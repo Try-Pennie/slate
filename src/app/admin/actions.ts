@@ -593,7 +593,7 @@ export async function setMonitorSettings(form: FormData): Promise<void> {
   });
 
   if (parsed.errors.length) {
-    redirect(`/admin/settings?error=${encodeURIComponent(parsed.errors.join(" "))}`);
+    redirect(`/admin/alerts?error=${encodeURIComponent(parsed.errors.join(" "))}`);
   }
 
   const db = supabaseAdmin();
@@ -619,8 +619,8 @@ export async function setMonitorSettings(form: FormData): Promise<void> {
   });
   // Channels are cached in-process; clear so the new destination takes effect now.
   __clearChannelCache();
-  revalidatePath("/admin/settings");
-  redirect("/admin/settings?ok=1");
+  revalidatePath("/admin/alerts");
+  redirect("/admin/alerts?ok=1");
 }
 
 /**
@@ -647,7 +647,7 @@ export async function setDefaultBucket(form: FormData): Promise<void> {
 
   const parsed = parseDefaultBucketForm(String(form.get("default_bucket_code") ?? ""), validCodes);
   if (parsed.errors.length) {
-    redirect(`/admin/settings?error=${encodeURIComponent(parsed.errors.join(" "))}`);
+    redirect(`/admin/buckets?error=${encodeURIComponent(parsed.errors.join(" "))}`);
   }
 
   await db.from("booking_settings").upsert(
@@ -666,8 +666,8 @@ export async function setDefaultBucket(form: FormData): Promise<void> {
     action: "booking.settings",
     details: { default_bucket_code: parsed.default_bucket_code },
   });
-  revalidatePath("/admin/settings");
-  redirect("/admin/settings?ok=1");
+  revalidatePath("/admin/buckets");
+  redirect("/admin/buckets?ok=1");
 }
 
 /**
@@ -686,7 +686,7 @@ export async function setBookingHorizon(form: FormData): Promise<void> {
 
   const parsed = parseHorizonForm(String(form.get("horizon_days") ?? ""));
   if (parsed.errors.length) {
-    redirect(`/admin/settings?error=${encodeURIComponent(parsed.errors.join(" "))}`);
+    redirect(`/admin/business-hours?error=${encodeURIComponent(parsed.errors.join(" "))}`);
   }
 
   await db.from("booking_settings").upsert(
@@ -712,8 +712,8 @@ export async function setBookingHorizon(form: FormData): Promise<void> {
     action: "booking.settings",
     details: { horizon_days: parsed.horizon_days },
   });
-  revalidatePath("/admin/settings");
-  redirect("/admin/settings?ok=1");
+  revalidatePath("/admin/business-hours");
+  redirect("/admin/business-hours?ok=1");
 }
 
 /**
@@ -739,12 +739,12 @@ export async function setEventDescription(form: FormData): Promise<void> {
 
   const eventTypeId = String(form.get("event_type_id") ?? "").trim();
   if (!eventTypeId) {
-    redirect(`/admin/settings?error=${encodeURIComponent("No event type was named.")}`);
+    redirect(`/admin/booker-copy?error=${encodeURIComponent("No event type was named.")}`);
   }
 
   const parsed = parseEventDescriptionForm(String(form.get("description") ?? ""));
   if (parsed.errors.length) {
-    redirect(`/admin/settings?error=${encodeURIComponent(parsed.errors.join(" "))}`);
+    redirect(`/admin/booker-copy?error=${encodeURIComponent(parsed.errors.join(" "))}`);
   }
 
   // #1435: one helper owns the write AND the refresh of what the booker serves,
@@ -764,7 +764,7 @@ export async function setEventDescription(form: FormData): Promise<void> {
       saved.error,
     );
     redirect(
-      `/admin/settings?error=${encodeURIComponent("Could not save the description. Please try again.")}`,
+      `/admin/booker-copy?error=${encodeURIComponent("Could not save the description. Please try again.")}`,
     );
   }
   // Zero rows is not a success either: the id did not match anything this admin's
@@ -772,7 +772,7 @@ export async function setEventDescription(form: FormData): Promise<void> {
   // else's data as much as about theirs.
   if (saved.count === 0) {
     redirect(
-      `/admin/settings?error=${encodeURIComponent("That event type was not found.")}`,
+      `/admin/booker-copy?error=${encodeURIComponent("That event type was not found.")}`,
     );
   }
 
@@ -782,8 +782,8 @@ export async function setEventDescription(form: FormData): Promise<void> {
     action: "booking.settings",
     details: { event_type_id: eventTypeId, description_chars: parsed.description?.length ?? 0 },
   });
-  revalidatePath("/admin/settings");
-  redirect("/admin/settings?ok=1");
+  revalidatePath("/admin/booker-copy");
+  redirect("/admin/booker-copy?ok=1");
 }
 
 /**
@@ -1651,7 +1651,7 @@ export async function setBusinessHoursException(
     action: "org.business_hours_exception",
     details: { on_date: row.on_date, is_open: row.is_open, note: row.note },
   });
-  revalidatePath("/admin/settings");
+  revalidatePath("/admin/business-hours");
   return { error: null, ok: true };
 }
 
@@ -1676,7 +1676,7 @@ export async function removeBusinessHoursException(form: FormData): Promise<void
     action: "org.business_hours_exception_removed",
     details: { on_date },
   });
-  revalidatePath("/admin/settings");
+  revalidatePath("/admin/business-hours");
 }
 
 export async function setBusinessHours(
@@ -1748,7 +1748,7 @@ export async function setBusinessHours(
     },
   });
 
-  revalidatePath("/admin/settings");
+  revalidatePath("/admin/business-hours");
 
   // #1458: measured AFTER the write, so it can only ever describe hours that are
   // really saved. Wrapped, because a coverage read that fails must not turn a

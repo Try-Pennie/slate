@@ -7,6 +7,18 @@ interface SettingsSaveNoticeProps {
   ok: boolean;
   /** The ?error= message when the save action rejected, else undefined. */
   error?: string;
+  /**
+   * What was saved, in this page's own words (#1922).
+   *
+   * REQUIRED, and that is the point. It used to be the hardcoded string "Alert
+   * settings saved." for every page that mounted this, so saving a booking reason
+   * confirmed that your ALERT settings had been saved. Measured on a running
+   * server: `/admin/booking-reasons?ok=1` and `/admin/buckets?ok=1` both said it.
+   *
+   * No default, so a page cannot mount this and inherit somebody else's
+   * sentence. `tsc` names every call site instead.
+   */
+  saved: string;
 }
 
 /**
@@ -20,12 +32,12 @@ interface SettingsSaveNoticeProps {
  * strips the param from the URL on mount via history.replaceState. A reload or
  * copied URL then carries no param and shows no banner.
  */
-export function SettingsSaveNotice({ ok, error }: SettingsSaveNoticeProps) {
+export function SettingsSaveNotice({ ok, error, saved }: SettingsSaveNoticeProps) {
   const [notice] = useState<{ kind: "ok" | "error"; message: string } | null>(
     error
       ? { kind: "error", message: error }
       : ok
-        ? { kind: "ok", message: "Alert settings saved." }
+        ? { kind: "ok", message: saved }
         : null,
   );
 

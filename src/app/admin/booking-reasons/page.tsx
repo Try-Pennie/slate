@@ -110,7 +110,7 @@ export default async function ReasonOptionsPage({
           <p className="mt-3 text-xs">{lastChanged}</p>
         </AdminPageHeader>
 
-        <SettingsSaveNotice ok={!!sp.ok} error={sp.error} />
+        <SettingsSaveNotice ok={!!sp.ok} error={sp.error} saved="Booking reasons saved." />
 
         <ReasonOptionsEditor initial={initial} usage={usage} />
       </>

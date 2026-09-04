@@ -100,7 +100,8 @@ describe("setEventDescription", () => {
 
   it("saves the copy and scopes the write to the admin's own org", async () => {
     const to = await run({ event_type_id: "et1", description: DANS_COPY });
-    expect(to).toBe("/admin/settings?ok=1");
+    // #1922: back to the page the form is on, not the dead /admin/settings.
+    expect(to).toBe("/admin/booker-copy?ok=1");
     expect(updateArgs[0]).toEqual({ description: DANS_COPY });
     // Both filters, or an admin could edit another org's copy by guessing an id.
     expect(eqCalls).toEqual([
@@ -160,6 +161,8 @@ describe("setEventDescription", () => {
   // pass all three failure tests above (L1).
   it("still reports success on a save that really wrote a row", async () => {
     result.count = 1;
-    expect(await run({ event_type_id: "et1", description: DANS_COPY })).toBe("/admin/settings?ok=1");
+    expect(await run({ event_type_id: "et1", description: DANS_COPY })).toBe(
+      "/admin/booker-copy?ok=1",
+    );
   });
 });

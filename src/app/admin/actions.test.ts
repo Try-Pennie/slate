@@ -218,6 +218,13 @@ vi.mock("@/lib/offboarding/service", () => offboarding);
 vi.mock("@/lib/bookable/service", () => bookable);
 vi.mock("@/lib/salesforce/sync", () => salesforce);
 vi.mock("@/lib/notify/streak", () => streak);
+// #1922: the booker copy write, seamed so the redirect TARGET can be asserted
+// without driving the whole event-type store through the table fake. What is
+// under test here is where the action sends you, not what it wrote.
+const eventTypeStore = vi.hoisted(() => ({
+  updateEventType: vi.fn(async () => ({ error: null })),
+}));
+vi.mock("@/lib/availability/event-type-store", () => eventTypeStore);
 
 import {
   grantStaffAccess,
@@ -238,6 +245,8 @@ import {
   useDefaultHours,
   useMyDefaultHours,
   setDefaultBucket,
+  setBookingHorizon,
+  setEventDescription,
   createBucket,
   updateBucket,
 } from "./actions";
@@ -648,7 +657,7 @@ describe("setMonitorSettings save path (#582)", () => {
     const key = ALERT_KEYS[0];
     await expect(
       setMonitorSettings(monitorForm({ [`cooldown_${key}`]: "", floor_30: "" })),
-    ).rejects.toThrow(/NEXT_REDIRECT:\/admin\/settings\?ok=1/);
+    ).rejects.toThrow(/NEXT_REDIRECT:\/admin\/alerts\?ok=1/);
 
     const rows = settingsUpsertPayload();
     const blankRow = rows.find((r) => r.key === key);
@@ -670,7 +679,7 @@ describe("setMonitorSettings save path (#582)", () => {
     // 0 is below the 1-minute floor; the parser rejects it.
     await expect(
       setMonitorSettings(monitorForm({ [`cooldown_${key}`]: "0" })),
-    ).rejects.toThrow(/NEXT_REDIRECT:\/admin\/settings\?error=/);
+    ).rejects.toThrow(/NEXT_REDIRECT:\/admin\/alerts\?error=/);
 
     expect(upsert).not.toHaveBeenCalled();
     expect(recordAudit).not.toHaveBeenCalled();
@@ -1356,7 +1365,8 @@ describe("the reads that decide authorization or a write must refuse, not guess 
       // is WHICH redirect and whether the write happened, never whether one threw.
       await expect(
         setDefaultBucket(form({ default_bucket_code: "120" })),
-      ).rejects.toThrow(/NEXT_REDIRECT:\/admin\/settings\?ok=1/);
+      // #1922: back to the page the form is on, not the dead /admin/settings.
+      ).rejects.toThrow(/NEXT_REDIRECT:\/admin\/buckets\?ok=1/);
       expect(upsert).toHaveBeenCalled();
     });
   });
@@ -1516,6 +1526,88 @@ describe("setAgentAttributes merges rather than rebuilding (#1874)", () => {
     // an empty attributes object is a legitimate value, so nothing downstream
     // could tell it from an agent who genuinely has none.
     expect(update).not.toHaveBeenCalled();
+  });
+});
+
+// #1922. Six actions redirected to `/admin/settings`, which since #1748 is not a
+// screen: it is a bare redirect to `/admin`, kept so an old bookmark lands
+// somewhere real. So a save on `/admin/buckets` or `/admin/business-hours` ended
+// on the HEALTH page and the outcome query was dropped by the second redirect.
+// Measured in a browser before the fix: `/admin/settings?ok=1` and
+// `/admin/settings?error=...` both landed on `/admin` with no notice anywhere.
+//
+// A successful save therefore said nothing, and a REFUSED save destroyed the
+// sentence explaining why, which is a fail-silent on the exact path built to fail
+// loud. That is L586.
+//
+// Asserted on the redirect TARGET, never on the fact of a redirect: a test that
+// only checks a redirect happened passes on every wrong target (L63).
+describe("a save returns to the page its own form is on (#1922)", () => {
+  beforeEach(() => {
+    auth.requireAdmin.mockResolvedValue(admin);
+    auth.requireSuperAdmin.mockResolvedValue(admin);
+    dbState.single = { id: "b1", code: "411", name: "Pool" };
+    dbState.rowsByTable = { buckets: { id: "b1", code: "411", name: "Pool" } };
+  });
+
+  /** The URL an action redirected to, from the thrown NEXT_REDIRECT. */
+  const targetOf = async (run: () => Promise<unknown>): Promise<string> => {
+    await run().catch(() => {});
+    const call = redirect.mock.calls.at(-1);
+    return call ? String(call[0]) : "(no redirect)";
+  };
+
+  it("sends a saved default bucket back to the buckets page", async () => {
+    dbState.rowsByTable.buckets = [{ code: "411", is_test: false }];
+    const to = await targetOf(() => setDefaultBucket(form({ default_bucket_code: "411" })));
+    expect(to).toMatch(/^\/admin\/buckets\?ok=1/);
+    expect(revalidatePath).toHaveBeenCalledWith("/admin/buckets");
+  });
+
+  it("sends a saved booking horizon back to the hours page", async () => {
+    const to = await targetOf(() => setBookingHorizon(form({ horizon_days: "5" })));
+    expect(to).toMatch(/^\/admin\/business-hours\?ok=1/);
+  });
+
+  it("sends saved booker copy back to the booker copy page", async () => {
+    const to = await targetOf(() =>
+      setEventDescription(form({ event_type_id: "et1", description: "Hello" })),
+    );
+    expect(to).toMatch(/^\/admin\/booker-copy\?ok=1/);
+  });
+
+  it("sends saved monitor settings back to the alerts page", async () => {
+    const to = await targetOf(() =>
+      setMonitorSettings(form(Object.fromEntries(ALERT_KEYS.map((k) => [`cooldown_${k}`, "15"])))),
+    );
+    expect(to).toMatch(/^\/admin\/alerts\?ok=1/);
+  });
+
+  // The half that mattered most: a REFUSAL has to reach the page too, or the
+  // sentence explaining why the value was rejected goes nowhere.
+  it("returns a refusal to the page that can show it, with the reason intact", async () => {
+    const to = await targetOf(() => setBookingHorizon(form({ horizon_days: "9999" })));
+    expect(to).toMatch(/^\/admin\/business-hours\?error=/);
+    expect(decodeURIComponent(to)).toMatch(/\d/);
+  });
+
+  // The route that swallowed them. Nothing may point at it again: it renders no
+  // notice and drops the query on its way to /admin.
+  it("points nothing at the route that is itself a redirect", async () => {
+    dbState.rowsByTable.buckets = [{ code: "411", is_test: false }];
+    for (const run of [
+      () => setDefaultBucket(form({ default_bucket_code: "411" })),
+      () => setBookingHorizon(form({ horizon_days: "5" })),
+      () => setBookingHorizon(form({ horizon_days: "9999" })),
+      () => setEventDescription(form({ event_type_id: "et1", description: "Hello" })),
+    ]) {
+      redirect.mockClear();
+      revalidatePath.mockClear();
+      await run().catch(() => {});
+      for (const call of [...redirect.mock.calls, ...revalidatePath.mock.calls]) {
+        expect(String(call[0])).not.toMatch(/\/admin\/settings/);
+      }
+    }
   });
 });
 
