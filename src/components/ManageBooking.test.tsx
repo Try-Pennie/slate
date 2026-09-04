@@ -2,6 +2,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { DateTime } from "luxon";
 import ManageBooking from "@/components/ManageBooking";
 import { RESCHEDULE_REASONS, CANCEL_REASONS } from "@/lib/booking/core";
 import { NEAREST_TIMES_COPY } from "@/lib/booking/booker-copy";
@@ -443,12 +444,27 @@ describe("ManageBooking", () => {
   // #1338: the page is what someone opens days later from a calendar reminder,
   // so the time is the hero and the heading says how far off the call is.
   describe("the rebuilt page (#1338)", () => {
-    const inDays = (n: number) => {
-      const d = new Date();
-      d.setDate(d.getDate() + n);
-      d.setHours(14, 0, 0, 0);
-      return d.toISOString();
-    };
+    /**
+     * An instant that is `n` days from now IN THE ZONE THE PAGE DISPLAYS.
+     *
+     * #1849: the page shows a fixed US zone rather than the host's, so a fixture
+     * built at 14:00 host-local is a different calendar day to the one being
+     * asserted the moment the host is not that zone. Under CI's TZ=UTC, "today
+     * at 14:00 UTC" is tomorrow in New York for most of the day, and the
+     * countdown correctly said so.
+     *
+     * The zone is SET here rather than inherited, which is the general fix: when
+     * the ambient configuration is what separates a right answer from a wrong
+     * one, a test that reads it has made the host part of the assertion (L504).
+     */
+    const DISPLAY_ZONE = "America/New_York";
+    const inDays = (n: number) =>
+      DateTime.now()
+        .setZone(DISPLAY_ZONE)
+        .plus({ days: n })
+        .set({ hour: 14, minute: 0, second: 0, millisecond: 0 })
+        .toUTC()
+        .toISO()!;
 
     it("computes the countdown from the booking time rather than a fixed value", () => {
       mockFetch({});
