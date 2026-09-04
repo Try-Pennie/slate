@@ -21,6 +21,7 @@ import { type CoverageAgent } from "@/lib/booking/business-hours-coverage";
 import { loadCoverageAgents } from "@/lib/booking/business-hours-coverage-load";
 import { approvedTimeOffIntervals } from "@/lib/ooo/approved-overlap";
 import { HORIZON_DAYS } from "@/lib/availability/slot-cache";
+import { isOrgOpen, memoisedOrgOpen } from "@/lib/availability/compute";
 import {
   buildAvailabilityGrid,
   bucketsOfferingByHour,
@@ -44,36 +45,59 @@ export async function loadAvailabilityGrid(now: DateTime = DateTime.now()): Prom
   // a staffing gap, and a date opened against the pattern renders its own window
   // (#1581). `loadBusinessHours` returns only the OPEN windows, so a weekday
   // missing from it is a closed day rather than an unreadable one.
-  const businessHours = await loadBusinessHours();
+  // #1846: the reads run TOGETHER rather than one after another. Measured against
+  // live Supabase, the page spent 839ms in seven strictly serial reads, and the
+  // slot cache does not depend on the roster or on the hours, nor the roster on
+  // the hours. Three independent chains, so they are three awaits in parallel.
+  //
+  // The roster chain stays a chain: leave is fetched for the same range the pool
+  // is read for, and it stays inside one try so a failure of EITHER renders as
+  // "could not check" rather than as an empty roster, which is the whole point of
+  // this loader.
+  const [businessHours, agents, slotRows] = await Promise.all([
+    loadBusinessHours(),
+    (async (): Promise<CoverageAgent[] | null> => {
+      try {
+        const pool = await loadCoverageAgents(db);
+        // Approved time off across the whole range (#1582), attached per agent so
+        // a day the team is away renders as away rather than as fully staffed.
+        // Inside the same try: if leave cannot be read, rendering "fully staffed"
+        // would be the exact defect this read exists to fix, so the grid says
+        // "could not check" instead.
+        const out = await approvedTimeOffIntervals(
+          today.toISO() ?? "",
+          today.plus({ days: GRID_DAYS }).toISO() ?? "",
+        );
+        return pool.map((a) => ({ ...a, out: out.get(a.userId) ?? [] }));
+      } catch {
+        // The pool, its rules, or its leave could not be read. NOT an empty
+        // roster: every cell must say it was not measured.
+        return null;
+      }
+    })(),
+    // What is being OFFERED, filtered through the org's current hours exactly as
+    // the read path filters it (#1296). A read error here IS fatal, as it was
+    // before: `unwrap` throws, and this rejecting rejects the whole page rather
+    // than rendering a grid with no offered times, which would read as booked out.
+    (async () =>
+      unwrap(
+        await db.from("bucket_slots").select("payload"),
+        "availability grid slots",
+      ) as { payload: { slots?: string[]; eventType?: { duration_min?: number } } | null }[] | null)(),
+  ]);
 
-  let agents: CoverageAgent[] | null;
-  try {
-    const pool = await loadCoverageAgents(db);
-    // Approved time off across the whole range (#1582), attached per agent so a
-    // day the team is away renders as away rather than as fully staffed. Inside
-    // the same try: if leave cannot be read, rendering "fully staffed" would be
-    // the exact defect this read exists to fix, so the grid says "could not
-    // check" instead.
-    const out = await approvedTimeOffIntervals(
-      today.toISO() ?? "",
-      today.plus({ days: GRID_DAYS }).toISO() ?? "",
-    );
-    agents = pool.map((a) => ({ ...a, out: out.get(a.userId) ?? [] }));
-  } catch {
-    // The pool, its rules, or its leave could not be read. NOT an empty roster:
-    // every cell must say it was not measured.
-    agents = null;
-  }
-
-  // What is being OFFERED, filtered through the org's current hours exactly as
-  // the read path filters it (#1296). A read error here is not fatal to the grid:
-  // the rostering half is still worth showing, and an hour with no cached row
-  // already renders as booked, which is what a lead would see.
-  const slotRows = unwrap(
-    await db.from("bucket_slots").select("payload"),
-    "availability grid slots",
-  ) as { payload: { slots?: string[]; eventType?: { duration_min?: number } } | null }[] | null;
-  const bucketsByDayHour = bucketsOfferingByHour(slotRows ?? [], businessHours, BUSINESS_ZONE);
+  // #1846: ONE memo across all sixty-odd buckets. The judge's answer depends only
+  // on the window against a week that is fixed for this request, and the same
+  // start time appears in most of the buckets, so asking once per distinct window
+  // rather than once per slot string is where 2 seconds of Worker CPU went. Built
+  // here and discarded with the request, never module level: the hours are read
+  // per request and can change between them (#1296).
+  const bucketsByDayHour = bucketsOfferingByHour(
+    slotRows ?? [],
+    businessHours,
+    BUSINESS_ZONE,
+    memoisedOrgOpen((startMs, endMs) => isOrgOpen(businessHours, startMs, endMs)),
+  );
 
   const days = gridDayInputs({
     hours: businessHours,

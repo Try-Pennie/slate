@@ -370,12 +370,56 @@ export function isBookableSlotForAgent(
  * trustworthy input the moment one of its entries is unparseable, and dropping is
  * the direction that can only ever offer less.
  */
+/**
+ * Whether the org is open for one window. The seam `slotsWithinBusinessHours` and
+ * the availability grid take, so a caller can hand them a memo instead (#1846).
+ */
+export type OrgOpenJudge = (startMs: number, endMs: number) => boolean;
+
+/**
+ * The same judge, asked at most once per distinct window (#1846).
+ *
+ * `/admin/availability` walks 62 cached bucket rows holding 11,384 slot strings
+ * and asked about every one, which measured 2.0 to 2.4 seconds of Worker CPU per
+ * page view. The answer depends only on the window against a week that is fixed
+ * for the request, and a start time is the SAME instant in most of the sixty
+ * buckets, so nearly all of those questions were repeats.
+ *
+ * THE KEY IS THE WHOLE WINDOW, start and end, not the hour or the day. A memo
+ * keyed on less would be fast and wrong in exactly the cases a uniform fixture
+ * never has: a date closed against the weekly pattern, and a window that begins
+ * inside the day but runs past the close.
+ *
+ * IT MUST NOT OUTLIVE THE REQUEST. The hours it is computed against are read per
+ * request and can change between them (#1296 is the whole reason the org window
+ * is applied at read time), so this is a function a caller builds and discards,
+ * never a module level cache.
+ */
+export function memoisedOrgOpen(judge: OrgOpenJudge): OrgOpenJudge {
+  const seen = new Map<string, boolean>();
+  return (startMs, endMs) => {
+    const key = `${startMs}:${endMs}`;
+    const hit = seen.get(key);
+    if (hit !== undefined) return hit;
+    const answer = judge(startMs, endMs);
+    seen.set(key, answer);
+    return answer;
+  };
+}
+
 export function slotsWithinBusinessHours(
   slots: string[],
   durationMin: number,
   hours: BusinessHoursRules,
+  /**
+   * Who decides. Defaults to asking directly, which is what every caller with a
+   * single list wants; a caller walking MANY lists against one week passes a
+   * `memoisedOrgOpen` so the repeats across those lists cost nothing.
+   */
+  judge?: OrgOpenJudge,
 ): string[] {
   const durMs = durationMin * MIN;
+  const decide = judge ?? ((s: number, e: number) => isOrgOpen(hours, s, e));
   return slots.filter((iso) => {
     // parse-ok: an unreadable instant fails this check and is dropped from the
     // offered list, so NaN can only ever remove a slot, never admit one.
@@ -383,7 +427,7 @@ export function slotsWithinBusinessHours(
     if (!Number.isFinite(startMs)) return false;
     // Through the same judge the gate uses, so a date exception (#1363) filters a
     // cached slot on the very next request rather than at the next recompute.
-    return isOrgOpen(hours, startMs, startMs + durMs);
+    return decide(startMs, startMs + durMs);
   });
 }
 
