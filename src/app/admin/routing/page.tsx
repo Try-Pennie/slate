@@ -43,12 +43,24 @@ export default async function RecentRoutingPage() {
 
   return (
     <>
+      {/* #1915: the header describes the PAGE, which holds two cards, rather
+          than restating the first one. Its old description was the section's
+          sentence with the count taken out, which is the worse of the two: the
+          section knows how many bookings it actually read. That sentence stays
+          where it is, inside the branch where the read SUCCEEDED, because in the
+          header it would claim "the last 0 bookings routed" off a read that
+          never ran (#1629). */}
       <AdminPageHeader title="Recent routing">
-        How the last bookings routed: who was considered, who was chosen, whether
-        the fallback fired, and any manual reassignments.
+        Why each recent booking went to the advisor it did, and the API for forcing
+        one onto a specific advisor.
       </AdminPageHeader>
       <section className={cardCls}>
-        <h2 className="mb-1 text-sm font-semibold">Recent routing</h2>
+        {/* #1915: no heading of its own. The page header above names this,
+            and a section that IS the page restating the page's title is the
+            redundancy Dan read as "this is redundant". A page shell that titles
+            itself and a section that titles itself are each correct alone; the
+            duplication exists only in the composition, which is the one place
+            nobody reads. */}
         {/* An empty trace says "nothing has been booked", which is exactly the
             question this panel is opened to answer (#1629). */}
         {recentUnreadable ? (
