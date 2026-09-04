@@ -22,6 +22,7 @@
  */
 
 import { IANAZone } from "luxon";
+import { uniformRules } from "./schedule-core";
 
 export interface ScheduleRule {
   weekday: number;
@@ -149,12 +150,5 @@ export function planUniformSchedule(
   endMinute: number,
   timezone: string,
 ): ScheduleReplacementPlan {
-  return planScheduleReplacement(
-    weekdays.map((weekday) => ({
-      weekday,
-      start_minute: startMinute,
-      end_minute: endMinute,
-    })),
-    timezone,
-  );
+  return planScheduleReplacement(uniformRules(weekdays, startMinute, endMinute), timezone);
 }

@@ -12,7 +12,13 @@
  */
 
 import { formatTimeOfDay } from "./date/parse";
-import { WEEKDAY_NAMES, minutesToTime, weekdayPhrase } from "./schedule-core";
+import {
+  WEEKDAY_NAMES,
+  minutesToTime,
+  uniformRules,
+  weekdayPhrase,
+  type OrgDefaults,
+} from "./schedule-core";
 
 /** One window of a working day, in the agent's own zone, as "HH:MM". */
 export interface WorkingHoursWindow {
@@ -66,6 +72,21 @@ export function workingHoursDays(
       windows: windows.length > 0 ? windows : [{ ...DEFAULT_DAY }],
     };
   });
+}
+
+/**
+ * The week "Apply company default hours" would write (#1873).
+ *
+ * Built from `uniformRules`, the same rows `planUniformSchedule` inserts, and
+ * then read back through `workingHoursDays` exactly as a stored week is, so the
+ * sentence the confirm shows is the week that actually lands rather than a second
+ * account of it.
+ */
+export function orgDefaultWeek(org: OrgDefaults): WorkingHoursDay[] {
+  return workingHoursDays(
+    uniformRules(org.default_weekdays, org.default_start_minute, org.default_end_minute),
+    org.default_weekdays,
+  );
 }
 
 /** A day's windows as words, or null when it has no readable times yet. */

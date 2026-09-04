@@ -39,6 +39,7 @@ export function SubmitButton({
   slowLabel = "Still working",
   buttonRef,
   role,
+  formAction,
 }: {
   children: React.ReactNode;
   pendingLabel: string;
@@ -47,6 +48,15 @@ export function SubmitButton({
   buttonRef?: React.Ref<HTMLButtonElement>;
   /** For a submit that is also a menu item (the account menu's sign out). */
   role?: string;
+  /**
+   * Submit the enclosing form to a DIFFERENT action than the form's own (#1873).
+   *
+   * One form, two actions, which is how a control can sit INSIDE a form (the only
+   * place it can see whether that form has unsaved edits) without running the
+   * form's save. The pending state still comes from `useFormStatus`, which reads
+   * the form rather than the button, so it reports either submission.
+   */
+  formAction?: (form: FormData) => Promise<void>;
   /** Shown in place of `pendingLabel` once the wait stops being normal. */
   slowLabel?: string;
 }) {
@@ -73,6 +83,7 @@ export function SubmitButton({
       ref={buttonRef}
       type="submit"
       role={role}
+      formAction={formAction}
       disabled={pending}
       aria-busy={pending}
       className={className}

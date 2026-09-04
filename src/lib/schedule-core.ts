@@ -49,6 +49,27 @@ export type RuleRow = {
   end_minute: number;
 };
 
+/**
+ * The same window on each of several weekdays (#1873).
+ *
+ * ONE derivation, because two things ask what "the company default hours" are:
+ * `planUniformSchedule`, which WRITES them, and the confirm on the admin's hours
+ * form, which has to NAME them before it writes. A second copy would let the
+ * sentence and the write disagree, and the sentence is the half nobody could
+ * check.
+ */
+export function uniformRules(
+  weekdays: number[],
+  startMinute: number,
+  endMinute: number,
+): { weekday: number; start_minute: number; end_minute: number }[] {
+  return weekdays.map((weekday) => ({
+    weekday,
+    start_minute: startMinute,
+    end_minute: endMinute,
+  }));
+}
+
 export function defaultRuleRows(scheduleId: string, org: OrgDefaults): RuleRow[] {
   if (org.default_end_minute <= org.default_start_minute) return [];
   return org.default_weekdays.map((weekday) => ({

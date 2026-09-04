@@ -1,8 +1,7 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
-
 import { btnSecondaryCls } from "@/components/ui/styles";
+import { ConfirmAction } from "@/components/ui/ConfirmAction";
 import { SubmitButton } from "@/components/ui/SubmitButton";
 
 /**
@@ -72,19 +71,6 @@ export default function PoolExitConfirmButton({
   upcomingBookings: number | null;
 }) {
   const copy = COPY[action];
-  const [confirming, setConfirming] = useState(false);
-  const openRef = useRef<HTMLButtonElement>(null);
-  const confirmRef = useRef<HTMLButtonElement>(null);
-  // The two buttons swap places in the DOM, so without moving focus deliberately
-  // it lands on the document body and a keyboard or screen-reader user is dropped
-  // out of the flow they just started (and cannot tab forward to the warning).
-  // `returning` distinguishes cancelling back (focus the opener) from the first
-  // render (focus nothing, or the page would steal focus on load).
-  const [returning, setReturning] = useState(false);
-  useEffect(() => {
-    if (confirming) confirmRef.current?.focus();
-    else if (returning) openRef.current?.focus();
-  }, [confirming, returning]);
 
   // Nothing at stake: one click, as before. A confirm here would be a speed bump
   // in front of nothing, which is how confirms get clicked through by reflex.
@@ -96,53 +82,33 @@ export default function PoolExitConfirmButton({
     );
   }
 
-  if (!confirming) {
-    return (
-      <button
-        ref={openRef}
-        type="button"
-        className={btnSecondaryCls}
-        onClick={() => setConfirming(true)}
-      >
-        {copy.label}
-      </button>
-    );
-  }
-
   const held =
     upcomingBookings === null
       ? `Slate could not check how many upcoming appointments ${agentName} still holds.`
       : `${agentName} still holds ${upcomingBookings} upcoming ` +
         `${upcomingBookings === 1 ? "appointment" : "appointments"}.`;
 
+  // The open/confirm/cancel swap and its focus move live in `ConfirmAction`
+  // (#1873), because applying company default hours needed the identical
+  // interaction and two copies of it would drift. What stays here is the COPY,
+  // which is the half that differs per control.
   return (
-    <div role="alert" className="rounded-sm border border-border bg-[var(--field)] p-4">
-      <p className="text-sm text-fg">
-        {held} {copy.effect}: the customers stay booked with {agentName} and will meet nobody.
-        Reassign them in Coverage below, either before or after this.
-      </p>
-      <div className="mt-3 flex flex-wrap items-center gap-3">
-        <SubmitButton
-          buttonRef={confirmRef}
-          className={btnSecondaryCls}
-          pendingLabel={copy.pending}
-        >
-          {copy.confirm}
-        </SubmitButton>
-        <button
-          type="button"
-          className={btnSecondaryCls}
-          onClick={() => {
-            setReturning(true);
-            setConfirming(false);
-          }}
-        >
-          Cancel
-        </button>
+    <ConfirmAction
+      label={copy.label}
+      confirmLabel={copy.confirm}
+      pendingLabel={copy.pending}
+      className={btnSecondaryCls}
+      message={
+        <>
+          {held} {copy.effect}: the customers stay booked with {agentName} and will meet
+          nobody. Reassign them in Coverage below, either before or after this.
+        </>
+      }
+      extra={
         <a className="text-xs underline text-fg-muted" href={`/admin/agents/${agentId}#coverage`}>
           Go to Coverage
         </a>
-      </div>
-    </div>
+      }
+    />
   );
 }

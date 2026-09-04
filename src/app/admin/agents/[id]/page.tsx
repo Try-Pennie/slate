@@ -28,7 +28,7 @@ import { unwrap } from "@/lib/db/result";
 import { loadReasonOptions } from "@/lib/booking/reason-options";
 import { WorkingHoursForm } from "@/components/ui/WorkingHoursForm";
 import { SubmitButton } from "@/components/ui/SubmitButton";
-import { workingHoursDays } from "@/lib/schedule-week";
+import { orgDefaultWeek, workingHoursDays } from "@/lib/schedule-week";
 import { btnCls, btnSecondaryCls, cardCls, inputCls, labelCls } from "@/components/ui/styles";
 import { Pill } from "@/components/ui/Pill";
 import { ViewAsButton } from "@/components/admin/ViewAsButton";
@@ -388,6 +388,12 @@ export default async function AgentProfilePage({
           </div>
           {canManageThisAgent ? (
             <>
+              {/* #1873: "Apply company default hours" is INSIDE this form now,
+                  submitted to its own action, rather than a second form below it.
+                  It has to be, because it discards whatever is unsaved here and
+                  only this form knows whether anything is. `orgDefaultWeek` is
+                  the week that action writes, so the confirm names it rather than
+                  asking a generic question. */}
               <div className="mt-4">
                 <WorkingHoursForm
                   action={setWorkingHours}
@@ -396,17 +402,10 @@ export default async function AgentProfilePage({
                   timezoneLabel="Timezone (agent home tz)"
                   userId={agent.id}
                   saveLabel="Save hours"
+                  defaultsAction={useDefaultHours}
+                  companyDefaultDays={orgDefaultWeek(org)}
                 />
               </div>
-              <form action={useDefaultHours} className="mt-3">
-                <input type="hidden" name="user_id" value={agent.id} />
-                <SubmitButton
-                  className="text-xs text-pennie-blue underline dark:text-pennie-sky"
-                  pendingLabel="Applying company hours"
-                >
-                  Apply company default hours
-                </SubmitButton>
-              </form>
             </>
           ) : (
             <p className="mt-4 text-xs text-fg-muted">
