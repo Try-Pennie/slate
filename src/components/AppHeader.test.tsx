@@ -15,21 +15,37 @@ vi.mock("@/app/admin/actions", () => ({
 // #1165: the pending-OOO badge read is a `{ count }` destructure. The fake lets a
 // test make that read FAIL so the badge's behaviour on a broken read is pinned,
 // rather than the failure quietly scoring as "no requests pending".
-const db = vi.hoisted(() => ({ oooCountError: null as { message: string } | null, oooCount: 0 }));
+const db = vi.hoisted(() => ({
+  oooCountError: null as { message: string } | null,
+  oooCount: 0,
+  /** Every read, in the order it was ISSUED and then in the order it SETTLED. */
+  trace: [] as string[],
+  /** Tables held open until a test releases them, so ordering is decided not raced. */
+  hold: null as null | Set<string>,
+  release: {} as Record<string, () => void>,
+}));
 const supabaseAdmin = vi.hoisted(() =>
   vi.fn(() => ({
     from: (table: string) => {
+      const answer = () =>
+        table === "ooo_requests"
+          ? { count: db.oooCountError ? null : db.oooCount, error: db.oooCountError }
+          : { data: [], error: null };
       const b: Record<string, unknown> = {
         select: () => b,
         eq: () => b,
         in: () => b,
         not: () => b,
-        then: (resolve: (v: unknown) => unknown) =>
-          Promise.resolve(
-            table === "ooo_requests"
-              ? { count: db.oooCountError ? null : db.oooCount, error: db.oooCountError }
-              : { data: [], error: null },
-          ).then(resolve),
+        then: (resolve: (v: unknown) => unknown) => {
+          db.trace.push(`${table}:issued`);
+          const gate = db.hold?.has(table)
+            ? new Promise<void>((res) => { db.release[table] = res; })
+            : Promise.resolve();
+          return gate.then(() => {
+            db.trace.push(`${table}:settled`);
+            return resolve(answer());
+          });
+        },
       };
       return b;
     },
@@ -49,6 +65,9 @@ beforeEach(() => {
   view.v = { status: "none" };
   db.oooCountError = null;
   db.oooCount = 0;
+  db.trace = [];
+  db.hold = null;
+  db.release = {};
   logSpy.warn.mockClear();
 });
 
@@ -120,5 +139,63 @@ describe("pending-OOO badge on a failed count read (#1165)", () => {
     expect(screen.queryByText(/requests? pending/i)).toBeNull();
     expect(logSpy.warn).toHaveBeenCalledTimes(1);
     expect(JSON.stringify(logSpy.warn.mock.calls[0])).toMatch(/pending/i);
+  });
+});
+
+
+// #1847: the header's two INDEPENDENT reads are issued together.
+//
+// It ran three reads in a strict chain, which on a full page load is a serial
+// prefix in front of the page. The calendar read and the staff-id read do not
+// depend on each other; the pending count does depend on the staff ids, because
+// it filters the queue on them, and that ordering is asserted too or "parallel"
+// would be satisfied by firing a query before its own input exists.
+//
+// NOT ON THE NAVIGATION PATH, and the issue is corrected to say so: Next reuses
+// the admin layout between console pages, so this header does not re-render when
+// somebody clicks from one page to another. The saving is on a first visit or a
+// refresh. That was measured before this was built rather than assumed.
+//
+// No sleeps: the reads are held open by promises the test releases by hand, so
+// the ordering is decided rather than raced (L290).
+describe("the header's independent reads run together (#1847)", () => {
+  const withIds = { ...props, userId: "mgr-1", orgId: "org-1" };
+
+  it("issues the calendar and staff reads before either settles", async () => {
+    db.hold = new Set(["agent_calendars", "users"]);
+    const rendered = AppHeader(withIds);
+    // Let every synchronous chain run without advancing any read.
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const issued = db.trace.filter((e) => e.endsWith(":issued")).map((e) => e.split(":")[0]);
+    expect(issued).toContain("agent_calendars");
+    expect(issued).toContain("users");
+    // A serial version cannot have issued the second: it would still be awaiting
+    // the first, which this test is holding open.
+    expect(
+      db.trace.some((e) => e.endsWith(":settled")),
+      "nothing has settled yet, so both were issued while the other was pending",
+    ).toBe(false);
+
+    db.release.agent_calendars?.();
+    db.release.users?.();
+    render(await rendered);
+  });
+
+  it("still reads the pending count only AFTER the staff ids it filters on", async () => {
+    db.oooCount = 2;
+    render(await AppHeader(withIds));
+    const usersIssued = db.trace.indexOf("users:issued");
+    const oooIssued = db.trace.indexOf("ooo_requests:issued");
+    expect(usersIssued).toBeGreaterThan(-1);
+    expect(oooIssued).toBeGreaterThan(-1);
+    expect(
+      oooIssued,
+      "the count filters on the staff ids, so it cannot be fired beside them",
+    ).toBeGreaterThan(db.trace.indexOf("users:settled"));
+    // And the badge still works, which is what the reordering must not cost.
+    expect(screen.getByText(/2 requests pending/i)).toBeTruthy();
   });
 });

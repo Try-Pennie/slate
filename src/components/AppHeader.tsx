@@ -71,18 +71,51 @@ export async function AppHeader({
   // regardless, so "no live watch" is NOT the urgent case. Only a bookable agent
   // with NO calendar row at all (we can't sync them) gets the loud banner; a
   // lapsed watch with a row is "degraded". calendarHeaderStatus owns that call.
+  // #1847: the calendar read and the staff-id read are independent of each other,
+  // so they are issued TOGETHER rather than one after the other. Measured: this
+  // header ran three reads in a strict chain, which on a full page load is a
+  // serial prefix in front of the page. It is NOT on the client navigation path,
+  // because Next reuses this layout between console pages, so the saving is on a
+  // first visit or a refresh rather than on every click. Measured before building
+  // rather than assumed, and the issue is corrected to say so.
+  //
+  // The pending count still waits for the staff ids, because it filters on them.
+  const wantsCalendar = Boolean(userId) && !oooOnly;
+  const wantsBadge = showTimeOff && Boolean(userId) && Boolean(orgId);
+  const [calendarRows, staffRows] = await Promise.all([
+    wantsCalendar
+      ? // error-ok: a failed read leaves `checked: false`, which is the "we did
+        // not look" state calendarHeaderStatus already models, and the banner
+        // stays silent rather than claiming a calendar is broken. The every
+        // minute sync lane is what actually reports a broken calendar.
+        supabaseAdmin()
+          .from("agent_calendars")
+          .select("watch_expiration")
+          .eq("user_id", userId!)
+          .then((r) => r.data as { watch_expiration: string | null }[] | null)
+      : Promise.resolve(null),
+    wantsBadge
+      ? // Exclude requests authored by admins/super admins, mirroring the Team
+        // Requests page, so test/operator requests can't inflate the badge.
+        // error-ok: an unreadable staff list means the exclusion is not applied;
+        // the count below consults its own error and hides the badge either way.
+        supabaseAdmin()
+          .from("users")
+          .select("id")
+          .eq("org_id", orgId!)
+          .in("role", ["admin", "super_admin"])
+          .then((r) => r.data as { id: string }[] | null)
+      : Promise.resolve(null),
+  ]);
+
   let calendar = calendarHeaderStatus({
     checked: false,
     bookable: bookable === true,
     hasCalendars: false,
     hasLiveWatch: false,
   });
-  if (userId && !oooOnly) {
-    const { data } = await supabaseAdmin()
-      .from("agent_calendars")
-      .select("watch_expiration")
-      .eq("user_id", userId);
-    const rows = (data ?? []) as { watch_expiration: string | null }[];
+  if (wantsCalendar) {
+    const rows = calendarRows ?? [];
     calendar = calendarHeaderStatus({
       checked: true,
       bookable: bookable === true,
@@ -96,26 +129,19 @@ export async function AppHeader({
   // own reports; team leads and up (canModerateAllOoo) see the whole org. Needs
   // org_id for the org-wide scope, so it's a no-op without the orgId prop.
   let pendingOoo = 0;
-  if (showTimeOff && userId && orgId) {
-    // Exclude requests authored by admins/super admins, mirroring the Team
-    // Requests page, so test/operator requests can't inflate the badge.
-    const { data: staff } = await supabaseAdmin()
-      .from("users")
-      .select("id")
-      .eq("org_id", orgId)
-      .in("role", ["admin", "super_admin"]);
-    const staffIds = ((staff ?? []) as { id: string }[]).map((u) => u.id);
+  if (wantsBadge) {
+    const staffIds = (staffRows ?? []).map((u) => u.id);
 
     let q = supabaseAdmin()
       .from("ooo_requests")
       .select("id", { count: "exact", head: true })
-      .eq("org_id", orgId)
+      .eq("org_id", orgId!)
       .eq("status", "pending");
     if (staffIds.length > 0) {
       q = q.not("user_id", "in", `(${staffIds.join(",")})`);
     }
     // showTimeOff already implies isRole(r); the guard just narrows the type.
-    if (isRole(r) && !canModerateAllOoo(r)) q = q.eq("manager_id", userId);
+    if (isRole(r) && !canModerateAllOoo(r)) q = q.eq("manager_id", userId!);
     // #1165: consult `error`. A failed count came back null and `?? 0` hid the
     // badge, which is exactly what an empty queue looks like, so a broken read
     // presented as "nothing waiting for you". The header still renders (throwing
