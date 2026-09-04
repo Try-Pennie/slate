@@ -7,6 +7,7 @@ import {
   formatTimeOfDay,
   quarterHourOptions,
   resolveTypedTime,
+  timeSegmentAt,
   roundDownToQuarterHour,
   roundUpToQuarterHour,
 } from "@/lib/date/parse";
@@ -100,6 +101,16 @@ export function TimeField({
   const [dirty, setDirty] = useState(false);
 
   const inputRef = useRef<HTMLInputElement>(null);
+  /**
+   * Where the pointer was on the second click of a double click (#1964).
+   *
+   * MEASURED rather than assumed: by the time `dblclick` fires the browser has
+   * already expanded the selection to its own idea of a word, and for "5:00pm"
+   * that word is "00pm", so `selectionStart` there reports 2 wherever inside it
+   * you clicked. The second MOUSEDOWN still reports the exact caret (0 through 5
+   * for the six characters), so that is where the position is taken from.
+   */
+  const dblCaret = useRef<number | null>(null);
   const listRef = useRef<HTMLUListElement>(null);
   const baseId = useId();
   const listId = `${baseId}-list`;
@@ -109,7 +120,9 @@ export function TimeField({
     () => (dirty ? filterTimeOptions(text) : quarterHourOptions()),
     [dirty, text],
   );
-  const resolved = resolveTypedTime(text);
+  // `committed` is what the field is standing on, which is what a bare 12 hour
+  // time inherits its half of the day from (#1964).
+  const resolved = resolveTypedTime(text, committed);
 
   /**
    * What is wrong with the field right now, in the reader's words, or null.
@@ -173,7 +186,7 @@ export function TimeField({
   /** Settle whatever is typed: a real time commits, anything else stands refused. */
   function settle() {
     setTouched(true);
-    const r = resolveTypedTime(text);
+    const r = resolveTypedTime(text, committed);
     if (r.ok) {
       if (r.value !== committed) {
         setCommitted(r.value);
@@ -261,6 +274,25 @@ export function TimeField({
           setDirty(true);
           setOpen(true);
           setHighlight(null);
+        }}
+        onMouseDown={(e) => {
+          // The second click of a double click still reports the exact caret;
+          // by dblclick the browser has expanded it to a word (#1964).
+          dblCaret.current = e.detail === 2 ? e.currentTarget.selectionStart : null;
+        }}
+        onDoubleClick={(e) => {
+          // Give the gesture the meaning a segmented field would have: select
+          // the hour, the minutes or the meridiem, whichever was clicked. The
+          // browser's own word rules group "00pm" together, so double clicking
+          // the minutes selected the meridiem with them and typing replaced
+          // both. Overridden here rather than prevented on mousedown, which
+          // would also cancel the focus the click is there to give.
+          const caret = dblCaret.current ?? e.currentTarget.selectionStart ?? 0;
+          const seg = timeSegmentAt(e.currentTarget.value, caret);
+          // No segment means the text is not a time this can read, so the
+          // browser keeps whatever it did rather than selecting something
+          // arbitrary.
+          if (seg) e.currentTarget.setSelectionRange(seg.start, seg.end);
         }}
         onFocus={openList}
         onBlur={settle}
