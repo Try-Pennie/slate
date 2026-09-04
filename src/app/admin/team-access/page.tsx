@@ -44,9 +44,14 @@ export default async function TeamAccessPage({
 
   return (
     <>
+      {/* #1907: the ONE name and the ONE description for this page. The panel
+          below used to repeat both, one card apart. The second sentence came from
+          the panel and is the one worth keeping: it is what tells somebody why a
+          granted account can sit unused forever. */}
       <AdminPageHeader title="Team access">
         Slate accounts for people who are not debt team agents, so nothing creates
-        them automatically.
+        them automatically. They pick the access up the first time they sign in with
+        this exact address, so the address is the thing to get right.
       </AdminPageHeader>
       <TeamAccessPanel
         outcome={sp.staff && isStaffAccessOutcome(sp.staff) ? sp.staff : null}

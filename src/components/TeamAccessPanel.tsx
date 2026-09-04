@@ -49,13 +49,17 @@ export function TeamAccessPanel({
     : null;
 
   return (
+    // #1907: this panel does NOT title or explain itself. It was written as one
+    // panel among several, so it did, and it is now the whole content of a route
+    // that also titles and explains itself: two headings reading "Team access"
+    // one card apart, each with its own description of the same thing. Neither
+    // half was wrong on its own, which is why nothing reported it.
+    //
+    // The page header carries both, including the sentence that says the address
+    // has to be the one they sign in with. That sentence is the fact this panel
+    // exists to convey (#160), so it survived the merge rather than being the
+    // half that was dropped.
     <section id="team-access" className={cardCls}>
-      <h2 className="mb-1 text-sm font-semibold">Team access</h2>
-      <p className={`mb-4 text-xs text-fg-muted ${proseCls}`}>
-        For people who need Slate but are not debt team agents, so nothing creates
-        them automatically. They pick the access up the first time they sign in
-        with this exact address, so the address is the thing to get right.
-      </p>
 
       {result && (
         <div

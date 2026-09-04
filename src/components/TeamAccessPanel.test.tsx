@@ -69,6 +69,21 @@ describe("TeamAccessPanel", () => {
     expect(input.getAttribute("placeholder")).toBeNull();
   });
 
+  // #1907: the panel does not title or explain itself, because the page it is
+  // the whole content of already does. Two headings reading "Team access" one
+  // card apart, each with its own description, is what this removes. Asserted
+  // from the PANEL's side, since that is the half that has to stay quiet: the
+  // page header is the one place the name belongs.
+  it("does not name or explain itself, because the page around it does", () => {
+    render(panel());
+    expect(screen.queryByRole("heading", { name: /^team access$/i })).toBeNull();
+    expect(screen.queryByText(/not debt team agents/i)).toBeNull();
+    // The controls it exists for are all still there.
+    expect(screen.getByLabelText(/work email address/i)).toBeTruthy();
+    expect(screen.getByRole("button", { name: /give access/i })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: /waiting for a first sign in/i })).toBeTruthy();
+  });
+
   // #1890: the paragraph over the pending list explained its own heading, and
   // every row already carries what it was spelling out.
   it("does not explain what waiting for a first sign in means", () => {
