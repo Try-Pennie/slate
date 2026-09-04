@@ -90,12 +90,28 @@ describe("setBookingHorizon", () => {
     );
   });
 
-  it("clears the override when blank (writes null) and still refreshes rows", async () => {
+  // #1924 reversed this. Blank used to clear the override and write null, and the
+  // field rendered EMPTY with 4 only as a placeholder, so an admin who saved
+  // without typing wrote null while a grey 4 sat in the box looking like a value.
+  // Dan: "if they try to save with no number, just error and don't let them."
+  //
+  // Replaced rather than adjusted: its whole content was the decision being
+  // reversed (L252). What survives is the shape of the assertion, which is that a
+  // refusal writes NOTHING.
+  it("refuses a blank value, writes nothing, and refreshes nothing", async () => {
     await expect(setBookingHorizon(form({ horizon_days: "" }))).rejects.toThrow(
-      /NEXT_REDIRECT:.*ok=1/,
+      /NEXT_REDIRECT:.*error=/,
     );
-    const [row] = upsert.mock.calls[0] as unknown as [Record<string, unknown>];
-    expect(row.horizon_days).toBeNull();
-    expect(markAllBucketSlotsStale).toHaveBeenCalledTimes(1);
+    expect(upsert).not.toHaveBeenCalled();
+    // A refused save must not invalidate every bucket's slots for nothing.
+    expect(markAllBucketSlotsStale).not.toHaveBeenCalled();
+  });
+
+  // #1922: and the refusal reaches the page that can show it, rather than the
+  // dead /admin/settings that dropped the query on its way to Health.
+  it("sends the refusal to the page the form is on", async () => {
+    await expect(setBookingHorizon(form({ horizon_days: "" }))).rejects.toThrow(
+      /NEXT_REDIRECT:\/admin\/business-hours\?error=/,
+    );
   });
 });
