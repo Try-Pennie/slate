@@ -319,11 +319,22 @@ below(r("--pennie-line"), r("--bg"), PERCEPTIBLE, "the stroke tone as a ledger l
 // visible, and so close to the covered letters that the two stop reading as two
 // states. That is what shipped before #1832 and what the gap floor now refuses.
 below(r("--fg-muted"), ledgerOn, TWO_STATES, "body text as the uncovered tone - too close to the covered letters");
+// #1958 CONSUMED THE OLD FORM OF THIS ONE, and it is worth saying why rather
+// than editing the number. It read `below(rDark("--fg-muted"), rDark("--fg"), 2)`
+// and its stated reason was "1.00:1 from the foreground, so no tone step at all".
+// That was true, and it was a symptom of the dark theme having no muted text
+// colour at all rather than a fact about the ledger, so the assertion was
+// recording a defect while reading as a design decision (L373).
+//
+// Dark muted is 2.32:1 from the foreground now, and it STILL must not be the
+// quiet letter, for the durable reason: it does not give the two state gap from
+// the covered letters. That is the same reason the light theme's line above
+// gives, so the two themes now refuse it for one reason instead of two.
 below(
   rDark("--fg-muted"),
-  rDark("--fg"),
-  2,
-  "the dark theme's own muted text as the quiet letter - 1.00:1 from the foreground, so no tone step at all",
+  rDark("--ledger-on"),
+  TWO_STATES,
+  "the dark theme's own muted text as the quiet letter - no two state gap from the covered letters",
 );
 
 // --- #1822: which semantic colours may be a BARE MARK ----------------------
@@ -354,17 +365,30 @@ for (const [name, surface] of [
   atLeast(greenMark, surface, 3, `green mark on ${name}`);
 }
 
-// Its LIMIT, which the proposal did not check and which is the reason it is
-// scoped rather than blanket "the green for marks". On a hovered dark row it is
-// 2.68:1, so it is legal on light surfaces and on the wash (which is
-// theme-independent, so a dot inside a status pill is fine in both themes) and NOT
-// as a bare mark on the dark theme's own row tint.
-below(
-  greenMark,
-  rDark("--bg-alt"),
-  3,
-  "green mark on a hovered DARK row - why it is scoped to light surfaces and the wash",
-);
+// ITS LIMIT WAS REMOVED BY #1958, and this is recorded as a re-measurement
+// rather than as a nudged threshold, because a threshold moved to keep a suite
+// green is how an assertion starts passing for a reason nobody has checked.
+//
+// The green mark used to read 2.68:1 on the dark theme's row tint, so it was
+// scoped to light surfaces plus the wash. #1958 brought the whole dark surface
+// ladder down to make a muted text colour legible, and every mark on dark gained
+// contrast as a side effect: the green mark now clears 3:1 on all five dark
+// surfaces, the tightest being the elevated one at 3.23:1.
+//
+// So the prohibition is gone. It is not replaced by permission to use green
+// anywhere: the wash remains the case a status dot is designed for, and green
+// still cannot be a bare mark in LIGHT theme's palette forms above. What changed
+// is one measured fact, and it is asserted in the direction it now runs so the
+// suite cannot go on defending a limit that no longer exists.
+for (const [name, surface] of [
+  ["the dark page", rDark("--bg")],
+  ["a dark input well", rDark("--field")],
+  ["a dark card", rDark("--surface")],
+  ["a hovered dark row", rDark("--bg-alt")],
+  ["a dark elevated surface", rDark("--surface-elevated")],
+] as [string, RGB][]) {
+  atLeast(greenMark, surface, 3, `green mark on ${name} (dark, freed by #1958)`);
+}
 
 // Neither existing green can be a bare mark. Held as tripwires, so the reason the
 // palette green is unavailable stays a measurement.
@@ -505,7 +529,10 @@ atLeast(muted, white, 4.5, "page header description, muted on the card surface")
 // The value was chosen by RENDERING the candidates as zebra rows and a header
 // row rather than by picking a number: at today's value the stripes are not
 // there at all, and at `--pennie-cream-3` they read immediately. Dark mode was
-// already given a real value and clears this comfortably at 1.88.
+// already given a real value and clears this comfortably at 1.48 (it read 1.88
+// until #1958 brought the dark ladder down to make a muted text colour legible;
+// the figure is restated rather than left as prose the passing check does not
+// verify, L210).
 const SURFACE_SEPARATION = 1.05;
 
 for (const [label, over, under] of [
@@ -612,5 +639,85 @@ for (const [theme, resolve] of [
   atLeast(fill, headerBg, 3, `pending badge FILL against the ${theme} header (${badgeFill})`);
   atLeast(label, fill, 4.5, `pending badge label on its own fill, ${theme} (${badgeLabel})`);
 }
+
+// --- #1958: the muted role, which nothing measured ------------------------
+//
+// The pair that shipped broken for months, and the reason nothing caught it.
+// Dark's `--fg-muted` was mapped to a near white the brand file itself describes
+// as footer text on dark, so a hint, a caption, a placeholder and a heading all
+// rendered the same colour. Every existing assertion asked whether muted text
+// passes against its BACKGROUND, and it passed everywhere with room to spare,
+// because the value was brighter than it should be rather than dimmer. The
+// direction of failure was the safe looking one.
+//
+// A muted token only means anything as one half of a pair with PRIMARY (L569),
+// and that pair had no assertion in either theme. Both halves are asserted here.
+
+// Half one: muted has to be quieter than primary by a real tone step. A floor
+// rather than a figure, so a legitimate refinement of either token is free to
+// move it; 1.00 is what shipped, which is no step at all.
+const MUTED_STEP = 2;
+atLeast(r("--fg"), r("--fg-muted"), MUTED_STEP, "muted text is a tone step below primary (light)");
+atLeast(
+  rDark("--fg"),
+  rDark("--fg-muted"),
+  MUTED_STEP,
+  "muted text is a tone step below primary (dark)",
+);
+
+// Half two: and it still has to be READABLE, on every surface it can land on,
+// which is what stops the answer to half one being "make it dimmer". `--bg-alt`
+// is the one that bites: it is the tint behind table headers and hovered rows,
+// and muted text sits on it all over the admin.
+for (const [theme, read] of [
+  ["light", r],
+  ["dark", rDark],
+] as [string, (n: string) => RGB][]) {
+  for (const surface of ["--bg", "--bg-alt", "--surface", "--surface-elevated", "--field"]) {
+    atLeast(read("--fg-muted"), read(surface), 4.5, `muted text on ${surface} (${theme})`);
+  }
+}
+
+// --- #1958: the dark elevation ladder --------------------------------------
+//
+// Holding both halves above at once is what the ladder change was FOR: a muted
+// value dim enough to be a tone step below primary was under 4.5:1 on the two
+// brightest dark surfaces, so those surfaces came down.
+//
+// Two things are asserted about the result, because the ladder is now
+// load bearing for the readability of every muted line in the dark admin, and
+// neither would fail loudly on its own.
+const DARK_LADDER = ["--bg", "--field", "--surface", "--bg-alt", "--surface-elevated"];
+
+// It rises, rung by rung. Nothing checked this before, and the order is the
+// whole meaning of the scale: the page recedes, cards float, menus sit highest.
+for (let i = 1; i < DARK_LADDER.length; i++) {
+  const below_ = rDark(DARK_LADDER[i - 1]);
+  const above = rDark(DARK_LADDER[i]);
+  const lit = (c: RGB) => ratio(c, [0, 0, 0]);
+  const said = `dark ladder: ${DARK_LADDER[i]} sits above ${DARK_LADDER[i - 1]}`;
+  if (lit(above) > lit(below_)) assert(true, said);
+  else fail(`${said}, but it does not, so the elevation scale is out of order`);
+}
+
+// And every rung is a step somebody can SEE. The old ladder's top two rungs were
+// 1.05:1 apart, which is one surface wearing two names: a menu did not read as
+// floating above a hovered row, and the range the scale spent on that invisible
+// step was the range that left no room for a legible muted colour.
+//
+// This covers the four ADJACENT pairs. `SURFACE_SEPARATION` above covers three
+// specific pairs against the page and `dark elevated surface against a card`
+// covers one non-adjacent pair at a higher floor; none of them is redundant with
+// another, and all of them stay.
+const LADDER_STEP = 1.1;
+for (let i = 1; i < DARK_LADDER.length; i++) {
+  atLeast(
+    rDark(DARK_LADDER[i]),
+    rDark(DARK_LADDER[i - 1]),
+    LADDER_STEP,
+    `dark ladder: ${DARK_LADDER[i - 1]} to ${DARK_LADDER[i]} is a visible step`,
+  );
+}
+
 
 finish();

@@ -66,6 +66,16 @@
   --pennie-line:        var(--pennie-mercury);   /* alias → Mercury */
   --pennie-line-2:      var(--pennie-wild-sand); /* alias → Wild Sand */
   --pennie-line-3:      rgb(246, 246, 246); /* footer text on dark */
+  /* Muted text on DARK, and the design system has no value for it (#1958).
+     The export carries one `:root` and no dark block at all, and its two
+     "on dark" text colours (white for primary, beige for secondary) are 1.03:1
+     apart, which is not a distinction anybody can see. So this is Slate's own
+     value, derived rather than picked: it holds the LIGHT theme's 2.32:1 gap
+     from primary text, which is the ratio the whole admin hierarchy is built on,
+     and the dark surface ladder was brought down to make it legible (see the
+     dark scope below). Hue follows --ledger-off, so it stays in the theme's navy
+     family rather than turning cold. */
+  --pennie-muted-dark:  rgb(165, 162, 177);
 
   /* ---------------- Semantic ---------------- */
   --bg:                 var(--pennie-beige);
@@ -238,15 +248,37 @@
    accent / accent-hover / focus-ring (sky) stay the same. */
 [data-theme="dark"] {
   /* Warm-charcoal elevation scale: surfaces pulled well off cold blue (R/G
-     brought up near B) so dark mode feels warm, not clinical, with a wide
-     page→hero range for clear depth. Stays in the navy family (B still top). */
-  --bg:               rgb(23, 22, 26);  /* deepest — page recedes */
-  --bg-alt:           rgb(70, 68, 78);  /* hover / table-row / zebra tint (light-only otherwise → cream flash in dark) */
-  --field:            rgb(40, 39, 45);  /* recessed input wells inside cards */
-  --surface:          rgb(57, 55, 63);  /* cards float above the page */
-  --surface-elevated: rgb(74, 71, 81);  /* brightest — hero band, menus, popovers */
+     brought up near B) so dark mode feels warm, not clinical. Stays in the navy
+     family (B still top).
+
+     THE WHOLE LADDER CAME DOWN IN #1958, and the reason is a text colour rather
+     than a surface one. Dark had no muted text: `--fg-muted` pointed at a near
+     white, so a hint, a caption, a placeholder and a heading all rendered the
+     same. A muted value quiet enough to be a real tone step below primary was
+     under 4.5:1 on the two brightest surfaces here, so those surfaces had to
+     give way. The chain is fixed: primary to muted needs a tone step, muted to
+     the brightest surface needs 4.5:1, and the product of the two is the
+     contrast budget the whole scale has to fit inside.
+
+     It reads as MORE depth, not less, even though the page-to-menu range
+     narrowed from 1.98 to 1.70. The old range was being spent on a step nobody
+     could see: the top two rungs were 1.05:1 apart, so a menu did not read as
+     floating above a hovered row. The four steps are now 1.12, 1.15, 1.15 and
+     1.14, evenly spread. Every mark on dark (the sky accent, the rose, the
+     status greens, the borders) gained contrast as a side effect, which is why
+     the green mark's dark scoping in scripts/test-contrast.ts was re-measured
+     rather than kept.
+
+     The order, the evenness and muted's legibility on each rung are all
+     asserted by name in scripts/test-contrast.ts, because none of the three
+     fails loudly on its own. */
+  --bg:               rgb(12, 11, 14);  /* deepest, the page recedes */
+  --bg-alt:           rgb(49, 47, 55);  /* hover / table-row / zebra tint (light-only otherwise → cream flash in dark) */
+  --field:            rgb(26, 25, 30);  /* recessed input wells inside cards */
+  --surface:          rgb(38, 37, 43);  /* cards float above the page */
+  --surface-elevated: rgb(58, 56, 65);  /* brightest: hero band, menus, popovers */
   --fg:               var(--pennie-beige);
-  --fg-muted:         var(--pennie-line-3);
+  --fg-muted:         var(--pennie-muted-dark);
   /* Stronger than light's hairline: in dark, borders (not shadows) carry the
      card/field edges, and inputs need a 3:1 boundary for WCAG 1.4.11. */
   --border:           rgba(246, 246, 246, 0.38);
