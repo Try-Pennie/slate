@@ -1,3 +1,4 @@
+import { Suspense } from "react";
 import { redirect } from "next/navigation";
 import { SaveForm } from "@/components/ui/SaveForm";
 import { currentUser } from "@/lib/auth";
@@ -20,6 +21,7 @@ import {
 } from "@/lib/monitor/settings";
 import { SubmitButton } from "@/components/ui/SubmitButton";
 import { AdminPageHeader, AdminDenied } from "@/components/admin/AdminPageHeader";
+import { SlackDestinations, SLACK_CHANNEL_LIST_ID } from "@/components/admin/SlackDestinations";
 import { SettingsSaveNotice } from "@/app/admin/settings/SettingsSaveNotice";
 import { savedOutcome, savedSentence } from "@/lib/admin/save-outcomes";
 import { lastChangedLine, shortStamp } from "@/lib/admin/last-changed";
@@ -385,10 +387,20 @@ export default async function AlertSettingsPage({
         <section className={cardCls}>
           <h2 className="mb-1 text-sm font-semibold">Slack destinations</h2>
           <p className={`mb-4 text-xs text-fg-muted ${proseCls}`}>
-            Where alerts post. These apply to all alerts app-wide. Blank uses the
-            server-configured channel. The info channel falls back to the alerts
-            channel.
+            Where alerts post, app-wide. Pick a channel from the list or paste an
+            id. Leave a field blank to use whatever the deployment itself is
+            configured with.
           </p>
+          {/* #1957: what the rules RESOLVE to, rather than the rules. The Slack
+              check inside it is one network call, so it renders behind a
+              boundary and the form draws immediately without it. */}
+          <Suspense
+            fallback={
+              <p className="mb-4 text-xs text-fg-muted">Reading the current destinations...</p>
+            }
+          >
+            <SlackDestinations config={config} envAlerts={envAlerts} envInfo={envInfo} />
+          </Suspense>
           <div className="space-y-4">
             <div>
               {/* heading-gloss-ok: which of two sibling channels this is. A reader choosing
@@ -401,8 +413,12 @@ export default async function AlertSettingsPage({
                 id="alerts_channel"
                 name="alerts_channel"
                 type="text"
+                list={SLACK_CHANNEL_LIST_ID}
                 defaultValue={config?.alerts_channel ?? ""}
-                placeholder={envAlerts ? `default ${envAlerts}` : "#channel or channel ID"}
+                // #1957: no bare id here either. The panel above already names
+                // the deployment's default channel, and the id repeated in grey
+                // was the last place on this page that made a person look one up.
+                placeholder={envAlerts ? "blank uses the default above" : "pick a channel or paste an id"}
                 className={`${inputCls} w-72`}
               />
             </div>
@@ -415,6 +431,7 @@ export default async function AlertSettingsPage({
                 id="info_channel"
                 name="info_channel"
                 type="text"
+                list={SLACK_CHANNEL_LIST_ID}
                 defaultValue={config?.info_channel ?? ""}
                 placeholder={envInfo ? `default ${envInfo}` : "falls back to alerts channel"}
                 className={`${inputCls} w-72`}

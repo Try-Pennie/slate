@@ -45,9 +45,25 @@ export function slackConfigured(): boolean {
   return slackBotToken().length > 0;
 }
 
+/**
+ * ENCODING IS PER METHOD, not a house style (#1957).
+ *
+ * Slack's write methods take a JSON body. Its READ methods do not: measured
+ * against the live workspace on 2026-09-06, `conversations.info` answers
+ * `invalid_arguments` to a JSON body for every channel, including a real one the
+ * bot is a member of, and answers correctly to the same argument form encoded.
+ *
+ * That failure is the shape worth naming, because it is indistinguishable from
+ * the finding the caller is looking for: an error string, about the channel, on
+ * a request that reached Slack. Nothing but sending the real request could have
+ * told the two apart (L52).
+ */
+type SlackEncoding = "json" | "form";
+
 async function slackApi(
   method: string,
   body: Record<string, unknown>,
+  encoding: SlackEncoding = "json",
 ): Promise<{ ok: boolean; error?: string; data?: Record<string, unknown> }> {
   const token = slackBotToken();
   if (!token) return { ok: false, error: "slack-not-configured" };
@@ -55,16 +71,89 @@ async function slackApi(
     const res = await fetchWithTimeout(`https://slack.com/api/${method}`, {
       method: "POST",
       headers: {
-        "Content-Type": "application/json; charset=utf-8",
+        "Content-Type":
+          encoding === "form"
+            ? "application/x-www-form-urlencoded; charset=utf-8"
+            : "application/json; charset=utf-8",
         Authorization: `Bearer ${token}`,
       },
-      body: JSON.stringify(body),
+      body:
+        encoding === "form"
+          ? new URLSearchParams(
+              Object.entries(body).map(([k, v]) => [k, String(v)]),
+            ).toString()
+          : JSON.stringify(body),
     });
     const data = (await res.json()) as { ok: boolean; error?: string };
     return { ok: data.ok, error: data.error, data };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
   }
+}
+
+/**
+ * The channels this workspace has, for the picker (#1957).
+ *
+ * The issue's title is the whole point: a person picks a channel by NAME and
+ * Slate stores the id. Before this the field took an id typed from memory and
+ * accepted anything.
+ *
+ * Paginated, and deliberately BOUNDED rather than exhaustive. The list feeds a
+ * `datalist`, which suggests without restricting: the field still takes any id
+ * typed into it, so a channel past the bound (or a private one, which needs
+ * `groups:read`) is reachable by typing it and is then checked by
+ * `fetchSlackChannel` like any other. Measured 2026-09-06 the workspace has 13
+ * public channels, one page.
+ *
+ * Never throws, and an unreadable list is an EMPTY list of suggestions rather
+ * than a broken page: the field it decorates works without it.
+ */
+export async function listSlackChannels(): Promise<{ id: string; name: string; isMember: boolean }[]> {
+  const out: { id: string; name: string; isMember: boolean }[] = [];
+  let cursor = "";
+  for (let page = 0; page < 5; page++) {
+    const reply = await slackApi(
+      "conversations.list",
+      { limit: 200, exclude_archived: true, types: "public_channel", ...(cursor ? { cursor } : {}) },
+      "form",
+    );
+    if (!reply.ok) break;
+    for (const c of (reply.data?.channels ?? []) as { id?: string; name?: string; is_member?: boolean }[]) {
+      if (typeof c.id === "string" && typeof c.name === "string") {
+        out.push({ id: c.id, name: c.name, isMember: c.is_member === true });
+      }
+    }
+    const meta = reply.data?.response_metadata as { next_cursor?: string } | undefined;
+    cursor = typeof meta?.next_cursor === "string" ? meta.next_cursor : "";
+    if (!cursor) break;
+  }
+  // A channel the bot is IN comes first: those are the ones an alert can
+  // actually reach, and the rest need an invite before they will work.
+  return out.sort(
+    (a, b) => Number(b.isMember) - Number(a.isMember) || a.name.localeCompare(b.name),
+  );
+}
+
+/**
+ * Ask Slack about one channel id (#1957).
+ *
+ * **The Slate app already carries `channels:read`.** #1957 assumed it did not,
+ * and that a Slack app configuration change by Dan was a prerequisite. Measured
+ * against the live workspace on 2026-09-06 it is not: this call answers with the
+ * channel's name and the bot's membership today, and answers `channel_not_found`
+ * for an id that does not exist. So the check works as shipped.
+ *
+ * `groups:read` governs PRIVATE channels and has not been measured, so the
+ * `missing_scope` branch stays: it is the honest answer for a destination this
+ * cannot see, and it says it could not check rather than passing judgement.
+ *
+ * Returns Slack's raw reply. The reading of it is pure and lives in
+ * `slack-channel-check.ts`, so every branch is driven offline.
+ */
+export async function fetchSlackChannel(
+  channel: string,
+): Promise<{ ok: boolean; error?: string; data?: Record<string, unknown> }> {
+  return slackApi("conversations.info", { channel }, "form");
 }
 
 /** Slack user id for a workspace email (needs the users:read.email scope). */
