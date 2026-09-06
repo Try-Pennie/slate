@@ -242,12 +242,98 @@ describe("the health page's status rows (#1767)", () => {
 
   it("states each thing it checked on a healthy fleet", async () => {
     render(await AdminPage());
-    for (const label of ["Fleet", "Calendar push", "Calendar sync", "Cron lanes"]) {
+    // #1960: "Stuck deliveries" joined this list when its own route was folded
+    // in. It is empty by construction, since every row it can show has already
+    // fired an alert, so on a healthy day it is one more Checked.
+    for (const label of [
+      "Fleet",
+      "Calendar push",
+      "Calendar sync",
+      "Stuck deliveries",
+      "Cron lanes",
+    ]) {
       expect(screen.getByText(label)).toBeTruthy();
     }
     // The all-clear is a positive statement, not the absence of a warning.
     expect(pageText()).toMatch(/no agent is in a failure streak/i);
-    expect(screen.getAllByText("Checked")).toHaveLength(4);
+    expect(pageText()).toMatch(/no delivery is stuck/i);
+    expect(screen.getAllByText("Checked")).toHaveLength(5);
+  });
+
+  // #1960: the three states this panel has to keep telling apart, now that it
+  // shares a page with four other checks.
+  describe("the stuck deliveries panel (#1960)", () => {
+    it("says nothing is stuck, rather than drawing nothing", async () => {
+      render(await AdminPage());
+      expect(pageText()).toMatch(/no delivery is stuck/i);
+      expect(screen.getByText("Stuck deliveries")).toBeTruthy();
+    });
+
+    it("lists what is wedged and flags the rows that gave up", async () => {
+      mockDb({
+        booking_outbox: {
+          data: [
+            {
+              id: "ob-1",
+              booking_id: "bk-1",
+              action: "calendar_insert",
+              status: "pending",
+              attempts: 12,
+              next_attempt_at: null,
+              last_error: "Google said no",
+              updated_at: "2026-09-01T10:00:00Z",
+            },
+          ],
+          error: null,
+        },
+      });
+      render(await AdminPage());
+      expect(pageText()).toMatch(/1 stuck delivery/i);
+      expect(pageText()).toMatch(/google said no/i);
+      expect(screen.getByText("Needs attention")).toBeTruthy();
+    });
+
+    // The distinction the whole panel was written for: an empty panel and a
+    // failed read must not look the same, or "nothing drawn" covers both
+    // "nothing is stuck" and "we could not tell".
+    it("says the drains could not be read, rather than that nothing is stuck", async () => {
+      mockDb({ booking_outbox: { data: null, error: { message: "statement timeout" } } });
+      render(await AdminPage());
+      expect(pageText()).toMatch(/could not be read/i);
+      expect(pageText()).toMatch(/not a report that nothing is stuck/i);
+      expect(pageText()).not.toMatch(/no delivery is stuck/i);
+      // And the ROW's verdict says so too. Without this the row reads "Checked"
+      // beside a message saying it could not be checked, which is the page
+      // contradicting itself in the one place somebody trusts it.
+      expect(screen.getByText("Not measured")).toBeTruthy();
+      expect(screen.getAllByText("Checked")).toHaveLength(4);
+    });
+
+    // The OTHER drain. Both feed one panel, and a version that read only the
+    // outbox passed every assertion above, because nothing exercised
+    // reservations at all: a crash recovered create could sit wedged forever
+    // with the page saying nothing is stuck.
+    it("lists a wedged reservation as well as a wedged outbox row", async () => {
+      mockDb({
+        booking_reservations: {
+          data: [
+            {
+              id: "rs-1",
+              idempotency_key: "idem-1",
+              status: "pending",
+              attempts: 9,
+              next_attempt_at: null,
+              last_error: "confirm never returned",
+              updated_at: "2026-09-01T09:00:00Z",
+            },
+          ],
+          error: null,
+        },
+      });
+      render(await AdminPage());
+      expect(pageText()).toMatch(/1 stuck delivery/i);
+      expect(pageText()).toMatch(/confirm never returned/i);
+    });
   });
 
   it("prints the push watch figure exactly once", async () => {
