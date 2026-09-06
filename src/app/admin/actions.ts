@@ -3,6 +3,12 @@
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { savedQuery } from "@/lib/admin/save-outcomes";
+import { fetchSlackChannel } from "@/lib/notify/slack";
+import {
+  channelCheckMessage,
+  readChannelReply,
+  refusesSave,
+} from "@/lib/notify/slack-channel-check";
 import { cookies } from "next/headers";
 import { nanoid } from "nanoid";
 import { supabaseAdmin } from "@/lib/supabase/admin";
@@ -750,6 +756,40 @@ export async function setMonitorSettings(form: FormData): Promise<void> {
 
   if (parsed.errors.length) {
     redirect(`/admin/alerts?error=${encodeURIComponent(parsed.errors.join(" "))}`);
+  }
+
+  // #1957: CHECK A CHANNEL BEFORE STORING IT.
+  //
+  // The field accepted any string, and a typo sent every alert nowhere. The send
+  // path is not the problem: a failed post is already logged with its Slack
+  // error and stamps only a short retry window (#1035). The residual is that the
+  // only signal is a log line, and that is correct, because the paging channel
+  // cannot page about itself. So a wrong id degrades ALL alerting to log only
+  // and nothing can alert about it by construction.
+  //
+  // Save time is the one place this can be caught, because it is the only moment
+  // somebody is looking at the screen.
+  //
+  // An UNVERIFIABLE answer is refused neither way. `conversations.info` needs a
+  // scope the Slate app may not carry yet, and scoring that as good ships the
+  // typo while scoring it as bad refuses a correct channel. It saves, and the
+  // PANEL says it could not check, on every render rather than once in a notice
+  // that clears: being unable to check is a standing condition of the Slack app,
+  // not an event that happened during this save (L126).
+  for (const [label, channel] of [
+    ["Alerts channel", parsed.config.alerts_channel],
+    ["Info channel", parsed.config.info_channel],
+  ] as [string, string | null][]) {
+    // A blank field is not a channel to check: it MEANS fall back to the env or
+    // to the alerts channel, and `parseMonitorSettingsForm` already turned it
+    // into null. Asking Slack about "" would refuse every save that clears one.
+    if (!channel) continue;
+    const check = readChannelReply(await fetchSlackChannel(channel));
+    if (refusesSave(check)) {
+      redirect(
+        `/admin/alerts?error=${encodeURIComponent(`${label}: ${channelCheckMessage(check, channel)}`)}`,
+      );
+    }
   }
 
   const db = supabaseAdmin();
