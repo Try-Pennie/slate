@@ -64,6 +64,7 @@ vi.mock("@/components/AppHeader", () => ({ AppHeader: () => null }));
 import AlertSettingsPage from "../alerts/page";
 import BucketsPage from "../buckets/page";
 import BusinessHoursPage from "../business-hours/page";
+import { ALERT_FIELDS } from "@/lib/monitor/settings";
 
 const props = { searchParams: Promise.resolve({}) };
 const ADMIN = {
@@ -280,15 +281,76 @@ describe("AlertSettings quieted-alarm notice (#1289)", () => {
   });
 
   // The default used to be a placeholder, which disappears the moment a value is
-  // stored, which is exactly when knowing the default matters.
+  // stored, which is exactly when knowing the default matters. It is its own
+  // column now (#1955) rather than a clause in a sentence, so it is there either
+  // way and the digits line up down the page.
   it("shows each field's default even when a value is stored", async () => {
     auth.currentUser.mockResolvedValueOnce(ADMIN);
     db.results.monitor_settings = { data: quietRows, error: null };
     render(await AlertSettingsPage(props));
 
-    const help = screen.getByText(/Urgent page when the cache disagrees/).textContent ?? "";
-    expect(help).toContain("Default 30 minutes");
-    expect(help).toMatch(/currently 7 days/);
+    // The field that HAS a stored value still states its default beside it.
+    const field = screen.getByLabelText(/Data-anomaly page cooldown/);
+    const describedBy = field.getAttribute("aria-describedby");
+    expect(describedBy).toBeTruthy();
+    expect(document.getElementById(describedBy!)?.textContent).toMatch(/default 30/i);
+    // And every field has one, not just the overridden one.
+    const defaults = [...document.querySelectorAll('[id$="_default"]')];
+    expect(defaults.length).toBe(ALERT_FIELDS.length);
+  });
+
+  // #1955: the one interesting fact on the section was buried in a grey sentence
+  // identical to the 22 that said nothing. The design says it instead: the value
+  // and its default sit on ONE line, so a 10080 beside "default 30" is visible
+  // without reading, and the notice above the section already names every
+  // override with its value, its default and the date. A third statement on the
+  // row would be decoration (L558).
+  it("puts each value beside its own default, so an override needs no sentence", async () => {
+    auth.currentUser.mockResolvedValueOnce(ADMIN);
+    db.results.monitor_settings = { data: quietRows, error: null };
+    render(await AlertSettingsPage(props));
+
+    const row = document
+      .querySelector('label[for="cooldown_availability_data_anomaly"]')
+      ?.closest("li");
+    // The stored value and the default are both on the row.
+    expect((row?.querySelector("input") as HTMLInputElement | null)?.value).toBe("10080");
+    expect(row?.textContent).toMatch(/default 30/);
+    // And the row does NOT restate the consequence, which the notice above the
+    // section already carries.
+    expect(row?.textContent).not.toMatch(/repeats less often/i);
+    expect(screen.getByText(/set to repeat less often than their defaults/i)).toBeTruthy();
+  });
+
+  // What each alert DOES is the only place any of them is explained, so it stays
+  // reachable by mouse and by screen reader even though 23 visible sentences is
+  // the wall of text this redesign removed (L579).
+  it("keeps what each alert does reachable rather than visible", async () => {
+    auth.currentUser.mockResolvedValueOnce(ADMIN);
+    render(await AlertSettingsPage(props));
+    const label = document.querySelector('label[for="cooldown_availability_data_anomaly"]');
+    expect(label?.getAttribute("title")).toMatch(/cache disagrees with the calendars/i);
+    expect(label?.querySelector(".sr-only")?.textContent).toMatch(
+      /cache disagrees with the calendars/i,
+    );
+  });
+
+  // Grouped by volume, loudest first, which is the axis the section had none of.
+  it("groups the settings by how loud they are, pages first", async () => {
+    auth.currentUser.mockResolvedValueOnce(ADMIN);
+    render(await AlertSettingsPage(props));
+    const headings = [...document.querySelectorAll("h3")].map((h) =>
+      (h.textContent ?? "").trim(),
+    );
+    const volumes = headings.filter((h) =>
+      /^(Pages|Alerts|Notices|Whispers)\b/.test(h),
+    );
+    expect(volumes.map((h) => h.split(" ")[0])).toEqual([
+      "Pages",
+      "Alerts",
+      "Notices",
+      "Whispers",
+    ]);
   });
 });
 
