@@ -15,6 +15,8 @@ import { savedOutcome, savedSentence } from "@/lib/admin/save-outcomes";
 import { UnreadableNotice } from "@/components/ui/UnreadableNotice";
 import { AdminPageHeader, AdminDenied } from "@/components/admin/AdminPageHeader";
 import { BucketForm } from "@/components/admin/BucketForm";
+import { BucketTable } from "@/components/admin/BucketTable";
+import { bucketRow } from "@/lib/admin/bucket-table";
 import { RosterProvider } from "@/components/admin/BucketMembersPicker";
 import { rosterSectionFor, type RosterEntry } from "@/lib/admin/bucket-member-picker";
 import { btnCls, cardCls, labelCls, proseCls } from "@/components/ui/styles";
@@ -246,43 +248,53 @@ export default async function BucketsPage({
           </UnreadableNotice>
         ) : (
           <RosterProvider roster={roster}>
-            <div className="space-y-4">
-              {/* #1929: `eligibleCount` is NOT `?? 0`. A code absent from a
-                  healthy depth map is not a measured zero, and zero is what this
-                  panel paints red. `undefined` reaches the form as "not
-                  measured" (L11). The comment on `depthByBucketCode` above
-                  already refuses to zero the whole MAP; a missing KEY walked
-                  straight past it. */}
-              {buckets.map((b) => (
+            {/* #1896: a table of the sixty pools, with ONE editor open at a
+                time underneath the row it belongs to.
+
+                The editors are rendered here, on the server, and handed to the
+                table as opaque markup: `BucketForm` carries server actions and
+                two on demand pickers, so it cannot be built in the browser. The
+                table puts only the OPEN one in the DOM, which is what keeps this
+                page from paying for sixty forms again (#1760, #1784). */}
+            <BucketTable
+              rows={buckets.map((b) =>
+                bucketRow(
+                  b,
+                  // #1929: NOT `?? 0`. A code absent from a healthy depth map is
+                  // not a measured zero, and zero is the value this table pills
+                  // in the error colour. `undefined` travels as "not measured"
+                  // all the way to the cell (L11).
+                  depthByBucketCode?.get(b.code),
+                  members.filter((m) => m.bucket_id === b.id).length,
+                ),
+              )}
+              forms={Object.fromEntries(
+                buckets.map((b) => [
+                  b.id,
+                  <BucketForm
+                    key={b.id}
+                    bucket={b}
+                    eventTypes={eventTypes}
+                    roster={roster}
+                    memberIds={
+                      new Set(
+                        members.filter((m) => m.bucket_id === b.id).map((m) => m.user_id),
+                      )
+                    }
+                    catalog={attrCatalog}
+                    eligibleCount={depthByBucketCode?.get(b.code)}
+                  />,
+                ]),
+              )}
+              newForm={
                 <BucketForm
-                  key={b.id}
-                  bucket={b}
                   eventTypes={eventTypes}
                   roster={roster}
-                  memberIds={
-                    new Set(
-                      members.filter((m) => m.bucket_id === b.id).map((m) => m.user_id),
-                    )
-                  }
+                  memberIds={new Set()}
                   catalog={attrCatalog}
-                  eligibleCount={depthByBucketCode?.get(b.code)}
                 />
-              ))}
-              {buckets.length === 0 && (
-                <p className="text-sm text-fg-muted">None yet.</p>
-              )}
-            </div>
-            <div className="mt-6">
-              <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-fg-muted">
-                New bucket
-              </h3>
-              <BucketForm
-                eventTypes={eventTypes}
-                roster={roster}
-                memberIds={new Set()}
-                catalog={attrCatalog}
-              />
-            </div>
+              }
+            />
           </RosterProvider>
         )}
       </section>

@@ -97,6 +97,26 @@ const CHIP_CLS =
   "px-2 py-1 text-xs text-fg dark:bg-fg/10";
 
 /**
+ * SECONDARY TEXT INSIDE A CHIP IS NOT MUTED, and that is a rule rather than a
+ * preference (#1896).
+ *
+ * `--fg-muted` is calibrated against the PAGE background. A chip paints its own,
+ * so the muted token inside one is half of a pair whose other half was swapped,
+ * which is the defect L213 names: the call site reads as correct, both tokens are
+ * real, and the result is text that is present, correctly announced, and too
+ * faint to read. Measured with axe on 2026-09-06, `text-fg-muted` on the criteria
+ * chip in dark theme came to 3.9:1 against the chip's own `#454349`, under the
+ * 4.5:1 body text needs.
+ *
+ * The distinction the muting was carrying is carried by WEIGHT instead, which
+ * needs no second colour and cannot drift when either surface changes. The token
+ * is written out rather than inherited so the choice is visible at the call site
+ * and greppable: an empty class would read as an oversight and invite the muted
+ * one straight back.
+ */
+const CHIP_SECONDARY_CLS = "text-fg";
+
+/**
  * A selected row or option. The selected state is carried by a tick icon and the
  * word in the row, never by the sky wash alone: colour is never the only signal.
  *
@@ -328,7 +348,7 @@ export function BucketMembersPicker({
               >
                 <span>{name}</span>
                 {!entry && (
-                  <span className="text-fg-muted">(not on the current roster)</span>
+                  <span className={CHIP_SECONDARY_CLS}>(not on the current roster)</span>
                 )}
                 <span aria-hidden="true" className="text-base text-fg-muted">
                   &times;
@@ -602,8 +622,8 @@ export function BucketCriteriaPicker({
         ) : (
           chosenPairs.map(({ key, value }) => (
             <span key={`${key}:${value}`} className={CHIP_CLS}>
-              <span className="text-fg-muted">{key}</span>
-              <span>{value}</span>
+              <span className={CHIP_SECONDARY_CLS}>{key}</span>
+              <span className="font-semibold">{value}</span>
             </span>
           ))
         )}

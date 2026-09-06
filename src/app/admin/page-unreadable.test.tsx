@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 
 // #1629: the admin page read six tables in one `Promise.all` and destructured each
 // as `(res.data ?? [])`, so an unreadable table drew exactly the screen an EMPTY
@@ -559,9 +559,18 @@ describe("an unreadable table (#1629)", () => {
   it("one failing read does not blank the panels whose reads succeeded", async () => {
     mockDb({ bookings: fails("bookings read exploded") });
     render(await BucketsPage(props));
-    // The six sibling reads in the same Promise.all still render their content.
+    // The sibling reads in the same Promise.all still render their content. The
+    // BUCKETS read reaches the table directly, as a row per pool.
+    expect(screen.getByText("311")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "New bucket" })).toBeTruthy();
+
+    // #1896: the roster and the event types now reach the screen only inside an
+    // open editor, and only one is ever in the DOM, so the control has to open
+    // one. Asserting the closed table alone would leave every "this panel is
+    // ABSENT" case in this file satisfiable by a page whose editor renders
+    // nothing at all, which is the reason the control exists (L159).
+    fireEvent.click(screen.getByRole("button", { name: /Edit 311/ }));
     expect(screen.getAllByText(/Ada Byron/).length).toBeGreaterThan(0);
     expect(screen.getAllByText(/Advisor Call/).length).toBeGreaterThan(0);
-    expect(screen.getByText(/New bucket/i)).toBeTruthy();
   });
 });

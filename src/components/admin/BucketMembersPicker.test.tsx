@@ -18,6 +18,7 @@ vi.mock("@/app/admin/actions", () => ({
 }));
 
 import {
+  BucketCriteriaPicker,
   BucketMembersPicker,
   RosterProvider,
 } from "@/components/admin/BucketMembersPicker";
@@ -352,5 +353,77 @@ describe("BucketMembersPicker in fallback mode (#1784)", () => {
     await open(user);
     expect(screen.getByText(/could not be read/i)).toBeTruthy();
     expect(screen.queryByText(/nobody is on the org roster/i)).toBeNull();
+  });
+});
+
+// #1896: TEXT ON A CHIP MAY NOT USE THE PAGE'S MUTED TOKEN.
+//
+// `--fg-muted` is calibrated against the page background. A chip paints its own
+// background, so a muted foreground inside one is half of a pair whose other
+// half was swapped, which is the defect L213 names: both tokens are real, the
+// call site reads as correct, and the result is text that is present in the DOM,
+// correctly announced, and too faint to read.
+//
+// It is not hypothetical. Measured with axe on the real page on 2026-09-06, the
+// attribute name on a routing criteria chip came to 3.9:1 against the chip's own
+// `#454349` in dark theme, under the 4.5:1 body text needs. It had been there
+// since the chips were built and was invisible because the editor it sits in was
+// one of sixty stacked forms nobody scrolled to.
+//
+// jsdom computes no colours, so what a test here can assert is the COMPOSITION
+// rather than the ratio: that no descendant of a chip carries the page level
+// muted token. The ratio itself is measured with axe against the running page,
+// and the number above is the record of that reading (L63: this is a proxy, and
+// saying so is the point).
+describe("chips never carry the page's muted foreground (#1896)", () => {
+  const chipOf = (el: HTMLElement): HTMLElement[] =>
+    [...el.querySelectorAll<HTMLElement>(".rounded-xs")];
+
+  /**
+   * Muted descendants that are actually TEXT.
+   *
+   * An `aria-hidden` glyph is exempt, and deliberately: it is a decorative mark
+   * rather than words, so it is judged as a graphical object at 3:1 rather than
+   * as body text at 4.5:1, and the measured 3.9:1 clears that. The remove
+   * affordance is the whole chip, not the cross, so nothing depends on reading
+   * the glyph itself.
+   */
+  const mutedText = (chip: HTMLElement): Element[] =>
+    [...chip.querySelectorAll(".text-fg-muted")].filter(
+      (n) => n.getAttribute("aria-hidden") !== "true",
+    );
+
+  it("draws a criteria chip with no muted descendant", () => {
+    const { container } = render(
+      <BucketCriteriaPicker
+        catalog={{ debt_team: ["low", "medium"], backend_service: ["beyond"] }}
+        current={{ debt_team: "low", backend_service: "beyond" }}
+      />,
+    );
+    const chips = chipOf(container);
+    expect(chips.length).toBeGreaterThan(0);
+    for (const chip of chips) {
+      expect(mutedText(chip)).toHaveLength(0);
+      // A positive control on the assertion itself: the chip really does hold
+      // the text this is about, so an empty chip could not satisfy it.
+      expect(chip.textContent).toMatch(/debt_team|backend_service/);
+    }
+  });
+
+  it("draws a selected member chip with no muted descendant", () => {
+    const roster = [person("u1", "Ada Byron")];
+    const { container } = render(
+      <RosterProvider roster={roster}>
+        <BucketMembersPicker selectedIds={["u1", "ghost"]} rosterTotal={roster.length} />
+      </RosterProvider>,
+    );
+    const chips = chipOf(container);
+    expect(chips.length).toBeGreaterThan(0);
+    for (const chip of chips) {
+      expect(mutedText(chip)).toHaveLength(0);
+    }
+    // The membership whose user is off the roster is one of them, and its
+    // explanatory aside is exactly the text that was muted (#1762).
+    expect(screen.getByText(/not on the current roster/)).toBeTruthy();
   });
 });
