@@ -462,6 +462,56 @@ const greenWash = r("--pennie-green-wash");
 const ink2 = r("--pennie-ink-2");
 const roseDark = rDark("--error"); // lightened rose in the dark flip (2.3)
 atLeast(graphite, greenWash, 4.5, "Pill status-ok graphite-on-green-wash"); // 11.58
+
+// #1997: THE SAVE CONFIRMATION SITS ON THAT SAME WASH, and it is asserted by its
+// own name rather than left to the pill's assertion above (L63: assert the
+// quantity you exist to protect, not a proxy for it).
+//
+// It drew `text-fg` on the wash. The wash is a RAW token and is the same pale
+// green in both themes, deliberately, so that "this went well" does not change
+// colour; `--fg` is not raw and is a near white in dark. The result was near
+// white on pale green: present in the DOM, correctly announced, and invisible on
+// screen (L213). Every save confirmation on every admin page had it.
+//
+// The forbidden pairing is held below as the record of the defect, because that
+// is what tells the next person why the panel does not use `--fg` like almost
+// everything else does.
+atLeast(graphite, greenWash, 4.5, "the save confirmation's text on its own green wash");
+below(
+  rDark("--fg"),
+  greenWash,
+  4.5,
+  "dark's foreground on the green wash - why the save confirmation pins graphite",
+);
+
+// AND THE CALL SITE IS READ, because the two assertions above cannot see it.
+//
+// This file checks token PAIRINGS. The defect was a call site composing two
+// individually correct tokens, which is exactly the gap named further down about
+// the navy Pill: reverting the component to `text-fg` leaves every pairing
+// assertion here passing. So the panel's own class string is read.
+//
+// The rule is about the KIND of token, not the exact value: anything painting a
+// RAW background (one that is the same in both themes on purpose) must pin a raw
+// foreground too, because a theme-flipping one is only correct in the theme
+// somebody happened to look at.
+{
+  const src = readFileSync(join("src", "app", "admin", "settings", "SettingsSaveNotice.tsx"), "utf8");
+  const onWash = src
+    .split("\n")
+    .filter((l) => l.includes("--pennie-green-wash"));
+  assert(onWash.length > 0, "the save confirmation still paints the green wash");
+  for (const line of onWash) {
+    assert(
+      /text-pennie-[\w-]+/.test(line),
+      `the text on the green wash is a raw token, not one that flips: ${line.trim()}`,
+    );
+    assert(
+      !/\btext-fg\b/.test(line),
+      `the text on the green wash is not --fg, which is a near white in dark: ${line.trim()}`,
+    );
+  }
+}
 atLeast(rose, white, 4.5, "Pill status-error rose-on-white"); // 5.14
 atLeast(roseDark, ink2, 4.5, "dark error rose-on-ink-2 surface"); // 4.96
 atLeast(roseDark, navy, 4.5, "dark error rose-on-navy bg"); // 6.72

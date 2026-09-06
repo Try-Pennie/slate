@@ -77,6 +77,13 @@ export const SAVE_OUTCOME_COPY: Record<Exclude<SaveOutcome, DynamicOutcome>, str
   "bucket-routing": "Bucket routing saved.",
   "bucket-updated": "Bucket saved.",
   "org-default-hours": "Default hours for a new agent saved.",
+  // #1997: "Hours saved." and nothing more. It used to recite the whole week,
+  // which put the week on screen three times at once: here, in the summary
+  // paragraph directly beneath, and in the day rows that hold every one of those
+  // times in fields. The rows ARE the stored week on this render, because the
+  // save redirects and they are drawn from the stored rules, so naming it again
+  // in a banner told nobody anything the screen was not already saying.
+  "working-hours": "Hours saved.",
 };
 
 /**
@@ -86,12 +93,18 @@ export const SAVE_OUTCOME_COPY: Record<Exclude<SaveOutcome, DynamicOutcome>, str
  * simply has no sentence anywhere fails the build instead of confirming a save
  * in silence, which is the defect this module exists to remove.
  */
-export const DYNAMIC_OUTCOME_REASONS = {
-  // #1988: it names the week that is now stored, read back from the database on
-  // the render that draws it, so it reports the finished state rather than what
-  // the action meant to write (L78).
-  "working-hours": "names the week that was written, which is only known at render",
-} as const;
+export const DYNAMIC_OUTCOME_REASONS: Record<string, string> = {
+  // EMPTY, deliberately, and kept rather than deleted (#1997).
+  //
+  // `working-hours` was the one entry: it recited the week the save had written.
+  // Dan had that shortened to "Hours saved." because the week was already on
+  // screen twice more, so nothing is built per render any more.
+  //
+  // The mechanism stays because the guard is what makes it safe: an outcome that
+  // is in NEITHER this map nor the fixed copy above fails the build rather than
+  // confirming a save in silence. Removing it would leave a page free to add a
+  // sentence built at render with nothing checking it has one at all.
+};
 
 export type DynamicOutcome = keyof typeof DYNAMIC_OUTCOME_REASONS;
 
