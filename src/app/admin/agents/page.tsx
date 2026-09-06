@@ -1,4 +1,5 @@
 import { redirect } from "next/navigation";
+import { SaveForm } from "@/components/ui/SaveForm";
 import { currentUser } from "@/lib/auth";
 import { canManageAgents, canEditOrgSettings, ROLES } from "@/lib/auth/roles";
 import { oooOnlyFor } from "@/lib/env";
@@ -115,9 +116,9 @@ export default async function AgentRosterPage({
             <h2 className="text-sm font-semibold">Agents</h2>
           </div>
           {isAdmin && (
-            <form action={syncSalesforceNow}>
+            <SaveForm action={syncSalesforceNow} name="salesforce-sync">
               <SyncButton />
-            </form>
+            </SaveForm>
           )}
         </div>
         {/* #1795: a failed "view as" redirects here, so the message is rendered

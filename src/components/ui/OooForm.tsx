@@ -40,6 +40,9 @@ const formLabelCls = "block text-xs font-semibold text-fg";
 const fieldBaseCls =
   "h-[44px] rounded-sm border border-border bg-[var(--field)] px-3 text-fg placeholder:text-fg-muted";
 
+// restore-optin-ok: this renders its OWN form and draws its own result through
+// useActionState, so it is not inside the wrapper and there is no restore for it
+// to take part in. It arrives with #1998.
 export function OooForm({
   action,
   editing,

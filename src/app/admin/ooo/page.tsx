@@ -1,4 +1,5 @@
 import { redirect } from "next/navigation";
+import { SaveForm } from "@/components/ui/SaveForm";
 import { currentUser } from "@/lib/auth";
 import { atLeast, canManageAgents, canModerateAllOoo } from "@/lib/auth/roles";
 import { supabaseAdmin } from "@/lib/supabase/admin";
@@ -664,12 +665,12 @@ export default async function OooQueuePage({
                       </p>
                     )}
                     <div className="mt-4 flex flex-wrap items-center gap-3">
-                      <form action={approveOooAction}>
+                      <SaveForm action={approveOooAction} name={`ooo-approve-${r.id}`}>
                         <input type="hidden" name="request_id" value={r.id} />
                         <SubmitButton className={btnCls} pendingLabel="Approving…">
                           Approve
                         </SubmitButton>
-                      </form>
+                      </SaveForm>
                       <form
                         action={rejectOooAction}
                         className="flex flex-1 flex-wrap items-center gap-2"
@@ -763,12 +764,12 @@ export default async function OooQueuePage({
                         </a>
                       )}
                       {canRetry && r.status === "approved" && failures.length > 0 && (
-                        <form action={retryOooAction}>
+                        <SaveForm action={retryOooAction} name={`ooo-retry-${r.id}`}>
                           <input type="hidden" name="request_id" value={r.id} />
                           <SubmitButton className={btnSecondaryCls} pendingLabel="Retrying calendar updates">
                             Retry calendar updates
                           </SubmitButton>
-                        </form>
+                        </SaveForm>
                       )}
                     </div>
                   </li>
