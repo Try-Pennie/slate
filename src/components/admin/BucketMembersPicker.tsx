@@ -74,6 +74,8 @@ const NO_ROSTER: RosterEntry[] = [];
  * One provider, not a prop per form: a `roster` prop on 60 client components
  * would serialize the whole roster into the client payload 60 times.
  */
+// restore-optin-ok: the bucket editor's form still posts straight at its action, so
+// there is no restore for this to take part in yet. It arrives with #1998.
 export function RosterProvider({
   roster,
   children,

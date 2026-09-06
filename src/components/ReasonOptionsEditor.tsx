@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { useRestoredValue } from "@/components/ui/SaveForm";
 import { SaveForm } from "@/components/ui/SaveForm";
 
 import { setReasonOptions } from "@/app/admin/actions";
@@ -68,10 +69,39 @@ export default function ReasonOptionsEditor({
    */
   usage?: ReasonUsageCounts | null;
 }) {
-  const [rows, setRows] = useState<Record<ReasonAction, EditRow[]>>({
-    reschedule: initial.reschedule.map(toEditRow),
-    cancel: initial.cancel.map(toEditRow),
-    reassign: initial.reassign.map(toEditRow),
+  // #2008: the list this form posts lives ENTIRELY in the state below and is
+  // sent as one hidden field, so a save killed by a deploy loses every edit and
+  // the blanket restore cannot help: it assigns to inputs, and the next render
+  // would overwrite this one from state. The restore has to reach the STATE, as
+  // its initial value, which is what `useRestoredValue` is for.
+  //
+  // Anything unreadable falls back to what is stored. A half parsed list would
+  // be a form quietly holding some of the person's rows and some of the saved
+  // ones, with nothing on screen saying which came from where (L11).
+  const restored = useRestoredValue("payload");
+  const [rows, setRows] = useState<Record<ReasonAction, EditRow[]>>(() => {
+    const stored = {
+      reschedule: initial.reschedule.map(toEditRow),
+      cancel: initial.cancel.map(toEditRow),
+      reassign: initial.reassign.map(toEditRow),
+    };
+    if (!restored) return stored;
+    try {
+      // The stash holds exactly what the hidden input posted, which is already
+      // the edit row shape, so it needs no conversion. Every action must be
+      // present and an array, or the whole thing is refused.
+      const parsed = JSON.parse(restored) as Record<ReasonAction, EditRow[]>;
+      const ok = ACTION_ORDER.every(
+        (a) =>
+          Array.isArray(parsed?.[a]) &&
+          parsed[a].every((r) => typeof r?.code === "string" && typeof r?.label === "string"),
+      );
+      return ok
+        ? { reschedule: parsed.reschedule, cancel: parsed.cancel, reassign: parsed.reassign }
+        : stored;
+    } catch {
+      return stored;
+    }
   });
   // The row awaiting a "retire a still-used reason" confirm, keyed `${action}:${i}`.
   const [confirming, setConfirming] = useState<string | null>(null);
@@ -136,7 +166,10 @@ export default function ReasonOptionsEditor({
     <SaveForm action={setReasonOptions} name="booking-reasons" className="space-y-6">
       {/* #1966: typed lists, with no other copy of them. */}
       <UnsavedGuard what="changes to these reasons" />
-      <input type="hidden" name="payload" value={payload} />
+      {/* `data-restore-own` keeps SaveForm's blanket restore off this input: the
+          value comes from the state above, which took the restored list as its
+          initial value (#2008). */}
+      <input type="hidden" name="payload" data-restore-own="true" value={payload} />
 
       {ACTION_ORDER.map((action) => (
         <section key={action} className={cardCls}>
