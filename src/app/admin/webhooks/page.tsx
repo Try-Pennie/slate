@@ -313,7 +313,8 @@ export default async function WebhooksPage({
             ? "Resend re-fires one delivery immediately. Test bucket bookings are recorded as “not sent”: they never reach a downstream system, so they cannot be resent."
             : `The last ${deliveries.length} delivery attempts. Resend re-fires one immediately. Test bucket bookings are recorded as “not sent”: they never reach a downstream system, so they cannot be resent.`}
         </p>
-        <form
+        <SaveForm
+          name="webhook-replay"
           action={replayFailedWebhooks}
           className="mb-3 flex flex-wrap items-center gap-2"
         >
@@ -336,7 +337,7 @@ export default async function WebhooksPage({
           <SubmitButton className={btnSecondaryCls} pendingLabel="Replaying…">
             Replay failed deliveries
           </SubmitButton>
-        </form>
+        </SaveForm>
         {deliveriesUnreadable ? null : deliveries.length === 0 ? (
           <p className="text-sm text-fg-muted">No deliveries yet.</p>
         ) : (

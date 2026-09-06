@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { SaveForm } from "@/components/ui/SaveForm";
 import { AnchoredPanel } from "@/components/ui/AnchoredPanel";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { SubmitButton } from "@/components/ui/SubmitButton";
@@ -166,7 +167,12 @@ export function AccountMenu({
             <ThemeToggle preference={themePreference} />
           </div>
 
-          <form action={signOut} className="mt-3 border-t border-border pt-3">
+          <SaveForm
+            action={signOut}
+            name="sign-out"
+            onStale="reload"
+            className="mt-3 border-t border-border pt-3"
+          >
             <SubmitButton
               role="menuitem"
               className="flex min-h-11 w-full items-center gap-2 rounded-md px-1.5 text-sm text-fg-muted transition-colors hover:bg-[var(--bg-alt)] hover:text-fg"
@@ -189,7 +195,7 @@ export function AccountMenu({
               </svg>
               Sign out
             </SubmitButton>
-          </form>
+          </SaveForm>
         </>
       </AnchoredPanel>
     </div>

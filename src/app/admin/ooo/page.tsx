@@ -671,7 +671,8 @@ export default async function OooQueuePage({
                           Approve
                         </SubmitButton>
                       </SaveForm>
-                      <form
+                      <SaveForm
+                        name={`ooo-reject-${r.id}`}
                         action={rejectOooAction}
                         className="flex flex-1 flex-wrap items-center gap-2"
                       >
@@ -683,7 +684,7 @@ export default async function OooQueuePage({
                           className={`${fieldBaseCls} min-w-0 flex-1`}
                         />
                         <DeclineConfirm agentName={nameOf(r.user_id)} />
-                      </form>
+                      </SaveForm>
                     </div>
                   </li>
                 );

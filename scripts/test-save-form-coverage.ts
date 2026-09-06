@@ -31,12 +31,6 @@ import { assert, fail, finish } from "./lib/harness.ts";
  */
 const STILL_POSTING_DIRECTLY = new Set(
   [
-    "src/app/admin/agents/[id]/page.tsx",
-    "src/app/admin/ooo/page.tsx",
-    "src/app/admin/webhooks/page.tsx",
-    "src/components/AccountMenu.tsx",
-    "src/components/AppHeader.tsx",
-    "src/components/admin/ViewAsButton.tsx",
     "src/components/admin/WebhookTestSend.tsx",
     "src/components/ui/BusinessHoursExceptions.tsx",
     "src/components/ui/BusinessHoursForm.tsx",
@@ -194,7 +188,17 @@ const MIGRATED: [string, string][] = [
   ["src/app/admin/webhooks/page.tsx", "resendWebhookDelivery"],
   ["src/app/me/page.tsx", "useMyDefaultHours"],
   ["src/components/ReasonOptionsEditor.tsx", "setReasonOptions"],
+  ["src/app/admin/agents/[id]/page.tsx", "setUserRole"],
+  ["src/app/admin/agents/[id]/page.tsx", "setBookable"],
+  ["src/app/admin/agents/[id]/page.tsx", "setOooCalendarId"],
+  ["src/app/admin/agents/[id]/page.tsx", "setAgentAttributes"],
+  ["src/app/admin/agents/[id]/page.tsx", "setUserLifecycle"],
+  ["src/app/admin/ooo/page.tsx", "rejectOooAction"],
+  ["src/app/admin/webhooks/page.tsx", "replayFailedWebhooks"],
+  ["src/components/AccountMenu.tsx", "signOut"],
+  ["src/components/AppHeader.tsx", "stopImpersonation"],
   ["src/components/TeamAccessPanel.tsx", "grantStaffAccess"],
+  ["src/components/admin/ViewAsButton.tsx", "startImpersonation"],
   ["src/components/ui/WorkingHoursForm.tsx", "action"],
 ];
 
@@ -234,6 +238,8 @@ const PER_ROW: [string, string][] = [
   ["src/app/admin/ooo/page.tsx", "retryOooAction"],
   ["src/app/admin/webhooks/page.tsx", "resendWebhookDelivery"],
   ["src/app/admin/booker-copy/page.tsx", "setEventDescription"],
+  ["src/components/admin/ViewAsButton.tsx", "startImpersonation"],
+  ["src/app/admin/ooo/page.tsx", "rejectOooAction"],
 ];
 
 {

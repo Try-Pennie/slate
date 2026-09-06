@@ -57,6 +57,7 @@ export function SaveForm({
   name,
   children,
   className,
+  onStale = "notice",
   ...rest
 }: {
   action: (form: FormData) => Promise<void>;
@@ -64,8 +65,36 @@ export function SaveForm({
   name: string;
   children: ReactNode;
   className?: string;
+  /**
+   * What a stale save does here (#1998).
+   *
+   * `notice` is the default and the right answer wherever there is something to
+   * say and room to say it: nothing was saved, reload, what you typed is kept.
+   *
+   * `reload` is for a form that holds NOTHING TYPED and whose action navigates
+   * or changes the session: sign out, view as, stop impersonating. Two reasons,
+   * and the second is the one that decides it.
+   *
+   * There is nowhere to put the notice. Those three sit inside a menu, taken out
+   * of the layout and the accessibility tree with `display: contents` and
+   * `role="none"` so the button becomes the menu's own child. An alert rendered
+   * in there is a `role="alert"` inside a `role="menu"`, which the role does not
+   * allow, and it would break the structure the menu depends on.
+   *
+   * And there is nothing the notice would say that the reload does not say
+   * better. Nothing is lost, the person asked to go somewhere, and reloading is
+   * that request honoured a page load later. A message telling them to press
+   * reload themselves is a step they gain nothing from taking.
+   */
+  onStale?: "notice" | "reload";
 } & Omit<React.FormHTMLAttributes<HTMLFormElement>, "action" | "name">) {
   const [stale, setStale] = useState(false);
+  // Whether the cheap recovery has already been tried on THIS page load. A
+  // reload makes the page current, so a second stale save in the same load can
+  // only mean a deploy landed in those few seconds. Reloading again would be a
+  // loop, so the error is let through to the boundary instead: we tried the
+  // quiet fix, it did not help, and hiding that is worse than showing it.
+  const reloadedRef = useRef(false);
   const formRef = useRef<HTMLFormElement>(null);
 
   // Read ONCE, before the fields mount, because a field takes its restored value
@@ -108,6 +137,12 @@ export function SaveForm({
       await action(formData);
     } catch (err) {
       if (!isStaleActionError(err)) throw err;
+      if (onStale === "reload") {
+        if (reloadedRef.current || typeof window === "undefined") throw err;
+        reloadedRef.current = true;
+        window.location.reload();
+        return;
+      }
       if (typeof window !== "undefined") {
         stashForm(
           window.sessionStorage,
