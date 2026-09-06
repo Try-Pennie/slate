@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { TimeField } from "./TimeField";
@@ -309,5 +309,72 @@ describe("editing part of a time (#1964)", () => {
     // arbitrary range over text that is not a time.
     await doubleClickAt(el, 2, [0, 6]);
     expect(selected(el)).toBe("banana");
+  });
+});
+
+describe("Enter commits the field and never submits the form (#1968)", () => {
+  /** A guarded field inside a real form, with the submit recorded. */
+  function Form({ onSubmit }: { onSubmit: () => void }) {
+    return (
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          onSubmit();
+        }}
+      >
+        <TimeField name="start_1" ariaLabel="Monday start time" defaultValue="08:00" />
+        <button type="submit">Save</button>
+      </form>
+    );
+  }
+
+  // BOTH PATHS, and the agreement between them is the assertion worth having:
+  // what Enter did used to depend on whether a dropdown row happened to be
+  // highlighted, which is a faint tint on one row and nothing else.
+  it("does not submit when a full time has been typed", async () => {
+    const user = userEvent.setup();
+    const onSubmit = vi.fn();
+    render(<Form onSubmit={onSubmit} />);
+    const el = box() as HTMLInputElement;
+    await user.tripleClick(el);
+    // Typed in the short form, so SETTLING is visible: it reformats to the
+    // canonical spelling and closes the list. Asserting the hidden input alone
+    // proved nothing, because that is derived from the text on every render and
+    // reads 17:15 whether Enter settled or not.
+    await user.keyboard("5:15p{Enter}");
+    expect(onSubmit).not.toHaveBeenCalled();
+    // And it still COMMITTED, or the key would do nothing at all.
+    expect(submitted()).toBe("17:15");
+    expect(el.value).toBe("5:15pm");
+    expect(el.getAttribute("aria-expanded")).toBe("false");
+  });
+
+  it("does not submit when a row in the list is highlighted either", async () => {
+    const user = userEvent.setup();
+    const onSubmit = vi.fn();
+    render(<Form onSubmit={onSubmit} />);
+    const el = box() as HTMLInputElement;
+    el.focus();
+    await user.keyboard("{ArrowDown}{Enter}");
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
+  it("does not submit on a second Enter, once the value is settled", async () => {
+    const user = userEvent.setup();
+    const onSubmit = vi.fn();
+    render(<Form onSubmit={onSubmit} />);
+    const el = box() as HTMLInputElement;
+    await user.tripleClick(el);
+    await user.keyboard("5:15pm{Enter}{Enter}");
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
+  // Save is the only thing that saves, which is the other half of the rule.
+  it("still submits when the Save button is pressed", async () => {
+    const user = userEvent.setup();
+    const onSubmit = vi.fn();
+    render(<Form onSubmit={onSubmit} />);
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    expect(onSubmit).toHaveBeenCalledOnce();
   });
 });
