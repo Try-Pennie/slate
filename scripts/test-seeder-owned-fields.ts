@@ -21,6 +21,7 @@
 //
 // Run: node --experimental-strip-types scripts/test-seeder-owned-fields.ts
 import { readFileSync } from "node:fs";
+import { seederOwnsCode } from "../src/lib/xbc.ts";
 import { assert, eq, fail, finish } from "./lib/harness.ts";
 
 const SEEDER = readFileSync("scripts/seed-buckets.ts", "utf8");
@@ -90,23 +91,72 @@ function writtenFields(body: string): Map<string, string> {
 const written = writtenFields(updateBody);
 assert(written.size >= 4, `updateBucket's written fields were read (${[...written.keys()].join(", ")})`);
 
+// THE RULE IS SCOPED TO THE CODES THE SEEDER ACTUALLY WRITES (#2006).
+//
+// It used to be "an existing bucket", which is broader than the reason. The
+// seeder writes only `allXbcCodes()`, so a bucket created by hand outside that
+// matrix was never going to be overwritten, and freezing it left a typo in its
+// name permanent with the create form the only place it could ever be set
+// (L615).
+//
+// So a seeder refreshed field must be GATED on that predicate rather than taken
+// from the stored row unconditionally: gated, the sixty are protected and the
+// rest stay editable; ungated in either direction, one of those two is wrong.
 for (const key of seederRefreshes) {
   const expr = written.get(key);
   if (expr === undefined) {
-    // Not written at all is the strongest form of not overriding it.
-    assert(true, `updateBucket does not write ${key}, which the seeder refreshes`);
+    // Not written at all protects the sixty, but it also makes the hand created
+    // ones uneditable, which is the defect this issue exists about.
+    fail(`updateBucket does not write ${key} at all, so a hand created bucket cannot set it`);
     continue;
   }
-  // Written, so it must come from the STORED ROW rather than from the form. A
-  // field read out of the form here is an edit the next seed run replaces, and
-  // it reads as a working feature until somebody re-runs the seeder.
-  if (/form\.get/.test(expr)) {
+  if (!/seederOwned/.test(expr)) {
     fail(
-      `updateBucket writes ${key} from the form (${expr.trim()}), and the seeder refreshes it, so the edit is silently reverted`,
+      `updateBucket writes ${key} without asking whether the seeder owns this code (${expr.trim()}): ` +
+        `either the sixty are editable and get reverted, or the hand created ones are frozen with no way back`,
+    );
+  } else if (!/form\.get|criteriaFromForm/.test(expr)) {
+    fail(
+      `updateBucket never reads ${key} from the form (${expr.trim()}), so a bucket the seeder does not own cannot set it`,
     );
   } else {
-    assert(true, `updateBucket takes ${key} from the stored row, not the form`);
+    assert(true, `updateBucket gates ${key} on whether the seeder owns the code`);
   }
+}
+
+// The gate is DERIVED from the bucket's code, not set to a constant. Every
+// assertion above reads the write expression, which goes on naming `seederOwned`
+// whether that is the predicate or a literal `true`, so pinning the two apart
+// needs its own line: `true` freezes the hand created buckets again and `false`
+// lets the sixty be reverted, and neither shows up in the expressions.
+{
+  assert(
+    /const seederOwned = seederOwnsCode\(/.test(updateBody),
+    "updateBucket derives the gate from the bucket's own code",
+  );
+  assert(
+    /const seederOwned = editing && seederOwnsCode\(/.test(FORM),
+    "and so does the form, from the same predicate rather than a second rule",
+  );
+}
+
+// And the predicate is the SEEDER'S OWN enumeration, not a second test of the
+// code's shape. Two definitions of "the seeder writes this" would drift the
+// first time the matrix widened (L41).
+{
+  const xbc = readFileSync("src/lib/xbc.ts", "utf8");
+  assert(
+    /new Set\(allXbcCodes\(\)\)/.test(xbc),
+    "seederOwnsCode is derived from the same enumeration the seeder writes",
+  );
+  assert(
+    seederOwnsCode("411") && seederOwnsCode("100"),
+    "a code in the matrix reads as seeder owned",
+  );
+  assert(
+    !seederOwnsCode("SMOKE") && !seederOwnsCode("999") && !seederOwnsCode("zzz"),
+    "and one outside it does not, which is what keeps a hand created bucket editable",
+  );
 }
 
 // And the converse, so this is not one sided: a field the seeder sets ONCE has
@@ -138,13 +188,13 @@ for (const key of seederRefreshes) {
     // It may still appear for CREATION, where the value is genuinely being
     // chosen for the first time. What it must not be is unconditional.
     assert(
-      /\{editing \?/.test(FORM),
-      `the ${key} field is offered only when creating a bucket, not when editing one`,
+      /\{seederOwned \?/.test(FORM),
+      `the ${key} field is drawn read only only when the seeder owns the code`,
     );
   }
   assert(
-    /readOnly=\{editing\}/.test(FORM),
-    "the criteria picker is read only on an existing bucket",
+    /readOnly=\{seederOwned\}/.test(FORM),
+    "the criteria picker is read only on a bucket the seeder owns, and only then",
   );
 }
 
@@ -157,14 +207,14 @@ for (const key of seederRefreshes) {
   // nothing. The first version of this used `code` and said so out loud when it
   // failed, which is the guard doing its job on its own test.
   const reverted = updateBody.replace(
-    'name: String(before?.name ?? ""),',
+    /name: seederOwned \? [^\n]*,/,
     'name: String(form.get("name") ?? "").trim(),',
   );
   assert(reverted !== updateBody, "the overlay changed the real source");
   const back = writtenFields(reverted).get("name") ?? "";
   assert(
-    /form\.get/.test(back),
-    "the overlay really restores a form read, so the rule above would have fired",
+    /form\.get/.test(back) && !/seederOwned/.test(back),
+    `the overlay really restores an UNGATED form read, so the rule above would have fired (${back})`,
   );
   eq(
     seederRefreshes.includes("name"),

@@ -1,4 +1,5 @@
 import { createBucket, updateBucket } from "@/app/admin/actions";
+import { seederOwnsCode } from "@/lib/xbc";
 import { SubmitButton } from "@/components/ui/SubmitButton";
 import {
   BucketCriteriaPicker,
@@ -49,6 +50,11 @@ export function BucketForm({
   eligibleCount?: number;
 }) {
   const editing = !!bucket;
+  // #2006: what is read only is what the SEEDER writes, not "this bucket
+  // exists". The seeder writes only the sixty XBC codes, so a bucket created by
+  // hand keeps its own fields editable; #1935 froze those too and left a typo in
+  // one permanent, since the create form is the only place they can be set.
+  const seederOwned = editing && seederOwnsCode(bucket.code);
   const memberList = roster
     .map((u) => u.id)
     .filter((id) => memberIds.has(id))
@@ -118,20 +124,32 @@ export function BucketForm({
               seeder's own row literal, so it cannot drift the next time the
               seeder grows a column. What is here is only the part a person can
               see: a field that cannot be typed into should not look like one. */}
-          {editing ? (
+          {seederOwned ? (
             <p className="mt-1 h-11 text-sm font-semibold tabular-nums leading-[2.75rem]">
               {bucket?.code}
             </p>
           ) : (
-            <input name="code" aria-label="XBC" defaultValue="" className={`${inputCls} w-28`} required />
+            <input
+              name="code"
+              aria-label="XBC"
+              defaultValue={bucket?.code ?? ""}
+              className={`${inputCls} w-28`}
+              required
+            />
           )}
         </div>
         <div>
           <label className={labelCls}>Name</label>
-          {editing ? (
+          {seederOwned ? (
             <p className="mt-1 h-11 text-sm leading-[2.75rem]">{bucket?.name}</p>
           ) : (
-            <input name="name" aria-label="Name" defaultValue="" className={inputCls} required />
+            <input
+              name="name"
+              aria-label="Name"
+              defaultValue={bucket?.name ?? ""}
+              className={inputCls}
+              required
+            />
           )}
         </div>
         <div>
@@ -175,7 +193,7 @@ export function BucketForm({
       <BucketCriteriaPicker
         catalog={catalog}
         current={bucket?.criteria ?? {}}
-        readOnly={editing}
+        readOnly={seederOwned}
       />
       <BucketMembersPicker selectedIds={memberList} rosterTotal={roster.length} />
       <SubmitButton className={btnCls} pendingLabel={editing ? "Saving…" : "Creating…"}>

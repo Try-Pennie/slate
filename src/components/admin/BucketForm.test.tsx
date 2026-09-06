@@ -279,6 +279,61 @@ describe("BucketForm attribute matcher, editing a bucket (#1935)", () => {
   });
 });
 
+// #2006: WHICH bucket is frozen, and it is not "every existing one".
+//
+// The seeder rewrites a bucket's code, name and criteria from `xbc.ts` on every
+// run, but it writes only the sixty XBC codes. #1935 froze every existing
+// bucket, which took the hand created ones with it: their fields are set nowhere
+// but the create form, so a typo in one was permanent (L615).
+describe("BucketForm freezes only what the seeder writes (#2006)", () => {
+  const renderOne = (code: string) => {
+    const people = roster(3);
+    return render(
+      <RosterProvider roster={people}>
+        <BucketForm
+          bucket={{ ...bucket(1), code, name: "Typed by hand" } as Bucket}
+          eventTypes={EVENT_TYPES}
+          roster={people}
+          memberIds={new Set()}
+          catalog={CATALOG}
+          eligibleCount={1}
+        />
+      </RosterProvider>,
+    );
+  };
+
+  it("leaves a hand created bucket's code and name editable", () => {
+    const { container } = renderOne("SMOKE");
+    const form = container.querySelector("form") as HTMLFormElement;
+    // Editable, AND holding what is stored: a box that came up blank would lose
+    // the name on the next save, which is worse than not offering it at all.
+    const code = form.querySelector('input[name="code"]') as HTMLInputElement;
+    const name = form.querySelector('input[name="name"]') as HTMLInputElement;
+    expect(code?.value).toBe("SMOKE");
+    expect(name?.value).toBe("Typed by hand");
+    // And its routing criteria can be changed too, for the same reason.
+    expect(screen.getByRole("button", { name: /choose routing criteria/i })).toBeTruthy();
+  });
+
+  it("still freezes one the seeder writes", () => {
+    const { container } = renderOne("411");
+    const form = container.querySelector("form") as HTMLFormElement;
+    expect(form.querySelector('input[name="code"]')).toBeNull();
+    expect(form.querySelector('input[name="name"]')).toBeNull();
+    expect(screen.queryByRole("button", { name: /choose routing criteria/i })).toBeNull();
+    expect(screen.getByText(/replaced the next time the seeder runs/i)).toBeTruthy();
+  });
+
+  // The boundary itself, so neither test above is passing on one lucky code.
+  it("draws the line at the matrix, not at the shape of the code", () => {
+    const { container: inside } = renderOne("100");
+    expect(inside.querySelector('input[name="code"]')).toBeNull();
+    cleanup();
+    const { container: outside } = renderOne("999");
+    expect(outside.querySelector('input[name="code"]')).toBeTruthy();
+  });
+});
+
 describe("BucketForm explains its two counts", () => {
   it("says what the eligible count measures and what the manual list offers", () => {
     const people = roster(136);
