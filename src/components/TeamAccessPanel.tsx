@@ -1,4 +1,5 @@
 import { Fragment } from "react";
+import { SaveForm } from "@/components/ui/SaveForm";
 import { grantStaffAccess } from "@/app/admin/actions";
 import { GRANTABLE_STAFF_ROLES, staffAccessMessage } from "@/lib/admin/staff-access";
 import type { StaffAccessOutcome } from "@/lib/admin/staff-access";
@@ -97,7 +98,7 @@ export function TeamAccessPanel({
           was protecting still holds: this row aligns its children on their bottom
           edges, so anything added inside the email column pushes the select and
           the button down by its height to meet it. */}
-      <form action={grantStaffAccess}>
+      <SaveForm action={grantStaffAccess} name="staff-access">
         <div className="flex flex-wrap items-end gap-3">
         <div className="min-w-0 flex-1">
           <label className="sr-only" htmlFor="staff-email">
@@ -133,7 +134,7 @@ export function TeamAccessPanel({
           Give access
         </SubmitButton>
         </div>
-      </form>
+      </SaveForm>
 
       <div className="mt-6 border-t border-border pt-4">
         {/* #1890: the paragraph that used to sit here explained the heading. Each
@@ -285,8 +286,17 @@ function Lookalike({
           ? "If that is the address they really use, give the access to it instead."
           : `That account already has ${roleLabel(lookalike.role)} access, so there is nothing to give it. The row above is most likely an address nobody signs in with.`}
       </p>
+      {/* #1998: through the wrapper too. Nothing is typed here, so there is
+          nothing to restore, but a deploy landing under the page still killed
+          this button with the error boundary and no explanation. The name
+          carries the address, because one of these is drawn per lookalike row
+          and a shared name would file them under one key. */}
       {wouldGain && (
-        <form action={grantStaffAccess} className="mt-2">
+        <SaveForm
+          action={grantStaffAccess}
+          name={`staff-access-lookalike-${lookalike.email}`}
+          className="mt-2"
+        >
           <input type="hidden" name="email" value={lookalike.email} />
           <input type="hidden" name="role" value={row.role} />
           <SubmitButton
@@ -296,7 +306,7 @@ function Lookalike({
           >
             Give {roleLabel(row.role)} access to {lookalike.email}
           </SubmitButton>
-        </form>
+        </SaveForm>
       )}
     </div>
   );
