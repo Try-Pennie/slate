@@ -33,13 +33,11 @@ const STILL_POSTING_DIRECTLY = new Set(
   [
     "src/app/admin/agents/[id]/page.tsx",
     "src/app/admin/agents/page.tsx",
-    "src/app/admin/business-hours/page.tsx",
     "src/app/admin/ooo/page.tsx",
     "src/app/admin/webhooks/page.tsx",
     "src/app/me/page.tsx",
     "src/components/AccountMenu.tsx",
     "src/components/AppHeader.tsx",
-    "src/components/TeamAccessPanel.tsx",
     "src/components/admin/ViewAsButton.tsx",
     "src/components/admin/WebhookTestSend.tsx",
     "src/components/ui/BusinessHoursExceptions.tsx",
@@ -170,6 +168,50 @@ function saveFormTags(src: string): string[] {
     }
   }
   return out;
+}
+
+/**
+ * Forms that have MOVED, by the action they post at.
+ *
+ * The list above stops a NEW bare form appearing. It cannot stop a migrated one
+ * being reverted inside a file that still holds others: the file is exempt as a
+ * whole, so a `<form action={setWebhookEndpoint}>` reappearing beside the
+ * webhook resend button would be silently allowed. This is the other direction,
+ * and it is by ACTION rather than by file for exactly that reason.
+ *
+ * An entry is added when a form moves. It is never removed except by deleting
+ * the form.
+ */
+const MIGRATED: [string, string][] = [
+  ["src/app/admin/alerts/page.tsx", "setMonitorSettings"],
+  ["src/app/admin/booker-copy/page.tsx", "setEventDescription"],
+  ["src/app/admin/buckets/page.tsx", "setDefaultBucket"],
+  ["src/app/admin/business-hours/page.tsx", "setBookingHorizon"],
+  ["src/app/admin/business-hours/page.tsx", "setOrgDefaultHours"],
+  ["src/app/admin/event-types/page.tsx", "createEventType"],
+  ["src/app/admin/webhooks/page.tsx", "setWebhookEndpoint"],
+  ["src/components/ReasonOptionsEditor.tsx", "setReasonOptions"],
+  ["src/components/TeamAccessPanel.tsx", "grantStaffAccess"],
+  ["src/components/ui/WorkingHoursForm.tsx", "action"],
+];
+
+{
+  for (const [file, action] of MIGRATED) {
+    const path = join(...file.split("/"));
+    const src = readFileSync(path, "utf8");
+    const wrapped = saveFormTags(src).some((t) => new RegExp(`action=\\{${action}\\}`).test(t));
+    assert(
+      wrapped,
+      `${file}: ${action} posts through <SaveForm>, so a deploy under the page does not kill it`,
+    );
+    // And it is not ALSO reachable through a bare form, which would be the same
+    // defect wearing the fix beside it.
+    assert(
+      !new RegExp(`<form[^>]*action=\\{${action}\\}`).test(src),
+      `${file}: ${action} is not also posted at by a bare form`,
+    );
+  }
+  assert(MIGRATED.length >= 8, `the migrated list has real entries (${MIGRATED.length})`);
 }
 
 // --- a repeated form needs a name PER INSTANCE ------------------------------

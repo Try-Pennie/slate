@@ -1,4 +1,5 @@
 import { redirect } from "next/navigation";
+import { SaveForm } from "@/components/ui/SaveForm";
 import { currentUser } from "@/lib/auth";
 import { canEditOrgSettings } from "@/lib/auth/roles";
 import { oooOnlyFor } from "@/lib/env";
@@ -171,7 +172,7 @@ export default async function WebhooksPage({
             worst of the three: it said "no API key set" in the same muted grey
             as "API key stored", which is the exact failure this issue is about,
             and after adding the marker there were two captions of one fact (L558). */}
-        <form action={setWebhookEndpoint} className="space-y-3">
+        <SaveForm action={setWebhookEndpoint} name="webhook-endpoint" className="space-y-3">
           <div className="flex flex-wrap items-end gap-3">
             <div className="flex-1">
               <label className={labelCls}>URL</label>
@@ -278,7 +279,7 @@ export default async function WebhooksPage({
           <SubmitButton className={btnCls} pendingLabel="Saving…">
             Save
           </SubmitButton>
-        </form>
+        </SaveForm>
         {/* #1951: a real POST at a URL you paste, so the request, the headers
             and the response can all be looked at. Dan's call over a preview
             only panel and over firing at the configured endpoint. */}

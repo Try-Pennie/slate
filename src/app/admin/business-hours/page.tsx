@@ -1,4 +1,5 @@
 import { redirect } from "next/navigation";
+import { SaveForm } from "@/components/ui/SaveForm";
 import { DateTime } from "luxon";
 import { currentUser } from "@/lib/auth";
 import { canEditOrgSettings } from "@/lib/auth/roles";
@@ -262,7 +263,7 @@ export default async function BusinessHoursPage({
           bucket. A change refreshes availability across all buckets within a minute
           or two.
         </p>
-        <form action={setBookingHorizon} className="space-y-4">
+        <SaveForm action={setBookingHorizon} name="booking-horizon" className="space-y-4">
           <div>
             {/* heading-gloss-ok: the accepted RANGE of the number, derived from the same
                   constants the server validates against. */}
@@ -292,7 +293,7 @@ export default async function BusinessHoursPage({
           <SubmitButton className={btnCls} pendingLabel="Saving…">
             Save booking horizon
           </SubmitButton>
-        </form>
+        </SaveForm>
       </section>
 
       {/* #1892: the new agent template, moved from its own route.
@@ -316,7 +317,7 @@ export default async function BusinessHoursPage({
             <p className={`mb-4 ${proseCls} text-xs text-fg-muted`}>
               What a new agent starts with. Existing agents are not changed.
             </p>
-            <form action={setOrgDefaultHours} className="flex flex-wrap items-end gap-3">
+            <SaveForm action={setOrgDefaultHours} name="org-default-hours" className="flex flex-wrap items-end gap-3">
               <div>
                 <label className={labelCls} htmlFor="default_timezone">
                   Timezone
@@ -361,7 +362,7 @@ export default async function BusinessHoursPage({
               <SubmitButton className={btnCls} pendingLabel="Saving…">
                 Save starting hours
               </SubmitButton>
-            </form>
+            </SaveForm>
           </>
         )}
       </section>
