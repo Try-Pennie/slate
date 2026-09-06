@@ -7,9 +7,20 @@ import { unwrap } from "@/lib/db/result";
 import { cardCls } from "@/components/ui/styles";
 import AdminBookingActions from "@/components/AdminBookingActions";
 import BookingHistory from "@/components/BookingHistory";
-import { loadBookingDetail } from "@/lib/booking/detail";
+import { bookingIsActionable, loadBookingDetail } from "@/lib/booking/detail";
 import { loadReasonOptions } from "@/lib/booking/reason-options";
-import type { HistoryRosterUser } from "@/lib/booking/event-display";
+import type { BookingEventView, HistoryRosterUser } from "@/lib/booking/event-display";
+import { listBookingHistory } from "@/lib/booking/history";
+import { log } from "@/lib/log";
+
+/**
+ * How many considered agents to name before summarising the rest (#1943).
+ *
+ * Routing can weigh most of an 84 agent roster, and 84 names in a card is not an
+ * answer to "which agents". The count above the list still says how many there
+ * were, so nothing is hidden, only summarised.
+ */
+const CONSIDERED_SHOWN = 12;
 import type { Booking } from "@/lib/db/types";
 
 export const dynamic = "force-dynamic";
@@ -75,6 +86,17 @@ export default async function BookingDetailPage({
   if (result.kind === "notfound") notFound();
   const { booking, view } = result;
 
+  // #1943: the history, read HERE. It was a client fetch behind a toggle, and
+  // taking the toggle away honestly meant taking the fetch with it. `null` is
+  // "could not be read", which is a different screen from "nothing has changed".
+  let history: BookingEventView[] | null = null;
+  try {
+    history = await listBookingHistory(booking.id, me.org_id);
+  } catch (err) {
+    log.error("booking-detail", { msg: "history unreadable", booking_id: booking.id }, err);
+    history = null;
+  }
+
   const opts = await loadReasonOptions();
   const actionReasons = {
     reschedule: opts.reschedule.active,
@@ -108,6 +130,14 @@ export default async function BookingDetailPage({
           </dl>
         </section>
 
+        {/* #1943: no card at all when nothing is actionable. Dan: "what does
+            actions canceled mean? I can see it was canceled from the history."
+            It was a card headed Actions containing the single word Cancelled,
+            which is the component saying "there are none" by printing a status
+            the page already states twice. An empty Actions card is not
+            information, so it goes, and `completed` takes the same route since
+            it hit the same branch and read just as oddly. */}
+        {bookingIsActionable(booking.status) && (
         <section className={cardCls}>
           <h2 className="mb-3 text-sm font-semibold">Actions</h2>
           <AdminBookingActions
@@ -118,20 +148,36 @@ export default async function BookingDetailPage({
             reasonOptions={actionReasons}
           />
         </section>
+        )}
 
         <section className={cardCls}>
           <h2 className="mb-3 text-sm font-semibold">History</h2>
-          <BookingHistory bookingId={booking.id} />
+          {/* #1943: read here rather than fetched from the browser on a toggle.
+              `null` means the read FAILED, which the component says out loud
+              rather than drawing as "no changes recorded". */}
+          <BookingHistory events={history} />
         </section>
 
         <section className={cardCls}>
           <h2 className="mb-1 text-sm font-semibold">Routing</h2>
           {view.trace ? (
             <div className="space-y-1 text-sm text-fg-muted">
+              {/* #1943: WHO was considered, not how many. The ids were already
+                  on the page and it printed their length. Long pools are capped
+                  rather than dumped: routing can weigh most of an 84 agent
+                  roster, and the count still says how many there were. */}
               <div>
-                {view.trace.considered} agent{view.trace.considered === 1 ? "" : "s"} considered
-                {view.trace.fallbackApplied ? " · fallback used" : ""}
+                {view.trace.considered.length} agent
+                {view.trace.considered.length === 1 ? "" : "s"} considered
+                {view.trace.fallbackApplied ? " \u00b7 fallback used" : ""}
               </div>
+              {view.trace.considered.length > 0 && (
+                <div className="text-fg">
+                  {view.trace.considered.slice(0, CONSIDERED_SHOWN).join(", ")}
+                  {view.trace.considered.length > CONSIDERED_SHOWN &&
+                    ` and ${view.trace.considered.length - CONSIDERED_SHOWN} more`}
+                </div>
+              )}
               {view.trace.reassignments.map((r, i) => (
                 <div key={i} className="text-pennie-blue dark:text-pennie-sky">
                   reassigned {r.from} &rarr; {r.to}

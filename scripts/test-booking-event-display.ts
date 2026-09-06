@@ -26,16 +26,33 @@ const OPTS: Record<ReasonAction, ReasonOption[]> = {
   reassign: REASSIGN_REASONS,
 };
 
-// --- formatLeadTime: signed minutes -> human "before"/"after" the appointment ---
-eq(formatLeadTime(2880), "2 days before", "2880 min -> 2 days before");
-eq(formatLeadTime(1440), "1 day before", "1440 min -> 1 day before");
-eq(formatLeadTime(180), "3 hours before", "180 min -> 3 hours before");
-eq(formatLeadTime(60), "1 hour before", "60 min -> 1 hour before");
-eq(formatLeadTime(45), "45 minutes before", "45 min -> 45 minutes before");
-eq(formatLeadTime(1), "1 minute before", "1 min -> 1 minute before");
-eq(formatLeadTime(-120), "2 hours after", "-120 min -> 2 hours after (action after the appt)");
-eq(formatLeadTime(0), "at the scheduled time", "0 min -> at the scheduled time");
+// --- formatLeadTime: signed minutes -> human, and it NAMES ITS ANCHOR (#1943) ---
+//
+// It read "4 hours before", which is a dangling comparative: nothing on screen
+// said before what, and the reader's only available guess (before the previous
+// entry) is wrong. `bookingEventFrom` measures it against the PRE ACTION
+// appointment time, so three reschedules in a row show a growing notice period
+// against one unchanging clock time, which reads as a data fault and is not.
+const ANCHOR = "the time it was booked for then";
+eq(formatLeadTime(2880), `2 days before ${ANCHOR}`, "2880 min -> 2 days before");
+eq(formatLeadTime(1440), `1 day before ${ANCHOR}`, "1440 min -> 1 day before");
+eq(formatLeadTime(180), `3 hours before ${ANCHOR}`, "180 min -> 3 hours before");
+eq(formatLeadTime(60), `1 hour before ${ANCHOR}`, "60 min -> 1 hour before");
+eq(formatLeadTime(45), `45 minutes before ${ANCHOR}`, "45 min -> 45 minutes before");
+eq(formatLeadTime(1), `1 minute before ${ANCHOR}`, "1 min -> 1 minute before");
+eq(formatLeadTime(-120), `2 hours after ${ANCHOR}`, "-120 min -> after the appointment");
+eq(formatLeadTime(0), "at the time it was booked for", "0 min -> at the booked time");
 eq(formatLeadTime(null), null, "null lead -> null");
+
+// Every phrase it can produce names something, or the fix is only in the cases
+// somebody happened to list.
+for (const m of [2880, 1440, 180, 60, 45, 1, 0, -1, -60, -2880]) {
+  const out = formatLeadTime(m) ?? "";
+  assert(
+    /the time it was booked for/.test(out),
+    `every lead phrase names what it is relative to (${m} gave ${JSON.stringify(out)})`,
+  );
+}
 
 // --- reasonLabel: code -> human label, with "other" free text + unknown-code fallback ---
 eq(
@@ -149,7 +166,7 @@ const rv = toBookingEventView(reschedule, nameOf, TZ, OPTS);
 eq(rv.actionLabel, "Rescheduled", "reschedule -> actionLabel Rescheduled");
 eq(rv.who, "Dan Wright (admin)", "reschedule who");
 eq(rv.reason, "Schedule conflict", "reschedule reason label");
-eq(rv.lead, "2 days before", "reschedule lead");
+eq(rv.lead, "2 days before the time it was booked for then", "reschedule lead names its anchor");
 const expectFrom = `${formatSlotDay("2026-07-03T18:00:00Z", TZ)}, ${formatSlotTime("2026-07-03T18:00:00Z", TZ)}`;
 const expectTo = `${formatSlotDay("2026-07-05T18:00:00Z", TZ)}, ${formatSlotTime("2026-07-05T18:00:00Z", TZ)}`;
 eq(rv.timeChange, `${expectFrom} → ${expectTo}`, "reschedule timeChange from -> to");
@@ -181,7 +198,7 @@ const cancel: BookingEvent = {
 const cv = toBookingEventView(cancel, nameOf, TZ, OPTS);
 eq(cv.actionLabel, "Cancelled", "cancel -> actionLabel Cancelled");
 eq(cv.who, "Customer", "cancel who = Customer");
-eq(cv.lead, "4 hours after", "cancel lead after the appt");
+eq(cv.lead, "4 hours after the time it was booked for then", "cancel lead names its anchor");
 assert(cv.timeChange === null && cv.agentChange === null, "cancel has no time/agent change");
 
 // --- buildHistoryViews: newest-first + roster name resolution (name ?? email) ---
