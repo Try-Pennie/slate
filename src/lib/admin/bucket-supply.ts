@@ -535,14 +535,37 @@ export function bucketSupplyReport(input: BucketSupplyInput): BucketSupplyReport
 
 const XBC_CODE = /^[1-5][0-3][0-2]$/;
 
-/** Sort key: backend digit first (the grouping), then debt tier, then legal. */
+/**
+ * Sort key: DEBT TIER first and DESCENDING, then the backend digit, then legal
+ * (#1942).
+ *
+ * Dan on 2026-09-04: "don't order this page by backend param, that's not the
+ * important part. we want to see debt bucket desc. so ultra high should be shown
+ * first and low last." The debt tier is the axis he scans by, and it was third
+ * in the key, behind a digit he does not read the page for.
+ *
+ * The descent is built into the KEY as `5 - tier` rather than by negating the
+ * result or reversing the comparator, and that is not a style choice. An
+ * unreadable code sorts LAST by returning `MAX_SAFE_INTEGER`, which is a
+ * deliberate decision (such a row is kept and put at the end rather than
+ * dropped), and any of the naive ways to reverse an ascending sort sends that
+ * sentinel to the FRONT: the page would open with the one row nobody can read.
+ * Keeping the key ascending keeps the sentinel meaning what it says.
+ */
 export function xbcOrder(code: string): number {
   if (!XBC_CODE.test(code)) return Number.MAX_SAFE_INTEGER;
-  const [adv, bes, leg] = code.split("").map(Number);
-  return bes * 100 + adv * 10 + leg;
+  const [tier, backend, legal] = code.split("").map(Number);
+  // Tiers run 1 to 5, so `5 - tier` puts Ultra High (5) at 0 and Low (1) at 4.
+  return (5 - tier) * 100 + backend * 10 + legal;
 }
 
-/** The backend digit a row groups under, or null for a code that is not an XBC. */
+/** The debt tier digit a row groups under, or null for a code that is not an XBC. */
+export function debtTierDigitOf(code: string): string | null {
+  return XBC_CODE.test(code) ? code[0] : null;
+}
+
+/** The backend digit of an XBC code, or null. Still the secondary sort, and
+ *  still worth naming: see the measurement beside the table's grouping. */
 export function backendDigitOf(code: string): string | null {
   return XBC_CODE.test(code) ? code[1] : null;
 }

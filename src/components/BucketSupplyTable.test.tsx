@@ -162,15 +162,31 @@ describe("BucketSupplyTable (#1254)", () => {
     expect(screen.queryByText("0", { selector: "td span" })).toBeNull();
   });
 
-  it("groups the rows by the backend digit so a thin family stands out", () => {
+  // #1942: grouped by DEBT TIER now, which is the axis the page is read by. The
+  // rows arrive already sorted (the report sorts them), so the fixture is given
+  // in the order the page receives them.
+  it("groups the rows by debt tier, and names each group", () => {
     renderTable([
+      row({ code: "220", name: "Medium | Beyond | No Legal Param" }),
       row({ code: "110", name: "Low | Both | No Legal Param" }),
       row({ code: "120", name: "Low | Beyond | No Legal Param" }),
-      row({ code: "220", name: "Medium | Beyond | No Legal Param" }),
     ]);
     const groups = [...document.querySelectorAll("th[scope='rowgroup']")].map(
       (n) => n.textContent ?? "",
     );
-    expect(groups).toEqual(["Both", "Beyond"]);
+    expect(groups).toEqual(["Medium debt", "Low debt"]);
+  });
+
+  // A code the grouping cannot read still gets a group rather than being folded
+  // into whichever one happens to precede it.
+  it("gives an unreadable code its own group", () => {
+    renderTable([
+      row({ code: "110", name: "Low | Both | No Legal Param" }),
+      row({ code: "zzz", name: "Something else" }),
+    ]);
+    const groups = [...document.querySelectorAll("th[scope='rowgroup']")].map(
+      (n) => n.textContent ?? "",
+    );
+    expect(groups).toEqual(["Low debt", "Other codes"]);
   });
 });
