@@ -45,21 +45,28 @@ export default function GlobalError({
   return (
     <html lang="en">
       <body style={{ margin: 0 }}>
-        {/* --pennie-beige / --pennie-graphite / --pennie-sky, and the dark page
-            ground, all quoted from globals.css. */}
+        {/* Every value below is QUOTED from globals.css, because this component
+            renders its own document and gets no global stylesheet, so it cannot
+            reference the tokens. A hand kept copy of another file's values is
+            exactly the thing that drifts (L41), and it drifted on the first
+            occasion: #1958 moved the dark ladder and these two dark values were
+            left behind, still naming the surfaces the theme had before. It
+            cannot be derived, so it is GUARDED instead:
+            `scripts/test-global-error-tokens.ts` reads both files and fails when
+            a value here is not the one globals.css defines. */}
         <style>{`
           .slate-fatal {
             --ground: rgb(249, 246, 240);
             --ink: rgb(52, 52, 52);
             --card: rgb(255, 255, 255);
-            --edge: rgba(52, 52, 52, 0.14);
+            --edge: rgba(52, 52, 52, 0.16);
             --action: rgb(130, 208, 255);
           }
           @media (prefers-color-scheme: dark) {
             .slate-fatal {
-              --ground: rgb(23, 22, 26);
+              --ground: rgb(12, 11, 14);
               --ink: rgb(249, 246, 240);
-              --card: rgb(57, 55, 63);
+              --card: rgb(38, 37, 43);
               --edge: rgba(246, 246, 246, 0.38);
               --action: rgb(130, 208, 255);
             }
