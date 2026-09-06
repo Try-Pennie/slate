@@ -66,7 +66,20 @@ export function SettingsSaveNotice({ ok, error, saved }: SettingsSaveNoticeProps
   return (
     <div
       role="status"
-      className="rounded-md bg-[var(--pennie-green-wash)] px-5 py-4 text-sm text-fg"
+      // #1997: `text-pennie-graphite`, NOT `text-fg`.
+      //
+      // The green wash is a RAW token: it is the same pale green in both themes,
+      // deliberately, because a status colour that flipped would stop meaning
+      // "this went well". `--fg` is not raw, and in dark it is a near white. So
+      // this drew near white text on a pale green panel: present in the DOM,
+      // correctly announced to a screen reader, and invisible on screen (L213).
+      //
+      // Found by screenshotting both themes at a real week, which #1997 asked
+      // for. It had shipped on every save confirmation on every admin page.
+      //
+      // Graphite on this wash is 11.58:1 and is asserted by name in
+      // scripts/test-contrast.ts, so the pair cannot drift apart again.
+      className="rounded-md bg-[var(--pennie-green-wash)] px-5 py-4 text-sm text-pennie-graphite"
     >
       {notice.message}
     </div>

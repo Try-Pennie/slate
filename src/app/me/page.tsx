@@ -21,8 +21,8 @@ import { Pill, type PillVariant } from "@/components/ui/Pill";
 import { InfoIcon } from "@/components/icons";
 import { WorkingHoursForm } from "@/components/ui/WorkingHoursForm";
 import { SubmitButton } from "@/components/ui/SubmitButton";
-import { workingHoursDays, workingHoursSavedNotice } from "@/lib/schedule-week";
-import { savedOutcome } from "@/lib/admin/save-outcomes";
+import { workingHoursDays } from "@/lib/schedule-week";
+import { savedOutcome, savedSentence } from "@/lib/admin/save-outcomes";
 import { SettingsSaveNotice } from "@/app/admin/settings/SettingsSaveNotice";
 import { OooForm } from "@/components/ui/OooForm";
 import { RequestActions } from "@/components/ui/RequestActions";
@@ -411,7 +411,7 @@ export default async function MePage({
                       reports what is actually stored (L78). */}
                   {savedOutcome(sp.ok) === "working-hours" ? (
                     <div className="mb-4">
-                      <SettingsSaveNotice ok saved={workingHoursSavedNotice(hoursDays)} />
+                      <SettingsSaveNotice ok saved={savedSentence("working-hours") ?? ""} />
                     </div>
                   ) : null}
                   {/* #1994: a week the server refused says WHY. These sentences

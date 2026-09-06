@@ -496,15 +496,16 @@ describe("AgentProfilePage confirms a saved week (#1988)", () => {
     );
   };
 
-  it("says what week is now stored, not just that something happened", async () => {
+  // #1997: the banner says "Hours saved." and stops there. It used to recite the
+  // week, which put the week on screen three times at once: here, in the summary
+  // paragraph beneath, and in the day rows that hold every one of those times in
+  // fields. The assertion that it NAMES the week is deleted rather than adjusted,
+  // because that is the behaviour being removed (L252).
+  it("confirms the save without reciting the week the rows already show", async () => {
     await renderWith("working-hours");
     const said = screen.getAllByRole("status").map((n) => n.textContent ?? "");
     const notice = said.find((t) => /hours saved/i.test(t));
-    expect(notice).toBeTruthy();
-    // The sentence names the week. A bare "Saved." would leave a person who
-    // changed one window no better off than the silence this replaced, since
-    // the thing they want to check is WHAT is stored.
-    expect(notice).toMatch(/\b(day|off|am|pm)\b/i);
+    expect(notice).toBe("Hours saved.");
   });
 
   it("says nothing on an ordinary visit", async () => {

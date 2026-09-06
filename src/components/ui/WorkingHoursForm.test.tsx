@@ -158,23 +158,20 @@ describe("WorkingHoursForm (#1764)", () => {
     );
   });
 
-  it("states the week in a sentence, and restates it when a time changes", async () => {
-    const user = userEvent.setup();
+  // #1997: THE WEEK SENTENCE IS GONE, and the test that asserted it is deleted
+  // rather than adjusted, because its whole content was the behaviour being
+  // removed (L252). It stated the week a third time, above rows that already
+  // hold every one of those times and below a banner that recites it.
+  //
+  // What it also covered, and what is deliberately NOT replaced: the sentence
+  // tracked an UNSAVED edit. That is the thing given up, recorded on #1997. If
+  // it is missed the answer is a summary shown only while edited, not this test
+  // and its paragraph coming back.
+  it("draws no week sentence above the rows", () => {
     render(form(workingHoursDays([1, 2, 3, 4, 5].map((d) => rule(d, 540, 1020)))));
-
-    const summary = screen.getByTestId("hours-summary");
-    expect(summary.textContent).toBe("Monday to Friday, 9:00am to 5:00pm. Saturday and Sunday off.");
-
-    // The sentence describes what is on screen, so an edit that has not been saved
-    // yet still reads correctly rather than describing the stored week.
-    const monday = screen.getAllByRole("combobox", { name: /monday start time/i })[0];
-    await user.clear(monday);
-    await user.type(monday, "8a");
-    await user.keyboard("{ArrowDown}{Enter}");
-
-    expect(summary.textContent).toBe(
-      "Monday, 8:00am to 5:00pm. Tuesday to Friday, 9:00am to 5:00pm. Saturday and Sunday off.",
-    );
+    expect(screen.queryByTestId("hours-summary")).toBeNull();
+    // The rows are still the week, which is why the sentence was redundant.
+    expect(screen.getAllByRole("combobox", { name: /monday start time/i })[0]).toBeTruthy();
   });
 
   it("copies Monday's WHOLE window list to the working days, leaving off days off", async () => {

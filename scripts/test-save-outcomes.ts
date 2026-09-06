@@ -32,6 +32,7 @@ import {
   savedOutcome,
   savedQuery,
   savedSentence,
+  type SaveOutcome,
 } from "../src/lib/admin/save-outcomes.ts";
 import { assert, eq, fail, finish } from "./lib/harness.ts";
 
@@ -92,7 +93,22 @@ const ACTION_FILES = FILES.filter((f) => /actions\.ts$/.test(f));
   eq(savedOutcome(""), null, "an empty value is nothing");
   eq(savedOutcome(undefined), null, "an absent value is nothing");
   eq(savedSentence(null), null, "nothing to say about no outcome");
-  eq(savedSentence("working-hours"), null, "a page built sentence is not invented here");
+  // #1997: `working-hours` is ordinary fixed copy now ("Hours saved."), because
+  // reciting the week put it on screen three times at once. The DYNAMIC map is
+  // empty as a result, so the assertion that a page built sentence is not
+  // invented here is made against the mechanism rather than against an entry
+  // that no longer exists.
+  eq(savedSentence("alerts"), SAVE_OUTCOME_COPY.alerts, "a fixed outcome reads its own copy");
+  {
+    const invented = (Object.keys(DYNAMIC_OUTCOME_REASONS) as SaveOutcome[]).map((k) =>
+      savedSentence(k),
+    );
+    eq(
+      invented.filter((x) => x !== null).length,
+      0,
+      "no page built outcome has a sentence invented here",
+    );
+  }
   assert((savedSentence("alerts") ?? "").length > 0, "a fixed outcome has its sentence");
   eq(savedQuery("bucket-created"), "?ok=bucket-created", "the query is built in one place");
 }

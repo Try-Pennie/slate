@@ -165,17 +165,26 @@ export function WorkingHoursWeek({
 
   return (
     <div className="space-y-4">
-      <p
-        data-testid="hours-summary"
-        // Announced when it changes, without claiming `role="status"`: that role is
-        // for the outcome of an action, and this panel already has one for what a
-        // save came back with. Two status regions on one form is noise.
-        aria-live="polite"
-        className="text-sm font-semibold text-fg"
-      >
-        {workingHoursSummary(summaryDays)}
-      </p>
+      {/* #1997: THE WEEK SENTENCE IS GONE FROM HERE.
+          Dan, 2026-09-06: "this is ugly and redundant ... we need to fix both
+          sets of text to be better looking and more pleasing."
 
+          It stated the week a third time. The green banner above recites it, this
+          paragraph recited it word for word, and the rows below hold every one of
+          those times in fields. At a real week, five different day patterns and a
+          split shift, the two paragraphs filled most of the panel. A two row
+          fixture never shows that (L606).
+
+          What is given up, recorded so nobody rediscovers it as a regression:
+          this was the only one line summary of an UNSAVED edit, and while editing
+          seven rows of controls do not say at a glance what the week now reads.
+          Judged acceptable. If it is missed, the answer is a summary that appears
+          only while edited, not this paragraph coming back.
+
+          `workingHoursSummary` itself STAYS: the "apply company default hours"
+          confirm below names the week it is about to overwrite with it, and
+          `summaryDays` still feeds the `edited` comparison (#1873) that guards an
+          unsaved week. Neither is this paragraph. */}
       {timezoneField}
 
       <div className="space-y-2">

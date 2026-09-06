@@ -28,9 +28,9 @@ import { unwrap } from "@/lib/db/result";
 import { loadReasonOptions } from "@/lib/booking/reason-options";
 import { WorkingHoursForm } from "@/components/ui/WorkingHoursForm";
 import { SubmitButton } from "@/components/ui/SubmitButton";
-import { orgDefaultWeek, workingHoursDays, workingHoursSavedNotice } from "@/lib/schedule-week";
+import { orgDefaultWeek, workingHoursDays } from "@/lib/schedule-week";
 import { SettingsSaveNotice } from "@/app/admin/settings/SettingsSaveNotice";
-import { savedOutcome } from "@/lib/admin/save-outcomes";
+import { savedOutcome, savedSentence } from "@/lib/admin/save-outcomes";
 import {
   deactivateExplanation,
   notBookableContrast,
@@ -434,12 +434,7 @@ export default async function AgentProfilePage({
               ) : null}
               {savedOutcome(query?.ok) === "working-hours" ? (
                 <div className="mt-4">
-                  <SettingsSaveNotice
-                    ok
-                    saved={workingHoursSavedNotice(
-                      workingHoursDays(rules, org.default_weekdays),
-                    )}
-                  />
+                  <SettingsSaveNotice ok saved={savedSentence("working-hours") ?? ""} />
                 </div>
               ) : null}
               <div className="mt-4">
