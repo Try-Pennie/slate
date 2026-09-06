@@ -138,6 +138,83 @@ describe("SaveForm survives a deploy landing under the page (#1994)", () => {
   });
 });
 
+// #1998: the menu forms, where a notice cannot go and would say nothing useful.
+describe("SaveForm reloads instead, where that is the whole recovery (#1998)", () => {
+  it("reloads rather than drawing an alert inside a menu", async () => {
+    const user = userEvent.setup();
+    stale.is.mockReturnValue(true);
+    const reload = vi.fn();
+    Object.defineProperty(window, "location", {
+      configurable: true,
+      value: { ...window.location, reload, pathname: "/admin" },
+    });
+    const action = vi.fn(async () => {
+      throw new Error("Failed to find Server Action");
+    });
+    render(
+      <SaveForm action={action} name="sign-out" onStale="reload">
+        <button type="submit">Sign out</button>
+      </SaveForm>,
+    );
+    await user.click(screen.getByRole("button", { name: "Sign out" }));
+
+    expect(reload).toHaveBeenCalledTimes(1);
+    // No alert, because there is nowhere in a menu to put one and nothing it
+    // would say that the reload does not say better.
+    expect(screen.queryByRole("alert")).toBeNull();
+    // And nothing stashed: there was nothing typed to keep.
+    expect(window.sessionStorage.length).toBe(0);
+  });
+
+  // THE LOOP GUARD. A reload makes the page current, so a second stale save in
+  // the same load can only mean a deploy landed in those few seconds. Reloading
+  // again would be a loop, so the error is let through instead: the quiet fix
+  // was tried, it did not help, and hiding that is worse than showing it.
+  it("does not reload twice for the same page load", async () => {
+    const user = userEvent.setup();
+    stale.is.mockReturnValue(true);
+    const reload = vi.fn();
+    Object.defineProperty(window, "location", {
+      configurable: true,
+      value: { ...window.location, reload, pathname: "/admin" },
+    });
+    const failure = new Error("Failed to find Server Action");
+    const action = vi.fn(async () => {
+      throw failure;
+    });
+    const caught: unknown[] = [];
+    render(
+      <CatchHere onError={(e) => caught.push(e)}>
+        <SaveForm action={action} name="sign-out" onStale="reload">
+          <button type="submit">Sign out</button>
+        </SaveForm>
+      </CatchHere>,
+    );
+    const press = () => user.click(screen.getByRole("button", { name: "Sign out" }));
+    await press();
+    await press();
+
+    expect(reload).toHaveBeenCalledTimes(1);
+    expect(caught).toContain(failure);
+  });
+
+  it("still draws the notice on a form that has something to say", async () => {
+    const user = userEvent.setup();
+    stale.is.mockReturnValue(true);
+    const action = vi.fn(async () => {
+      throw new Error("Failed to find Server Action");
+    });
+    render(
+      <SaveForm action={action} name="hours">
+        <input name="start_1" defaultValue="08:00" aria-label="start" />
+        <button type="submit">Save</button>
+      </SaveForm>,
+    );
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    expect(screen.getByRole("alert").textContent).toMatch(/nothing was saved/i);
+  });
+});
+
 describe("SaveForm puts back what was typed (#1994)", () => {
   it("restores a plain field and says it did", () => {
     window.sessionStorage.setItem(

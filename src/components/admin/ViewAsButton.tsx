@@ -1,4 +1,5 @@
 import { startImpersonation } from "@/app/admin/actions";
+import { SaveForm } from "@/components/ui/SaveForm";
 import { SubmitButton } from "@/components/ui/SubmitButton";
 import { canImpersonate } from "@/lib/auth/roles";
 import type { Role } from "@/lib/db/types";
@@ -59,8 +60,14 @@ export function ViewAsButton({
 
   const who = target.name ?? target.email;
   return (
-    <form
+    <SaveForm
       action={startImpersonation}
+      name={`view-as-${target.email}`}
+      // #1998: reload rather than a notice. This form is deliberately taken out
+      // of the layout and the accessibility tree below so the button can be the
+      // menu's own child, and an alert rendered inside that would be a
+      // `role="alert"` in a `role="menu"`. Nothing is typed here either.
+      onStale="reload"
       // Inside a menu the form sits between `role="menu"` and its `menuitem`,
       // which is a structure the role does not allow, so it is taken out of the
       // accessibility tree and out of the layout: `display: contents` promotes
@@ -77,6 +84,6 @@ export function ViewAsButton({
       >
         {`View as ${who}`}
       </SubmitButton>
-    </form>
+    </SaveForm>
   );
 }

@@ -40,11 +40,20 @@ export interface SubmitSite {
 // reads as a reason and the convention decays into a magic word.
 const OPT_OUT = /(?:\/\/|\{?\/\*)\s*submit-feedback-ok:\s*(?!\*\/)\S/;
 
-/** A `<form ...>` opening tag whose action is a FUNCTION, not a URL. */
-const ACTION_FORM = /<form\b[^>]*\saction=\{/;
-/** Any `<form ...>` opening tag, so a GET form still closes a region. */
-const FORM_OPEN = /<form\b/;
-const FORM_CLOSE = /<\/form>/;
+/**
+ * A form opening tag whose action is a FUNCTION, not a URL.
+ *
+ * `<SaveForm>` counts: it renders a real `<form>` and takes a server action
+ * (#1994). Reading only `<form` stopped seeing the agent page the moment its
+ * forms moved onto the wrapper, and this file's own control is what said so: the
+ * plain button it plants was no longer inside anything the scanner recognised as
+ * a form, so it reported a clean file. A check that stops MATCHING and a
+ * converted tree produce the same empty list (L98).
+ */
+const ACTION_FORM = /<(?:form|SaveForm)\b[^>]*\saction=\{/;
+/** Any form opening tag, so a GET form still closes a region. */
+const FORM_OPEN = /<(?:form|SaveForm)\b/;
+const FORM_CLOSE = /<\/(?:form|SaveForm)>/;
 
 function optedOut(lines: string[], i: number): boolean {
   if (OPT_OUT.test(lines[i])) return true;

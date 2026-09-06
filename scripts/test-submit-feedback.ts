@@ -107,6 +107,29 @@ function sourceFiles(): string[] {
     "an opt-out carrying no reason",
   );
 
+  // #1998: THE WRAPPER IS A FORM.
+  //
+  // `<SaveForm>` renders a real `<form>` and takes a server action, so a plain
+  // button inside one is the same defect as a plain button inside a `<form>`.
+  // Reading only `<form` stopped seeing the agent page the moment its forms
+  // moved onto the wrapper: the control below plants a button there and it went
+  // uncaught, reporting the file clean. A check that stops MATCHING and a
+  // converted tree produce the same empty list (L98).
+  caught(
+    '<SaveForm action={save} name="x">\n  <button className={btn}>Go</button>\n</SaveForm>',
+    "a plain button inside the wrapper, which is a form",
+  );
+  allowed(
+    '<SaveForm action={save} name="x">\n  <SubmitButton pendingLabel="Going">Go</SubmitButton>\n</SaveForm>',
+    "a proper submit button inside the wrapper",
+  );
+  // And the region really CLOSES on the wrapper's own tag, or every plain button
+  // after one would be judged as though it were still inside it.
+  allowed(
+    '<SaveForm action={save} name="x">\n  <SubmitButton pendingLabel="Going">Go</SubmitButton>\n</SaveForm>\n<button type="button" onClick={x}>Cancel</button>',
+    "an ordinary button after the wrapper has closed",
+  );
+
   // And the control that matters: put the REAL page's plain buttons back and
   // require this to catch them. A scanner that stopped matching and a converted
   // tree produce the same empty list (L98).

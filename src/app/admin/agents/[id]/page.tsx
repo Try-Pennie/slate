@@ -1,4 +1,5 @@
 import { redirect, notFound } from "next/navigation";
+import { SaveForm } from "@/components/ui/SaveForm";
 import { currentUser } from "@/lib/auth";
 import {
   canManageAgents,
@@ -307,7 +308,7 @@ export default async function AgentProfilePage({
                 underscores, so "team lead" cannot be spelled two ways on one
                 page (L41). */}
             {canSetThisRole ? (
-              <form action={setUserRole} className="flex items-end gap-2">
+              <SaveForm action={setUserRole} name="agent-role" className="flex items-end gap-2">
                 <input type="hidden" name="user_id" value={agent.id} />
                 <div>
                   <label className={labelCls}>Role</label>
@@ -323,7 +324,7 @@ export default async function AgentProfilePage({
                   />
                 </div>
                 <SubmitButton className={btnSecondaryCls} pendingLabel="Setting role">Set role</SubmitButton>
-              </form>
+              </SaveForm>
             ) : (
               <div>
                 <span className={labelCls}>Role</span>
@@ -331,7 +332,7 @@ export default async function AgentProfilePage({
               </div>
             )}
             {canManageThisAgent && (
-              <form action={setBookable} className="flex items-end">
+              <SaveForm action={setBookable} name="agent-bookable" className="flex items-end">
                 <input type="hidden" name="user_id" value={agent.id} />
                 <input
                   type="hidden"
@@ -354,7 +355,7 @@ export default async function AgentProfilePage({
                     Make bookable
                   </SubmitButton>
                 )}
-              </form>
+              </SaveForm>
             )}
             {/* Read only on purpose (#1474). Salesforce owns this link: the hourly
                 roster sync converges on Agent_Manager__c, clearing a link
@@ -383,7 +384,8 @@ export default async function AgentProfilePage({
             )}
           </div>
           {isAdmin && agent.role !== "agent" && (
-            <form
+            <SaveForm
+              name="agent-ooo-calendar"
               action={setOooCalendarId}
               className="mt-4 flex flex-wrap items-end gap-2"
             >
@@ -399,7 +401,7 @@ export default async function AgentProfilePage({
                 />
               </div>
               <SubmitButton className={btnSecondaryCls} pendingLabel="Saving calendar">Save calendar</SubmitButton>
-            </form>
+            </SaveForm>
           )}
         </section>
 
@@ -507,7 +509,8 @@ export default async function AgentProfilePage({
             </p>
           )}
           {canManageThisAgent && (
-            <form
+            <SaveForm
+              name="agent-attributes"
               action={setAgentAttributes}
               className="mt-4 flex flex-wrap items-end gap-x-4 gap-y-3 border-t border-border pt-4"
             >
@@ -535,7 +538,7 @@ export default async function AgentProfilePage({
               <SubmitButton className={btnCls} pendingLabel="Saving">
                 Save legal eligible
               </SubmitButton>
-            </form>
+            </SaveForm>
           )}
         </section>
 
@@ -576,7 +579,7 @@ export default async function AgentProfilePage({
                   You can&apos;t deactivate your own account.
                 </span>
               ) : (
-                <form action={setUserLifecycle} className="flex items-end">
+                <SaveForm action={setUserLifecycle} name="agent-lifecycle" className="flex items-end">
                   <input type="hidden" name="user_id" value={agent.id} />
                   <input type="hidden" name="action" value="deactivate" />
                   {/* #1215: confirm (never block) when this agent still holds
@@ -590,16 +593,16 @@ export default async function AgentProfilePage({
                     agentName={agent.name ?? agent.email}
                     upcomingBookings={heldUpcoming}
                   />
-                </form>
+                </SaveForm>
               )
             ) : (
-              <form action={setUserLifecycle} className="flex items-end">
+              <SaveForm action={setUserLifecycle} name="agent-lifecycle" className="flex items-end">
                 <input type="hidden" name="user_id" value={agent.id} />
                 <input type="hidden" name="action" value="reactivate" />
                 <SubmitButton className={btnSecondaryCls} pendingLabel="Reactivating account">
                   Reactivate account
                 </SubmitButton>
-              </form>
+              </SaveForm>
             )}
           </div>
           {/* #1875: the copy lives in a pure builder, because the defect here

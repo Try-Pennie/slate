@@ -1,4 +1,5 @@
 import { AccountMenu } from "@/components/AccountMenu";
+import { SaveForm } from "@/components/ui/SaveForm";
 import { SubmitButton } from "@/components/ui/SubmitButton";
 import { HeaderNav, type HeaderTab } from "@/components/HeaderNav";
 import { PAGE_WIDTHS } from "@/components/ui/PageShell";
@@ -190,14 +191,14 @@ export async function AppHeader({
           <strong>{impersonation.target.name ?? impersonation.target.email}</strong>{" "}
           ({impersonation.target.role}). Actions you take happen as them.
         </span>
-        <form action={stopImpersonation}>
+        <SaveForm action={stopImpersonation} name="stop-impersonation" onStale="reload">
           <SubmitButton
             className="pn-btn pn-btn--small pn-btn--primary"
             pendingLabel="Returning to your own view"
           >
             Stop viewing as them
           </SubmitButton>
-        </form>
+        </SaveForm>
       </div>
     )}
     {impersonation.status === "dropped" && (
