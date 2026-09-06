@@ -31,6 +31,8 @@ function readableDate(iso: string): string {
  * already holds appointments is allowed, and the person is shown the consequence
  * once before it happens.
  */
+// restore-optin-ok: this component renders its own form, which is not the wrapper
+// and draws its own result through useActionState. It arrives with #1998.
 export function BusinessHoursExceptions({
   action,
   removeAction,

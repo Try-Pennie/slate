@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useId, useMemo, useRef, useState } from "react";
+import { useRestoredValue } from "@/components/ui/SaveForm";
 import { AnchoredPanel } from "@/components/ui/AnchoredPanel";
 import {
   nextIndex,
@@ -82,7 +83,13 @@ export function SelectField({
 }) {
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState<number | null>(null);
-  const [uncontrolled, setUncontrolled] = useState(defaultValue ?? "");
+  // #2008: the restored value wins over the stored one as the INITIAL state.
+  // This control renders its hidden input from state, so the blanket restore in
+  // SaveForm cannot reach it: an assignment there is overwritten by the next
+  // render and the form posts the stored value. Outside a SaveForm this is null
+  // and nothing changes.
+  const restored = useRestoredValue(name);
+  const [uncontrolled, setUncontrolled] = useState(restored ?? defaultValue ?? "");
   const value = controlled ?? uncontrolled;
   const triggerRef = useRef<HTMLButtonElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
@@ -192,7 +199,12 @@ export function SelectField({
   return (
     <span className={`relative inline-flex ${className ?? ""}`}>
       {/* What the form actually posts. A native select carried this for free. */}
-      {name !== undefined && <input type="hidden" name={name} value={value} />}
+      {/* `data-restore-own` keeps SaveForm's blanket restore off this input: the
+          value comes from the state above, which took the restored one as its
+          initial value (#2008). */}
+      {name !== undefined && (
+        <input type="hidden" name={name} data-restore-own="true" value={value} />
+      )}
       <button
         ref={triggerRef}
         id={id}

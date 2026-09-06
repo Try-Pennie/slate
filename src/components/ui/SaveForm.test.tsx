@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { Component, type ReactNode } from "react";
+import { Component, useState, type ReactNode } from "react";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -17,6 +17,7 @@ vi.mock("@/lib/stale-action", async () => {
 
 import { SaveForm } from "./SaveForm";
 import { TimeField } from "./TimeField";
+import { SelectField } from "./SelectField";
 import { restoreKey } from "@/lib/form-restore";
 
 beforeEach(() => {
@@ -171,6 +172,55 @@ describe("SaveForm puts back what was typed (#1994)", () => {
     expect((screen.getByRole("combobox") as HTMLInputElement).value).toBe("9:30am");
     const hidden = container.querySelector('input[name="start_1"]') as HTMLInputElement;
     expect(hidden.value).toBe("09:30");
+  });
+
+  // #2008: the SAME mechanism on a second control, so the pattern is shown to be
+  // the pattern rather than one component's trick. The timezone picker renders
+  // its hidden input from state exactly as the time field does, so the blanket
+  // restore could never have reached it either.
+  it("restores a picker whose value also lives in React state", () => {
+    window.sessionStorage.setItem(
+      restoreKey(window.location.pathname, "hours"),
+      JSON.stringify({ timezone: ["America/Denver"] }),
+    );
+    const { container } = render(
+      <SaveForm action={vi.fn()} name="hours">
+        <SelectField
+          name="timezone"
+          ariaLabel="Your timezone"
+          defaultValue="America/New_York"
+          options={[
+            { value: "America/New_York", label: "Eastern" },
+            { value: "America/Denver", label: "Mountain" },
+          ]}
+        />
+      </SaveForm>,
+    );
+    const hidden = container.querySelector('input[name="timezone"]') as HTMLInputElement;
+    expect(hidden.value).toBe("America/Denver");
+    expect(screen.getByRole("combobox").textContent).toMatch(/Mountain/);
+  });
+
+  // AND THE NEGATIVE, which is what makes the two above mean anything: a field
+  // holding its own state that does NOT opt in is shown not to restore. Without
+  // it, a guard demanding the opt in would be enforcing a rule nobody had
+  // measured the effect of.
+  it("does not restore a stateful field that never opted in", () => {
+    window.sessionStorage.setItem(
+      restoreKey(window.location.pathname, "hours"),
+      JSON.stringify({ own: ["restored"] }),
+    );
+    function NotOptedIn() {
+      const [value] = useState("stored");
+      return <input type="hidden" name="own" value={value} readOnly />;
+    }
+    const { container } = render(
+      <SaveForm action={vi.fn()} name="hours">
+        <NotOptedIn />
+      </SaveForm>,
+    );
+    const hidden = container.querySelector('input[name="own"]') as HTMLInputElement;
+    expect(hidden.value).toBe("stored");
   });
 
   it("falls back to the stored value when nothing was stashed for that field", () => {
