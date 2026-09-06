@@ -1,12 +1,12 @@
 import { DateTime } from "luxon";
 import {
-  backendDigitOf,
+  debtTierDigitOf,
   supplyTotals,
   type BucketSupplyRow,
   type SupplyDay,
 } from "@/lib/admin/bucket-supply";
+import { DEBT_TIER } from "@/lib/xbc";
 import {
-  BACKEND_GROUP_LABEL,
   SUPPLY_LEGEND,
   cellStyle,
   depthLabel,
@@ -23,9 +23,26 @@ import {
  * is the only thing a screen reader gets, so a static check on the copy builder
  * cannot prove the sentence reaches the screen.
  *
- * Rows are grouped by the BACKEND digit of the XBC code, because that is where
- * the pattern lives: on 2026-08-04 every one of the fifteen partially blocked
- * buckets was a Beyond code, and it thinned as the debt tier rose.
+ * Rows are grouped by the DEBT TIER, descending, because that is the axis Dan
+ * reads the page by (#1942): Ultra High first, Low last.
+ *
+ * THE BACKEND PATTERN IS STILL REAL, and it is recorded here rather than deleted
+ * because it survived a re-measurement. The original grouping was chosen on
+ * 2026-08-04, while the roster was deliberately dark (#1272), so it was worth
+ * re-taking once the roster went live on 2026-09-02. Measured again on
+ * 2026-09-05, across all sixty buckets, in cached slots per bucket:
+ *
+ *   by backend   0: mean 355    1: mean 355    2: mean 57    3: mean 355
+ *   by debt tier 1: mean 352    2: 367    3: 289    4: 205    5: mean 190
+ *
+ * So backend 2 (Beyond) is still a step change rather than a gradient, and it is
+ * still all fifteen of them, including the only three buckets offering nothing at
+ * all (120, 121, 122). The debt tier is a real gradient too, thinning as the tier
+ * rises, which is the same direction the original note recorded.
+ *
+ * The backend stays the SECONDARY sort, so those fifteen still land together
+ * inside each tier. It is no longer a group heading, and it needs no separate
+ * label because each row's own name already carries it (`Low | Beyond | Legal`).
  */
 export function BucketSupplyTable({
   days,
@@ -45,15 +62,16 @@ export function BucketSupplyTable({
     ? DateTime.fromISO(days[0].iso, { zone }).toFormat("cccc d LLLL")
     : "today";
 
-  // One `tbody` per backend group, each opening with a `scope="rowgroup"`
-  // heading. The table stays ONE table (one caption, one set of column headers a
-  // screen reader can associate every cell with) and the group label is a real
-  // heading for the rows under it rather than a styled row that happens to look
-  // like one.
+  // One `tbody` per DEBT TIER, descending, each opening with a `scope="rowgroup"`
+  // heading (#1942). The structure is unchanged and deliberate: the table stays
+  // ONE table (one caption, one set of column headers a screen reader can
+  // associate every cell with) and the group label is a real heading for the
+  // rows under it rather than a styled row that happens to look like one. Only
+  // what it groups BY has changed.
   const groups: { label: string; rows: BucketSupplyRow[] }[] = [];
   for (const row of rows) {
-    const digit = backendDigitOf(row.code);
-    const label = digit === null ? "Other codes" : BACKEND_GROUP_LABEL[digit];
+    const digit = debtTierDigitOf(row.code);
+    const label = digit === null ? "Other codes" : `${DEBT_TIER[digit]?.label ?? digit} debt`;
     const last = groups[groups.length - 1];
     if (last && last.label === label) last.rows.push(row);
     else groups.push({ label, rows: [row] });

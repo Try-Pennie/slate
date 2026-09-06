@@ -426,10 +426,54 @@ function reportWith(over: Partial<Parameters<typeof bucketSupplyReport>[0]> = {}
   // lived: every partially blocked bucket was an x2y (Beyond) code.
   const codes = ["521", "120", "220", "110", "320", "zzz"];
   const sorted = [...codes].sort((a, b) => xbcOrder(a) - xbcOrder(b) || a.localeCompare(b));
+  // #1942: DEBT TIER first and descending, which is the axis the page is read
+  // by. Ultra High (5) leads and Low (1) is last, with the backend digit as the
+  // secondary sort inside a tier (110 before 120).
   eq(
     sorted.join(","),
-    "110,120,220,320,521,zzz",
-    "codes group by backend digit, then by debt tier, with a non-XBC code last",
+    "521,320,220,110,120,zzz",
+    "codes group by debt tier descending, then backend, with a non-XBC code last",
+  );
+
+  // THE TRAP THE ISSUE NAMED. An unreadable code sorts LAST, deliberately: it is
+  // kept and put at the end rather than dropped. Every naive way of reversing an
+  // ascending sort (negating the key, flipping the comparator) sends that
+  // sentinel to the FRONT, so the page would open with the one row nobody can
+  // read. The descent lives in the key instead, and this is what holds it there.
+  for (const bad of ["zzz", "", "6000", "12", "1a2"]) {
+    assert(
+      xbcOrder(bad) === Number.MAX_SAFE_INTEGER,
+      `an unreadable code keeps the last-place sentinel (${JSON.stringify(bad)})`,
+    );
+    assert(
+      xbcOrder(bad) > xbcOrder("511"),
+      `and sorts after every real code, including the first one (${JSON.stringify(bad)})`,
+    );
+    assert(
+      xbcOrder(bad) > xbcOrder("100"),
+      `and after the last one too (${JSON.stringify(bad)})`,
+    );
+  }
+
+  // Ultra High really is first and Low really is last, asserted as the RULE
+  // rather than as one sorted list: a list can be right for the five codes
+  // somebody happened to pick.
+  assert(
+    xbcOrder("500") < xbcOrder("400") &&
+      xbcOrder("400") < xbcOrder("300") &&
+      xbcOrder("300") < xbcOrder("200") &&
+      xbcOrder("200") < xbcOrder("100"),
+    "every debt tier sorts ahead of the one below it",
+  );
+  // And the backend still separates within a tier, which is what keeps the
+  // fifteen Beyond codes together.
+  assert(
+    xbcOrder("300") < xbcOrder("310") && xbcOrder("310") < xbcOrder("320"),
+    "the backend digit orders rows inside one tier",
+  );
+  assert(
+    xbcOrder("320") < xbcOrder("200"),
+    "and never outranks the tier, so a whole tier stays together",
   );
 }
 
