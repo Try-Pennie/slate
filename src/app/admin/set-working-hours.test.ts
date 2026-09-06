@@ -27,9 +27,14 @@ const rpc = vi.hoisted(() =>
 // delete here is the defect. Any call is recorded so a test can assert its absence.
 const fromTable = vi.hoisted(() => vi.fn());
 const upsertUserSchedule = vi.hoisted(() => vi.fn(async () => "sched1"));
+// #1988: the confirmation IS the redirect, so it is a named mock rather than an
+// anonymous one. It does not throw the way the real `redirect` does, which is
+// safe only because nothing follows a redirect in any of these actions; the
+// ordering assertion below is what holds that true rather than the mock's shape.
+const redirect = vi.hoisted(() => vi.fn());
 
 vi.mock("@/lib/auth", () => auth);
-vi.mock("next/navigation", () => ({ redirect: vi.fn() }));
+vi.mock("next/navigation", () => ({ redirect }));
 vi.mock("next/cache", () => ({ revalidatePath }));
 vi.mock("next/headers", () => ({ cookies: async () => ({ set: vi.fn(), get: vi.fn(), delete: vi.fn() }) }));
 /** Whatever the last `.update()` wrote, so the org-default cases can read it. */
@@ -82,7 +87,13 @@ vi.mock("@/lib/bookable/service", () => ({ applyBookableByUserId: vi.fn(), apply
 vi.mock("@/lib/salesforce/sync", () => ({ syncSalesforceAgents: vi.fn(), AGENTS_SYNC_STREAK_KEY: "k" }));
 vi.mock("@/lib/notify/streak", () => ({ clearFailureStreak: vi.fn(), recordFailureStreak: vi.fn(), recordConsecutiveStreak: vi.fn() }));
 
-import { setWorkingHours, setOrgDefaultHours, useDefaultHours } from "./actions";
+import {
+  setWorkingHours,
+  setOrgDefaultHours,
+  useDefaultHours,
+  setMyWorkingHours,
+  useMyDefaultHours,
+} from "./actions";
 
 /**
  * The form as the per-day hours editor submits it (#1308): a checkbox and its own
@@ -167,6 +178,89 @@ describe("setWorkingHours", () => {
 });
 
 // #1308: the per-day half, which is the reason the form changed shape at all.
+// #1988: whether a save SAYS it saved.
+//
+// Dan, 2026-09-06: "when I click save hours it appears to work but there's no
+// real confirmation. I want to know it worked for sure." The week was written
+// and the page came back with the same values it already showed, so a
+// successful save and a click that did nothing were the same event.
+//
+// The confirmation travels as a redirect carrying `ok=1`, so what is asserted
+// here is that the redirect happens, that it lands on the page the person was
+// actually on, and above all that it does NOT happen when nothing was saved. A
+// confirmation over a week nobody wrote is worse than the silence it replaced.
+describe("saving working hours confirms it saved (#1988)", () => {
+  it("sends the person back to the agent they were editing", async () => {
+    await setWorkingHours(hoursForm());
+    expect(redirect).toHaveBeenCalledWith("/admin/agents/u1?ok=1");
+  });
+
+  // The route is derived from the SUBJECT, not written down once. A hardcoded
+  // path passes the assertion above and sends every admin to the same agent.
+  it("names the agent from the form rather than a fixed path", async () => {
+    const other = hoursForm();
+    other.set("user_id", "u9");
+    await setWorkingHours(other);
+    expect(redirect).toHaveBeenCalledWith("/admin/agents/u9?ok=1");
+  });
+
+  // The /me form posts from a different page into an action that looks alike.
+  // #1769 was already this mistake once, in the revalidate rather than the
+  // redirect: the agent's own page went unrefreshed because only /admin was
+  // named. Asserted separately so one cannot answer for the other.
+  it("sends an agent saving their own hours back to their own page", async () => {
+    auth.currentUser.mockResolvedValue({ id: "me1", role: "agent", org_id: "o1" });
+    await setMyWorkingHours(hoursForm());
+    expect(redirect).toHaveBeenCalledWith("/me?ok=1");
+  });
+
+  it("confirms the company default button too, on both pages", async () => {
+    await useDefaultHours(hoursForm());
+    expect(redirect).toHaveBeenCalledWith("/admin/agents/u1?ok=1");
+
+    redirect.mockClear();
+    auth.currentUser.mockResolvedValue({ id: "me1", role: "agent", org_id: "o1" });
+    await useMyDefaultHours();
+    expect(redirect).toHaveBeenCalledWith("/me?ok=1");
+  });
+
+  // The half that matters most, and it is the reason the confirmation is placed
+  // after the write rather than beside it.
+  it("says nothing when the week was refused", async () => {
+    const noDays = hoursForm();
+    for (const d of [1, 2, 3, 4, 5]) noDays.delete(`day_${d}`);
+    await expect(setWorkingHours(noDays)).rejects.toThrow(/day/i);
+    expect(redirect).not.toHaveBeenCalled();
+  });
+
+  it("says nothing when the write itself failed", async () => {
+    rpc.mockResolvedValue({ data: null, error: { message: "deadlock detected" } });
+    await expect(setWorkingHours(hoursForm())).rejects.toThrow(/could not be saved/i);
+    expect(redirect).not.toHaveBeenCalled();
+  });
+
+  // The count guard is the only thing that can catch a write that PARTLY landed,
+  // and a confirmation shown over a partial write is exactly the false assurance
+  // this issue exists to prevent.
+  it("says nothing when the database recorded a different number of days", async () => {
+    rpc.mockResolvedValue({ data: 3, error: null });
+    await expect(setWorkingHours(hoursForm())).rejects.toThrow(/expected 5 days/i);
+    expect(redirect).not.toHaveBeenCalled();
+  });
+
+  // ORDER, not just presence. The mock does not throw the way the real redirect
+  // does, so nothing structural stops a future edit confirming before the write
+  // commits. This is what does.
+  it("confirms only after the write has committed", async () => {
+    await setWorkingHours(hoursForm());
+    expect(rpc).toHaveBeenCalled();
+    expect(redirect.mock.invocationCallOrder[0]).toBeGreaterThan(
+      rpc.mock.invocationCallOrder[0],
+    );
+  });
+});
+
+
 describe("setWorkingHours, a window per day", () => {
   it("writes each day's OWN window rather than the first day's applied to all", async () => {
     const fd = new FormData();

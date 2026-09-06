@@ -163,6 +163,25 @@ export function workingHoursSummary(days: WorkingHoursDay[]): string {
 }
 
 /**
+ * What the confirmation says after a week is written (#1988).
+ *
+ * Two things it is deliberately not. It is not a bare "Saved.", because the
+ * complaint that produced it was that pressing the button looked exactly like
+ * pressing nothing, and a word that appears either way barely improves on that:
+ * the sentence names the week that is now stored, so a person can check it
+ * against what they meant. And it is not built by the ACTION out of what it
+ * intended to write. It is built by the page out of the week it just re-read,
+ * so it reports the finished state rather than one of the paths that reach it
+ * (L78); a save that partly landed then says what really landed.
+ *
+ * One builder for both screens, because the agent's own page and the admin's
+ * copy of it are the same form and two sentences would drift (L41).
+ */
+export function workingHoursSavedNotice(days: WorkingHoursDay[]): string {
+  return `Hours saved. ${workingHoursSummary(days)}`;
+}
+
+/**
  * The ORG's opening hours, which are a different sentence about the same shape.
  *
  * "Off" is about a person and "closed" is about a business, and this panel sets

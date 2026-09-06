@@ -28,7 +28,8 @@ import { unwrap } from "@/lib/db/result";
 import { loadReasonOptions } from "@/lib/booking/reason-options";
 import { WorkingHoursForm } from "@/components/ui/WorkingHoursForm";
 import { SubmitButton } from "@/components/ui/SubmitButton";
-import { orgDefaultWeek, workingHoursDays } from "@/lib/schedule-week";
+import { orgDefaultWeek, workingHoursDays, workingHoursSavedNotice } from "@/lib/schedule-week";
+import { SettingsSaveNotice } from "@/app/admin/settings/SettingsSaveNotice";
 import {
   deactivateExplanation,
   notBookableContrast,
@@ -96,7 +97,12 @@ export default async function AgentProfilePage({
    * than a sentence, so the wording lives here where the copy rules and the
    * preview can see it, and nothing an admin types can reach the banner.
    */
-  searchParams?: Promise<{ job?: string; bookable?: string }>;
+  searchParams?: Promise<{
+    job?: string;
+    bookable?: string;
+    /** Set by the two hours actions on a successful write (#1988). */
+    ok?: string;
+  }>;
 }) {
   const { id } = await params;
   const query = await searchParams;
@@ -412,6 +418,20 @@ export default async function AgentProfilePage({
                   only this form knows whether anything is. `orgDefaultWeek` is
                   the week that action writes, so the confirm names it rather than
                   asking a generic question. */}
+              {/* #1988: the save wrote the week and said nothing, so it read
+                  as a click that did nothing. Built from the week this render
+                  just READ rather than from what the action meant to write, so
+                  a save that partly landed says what really landed (L78). */}
+              {query?.ok ? (
+                <div className="mt-4">
+                  <SettingsSaveNotice
+                    ok
+                    saved={workingHoursSavedNotice(
+                      workingHoursDays(rules, org.default_weekdays),
+                    )}
+                  />
+                </div>
+              ) : null}
               <div className="mt-4">
                 <WorkingHoursForm
                   action={setWorkingHours}
