@@ -131,6 +131,24 @@ export function misrouteAlert(bookingId: string, bucketCode: string, agentId: st
 }
 
 /** An unexpected server fault, reported without the raw error body. */
+/**
+ * A page's error boundary caught something, so a person is looking at the error
+ * screen right now (#1974).
+ *
+ * It does NOT reuse `internalErrorAlert`, and that is the point rather than
+ * tidiness. That sentence ends "the caller got a generic 500", which is untrue
+ * here: nothing returned a 500, a person was shown a screen. A message may claim
+ * only what its check actually measured (L11), and the reader's next move
+ * differs: a 500 is a route to look at, this is a PAGE somebody cannot use.
+ *
+ * It names the page, because that is the one thing the reader needs in order to
+ * go and look, and it says the screen was shown, because that is what makes this
+ * worth reading at all: somebody met it.
+ */
+export function boundaryCatchAlert(page: string, detail: string): string {
+  return `A page under ${page} failed to render and showed its error screen (${detail}). Anyone on that page is seeing it. Full detail is in the Worker logs at level error.`;
+}
+
 export function internalErrorAlert(context: string, detail: string): string {
   return `Unexpected server error on ${context} (${detail}). The caller got a generic 500. Full detail is in the Worker logs at level error.`;
 }
