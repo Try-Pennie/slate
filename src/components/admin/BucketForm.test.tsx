@@ -141,8 +141,77 @@ describe("BucketForm rendered control count", () => {
   });
 });
 
-describe("BucketForm attribute matcher", () => {
-  const renderOne = (criteria: Record<string, string[]> = {}) => {
+// #1935: THE MATCHER BELONGS TO THE CREATE FORM NOW.
+//
+// The seeder rewrites a bucket's criteria from `src/lib/xbc.ts` on every run, so
+// editing them on an existing bucket wrote a value the next seed run replaced.
+// The picker is offered where the choice is real, which is when a bucket is
+// being created, and everything here exercises it there.
+//
+// The tests that DEFENDED the old edit behaviour are gone rather than adjusted,
+// because their whole content was the behaviour being removed (L252): posting a
+// stored value back, and carrying an orphaned one through a save. On an existing
+// bucket nothing is posted at all now, and that is asserted below rather than
+// left to be inferred from their absence.
+describe("BucketForm attribute matcher, creating a bucket", () => {
+  const renderNew = () => {
+    const people = roster(4);
+    const view = render(
+      <RosterProvider roster={people}>
+        <BucketForm
+          eventTypes={EVENT_TYPES}
+          roster={people}
+          memberIds={new Set()}
+          catalog={CATALOG}
+          eligibleCount={0}
+        />
+      </RosterProvider>,
+    );
+    const form = () => view.container.querySelector("form") as HTMLFormElement;
+    const crit = (key: string) => new FormData(form()).getAll(`crit_${key}`).map(String);
+    return { ...view, form, crit };
+  };
+
+  it("starts with nothing chosen, and says so rather than drawing an empty group", () => {
+    const { crit } = renderNew();
+    expect(crit("debt_team")).toEqual([]);
+    expect(screen.getByText(/no attribute criteria/i)).toBeTruthy();
+  });
+
+  it("adds a criteria value picked from the opened matcher", async () => {
+    const user = userEvent.setup();
+    const { crit } = renderNew();
+    await user.click(screen.getByRole("button", { name: /choose routing criteria/i }));
+    await user.click(screen.getByRole("checkbox", { name: "ultra_high" }));
+    expect(crit("debt_team")).toEqual(["ultra_high"]);
+  });
+
+  it("removes a criteria value by switching it back off", async () => {
+    const user = userEvent.setup();
+    const { crit } = renderNew();
+    await user.click(screen.getByRole("button", { name: /choose routing criteria/i }));
+    const box = screen.getByRole("checkbox", { name: "high" }) as HTMLInputElement;
+    await user.click(box);
+    expect(crit("debt_team")).toEqual(["high"]);
+    await user.click(box);
+    expect(crit("debt_team")).toEqual([]);
+  });
+
+  it("keeps a chosen value while the panel is closed again", async () => {
+    // Closing the panel unmounts every control in it, so the value has to
+    // survive as a hidden input or a save made with it shut would post nothing.
+    const user = userEvent.setup();
+    const { crit } = renderNew();
+    await user.click(screen.getByRole("button", { name: /choose routing criteria/i }));
+    await user.click(screen.getByRole("checkbox", { name: "high" }));
+    await user.click(screen.getByRole("button", { name: /done choosing criteria/i }));
+    expect(crit("debt_team")).toEqual(["high"]);
+  });
+});
+
+// The read only state, which is what an EXISTING bucket draws.
+describe("BucketForm attribute matcher, editing a bucket (#1935)", () => {
+  const renderEdit = (criteria: Record<string, string[]> = {}) => {
     const people = roster(4);
     const view = render(
       <RosterProvider roster={people}>
@@ -161,52 +230,26 @@ describe("BucketForm attribute matcher", () => {
     return { ...view, form, crit };
   };
 
-  it("posts the criteria it was given, with no interaction at all", () => {
-    const { crit } = renderOne({ debt_team: ["high", "mid"] });
-    expect(crit("debt_team").sort()).toEqual(["high", "mid"]);
-  });
-
-  it("shows the current criteria while collapsed, so a pool can still be scanned", () => {
-    renderOne({ debt_team: ["high"], backend: ["beyond"] });
+  it("still shows what the pool routes by, which is what somebody came to read", () => {
+    renderEdit({ debt_team: ["high"], backend: ["beyond"] });
     const summary = screen.getByRole("group", { name: /current routing criteria/i });
     expect(within(summary).getByText("high")).toBeTruthy();
     expect(within(summary).getByText("beyond")).toBeTruthy();
   });
 
-  it("adds a criteria value picked from the opened matcher", async () => {
-    const user = userEvent.setup();
-    const { crit } = renderOne({});
-    await user.click(screen.getByRole("button", { name: /choose routing criteria/i }));
-    await user.click(screen.getByRole("checkbox", { name: "ultra_high" }));
-    expect(crit("debt_team")).toEqual(["ultra_high"]);
+  it("offers no way to change them, and says why", () => {
+    renderEdit({ debt_team: ["high"] });
+    expect(screen.queryByRole("button", { name: /choose routing criteria/i })).toBeNull();
+    expect(screen.queryAllByRole("checkbox", { name: "high" })).toHaveLength(0);
+    expect(screen.getByText(/replaced the next time the seeder runs/i)).toBeTruthy();
   });
 
-  it("removes a criteria value by switching it back off", async () => {
-    const user = userEvent.setup();
-    const { crit } = renderOne({ debt_team: ["high"] });
-    await user.click(screen.getByRole("button", { name: /choose routing criteria/i }));
-    const box = screen.getByRole("checkbox", { name: "high" }) as HTMLInputElement;
-    expect(box.checked).toBe(true);
-    await user.click(box);
+  it("posts no criteria at all, because nothing reads them", () => {
+    // `updateBucket` takes the criteria from the stored row and ignores the form,
+    // so posting them would be writing a value nothing reads and would leave the
+    // next reader working out which of the two was authoritative.
+    const { crit } = renderEdit({ debt_team: ["high", "retired_tier"] });
     expect(crit("debt_team")).toEqual([]);
-  });
-
-  it("keeps posting a stored criteria value the catalog no longer offers, open or closed", async () => {
-    // A value no live agent carries any more is absent from the derived catalog,
-    // so the matcher draws no control for it. It must still be posted, and it must
-    // be posted in BOTH states: dropping it only while the panel happens to be
-    // open would make saving destructive depending on what the admin had clicked.
-    const user = userEvent.setup();
-    const { crit } = renderOne({ debt_team: ["high", "retired_tier"] });
-    expect(crit("debt_team").sort()).toEqual(["high", "retired_tier"]);
-
-    await user.click(screen.getByRole("button", { name: /choose routing criteria/i }));
-    expect(crit("debt_team").sort()).toEqual(["high", "retired_tier"]);
-    expect(screen.getByText(/no longer offered by any agent/i)).toBeTruthy();
-
-    // And it is still there after an unrelated edit inside the open panel.
-    await user.click(screen.getByRole("checkbox", { name: "mid" }));
-    expect(crit("debt_team").sort()).toEqual(["high", "mid", "retired_tier"]);
   });
 
   it("says when no agent attributes have synced, rather than drawing an empty matcher", () => {
@@ -224,6 +267,15 @@ describe("BucketForm attribute matcher", () => {
       </RosterProvider>,
     );
     expect(screen.getByText(/no agent attributes synced yet/i)).toBeTruthy();
+  });
+
+  it("shows the code and the name without offering them for typing", () => {
+    renderEdit({});
+    const form = document.querySelector("form") as HTMLFormElement;
+    expect(form.querySelector('input[name="code"]')).toBeNull();
+    expect(form.querySelector('input[name="name"]')).toBeNull();
+    // But they are still on screen: read only is not hidden.
+    expect(screen.getByText(bucket(1).code)).toBeTruthy();
   });
 });
 

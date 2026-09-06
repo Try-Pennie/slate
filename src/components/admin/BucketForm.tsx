@@ -102,11 +102,37 @@ export function BucketForm({
               people who use it, so the label is the name rather than a generic
               word with the name in brackets after it. */}
           <label className={labelCls}>XBC</label>
-          <input name="code" aria-label="XBC" defaultValue={bucket?.code ?? ""} className={`${inputCls} w-28`} required />
+          {/* #1935: EDITABLE WHEN CREATING, READ ONLY WHEN EDITING, and the same
+              for the name and the criteria below.
+
+              `scripts/seed-buckets.ts` refreshes a bucket's name and criteria on
+              every run, from `src/lib/xbc.ts`, because that is what the seeder is
+              for: a rule changing in one place and reaching all sixty buckets. So
+              an edit here was accepted, written, and replaced by the next seed
+              run, which is the #1874 defect exactly. An override that is silently
+              undone is worse than none.
+
+              The refusal does not live in this markup. `updateBucket` takes these
+              from the stored row and ignores whatever is posted, and
+              `scripts/test-seeder-owned-fields.ts` derives the boundary from the
+              seeder's own row literal, so it cannot drift the next time the
+              seeder grows a column. What is here is only the part a person can
+              see: a field that cannot be typed into should not look like one. */}
+          {editing ? (
+            <p className="mt-1 h-11 text-sm font-semibold tabular-nums leading-[2.75rem]">
+              {bucket?.code}
+            </p>
+          ) : (
+            <input name="code" aria-label="XBC" defaultValue="" className={`${inputCls} w-28`} required />
+          )}
         </div>
         <div>
           <label className={labelCls}>Name</label>
-          <input name="name" aria-label="Name" defaultValue={bucket?.name ?? ""} className={inputCls} required />
+          {editing ? (
+            <p className="mt-1 h-11 text-sm leading-[2.75rem]">{bucket?.name}</p>
+          ) : (
+            <input name="name" aria-label="Name" defaultValue="" className={inputCls} required />
+          )}
         </div>
         <div>
           <label className={labelCls}>Event type</label>
@@ -144,7 +170,13 @@ export function BucketForm({
           />
         </div>
       </div>
-      <BucketCriteriaPicker catalog={catalog} current={bucket?.criteria ?? {}} />
+      {/* Read only on an existing bucket, for the reason recorded on the XBC
+          field above: the seeder rewrites these from `xbc.ts` on every run. */}
+      <BucketCriteriaPicker
+        catalog={catalog}
+        current={bucket?.criteria ?? {}}
+        readOnly={editing}
+      />
       <BucketMembersPicker selectedIds={memberList} rosterTotal={roster.length} />
       <SubmitButton className={btnCls} pendingLabel={editing ? "Saving…" : "Creating…"}>
         {editing ? "Save bucket" : "Create bucket"}

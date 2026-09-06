@@ -513,9 +513,22 @@ function currentValues(criteria: Criteria): Record<string, string[]> {
 export function BucketCriteriaPicker({
   catalog,
   current,
+  readOnly = false,
 }: {
   catalog: Record<string, string[]>;
   current: Criteria;
+  /**
+   * On an EXISTING bucket the criteria belong to the seeder, which rewrites them
+   * from `src/lib/xbc.ts` on every run (#1935), so the panel that edits them is
+   * not offered. The chips still show what the bucket routes by, because that is
+   * the fact somebody came to this row to read.
+   *
+   * No hidden inputs are posted in this state either. `updateBucket` takes the
+   * criteria from the stored row and ignores the form, so posting them would be
+   * writing a value nothing reads, and the next reader of this file would have to
+   * work out which of the two was authoritative.
+   */
+  readOnly?: boolean;
 }) {
   const keys = Object.keys(catalog);
   const [selected, setSelected] = useState<Record<string, string[]>>(() =>
@@ -558,10 +571,12 @@ export function BucketCriteriaPicker({
           No agent attributes synced yet. Sync from Salesforce to route by attribute.
         </p>
         {/* The stored criteria are still posted back: an unreadable catalog must
-            not silently clear a bucket's routing on the next save. */}
-        {chosenPairs.map(({ key, value }) => (
-          <input key={`${key}:${value}`} type="hidden" name={`crit_${key}`} value={value} />
-        ))}
+            not silently clear a bucket's routing on the next save. Not when read
+            only, where nothing reads them. */}
+        {!readOnly &&
+          chosenPairs.map(({ key, value }) => (
+            <input key={`${key}:${value}`} type="hidden" name={`crit_${key}`} value={value} />
+          ))}
       </div>
     );
   }
@@ -593,23 +608,32 @@ export function BucketCriteriaPicker({
       </div>
 
       {!open &&
+        !readOnly &&
         chosenPairs.map(({ key, value }) => (
           <input key={`${key}:${value}`} type="hidden" name={`crit_${key}`} value={value} />
         ))}
 
-      <div className="mt-2">
-        <button
-          type="button"
-          ref={disclosureRef}
-          onClick={() => setOpen((o) => !o)}
-          aria-expanded={open}
-          className={DISCLOSURE_CLS}
-        >
-          {open ? "Done choosing criteria" : "Choose routing criteria"}
-        </button>
-      </div>
+      {readOnly ? (
+        <p className="mt-2 text-xs text-fg-muted">
+          Set by the routing rules in the seeder, the same for every bucket with
+          this code. Editing it here would be replaced the next time the seeder
+          runs.
+        </p>
+      ) : (
+        <div className="mt-2">
+          <button
+            type="button"
+            ref={disclosureRef}
+            onClick={() => setOpen((o) => !o)}
+            aria-expanded={open}
+            className={DISCLOSURE_CLS}
+          >
+            {open ? "Done choosing criteria" : "Choose routing criteria"}
+          </button>
+        </div>
+      )}
 
-      {open && (
+      {open && !readOnly && (
         <div className={PANEL_CLS}>
           {orphanPairs.length > 0 && (
             <p className="mb-3 text-xs text-fg-muted">
