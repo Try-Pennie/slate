@@ -292,13 +292,22 @@ const perDayFrom = (form: FormData): ScheduleRule[] =>
 export async function setMyWorkingHours(form: FormData): Promise<void> {
   const me = await currentUser();
   if (!me) return;
-  await replaceUserSchedule(
-    me.id,
-    planScheduleReplacement(
-      perDayFrom(form),
-      String(form.get("timezone") ?? "America/New_York"),
-    ),
+  // #1994: a REFUSAL is the person's to fix, so it is sent back as a message
+  // rather than thrown. Every one of these sentences ("Tuesday's windows overlap
+  // each other", "Monday's end time needs to be later than its start time") was
+  // unreachable: a thrown error in a server action is redacted in production and
+  // arrives as the generic error boundary, which says it cannot tell what
+  // happened. A refusal only speakable by a path that can never speak it (L109).
+  //
+  // A FAULT still throws. A database that refused the write is not something a
+  // person can retype their way out of, and dressing one as advice would send
+  // them round the same loop.
+  const plan = planScheduleReplacement(
+    perDayFrom(form),
+    String(form.get("timezone") ?? "America/New_York"),
   );
+  if (!plan.ok) redirect(`/me?error=${encodeURIComponent(plan.error)}`);
+  await replaceUserSchedule(me.id, plan);
   revalidatePath("/me");
   // #1988: the save said nothing at all, so it looked exactly like a click that
   // did nothing. Post-redirect-get with a NAMED outcome, the same shape every
@@ -691,7 +700,13 @@ export async function setWorkingHours(form: FormData): Promise<void> {
 
   // One schedule per user (enforced by the availability_schedules(user_id)
   // unique index, #532): replaceUserSchedule upserts it, then replaces its rules.
-  await replaceUserSchedule(userId, planScheduleReplacement(perDayFrom(form), timezone));
+  // #1994: as on the agent's own page above, a refusal comes back as a message
+  // the person can act on rather than as the generic error boundary.
+  const plan = planScheduleReplacement(perDayFrom(form), timezone);
+  if (!plan.ok) {
+    redirect(`/admin/agents/${userId}?error=${encodeURIComponent(plan.error)}`);
+  }
+  await replaceUserSchedule(userId, plan);
   // #1769: the form that calls this lives on the agent's own page, so that is the
   // route that has to be refreshed. Revalidating only /admin left the page the
   // person is looking at showing what it showed before they pressed the button.

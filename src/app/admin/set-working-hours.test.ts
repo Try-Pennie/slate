@@ -28,10 +28,19 @@ const rpc = vi.hoisted(() =>
 const fromTable = vi.hoisted(() => vi.fn());
 const upsertUserSchedule = vi.hoisted(() => vi.fn(async () => "sched1"));
 // #1988: the confirmation IS the redirect, so it is a named mock rather than an
-// anonymous one. It does not throw the way the real `redirect` does, which is
-// safe only because nothing follows a redirect in any of these actions; the
-// ordering assertion below is what holds that true rather than the mock's shape.
-const redirect = vi.hoisted(() => vi.fn());
+// anonymous one.
+//
+// #1994: AND IT THROWS, the way the real one does. It did not, which was safe
+// while a redirect was only ever the last line of an action. It stopped being
+// safe the moment a REFUSAL redirected too: with a mock that returns, execution
+// carried on into the write, so the suite observed a throw from
+// `replaceUserSchedule` that production never reaches, and every refusal test
+// passed for a reason that no longer existed.
+const redirect = vi.hoisted(() =>
+  vi.fn((url: string) => {
+    throw new Error(`NEXT_REDIRECT:${url}`);
+  }),
+);
 
 vi.mock("@/lib/auth", () => auth);
 vi.mock("next/navigation", () => ({ redirect }));
@@ -127,7 +136,7 @@ beforeEach(() => {
 
 describe("setWorkingHours", () => {
   it("writes the whole week through the one transactional call", async () => {
-    await setWorkingHours(hoursForm());
+    await expect(setWorkingHours(hoursForm())).rejects.toThrow("NEXT_REDIRECT:/admin/agents/u1?ok=working-hours");
     expect(rpc).toHaveBeenCalledTimes(1);
     const [fn, args] = rpc.mock.calls[0] as [string, { p_schedule_id: string; p_rules: unknown[] }];
     expect(fn).toBe("replace_availability_rules");
@@ -153,7 +162,12 @@ describe("setWorkingHours", () => {
   });
 
   it("refuses an end time that is not after the start, and writes nothing", async () => {
+    // #1994: the refusal travels as a redirect carrying the reason now, so the
+    // sentence is asserted where it actually reaches the person.
     await expect(setWorkingHours(hoursForm({ start: "17:00", end: "09:00" }))).rejects.toThrow(
+      /NEXT_REDIRECT/,
+    );
+    expect(decodeURIComponent(String(redirect.mock.calls.at(-1)?.[0]))).toMatch(
       /later than its start/i,
     );
     expect(rpc).not.toHaveBeenCalled();
@@ -191,7 +205,7 @@ describe("setWorkingHours", () => {
 // confirmation over a week nobody wrote is worse than the silence it replaced.
 describe("saving working hours confirms it saved (#1988)", () => {
   it("sends the person back to the agent they were editing", async () => {
-    await setWorkingHours(hoursForm());
+    await expect(setWorkingHours(hoursForm())).rejects.toThrow("NEXT_REDIRECT:/admin/agents/u1?ok=working-hours");
     expect(redirect).toHaveBeenCalledWith("/admin/agents/u1?ok=working-hours");
   });
 
@@ -200,7 +214,7 @@ describe("saving working hours confirms it saved (#1988)", () => {
   it("names the agent from the form rather than a fixed path", async () => {
     const other = hoursForm();
     other.set("user_id", "u9");
-    await setWorkingHours(other);
+    await expect(setWorkingHours(other)).rejects.toThrow(/ok=working-hours/);
     expect(redirect).toHaveBeenCalledWith("/admin/agents/u9?ok=working-hours");
   });
 
@@ -210,27 +224,37 @@ describe("saving working hours confirms it saved (#1988)", () => {
   // named. Asserted separately so one cannot answer for the other.
   it("sends an agent saving their own hours back to their own page", async () => {
     auth.currentUser.mockResolvedValue({ id: "me1", role: "agent", org_id: "o1" });
-    await setMyWorkingHours(hoursForm());
+    await expect(setMyWorkingHours(hoursForm())).rejects.toThrow(/ok=working-hours/);
     expect(redirect).toHaveBeenCalledWith("/me?ok=working-hours");
   });
 
   it("confirms the company default button too, on both pages", async () => {
-    await useDefaultHours(hoursForm());
+    await expect(useDefaultHours(hoursForm())).rejects.toThrow(/ok=working-hours/);
     expect(redirect).toHaveBeenCalledWith("/admin/agents/u1?ok=working-hours");
 
     redirect.mockClear();
     auth.currentUser.mockResolvedValue({ id: "me1", role: "agent", org_id: "o1" });
-    await useMyDefaultHours();
+    await expect(useMyDefaultHours()).rejects.toThrow(/ok=working-hours/);
     expect(redirect).toHaveBeenCalledWith("/me?ok=working-hours");
   });
 
   // The half that matters most, and it is the reason the confirmation is placed
   // after the write rather than beside it.
-  it("says nothing when the week was refused", async () => {
+  // #1994: a refusal DOES redirect now, carrying the reason. What it must never
+  // do is confirm, so the assertion is about the outcome and not about whether a
+  // redirect happened at all.
+  it("does not confirm a week that was refused, and says why instead", async () => {
     const noDays = hoursForm();
     for (const d of [1, 2, 3, 4, 5]) noDays.delete(`day_${d}`);
-    await expect(setWorkingHours(noDays)).rejects.toThrow(/day/i);
-    expect(redirect).not.toHaveBeenCalled();
+    await expect(setWorkingHours(noDays)).rejects.toThrow(/NEXT_REDIRECT/);
+    const to = String(redirect.mock.calls.at(-1)?.[0] ?? "");
+    expect(to).not.toContain("ok=");
+    expect(to).toContain("error=");
+    // The sentence names what is wrong, in words a person can act on, which is
+    // the whole point: it was unreachable before, redacted into a blank screen.
+    expect(decodeURIComponent(to)).toMatch(/day/i);
+    // And nothing was written on the way past.
+    expect(rpc).not.toHaveBeenCalled();
   });
 
   it("says nothing when the write itself failed", async () => {
@@ -252,7 +276,7 @@ describe("saving working hours confirms it saved (#1988)", () => {
   // does, so nothing structural stops a future edit confirming before the write
   // commits. This is what does.
   it("confirms only after the write has committed", async () => {
-    await setWorkingHours(hoursForm());
+    await expect(setWorkingHours(hoursForm())).rejects.toThrow("NEXT_REDIRECT:/admin/agents/u1?ok=working-hours");
     expect(rpc).toHaveBeenCalled();
     expect(redirect.mock.invocationCallOrder[0]).toBeGreaterThan(
       rpc.mock.invocationCallOrder[0],
@@ -276,7 +300,7 @@ describe("setWorkingHours, a window per day", () => {
     fd.set("start_5", "08:00");
     fd.set("end_5", "16:00");
 
-    await setWorkingHours(fd);
+    await expect(setWorkingHours(fd)).rejects.toThrow(/ok=working-hours/);
 
     const [, args] = rpc.mock.calls[0] as [string, { p_rules: { weekday: number; start_minute: number; end_minute: number }[] }];
     expect(args.p_rules).toHaveLength(5);
@@ -304,7 +328,7 @@ describe("setWorkingHours, a window per day", () => {
     fd.set("end_6", "08:00");
 
     rpc.mockResolvedValue({ data: 1, error: null });
-    await setWorkingHours(fd);
+    await expect(setWorkingHours(fd)).rejects.toThrow(/ok=working-hours/);
 
     const [, args] = rpc.mock.calls[0] as [string, { p_rules: { weekday: number }[] }];
     expect(args.p_rules.map((r) => r.weekday)).toEqual([1]);
@@ -354,13 +378,13 @@ describe("setOrgDefaultHours", () => {
 
   it("writes the times as entered", async () => {
     updated.row = null;
-    await setOrgDefaultHours(orgForm());
+    await expect(setOrgDefaultHours(orgForm())).rejects.toThrow(/ok=org-default-hours/);
     expect(written()).toMatchObject({ default_start_minute: 480, default_end_minute: 1200 });
   });
 
   it("falls back to the seeded day, never to midnight, when a time cannot be read", async () => {
     updated.row = null;
-    await setOrgDefaultHours(orgForm({ default_start: "not a time" }));
+    await expect(setOrgDefaultHours(orgForm({ default_start: "not a time" }))).rejects.toThrow(/ok=org-default-hours/);
     // 00:00 is a perfectly valid window, so writing it would be indistinguishable
     // from somebody choosing it, and every new agent would start there (L50).
     expect(written()?.default_start_minute).not.toBe(0);
@@ -369,7 +393,7 @@ describe("setOrgDefaultHours", () => {
 
   it("falls back for a missing field too, not just a malformed one", async () => {
     updated.row = null;
-    await setOrgDefaultHours(orgForm({ default_end: "" }));
+    await expect(setOrgDefaultHours(orgForm({ default_end: "" }))).rejects.toThrow(/ok=org-default-hours/);
     expect(written()?.default_end_minute).not.toBe(0);
     // The SEEDED day (17:00), which is what a blank field has always meant here:
     // the fallback exists so a blank cannot write 09:00 over the backfilled
@@ -405,7 +429,7 @@ describe("the timezone on a working-hours save (#1671)", () => {
   it("CONTROL: a real zone still writes the week", async () => {
     const fd = hoursForm();
     fd.set("timezone", "America/Los_Angeles");
-    await setWorkingHours(fd);
+    await expect(setWorkingHours(fd)).rejects.toThrow(/ok=working-hours/);
     expect(rpc).toHaveBeenCalledTimes(1);
     expect(upsertUserSchedule).toHaveBeenCalledWith("u1", "America/Los_Angeles");
   });
@@ -436,7 +460,7 @@ describe("useDefaultHours (#1670)", () => {
   };
 
   it("goes through the one transactional call, and never deletes rules itself", async () => {
-    await useDefaultHours(form());
+    await expect(useDefaultHours(form())).rejects.toThrow(/ok=working-hours/);
     expect(rpc).toHaveBeenCalledTimes(1);
     const [fn, args] = rpc.mock.calls[0] as [string, { p_rules: unknown[] }];
     expect(fn).toBe("replace_availability_rules");
@@ -480,9 +504,11 @@ describe("setWorkingHours, several windows a day (#1764)", () => {
 
   it("writes BOTH windows of a split day", async () => {
     rpc.mockResolvedValue({ data: 3, error: null });
-    await setWorkingHours(
-      splitForm({ 1: [["08:00", "12:00"], ["14:00", "17:00"]], 2: [["09:00", "17:00"]] }),
-    );
+    await expect(
+      setWorkingHours(
+        splitForm({ 1: [["08:00", "12:00"], ["14:00", "17:00"]], 2: [["09:00", "17:00"]] }),
+      ),
+    ).rejects.toThrow(/ok=working-hours/);
 
     const [, args] = rpc.mock.calls[0] as [
       string,
@@ -499,7 +525,9 @@ describe("setWorkingHours, several windows a day (#1764)", () => {
   it("ignores a blank added window rather than refusing the whole week", async () => {
     rpc.mockResolvedValue({ data: 1, error: null });
     // Clicking + and saving without filling it in is an ordinary thing to do.
-    await setWorkingHours(splitForm({ 1: [["09:00", "17:00"], ["", ""]] }));
+    await expect(
+      setWorkingHours(splitForm({ 1: [["09:00", "17:00"], ["", ""]] })),
+    ).rejects.toThrow(/ok=working-hours/);
 
     const [, args] = rpc.mock.calls[0] as [string, { p_rules: { weekday: number }[] }];
     expect(args.p_rules).toHaveLength(1);
@@ -531,7 +559,7 @@ describe("setWorkingHours, several windows a day (#1764)", () => {
     fd.append("end_6", "08:00");
 
     rpc.mockResolvedValue({ data: 1, error: null });
-    await setWorkingHours(fd);
+    await expect(setWorkingHours(fd)).rejects.toThrow(/ok=working-hours/);
 
     const [, args] = rpc.mock.calls[0] as [string, { p_rules: { weekday: number }[] }];
     expect(args.p_rules.map((r) => r.weekday)).toEqual([1]);
@@ -544,7 +572,7 @@ describe("setWorkingHours, several windows a day (#1764)", () => {
 describe("the hours actions refresh the page their form is on (#1769)", () => {
   it("setWorkingHours refreshes the agent page", async () => {
     rpc.mockResolvedValue({ data: 5, error: null });
-    await setWorkingHours(hoursForm());
+    await expect(setWorkingHours(hoursForm())).rejects.toThrow("NEXT_REDIRECT:/admin/agents/u1?ok=working-hours");
     expect(revalidatePath).toHaveBeenCalledWith("/admin/agents/u1");
     // The Overview still refreshes too: this adds a route rather than moving one.
     expect(revalidatePath).toHaveBeenCalledWith("/admin");

@@ -1,4 +1,5 @@
 import { WorkingHoursWeek } from "@/components/ui/WorkingHoursWeek";
+import { SaveForm } from "@/components/ui/SaveForm";
 import { labelCls } from "@/components/ui/styles";
 import { UnsavedGuard } from "@/components/ui/UnsavedGuard";
 import { SelectField } from "@/components/ui/SelectField";
@@ -58,7 +59,12 @@ export function WorkingHoursForm({
   companyDefaultDays?: WorkingHoursDay[];
 }) {
   return (
-    <form action={action} className="space-y-4">
+    // #1994: through SaveForm, so a deploy landing under this page while
+    // somebody is filling it in says what happened instead of reaching the error
+    // boundary, and what they typed comes back after the reload. This is the
+    // exact form Dan lost a save on twice in one morning, and the exact form
+    // #1966 lost a week of hours from.
+    <SaveForm action={action} name="working-hours" className="space-y-4">
       {/* #1966: this is the form Dan lost a week of hours from, by
           refreshing. */}
       <UnsavedGuard what="changes to these hours" />
@@ -104,6 +110,6 @@ export function WorkingHoursForm({
           </div>
         }
       />
-    </form>
+    </SaveForm>
   );
 }

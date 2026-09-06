@@ -11,6 +11,7 @@ import {
   roundDownToQuarterHour,
   roundUpToQuarterHour,
 } from "@/lib/date/parse";
+import { useRestoredValue } from "@/components/ui/SaveForm";
 
 /**
  * One typeable time field: an editable box with a filtered list of every quarter
@@ -78,7 +79,15 @@ export function TimeField({
   onValueChange?: (value: string) => void;
 }) {
   const snap = round === "up" ? roundUpToQuarterHour : roundDownToQuarterHour;
-  const initial = defaultValue ? snap(defaultValue) : "";
+  // #1994: what this field held when a save was killed by a deploy, if there is
+  // one, in place of the stored value. Taken as the INITIAL state and never
+  // assigned afterwards, so the field behaves exactly as it does on an ordinary
+  // load; writing it onto the hidden input from outside would be overwritten by
+  // the next render, which is why the restore reaches the field rather than the
+  // DOM.
+  const restored = useRestoredValue(name);
+  const source = restored ?? defaultValue;
+  const initial = source ? snap(source) : "";
   const initialText = formatTimeOfDay(initial) ?? "";
 
   const [text, setText] = useState(initialText);
@@ -264,8 +273,15 @@ export function TimeField({
 
   return (
     <div className={`relative ${className}`}>
+      {/* `data-restore-own` keeps SaveForm's blanket restore off this input:
+          the value comes from the field's own state, above (#1994). */}
       {name !== undefined && (
-        <input type="hidden" name={name} value={resolved.ok ? resolved.value : ""} />
+        <input
+          type="hidden"
+          name={name}
+          data-restore-own="true"
+          value={resolved.ok ? resolved.value : ""}
+        />
       )}
       <input
         ref={inputRef}
