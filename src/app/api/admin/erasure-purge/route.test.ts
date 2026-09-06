@@ -34,11 +34,19 @@ const CROSS_ORIGIN_HEADERS = {
   origin: "https://evil.example",
   "sec-fetch-site": "cross-site",
 };
+/**
+ * An operator call. `authorisedBy` is filled in by default (#1961), because the
+ * route refuses every call without one and a helper that omitted it would make
+ * every test below a test of that refusal rather than of what it is about. The
+ * two tests that DO check the refusal pass a body naming nobody, explicitly.
+ */
 const req = (body?: unknown, headers: Record<string, string> = SAME_ORIGIN_HEADERS) =>
   ({
     json: async () => {
       if (body === undefined) throw new Error("no body");
-      return body;
+      return typeof body === "object" && body !== null && !Array.isArray(body)
+        ? { authorisedBy: "dan, erasure request 42", ...(body as object) }
+        : body;
     },
     headers: new Headers(headers),
   }) as unknown as Parameters<typeof POST>[0];
@@ -53,49 +61,55 @@ const clean = {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // #1961: the operator secret is the ONLY credential now. Every test that does
+  // not say otherwise runs as the operator, naming who asked.
   auth.requireAdmin.mockResolvedValue({ id: "admin-1", role: "admin" });
-  cron.isAuthorizedCron.mockReturnValue(false);
+  cron.isAuthorizedCron.mockReturnValue(true);
   locks.acquireLock.mockResolvedValue("lease");
   purge.purgeSnowflakeErasure.mockResolvedValue(clean);
 });
 
 describe("POST /api/admin/erasure-purge", () => {
   describe("who may call it", () => {
-    it("403s a caller who is neither an admin nor an operator, and purges nothing", async () => {
-      auth.requireAdmin.mockRejectedValue(new Error("not authorized"));
+    it("403s a caller holding no operator secret, and purges nothing", async () => {
+      cron.isAuthorizedCron.mockReturnValue(false);
       const res = await POST(req());
       expect(res.status).toBe(403);
       expect(purge.purgeSnowflakeErasure).not.toHaveBeenCalled();
       expect(locks.acquireLock).not.toHaveBeenCalled();
     });
 
-    it("403s a signed-in non-admin (requireAdmin is the gate, not merely being logged in)", async () => {
-      auth.requireAdmin.mockRejectedValue(new Error("not authorized"));
+    // #1961: A SIGNED-IN ADMIN IS REFUSED LIKE ANYBODY ELSE, and that is the
+    // whole point of taking the purge buttons off the page. Dan, 2026-09-04:
+    // "feels like it shouldn't be this easy to purge data and I think I'd prefer
+    // to go through Claude to do it." An endpoint a session could still reach
+    // would be the same easy purge, one fetch from the console instead of one
+    // click.
+    //
+    // The tests that asserted an admin was allowed and recorded as the actor are
+    // gone rather than adjusted: their content was the behaviour being removed
+    // (L252). This is their inverse, and it is what fails if the session path
+    // comes back.
+    it("403s a signed-in admin, because a session is not a credential for this", async () => {
       cron.isAuthorizedCron.mockReturnValue(false);
-      const res = await POST(req({ bookingIds: ["b1"] }));
+      auth.requireAdmin.mockResolvedValue({ id: "admin-1", role: "admin" });
+      const res = await POST(req({ authorisedBy: "dan, erasure request 42" }));
       expect(res.status).toBe(403);
       expect(purge.purgeSnowflakeErasure).not.toHaveBeenCalled();
+      // Not merely refused: the session is never even consulted, so nothing here
+      // can grow a branch that trusts one.
+      expect(auth.requireAdmin).not.toHaveBeenCalled();
     });
 
-    it("allows an admin and records them as the actor", async () => {
-      const res = await POST(req());
-      expect(res.status).toBe(200);
-      expect(purge.purgeSnowflakeErasure).toHaveBeenCalledWith(undefined, "admin-1", undefined);
-    });
-
-    // #1961: THE OPERATOR PATH MUST SAY WHO ASKED, and the test that let it
-    // through with nobody attached is replaced rather than kept beside the new
-    // one (L252): "with no actor" was the behaviour being removed.
+    // #1961: THE OPERATOR PATH MUST SAY WHO ASKED.
     //
-    // It records no `actorId` because there is no signed-in user behind it,
-    // which was tolerable while the UI button was the ordinary route. Dan's call
-    // on 2026-09-06 removes the buttons, so this becomes the ONLY way an erasure
-    // runs, and an entry naming nobody would be the entire record of a
-    // compliance action (L529).
+    // It records no `actorId`, because there is no signed-in user behind it, and
+    // it is now the only way an erasure runs. An entry naming nobody would be
+    // the entire record of a compliance action (L529), and the one real purge in
+    // this system's history is exactly that: 2026-07-31, eight rows blanked,
+    // verified clean, no actor and no authoriser on the row.
     it("refuses an operator call that names nobody", async () => {
-      auth.requireAdmin.mockRejectedValue(new Error("not authorized"));
-      cron.isAuthorizedCron.mockReturnValue(true);
-      const res = await POST(req());
+      const res = await POST(req({ authorisedBy: "" }));
       expect(res.status).toBe(400);
       expect((await res.json()).error).toMatch(/authorisedBy/i);
       // Refused BEFORE the lock and the purge, so a call naming nobody cannot
@@ -105,8 +119,6 @@ describe("POST /api/admin/erasure-purge", () => {
     });
 
     it("allows an operator process that names who authorised it", async () => {
-      auth.requireAdmin.mockRejectedValue(new Error("not authorized"));
-      cron.isAuthorizedCron.mockReturnValue(true);
       const res = await POST(req({ authorisedBy: "dan, erasure request 42" }));
       expect(res.status).toBe(200);
       expect(purge.purgeSnowflakeErasure).toHaveBeenCalledWith(
@@ -116,18 +128,16 @@ describe("POST /api/admin/erasure-purge", () => {
       );
     });
 
-    // A signed-in admin still needs no such field: they ARE the actor, and
-    // demanding it of them would be a second name for one fact.
-    it("does not demand it of a signed in admin", async () => {
-      const res = await POST(req());
-      expect(res.status).toBe(200);
-    });
   });
 
   describe("what it may touch", () => {
     it("passes an explicit booking id list through", async () => {
       await POST(req({ bookingIds: ["b1", "b2"] }));
-      expect(purge.purgeSnowflakeErasure).toHaveBeenCalledWith(["b1", "b2"], "admin-1", undefined);
+      expect(purge.purgeSnowflakeErasure).toHaveBeenCalledWith(
+        ["b1", "b2"],
+        undefined,
+        "dan, erasure request 42",
+      );
     });
 
     it("400s a bookingIds that is not an array of strings", async () => {
@@ -148,7 +158,7 @@ describe("POST /api/admin/erasure-purge", () => {
 
   describe("reporting what happened", () => {
     it("returns the row counts and the post-purge verify", async () => {
-      const res = await POST(req());
+      const res = await POST(req({}));
       expect(await res.json()).toMatchObject({ ok: true, rowsByTable: { webhook_deliveries: 3 } });
     });
 
@@ -159,14 +169,14 @@ describe("POST /api/admin/erasure-purge", () => {
         residualAfter: { ...clean.residualAfter, webhook_deliveries: 3 },
         reasons: ["webhook_deliveries: 3 row(s) still hold contact PII after the purge"],
       });
-      const res = await POST(req());
+      const res = await POST(req({}));
       expect(res.status).toBe(500);
       expect((await res.json()).ok).toBe(false);
     });
 
     it("500s and releases the lock when a statement fails", async () => {
       purge.purgeSnowflakeErasure.mockRejectedValue(new Error("Snowflake 400: invalid identifier"));
-      const res = await POST(req());
+      const res = await POST(req({}));
       expect(res.status).toBe(500);
       expect(locks.releaseLock).toHaveBeenCalledWith("erasure_warehouse_purge", "lease");
     });
@@ -175,37 +185,52 @@ describe("POST /api/admin/erasure-purge", () => {
   describe("concurrency", () => {
     it("409s rather than running two purges at once", async () => {
       locks.acquireLock.mockResolvedValue(null);
-      const res = await POST(req());
+      const res = await POST(req({}));
       expect(res.status).toBe(409);
       expect(purge.purgeSnowflakeErasure).not.toHaveBeenCalled();
     });
 
     it("releases the lock on the happy path too", async () => {
-      await POST(req());
+      await POST(req({}));
       expect(locks.releaseLock).toHaveBeenCalledWith("erasure_warehouse_purge", "lease");
     });
   });
 });
 
-// #1046: the session cookie is this route's only credential, so a request that says
-// it came from another site is refused before the auth check and before the body is
-// read. The static guard (scripts/test-same-origin-coverage.ts) proves every
-// cookie-authed mutation route carries the CALL; this proves the call on this route
-// actually refuses rather than sitting unreachable behind an earlier return.
-describe("erasure purge refuses a cross-origin request (#1046)", () => {
-  it("403s a cross-site request without authenticating or writing", async () => {
-    const res = await POST(req(undefined, CROSS_ORIGIN_HEADERS));
-
-    expect(res.status).toBe(403);
-    expect(auth.requireAdmin).not.toHaveBeenCalled();
-    expect(purge.purgeSnowflakeErasure).not.toHaveBeenCalled();
-    expect(locks.acquireLock).not.toHaveBeenCalled();
+describe("origin is no longer a gate (#1961)", () => {
+  // The INVERSE of the #1046 block that stood here, kept rather than deleted so
+  // the change is guarded in both directions. A same-origin refusal exists for
+  // an AMBIENT credential, one a browser attaches on its own; this route's only
+  // credential is a secret in a header, which no browser sends for another site.
+  //
+  // Reinstating the check would refuse an operator whose tool happened to send
+  // an Origin header, which is a real way to break the only remaining path to a
+  // purge, and it would fail here rather than in production.
+  it("serves an operator call whatever origin it claims to come from", async () => {
+    cron.isAuthorizedCron.mockReturnValue(true);
+    const res = await POST(req({}, CROSS_ORIGIN_HEADERS));
+    expect(res.status).toBe(200);
+    expect(purge.purgeSnowflakeErasure).toHaveBeenCalled();
   });
 
-  it("still serves the same-origin request the UI sends", async () => {
-    // The positive control: a guard that refused everything would pass the test
-    // above while breaking the whole surface.
-    const res = await POST(req());
-    expect(res.status).not.toBe(403);
+  it("still refuses a caller with no operator secret, whatever origin it claims", async () => {
+    cron.isAuthorizedCron.mockReturnValue(false);
+    const res = await POST(req({}, CROSS_ORIGIN_HEADERS));
+    expect(res.status).toBe(403);
+    expect(purge.purgeSnowflakeErasure).not.toHaveBeenCalled();
   });
 });
+
+// #1046's cross-origin block is GONE with the session path (#1961).
+//
+// A same-origin refusal exists for an AMBIENT credential, one a browser attaches
+// on its own. This route's only credential is now a secret in a header, which no
+// browser will send for another site, so there is no cross-site request to
+// refuse and keeping the check would refuse an operator whose tool happened to
+// send an Origin header. The tests went with it rather than being adjusted: a
+// test whose premise a change has consumed goes permanently red for a reason
+// that looks exactly like a real defect (L373).
+//
+// The static guard now asserts this route is NOT a same-origin subject
+// (scripts/test-same-origin-coverage.ts), which is the inverse of what it
+// asserted before, in the same change.

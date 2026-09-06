@@ -15,19 +15,15 @@
  *     matches what it said.
  */
 
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { cleanup, render, screen } from "@testing-library/react";
 
-vi.mock("next/navigation", () => ({ useRouter: () => ({ refresh: vi.fn() }) }));
-vi.mock("@/lib/http", () => ({ postJson: vi.fn(), REQUEST_TIMEOUT_MS: 20000 }));
+// No router and no http mock: with the controls gone this component posts
+// nothing and navigates nowhere, and a mock for a call it can no longer make
+// would be a fixture defending a removed behaviour (L252).
 
 import { ErasureWorklist } from "./ErasureWorklist";
-import { postJson } from "@/lib/http";
-import {
-  emptyTrailText,
-  entryPurgeLabel,
-  purgeAllLabel,
-} from "@/lib/snowflake/erasure-worklist-copy";
+import { emptyTrailText } from "@/lib/snowflake/erasure-worklist-copy";
 import type { ErasureWorklistState } from "@/lib/snowflake/erasure-worklist";
 
 /** #1961: the ages on this page are measured from an instant the SERVER takes
@@ -79,7 +75,6 @@ describe("ErasureWorklist: reading the state", () => {
       />,
     );
     expect(screen.getByText(emptyTrailText())).toBeTruthy();
-    expect(screen.queryByText(entryPurgeLabel())).toBeNull();
   });
 
   it("shows an unmeasured residual as unknown, never as clean", () => {
@@ -99,9 +94,6 @@ describe("ErasureWorklist: reading the state", () => {
   it("says an unconfigured mirror is a different thing from an unreadable one", () => {
     render(<ErasureWorklist state={ready({ warehouse: { kind: "unconfigured" } })} />);
     expect(screen.getByRole("alert").textContent).toMatch(/not configured/i);
-    // Nothing to purge against, so no destructive control is offered.
-    expect(screen.queryByText(entryPurgeLabel())).toBeNull();
-    expect(screen.queryByText(purgeAllLabel())).toBeNull();
   });
 
   it("names the erasure by its hash, and never renders a cleartext address", () => {
@@ -111,148 +103,50 @@ describe("ErasureWorklist: reading the state", () => {
   });
 });
 
-describe("ErasureWorklist: scope per control", () => {
-  it("asks before purging one erasure, naming that erasure's bookings only", () => {
+// #1961: THE CONTROLS ARE GONE, and this is the guard on that.
+//
+// Dan, 2026-09-04: "feels like it shouldn't be this easy to purge data and I
+// think I'd prefer to go through Claude to do it." Both controls went on his
+// decision of 2026-09-06, the single and the bulk.
+//
+// The tests that used to live here drove those controls: the confirmation, the
+// scope per button, the three progress states, the timeout. They were deleted
+// rather than adjusted, because their whole content was the behaviour being
+// removed and a test that defends a reversed decision is the guard keeping it
+// alive (L252). What replaces them asserts the ABSENCE, which is the thing that
+// can regress: a purge button is an easy thing to add back.
+describe("ErasureWorklist: nothing here purges (#1961)", () => {
+  it("offers no control at all, on a trail with an outstanding purge", () => {
+    render(
+      <ErasureWorklist
+        state={ready({ entries: [entry({ residuals: [{ table: "bookings", residual: 4 }] })] })}
+      />,
+    );
+    // The row still SAYS it is outstanding: what went is the button, not the fact.
+    expect(screen.getByText(/4 rows/i)).toBeTruthy();
+    expect(screen.queryAllByRole("button")).toHaveLength(0);
+    // Not just "no button": nothing clickable of any kind, which is what a
+    // link or an anchor styled as one would slip back in as.
+    expect(screen.queryAllByRole("link")).toHaveLength(0);
+  });
+
+  it("posts nothing, because it renders no form", () => {
+    const { container } = render(
+      <ErasureWorklist
+        state={ready({ entries: [entry({ residuals: [{ table: "bookings", residual: 4 }] })] })}
+      />,
+    );
+    expect(container.querySelectorAll("form")).toHaveLength(0);
+    expect(container.querySelectorAll("input")).toHaveLength(0);
+  });
+
+  // A SCREEN THAT NAMES A FAULT AND OFFERS NO REMEDY teaches its reader to skim
+  // it (L126, L148), so the absence of a button is explained rather than left as
+  // a gap where one used to be.
+  it("says how an outstanding purge is run instead", () => {
     render(<ErasureWorklist state={ready()} />);
-    fireEvent.click(screen.getByText(entryPurgeLabel()));
-    const confirm = screen.getByRole("alertdialog").textContent ?? "";
-    expect(confirm).toMatch(/this erasure only/i);
-    expect(confirm).toMatch(/2 bookings/);
-    expect(postJson).not.toHaveBeenCalled();
-  });
-
-  it("sends only that erasure's booking ids when confirmed", async () => {
-    vi.mocked(postJson).mockResolvedValue({ ok: true, status: 200, data: { ok: true, bookingIds: ["bk1", "bk2"], rowsByTable: {}, residualAfter: {}, reasons: [] } });
-    render(<ErasureWorklist state={ready()} />);
-    fireEvent.click(screen.getByText(entryPurgeLabel()));
-    await act(async () => {
-      fireEvent.click(screen.getByText(/Yes, purge/i));
-    });
-    expect(vi.mocked(postJson).mock.calls[0][0]).toBe("/api/admin/erasure-purge");
-    expect(vi.mocked(postJson).mock.calls[0][1]).toEqual({ bookingIds: ["bk1", "bk2"] });
-  });
-
-  it("asks before purging the whole trail, and sends no ids so the route takes all of it", async () => {
-    vi.mocked(postJson).mockResolvedValue({ ok: true, status: 200, data: { ok: true, bookingIds: ["bk1", "bk2"], rowsByTable: {}, residualAfter: {}, reasons: [] } });
-    render(<ErasureWorklist state={ready()} />);
-    fireEvent.click(screen.getByText(purgeAllLabel()));
-    const confirm = screen.getByRole("alertdialog").textContent ?? "";
-    expect(confirm).toMatch(/every booking in the erasure trail/i);
-    expect(confirm).toMatch(/already clean/i);
-    await act(async () => {
-      fireEvent.click(screen.getByText(/Yes, purge/i));
-    });
-    expect(vi.mocked(postJson).mock.calls[0][1]).toEqual({});
-  });
-
-  it("lets the reader back out of the confirmation without sending anything", () => {
-    render(<ErasureWorklist state={ready()} />);
-    fireEvent.click(screen.getByText(entryPurgeLabel()));
-    fireEvent.click(screen.getByText(/Leave it/i));
-    expect(screen.queryByRole("alertdialog")).toBeNull();
-    expect(postJson).not.toHaveBeenCalled();
-  });
-});
-
-describe("ErasureWorklist: the three progress states", () => {
-  beforeEach(() => vi.useFakeTimers({ shouldAdvanceTime: true }));
-
-  function startPurge() {
-    render(<ErasureWorklist state={ready()} />);
-    fireEvent.click(screen.getByText(entryPurgeLabel()));
-    fireEvent.click(screen.getByText(/Yes, purge/i));
-  }
-
-  it("shows elapsed time while it works, so a live run and a dead one look different", async () => {
-    vi.mocked(postJson).mockImplementation(() => new Promise(() => {}));
-    startPurge();
-    await act(async () => {
-      vi.advanceTimersByTime(3000);
-    });
-    const live = screen.getByRole("status").textContent ?? "";
-    expect(live).toMatch(/Purging in the warehouse/);
-    expect(live).toMatch(/3s/);
-    await act(async () => {
-      vi.advanceTimersByTime(2000);
-    });
-    expect(screen.getByRole("status").textContent).toMatch(/5s/);
-  });
-
-  it("changes to a still going message once it runs long", async () => {
-    vi.mocked(postJson).mockImplementation(() => new Promise(() => {}));
-    startPurge();
-    await act(async () => {
-      vi.advanceTimersByTime(20000);
-    });
-    expect(screen.getByRole("status").textContent).toMatch(/Still going after 20s/);
-  });
-
-  it("surfaces a refused purge as a failure, with the server's reason, and re-enables the control", async () => {
-    vi.mocked(postJson).mockResolvedValue({
-      ok: false,
-      status: 409,
-      data: { error: "a purge is already running" },
-    });
-    startPurge();
-    await act(async () => {});
-    const alert = screen.getByRole("alert").textContent ?? "";
-    expect(alert).toMatch(/did not run/i);
-    expect(alert).toMatch(/a purge is already running/);
-    expect(alert).not.toMatch(/finished|complete/i);
-    // The control has to come back, or the only diagnosis left is reloading.
-    expect(screen.getByText(entryPurgeLabel())).toBeTruthy();
-    expect(screen.queryByRole("status")).toBeNull();
-  });
-
-  it("surfaces a purge that ran but left data behind as a failure, not a success", async () => {
-    vi.mocked(postJson).mockResolvedValue({
-      ok: false,
-      status: 500,
-      data: {
-        ok: false,
-        bookingIds: ["bk1"],
-        rowsByTable: { bookings: 1 },
-        residualAfter: { bookings: 1 },
-        reasons: ["bookings: 1 row(s) still hold contact PII after the purge"],
-      },
-    });
-    startPurge();
-    await act(async () => {});
-    const alert = screen.getByRole("alert").textContent ?? "";
-    expect(alert).toMatch(/still holds contact data/i);
-    expect(alert).toMatch(/bookings: 1 row/);
-    expect(alert).not.toMatch(/no contact data left/i);
-  });
-
-  it("converts a request that never came back into an actionable timeout, not a hang", async () => {
-    // postJson resolves { ok:false, status:0 } on its own abort; that is the shape
-    // a wedged request arrives in.
-    vi.mocked(postJson).mockResolvedValue({ ok: false, status: 0, data: {} });
-    startPurge();
-    await act(async () => {});
-    const alert = screen.getByRole("alert").textContent ?? "";
-    expect(alert).toMatch(/stopped waiting/i);
-    expect(alert).toMatch(/try again/i);
-    expect(alert).not.toMatch(/did not run/i);
-    expect(screen.getByText(entryPurgeLabel())).toBeTruthy();
-  });
-
-  it("reports a completed purge with the counts the warehouse gave back", async () => {
-    vi.mocked(postJson).mockResolvedValue({
-      ok: true,
-      status: 200,
-      data: {
-        ok: true,
-        bookingIds: ["bk1", "bk2"],
-        rowsByTable: { bookings: 2, booking_events: 1 },
-        residualAfter: { bookings: 0 },
-        reasons: [],
-      },
-    });
-    startPurge();
-    await act(async () => {});
-    const done = screen.getByRole("alert").textContent ?? "";
-    expect(done).toMatch(/Purge finished for 2 bookings/);
-    expect(done).toMatch(/bookings 2 rows/);
+    expect(screen.getByText(/no button for this, deliberately/i)).toBeTruthy();
+    expect(screen.getByText(/naming who asked for the erasure/i)).toBeTruthy();
+    expect(screen.getByText(/pii-erasure-runbook/i)).toBeTruthy();
   });
 });
