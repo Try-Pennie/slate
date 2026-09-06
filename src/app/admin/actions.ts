@@ -109,6 +109,7 @@ import {
   type ScheduleRule,
 } from "@/lib/schedule-replacement";
 import type { Attributes, Criteria, Role, User } from "@/lib/db/types";
+import { seederOwnsCode } from "@/lib/xbc";
 
 /**
  * Asserts the signed-in user is a manager+ who may edit `userId` (escalation
@@ -644,10 +645,16 @@ export async function updateBucket(form: FormData): Promise<void> {
   //
   // A read that failed has already thrown above, so `before` is null only when
   // the bucket is genuinely gone, and the update below then matches no row.
+  // #2006: SCOPED TO THE CODES THE SEEDER ACTUALLY WRITES, not to "this bucket
+  // exists". #1935 used the broader condition, which froze the hand created
+  // buckets too: the seeder writes only `allXbcCodes()`, so nothing was ever
+  // going to overwrite one of those, and the create form is the only place those
+  // fields can be set, so a typo made once was permanent (L615).
+  const seederOwned = seederOwnsCode(String(before?.code ?? ""));
   const after = {
-    code: String(before?.code ?? ""),
-    name: String(before?.name ?? ""),
-    criteria: (before?.criteria ?? {}) as Criteria,
+    code: seederOwned ? String(before?.code ?? "") : String(form.get("code") ?? "").trim(),
+    name: seederOwned ? String(before?.name ?? "") : String(form.get("name") ?? "").trim(),
+    criteria: (seederOwned ? (before?.criteria ?? {}) : criteriaFromForm(form)) as Criteria,
     event_type_id: String(form.get("event_type_id") ?? ""),
     routing_form_id: String(form.get("routing_form_id") ?? "").trim() || null,
     fallback_user_id: String(form.get("fallback_user_id") ?? "") || null,

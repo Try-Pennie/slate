@@ -1740,6 +1740,20 @@ describe("saving a bucket is atomic, refuses loudly, and is recorded (#1930)", (
   // bucket still can, and still names it, in its own block below.
   //
   // What replaced it is the reason: a posted code is ignored entirely.
+  // #2006: and a bucket the seeder does NOT write keeps its own fields. The
+  // seeder writes only the sixty XBC codes, so freezing every existing bucket
+  // took the hand created ones with it, whose fields are set nowhere but the
+  // create form (L615).
+  it("accepts an edit to a bucket the seeder does not write", async () => {
+    dbState.rowsByTable.buckets = { code: "SMOKE", name: "Old", criteria: {}, event_type_id: "et1" };
+    await expect(
+      updateBucket(edit({ code: "SMOKE", name: "Corrected" })),
+    ).rejects.toThrow(/ok=bucket-updated/);
+    const wrote = update.mock.calls.at(-1)?.[0] as Record<string, unknown>;
+    expect(wrote.name).toBe("Corrected");
+    expect(wrote.code).toBe("SMOKE");
+  });
+
   it("ignores a posted code, because the seeder owns it", async () => {
     await expect(updateBucket(edit({ code: "412" }))).rejects.toThrow(/ok=bucket-updated/);
     const wrote = update.mock.calls.at(-1)?.[0] as Record<string, unknown>;

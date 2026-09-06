@@ -69,6 +69,32 @@ export function bucketSpecForXbc(code: string): BucketSpec | null {
 }
 
 /** Every valid XBC code (5 tiers x 4 backends x 3 legal = 60). */
+/**
+ * Whether the bucket seeder owns this code, and therefore rewrites its name and
+ * routing criteria on every run (#2006).
+ *
+ * `scripts/seed-buckets.ts` writes exactly `allXbcCodes()`. A bucket whose code
+ * is not in that set is never touched by it, so nothing was ever going to
+ * overwrite what an operator typed there.
+ *
+ * THE DISTINCTION IS THE WHOLE POINT. #1935 made a bucket's code, name and
+ * criteria read only because the seeder replaced any edit to them, and used
+ * "this bucket already exists" as the condition. That is broader than the
+ * reason: it froze the hand created buckets too, whose fields the seeder never
+ * writes, and the create form is the only place those can be set, so a typo made
+ * once was permanent (L615).
+ *
+ * Derived from the same enumeration the seeder uses rather than re-tested
+ * against the code shape, so widening the matrix moves both together (L41).
+ */
+export function seederOwnsCode(code: string): boolean {
+  return SEEDED_CODES.has(code);
+}
+
+/** Built once: the set is fixed at 60 entries and this is asked per bucket on a
+ *  page that renders sixty of them. */
+const SEEDED_CODES = new Set(allXbcCodes());
+
 export function allXbcCodes(): string[] {
   const codes: string[] = [];
   for (const adv of ["1", "2", "3", "4", "5"]) {
