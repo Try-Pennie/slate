@@ -13,6 +13,7 @@
  */
 
 import type { ErasureResidual } from "./erasure-audit";
+import { parseStampMs } from "@/lib/date/stamp";
 
 /** One `pii.erasure` audit entry, with what Snowflake still holds for it. */
 export interface ErasureWorklistEntry {
@@ -64,7 +65,85 @@ export type ErasureWorklistState =
       entries: ErasureWorklistEntry[];
       trail: TrailScope;
       warehouse: WarehouseState;
+      /**
+       * The instant every age on the page is measured from (#1961).
+       *
+       * Taken by the LOADER, beside the read it describes, rather than in the
+       * render. Rendering may not read a clock (the same fact would differ
+       * between the server pass and the client one, and the compiler refuses
+       * it), and the copy builders are pure by design so they cannot take one
+       * themselves.
+       */
+      nowMs: number;
     };
+
+/**
+ * Pennie's stated response deadline for a verified deletion request, in days
+ * (#1961). Recorded in `docs/pii-retention.md` section 9 as Pennie's own
+ * position under the stricter CCPA reading, decided 2026-07-29 (#1074), not as
+ * counsel's opinion.
+ *
+ * IT DOES NOT RUN FROM ANYTHING SLATE HOLDS. The clock starts at the person's
+ * request, and the only date in the trail is when the Supabase half of the
+ * erasure ran, which is necessarily later. So Slate can say how long a warehouse
+ * copy has been outstanding and it CANNOT say when the deadline falls: any due
+ * date computed from what is here would be later than the real one, which is the
+ * one direction a compliance clock must never be wrong in. The age is reported
+ * as a floor, and the shortfall is named on the page rather than papered over
+ * (L589: a relative time must say what it is relative to).
+ */
+export const ERASURE_RESPONSE_DAYS = 45;
+
+/** Whole days between an entry's erasure and now, or `null` when the stamp could
+ *  not be read. Never a number on an unreadable stamp: a zero would read as
+ *  "erased just now", which is the reassuring direction (L50). */
+export function entryAgeDays(createdAt: string, nowMs: number): number | null {
+  const ms = parseStampMs(createdAt);
+  if (ms === null) return null;
+  return Math.max(0, Math.floor((nowMs - ms) / 86_400_000));
+}
+
+/**
+ * The entries in the order somebody should work them: what is OUTSTANDING first
+ * and oldest first inside that, because the entry that has been waiting longest
+ * is the one closest to a deadline.
+ *
+ * Ordered here rather than in the query, so it is pure and drivable, and because
+ * a list rendered straight from a read appears in whatever order the store
+ * happened to return (L343). An unreadable stamp sorts to the TOP of its group:
+ * it cannot be shown to be young, and the safe reading of an unknown age on a
+ * compliance clock is the alarming one.
+ */
+const GROUP_ORDER: Record<EntryStatus, number> = { outstanding: 0, unknown: 1, clean: 2 };
+
+export function worklistOrder(
+  entries: ErasureWorklistEntry[],
+  nowMs: number,
+): ErasureWorklistEntry[] {
+  return [...entries].sort((a, b) => {
+    const g = GROUP_ORDER[entryStatus(a)] - GROUP_ORDER[entryStatus(b)];
+    if (g !== 0) return g;
+    const ageA = entryAgeDays(a.createdAt, nowMs);
+    const ageB = entryAgeDays(b.createdAt, nowMs);
+    if (ageA === null && ageB === null) return a.auditId.localeCompare(b.auditId);
+    if (ageA === null) return -1;
+    if (ageB === null) return 1;
+    return ageB - ageA || a.auditId.localeCompare(b.auditId);
+  });
+}
+
+/** The longest a still outstanding entry has been waiting, or `null` when there
+ *  is none, or when none of their stamps could be read. */
+export function oldestOutstandingDays(
+  entries: ErasureWorklistEntry[],
+  nowMs: number,
+): number | null {
+  const ages = entries
+    .filter((e) => entryStatus(e) === "outstanding")
+    .map((e) => entryAgeDays(e.createdAt, nowMs))
+    .filter((d): d is number => d !== null);
+  return ages.length ? Math.max(...ages) : null;
+}
 
 export type EntryStatus = "clean" | "outstanding" | "unknown";
 
@@ -82,6 +161,9 @@ export function entryStatus(entry: ErasureWorklistEntry): EntryStatus {
 
 export interface WorklistSummary {
   entries: number;
+  /** How long the longest still outstanding entry has waited, or `null` when
+   *  there is none or no stamp among them could be read (#1961). */
+  oldestOutstandingDays: number | null;
   clean: number;
   outstanding: number;
   unknown: number;
@@ -92,7 +174,10 @@ export interface WorklistSummary {
   residualRows: number | null;
 }
 
-export function summarizeWorklist(entries: ErasureWorklistEntry[]): WorklistSummary {
+export function summarizeWorklist(
+  entries: ErasureWorklistEntry[],
+  nowMs: number,
+): WorklistSummary {
   let clean = 0;
   let outstanding = 0;
   let unknown = 0;
@@ -115,6 +200,7 @@ export function summarizeWorklist(entries: ErasureWorklistEntry[]): WorklistSumm
     outstanding,
     unknown,
     residualRows: measuredAny ? rows : null,
+    oldestOutstandingDays: oldestOutstandingDays(entries, nowMs),
   };
 }
 

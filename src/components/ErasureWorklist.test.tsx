@@ -30,6 +30,11 @@ import {
 } from "@/lib/snowflake/erasure-worklist-copy";
 import type { ErasureWorklistState } from "@/lib/snowflake/erasure-worklist";
 
+/** #1961: the ages on this page are measured from an instant the SERVER takes
+ *  and passes in, so the tests pin it rather than reading a clock. Fifteen days
+ *  after the fixture entry's erasure. */
+const NOW = Date.parse("2026-09-04T09:00:00+00:00");
+
 const entry = (over: Record<string, unknown> = {}) => ({
   auditId: "a1",
   createdAt: "2026-08-20T09:00:00+00:00",
@@ -43,6 +48,7 @@ const entry = (over: Record<string, unknown> = {}) => ({
 const ready = (over: Partial<Extract<ErasureWorklistState, { kind: "ready" }>> = {}) =>
   ({
     kind: "ready",
+    nowMs: NOW,
     entries: [entry()],
     trail: { entryCount: 1, bookingCount: 2, otherOrgBookingCount: 0 },
     warehouse: { kind: "measured" },

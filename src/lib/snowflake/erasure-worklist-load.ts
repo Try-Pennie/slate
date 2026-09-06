@@ -70,7 +70,13 @@ function unmeasured(rows: ErasureAuditRow[], reason: string): ErasureWorklistEnt
  * the WHOLE trail, because that is genuinely what a no body purge covers, and the
  * copy says so rather than letting the reader assume the button matches the list.
  */
-export async function loadErasureWorklist(orgId: string): Promise<ErasureWorklistState> {
+export async function loadErasureWorklist(
+  orgId: string,
+  /** #1961: the instant the page's ages are measured from. Taken here, beside
+   *  the read it describes, because a render may not read a clock, and injected
+   *  so a test can pin it rather than race it. */
+  nowMs: number = Date.now(),
+): Promise<ErasureWorklistState> {
   let rows: ErasureAuditRow[];
   try {
     rows = await readErasureAuditRows();
@@ -95,18 +101,19 @@ export async function loadErasureWorklist(orgId: string): Promise<ErasureWorklis
     // Half configured (a key with no account). The mirror exists in intent, so
     // this is a read that failed, not an environment without a warehouse.
     const reason = shortErrorReason(err);
-    return { kind: "ready", trail, warehouse: { kind: "unreadable", reason }, entries: unmeasured(mine, reason) };
+    return { kind: "ready", nowMs, trail, warehouse: { kind: "unreadable", reason }, entries: unmeasured(mine, reason) };
   }
   if (!config) {
     return {
       kind: "ready",
+      nowMs,
       trail,
       warehouse: { kind: "unconfigured" },
       entries: unmeasured(mine, "the Snowflake mirror is not configured here"),
     };
   }
   if (myIds.length === 0) {
-    return { kind: "ready", trail, warehouse: { kind: "measured" }, entries: [] };
+    return { kind: "ready", nowMs, trail, warehouse: { kind: "measured" }, entries: [] };
   }
 
   let union: ErasureResidual[];
@@ -115,7 +122,7 @@ export async function loadErasureWorklist(orgId: string): Promise<ErasureWorklis
   } catch (err) {
     log.error("erasure-worklist", { msg: "residual read failed" }, err);
     const reason = shortErrorReason(err);
-    return { kind: "ready", trail, warehouse: { kind: "unreadable", reason }, entries: unmeasured(mine, reason) };
+    return { kind: "ready", nowMs, trail, warehouse: { kind: "unreadable", reason }, entries: unmeasured(mine, reason) };
   }
 
   const total = union.reduce((sum, r) => sum + r.residual, 0);
@@ -127,6 +134,7 @@ export async function loadErasureWorklist(orgId: string): Promise<ErasureWorklis
     const allClean = union.map((r) => ({ table: r.table, residual: 0 }));
     return {
       kind: "ready",
+      nowMs,
       trail,
       warehouse,
       entries: mine.map((r) => ({
@@ -173,5 +181,5 @@ export async function loadErasureWorklist(orgId: string): Promise<ErasureWorklis
     }
   }
 
-  return { kind: "ready", trail, warehouse, entries };
+  return { kind: "ready", nowMs, trail, warehouse, entries };
 }
