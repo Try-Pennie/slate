@@ -22,6 +22,10 @@ const grid = (cells: GridCell[]): AvailabilityGrid => ({
   })),
 });
 
+// Every state, and it really is every state now (#1928). It was named ALL_STATES
+// while missing `unknown`, and nothing noticed because the key used to render all
+// seven treatments whatever the grid held: the count matched the treatments list
+// rather than the data. Deriving the key from what is present is what surfaced it.
 const ALL_STATES: GridCell[] = [
   { kind: "open", agents: 3, buckets: 42 },
   { kind: "booked", agents: 3 },
@@ -29,6 +33,7 @@ const ALL_STATES: GridCell[] = [
   { kind: "away", away: 4 },
   { kind: "beyond-horizon", agents: 2 },
   { kind: "closed", note: "Christmas Day" },
+  { kind: "unknown" },
 ];
 
 describe("AvailabilityGridTable (#1302)", () => {
@@ -55,7 +60,7 @@ describe("AvailabilityGridTable (#1302)", () => {
     }
   });
 
-  it("explains every state it can render, so no letter is unexplained", () => {
+  it("explains every state it renders, so no letter is unexplained", () => {
     render(<AvailabilityGridTable grid={grid(ALL_STATES)} />);
     const legend = document.querySelectorAll("ul > li");
 
@@ -64,6 +69,43 @@ describe("AvailabilityGridTable (#1302)", () => {
       expect(screen.getByText(t.label)).toBeTruthy();
       expect(screen.getByText(t.meaning, { exact: false })).toBeTruthy();
     }
+  });
+
+  // #1928: Dan, "what if we only show the values that matter? Like nothing right
+  // now is ? or A so we don't need to show those at all."
+  it("leaves out a state the grid does not hold, from the key AND the counts", () => {
+    render(
+      <AvailabilityGridTable
+        grid={grid([
+          { kind: "open", agents: 3, buckets: 42 },
+          { kind: "closed", note: "Christmas Day" },
+        ])}
+      />,
+    );
+    const labels = [...document.querySelectorAll("ul > li")].map(
+      (li) => li.querySelector("span:nth-child(2)")?.textContent ?? "",
+    );
+    expect(labels).toEqual(["Bookable", "Closed"]);
+    // And the counts strip above it says nothing about them either, since the
+    // two are one list now.
+    const strip = document.querySelector("div.mb-4")?.textContent ?? "";
+    expect(strip).not.toMatch(/away|rostered|horizon|could not be checked/i);
+    expect(strip).toMatch(/bookable hours/);
+  });
+
+  // The state that used to be missing from the counts strip whatever its count,
+  // which is the could-not-measure one: a grid whose hours could not be read
+  // said nothing about them in the summary somebody reads first.
+  it("counts the hours it could not check", () => {
+    render(<AvailabilityGridTable grid={grid([{ kind: "unknown" }, { kind: "unknown" }])} />);
+    const strip = document.querySelector("div.mb-4")?.textContent ?? "";
+    expect(strip).toMatch(/2 that could not be checked/);
+  });
+
+  // An empty grid draws no key at all, rather than a box explaining nothing.
+  it("draws no key when there is nothing to explain", () => {
+    render(<AvailabilityGridTable grid={grid([])} />);
+    expect(document.querySelectorAll("ul > li").length).toBe(0);
   });
 
   it("counts a full hour separately from an hour with nobody rostered", () => {

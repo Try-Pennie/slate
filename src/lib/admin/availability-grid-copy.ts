@@ -25,6 +25,25 @@ export interface CellTreatment {
   /** The legend's one-line explanation, in a reader's terms. */
   meaning: string;
   /**
+   * How the counts strip above the grid names this state, which reads as part of
+   * a sentence ("2 with nobody rostered") where `label` reads as a name
+   * ("Nobody rostered") (#1928).
+   *
+   * Both forms live here because the strip and the key are derived from THIS
+   * list now, and there used to be two hand maintained lists of the same seven
+   * states with different words, a different order, and two kinds missing from
+   * the strip entirely. One of the two it omitted was `unknown`, the
+   * could-not-measure state, so a grid whose hours could not be read said
+   * nothing about them in the summary somebody reads first.
+   */
+  strip: string;
+  /**
+   * Whether a non zero count of this state is worth drawing attention to in the
+   * strip. On the record rather than in the strip's markup, or deriving the
+   * strip would silently drop it.
+   */
+  urgent?: true;
+  /**
    * The cell's classes. The legend swatch reuses them, so a colour can never be
    * right in the grid and wrong in the key that explains it.
    */
@@ -35,43 +54,55 @@ export interface CellTreatment {
 
 /**
  * Ordered most to least actionable, which is also the order somebody scans a key
- * in. Every fill is opaque where it carries a letter, so its contrast is fixed by
- * the two brand colours rather than by whatever the theme paints behind it.
+ * in, and the order the counts strip runs in (#1928). Every fill is opaque where
+ * it carries a letter, so its contrast is fixed by the two brand colours rather
+ * than by whatever the theme paints behind it.
+ *
+ * The `meaning` sentences are deliberately short (#1925). `Could not check` is
+ * the one that keeps its length: shortening it to something like "Not measured"
+ * loses the distinction between "we looked and there was nothing" and "we could
+ * not look", which is the whole reason that state exists.
  */
 export const CELL_TREATMENTS: CellTreatment[] = [
   {
     kind: "open",
     mark: "O",
     label: "Bookable",
-    meaning: "Agents are on shift and at least one pool is offering a time.",
+    meaning: "On shift, and times are available.",
+    strip: "bookable hours",
     cell: "bg-pennie-sky text-pennie-graphite",
   },
   {
     kind: "booked",
     mark: "F",
     label: "Full",
-    meaning: "Agents are on shift and every one of their times is taken.",
+    meaning: "On shift, every time taken.",
+    strip: "staffed but full",
     cell: "bg-pennie-yellow text-pennie-graphite",
   },
   {
     kind: "unrostered",
     mark: "N",
     label: "Nobody rostered",
-    meaning: "The org is open and no bookable agent is scheduled to work.",
+    meaning: "Open, but nobody is scheduled.",
+    strip: "with nobody rostered",
+    urgent: true,
     cell: "bg-error/25 text-fg",
   },
   {
     kind: "away",
     mark: "A",
     label: "Away",
-    meaning: "The org is open and everyone scheduled has approved time off.",
+    meaning: "Open, everyone scheduled is off.",
+    strip: "with everyone away",
     cell: "bg-[var(--pennie-yellow-2)] text-pennie-graphite",
   },
   {
     kind: "beyond-horizon",
     mark: "H",
     label: "Past the horizon",
-    meaning: "Agents are on shift, but this day is too far ahead to be offered yet.",
+    meaning: "Too far ahead to offer yet.",
+    strip: "past the horizon",
     cell: "bg-[var(--bg-alt)] text-fg-muted",
     swatchExtra: "border border-border",
   },
@@ -79,7 +110,8 @@ export const CELL_TREATMENTS: CellTreatment[] = [
     kind: "closed",
     mark: "",
     label: "Closed",
-    meaning: "The org is not open then.",
+    meaning: "Not open.",
+    strip: "closed",
     cell: "bg-transparent text-fg-muted/50",
     swatchExtra: "border border-border",
   },
@@ -87,7 +119,8 @@ export const CELL_TREATMENTS: CellTreatment[] = [
     kind: "unknown",
     mark: "?",
     label: "Could not check",
-    meaning: "The roster could not be read, so nothing about this hour was measured.",
+    meaning: "The roster could not be read, so this was not measured.",
+    strip: "that could not be checked",
     cell: "bg-transparent text-fg-muted",
     swatchExtra: "border border-dashed border-border",
   },

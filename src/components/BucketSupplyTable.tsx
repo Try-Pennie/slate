@@ -6,6 +6,7 @@ import {
   type SupplyDay,
 } from "@/lib/admin/bucket-supply";
 import { DEBT_TIER } from "@/lib/xbc";
+import { LegendList } from "@/components/ui/LegendList";
 import {
   SUPPLY_LEGEND,
   cellStyle,
@@ -240,21 +241,16 @@ export function BucketSupplyTable({
         </table>
       </div>
 
-      <ul className="mt-4 flex flex-wrap gap-x-6 gap-y-2 text-xs text-fg-muted">
-        {SUPPLY_LEGEND.map((t) => (
-          <li key={t.id} className="flex items-center gap-2">
-            <span
-              aria-hidden="true"
-              className={`flex h-5 w-8 shrink-0 items-center justify-center rounded text-[10px] font-semibold tabular-nums ${t.cell} ${t.swatchExtra ?? ""}`}
-            >
-              {t.mark}
-            </span>
-            <span>
-              <span className="font-semibold text-fg">{t.label}</span> {t.meaning}
-            </span>
-          </li>
-        ))}
-      </ul>
+      {/* #1925: the same shared key as /admin/availability. This markup was
+          character for character the same wrapping flow row, and fixing one
+          while leaving the other is exactly how the two drift. The swatches are
+          wider here because these marks are percentages rather than letters.
+
+          NOT filtered to the states present, unlike the grid's key: this page's
+          totals are counts of shares (saturated, part booked, nothing booked)
+          and do not map one to one onto the seven entries here, so deriving it
+          would be a different change rather than the same one. */}
+      <LegendList entries={SUPPLY_LEGEND} swatchCls="h-5 w-8" />
 
       <p className="mt-4 text-xs text-fg-muted">
         {/* #1937: this described the OLD ceiling, one synthetic ideal agent's grid

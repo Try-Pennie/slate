@@ -2,6 +2,7 @@ import { DateTime } from "luxon";
 import { BUSINESS_ZONE } from "@/lib/booking/business-hours";
 import { gridTotals, type AvailabilityGrid } from "@/lib/admin/availability-grid";
 import { CELL_TREATMENTS, cellTitle, treatmentFor } from "@/lib/admin/availability-grid-copy";
+import { LegendList } from "@/components/ui/LegendList";
 
 /**
  * The availability grid's table and its key (#1302).
@@ -13,25 +14,37 @@ import { CELL_TREATMENTS, cellTitle, treatmentFor } from "@/lib/admin/availabili
  */
 export function AvailabilityGridTable({ grid }: { grid: AvailabilityGrid }) {
   const totals = gridTotals(grid);
+  // The states this grid actually holds, in the treatments' own order. An empty
+  // grid leaves this empty, and both the strip and the key then draw nothing,
+  // which is right: the grid has its own empty state and a key explaining
+  // nothing would sit under it saying so twice.
+  const present = CELL_TREATMENTS.filter((t) => totals[t.kind] > 0);
 
   return (
     <>
+      {/* #1928: the strip and the key below are both DERIVED from
+          CELL_TREATMENTS, filtered to the states actually present. Dan: "what if
+          we only show the values that matter? Like nothing right now is ? or A
+          so we don't need to show those at all."
+
+          It also settles something already wrong. These were two hand written
+          lists of the same seven states with different words for each, a
+          different order, and two kinds missing from the strip whatever their
+          count. One of the missing two was `unknown`, the could-not-measure
+          state, so a grid whose hours could not be read said nothing about them
+          in the summary somebody reads first.
+
+          A key that changes with the data cannot be learned by heart, and that
+          does not matter here: a state and its key entry appear together, so
+          nobody meets an unexplained letter. The letter arriving is exactly what
+          puts its explanation back. */}
       <div className="mb-4 flex flex-wrap items-center gap-x-6 gap-y-1 text-sm">
-        <span className="text-fg-muted">
-          <span className="font-semibold tabular-nums text-fg">{totals.open}</span> bookable hours
-        </span>
-        <span className={totals.unrostered > 0 ? "text-error" : "text-fg-muted"}>
-          <span className="font-semibold tabular-nums">{totals.unrostered}</span> with nobody rostered
-        </span>
-        <span className="text-fg-muted">
-          <span className="font-semibold tabular-nums">{totals.away}</span> with everyone away
-        </span>
-        <span className="text-fg-muted">
-          <span className="font-semibold tabular-nums">{totals.booked}</span> staffed but full
-        </span>
-        <span className="text-fg-muted">
-          <span className="font-semibold tabular-nums">{totals["beyond-horizon"]}</span> past the horizon
-        </span>
+        {present.map((t) => (
+          <span key={t.kind} className={t.urgent ? "text-error" : "text-fg-muted"}>
+            <span className="font-semibold tabular-nums text-fg">{totals[t.kind]}</span>{" "}
+            {t.strip}
+          </span>
+        ))}
       </div>
 
       <div className="overflow-x-auto rounded-md border border-border">
@@ -90,21 +103,16 @@ export function AvailabilityGridTable({ grid }: { grid: AvailabilityGrid }) {
         </table>
       </div>
 
-      <ul className="mt-4 flex flex-wrap gap-x-6 gap-y-2 text-xs text-fg-muted">
-        {CELL_TREATMENTS.map((t) => (
-          <li key={t.kind} className="flex items-center gap-2">
-            <span
-              aria-hidden="true"
-              className={`flex h-4 w-4 shrink-0 items-center justify-center rounded text-[10px] font-semibold ${t.cell} ${t.swatchExtra ?? ""}`}
-            >
-              {t.mark}
-            </span>
-            <span>
-              <span className="font-semibold text-fg">{t.label}</span> {t.meaning}
-            </span>
-          </li>
-        ))}
-      </ul>
+      <LegendList
+        entries={present.map((t) => ({
+          id: t.kind,
+          mark: t.mark,
+          label: t.label,
+          meaning: t.meaning,
+          cell: t.cell,
+          swatchExtra: t.swatchExtra,
+        }))}
+      />
     </>
   );
 }
