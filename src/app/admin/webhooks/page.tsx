@@ -411,12 +411,12 @@ export default async function WebhooksPage({
                       </td>
                       <td className="py-1.5">
                         {view.resendable ? (
-                          <form action={resendWebhookDelivery}>
+                          <SaveForm action={resendWebhookDelivery} name={`webhook-resend-${d.id}`}>
                             <input type="hidden" name="delivery_id" value={d.id} />
                             <SubmitButton className={btnSecondaryCls} pendingLabel="Resending…">
                               Resend
                             </SubmitButton>
-                          </form>
+                          </SaveForm>
                         ) : (
                           // resendDelivery() refuses a suppressed row, so a button
                           // here would be a no-op that looks like an action.

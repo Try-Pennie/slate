@@ -34,6 +34,8 @@ function ConfirmButton() {
   );
 }
 
+// restore-optin-ok: this renders its own form and takes its action as a prop, so it
+// is not inside the wrapper yet. It arrives with #1998.
 export function RequestActions({
   requestId,
   cancelAction,

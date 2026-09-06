@@ -32,10 +32,8 @@ import { assert, fail, finish } from "./lib/harness.ts";
 const STILL_POSTING_DIRECTLY = new Set(
   [
     "src/app/admin/agents/[id]/page.tsx",
-    "src/app/admin/agents/page.tsx",
     "src/app/admin/ooo/page.tsx",
     "src/app/admin/webhooks/page.tsx",
-    "src/app/me/page.tsx",
     "src/components/AccountMenu.tsx",
     "src/components/AppHeader.tsx",
     "src/components/admin/ViewAsButton.tsx",
@@ -189,7 +187,12 @@ const MIGRATED: [string, string][] = [
   ["src/app/admin/business-hours/page.tsx", "setBookingHorizon"],
   ["src/app/admin/business-hours/page.tsx", "setOrgDefaultHours"],
   ["src/app/admin/event-types/page.tsx", "createEventType"],
+  ["src/app/admin/agents/page.tsx", "syncSalesforceNow"],
+  ["src/app/admin/ooo/page.tsx", "approveOooAction"],
+  ["src/app/admin/ooo/page.tsx", "retryOooAction"],
   ["src/app/admin/webhooks/page.tsx", "setWebhookEndpoint"],
+  ["src/app/admin/webhooks/page.tsx", "resendWebhookDelivery"],
+  ["src/app/me/page.tsx", "useMyDefaultHours"],
   ["src/components/ReasonOptionsEditor.tsx", "setReasonOptions"],
   ["src/components/TeamAccessPanel.tsx", "grantStaffAccess"],
   ["src/components/ui/WorkingHoursForm.tsx", "action"],
@@ -212,6 +215,48 @@ const MIGRATED: [string, string][] = [
     );
   }
   assert(MIGRATED.length >= 8, `the migrated list has real entries (${MIGRATED.length})`);
+}
+
+/**
+ * Actions whose form is drawn ONCE PER ROW, so its name must vary.
+ *
+ * The `key` rule below catches a repeated form that React itself keys. These are
+ * not keyed: they sit inside an element that is, so the wrapper carries no `key`
+ * of its own and that rule cannot see them. Their names interpolate the row's
+ * id, and this is what says so.
+ *
+ * Getting it wrong is not cosmetic: every row would file under one stash key, so
+ * a save killed by a deploy would offer one request's values back on another's
+ * form.
+ */
+const PER_ROW: [string, string][] = [
+  ["src/app/admin/ooo/page.tsx", "approveOooAction"],
+  ["src/app/admin/ooo/page.tsx", "retryOooAction"],
+  ["src/app/admin/webhooks/page.tsx", "resendWebhookDelivery"],
+  ["src/app/admin/booker-copy/page.tsx", "setEventDescription"],
+];
+
+{
+  for (const [file, action] of PER_ROW) {
+    const tags = saveFormTags(readFileSync(join(...file.split("/")), "utf8")).filter((t) =>
+      new RegExp(`action=\\{${action}\\}`).test(t),
+    );
+    assert(tags.length > 0, `${file}: ${action} is drawn through the wrapper`);
+    for (const tag of tags) {
+      assert(
+        /name=\{`[^`]*\$\{/.test(tag),
+        `${file}: ${action} is one per row, so its name must carry the row (${tag.slice(0, 90)})`,
+      );
+    }
+  }
+  // Every per row action is also pinned as migrated, so the two lists cannot
+  // drift into naming different things.
+  for (const [file, action] of PER_ROW) {
+    assert(
+      MIGRATED.some(([f, a]) => f === file && a === action),
+      `${file}: ${action} is in both lists`,
+    );
+  }
 }
 
 // --- a repeated form needs a name PER INSTANCE ------------------------------

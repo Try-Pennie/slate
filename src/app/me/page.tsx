@@ -1,4 +1,5 @@
 import { redirect } from "next/navigation";
+import { SaveForm } from "@/components/ui/SaveForm";
 import { DateTime } from "luxon";
 import { currentUser } from "@/lib/auth";
 import { oooOnlyFor } from "@/lib/env";
@@ -376,11 +377,11 @@ export default async function MePage({
                   />
                   You have no working hours set, so you won&apos;t get bookings.
                 </span>
-                <form action={useMyDefaultHours}>
+                <SaveForm action={useMyDefaultHours} name="my-default-hours">
                   <SubmitButton className={btnCls} pendingLabel="Applying company hours">
                     Use default hours
                   </SubmitButton>
-                </form>
+                </SaveForm>
               </div>
             )}
 
@@ -429,14 +430,14 @@ export default async function MePage({
                     timezone={sched?.timezone ?? "America/New_York"}
                     timezoneLabel="Your timezone"
                   />
-                  <form action={useMyDefaultHours} className="mt-3">
+                  <SaveForm action={useMyDefaultHours} name="my-default-hours-reset" className="mt-3">
                     <SubmitButton
                       className="text-xs text-pennie-blue underline dark:text-pennie-sky"
                       pendingLabel="Applying company hours"
                     >
                       Reset to company default hours
                     </SubmitButton>
-                  </form>
+                  </SaveForm>
                 </>
               )}
             </section>
