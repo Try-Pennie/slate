@@ -34,31 +34,47 @@ export interface SupplyLegendEntry {
 }
 
 /**
- * The three readings a COUNTED cell can take. One kind covers all three, and
- * they are very different facts: every time the day could hold, some of them,
- * and none.
+ * The three readings a COUNTED cell can take, and they INVERTED with the metric
+ * (#1937).
+ *
+ * The cell used to be how much was OFFERED, so offering nothing was the alarm
+ * and offering everything was the reassurance. It is now how much was BOOKED, so
+ * those two swap: a pool with nothing booked is the ordinary state (it is every
+ * bucket today, since cal.com still takes every lead), and a pool whose every
+ * possible time is taken is the one with nothing left to give.
+ *
+ * So `none` is deliberately UNALARMING and `saturated` is the notable one. The
+ * state actually worth acting on is not a share at all: it is
+ * `nobody-available`, which has no ceiling to be a share of and carries the
+ * error treatment below.
  */
-export type SupplyTone = "full" | "partial" | "empty";
+export type SupplyTone = "saturated" | "some" | "none";
 
 export const TONE_CLS: Record<SupplyTone, string> = {
-  full: "bg-pennie-sky text-pennie-graphite",
-  partial: "bg-pennie-yellow text-pennie-graphite",
-  empty: "bg-error/25 text-fg",
+  // Every possible time taken: nothing left for a new lead.
+  saturated: "bg-pennie-sky text-pennie-graphite",
+  some: "bg-pennie-yellow text-pennie-graphite",
+  // Quiet, not wrong. An error tint here would paint the entire page red today.
+  none: "bg-[var(--bg-alt)] text-fg-muted",
 };
 
 /** Which tone a measured cell reads in. Decided by the numbers, never by a
- *  threshold guessed here: a pool offering every time the day could hold is a
- *  different fact from one offering most of them. */
-export function toneFor(open: number, max: number): SupplyTone {
-  if (open <= 0) return "empty";
-  return open >= max ? "full" : "partial";
+ *  threshold guessed here: every possible time taken is a different fact from
+ *  most of them. */
+export function toneFor(booked: number, capacity: number): SupplyTone {
+  if (booked <= 0) return "none";
+  return booked >= capacity ? "saturated" : "some";
 }
 
 /** The classes and fallback mark for one cell. */
 export function cellStyle(cell: SupplyCell): { cell: string; mark: string } {
   switch (cell.kind) {
     case "counted":
-      return { cell: TONE_CLS[toneFor(cell.open, cell.max)], mark: "" };
+      return { cell: TONE_CLS[toneFor(cell.booked, cell.capacity)], mark: "" };
+    case "nobody-available":
+      // The one state on this page somebody has to act on, so it keeps the error
+      // treatment the old "nothing open" cell had, and a letter of its own.
+      return { cell: "bg-error/25 text-fg", mark: "N" };
     case "no-capacity":
       return { cell: "bg-[var(--bg-alt)] text-fg-muted", mark: "T" };
     case "beyond-horizon":
@@ -76,25 +92,36 @@ export function cellStyle(cell: SupplyCell): { cell: string; mark: string } {
  */
 export const SUPPLY_LEGEND: SupplyLegendEntry[] = [
   {
-    id: "full",
-    label: "Every time the day had",
-    meaning: "This pool is offering the whole of what the office day could hold.",
-    mark: "21",
-    cell: TONE_CLS.full,
+    id: "nobody-available",
+    label: "Nobody available",
+    meaning:
+      "The day had room for appointments and this pool has none: none offered, and none booked. This is the one to act on.",
+    mark: "N",
+    cell: "bg-error/25 text-fg",
   },
   {
-    id: "partial",
-    label: "Some of the day",
-    meaning: "Part of the day is taken. The number is open starts over what the day could have held.",
-    mark: "9",
-    cell: TONE_CLS.partial,
+    id: "saturated",
+    label: "Every time taken",
+    meaning: "Every time this pool could have taken an appointment at is booked. Nothing is left for a new lead.",
+    mark: "100%",
+    cell: TONE_CLS.saturated,
   },
   {
-    id: "empty",
-    label: "Nothing open",
-    meaning: "The day had room and this pool is offering none of it.",
-    mark: "0",
-    cell: TONE_CLS.empty,
+    id: "some",
+    label: "Part booked",
+    meaning:
+      "Some of the times this pool could take are booked. The number is booked starts out of the times it could have taken.",
+    mark: "45%",
+    cell: TONE_CLS.some,
+  },
+  {
+    id: "none",
+    label: "Nothing booked",
+    meaning:
+      "This pool has times to offer and none of them are taken. Every bucket reads this way until leads start arriving in Slate.",
+    mark: "0%",
+    cell: TONE_CLS.none,
+    swatchExtra: "border border-border",
   },
   {
     id: "no-capacity",
@@ -148,10 +175,12 @@ export function supplyCellTitle(cell: SupplyCell, bucketLabel: string, dayLabel:
   const when = `${bucketLabel} on ${dayLabel}`;
   switch (cell.kind) {
     case "counted":
-      if (cell.open === 0) {
-        return `${when}: nothing open. The day could have held ${cell.max}.`;
+      if (cell.booked === 0) {
+        return `${when}: nothing booked, out of ${cell.capacity} times it could have taken.`;
       }
-      return `${when}: ${cell.open} of ${cell.max} open, ${sharePercent(cell.share)} percent of what the day could hold.`;
+      return `${when}: ${cell.booked} of ${cell.capacity} possible times booked, ${sharePercent(cell.share)} percent.`;
+    case "nobody-available":
+      return `${when}: nobody available. The day had room for appointments and this pool has none offered and none booked.`;
     case "no-capacity":
       return `${when}: nothing left today. The office is open but no whole appointment fits before closing.`;
     case "beyond-horizon":

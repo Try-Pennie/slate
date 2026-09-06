@@ -51,6 +51,11 @@ const db = vi.hoisted(() => ({
   slotError: null as { message: string } | null,
   bucketRows: [] as unknown[],
   bucketError: null as { message: string } | null,
+  /** Booked start times, as the bookings table returns them (#1937). */
+  bookingRows: [] as { starts_at: string; buckets: { code: string } | null }[],
+  bookingError: null as { message: string } | null,
+  /** What the bookings read actually asked for, so the filters can be asserted. */
+  bookingQuery: { select: "", filters: [] as [string, string, string][] },
 }));
 
 vi.mock("@/lib/booking/business-hours-load", () => hours);
@@ -68,6 +73,45 @@ vi.mock("@/lib/supabase/admin", () => ({
         const q = {
           select: () => q,
           eq: async () => ({ data: db.bucketRows, error: db.bucketError }),
+        };
+        return q;
+      }
+      // #1937: the times already booked, the numerator of every share. The call
+      // site paginates, so this answers one page and then an EMPTY one, or the
+      // loader would ask for the next page forever.
+      if (table === "bookings") {
+        let served = false;
+        // RECORDED, not swallowed. A fake whose filters are passthroughs cannot
+        // tell a query that excludes cancelled bookings from one that counts
+        // them, and both mutations survived until this recorded them: the
+        // assertions below are what make those filters real (L143).
+        const q = {
+          select: (cols: string) => {
+            db.bookingQuery.select = cols;
+            return q;
+          },
+          eq: (col: string, val: unknown) => {
+            db.bookingQuery.filters.push(["eq", col, String(val)]);
+            return q;
+          },
+          neq: (col: string, val: unknown) => {
+            db.bookingQuery.filters.push(["neq", col, String(val)]);
+            return q;
+          },
+          gte: (col: string, val: unknown) => {
+            db.bookingQuery.filters.push(["gte", col, String(val)]);
+            return q;
+          },
+          lt: (col: string, val: unknown) => {
+            db.bookingQuery.filters.push(["lt", col, String(val)]);
+            return q;
+          },
+          range: async () => {
+            if (db.bookingError) return { data: null, error: db.bookingError };
+            const page = served ? [] : db.bookingRows;
+            served = true;
+            return { data: page, error: null };
+          },
         };
         return q;
       }
@@ -97,6 +141,9 @@ const EVENT_TYPE = {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  db.bookingRows = [];
+  db.bookingError = null;
+  db.bookingQuery = { select: "", filters: [] };
   hours.loadBusinessHours.mockResolvedValue({
     zone: "America/New_York",
     source: "stored",
@@ -134,15 +181,18 @@ beforeEach(() => {
 });
 
 describe("loadBucketSupply (#1254)", () => {
-  it("measures each bucket against the maximum the booker would derive", async () => {
+  it("measures each bucket's booked share against what that bucket could take", async () => {
     const report = await loadBucketSupply("org-1", NOW);
     expect(report.measurable).toBe(true);
     if (!report.measurable) return;
 
     const thin = report.rows.find((r) => r.code === "120");
     const full = report.rows.find((r) => r.code === "110");
-    expect(thin?.cells[0]).toEqual({ kind: "counted", open: 9, max: 21, share: 9 / 21 });
-    expect(full?.cells[0]).toEqual({ kind: "counted", open: 21, max: 21, share: 1 });
+    // #1937: the share is BOOKED out of POSSIBLE. With nothing booked, each
+    // reads as an honest zero against its OWN ceiling, which is what that
+    // bucket could have taken rather than one ideal agent's grid.
+    expect(thin?.cells[0]).toEqual({ kind: "counted", booked: 0, capacity: 9, share: 0 });
+    expect(full?.cells[0]).toEqual({ kind: "counted", booked: 0, capacity: 21, share: 0 });
     expect(thin?.depth).toBe(4);
     expect(thin?.effectiveDepth).toBe(3);
     expect(report.depthReadable).toBe(true);
@@ -181,9 +231,9 @@ describe("loadBucketSupply (#1254)", () => {
     // page that can still answer the question it exists for.
     expect(report.rows.find((r) => r.code === "120")?.cells[0]).toEqual({
       kind: "counted",
-      open: 9,
-      max: 21,
-      share: 9 / 21,
+      booked: 0,
+      capacity: 9,
+      share: 0,
     });
   });
 
@@ -198,9 +248,9 @@ describe("loadBucketSupply (#1254)", () => {
     // Still measured, because the cache is what carries the answer.
     expect(report.rows.find((r) => r.code === "110")?.cells[0]).toEqual({
       kind: "counted",
-      open: 21,
-      max: 21,
-      share: 1,
+      booked: 0,
+      capacity: 21,
+      share: 0,
     });
   });
 
@@ -249,5 +299,70 @@ describe("loadBucketSupply (#1254)", () => {
     settings.readBookingHorizonDays.mockResolvedValue(4);
     const report = await loadBucketSupply("o1", new Date("2026-08-04T14:00:00Z"));
     expect(report.measurable).toBe(true);
+  });
+
+  // #1937: what the page is for once leads start arriving.
+  it("counts the times already booked against what the bucket could take", async () => {
+    db.bookingRows = FULL_DAY.slice(0, 7).map((starts_at) => ({
+      starts_at,
+      buckets: { code: "110" },
+    }));
+    const report = await loadBucketSupply("org-1", NOW);
+    expect(report.measurable).toBe(true);
+    if (!report.measurable) return;
+
+    const cell = report.rows.find((r) => r.code === "110")?.cells[0];
+    // The seven booked times are no longer being offered, so the ceiling is the
+    // 21 the cache still holds plus nothing new: they are the same instants.
+    expect(cell).toEqual({ kind: "counted", booked: 7, capacity: 21, share: 7 / 21 });
+  });
+
+  // A read that could not measure must never be scored as zero booked, which is
+  // exactly what a healthy quiet day looks like (L11).
+  it("says unknown rather than zero booked when the bookings cannot be read", async () => {
+    db.bookingError = { message: "statement timeout" };
+    const report = await loadBucketSupply("org-1", NOW);
+    expect(report.measurable).toBe(true);
+    if (!report.measurable) return;
+
+    // Not one share anywhere: a zero would read as "nothing is taken", which is
+    // what every bucket honestly looks like today.
+    expect(report.rows.every((r) => r.cells.every((c) => c.kind !== "counted"))).toBe(true);
+    expect(report.rows[0].cells[0].kind).toBe("unknown");
+    // A day the office is SHUT still says so, because that is known whatever the
+    // bookings read did, and "unknown" about a closed day would be worse than
+    // useless.
+    const sunday = report.days.findIndex((d) => d.iso === "2026-08-09");
+    expect(sunday).toBeGreaterThanOrEqual(0);
+    expect(report.rows[0].cells[sunday].kind).toBe("closed");
+  });
+
+  // The filters are the correctness of this read, and nothing could see them
+  // until the fake recorded them: both of these mutations survived first time.
+  it("counts no cancelled booking, and asks only for the window on screen", async () => {
+    await loadBucketSupply("org-1", NOW);
+
+    const filters = db.bookingQuery.filters;
+    // A cancelled time is FREE again, so counting it would report a bucket as
+    // busier than it is. `rescheduled` is deliberately NOT excluded: that marks
+    // a booking that moved, and the row carries the time it moved to.
+    expect(filters).toContainEqual(["neq", "status", "cancelled"]);
+    expect(filters.some(([op, col]) => op === "neq" && col === "status")).toBe(true);
+    expect(filters).toContainEqual(["eq", "org_id", "org-1"]);
+
+    // Bounded to the days the page draws, which is what keeps this off the whole
+    // table: bookings is a growth table, not a roster bounded one.
+    const lower = filters.find(([op, col]) => op === "gte" && col === "starts_at");
+    const upper = filters.find(([op, col]) => op === "lt" && col === "starts_at");
+    expect(lower).toBeTruthy();
+    expect(upper).toBeTruthy();
+    expect(Date.parse(lower![2])).toBeLessThanOrEqual(NOW.getTime());
+    expect(Date.parse(upper![2])).toBeGreaterThan(NOW.getTime());
+
+    // The bucket's code comes through the FOREIGN KEY rather than a second read
+    // of `buckets`, which is what keeps this read working when the bucket list
+    // one fails.
+    expect(db.bookingQuery.select).toContain("buckets");
+    expect(db.bookingQuery.select).toContain("starts_at");
   });
 });

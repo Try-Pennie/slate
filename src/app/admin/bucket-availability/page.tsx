@@ -43,10 +43,14 @@ export default async function BucketAvailabilityPage() {
     <>
       <>
         <AdminPageHeader title="Bucket availability">
-            How many appointment times each debt bucket is offering on each day, against how
-            many that day could have held. A count on its own cannot tell a thin pool from a
-            closed one, so every number is a share of what was possible. All times are{" "}
-            {zoneLabel}.
+            {/* #1937: the header used to promise "a share of what was possible",
+                and that phrase is what let the two halves of the number drift
+                apart until shares ran to 189%. It names the exact question the
+                number answers now, and what the ceiling is measured over. */}
+            What share of the appointment times each debt bucket could have taken have
+            actually been booked, day by day. The figure under each share is how many
+            times that bucket could have taken: the ones it is still offering plus the
+            ones already booked. All times are {zoneLabel}.
         </AdminPageHeader>
 
         {!report.measurable ? (
