@@ -218,22 +218,34 @@ describe("editing part of a time (#1964)", () => {
   /**
    * A double click, as the browser really delivers it.
    *
-   * Measured in Chromium: the SECOND mousedown reports the exact caret, and by
-   * the time `dblclick` fires the selection has already been expanded to the
-   * browser's own word, which for "5:00pm" is "00pm". jsdom does no such
-   * expansion, so the expansion is applied here too, or the test would exercise
-   * a gesture nobody performs and pass on a component that read the wrong
-   * offset (L52).
+   * Measured in Chromium: the SECOND mousedown reports the exact caret, and
+   * expanding the selection to the browser's own word, which for "5:00pm" is
+   * "00pm", is that mousedown's DEFAULT ACTION. jsdom does neither, so both are
+   * modelled here, or the test would exercise a gesture nobody performs and pass
+   * on a component that read the wrong offset (L52).
+   *
+   * The expansion is conditional on `defaultPrevented`, and that is the whole
+   * mechanism #1987 turns on: a handler that cancels the second mousedown stops
+   * the browser ever applying its word, so there is nothing to paint and nothing
+   * to correct. A harness that expanded unconditionally would report the flash
+   * as unfixable, and one whose events were not `cancelable` would report it as
+   * fixed by any handler at all, since `preventDefault` on an uncancelable event
+   * is a silent no-op.
+   *
+   * It returns the second mousedown so a test can ask whether it was cancelled,
+   * which is the only observable this defect has: a paint cannot be measured.
    */
   async function doubleClickAt(el: HTMLInputElement, caret: number, browserWord: [number, number]) {
     el.focus();
     el.setSelectionRange(caret, caret);
-    el.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, detail: 1 }));
+    el.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, detail: 1 }));
     el.setSelectionRange(caret, caret);
-    el.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, detail: 2 }));
-    // What the browser does on its own before the handler runs.
-    el.setSelectionRange(browserWord[0], browserWord[1]);
+    const second = new MouseEvent("mousedown", { bubbles: true, cancelable: true, detail: 2 });
+    el.dispatchEvent(second);
+    // The browser expands to its own word only if nothing cancelled it.
+    if (!second.defaultPrevented) el.setSelectionRange(browserWord[0], browserWord[1]);
     el.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, detail: 2 }));
+    return second;
   }
 
   const selected = (el: HTMLInputElement) =>
@@ -246,6 +258,79 @@ describe("editing part of a time (#1964)", () => {
     // The browser's own word for a click inside "00pm" is the whole of it.
     await doubleClickAt(el, 2, [2, 6]);
     expect(selected(el)).toBe("00");
+  });
+
+  // #1987, and it is deliberately NOT a test about the final selection.
+  //
+  // Dan, 2026-09-06: "it briefly highlights the am/pm as well. It instantly
+  // corrects itself to just the minutes but the highlight of am/pm shouldn't
+  // happen at all in that case."
+  //
+  // The final selection was already correct before this change, so a test named
+  // for the flash that only checked `selected(el)` would have passed over the
+  // defect it was written for. What separates the two is WHEN and WHICH HANDLER:
+  // a correction applied after the browser has painted its own word is a flash,
+  // and one that stops the browser having a word to paint is not. So these
+  // assert the mechanism.
+  it("never lets the browser apply its own word, so there is nothing to correct", async () => {
+    render(<TimeField name="start_1" ariaLabel="Monday start time" defaultValue="12:30" />);
+    const el = box() as HTMLInputElement;
+    expect(el.value).toBe("12:30pm");
+    // "12:30pm" is 1 2 : 3 0 p m, so the minutes are 3 to 5 and a click at 4 is
+    // inside them. The browser's word for that click is the whole of "30pm",
+    // which is the highlight Dan saw.
+    const second = await doubleClickAt(el, 4, [3, 7]);
+    expect(second.defaultPrevented).toBe(true);
+    expect(selected(el)).toBe("30");
+  });
+
+  it("has already selected the segment by the end of the mousedown", async () => {
+    render(<TimeField name="start_1" ariaLabel="Monday start time" defaultValue="12:30" />);
+    const el = box() as HTMLInputElement;
+    el.focus();
+    el.setSelectionRange(4, 4);
+    el.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, detail: 1 }));
+    el.setSelectionRange(4, 4);
+    el.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, detail: 2 }));
+    // No `dblclick` dispatched at all. The range is right already, which is what
+    // stops there being a frame in between the two where something else is
+    // highlighted. A component that still corrected on dblclick would leave the
+    // caret sitting where the first click put it here.
+    expect(selected(el)).toBe("30");
+  });
+
+  // The refusal, and it has to stay: cancelling the browser's word in favour of
+  // NOTHING would make a field holding unparseable text double click to a bare
+  // caret, which is worse than the word it replaced.
+  it("leaves the browser alone when the text is not a time it can read", async () => {
+    render(<TimeField name="start_1" ariaLabel="Monday start time" defaultValue="17:00" />);
+    const el = box() as HTMLInputElement;
+    await userEvent.setup().clear(el);
+    await userEvent.setup().type(el, "lunchtime");
+    const second = await doubleClickAt(el, 2, [0, 9]);
+    expect(second.defaultPrevented).toBe(false);
+    expect(selected(el)).toBe("lunchtime");
+  });
+
+  // The two NEIGHBOURING gestures, which `detail !== 2` is the only thing
+  // standing between. A single click still places a caret and a triple click
+  // still takes the whole value; cancelling either would break a field people
+  // use constantly to fix a defect nobody can see. Measured in Chromium on the
+  // real control: a triple click selects "8:00am" whole, unchanged by this.
+  it.each([
+    ["a single click", 1],
+    ["a triple click", 3],
+  ])("does not touch %s", async (_label, detail) => {
+    render(<TimeField name="start_1" ariaLabel="Monday start time" defaultValue="17:00" />);
+    const el = box() as HTMLInputElement;
+    el.focus();
+    el.setSelectionRange(3, 3);
+    const ev = new MouseEvent("mousedown", { bubbles: true, cancelable: true, detail });
+    el.dispatchEvent(ev);
+    expect(ev.defaultPrevented).toBe(false);
+    // Whatever the browser would do is left to it: jsdom does nothing, so the
+    // caret stays where it was put rather than being moved by the component.
+    expect(selected(el)).toBe("");
   });
 
   it("selects the hour when the hour is clicked", async () => {

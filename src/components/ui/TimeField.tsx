@@ -110,7 +110,6 @@ export function TimeField({
    * you clicked. The second MOUSEDOWN still reports the exact caret (0 through 5
    * for the six characters), so that is where the position is taken from.
    */
-  const dblCaret = useRef<number | null>(null);
   const listRef = useRef<HTMLUListElement>(null);
   const baseId = useId();
   const listId = `${baseId}-list`;
@@ -294,23 +293,41 @@ export function TimeField({
           setHighlight(null);
         }}
         onMouseDown={(e) => {
-          // The second click of a double click still reports the exact caret;
-          // by dblclick the browser has expanded it to a word (#1964).
-          dblCaret.current = e.detail === 2 ? e.currentTarget.selectionStart : null;
-        }}
-        onDoubleClick={(e) => {
           // Give the gesture the meaning a segmented field would have: select
           // the hour, the minutes or the meridiem, whichever was clicked. The
-          // browser's own word rules group "00pm" together, so double clicking
-          // the minutes selected the meridiem with them and typing replaced
-          // both. Overridden here rather than prevented on mousedown, which
-          // would also cancel the focus the click is there to give.
-          const caret = dblCaret.current ?? e.currentTarget.selectionStart ?? 0;
-          const seg = timeSegmentAt(e.currentTarget.value, caret);
-          // No segment means the text is not a time this can read, so the
-          // browser keeps whatever it did rather than selecting something
-          // arbitrary.
-          if (seg) e.currentTarget.setSelectionRange(seg.start, seg.end);
+          // browser's own word rules group "00pm" together, so a double click on
+          // the minutes would otherwise select the meridiem with them and typing
+          // would replace both (#1964).
+          //
+          // ON THE SECOND MOUSEDOWN, NOT ON `dblclick` (#1987). It was on
+          // dblclick, which fires after the browser has already applied and
+          // PAINTED its own word selection, so double clicking the minutes of
+          // "12:30pm" showed the am or pm highlighted for a frame before the
+          // correction dropped it away. The correction was instant and it was
+          // not invisible.
+          //
+          // The reason it was not done here was recorded as "preventing on
+          // mousedown would also cancel the focus the click is there to give",
+          // and that is true of a FIRST mousedown and not of this one: by the
+          // second click of a double click the field is already focused, from
+          // the first. Preventing the second cancels only the word selection,
+          // which is the thing being replaced. `focus()` is called anyway, so
+          // the handler does not rest on that reasoning holding in every
+          // browser; on an already focused field it does nothing.
+          if (e.detail !== 2) return;
+          const seg = timeSegmentAt(
+            e.currentTarget.value,
+            e.currentTarget.selectionStart ?? 0,
+          );
+          // No segment means the text is not a time this can read. The browser
+          // then keeps its own word selection, rather than having it cancelled
+          // in favour of nothing, so an unparseable field still double clicks
+          // the way every other text box does.
+          if (!seg) return;
+          e.preventDefault();
+          const el = e.currentTarget;
+          el.focus();
+          el.setSelectionRange(seg.start, seg.end);
         }}
         onFocus={openList}
         onBlur={settle}
