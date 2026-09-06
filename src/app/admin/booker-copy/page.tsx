@@ -7,6 +7,7 @@ import { setEventDescription } from "@/app/admin/actions";
 import { EVENT_DESCRIPTION_MAX } from "@/lib/booking/settings";
 import { SubmitButton } from "@/components/ui/SubmitButton";
 import { SettingsSaveNotice } from "@/app/admin/settings/SettingsSaveNotice";
+import { savedOutcome, savedSentence } from "@/lib/admin/save-outcomes";
 import { AdminPageHeader, AdminDenied } from "@/components/admin/AdminPageHeader";
 import { btnCls, cardCls, labelCls, proseCls, textareaCls } from "@/components/ui/styles";
 
@@ -18,6 +19,7 @@ export default async function BookerCopyPage({
   searchParams: Promise<{ ok?: string; error?: string }>;
 }) {
   const sp = await searchParams;
+  const saved = savedSentence(savedOutcome(sp.ok));
   const me = await currentUser();
   if (!me) redirect("/login");
   if (!canEditOrgSettings(me.role)) return <AdminDenied need="an admin" />;
@@ -46,7 +48,12 @@ export default async function BookerCopyPage({
       <AdminPageHeader title="Booker copy">
         The words a lead reads on the booking panel before they pick a time.
       </AdminPageHeader>
-      <SettingsSaveNotice ok={!!sp.ok} error={sp.error} saved="Booker copy saved." />
+      {/* #1990: the sentence comes from the OUTCOME, so it names the form
+          that saved rather than whatever this page had written down. An
+          unrecognised value (a bookmarked `?ok=1` from before outcomes were
+          named) shows nothing, rather than confirming a save nobody made. */}
+      {saved && <SettingsSaveNotice ok saved={saved} error={sp.error} />}
+      {sp.error && !saved && <SettingsSaveNotice ok={false} error={sp.error} saved="" />}
       <section className={cardCls}>
         <h2 className="mb-1 text-sm font-semibold">What the lead reads before booking</h2>
         <p className={`mb-4 ${proseCls} text-xs text-fg-muted`}>

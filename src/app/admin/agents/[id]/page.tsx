@@ -30,6 +30,7 @@ import { WorkingHoursForm } from "@/components/ui/WorkingHoursForm";
 import { SubmitButton } from "@/components/ui/SubmitButton";
 import { orgDefaultWeek, workingHoursDays, workingHoursSavedNotice } from "@/lib/schedule-week";
 import { SettingsSaveNotice } from "@/app/admin/settings/SettingsSaveNotice";
+import { savedOutcome } from "@/lib/admin/save-outcomes";
 import {
   deactivateExplanation,
   notBookableContrast,
@@ -422,7 +423,7 @@ export default async function AgentProfilePage({
                   as a click that did nothing. Built from the week this render
                   just READ rather than from what the action meant to write, so
                   a save that partly landed says what really landed (L78). */}
-              {query?.ok ? (
+              {savedOutcome(query?.ok) === "working-hours" ? (
                 <div className="mt-4">
                   <SettingsSaveNotice
                     ok

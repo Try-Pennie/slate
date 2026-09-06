@@ -480,7 +480,7 @@ describe("AgentProfilePage says what the pool toggle did (#1769)", () => {
 // appears a dozen times in this page's prose, so a count of it could never tell a
 // duplicate rendering apart from a sentence.
 // #1988: the other half of the confirmation, and it is deliberately its own
-// test. Asserting that the action redirects with `ok=1` proves nothing about
+// test. Asserting that the action redirects with an outcome proves nothing about
 // whether the page ever renders anything for it, and asserting that the page
 // renders a notice proves nothing about whether the action sets the flag. Both
 // halves, or the feature can be half shipped and green.
@@ -497,7 +497,7 @@ describe("AgentProfilePage confirms a saved week (#1988)", () => {
   };
 
   it("says what week is now stored, not just that something happened", async () => {
-    await renderWith("1");
+    await renderWith("working-hours");
     const said = screen.getAllByRole("status").map((n) => n.textContent ?? "");
     const notice = said.find((t) => /hours saved/i.test(t));
     expect(notice).toBeTruthy();

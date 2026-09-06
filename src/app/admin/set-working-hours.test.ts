@@ -185,14 +185,14 @@ describe("setWorkingHours", () => {
 // and the page came back with the same values it already showed, so a
 // successful save and a click that did nothing were the same event.
 //
-// The confirmation travels as a redirect carrying `ok=1`, so what is asserted
+// The confirmation travels as a redirect carrying a NAMED outcome, so what is asserted
 // here is that the redirect happens, that it lands on the page the person was
 // actually on, and above all that it does NOT happen when nothing was saved. A
 // confirmation over a week nobody wrote is worse than the silence it replaced.
 describe("saving working hours confirms it saved (#1988)", () => {
   it("sends the person back to the agent they were editing", async () => {
     await setWorkingHours(hoursForm());
-    expect(redirect).toHaveBeenCalledWith("/admin/agents/u1?ok=1");
+    expect(redirect).toHaveBeenCalledWith("/admin/agents/u1?ok=working-hours");
   });
 
   // The route is derived from the SUBJECT, not written down once. A hardcoded
@@ -201,7 +201,7 @@ describe("saving working hours confirms it saved (#1988)", () => {
     const other = hoursForm();
     other.set("user_id", "u9");
     await setWorkingHours(other);
-    expect(redirect).toHaveBeenCalledWith("/admin/agents/u9?ok=1");
+    expect(redirect).toHaveBeenCalledWith("/admin/agents/u9?ok=working-hours");
   });
 
   // The /me form posts from a different page into an action that looks alike.
@@ -211,17 +211,17 @@ describe("saving working hours confirms it saved (#1988)", () => {
   it("sends an agent saving their own hours back to their own page", async () => {
     auth.currentUser.mockResolvedValue({ id: "me1", role: "agent", org_id: "o1" });
     await setMyWorkingHours(hoursForm());
-    expect(redirect).toHaveBeenCalledWith("/me?ok=1");
+    expect(redirect).toHaveBeenCalledWith("/me?ok=working-hours");
   });
 
   it("confirms the company default button too, on both pages", async () => {
     await useDefaultHours(hoursForm());
-    expect(redirect).toHaveBeenCalledWith("/admin/agents/u1?ok=1");
+    expect(redirect).toHaveBeenCalledWith("/admin/agents/u1?ok=working-hours");
 
     redirect.mockClear();
     auth.currentUser.mockResolvedValue({ id: "me1", role: "agent", org_id: "o1" });
     await useMyDefaultHours();
-    expect(redirect).toHaveBeenCalledWith("/me?ok=1");
+    expect(redirect).toHaveBeenCalledWith("/me?ok=working-hours");
   });
 
   // The half that matters most, and it is the reason the confirmation is placed

@@ -80,7 +80,7 @@ describe("setDefaultBucket", () => {
 
   it("saves a valid code (id=1 upsert + audit) and redirects ok", async () => {
     await expect(setDefaultBucket(form({ default_bucket_code: "200" }))).rejects.toThrow(
-      /NEXT_REDIRECT:.*ok=1/,
+      /NEXT_REDIRECT:.*ok=bucket-routing/,
     );
     expect(upsert).toHaveBeenCalledTimes(1);
     const [row, opts] = upsert.mock.calls[0] as unknown as [
@@ -98,7 +98,7 @@ describe("setDefaultBucket", () => {
 
   it("clears the default when the choice is blank (writes null)", async () => {
     await expect(setDefaultBucket(form({ default_bucket_code: "" }))).rejects.toThrow(
-      /NEXT_REDIRECT:.*ok=1/,
+      /NEXT_REDIRECT:.*ok=bucket-routing/,
     );
     const [row] = upsert.mock.calls[0] as unknown as [Record<string, unknown>];
     expect(row.default_bucket_code).toBeNull();

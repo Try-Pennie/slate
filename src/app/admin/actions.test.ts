@@ -664,7 +664,7 @@ describe("setMonitorSettings save path (#582)", () => {
     const key = ALERT_KEYS[0];
     await expect(
       setMonitorSettings(monitorForm({ [`cooldown_${key}`]: "", floor_30: "" })),
-    ).rejects.toThrow(/NEXT_REDIRECT:\/admin\/alerts\?ok=1/);
+    ).rejects.toThrow(/NEXT_REDIRECT:\/admin\/alerts\?ok=alerts/);
 
     const rows = settingsUpsertPayload();
     const blankRow = rows.find((r) => r.key === key);
@@ -696,7 +696,7 @@ describe("setMonitorSettings save path (#582)", () => {
   // A full row is written per key (onConflict: "key"), each a complete object, so
   // saving one field can never blank a sibling column.
   it("upserts a complete row per key on the key conflict target", async () => {
-    await expect(setMonitorSettings(monitorForm())).rejects.toThrow(/ok=1/);
+    await expect(setMonitorSettings(monitorForm())).rejects.toThrow(/ok=alerts/);
 
     const settingsCall = upsert.mock.calls.find(([payload]) => Array.isArray(payload));
     expect(settingsCall).toBeTruthy();
@@ -720,7 +720,7 @@ describe("setMonitorSettings save path (#582)", () => {
 
   // The acting admin is stamped on both writes and in the audit trail.
   it("stamps updated_by with the acting admin and audits the change", async () => {
-    await expect(setMonitorSettings(monitorForm())).rejects.toThrow(/ok=1/);
+    await expect(setMonitorSettings(monitorForm())).rejects.toThrow(/ok=alerts/);
 
     const rows = settingsUpsertPayload();
     expect(rows.every((r) => r.updated_by === admin.id)).toBe(true);
@@ -1312,7 +1312,7 @@ describe("the reads that decide authorization or a write must refuse, not guess 
         /org default schedule/,
       );
       expect(schedule.upsertUserSchedule).not.toHaveBeenCalled();
-      // #1988: and no confirmation. A refusal that still redirected with ok=1
+      // #1988: and no confirmation. A refusal that still carried a save outcome
       // would put "Hours saved." over a week nobody wrote, which is worse than
       // the silence this replaced.
       expect(redirect).not.toHaveBeenCalled();
@@ -1330,7 +1330,7 @@ describe("the reads that decide authorization or a write must refuse, not guess 
       dbState.rowsByTable.organizations = orgDefaults;
       dbState.rowsByTable.availability_schedules = { timezone: "America/Denver" };
       await expect(useDefaultHours(form({ user_id: "u2" }))).rejects.toThrow(
-        "NEXT_REDIRECT:/admin/agents/u2?ok=1",
+        "NEXT_REDIRECT:/admin/agents/u2?ok=working-hours",
       );
       expect(schedule.upsertUserSchedule).toHaveBeenCalledWith("u2", "America/Denver");
     });
@@ -1340,7 +1340,7 @@ describe("the reads that decide authorization or a write must refuse, not guess 
       dbState.rowsByTable.organizations = orgDefaults;
       dbState.rowsByTable.availability_schedules = null;
       await expect(useDefaultHours(form({ user_id: "u2" }))).rejects.toThrow(
-        "NEXT_REDIRECT:/admin/agents/u2?ok=1",
+        "NEXT_REDIRECT:/admin/agents/u2?ok=working-hours",
       );
       expect(schedule.upsertUserSchedule).toHaveBeenCalledWith("u2", "America/Chicago");
     });
@@ -1386,7 +1386,7 @@ describe("the reads that decide authorization or a write must refuse, not guess 
       await expect(
         setDefaultBucket(form({ default_bucket_code: "120" })),
       // #1922: back to the page the form is on, not the dead /admin/settings.
-      ).rejects.toThrow(/NEXT_REDIRECT:\/admin\/buckets\?ok=1/);
+      ).rejects.toThrow(/NEXT_REDIRECT:\/admin\/buckets\?ok=bucket-routing/);
       expect(upsert).toHaveBeenCalled();
     });
   });
@@ -1502,13 +1502,19 @@ describe("setAgentAttributes merges rather than rebuilding (#1874)", () => {
     (update.mock.calls.at(-1)?.[0] as { attributes: Record<string, unknown> }).attributes;
 
   it("keeps every Salesforce owned key when setting legal eligible", async () => {
-    await setAgentAttributes(form({ user_id: "u2", legal_eligible: "true" }));
+    // #1990: a successful save now ends in a redirect, which the mock throws as
+    // the real one does, so reaching it IS reaching the end of the write.
+    await expect(
+      setAgentAttributes(form({ user_id: "u2", legal_eligible: "true" })),
+    ).rejects.toThrow(/ok=agent-attributes/);
     expect(written()).toEqual({ ...stored, legal_eligible: true });
   });
 
   it("clears legal eligible on Not set, which a merge would otherwise make impossible", async () => {
     dbState.rowsByTable.users = { role: "agent", attributes: { ...stored, legal_eligible: true } };
-    await setAgentAttributes(form({ user_id: "u2", legal_eligible: "" }));
+    await expect(
+      setAgentAttributes(form({ user_id: "u2", legal_eligible: "" })),
+    ).rejects.toThrow(/ok=agent-attributes/);
     // Removed, not set to false: `legal_eligible!` treats an unset agent
     // differently from one explicitly marked N.
     expect("legal_eligible" in written()).toBe(false);
@@ -1518,15 +1524,17 @@ describe("setAgentAttributes merges rather than rebuilding (#1874)", () => {
   // The panel no longer sends these, but the action is a route of its own and a
   // form is anything a caller posts.
   it("ignores routing values posted to it, since Salesforce owns them", async () => {
-    await setAgentAttributes(
-      form({
-        user_id: "u2",
-        debt_team: "colossal",
-        backend_service: "nonsense",
-        agent_role: "sales_agent",
-        legal_eligible: "false",
-      }),
-    );
+    await expect(
+      setAgentAttributes(
+        form({
+          user_id: "u2",
+          debt_team: "colossal",
+          backend_service: "nonsense",
+          agent_role: "sales_agent",
+          legal_eligible: "false",
+        }),
+      ),
+    ).rejects.toThrow(/ok=agent-attributes/);
     expect(written()).toEqual({ ...stored, legal_eligible: false });
   });
 
@@ -1580,27 +1588,27 @@ describe("a save returns to the page its own form is on (#1922)", () => {
   it("sends a saved default bucket back to the buckets page", async () => {
     dbState.rowsByTable.buckets = [{ code: "411", is_test: false }];
     const to = await targetOf(() => setDefaultBucket(form({ default_bucket_code: "411" })));
-    expect(to).toMatch(/^\/admin\/buckets\?ok=1/);
+    expect(to).toMatch(/^\/admin\/buckets\?ok=/);
     expect(revalidatePath).toHaveBeenCalledWith("/admin/buckets");
   });
 
   it("sends a saved booking horizon back to the hours page", async () => {
     const to = await targetOf(() => setBookingHorizon(form({ horizon_days: "5" })));
-    expect(to).toMatch(/^\/admin\/business-hours\?ok=1/);
+    expect(to).toMatch(/^\/admin\/business-hours\?ok=/);
   });
 
   it("sends saved booker copy back to the booker copy page", async () => {
     const to = await targetOf(() =>
       setEventDescription(form({ event_type_id: "et1", description: "Hello" })),
     );
-    expect(to).toMatch(/^\/admin\/booker-copy\?ok=1/);
+    expect(to).toMatch(/^\/admin\/booker-copy\?ok=/);
   });
 
   it("sends saved monitor settings back to the alerts page", async () => {
     const to = await targetOf(() =>
       setMonitorSettings(form(Object.fromEntries(ALERT_KEYS.map((k) => [`cooldown_${k}`, "15"])))),
     );
-    expect(to).toMatch(/^\/admin\/alerts\?ok=1/);
+    expect(to).toMatch(/^\/admin\/alerts\?ok=/);
   });
 
   // The half that mattered most: a REFUSAL has to reach the page too, or the
@@ -1672,7 +1680,7 @@ describe("saving a bucket is atomic, refuses loudly, and is recorded (#1930)", (
     });
 
   it("replaces the members through the transaction, not a delete then an insert", async () => {
-    await updateBucket(edit());
+    await expect(updateBucket(edit())).rejects.toThrow(/ok=bucket-updated/);
     expect(rpc).toHaveBeenCalledWith("replace_bucket_members", {
       p_bucket_id: "b1",
       p_user_ids: ["u1", "u2"],
@@ -1699,14 +1707,19 @@ describe("saving a bucket is atomic, refuses loudly, and is recorded (#1930)", (
   // the roster and carried over as an off roster id. The function inserts
   // `distinct`, so the count is compared against the deduplicated input or every
   // such save would refuse itself.
+  // #1990: reaching the redirect IS reaching the end of a successful save, so
+  // these two assert the confirmation rather than a clean resolve. A resolve
+  // would now mean the action returned early without saving.
   it("does not refuse a save that posted the same member twice", async () => {
-    await expect(updateBucket(edit({ members: ["u1", "u2", "u2"] }))).resolves.toBeUndefined();
+    await expect(updateBucket(edit({ members: ["u1", "u2", "u2"] }))).rejects.toThrow(
+      /ok=bucket-updated/,
+    );
   });
 
   // An empty set is the ORDINARY case for a bucket: it routes by criteria. That is
   // the deliberate difference from migration 0097, which refuses one.
   it("allows a bucket with no manual members at all", async () => {
-    await expect(updateBucket(edit({ members: [] }))).resolves.toBeUndefined();
+    await expect(updateBucket(edit({ members: [] }))).rejects.toThrow(/ok=bucket-updated/);
     expect(rpc).toHaveBeenCalledWith("replace_bucket_members", {
       p_bucket_id: "b1",
       p_user_ids: [],
@@ -1730,7 +1743,7 @@ describe("saving a bucket is atomic, refuses loudly, and is recorded (#1930)", (
 
   // #1932: the trail has to answer what the configuration WAS, so both values.
   it("records what changed, with the old and the new value", async () => {
-    await updateBucket(edit({ name: "New name", members: ["u2", "u9"] }));
+    await expect(updateBucket(edit({ name: "New name", members: ["u2", "u9"] }))).rejects.toThrow(/ok=bucket-updated/);
 
     const entry = recordAudit.mock.calls.at(-1)![0] as {
       action: string;
@@ -1746,7 +1759,7 @@ describe("saving a bucket is atomic, refuses loudly, and is recorded (#1930)", (
   });
 
   it("records nothing as changed when nothing changed", async () => {
-    await updateBucket(edit());
+    await expect(updateBucket(edit())).rejects.toThrow(/ok=bucket-updated/);
     const entry = recordAudit.mock.calls.at(-1)![0] as {
       details: Record<string, unknown>;
     };
@@ -1756,7 +1769,7 @@ describe("saving a bucket is atomic, refuses loudly, and is recorded (#1930)", (
   });
 
   it("refreshes the page the form is on, not the one it used to be on", async () => {
-    await updateBucket(edit());
+    await expect(updateBucket(edit())).rejects.toThrow(/ok=bucket-updated/);
     expect(revalidatePath).toHaveBeenCalledWith("/admin/buckets");
   });
 
@@ -1783,7 +1796,7 @@ describe("saving a bucket is atomic, refuses loudly, and is recorded (#1930)", (
 
     it("records the creation with the code and who is in it", async () => {
       dbState.insertReturns = { id: "b9" };
-      await createBucket(create({ members: ["u1", "u2"] }));
+      await expect(createBucket(create({ members: ["u1", "u2"] }))).rejects.toThrow(/ok=bucket-created/);
 
       const entry = recordAudit.mock.calls.at(-1)![0] as {
         action: string;
