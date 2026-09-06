@@ -83,7 +83,7 @@ export default async function AgentRosterPage({
         Everyone Slate can route a lead to, and whether they are bookable.
       </AdminPageHeader>
       {sp.synced && (
-        <div className="rounded-md bg-[var(--pennie-green-wash)] px-5 py-4 text-sm text-fg">
+        <div className="rounded-md bg-[var(--pennie-green-wash)] px-5 py-4 text-sm text-pennie-graphite">
           Salesforce sync complete. {sp.synced}.
         </div>
       )}

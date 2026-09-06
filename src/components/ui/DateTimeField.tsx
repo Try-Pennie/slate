@@ -416,7 +416,7 @@ export function DateTimeField({
 
           <div className="mt-3 flex justify-end gap-2">
             <button type="button" onClick={cancel}
-              className="rounded-sm border border-border bg-surface px-3 py-1.5 text-sm font-semibold text-fg hover:bg-pennie-sky-soft">
+              className="rounded-sm border border-border bg-surface px-3 py-1.5 text-sm font-semibold text-fg hover:bg-pennie-sky-soft dark:hover:bg-accent/15">
               Cancel
             </button>
             <button type="button" onClick={() => setOpen(false)}

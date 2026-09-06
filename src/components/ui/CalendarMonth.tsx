@@ -96,7 +96,7 @@ export function CalendarMonth({
           aria-label="Previous month"
           disabled={!canPrev}
           onClick={() => onMonthChange(month.minus({ months: 1 }))}
-          className="flex h-8 w-8 items-center justify-center rounded-sm text-fg-muted hover:bg-pennie-sky-soft hover:text-fg disabled:pointer-events-none disabled:opacity-30"
+          className="flex h-8 w-8 items-center justify-center rounded-sm text-fg-muted hover:bg-pennie-sky-soft hover:text-fg dark:hover:bg-accent/15 disabled:pointer-events-none disabled:opacity-30"
         >
           <svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4">
             <path d="M10 4L6 8l4 4" />
@@ -110,7 +110,7 @@ export function CalendarMonth({
           aria-label="Next month"
           disabled={!canNext}
           onClick={() => onMonthChange(month.plus({ months: 1 }))}
-          className="flex h-8 w-8 items-center justify-center rounded-sm text-fg-muted hover:bg-pennie-sky-soft hover:text-fg disabled:pointer-events-none disabled:opacity-30"
+          className="flex h-8 w-8 items-center justify-center rounded-sm text-fg-muted hover:bg-pennie-sky-soft hover:text-fg dark:hover:bg-accent/15 disabled:pointer-events-none disabled:opacity-30"
         >
           <svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4">
             <path d="M6 4l4 4-4 4" />
@@ -152,7 +152,7 @@ export function CalendarMonth({
                   ? "cursor-not-allowed text-fg-muted opacity-30"
                   : selected
                     ? "bg-pennie-sky font-semibold text-pennie-graphite"
-                    : "text-fg hover:bg-pennie-sky-soft"
+                    : "text-fg hover:bg-pennie-sky-soft dark:hover:bg-accent/15"
               }`}
             >
               {d.day}

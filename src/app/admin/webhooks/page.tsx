@@ -119,7 +119,7 @@ export default async function WebhooksPage({
           return fb.tone === "ok" ? (
             <div
               role="status"
-              className="rounded-md bg-[var(--pennie-green-wash)] px-5 py-4 text-sm text-fg"
+              className="rounded-md bg-[var(--pennie-green-wash)] px-5 py-4 text-sm text-pennie-graphite"
             >
               {fb.message}
             </div>
