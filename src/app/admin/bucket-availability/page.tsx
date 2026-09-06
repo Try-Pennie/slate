@@ -43,14 +43,14 @@ export default async function BucketAvailabilityPage() {
     <>
       <>
         <AdminPageHeader title="Bucket availability">
-            {/* #1937: the header used to promise "a share of what was possible",
-                and that phrase is what let the two halves of the number drift
-                apart until shares ran to 189%. It names the exact question the
-                number answers now, and what the ceiling is measured over. */}
-            What share of the appointment times each debt bucket could have taken have
-            actually been booked, day by day. The figure under each share is how many
-            times that bucket could have taken: the ones it is still offering plus the
-            ones already booked. All times are {zoneLabel}.
+            {/* #1938: three lines down to one, and that is the point of the
+                change rather than a side effect of it. Dan had the explanatory
+                paragraph stripped from the sibling page for the same reason
+                (#1898): a page that needs one is a page whose design has not
+                been done. What this said is now carried by the table's own
+                headers, where a reader meets it first. The zone stays, because
+                nothing in the table can say it. */}
+            All times are {zoneLabel}.
         </AdminPageHeader>
 
         {!report.measurable ? (
@@ -76,6 +76,7 @@ export default async function BucketAvailabilityPage() {
               days={report.days}
               rows={report.rows}
               zone={report.zone}
+              nowMs={report.nowMs}
               depthReadable={report.depthReadable}
               bucketListReadable={report.bucketListReadable}
             />

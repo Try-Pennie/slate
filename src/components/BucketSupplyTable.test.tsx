@@ -2,7 +2,12 @@
 import { describe, it, expect } from "vitest";
 import { render, screen } from "@testing-library/react";
 import { BucketSupplyTable } from "./BucketSupplyTable";
-import { supplyCellTitle, freshnessLabel } from "@/lib/admin/bucket-supply-copy";
+import {
+  SUPPLY_SUMMARY_STATES,
+  freshnessLabel,
+  supplyCellTitle,
+  supplyLegendEntry,
+} from "@/lib/admin/bucket-supply-copy";
 import type { BucketSupplyRow, SupplyCell, SupplyDay } from "@/lib/admin/bucket-supply";
 
 // A cell's visible content is a bare number or a single letter (#1254), so the
@@ -38,16 +43,33 @@ function row(over: Partial<BucketSupplyRow> = {}): BucketSupplyRow {
   };
 }
 
-function renderTable(rows: BucketSupplyRow[], over: { depthReadable?: boolean; bucketListReadable?: boolean } = {}) {
+// Pinned, never `Date.now()`: the age a row renders and the freshness grade it
+// was given are two readings of one measurement, so the fixture fixes the
+// instant and the assertions are about the wording rather than the clock (L290).
+const NOW_MS = Date.parse("2026-08-04T15:20:30.000Z");
+
+function renderTable(
+  rows: BucketSupplyRow[],
+  over: { depthReadable?: boolean; bucketListReadable?: boolean; nowMs?: number } = {},
+) {
   render(
     <BucketSupplyTable
       days={DAYS}
       rows={rows}
       zone="America/New_York"
+      nowMs={over.nowMs ?? NOW_MS}
       depthReadable={over.depthReadable ?? true}
       bucketListReadable={over.bucketListReadable ?? true}
     />,
   );
+}
+
+/** The summary block above the table, found by the one line only it holds. The
+ *  key below the table explains the same states in the same words, so a bare
+ *  text query cannot tell the two ends of the page apart. */
+function summaryText(): string {
+  const scope = screen.getByText(/^Today, /).parentElement;
+  return scope?.textContent ?? "";
 }
 
 describe("BucketSupplyTable (#1254)", () => {
@@ -157,7 +179,9 @@ describe("BucketSupplyTable (#1254)", () => {
 
   it("says an unreadable roster is unknown depth, not zero agents", () => {
     renderTable([row({ depth: null, effectiveDepth: null })], { depthReadable: false });
-    expect(screen.getByText("Unknown")).toBeTruthy();
+    // Both agent columns, and neither of them a zero: an unreadable roster is
+    // not a report that nobody can take these bookings.
+    expect(screen.getAllByText("Unknown").length).toBe(2);
     expect(screen.getByText(/roster could not be read/)).toBeTruthy();
     expect(screen.queryByText("0", { selector: "td span" })).toBeNull();
   });
@@ -188,5 +212,100 @@ describe("BucketSupplyTable (#1254)", () => {
       (n) => n.textContent ?? "",
     );
     expect(groups).toEqual(["Low debt", "Other codes"]);
+  });
+
+  // #1938. Everything below is about a person who has never seen this page
+  // being able to answer three questions without reading a paragraph: what one
+  // cell means, which pool is in trouble, and whether the numbers are current.
+
+  it("carries the unit and the question in the headers, not in a paragraph", () => {
+    renderTable([row()]);
+    // A spanning header per group, each answering its own columns once. Without
+    // these the day columns carry no unit at all and `Eligible agents` does not
+    // say eligible for what, which is what the stripped paragraph was carrying.
+    const groups = [...document.querySelectorAll("thead th[scope='colgroup']")].map(
+      (n) => n.textContent ?? "",
+    );
+    expect(groups).toEqual([
+      "Agents who can take these bookings",
+      "Booked share of the appointment times the pool could have taken",
+    ]);
+    // And the pair underneath is two columns of one fact each, never `84 (75 today)`.
+    // Read in DOCUMENT order, not visual order: the headers that span both rows
+    // sit in the first one, so `Last computed` precedes the pair here while
+    // rendering to their right.
+    const cols = [...document.querySelectorAll("thead th[scope='col']")].map(
+      (n) => n.textContent ?? "",
+    );
+    expect(cols.slice(0, 4)).toEqual(["Bucket", "Last computed", "Eligible", "Available today"]);
+  });
+
+  it("splits the two agent counts into their own columns", () => {
+    renderTable([row({ depth: 84, effectiveDepth: 75 })]);
+    const cells = [...document.querySelectorAll("tbody tr td")]
+      .slice(0, 2)
+      .map((n) => n.textContent ?? "");
+    expect(cells).toEqual(["84", "75"]);
+    // The bracketed form is what a reader had to decode before they could read.
+    expect(screen.queryByText(/\(75 today\)/)).toBeNull();
+  });
+
+  it("calls out a pool with nobody on shift today, and only that", () => {
+    renderTable([row({ depth: 84, effectiveDepth: 0 })]);
+    const zero = screen.getByText("0", { selector: "td span" });
+    expect(zero.className).toContain("text-error");
+    // 75 of 84 is unremarkable, and a column of emphasis teaches a reader to
+    // ignore the column. No threshold is invented for "much lower".
+    screen.getByText("84");
+  });
+
+  it("answers when these numbers are from with a time", () => {
+    // Two minutes old, judged against the pinned instant above.
+    renderTable([row({ computedAtMs: NOW_MS - 2 * 60_000 })]);
+    expect(screen.getByText("2 min ago")).toBeTruthy();
+    // The header asks WHEN, so a grade in that column is the thing being fixed.
+    expect(screen.queryByText(freshnessLabel("fresh").label)).toBeNull();
+  });
+
+  it("keeps the words for the two states that have no useful time to show", () => {
+    renderTable([row({ freshness: "unknown", computedAtMs: null })]);
+    const el = screen.getByText(freshnessLabel("unknown").label);
+    expect(el.className).toContain("text-error");
+    expect(screen.queryByText(/ago$/)).toBeNull();
+  });
+
+  it("says the office is shut rather than showing a summary of zeros", () => {
+    renderTable([row({ cells: [{ kind: "closed" }, { kind: "closed" }] })]);
+    // Every count refuses to count what it could not measure, so a shut day
+    // reads zero on all six. That is character for character what a working day
+    // on which nothing was found looks like, and they are different screens.
+    // Read from the SUMMARY block, because the key below the table explains the
+    // same state in the same words. That is the point of the vocabulary, and it
+    // is why a bare text query would pass whether the summary said it or not.
+    expect(summaryText()).toContain(supplyLegendEntry("closed").label);
+    expect(summaryText()).not.toContain(supplyLegendEntry("nobody-available").label);
+  });
+
+  it("still says a row is out of date on a day the office is shut", () => {
+    // Freshness belongs to the ROW, not to the day: a stale row is stale on a
+    // Sunday, and the one line that replaces the chips must not swallow it.
+    renderTable([
+      row({ freshness: "stale", cells: [{ kind: "closed" }, { kind: "closed" }] }),
+    ]);
+    expect(summaryText()).toContain(supplyLegendEntry("closed").label);
+    expect(summaryText()).toContain(freshnessLabel("stale").label);
+  });
+
+  it("names each state once, in the same words above the table and below it", () => {
+    renderTable([row()]);
+    // ONE vocabulary (#1938): the summary chip and the key entry are the same
+    // string, because both read one record. A chip holding its own wording is
+    // exactly how the page came to have three names for one state.
+    for (const { legendId } of SUPPLY_SUMMARY_STATES) {
+      const label = supplyLegendEntry(legendId).label;
+      expect(screen.getAllByText(label).length).toBeGreaterThanOrEqual(2);
+    }
+    // The scope is stated once, above the chips, rather than on the end of each.
+    expect(screen.getByText(/^Today, .*, across 1 pool$/)).toBeTruthy();
   });
 });

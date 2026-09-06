@@ -197,6 +197,16 @@ export type BucketSupplyReport =
       measurable: true;
       zone: string;
       horizonDays: number;
+      /**
+       * The instant every freshness state on the page was judged against
+       * (#1938).
+       *
+       * Carried rather than re-read where the stamps are RENDERED, because
+       * "Stale" and "2 min ago" are two readings of one measurement and a second
+       * clock read lets them disagree: a row can be judged fresh here and
+       * rendered as an age past the alarm a moment later (L134).
+       */
+      nowMs: number;
       days: SupplyDay[];
       rows: BucketSupplyRow[];
       /** False when the bucket list could not be read, so the rows came from the
@@ -520,12 +530,25 @@ export function bucketSupplyReport(input: BucketSupplyInput): BucketSupplyReport
     };
   });
 
-  rows.sort((a, b) => xbcOrder(a.code) - xbcOrder(b.code) || a.code.localeCompare(b.code));
+  // Debt tier first, then TROUBLE, then the rest of the code (#1938, #1942).
+  // Both orderings were asked for and they compose: Dan scans by tier, and
+  // inside a tier the rows worth acting on come first instead of sitting at
+  // whatever position their code happens to give them. Slotting trouble between
+  // the tier and the backend digit is why this is a comparator rather than a
+  // widened `xbcOrder`: the tier has to stay the outer key or the groups break.
+  rows.sort(
+    (a, b) =>
+      tierOrder(a.code) - tierOrder(b.code) ||
+      troubleRank(a, 0) - troubleRank(b, 0) ||
+      xbcOrder(a.code) - xbcOrder(b.code) ||
+      a.code.localeCompare(b.code),
+  );
 
   return {
     measurable: true,
     zone: hours.zone,
     horizonDays: input.horizonDays,
+    nowMs,
     days,
     rows,
     bucketListReadable: input.buckets !== null,
@@ -559,6 +582,40 @@ export function xbcOrder(code: string): number {
   return (5 - tier) * 100 + backend * 10 + legal;
 }
 
+/**
+ * The OUTER sort key, and the same descent `xbcOrder` builds in, on its own so
+ * a second key can sit under it without breaking the grouping (#1938).
+ *
+ * An unreadable code sorts last here for the same reason it does there: such a
+ * row is kept and put at the end rather than dropped.
+ */
+export function tierOrder(code: string): number {
+  if (!XBC_CODE.test(code)) return Number.MAX_SAFE_INTEGER;
+  return 5 - Number(code[0]);
+}
+
+/**
+ * How much this row is asking somebody to do something, lowest first (#1938).
+ *
+ * A first-time reader's only real question is "which of these is in trouble",
+ * and sixty rows of near identical numbers in code order cannot answer it. The
+ * ranking is over states that are ALREADY named on the page, never over a
+ * threshold invented here: nobody available is the one state the key calls "the
+ * one to act on", a cell that could not be checked is the one that is not a
+ * measurement at all, and a stale or never computed row is the one whose numbers
+ * may not be what the booker is serving.
+ *
+ * A day the office is shut leaves every row at the same rank, which is correct:
+ * on a Sunday no bucket is in trouble and the tier order stands alone.
+ */
+export function troubleRank(row: BucketSupplyRow, dayIndex: number): number {
+  const cell = row.cells[dayIndex];
+  if (cell?.kind === "nobody-available") return 0;
+  if (!cell || cell.kind === "unknown") return 1;
+  if (row.freshness === "stale" || row.freshness === "unknown") return 2;
+  return 3;
+}
+
 /** The debt tier digit a row groups under, or null for a code that is not an XBC. */
 export function debtTierDigitOf(code: string): string | null {
   return XBC_CODE.test(code) ? code[0] : null;
@@ -586,10 +643,23 @@ export function backendDigitOf(code: string): string | null {
  * `measured`, because a bucket with no capacity at all has no share to average
  * in with the others.
  */
-export function supplyTotals(
-  rows: BucketSupplyRow[],
-  dayIndex: number,
-): {
+/**
+ * Whether the day the summary counts is one the office is SHUT on (#1938).
+ *
+ * Every count in `SupplyTotals` refuses to count what it could not measure, and
+ * on a closed day there is nothing to measure, so all six of them read zero.
+ * That renders identically to a working day on which nothing was found, and
+ * those are different screens (L10): one is "the office is closed", the other is
+ * "sixty pools were checked and none of them is in this state".
+ *
+ * Judged from the CELLS rather than from the counts being zero, because zero
+ * rows would satisfy the counts too and means something else again.
+ */
+export function dayIsClosed(rows: BucketSupplyRow[], dayIndex: number): boolean {
+  return rows.length > 0 && rows.every((r) => r.cells[dayIndex]?.kind === "closed");
+}
+
+export interface SupplyTotals {
   measured: number;
   unmeasured: number;
   saturated: number;
@@ -597,7 +667,9 @@ export function supplyTotals(
   nothingBooked: number;
   nobodyAvailable: number;
   stale: number;
-} {
+}
+
+export function supplyTotals(rows: BucketSupplyRow[], dayIndex: number): SupplyTotals {
   let measured = 0;
   let unmeasured = 0;
   let saturated = 0;

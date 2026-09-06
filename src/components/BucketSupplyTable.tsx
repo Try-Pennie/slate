@@ -1,5 +1,6 @@
 import { DateTime } from "luxon";
 import {
+  dayIsClosed,
   debtTierDigitOf,
   supplyTotals,
   type BucketSupplyRow,
@@ -8,12 +9,17 @@ import {
 import { DEBT_TIER } from "@/lib/xbc";
 import { LegendList } from "@/components/ui/LegendList";
 import {
+  SUPPLY_ALARMING_STATES,
+  SUPPLY_DAY_GROUP_HEADER,
   SUPPLY_LEGEND,
+  SUPPLY_SUMMARY_STATES,
+  agentCountLabel,
   cellStyle,
-  depthLabel,
+  computedAtLabel,
   freshnessLabel,
   sharePercent,
   supplyCellTitle,
+  supplyLegendEntry,
 } from "@/lib/admin/bucket-supply-copy";
 
 /**
@@ -49,16 +55,21 @@ export function BucketSupplyTable({
   days,
   rows,
   zone,
+  nowMs,
   depthReadable,
   bucketListReadable,
 }: {
   days: SupplyDay[];
   rows: BucketSupplyRow[];
   zone: string;
+  /** The instant the loader judged every freshness state against, so the age a
+   *  row shows and the grade it was given come from ONE clock read (#1938). */
+  nowMs: number;
   depthReadable: boolean;
   bucketListReadable: boolean;
 }) {
   const totals = supplyTotals(rows, 0);
+  const closedToday = dayIsClosed(rows, 0);
   const todayLabel = days[0]
     ? DateTime.fromISO(days[0].iso, { zone }).toFormat("cccc d LLLL")
     : "today";
@@ -80,38 +91,73 @@ export function BucketSupplyTable({
 
   return (
     <>
-      <div className="mb-4 flex flex-wrap items-center gap-x-6 gap-y-1 text-sm">
-        {/* #1937: the headline counts inverted with the metric. "Offering the
-            whole of today" counted every bucket whose share ran over 100%, so
-            the line was as unreadable as the cells it summed. Nobody available
-            leads, because it is the only one of these that asks for an action. */}
-        <span className={totals.nobodyAvailable > 0 ? "text-error" : "text-fg-muted"}>
-          <span className="font-semibold tabular-nums">{totals.nobodyAvailable}</span> with nobody
-          available today
-        </span>
-        <span className="text-fg-muted">
-          <span className="font-semibold tabular-nums text-fg">{totals.saturated}</span> fully
-          booked today
-        </span>
-        <span className="text-fg-muted">
-          <span className="font-semibold tabular-nums">{totals.partBooked}</span> part booked today
-        </span>
-        <span className="text-fg-muted">
-          <span className="font-semibold tabular-nums">{totals.nothingBooked}</span> with nothing
-          booked today
-        </span>
-        <span className={totals.unmeasured > 0 ? "text-error" : "text-fg-muted"}>
-          <span className="font-semibold tabular-nums">{totals.unmeasured}</span> could not be
-          measured
-        </span>
-        <span className={totals.stale > 0 ? "text-error" : "text-fg-muted"}>
-          <span className="font-semibold tabular-nums">{totals.stale}</span> stale or never computed
-        </span>
+      {/* #1938: ONE vocabulary. Every chip here takes its words from the same
+          legend entry the key below the table explains, so a state is named
+          once and a reader who learns it in one place can use it in the other.
+          The scope is stated ONCE, above the chips, rather than repeated as
+          "today" on the end of each of them (L287). */}
+      <div className="mb-4 text-sm">
+        <p className="mb-1.5 text-xs uppercase tracking-wide text-fg-muted">
+          Today, {todayLabel}, across {rows.length} {rows.length === 1 ? "pool" : "pools"}
+        </p>
+        {/* A shut day is a real answer about the org and it is not six zeros
+            (L10). Every count below refuses to count what it could not measure,
+            so on a Sunday they all read zero, which is exactly what a working
+            day on which nothing was found looks like. The words are the key's
+            own, so this is not a second name for the state. */}
+        {closedToday ? (
+          <p className="text-fg-muted">
+            {/* The key's own LABEL for the state, so this is not a second name
+                for it. Its `meaning` is written for a cell ("that day") and
+                reads wrong directly under a line that has just said "Today". */}
+            {supplyLegendEntry("closed").label}, so there was nothing to measure.
+          </p>
+        ) : (
+        <div className="flex flex-wrap items-baseline gap-x-6 gap-y-1">
+          {SUPPLY_SUMMARY_STATES.map(({ totalsKey, legendId }) => {
+            const entry = supplyLegendEntry(legendId);
+            const count = totals[totalsKey];
+            const alarming = SUPPLY_ALARMING_STATES.includes(legendId) && count > 0;
+            return (
+              <span
+                key={legendId}
+                className={alarming ? "text-error" : "text-fg-muted"}
+                title={entry.meaning}
+              >
+                {entry.label}{" "}
+                <span className={`font-semibold tabular-nums ${alarming ? "" : "text-fg"}`}>
+                  {count}
+                </span>
+              </span>
+            );
+          })}
+          {/* Not a cell state but a property of the ROW, so it is counted apart.
+              Its words come from the same builder the Last computed column uses. */}
+          <span
+            className={totals.stale > 0 ? "text-error" : "text-fg-muted"}
+            title={freshnessLabel("stale").meaning}
+          >
+            {freshnessLabel("stale").label} or{" "}
+            {freshnessLabel("unknown").label.toLowerCase()}{" "}
+            <span className={`font-semibold tabular-nums ${totals.stale > 0 ? "" : "text-fg"}`}>
+              {totals.stale}
+            </span>
+          </span>
+        </div>
+        )}
+        {/* Freshness is a property of the ROW, not of the day, so it is stated
+            whether the office is open or not: a stale row is stale on a Sunday. */}
+        {closedToday && totals.stale > 0 && (
+          <p className="mt-1 text-error">
+            {freshnessLabel("stale").label} or {freshnessLabel("unknown").label.toLowerCase()}{" "}
+            <span className="font-semibold tabular-nums">{totals.stale}</span>
+          </p>
+        )}
       </div>
 
       {!depthReadable && (
         <p className="mb-4 rounded-md border border-border bg-[var(--bg-alt)] px-4 py-3 text-sm text-fg-muted">
-          The roster could not be read, so the eligible agents column says unknown throughout.
+          The roster could not be read, so both agent columns say unknown throughout.
           That is not a report that no agent can take these bookings. The booked shares beside
           it were still measured.
         </p>
@@ -124,26 +170,62 @@ export function BucketSupplyTable({
       )}
 
       <div className="overflow-x-auto rounded-md border border-border">
-        <table className="w-full min-w-[760px] border-collapse text-sm">
+        <table className="w-full min-w-[860px] border-collapse text-sm">
           <caption className="sr-only">
-            Open appointment starts per debt bucket per day, over what each day could have held.
-            Times are {zone}.
+            The share of each debt bucket&apos;s possible appointment times that are booked, day by
+            day. Rows are grouped by debt tier, highest first, and inside each tier the pools with
+            nobody available, an unreadable answer or an out of date one come first. Times are{" "}
+            {zone}.
           </caption>
+          {/* #1938: TWO header rows, because the clarity has to come from
+              structure rather than from a paragraph above the table.
+              `Eligible agents` did not say eligible for what and carried a
+              second number in a bracket; the day columns carried no unit at
+              all, and the only place that said these were appointment times was
+              the sentence a reader arrives at last. Each spanning header answers
+              its group once, where the numbers are. */}
           <thead>
             <tr className="border-b border-border bg-[var(--bg-alt)] text-xs text-fg-muted">
-              <th scope="col" className="px-3 py-2.5 text-left font-semibold">
+              <th scope="col" rowSpan={2} className="px-3 py-2.5 text-left align-bottom font-semibold">
                 Bucket
               </th>
-              <th scope="col" className="px-3 py-2.5 text-left font-semibold">
-                Eligible agents
+              <th
+                scope="colgroup"
+                colSpan={2}
+                className="border-l border-border px-3 pt-2.5 pb-1 text-left font-semibold"
+              >
+                Agents who can take these bookings
               </th>
-              <th scope="col" className="px-3 py-2.5 text-left font-semibold">
+              <th
+                scope="col"
+                rowSpan={2}
+                className="border-l border-border px-3 py-2.5 text-left align-bottom font-semibold"
+              >
                 Last computed
               </th>
-              {days.map((day) => {
+              <th
+                scope="colgroup"
+                colSpan={days.length}
+                className="border-l border-border px-2 pt-2.5 pb-1 text-center font-semibold"
+              >
+                {SUPPLY_DAY_GROUP_HEADER}
+              </th>
+            </tr>
+            <tr className="border-b border-border bg-[var(--bg-alt)] text-xs text-fg-muted">
+              <th scope="col" className="border-l border-border px-3 pb-2.5 text-left font-normal">
+                Eligible
+              </th>
+              <th scope="col" className="px-3 pb-2.5 text-left font-normal">
+                Available today
+              </th>
+              {days.map((day, i) => {
                 const d = DateTime.fromISO(day.iso, { zone });
                 return (
-                  <th key={day.iso} scope="col" className="px-2 py-2.5 font-semibold">
+                  <th
+                    key={day.iso}
+                    scope="col"
+                    className={`px-2 pb-2.5 font-semibold ${i === 0 ? "border-l border-border" : ""}`}
+                  >
                     <span className="block">{d.toFormat("ccc")}</span>
                     <span className="block font-normal tabular-nums">{d.toFormat("d LLL")}</span>
                   </th>
@@ -156,14 +238,14 @@ export function BucketSupplyTable({
               <tr className="border-b border-border bg-[var(--bg-alt)]">
                 <th
                   scope="rowgroup"
-                  colSpan={3 + days.length}
+                  colSpan={4 + days.length}
                   className="px-3 py-2 text-left text-xs font-semibold uppercase tracking-wide text-fg-muted"
                 >
                   {group.label}
                 </th>
               </tr>
               {group.rows.map((row) => {
-                const fresh = freshnessLabel(row.freshness);
+                const fresh = computedAtLabel(row.freshness, row.computedAtMs, nowMs);
                 const bucketLabel = `${row.code} ${row.name}`;
                 return (
                   <tr key={row.code} className="border-b border-border align-middle last:border-0">
@@ -171,12 +253,35 @@ export function BucketSupplyTable({
                       <span className="block font-semibold tabular-nums text-fg">{row.code}</span>
                       <span className="block text-xs text-fg-muted">{row.name}</span>
                     </th>
-                    <td className="px-3 py-2 tabular-nums">
+                    <td className="border-l border-border px-3 py-2 tabular-nums">
                       <span className={row.depth === null ? "text-fg-muted" : "text-fg"}>
-                        {depthLabel(row.depth, row.effectiveDepth)}
+                        {agentCountLabel(row.depth)}
                       </span>
                     </td>
-                    <td className="px-3 py-2">
+                    {/* #1938: the two counts are a RELATIONSHIP, and encoding it
+                        as `84 (75 today)` made a reader decode before they could
+                        read. Side by side it is visible.
+
+                        Only ZERO is emphasised, and deliberately no "much lower
+                        than eligible" rule: any threshold for that would be one
+                        invented here (L172), and 75 of 84 is unremarkable while
+                        a column of amber would teach a reader to ignore it. Zero
+                        is a fact rather than a judgement, and it is the same
+                        thing the `nobody available` cell says. */}
+                    <td className="px-3 py-2 tabular-nums">
+                      <span
+                        className={
+                          row.effectiveDepth === null
+                            ? "text-fg-muted"
+                            : row.effectiveDepth === 0
+                              ? "font-semibold text-error"
+                              : "text-fg"
+                        }
+                      >
+                        {agentCountLabel(row.effectiveDepth)}
+                      </span>
+                    </td>
+                    <td className="border-l border-border px-3 py-2">
                       <span
                         className={
                           row.freshness === "stale" || row.freshness === "unknown"
@@ -195,7 +300,10 @@ export function BucketSupplyTable({
                       );
                       const title = supplyCellTitle(cell, bucketLabel, dayLabel);
                       return (
-                        <td key={days[i].iso} className="p-0.5">
+                        <td
+                          key={days[i].iso}
+                          className={`p-0.5 ${i === 0 ? "border-l border-border" : ""}`}
+                        >
                           <span
                             className={`flex h-9 flex-col items-center justify-center rounded text-xs font-semibold tabular-nums ${style.cell}`}
                             title={title}
@@ -230,7 +338,7 @@ export function BucketSupplyTable({
             <tbody>
               <tr>
                 <td
-                  colSpan={3 + days.length}
+                  colSpan={4 + days.length}
                   className="px-4 py-10 text-center text-sm text-fg-muted"
                 >
                   No buckets yet. Create one on the admin page to route bookings.
@@ -255,13 +363,18 @@ export function BucketSupplyTable({
       <p className="mt-4 text-xs text-fg-muted">
         {/* #1937: this described the OLD ceiling, one synthetic ideal agent's grid
             across the office day, which is what the shares were being divided by
-            when they ran to 189%. */}
+            when they ran to 189%.
+
+            #1938: it no longer has to introduce the page, only to say where the
+            numbers come from, because the column headers now carry the unit and
+            the question. Today's date moved into the summary line above, where
+            the counts it scopes are. */}
         Every number is read from the slot cache the booker itself serves, plus the bookings
         already made, so this page adds no calendar traffic and nothing here is a live check of
-        a calendar. The figure a share is measured against is what THAT pool could have taken:
-        the times it is still offering plus the times already booked, counted as start times. A
-        time nobody in the pool was ever free for was never a possible appointment, so it is in
-        neither. Today is {todayLabel}.
+        a calendar. What a share is measured against is what THAT pool could have taken: the
+        times it is still offering plus the times already booked, counted as start times. A time
+        nobody in the pool was ever free for was never a possible appointment, so it is in
+        neither.
       </p>
     </>
   );
