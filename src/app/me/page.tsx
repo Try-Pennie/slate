@@ -22,6 +22,7 @@ import { InfoIcon } from "@/components/icons";
 import { WorkingHoursForm } from "@/components/ui/WorkingHoursForm";
 import { SubmitButton } from "@/components/ui/SubmitButton";
 import { workingHoursDays, workingHoursSavedNotice } from "@/lib/schedule-week";
+import { savedOutcome } from "@/lib/admin/save-outcomes";
 import { SettingsSaveNotice } from "@/app/admin/settings/SettingsSaveNotice";
 import { OooForm } from "@/components/ui/OooForm";
 import { RequestActions } from "@/components/ui/RequestActions";
@@ -406,7 +407,7 @@ export default async function MePage({
                       nothing. The sentence is built from the week this render
                       just READ, not from what the action meant to write, so it
                       reports what is actually stored (L78). */}
-                  {sp.ok ? (
+                  {savedOutcome(sp.ok) === "working-hours" ? (
                     <div className="mb-4">
                       <SettingsSaveNotice ok saved={workingHoursSavedNotice(hoursDays)} />
                     </div>

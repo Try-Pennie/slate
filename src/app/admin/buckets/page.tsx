@@ -10,6 +10,7 @@ import { bucketDepthByCode } from "@/app/admin/bucket-depth";
 import { setDefaultBucket } from "@/app/admin/actions";
 import { SubmitButton } from "@/components/ui/SubmitButton";
 import { SettingsSaveNotice } from "@/app/admin/settings/SettingsSaveNotice";
+import { savedOutcome, savedSentence } from "@/lib/admin/save-outcomes";
 import { UnreadableNotice } from "@/components/ui/UnreadableNotice";
 import { AdminPageHeader, AdminDenied } from "@/components/admin/AdminPageHeader";
 import { BucketForm } from "@/components/admin/BucketForm";
@@ -27,6 +28,7 @@ export default async function BucketsPage({
   searchParams: Promise<{ ok?: string; error?: string }>;
 }) {
   const sp = await searchParams;
+  const saved = savedSentence(savedOutcome(sp.ok));
   const me = await currentUser();
   if (!me) redirect("/login");
   if (!canEditOrgSettings(me.role)) return <AdminDenied need="an admin" />;
@@ -164,7 +166,12 @@ export default async function BucketsPage({
         Which pool each routing code sends a lead to, who is in it, and which one a
         direct booking falls back to when it names no code.
       </AdminPageHeader>
-      <SettingsSaveNotice ok={!!sp.ok} error={sp.error} saved="Bucket routing saved." />
+      {/* #1990: the sentence comes from the OUTCOME, so it names the form
+          that saved rather than whatever this page had written down. An
+          unrecognised value (a bookmarked `?ok=1` from before outcomes were
+          named) shows nothing, rather than confirming a save nobody made. */}
+      {saved && <SettingsSaveNotice ok saved={saved} error={sp.error} />}
+      {sp.error && !saved && <SettingsSaveNotice ok={false} error={sp.error} saved="" />}
       <section className={cardCls}>
         <h2 className="mb-1 text-sm font-semibold">Direct-booking default bucket</h2>
         <p className={`mb-4 text-xs text-fg-muted ${proseCls}`}>

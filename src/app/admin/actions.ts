@@ -2,6 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
+import { savedQuery } from "@/lib/admin/save-outcomes";
 import { cookies } from "next/headers";
 import { nanoid } from "nanoid";
 import { supabaseAdmin } from "@/lib/supabase/admin";
@@ -300,10 +301,10 @@ export async function setMyWorkingHours(form: FormData): Promise<void> {
   );
   revalidatePath("/me");
   // #1988: the save said nothing at all, so it looked exactly like a click that
-  // did nothing. Post-redirect-get with `ok=1`, the same shape every other
-  // settings form here uses, and the redirect is AFTER the write so a refusal
-  // (which throws out of `planScheduleReplacement`) never reaches it.
-  redirect("/me?ok=1");
+  // did nothing. Post-redirect-get with a NAMED outcome, the same shape every
+  // other settings form here uses, and the redirect is AFTER the write so a
+  // refusal (which throws out of `planScheduleReplacement`) never reaches it.
+  redirect(`/me${savedQuery("working-hours")}`);
 }
 
 /** Agent self-service: apply the org default hours to myself. */
@@ -314,7 +315,7 @@ export async function useMyDefaultHours(): Promise<void> {
   revalidatePath("/me");
   // #1988: same button, same silence. This one writes a whole week the person
   // did not type, so it needs the confirmation more than the other, not less.
-  redirect("/me?ok=1");
+  redirect(`/me${savedQuery("working-hours")}`);
 }
 
 export async function syncSalesforceNow(): Promise<void> {
@@ -399,6 +400,7 @@ function num(form: FormData, key: string, fallback: number): number {
  * A FAILED INSERT. The insert's error was neither bound nor read, so a rejected
  * write returned normally and the page redrew as though the event type existed.
  */
+// outcome-ok: the event type it creates appears in the list directly above the form, which is the confirmation; this page mounts no notice
 export async function createEventType(form: FormData): Promise<void> {
   const admin = await requireAdmin();
   const db = supabaseAdmin();
@@ -583,6 +585,11 @@ export async function createBucket(form: FormData): Promise<void> {
     },
   });
   revalidatePath("/admin/buckets");
+  // #1990: this page already confirms one of its forms, so silence after this
+  // one reads as a failure rather than as a feature nobody built. Named, because
+  // the page holds three forms and an unnamed flag lit whichever sentence the
+  // page had written down.
+  redirect(`/admin/buckets${savedQuery("bucket-created")}`);
 }
 
 export async function updateBucket(form: FormData): Promise<void> {
@@ -655,6 +662,9 @@ export async function updateBucket(form: FormData): Promise<void> {
     },
   });
   revalidatePath("/admin/buckets");
+  // #1990: as above, and said differently, because creating a pool and editing
+  // one are different events and the confirmation is worth reading.
+  redirect(`/admin/buckets${savedQuery("bucket-updated")}`);
 }
 
 export async function setWorkingHours(form: FormData): Promise<void> {
@@ -673,7 +683,7 @@ export async function setWorkingHours(form: FormData): Promise<void> {
   // #1988: and the same reasoning decides where the confirmation lands. The
   // route is NAMED from the subject rather than assumed, because this form and
   // the one on /me post from different pages into actions that look alike.
-  redirect(`/admin/agents/${userId}?ok=1`);
+  redirect(`/admin/agents/${userId}${savedQuery("working-hours")}`);
 }
 
 /**
@@ -727,7 +737,7 @@ export async function setMonitorSettings(form: FormData): Promise<void> {
   // Channels are cached in-process; clear so the new destination takes effect now.
   __clearChannelCache();
   revalidatePath("/admin/alerts");
-  redirect("/admin/alerts?ok=1");
+  redirect(`/admin/alerts${savedQuery("alerts")}`);
 }
 
 /**
@@ -774,7 +784,7 @@ export async function setDefaultBucket(form: FormData): Promise<void> {
     details: { default_bucket_code: parsed.default_bucket_code },
   });
   revalidatePath("/admin/buckets");
-  redirect("/admin/buckets?ok=1");
+  redirect(`/admin/buckets${savedQuery("bucket-routing")}`);
 }
 
 /**
@@ -820,7 +830,7 @@ export async function setBookingHorizon(form: FormData): Promise<void> {
     details: { horizon_days: parsed.horizon_days },
   });
   revalidatePath("/admin/business-hours");
-  redirect("/admin/business-hours?ok=1");
+  redirect(`/admin/business-hours${savedQuery("booking-horizon")}`);
 }
 
 /**
@@ -890,7 +900,7 @@ export async function setEventDescription(form: FormData): Promise<void> {
     details: { event_type_id: eventTypeId, description_chars: parsed.description?.length ?? 0 },
   });
   revalidatePath("/admin/booker-copy");
-  redirect("/admin/booker-copy?ok=1");
+  redirect(`/admin/booker-copy${savedQuery("booker-copy")}`);
 }
 
 /**
@@ -931,7 +941,7 @@ export async function setReasonOptions(form: FormData): Promise<void> {
     details: { rows: rows.map((r) => ({ action: r.action, code: r.code, active: r.active })) },
   });
   revalidatePath("/admin/booking-reasons");
-  redirect("/admin/booking-reasons?ok=1");
+  redirect(`/admin/booking-reasons${savedQuery("booking-reasons")}`);
 }
 
 export async function setOrgDefaultHours(form: FormData): Promise<void> {
@@ -971,7 +981,14 @@ export async function setOrgDefaultHours(form: FormData): Promise<void> {
       default_weekdays: weekdays.length ? weekdays : [1, 2, 3, 4, 5],
     })
     .eq("id", admin.org_id);
+  // #1990: `/admin` was the only route refreshed, and this form is not on it.
+  // That is #1769 exactly: the page the person is looking at redrew with what it
+  // showed before they pressed the button, which is indistinguishable from the
+  // save not happening. Both routes now, and the one the form is ON carries the
+  // confirmation.
   revalidatePath("/admin");
+  revalidatePath("/admin/business-hours");
+  redirect(`/admin/business-hours${savedQuery("org-default-hours")}`);
 }
 
 /** Applies the org default schedule to one agent (keeps their tz if already set). */
@@ -1039,7 +1056,7 @@ export async function useDefaultHours(form: FormData): Promise<void> {
   revalidatePath(`/admin/agents/${userId}`);
   // #1988: as above. This button replaces the whole week with the company
   // default, so "did that do anything" is the question it most invites.
-  redirect(`/admin/agents/${userId}?ok=1`);
+  redirect(`/admin/agents/${userId}${savedQuery("working-hours")}`);
 }
 
 export async function setBookable(form: FormData): Promise<void> {
@@ -1095,6 +1112,7 @@ export async function setBookable(form: FormData): Promise<void> {
  * while deactivated. requireManageAgent enforces the manager+ / strict-outrank
  * escalation gate and writes the audit row.
  */
+// outcome-ok: the account status it changes is shown on this page and visibly flips, and the controls offered change with it
 export async function setUserLifecycle(form: FormData): Promise<void> {
   const userId = String(form.get("user_id") ?? "");
   const action = String(form.get("action") ?? "");
@@ -1125,6 +1143,7 @@ export async function setUserLifecycle(form: FormData): Promise<void> {
  * outcome (L11), and the fix is to give this one its own refusal before anything
  * is written.
  */
+// outcome-ok: the whole session becomes somebody else and a banner says so on every page, which is a larger confirmation than a sentence
 export async function startImpersonation(form: FormData): Promise<void> {
   const admin = await realCurrentUser();
   if (!admin || !atLeast(admin.role, "admin")) throw new Error("Not authorized");
@@ -1186,6 +1205,7 @@ export async function startImpersonation(form: FormData): Promise<void> {
 }
 
 /** Stop impersonating and revert to your own session. Safe for anyone to call. */
+// outcome-ok: the banner disappears and the session is the admin's own again, on every page
 export async function stopImpersonation(): Promise<void> {
   const real = await realCurrentUser();
   const store = await cookies();
@@ -1213,6 +1233,7 @@ export async function stopImpersonation(): Promise<void> {
  * "session ended" notice visible while the cookie clears behind it. Safe to call
  * repeatedly and when no cookie remains (idempotent).
  */
+// outcome-ok: the dropped session notice is the confirmation, and it is drawn by the page this ends on
 export async function endDroppedImpersonation(
   reason: "expired" | "unavailable",
 ): Promise<void> {
@@ -1253,9 +1274,14 @@ export async function setOooCalendarId(form: FormData): Promise<void> {
   // person is looking at showing what it showed before they pressed the button.
   revalidatePath("/admin");
   revalidatePath(`/admin/agents/${userId}`);
+  // #1990: this page confirms its other forms now, so a silent save here reads as
+  // a failure rather than as a feature nobody built. There is nothing else on
+  // screen to show it landed: the field redraws holding the same text either way.
+  redirect(`/admin/agents/${userId}${savedQuery("agent-ooo-calendar")}`);
 }
 
 /** Admin-only: change a user's tier (agent/manager/admin). Guards last-admin. */
+// outcome-ok: the role it writes is drawn on this page and visibly changes, including which controls are offered at all
 export async function setUserRole(form: FormData): Promise<void> {
   const admin = await requireAdmin();
   const db = supabaseAdmin();
@@ -1576,6 +1602,9 @@ export async function setAgentAttributes(form: FormData): Promise<void> {
   // person is looking at showing what it showed before they pressed the button.
   revalidatePath("/admin");
   revalidatePath(`/admin/agents/${userId}`);
+  // #1990: as above. These decide which pools the agent is routed into, and the
+  // page shows them back unchanged whether the write happened or not.
+  redirect(`/admin/agents/${userId}${savedQuery("agent-attributes")}`);
 }
 
 export async function setWebhookEndpoint(form: FormData): Promise<void> {
@@ -1766,6 +1795,7 @@ export async function setBusinessHoursException(
 }
 
 /** Drop a date exception, so that date goes back to following the weekly pattern. */
+// outcome-ok: the date it removes disappears from the list beside the form, and the add form on the same card draws its own result
 export async function removeBusinessHoursException(form: FormData): Promise<void> {
   const admin = await requireAdmin();
   const on_date = String(form.get("on_date") ?? "").trim();

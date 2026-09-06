@@ -20,6 +20,7 @@ import {
 import { SubmitButton } from "@/components/ui/SubmitButton";
 import { AdminPageHeader, AdminDenied } from "@/components/admin/AdminPageHeader";
 import { SettingsSaveNotice } from "@/app/admin/settings/SettingsSaveNotice";
+import { savedOutcome, savedSentence } from "@/lib/admin/save-outcomes";
 import { lastChangedLine, shortStamp } from "@/lib/admin/last-changed";
 import { btnCls, cardCls, inputCls, labelCls, proseCls } from "@/components/ui/styles";
 import type { MonitorAlertConfig, MonitorSettings, User } from "@/lib/db/types";
@@ -32,6 +33,7 @@ export default async function AlertSettingsPage({
   searchParams: Promise<{ ok?: string; error?: string }>;
 }) {
   const sp = await searchParams;
+  const saved = savedSentence(savedOutcome(sp.ok));
   const me = await currentUser();
   if (!me) redirect("/login");
   if (!canEditOrgSettings(me.role)) return <AdminDenied need="an admin" />;
@@ -98,7 +100,12 @@ export default async function AlertSettingsPage({
         which Slack channel each one posts to. No deploy needed.
         <p className="mt-3 text-xs text-pennie-beige/70">{lastChanged}</p>
       </AdminPageHeader>
-      <SettingsSaveNotice ok={!!sp.ok} error={sp.error} saved="Alert settings saved." />
+      {/* #1990: the sentence comes from the OUTCOME, so it names the form
+          that saved rather than whatever this page had written down. An
+          unrecognised value (a bookmarked `?ok=1` from before outcomes were
+          named) shows nothing, rather than confirming a save nobody made. */}
+      {saved && <SettingsSaveNotice ok saved={saved} error={sp.error} />}
+      {sp.error && !saved && <SettingsSaveNotice ok={false} error={sp.error} saved="" />}
       {!armed && (
         <div className="rounded-md border border-border bg-[var(--bg-alt)] px-5 py-4 text-sm text-fg-muted">
           Heads up: the low-booking-volume alarm is currently <strong>disarmed</strong> (a

@@ -71,7 +71,7 @@ describe("setBookingHorizon", () => {
 
   it("saves a valid horizon (id=1 upsert), refreshes rows, audits, redirects ok", async () => {
     await expect(setBookingHorizon(form({ horizon_days: "6" }))).rejects.toThrow(
-      /NEXT_REDIRECT:.*ok=1/,
+      /NEXT_REDIRECT:.*ok=booking-horizon/,
     );
     expect(upsert).toHaveBeenCalledTimes(1);
     const [row, opts] = upsert.mock.calls[0] as unknown as [

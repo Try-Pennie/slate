@@ -101,7 +101,7 @@ describe("setEventDescription", () => {
   it("saves the copy and scopes the write to the admin's own org", async () => {
     const to = await run({ event_type_id: "et1", description: DANS_COPY });
     // #1922: back to the page the form is on, not the dead /admin/settings.
-    expect(to).toBe("/admin/booker-copy?ok=1");
+    expect(to).toBe("/admin/booker-copy?ok=booker-copy");
     expect(updateArgs[0]).toEqual({ description: DANS_COPY });
     // Both filters, or an admin could edit another org's copy by guessing an id.
     expect(eqCalls).toEqual([
@@ -135,13 +135,13 @@ describe("setEventDescription", () => {
   });
 
   // The failure path this test file exists for. A write that errored and still
-  // redirected to ok=1 would tell the author their copy had changed while every
+  // redirected with a save outcome would tell the author their copy had changed while every
   // lead kept reading the old one.
   it("tells the author when the write itself failed, and claims nothing", async () => {
     result.error = { message: "connection lost" };
     const to = await run({ event_type_id: "et1", description: DANS_COPY });
     expect(to).toContain("error=");
-    expect(to).not.toContain("ok=1");
+    expect(to).not.toContain("ok=");
     expect(recordAudit).not.toHaveBeenCalled();
     // And it does not invalidate every bucket over a save that did not happen.
     expect(markAllBucketSlotsStale).not.toHaveBeenCalled();
@@ -153,7 +153,7 @@ describe("setEventDescription", () => {
     result.count = 0;
     const to = await run({ event_type_id: "someone-elses", description: DANS_COPY });
     expect(to).toContain("error=");
-    expect(to).not.toContain("ok=1");
+    expect(to).not.toContain("ok=");
     expect(recordAudit).not.toHaveBeenCalled();
   });
 
@@ -162,7 +162,7 @@ describe("setEventDescription", () => {
   it("still reports success on a save that really wrote a row", async () => {
     result.count = 1;
     expect(await run({ event_type_id: "et1", description: DANS_COPY })).toBe(
-      "/admin/booker-copy?ok=1",
+      "/admin/booker-copy?ok=booker-copy",
     );
   });
 });
