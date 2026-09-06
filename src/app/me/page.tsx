@@ -21,7 +21,8 @@ import { Pill, type PillVariant } from "@/components/ui/Pill";
 import { InfoIcon } from "@/components/icons";
 import { WorkingHoursForm } from "@/components/ui/WorkingHoursForm";
 import { SubmitButton } from "@/components/ui/SubmitButton";
-import { workingHoursDays } from "@/lib/schedule-week";
+import { workingHoursDays, workingHoursSavedNotice } from "@/lib/schedule-week";
+import { SettingsSaveNotice } from "@/app/admin/settings/SettingsSaveNotice";
 import { OooForm } from "@/components/ui/OooForm";
 import { RequestActions } from "@/components/ui/RequestActions";
 import type { OooRequest, OooStatus, User } from "@/lib/db/types";
@@ -160,6 +161,8 @@ export default async function MePage({
     ooo_error?: string;
     edit?: string;
     t?: string;
+    /** Set by the two hours actions on a successful write (#1988). */
+    ok?: string;
   }>;
 }) {
   const sp = await searchParams;
@@ -398,6 +401,16 @@ export default async function MePage({
                     Set your home timezone and weekly hours. Leads always see times
                     in their own timezone.
                   </p>
+                  {/* #1988: pressing Save wrote the week and then said
+                      nothing, so it looked exactly like a click that did
+                      nothing. The sentence is built from the week this render
+                      just READ, not from what the action meant to write, so it
+                      reports what is actually stored (L78). */}
+                  {sp.ok ? (
+                    <div className="mb-4">
+                      <SettingsSaveNotice ok saved={workingHoursSavedNotice(hoursDays)} />
+                    </div>
+                  ) : null}
                   <WorkingHoursForm
                     action={setMyWorkingHours}
                     days={hoursDays}

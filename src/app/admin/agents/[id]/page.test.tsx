@@ -479,6 +479,41 @@ describe("AgentProfilePage says what the pool toggle did (#1769)", () => {
 // The fixtures use team lead and super admin rather than agent on purpose. "agent"
 // appears a dozen times in this page's prose, so a count of it could never tell a
 // duplicate rendering apart from a sentence.
+// #1988: the other half of the confirmation, and it is deliberately its own
+// test. Asserting that the action redirects with `ok=1` proves nothing about
+// whether the page ever renders anything for it, and asserting that the page
+// renders a notice proves nothing about whether the action sets the flag. Both
+// halves, or the feature can be half shipped and green.
+describe("AgentProfilePage confirms a saved week (#1988)", () => {
+  const renderWith = async (ok?: string) => {
+    auth.currentUser.mockResolvedValueOnce({ id: "m1", role: "admin", org_id: "o1" });
+    dbState.agent = agentOf("agent");
+    render(
+      await AgentProfilePage({
+        params: Promise.resolve({ id: "x1" }),
+        searchParams: Promise.resolve(ok ? { ok } : {}),
+      }),
+    );
+  };
+
+  it("says what week is now stored, not just that something happened", async () => {
+    await renderWith("1");
+    const said = screen.getAllByRole("status").map((n) => n.textContent ?? "");
+    const notice = said.find((t) => /hours saved/i.test(t));
+    expect(notice).toBeTruthy();
+    // The sentence names the week. A bare "Saved." would leave a person who
+    // changed one window no better off than the silence this replaced, since
+    // the thing they want to check is WHAT is stored.
+    expect(notice).toMatch(/\b(day|off|am|pm)\b/i);
+  });
+
+  it("says nothing on an ordinary visit", async () => {
+    await renderWith();
+    const said = screen.queryAllByRole("status").map((n) => n.textContent ?? "");
+    expect(said.some((t) => /hours saved/i.test(t))).toBe(false);
+  });
+});
+
 describe("AgentProfilePage names the role once, and the header carries view as (#1878)", () => {
   const header = () =>
     screen.getByRole("heading", { level: 1 }).closest("section") as HTMLElement;

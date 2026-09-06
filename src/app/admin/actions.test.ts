@@ -1312,15 +1312,26 @@ describe("the reads that decide authorization or a write must refuse, not guess 
         /org default schedule/,
       );
       expect(schedule.upsertUserSchedule).not.toHaveBeenCalled();
+      // #1988: and no confirmation. A refusal that still redirected with ok=1
+      // would put "Hours saved." over a week nobody wrote, which is worse than
+      // the silence this replaced.
+      expect(redirect).not.toHaveBeenCalled();
     });
 
     // The control, and the behaviour the pair exists to protect: with both reads
     // healthy the agent KEEPS their own zone rather than adopting the org's.
+    // #1988: a successful write now ENDS in a redirect, which the mock throws
+    // the way the real one does, so these two await the rejection rather than a
+    // clean resolve. That is not incidental to what they assert: the redirect
+    // is the confirmation, and a test that resolved here would be describing an
+    // action that saved and then said nothing.
     it("keeps the agent's own timezone when both reads work", async () => {
       dbState.rowsByTable.users = { role: "agent" };
       dbState.rowsByTable.organizations = orgDefaults;
       dbState.rowsByTable.availability_schedules = { timezone: "America/Denver" };
-      await useDefaultHours(form({ user_id: "u2" }));
+      await expect(useDefaultHours(form({ user_id: "u2" }))).rejects.toThrow(
+        "NEXT_REDIRECT:/admin/agents/u2?ok=1",
+      );
       expect(schedule.upsertUserSchedule).toHaveBeenCalledWith("u2", "America/Denver");
     });
 
@@ -1328,7 +1339,9 @@ describe("the reads that decide authorization or a write must refuse, not guess 
       dbState.rowsByTable.users = { role: "agent" };
       dbState.rowsByTable.organizations = orgDefaults;
       dbState.rowsByTable.availability_schedules = null;
-      await useDefaultHours(form({ user_id: "u2" }));
+      await expect(useDefaultHours(form({ user_id: "u2" }))).rejects.toThrow(
+        "NEXT_REDIRECT:/admin/agents/u2?ok=1",
+      );
       expect(schedule.upsertUserSchedule).toHaveBeenCalledWith("u2", "America/Chicago");
     });
 

@@ -299,6 +299,11 @@ export async function setMyWorkingHours(form: FormData): Promise<void> {
     ),
   );
   revalidatePath("/me");
+  // #1988: the save said nothing at all, so it looked exactly like a click that
+  // did nothing. Post-redirect-get with `ok=1`, the same shape every other
+  // settings form here uses, and the redirect is AFTER the write so a refusal
+  // (which throws out of `planScheduleReplacement`) never reaches it.
+  redirect("/me?ok=1");
 }
 
 /** Agent self-service: apply the org default hours to myself. */
@@ -307,6 +312,9 @@ export async function useMyDefaultHours(): Promise<void> {
   if (!me) return;
   await applyOrgDefaultToUser(me.org_id, me.id);
   revalidatePath("/me");
+  // #1988: same button, same silence. This one writes a whole week the person
+  // did not type, so it needs the confirmation more than the other, not less.
+  redirect("/me?ok=1");
 }
 
 export async function syncSalesforceNow(): Promise<void> {
@@ -662,6 +670,10 @@ export async function setWorkingHours(form: FormData): Promise<void> {
   // person is looking at showing what it showed before they pressed the button.
   revalidatePath("/admin");
   revalidatePath(`/admin/agents/${userId}`);
+  // #1988: and the same reasoning decides where the confirmation lands. The
+  // route is NAMED from the subject rather than assumed, because this form and
+  // the one on /me post from different pages into actions that look alike.
+  redirect(`/admin/agents/${userId}?ok=1`);
 }
 
 /**
@@ -1025,6 +1037,9 @@ export async function useDefaultHours(form: FormData): Promise<void> {
   // person is looking at showing what it showed before they pressed the button.
   revalidatePath("/admin");
   revalidatePath(`/admin/agents/${userId}`);
+  // #1988: as above. This button replaces the whole week with the company
+  // default, so "did that do anything" is the question it most invites.
+  redirect(`/admin/agents/${userId}?ok=1`);
 }
 
 export async function setBookable(form: FormData): Promise<void> {
