@@ -157,6 +157,11 @@ const PALETTE = {
     confirm: "bg-accent text-fg-on-sky hover:bg-accent-hover",
     backHover: "hover:text-fg",
   },
+  // Every wash below is the LIGHT half of a pair whose dark half, above, swaps it
+  // for an accent tint. `--fg` is graphite while this half applies, so the pair
+  // is fixed against fixed. That is the shape #2007 asks for, expressed as two
+  // maps rather than as a `dark:` prefix per class, which is why each line
+  // carries the marker rather than the block.
   light: {
     shell: "bg-surface text-fg",
     border: "border-border",
@@ -164,7 +169,9 @@ const PALETTE = {
     muted: "text-fg-muted",
     faint: "text-fg-muted",
     body: "text-fg",
+    // theme-pair-ok: light half of a two map palette, see the note above
     avatar: "bg-pennie-sky-soft text-fg",
+    // theme-pair-ok: light half of a two map palette, see the note above
     dayOn: "text-fg hover:bg-pennie-sky-soft",
     dayOff: "cursor-default text-fg-muted opacity-50",
     daySelected: "bg-pennie-sky-soft",
@@ -173,6 +180,7 @@ const PALETTE = {
     input:
       "bg-surface text-fg placeholder:text-fg-muted shadow-[inset_0_0_0_1px_var(--border)]",
     toggleBorder: "border-border",
+    // theme-pair-ok: light half of a two map palette, see the note above
     toggleOn: "bg-pennie-sky-soft text-fg",
     toggleOff: "text-fg-muted",
     navHover: "hover:bg-[rgba(52,52,52,0.04)]",
