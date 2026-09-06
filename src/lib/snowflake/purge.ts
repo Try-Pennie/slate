@@ -229,7 +229,24 @@ export async function runPurgeAndVerify(
  * written, because a record saying the warehouse was purged is worse than no
  * record when it was not.
  */
-export async function purgeSnowflakeErasure(ids?: string[], actorId?: string): Promise<PurgeOutcome> {
+export async function purgeSnowflakeErasure(
+  ids?: string[],
+  actorId?: string,
+  /**
+   * Who authorised this, when there is no signed-in admin to name (#1961).
+   *
+   * The operator-secret path records no `actorId`, because there is no user
+   * behind it. That was tolerable while it was the rare path and the button in
+   * the UI was the ordinary one. Dan's call on 2026-09-06 removes the buttons and
+   * makes this the ONLY way an erasure is executed, so an audit entry naming
+   * nobody stops being a gap in an unusual case and becomes the whole record of a
+   * compliance action.
+   *
+   * An audit entry that cannot say who is an entry that cannot answer the
+   * question an audit exists to answer (L529).
+   */
+  authorisedBy?: string,
+): Promise<PurgeOutcome> {
   const config = readSnowflakeConfig();
   if (!config) {
     return { skipped: true, ok: true, bookingIds: [], rowsByTable: {}, residualAfter: {}, reasons: [] };
@@ -275,6 +292,11 @@ export async function purgeSnowflakeErasure(ids?: string[], actorId?: string): P
       rows_by_table: rowsByTable,
       residual_after: residualAfter,
       verified: ok,
+      // #1961: one of these is always present. `actor_id` when an admin is
+      // signed in, `authorised_by` when the operator secret is used, which is
+      // now the only path. The route refuses a secret call that names neither,
+      // so the trail cannot hold an execution nobody is attached to.
+      ...(authorisedBy ? { authorised_by: authorisedBy } : {}),
     },
   });
 

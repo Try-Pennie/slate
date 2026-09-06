@@ -80,22 +80,54 @@ describe("POST /api/admin/erasure-purge", () => {
     it("allows an admin and records them as the actor", async () => {
       const res = await POST(req());
       expect(res.status).toBe(200);
-      expect(purge.purgeSnowflakeErasure).toHaveBeenCalledWith(undefined, "admin-1");
+      expect(purge.purgeSnowflakeErasure).toHaveBeenCalledWith(undefined, "admin-1", undefined);
     });
 
-    it("allows an operator process holding the secret, with no actor", async () => {
+    // #1961: THE OPERATOR PATH MUST SAY WHO ASKED, and the test that let it
+    // through with nobody attached is replaced rather than kept beside the new
+    // one (L252): "with no actor" was the behaviour being removed.
+    //
+    // It records no `actorId` because there is no signed-in user behind it,
+    // which was tolerable while the UI button was the ordinary route. Dan's call
+    // on 2026-09-06 removes the buttons, so this becomes the ONLY way an erasure
+    // runs, and an entry naming nobody would be the entire record of a
+    // compliance action (L529).
+    it("refuses an operator call that names nobody", async () => {
       auth.requireAdmin.mockRejectedValue(new Error("not authorized"));
       cron.isAuthorizedCron.mockReturnValue(true);
       const res = await POST(req());
+      expect(res.status).toBe(400);
+      expect((await res.json()).error).toMatch(/authorisedBy/i);
+      // Refused BEFORE the lock and the purge, so a call naming nobody cannot
+      // leave a lock behind or delete anything on its way to being told off.
+      expect(purge.purgeSnowflakeErasure).not.toHaveBeenCalled();
+      expect(locks.acquireLock).not.toHaveBeenCalled();
+    });
+
+    it("allows an operator process that names who authorised it", async () => {
+      auth.requireAdmin.mockRejectedValue(new Error("not authorized"));
+      cron.isAuthorizedCron.mockReturnValue(true);
+      const res = await POST(req({ authorisedBy: "dan, erasure request 42" }));
       expect(res.status).toBe(200);
-      expect(purge.purgeSnowflakeErasure).toHaveBeenCalledWith(undefined, undefined);
+      expect(purge.purgeSnowflakeErasure).toHaveBeenCalledWith(
+        undefined,
+        undefined,
+        "dan, erasure request 42",
+      );
+    });
+
+    // A signed-in admin still needs no such field: they ARE the actor, and
+    // demanding it of them would be a second name for one fact.
+    it("does not demand it of a signed in admin", async () => {
+      const res = await POST(req());
+      expect(res.status).toBe(200);
     });
   });
 
   describe("what it may touch", () => {
     it("passes an explicit booking id list through", async () => {
       await POST(req({ bookingIds: ["b1", "b2"] }));
-      expect(purge.purgeSnowflakeErasure).toHaveBeenCalledWith(["b1", "b2"], "admin-1");
+      expect(purge.purgeSnowflakeErasure).toHaveBeenCalledWith(["b1", "b2"], "admin-1", undefined);
     });
 
     it("400s a bookingIds that is not an array of strings", async () => {

@@ -50,8 +50,12 @@ export async function POST(req: NextRequest) {
   if (!caller) return NextResponse.json({ error: "forbidden" }, { status: 403 });
 
   let bookingIds: string[] | undefined;
+  let authorisedBy: string | undefined;
   try {
-    const body = (await req.json()) as { bookingIds?: unknown };
+    const body = (await req.json()) as { bookingIds?: unknown; authorisedBy?: unknown };
+    if (typeof body?.authorisedBy === "string" && body.authorisedBy.trim()) {
+      authorisedBy = body.authorisedBy.trim().slice(0, 200);
+    }
     if (body?.bookingIds !== undefined) {
       if (!Array.isArray(body.bookingIds) || body.bookingIds.some((id) => typeof id !== "string")) {
         return NextResponse.json({ error: "bookingIds must be an array of strings" }, { status: 400 });
@@ -62,11 +66,32 @@ export async function POST(req: NextRequest) {
     // No body at all is the normal case: purge everything in the trail.
   }
 
+  // #1961: a purge run on the operator secret must say who authorised it.
+  //
+  // That path records no `actorId`, because there is no signed-in user behind
+  // it. It was tolerable while the UI button was the ordinary route and this was
+  // the exception. Dan's call on 2026-09-06 removes the buttons, so this becomes
+  // the ONLY way an erasure is executed and an entry naming nobody would be the
+  // entire record of a compliance action (L529).
+  //
+  // Refused rather than defaulted: a default here would be a name nobody chose,
+  // attached to an irreversible deletion, and it would read in the trail exactly
+  // like a real one.
+  if (!caller.actorId && !authorisedBy) {
+    return NextResponse.json(
+      {
+        error:
+          "authorisedBy is required when calling with the operator secret: name who asked for this erasure, so the audit entry is not the only record with nobody attached to it",
+      },
+      { status: 400 },
+    );
+  }
+
   const lock = await acquireLock("erasure_warehouse_purge", LOCK_TTL_MS);
   if (!lock) return NextResponse.json({ error: "a purge is already running" }, { status: 409 });
 
   try {
-    const result = await purgeSnowflakeErasure(bookingIds, caller.actorId);
+    const result = await purgeSnowflakeErasure(bookingIds, caller.actorId, authorisedBy);
     return NextResponse.json(result, { status: result.ok ? 200 : 500 });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
