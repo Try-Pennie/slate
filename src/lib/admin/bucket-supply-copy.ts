@@ -14,12 +14,29 @@
  * PURE, so the node suite and the component test drive the real wording rather
  * than a second copy of it (L41).
  */
-import type { SupplyCell, SupplyFreshness } from "./bucket-supply.ts";
+import type { SupplyCell, SupplyFreshness, SupplyTotals } from "./bucket-supply.ts";
+
+/**
+ * Every state this page has a name for.
+ *
+ * A union rather than a bare string so `tsc` names the omission when a state is
+ * added, and so the summary line above the table can only ever count a state the
+ * key below it explains (#1938).
+ */
+export type SupplyLegendId =
+  | "nobody-available"
+  | "saturated"
+  | "some"
+  | "none"
+  | "no-capacity"
+  | "beyond-horizon"
+  | "closed"
+  | "unknown";
 
 export interface SupplyLegendEntry {
   /** Its own id: two entries share the `counted` kind, because "every time the
    *  day had" and "none of them" are opposite readings of one measurement. */
-  id: string;
+  id: SupplyLegendId;
   /** The legend's name for it. */
   label: string;
   /** The legend's one line explanation, in a reader's terms. */
@@ -160,6 +177,50 @@ export const SUPPLY_LEGEND: SupplyLegendEntry[] = [
   },
 ];
 
+/** One legend entry by id. Throws rather than returning a default, because a
+ *  default is indistinguishable from a deliberate choice (L113) and the caller
+ *  is the summary line, which would silently start counting under a blank name. */
+export function supplyLegendEntry(id: SupplyLegendId): SupplyLegendEntry {
+  const found = SUPPLY_LEGEND.find((e) => e.id === id);
+  if (!found) throw new Error(`no legend entry for ${id}`);
+  return found;
+}
+
+/**
+ * The summary line and the key are ONE vocabulary (#1938).
+ *
+ * The page used to name each state three times: the summary said "offering the
+ * whole of today", the key said "Bookable", the column headers said something
+ * else again, so nothing a reader learned in one place helped them in another.
+ * Each chip here names the legend entry it counts and takes its WORDS from that
+ * entry, so there is one label per state and both ends of the page read it.
+ *
+ * Five of the eight states, and the three missing ones are properties of the
+ * DAY rather than of a bucket (closed, nothing left today, past the horizon), so
+ * a count of them across buckets would be sixty times one fact.
+ */
+export const SUPPLY_SUMMARY_STATES: { totalsKey: keyof SupplyTotals; legendId: SupplyLegendId }[] = [
+  // Nobody available leads: it is the only one of these that asks for an action.
+  { totalsKey: "nobodyAvailable", legendId: "nobody-available" },
+  { totalsKey: "saturated", legendId: "saturated" },
+  { totalsKey: "partBooked", legendId: "some" },
+  { totalsKey: "nothingBooked", legendId: "none" },
+  { totalsKey: "unmeasured", legendId: "unknown" },
+];
+
+/** Which summary chips read as something wrong rather than as a state of the
+ *  world. `nothingBooked` is every bucket today and is not a fault. */
+export const SUPPLY_ALARMING_STATES: SupplyLegendId[] = ["nobody-available", "unknown"];
+
+/**
+ * The unit, stated ONCE, over the columns it applies to (#1938).
+ *
+ * Every number under these headers is a share of appointment START TIMES, and
+ * nothing on the page said so except a paragraph above the table, which is where
+ * a reader arrives last. A spanning header says it where the numbers are.
+ */
+export const SUPPLY_DAY_GROUP_HEADER = "Booked share of the appointment times the pool could have taken";
+
 /** How a share reads as a percentage, with no false precision. */
 export function sharePercent(share: number): number {
   return Math.round(share * 100);
@@ -216,11 +277,69 @@ export function freshnessLabel(freshness: SupplyFreshness): { label: string; mea
   }
 }
 
-/** How a depth reads. `null` is unknown, which is never zero agents. */
-export function depthLabel(depth: number | null, effectiveDepth: number | null): string {
-  if (depth === null) return "Unknown";
-  if (effectiveDepth !== null && effectiveDepth !== depth) return `${depth} (${effectiveDepth} today)`;
-  return String(depth);
+/**
+ * How long ago, in words, with no false precision (#1938).
+ *
+ * Pure and clock free: both instants are arguments, so the same pair always
+ * renders the same string and a test can assert the wording rather than the
+ * machine's speed (L290).
+ */
+export function relativeAge(ageMs: number): string | null {
+  // `null` rather than a string, so a caller has to decide what an unreadable
+  // age says. Every comparison below is false for NaN, so without this the
+  // value falls through to the LAST branch and renders "NaN days ago" (L50):
+  // the arm reached is the one that reads as the most confident. A negative age
+  // needs no branch of its own, because `Math.floor` already puts it under one
+  // minute, and a guard that changes no answer is dead code pretending to be a
+  // decision (L29).
+  if (!Number.isFinite(ageMs)) return null;
+  const minutes = Math.floor(ageMs / 60_000);
+  if (minutes < 1) return "just now";
+  if (minutes === 1) return "1 min ago";
+  if (minutes < 60) return `${minutes} min ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours === 1) return "1 hr ago";
+  if (hours < 24) return `${hours} hr ago`;
+  const days = Math.floor(hours / 24);
+  return days === 1 ? "1 day ago" : `${days} days ago`;
+}
+
+/**
+ * What the "Last computed" column SAYS, which is now a time (#1938).
+ *
+ * The header asks WHEN and the cell used to answer with a grade ("Fresh"), so
+ * the one column that could tell a first-time reader whether these numbers are
+ * current answered a question nobody had asked. A healthy row states its age and
+ * the reader judges it.
+ *
+ * `stale` and `unknown` keep their WORDS, and that is not an inconsistency: an
+ * age past the alarm is a thing to act on rather than a fact to weigh, and a row
+ * that has never been computed has no age at all. Both keep the error treatment
+ * the grade carried.
+ */
+export function computedAtLabel(
+  freshness: SupplyFreshness,
+  computedAtMs: number | null,
+  nowMs: number,
+): { label: string; meaning: string } {
+  const grade = freshnessLabel(freshness);
+  if (freshness === "stale" || freshness === "unknown" || computedAtMs === null) return grade;
+  const age = relativeAge(nowMs - computedAtMs);
+  // An age nobody could compute falls back to the WORD, never to a blank and
+  // never to a figure: the column has to keep answering.
+  if (age === null) return grade;
+  return { label: age, meaning: grade.meaning };
+}
+
+/**
+ * How one agent count reads. `null` is unknown, which is never zero agents.
+ *
+ * ONE number, because the column it sits in names one fact (#1938). It used to
+ * render `84 (75 today)`, two different measurements in one cell separated by a
+ * bracket, which a reader had to decode before they could read it.
+ */
+export function agentCountLabel(count: number | null): string {
+  return count === null ? "Unknown" : String(count);
 }
 
 /** The name of the backend digit a group of codes shares. */
