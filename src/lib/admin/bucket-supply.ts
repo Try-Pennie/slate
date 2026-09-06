@@ -109,8 +109,29 @@ export type SupplyCell =
   | { kind: "beyond-horizon" }
   /** This bucket's cached payload could not be measured. NOT zero. */
   | { kind: "unknown" }
-  /** A real measurement. `share` is `open / max`, and `max` is always > 0. */
-  | { kind: "counted"; open: number; max: number; share: number };
+  /**
+   * The day could hold appointments and this bucket has none of them: nothing
+   * offered and nothing booked (#1937).
+   *
+   * Its own answer rather than a zero share, because there is no ceiling to be a
+   * share OF, and because it is the state worth acting on: a booked out bucket
+   * is a full share and a healthy one, while this is nobody being available at
+   * all. A bare 0% would read as the first.
+   */
+  | { kind: "nobody-available" }
+  /**
+   * A real measurement (#1937): how many of the times this bucket could have
+   * taken an appointment at were actually booked.
+   *
+   * `capacity` is what is still OFFERED plus what is already TAKEN, both counted
+   * as distinct start times on the same grid from the same source, which is the
+   * whole reason the two are comparable. `share` is `booked / capacity` and is
+   * therefore always between 0 and 1, by construction rather than by clamping.
+   *
+   * It used to be the times the whole POOL was offering over the slots that fit
+   * for ONE synthetic ideal agent, and the ratio of those two ran to 189%.
+   */
+  | { kind: "counted"; booked: number; capacity: number; share: number };
 
 /**
  * How a bucket's cached row read.
@@ -220,6 +241,17 @@ export interface BucketSupplyInput {
   depthByCode: Map<string, SupplyDepth> | null;
   /** Cached rows, or `null` when `bucket_slots` could not be read. */
   cacheRows: CachedSlotRow[] | null;
+  /**
+   * The start times already booked, by bucket code and then by date in the org's
+   * zone (#1937). A code or a date simply absent means none were booked, which is
+   * a real answer.
+   *
+   * `null` means the bookings could NOT be read, and it makes every cell unknown
+   * rather than reporting zero booked: a zero here would read as "nothing is
+   * taken" across every bucket at once, which is exactly what a healthy quiet
+   * day looks like (L11).
+   */
+  bookedByCodeAndDate: Map<string, Map<string, string[]>> | null;
 }
 
 /** The theoretical maximum for one day, or the fact that there was never a day. */
@@ -392,8 +424,13 @@ export function bucketSupplyReport(input: BucketSupplyInput): BucketSupplyReport
           : "unreadable";
     const computedAtMs = row ? parseStampMs(row.computed_at) : null;
 
+    // The times already taken, by date. An unreadable read makes every cell
+    // unknown below rather than reporting a zero nobody measured.
+    const bookedByDate = input.bookedByCodeAndDate?.get(d.code) ?? new Map<string, string[]>();
+    const bookingsReadable = input.bookedByCodeAndDate !== null;
+
     let cells: SupplyCell[];
-    if (cacheState !== "measured" || eventType === null || !Array.isArray(slots)) {
+    if (cacheState !== "measured" || eventType === null || !Array.isArray(slots) || !bookingsReadable) {
       // A day the org is shut is known whatever the cache says; everything else
       // about this bucket is not.
       cells = days.map((day) =>
@@ -404,13 +441,21 @@ export function bucketSupplyReport(input: BucketSupplyInput): BucketSupplyReport
       // the cached payload through the org's current hours, so counting the raw
       // list would measure times nobody is being offered.
       const served = slotsWithinBusinessHours(slots, eventType.duration_min, hours);
-      const openByDate = new Map<string, number>();
+      // The INSTANTS, not a count, because they have to be unioned with the times
+      // already booked, and keyed by epoch milliseconds rather than by their text
+      // (#1937). The cache writes "2026-08-04T17:20:00.000Z" and Postgres hands
+      // back "2026-08-04T17:20:00+00:00" for the same moment, so a set of strings
+      // would never match a single one of them and every booked time would look
+      // like a time nobody was offering.
+      const openByDate = new Map<string, Set<number>>();
       for (const iso of served) {
         const dt = DateTime.fromISO(iso, { zone: hours.zone });
         if (!dt.isValid) continue;
         const key = dt.toISODate();
         if (key === null) continue;
-        openByDate.set(key, (openByDate.get(key) ?? 0) + 1);
+        const set = openByDate.get(key) ?? new Set<number>();
+        set.add(dt.toMillis());
+        openByDate.set(key, set);
       }
       // This bucket's answer was trimmed to the first `horizonDays` days that
       // produced times, so a later day may hold nothing simply because the
@@ -420,19 +465,45 @@ export function bucketSupplyReport(input: BucketSupplyInput): BucketSupplyReport
       const allowanceSpent = daysWithSlots.length >= input.horizonDays;
 
       cells = days.map((day) => {
-        const capacity = capacityFor(eventType, day);
-        if (capacity.state === "closed") return { kind: "closed" };
-        if (capacity.max === 0) return { kind: "no-capacity" };
-        const open = openByDate.get(day.iso) ?? 0;
+        const dayRoom = capacityFor(eventType, day);
+        if (dayRoom.state === "closed") return { kind: "closed" };
+        // The org's own day still decides whether an appointment could EVER have
+        // started here, which is what tells "the day is over" apart from "booked
+        // out". It is no longer the denominator.
+        if (dayRoom.max === 0) return { kind: "no-capacity" };
+
+        const offered = openByDate.get(day.iso) ?? new Set<number>();
+        // Read to the same epoch key as the offered times, and an unreadable
+        // stamp is DROPPED rather than becoming a NaN that joins nothing and
+        // inflates the ceiling by one (L50).
+        const taken = new Set<number>();
+        for (const iso of bookedByDate.get(day.iso) ?? []) {
+          const ms = parseStampMs(iso);
+          if (ms !== null) taken.add(ms);
+        }
         if (
-          open === 0 &&
+          offered.size === 0 &&
+          taken.size === 0 &&
           allowanceSpent &&
           lastOfferedDate !== null &&
           day.iso > lastOfferedDate
         ) {
           return { kind: "beyond-horizon" };
         }
-        return { kind: "counted", open, max: capacity.max, share: open / capacity.max };
+
+        // The ceiling is the UNION, so a time that is both offered and booked is
+        // counted once. Without that a double count would put the share back
+        // over 1 by a different route.
+        const possible = new Set(offered);
+        for (const t of taken) possible.add(t);
+        if (possible.size === 0) return { kind: "nobody-available" };
+
+        return {
+          kind: "counted",
+          booked: taken.size,
+          capacity: possible.size,
+          share: taken.size / possible.size,
+        };
       });
     }
 
@@ -478,22 +549,38 @@ export function backendDigitOf(code: string): string | null {
 
 /** Totals for the summary line, each one refusing to count what it could not
  *  measure. */
+/**
+ * The headline counts for one day.
+ *
+ * THESE INVERTED WITH THE METRIC (#1937). They used to be `fullyOpen`,
+ * `partial` and `empty`, read off how much was OFFERED, and `fullyOpen` was
+ * `cell.open >= cell.max`: every bucket whose share ran over 100% counted as
+ * "offering the whole of today", so the summary line was as unreadable as the
+ * cells it summed. Dan's screenshot said "18 offering the whole of today" and
+ * some of those 18 were offering 189% of a number that was not their capacity.
+ *
+ * `nobodyAvailable` is the one worth acting on and is counted separately from
+ * `measured`, because a bucket with no capacity at all has no share to average
+ * in with the others.
+ */
 export function supplyTotals(
   rows: BucketSupplyRow[],
   dayIndex: number,
 ): {
   measured: number;
   unmeasured: number;
-  fullyOpen: number;
-  partial: number;
-  empty: number;
+  saturated: number;
+  partBooked: number;
+  nothingBooked: number;
+  nobodyAvailable: number;
   stale: number;
 } {
   let measured = 0;
   let unmeasured = 0;
-  let fullyOpen = 0;
-  let partial = 0;
-  let empty = 0;
+  let saturated = 0;
+  let partBooked = 0;
+  let nothingBooked = 0;
+  let nobodyAvailable = 0;
   let stale = 0;
   for (const row of rows) {
     if (row.freshness === "stale" || row.freshness === "unknown") stale++;
@@ -502,11 +589,15 @@ export function supplyTotals(
       unmeasured++;
       continue;
     }
+    if (cell.kind === "nobody-available") {
+      nobodyAvailable++;
+      continue;
+    }
     if (cell.kind !== "counted") continue;
     measured++;
-    if (cell.open === 0) empty++;
-    else if (cell.open >= cell.max) fullyOpen++;
-    else partial++;
+    if (cell.booked === 0) nothingBooked++;
+    else if (cell.booked >= cell.capacity) saturated++;
+    else partBooked++;
   }
-  return { measured, unmeasured, fullyOpen, partial, empty, stale };
+  return { measured, unmeasured, saturated, partBooked, nothingBooked, nobodyAvailable, stale };
 }

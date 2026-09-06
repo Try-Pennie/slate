@@ -169,6 +169,8 @@ function reportWith(over: Partial<Parameters<typeof bucketSupplyReport>[0]> = {}
       cachedRow("120", slotsFrom1320(9), FRESH_STAMP),
       cachedRow("110", slotsFrom1320(21), FRESH_STAMP),
     ],
+    // Nothing booked unless a case says otherwise, which is production today.
+    bookedByCodeAndDate: new Map(),
     ...over,
   });
 }
@@ -192,11 +194,16 @@ function reportWith(over: Partial<Parameters<typeof bucketSupplyReport>[0]> = {}
       if (b.kind !== "counted" || o.kind !== "counted") {
         fail("today's cells are measured counts");
       } else {
-        eq(b.open, 9, "the thin bucket's open count comes from the cache");
-        eq(b.max, 21, "and it is measured against the same maximum the booker derives");
-        assert(b.share > 0.42 && b.share < 0.43, "a thin bucket reads as a fraction, not as empty");
-        eq(o.open, 21, "the healthy bucket is offering the whole day");
-        eq(o.share, 1, "which reads as a full share");
+        // #1937: the cell is BOOKED out of POSSIBLE now. With nothing booked,
+        // both buckets read as an honest zero against their own ceiling, and
+        // the ceiling is what each is offering rather than one ideal agent's
+        // grid, so the thin bucket's ceiling is smaller than the healthy one's.
+        eq(b.booked, 0, "nothing is booked in the thin bucket");
+        eq(b.capacity, 9, "and its ceiling is the times IT could take, not the day's");
+        eq(b.share, 0, "so its share is zero");
+        eq(o.booked, 0, "nothing is booked in the healthy bucket either");
+        eq(o.capacity, 21, "whose ceiling is larger, because it offers more");
+        eq(o.share, 0, "and its share is zero too");
       }
       eq(beyond.depth, 4, "depth comes from the routing criteria match, not bucket_members");
       eq(beyond.effectiveDepth, 3, "and the out-today figure rides with it");
@@ -293,8 +300,13 @@ function reportWith(over: Partial<Parameters<typeof bucketSupplyReport>[0]> = {}
   }
 }
 
-// A bucket that really is offering nothing: this is the one cell that MUST read
-// as a hard zero, or the page cannot answer the question it exists for.
+// A bucket that really is offering nothing, with nothing booked either: the one
+// cell that MUST be its own answer, or the page cannot say the thing it exists
+// to say (#1937).
+//
+// It used to be a counted zero, and under a BOOKED share a zero would read as
+// "nothing taken yet", which is the healthy state every other bucket is in
+// today. Nobody being available is the opposite, so it is a kind of its own.
 {
   const report = reportWith({
     cacheRows: [cachedRow("120", [], FRESH_STAMP), cachedRow("110", slotsFrom1320(21), FRESH_STAMP)],
@@ -303,12 +315,23 @@ function reportWith(over: Partial<Parameters<typeof bucketSupplyReport>[0]> = {}
     fail("an empty bucket does not take the report down");
   } else {
     const cell = report.rows.find((r) => r.code === "120")?.cells[0];
-    if (cell?.kind !== "counted") {
-      fail("an empty but readable bucket is counted, not unknown");
-    } else {
-      eq(cell.open, 0, "an empty bucket reads as zero open");
-      eq(cell.max, 21, "against the maximum the day could have held");
-      eq(cell.share, 0, "and a zero share");
+    eq(
+      cell?.kind,
+      "nobody-available",
+      "a bucket offering nothing, with nothing booked, says nobody is available",
+    );
+    // And it is NOT confused with a bucket that is simply fully booked, which is
+    // the opposite reading of the same empty offer list.
+    const bookedOut = reportWith({
+      cacheRows: [cachedRow("120", [], FRESH_STAMP)],
+      buckets: [{ code: "120", name: "Bucket 120" }],
+      bookedByCodeAndDate: new Map([["120", new Map([["2026-08-04", slotsFrom1320(6)]])]]),
+    });
+    if (!bookedOut.measurable) fail("a booked out bucket produces a report");
+    else {
+      const c = bookedOut.rows[0].cells[0];
+      assert(c.kind === "counted", `a booked out day is counted (got ${c.kind})`);
+      if (c.kind === "counted") eq(c.share, 1, "and reads as every possible time taken");
     }
   }
 }
@@ -422,9 +445,12 @@ function reportWith(over: Partial<Parameters<typeof bucketSupplyReport>[0]> = {}
   } else {
     const totals = supplyTotals(report.rows, 0);
     eq(totals.measured, 2, "both buckets were measured today");
-    eq(totals.partial, 1, "one is partially open");
-    eq(totals.fullyOpen, 1, "one is fully open");
-    eq(totals.empty, 0, "and none is empty");
+    // #1937: the headline counts inverted with the metric. "Offering the whole
+    // of today" counted every bucket whose share ran over 100%, so it is gone.
+    eq(totals.nothingBooked, 2, "with no bookings, both read as nothing booked");
+    eq(totals.saturated, 0, "neither is fully booked");
+    eq(totals.partBooked, 0, "and neither is part booked");
+    eq(totals.nobodyAvailable, 0, "both have times to offer, so neither is unavailable");
     eq(totals.stale, 1, "the stale row is counted as stale");
   }
 }
@@ -443,7 +469,15 @@ function reportWith(over: Partial<Parameters<typeof bucketSupplyReport>[0]> = {}
     const totals = supplyTotals(report.rows, 0);
     eq(totals.measured, 1, "only the readable bucket is counted as measured");
     eq(totals.unmeasured, 1, "and the unreadable one is reported as unmeasured");
-    eq(totals.empty, 0, "an unreadable bucket is never counted as empty");
+    // The unreadable bucket contributes to `unmeasured` and to NOTHING else, so
+    // the three share categories account for exactly the measured ones and no
+    // bucket is counted twice or dropped (L517).
+    eq(
+      totals.saturated + totals.partBooked + totals.nothingBooked,
+      totals.measured,
+      "every measured bucket lands in exactly one share category",
+    );
+    eq(totals.nothingBooked, 1, "which here is the one readable bucket, with nothing booked");
   }
 }
 
@@ -453,6 +487,124 @@ function reportWith(over: Partial<Parameters<typeof bucketSupplyReport>[0]> = {}
 {
   const days = supplyDays(WEEK, 4, Date.parse("2026-08-05T03:30:00.000Z"));
   eq(days[0].iso, "2026-08-04", "late evening in New York is still today's column");
+}
+
+// --- the share is BOOKED out of POSSIBLE, and can never exceed 1 (#1937) -----
+//
+// The page showed shares of 117%, 168% and 189%, and Dan read them as "did we
+// somehow book more appointments than we offered?". They were proof the two
+// halves measured different things: the numerator counted the times the WHOLE
+// POOL was offering (84 agents for bucket 100) and the denominator counted how
+// many slots fit for ONE synthetic ideal agent. Agents set their own hours
+// across seven zones, so their windows start at different minutes past the hour
+// and the pool's union holds far more instants than any single grid.
+//
+// Dan's own reading of what the number should mean, on 2026-09-04: "what
+// percentage of the possible appointment times have been booked".
+{
+  const DAY = "2026-08-04";
+  const booked = (times: string[]) =>
+    new Map([["120", new Map([[DAY, times]])]]);
+
+  const reportBooked = (offered: string[], taken: string[]) =>
+    bucketSupplyReport({
+      hours: WEEK,
+      horizonDays: 4,
+      nowMs: AUG_4_1119_ET,
+      buckets: [{ code: "120", name: "Bucket 120" }],
+      depthByCode: DEPTHS,
+      cacheRows: [cachedRow("120", offered, FRESH_STAMP)],
+      bookedByCodeAndDate: booked(taken),
+    });
+
+  const todayCell = (r: ReturnType<typeof bucketSupplyReport>) => {
+    if (!r.measurable) throw new Error("report was not measurable");
+    const i = r.days.findIndex((d) => d.iso === DAY);
+    return r.rows[0].cells[i];
+  };
+
+  // Nothing booked: an honest zero against a real ceiling, which is what every
+  // bucket reads today, since cal.com still takes every lead.
+  const none = todayCell(reportBooked(slotsFrom1320(8), []));
+  assert(none.kind === "counted", `a day with times offered is counted (got ${none.kind})`);
+  if (none.kind === "counted") {
+    eq(none.booked, 0, "nothing booked reads as zero booked");
+    eq(none.capacity, 8, "the ceiling is what could be booked");
+    eq(none.share, 0, "and the share is zero");
+  }
+
+  // Half the times taken: the ceiling is what is still offered PLUS what is
+  // already taken, both counted on the same grid from the same source, which is
+  // what makes the two halves comparable at all.
+  const half = todayCell(reportBooked(slotsFrom1320(8).slice(0, 4), slotsFrom1320(8).slice(4)));
+  assert(half.kind === "counted", "a partly booked day is counted");
+  if (half.kind === "counted") {
+    eq(half.booked, 4, "the booked times are counted");
+    eq(half.capacity, 8, "the ceiling is the times offered plus the times taken");
+    eq(half.share, 0.5, "half booked is a half share");
+  }
+
+  // Fully booked: nothing left to offer, and everything that could be taken was.
+  // A raw count of what is OFFERED reports this same day as empty.
+  const full = todayCell(reportBooked([], slotsFrom1320(8)));
+  assert(full.kind === "counted", "a fully booked day is counted, not empty");
+  if (full.kind === "counted") {
+    eq(full.share, 1, "every possible time taken is a full share");
+    eq(full.booked, 8, "and the booked count is every one of them");
+    eq(full.capacity, 8, "with the ceiling agreeing");
+  }
+
+  // THE DEFECT ITSELF. No combination may produce a share above 1: a displayed
+  // share outside its own range is the only self-evident proof that the two
+  // halves measure different things (L588).
+  const shapes: [string, string[], string[]][] = [
+    ["nothing taken", slotsFrom1320(8), []],
+    ["everything taken", [], slotsFrom1320(8)],
+    ["some of each", slotsFrom1320(3), slotsFrom1320(8).slice(3)],
+    // A time that is BOTH offered and booked, which a double count would inflate.
+    ["the same times twice", slotsFrom1320(8), slotsFrom1320(8)],
+    // A booking at a time nothing is offered at, which is what a narrowed week
+    // or an agent going away leaves behind.
+    ["a booking outside what is offered", slotsFrom1320(2), slotsFrom1320(20).slice(12)],
+  ];
+  for (const [what, offered, taken] of shapes) {
+    const c = todayCell(reportBooked(offered, taken));
+    if (c.kind !== "counted") continue;
+    assert(
+      c.share >= 0 && c.share <= 1,
+      `a share stays inside its own range (${what}: got ${c.share})`,
+    );
+    assert(
+      c.booked <= c.capacity,
+      `the booked count never exceeds the ceiling (${what}: got ${c.booked} of ${c.capacity})`,
+    );
+  }
+
+  // A bucket offering nothing and holding nothing, on a day the office CAN hold
+  // appointments, is nobody being available. Distinct from a booked out day
+  // (which is a full share) and from a day that could never hold one.
+  const nobody = todayCell(reportBooked([], []));
+  assert(
+    nobody.kind === "nobody-available",
+    `a bucket with no times and no bookings says nobody is available (got ${nobody.kind})`,
+  );
+
+  // A booking count that could not be READ must never be scored as zero booked,
+  // which would read as "nothing is taken" on every bucket at once (L11).
+  const unreadable = bucketSupplyReport({
+    hours: WEEK,
+    horizonDays: 4,
+    nowMs: AUG_4_1119_ET,
+    buckets: [{ code: "120", name: "Bucket 120" }],
+    depthByCode: DEPTHS,
+    cacheRows: [cachedRow("120", slotsFrom1320(8), FRESH_STAMP)],
+    bookedByCodeAndDate: null,
+  });
+  const un = todayCell(unreadable);
+  assert(
+    un.kind === "unknown",
+    `an unreadable booking count is unknown, never zero booked (got ${un.kind})`,
+  );
 }
 
 finish();

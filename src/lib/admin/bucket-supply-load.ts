@@ -33,6 +33,9 @@ import { loadBusinessHours } from "@/lib/booking/business-hours-load";
 import { readBookingHorizonDays } from "@/lib/booking/settings";
 import { loadTierDepths } from "@/lib/routing/staffing-depth-load";
 import { log } from "@/lib/log";
+import { DateTime } from "luxon";
+import { selectAllPages } from "@/lib/supabase/paginate";
+import { searchWindowDays } from "@/lib/availability/bookable-days";
 import {
   bucketSupplyReport,
   type BucketSupplyReport,
@@ -116,6 +119,26 @@ export async function loadBucketSupply(
     return { measurable: false, reason: "booking-horizon" };
   }
 
+  // The times already booked, which is the NUMERATOR of every share on the page
+  // (#1937). Keyed by bucket CODE and then by date in the org's zone, so the
+  // report never has to know about bucket ids.
+  //
+  // `bookings` is a growth table rather than a roster bounded one, so this is
+  // paginated: a single page read would silently under-count the moment the
+  // window holds more than a thousand bookings, and an under-count here reads as
+  // "those times are free" (see the capped read convention in AGENTS.md).
+  //
+  // Null on failure, never an empty map: an empty one means "nothing is booked",
+  // which is exactly what a healthy quiet day looks like, and it would paint the
+  // whole page 0% while the read was broken (L11).
+  let bookedByCodeAndDate: Map<string, Map<string, string[]>> | null = null;
+  try {
+    bookedByCodeAndDate = await loadBookedTimes(db, orgId, hours, horizonDays, now);
+  } catch (err) {
+    log.error("bucket-supply", { msg: "booked times unreadable" }, err);
+    bookedByCodeAndDate = null;
+  }
+
   return bucketSupplyReport({
     hours,
     horizonDays,
@@ -123,5 +146,65 @@ export async function loadBucketSupply(
     buckets,
     depthByCode,
     cacheRows,
+    bookedByCodeAndDate,
   });
+}
+
+/**
+ * The start times already booked, by bucket code and then by date.
+ *
+ * CANCELLED bookings are excluded, because a cancelled time is free again and
+ * counting it would report a bucket as busier than it is. `rescheduled` is NOT
+ * excluded: that status marks a booking that MOVED, and the row carries the time
+ * it moved to, so its slot is genuinely taken.
+ *
+ * Bounded to the window the page draws, which is what keeps this read small: a
+ * fortnight of one org's bookings rather than the whole table.
+ */
+async function loadBookedTimes(
+  db: ReturnType<typeof supabaseAdmin>,
+  orgId: string,
+  hours: Awaited<ReturnType<typeof loadBusinessHours>>,
+  horizonDays: number,
+  now: Date,
+): Promise<Map<string, Map<string, string[]>>> {
+  const start = DateTime.fromJSDate(now, { zone: hours.zone }).startOf("day");
+  const end = start.plus({ days: searchWindowDays(horizonDays) });
+
+  // The bucket's CODE comes through the foreign key rather than from a second
+  // read of `buckets`. That is not only one query fewer: keying these by id
+  // would make this read depend on the bucket list one, and a bucket list
+  // failure is deliberately survivable here (the rows then come from the cache's
+  // own codes). Re-reading it would have turned that degraded page into one with
+  // no shares at all.
+  const rows = await selectAllPages<{ starts_at: string; buckets: { code: string } | null }>(
+    "bucket supply booked times",
+    (from, to) =>
+      db
+        .from("bookings")
+        .select("starts_at, buckets!inner(code)")
+        .eq("org_id", orgId)
+        // A cancelled time is free again, so counting it would report a bucket
+        // as busier than it is. `rescheduled` is NOT excluded: that marks a
+        // booking that MOVED, and the row carries the time it moved to, so its
+        // slot is genuinely taken.
+        .neq("status", "cancelled")
+        .gte("starts_at", start.toISO() ?? "")
+        .lt("starts_at", end.toISO() ?? "")
+        .range(from, to),
+  );
+
+  const out = new Map<string, Map<string, string[]>>();
+  for (const row of rows) {
+    const code = row.buckets?.code;
+    if (!code) continue;
+    const dt = DateTime.fromISO(row.starts_at, { zone: hours.zone });
+    if (!dt.isValid) continue;
+    const iso = dt.toISODate();
+    if (iso === null) continue;
+    const byDate = out.get(code) ?? new Map<string, string[]>();
+    byDate.set(iso, [...(byDate.get(iso) ?? []), row.starts_at]);
+    out.set(code, byDate);
+  }
+  return out;
 }

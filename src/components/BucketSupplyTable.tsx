@@ -62,15 +62,24 @@ export function BucketSupplyTable({
   return (
     <>
       <div className="mb-4 flex flex-wrap items-center gap-x-6 gap-y-1 text-sm">
-        <span className="text-fg-muted">
-          <span className="font-semibold tabular-nums text-fg">{totals.fullyOpen}</span> offering
-          the whole of today
+        {/* #1937: the headline counts inverted with the metric. "Offering the
+            whole of today" counted every bucket whose share ran over 100%, so
+            the line was as unreadable as the cells it summed. Nobody available
+            leads, because it is the only one of these that asks for an action. */}
+        <span className={totals.nobodyAvailable > 0 ? "text-error" : "text-fg-muted"}>
+          <span className="font-semibold tabular-nums">{totals.nobodyAvailable}</span> with nobody
+          available today
         </span>
         <span className="text-fg-muted">
-          <span className="font-semibold tabular-nums">{totals.partial}</span> partly taken today
+          <span className="font-semibold tabular-nums text-fg">{totals.saturated}</span> fully
+          booked today
         </span>
-        <span className={totals.empty > 0 ? "text-error" : "text-fg-muted"}>
-          <span className="font-semibold tabular-nums">{totals.empty}</span> offering nothing today
+        <span className="text-fg-muted">
+          <span className="font-semibold tabular-nums">{totals.partBooked}</span> part booked today
+        </span>
+        <span className="text-fg-muted">
+          <span className="font-semibold tabular-nums">{totals.nothingBooked}</span> with nothing
+          booked today
         </span>
         <span className={totals.unmeasured > 0 ? "text-error" : "text-fg-muted"}>
           <span className="font-semibold tabular-nums">{totals.unmeasured}</span> could not be
@@ -84,8 +93,8 @@ export function BucketSupplyTable({
       {!depthReadable && (
         <p className="mb-4 rounded-md border border-border bg-[var(--bg-alt)] px-4 py-3 text-sm text-fg-muted">
           The roster could not be read, so the eligible agents column says unknown throughout.
-          That is not a report that no agent can take these bookings. The open counts beside it
-          were still measured.
+          That is not a report that no agent can take these bookings. The booked shares beside
+          it were still measured.
         </p>
       )}
       {!bucketListReadable && (
@@ -174,11 +183,15 @@ export function BucketSupplyTable({
                           >
                             {cell.kind === "counted" ? (
                               <>
-                                <span aria-hidden="true">
-                                  {cell.open} / {cell.max}
-                                </span>
+                                {/* #1937: the share LEADS, and the ceiling it was
+                                    measured against sits under it, so a 0% is
+                                    read as "none of 204 taken" rather than as a
+                                    bare zero. A bucket with no capacity at all is
+                                    a different cell kind entirely, since it has
+                                    no ceiling to be a share of. */}
+                                <span aria-hidden="true">{sharePercent(cell.share)}%</span>
                                 <span aria-hidden="true" className="font-normal">
-                                  {sharePercent(cell.share)}%
+                                  of {cell.capacity}
                                 </span>
                               </>
                             ) : (
@@ -226,11 +239,15 @@ export function BucketSupplyTable({
       </ul>
 
       <p className="mt-4 text-xs text-fg-muted">
-        Every number is read from the slot cache the booker itself serves, so this page adds no
-        calendar traffic and nothing here is a live check of a calendar. The figure a cell is
-        measured against is the same one the booker derives: appointments at the event type&rsquo;s
-        interval across the office day, minus anything inside the notice cutoff. Today is{" "}
-        {todayLabel}.
+        {/* #1937: this described the OLD ceiling, one synthetic ideal agent's grid
+            across the office day, which is what the shares were being divided by
+            when they ran to 189%. */}
+        Every number is read from the slot cache the booker itself serves, plus the bookings
+        already made, so this page adds no calendar traffic and nothing here is a live check of
+        a calendar. The figure a share is measured against is what THAT pool could have taken:
+        the times it is still offering plus the times already booked, counted as start times. A
+        time nobody in the pool was ever free for was never a possible appointment, so it is in
+        neither. Today is {todayLabel}.
       </p>
     </>
   );
