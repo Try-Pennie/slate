@@ -4,8 +4,9 @@ import { useState } from "react";
 
 import { setReasonOptions } from "@/app/admin/actions";
 import { SubmitButton } from "@/components/ui/SubmitButton";
-import { labelCls, inputCls, cardCls, btnCls, btnSecondaryCls } from "@/components/ui/styles";
-import { REASON_LABEL_MAX, type ReasonOptionRow } from "@/lib/booking/reason-options";
+import { inputCls, cardCls, btnCls, btnSecondaryCls } from "@/components/ui/styles";
+import { ReasonSwitch } from "@/components/ui/ReasonSwitch";
+import { REASON_LABEL_MAX, slugifyCode, type ReasonOptionRow } from "@/lib/booking/reason-options";
 import type { ReasonAction } from "@/lib/booking/core";
 import { REASON_USAGE_WINDOW_DAYS, type ReasonUsageCounts } from "@/lib/booking/reason-usage";
 import { UnsavedGuard } from "@/components/ui/UnsavedGuard";
@@ -143,10 +144,23 @@ export default function ReasonOptionsEditor({
             {rows[action].map((r, i) => (
               <li
                 key={`${r.code}:${i}`}
-                className="flex flex-wrap items-center gap-2 border-t border-border py-2 first:border-t-0"
+                /* #1947: a GRID with fixed control tracks, not a flow row. As a
+                   flow row the first column was `flex-1`, so it absorbed any
+                   difference in the controls' widths: the locked row's wider
+                   pill made that row's column shrink and pushed its up and down
+                   buttons left, on that row only, which is the misalignment Dan
+                   saw. Fixed tracks mean no row's content can move another
+                   row's columns, whatever any control's width becomes later
+                   (L578). */
+                className="grid grid-cols-[minmax(0,1fr)_auto_auto] items-center gap-x-3 gap-y-1 border-t border-border py-1.5 first:border-t-0"
               >
-                <div className="flex min-w-0 flex-1 flex-col gap-1">
-                  <label className={labelCls} htmlFor={`${action}-${i}-label`}>
+                <div className="flex min-w-0 flex-col">
+                  {/* #1947: "we don't need the word Label on every row". It goes
+                      from the SCREEN, not from the markup: this is the input's
+                      accessible name, and deleting it outright would leave the
+                      field announced as an unnamed edit box (WCAG 4.1.2). Same
+                      trap as #1889 on the Team access field, recorded as L577. */}
+                  <label className="sr-only" htmlFor={`${action}-${i}-label`}>
                     Label
                   </label>
                   <input
@@ -155,19 +169,33 @@ export default function ReasonOptionsEditor({
                     value={r.label}
                     maxLength={REASON_LABEL_MAX}
                     disabled={r.locked}
+                    aria-describedby={`${action}-${i}-note`}
                     onChange={(e) => setLabel(action, i, e.target.value)}
                   />
-                  {r.code && (
-                    <span className="text-xs text-fg-muted tabular-nums">
-                      Code: {r.code}
-                      {r.locked && " (system)"}
-                    </span>
-                  )}
-                  {r.code && (
-                    <span className="text-xs text-fg-muted tabular-nums">
-                      {usageHint(usesFor(action, r.code))}
-                    </span>
-                  )}
+                  {/* One line under the field rather than two, and it says the
+                      thing that decides whether a reason is worth keeping.
+
+                      THE CODE MOVED RATHER THAN VANISHING, and its placement was
+                      backwards. `setReasonOptions` upserts on (action, code) and
+                      a code is minted from the label only for a NEW row, so
+                      renaming an existing reason never changes its code: the two
+                      diverge permanently, by design, and the code is what shows
+                      up in booking history, in the Regal payload and in any
+                      report keyed on reasons. It used to be printed on every row
+                      where it can never change and hidden on the one row where
+                      the typing is choosing it. Now it is previewed while it is
+                      being chosen, and reachable elsewhere. */}
+                  <span
+                    id={`${action}-${i}-note`}
+                    className="mt-0.5 truncate text-xs text-fg-muted tabular-nums"
+                    title={r.code ? `Stored code: ${r.code}${r.locked ? " (system)" : ""}` : undefined}
+                  >
+                    {r.code
+                      ? usageHint(usesFor(action, r.code))
+                      : r.label.trim()
+                        ? `Will be stored as ${slugifyCode(r.label) || "an unusable code"}`
+                        : "New reason"}
+                  </span>
                 </div>
 
                 <div className="flex items-center gap-1">
@@ -191,19 +219,35 @@ export default function ReasonOptionsEditor({
                   </button>
                 </div>
 
+                {/* #1947: a switch, and the locked row shows the SAME switch,
+                    on and unmovable, rather than the words "Always on".
+
+                    Three things that had to survive it. It is a native checkbox
+                    with `role="switch"`, not a div that looks like one, so the
+                    keyboard, the form and the screen reader all still work
+                    (L568). The locked row still says WHY it cannot change, since
+                    a disabled control announces as unavailable and never says
+                    why, which would leave a dead control and no explanation
+                    (L109). And it must not read as OFF: a greyed switch usually
+                    means off, so the locked one keeps its filled ON track and is
+                    dimmed only slightly. */}
                 {r.locked ? (
-                  <span className="rounded-full border border-border px-2 py-0.5 text-xs text-fg-muted">
-                    Always on
-                  </span>
+                  <ReasonSwitch
+                    id={`${action}-${i}-active`}
+                    label={`${r.label || "This reason"} is always on`}
+                    checked
+                    disabled
+                    describedBy={`${action}-${i}-locked`}
+                    note="Always on: this reason is part of the system and cannot be retired."
+                    noteId={`${action}-${i}-locked`}
+                  />
                 ) : r.code ? (
-                  <label className="flex items-center gap-1 text-xs text-fg-muted">
-                    <input
-                      type="checkbox"
-                      checked={r.active}
-                      onChange={() => toggleActive(action, i)}
-                    />
-                    Active
-                  </label>
+                  <ReasonSwitch
+                    id={`${action}-${i}-active`}
+                    label={`${r.label || "This reason"} is active`}
+                    checked={r.active}
+                    onChange={() => toggleActive(action, i)}
+                  />
                 ) : (
                   <button
                     type="button"

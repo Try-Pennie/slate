@@ -43,9 +43,56 @@ describe("ReasonOptionsEditor", () => {
     // Two "Other" rows are locked (reschedule + cancel + reassign each have one).
     const otherInputs = screen.getAllByDisplayValue("Other") as HTMLInputElement[];
     expect(otherInputs.every((i) => i.disabled)).toBe(true);
-    // Locked rows show "Always on", never an Active checkbox to retire them:
-    // 3 "Other" rows + reassign's "owner_reassignment" = 4 locked rows.
-    expect(screen.getAllByText(/always on/i).length).toBe(4);
+    // #1947: a locked row shows the SAME switch as every other row, on and
+    // unmovable, rather than the words "Always on". 3 "Other" rows plus
+    // reassign's "owner_reassignment" is 4 locked rows.
+    const locked = screen
+      .getAllByRole("switch")
+      .filter((el) => (el as HTMLInputElement).disabled) as HTMLInputElement[];
+    expect(locked.length).toBe(4);
+    // ON, and unmovable. A locked switch drawn off would say the opposite of
+    // what it means.
+    expect(locked.every((el) => el.checked)).toBe(true);
+    // And it still says WHY, since a disabled control announces as unavailable
+    // and never says why on its own (L109).
+    for (const el of locked) {
+      const describedBy = el.getAttribute("aria-describedby");
+      expect(describedBy).toBeTruthy();
+      expect(document.getElementById(describedBy!)?.textContent).toMatch(/cannot be retired/i);
+    }
+  });
+
+  // #1947: "we don't need the word Label on every row". It goes from the SCREEN,
+  // not from the markup: it is the field's accessible name, and deleting it
+  // would leave an unnamed edit box (L577).
+  it("keeps every label field named to a screen reader", () => {
+    render(<ReasonOptionsEditor initial={initial} />);
+    const fields = screen.getAllByLabelText("Label") as HTMLInputElement[];
+    expect(fields.length).toBeGreaterThan(0);
+    // Named, and the name is not drawn where it costs a line on every row.
+    for (const f of fields) {
+      const label = document.querySelector(`label[for="${f.id}"]`);
+      expect(label?.className).toContain("sr-only");
+    }
+  });
+
+  // The code used to be printed on every row where it can never change, and
+  // hidden on the one row where the typing is choosing it permanently.
+  it("previews the code a new reason will be stored as, while it is being typed", () => {
+    render(<ReasonOptionsEditor initial={initial} />);
+    fireEvent.click(screen.getAllByRole("button", { name: /add reason/i })[1]);
+    const blank = screen.getAllByDisplayValue("").at(-1) as HTMLInputElement;
+    fireEvent.change(blank, { target: { value: "Called the wrong number" } });
+    expect(screen.getByText(/stored as called_the_wrong_number/i)).toBeTruthy();
+  });
+
+  // And on an existing row the stored code stays reachable, because renaming
+  // never changes it: the label and the code diverge permanently, by design.
+  it("keeps a stored code reachable on a row that already has one", () => {
+    render(<ReasonOptionsEditor initial={initial} />);
+    const li = liFor("No longer interested");
+    const note = li.querySelector("[title]");
+    expect(note?.getAttribute("title")).toMatch(/stored code: no_longer_interested/i);
   });
 
   it("adds a new blank reason row to the payload", () => {
