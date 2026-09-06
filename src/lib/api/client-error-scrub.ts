@@ -78,7 +78,16 @@ export function scrubContactData(text: string): string {
     .replace(LONG_DIGITS, "[number]");
 }
 
-export type ClientErrorKind = "error" | "unhandledrejection";
+/**
+ * `boundary` is a REACT ERROR BOUNDARY catch (#1974), not a window event.
+ *
+ * The other two arrive from listeners on the page. This one is reported
+ * deliberately by the boundary itself, and it is the case that matters most on
+ * the staff surfaces: a page that throws on render shows a person the error
+ * screen and tells nobody, so one stray fault and a deploy that broke a page for
+ * everybody arrive on the same path and look identical (L77).
+ */
+export type ClientErrorKind = "error" | "unhandledrejection" | "boundary";
 
 export interface ClientErrorReport {
   kind: ClientErrorKind;
@@ -91,7 +100,7 @@ export interface ClientErrorReport {
   col: number | null;
 }
 
-const KINDS: ClientErrorKind[] = ["error", "unhandledrejection"];
+const KINDS: ClientErrorKind[] = ["error", "unhandledrejection", "boundary"];
 
 /** Trim, scrub, and cap one string field. Returns null for nothing usable. */
 function field(raw: unknown, limit: number): string | null {
@@ -152,7 +161,13 @@ export function normalizeClientError(body: unknown): ClientErrorReport | null {
  * of the booker collapses to one key, because a broken bundle breaks all of them
  * at once and sixty messages say no more than one.
  */
-export function clientErrorSignature(input: { page: string }): string {
+export function clientErrorSignature(input: { page: string; kind?: ClientErrorKind }): string {
   const first = input.page.replace(/[^a-zA-Z0-9/_-]/g, "").split("/").filter(Boolean)[0] ?? "root";
-  return `client_error:${first.slice(0, 32)}`;
+  // #1974: a BOUNDARY catch gets its own key space, so a broken admin page and a
+  // broken booker bundle do not share a cooldown. They are different failures
+  // with different audiences, and one silencing the other for the cooldown's
+  // length is exactly the shape that leaves the second invisible for as long as
+  // it lasts.
+  const prefix = input.kind === "boundary" ? "boundary_error" : "client_error";
+  return `${prefix}:${first.slice(0, 32)}`;
 }

@@ -3,6 +3,7 @@
 import { useEffect } from "react";
 import Link from "next/link";
 import { log } from "@/lib/log";
+import { reportBoundaryCatch } from "@/lib/errors/report-boundary";
 import { btnCls, btnSecondaryCls, cardCls } from "@/components/ui/styles";
 import {
   BOUNDARY_BODY,
@@ -39,6 +40,14 @@ export default function AdminError({
   // logs, so it is logged from here too, with the tag the runbook searches on.
   useEffect(() => {
     log.error("admin-boundary", { msg: "page boundary caught", digest: error.digest }, error);
+    // #1974: and TELL somebody. The log line above is the forensic trail and it
+    // speaks to nobody: a page that throws for everyone after a deploy looks
+    // exactly like one stray fault until a person happens to open it or a person
+    // happens to query the logs.
+    //
+    // The route rather than `window.location`, so a query string carrying an
+    // address or a token cannot travel with the report.
+    reportBoundaryCatch({ page: "/admin", digest: error.digest, message: error.message });
   }, [error]);
 
   const reference = boundaryReference(error.digest);

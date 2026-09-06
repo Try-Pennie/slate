@@ -403,6 +403,14 @@ export const ALERT_CATALOG: AlertEntry[] = [
     why: "One request already returned a 500; there is no ongoing state, and the next request is unrelated.",
   },
   {
+    key: "boundary_error:*",
+    kind: "incident",
+    why:
+      "One person already met the error screen on one page load. There is no state that CLEARS: the next load either " +
+      "renders or does not, and it reports for itself. An all-clear here would say the screen somebody already saw has " +
+      "stopped having been seen, which is the test this classification turns on (#1974).",
+  },
+  {
     key: "rr_ordering_degraded",
     kind: "incident",
     why: "One assignment may not reflect fair share; that booking is made and the next is judged on its own.",

@@ -1,5 +1,19 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { reportInternalError } from "@/lib/api/errors";
+import { log } from "@/lib/log";
+import { sendThrottledAlert } from "@/lib/notify/dispatch";
+import { boundaryCatchAlert } from "@/lib/notify/misc-alert-copy";
+import { shortErrorReason } from "@/lib/notify/error-text";
+
+/**
+ * How long one page stays quiet after its boundary has been reported (#1974).
+ *
+ * Long enough that a page broken for everybody pages ONCE rather than once per
+ * person who opens it, which is what "one person hitting one broken screen does
+ * not page repeatedly" asks for. Short enough that a second, different break the
+ * next hour is not swallowed by the first.
+ */
+const BOUNDARY_ERROR_COOLDOWN_MS = 30 * 60_000;
 import { allowRequest, clientIp, CLIENT_ERROR_RATE_RULES } from "@/lib/rate-limit";
 import { CLIENT_ERROR_ADDRESS_POLICY } from "@/lib/rate-limit-core";
 import {
@@ -65,6 +79,24 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     `${report.kind} on ${report.page}: ${report.message}${where ? ` (${where})` : ""}`,
   );
   err.stack = report.stack ?? undefined;
+
+  // #1974: a BOUNDARY catch is a different event from an unexpected 500 and gets
+  // its own sentence. `reportInternalError`'s copy ends "the caller got a
+  // generic 500", which is untrue here: nothing returned a 500, a person was
+  // shown a screen (L11). The log line is the same either way, because the
+  // forensic trail is the same.
+  if (report.kind === "boundary") {
+    log.error("client-errors", { msg: "page boundary caught", page: report.page }, err);
+    // alert-key: boundary_error:*
+    await sendThrottledAlert(
+      clientErrorSignature(report),
+      BOUNDARY_ERROR_COOLDOWN_MS,
+      boundaryCatchAlert(report.page, shortErrorReason(err, { maxChars: 240 })),
+    ).catch((alertErr: unknown) => {
+      log.error("client-errors", { msg: "boundary alert failed", page: report.page }, alertErr);
+    });
+    return done();
+  }
 
   await reportInternalError(err, clientErrorSignature(report));
   return done();

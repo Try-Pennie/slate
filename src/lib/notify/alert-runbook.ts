@@ -158,6 +158,10 @@ const FAMILY_BY_KEY: Record<string, AlertFamily> = {
 
   // A fault nothing predicted.
   internal_error: "an-unexpected-fault-was-reported",
+  // #1974: the same family. A page that failed to render is an unpredicted
+  // fault, and the procedure is the same one: find it by its digest in the
+  // Worker logs and decide whether a deploy caused it.
+  boundary_error: "an-unexpected-fault-was-reported",
 };
 
 /**

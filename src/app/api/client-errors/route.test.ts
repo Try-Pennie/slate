@@ -15,10 +15,14 @@ import { CLIENT_ERROR_ADDRESS_POLICY } from "@/lib/rate-limit-core";
 //    though the page already scrubbed it.
 
 const reportInternalError = vi.hoisted(() => vi.fn());
+const sendThrottledAlert = vi.hoisted(() =>
+  vi.fn(async (_key: string, _cooldownMs: number, _text: string) => {}),
+);
 const allowRequest = vi.hoisted(() => vi.fn());
 const clientIp = vi.hoisted(() => vi.fn(() => "1.2.3.4"));
 
 vi.mock("@/lib/api/errors", () => ({ reportInternalError }));
+vi.mock("@/lib/notify/dispatch", () => ({ sendThrottledAlert }));
 vi.mock("@/lib/rate-limit", () => ({
   allowRequest,
   clientIp,
@@ -43,6 +47,65 @@ const REPORT = {
 beforeEach(() => {
   vi.clearAllMocks();
   allowRequest.mockResolvedValue(true);
+});
+
+// #1974: a page whose error boundary caught something reports through here too,
+// so a page that throws for everybody after a deploy SPEAKS. Before this, the
+// boundary logged and nothing else: one stray fault and a broken deploy arrived
+// on the same path and looked identical, and the second stayed invisible for as
+// long as it lasted.
+describe("a boundary catch (#1974)", () => {
+  const BOUNDARY = { kind: "boundary", message: "digest 3847221905", page: "/admin" };
+
+  it("alerts, naming the page somebody is looking at", async () => {
+    const res = await post(BOUNDARY);
+    expect(res.status).toBe(204);
+    expect(sendThrottledAlert).toHaveBeenCalledTimes(1);
+    const [key, cooldown, text] = sendThrottledAlert.mock.calls[0]!;
+    expect(key).toBe("boundary_error:admin");
+    expect(cooldown).toBeGreaterThan(0);
+    expect(text).toMatch(/\/admin/);
+    // It must not claim a 500. Nothing returned a status code; a person was
+    // shown a screen, and the reader's next move differs (L11).
+    expect(text).not.toMatch(/500/);
+    expect(text).toMatch(/error screen|failed to render/i);
+  });
+
+  // ITS OWN KEY SPACE. A broken admin page and a broken booker bundle are
+  // different failures with different audiences, and sharing a cooldown would
+  // let one silence the other for its whole length.
+  it("does not share a cooldown with the booker's beacon", async () => {
+    await post(BOUNDARY);
+    await post({ ...REPORT, page: "/book/411" });
+    const boundaryKey = sendThrottledAlert.mock.calls[0]?.[0];
+    const beaconKey = reportInternalError.mock.calls[0]?.[1];
+    expect(boundaryKey).toBe("boundary_error:admin");
+    expect(beaconKey).toBe("client_error:book");
+    expect(boundaryKey).not.toBe(beaconKey);
+  });
+
+  // The generic path is untouched, which is what stops this being a rewrite of
+  // the beacon rather than an addition to it.
+  it("leaves an ordinary client error on the path it was already on", async () => {
+    await post(REPORT);
+    expect(reportInternalError).toHaveBeenCalledTimes(1);
+    expect(sendThrottledAlert).not.toHaveBeenCalled();
+  });
+
+  // Everything the endpoint already refuses still applies: it is the same public
+  // surface, and a boundary report is not more trusted than any other.
+  it("is dropped when the limiter cannot vouch for the caller", async () => {
+    allowRequest.mockResolvedValue(false);
+    const res = await post(BOUNDARY);
+    expect(res.status).toBe(204);
+    expect(sendThrottledAlert).not.toHaveBeenCalled();
+  });
+
+  it("says nothing back, on every path", async () => {
+    const res = await post(BOUNDARY);
+    expect(res.status).toBe(204);
+    expect(await res.text()).toBe("");
+  });
 });
 
 describe("POST /api/client-errors", () => {
