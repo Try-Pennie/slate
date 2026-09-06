@@ -1734,16 +1734,29 @@ describe("saving a bucket is atomic, refuses loudly, and is recorded (#1930)", (
     expect(rpc).not.toHaveBeenCalledWith("replace_bucket_members", expect.anything());
   });
 
-  it("names a duplicate code apart from any other refusal", async () => {
-    updateEq.mockResolvedValueOnce({ error: { code: "23505", message: "duplicate key" } });
-    await expect(updateBucket(edit({ code: "412" }))).rejects.toThrow(
-      /bucket with code 412 already exists/i,
-    );
+  // #1935: THE DUPLICATE CODE REFUSAL IS GONE FROM THIS ACTION, and its test with
+  // it (L252): an update writes back the code the row already has, so a unique
+  // violation on (org_id, code) can no longer be reached from here. Creating a
+  // bucket still can, and still names it, in its own block below.
+  //
+  // What replaced it is the reason: a posted code is ignored entirely.
+  it("ignores a posted code, because the seeder owns it", async () => {
+    await expect(updateBucket(edit({ code: "412" }))).rejects.toThrow(/ok=bucket-updated/);
+    const wrote = update.mock.calls.at(-1)?.[0] as Record<string, unknown>;
+    expect(wrote.code).toBe("411");
+  });
+
+  it("ignores a posted name and posted criteria for the same reason", async () => {
+    await expect(updateBucket(edit({ name: "New name" }))).rejects.toThrow(/ok=bucket-updated/);
+    const wrote = update.mock.calls.at(-1)?.[0] as Record<string, unknown>;
+    expect(wrote.name).toBe("Old name");
   });
 
   // #1932: the trail has to answer what the configuration WAS, so both values.
   it("records what changed, with the old and the new value", async () => {
-    await expect(updateBucket(edit({ name: "New name", members: ["u2", "u9"] }))).rejects.toThrow(/ok=bucket-updated/);
+    await expect(
+      updateBucket(edit({ event_type_id: "et9", members: ["u2", "u9"] })),
+    ).rejects.toThrow(/ok=bucket-updated/);
 
     const entry = recordAudit.mock.calls.at(-1)![0] as {
       action: string;
@@ -1751,7 +1764,7 @@ describe("saving a bucket is atomic, refuses loudly, and is recorded (#1930)", (
     };
     expect(entry.action).toBe("bucket.updated");
     expect(entry.details.changed).toEqual({
-      name: { from: "Old name", to: "New name" },
+      event_type_id: { from: "et1", to: "et9" },
     });
     // The membership change is the one with no other trace anywhere.
     expect(entry.details.members_added).toEqual(["u9"]);

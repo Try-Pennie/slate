@@ -618,11 +618,28 @@ export async function updateBucket(form: FormData): Promise<void> {
     ) ?? []
   ).map((m) => (m as { user_id: string }).user_id);
 
+  // #1935: THE SEEDER OWNS THREE OF THESE, so they are taken from the stored row
+  // and whatever the form posted is ignored.
+  //
+  // `scripts/seed-buckets.ts` rewrites `code`, `name` and `criteria` from
+  // `src/lib/xbc.ts` on every run, which is what the seeder is for. Accepting an
+  // edit to them wrote a value the next seed run replaced, which is the #1874
+  // defect: an override that is silently undone is worse than none.
+  //
+  // The refusal is HERE rather than in the form's markup, because markup is a
+  // request and this is the thing that writes. A hidden input, a stale tab, a
+  // curl, or the next person restoring the field because it looked like an
+  // oversight all reach this line, and all of them now leave the seeder's
+  // columns alone. The form is read only too, but only so a field nobody can
+  // change does not look like one.
+  //
+  // A read that failed has already thrown above, so `before` is null only when
+  // the bucket is genuinely gone, and the update below then matches no row.
   const after = {
-    code: String(form.get("code") ?? "").trim(),
-    name: String(form.get("name") ?? "").trim(),
+    code: String(before?.code ?? ""),
+    name: String(before?.name ?? ""),
+    criteria: (before?.criteria ?? {}) as Criteria,
     event_type_id: String(form.get("event_type_id") ?? ""),
-    criteria: criteriaFromForm(form),
     routing_form_id: String(form.get("routing_form_id") ?? "").trim() || null,
     fallback_user_id: String(form.get("fallback_user_id") ?? "") || null,
   };
