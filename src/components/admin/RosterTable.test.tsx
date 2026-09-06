@@ -310,11 +310,30 @@ describe("RosterTable", () => {
       expect(screen.queryByRole("link", { name: "Manage" })).toBeNull();
     });
 
-    it("offers View as and Manage inside the open menu", async () => {
+    it("puts Manage first, so the keyboard lands on the routine action (#1963)", async () => {
       render(<RosterTable {...base} roleOptions={[...base.roleOptions]} />);
       await userEvent.click(screen.getByRole("button", { name: "Actions for Ada Lovelace" }));
       const items = screen.getAllByRole("menuitem");
-      expect(items.map((i) => i.textContent)).toEqual(["View as Ada Lovelace", "Manage"]);
+      // Manage first, View as second. The menu focuses its FIRST item when it is
+      // opened from the keyboard, so this order is what decides where a keyboard
+      // user is placed, and it should not be on impersonation.
+      expect(items.map((i) => i.textContent)).toEqual(["Manage", "View as Ada Lovelace"]);
+    });
+
+    // The reason the order matters, and the half a source read cannot see: the
+    // menu focuses its FIRST item when it is opened from the keyboard, so the
+    // order at the call site is what decides where somebody is placed.
+    it("focuses Manage when the menu is opened from the keyboard (#1963)", async () => {
+      render(<RosterTable {...base} roleOptions={[...base.roleOptions]} />);
+      const trigger = screen.getByRole("button", { name: "Actions for Ada Lovelace" });
+      trigger.focus();
+      await userEvent.keyboard("{ArrowDown}");
+      const items = screen.getAllByRole("menuitem");
+      expect(document.activeElement).toBe(items[0]);
+      expect(document.activeElement?.textContent).toBe("Manage");
+      // And it is NOT the impersonation control, which is the thing being moved
+      // out of the default position.
+      expect(document.activeElement?.textContent).not.toMatch(/View as/);
     });
 
     it("submits View as through a form rather than navigating", async () => {
