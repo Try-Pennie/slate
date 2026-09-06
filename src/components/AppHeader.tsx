@@ -7,13 +7,13 @@ import { oooOnlyFor } from "@/lib/env";
 import {
   atLeast,
   canManageAgents,
-  canModerateAllOoo,
   isRole,
 } from "@/lib/auth/roles";
 import { getImpersonationView } from "@/lib/auth";
 import { supabaseAdmin } from "@/lib/supabase/admin";
+import { Suspense } from "react";
 import { calendarHeaderStatus } from "@/lib/calendar/header-status";
-import { log } from "@/lib/log";
+import { PendingApprovalsBadge } from "@/components/header/PendingApprovalsBadge";
 import { stopImpersonation } from "@/app/admin/actions";
 import { ImpersonationDropNotice } from "@/components/ImpersonationDropNotice";
 import type { ThemePreference } from "@/lib/db/types";
@@ -82,32 +82,34 @@ export async function AppHeader({
   //
   // The pending count still waits for the staff ids, because it filters on them.
   const wantsCalendar = Boolean(userId) && !oooOnly;
-  const wantsBadge = showTimeOff && Boolean(userId) && Boolean(orgId);
-  const [calendarRows, staffRows] = await Promise.all([
-    wantsCalendar
-      ? // error-ok: a failed read leaves `checked: false`, which is the "we did
-        // not look" state calendarHeaderStatus already models, and the banner
-        // stays silent rather than claiming a calendar is broken. The every
-        // minute sync lane is what actually reports a broken calendar.
-        supabaseAdmin()
+  // #1847: ONLY the calendar read is awaited here now.
+  //
+  // The staff id read and the pending count moved into
+  // `PendingApprovalsBadge`, behind a Suspense boundary below, because they were
+  // the last two hops of a chain in front of every internal page and nothing on
+  // the page needs them. Measured in production on 2026-09-03: an admin page
+  // came back in 100 to 563ms of wall time on 8 to 37ms of Worker CPU, and on
+  // `/admin/agents` the roster read finished at +391ms while the count had not
+  // started until +390ms.
+  //
+  // THE CALENDAR READ STAYS AWAITED, deliberately. Its urgent banner is drawn
+  // ABOVE the header, so a late arrival would push the whole page down under
+  // somebody already reading it, and it is a real warning rather than a nudge:
+  // #1847 says it must not shift the layout and must not be possible to miss.
+  // Deferring it would also save nothing, since it ran alongside the staff read
+  // rather than after it.
+  const calendarRows = wantsCalendar
+    ? // error-ok: a failed read leaves `checked: false`, which is the "we did
+      // not look" state calendarHeaderStatus already models, and the banner
+      // stays silent rather than claiming a calendar is broken. The every
+      // minute sync lane is what actually reports a broken calendar.
+      ((
+        await supabaseAdmin()
           .from("agent_calendars")
           .select("watch_expiration")
           .eq("user_id", userId!)
-          .then((r) => r.data as { watch_expiration: string | null }[] | null)
-      : Promise.resolve(null),
-    wantsBadge
-      ? // Exclude requests authored by admins/super admins, mirroring the Team
-        // Requests page, so test/operator requests can't inflate the badge.
-        // error-ok: an unreadable staff list means the exclusion is not applied;
-        // the count below consults its own error and hides the badge either way.
-        supabaseAdmin()
-          .from("users")
-          .select("id")
-          .eq("org_id", orgId!)
-          .in("role", ["admin", "super_admin"])
-          .then((r) => r.data as { id: string }[] | null)
-      : Promise.resolve(null),
-  ]);
+      ).data as { watch_expiration: string | null }[] | null)
+    : null;
 
   let calendar = calendarHeaderStatus({
     checked: false,
@@ -125,41 +127,6 @@ export async function AppHeader({
     });
   }
 
-  // Pending-OOO count on the Team Requests tab, so approvals don't depend on a
-  // manager catching the Slack DM or the daily digest. Scoped to the manager's
-  // own reports; team leads and up (canModerateAllOoo) see the whole org. Needs
-  // org_id for the org-wide scope, so it's a no-op without the orgId prop.
-  let pendingOoo = 0;
-  if (wantsBadge) {
-    const staffIds = (staffRows ?? []).map((u) => u.id);
-
-    let q = supabaseAdmin()
-      .from("ooo_requests")
-      .select("id", { count: "exact", head: true })
-      .eq("org_id", orgId!)
-      .eq("status", "pending");
-    if (staffIds.length > 0) {
-      q = q.not("user_id", "in", `(${staffIds.join(",")})`);
-    }
-    // showTimeOff already implies isRole(r); the guard just narrows the type.
-    if (isRole(r) && !canModerateAllOoo(r)) q = q.eq("manager_id", userId!);
-    // #1165: consult `error`. A failed count came back null and `?? 0` hid the
-    // badge, which is exactly what an empty queue looks like, so a broken read
-    // presented as "nothing waiting for you". The header still renders (throwing
-    // here would take down every admin page over a nudge, and the Team Requests
-    // page is the source of truth one click away), but the failure is logged
-    // rather than passing as a healthy zero.
-    const { count, error } = await q;
-    if (error) {
-      log.warn("app-header", {
-        msg: "pending time-off count read failed; badge hidden",
-        org_id: orgId,
-        err: error.message,
-      });
-    }
-    pendingOoo = count ?? 0;
-  }
-
   // Which tab is CURRENT is decided by HeaderNav from the path, not here: since
   // #1748 the admin console renders this header once from its layout, which wraps
   // /admin and /admin/ooo alike, so there is no page left in a position to say.
@@ -167,7 +134,22 @@ export async function AppHeader({
     ...(showAdmin ? [{ href: "/admin", label: "Admin" }] : []),
     { href: "/me", label: meLabel },
     ...(showTimeOff
-      ? [{ href: "/admin/ooo", label: "Team Requests", badge: pendingOoo }]
+      ? [
+          {
+            href: "/admin/ooo",
+            label: "Team Requests",
+            // #1847: the count arrives under its own boundary, so the tab
+            // renders now and the badge a moment later. `null` while it loads,
+            // not a placeholder pill: a badge is absent far more often than it
+            // is present, and a shape that resolves to nothing would flicker on
+            // every page load for most people.
+            badge: (
+              <Suspense fallback={null}>
+                <PendingApprovalsBadge role={r} userId={userId} orgId={orgId} />
+              </Suspense>
+            ),
+          },
+        ]
       : []),
   ];
   return (

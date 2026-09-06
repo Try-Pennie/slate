@@ -7,11 +7,12 @@ const nav = vi.hoisted(() => ({ path: "/admin" }));
 vi.mock("next/navigation", () => ({ usePathname: () => nav.path }));
 
 import { HeaderNav, activeTab, type HeaderTab } from "@/components/HeaderNav";
+import { PendingBadge } from "@/components/ui/PendingBadge";
 
 const TABS: HeaderTab[] = [
   { href: "/admin", label: "Admin" },
   { href: "/me", label: "My Availability" },
-  { href: "/admin/ooo", label: "Team Requests", badge: 3 },
+  { href: "/admin/ooo", label: "Team Requests", badge: <PendingBadge count={3} /> },
 ];
 
 describe("activeTab", () => {
@@ -35,6 +36,11 @@ describe("activeTab", () => {
   });
 });
 
+// #1847: a tab's badge is a NODE now, not a number. The count is a database read
+// and it was the last serial hop in front of every internal page, so it arrives
+// under its own boundary; `HeaderNav` renders whatever turns up in the slot and
+// no longer knows what a badge looks like. These pass `PendingBadge`, which is
+// what the header passes, so the rendering they assert is the shipped one.
 describe("HeaderNav", () => {
   it("marks the current tab for assistive tech, not just visually", () => {
     nav.path = "/admin/ooo";
@@ -56,14 +62,14 @@ describe("HeaderNav", () => {
 
   it("says request in the singular for one", () => {
     nav.path = "/admin";
-    render(<HeaderNav tabs={[{ href: "/admin/ooo", label: "Team Requests", badge: 1 }]} />);
+    render(<HeaderNav tabs={[{ href: "/admin/ooo", label: "Team Requests", badge: <PendingBadge count={1} /> }]} />);
 
     expect(screen.getByText("(1 request pending)")).toBeTruthy();
   });
 
   it("shows no badge at all for none waiting", () => {
     nav.path = "/admin";
-    render(<HeaderNav tabs={[{ href: "/admin/ooo", label: "Team Requests", badge: 0 }]} />);
+    render(<HeaderNav tabs={[{ href: "/admin/ooo", label: "Team Requests", badge: <PendingBadge count={0} /> }]} />);
 
     expect(screen.queryByText(/pending\)/)).toBeNull();
   });
@@ -77,7 +83,7 @@ describe("HeaderNav", () => {
 describe("the pending count wears the measured badge treatment (#1881)", () => {
   it("renders the count in the shared badge class, not classes of its own", () => {
     nav.path = "/admin";
-    render(<HeaderNav tabs={[{ href: "/admin/ooo", label: "Team Requests", badge: 3 }]} />);
+    render(<HeaderNav tabs={[{ href: "/admin/ooo", label: "Team Requests", badge: <PendingBadge count={3} /> }]} />);
 
     // The visible pill is aria-hidden (the sr-only sentence beside it carries the
     // meaning), so it is found by its text rather than by a role. The text sits in
@@ -92,7 +98,7 @@ describe("the pending count wears the measured badge treatment (#1881)", () => {
   // which is the thing that is already in the right place.
   it("puts the optical nudge on the digits and not on the pill", () => {
     nav.path = "/admin";
-    render(<HeaderNav tabs={[{ href: "/admin/ooo", label: "Team Requests", badge: 7 }]} />);
+    render(<HeaderNav tabs={[{ href: "/admin/ooo", label: "Team Requests", badge: <PendingBadge count={7} /> }]} />);
 
     const ink = screen.getByText("7");
     expect(ink.className).toMatch(/translate-y/);
@@ -107,7 +113,7 @@ describe("the pending count wears the measured badge treatment (#1881)", () => {
 
   it("keeps the count from widening the pill out of shape past 99", () => {
     nav.path = "/admin";
-    render(<HeaderNav tabs={[{ href: "/admin/ooo", label: "Team Requests", badge: 128 }]} />);
+    render(<HeaderNav tabs={[{ href: "/admin/ooo", label: "Team Requests", badge: <PendingBadge count={128} /> }]} />);
     expect(screen.getByText("99+")).toBeTruthy();
     // The words still carry the real number, so nobody acts on a capped count.
     expect(screen.getByText("(128 requests pending)")).toBeTruthy();
