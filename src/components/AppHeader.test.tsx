@@ -114,33 +114,13 @@ describe("AppHeader impersonation banners (#652)", () => {
   });
 });
 
-// #1165: the badge read destructured `{ count }` and ignored `error`, so a read
-// that FAILED scored as zero pending requests: the badge vanished exactly as it
-// does when the queue is genuinely empty, and nothing anywhere recorded that the
-// count had not been read. The badge itself stays hidden (the header must render
-// either way, and the Team Requests page is the source of truth one click away),
-// but the failure has to reach the logs instead of passing as a healthy zero.
-describe("pending-OOO badge on a failed count read (#1165)", () => {
-  const withIds = { ...props, userId: "mgr-1", orgId: "org-1" };
+// #1165's badge cases live in PendingApprovalsBadge.test.tsx since #1847, with
+// the code that does the read. What they pin is unchanged: a count that FAILED
+// used to score as zero pending requests, so the badge vanished exactly as it
+// does when the queue is genuinely empty and nothing recorded that the count had
+// not been read. Moving the assertions with the read is the point; leaving them
+// here would have them asking a component that no longer does it, and passing.
 
-  it("shows the badge when the count reads cleanly", async () => {
-    db.oooCount = 3;
-    render(await AppHeader(withIds));
-    expect(screen.getByText(/3 requests pending/i)).toBeTruthy();
-    expect(logSpy.warn).not.toHaveBeenCalled();
-  });
-
-  it("logs the failure instead of silently rendering an empty queue", async () => {
-    db.oooCount = 3; // there ARE pending requests; only the read is broken
-    db.oooCountError = { message: "permission denied for table ooo_requests" };
-
-    render(await AppHeader(withIds));
-
-    expect(screen.queryByText(/requests? pending/i)).toBeNull();
-    expect(logSpy.warn).toHaveBeenCalledTimes(1);
-    expect(JSON.stringify(logSpy.warn.mock.calls[0])).toMatch(/pending/i);
-  });
-});
 
 
 // #1847: the header's two INDEPENDENT reads are issued together.
@@ -158,44 +138,35 @@ describe("pending-OOO badge on a failed count read (#1165)", () => {
 //
 // No sleeps: the reads are held open by promises the test releases by hand, so
 // the ordering is decided rather than raced (L290).
-describe("the header's independent reads run together (#1847)", () => {
+describe("the header does not wait on the badge (#1847)", () => {
   const withIds = { ...props, userId: "mgr-1", orgId: "org-1" };
 
-  it("issues the calendar and staff reads before either settles", async () => {
-    db.hold = new Set(["agent_calendars", "users"]);
-    const rendered = AppHeader(withIds);
-    // Let every synchronous chain run without advancing any read.
-    await Promise.resolve();
-    await Promise.resolve();
-    await Promise.resolve();
+  // THE QUANTITY THIS PROTECTS is the await graph, not a duration: a duration
+  // measures whatever else the machine is running (L224).
+  //
+  // Measured in production on 2026-09-03, an admin page came back in 100 to
+  // 563ms of wall time on 8 to 37ms of Worker CPU. On /admin/agents the roster
+  // read the person asked for finished at +391ms while the badge count had not
+  // started until +390ms: the content was ready and waiting on a nudge.
+  it("resolves without having issued the badge's reads at all", async () => {
+    render(await AppHeader(withIds));
 
-    const issued = db.trace.filter((e) => e.endsWith(":issued")).map((e) => e.split(":")[0]);
-    expect(issued).toContain("agent_calendars");
-    expect(issued).toContain("users");
-    // A serial version cannot have issued the second: it would still be awaiting
-    // the first, which this test is holding open.
-    expect(
-      db.trace.some((e) => e.endsWith(":settled")),
-      "nothing has settled yet, so both were issued while the other was pending",
-    ).toBe(false);
+    expect(screen.getByText("Team Requests")).toBeTruthy();
+    expect(db.trace).toContain("agent_calendars:issued");
 
-    db.release.agent_calendars?.();
-    db.release.users?.();
-    render(await rendered);
+    expect(db.trace).not.toContain("users:issued");
+    expect(db.trace).not.toContain("ooo_requests:issued");
   });
 
-  it("still reads the pending count only AFTER the staff ids it filters on", async () => {
-    db.oooCount = 2;
+  // The control, because the assertion above is a NEGATIVE and would pass just
+  // as well against a fake that never records anything (L159).
+  it("and the fake really does record a read the header still makes", async () => {
     render(await AppHeader(withIds));
-    const usersIssued = db.trace.indexOf("users:issued");
-    const oooIssued = db.trace.indexOf("ooo_requests:issued");
-    expect(usersIssued).toBeGreaterThan(-1);
-    expect(oooIssued).toBeGreaterThan(-1);
-    expect(
-      oooIssued,
-      "the count filters on the staff ids, so it cannot be fired beside them",
-    ).toBeGreaterThan(db.trace.indexOf("users:settled"));
-    // And the badge still works, which is what the reordering must not cost.
-    expect(screen.getByText(/2 requests pending/i)).toBeTruthy();
+    expect(db.trace.filter((e) => e.endsWith(":issued")).length).toBeGreaterThan(0);
+  });
+
+  it("still holds the calendar read, whose banner must not arrive late", async () => {
+    render(await AppHeader(withIds));
+    expect(db.trace).toContain("agent_calendars:settled");
   });
 });

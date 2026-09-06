@@ -1,7 +1,8 @@
 "use client";
 
+import type { ReactNode } from "react";
+
 import Link from "next/link";
-import { badgeCountCls, badgeCountInkCls } from "@/components/ui/styles";
 import { usePathname } from "next/navigation";
 import { LinkPending } from "@/components/ui/LinkPending";
 
@@ -21,8 +22,18 @@ import { LinkPending } from "@/components/ui/LinkPending";
 export interface HeaderTab {
   href: string;
   label: string;
-  /** Optional count shown as a sky-soft badge (e.g. pending approvals). */
-  badge?: number;
+  /**
+   * What sits after the label, when anything does: today a count pill.
+   *
+   * A NODE rather than a number (#1847). The pending approvals count is a
+   * database read, and it was the last serial hop in front of every internal
+   * page: the tab could not render until the number existed. As a node the tab
+   * renders immediately and the count arrives under its own `Suspense`
+   * boundary, so nothing waits on a nudge.
+   *
+   * `HeaderNav` no longer knows what a badge looks like; `PendingBadge` does.
+   */
+  badge?: ReactNode;
 }
 
 /** The tab the current path belongs to: longest match, so a prefix cannot win. */
@@ -54,20 +65,7 @@ export function HeaderNav({ tabs }: { tabs: HeaderTab[] }) {
             }`}
           >
             {tab.label}
-            {!!tab.badge && tab.badge > 0 && (
-              <>
-                <span aria-hidden="true" className={badgeCountCls}>
-                  {/* #1921: the digits carry the optical nudge, not the pill,
-                      which would move the whole badge with it. */}
-                  <span className={badgeCountInkCls}>
-                    {tab.badge > 99 ? "99+" : tab.badge}
-                  </span>
-                </span>
-                <span className="sr-only">
-                  ({tab.badge} {tab.badge === 1 ? "request" : "requests"} pending)
-                </span>
-              </>
-            )}
+            {tab.badge}
             <LinkPending />
           </Link>
         );
