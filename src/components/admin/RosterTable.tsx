@@ -296,14 +296,24 @@ export function RosterTable({
                       when it holds only Manage, because a control that moves
                       depending on who you are is harder to scan than one extra
                       click. */}
+                  {/* #1963: MANAGE FIRST, and the order is the convention for
+                      every table that adopts this menu (#1819): the routine
+                      action first, and the ones that change who you are or
+                      destroy something last.
+
+                      Three reasons, and the third is the one that is invisible
+                      unless you tab through several rows. Opening a record is
+                      what somebody does on this table all day, while becoming
+                      that agent is a deliberate, audited act with a two hour
+                      expiry. Opening the menu with the keyboard focuses its
+                      FIRST item, so a keyboard user was being placed on
+                      impersonation by default, which is the same consideration
+                      the erasure confirm applies when it focuses "Leave it"
+                      rather than the destructive button. And `ViewAsButton`
+                      renders nothing on a row the actor cannot impersonate, so
+                      the first item, and therefore the keyboard target, used to
+                      depend on who the row was about. */}
                   <RowActionsMenu label={`Actions for ${u.name ?? u.email}`}>
-                    <ViewAsButton
-                      actorRole={actorRole}
-                      actorId={actorId}
-                      target={u}
-                      role="menuitem"
-                      className={MENU_ITEM_CLS}
-                    />
                     <InPlaceLink
                       href={`/admin/agents/${u.id}`}
                       role="menuitem"
@@ -311,6 +321,13 @@ export function RosterTable({
                     >
                       Manage
                     </InPlaceLink>
+                    <ViewAsButton
+                      actorRole={actorRole}
+                      actorId={actorId}
+                      target={u}
+                      role="menuitem"
+                      className={MENU_ITEM_CLS}
+                    />
                   </RowActionsMenu>
                 </td>
               </tr>
