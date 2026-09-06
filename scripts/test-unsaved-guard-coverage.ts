@@ -47,6 +47,12 @@ const WORK = [
  * protecting the hours either (L36).
  */
 const VIEW: Record<string, string> = {
+  [join("src", "components", "ui", "SaveForm.tsx")]:
+    "the form wrapper itself (#1994): its own state is whether the last save " +
+    "died on a stale deploy and what was restored from the previous one, " +
+    "neither of which anybody typed. It carries no guard because the form it " +
+    "wraps carries its own, and two dialogs on one submit would be worse than " +
+    "none",
   [join("src", "components", "admin", "RosterTable.tsx")]:
     "a filter row: which agents are listed, not anything about them",
   [join("src", "components", "BookingLookup.tsx")]:
@@ -86,6 +92,19 @@ assert(
   `every form holding unsaved work warns before it is left:\n    ${missing.join("\n    ")}`,
 );
 
+/**
+ * What OPENS a form, in source.
+ *
+ * `<SaveForm>` renders a real `<form>` (#1994), so a guard inside one is inside
+ * a form, and a component using one is a form-bearing component. Reading only
+ * `<form` reported the working hours form as having no form at all the moment it
+ * moved onto the wrapper, which is a check failing on a rename rather than on a
+ * defect. Kept as one list, because two copies would drift the first time a
+ * second wrapper appeared.
+ */
+const FORM_OPEN = /<(?:form|SaveForm)\b/g;
+const FORM_CLOSE = /<\/(?:form|SaveForm)>/g;
+
 // --- and it is INSIDE the form, or it guards nothing -------------------------
 //
 // The guard finds its own form by walking up from where it is rendered, so one
@@ -95,8 +114,8 @@ const outside: string[] = [];
 for (const f of guarded) {
   const text = readFileSync(f, "utf8");
   const beforeGuard = text.slice(0, text.search(GUARD));
-  const opens = (beforeGuard.match(/<form\b/g) ?? []).length;
-  const closes = (beforeGuard.match(/<\/form>/g) ?? []).length;
+  const opens = (beforeGuard.match(FORM_OPEN) ?? []).length;
+  const closes = (beforeGuard.match(FORM_CLOSE) ?? []).length;
   if (opens <= closes) outside.push(f);
 }
 assert(
@@ -123,7 +142,7 @@ for (const f of files) {
   if (decided.has(f)) continue;
   const text = readFileSync(f, "utf8");
   if (!/^"use client"/m.test(text)) continue;
-  if (!/<form\b/.test(text)) continue;
+  if (!new RegExp(FORM_OPEN.source).test(text)) continue;
   // A form with no local state submits whatever is typed straight away and holds
   // nothing across a navigation.
   if (!/\buseState[<(]/.test(text)) continue;

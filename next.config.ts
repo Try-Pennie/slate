@@ -1,4 +1,7 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import type { NextConfig } from "next";
+import { buildCommitFrom, deploymentIdFor } from "./src/lib/deployment-id";
 
 // NEXT_PUBLIC_APP_URL is INLINED at build time into every booking webhook's
 // manage_url / slateBookingLink and the Google invite manage link (env.ts
@@ -18,7 +21,31 @@ if (process.env.NODE_ENV === "production") {
   }
 }
 
+// #1994: the build identity Next stamps into every page and every server action.
+// Derived from the commit the deploy job has already stamped into
+// `src/lib/build-info.ts`, read as TEXT so this config does not depend on module
+// resolution into `src/` at build time, and HASHED because the value is sent to
+// the browser and the commit is deliberately not public.
+//
+// AN UNSTAMPED BUILD IS NOT REFUSED HERE, and the first version of this did
+// refuse one. The signal it used for "this is a real deploy" was a production
+// build pointing at a non-localhost URL, which is also every local `pnpm
+// cf:build`, because `.env.local` points at production too. It broke the
+// pre-push gate on the first run.
+//
+// The risk it was reaching for is real (a deploy that skipped the stamp gives
+// every build the SAME id, so nothing can tell a stale page from a current one
+// while the setting reads as present) but it belongs where the deploy is
+// defined, not here: `scripts/test-deploy-stamp-order.ts` asserts the deploy job
+// stamps before it builds. A local build gets a stable local id, which is
+// correct, because there is only one of them at a time.
+const buildCommit = buildCommitFrom(
+  readFileSync(join(import.meta.dirname, "src", "lib", "build-info.ts"), "utf8"),
+);
 const nextConfig: NextConfig = {
+  // Changes on every deploy, so a page loaded from an earlier one is recognised
+  // rather than failing with an unexplained 404 on its next save (#1994).
+  deploymentId: deploymentIdFor(buildCommit),
   // Pin the project as the Turbopack root so an unrelated lockfile in a parent
   // directory isn't mistaken for the workspace root.
   turbopack: {

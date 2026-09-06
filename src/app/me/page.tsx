@@ -164,6 +164,8 @@ export default async function MePage({
     t?: string;
     /** Set by the two hours actions on a successful write (#1988). */
     ok?: string;
+    /** A refusal the person can act on, from the same actions (#1994). */
+    error?: string;
   }>;
 }) {
   const sp = await searchParams;
@@ -410,6 +412,15 @@ export default async function MePage({
                   {savedOutcome(sp.ok) === "working-hours" ? (
                     <div className="mb-4">
                       <SettingsSaveNotice ok saved={workingHoursSavedNotice(hoursDays)} />
+                    </div>
+                  ) : null}
+                  {/* #1994: a week the server refused says WHY. These sentences
+                      name the day and what is wrong with it, and until now none
+                      of them could be read: a thrown error is redacted in
+                      production and arrived as the generic error boundary. */}
+                  {sp.error ? (
+                    <div className="mb-4">
+                      <SettingsSaveNotice ok={false} error={sp.error} saved="" />
                     </div>
                   ) : null}
                   <WorkingHoursForm

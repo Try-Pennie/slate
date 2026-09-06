@@ -103,6 +103,8 @@ export default async function AgentProfilePage({
     bookable?: string;
     /** Set by the two hours actions on a successful write (#1988). */
     ok?: string;
+    /** A refusal the person can act on, from the same actions (#1994). */
+    error?: string;
   }>;
 }) {
   const { id } = await params;
@@ -423,6 +425,13 @@ export default async function AgentProfilePage({
                   as a click that did nothing. Built from the week this render
                   just READ rather than from what the action meant to write, so
                   a save that partly landed says what really landed (L78). */}
+              {/* #1994: a week the server refused says WHY, in the sentence the
+                  validator wrote, rather than as the generic error boundary. */}
+              {query?.error ? (
+                <div className="mt-4">
+                  <SettingsSaveNotice ok={false} error={query.error} saved="" />
+                </div>
+              ) : null}
               {savedOutcome(query?.ok) === "working-hours" ? (
                 <div className="mt-4">
                   <SettingsSaveNotice
