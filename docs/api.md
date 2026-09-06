@@ -683,7 +683,6 @@ request gets a `403` and is logged under `tag=same-origin`.
 | `POST /api/admin/bookings/[id]/cancel` | booking actor | Staff cancel a booking |
 | `POST /api/admin/bookings/[id]/reschedule` | booking actor | Staff reschedule a booking |
 | `POST /api/admin/bookings/[id]/reassign` | manager+ | Manager reassign by booking id (#546); at-cap returns a distinct `409` for the two-step "Reassign anyway", not-found `404`, terminal `409` |
-| `GET /api/admin/bookings/[id]/history` | manager+ | One booking's reschedule, cancel and reassign history (#561). Tenant-scoped by the caller's org, so a booking they cannot see is a `404` rather than an empty list. A read fault is a `500`, never an empty `200` |
 | `GET /api/admin/bookings/search` | manager+ | Booking lookup by attendee email, name or phone, or by booking id (#901). Tenant-scoped; bounded to 20 rows and reports when the bound was filled (#903). A read fault is a `500`, never an empty `200` |
 | `POST /api/admin/agents/[id]/bulk-reassign` | booking actor | Start a bulk coverage reassign for one out agent over a date range (#974). The accountable actor is recorded on the job (#549) |
 | `GET /api/admin/agents/[id]/bulk-reassign` | booking actor | Progress for that job, so the panel can report what has moved |

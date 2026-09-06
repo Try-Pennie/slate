@@ -9,6 +9,7 @@ import {
   type ReasonAction,
   type ReasonOption,
 } from "@/lib/booking/core";
+import { bookingIsActionable } from "@/lib/booking/detail";
 import { rankReassignAgents, type ReassignAgent } from "@/lib/booking/reassign-agents";
 import ReasonPicker from "@/components/ReasonPicker";
 import { AsyncListStates, useFetchList } from "@/components/AsyncList";
@@ -87,10 +88,12 @@ export default function AdminBookingActions({
   // two-step confirm as the at-cap case (was a single unguarded click).
   const [rotationWarn, setRotationWarn] = useState<{ email: string; name: string } | null>(null);
 
-  // Only confirmed/rescheduled bookings can be changed.
-  if (status === "cancelled" || status === "completed") {
-    return <span className="text-fg-muted capitalize">{status}</span>;
-  }
+  // Only confirmed/rescheduled bookings can be changed. The page drops the whole
+  // card in that case (#1943), so this is a backstop rather than the surface a
+  // reader meets: a card headed "Actions" containing the single word "Cancelled"
+  // answered a question nobody asked and repeated a fact the page already
+  // carries twice, in the facts list and in the history.
+  if (!bookingIsActionable(status)) return null;
 
   const action: ReasonAction =
     mode === "reschedule" ? "reschedule" : mode === "reassign" ? "reassign" : "cancel";

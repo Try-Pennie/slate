@@ -1,4 +1,5 @@
 import {
+  bookingIsActionable,
   bookingDetailView,
   loadBookingDetail,
   bookingDetailHref,
@@ -47,7 +48,39 @@ eq(
 );
 eq(v.rescheduledFrom, null, "no original time -> not rescheduled");
 assert(v.trace !== null, "trace present");
-eq(v.trace!.considered, 2, "considered count");
+// #1943: WHO was considered, not how many. The ids were on the page already and
+// it printed their length. Resolved through the SHARED roster resolver, so an
+// agent with no name falls back to their email exactly as every other surface
+// does, and an id the roster is missing says so rather than rendering eight hex
+// characters (L67).
+eq(
+  v.trace!.considered.join(", "),
+  "Jamie Smith, ana@x.co",
+  "the considered agents are named, with the same fallbacks as everywhere else",
+);
+// And an id the roster does not hold says so rather than rendering as a name or
+// as eight hex characters. An unresolved id is a DETECTION that the roster this
+// page was handed is missing somebody, not a name (L67), and the smoke agents'
+// patterned ids are why truncating was worse than nothing (#1914).
+{
+  const missing = bookingDetailView(
+    {
+      ...base,
+      routing_trace: { ...base.routing_trace!, considered: ["u1", "nobody-here"] },
+    },
+    nameOf,
+    TZ,
+  );
+  eq(
+    missing.trace!.considered.join(", "),
+    "Jamie Smith, Unknown user",
+    "an id the roster is missing is named as unknown, never as hex",
+  );
+  assert(
+    !missing.trace!.considered.some((n) => /^[0-9a-f]{6,}$/i.test(n)),
+    "and no considered entry is a raw id",
+  );
+}
 eq(v.trace!.fallbackApplied, false, "fallback flag");
 eq(v.trace!.reassignments.length, 0, "no reassignments");
 
@@ -160,7 +193,24 @@ async function main() {
     eq(ok.view.agentName, "Jamie Smith", "ok view resolves the agent name");
   }
 
-  finish();
+  // --- whether there are any actions at all (#1943) ----------------------------
+//
+// Dan: "what does actions canceled mean? I can see it was canceled from the
+// history." It was a card headed Actions containing the single word Cancelled,
+// which is the control saying "there are none" by printing a status the page
+// already states twice. The page drops the card entirely now, and both it and
+// the control read THIS predicate, so they cannot disagree and leave an empty
+// card behind.
+//
+// Driven here rather than only in the browser: production holds no confirmed or
+// rescheduled booking at all today (298 cancelled and 2 completed), so the
+// actionable case cannot be seen on real data.
+assert(bookingIsActionable("confirmed"), "a confirmed booking can still be changed");
+assert(bookingIsActionable("rescheduled"), "and so can a rescheduled one");
+assert(!bookingIsActionable("cancelled"), "a cancelled booking cannot");
+assert(!bookingIsActionable("completed"), "and neither can a completed one, which read just as oddly");
+
+finish();
 }
 
 void main();

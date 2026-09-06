@@ -20,7 +20,16 @@ export type BookingDetailInput = Pick<
 >;
 
 export interface BookingDetailTraceView {
-  considered: number;
+  /**
+   * The agents routing weighed, BY NAME (#1943).
+   *
+   * It was a count, and the page printed the length of a list it was already
+   * holding: "2 agents considered" while the ids sat right there. An id that
+   * cannot be resolved says so rather than rendering eight hex characters, which
+   * is the same fault #1914 fixed on the routing table: an unresolved id is a
+   * detection that the roster is missing somebody, not a name (L67).
+   */
+  considered: string[];
   fallbackApplied: boolean;
   reassignments: { from: string; to: string }[];
 }
@@ -40,6 +49,24 @@ export interface BookingDetailView {
   trace: BookingDetailTraceView | null;
 }
 
+/**
+ * Whether anything can still change this booking (#1943).
+ *
+ * ONE predicate, so the page and the actions control cannot disagree about
+ * whether there are actions: a card that renders while its contents refuse is an
+ * empty card, which is what this issue is about.
+ *
+ * It lives HERE rather than beside the control, because the control is a client
+ * component and the page that decides whether to draw the card is a server one.
+ * An export from a `"use client"` module is a client REFERENCE on the server,
+ * not a function, so calling it during server render throws: that is exactly
+ * what happened when it was first written next to the control, and the page's
+ * own error boundary caught it.
+ */
+export function bookingIsActionable(status: string): boolean {
+  return status !== "cancelled" && status !== "completed";
+}
+
 /** The detail-page URL for a booking, used by every surface that links to it
  *  (the admin recent-routing row and the booking lookup), so the path lives in
  *  one place. */
@@ -53,7 +80,7 @@ function fmt(iso: string, tz: string): string {
 
 function traceView(t: RoutingTrace, nameOf: NameResolver): BookingDetailTraceView {
   return {
-    considered: t.considered.length,
+    considered: t.considered.map(nameOf),
     fallbackApplied: t.fallback_applied,
     reassignments: (t.reassignments ?? []).map((r) => ({
       from: nameOf(r.from),

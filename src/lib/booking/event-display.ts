@@ -40,14 +40,27 @@ function plural(n: number, unit: string): string {
  */
 export function formatLeadTime(minutes: number | null): string | null {
   if (minutes == null) return null;
-  if (minutes === 0) return "at the scheduled time";
+  if (minutes === 0) return "at the time it was booked for";
   const suffix = minutes > 0 ? "before" : "after";
   const abs = Math.abs(minutes);
   let magnitude: string;
   if (abs >= 1440) magnitude = plural(Math.round(abs / 1440), "day");
   else if (abs >= 60) magnitude = plural(Math.round(abs / 60), "hour");
   else magnitude = plural(abs, "minute");
-  return `${magnitude} ${suffix}`;
+  // #1943: IT NAMES WHAT IT IS RELATIVE TO, and which one.
+  //
+  // It read "4 hours before", a dangling comparative with nothing on screen
+  // saying before what, and the reader's only available guess (before the
+  // previous entry) is wrong. Worse, three reschedules in a row showed 2, 3 then
+  // 4 hours down the page against one unchanging clock time, which reads as a
+  // data fault and is not: each one MOVED the appointment later, so the notice
+  // period grew while the wall clock did not.
+  //
+  // `bookingEventFrom` measures this against the PRE ACTION appointment time, so
+  // the anchor is different for each entry, and an anchor that moves has to be
+  // named or the numbers cannot be reconciled with each other (L589). "then" is
+  // what carries that.
+  return `${magnitude} ${suffix} the time it was booked for then`;
 }
 
 /**
