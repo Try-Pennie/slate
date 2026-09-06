@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   ALERT_FIELDS,
+  ALERT_URGENCY_ORDER,
   ALERT_KEYS,
   MONITOR_DEFAULTS,
   resolveCooldownMs,
@@ -10,6 +11,7 @@ import {
   parseMonitorSettingsForm,
   type MonitorSettingsFormInput,
 } from "./settings";
+import { ALERT_CATALOG } from "@/lib/notify/alert-catalog";
 
 // #571: the monitor's cooldowns and low-volume floors become UI-tunable via a
 // store, with precedence store > env > coded default. These pure resolvers own
@@ -47,6 +49,77 @@ describe("alert keys", () => {
     for (const f of ALERT_FIELDS) {
       expect(f.label.length).toBeGreaterThan(0);
       expect(f.help.length).toBeGreaterThan(0);
+    }
+  });
+
+  // #1955: Dan on the cooldowns section, "I hate everything about this. we can
+  // do so much better than this design." One of the six faults was that it gave
+  // no sense of which of these matter, while every sentence said so in a word
+  // somebody had to parse row by row. That is the organising axis, so it is a
+  // recorded fact now rather than something read out of the prose (L192).
+  it("records how loud each alert is, rather than leaving it in the sentence", () => {
+    for (const f of ALERT_FIELDS) {
+      expect(ALERT_URGENCY_ORDER, `${f.key} has a real urgency`).toContain(f.urgency);
+    }
+    // Every level is USED. A level nothing carries is a group heading that can
+    // never appear, and one that carries everything is not an axis at all.
+    for (const level of ALERT_URGENCY_ORDER) {
+      expect(
+        ALERT_FIELDS.filter((f) => f.urgency === level).length,
+        `${level} has at least one alert`,
+      ).toBeGreaterThan(0);
+    }
+    expect(ALERT_FIELDS.every((f) => f.urgency === ALERT_FIELDS[0].urgency)).toBe(false);
+  });
+
+  // Cross checked against the alert CATALOG, which independently records which
+  // keys are mere whispers on the info channel. So this is not a snapshot of a
+  // judgement: it is the one direction the two sources genuinely constrain each
+  // other in.
+  //
+  // ONLY that direction. `info` means "never needed action", so an info key
+  // classified here as a page or an alert is a real contradiction. The reverse
+  // does NOT hold: `condition` is about whether an alert can CLEAR, not about
+  // how loud it is, and `availability_booked_solid` is deliberately a condition
+  // (it stops being true) and deliberately quiet (agents being full is not a
+  // fault, #570). Asserting that direction too would fail on a correct
+  // classification.
+  it("never calls a whisper on the info channel a page", () => {
+    const kind = new Map(ALERT_CATALOG.map((e) => [e.key, e.kind]));
+    const contradictions = ALERT_FIELDS.filter(
+      (f) => kind.get(f.key) === "info" && (f.urgency === "page" || f.urgency === "alert"),
+    ).map((f) => `${f.key} is catalog info and grouped as ${f.urgency}`);
+    expect(contradictions).toEqual([]);
+    // The check is only real if the catalog actually calls some of these info.
+    const infoKeys = ALERT_FIELDS.filter((f) => kind.get(f.key) === "info");
+    expect(infoKeys.length, "some of these keys are info in the catalog").toBeGreaterThan(0);
+  });
+
+  // The section's group heading carries the urgency now, so the sentence must
+  // not restate it: that was the issue's "the hint carries two jobs", and 23
+  // sentences each opening with their own volume is the wall of text Dan had
+  // stripped from another page for the same reason (L579).
+  //
+  // Checked as a CONTRADICTION rather than as a vocabulary match: a field
+  // grouped as a whisper whose sentence calls itself a page is the drift worth
+  // catching, and demanding each sentence contain its own level's exact word
+  // would just be a synonym list (it already failed on "Quiet nudge", which is a
+  // notice by any reading).
+  it("leaves the volume to the group heading rather than restating it", () => {
+    for (const f of ALERT_FIELDS) {
+      const help = f.help.toLowerCase();
+      for (const other of ALERT_URGENCY_ORDER) {
+        if (other === f.urgency) continue;
+        expect(
+          new RegExp(`\\b${other}\\b`).test(help),
+          `${f.key} is grouped as ${f.urgency} and its own sentence says "${other}": ${f.help}`,
+        ).toBe(false);
+      }
+      // And it does not open by naming its own level either.
+      expect(
+        /^(urgent |page when|alert when|whisper when|quiet )/i.test(f.help),
+        `${f.key} opens by restating its volume: ${f.help}`,
+      ).toBe(false);
     }
   });
 });

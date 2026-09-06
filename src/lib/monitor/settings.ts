@@ -66,121 +66,188 @@ export const ALERT_KEYS: MonitorAlertKey[] = [
  * is a cooldown nobody can tune, and a field with no key is a control that does
  * nothing. A test asserts they stay in lockstep.
  */
-export const ALERT_FIELDS: { key: MonitorAlertKey; label: string; help: string }[] = [
+/**
+ * How loud an alert is, loudest first (#1955).
+ *
+ * Dan on the cooldowns section: "I hate everything about this. we can do so much
+ * better than this design." One of the six faults was that it gave no sense of
+ * which of these matter, while every `help` sentence said so in a word a reader
+ * had to parse row by row. This is that word, as a FACT the section can group by
+ * rather than something read back out of the prose (L192).
+ *
+ * The order is the order the section renders in, so a page is never below a
+ * whisper. `settings.test.ts` holds every field to carrying one, holds every
+ * level to being used, and holds each field's level to agreeing with its own
+ * description, so the two cannot drift apart.
+ */
+export const ALERT_URGENCY_ORDER = ["page", "alert", "notice", "whisper"] as const;
+
+export type AlertUrgency = (typeof ALERT_URGENCY_ORDER)[number];
+
+/** What each level means, for the group heading. */
+export const ALERT_URGENCY_COPY: Record<AlertUrgency, { label: string; meaning: string }> = {
+  page: {
+    label: "Pages",
+    meaning: "Somebody is expected to act now.",
+  },
+  alert: {
+    label: "Alerts",
+    meaning: "Needs acting on, but not this minute.",
+  },
+  notice: {
+    label: "Notices",
+    meaning: "Worth knowing. Usually nothing is wrong.",
+  },
+  whisper: {
+    label: "Whispers",
+    meaning: "Logged for whoever goes looking.",
+  },
+};
+
+export const ALERT_FIELDS: {
+  key: MonitorAlertKey;
+  label: string;
+  help: string;
+  /** REQUIRED, so `tsc` names a field added later with no level. */
+  urgency: AlertUrgency;
+}[] = [
   {
     key: "availability_data_anomaly",
+    urgency: "page",
     label: "Data-anomaly page cooldown",
-    help: "Urgent page when the cache disagrees with the calendars.",
+    help: "The cache disagrees with the calendars.",
   },
   {
     key: "availability_booked_solid",
+    urgency: "notice",
     label: "Booked-solid notice cooldown",
-    help: "Quiet notice when agents are genuinely full.",
+    help: "Agents are genuinely full.",
   },
   {
     key: "fallback_covered_availability",
+    urgency: "notice",
     label: "Fallback-covered notice cooldown",
-    help: "Quiet notice when a thin tier is covered by the fallback.",
+    help: "A thin tier is covered by the fallback.",
   },
   {
     key: "low_booking_volume",
+    urgency: "alert",
     label: "Low-volume alert cooldown",
-    help: "Throttle for the low-booking-volume alert.",
+    help: "Bookings in a window fell below the floor.",
   },
   {
     key: "thin_tier_staffing",
+    urgency: "notice",
     label: "Thin-tier staffing cooldown",
-    help: "Quiet nudge when a tier rests on 1 to 2 bookable agents.",
+    help: "A tier rests on 1 to 2 bookable agents.",
   },
   {
     key: "agents_without_schedule",
+    urgency: "whisper",
     label: "Schedule-less agent cooldown",
-    help: "Whisper when a bookable agent's working-hours schedule could not be auto-created.",
+    help: "A bookable agent's working hours schedule could not be auto created.",
   },
   {
     key: "agents_without_routing",
+    urgency: "whisper",
     label: "Unroutable agent cooldown",
-    help: "Whisper when a bookable agent has no routing attributes and no manual bucket membership, so they match no bucket.",
+    help: "A bookable agent has no routing attributes and no manual bucket membership, so they match no bucket.",
   },
   {
     key: "migration_version_lag",
+    urgency: "page",
     label: "Migration-lag page cooldown",
-    help: "Urgent page when the live database is missing a migration the deployed code ships.",
+    help: "The live database is missing a migration the deployed code ships.",
   },
   {
     key: "sync_staleness",
+    urgency: "alert",
     label: "Sync-staleness alert cooldown",
-    help: "Alert when a bookable agent has not been calendar-synced for too long (the rotation is falling behind).",
+    help: "A bookable agent has not been calendar-synced for too long (the rotation is falling behind).",
   },
   {
     key: "inactive_agent_bookings",
+    urgency: "alert",
     label: "Orphaned-appointment alert cooldown",
-    help: "Alert when an agent who has left the booking pool (deactivated or not bookable) still holds future appointments, so those customers are booked with nobody.",
+    help: "An agent who has left the booking pool (deactivated or not bookable) still holds future appointments, so those customers are booked with nobody.",
   },
   {
     key: "coverage_needs_human",
+    urgency: "alert",
     label: "Stranded-appointment alert cooldown",
-    help: "Alert when a coverage sweep could not move an appointment and gave up, so it is still with an agent who will not be there and only a person can place it.",
+    help: "A coverage sweep could not move an appointment and gave up, so it is still with an agent who will not be there and only a person can place it.",
   },
   {
     key: "ooo_coverage_gap",
+    urgency: "page",
     label: "Time off nobody has covered",
-    help: "Page when an agent on approved time off still holds an appointment starting within 48 hours that no coverage sweep has picked up, so that customer is booked with somebody who will not be there.",
+    help: "An agent on approved time off still holds an appointment starting within 48 hours that no coverage sweep has picked up, so that customer is booked with somebody who will not be there.",
   },
   {
     key: "calendar_window_uncovered",
+    urgency: "page",
     label: "Calendar refresh not covering the booking window",
-    help: "Page when a bookable agent's calendar has not been refreshed far enough ahead to cover the days the booker offers, so a lead could book an hour that calendar already has taken.",
+    help: "A bookable agent's calendar has not been refreshed far enough ahead to cover the days the booker offers, so a lead could book an hour that calendar already has taken.",
   },
   {
     key: "ooo_calcom_unprotected",
+    urgency: "alert",
     label: "Time off not blocked in cal.com",
-    help: "Alert when an agent is on approved time off right now with no cal.com block in place, so cal.com can still book them while they are away.",
+    help: "An agent is on approved time off right now with no cal.com block in place, so cal.com can still book them while they are away.",
   },
   {
     key: "availability_drift",
+    urgency: "page",
     label: "Offered times that are not really free",
-    help: "Page when the times a bucket is offering turn out to be already busy on every eligible agent's real calendar, so customers would be refused at the last step.",
+    help: "The times a bucket is offering turn out to be already busy on every eligible agent's real calendar, so customers would be refused at the last step.",
   },
   {
     key: "booking_failure_rate",
+    urgency: "page",
     label: "Customers failing to book",
-    help: "Page when the share of booking attempts that fail over a rolling window crosses the threshold, so a wave of customers being turned away is caught as it happens rather than by complaints.",
+    help: "The share of booking attempts that fail over a rolling window crosses the threshold, so a wave of customers being turned away is caught as it happens rather than by complaints.",
   },
   {
     key: "booker_empty_reason",
+    urgency: "page",
     label: "Booker cannot say why a week is empty",
-    help: "Page when the booker has no times to offer and cannot tell whether we are closed or fully booked, so a lead is shown a vague message instead of the reason.",
+    help: "The booker has no times to offer and cannot tell whether we are closed or fully booked, so a lead is shown a vague message instead of the reason.",
   },
   {
     key: "roster_coverage_gap",
+    urgency: "page",
     label: "Advertised hours nobody is rostered for",
-    help: "Page when the org's business hours include time no agent is scheduled to work, so a lead is offered nothing during hours we say we are open.",
+    help: "The org's business hours include time no agent is scheduled to work, so a lead is offered nothing during hours we say we are open.",
   },
   {
     key: "ooo_protection_lost",
+    urgency: "page",
     label: "Approved time off no longer blocked",
-    help: "Page when an approved time off has no calendar event and no cached busy time covering it, so a lead can be booked into hours the agent is away.",
+    help: "An approved time off has no calendar event and no cached busy time covering it, so a lead can be booked into hours the agent is away.",
   },
   {
     key: "webhook_event_no_subscriber",
+    urgency: "page",
     label: "Booking event nobody is subscribed to",
-    help: "Page when a booking event Slate sends has no active webhook endpoint subscribed to it, so the delivery is recorded and reaches no downstream system.",
+    help: "A booking event Slate sends has no active webhook endpoint subscribed to it, so the delivery is recorded and reaches no downstream system.",
   },
   {
     key: "edge_limiter_unusable",
+    urgency: "page",
     label: "Request rate limits not being enforced",
-    help: "Page when the running deployment cannot use its request rate limits, so the public endpoints are open to unlimited traffic from one source. Clears itself once they are enforced again.",
+    help: "The running deployment cannot use its request rate limits, so the public endpoints are open to unlimited traffic from one source. Clears itself once they are enforced again.",
   },
   {
     key: "hydration_all_failing",
+    urgency: "page",
     label: "Calendar refresh failing on every calendar",
-    help: "Page when the daily calendar refresh has failed on every calendar it tried, several runs in a row. Bookings are unaffected while this lasts; what stops is the cached cover being renewed.",
+    help: "The daily calendar refresh has failed on every calendar it tried, several runs in a row. Bookings are unaffected while this lasts; what stops is the cached cover being renewed.",
   },
   {
     key: "empty_buckets",
+    urgency: "alert",
     label: "Bucket with nobody to route to",
-    help: "Alert when a booking bucket has no eligible bookable agent, so a lead sent there cannot be booked. A broad outage pages once for the whole set rather than once per bucket.",
+    help: "A booking bucket has no eligible bookable agent, so a lead sent there cannot be booked. A broad outage pages once for the whole set rather than once per bucket.",
   },
 ];
 

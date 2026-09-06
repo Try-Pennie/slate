@@ -6,6 +6,8 @@ import { supabaseAdmin } from "@/lib/supabase/admin";
 import { setMonitorSettings } from "@/app/admin/actions";
 import {
   ALERT_FIELDS as COOLDOWN_FIELDS,
+  ALERT_URGENCY_ORDER,
+  ALERT_URGENCY_COPY,
   MONITOR_DEFAULTS,
   quietedAlarms,
   formatMinutes,
@@ -143,36 +145,116 @@ export default async function AlertSettingsPage({
           {/* heading-gloss-ok: the UNIT of the numbers in the fields below. */}
           <h2 className="mb-1 text-sm font-semibold">Alert cooldowns (minutes)</h2>
           <p className={`mb-4 text-xs text-fg-muted ${proseCls}`}>
-            The minimum time between repeats of the same alert.
+            The minimum time between repeats of the same alert. Blank uses the
+            default beside it.
           </p>
-          <div className="space-y-4">
-            {COOLDOWN_FIELDS.map((f) => {
-              const stored = storedByKey.get(f.key);
-              const defMin = MONITOR_DEFAULTS.cooldownMs[f.key] / 60_000;
+          {/* #1955: Dan, "I hate everything about this. we can do so much better
+              than this design."
+
+              Six faults, and the layout was most of them. Twenty three settings
+              were a label, a FULL WIDTH input and a sentence each: about 910
+              pixels of field to hold three to five digits, and the eye had to
+              cross the whole page to get from one label to the next. Every row
+              stated the unit three times (the heading, the placeholder, the
+              hint) and the third was in different units from the first two. Nine
+              of ten fields were empty, so their grey placeholders read enough
+              like values to be mistaken for them.
+
+              So: rows, not a stack. Narrow right aligned tabular inputs, so the
+              digits line up down the page and a 10080 beside a 360 is visibly
+              odd. The unit once, in the heading. The default beside the field
+              rather than restated in a sentence.
+
+              GROUPED BY VOLUME, which was the sixth fault: the section gave no
+              sense of which of these matter while every sentence said so in a
+              word somebody had to parse row by row. That word is data now
+              (`urgency`), so the heading carries it and the sentences stopped
+              repeating it.
+
+              What each alert DOES stays reachable rather than visible, and that
+              is deliberate. It is the only place any of these is explained, and
+              23 sentences on one form is the wall of text Dan had stripped from
+              the staffing depth page for exactly this reason (#1898, L579). So
+              it is a `title` plus an `sr-only` span, the pattern RosterTable
+              already uses (#1812), which reaches a mouse and a screen reader. */}
+          <div className="space-y-5">
+            {ALERT_URGENCY_ORDER.map((level) => {
+              const fields = COOLDOWN_FIELDS.filter((f) => f.urgency === level);
+              if (fields.length === 0) return null;
+              const copy = ALERT_URGENCY_COPY[level];
               return (
-                <div key={f.key}>
-                  <label className={labelCls} htmlFor={`cooldown_${f.key}`}>
-                    {f.label}
-                  </label>
-                  <input
-                    id={`cooldown_${f.key}`}
-                    name={`cooldown_${f.key}`}
-                    type="number"
-                    min={1}
-                    inputMode="numeric"
-                    defaultValue={stored ?? ""}
-                    placeholder={`default ${defMin} min`}
-                    className={`${inputCls} w-48 tabular-nums`}
-                  />
-                  <p className="mt-1 text-xs text-fg-muted">
-                    {f.help}{" "}
-                    <span className="tabular-nums">
-                      Default {formatMinutes(defMin)}
-                      {stored != null && stored > defMin
-                        ? `; currently ${formatMinutes(stored)}, so it repeats less often than intended.`
-                        : "."}
-                    </span>
-                  </p>
+                <div key={level}>
+                  <h3 className="text-xs font-semibold text-fg">
+                    {copy.label}{" "}
+                    <span className="font-normal text-fg-muted">{copy.meaning}</span>
+                  </h3>
+                  <ul className="mt-1.5">
+                    {fields.map((f) => {
+                      const stored = storedByKey.get(f.key);
+                      const defMin = MONITOR_DEFAULTS.cooldownMs[f.key] / 60_000;
+                      return (
+                        <li
+                          key={f.key}
+                          className="flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-border py-1.5 first:border-t-0"
+                        >
+                          <label
+                            className="min-w-0 flex-1 text-xs text-fg"
+                            htmlFor={`cooldown_${f.key}`}
+                            title={f.help}
+                          >
+                            {f.label}
+                            <span className="sr-only">{`. ${f.help}`}</span>
+                          </label>
+                          {/* NO sentence for an override, deliberately. The
+                              value and its default now sit side by side on one
+                              line, so a 10080 beside "default 30" is visible
+                              without reading anything, and the notice above this
+                              section already names every override with its
+                              value, its default and the date it changed. A
+                              third statement of the same fact on the row is
+                              decoration (L558), and "not more prose" is Dan's
+                              own constraint from the staffing depth page. */}
+                          {/* The width lives on a WRAPPER, not on the input.
+                              `inputCls` sets `w-full`, and a `w-20` appended
+                              after it loses or wins by whatever order Tailwind
+                              happens to emit the two utilities in, which is
+                              invisible at the call site (L509). Measured: the
+                              first version of this row still rendered a 912px
+                              field, so the shared style is given a box to fill
+                              rather than argued with. Changing `inputCls`
+                              itself belongs to #1855. */}
+                          <span className="block w-24 shrink-0">
+                            <input
+                              id={`cooldown_${f.key}`}
+                              name={`cooldown_${f.key}`}
+                              type="number"
+                              min={1}
+                              inputMode="numeric"
+                              defaultValue={stored ?? ""}
+                              aria-describedby={`cooldown_${f.key}_default`}
+                              /* Only the WIDTH changes, which is what the issue
+                                 is about. The height stays `inputCls`'s 44px,
+                                 which the design system asks for as a target
+                                 size, and measured at 44px on the page.
+
+                                 An `h-9` written here first was INERT for the
+                                 same reason a `w-20` was: `inputCls` sets both
+                                 dimensions and an appended utility wins or
+                                 loses by Tailwind's emit order (L509). It read
+                                 as a deliberate 36px row and rendered 44px. */
+                              className={`${inputCls} mt-0 text-right tabular-nums`}
+                            />
+                          </span>
+                          <span
+                            id={`cooldown_${f.key}_default`}
+                            className="w-28 text-xs text-fg-muted tabular-nums"
+                          >
+                            default {defMin}
+                          </span>
+                        </li>
+                      );
+                    })}
+                  </ul>
                 </div>
               );
             })}
