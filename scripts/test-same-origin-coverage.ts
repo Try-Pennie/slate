@@ -51,18 +51,27 @@ assert(routes.length > 20, `read the api tree (${routes.length} route files)`);
 
 // --- 1. the enumeration reaches real subjects ---
 const subjects = subjectRoutes(routes);
+// Four, not five: `erasure-purge` left the set in #1961 when its session path
+// was removed, and it is asserted below to be OUT rather than merely absent.
 assert(
-  subjects.length >= 5,
+  subjects.length >= 4,
   `found the cookie-authed mutation routes (${subjects.length}): ${subjects
     .map((s) => s.path.replace(`${API_DIR}/`, ""))
     .join(", ")}`,
 );
 
 // The two routes whose loss would be least noticed: a booking cancel (the highest
-// consequence write on the surface) and the warehouse erasure purge (admin-only and
-// rarely exercised). Named so a refactor that stops the scan seeing them fails here
+// consequence write on the surface) and the bulk reassign (admin-only and rarely
+// exercised). Named so a refactor that stops the scan seeing them fails here
 // rather than quietly shrinking the subject list.
-for (const needle of ["bookings/[id]/cancel", "erasure-purge"]) {
+//
+// `erasure-purge` used to hold the second place. It moved to the list below in
+// #1961: its session path was removed with the purge buttons, so its credential
+// is no longer ambient and a browser-shaped check on it would be wrong. The
+// assertion was inverted in the same change rather than deleted, because an
+// assertion whose premise a change has consumed goes permanently red for a
+// reason that looks exactly like a real defect (L373).
+for (const needle of ["bookings/[id]/cancel", "bulk-reassign"]) {
   assert(
     subjects.some((s) => s.path.includes(needle)),
     `the scan sees ${needle} as a subject`,
@@ -71,7 +80,7 @@ for (const needle of ["bookings/[id]/cancel", "erasure-purge"]) {
 
 // A key-authed mutation must NOT be a subject: its credential is not ambient, and
 // pulling it in would put a browser-shaped check on a machine caller.
-for (const needle of ["bookings/reassign", "users/bookable", "smoke/heartbeat"]) {
+for (const needle of ["bookings/reassign", "users/bookable", "smoke/heartbeat", "erasure-purge"]) {
   assert(
     !subjects.some((s) => s.path.includes(needle)),
     `${needle} is not a subject (its credential is not ambient)`,

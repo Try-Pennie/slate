@@ -1,10 +1,8 @@
 import { NextResponse, type NextRequest } from "next/server";
-import { requireAdmin } from "@/lib/auth";
 import { isAuthorizedCron } from "@/lib/cron";
 import { acquireLock, releaseLock } from "@/lib/locks";
 import { purgeSnowflakeErasure } from "@/lib/snowflake/purge";
 import { log } from "@/lib/log";
-import { crossOriginRefusal } from "@/lib/api/same-origin";
 
 export const dynamic = "force-dynamic";
 
@@ -18,8 +16,14 @@ const LOCK_TTL_MS = 120_000;
  * have, Snowflake rejected it, and the person's data sat in the archive for two
  * days while the runbook's own verify reported success.
  *
- * WHO MAY CALL IT: a signed-in admin, or an operator process holding CRON_SECRET.
- * Both are already trusted with the whole system; there is no self-service path.
+ * WHO MAY CALL IT: an operator process holding CRON_SECRET, and nothing else
+ * (#1961). The signed-in admin path went with the buttons on 2026-09-06: with no
+ * control on the page, a session that could still reach this endpoint would be
+ * the same easy purge Dan asked to remove, one fetch away from the console
+ * instead of one click. It is a TIGHTENING, and it loses no attribution, because
+ * the operator path is refused outright unless it names who authorised the
+ * erasure, which is a better record than an actor id: it says who ASKED, not who
+ * typed.
  * WHAT IT MAY TOUCH: only bookings that already appear in a `pii.erasure` audit
  * row, i.e. bookings whose contact data has ALREADY been erased in Supabase, so
  * blanking the warehouse copy is by definition the outcome that was requested. An
@@ -27,9 +31,10 @@ const LOCK_TTL_MS = 120_000;
  * columns; the export role holds no DELETE, so nothing here can drop a row.
  *
  * POST, not GET, so it cannot be triggered by following a link, and it takes a
- * lock so two operators cannot run it concurrently. Optional body
- * `{ "bookingIds": [...] }` narrows it to a subset; with no body it purges every
- * booking in the trail, which is safe to repeat. Note repeating it is idempotent in
+ * lock so two operators cannot run it concurrently. The body is REQUIRED and
+ * must carry `authorisedBy` (#1961): a purge with nobody attached to it is
+ * refused before the lock. `bookingIds` inside it narrows the run to a subset;
+ * omitting it purges every booking in the trail, which is safe to repeat. Note repeating it is idempotent in
  * EFFECT, not in the counts: the statements are unguarded, so a second run re-nulls
  * already-null columns and reports the same rows changed. Judge a run by the verify,
  * not by `rowsByTable`.
@@ -40,14 +45,15 @@ const LOCK_TTL_MS = 120_000;
  * that ran but left data behind reports false rather than success.
  */
 export async function POST(req: NextRequest) {
-  // #1046: this route's only credential is the session cookie, so refuse a request
-  // that says it came from somewhere else, before the auth check and before the body
-  // is read. See src/lib/api/same-origin.ts for why silence is allowed through.
-  const crossOrigin = crossOriginRefusal(req, "admin/erasure-purge");
-  if (crossOrigin) return crossOrigin;
-
-  const caller = await resolveCaller(req);
-  if (!caller) return NextResponse.json({ error: "forbidden" }, { status: 403 });
+  // #1046's same-origin refusal is GONE with the session path (#1961). It exists
+  // for an AMBIENT credential, one a browser attaches on its own: a cookie can be
+  // ridden by another origin, a secret in a header cannot. With the only caller
+  // holding CRON_SECRET there is no cross-site request to refuse, and keeping the
+  // check would put a browser-shaped rule on a machine caller, refusing an
+  // operator whose tool happened to send an Origin header.
+  // An operator secret and nothing else (#1961). A signed-in admin is refused
+  // here like anybody else: that is the whole point of taking the buttons off.
+  if (!isAuthorizedCron(req)) return NextResponse.json({ error: "forbidden" }, { status: 403 });
 
   let bookingIds: string[] | undefined;
   let authorisedBy: string | undefined;
@@ -66,18 +72,18 @@ export async function POST(req: NextRequest) {
     // No body at all is the normal case: purge everything in the trail.
   }
 
-  // #1961: a purge run on the operator secret must say who authorised it.
+  // #1961: a purge must say who authorised it.
   //
-  // That path records no `actorId`, because there is no signed-in user behind
-  // it. It was tolerable while the UI button was the ordinary route and this was
-  // the exception. Dan's call on 2026-09-06 removes the buttons, so this becomes
-  // the ONLY way an erasure is executed and an entry naming nobody would be the
-  // entire record of a compliance action (L529).
+  // The operator path records no `actorId`, because there is no signed-in user
+  // behind it, and since the buttons went it is the only path. An entry naming
+  // nobody would be the entire record of a compliance action (L529), and the one
+  // real purge in this system's history is exactly that: 2026-07-31, eight rows
+  // blanked, verified clean, and no actor and no authoriser on the row.
   //
   // Refused rather than defaulted: a default here would be a name nobody chose,
   // attached to an irreversible deletion, and it would read in the trail exactly
   // like a real one.
-  if (!caller.actorId && !authorisedBy) {
+  if (!authorisedBy) {
     return NextResponse.json(
       {
         error:
@@ -91,7 +97,7 @@ export async function POST(req: NextRequest) {
   if (!lock) return NextResponse.json({ error: "a purge is already running" }, { status: 409 });
 
   try {
-    const result = await purgeSnowflakeErasure(bookingIds, caller.actorId, authorisedBy);
+    const result = await purgeSnowflakeErasure(bookingIds, undefined, authorisedBy);
     return NextResponse.json(result, { status: result.ok ? 200 : 500 });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -105,15 +111,4 @@ export async function POST(req: NextRequest) {
   }
 }
 
-/**
- * Who is calling: a signed-in admin (recorded as the actor in the audit trail) or
- * an operator process holding the shared secret (no actor). Null when neither, so
- * the caller is resolved exactly once rather than being re-checked per use.
- */
-async function resolveCaller(req: NextRequest): Promise<{ actorId?: string } | null> {
-  try {
-    return { actorId: (await requireAdmin()).id };
-  } catch {
-    return isAuthorizedCron(req) ? {} : null;
-  }
-}
+

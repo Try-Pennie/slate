@@ -12,33 +12,22 @@
 //   - each control names its own SCOPE. The per row button purges one erasure's
 //     bookings; the footer button purges every booking in the trail, including
 //     the ones already clean, which is what makes a missed purge self correcting.
-//     The issue asked for that to be decided on the screen rather than left to
-//     fall out of the code.
-//   - the confirmation sentence is DERIVED from the state it is about to change
-//     (L180), so it cannot read identically whether it is taking one booking or
-//     thirty.
+//     The controls those lines described went in #1961: the page is read only
+//     now, and what stands where the buttons did is a sentence saying how a
+//     purge IS run. Their tests were deleted rather than adjusted (L252).
 // Run: node --experimental-strip-types scripts/test-erasure-worklist.ts
 import {
-  MAX_ATTRIBUTED_ENTRIES,
   entryResidualTotal,
   entryStatus,
-  needsPerEntryAttribution,
   summarizeWorklist,
+  MAX_ATTRIBUTED_ENTRIES,
+  needsPerEntryAttribution,
   type ErasureWorklistEntry,
 } from "../src/lib/snowflake/erasure-worklist.ts";
 import {
-  entryPurgeConfirm,
-  entryPurgeLabel,
   entryResidualText,
   entryStatusLabel,
-  purgeAllConfirm,
-  purgeAllLabel,
-  purgeFailedText,
-  purgeLeftResidualText,
-  purgeStalledText,
-  purgeSucceededText,
-  purgeTimeoutText,
-  purgeWorkingText,
+  howToPurgeText,
   trailUnreadableText,
   warehouseUnconfiguredText,
   warehouseUnreadableText,
@@ -145,112 +134,57 @@ const entry = (over: Partial<ErasureWorklistEntry> = {}): ErasureWorklistEntry =
   );
 }
 
-// --- per control scope: the sentence says WHICH bookings it is about to touch ---
+// --- when the loader asks Snowflake about each entry separately ---
+//
+// Restored here in #1961. Its only coverage used to sit inside the bulk purge
+// confirm's tests, and deleting those with the controls took it with them: live
+// code whose only test was a side effect of testing something else (L281).
+//
+// Attribution costs one warehouse round trip per table per entry, so the two
+// cases that must NOT spend one are the whole point: a measured zero already
+// proves every entry is clean, because each entry's bookings are a subset of the
+// trail's, and an unmeasurable total cannot be attributed to anything.
 {
-  const one = entry({ bookingIds: ["bk1", "bk2", "bk3"], residuals: [{ table: "bookings", residual: 1 }] });
-  const rowConfirm = entryPurgeConfirm(one);
-  assert(rowConfirm.includes("3"), "the per row confirm names how many bookings it takes");
-  assert(/this erasure|these 3 bookings|only/i.test(rowConfirm), "the per row confirm says it is narrow");
-
-  // L180: the sentence is derived, so a different entry produces a different sentence.
-  const other = entryPurgeConfirm(entry({ bookingIds: ["bk1"] }));
-  assert(other !== rowConfirm, "the confirm changes with the state it is about to change");
-  assert(other.includes("1"), "a single booking entry says 1");
-
-  const trail = { entryCount: 4, bookingCount: 11, otherOrgBookingCount: 0 };
-  const allConfirm = purgeAllConfirm(trail);
-  assert(allConfirm.includes("11"), "the trail wide confirm names every booking it touches");
-  assert(allConfirm.includes("4"), "the trail wide confirm names every erasure it covers");
+  assert(needsPerEntryAttribution(4), "a measured residual is attributed to entries");
+  assert(!needsPerEntryAttribution(0), "a measured zero already proves every entry clean");
   assert(
-    /already clean|again|every booking/i.test(allConfirm),
-    "the trail wide confirm says it re runs bookings that are already clean",
+    !needsPerEntryAttribution(null),
+    "and an unmeasured total cannot be attributed, so it spends no call either",
   );
-  assert(allConfirm !== rowConfirm, "the two controls do not share a sentence");
+  // The two cheap answers are DIFFERENT states even though they cost the same,
+  // and the loader tells them apart elsewhere: zero renders as clean, null as
+  // unknown. This is only asserting neither one triggers the round trips.
+  assert(MAX_ATTRIBUTED_ENTRIES > 0, "the bound is a real number of entries");
   assert(
-    purgeAllConfirm({ entryCount: 5, bookingCount: 12, otherOrgBookingCount: 0 }) !== allConfirm,
-    "the trail wide confirm is derived from the trail, not fixed",
-  );
-
-  // Scope honesty across orgs: the button covers the whole trail even though the
-  // list is scoped to the reader's org, so it has to say so.
-  const crossOrg = purgeAllConfirm({ entryCount: 4, bookingCount: 11, otherOrgBookingCount: 3 });
-  assert(crossOrg.includes("3"), "a trail reaching another org names how many of its bookings");
-  assert(crossOrg !== allConfirm, "the cross org case reads differently");
-
-  assert(
-    entryPurgeLabel() !== purgeAllLabel(),
-    "the two buttons are labelled differently, so scope is readable at rest",
-  );
-  assert(/this erasure/i.test(entryPurgeLabel()), "the row button names its narrow scope");
-  assert(/all|every|trail/i.test(purgeAllLabel()), "the footer button names its wide scope");
-}
-
-// --- the three progress states read differently, and the timeout is actionable ---
-{
-  const working = purgeWorkingText(3);
-  const stalled = purgeStalledText(25);
-  const timedOut = purgeTimeoutText(90);
-  assert(working.includes("3"), "the working state shows elapsed seconds, so it is visibly alive");
-  assert(purgeWorkingText(4) !== working, "the working line moves with the clock");
-  assert(stalled !== working, "still working reads differently from just started");
-  assert(stalled.includes("25"), "the still working line carries the elapsed time");
-  assert(timedOut !== stalled && timedOut !== working, "timed out is its own state");
-  assert(/try again|retry/i.test(timedOut), "the timeout tells the reader what to do");
-  assert(
-    /may have|might have|check/i.test(timedOut),
-    "the timeout does not claim the purge failed, only that we stopped waiting",
+    Number.isInteger(MAX_ATTRIBUTED_ENTRIES),
+    "and a whole one, since it indexes a list",
   );
 }
 
-// --- a failed purge never reads as a success ---
+// --- there is no control here any more (#1961) ---
+//
+// The blocks that stood here drove the purge controls: the per row confirm's
+// scope, the bulk confirm's, the labels, and the three progress states. They
+// were DELETED rather than adjusted when the controls went, because their whole
+// content was the behaviour being removed, and a test defending a reversed
+// decision is the guard that keeps it alive (L252).
+//
+// What replaces them is the sentence that stands where the button did. A screen
+// that names a fault and offers no remedy teaches its reader to skim it (L126,
+// L148), so the absence has to be explained rather than left as a gap.
 {
-  const failed = purgeFailedText("a purge is already running");
-  assert(failed.includes("a purge is already running"), "the failure carries the server's reason");
-  assert(!/complete|succeeded|cleared/i.test(failed), "a failure never borrows success wording");
-
-  const noReason = purgeFailedText(null);
-  assert(noReason.length > 0, "a failure with no reason still says something");
-  assert(!/undefined|null/.test(noReason), "a missing reason never leaks a null");
-
-  const ran = purgeSucceededText({
-    bookingIds: ["bk1", "bk2"],
-    rowsByTable: { bookings: 2, booking_events: 1 },
-  });
-  assert(ran.includes("2"), "success names how many bookings it purged");
-  assert(/verif/i.test(ran), "success says the verify is what makes it true");
-
-  const left = purgeLeftResidualText([
-    "bookings: 1 row(s) still hold contact PII after the purge",
-  ]);
-  assert(left.includes("bookings: 1"), "a residual after the purge carries the measured reason");
-  assert(!/complete|succeeded/i.test(left), "a purge that left data behind is not a success");
+  const how = howToPurgeText();
+  assert(/no button for this, deliberately/i.test(how), "it says the absence is a decision");
+  assert(/cannot be undone/i.test(how), "and why: the deletion is irreversible");
+  assert(/naming who asked/i.test(how), "it says the run has to name who asked for the erasure");
+  assert(/refuses to run without that name/i.test(how), "and that this is enforced rather than asked politely");
+  assert(/pii-erasure-runbook/.test(how), "and where the steps are");
+  // It names no COMMAND and no secret. A runbook step changes and a copy string
+  // does not, and one naming a stale command is worse than one naming none
+  // (L210). This is the assertion that fails if somebody pastes a curl in here.
+  assert(!/curl|CRON_SECRET|http/i.test(how), "and it pastes in no command or secret to go stale");
 }
 
-// --- an unreadable trail and an unconfigured warehouse are distinct screens ---
-{
-  const t = trailUnreadableText("permission denied for table audit_log");
-  assert(t.includes("permission denied"), "the trail failure carries its reason");
-  assert(!/no |nothing|none/i.test(t.split(":")[0] ?? ""), "it never opens by claiming emptiness");
-
-  const w = warehouseUnreadableText("Snowflake returned 503");
-  assert(w.includes("503"), "the warehouse failure carries its reason");
-  assert(w !== t, "a trail failure and a warehouse failure are different messages");
-
-  const u = warehouseUnconfiguredText();
-  assert(u !== w, "unconfigured is not the same as unreadable");
-  assert(/not configured|no warehouse|mirror/i.test(u), "unconfigured says what is missing");
-}
-
-// --- when attribution runs ---
-{
-  assert(needsPerEntryAttribution(0) === false, "a clean trail needs no per entry attribution");
-  assert(needsPerEntryAttribution(3) === true, "a residual has to be attributed to an entry");
-  assert(
-    needsPerEntryAttribution(null) === false,
-    "an unmeasurable trail total cannot be attributed, so nothing is claimed",
-  );
-  assert(MAX_ATTRIBUTED_ENTRIES > 0, "the attribution pass is bounded");
-}
 
 // --- the copy rules hold on every string this surface can render ---
 {
@@ -261,17 +195,7 @@ const entry = (over: Partial<ErasureWorklistEntry> = {}): ErasureWorklistEntry =
     entryStatusLabel("unknown"),
     entryResidualText(entry()),
     entryResidualText(entry({ residuals: null, unmeasuredReason: "no answer" })),
-    entryPurgeLabel(),
-    entryPurgeConfirm(entry()),
-    purgeAllLabel(),
-    purgeAllConfirm({ entryCount: 2, bookingCount: 5, otherOrgBookingCount: 1 }),
-    purgeWorkingText(2),
-    purgeStalledText(20),
-    purgeTimeoutText(90),
-    purgeFailedText("boom"),
-    purgeFailedText(null),
-    purgeSucceededText({ bookingIds: ["bk1"], rowsByTable: { bookings: 1 } }),
-    purgeLeftResidualText(["bookings: 1 row(s) still hold contact PII after the purge"]),
+    howToPurgeText(),
     trailUnreadableText("boom"),
     warehouseUnreadableText("boom"),
     warehouseUnconfiguredText(),
