@@ -221,9 +221,27 @@ export function TimeField({
       return;
     }
     if (e.key === "Enter") {
+      // ENTER COMMITS THIS FIELD AND NEVER SUBMITS THE FORM (#1968, Dan's call
+      // on 2026-09-05: "Save is the only thing that saves").
+      //
+      // It used to call preventDefault ONLY when a dropdown row happened to be
+      // highlighted, and fall through otherwise. A text input inside a form
+      // submits that form on Enter, so the same key meant "pick this row" or
+      // "save everything" depending on a faint background tint on one row of a
+      // dropdown. On the business hours form that writes the org's opening
+      // hours, which gate every bookable slot, and it happened: two saves landed
+      // in the audit trail while somebody was only verifying the field.
+      //
+      // A custom control inside a form inherits the platform's form behaviours
+      // wherever its own handler does not stop them, so the branch that forgot
+      // is the one that writes (L596). It is unconditional now: the highlighted
+      // row is taken when there is one, the typed value is settled when there is
+      // not, and neither reaches the form.
+      e.preventDefault();
       if (open && highlight !== null && options[highlight]) {
-        e.preventDefault();
         commit(options[highlight].value);
+      } else {
+        settle();
       }
       return;
     }
