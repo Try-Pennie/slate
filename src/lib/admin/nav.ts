@@ -123,8 +123,11 @@ export const ADMIN_NAV: AdminNavGroup[] = [
   {
     title: "Monitoring",
     items: [
+      // #1960: "Stuck deliveries" went with its route. It was empty by
+      // construction (every row has already fired an alert) and had no controls,
+      // so it is a panel on the Health page now, which is where somebody lands
+      // after being paged.
       { href: "/admin/alerts", label: "Alerts and floors", gate: "admin" },
-      { href: "/admin/drain", label: "Stuck deliveries", gate: "admin" },
     ],
   },
   {

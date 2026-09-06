@@ -14,6 +14,15 @@ import { SyncHealthPanel, type SyncHealthRow } from "@/components/ui/SyncHealthP
 import { UnreadableNotice } from "@/components/ui/UnreadableNotice";
 import { AdminPageHeader, AdminDenied } from "@/components/admin/AdminPageHeader";
 import { cardCls, proseCls } from "@/components/ui/styles";
+import { DRAIN_ALERT_AFTER } from "@/lib/booking/drain-backoff";
+import {
+  normalizeOutboxRow,
+  normalizeReservationRow,
+  summarizeStuck,
+  type StuckRow,
+} from "@/lib/booking/stuck-drain";
+import { StuckDeliveriesPanel } from "@/components/admin/StuckDeliveriesPanel";
+import type { BookingOutbox, BookingReservation } from "@/lib/db/types";
 import type { User } from "@/lib/db/types";
 
 export const dynamic = "force-dynamic";
@@ -185,7 +194,7 @@ export default async function AdminHealthPage() {
   if (oooOnlyFor(me.role)) redirect("/admin/ooo");
 
   const db = supabaseAdmin();
-  const [usersRes, calsRes] = await Promise.all([
+  const [usersRes, calsRes, outboxRes, reservationRes] = await Promise.all([
     // Exclude the synthetic smoke-test agent (#396) from every count here.
     db.from("users").select("*").eq("org_id", me.org_id).eq("is_test", false),
     db
@@ -195,7 +204,39 @@ export default async function AdminHealthPage() {
         // string, and a concatenation collapses it to GenericStringError[].
         "user_id, watch_expiration, consecutive_failures, last_success_at, last_sync_error, watch_consecutive_failures, watch_last_success_at, watch_last_error",
       ),
+    // #1960: the two drains, moved here from their own route. Both are filtered
+    // to rows that have ALREADY crossed the alert threshold, so they are empty
+    // on any ordinary day. They run in the SAME wave as the reads above rather
+    // than after them, so folding a page in costs no extra round trip on the
+    // landing page (#1847 is about that request path).
+    db
+      // cap-safe: only rows past the alert threshold and still pending; a bounded
+      // page (200 wedged rows is itself an emergency, not normal volume).
+      .from("booking_outbox")
+      .select("*")
+      .eq("status", "pending")
+      .gte("attempts", DRAIN_ALERT_AFTER)
+      .order("attempts", { ascending: false })
+      .limit(200),
+    db
+      // cap-safe: same bound, over the reservation (crash recovered create) drain.
+      .from("booking_reservations")
+      .select("*")
+      .eq("status", "pending")
+      .gte("attempts", DRAIN_ALERT_AFTER)
+      .order("attempts", { ascending: false })
+      .limit(200),
   ]);
+
+  // A read error here must not look like "nothing is stuck", which is a false
+  // all clear on the one panel somebody opens after being paged.
+  const stuckReadError =
+    outboxRes.error?.message ?? reservationRes.error?.message ?? null;
+  const stuckRows: StuckRow[] = [
+    ...((outboxRes.data ?? []) as BookingOutbox[]).map(normalizeOutboxRow),
+    ...((reservationRes.data ?? []) as BookingReservation[]).map(normalizeReservationRow),
+  ].sort((a, b) => b.attempts - a.attempts);
+  const stuckSummary = summarizeStuck(stuckRows);
   // #1629: an unreadable read and an empty one draw the same picture, and on this
   // page that picture is the fleet being gone rather than a query having failed.
   // Each read is classified explicitly and every count derived from an unreadable
@@ -383,6 +424,24 @@ export default async function AdminHealthPage() {
         calendarsUnreadable || rosterUnreadable
           ? null
           : streakColumnsAgeMs(laneHealth, laneHealthUnavailable),
+    },
+    {
+      key: "stuck",
+      label: "Stuck deliveries",
+      note:
+        `A booking's side effects and its crash recovered creates each retry on their own. ` +
+        `A row appears here only once it has failed ${DRAIN_ALERT_AFTER} times, which is the ` +
+        `same point an alert fires, so this is empty on an ordinary day.`,
+      // Unreadable is NOT ok: on this panel a silent empty is a false all clear.
+      verdict: stuckReadError ? "unmeasured" : stuckRows.length > 0 ? "attention" : "ok",
+      detail: (
+        <StuckDeliveriesPanel
+          rows={stuckRows}
+          gaveUp={stuckSummary.gaveUp}
+          readError={stuckReadError}
+        />
+      ),
+      inputAgeMs: stuckReadError ? null : 0,
     },
     {
       key: "lanes",
