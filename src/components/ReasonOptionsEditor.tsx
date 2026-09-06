@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { SaveForm } from "@/components/ui/SaveForm";
 
 import { setReasonOptions } from "@/app/admin/actions";
 import { SubmitButton } from "@/components/ui/SubmitButton";
@@ -132,7 +133,7 @@ export default function ReasonOptionsEditor({
   );
 
   return (
-    <form action={setReasonOptions} className="space-y-6">
+    <SaveForm action={setReasonOptions} name="booking-reasons" className="space-y-6">
       {/* #1966: typed lists, with no other copy of them. */}
       <UnsavedGuard what="changes to these reasons" />
       <input type="hidden" name="payload" value={payload} />
@@ -303,6 +304,6 @@ export default function ReasonOptionsEditor({
       <SubmitButton className={btnCls} pendingLabel="Saving…">
         Save reasons
       </SubmitButton>
-    </form>
+    </SaveForm>
   );
 }

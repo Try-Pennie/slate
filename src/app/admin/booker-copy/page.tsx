@@ -1,4 +1,5 @@
 import { redirect } from "next/navigation";
+import { SaveForm } from "@/components/ui/SaveForm";
 import { currentUser } from "@/lib/auth";
 import { canEditOrgSettings } from "@/lib/auth/roles";
 import { oooOnlyFor } from "@/lib/env";
@@ -68,9 +69,14 @@ export default async function BookerCopyPage({
           </p>
         ) : (
           eventTypes.map((e) => (
-            <form
+            <SaveForm
               key={e.id}
               action={setEventDescription}
+              // #1998: the name carries the EVENT TYPE, because this form is
+              // rendered once per event type. A single name would file every
+              // one of them under one key, so a save killed by a deploy would
+              // restore one event type's description onto another's field.
+              name={`booker-copy-${e.id}`}
               // #1945: an explicit column with a real gap. `space-y-3` alone
               // could not separate the field from the button, because both were
               // inline level and sat side by side: a vertical utility has nothing
@@ -96,7 +102,7 @@ export default async function BookerCopyPage({
               <SubmitButton className={btnCls} pendingLabel="Saving…">
                 Save description
               </SubmitButton>
-            </form>
+            </SaveForm>
           ))
         )}
       </section>

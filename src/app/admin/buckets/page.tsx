@@ -1,4 +1,5 @@
 import { redirect } from "next/navigation";
+import { SaveForm } from "@/components/ui/SaveForm";
 import { currentUser } from "@/lib/auth";
 import { canEditOrgSettings } from "@/lib/auth/roles";
 import { oooOnlyFor } from "@/lib/env";
@@ -179,7 +180,7 @@ export default async function BucketsPage({
           routes to this bucket. Leave it as &ldquo;No default&rdquo; to make a missing
           code an explicit error instead of a silent guess.
         </p>
-        <form action={setDefaultBucket} className="space-y-4">
+        <SaveForm action={setDefaultBucket} name="bucket-routing" className="space-y-4">
           <div>
             <label className={labelCls} htmlFor="default_bucket_code">
               Default bucket
@@ -206,7 +207,7 @@ export default async function BucketsPage({
           <SubmitButton className={btnCls} pendingLabel="Saving…">
             Save default bucket
           </SubmitButton>
-        </form>
+        </SaveForm>
       </section>
       <section className={cardCls}>
         {/* #1901: the heading is the NAME. It read "Buckets (round-robin
