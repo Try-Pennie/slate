@@ -145,8 +145,41 @@ export function misrouteAlert(bookingId: string, bucketCode: string, agentId: st
  * go and look, and it says the screen was shown, because that is what makes this
  * worth reading at all: somebody met it.
  */
-export function boundaryCatchAlert(page: string, detail: string): string {
-  return `A page under ${page} failed to render and showed its error screen (${detail}). Anyone on that page is seeing it. Full detail is in the Worker logs at level error.`;
+export function boundaryCatchAlert(
+  page: string,
+  detail: string,
+  count: { count: number | null; measured: boolean; windowMinutes: number },
+): string {
+  return `A page under ${page} failed to render and showed its error screen (${detail}). ${boundaryScope(count)} Full detail is in the Worker logs at level error.`;
+}
+
+/**
+ * How widely it is happening, which is the fact that decides whether the reader
+ * gets up (#1974).
+ *
+ * Three sentences because there are three different things to say, and each says
+ * only what was measured (L11). A number is the reason this alert is worth
+ * reading at all: one catch on one load is a stale bundle or somebody's
+ * extension, and the same page failing eleven times in half an hour is a page
+ * nobody can use.
+ *
+ * The unmeasured case does NOT fall back to a number or to the wording of either
+ * other case. It pages, because the counter failing open is what keeps a hiccup
+ * from muting this alert, and it says the count is missing so the reader knows
+ * the scope is still an open question rather than a small one.
+ */
+function boundaryScope(c: { count: number | null; measured: boolean; windowMinutes: number }): string {
+  if (!c.measured) {
+    return `Slate could not count how often this is happening, so treat the scope as unknown and look at the page.`;
+  }
+  if (c.count !== null && c.count > 1) {
+    return `${c.count} loads of it have shown the error screen in the last ${c.windowMinutes} minutes, so this is the page rather than one person's browser.`;
+  }
+  // The alert is only sent on a REPEAT, so the fact of more than one is known
+  // even when the figure itself could not be read back. Saying "more than once"
+  // claims exactly that and no more, rather than borrowing the single-catch
+  // wording, which would understate a break the reader has to act on (L11).
+  return `It has shown that screen more than once in the last ${c.windowMinutes} minutes, so this is the page rather than one person's browser. Slate could not read the exact figure.`;
 }
 
 export function internalErrorAlert(context: string, detail: string): string {

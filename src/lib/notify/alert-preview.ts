@@ -1967,8 +1967,19 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     text: internalErrorAlert("POST /api/bookings", "503 backendError") },
   // #1974: a page that failed to RENDER, which is a different event from a 500
   // and reads differently: nobody got a status code, somebody got a screen.
-  { key: "boundary_error:*", state: "a page showed its error screen", channel: "alert",
-    text: boundaryCatchAlert("/admin", "digest 3847221905") },
+  // Three states, because the SCOPE sentence is what decides whether the reader
+  // gets up, and the three are the three different things Slate can know: how
+  // many, that a break is repeating but the figure is missing, and that the
+  // counter itself could not answer.
+  { key: "boundary_error:*", state: "a page showed its error screen, counted", channel: "alert",
+    text: boundaryCatchAlert("/admin", "digest 3847221905", {
+      count: 11, measured: true, windowMinutes: 30 }) },
+  { key: "boundary_error:*", state: "a page showed its error screen, the figure unreadable", channel: "alert",
+    text: boundaryCatchAlert("/admin", "digest 3847221905", {
+      count: null, measured: true, windowMinutes: 30 }) },
+  { key: "boundary_error:*", state: "a page showed its error screen, uncounted", channel: "alert",
+    text: boundaryCatchAlert("/admin", "digest 3847221905", {
+      count: null, measured: false, windowMinutes: 30 }) },
   // Three states, because the reader's next move differs. The database rejecting
   // the row points at the CALLER (#1220, and #1223 for the copy); a grant or schema
   // break and a thrown client point at the trail itself.

@@ -406,9 +406,10 @@ export const ALERT_CATALOG: AlertEntry[] = [
     key: "boundary_error:*",
     kind: "incident",
     why:
-      "One person already met the error screen on one page load. There is no state that CLEARS: the next load either " +
-      "renders or does not, and it reports for itself. An all-clear here would say the screen somebody already saw has " +
-      "stopped having been seen, which is the test this classification turns on (#1974).",
+      "People already met the error screen on loads that have finished. There is no state that CLEARS: the next load " +
+      "either renders or does not, and it reports for itself, counted against its own window. An all-clear here would " +
+      "say the screens somebody already saw have stopped having been seen, which is the test this classification " +
+      "turns on (#1974).",
   },
   {
     key: "rr_ordering_degraded",

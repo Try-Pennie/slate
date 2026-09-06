@@ -4,16 +4,21 @@ import { log } from "@/lib/log";
 import { sendThrottledAlert } from "@/lib/notify/dispatch";
 import { boundaryCatchAlert } from "@/lib/notify/misc-alert-copy";
 import { shortErrorReason } from "@/lib/notify/error-text";
+import { countBoundaryCatch, BOUNDARY_WINDOW_MS } from "@/lib/api/boundary-count";
 
 /**
  * How long one page stays quiet after its boundary has been reported (#1974).
  *
  * Long enough that a page broken for everybody pages ONCE rather than once per
- * person who opens it, which is what "one person hitting one broken screen does
- * not page repeatedly" asks for. Short enough that a second, different break the
- * next hour is not swallowed by the first.
+ * person who opens it. Short enough that a second, different break the next hour
+ * is not swallowed by the first.
+ *
+ * The cooldown answers "how OFTEN does one page speak". It cannot answer "is
+ * this worth speaking about at all", because the first catch always passes it:
+ * that is what `countBoundaryCatch` decides, and the two are deliberately equal
+ * in length so a break lasting past the window pages again on the same cadence.
  */
-const BOUNDARY_ERROR_COOLDOWN_MS = 30 * 60_000;
+const BOUNDARY_ERROR_COOLDOWN_MS = BOUNDARY_WINDOW_MS;
 import { allowRequest, clientIp, CLIENT_ERROR_RATE_RULES } from "@/lib/rate-limit";
 import { CLIENT_ERROR_ADDRESS_POLICY } from "@/lib/rate-limit-core";
 import {
@@ -86,12 +91,31 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   // shown a screen (L11). The log line is the same either way, because the
   // forensic trail is the same.
   if (report.kind === "boundary") {
+    const signature = clientErrorSignature(report);
+    // The LOG line is written for every catch, including the ones that do not
+    // page. It is the forensic trail and the record the count is read against,
+    // so a single stray fault stays findable by `tag=client-errors` even though
+    // nobody is woken for it.
     log.error("client-errors", { msg: "page boundary caught", page: report.page }, err);
+
+    // #1974: ONE catch is not a signal. A stale bundle after a deploy, a chunk
+    // that failed to load, one person's extension: each is exactly one catch on
+    // one load, and paging on it teaches the reader to ignore the channel (L36).
+    // A SECOND catch on the same surface inside the window is the page rather
+    // than the person. The counter fails OPEN, so a counter that cannot answer
+    // pages and says the scope is unknown.
+    const seen = await countBoundaryCatch(signature);
+    if (!seen.repeated) return done();
+
     // alert-key: boundary_error:*
     await sendThrottledAlert(
-      clientErrorSignature(report),
+      signature,
       BOUNDARY_ERROR_COOLDOWN_MS,
-      boundaryCatchAlert(report.page, shortErrorReason(err, { maxChars: 240 })),
+      boundaryCatchAlert(report.page, shortErrorReason(err, { maxChars: 240 }), {
+        count: seen.count,
+        measured: seen.measured,
+        windowMinutes: Math.round(BOUNDARY_WINDOW_MS / 60_000),
+      }),
     ).catch((alertErr: unknown) => {
       log.error("client-errors", { msg: "boundary alert failed", page: report.page }, alertErr);
     });

@@ -19,10 +19,27 @@ const sendThrottledAlert = vi.hoisted(() =>
   vi.fn(async (_key: string, _cooldownMs: number, _text: string) => {}),
 );
 const allowRequest = vi.hoisted(() => vi.fn());
+// #1974: the count that decides whether a catch is worth waking anybody for. It
+// is mocked rather than driven here because its own behaviour (the atomic
+// increment, the fail-open) is pinned in `src/lib/api/boundary-count.test.ts`;
+// what these tests pin is that the route HONOURS the answer.
+const countBoundaryCatch = vi.hoisted(() =>
+  vi.fn(
+    async (): Promise<{ repeated: boolean; count: number | null; measured: boolean }> => ({
+      repeated: true,
+      count: 5,
+      measured: true,
+    }),
+  ),
+);
 const clientIp = vi.hoisted(() => vi.fn(() => "1.2.3.4"));
 
 vi.mock("@/lib/api/errors", () => ({ reportInternalError }));
 vi.mock("@/lib/notify/dispatch", () => ({ sendThrottledAlert }));
+vi.mock("@/lib/api/boundary-count", () => ({
+  countBoundaryCatch,
+  BOUNDARY_WINDOW_MS: 30 * 60_000,
+}));
 vi.mock("@/lib/rate-limit", () => ({
   allowRequest,
   clientIp,
@@ -47,6 +64,7 @@ const REPORT = {
 beforeEach(() => {
   vi.clearAllMocks();
   allowRequest.mockResolvedValue(true);
+  countBoundaryCatch.mockResolvedValue({ repeated: true, count: 5, measured: true });
 });
 
 // #1974: a page whose error boundary caught something reports through here too,
@@ -56,6 +74,36 @@ beforeEach(() => {
 // long as it lasted.
 describe("a boundary catch (#1974)", () => {
   const BOUNDARY = { kind: "boundary", message: "digest 3847221905", page: "/admin" };
+
+  // ONE CATCH IS NOT A SIGNAL. A stale bundle after a deploy, a chunk that
+  // failed to load, one person's extension: each is exactly one catch on one
+  // load. Paging on it teaches the reader to skip the channel (L36), which is
+  // what makes the real break invisible.
+  it("does not page on the first catch on a page", async () => {
+    countBoundaryCatch.mockResolvedValueOnce({ repeated: false, count: 1, measured: true });
+    const res = await post(BOUNDARY);
+    expect(res.status).toBe(204);
+    expect(sendThrottledAlert).not.toHaveBeenCalled();
+    // The LOG line is still written for every catch: the forensic trail is what
+    // makes a single stray fault findable, and it costs nobody's attention.
+    expect(countBoundaryCatch).toHaveBeenCalledWith("boundary_error:admin");
+  });
+
+  // THE COUNTER FAILING OPEN. It is the alerting path: a counter hiccup that
+  // silently withheld the page would mute the one detector for a page nobody
+  // can use, so an unmeasured run pages and the copy says the scope is unknown.
+  it("pages when the count could not be taken, saying the scope is unknown", async () => {
+    countBoundaryCatch.mockResolvedValueOnce({ repeated: true, count: null, measured: false });
+    await post(BOUNDARY);
+    expect(sendThrottledAlert).toHaveBeenCalledTimes(1);
+    expect(sendThrottledAlert.mock.calls[0]![2]).toMatch(/could not count/);
+  });
+
+  it("carries the measured figure into the message", async () => {
+    countBoundaryCatch.mockResolvedValueOnce({ repeated: true, count: 11, measured: true });
+    await post(BOUNDARY);
+    expect(sendThrottledAlert.mock.calls[0]![2]).toMatch(/11 loads/);
+  });
 
   it("alerts, naming the page somebody is looking at", async () => {
     const res = await post(BOUNDARY);
