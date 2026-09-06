@@ -9,9 +9,10 @@
 //
 // The wrapper is on the working hours form, which is the one Dan lost two saves
 // on in a morning and the one 121 agents are filling in during the parallel run.
-// Twenty other components still post directly, listed below and tracked by
-// #1998. This guard is what stops that list GROWING while the migration happens:
-// a new form must use the wrapper, or be added here deliberately.
+// The migration of the rest is #1998, and the list below is what is left. This
+// guard is what stops it GROWING while that happens: a new form must use the
+// wrapper, or be added here deliberately, and an entry that has moved must be
+// deleted rather than left standing.
 //
 // Run: node --experimental-strip-types scripts/test-save-form-coverage.ts
 import { readFileSync, readdirSync, statSync } from "node:fs";
@@ -32,17 +33,12 @@ const STILL_POSTING_DIRECTLY = new Set(
   [
     "src/app/admin/agents/[id]/page.tsx",
     "src/app/admin/agents/page.tsx",
-    "src/app/admin/alerts/page.tsx",
-    "src/app/admin/booker-copy/page.tsx",
-    "src/app/admin/buckets/page.tsx",
     "src/app/admin/business-hours/page.tsx",
-    "src/app/admin/event-types/page.tsx",
     "src/app/admin/ooo/page.tsx",
     "src/app/admin/webhooks/page.tsx",
     "src/app/me/page.tsx",
     "src/components/AccountMenu.tsx",
     "src/components/AppHeader.tsx",
-    "src/components/ReasonOptionsEditor.tsx",
     "src/components/TeamAccessPanel.tsx",
     "src/components/admin/ViewAsButton.tsx",
     "src/components/admin/WebhookTestSend.tsx",
@@ -148,5 +144,78 @@ if (offenders.length) {
 }
 
 assert(seen > 5, `the rule has subjects (${seen} components post at a server action)`);
+
+/**
+ * The opening tag of each `<SaveForm ...>` in a file.
+ *
+ * SCANNED to the closing `>` at brace depth zero rather than taken as a fixed
+ * number of characters from the tag. The first version took 700, and the booker
+ * copy form's tag is 911 because it carries an explanatory comment inside it: a
+ * check that reads a fixed span from an anchor stops containing the thing it
+ * checks the moment a comment is added (L518), and it failed by finding NOTHING,
+ * which is the direction that reads as a clean tree.
+ */
+function saveFormTags(src: string): string[] {
+  const out: string[] = [];
+  for (const m of src.matchAll(/<SaveForm\b/g)) {
+    let depth = 0;
+    for (let i = (m.index ?? 0) + "<SaveForm".length; i < src.length; i++) {
+      const c = src[i];
+      if (c === "{") depth++;
+      else if (c === "}") depth--;
+      else if (c === ">" && depth === 0) {
+        out.push(src.slice(m.index ?? 0, i + 1));
+        break;
+      }
+    }
+  }
+  return out;
+}
+
+// --- a repeated form needs a name PER INSTANCE ------------------------------
+//
+// The stash a save is kept in is keyed by the page path and the form's name. A
+// form rendered once per row with one FIXED name files every instance under one
+// key, so a save killed by a deploy restores one row's values into another
+// row's fields, which is worse than restoring nothing.
+//
+// Caught on the booker copy page, which renders one form per event type.
+//
+// "IS IT IN A LIST" IS ASKED OF `key`, not of the surrounding source. The first
+// version looked back for an unclosed `.map(` and counted brackets, and reported
+// the buckets page, whose form is not in a list at all: an earlier
+// `users.map((u) => ({ ... }))` left its count unbalanced. React already
+// requires `key` on exactly the elements this rule is about, so that is the
+// signal, and no bracket elsewhere in the file can confuse it.
+{
+  const bad: string[] = [];
+  let tagsSeen = 0;
+  for (const f of files) {
+    for (const tag of saveFormTags(readFileSync(f, "utf8"))) {
+      tagsSeen++;
+      if (!/\bname=/.test(tag)) {
+        bad.push(`${f}: a SaveForm with no name at all`);
+        continue;
+      }
+      if (!/\bkey=/.test(tag)) continue; // not rendered in a list
+      if (!/name=\{`[^`]*\$\{/.test(tag)) {
+        bad.push(`${f}: <SaveForm> has a key, so it is one of several, but its name is fixed`);
+      }
+    }
+  }
+  assert(
+    bad.length === 0,
+    `a repeated form files every instance under one key:\n    ${bad.join("\n    ")}`,
+  );
+
+  // Controls, because a rule that matched nothing would read the same as a clean
+  // tree, and the first version of the scan really did match nothing.
+  assert(tagsSeen > 3, `the scan found SaveForm tags to judge (${tagsSeen})`);
+  const keyed = saveFormTags(
+    readFileSync(join("src", "app", "admin", "booker-copy", "page.tsx"), "utf8"),
+  ).filter((t) => /\bkey=/.test(t));
+  assert(keyed.length > 0, "the keyed form the rule was written for is still there");
+  assert(/name=\{`[^`]*\$\{/.test(keyed[0]!), "and its name varies per instance");
+}
 
 finish();

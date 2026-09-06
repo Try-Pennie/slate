@@ -1,4 +1,5 @@
 import { redirect } from "next/navigation";
+import { SaveForm } from "@/components/ui/SaveForm";
 import { currentUser } from "@/lib/auth";
 import { canEditOrgSettings } from "@/lib/auth/roles";
 import { oooOnlyFor } from "@/lib/env";
@@ -83,7 +84,7 @@ export default async function EventTypesPage() {
             A box left blank takes the value shown in it. The title is yours to
             pick and has to be new.
           </p>
-        <form action={createEventType} className="space-y-3">
+        <SaveForm action={createEventType} name="event-type" className="space-y-3">
           {/* #1950: every box arrives EMPTY, and the numbers appear only as
               placeholders. A `defaultValue` submits when untouched, so the six
               literals that used to sit here were values nobody typed reaching
@@ -166,7 +167,7 @@ export default async function EventTypesPage() {
           <SubmitButton className={btnCls} pendingLabel="Adding…">
             Add event type
           </SubmitButton>
-        </form>
+        </SaveForm>
         </details>
       </section>
     </>
