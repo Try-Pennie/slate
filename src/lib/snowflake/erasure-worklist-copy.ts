@@ -24,7 +24,7 @@ import type {
   TrailScope,
   WorklistSummary,
 } from "./erasure-worklist";
-import { entryResidualTotal } from "./erasure-worklist";
+import { entryResidualTotal, ERASURE_RESPONSE_DAYS } from "./erasure-worklist";
 
 const plural = (n: number, one: string, many = `${one}s`): string =>
   `${n} ${n === 1 ? one : many}`;
@@ -35,14 +35,50 @@ export function worklistHeadline(summary: WorklistSummary): string {
   // paragraph under it saying the same words is a wasted line.
   if (summary.entries === 0) return "Nothing to purge yet.";
   if (summary.outstanding > 0) {
-    return `${plural(summary.outstanding, "erasure")} still ${
+    const head = `${plural(summary.outstanding, "erasure")} still ${
       summary.outstanding === 1 ? "has" : "have"
     } contact data in the warehouse.`;
+    // The AGE is what turns a count into something with a clock on it. Omitted
+    // rather than defaulted when no outstanding stamp could be read, because a
+    // headline naming zero days would be the reassuring reading of an unknown.
+    return summary.oldestOutstandingDays === null
+      ? head
+      : `${head} The longest has been waiting ${plural(summary.oldestOutstandingDays, "day")}.`;
   }
   if (summary.unknown > 0) {
     return `${plural(summary.unknown, "erasure")} could not be checked against the warehouse.`;
   }
   return `Every erasure is clean in the warehouse. ${plural(summary.entries, "entry", "entries")} checked.`;
+}
+
+/**
+ * How long one entry has been waiting, said once per row (#1961).
+ *
+ * A row on a compliance queue whose only date is a timestamp makes every reader
+ * do the subtraction, and the number they are subtracting toward is a deadline
+ * nobody has written down. The elapsed days are the fact; what it is elapsed
+ * FROM is stated once at the top of the page rather than on every row, because
+ * an explanation attached to the row template becomes a wall of identical text
+ * at the real row count (L579).
+ */
+export function entryAgeText(days: number | null): string {
+  if (days === null) return "Erased at a time Slate cannot read.";
+  if (days === 0) return "Erased here today.";
+  return `Erased here ${plural(days, "day")} ago.`;
+}
+
+/**
+ * What the elapsed days on this page mean, said ONCE (#1961).
+ *
+ * The honest and uncomfortable part is the second sentence. Pennie's stated
+ * position is a 45 day response deadline running from the person's REQUEST, and
+ * the only date the erasure trail holds is when the Supabase half ran, which is
+ * necessarily later. A due date computed from what is here would be later than
+ * the real one, which is the single direction a compliance clock must never be
+ * wrong in, so none is shown and the shortfall is named instead (L589, L11).
+ */
+export function deadlineNote(): string {
+  return `Pennie's stated deadline is ${ERASURE_RESPONSE_DAYS} days to answer a verified deletion request, and it runs from the day the person asked. Slate does not record that day: the only date here is when the Supabase half of the erasure ran, which is later. So the days below are a floor on how long each request has been open, not the whole of it, and no due date is shown because any date computed from this side would fall after the real one.`;
 }
 
 /** The empty trail, which is a healthy measured state, not a failure. */

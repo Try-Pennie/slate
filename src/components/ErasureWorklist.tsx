@@ -8,7 +8,9 @@ import { btnCls, btnSecondaryCls, cardCls, proseCls } from "@/components/ui/styl
 import { postJson } from "@/lib/http";
 import { useStalledAfter } from "@/lib/useStalledAfter";
 import {
+  entryAgeDays,
   entryStatus,
+  worklistOrder,
   type EntryStatus,
   type ErasureWorklistEntry,
   type ErasureWorklistState,
@@ -31,6 +33,8 @@ import {
   warehouseUnconfiguredText,
   warehouseUnreadableText,
   worklistHeadline,
+  entryAgeText,
+  deadlineNote,
 } from "@/lib/snowflake/erasure-worklist-copy";
 import { summarizeWorklist } from "@/lib/snowflake/erasure-worklist";
 import { AdminPageHeader } from "@/components/admin/AdminPageHeader";
@@ -121,8 +125,14 @@ export function ErasureWorklist({ state }: { state: ErasureWorklistState }) {
     );
   }
 
-  const { entries, trail, warehouse } = state;
-  const summary = summarizeWorklist(entries);
+  // #1961: the instant every age is measured from. It comes with the state,
+  // taken beside the read it describes, because rendering may not read a clock.
+  const { trail, warehouse, nowMs } = state;
+  // Outstanding first and oldest first inside that: the entry that has been
+  // waiting longest is the one closest to a deadline, and a list rendered in
+  // whatever order the store returned puts it anywhere (L343).
+  const entries = worklistOrder(state.entries, nowMs);
+  const summary = summarizeWorklist(entries, nowMs);
   const purgeable = warehouse.kind !== "unconfigured";
 
   async function run(target: Target) {
@@ -220,6 +230,11 @@ export function ErasureWorklist({ state }: { state: ErasureWorklistState }) {
         erased, and the control that clears it.
       </AdminPageHeader>
 
+      {/* #1961: what the days on each row are counted from, and the one thing
+          this page cannot tell you. Said once, above the list, rather than on
+          every row. */}
+      <p className={`text-xs text-fg-muted ${proseCls}`}>{deadlineNote()}</p>
+
       {warehouse.kind === "unreadable" && (
         <div role="alert" className="rounded-xl border border-[var(--error)] px-5 py-4 text-sm text-error">
           {warehouseUnreadableText(warehouse.reason)}
@@ -249,6 +264,7 @@ export function ErasureWorklist({ state }: { state: ErasureWorklistState }) {
                       <Pill variant={STATUS_PILL[status]}>{entryStatusLabel(status)}</Pill>
                       <span className="tabular-nums text-fg-muted">{stamp(e.createdAt)}</span>
                     </p>
+                    <p className="mt-1 text-sm text-fg">{entryAgeText(entryAgeDays(e.createdAt, nowMs))}</p>
                     <p className="mt-2 font-mono text-xs break-all text-fg-muted">
                       {e.emailSha256
                         ? `email hash ${e.emailSha256.slice(0, 12)}`
