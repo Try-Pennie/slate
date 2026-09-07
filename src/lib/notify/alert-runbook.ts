@@ -137,6 +137,7 @@ const FAMILY_BY_KEY: Record<string, AlertFamily> = {
   agents_without_routing: "the-roster-or-routing-data-is-wrong",
   agents_without_schedule: "the-roster-or-routing-data-is-wrong",
   roster_coverage_gap: "the-roster-or-routing-data-is-wrong",
+  schedule_parity_drift: "the-roster-or-routing-data-is-wrong",
   salesforce_user_id_conflicts: "the-roster-or-routing-data-is-wrong",
   salesforce_manager_ambiguous: "the-roster-or-routing-data-is-wrong",
   misroute: "the-roster-or-routing-data-is-wrong",

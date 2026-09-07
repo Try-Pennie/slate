@@ -82,7 +82,7 @@ names which one it requires.
 | Slack signature | `X-Slack-Signature` + `X-Slack-Request-Timestamp` | Slack signing secret | `POST /api/slack/interactions` |
 | Supabase session (staff) | session cookie | Supabase Auth | every `/api/admin/*` route |
 | Manage token | in the URL path | per-booking `manage_token` | `POST /api/bookings/[token]/cancel`, `POST /api/bookings/[token]/reschedule`, `POST /api/bookings/[token]/phone` |
-| Smoke key | `Authorization: Bearer <key>` | `BOOKING_API_KEY` | `GET /api/smoke/version`, `POST /api/smoke/heartbeat`, `POST /api/smoke/burst-counter` |
+| Smoke key | `Authorization: Bearer <key>` | `BOOKING_API_KEY` | `GET /api/smoke/version`, `POST /api/smoke/heartbeat`, `POST /api/smoke/burst-counter`, `POST /api/smoke/schedule-parity` |
 | None (public) | n/a | n/a | `GET /api/availability`, `GET /api/availability/next`, `POST /api/routing`, `POST /api/client-errors`, `GET /api/health`, `GET /api/health/availability`, `GET /api/auth/callback` |
 
 Every Bearer credential is compared in constant time (`src/lib/bearer-auth.ts`).
@@ -759,6 +759,7 @@ answer `503` when no booking API key is configured.
 | `GET /api/smoke/version` | Which commit the live Worker is serving (#1037). The post-deploy probe polls this and refuses to judge health until the expected commit answers: without it, a probe hitting `/api/health` during Cloudflare's propagation window gets a `200` from the PREVIOUS version and reports a broken deploy as healthy. Key-authed deliberately, so the deployed commit is not public. |
 | `POST /api/smoke/heartbeat` | Liveness stamp for the scheduled booking-smoke canary (#525). The canary calls it on every successful run, so a schedule that silently stops firing goes stale and the lane watchdog pages. |
 | `POST /api/smoke/burst-counter` | The one step `pnpm verify:burst-counter` takes into the deployment (#1564): a Durable Object is reachable only through a binding inside the Worker. It reports one request against a FIXED monitor key, which is a constant in the route and never taken from the request, and answers with the count the object now holds. |
+| `POST /api/smoke/schedule-parity` | Where the daily Slate against cal.com comparison reports its result (#2031). The sweep runs on a GitHub schedule because it is about one cal.com read per agent, which the shared cron budget cannot hold; it comes back here rather than posting to Slack itself because drift is a condition that needs a cooldown and an all clear, and a runner has no memory. The body carries counts and verdict names only: a verdict outside the fourteen the sweep can produce is refused rather than rendered, and the run link may only point at GitHub, so a key holder cannot put words of their own into an alert. It stamps no heartbeat; the caller does that only after this answers `page` or `all-clear`. |
 
 ---
 

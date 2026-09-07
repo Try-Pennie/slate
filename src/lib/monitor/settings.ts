@@ -33,7 +33,8 @@ export type MonitorAlertKey =
   | "webhook_event_no_subscriber"
   | "edge_limiter_unusable"
   | "hydration_all_failing"
-  | "calendar_window_uncovered";
+  | "calendar_window_uncovered"
+  | "schedule_parity_drift";
 
 export const ALERT_KEYS: MonitorAlertKey[] = [
   "availability_data_anomaly",
@@ -59,6 +60,7 @@ export const ALERT_KEYS: MonitorAlertKey[] = [
   "edge_limiter_unusable",
   "hydration_all_failing",
   "calendar_window_uncovered",
+  "schedule_parity_drift",
 ];
 
 /**
@@ -191,6 +193,12 @@ export const ALERT_FIELDS: {
     help: "A bookable agent's calendar has not been refreshed far enough ahead to cover the days the booker offers, so a lead could book an hour that calendar already has taken.",
   },
   {
+    key: "schedule_parity_drift",
+    urgency: "alert",
+    label: "Slate and cal.com disagree about the roster",
+    help: "The daily comparison found an agent the two systems hold different working hours, days, timezone or pool membership for. While both systems are live this changes who a lead is booked with, or when, and nothing inside Slate can see it: a stored week is valid whether or not it matches the one the agent keeps.",
+  },
+  {
     key: "ooo_calcom_unprotected",
     urgency: "alert",
     label: "Time off not blocked in cal.com",
@@ -304,6 +312,13 @@ export const MONITOR_DEFAULTS = {
     // (#1262): stays wrong until the rotation reaches it or someone fixes the
     // account, so it repeats hourly like the coverage pages it sits beside.
     calendar_window_uncovered: 60 * 60_000,
+    // Slate against cal.com drift (#2031). The sweep runs once a day, so anything
+    // under a day cannot make it repeat and anything over it silences a day's
+    // findings. A day means at most one page per sweep while drift sits unfixed,
+    // which is the point: it is real, it is actionable, and it is invisible
+    // anywhere else. Turn it up on the settings screen if a known drift is being
+    // lived with, rather than muting the check.
+    schedule_parity_drift: 24 * 60 * 60_000,
     // Routing dead zone (#327): unchanged from the constant this replaced. A bucket
     // with nobody stays wrong until someone is staffed onto it, so it repeats while
     // it lasts, six-hourly. Tunable since a deliberately dark roster (#1272) turned

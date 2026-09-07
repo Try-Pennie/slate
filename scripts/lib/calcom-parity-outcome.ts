@@ -11,6 +11,7 @@
 // Folding would produce an order nobody chose, and the answer to "is a departed
 // agent worse than a wrong timezone" would be an accident of two numbers picked
 // months apart in different files.
+import { PARITY_VERDICT_CLASS, type ParityVerdict } from "@/lib/monitor/schedule-parity-alert";
 import type { RosterVerdict } from "./roster-parity.ts";
 import type { ScheduleVerdict } from "./schedule-parity.ts";
 
@@ -119,3 +120,21 @@ export function worstOutcome(verdicts: (RosterVerdict | ScheduleVerdict)[]): Par
   }
   return best === OUTCOME_ORDER.length ? null : OUTCOME_ORDER[best];
 }
+
+// --- the daily alert's copy of this vocabulary, held to it by tsc (#2031) --------
+//
+// The scheduled sweep reports to an endpoint in the app, and that endpoint refuses
+// a verdict it does not know, so the classification table in
+// `src/lib/monitor/schedule-parity-alert.ts` is a second statement of the list
+// above. A second statement drifts, and it drifts silently in the worst direction:
+// a verdict renamed here would arrive at the endpoint unclassified, be refused, and
+// the finding would page nobody while every run still looked healthy (L41, L96).
+//
+// So both directions are checked at COMPILE time rather than by a test that has to
+// remember to be written. Neither line runs; each exists to fail `tsc`.
+/** Every outcome this file can produce is classified over there. */
+const _everyOutcomeIsClassified: Record<ParityOutcome, unknown> = PARITY_VERDICT_CLASS;
+/** And nothing is classified over there that this file cannot produce. */
+const _everyClassifiedOutcomeExists: ParityOutcome = null as unknown as ParityVerdict;
+void _everyOutcomeIsClassified;
+void _everyClassifiedOutcomeExists;

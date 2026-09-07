@@ -59,6 +59,12 @@ export function canaryRecoveryText(lane: string): string {
       `in place. No action is needed.`
     );
   }
+  if (lane === "schedule-parity") {
+    return (
+      `The daily Slate against cal.com comparison is running again, so drift between ` +
+      `the two systems is being watched for once more. No action is needed.`
+    );
+  }
   return (
     `The booking smoke canary is running again, so the automated end to end ` +
     `booking check is back in place. No action is needed.`
@@ -193,6 +199,9 @@ export function canaryAlertText(lane: StaleLane, boundMin: number): string {
   const quiet = laneQuietClause({ ageMs: lane.ageMs, boundMin, unreadable: lane.unreadable });
   if (lane.lane === "smoke-canary-full") {
     return `The booking smoke canary's full end to end pass (create, reschedule, cancel) ${quiet}, so the automated proof that a booking can actually be made is no longer running (the quick health tick may still be fine). Both the 6h scheduled run and the Worker gap filler have failed to complete it. Re run it from the Actions tab (Run workflow on smoke-canary, mode full).`;
+  }
+  if (lane.lane === "schedule-parity") {
+    return `The daily check comparing Slate's roster and working hours against cal.com ${quiet}, so nothing is watching for the two systems drifting apart while both are live. Drift ran at about four agents a day the last time this went unwatched, and it is invisible from inside Slate: a schedule saying 08:00 reads the same whether or not the agent starts then. Re run it from the Actions tab (Run workflow on schedule-parity).`;
   }
   return `The booking smoke canary ${quiet}, so the automated end to end booking check is no longer running. The scheduled GitHub Actions workflow (smoke-canary) has likely stopped firing or is failing before it can report. Check the Actions tab and re run it.`;
 }

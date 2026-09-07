@@ -190,6 +190,14 @@ export const ALERT_CATALOG: AlertEntry[] = [
     why: "The running deployment cannot use its request rate limits, which stays true until a deploy puts them back, so the reader needs to be told when it is over (#1529).",
   },
   {
+    key: "schedule_parity_drift",
+    kind: "condition",
+    why:
+      "Slate and cal.com hold a different week, or a different pool, for somebody; " +
+      "it ends when one side is corrected and the next daily sweep sees them agree " +
+      "again (#2031).",
+  },
+  {
     key: "webhook_event_no_subscriber",
     kind: "condition",
     why:

@@ -1,0 +1,130 @@
+name: Schedule parity
+
+# The daily Slate against cal.com comparison (#2031).
+#
+# `pnpm verify:calcom-parity` compares the two systems' rosters and the working week
+# each holds for it. It was hand run, so it found what it found on the day somebody
+# remembered: 97 schedules were imported on 2026-09-02 and verified idempotent the
+# same day, and five days later 21 of 102 agents had drifted. Three were not being
+# offered a day they work; two were being offered a Saturday they do not. Nothing
+# else in Slate can see any of it, because a stored schedule saying 08:00 is
+# indistinguishable from an agent who really starts at 08:00 (#1738).
+#
+# It runs HERE and not on the Worker's monitor lane: the sweep is roughly one cal.com
+# read per agent, about a hundred subrequests, and the four cron lanes share one
+# invocation budget the recompute lane already runs at 100 to 120 percent of (#2022).
+#
+# The result is REPORTED BACK to Slate rather than posted to Slack from here, because
+# drift is a condition rather than an event: it stays true until somebody corrects one
+# side, so it needs an all clear and must not repeat every morning while it sits. Both
+# need a memory of what was said yesterday, which a runner has none of.
+#
+# Needs the CALCOM_API_KEY, BOOKING_API_KEY, SUPABASE_SECRET_KEY and SLACK_BOT_TOKEN
+# repo secrets, and the SLACK_ALERTS_CHANNEL and SLATE_BASE_URL repo variables.
+on:
+  schedule:
+    # 12:20 UTC, which is mid morning Eastern: late enough that a correction made in
+    # the morning is picked up the same day, early enough that a page still leaves a
+    # working day to act in. Not on the hour, where GitHub's scheduling queue is
+    # busiest and runs are most often dropped.
+    - cron: "20 12 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: schedule-parity
+  cancel-in-progress: false
+
+jobs:
+  parity:
+    timeout-minutes: 20  # the sweep paces itself at 250ms per agent, so ~1 min per 100
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+        with:
+          version: 10
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24
+          cache: pnpm
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      # Skip quietly until the keys are configured, so merging this does not fail a
+      # run every morning before setup. An absent key is "not configured yet"; a
+      # present but wrong one still runs and reports.
+      - name: Preflight (is the sweep configured?)
+        id: pre
+        env:
+          CALCOM_API_KEY: ${{ secrets.CALCOM_API_KEY }}
+          BOOKING_API_KEY: ${{ secrets.BOOKING_API_KEY }}
+        run: |
+          if [ -n "$CALCOM_API_KEY" ] && [ -n "$BOOKING_API_KEY" ]; then
+            echo "configured=1" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=0" >> "$GITHUB_OUTPUT"
+            echo "::notice::CALCOM_API_KEY or BOOKING_API_KEY is not set as a repo secret, so the parity sweep is skipping. Add both in Settings > Secrets and variables > Actions."
+          fi
+
+      # `continue-on-error`, because this step's exit code is the FINDING: it exits
+      # non-zero on every difference by design, and a difference is what the run is
+      # for. The report step below is what decides whether anybody is told, and
+      # failing the job here would skip it and leave the finding in the Actions tab
+      # with nobody reading it.
+      - name: Compare Slate against cal.com
+        id: sweep
+        continue-on-error: true
+        if: steps.pre.outputs.configured == '1'
+        env:
+          CALCOM_API_KEY: ${{ secrets.CALCOM_API_KEY }}
+          # The roster half reads Slate's own users through supabaseAdmin, so the
+          # sweep needs the same two the app does. The URL is written out rather than
+          # referenced as a repo variable, matching ci.yml: it is not a secret, and a
+          # variable would be one more setting to create before this can ever run.
+          NEXT_PUBLIC_SUPABASE_URL: https://drukfvgaynzrralbzkzj.supabase.co
+          SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+          # A literal path, not a repo variable: it is an internal handoff between
+          # two steps of the same job, and the report step reads the same path.
+          PARITY_SUMMARY_FILE: parity-summary.json
+        run: node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/verify-calcom-parity-live.ts
+
+      # Bare node, no alias hook: this is the step that speaks after the expensive
+      # part of the job, and scripts/test-dependency-free-scripts.ts holds it to
+      # importing nothing outside scripts/.
+      - name: Report the result to Slate
+        id: report
+        if: steps.pre.outputs.configured == '1'
+        env:
+          BOOKING_API_KEY: ${{ secrets.BOOKING_API_KEY }}
+          SLATE_BASE_URL: ${{ vars.SLATE_BASE_URL }}
+          PARITY_SUMMARY_FILE: parity-summary.json
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: node --experimental-strip-types scripts/report-schedule-parity.ts
+
+      # Stamped ONLY after Slate accepted a measured sweep, never merely because the
+      # workflow ran. A sweep that reached nobody exits non-zero above, so this is
+      # skipped, the schedule-parity heartbeat goes stale after 30 hours and the lane
+      # watchdog pages: a detector that has stopped concluding otherwise looks exactly
+      # like one finding nothing wrong (#1394).
+      - name: Stamp the parity heartbeat (a measured sweep only)
+        if: success() && steps.pre.outputs.configured == '1'
+        env:
+          BOOKING_API_KEY: ${{ secrets.BOOKING_API_KEY }}
+          SLATE_BASE_URL: ${{ vars.SLATE_BASE_URL }}
+        run: |
+          base="${SLATE_BASE_URL:-https://slate.trypennie.app}"
+          curl -fsS -X POST "${base%/}/api/smoke/heartbeat?lane=schedule-parity" \
+            -H "authorization: Bearer $BOOKING_API_KEY"
+
+      # The drift itself is reported by Slate, through the app's own alerting. This
+      # speaks about the OTHER failure: the sweep could not read cal.com, or could not
+      # reach Slate to report. Without it those exit non-zero into an Actions tab
+      # nobody is watching, and the only signal would be the heartbeat going stale
+      # thirty hours later.
+      - name: Slack alert when the sweep could not report
+        if: failure() && steps.pre.outputs.configured == '1'
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_ALERTS_CHANNEL: ${{ vars.SLACK_ALERTS_CHANNEL }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: node --experimental-strip-types scripts/notify-parity-failure.ts
