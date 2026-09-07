@@ -239,7 +239,7 @@ export function SelectField({
 
       <AnchoredPanel
         open={open}
-        onClose={() => close(false)}
+        onDismiss={() => close(false)}
         triggerRef={triggerRef}
         panelRef={listRef}
         align="start"

@@ -250,3 +250,128 @@ describe("DateTimeField click-to-type focus", () => {
     expect(activeLabel()).toBe("Start, day");
   });
 });
+
+// #2048: dismissing the popup is not the same gesture as cancelling it.
+//
+// `AnchoredPanel` dismisses on an outside mousedown AND on any page scroll
+// outside the panel, and this field had that wired to `cancel()`, which writes the
+// pre-open snapshot back over whatever was picked. So a click aimed at anything
+// else on the page, or a scroll, silently erased a date somebody had just chosen,
+// with no undo.
+//
+// Both directions are asserted, because removing the revert altogether would pass
+// a one-sided test: an incidental dismissal KEEPS the value, and the two explicit
+// cancel gestures (the Cancel button, Escape) still restore the snapshot (L628).
+describe("DateTimeField dismiss keeps the value, cancel restores it", () => {
+  const openPopup = async (u: ReturnType<typeof userEvent.setup>, getByLabelText: (t: string) => HTMLElement) => {
+    await u.click(getByLabelText("Open calendar and time"));
+  };
+
+  it("keeps a date picked in the grid when the popup is dismissed by an outside click", async () => {
+    const u = userEvent.setup();
+    const { container, getByLabelText } = renderField();
+
+    await openPopup(u, getByLabelText);
+    await u.click(getByLabelText("Thursday, June 25, 2026"));
+    expect(hiddenValue(container, "d")).toBe("2026-06-25");
+
+    // A mousedown on the page, not aimed at the picker at all.
+    fireEvent.mouseDown(document.body);
+
+    expect(hiddenValue(container, "d")).toBe("2026-06-25");
+    expect((getByLabelText("Start, day") as HTMLInputElement).value).toBe("25");
+  });
+
+  it("keeps a date picked in the grid when the page is scrolled", async () => {
+    const u = userEvent.setup();
+    const { container, getByLabelText } = renderField();
+
+    await openPopup(u, getByLabelText);
+    await u.click(getByLabelText("Thursday, June 25, 2026"));
+
+    // AnchoredPanel listens for scroll in the capture phase on window.
+    fireEvent.scroll(window);
+
+    expect(hiddenValue(container, "d")).toBe("2026-06-25");
+  });
+
+  it("restores the snapshot when Cancel is pressed", async () => {
+    const u = userEvent.setup();
+    const { container, getByLabelText, getByText } = renderField({
+      defaultDate: "2026-06-10",
+      defaultTime: "09:00",
+    });
+
+    await openPopup(u, getByLabelText);
+    await u.click(getByLabelText("Thursday, June 25, 2026"));
+    expect(hiddenValue(container, "d")).toBe("2026-06-25");
+
+    await u.click(getByText("Cancel"));
+
+    // Explicitly abandoning the picker puts back what the field held before.
+    expect(hiddenValue(container, "d")).toBe("2026-06-10");
+  });
+
+  it("restores the snapshot when Escape is pressed", async () => {
+    const u = userEvent.setup();
+    const { container, getByLabelText } = renderField({
+      defaultDate: "2026-06-10",
+      defaultTime: "09:00",
+    });
+
+    await openPopup(u, getByLabelText);
+    await u.click(getByLabelText("Thursday, June 25, 2026"));
+
+    fireEvent.keyDown(document, { key: "Escape" });
+
+    expect(hiddenValue(container, "d")).toBe("2026-06-10");
+  });
+
+  it("commits on Confirm, the same outcome a dismissal now gives", async () => {
+    const u = userEvent.setup();
+    const { container, getByLabelText, getByText } = renderField({
+      defaultDate: "2026-06-10",
+    });
+
+    await openPopup(u, getByLabelText);
+    await u.click(getByLabelText("Thursday, June 25, 2026"));
+    await u.click(getByText("Confirm"));
+
+    expect(hiddenValue(container, "d")).toBe("2026-06-25");
+  });
+});
+
+// #2048 fault 2: the popup's own time control read the segments once, when it
+// mounted, and never again. Typing a time into the field while the popup was open
+// left the two controls showing one value and disagreeing about it (L605).
+describe("DateTimeField popup time control tracks the segments", () => {
+  it("shows a time typed into the segments after the popup was opened", async () => {
+    const u = userEvent.setup();
+    const { getByLabelText } = renderField();
+
+    await u.click(getByLabelText("Open calendar and time"));
+
+    // The popup is open and its time box is empty, matching the empty segments.
+    const popupTime = getByLabelText("Start time") as HTMLInputElement;
+    expect(popupTime.value).toBe("");
+
+    const hh = getByLabelText("Start, hour") as HTMLInputElement;
+    await u.click(hh);
+    await u.type(hh, "10");
+    const mi = getByLabelText("Start, minute") as HTMLInputElement;
+    await u.type(mi, "30");
+    fireEvent.blur(mi, { target: { value: "30" } });
+
+    // The two controls now agree.
+    expect((getByLabelText("Start time") as HTMLInputElement).value).toBe("10:30am");
+  });
+
+  it("still opens on the segments' current value", async () => {
+    const u = userEvent.setup();
+    const { getByLabelText } = renderField({ defaultTime: "14:15" });
+
+    await u.click(getByLabelText("Open calendar and time"));
+
+    expect((getByLabelText("Start time") as HTMLInputElement).value).toBe("2:15pm");
+  });
+});

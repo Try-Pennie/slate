@@ -103,7 +103,7 @@ export function AccountMenu({
 
       <AnchoredPanel
         open={open}
-        onClose={() => setOpen(false)}
+        onDismiss={() => setOpen(false)}
         triggerRef={triggerRef}
         align="end"
         gap={8}

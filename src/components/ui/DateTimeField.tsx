@@ -103,6 +103,12 @@ export function DateTimeField({
     if (dateObj && inRange(dateObj)) setView(dateObj.startOf("month"));
     setOpen(true);
   };
+  /**
+   * Abandon the popup: put back what the field held before it opened.
+   *
+   * Only the two EXPLICIT gestures reach this, the Cancel button and Escape. A
+   * dismissal does not (#2048).
+   */
   const cancel = () => {
     const s = snapshot.current;
     if (s) {
@@ -111,6 +117,16 @@ export function DateTimeField({
     }
     setOpen(false);
   };
+  /**
+   * Close the popup KEEPING whatever is in the field, which is what Confirm does.
+   *
+   * This is the outside mousedown and the page scroll, and it used to run `cancel`.
+   * Neither gesture is aimed at the picker: a click lands on something else on the
+   * page and a scroll is not a click at all, so a date somebody had just chosen was
+   * erased with nothing said and no way back. Destroying input on a gesture that
+   * was never a decision about the input is data loss, not a tidy-up (L628).
+   */
+  const dismiss = () => setOpen(false);
 
   // #1843: the popup is portalled now, so it is no longer inside `rootRef` and an
   // outside-click test written against that alone would dismiss the calendar the
@@ -378,7 +394,7 @@ export function DateTimeField({
 
       {/* #1843: portalled and positioned in viewport space, so nothing above this
           field can clip the calendar. */}
-      <AnchoredPanel open={open} onClose={cancel} triggerRef={rootRef} align="start"
+      <AnchoredPanel open={open} onDismiss={dismiss} triggerRef={rootRef} align="start"
         id={dialogId} role="dialog" aria-label={ariaLabel} aria-modal={true}
         className="w-72 rounded-md border border-border bg-surface-elevated p-3 shadow-pop">
         <>
@@ -403,11 +419,17 @@ export function DateTimeField({
             {/* The same control the hours screens use, rather than a third hour,
                 minute and AM or PM trio (#1765). It carries no `name`: this field
                 owns the submitted value, and two hidden inputs under one name
-                would post the time twice. Mounted only while the popup is open, so
-                it always opens on the segments' current value. */}
+                would post the time twice.
+
+                It takes `value`, not `defaultValue` (#2048). The segments are the
+                one place this value lives, and this control is a second way of
+                picking it, so it has to READ them for as long as it is open rather
+                than once when it mounts. As `defaultValue` it was read at mount and
+                never again, so typing a time into the segments with the popup open
+                left the two showing one value and disagreeing about it. */}
             <TimeField
               ariaLabel={`${ariaLabel} time`}
-              defaultValue={timeHHMM}
+              value={timeHHMM}
               round={round}
               onValueChange={writeTime}
             />
