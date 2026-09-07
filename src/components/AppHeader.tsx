@@ -1,5 +1,6 @@
 import { AccountMenu } from "@/components/AccountMenu";
 import { SaveForm } from "@/components/ui/SaveForm";
+import { ImpersonationFrame } from "@/components/ImpersonationFrame";
 import { SubmitButton } from "@/components/ui/SubmitButton";
 import { HeaderNav, type HeaderTab } from "@/components/HeaderNav";
 import { PAGE_WIDTHS } from "@/components/ui/PageShell";
@@ -166,22 +167,27 @@ export async function AppHeader({
     <a href="#main" className="pn-skip-link">
       Skip to content
     </a>
+    {/* #2037: a hazard striped frame around the viewport, not a bar in the flow.
+        The treatment is settled and recorded (DESIGN.md's Hazard Rule, and
+        docs/design/impersonation-marker.html); the component carries the reasons.
+        The way out is passed IN because it is a server action's form, and it is
+        an outlined graphite button rather than a primary one, so sky stays the
+        only colour in the product that means "do this" (IM7). */}
     {impersonation.status === "active" && (
-      <div className="flex flex-wrap items-center justify-center gap-x-3 gap-y-1 bg-pennie-navy px-4 py-2 text-center text-sm text-pennie-beige">
-        <span>
-          Viewing as{" "}
-          <strong>{impersonation.target.name ?? impersonation.target.email}</strong>{" "}
-          ({impersonation.target.role}). Actions you take happen as them.
-        </span>
+      <ImpersonationFrame
+        name={impersonation.target.name}
+        email={impersonation.target.email}
+        role={impersonation.target.role}
+      >
         <SaveForm action={stopImpersonation} name="stop-impersonation" onStale="reload">
           <SubmitButton
-            className="pn-btn pn-btn--small pn-btn--primary"
+            className="pn-impersonation-exit"
             pendingLabel="Returning to your own view"
           >
             Stop viewing as them
           </SubmitButton>
         </SaveForm>
-      </div>
+      </ImpersonationFrame>
     )}
     {impersonation.status === "dropped" && (
       <ImpersonationDropNotice reason={impersonation.reason} />
@@ -200,7 +206,7 @@ export async function AppHeader({
         </a>
       </div>
     )}
-    <header className="sticky top-0 z-30 border-b border-border bg-bg">
+    <header data-app-header="" className="sticky top-0 z-30 border-b border-border bg-bg">
       {/* #1745: the same cap the page content uses, so the wordmark and the nav
           line up with the left edge of the content under them rather than sitting
           in from it. Read from PAGE_WIDTHS so the two cannot drift apart. */}

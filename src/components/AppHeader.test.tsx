@@ -87,8 +87,11 @@ describe("AppHeader impersonation banners (#652)", () => {
     render(await AppHeader(props));
     // 1. who you are acting as, by name, which the removed prose could never do
     expect(screen.getByText(/Agent Nine/)).toBeTruthy();
-    // 2. what that means, which is the half the removed prose was standing in for
-    expect(screen.getByText(/actions you take happen as them/i)).toBeTruthy();
+    // 2. what that means, which is the half the removed prose was standing in for.
+    // #2037 rewrote the sentence: it is two elements now, so that a line can break
+    // only at the period, and it says "recorded" because that is the part that
+    // matters to somebody deciding whether to click.
+    expect(screen.getByText(/anything you do here is recorded as them/i)).toBeTruthy();
     // 3. the way back
     expect(screen.getByRole("button", { name: /stop viewing as them/i })).toBeTruthy();
     expect(screen.queryByText(/timed out|no longer available/i)).toBeNull();
@@ -99,6 +102,14 @@ describe("AppHeader impersonation banners (#652)", () => {
     render(await AppHeader(props));
     expect(screen.getByText(/timed out/i)).toBeTruthy();
     expect(screen.queryByRole("button", { name: /stop viewing as them/i })).toBeNull();
+    // #2037 (IM9): this notice says the dangerous state is OVER, so it stays an
+    // ordinary bar and must not wear the marker's treatment. What makes that safe
+    // is that the ACTIVE state is no longer a bar at all, so the two cannot be
+    // confused the way two navy bars could.
+    expect(document.querySelector("[data-impersonation-frame]")).toBeNull();
+    expect(document.querySelector("[data-impersonation-strip]")).toBeNull();
+    // And nothing claims the mode, so the page is not inset for a notice.
+    expect(document.documentElement.dataset.impersonating).toBeUndefined();
   });
 
   it("shows the unavailable drop notice when dropped/unavailable", async () => {
