@@ -23,11 +23,18 @@
 // the validator is where the refusals live that stop a broken week being written.
 //
 // IT REFUSES RATHER THAN GUESSES. An agent whose cal.com schedule cannot be read,
-// or whose week Slate's validator will not accept (a split shift is two windows on
-// one weekday, which the validator refuses by design), is SKIPPED and named. It is
-// not defaulted to Eastern and not merged into a single window: defaulting is
-// precisely how the roster came to claim a timezone three quarters of it does not
-// have.
+// or whose week Slate's validator will not accept, is SKIPPED and named. It is not
+// defaulted to Eastern and not merged into a single window: defaulting is precisely
+// how the roster came to claim a timezone three quarters of it does not have.
+//
+// SPLIT SHIFTS ARE IMPORTED WHOLE, and until #1782 they were not. Slate could hold
+// only one window per weekday, so a day with a morning and an afternoon was left
+// out of the import and the agent was offered nothing on it; three agents (jkite@,
+// jsullivan@, pdelacerda@) were excluded that way and given a single full-day span
+// by hand instead, which makes them bookable straight through a break they never
+// offered. The hours editor rebuild removed the limit, and `planScheduleReplacement`
+// now refuses only windows that OVERLAP each other, so the shifts come across as
+// cal.com holds them and the break stops being bookable.
 //
 // IT IS IDEMPOTENT and safe to re-run. An agent already matching cal.com is left
 // alone, so a run interrupted part way is repaired by running it again.
@@ -38,8 +45,15 @@ loadEnvFiles([".env.local", ".dev.vars"]);
 const { supabaseAdmin } = await import("@/lib/supabase/admin");
 const { unwrap } = await import("@/lib/db/result");
 const { planScheduleReplacement } = await import("@/lib/schedule-replacement");
-const { mapCalcomSchedule, diffSchedule, retryDelayMs, skipKindForStatus, paceMs, dropSplitDays } =
-  await import("./lib/calcom-schedule-import.ts");
+const { mapCalcomSchedule, diffSchedule, skipKindForStatus, paceMs } = await import(
+  "./lib/calcom-schedule-import.ts"
+);
+// The reads this shares with `pnpm verify:schedule-parity`. One definition of "who
+// is a bookable agent", because two would drift and the command would then report
+// agreement about a roster this never wrote to.
+const { makeCalGet, pickDefaultSchedule, emailIndex, loadBookableRoster } = await import(
+  "./lib/calcom-roster.ts"
+);
 
 const apply = process.env.APPLY === "1";
 const calcomKey = process.env.CALCOM_API_KEY ?? "";
@@ -54,33 +68,7 @@ const EXIT = {
   rateLimited: 5,
 } as const;
 
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-
-/**
- * A cal.com GET that survives the rate limit.
- *
- * The first real run met 429 on 89 of 103 agents. cal.com meters this endpoint
- * hard, so every read retries on its own instruction (Retry-After) or an
- * exponential backoff, and a small pause between agents keeps the run under the
- * limit rather than earning one refusal per agent.
- */
-async function calGet(path: string): Promise<{ status: number; json: unknown }> {
-  for (let attempt = 0; ; attempt++) {
-    let res: Response;
-    try {
-      res = await fetch(`https://api.cal.com/v2${path}`, { headers: H });
-    } catch (err) {
-      const wait = retryDelayMs(503, null, attempt);
-      if (wait === null) throw err;
-      await sleep(wait);
-      continue;
-    }
-    if (res.ok) return { status: res.status, json: await res.json().catch(() => null) };
-    const wait = retryDelayMs(res.status, res.headers.get("retry-after"), attempt);
-    if (wait === null) return { status: res.status, json: null };
-    await sleep(wait);
-  }
-}
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 /** Between agents, so a 103-agent run does not trip the limit in the first place.
  *  Parsed through `paceMs`, which refuses a value a timer would treat as zero. */
@@ -95,61 +83,33 @@ if (!calcomKey) {
   stop(EXIT.notConfigured, "no CALCOM_API_KEY here, so nothing was attempted. Add it to .env.local.");
 }
 
-const H = {
-  Authorization: `Bearer ${calcomKey}`,
-  "cal-api-version": "2024-09-04",
-};
+const calGet = makeCalGet({ key: calcomKey, sleep });
 const db = supabaseAdmin();
 
 console.log(apply ? "APPLYING changes to production\n" : "DRY RUN: nothing will be written\n");
 
 // --- who ----------------------------------------------------------------------
-const agents = (unwrap(
-  await db
-    .from("users")
-    .select("id, email")
-    .eq("bookable", true)
-    .is("deactivated_at", null)
-    .eq("is_test", false),
-  "bookable agents",
-) ?? []) as { id: string; email: string }[];
+const agents = await loadBookableRoster(db, unwrap);
 
-const scheds = (unwrap(
-  await db
-    .from("availability_schedules")
-    .select("id, user_id, timezone")
-    .in("user_id", agents.map((a) => a.id)),
-  "schedules",
-) ?? []) as { id: string; user_id: string; timezone: string }[];
-
-const rules = (unwrap(
-  await db
-    .from("availability_rules")
-    .select("schedule_id, weekday, start_minute, end_minute")
-    .in("schedule_id", scheds.map((s) => s.id)),
-  "rules",
-) ?? []) as { schedule_id: string; weekday: number; start_minute: number; end_minute: number }[];
-
-const schedByUser = new Map(scheds.map((s) => [s.user_id, s]));
-
-// cal.com's org listing, one read for the whole roster.
-const listRes = await fetch(`https://api.cal.com/v2/organizations/${org}/users?take=250`, { headers: H });
-if (!listRes.ok) stop(EXIT.notConfigured, `cal.com org users returned ${listRes.status}`);
-const listJson = (await listRes.json()) as { data?: { id: number; email: string }[] };
-const calId = new Map((listJson.data ?? []).map((u) => [u.email.toLowerCase(), u.id]));
+// cal.com's org listing, one read for the whole roster. Refused whole rather than
+// salvaged: a half-read listing is a SHORTER index, and a missing entry is reported
+// as "this agent has no cal.com account", which is a finding about the roster
+// wearing the costume of a defect in our parsing.
+const listing = await calGet(`/organizations/${org}/users?take=500`);
+if (listing.status < 200 || listing.status >= 300) {
+  stop(EXIT.notConfigured, `cal.com org users returned ${listing.status}`);
+}
+const index = emailIndex(listing.json);
+if (!index.ok) stop(EXIT.notConfigured, `cal.com's org user listing could not be read: ${index.why}`);
+const calId = index.index;
 console.log(`${agents.length} bookable agents, ${calId.size} users listed in cal.com\n`);
 
 // --- compare ------------------------------------------------------------------
-/** Weekday names for a message a person reads, so a dropped day is named rather
- *  than being an index they have to decode. */
-const DAY_NAMES = ["", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
-
 interface Change {
   email: string;
   userId: string;
   scheduleId: string;
   reasons: string[];
-  droppedDays: number[];
   plan: { rules: { weekday: number; start_minute: number; end_minute: number }[]; timezone: string };
 }
 const changes: Change[] = [];
@@ -164,8 +124,7 @@ const render = (rs: { weekday: number; start_minute: number; end_minute: number 
 };
 
 for (const agent of agents) {
-  const sched = schedByUser.get(agent.id);
-  if (!sched) {
+  if (agent.scheduleId === null || agent.timezone === null) {
     skipped.push({ email: agent.email, why: "no availability_schedules row in Slate", kind: "permanent" });
     continue;
   }
@@ -186,15 +145,19 @@ for (const agent of agents) {
       });
       continue;
     }
-    const list = ((r.json as { data?: { isDefault?: boolean }[] })?.data ?? []);
-    calSchedule = list.find((x) => x.isDefault) ?? list[0];
+    const picked = pickDefaultSchedule(r.json);
+    if (picked.kind === "none") {
+      skipped.push({ email: agent.email, why: "no schedule in cal.com", kind: "permanent" });
+      continue;
+    }
+    if (picked.kind === "unreadable") {
+      skipped.push({ email: agent.email, why: picked.why, kind: "permanent" });
+      continue;
+    }
+    calSchedule = picked.schedule;
   } catch (err) {
     // A thrown fetch is a transport problem, the same class as a 5xx.
     skipped.push({ email: agent.email, why: `cal.com read threw: ${String(err).slice(0, 80)}`, kind: "transient" });
-    continue;
-  }
-  if (!calSchedule) {
-    skipped.push({ email: agent.email, why: "no schedule in cal.com", kind: "permanent" });
     continue;
   }
   const mapped = mapCalcomSchedule(calSchedule as never);
@@ -202,29 +165,22 @@ for (const agent of agents) {
     skipped.push({ email: agent.email, why: mapped.why, kind: "permanent" });
     continue;
   }
-  // Slate stores ONE window per weekday, so a day carrying two shifts cannot be
-  // represented. It is left out and the rest of the week is imported (Dan, 
-  // 2026-09-02): merging them would make the agent bookable through a break they
-  // never offered, and taking the first would delete the second half of their day.
-  const { rules: usableRules, droppedDays } = dropSplitDays(mapped.rules);
-  if (usableRules.length === 0) {
-    skipped.push({
-      email: agent.email,
-      why: droppedDays.length > 0
-        ? `every day is a split shift (${droppedDays.map((d) => DAY_NAMES[d]).join(", ")}), so there is no week left to write`
-        : "the schedule has no usable days",
-      kind: "permanent",
-    });
+  // Split shifts come across whole (#1782). Slate held one window per weekday until
+  // then, so a day with two was left out and the agent was offered nothing on it;
+  // `planScheduleReplacement` now refuses only windows that OVERLAP each other, and
+  // names the day when it does.
+  if (mapped.rules.length === 0) {
+    skipped.push({ email: agent.email, why: "the schedule has no usable days", kind: "permanent" });
     continue;
   }
-  const plan = planScheduleReplacement(usableRules, mapped.timezone);
+  const plan = planScheduleReplacement(mapped.rules, mapped.timezone);
   if (!plan.ok) {
     skipped.push({ email: agent.email, why: `Slate will not accept this week: ${plan.error}`, kind: "permanent" });
     continue;
   }
-  const currentRules = rules.filter((r) => r.schedule_id === sched.id);
+  const currentRules = agent.rules;
   const diff = diffSchedule(
-    { timezone: sched.timezone, rules: currentRules },
+    { timezone: agent.timezone, rules: currentRules },
     { timezone: plan.timezone, rules: plan.rules },
   );
   if (!diff.changed) {
@@ -234,20 +190,14 @@ for (const agent of agents) {
   changes.push({
     email: agent.email,
     userId: agent.id,
-    scheduleId: sched.id,
+    scheduleId: agent.scheduleId,
     reasons: diff.reasons,
-    droppedDays,
     plan: { rules: plan.rules, timezone: plan.timezone },
   });
   console.log(`${agent.email}`);
-  console.log(`   now:  ${sched.timezone}  ${render(currentRules)}`);
+  console.log(`   now:  ${agent.timezone}  ${render(currentRules)}`);
   console.log(`   new:  ${plan.timezone}  ${render(plan.rules)}`);
   console.log(`   why:  ${diff.reasons.join("; ")}`);
-  if (droppedDays.length > 0) {
-    // Said at the agent, and again in the summary, because it is a real loss: they
-    // will be offered NOTHING on these days until somebody sets them by hand.
-    console.log(`   NOTE: ${droppedDays.map((d) => DAY_NAMES[d]).join(", ")} left out (two shifts that day); they will be offered nothing then`);
-  }
 }
 
 console.log(`\n--- summary ---`);
@@ -257,13 +207,6 @@ console.log(`already matching: ${unchanged.length}`);
 // completely different: one wants another run, the other wants a person.
 const transient = skipped.filter((s) => s.kind === "transient");
 const permanent = skipped.filter((s) => s.kind === "permanent");
-const withDropped = changes.filter((c) => c.droppedDays.length > 0);
-if (withDropped.length > 0) {
-  console.log(`imported WITHOUT some days (two shifts that day, so Slate cannot hold them): ${withDropped.length}`);
-  for (const c of withDropped) {
-    console.log(`   ${c.email}: no ${c.droppedDays.map((d) => DAY_NAMES[d]).join(", ")}`);
-  }
-}
 console.log(`skipped, needs a person: ${permanent.length}`);
 for (const s of permanent) console.log(`   ${s.email}: ${s.why}`);
 console.log(`skipped, transient (re-run reaches them): ${transient.length}`);
