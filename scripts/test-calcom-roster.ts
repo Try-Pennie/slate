@@ -13,7 +13,7 @@
 // THE RATE LIMIT IS NOT HYPOTHETICAL. The first real import run met 429 on 89 of
 // 103 agents. The ladder is driven here with an injected clock, so the retry
 // behaviour is proved without a test that waits (L524, L290).
-import { pickDefaultSchedule, emailIndex, makeCalGet } from "./lib/calcom-roster.ts";
+import { pickDefaultSchedule, emailIndex, makeCalGet, readEventTypeId } from "./lib/calcom-roster.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
 // --- which of a user's schedules is the one Slate compares against -------------
@@ -173,6 +173,34 @@ import { assert, eq, finish } from "./lib/harness.ts";
   await calGet("/organizations/1/users");
   eq(sawAuth, "Bearer secret-key", "the key is sent");
   assert(sawUrl.startsWith("https://api.cal.com/v2/organizations/1/users"), `the path is under the v2 API (${sawUrl})`);
+}
+
+// --- the event type id, which decides which host list is read ------------------
+{
+  // Handed to a strict equality against every event type cal.com returns. Left to
+  // `Number()` alone, an unreadable value is NaN, NaN matches nothing, and the run
+  // stops with "event type NaN is not among team 19546's event types": a true
+  // sentence that sends somebody hunting for a missing event type rather than for
+  // the mistyped setting they actually have (L50, L11).
+  eq(readEventTypeId(undefined, 1314152), 1314152, "an unset value takes the default");
+  eq(readEventTypeId("", 1314152), 1314152, "and so does an empty one, which is how a blank env var arrives");
+  eq(readEventTypeId("  ", 1314152), 1314152, "whitespace is empty too");
+  eq(readEventTypeId("1860420", 1314152), 1860420, "a real id is taken");
+  eq(readEventTypeId(" 1860420 ", 1314152), 1860420, "padded, because a copied value carries spaces");
+  eq(readEventTypeId("nonsense", 1314152), null, "a value that is not a number is REFUSED, never defaulted");
+  eq(readEventTypeId("0", 1314152), null, "zero is not an id");
+  eq(readEventTypeId("-5", 1314152), null, "nor is a negative");
+  eq(readEventTypeId("12.5", 1314152), null, "nor a fraction, which would match nothing and read as a missing event type");
+  eq(readEventTypeId("1e5", 1314152), null, "nor a form no cal.com id is ever written in");
+}
+{
+  // Refusing must not collapse into the default. Falling back would silently read
+  // the WRONG event type's host list and report a confident answer about a
+  // comparison nobody asked for (L214).
+  assert(
+    readEventTypeId("nonsense", 1314152) !== 1314152,
+    "a refusal is never the default wearing a different hat",
+  );
 }
 
 finish();

@@ -62,7 +62,7 @@ loadEnvFiles([".env.local", ".dev.vars"]);
 const { supabaseAdmin } = await import("@/lib/supabase/admin");
 const { unwrap } = await import("@/lib/db/result");
 const { paceMs, skipKindForStatus } = await import("./lib/calcom-schedule-import.ts");
-const { makeCalGet, pickDefaultSchedule, emailIndex, loadBookableRoster } = await import(
+const { makeCalGet, pickDefaultSchedule, emailIndex, loadBookableRoster, readEventTypeId } = await import(
   "./lib/calcom-roster.ts"
 );
 const { compareAgentSchedule, VERDICT_RANK } = await import("./lib/schedule-parity.ts");
@@ -94,7 +94,7 @@ const EXIT = {
 const calcomKey = process.env.CALCOM_API_KEY ?? "";
 const org = envOr(process.env.CALCOM_ORG_ID, "19474");
 const teamId = envOr(process.env.CALCOM_TEAM_ID, "19546");
-const eventTypeId = Number(envOr(process.env.CALCOM_EVENT_TYPE_ID, "1314152"));
+const eventTypeId = readEventTypeId(process.env.CALCOM_EVENT_TYPE_ID, 1314152);
 const onlyAgent = (process.env.PARITY_AGENT ?? "").trim().toLowerCase();
 const PACE_MS = paceMs(process.env.CALCOM_PACE_MS);
 
@@ -108,6 +108,16 @@ if (!calcomKey) {
     EXIT.notConfigured,
     "no CALCOM_API_KEY here, so nothing was attempted. It is a wrangler secret on the " +
       "deployment; add it to .env.local to run this.",
+  );
+}
+
+// An unreadable id is refused HERE, by its own cause. The decision lives in
+// `readEventTypeId` so it is driven offline; this is only the wiring.
+if (eventTypeId === null) {
+  stop(
+    EXIT.notConfigured,
+    `CALCOM_EVENT_TYPE_ID is not a positive whole number: ${JSON.stringify(process.env.CALCOM_EVENT_TYPE_ID)}. ` +
+      "Nothing was attempted.",
   );
 }
 

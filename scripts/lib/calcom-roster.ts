@@ -140,6 +140,30 @@ export function emailIndex(
   return { ok: true, index };
 }
 
+/**
+ * The cal.com event type id to read a host list from, or null when the setting
+ * cannot be read.
+ *
+ * It is handed to a strict equality against every event type cal.com returns, so
+ * `Number()` alone is not enough: an unreadable value becomes NaN, NaN matches
+ * nothing, and the caller stops with "event type NaN is not among team 19546's
+ * event types". True, and it sends somebody hunting for a missing event type
+ * rather than for the mistyped setting they actually have (L50, L11).
+ *
+ * A refusal is null and NEVER the default. Falling back would read the wrong
+ * event type's host list and report a confident answer about a comparison nobody
+ * asked for (L214).
+ */
+export function readEventTypeId(raw: string | undefined, fallback: number): number | null {
+  if (raw === undefined || raw.trim() === "") return fallback;
+  const trimmed = raw.trim();
+  // Matched as digits rather than parsed, because `Number` accepts "1e5", "0x10"
+  // and " 12 " as numbers, and no cal.com id is ever written in any of those.
+  if (!/^\d+$/.test(trimmed)) return null;
+  const n = Number(trimmed);
+  return Number.isSafeInteger(n) && n > 0 ? n : null;
+}
+
 export interface RosterAgent {
   id: string;
   email: string;
