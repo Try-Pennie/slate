@@ -84,12 +84,61 @@ describe("GET /api/cron/recompute", () => {
 
   // #1151: both of this lane's alerts describe CONDITIONS, so a healthy cycle
   // says they are over. Which conditions get cleared is driven by what the cycle
-  // MEASURED, never by "we did not alert this tick".
-  it("clears both conditions on a cycle that drained its work with nothing stale", async () => {
+  // MEASURED, never by "we did not alert this tick". Since #2021 the headroom
+  // side is a STREAK: one caught-up cycle is the wobble the page has to survive,
+  // so the all-clear waits until the re-arm streak (driven here through the
+  // `rate_limit_hit` double, keyed so the wrong streak cannot answer for it) has
+  // reached its window.
+  const rpcAnsweringReachedFor = (reachedKey: string) =>
+    ({
+      from: () => ({ delete: () => ({ eq: async () => ({}) }) }),
+      rpc: async (_fn: string, args: { p_key: string }) => ({
+        data: args.p_key !== reachedKey,
+        error: null,
+      }),
+    }) as never;
+
+  it("clears only the stale condition on a drained cycle whose re-arm streak is not yet full", async () => {
     cron.isAuthorizedCron.mockReturnValue(true);
     await GET(req());
     const keys = (dispatch.resolveRecovered.mock.calls[0]?.[0] ?? []).map((r) => r.key);
+    expect(keys).toEqual(["bucket_slots_stale"]);
+  });
+
+  it("clears both conditions once the lane has kept up for the whole re-arm window", async () => {
+    cron.isAuthorizedCron.mockReturnValue(true);
+    admin.supabaseAdmin.mockReturnValue(rpcAnsweringReachedFor("cron_recompute_drained"));
+    await GET(req());
+    const keys = (dispatch.resolveRecovered.mock.calls[0]?.[0] ?? []).map((r) => r.key);
     expect(keys.sort()).toEqual(["bucket_slots_stale", "recompute_headroom"]);
+  });
+
+  it("does not page on a behind cycle until the behind streak has reached its window", async () => {
+    cron.isAuthorizedCron.mockReturnValue(true);
+    precomputeCron.recomputeHeadroom.mockReturnValueOnce({ drained: false, utilizationPct: 110 });
+    await GET(req());
+    expect(dispatch.sendThrottledAlert.mock.calls.filter(([k]) => k === "recompute_headroom")).toHaveLength(0);
+  });
+
+  it("pages once the lane has been behind for the whole behind window", async () => {
+    cron.isAuthorizedCron.mockReturnValue(true);
+    admin.supabaseAdmin.mockReturnValue(rpcAnsweringReachedFor("cron_recompute_behind"));
+    precomputeCron.recomputeHeadroom.mockReturnValueOnce({ drained: false, utilizationPct: 110 });
+    await GET(req());
+    const pages = dispatch.sendThrottledAlert.mock.calls.filter(([k]) => k === "recompute_headroom");
+    expect(pages).toHaveLength(1);
+    expect(String(pages[0][2])).toMatch(/minutes running/);
+  });
+
+  it("does not let a full re-arm streak fire the page, nor a full behind streak the all-clear", async () => {
+    // The two streaks are under their own keys; a reached answer on the wrong one
+    // must move nothing.
+    cron.isAuthorizedCron.mockReturnValue(true);
+    admin.supabaseAdmin.mockReturnValue(rpcAnsweringReachedFor("cron_recompute_behind"));
+    await GET(req());
+    const keys = (dispatch.resolveRecovered.mock.calls[0]?.[0] ?? []).map((r) => r.key);
+    expect(keys).toEqual(["bucket_slots_stale"]);
+    expect(dispatch.sendThrottledAlert.mock.calls.filter(([k]) => k === "recompute_headroom")).toHaveLength(0);
   });
 
   it("clears only the stale condition when the cycle did NOT drain its due list", async () => {
@@ -104,6 +153,7 @@ describe("GET /api/cron/recompute", () => {
   // that key must not be cleared even though the other one can be.
   it("clears only the headroom condition while rows are still stale", async () => {
     cron.isAuthorizedCron.mockReturnValue(true);
+    admin.supabaseAdmin.mockReturnValue(rpcAnsweringReachedFor("cron_recompute_drained"));
     precomputeCron.staleBuckets.mockReturnValueOnce(["411", "412"] as never);
     await GET(req());
     const keys = (dispatch.resolveRecovered.mock.calls[0]?.[0] ?? []).map((r) => r.key);

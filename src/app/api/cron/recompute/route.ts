@@ -1,12 +1,10 @@
 import { NextResponse, type NextRequest } from "next/server";
-import { supabaseAdmin } from "@/lib/supabase/admin";
 import { isAuthorizedCron } from "@/lib/cron";
 import { withinBudget } from "@/lib/google/sync-pace";
 import { acquireLock, releaseLock } from "@/lib/locks";
 import { RECOMPUTE_LOCK_TTL_MS } from "@/lib/google/sync-coalesce";
 import { recordHeartbeat } from "@/lib/monitor/heartbeat";
 import { sendThrottledAlert, resolveRecovered } from "@/lib/notify/dispatch";
-import { isConsecutiveFailure } from "@/lib/notify/alerts";
 import { recomputeBucketSlotsForToday } from "@/lib/availability/slot-cache";
 import { loadBookingHorizonDays } from "@/lib/booking/settings";
 import { eligibleAgentIdsCached } from "@/lib/availability/eligible-cache";
@@ -36,6 +34,11 @@ import {
   recomputeDueBuckets,
 } from "@/lib/availability/precompute-cron";
 import { recordConsecutiveStreak, clearFailureStreak } from "@/lib/notify/streak";
+import {
+  judgeRecomputeCycle,
+  RECOMPUTE_BEHIND_CYCLES,
+  RECOMPUTE_REARM_CYCLES,
+} from "@/lib/availability/recompute-alert";
 
 export const dynamic = "force-dynamic";
 
@@ -61,49 +64,40 @@ const RECOMPUTE_BUDGET_MS = 50_000;
 const RECOMPUTE_CONCURRENCY = 6;
 const STALE_ALERT_COOLDOWN_MS = 30 * 60 * 1000;
 const HEADROOM_ALERT_COOLDOWN_MS = 2 * 60 * 60 * 1000; // at most every 2h
-// "Falling behind" = a cycle couldn't drain its due set within budget. A single
-// such cycle is usually transient (e.g. a post-deploy catch-up burst), so only
-// alert when it persists on CONSECUTIVE cycles (#43-style streak): each behind
-// cycle bumps the key inside this window, a clean (drained) cycle clears it, and
-// the second consecutive bump trips the alert. Keeps the gauge quiet unless the
-// lane genuinely can't keep up.
-const RECOMPUTE_STREAK_KEY = "cron_recompute_behind";
-const RECOMPUTE_STREAK_WINDOW_S = 600;
+// "Falling behind" = a cycle could not drain its due set within budget. It pages
+// only once that has held for longer than the freshness window, and the all-clear
+// waits just as long for the lane to have KEPT UP (#2021): both thresholds and
+// the streak keys live in recompute-alert.ts, pure and node-tested, and the
+// streaks themselves are the shared `rate_limit_hit` counter.
+const recomputeStreaks = { bump: recordConsecutiveStreak, clear: clearFailureStreak };
 
 /**
- * Alert only when the recompute lane is PERSISTENTLY behind (couldn't drain the
- * due set on consecutive cycles). A drained cycle clears the streak and stays
- * silent regardless of how much budget it used — keeping up is not actionable.
+ * Alert only when the recompute lane is PERSISTENTLY behind, and report whether
+ * it has been persistently caught up, so the caller can hang the all-clear off
+ * that rather than off one healthy cycle (L160). A cycle that could not track
+ * its streak reports neither.
  */
-async function alertIfFallingBehind(
+async function judgeHeadroom(
   headroom: { drained: boolean; utilizationPct: number },
   recomputed: number,
   due: number,
   totalBuckets: number,
-): Promise<void> {
-  const db = supabaseAdmin();
-  if (headroom.drained) {
-    await db.from("rate_limits").delete().eq("key", RECOMPUTE_STREAK_KEY);
-    // #1151: falling behind is a CONDITION, and a cycle that drained its whole
-    // due list IS the recovery. Hung off the measured healthy result rather than
-    // off "we did not alert", so a cycle that could not measure clears nothing.
-    return;
+): Promise<{ recovered: boolean }> {
+  const verdict = await judgeRecomputeCycle(headroom.drained, recomputeStreaks);
+  if (verdict.page) {
+    await sendThrottledAlert(
+      "recompute_headroom",
+      HEADROOM_ALERT_COOLDOWN_MS,
+      recomputeHeadroomAlert(
+        recomputed,
+        due,
+        totalBuckets,
+        headroom.utilizationPct,
+        RECOMPUTE_BEHIND_CYCLES,
+      ),
+    ).catch(() => {});
   }
-  const { data: underLimit, error } = await db.rpc("rate_limit_hit", {
-    p_key: RECOMPUTE_STREAK_KEY,
-    p_window_seconds: RECOMPUTE_STREAK_WINDOW_S,
-    p_max: 1,
-  });
-  if (error) {
-    log.error("recompute", { msg: "behind-streak tracking failed" }, error);
-    return;
-  }
-  if (!isConsecutiveFailure(underLimit === false ? 2 : 1)) return;
-  await sendThrottledAlert(
-    "recompute_headroom",
-    HEADROOM_ALERT_COOLDOWN_MS,
-    recomputeHeadroomAlert(recomputed, due, totalBuckets, headroom.utilizationPct),
-  ).catch(() => {});
+  return { recovered: verdict.recovered };
 }
 
 /**
@@ -163,7 +157,7 @@ export async function GET(req: NextRequest) {
       drained: headroom.drained,
     });
     // Alert only when PERSISTENTLY behind, not on a single busy-but-drained cycle.
-    await alertIfFallingBehind(headroom, recomputed, due.length, allCodes.length);
+    const headroomVerdict = await judgeHeadroom(headroom, recomputed, due.length, allCodes.length);
 
     // Alarm on what's STILL stale AFTER recomputing (re-read so buckets we just
     // refreshed don't count): that's a genuine fall-behind, not normal aging.
@@ -227,17 +221,17 @@ export async function GET(req: NextRequest) {
     }
 
     // #1151: both of this lane's alerts describe CONDITIONS that end, so say when
-    // they do. Only conditions MEASURED healthy this cycle go in the list: a
-    // cycle that drained its due list proves the headroom condition is over, and
-    // a post-recompute re-read finding nothing stale proves the other is. Batched
-    // into one alert_state read because this lane runs every minute and shares a
-    // subrequest budget with three others.
+    // they do. Only conditions MEASURED healthy go in the list: a lane that has
+    // drained its due list for the whole re-arm window proves the headroom
+    // condition is over (one drained cycle is the wobble the page has to survive,
+    // #2021), and a post-recompute re-read finding nothing stale proves the other
+    // is. Batched into one alert_state read because this lane runs every minute
+    // and shares a subrequest budget with three others.
     const recovered: { key: string; text: string }[] = [];
-    if (headroom.drained) {
+    if (headroomVerdict.recovered) {
       recovered.push({
         key: "recompute_headroom",
-        text:
-          recomputeHeadroomRecovery(),
+        text: recomputeHeadroomRecovery(RECOMPUTE_REARM_CYCLES),
       });
     }
     if (stale.length === 0) {

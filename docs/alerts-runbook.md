@@ -98,6 +98,10 @@ drains it.
 **First checks.**
 - Is it a spike or a trend? One saturated tick after a bulk operation is expected. Every
   tick for an hour is not.
+  `recompute_headroom` already applies that test itself (#2021): it pages only once the
+  lane has been behind for longer than the freshness window (5 minutes running) and says
+  it is over only after it has kept up for as long again, so one of these means the
+  lane, not a wobble, and the thing to read is #2022.
 - What is in the backlog? The alert names the table and the count.
 - Is the work itself failing, so nothing ever leaves the queue? That is a different
   family (a side effect that did not complete, below).

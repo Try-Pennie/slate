@@ -23,6 +23,7 @@
  * the fixture should be the state that embarrasses it.
  */
 import { ALERT_CATALOG, type AlertKind } from "@/lib/notify/alert-catalog";
+import { RECOMPUTE_BEHIND_CYCLES, RECOMPUTE_REARM_CYCLES } from "@/lib/availability/recompute-alert";
 import {
   formatWatchLapseAlert,
   formatSyncFailureAlert,
@@ -1915,9 +1916,9 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
   { key: "salesforce_manager_ambiguous", state: "every manager name is unique again", channel: "recovery",
     text: salesforceManagerAmbiguousRecovery() },
   { key: "recompute_headroom", state: "falling behind its budget", channel: "alert",
-    text: recomputeHeadroomAlert(18, 64, 60, 98) },
+    text: recomputeHeadroomAlert(18, 64, 60, 98, RECOMPUTE_BEHIND_CYCLES) },
   { key: "recompute_headroom", state: "caught up", channel: "recovery",
-    text: recomputeHeadroomRecovery() },
+    text: recomputeHeadroomRecovery(RECOMPUTE_REARM_CYCLES) },
   { key: "bucket_slots_stale", state: "rows stale after a pass", channel: "alert",
     text: bucketSlotsStaleAlert(9, 12, ["411", "412", "511", "512", "611"]) },
   // #1304: the same staleness with nothing able to EXPLAIN it. Distinct wording,
