@@ -46,13 +46,21 @@ export function AdminSidebar({ groups }: { groups: AdminNavGroup[] }) {
             // Dan: the landing page floated alone above the first heading and
             // read as stranded. Giving it a heading is the one fix ruled out,
             // because a heading over a single item promises a section that is
-            // not there (#1790), and `visibleAdminNav` applies that same rule to
-            // any group that collapses to one item for this role. So the rule
-            // marks it as its own zone without claiming to be a section.
+            // not there (#1790). So the rule marks it as its own zone without
+            // claiming to be a section.
             //
-            // Any headingless group, not just the first: which groups collapse
-            // is different per role. Never the LAST one, since a trailing rule
-            // marks a boundary with nothing on the other side of it.
+            // Only the FIRST group can be headingless now (#2043): the demotion
+            // that used to strip a heading from any group collapsing to one item
+            // is gone, because in the middle of the list it left this rule
+            // answering a gap that is ABOVE the group rather than below it. The
+            // static list is the only source of a null title and `nav.test.ts`
+            // holds it to the first position.
+            //
+            // The condition stays written for any headingless group rather than
+            // for index 0, since that is the property the rule actually depends
+            // on and this component renders whatever list it is handed. Never the
+            // LAST one, since a trailing rule marks a boundary with nothing on
+            // the other side of it.
             //
             // `lg:` only, because below that the groups are laid out as a
             // horizontal scroller and a bottom border would underline one column

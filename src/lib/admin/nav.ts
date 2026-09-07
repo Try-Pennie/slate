@@ -38,14 +38,15 @@ export interface AdminNavItem {
 
 export interface AdminNavGroup {
   /**
-   * The heading, or null for items that render with none (#1790).
+   * The heading, or null for a group that renders with none (#1790, narrowed by
+   * #2043).
    *
-   * A heading over a single item reads as a container with more inside it, so
-   * the sidebar promises a section that is not there. Null is how a group says
-   * it is a bare item rather than a section, and `visibleAdminNav` sets it on
-   * any group that COLLAPSES to one item for the person looking, which is a
-   * different set per role and is why this cannot be judged from the static
-   * list alone (L101).
+   * Only the FIRST group may declare null, and exactly one does: the overview,
+   * which is a single link that belongs at the top rather than folded into a
+   * section it does not describe. Anywhere else a missing heading leaves the gap
+   * above the group unexplained, which reads as a layout fault rather than as a
+   * section break, so a group that collapses to one item for a given role keeps
+   * its heading instead.
    */
   title: string | null;
   items: AdminNavItem[];
@@ -151,18 +152,29 @@ export function adminNavHrefs(): string[] {
  * empty heading promises a section that is not there.
  */
 export function visibleAdminNav(role: Role): AdminNavGroup[] {
-  return ADMIN_NAV.map((g) => {
-    const items = g.items.filter((i) => passesGate(role, i.gate));
-    return {
-      // A heading is demoted, never the item under it (#1790). A group can hold
-      // three entries and still leave ONE visible for a given role: a manager
-      // saw three such headings, so authoring the static list carefully cannot
-      // fix this and the rule has to be applied here, after the gate, where it
-      // is true for every role by construction rather than by review.
-      title: items.length >= 2 ? g.title : null,
-      items,
-    };
-  }).filter((g) => g.items.length > 0);
+  return ADMIN_NAV.map((g) => ({
+    // The heading is whatever the static list DECLARES. It used to be demoted
+    // here whenever the gate left a group with fewer than two items (#1790), and
+    // that is narrowed to the one position it was written for (#2043).
+    //
+    // A heading is not only a label, it is the only thing explaining the 24px
+    // gap the sidebar puts ABOVE its group. Dropping it in the middle of the
+    // list traded a heading over one item for an empty space that reads as a
+    // layout fault, and #1841's compensating rule is drawn BELOW the group, on
+    // the wrong side of the gap it was answering. Monitoring is the instance Dan
+    // reported, being a single item for everybody since #1960, but a manager saw
+    // the same thing over Agents and Bookings.
+    //
+    // Dan's call, 2026-09-07: give it the heading back. At the TOP of the list
+    // the original reasoning still holds, because there is no gap above the
+    // first group to explain, and the overview declares `title: null` in the
+    // list itself. Nothing computes a null any more, so a headingless group can
+    // only come from the static list, and `nav.test.ts` holds that to the first
+    // position, which is what replaces this rule rather than leaving the class
+    // to be caught by review (L96).
+    title: g.title,
+    items: g.items.filter((i) => passesGate(role, i.gate)),
+  })).filter((g) => g.items.length > 0);
 }
 
 /**

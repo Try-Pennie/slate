@@ -50,24 +50,32 @@ describe("AdminSidebar", () => {
     expect(screen.getAllByRole("link")).toHaveLength(3);
   });
 
-  // The end to end version of the rule, over the REAL map rather than fixtures:
-  // whatever a manager is shown, no heading it draws may cover a single link.
-  it("draws no heading over a single link for a manager's real map", () => {
+  // The end to end version of the rule, over the REAL map rather than fixtures
+  // (#2043): every group a manager is shown, apart from the one at the top,
+  // draws a heading. The sidebar puts a 24px gap above each group, and the
+  // heading is the only thing that says what the gap is for, so a group without
+  // one in the middle of the list is an empty space that reads as a mistake.
+  it("draws a heading over every group but the first, for a manager's real map", () => {
     const groups = visibleAdminNav("manager");
     render(<AdminSidebar groups={groups} />);
     const drawn = screen.getAllByRole("heading").map((h) => h.textContent ?? "");
-    for (const group of groups) {
-      if (group.title !== null && drawn.includes(group.title)) {
-        expect(group.items.length, `heading "${group.title}"`).toBeGreaterThanOrEqual(2);
-      }
-    }
-    // An EMPTY heading is the shape the defect took: the component drew an <h2>
-    // holding a null title, which the by-name check above cannot see, so that
-    // loop passed while the sidebar was still wrong.
+
+    groups.forEach((group, i) => {
+      if (i === 0) return;
+      expect(group.title, `group ${i} (${group.items[0]!.href}) has no heading`).not.toBeNull();
+      expect(drawn, `heading for ${group.items[0]!.href}`).toContain(group.title);
+    });
+
+    // Groups that hold ONE entry for a manager are the point of this: they draw
+    // a heading like any other. A positive control too, since a manager whose
+    // map happened to collapse nothing would prove nothing here (L98).
+    const collapsed = groups.filter((g, i) => i > 0 && g.items.length === 1);
+    expect(collapsed.length, "a manager really does see collapsed groups").toBeGreaterThan(0);
+    for (const g of collapsed) expect(drawn).toContain(g.title);
+
+    // An EMPTY heading is the shape the original defect took: the component drew
+    // an <h2> holding a null title, which a by-name check cannot see.
     for (const text of drawn) expect(text.trim()).toBeTruthy();
-    // A positive control: the manager map really does draw some headings, so an
-    // empty heading list cannot be what makes this pass (L98).
-    expect(drawn.length).toBeGreaterThan(0);
   });
 });
 
@@ -77,15 +85,16 @@ describe("AdminSidebar", () => {
 // and read as stranded, an orphan sitting above the structured part of the list
 // rather than as the first thing in the map.
 //
-// The fix is NOT to give it a heading. #1790's rule stands: a heading over a
-// single item promises a section that is not there, and `visibleAdminNav`
-// applies the same rule dynamically to any group that collapses to one item for
-// the person looking. So the headingless group gets a rule beneath it instead,
-// which separates it from the grouped sections without claiming to be one.
+// The fix is NOT to give it a heading. #1790's rule stands where it was written:
+// at the top of the list a heading over a single item promises a section that is
+// not there. So the headingless group gets a rule beneath it instead, which
+// separates it from the grouped sections without claiming to be one.
 //
-// It is asserted for ANY headingless group, not just the first, because which
-// groups collapse differs per role and the top item is not the only one that can
-// end up without a heading.
+// It is asserted for ANY headingless group rather than only the first, because
+// that is the property the component's condition actually reads. Since #2043 the
+// live map only ever puts one at the top, which `nav.test.ts` enforces; these
+// stay as fixtures so the component's own contract is pinned independently of
+// what the current list happens to contain.
 describe("a headingless group is marked as its own zone (#1841)", () => {
   const groupEls = (c: HTMLElement) =>
     Array.from(c.querySelectorAll("nav > ul > li")) as HTMLElement[];
