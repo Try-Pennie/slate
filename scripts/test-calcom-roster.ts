@@ -1,5 +1,5 @@
 // The reads shared by `pnpm import:calcom-schedules` and
-// `pnpm verify:schedule-parity` (#1754). Run:
+// `pnpm verify:calcom-parity` (#1754). Run:
 //   node --experimental-strip-types scripts/test-calcom-roster.ts
 //
 // WHY THEY ARE SHARED. The importer WRITES cal.com's hours into Slate and the

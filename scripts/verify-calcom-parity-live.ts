@@ -1,14 +1,27 @@
-// Live cal.com schedule parity (#1754). Run:
-//   pnpm verify:schedule-parity                              # sweep the roster
-//   PARITY_AGENT=someone@trypennie.com pnpm verify:schedule-parity
+// Live cal.com parity (#1754, #1911). Run:
+//   pnpm verify:calcom-parity                              # sweep the roster
+//   PARITY_AGENT=someone@trypennie.com pnpm verify:calcom-parity
 //
 // WHAT IT IS FOR. During the parallel run (docs/parallel-run-plan.md) Slate
 // computes availability nobody can book while cal.com keeps taking every lead.
-// This is what turns that silence into a measurement: for every bookable agent,
-// read the week cal.com holds and the week Slate holds, and report where they
-// disagree. It is the only thing that would notice an agent changing their hours
-// in cal.com and not in Slate, which nothing has re-checked since the 97 schedules
-// imported on 2026-09-02.
+// This is what turns that silence into a measurement, and it asks TWO questions:
+//
+//   MEMBERSHIP: do the two systems hold the same roster? Nothing reconciled them,
+//   so one could be six weeks ahead of the other with no signal. Slate deactivated
+//   an agent on 2026-07-21 and had no Low plus Beyond agent from that date, while
+//   cal.com went on routing her every Low plus Beyond lead for six more weeks (28
+//   of 28 bookings), then removed her, leaving 11 upcoming calls with a host who no
+//   longer existed. Both failures were invisible from inside either system.
+//
+//   HOURS: for every agent bookable in Slate, does cal.com hold the same week?
+//   Nothing re-checked the 97 schedules imported on 2026-09-02, and five days later
+//   21 of 102 agents had drifted.
+//
+// The two are asked together because they are one question to whoever reads the
+// answer, and because the membership half is the one the hours half cannot see:
+// it iterates agents who ARE bookable in Slate, so somebody missing from Slate is
+// never in the loop, and a bucket empty in Slate but served by one person in
+// cal.com reads as ordinary under-offering.
 //
 // WHAT IT DOES NOT PROVE. Not correctness: cal.com is the incumbent, not the
 // source of truth, and a week both systems hold can be wrong in both. That
@@ -27,16 +40,21 @@
 // IT WRITES NOTHING: no calendar, no database, no alert. It is deliberately not
 // named `test-*.ts`, because that glob is the offline unit suite and this needs
 // live cal.com plus the Supabase secret key. Its decision logic is pinned offline
-// by `scripts/test-schedule-parity.ts` and `scripts/test-calcom-roster.ts`.
+// by `scripts/test-schedule-parity.ts`, `scripts/test-roster-parity.ts`,
+// `scripts/test-calcom-parity-outcome.ts` and `scripts/test-calcom-roster.ts`.
 //
 // Env:
 //   CALCOM_API_KEY   required. A wrangler secret on the deployment; add it to
 //                    .env.local to run this.
 //   CALCOM_ORG_ID    default 19474 (trypennie)
+//   CALCOM_TEAM_ID   default 19546 (Loan Consultation), which owns the event type
+//   CALCOM_EVENT_TYPE_ID  default 1314152 (the review event the landing pages use)
 //   CALCOM_PACE_MS   pause between agents, default 250. cal.com meters the
 //                    schedules endpoint hard: the first import run met 429 on 89
 //                    of 103 agents without this.
-//   PARITY_AGENT     one email instead of the whole roster
+//   PARITY_AGENT     one email instead of the whole roster. Narrows the HOURS half
+//                    only: membership is a comparison of two whole rosters and
+//                    means nothing scoped to one person.
 import { loadEnvFiles, envOr } from "./smoke-env.ts";
 
 loadEnvFiles([".env.local", ".dev.vars"]);
@@ -47,8 +65,11 @@ const { paceMs, skipKindForStatus } = await import("./lib/calcom-schedule-import
 const { makeCalGet, pickDefaultSchedule, emailIndex, loadBookableRoster } = await import(
   "./lib/calcom-roster.ts"
 );
-const { compareAgentSchedule, worstVerdict, VERDICT_RANK } = await import("./lib/schedule-parity.ts");
+const { compareAgentSchedule, VERDICT_RANK } = await import("./lib/schedule-parity.ts");
+const { compareRosters, ROSTER_VERDICT_RANK } = await import("./lib/roster-parity.ts");
+const { OUTCOME_ORDER, EXIT_CODE, worstOutcome } = await import("./lib/calcom-parity-outcome.ts");
 type ScheduleVerdict = import("./lib/schedule-parity.ts").ScheduleVerdict;
+type RosterVerdict = import("./lib/roster-parity.ts").RosterVerdict;
 type CalcomSide = import("./lib/schedule-parity.ts").CalcomSide;
 
 /**
@@ -62,26 +83,18 @@ const EXIT = {
   nothingToCompare: 2,
   calcomUnreachable: 4,
   calcomUnreadable: 5,
+  noHosts: 6,
 } as const;
 
-/** One code per verdict, so the run's exit says WHICH kind of disagreement it met
- *  rather than only that it met one. Derived from the verdict list rather than
- *  written out twice, so a verdict added later cannot quietly map to zero. */
-const VERDICT_EXIT: Record<ScheduleVerdict, number> = {
-  agree: 0,
-  "timezone-name-differs": 9,
-  "no-calcom-user": 10,
-  "no-calcom-schedule": 11,
-  "no-slate-schedule": 12,
-  "calcom-unreachable": 13,
-  "calcom-unreadable": 14,
-  "hours-differ": 15,
-  "days-differ": 16,
-  "timezone-differs": 17,
-};
+// Which finding names the run, and its code, both live in
+// `scripts/lib/calcom-parity-outcome.ts` as ONE table across both halves, so the
+// cross-family judgements are a decision somebody made rather than an accident of
+// two rank scales written months apart.
 
 const calcomKey = process.env.CALCOM_API_KEY ?? "";
 const org = envOr(process.env.CALCOM_ORG_ID, "19474");
+const teamId = envOr(process.env.CALCOM_TEAM_ID, "19546");
+const eventTypeId = Number(envOr(process.env.CALCOM_EVENT_TYPE_ID, "1314152"));
 const onlyAgent = (process.env.PARITY_AGENT ?? "").trim().toLowerCase();
 const PACE_MS = paceMs(process.env.CALCOM_PACE_MS);
 
@@ -115,6 +128,22 @@ if (agents.length === 0) {
   );
 }
 
+// The membership half needs EVERY Slate user, not only the bookable ones: somebody
+// who has left, or who was held back, is exactly who it exists to find, and they
+// are by definition absent from the bookable set.
+// cap-safe: users is a roster-bounded table, ~142 rows against a 200-agent design target
+const allUsers = (unwrap(
+  await db.from("users").select("email, role, bookable, deactivated_at, is_test, attributes"),
+  "all users",
+) ?? []) as {
+  email: string;
+  role: string;
+  bookable: boolean;
+  deactivated_at: string | null;
+  is_test: boolean;
+  attributes: Record<string, unknown> | null;
+}[];
+
 // One read for the whole org rather than one lookup per agent: the same listing
 // answers every email, and it is the read most likely to be rate limited.
 const listing = await calGet(`/organizations/${org}/users?take=500`);
@@ -126,9 +155,75 @@ if (!index.ok) {
   stop(EXIT.calcomUnreadable, `cal.com's org user listing could not be read: ${index.why}`);
 }
 
+// The host list for the event type the landing pages actually book. Team
+// membership is NOT the same question: `assignAllTeamMembers` can be true today
+// and false tomorrow, and it is the hosts on this event type who receive a lead.
+const etRes = await calGet(`/organizations/${org}/teams/${teamId}/event-types`);
+if (etRes.status < 200 || etRes.status >= 300) {
+  stop(EXIT.calcomUnreachable, `cal.com's team event types returned ${etRes.status} for team ${teamId}`);
+}
+const eventTypes = (etRes.json as { data?: { id?: number; slug?: string; hosts?: { userId?: number }[] }[] })?.data;
+if (!Array.isArray(eventTypes)) {
+  stop(EXIT.calcomUnreadable, "cal.com's team event types answered with no readable list");
+}
+const target = eventTypes.find((e) => e?.id === eventTypeId);
+if (!target) {
+  // Refused rather than reported as "nobody hosts". An event type that has moved
+  // teams, or an id that is wrong, would otherwise turn every bookable Slate agent
+  // into a finding: a hundred lines about one broken read (L98).
+  stop(
+    EXIT.noHosts,
+    `event type ${eventTypeId} is not among team ${teamId}'s ${eventTypes.length} event types ` +
+      `(${eventTypes.map((e) => e?.slug ?? "?").join(", ")}). Nothing was compared.`,
+  );
+}
+const hostIds = (target.hosts ?? []).map((h) => h?.userId).filter((id): id is number => typeof id === "number");
+const emailByCalId = new Map([...index.index].map(([email, id]) => [id, email]));
+const hostEmails = new Set(hostIds.map((id) => emailByCalId.get(id)).filter((e): e is string => Boolean(e)));
+const hostsWithNoOrgUser = hostIds.length - hostEmails.size;
+
 console.log(
-  `schedule parity: ${agents.length} bookable Slate agent(s) against ${index.index.size} cal.com org user(s)\n`,
+  `cal.com parity: ${allUsers.length} Slate user(s), ${agents.length} of them bookable, ` +
+    `against ${hostEmails.size} host(s) on event type ${eventTypeId} and ${index.index.size} org user(s)\n`,
 );
+
+// --- membership -----------------------------------------------------------------
+const membership = compareRosters(
+  allUsers.map((u) => ({
+    email: u.email,
+    role: u.role,
+    bookable: u.bookable,
+    deactivatedAt: u.deactivated_at,
+    isTest: u.is_test,
+    // Any recorded Salesforce attribute at all: a bucket's criteria key on these,
+    // so an agent carrying none cannot be matched by one.
+    hasRoutingAttributes: !!u.attributes && Object.keys(u.attributes).length > 0,
+  })),
+  hostEmails,
+);
+if (membership.hostsEmpty) {
+  stop(
+    EXIT.noHosts,
+    `event type ${eventTypeId} named no hosts this run. Every bookable Slate agent would be ` +
+      "reported as absent from cal.com, which is a hundred findings about one read.",
+  );
+}
+if (hostsWithNoOrgUser > 0) {
+  console.log(
+    `note: ${hostsWithNoOrgUser} host(s) on the event type have no row in the org user listing, ` +
+      "so they could not be resolved to an address and are not compared\n",
+  );
+}
+const membershipRows = [...membership.rows]
+  .filter((r) => r.verdict !== "agree")
+  .sort((a, b) => ROSTER_VERDICT_RANK[b.verdict] - ROSTER_VERDICT_RANK[a.verdict] || a.email.localeCompare(b.email));
+if (membershipRows.length > 0) {
+  console.log("--- roster ---");
+  for (const row of membershipRows) console.log(`${row.verdict}  ${row.email}\n    ${row.reason}`);
+  console.log("");
+}
+
+console.log("--- hours ---");
 
 // --- compare ------------------------------------------------------------------
 interface Row {
@@ -201,17 +296,27 @@ for (const row of ordered) {
   for (const reason of row.reasons) console.log(`    ${reason}`);
 }
 
-const counts = new Map<ScheduleVerdict, number>();
+const counts = new Map<string, number>();
 for (const row of rows) counts.set(row.verdict, (counts.get(row.verdict) ?? 0) + 1);
-const summary = [...counts]
-  .sort((a, b) => VERDICT_RANK[b[0]] - VERDICT_RANK[a[0]])
-  .map(([v, n]) => `${v}: ${n}`)
-  .join("   ");
-console.log(`\n${summary}`);
+for (const row of membership.rows) {
+  if (row.verdict === "agree") continue;
+  counts.set(row.verdict, (counts.get(row.verdict) ?? 0) + 1);
+}
+const severity = (v: string) => {
+  const at = OUTCOME_ORDER.indexOf(v as never);
+  return at === -1 ? -1 : OUTCOME_ORDER.length - at;
+};
+console.log(
+  "\n" +
+    [...counts]
+      .sort((a, b) => severity(b[0]) - severity(a[0]))
+      .map(([v, n]) => `${v}: ${n}`)
+      .join("   "),
+);
 
 // An agent whose week could not be read on either side was NOT compared, and a
 // sweep made entirely of those has judged nothing. It still exits on its worst
-// verdict, so it can never read as agreement, but the message has to say which of
+// finding, so it can never read as agreement, but the message has to say which of
 // the two happened or a reader takes "no differences" for "no problems".
 //
 // The four unusable kinds are LISTED rather than picked out by rank. A rank
@@ -228,18 +333,28 @@ const CANNOT_COMPARE: ScheduleVerdict[] = [
 const compared = rows.filter((r) => !CANNOT_COMPARE.includes(r.verdict)).length;
 console.log(`${compared} of ${rows.length} agent(s) had a week on both sides to compare`);
 
-const worst = worstVerdict(rows.map((r) => r.verdict));
-if (worst === null) {
+const all: (ScheduleVerdict | RosterVerdict)[] = [
+  ...rows.map((r) => r.verdict),
+  ...membership.rows.map((r) => r.verdict),
+];
+if (all.length === 0) {
   stop(EXIT.nothingToCompare, "not one agent produced a verdict, which is never a pass");
 }
-if (worst === "agree") {
-  console.log(`\nPASSED: every one of ${rows.length} agent(s) holds the same week in both systems`);
+const worst = worstOutcome(all);
+if (worst === null) {
+  console.log(
+    `\nPASSED: ${agents.length} agent(s) hold the same week in both systems, and the two ` +
+      "rosters agree on who can take a booking",
+  );
   process.exit(EXIT.agree);
 }
-const hit = rows.filter((r) => r.verdict === worst);
+const hit = [
+  ...rows.filter((r) => r.verdict === worst).map((r) => r.email),
+  ...membership.rows.filter((r) => r.verdict === worst).map((r) => r.email),
+];
 stop(
-  VERDICT_EXIT[worst],
+  EXIT_CODE[worst],
   `${hit.length} agent(s) reported ${worst}` +
-    (compared === 0 ? ", and not one agent could actually be compared" : "") +
-    `: ${hit.map((h) => h.email).join(", ")}`,
+    (compared === 0 ? ", and not one agent's hours could actually be compared" : "") +
+    `: ${hit.join(", ")}`,
 );

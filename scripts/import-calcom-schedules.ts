@@ -48,7 +48,7 @@ const { planScheduleReplacement } = await import("@/lib/schedule-replacement");
 const { mapCalcomSchedule, diffSchedule, skipKindForStatus, paceMs } = await import(
   "./lib/calcom-schedule-import.ts"
 );
-// The reads this shares with `pnpm verify:schedule-parity`. One definition of "who
+// The reads this shares with `pnpm verify:calcom-parity`. One definition of "who
 // is a bookable agent", because two would drift and the command would then report
 // agreement about a roster this never wrote to.
 const { makeCalGet, pickDefaultSchedule, emailIndex, loadBookableRoster } = await import(

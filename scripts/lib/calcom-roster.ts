@@ -1,5 +1,5 @@
 // The reads shared by `pnpm import:calcom-schedules` (which writes cal.com's hours
-// into Slate) and `pnpm verify:schedule-parity` (which checks the two still agree).
+// into Slate) and `pnpm verify:calcom-parity` (which checks the two still agree).
 //
 // They ask cal.com the same three questions and Slate the same one, and the pair
 // that matters most is "who is a bookable agent": two copies of that predicate

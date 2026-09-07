@@ -1,4 +1,4 @@
-// The comparison behind `pnpm verify:schedule-parity` (#1754). Run:
+// The comparison behind `pnpm verify:calcom-parity` (#1754). Run:
 //   node --experimental-strip-types scripts/test-schedule-parity.ts
 //
 // WHY THIS REPLACED A SLOT COMPARISON. The first parity probe (#1731) narrowed
