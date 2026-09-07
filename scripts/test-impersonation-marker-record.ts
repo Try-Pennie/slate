@@ -61,6 +61,31 @@ for (let n = 1; n <= 10; n++) {
   assert(real.record.includes(`IM${n}.`), `requirement IM${n} is present`);
 }
 
+// A record states two KINDS of number and they do not travel the same way. The
+// contrast figures are properties of the colours and hold anywhere. The width and
+// height figures were measured in the record's own type and spacing, so they are
+// the shape of the behaviour rather than targets, and an implementer reading a
+// committed record treats a number as a spec unless it says otherwise (L11: a
+// claim may only assert what it actually measured). So the record has to say
+// where its pixel figures came from, and that sentence must not be tidied away
+// later, which is why it is asserted rather than trusted.
+const PIXEL_CAVEAT = [
+  "not a specification",
+  "this file's own typography",
+  "in THIS file's typography",
+];
+for (const phrase of PIXEL_CAVEAT) {
+  assert(
+    real.record.includes(phrase),
+    `the record says where its pixel figures came from ("${phrase}")`,
+  );
+}
+// And the requirement that depends on it must not name the numbers as a target.
+assert(
+  real.record.includes("do not copy the three above into the app"),
+  "IM6 warns against copying its example heights",
+);
+
 // --- positive controls ------------------------------------------------------
 // Each mutates ONE thing and requires the audit to catch it, naming the kind, so
 // a check that has quietly stopped looking cannot pass (L1, L154).
