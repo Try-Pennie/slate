@@ -82,35 +82,6 @@ describe("visibleAdminNav", () => {
     }
   });
 
-  // #1790: a heading over one item reads as a container with more inside it, so
-  // the sidebar promises a section that is not there. Counted AFTER the gate
-  // filter, because a group can hold three entries and still render one for a
-  // given role (L101): a manager saw three such headings, not just the overview,
-  // so this is the class rather than the one instance (L30).
-  it("never puts a heading over a single item, for any role", () => {
-    for (const role of ROLES) {
-      for (const group of visibleAdminNav(role)) {
-        if (group.title !== null) {
-          expect(
-            group.items.length,
-            `${role} sees heading "${group.title}" over ${group.items.length} item(s)`,
-          ).toBeGreaterThanOrEqual(2);
-        }
-      }
-    }
-  });
-
-  it("drops the heading and keeps the item, never the other way round", () => {
-    // A manager may see only Roster out of the three Agents entries. The entry
-    // has to survive; it is the heading that is wrong, not the link.
-    const manager = visibleAdminNav("manager");
-    const hrefs = manager.flatMap((g) => g.items.map((i) => i.href));
-    expect(hrefs).toContain("/admin/agents");
-    expect(hrefs).toContain("/admin/bookings");
-    const holding = manager.find((g) => g.items.some((i) => i.href === "/admin/agents"));
-    expect(holding?.title).toBeNull();
-  });
-
   it("leaves the overview unheaded for everyone who can see it", () => {
     for (const role of ROLES) {
       const group = visibleAdminNav(role).find((g) =>
@@ -127,6 +98,60 @@ describe("visibleAdminNav", () => {
     const bookings = admin.find((g) => g.items.some((i) => i.href === "/admin/bookings"));
     expect(bookings?.title).toBe("Bookings");
     expect(admin.filter((g) => g.title !== null).length).toBeGreaterThan(3);
+  });
+
+  // #2043: the #1790 demotion is NARROWED to the position it was written for.
+  //
+  // Dropping a heading also drops the only thing explaining the 24px gap above
+  // the group, so in the MIDDLE of the list it trades a heading over one item
+  // for an empty space that reads as a layout fault. #1841's compensating rule
+  // sits BELOW the group, on the wrong side of the gap it is answering.
+  //
+  // Dan's call, 2026-09-07: give it the heading back. So a heading is now
+  // whatever the static list declares, and a group that collapses to one item
+  // for a given role keeps saying what it is.
+  it("keeps Monitoring's heading, which is one item for everyone", () => {
+    const admin = visibleAdminNav("admin");
+    const monitoring = admin.find((g) => g.items.some((i) => i.href === "/admin/alerts"));
+    expect(monitoring?.items.length, "the group really is a single item").toBe(1);
+    expect(monitoring?.title).toBe("Monitoring");
+  });
+
+  it("keeps the heading of a group that COLLAPSES to one item for a role", () => {
+    // The class, not the instance: a manager sees one of the three Agents
+    // entries, and that group has the same unexplained gap Monitoring had.
+    const manager = visibleAdminNav("manager");
+    const agents = manager.find((g) => g.items.some((i) => i.href === "/admin/agents"));
+    expect(agents?.items.length, "collapsed for a manager").toBe(1);
+    expect(agents?.title).toBe("Agents");
+    // The gate takes the entries, never the group's name for what they are: the
+    // half of the old rule that survives its reversal.
+    expect(agents?.items[0]!.href).toBe("/admin/agents");
+    expect(manager.flatMap((g) => g.items.map((i) => i.href))).toContain("/admin/bookings");
+  });
+
+  it("only the FIRST group may declare no heading", () => {
+    // What replaces the demotion. A headingless group anywhere else is a gap
+    // with nothing explaining it, and the static list is the only place one can
+    // now come from, so this is where it is caught (L96).
+    ADMIN_NAV.forEach((group, i) => {
+      if (i > 0) {
+        expect(group.title, `group ${i} (${group.items[0]?.href}) declares no heading`)
+          .not.toBeNull();
+      }
+    });
+    // A positive control: the first group really does declare none, so an
+    // all-headed list cannot be what makes this pass (L98).
+    expect(ADMIN_NAV[0]!.title).toBeNull();
+  });
+
+  it("never manufactures a heading the static list did not declare", () => {
+    for (const role of ROLES) {
+      for (const group of visibleAdminNav(role)) {
+        const declared = ADMIN_NAV.find((g) => g.items.some((i) => i.href === group.items[0]!.href));
+        expect(group.title, `${role} sees ${group.items[0]!.href}`).toBe(declared!.title);
+      }
+    }
   });
 
   it("shows an agent nothing at all", () => {
