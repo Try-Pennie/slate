@@ -132,7 +132,21 @@ export interface Database {
       booking_reservations: Table<BookingReservation>;
       booking_api_outcome_daily: Table<BookingApiOutcomeDaily>;
       booking_failure_rate_state: Table<BookingFailureRateState>;
-      routing_decisions: Table<RoutingDecision>;
+      // The embed is what lets the catch-all rate exclude the smoke canary's own
+      // bookings (#1908): `routing_decisions` has no is_test column, so test-ness
+      // is a property of the BUCKET and has to be reached through the join.
+      routing_decisions: Table<
+        RoutingDecision,
+        [
+          {
+            foreignKeyName: "routing_decisions_bucket_id_fkey";
+            columns: ["bucket_id"];
+            isOneToOne: false;
+            referencedRelation: "buckets";
+            referencedColumns: ["id"];
+          },
+        ]
+      >;
       lane_heartbeats: Table<LaneHeartbeat>;
       selfheal_scan_cursor: Table<SelfhealScanCursor>;
       export_cursor: Table<ExportCursor>;

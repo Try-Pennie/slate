@@ -9,6 +9,19 @@
  * this file exists to feed. `unwrapCount` throws instead, and the caller reports
  * the tick as unmeasured rather than clear.
  *
+ * THE SMOKE CANARY IS EXCLUDED, and it is the whole population today. Measured
+ * 2026-09-07, all 40 booked routing decisions in the last 24 hours came from the
+ * two test buckets (SMOKE: 35, SMOKE2: 5). Counting them would mean reporting a
+ * measured healthy rate off entirely synthetic traffic before cutover, and
+ * diluting the real rate by roughly 40 bookings a day after it, which at a 5
+ * percent threshold is enough to hide a real regression.
+ *
+ * `routing_decisions` has no is_test column, so test-ness is a property of the
+ * BUCKET and is reached through an inner join, exactly as the customer booking
+ * count does it (#1258). A hardcoded list of test bucket codes would be a second
+ * definition of which buckets are synthetic, drifting the first time one is added
+ * (L41).
+ *
  * COST. Two server side counts per tick, no rows returned. Every lane on this
  * cron's schedule shares one invocation's subrequest budget, so this is named
  * here rather than left to be rediscovered: if that budget ever needs trimming,
@@ -39,7 +52,8 @@ export async function readCatchallWindow(nowMs: number): Promise<CatchallWindow>
   const total = unwrapCount(
     await db
       .from("routing_decisions")
-      .select("id", { count: "exact", head: true })
+      .select("id, buckets!inner(is_test)", { count: "exact", head: true })
+      .eq("buckets.is_test", false)
       .eq("outcome", "booked")
       .gte("created_at", since),
     "routing_decisions total",
@@ -47,7 +61,8 @@ export async function readCatchallWindow(nowMs: number): Promise<CatchallWindow>
   const catchall = unwrapCount(
     await db
       .from("routing_decisions")
-      .select("id", { count: "exact", head: true })
+      .select("id, buckets!inner(is_test)", { count: "exact", head: true })
+      .eq("buckets.is_test", false)
       .eq("outcome", "booked")
       .eq("catchall_applied", true)
       .gte("created_at", since),
