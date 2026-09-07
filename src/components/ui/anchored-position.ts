@@ -102,3 +102,26 @@ export function anchoredPosition(
  * the source rather than trusting this comment, so the three cannot drift.
  */
 export const ANCHORED_PANEL_Z = 50;
+
+/**
+ * How many panels deep the stacking is allowed to go (#2046).
+ *
+ * A panel opened from inside another panel takes one level ABOVE the panel that
+ * contains it, so the levels run `ANCHORED_PANEL_Z`, `+1`, `+2` and so on. That
+ * has to stop somewhere below the skip link, which must stay reachable over
+ * everything, and `scripts/test-anchored-panel-stacking.ts` holds the whole
+ * range under it rather than just the base.
+ *
+ * Four is the headroom, not the requirement: the app nests exactly two (the time
+ * list inside the time off calendar) and a design needing five stacked popups
+ * has a bigger problem than its z-indexes. Beyond it the levels keep counting
+ * rather than clamping, because a clamp would silently put two nested panels
+ * back on ONE level, which is the exact defect this exists to remove and would
+ * come back looking like the fix was in place.
+ */
+export const MAX_ANCHORED_PANEL_NESTING = 4;
+
+/** The level a panel nested `depth` panels deep paints on. */
+export function anchoredPanelZ(depth: number): number {
+  return ANCHORED_PANEL_Z + depth;
+}
