@@ -87,11 +87,19 @@ const healthy = () => ({
   // omitting one from a fixture reads as blind and pages.
   "verdict:low-booking-volume": ago(6 * 60 * MIN),
   "verdict:ooo-protection": ago(10 * MIN),
-  // The two PARKED detectors (#1561) are deliberately absent, because that is
-  // what production looks like: neither has ever reached a verdict, and while
-  // they are parked that is a known, accepted gap rather than a page. Stamping
-  // them here would describe a fleet where the park is over, which is its own
-  // alert and has its own tests below.
+  // The truth probe stamps here since #1831, because that is now what production
+  // looks like: it concludes on essentially every tick, having found buckets
+  // offering times after the 2026-09-02 roster flip. While it was parked this
+  // fixture omitted it, and leaving it out now would describe a probe that has
+  // never concluded and let the healthy tick below pass on its grace window
+  // rather than on health.
+  "verdict:availability-truth": ago(10 * MIN),
+  // The one remaining PARKED detector (#1561) is deliberately absent, because
+  // that is what production looks like: the failure rate check has reached one
+  // verdict in its life, off a smoke canary coincidence, and while it is parked
+  // that is a known, accepted gap rather than a page. Stamping it here would
+  // describe a fleet where the park is over, which is its own alert and has its
+  // own tests below.
 });
 
 beforeEach(() => {
@@ -131,12 +139,17 @@ describe("alertOnStaleLanes (#803)", () => {
   });
 
   // #1561: a detector that CANNOT conclude yet. Before cutover the availability
-  // truth probe finds no bucket offering times and the failure rate check never
-  // sees 20 attempts in an hour, so the blind page fired every 24 hours naming an
+  // truth probe found no bucket offering times and the failure rate check never
+  // saw 20 attempts in an hour, so the blind page fired every 24 hours naming an
   // action nobody could take. Parking is quiet about the blindness, loud about
   // the park, and loud again the moment a parked detector concludes anyway.
+  //
+  // The subject here is the FAILURE RATE check since #1831, because it is the one
+  // still parked: every booking attempt is still the smoke canary's, and one pass
+  // records 16 against a floor of 20 in a rolling hour. The truth probe was the
+  // other one, and it is armed above.
   describe("detectors parked because they cannot conclude yet (#1561)", () => {
-    const PARKED = "verdict:availability-truth";
+    const PARKED = "verdict:booking-failure-rate";
     const laneKey = (lane: string) => `cron_lane_stale:${lane}`;
 
     it("does not page a parked detector that has never reached a verdict", async () => {
@@ -222,6 +235,47 @@ describe("alertOnStaleLanes (#803)", () => {
           (c) => c[0] === laneKey("verdict:ooo-protection"),
         ),
       ).toBeDefined();
+    });
+
+    // #1831: the safety net this change actually switches on. While the truth
+    // probe was parked, a probe that stopped concluding was silent, and silent is
+    // indistinguishable from a probe finding nothing wrong (#1394). Now it pages,
+    // and this is the assertion that would have failed before the registry entry
+    // came out.
+    it("pages the truth probe once it stops concluding, which the park used to hide", async () => {
+      heartbeat.readAllHeartbeatMs.mockResolvedValue({
+        ...healthy(),
+        "verdict:availability-truth": ago(30 * 60 * MIN),
+      });
+
+      await alertOnStaleLanes();
+
+      const call = dispatch.sendThrottledAlert.mock.calls.find(
+        (c) => c[0] === laneKey("verdict:availability-truth"),
+      );
+      expect(call).toBeDefined();
+      // The blind page, not the un-park page: it says the check is running and has
+      // stopped answering, and it must not read as a fault in the lane itself.
+      expect(String(call?.[2])).toMatch(/not reached a verdict/i);
+    });
+
+    // The production consequence of merging #1831, in one assertion. The un-park
+    // page has been firing daily since 2026-09-03; removing the registry entry is
+    // what ends it, with the ending that says somebody armed the detector rather
+    // than the one that says the verdict lapsed (L11).
+    it("all-clears the truth probe's standing un-park page as armed, not lapsed", async () => {
+      dispatch.existingAlertStateKeys.mockResolvedValue(
+        new Set(["alert_firing:detector_unpark:verdict:availability-truth"]),
+      );
+
+      await alertOnStaleLanes();
+
+      const call = dispatch.resolveAlert.mock.calls.find(
+        (c) => c[0] === "detector_unpark:verdict:availability-truth",
+      );
+      expect(call).toBeDefined();
+      expect(String(call?.[1])).toMatch(/armed again/i);
+      expect(String(call?.[1])).not.toMatch(/stays parked/i);
     });
   });
 

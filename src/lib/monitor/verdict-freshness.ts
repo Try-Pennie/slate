@@ -101,9 +101,10 @@ export function oooProtectionReachedVerdict(result: OooProtectionResult): boolea
  * A detector that CANNOT reach a verdict yet, and is deliberately not paging (#1561).
  *
  * The verdict watch above pages a detector that has stopped concluding, which is
- * right, and before cutover two of them have never been able to conclude at all.
- * The page named no action anybody could take this morning (L111) and repeated
- * every 24 hours, which is how a channel gets ignored (L36).
+ * right, and before cutover two of them had never been able to conclude at all
+ * (the availability truth probe now can, and was unparked in #1831). The page
+ * named no action anybody could take this morning (L111) and repeated every 24
+ * hours, which is how a channel gets ignored (L36).
  *
  * Parking is deliberately a hand written registry rather than something derived
  * from a live signal. "The roster is dark" is not a fact any single query returns
@@ -148,16 +149,14 @@ export interface ParkedDetector {
 }
 
 export const PARKED_VERDICT_DETECTORS: Partial<Record<DetectorVerdictLane, ParkedDetector>> = {
-  [AVAILABILITY_TRUTH_VERDICT_LANE]: {
-    reason:
-      "the roster is dark before cutover (#1272), so the bucket the probe picks each tick is offering no times to check",
-    issue: 1562,
-    // One pass of the roughly 60 bucket rotation takes about 5 hours, so a verdict
-    // inside 6 hours means the probe concluded on the pass it is currently making.
-    // Its blindness bound is 24 hours, nearly five passes, which is the right
-    // question for "has it stopped" and the wrong one for "is it going".
-    unparkWithinMs: 6 * 60 * 60_000,
-  },
+  // The availability truth probe's park was REMOVED here on 2026-09-07 (#1831),
+  // which is the park working rather than the park being abandoned. Its reason was
+  // that the roster was dark, so the bucket the probe picks each tick offered no
+  // times to check, and the 2026-09-02 roster flip (#1739) ended that: 57 of the 60
+  // non test buckets are offering times, and the probe stamped a verdict on two
+  // consecutive monitor ticks. The daily un-park page is what said so, unprompted,
+  // for four days. Note this arms the WATCH on the probe concluding, not the drift
+  // page itself, which is a separate switch and still off (#1371).
   [FAILURE_RATE_VERDICT_LANE]: {
     reason:
       "every booking attempt is still the smoke canary's, and one full canary pass records exactly 16 of them inside about two minutes against a floor of 20 in a rolling hour, so a pass lands four short and only two passes inside one hour ever clear it",
