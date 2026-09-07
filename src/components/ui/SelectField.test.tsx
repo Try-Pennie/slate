@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { SelectField, type SelectOption } from "@/components/ui/SelectField";
 
@@ -158,12 +158,35 @@ describe("SelectField (#1849)", () => {
       expect(list.className).toMatch(/overflow-y-auto/);
     });
 
-    it("closes when the page behind it scrolls", async () => {
+    // #2052: a scroll REPOSITIONS the panel rather than dismissing it, and only a
+    // trigger that has left the window closes it. jsdom reports every rect as
+    // zero, so the trigger's rect is stubbed; without that, every trigger reads
+    // as off screen and the closing case would pass for the wrong reason.
+    it("stays open while the field is still on screen", async () => {
       const user = userEvent.setup();
       render(<Field />);
       await user.click(trigger());
+      const list = screen.getByRole("listbox");
+      const placedAt = list.style.top;
+      trigger().getBoundingClientRect = () =>
+        ({ top: 200, bottom: 240, left: 40, right: 240, width: 200, height: 40,
+           x: 40, y: 200, toJSON: () => ({}) }) as DOMRect;
       fireEvent.scroll(window);
-      expect(screen.queryByRole("listbox")).toBeNull();
+      // On the reposition rather than on a duration, so this cannot pass by the
+      // list simply never having closed (L290).
+      await waitFor(() => expect(list.style.top).not.toBe(placedAt));
+      expect(screen.queryByRole("listbox")).toBeTruthy();
+    });
+
+    it("closes once the field has scrolled out of the window", async () => {
+      const user = userEvent.setup();
+      render(<Field />);
+      await user.click(trigger());
+      trigger().getBoundingClientRect = () =>
+        ({ top: -300, bottom: -260, left: 40, right: 240, width: 200, height: 40,
+           x: 40, y: -300, toJSON: () => ({}) }) as DOMRect;
+      fireEvent.scroll(window);
+      await waitFor(() => expect(screen.queryByRole("listbox")).toBeNull());
     });
   });
 });

@@ -16,7 +16,10 @@
 // Run: node --experimental-strip-types --import ./scripts/register-paths.mjs \
 //        scripts/test-anchored-position.ts
 import { assert, eq, finish } from "./lib/harness.ts";
-import { anchoredPosition } from "../src/components/ui/anchored-position.ts";
+import {
+  anchoredPosition,
+  triggerIsOnScreen,
+} from "../src/components/ui/anchored-position.ts";
 
 const trigger = (top: number, left = 500, w = 44, h = 44) => ({
   top,
@@ -83,6 +86,67 @@ const panel = { width: 220, height: 120 };
     trigger: trigger(100), panel: { width: 2000, height: 100 }, viewport, align: "end", gap: 4,
   });
   eq(huge.left, 0, "a panel wider than the window starts at the left edge");
+}
+
+
+// #2052: a page scroll REPOSITIONS an open panel rather than dismissing it, and
+// only a trigger that has left the viewport closes it.
+//
+// This reverses the decision recorded at the top of AnchoredPanel ("it closes on
+// scroll rather than following the trigger"). That reasoning was about a row
+// menu on a long table, where a menu hovering beside an unrelated row really is
+// worse than one that has gone. It was wrong for a picker somebody is filling
+// IN: scrolling to see the field being edited, or an inertial flick on a
+// trackpad, shut the calendar mid pick. Following the trigger serves both, and
+// leaving the viewport is what the original concern actually reduces to.
+//
+// Pure, so the cases can be driven at sizes jsdom cannot produce, since jsdom
+// reports every rect as zero.
+{
+  const view = { width: 1000, height: 800 };
+  const box = (top: number, height = 40, left = 100, width = 200) => ({
+    top,
+    bottom: top + height,
+    left,
+    right: left + width,
+    width,
+    height,
+  });
+
+  assert(triggerIsOnScreen(box(400), view), "a trigger in the middle of the page is on screen");
+  assert(triggerIsOnScreen(box(0), view), "one flush against the top edge is on screen");
+  assert(
+    triggerIsOnScreen(box(760), view),
+    "one flush against the bottom edge is on screen",
+  );
+
+  // PARTIALLY visible counts, in both directions. Half a field is still a field
+  // somebody is looking at, and closing its picker there is the complaint.
+  assert(triggerIsOnScreen(box(-20), view), "one half above the top edge is still on screen");
+  assert(
+    triggerIsOnScreen(box(780), view),
+    "one half below the bottom edge is still on screen",
+  );
+
+  // Gone entirely, in each of the four directions.
+  assert(!triggerIsOnScreen(box(-40), view), "one scrolled entirely above is gone");
+  assert(!triggerIsOnScreen(box(800), view), "one scrolled entirely below is gone");
+  assert(
+    !triggerIsOnScreen(box(400, 40, -200, 200), view),
+    "one scrolled entirely off the left is gone",
+  );
+  assert(
+    !triggerIsOnScreen(box(400, 40, 1000, 200), view),
+    "one scrolled entirely off the right is gone",
+  );
+
+  // The exact boundaries, which decide whether a trigger touching the edge keeps
+  // its panel. Touching by a single pixel counts as present; sharing only an edge
+  // does not, because a zero height overlap is nothing to point at.
+  assert(!triggerIsOnScreen(box(-40, 40), view), "sharing only the top edge is gone");
+  assert(triggerIsOnScreen(box(-39, 40), view), "overlapping the top edge by 1px is present");
+  assert(!triggerIsOnScreen(box(800, 40), view), "sharing only the bottom edge is gone");
+  assert(triggerIsOnScreen(box(799, 40), view), "overlapping the bottom edge by 1px is present");
 }
 
 finish();
