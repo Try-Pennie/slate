@@ -25,6 +25,7 @@ export type MonitorAlertKey =
   | "ooo_calcom_unprotected"
   | "empty_buckets"
   | "booking_failure_rate"
+  | "catchall_rate"
   | "availability_drift"
   | "booker_empty_reason"
   | "roster_coverage_gap"
@@ -269,6 +270,11 @@ export const MONITOR_DEFAULTS = {
     // human sets attributes or adds a manual member. Once-a-day whisper, like the
     // schedule-coverage and thin-tier nudges; the settings screen can tighten it.
     agents_without_routing: 24 * 60 * 60_000,
+    // Leads arriving with no usable routing code (#1908). Repeats hourly while it
+    // persists: the cause is an upstream page building links without an xbc, which
+    // stays broken until somebody fixes that page, and every hour it runs is more
+    // leads booked with the wrong team.
+    catchall_rate: 60 * 60_000,
     // Schema behind the deployed code (#516). Repeats hourly while it persists:
     // it stays broken until a human runs db push, and a dormant schema gap has
     // twice gone unnoticed for a whole session, so it should keep asking.

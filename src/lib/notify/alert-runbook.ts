@@ -130,6 +130,10 @@ const FAMILY_BY_KEY: Record<string, AlertFamily> = {
 
   // The roster or the routing inputs disagree with Salesforce, or with themselves.
   agent_sync_failures: "the-roster-or-routing-data-is-wrong",
+  // #1908. The lead's own routing input is missing, so they are routed to the Low
+  // pool rather than their real tier. Same family as the rest: the routing data is
+  // wrong, and the fix is upstream of Slate rather than inside it.
+  catchall_rate: "the-roster-or-routing-data-is-wrong",
   agents_without_routing: "the-roster-or-routing-data-is-wrong",
   agents_without_schedule: "the-roster-or-routing-data-is-wrong",
   roster_coverage_gap: "the-roster-or-routing-data-is-wrong",

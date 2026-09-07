@@ -5,6 +5,7 @@ import { ClientErrorBeacon } from "@/components/ClientErrorBeacon";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { loadBookingHorizonDays } from "@/lib/booking/settings";
 import { loadReasonOptions } from "@/lib/booking/reason-options";
+import { resolveRequestedCode } from "@/lib/routing/catchall";
 
 export const dynamic = "force-dynamic";
 // Lead-facing: the brand is Pennie; Slate stays internal.
@@ -34,16 +35,14 @@ export default async function BookEntry({
 }) {
   const sp = await searchParams;
 
-  const bucketCode = first(sp, "xbc");
-  if (!bucketCode) {
-    return (
-      <main className="flex min-h-dvh items-center justify-center bg-bg p-8">
-        <p className="max-w-md text-sm text-fg-muted">
-          This booking link is missing its configuration (no <code>xbc</code>).
-        </p>
-      </main>
-    );
-  }
+  // A blank or unreadable code is ROUTED, not refused (#1908). cal.com catches
+  // every one with its own catch-all to the Low pool, and that rule carries about
+  // 2 percent of all bookings today, so refusing them turns a working lead into a
+  // dead end at cutover. The lead sees an ordinary booker: the routing is our
+  // problem, not something they can act on.
+  const requestedCode = first(sp, "xbc");
+  const resolved = resolveRequestedCode(requestedCode);
+  const bucketCode = resolved.code;
 
   const { data: bucketRow } = await supabaseAdmin()
     .from("buckets")
@@ -92,6 +91,7 @@ export default async function BookEntry({
       <ClientErrorBeacon page="/book" bucketCode={bucketCode} />
       <Booker
         bucketCode={bucketCode}
+        requestedCode={requestedCode}
         salesforceId={first(sp, "external_id") || null}
         attendee={{
           name: first(sp, "name"),

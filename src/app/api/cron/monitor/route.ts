@@ -58,6 +58,13 @@ import {
   type RateThresholds,
 } from "@/lib/monitor/booking-failure-rate";
 import {
+  catchallVerdict,
+  catchallPageText,
+  catchallClearText,
+  CATCHALL_RATE_ALERT_KEY,
+} from "@/lib/monitor/catchall-rate";
+import { readCatchallWindow, CATCHALL_WINDOW_HOURS } from "@/lib/monitor/catchall-rate-store";
+import {
   loadRateState,
   saveRateState,
   readTodayOutcomes,
@@ -836,6 +843,48 @@ export async function GET(req: NextRequest) {
             log.error("monitor", { msg: "booking failure rate step failed", step: context }, err),
         }),
     );
+
+    // --- Are leads arriving with no usable routing code (#1908)? ---
+    //
+    // A blank or unreadable `xbc` is routed to the Low pool rather than refused,
+    // which is right, and is also a defect absorber: every rescue is an upstream
+    // page that stopped sending a code. cal.com has been doing exactly this
+    // silently and turned out to be carrying roughly 2 percent of all bookings
+    // through it. Shipping the rescue without this count would reproduce the very
+    // condition it was written to end.
+    //
+    // Its own failure boundary (L73), like its neighbours. A tick that cannot
+    // COUNT sends nothing in either direction: an unreadable count is not a
+    // healthy rate, and an all clear hung off it would be a claim nobody measured
+    // (#1134, #1152). That is why the verdict has an `unmeasured` state, and why
+    // the store throws rather than letting a failed count arrive as zero.
+    await steps.run("catchall_rate", null, async () => {
+      const window = await readCatchallWindow(now);
+      const verdict = catchallVerdict(window);
+      log.info("monitor", {
+        msg: "catchall rate",
+        catchall: window.catchall,
+        total: window.total,
+        window_h: CATCHALL_WINDOW_HOURS,
+        verdict: verdict.kind,
+      });
+      if (verdict.kind === "unmeasured") return;
+      if (verdict.kind === "page") {
+        // alert-key: catchall_rate
+        // alert-text-ok: our own copy from catchall-rate.ts, built from measured
+        // counts; no error text can reach it.
+        await sendThrottledAlert(
+          CATCHALL_RATE_ALERT_KEY,
+          settings.cooldownMs.catchall_rate,
+          catchallPageText(verdict, CATCHALL_WINDOW_HOURS),
+        );
+        return;
+      }
+      // Hung off the MEASURED healthy verdict, never off "we did not page this
+      // run": a tick that skipped or could not read has cleared nothing.
+      // alert-key: catchall_rate
+      await resolveAlert(CATCHALL_RATE_ALERT_KEY, catchallClearText(verdict.share, CATCHALL_WINDOW_HOURS));
+    });
 
     // --- Is the booking API refusing its own caller (#1442, #1450, #1709)? ---
     //

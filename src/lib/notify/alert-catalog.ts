@@ -215,6 +215,15 @@ export const ALERT_CATALOG: AlertEntry[] = [
     kind: "condition",
     why: "Customers are being turned away right now; it ends when bookings start completing again, and the monitor re-measures the window every 5 minutes.",
   },
+  {
+    // #1908. A CONDITION: an upstream page has started building booking links
+    // without a routing code, and it stays true until somebody fixes that page.
+    // Whoever reads the page needs to know when it is over, and the monitor
+    // re-measures the same window every tick, so it can say so.
+    key: "catchall_rate",
+    kind: "condition",
+    why: "An upstream page is sending leads with no routing code, and they are being routed to the Low pool rather than their real tier; it ends when that page starts sending codes again.",
+  },
   // #1442 / #1450 / #1709. All three are CONDITIONS: each is an ongoing state
   // somebody ends by changing something (raising a ceiling, fixing a key, the
   // table becoming readable), so each owes an all-clear. Each is hung off a

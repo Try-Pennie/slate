@@ -66,6 +66,7 @@ import { routingMetaFromTrace } from "@/lib/webhooks/types";
 // Type-only (erased under --experimental-strip-types), so this never pulls the
 // emit module's runtime deps into the node-tested domain code.
 import type { WebhookSendScheduler } from "@/lib/webhooks/emit";
+import { catchallRecord } from "@/lib/routing/catchall";
 import type {
   Booking,
   BookingEventAction,
@@ -406,6 +407,20 @@ export async function deleteEventBestEffort(
 
 export interface CreateBookingInput {
   bucketCode: string;
+  /**
+   * The `xbc` exactly as it arrived from the lead's link, when the caller knows
+   * it (#1908). It is NOT always `bucketCode`: a blank or unreadable one is
+   * routed to the Low pool, and this is the only evidence of what the upstream
+   * page actually sent.
+   *
+   * Recorded, never routed on. Routing uses `bucketCode`, which the caller has
+   * already resolved through `resolveRequestedCode`, so a client that lies about
+   * this corrupts a metric and cannot reach a pool it was not routed to.
+   *
+   * Undefined means the caller did not say, which is different from an empty
+   * string meaning the lead arrived with no code at all.
+   */
+  requestedCode?: string;
   startIso: string;
   timezone: string;
   salesforceId?: string | null;
@@ -1895,6 +1910,11 @@ export async function createBooking(
           rungsDropped: 0,
           requestedTier: pool.criteria.debt_team ? String(pool.criteria.debt_team) : null,
           bookedTier: null,
+          // No booking was made, so the subject is the bucket that was TRIED. A
+          // rescued lead who then found no times is still a rescued lead, and
+          // leaving it off here would undercount exactly the population whose
+          // rescue did not work.
+          ...catchallRecord(input.requestedCode, bucket.code),
           outcome,
         });
       } catch {
@@ -1978,7 +1998,12 @@ export async function createBooking(
     pinned_user_id: userId,
     pinned_agent_email: email,
     gcal_client_id: gcalClientId,
-    payload: { booking: bookingInsert, event, bucketCode: input.bucketCode },
+    payload: {
+      booking: bookingInsert,
+      event,
+      bucketCode: input.bucketCode,
+      requestedCode: input.requestedCode,
+    },
   });
 
   const result = await completeReservation(deps, reservation);
@@ -2050,7 +2075,7 @@ async function completeReservation(
   deps: BookingDeps,
   reservation: BookingReservation,
 ): Promise<BookingResult> {
-  const { booking: bookingInsert, event, bucketCode } = reservation.payload;
+  const { booking: bookingInsert, event, bucketCode, requestedCode } = reservation.payload;
   const key = bookingInsert.idempotency_key;
 
   // A resume after the booking was inserted but before the reservation was
@@ -2155,6 +2180,9 @@ async function completeReservation(
         rungsDropped: rt?.rungs_dropped ?? 0,
         requestedTier: rt?.requested_tier ?? null,
         bookedTier: rt?.booked_tier ?? null,
+        // Judged against the bucket actually booked, never against the raw value
+        // alone: the raw one comes from the client (#1908).
+        ...catchallRecord(requestedCode, resolved.bucket.code),
         outcome: "booked",
       });
     } catch {
