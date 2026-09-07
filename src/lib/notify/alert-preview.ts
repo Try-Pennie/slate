@@ -1657,12 +1657,14 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     channel: "info",
     text: verdictParkedInfoText(Object.keys(PARKED_VERDICT_DETECTORS)),
   },
-  {
-    key: "detector_parked",
-    state: "a single parked check",
-    channel: "info",
-    text: verdictParkedInfoText(["verdict:availability-truth"]),
-  },
+  // There WAS a second state here rendering one named lane, back when two were
+  // parked and the whisper had a visibly different singular form to read. Since
+  // #1831 armed the truth probe the registry holds exactly one entry, so the state
+  // above IS the singular form, and the only way to preview the plural again would
+  // be to name a lane the registry has no entry for, which renders the word
+  // undefined into a sentence somebody reads. Nothing is lost: the state above is
+  // derived from the registry, so a second park brings the plural wording back into
+  // the preview on its own.
   {
     key: "detector_unpark:*",
     state: "a parked check has started concluding",
