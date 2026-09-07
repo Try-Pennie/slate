@@ -11,8 +11,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { assert, fail, finish } from "./lib/harness.ts";
-
-type RGB = [number, number, number];
+import { ratio, type RGB } from "./lib/wcag-contrast.ts";
 
 // --- Token parsing ----------------------------------------------------------
 const TOKEN_FILE = join("src", "app", "globals.css");
@@ -68,18 +67,8 @@ function rDark(name: string): RGB {
   return resolveIn([DARK, ROOT], name);
 }
 
-// --- WCAG 2.x relative luminance + contrast ratio ---------------------------
-function lin(c: number): number {
-  const s = c / 255;
-  return s <= 0.04045 ? s / 12.92 : Math.pow((s + 0.055) / 1.055, 2.4);
-}
-function luminance([red, green, blue]: RGB): number {
-  return 0.2126 * lin(red) + 0.7152 * lin(green) + 0.0722 * lin(blue);
-}
-function ratio(a: RGB, b: RGB): number {
-  const [l1, l2] = [luminance(a), luminance(b)].sort((x, y) => y - x);
-  return (l1 + 0.05) / (l2 + 0.05);
-}
+// WCAG luminance and ratio live in scripts/lib/wcag-contrast.ts, shared with
+// the guards that verify the numbers quoted in DESIGN.md and the design records.
 
 // The harness takes (condition, message). Passing the message alone made every
 // passing line print "ok: undefined", so the ratios this guard exists to record
