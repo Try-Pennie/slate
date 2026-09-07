@@ -26,7 +26,7 @@ function main() {
 
   // 2. A lagging export lane points at the export lane, NOT at the credential.
   {
-    const reason = "routing_decisions: the export lane is 4 hours behind, with 812 rows waiting";
+    const reason = "routing_decisions: the oldest row waiting for export is 4 hours old, with 812 rows waiting";
     const text = retentionSkippedText("prune-routing", reason);
     assert(text.includes("catches up"), "the lag remedy sends the reader to the export lane");
     assert(text.includes("snowflake-export"), "the lag remedy names the lane to check");

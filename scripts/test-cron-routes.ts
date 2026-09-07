@@ -107,6 +107,29 @@ for (const [cron, value] of Object.entries(CRON_ROUTES)) {
 
 assert(routesForCron("0 0 31 2 *").length === 0, "unknown cron expressions route to nothing");
 
+// #1713: the retention lanes gate on the export lane being current, and both used
+// to fire at 03:00 exactly, so the gate read the mirror while the export tick it
+// was judging was still working through six tables. Derived from the routes, not
+// from the expressions, so a renamed cron is still checked.
+{
+  const cronFor = (route: string) =>
+    Object.entries(CRON_ROUTES).find(([, r]) => (Array.isArray(r) ? r : [r]).includes(route))?.[0];
+  const exportCron = cronFor("/api/cron/snowflake-export");
+  assert(exportCron !== undefined, "the export lane has a cron");
+  const exportStep = Number(/^\*\/(\d+) /.exec(exportCron ?? "")?.[1]);
+  assert(Number.isInteger(exportStep) && exportStep > 0, `the export lane runs every N minutes (${exportCron})`);
+  for (const route of ["/api/cron/prune-routing", "/api/cron/prune-webhook-payloads", "/api/cron/prune-bookings-pii"]) {
+    const cron = cronFor(route);
+    assert(cron !== undefined, `${route} has a cron`);
+    const minute = Number(cron?.split(" ")[0]);
+    assert(Number.isInteger(minute), `${route} fires at a fixed minute (${cron})`);
+    assert(
+      minute % exportStep !== 0,
+      `${route} (${cron}) never fires on the export lane's own minute (every ${exportStep}), so the gate never reads mid tick`,
+    );
+  }
+}
+
 // --- Doc/runbook consistency guards (docs cluster #639/#642/#644) ---
 // The setup + deploy docs drift out of sync with this file and wrangler.jsonc
 // (an audit found README describing Vercel crons that no longer exist, and

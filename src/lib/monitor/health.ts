@@ -218,7 +218,7 @@ export const MIRROR_STALE_BOUNDS_MS: Record<string, number> = {
  * with no alerting, so the first permanent deletion of customer data in Slate was
  * about to run with no one watching it.
  *
- * They fire daily at 03:00 UTC, so the bound is the cadence plus 4h of slack: one
+ * They fire daily at 03:05 UTC, so the bound is the cadence plus 4h of slack: one
  * missed or failing run pages, and cron jitter never causes it.
  *
  * These lanes stamp on a SKIP as well as on real work, because "the cron fired"
@@ -566,7 +566,7 @@ export function retentionAlertText(
  * What to do about a lane that has NEVER stamped, under a `neverIsStale` bounds map.
  *
  * Why this exists. Turning `neverIsStale` on for the daily retention lanes (#1102)
- * paged all three the moment the heartbeat code deployed: those lanes run at 03:00
+ * paged all three the moment the heartbeat code deployed: those lanes run at 03:05
  * UTC, so between shipping the code and their first scheduled run they had
  * legitimately never stamped, and the alert claimed they had "failed every run or
  * are not being scheduled". Both false. That is exactly the cry-wolf failure the

@@ -18,6 +18,7 @@ const lag = (over: Partial<TableLag> = {}): TableLag => ({
   table: "bookings",
   cursorTs: "2026-07-31T12:00:00Z",
   newestTs: "2026-07-31T12:05:00Z",
+  oldestPendingTs: "2026-07-31T12:05:00Z",
   lagMs: 5 * 60_000,
   backlog: 1,
   ...over,
@@ -46,7 +47,7 @@ describe("mirrorReadyForDeletion", () => {
     const g = await mirrorReadyForDeletion();
     expect(g.ready).toBe(false);
     expect(g.reason).toMatch(/bookings/);
-    expect(g.reason).toMatch(/behind/);
+    expect(g.reason).toMatch(/oldest row waiting for export is .* old/);
   });
 
   it("does NOT ask Snowflake anything, so a suspended warehouse cannot stall the lane", async () => {

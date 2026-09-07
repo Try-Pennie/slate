@@ -129,6 +129,7 @@ import {
   refundFailedAlert,
 } from "@/lib/rate-limit-core";
 import { evaluateRecon } from "@/lib/snowflake/reconcile-core";
+import { evaluateExportLag } from "@/lib/snowflake/export-lag-core";
 import {
   snowflakeDriftAlert,
   snowflakeDriftRecovery,
@@ -695,7 +696,16 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     channel: "alert",
     text: retentionSkippedText(
       "prune-routing",
-      "routing_decisions: the export lane is 4 hours behind, with 812 rows waiting",
+      evaluateExportLag([
+        {
+          table: "routing_decisions",
+          cursorTs: "2026-08-03T02:00:00.000Z",
+          newestTs: "2026-08-03T06:55:00.000Z",
+          oldestPendingTs: "2026-08-03T02:00:30.000Z",
+          lagMs: 4 * 60 * 60_000,
+          backlog: 812,
+        },
+      ]).reasons.join("; "),
     ),
   },
   {
@@ -1821,7 +1831,7 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
       evaluateRecon(
         [{ table: "audit_log", supabase: 278, snowflake: 27, drift: 251, behindCursor: 277 }],
         [],
-        [{ table: "audit_log", cursorTs: "2026-08-03T05:59:00.000Z", newestTs: "2026-08-03T05:59:00.000Z", lagMs: 0, backlog: 0 }],
+        [{ table: "audit_log", cursorTs: "2026-08-03T05:59:00.000Z", newestTs: "2026-08-03T05:59:00.000Z", oldestPendingTs: "2026-08-03T05:59:00.000Z", lagMs: 0, backlog: 0 }],
       ).reasons,
     ) },
   // #1231: a small stranding the total-count tolerance would never have reported.
@@ -1830,7 +1840,7 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
       evaluateRecon(
         [{ table: "booking_events", supabase: 1086, snowflake: 1084, drift: 2, behindCursor: 1085 }],
         [],
-        [{ table: "booking_events", cursorTs: "2026-08-03T14:11:47.000Z", newestTs: "2026-08-03T14:11:47.000Z", lagMs: 0, backlog: 0 }],
+        [{ table: "booking_events", cursorTs: "2026-08-03T14:11:47.000Z", newestTs: "2026-08-03T14:11:47.000Z", oldestPendingTs: "2026-08-03T14:11:47.000Z", lagMs: 0, backlog: 0 }],
       ).reasons,
     ) },
   { key: "snowflake_reconcile_drift", state: "the export lane is behind", channel: "alert",
@@ -1838,7 +1848,7 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
       evaluateRecon(
         [{ table: "bookings", supabase: 10412, snowflake: 9880, drift: 532, behindCursor: 9880 }],
         [],
-        [{ table: "bookings", cursorTs: "2026-08-03T03:00:00.000Z", newestTs: "2026-08-03T06:00:00.000Z", lagMs: 3 * 60 * 60_000, backlog: 540 }],
+        [{ table: "bookings", cursorTs: "2026-08-03T03:00:00.000Z", newestTs: "2026-08-03T06:00:00.000Z", oldestPendingTs: "2026-08-03T03:00:01.000Z", lagMs: 3 * 60 * 60_000, backlog: 540 }],
       ).reasons,
     ) },
   { key: "snowflake_reconcile_drift", state: "the cause could not be measured", channel: "alert",
