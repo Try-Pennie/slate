@@ -132,9 +132,17 @@ export function worstOutcome(verdicts: (RosterVerdict | ScheduleVerdict)[]): Par
 //
 // So both directions are checked at COMPILE time rather than by a test that has to
 // remember to be written. Neither line runs; each exists to fail `tsc`.
-/** Every outcome this file can produce is classified over there. */
-const _everyOutcomeIsClassified: Record<ParityOutcome, unknown> = PARITY_VERDICT_CLASS;
-/** And nothing is classified over there that this file cannot produce. */
-const _everyClassifiedOutcomeExists: ParityOutcome = null as unknown as ParityVerdict;
+// The set to check against is everything the two halves PRODUCE, which is the
+// outcomes PLUS the deliberately quiet ones, never `ParityOutcome` alone. Keying it
+// on `ParityOutcome` is what shipped the check inert on 2026-09-07: nine agents came
+// back `staff-not-bookable`, the one verdict this file exempts from having an exit
+// code, so nothing anywhere required it to be classified and the endpoint refused
+// every payload that carried it. An exemption from ONE table is not an exemption
+// from every table, and the guard has to be told which one it is exempt from (L129).
+type ProducedVerdict = ParityOutcome | QuietVerdict;
+/** Every verdict this file's halves can produce is classified over there. */
+const _everyOutcomeIsClassified: Record<ProducedVerdict, unknown> = PARITY_VERDICT_CLASS;
+/** And nothing is classified over there that they cannot produce. */
+const _everyClassifiedOutcomeExists: ProducedVerdict = null as unknown as ParityVerdict;
 void _everyOutcomeIsClassified;
 void _everyClassifiedOutcomeExists;
