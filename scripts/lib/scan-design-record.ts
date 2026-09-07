@@ -114,7 +114,12 @@ export function auditRecord(input: AuditInput): Problem[] {
     try {
       productColors.push(parseColor(raw));
     } catch {
-      /* a non-colour token (a shadow, a radius) is not our business */
+      // A non-colour token (a shadow, a radius, a duration) is not our business.
+      // WHICH WAY THIS FAILS: if a real colour token were ever unreadable here it
+      // would be missing from the product set, so a record painted in it would be
+      // reported as "not a token". That is a false ACCUSATION, not a false pass,
+      // which is the safe direction for a guard: it complains rather than going
+      // quiet. Do not turn this into a skip that also suppresses the comparison.
     }
   }
   // Only the specimen's OWN palette is audited: the document's chrome (its page
