@@ -211,19 +211,36 @@ export async function AppHeader({
           line up with the left edge of the content under them rather than sitting
           in from it. Read from PAGE_WIDTHS so the two cannot drift apart. */}
       <div className={`mx-auto flex min-h-16 ${PAGE_WIDTHS.wide} flex-wrap items-center gap-x-6 gap-y-1 px-8 py-2`}>
-        {/* eslint-disable-next-line @next/next/no-img-element -- concrete-fill SVG logo; OpenNext/CF has no image loader */}
-        <img
-          src="/brand/logo-pennie-charcoal.svg"
-          alt="Pennie"
-          className="h-[22px] w-auto dark:hidden"
-        />
-        {/* eslint-disable-next-line @next/next/no-img-element -- cream variant for the dark theme */}
-        <img
-          src="/brand/logo-pennie-cream.svg"
-          alt="Pennie"
-          className="hidden h-[22px] w-auto dark:block"
-        />
-        <HeaderNav tabs={tabs} />
+        {/* #2038: the wordmark and the nav labels sit on ONE baseline.
+            
+            They were each centred independently, the wordmark in the bar and each
+            label inside its own 44px touch target, which put the labels against
+            the MIDDLE of the wordmark rather than its feet.
+            
+            This is an inner row, not `items-baseline` on the bar itself, for two
+            reasons. Baseline alignment packs its line to the START of the cross
+            axis, so putting it on the bar would drop the whole group to the top
+            of the 64px row; the group is baseline aligned WITHIN itself and then
+            centred as one thing. And the account menu on the right has no
+            business sharing a baseline with a wordmark.
+            
+            The 44px targets are untouched: baseline alignment moves the boxes to
+            line their text up, it does not resize them. */}
+        <div className="flex items-baseline gap-x-6">
+          {/* eslint-disable-next-line @next/next/no-img-element -- concrete-fill SVG logo; OpenNext/CF has no image loader */}
+          <img
+            src="/brand/logo-pennie-charcoal.svg"
+            alt="Pennie"
+            className="pn-wordmark h-[22px] w-auto dark:hidden"
+          />
+          {/* eslint-disable-next-line @next/next/no-img-element -- cream variant for the dark theme */}
+          <img
+            src="/brand/logo-pennie-cream.svg"
+            alt="Pennie"
+            className="pn-wordmark hidden h-[22px] w-auto dark:block"
+          />
+          <HeaderNav tabs={tabs} />
+        </div>
         <div className="ml-auto flex items-center">
           <AccountMenu
             email={email}

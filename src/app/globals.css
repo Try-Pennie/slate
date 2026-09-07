@@ -863,3 +863,26 @@ html {
 .pn-link-pending[data-pending] {
   visibility: visible;
 }
+
+/* The wordmark sits on its BASELINE, not its bottom edge (#2038).
+
+   Flexbox takes a replaced element's baseline to be its bottom margin edge, and
+   the wordmark's glyphs do not end there: the SVG's viewBox is 19.422 user units
+   tall while the flat stems finish at 19.021, so 0.401 units of empty space sit
+   below the baseline. Aligned as it comes, the wordmark lands that fraction high.
+
+   So it is nudged DOWN by that same fraction of the rendered height:
+   22px * (1 - 19.021 / 19.422) = 0.4542px.
+
+   As a RELATIVE OFFSET rather than a negative bottom margin, which was the first
+   attempt and does nothing: measured in Chrome, a replaced flex item is aligned by
+   its BORDER BOX bottom, and the margin is simply not consulted, so the wordmark
+   stayed exactly where it was. Relative positioning is applied after layout, so it
+   moves the ink without touching the baseline the row was built from.
+
+   scripts/test-wordmark-baseline.ts re-derives the number from the artwork and the
+   header's own height, so the three cannot drift apart. */
+.pn-wordmark {
+  position: relative;
+  top: 0.4542px;
+}
