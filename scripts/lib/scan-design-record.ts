@@ -117,21 +117,28 @@ export function auditRecord(input: AuditInput): Problem[] {
       /* a non-colour token (a shadow, a radius) is not our business */
     }
   }
+  // Only the specimen's OWN palette is audited: the document's chrome (its page
+  // fill, its rules) is not a product claim. Membership is decided against the
+  // colours already resolved above rather than by re-parsing the declarations
+  // here, so there is one parse per palette entry and no second place for an
+  // unreadable value to be quietly scored as "not in the palette" (L11).
+  const paletteColors = [...resolved.values()];
   for (const literal of colorLiterals(input.record)) {
     let rgb: RGB;
     try {
       rgb = parseColor(literal);
     } catch {
+      // A literal the colour regex matched but the parser cannot read is a fault
+      // in this audit, not an absence of one. Skipping it silently would let the
+      // guard stop looking while still reporting a clean record, which is the
+      // exact failure it exists to prevent (L11, L98).
+      problems.push({
+        kind: "colour-unreadable",
+        detail: `the record paints with ${literal}, which this audit cannot parse, so it was NOT checked`,
+      });
       continue;
     }
-    // White and pure transparent-ish neutrals used for document chrome are not
-    // product claims; only the specimen's own palette is audited, which is why
-    // this checks the declared palette rather than every literal on the page.
-    if (!Object.values(input.palette).some((d) => {
-      const v = decls.get(d.replace(/^--/, "").toLowerCase());
-      if (!v) return false;
-      try { return near(parseColor(v), rgb); } catch { return false; }
-    })) continue;
+    if (!paletteColors.some((p) => near(p, rgb))) continue;
     if (!productColors.some((p) => near(p, rgb))) {
       problems.push({
         kind: "colour-not-a-token",

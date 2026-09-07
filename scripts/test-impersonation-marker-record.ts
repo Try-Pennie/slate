@@ -107,7 +107,19 @@ only(
   "the Hazard Rule going missing from DESIGN.md",
 );
 
-// 5. a measurement row deleted
+// 5. a colour literal the audit cannot read. It must be REPORTED rather than
+//    skipped: a guard that quietly stops looking reports a clean record, which is
+//    indistinguishable from a correct one (L11, L98).
+//    The planted value is VALID CSS that parseColor does not support (percentage
+//    channels), which is the real shape of this fault: a truncated hex never
+//    matches the colour regex at all and is caught earlier as palette-unreadable.
+only(
+  ["colour-unreadable"],
+  { ...real, record: real.record.replace(/--mustard:\s*#FFD073/i, "--mustard:rgb(100% 82% 45%)") },
+  "a colour literal that is valid CSS the audit cannot parse",
+);
+
+// 6. a measurement row deleted
 only(
   ["claim-missing"],
   { ...real, record: real.record.replace("mustard strip against the rose bar below it", "something else entirely") },
