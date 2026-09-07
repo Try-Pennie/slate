@@ -718,3 +718,135 @@ html {
   --font-sans: var(--font-sans);
   --font-display: var(--font-display);
 }
+
+/* ---------------------------------------------------------------------------
+   The impersonation marker (#2037).
+
+   A hazard striped frame around the whole viewport whose TOP EDGE carries the
+   label. It is the one functional use of yellow in the product, named in the
+   Hazard Rule in DESIGN.md and recorded in full, with every measurement, at
+   docs/design/impersonation-marker.html. Read that before changing anything
+   here.
+
+   NO PER THEME OVERRIDE, deliberately. A frame is one half of a pair with the
+   page behind it and Slate has two pages: navy alone is 14.85:1 on beige and
+   1.23:1 on dark, mustard alone is 13.57:1 on dark and 1.34:1 on beige, so
+   either one on its own vanishes in one theme. The stripe carries both, which
+   is what makes one paint correct in both.
+   --------------------------------------------------------------------------- */
+
+/* The band width and the edge thickness, named once (IM2). */
+:root {
+  --impersonation-band: 9px;
+  --impersonation-edge: 6px;
+}
+
+.pn-impersonation-edge {
+  position: fixed;
+  z-index: 55; /* over the sticky header (30) and panels (50..54), under the skip link (60) */
+  pointer-events: none; /* a control at the page edge stays clickable through it */
+  background: repeating-linear-gradient(
+    45deg,
+    var(--pennie-navy) 0 var(--impersonation-band),
+    var(--pennie-yellow) var(--impersonation-band)
+      calc(var(--impersonation-band) * 2)
+  );
+}
+.pn-impersonation-edge--left {
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: var(--impersonation-edge);
+}
+.pn-impersonation-edge--right {
+  top: 0;
+  bottom: 0;
+  right: 0;
+  width: var(--impersonation-edge);
+}
+.pn-impersonation-edge--bottom {
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: var(--impersonation-edge);
+}
+
+/* The strip IS the frame's top edge (IM1, IM3). Solid mustard, graphite text. */
+.pn-impersonation-strip {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 56; /* above its own edges, so the corners are the strip, not stripes */
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 30px;
+  padding: 4px 8px;
+  background: var(--pennie-yellow);
+  color: var(--pennie-graphite); /* 8.61:1 */
+  font-size: var(--fs-small);
+  line-height: 1.35;
+}
+.pn-impersonation-glyph {
+  flex: none;
+  width: 15px;
+  height: 15px;
+  border-radius: 3px;
+  background: var(--pennie-graphite);
+  color: var(--pennie-yellow);
+  font-size: 10px;
+  font-weight: var(--fw-semibold);
+  line-height: 15px;
+  text-align: center;
+}
+/* IM4: the clauses are flex ITEMS, so a line can break only BETWEEN them, which
+   is the period. Nothing about the width can move the break inside a clause. */
+.pn-impersonation-say {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  column-gap: 0.32em;
+  row-gap: 1px;
+}
+.pn-impersonation-say > [data-impersonation-clause] {
+  min-width: 0;
+}
+/* IM5: the way out is pinned and never shrinks, so no width moves it off the
+   edge or onto a row of its own. IM7: outlined graphite, never sky, because sky
+   is the only colour in the product that means "do this". */
+.pn-impersonation-exit {
+  flex: none;
+  align-self: center;
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: var(--fw-semibold);
+  padding: 3px 10px;
+  border-radius: 6px;
+  border: 1.2px solid var(--pennie-graphite);
+  background: transparent;
+  color: var(--pennie-graphite);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.pn-impersonation-exit:hover {
+  background: rgba(52, 52, 52, 0.1);
+}
+
+/* IM6: the page insets itself by what the strip MEASURED. The height varies with
+   width, so it is published by the frame and read here, and appears as a number
+   nowhere. */
+:root[data-impersonating="on"] body {
+  padding: var(--impersonation-strip-h, 30px) var(--impersonation-edge)
+    var(--impersonation-edge);
+}
+/* The sticky header sticks BELOW the strip rather than under it, and the skip
+   link clears it too (IM8): both are positioned against the viewport, which the
+   body's padding does not move. */
+:root[data-impersonating="on"] [data-app-header] {
+  top: var(--impersonation-strip-h, 30px);
+}
+:root[data-impersonating="on"] .pn-skip-link:focus {
+  top: calc(var(--impersonation-strip-h, 30px) + 0.5rem);
+}

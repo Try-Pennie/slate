@@ -8,6 +8,22 @@ import { SubmitButton } from "@/components/ui/SubmitButton";
  * app already reverted the admin to their own view. Explains which happened, then
  * clears the stale cookie (automatically via ImpersonationDropAutoClear, or via
  * the no-JS Dismiss form). `role="status"` so it's announced to screen readers.
+ *
+ * IT STAYS AN ORDINARY BAR, and that is the #2037 decision rather than an
+ * oversight (IM9). This notice says the dangerous state is OVER: the app has
+ * already put you back in your own view and nothing is being done as anybody
+ * else. Ordinary chrome is the right weight for that, and dressing it as a
+ * warning would compete with the two surfaces that are warning about something
+ * still true.
+ *
+ * It has to be told apart from both of them, and now is:
+ *
+ * - from the ACTIVE marker, by FORM rather than by colour. That is a hazard
+ *   striped frame around the whole viewport with a mustard strip; this is a bar
+ *   in the flow. The two can no longer be confused at a glance, which is what
+ *   the old navy bar could not manage when the active state was also a navy bar.
+ * - from the calendar failure bar, by colour: rose means something is wrong right
+ *   now, and nothing here is.
  */
 export function ImpersonationDropNotice({
   reason,

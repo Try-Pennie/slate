@@ -23,7 +23,11 @@ import {
 const header = readFileSync("src/components/AppHeader.tsx", "utf8");
 const css = readFileSync("src/app/globals.css", "utf8");
 
-const headerZ = Number(/<header className="sticky top-0 z-(\d+)/.exec(header)?.[1]);
+// Tolerant of attributes BEFORE `className`, because there are some: the header
+// carries `data-app-header` so the impersonation marker can offset it (#2037).
+// The anchored form matched only one attribute order, and the first change to
+// that order turned this read into NaN, which the control below reported.
+const headerZ = Number(/<header[^>]*className="sticky top-0 z-(\d+)/.exec(header)?.[1]);
 const skipZ = Number(/\.pn-skip-link\s*\{[^}]*?z-index:\s*(\d+)/s.exec(css)?.[1]);
 
 // Positive controls on the two reads. A regex that stopped matching would give
@@ -75,6 +79,35 @@ assert(
 assert(
   MAX_ANCHORED_PANEL_NESTING >= 2,
   `the app nests two panels, so the supported depth (${MAX_ANCHORED_PANEL_NESTING}) has to reach at least that`,
+);
+
+// #2037: the impersonation marker sits between the panels and the skip link.
+//
+// It is a frame around the whole viewport, so it has to paint over the sticky
+// header and over an open panel (a menu drawn across the hazard edge would read
+// as the marker being broken), while still leaving the skip link on top. That
+// puts it in the gap above the deepest nested panel, and the gap is only there
+// because MAX_ANCHORED_PANEL_NESTING is bounded: raising that far enough would
+// walk the panels straight into it, silently, so the two are checked together.
+const edgeZ = Number(
+  /\.pn-impersonation-edge\s*\{[^}]*?z-index:\s*(\d+)/s.exec(css)?.[1],
+);
+const stripZ = Number(
+  /\.pn-impersonation-strip\s*\{[^}]*?z-index:\s*(\d+)/s.exec(css)?.[1],
+);
+assert(Number.isFinite(edgeZ), `the marker's edge z-index was read (got ${edgeZ})`);
+assert(Number.isFinite(stripZ), `the marker's strip z-index was read (got ${stripZ})`);
+assert(
+  edgeZ > deepest,
+  `the marker's frame (${edgeZ}) paints above the deepest panel (${deepest}), or a menu is drawn across the hazard edge`,
+);
+assert(
+  stripZ >= edgeZ,
+  `the marker's strip (${stripZ}) is at least its own edges (${edgeZ}), so the corners read as the strip`,
+);
+assert(
+  stripZ < skipZ,
+  `the marker (${stripZ}) stays below the skip link (${skipZ}), which must stay reachable over everything`,
 );
 
 finish();
