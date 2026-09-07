@@ -201,7 +201,7 @@ on purpose and is waiting for somebody.
 Keys: `agent_sync_failures`, `agents_without_routing`, `agents_without_schedule`,
 `roster_coverage_gap`, `salesforce_user_id_conflicts`, `salesforce_manager_ambiguous`,
 `misroute:*`, `rr_ordering_degraded`, `reassign-unknown-reason-code`,
-`booker_empty_reason`.
+`booker_empty_reason`, `schedule_parity_drift`.
 
 **What fired it.** Slate's picture of who works here, who they report to, or what they
 are eligible for disagrees with Salesforce, or with itself.
@@ -212,6 +212,22 @@ are eligible for disagrees with Salesforce, or with itself.
 - `/admin` for the agent list, `/admin/agents/<id>` for one agent's attributes and hours.
 - An agent with no schedule is expected before go-live (every agent sets their own hours
   at cutover) and is a real problem after it.
+
+**`schedule_parity_drift` is the one that compares Slate against cal.com** (#2031), so
+it is answered differently from the rest of this family. It fires from the daily
+`schedule-parity` workflow and names the agents whose hours, days, timezone or pool
+membership the two systems disagree about, while both are live and cal.com is still
+taking every real lead.
+
+- For an hours, days or timezone difference, cal.com is the system those agents have
+  actually been maintaining, so it is the better source: run
+  `APPLY=1 pnpm import:calcom-schedules`, which is idempotent and reports what it
+  changed. That fixed all 21 differences on 2026-09-07.
+- For a roster difference (somebody who has left Slate and can still be booked in
+  cal.com, or the reverse) there is no command. Salesforce is the source for both, so
+  a divergence means one side's sync has stalled, and a person decides which.
+- Reproduce or check it by hand with `pnpm verify:calcom-parity`, which exits on a
+  different code per finding.
 
 **Fix or escalate.** Data problems go to whoever owns the Salesforce record.
 `misroute` and `rr_ordering_degraded` are Slate's own routing reporting something it

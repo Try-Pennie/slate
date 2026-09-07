@@ -175,6 +175,17 @@ export function cronLanesNote(): string {
 export const CANARY_STALE_BOUNDS_MS: Record<string, number> = {
   "smoke-canary": 90 * MIN,
   "smoke-canary-full": 8 * 60 * MIN,
+  // The daily cal.com parity sweep (#2031), which is a scheduled workflow like the
+  // two above and belongs to the same family for the same reason: a stopped sweep
+  // means a comparison went quiet, never that Slate is down, so it must not reach
+  // the external /api/health 503.
+  //
+  // 30 hours, not the 3x cadence the 30 minute canary uses. On a daily schedule
+  // GitHub's jitter is minutes and a genuinely missed run is a whole day, so a
+  // multiple of the cadence would take two days to notice one; 30 hours pages
+  // within six hours of a run that did not happen. There is no gap filler for this
+  // one, so the page IS the recovery path.
+  "schedule-parity": 30 * 60 * MIN,
 };
 
 /**

@@ -33,6 +33,11 @@ import {
 import { retentionAlertText, LANE_STALE_BOUNDS_MS, VERDICT_STALE_BOUNDS_MS } from "@/lib/monitor/health";
 import { PARKED_VERDICT_DETECTORS } from "@/lib/monitor/verdict-freshness";
 import {
+  classifyParitySweep,
+  buildScheduleParityAlert,
+  buildScheduleParityAllClear,
+} from "@/lib/monitor/schedule-parity-alert";
+import {
   formatSyncStalenessAlert,
   formatSyncStalenessRecovery,
   SYNC_STALENESS_THRESHOLD_MS,
@@ -1281,6 +1286,35 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     text: formatAvailabilityRecovery(),
   },
   {
+    // The fixture is the real 2026-09-07 sweep: 21 of 102 agents drifted in the five
+    // days after 97 schedules were imported and verified idempotent, which is the
+    // measurement this alert exists because of.
+    key: "schedule_parity_drift",
+    state: "the two systems hold different weeks",
+    channel: "alert",
+    text: buildScheduleParityAlert(
+      classifyParitySweep({
+        total: 102,
+        compared: 100,
+        runUrl: "https://github.com/Try-Pennie/slate/actions/runs/1",
+        findings: [
+          { verdict: "days-differ", count: 6, agents: ["forellana@", "jarias@", "lcastillo@"] },
+          { verdict: "hours-differ", count: 6, agents: ["mharris@"] },
+          { verdict: "timezone-differs", count: 9, agents: ["cfrank@"] },
+          { verdict: "no-calcom-schedule", count: 2, agents: ["jsaminu@"] },
+        ],
+      }),
+    ),
+  },
+  {
+    key: "schedule_parity_drift",
+    state: "the two systems agree again",
+    channel: "recovery",
+    text: buildScheduleParityAllClear(
+      classifyParitySweep({ total: 102, compared: 100, runUrl: "https://github.com/x/y", findings: [] }),
+    ),
+  },
+  {
     key: "migration_version_lag",
     state: "shipped code is ahead of the applied schema",
     channel: "alert",
@@ -1595,6 +1629,21 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     state: "the booking canary recovered",
     channel: "recovery",
     text: canaryRecoveryText("smoke-canary-full"),
+  },
+  {
+    key: "cron_lane_stale:*",
+    state: "the daily cal.com comparison went quiet",
+    channel: "alert",
+    text: canaryAlertText(
+      { lane: "schedule-parity", ageMs: 36 * 60 * 60_000, maxStaleMs: 30 * 60 * 60_000, unreadable: false },
+      1800,
+    ),
+  },
+  {
+    key: "cron_lane_stale:*",
+    state: "the daily cal.com comparison recovered",
+    channel: "recovery",
+    text: canaryRecoveryText("schedule-parity"),
   },
   {
     key: "cron_lane_stale:*",

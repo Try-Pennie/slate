@@ -27,7 +27,14 @@ export const dynamic = "force-dynamic";
  * lane is actually dead. An unknown lane is rejected (400) and stamps nothing; the
  * default (no param) stays `smoke-canary` for the existing caller.
  */
-const CANARY_HEARTBEAT_LANES = new Set(["smoke-canary", "smoke-canary-full"]);
+const CANARY_HEARTBEAT_LANES = new Set([
+  "smoke-canary",
+  "smoke-canary-full",
+  // The daily Slate against cal.com comparison (#2031). Stamped only after that
+  // sweep reached a verdict, never merely because the workflow ran, so a sweep
+  // that cannot read cal.com goes stale rather than reporting itself alive.
+  "schedule-parity",
+]);
 
 export async function POST(req: NextRequest) {
   const keys = parseApiKeys(bookingApiKeyPrimary(), bookingApiKeySecondary());

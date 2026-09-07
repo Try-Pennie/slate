@@ -55,6 +55,17 @@
 //   PARITY_AGENT     one email instead of the whole roster. Narrows the HOURS half
 //                    only: membership is a comparison of two whole rosters and
 //                    means nothing scoped to one person.
+// env-ok: CALCOM_ORG_ID (optional; defaults to 19474, the live org, and a scheduled
+// run has no reason to point elsewhere)
+// env-ok: CALCOM_TEAM_ID (optional; defaults to 19546, Loan Consultation)
+// env-ok: CALCOM_EVENT_TYPE_ID (optional; defaults to 1314152, the review event the
+// landing pages use)
+// env-ok: CALCOM_PACE_MS (optional; defaults to 250, which is what keeps cal.com from
+// answering 429 on most of the roster)
+// env-ok: PARITY_AGENT (optional; narrows the hours half to one agent, which is a
+// hand run debugging aid and never something a schedule sets)
+import { writeFileSync } from "node:fs";
+import { buildParitySummary } from "./lib/parity-report.ts";
 import { loadEnvFiles, envOr } from "./smoke-env.ts";
 
 loadEnvFiles([".env.local", ".dev.vars"]);
@@ -342,6 +353,27 @@ const CANNOT_COMPARE: ScheduleVerdict[] = [
 ];
 const compared = rows.filter((r) => !CANNOT_COMPARE.includes(r.verdict)).length;
 console.log(`${compared} of ${rows.length} agent(s) had a week on both sides to compare`);
+
+// #2031: leave the result somewhere a caller can read, so the scheduled run can
+// report it to Slate and get a cooldown and an all clear from the app's own
+// alerting. Written HERE rather than at either exit, because both the agreement
+// path and the finding path exit immediately below and a summary written on only
+// one of them would make "no drift" indistinguishable from "the run never got that
+// far". Absent variable, no file, no behaviour change for a hand run.
+//
+// `total` is the union of everybody either half formed a verdict about, not the
+// bookable roster: a cal.com host with no Slate row at all is somebody the sweep
+// looked at, and counting only Slate's side could report more agents differing
+// than were looked at.
+{
+  const summaryPath = process.env.PARITY_SUMMARY_FILE?.trim();
+  if (summaryPath) {
+    writeFileSync(
+      summaryPath,
+      JSON.stringify(buildParitySummary(rows, membership.rows, compared), null, 2),
+    );
+  }
+}
 
 const all: (ScheduleVerdict | RosterVerdict)[] = [
   ...rows.map((r) => r.verdict),

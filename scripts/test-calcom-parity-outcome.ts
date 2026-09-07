@@ -1,5 +1,5 @@
 // The one ordering across both halves of `pnpm verify:calcom-parity` (#1911). Run:
-//   node --experimental-strip-types scripts/test-calcom-parity-outcome.ts
+//   node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/test-calcom-parity-outcome.ts
 //
 // The command answers two questions, "do the two systems hold the same roster"
 // and "do they hold the same hours for it", and each half has its own verdicts.

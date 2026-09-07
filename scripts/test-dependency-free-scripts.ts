@@ -74,6 +74,10 @@ const DECLARED_ALERTERS: { script: string; why: string }[] = [
     script: "scripts/notify-smoke-failure.ts",
     why: "the only notification that the production booking canary failed (#525, #1598)",
   },
+  {
+    script: "scripts/notify-parity-failure.ts",
+    why: "the only notification that the daily cal.com comparison could not run or report (#2031)",
+  },
 ];
 
 // ---------------------------------------------------------------------------
