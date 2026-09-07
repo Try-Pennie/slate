@@ -13,10 +13,37 @@ const linkStatus = vi.fn(() => ({ pending: false }));
 vi.mock("next/link", () => ({ useLinkStatus: () => linkStatus() }));
 
 describe("LinkPending", () => {
-  it("draws nothing at all while the link is idle", () => {
+  // #2045: the spinner used to be an ordinary in-flow child, so it took width from
+  // its siblings the moment it appeared and every nav item to its right jumped
+  // sideways for as long as the page took to commit. Dan: "I don't like that the
+  // loader pushes other nav items out of the way."
+  //
+  // The slot is RESERVED instead: the box is always in the layout and only becomes
+  // visible while pending, so nothing moves at the moment of the click. That is the
+  // one answer with no clipping risk, which the alternatives have: an absolutely
+  // positioned child is clipped by a scrolling ancestor (L566) and the sidebar nav
+  // is a horizontal scroller below `lg`, and overlaying the label is not available
+  // because the header's label is a bare text node with no element to dim.
+  it("holds the spinner's space while the link is idle, so nothing moves later", () => {
     linkStatus.mockReturnValue({ pending: false });
     const { container } = render(<LinkPending />);
-    expect(container.innerHTML).toBe("");
+    const slot = container.querySelector("[data-link-pending-slot]");
+    expect(slot, "the slot is in the layout before any click").toBeTruthy();
+    // Hidden, not absent: `visibility` keeps the box and its width.
+    expect(slot!.getAttribute("data-pending")).toBeNull();
+    // And it says nothing while there is nothing to say.
+    expect(screen.queryByRole("status")).toBeNull();
+  });
+
+  it("reserves exactly the space the spinner will occupy", () => {
+    // The same element carries the spinner in both states, so the reserved width
+    // and the spinner's width cannot drift apart into a shift nobody sees (L63).
+    linkStatus.mockReturnValue({ pending: false });
+    const idle = render(<LinkPending />).container.querySelector("[data-link-pending-slot]")!;
+    const idleHtml = idle.innerHTML;
+    linkStatus.mockReturnValue({ pending: true });
+    const busy = render(<LinkPending />).container.querySelector("[data-link-pending-slot]")!;
+    expect(busy.innerHTML).toBe(idleHtml);
   });
 
   it("draws both the spinner and the page load bar once the link is pending", () => {
@@ -24,6 +51,10 @@ describe("LinkPending", () => {
     const { container } = render(<LinkPending />);
     expect(container.querySelector("[data-spinner]")).toBeTruthy();
     expect(container.querySelector(".pn-loadbar")).toBeTruthy();
+    // The slot is the same element that was already there; it is marked visible
+    // rather than added, which is what makes the click move nothing.
+    expect(container.querySelector("[data-link-pending-slot]")!.getAttribute("data-pending"))
+      .toBe("");
   });
 
   it("announces the wait exactly once, from the load bar and not the graphic", () => {
@@ -41,12 +72,14 @@ describe("LinkPending", () => {
   });
 
   it("carries its own horizontal spacing rather than relying on a parent gap", () => {
-    // This is the defect: the sidebar's Link has no gap utility, so a spinner
-    // depending on its parent for one sat flush against the label's last letter.
+    // #1792: the sidebar's Link has no gap utility, so a spinner depending on its
+    // parent for one sat flush against the label's last letter. Still true, and
+    // now it is the RESERVED width as well, which is why it is asserted on the
+    // slot that is always present rather than only while pending.
+    //
     // Asserted as a CLASS because jsdom does not compute Tailwind, so there is no
-    // resolved margin to read here; the class is the only evidence available in
-    // this harness, and the rendered result is checked in a browser instead.
-    linkStatus.mockReturnValue({ pending: true });
+    // resolved margin to read here; the rendered result is checked in a browser.
+    linkStatus.mockReturnValue({ pending: false });
     const { container } = render(<LinkPending />);
     // `className` on an SVG element is an SVGAnimatedString, not a string, so the
     // attribute is what has to be read.
