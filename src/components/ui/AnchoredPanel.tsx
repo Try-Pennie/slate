@@ -1,7 +1,9 @@
 "use client";
 
 import {
+  createContext,
   useCallback,
+  useContext,
   useEffect,
   useLayoutEffect,
   useRef,
@@ -12,8 +14,26 @@ import {
 import { createPortal } from "react-dom";
 import {
   anchoredPosition,
-  ANCHORED_PANEL_Z,
+  anchoredPanelZ,
 } from "@/components/ui/anchored-position";
+
+/**
+ * How many panels deep this subtree is (#2046).
+ *
+ * A panel opened from inside another panel must paint above it, and NOTHING in
+ * the DOM says which of two panels contains the other: both portal to
+ * `document.body`, so they are siblings there whatever their nesting. With one
+ * shared z-index the winner was decided by document order, and that order is the
+ * WRONG WAY ROUND: React commits a child portal before its parent's, so the
+ * nested panel is appended first and painted underneath. Measured on the time
+ * off form, where the time list sat at body index 10 and the calendar containing
+ * it at 11.
+ *
+ * Context is what still knows the nesting, because it follows the REACT tree
+ * rather than the DOM and passes through a portal unchanged. So a panel reads
+ * the depth it was rendered at and publishes one more to whatever it contains.
+ */
+const PanelDepth = createContext(0);
 
 /** A subscription that never fires: the hydration probe only needs the snapshots. */
 const subscribeNothing = () => () => {};
@@ -129,6 +149,7 @@ export function AnchoredPanel({
   "aria-modal"?: boolean;
   onKeyDown?: React.KeyboardEventHandler<HTMLDivElement>;
 }) {
+  const depth = useContext(PanelDepth);
   const panelRef = useRef<HTMLDivElement>(null);
   // One callback ref writing both handles, rather than picking between two ref
   // objects at render time: a conditional ref is a different object on the
@@ -251,11 +272,11 @@ export function AnchoredPanel({
         top: 0,
         left: 0,
         visibility: "hidden",
-        zIndex: ANCHORED_PANEL_Z,
+        zIndex: anchoredPanelZ(depth),
       }}
       className={className}
     >
-      {children}
+      <PanelDepth.Provider value={depth + 1}>{children}</PanelDepth.Provider>
     </div>,
     document.body,
   );

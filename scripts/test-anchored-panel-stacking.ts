@@ -14,7 +14,11 @@
 //        scripts/test-anchored-panel-stacking.ts
 import { readFileSync } from "node:fs";
 import { assert, finish } from "./lib/harness.ts";
-import { ANCHORED_PANEL_Z } from "../src/components/ui/anchored-position.ts";
+import {
+  ANCHORED_PANEL_Z,
+  MAX_ANCHORED_PANEL_NESTING,
+  anchoredPanelZ,
+} from "../src/components/ui/anchored-position.ts";
 
 const header = readFileSync("src/components/AppHeader.tsx", "utf8");
 const css = readFileSync("src/app/globals.css", "utf8");
@@ -36,6 +40,41 @@ assert(
 assert(
   ANCHORED_PANEL_Z < skipZ,
   `a panel (${ANCHORED_PANEL_Z}) stays below the skip link (${skipZ}), which must stay reachable over everything`,
+);
+
+// #2046: panels stack against EACH OTHER now, so the bound above has to hold for
+// the whole range rather than for the base alone. A nested panel takes one level
+// per panel it sits inside, and the deepest one the design supports still has to
+// stay under the skip link.
+const deepest = anchoredPanelZ(MAX_ANCHORED_PANEL_NESTING);
+assert(
+  deepest < skipZ,
+  `the deepest nested panel (${deepest}) stays below the skip link (${skipZ})`,
+);
+
+// The levels really do separate, which is the whole point: two panels one inside
+// the other may never land on one number. Asserted as a walk over the range
+// rather than on the formula, so a future level scheme that is not `base + depth`
+// has to satisfy the same rule rather than restate it (L63).
+for (let depth = 0; depth < MAX_ANCHORED_PANEL_NESTING; depth += 1) {
+  assert(
+    anchoredPanelZ(depth + 1) > anchoredPanelZ(depth),
+    `a panel nested ${depth + 1} deep (${anchoredPanelZ(depth + 1)}) paints above one at ${depth} (${anchoredPanelZ(depth)})`,
+  );
+}
+
+// And the base is still where an unnested panel sits, so the range starts where
+// the two bounds above were measured against.
+assert(
+  anchoredPanelZ(0) === ANCHORED_PANEL_Z,
+  `an unnested panel is on the base level (${anchoredPanelZ(0)} === ${ANCHORED_PANEL_Z})`,
+);
+
+// A positive control on the loop: it has to have actually run, since a maximum of
+// zero would make every assertion above vacuous and report a clean pass (L98).
+assert(
+  MAX_ANCHORED_PANEL_NESTING >= 2,
+  `the app nests two panels, so the supported depth (${MAX_ANCHORED_PANEL_NESTING}) has to reach at least that`,
 );
 
 finish();
