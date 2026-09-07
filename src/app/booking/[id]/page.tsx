@@ -3,6 +3,7 @@ import LegalFooter from "@/components/LegalFooter";
 import StandaloneTheme from "@/components/StandaloneTheme";
 import { loadBookingHorizonDays } from "@/lib/booking/settings";
 import { loadReasonOptions } from "@/lib/booking/reason-options";
+import { resolveRequestedCode } from "@/lib/routing/catchall";
 
 export const dynamic = "force-dynamic";
 // Lead-facing: the brand is Pennie; Slate stays internal.
@@ -34,16 +35,14 @@ export default async function BookingPage({
   const { id } = await params;
   const sp = await searchParams;
 
-  const bucketCode = first(sp, "xbc");
-  if (!bucketCode) {
-    return (
-      <main className="flex min-h-dvh items-center justify-center bg-bg p-8">
-        <p className="max-w-md text-sm text-fg-muted">
-          This booking link is missing its configuration (no <code>xbc</code>).
-        </p>
-      </main>
-    );
-  }
+  // The same catch-all as `/book` (#1908), for the same reason and by the same
+  // resolver. This path was missed when that shipped: it is reached as
+  // `/booking/{salesforceId}?xbc={code}`, so a lead whose Salesforce record has no
+  // XBC arrives here with a blank code exactly as they do there, and refusing them
+  // here would leave half the defect in place.
+  const requestedCode = first(sp, "xbc");
+  const resolved = resolveRequestedCode(requestedCode);
+  const bucketCode = resolved.code;
 
   const phone =
     first(sp, "phone") ||
@@ -69,6 +68,7 @@ export default async function BookingPage({
       {!embedded && <StandaloneTheme theme={theme} />}
       <Booker
         bucketCode={bucketCode}
+        requestedCode={requestedCode}
         salesforceId={id}
         attendee={{
           name: first(sp, "name"),
