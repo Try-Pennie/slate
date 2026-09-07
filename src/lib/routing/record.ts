@@ -22,6 +22,12 @@ export interface RecordRoutingDecisionInput {
   chosenUserId: string | null;
   chosenAttributes: Attributes | null;
   emptyPoolFallback: boolean;
+  /** The `xbc` the lead's link actually carried, or null when the caller did not
+   *  say (an older embed). Distinct from an empty string, which means the lead
+   *  arrived with no code at all (#1908). */
+  requestedCode?: string | null;
+  /** Whether the catch-all rescued this lead into the Low pool (#1908). */
+  catchallApplied?: boolean;
   tierFallback: boolean;
   rungsDropped: number;
   requestedTier: string | null;
@@ -44,6 +50,12 @@ export async function recordRoutingDecision(input: RecordRoutingDecisionInput): 
       considered: input.considered,
       excluded: input.excluded,
       empty_pool_fallback: input.emptyPoolFallback,
+      // #1908: what the lead's link actually carried, and whether the catch-all
+      // had to rescue it. Kept as its own column rather than inferred from
+      // bucket_code, because a rescued lead and a lead who genuinely asked for the
+      // Low pool land in the same bucket and only this tells them apart.
+      requested_code: input.requestedCode ?? null,
+      catchall_applied: input.catchallApplied ?? false,
       tier_fallback: input.tierFallback,
       rungs_dropped: input.rungsDropped,
       outcome: input.outcome,

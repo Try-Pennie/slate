@@ -82,6 +82,13 @@ type ExistingCall =
 
 interface BookerProps {
   bucketCode: string;
+  /**
+   * The `xbc` exactly as it arrived, which is NOT always `bucketCode`: a blank or
+   * unreadable one is routed to the Low pool (#1908) and this is the only record
+   * of what the upstream page actually sent. Carried so the booking can be counted
+   * as a catch-all rather than as a lead who genuinely asked for that pool.
+   */
+  requestedCode?: string;
   salesforceId: string | null;
   attendee: Attendee;
   prefill: Record<string, string>;
@@ -227,6 +234,7 @@ function GlobeIcon() {
 
 export default function Booker({
   bucketCode,
+  requestedCode,
   salesforceId,
   attendee: initialAttendee,
   prefill,
@@ -455,6 +463,7 @@ export default function Booker({
         "/booking",
         {
           bucketCode,
+          requestedCode,
           start: selectedSlot,
           timezone: zone,
           salesforceId,

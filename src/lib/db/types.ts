@@ -480,6 +480,14 @@ export interface RoutingDecision {
   considered: string[];
   excluded: RoutingExclusion[];
   empty_pool_fallback: boolean;
+  /** The `xbc` the lead's link carried, or null when the caller did not say
+   *  (#1908). An empty string means the lead arrived with no code at all, which
+   *  is the defect being measured; null means nobody told us either way. */
+  requested_code: string | null;
+  /** Whether the catch-all routed this lead to the Low pool because their code
+   *  was blank or unreadable (#1908). A rescued lead and one who genuinely asked
+   *  for Low share a bucket, so only this tells them apart. */
+  catchall_applied: boolean;
   tier_fallback: boolean;
   rungs_dropped: number;
   outcome: "booked" | "no_availability" | "no_eligible_agents" | "error";
@@ -695,6 +703,16 @@ export interface ReservationPayload {
   booking: BookingInsert;
   event: ReservationEventInput;
   bucketCode: string;
+  /**
+   * The `xbc` the lead's link carried, when the caller knew it (#1908). Carried
+   * on the RESERVATION rather than read from the request, because a booking the
+   * drain resumes after a crash has no request left to read, and it should still
+   * be recorded as a rescued lead.
+   *
+   * Optional: rows written before this field existed do not have it, and the
+   * drain must resume those rather than refuse them.
+   */
+  requestedCode?: string;
 }
 
 /**

@@ -40,6 +40,12 @@ export const dynamic = "force-dynamic";
 const schema = z.object({
   // Bounded, shared with the API parser so the size caps can't drift (#1034).
   bucketCode: bucketCodeSchema,
+  // The `xbc` exactly as it arrived. Optional, because an older embed still in a
+  // cached page will not send it, and a missing one must not refuse the booking.
+  // It is used ONLY to record whether the catch-all was applied (#1908), never to
+  // decide routing, so a client that lies about it corrupts a metric and nothing
+  // else. Bounded so a long value cannot be used to bloat a stored row.
+  requestedCode: z.string().max(64).optional(),
   start: startSchema, // ISO instant of the chosen slot
   timezone: timezoneSchema,
   salesforceId: salesforceIdSchema.nullish(),
@@ -178,6 +184,7 @@ export async function POST(req: NextRequest) {
       // cross-bucket rebook (#364).
       refuseIfPersonHasCall: true,
       bucketCode: parsed.data.bucketCode,
+      requestedCode: parsed.data.requestedCode,
       startIso: parsed.data.start,
       timezone: parsed.data.timezone,
       salesforceId: parsed.data.salesforceId ?? null,

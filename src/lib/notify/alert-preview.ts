@@ -59,6 +59,7 @@ import {
   formatMigrationDriftAlert,
   formatMigrationDriftRecovery,
 } from "@/lib/monitor/migration-drift";
+import { catchallPageText, catchallClearText } from "@/lib/monitor/catchall-rate";
 import {
   formatFailureRateAlert,
   formatFailureRateAllClear,
@@ -524,6 +525,30 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     state: "the list is readable again",
     channel: "recovery",
     text: refusalAllClear.list,
+  },
+  {
+    // #1908. Calibrated against the incumbent: cal.com's own catch-all runs at
+    // about 2 percent, so 11 percent is the shape of a real regression rather
+    // than ordinary movement.
+    key: "catchall_rate",
+    state: "leads arriving with no routing code, above what cal.com runs at",
+    channel: "alert",
+    text: catchallPageText({ kind: "page", share: 0.11, catchall: 22, total: 200, trigger: "rate" }, 24),
+  },
+  {
+    // The other trigger, and the reason it exists: a count floor that stops a
+    // rate being noisy at small samples would otherwise silence the case where an
+    // upstream page has stopped sending codes ENTIRELY (L139).
+    key: "catchall_rate",
+    state: "an upstream page has stopped sending codes entirely, on a tiny sample",
+    channel: "alert",
+    text: catchallPageText({ kind: "page", share: 1, catchall: 3, total: 3, trigger: "saturation" }, 24),
+  },
+  {
+    key: "catchall_rate",
+    state: "back within tolerance",
+    channel: "recovery",
+    text: catchallClearText(0.018, 24),
   },
   {
     // #1313. The fixture is the 2026-08-06 cal.com shape: a wave of customers
