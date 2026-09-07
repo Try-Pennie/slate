@@ -212,25 +212,3 @@ export function paceMs(raw: string | undefined): number {
   if (!Number.isFinite(n) || n < 0) return DEFAULT_PACE_MS;
   return n;
 }
-
-/**
- * Leave out any weekday carrying more than one window, and say which.
- *
- * Slate stores ONE window per weekday, so an agent with two shifts on a Tuesday
- * cannot be represented. The two obvious repairs are both wrong: merging them into
- * 08:00 to 18:00 makes the agent bookable straight through a break they never
- * offered, and taking the first shift silently deletes the second half of their
- * day. So the split DAY is left out and every other day is imported, which is
- * Dan's call (2026-09-02): the agent ends up correct on the days we can express.
- *
- * Dropping a day is NOT free, and the caller is not allowed to forget it: that
- * agent will be offered nothing at all on the dropped day. So the days go back to
- * the caller rather than being swallowed, and the caller reports them.
- */
-export function dropSplitDays(rules: SlateRule[]): { rules: SlateRule[]; droppedDays: number[] } {
-  const perDay = new Map<number, number>();
-  for (const r of rules) perDay.set(r.weekday, (perDay.get(r.weekday) ?? 0) + 1);
-  const dropped = [...perDay.entries()].filter(([, n]) => n > 1).map(([d]) => d).sort((a, b) => a - b);
-  const drop = new Set(dropped);
-  return { rules: rules.filter((r) => !drop.has(r.weekday)), droppedDays: dropped };
-}

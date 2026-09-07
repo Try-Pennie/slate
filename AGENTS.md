@@ -627,104 +627,117 @@ Google says for a revoked licence as well as for an account that never had one.
 Reading that as a provisioning ticket would have sent somebody to re-license a
 departed employee, and left the sweep red forever while they did not.
 
-# Comparing Slate against cal.com (`pnpm verify:availability-parity`)
+# Comparing Slate against cal.com (`pnpm verify:schedule-parity`)
 
 The fourth command in the family above, and the one that only makes sense while
 BOTH systems are live. During the parallel run (`docs/parallel-run-plan.md`)
 Slate computes availability nobody can book while cal.com keeps taking every
-lead. This is what turns that silence into a measurement (#1731).
+lead. This is what turns that silence into a measurement (#1731, rebuilt in
+#1754).
 
-**It is not a correctness check, and the distinction matters.** cal.com is the
-incumbent, not the source of truth: a time both systems offer can be busy in
-both. That question belongs to `verify:availability-truth`, which asks Google.
-This one catches CONFIGURATION drift, which is invisible from inside Slate
-alone: working hours never set to the real 8am to 8pm (#1255), a bucket whose
-membership does not match cal.com's routing, business hours closing a day
-cal.com keeps open, an agent whose calendar never connected.
+**It compares SCHEDULES, and the first version compared slots and could never
+run.** That probe narrowed cal.com's answer to one bucket's agents with
+`routedTeamMemberIds[]` on `GET /v2/slots`. The parameter does not exist on that
+endpoint: it is a strict whitelist, so every spelling answers 400 and zero pins
+answers 200 with the whole pool. It belonged to `/v2/slots/available`, which is
+now 404. So the probe was merged, documented, and structurally incapable of
+executing a single comparison. Re-measured live on 2026-09-07, still 400. **The
+pin was the load-bearing capability and it was the last thing measured**; that is
+the mistake worth not repeating, and it is why the rebuild rests on the endpoint
+the OOO dual-write already exercises daily.
 
-**The comparison is at the (day, hour) level, deliberately.** The two systems
-carry their own slot interval (cal.com offers the review event every 10
-minutes), duration, buffers and minimum notice, so demanding equal instants
-would be red from the day it shipped for reasons nobody should fix (L36). An
-hour either system offers anything in is an hour it considers open, and that
-survives every one of those differences while still catching a roster scheduled
-9 to 17 against a cal.com week running 8 to 20.
+Schedules are read through `GET /v2/organizations/{org}/users/{id}/schedules`,
+and comparing them is better suited to the question anyway:
 
-**The pin is the dangerous part.** cal.com narrows the pool with
-`routedTeamMemberIds[]`, and when an id is not a host on the event type it
-IGNORES the pin and answers **200 with the whole pool**. Against one bucket that
-reads as Slate under-offering: a false finding pointing at agents who are fine.
-So every pinned read is paired with a bogus-id read whose answer is known to be
-the pool, and an identical pair refuses the run rather than reporting it.
+- **Per agent**, so one misconfigured person cannot be masked by a healthy pool.
+  The slot comparison could only ever answer at bucket level.
+- **No hydration dependency.** It never touches busy time, so the readiness gate
+  the slot probe needed (#1737, skipping a bucket whose pool was still draining
+  its calendar onboarding) is not needed here and was retired with it.
+- **It targets what was actually wrong**, which was hours and timezone drift: 81
+  of 100 and 74 of 103 on 2026-09-02 (#1738, #1739).
+
+**It is not a correctness check.** cal.com is the incumbent, not the source of
+truth: a week both systems hold can be wrong in both. That question belongs to
+`verify:availability-truth`, which asks Google. This one catches CONFIGURATION
+drift, which is invisible from inside Slate alone, and during the parallel run it
+is the only thing that would notice an agent changing their hours in one system
+and not the other. Nothing has re-checked the 97 schedules imported on
+2026-09-02.
+
+**The comparison is EXACT, and that is a deliberate departure from what #1754's
+body asked for.** The slot probe bucketed to the hour because the two systems
+carry different slot intervals, durations and buffers, so demanding equal
+instants would have been red from the day it shipped for reasons nobody should
+fix (L36). None of that applies to a schedule: both sides store a weekday plus
+start and end minutes, so the values compare directly, and hour bucketing would
+HIDE the commonest drift on this roster rather than tolerate noise. Real windows
+sit on half and quarter hours (07:45 to 16:15, 08:30 to 17:30, 09:30 to 18:30),
+and 09:00 against 09:30 opens the same hour. `scripts/test-schedule-parity.ts`
+carries that as a control: patching the comparison to bucket by the hour makes it
+fail.
 
 ```
-pnpm verify:availability-parity                     # sweep every active bucket
-PARITY_BUCKET=411 pnpm verify:availability-parity   # one bucket
+pnpm verify:schedule-parity                                   # sweep the roster
+PARITY_AGENT=someone@trypennie.com pnpm verify:schedule-parity  # one agent
 ```
 
-`CALCOM_API_KEY` is required (it resolves an agent email to a cal.com user id and
-is a wrangler secret on the deployment, so it has to be added to `.env.local` to
-run this); `CALCOM_ORG_ID`, `CALCOM_EVENT_TYPE_ID`, `SLATE_BASE_URL`,
-`PARITY_DAYS` (default 7) and `PARITY_ZONE` carry working defaults. The slots
-read itself needs no key.
+`CALCOM_API_KEY` is required (a wrangler secret on the deployment, so it has to
+be in `.env.local` to run this); `CALCOM_ORG_ID` defaults to 19474 and
+`CALCOM_PACE_MS` to 250. The pacing is not cosmetic: cal.com meters the schedules
+endpoint hard and the first import run met 429 on 89 of 103 agents without it.
+The retry ladder rides out a rate limit on the server's own `Retry-After`, and is
+finite, because a read that retries forever hangs the run (L110).
 
-**Only agreement passes, and every other outcome exits non-zero on its own
-code**, so a shell caller can branch on which one it met. Finding nothing to
-compare is never a pass (L98), and both systems offering nothing is the state the
-dark roster produces today:
+**Only agreement passes, and every other outcome exits on its own code.** Finding
+nothing to compare is never a pass (L98), and the report says how many agents had
+a week on BOTH sides, so "no differences" can never be read as "no problems" when
+the real answer is that nothing was compared:
 
 | exit | what it met |
 |---|---|
-| 0 | every compared bucket agrees on open hours |
-| 1 | no `CALCOM_API_KEY`, or an unreadable `PARITY_DAYS`; nothing was attempted |
-| 2 | no bucket could be compared (all dark, or the named code does not exist) |
-| 3 | Slate did not answer, or answered with no readable slots array |
-| 4 | cal.com did not answer |
-| 5 | cal.com answered with something unreadable |
-| 6 | no member of a bucket exists in cal.com, so nothing could be pinned |
-| 7 | **cal.com ignored the pin** and answered with the pool; every verdict built on it would be false |
-| 8 | neither system offers anything: perfect agreement, zero information |
-| 9 | cal.com offers nothing while Slate does; not ours to fix, and not comparable |
-| 10 | **Slate offers nothing** while cal.com offers a week |
-| 11 | **Slate under-offers**: hours cal.com opens and Slate does not |
-| 12 | Slate over-offers: usually cal.com holding an out of office Slate has not been told about |
-| 13 | the two answers cover no day in common, so nothing could be compared |
-| 14 | **the roster is still draining its calendar onboarding**, so comparing would measure the drain |
+| 0 | every agent holds the same week in both systems |
+| 1 | no `CALCOM_API_KEY` here; nothing was attempted |
+| 2 | no bookable agents in Slate, or the named agent does not exist |
+| 4 | cal.com's org user listing did not answer |
+| 5 | cal.com's org user listing could not be read |
+| 10 | an agent bookable in Slate has no cal.com account |
+| 11 | a cal.com account holds no schedule, or one with no windows set |
+| 12 | **a bookable agent has no hours in Slate**, so they are offered nothing |
+| 13 | cal.com would not answer for an agent (rate limit, or a refusal) |
+| 14 | cal.com answered with a payload this cannot read |
+| 15 | **hours differ** |
+| 16 | **days differ** |
+| 17 | **the timezone differs** |
 
-Under-offering outranks over-offering when a sweep meets both, because the
-direction that costs a lead a bookable time is the one somebody must act on;
-both are always printed, so the ranking decides only which one names the run.
+The ranking is worst last, and the sweep exits on its worst agent: one wrong
+timezone among a hundred agreements is the finding. The zone outranks the rest
+because it moves EVERY window at once while leaving the stored numbers looking
+correct, which is how 74 of 103 agents stayed wrong for months with nothing
+reporting it. An agent wrong in two ways is named by the more severe one and
+still carries BOTH reasons, so fixing only the zone cannot make them read as
+finished.
 
-**The hours are only compared across the range BOTH systems answered for**, and
-that is measured rather than assumed. Against live cal.com on 2026-09-02 its pool
-reached about two days ahead (43 slots on the second day, nothing beyond) while
-Slate's booking horizon runs much further. Comparing over a fixed week would
-therefore report Slate over-offering on every run forever, which is the always-red
-check this probe exists not to be. Days past either system's reach are printed as
-their own fact instead. The clip is by RANGE, never by the set of days each system
-holds: clipping to the shared set would excuse the finding that matters most, a day
-sitting inside both reaches that one of them offers nothing on.
+The four states where an agent cannot be compared each get their own code, on
+purpose: "no cal.com account", "no schedule in cal.com", "the read failed" and
+"the payload changed shape" send four different people to do four different
+things, and one message answering for another is how a person spends an afternoon
+on a rate limit (L11).
 
-**It refuses to measure a roster that is still settling.** An agent flipped
-bookable holds no cached busy time until the watch lane has discovered their
-calendar and the sync lane has hydrated it (#1736), and during that window the
-cache-first booker sees them as free for every hour their working hours allow. A
-run taken then measures the drain and reports it as Slate over-offering, which is
-a finding about our own timing dressed as one about the roster. So before any
-cal.com call, each bucket's pool is checked for a calendar row and a
-`sync_window_to` reaching the end of the compared range, and a bucket that fails
-is skipped by name with exit 14. The remedy could have been a sentence in the
-runbook saying to wait; a rule that lives only in an instruction is a hope, and
-that one would be read exactly once, by whoever is most eager to see the first
-numbers after the flip.
+Its decision logic is pinned offline by `scripts/test-schedule-parity.ts` and
+`scripts/test-calcom-roster.ts`, which drive every verdict, the retry ladder and
+the default-schedule choice through hand written fixtures with no network and no
+real clock. The reads it shares with `pnpm import:calcom-schedules` live in
+`scripts/lib/calcom-roster.ts`, deliberately in one place: two copies of "who is
+a bookable agent" drift, and the drift is silent in the worst direction, since
+the command would then report agreement about a roster the importer never wrote
+to.
 
-**It has never reached a real verdict, and cannot until the roster is hot.**
-Every real agent is `bookable = false` (#1272), so every real bucket resolves to
-an empty pool and the sweep exits 2. That is the honest state and the command
-says so rather than passing. The first run that matters is the one taken
-immediately after the Phase 1 flip, and its findings ARE the phase's evidence.
-Its decision logic is pinned offline by `scripts/test-availability-parity.ts`,
-which drives every verdict through hand written fixtures.
+**This retires at cutover (#65)**, since it only means anything while both
+systems are live. It is a hand-run command, so it finds what it finds on the day
+somebody runs it; #1911 covers the membership half (an agent bookable in one
+system and gone from the other), which is the divergence that books real leads
+with somebody who has left.
 
 # Capped single-page reads (the `// cap-safe:` convention)
 

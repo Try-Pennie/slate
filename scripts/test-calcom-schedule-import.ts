@@ -15,7 +15,8 @@
 // Every unreadable input is REFUSED rather than defaulted. Defaulting to Eastern is
 // precisely how the roster came to claim one timezone it does not have, so a
 // mapping that silently fell back would recreate the defect it exists to fix.
-import { mapCalcomSchedule, diffSchedule, retryDelayMs, skipKindForStatus, paceMs, dropSplitDays } from "./lib/calcom-schedule-import.ts";
+import { mapCalcomSchedule, diffSchedule, retryDelayMs, skipKindForStatus, paceMs } from "./lib/calcom-schedule-import.ts";
+import { planScheduleReplacement } from "@/lib/schedule-replacement";
 import { assert, eq, finish } from "./lib/harness.ts";
 
 const uniform = {
@@ -227,52 +228,73 @@ const current = {
 //
 // Leaving a day out is not free: the agent is offered nothing that day. So the
 // dropped days are returned rather than swallowed, and the caller has to say so.
+// --- split shifts, which used to be dropped and are now imported (#1782) -------
+// These blocks replace the `dropSplitDays` tests. That helper left out any weekday
+// carrying two windows, which was right while Slate could hold only one per day: it
+// kept jkite@, jsullivan@ and pdelacerda@ out of the import, and each was given a
+// single full-day span by hand instead, which makes them bookable straight through
+// a break they never offered. The hours editor rebuild removed the limit, so the
+// shifts now travel all the way into a valid plan, and what is asserted here is the
+// end of that road rather than the helper that used to block it.
 {
-  const rules = [
-    { weekday: 1, start_minute: 480, end_minute: 1020 },
-    { weekday: 2, start_minute: 480, end_minute: 720 },
-    { weekday: 2, start_minute: 840, end_minute: 1080 },
-    { weekday: 3, start_minute: 480, end_minute: 1020 },
-  ];
-  const r = dropSplitDays(rules);
-  eq(r.rules.map((x) => x.weekday), [1, 3], "the split day is left out and the others are kept");
-  eq(r.droppedDays, [2], "and the day that was dropped is reported, never silently lost");
+  const m = mapCalcomSchedule({
+    timeZone: "America/Los_Angeles",
+    availability: [
+      { days: ["Monday", "Tuesday"], startTime: "08:00", endTime: "12:00" },
+      { days: ["Monday", "Tuesday"], startTime: "13:00", endTime: "17:00" },
+    ],
+  });
+  assert(m.ok, "a split week maps");
+  if (m.ok) {
+    eq(m.rules.length, 4, "both shifts on both days survive, rather than the day being dropped");
+    const plan = planScheduleReplacement(m.rules, m.timezone);
+    assert(plan.ok, "and Slate's own validator accepts it");
+    if (plan.ok) {
+      eq(plan.rules.length, 4, "the plan carries every window");
+      eq(
+        plan.rules.map((r) => `${r.weekday}:${r.start_minute}`),
+        ["1:480", "1:780", "2:480", "2:780"],
+        "sorted by day and then by start, so the morning is never rendered below the afternoon",
+      );
+    }
+  }
 }
 {
-  const clean = [
-    { weekday: 1, start_minute: 480, end_minute: 1020 },
-    { weekday: 5, start_minute: 480, end_minute: 1020 },
-  ];
-  const r = dropSplitDays(clean);
-  eq(r.rules.length, 2, "a week with no split days is untouched");
-  eq(r.droppedDays.length, 0, "and reports nothing dropped");
+  // Windows that TOUCH are a legitimate way to write one span and must not be
+  // mistaken for an overlap: refusing them would strand an agent whose cal.com week
+  // happens to be entered as two halves.
+  const m = mapCalcomSchedule({
+    timeZone: "UTC",
+    availability: [
+      { days: ["Wednesday"], startTime: "08:00", endTime: "12:00" },
+      { days: ["Wednesday"], startTime: "12:00", endTime: "17:00" },
+    ],
+  });
+  assert(m.ok, "touching windows map");
+  if (m.ok) assert(planScheduleReplacement(m.rules, m.timezone).ok, "and are accepted");
 }
 {
-  // Three windows on one day is still one day to drop, not two.
-  const r = dropSplitDays([
-    { weekday: 4, start_minute: 480, end_minute: 600 },
-    { weekday: 4, start_minute: 660, end_minute: 780 },
-    { weekday: 4, start_minute: 840, end_minute: 1020 },
-  ]);
-  eq(r.rules.length, 0, "every window on the split day goes");
-  eq(r.droppedDays, [4], "reported once");
-}
-{
-  // An agent whose ENTIRE week is split shifts has nothing left. Writing an empty
-  // week would remove them from every bucket's availability while reporting a
-  // successful import, so the caller must be able to tell this apart from a normal
-  // result rather than writing zero rules.
-  const r = dropSplitDays([
-    { weekday: 1, start_minute: 480, end_minute: 720 },
-    { weekday: 1, start_minute: 840, end_minute: 1020 },
-  ]);
-  eq(r.rules.length, 0, "nothing survives");
-  eq(r.droppedDays, [1], "and the day is named so the caller refuses rather than writing an empty week");
-}
-{
-  const r = dropSplitDays([]);
-  eq(r.rules.length, 0, "an empty week drops nothing");
-  eq(r.droppedDays.length, 0, "and reports nothing");
+  // The one week that genuinely cannot be represented now, and the reason the
+  // import still needs a refusal path at all. It is refused by Slate's validator
+  // rather than by anything here, so there is one rule about what a week may be.
+  const m = mapCalcomSchedule({
+    timeZone: "UTC",
+    availability: [
+      { days: ["Thursday"], startTime: "08:00", endTime: "13:00" },
+      { days: ["Thursday"], startTime: "12:00", endTime: "17:00" },
+    ],
+  });
+  assert(m.ok, "an overlapping week still maps, because mapping is not validation");
+  if (m.ok) {
+    const plan = planScheduleReplacement(m.rules, m.timezone);
+    assert(!plan.ok, "and Slate refuses it rather than writing hours nobody meant");
+    if (!plan.ok) {
+      assert(
+        plan.error.includes("Thursday"),
+        `the refusal names the day, so the importer can name the agent AND the day (${plan.error})`,
+      );
+    }
+  }
 }
 
 finish();
