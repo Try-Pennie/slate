@@ -49,6 +49,14 @@ export const PARITY_VERDICT_CLASS = {
   "hours-differ": "paging",
   "bookable-not-hosting": "paging",
   "absent-from-slate": "paging",
+  // Nine admins, managers and team leads who host in cal.com and are correctly not
+  // bookable in Slate. It is the commonest non-agreement the sweep produces, and it
+  // is deliberately absent from `OUTCOME_ORDER` because an exit code for it would
+  // fail every run forever. It still has to be CLASSIFIED: the sweep sends every
+  // verdict it produced, and a table keyed on the outcomes that can fail a run had
+  // no entry for this one, so the endpoint refused the whole payload and the daily
+  // check reported nothing while looking configured.
+  "staff-not-bookable": "standing",
   // Worth closing, never worth waking somebody for: they carry no routing
   // attributes, so no bucket could match them however long this sits.
   "not-bookable-by-design": "standing",

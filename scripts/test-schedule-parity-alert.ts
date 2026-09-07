@@ -16,7 +16,8 @@ import {
   PARITY_VERDICT_CLASS,
   type ParitySweep,
 } from "@/lib/monitor/schedule-parity-alert";
-import { OUTCOME_ORDER } from "./lib/calcom-parity-outcome.ts";
+import { ROSTER_VERDICT_RANK } from "./lib/roster-parity.ts";
+import { VERDICT_RANK } from "./lib/schedule-parity.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
 /** A sweep with nothing in it, so each case below states only what it is about. */
@@ -25,16 +26,42 @@ function sweep(over: Partial<ParitySweep> = {}): ParitySweep {
 }
 
 // --- every verdict is classified, exactly once ----------------------------------
-// A verdict missing from the table is silently unclassified, which the endpoint
-// would refuse and the sweep would then report nothing about: a real finding that
-// pages nobody (L113). One present that nothing produces is dead weight reading as
-// coverage.
+// Enumerated from what the two halves PRODUCE, not from the outcomes that can fail
+// a run. Those are different sets, and keying on the second is what shipped the
+// check inert: `staff-not-bookable` is deliberately absent from `OUTCOME_ORDER`
+// (nine admins and managers host in cal.com and are correctly not bookable in
+// Slate, so an exit code for them would fail every run forever), and a table built
+// from that union therefore had no entry for the one verdict most of the roster
+// carries. The sweep sent it, the endpoint refused the whole payload, and every
+// daily run would have reported nothing while looking configured (L96, L129).
 {
-  for (const v of OUTCOME_ORDER) {
+  const produced = [...Object.keys(ROSTER_VERDICT_RANK), ...Object.keys(VERDICT_RANK)].filter(
+    (v) => v !== "agree",
+  );
+  for (const v of produced) {
     assert(v in PARITY_VERDICT_CLASS, `${v} is classified`);
   }
   for (const v of Object.keys(PARITY_VERDICT_CLASS)) {
-    assert((OUTCOME_ORDER as readonly string[]).includes(v), `${v} is a verdict something produces`);
+    assert(produced.includes(v), `${v} is a verdict something actually produces`);
+  }
+}
+
+// --- the shape that shipped the check inert ---------------------------------------
+// The live sweep on 2026-09-07 carried nine of these, and the endpoint refused the
+// whole payload over them. A run that agrees on everything except the staff who are
+// correctly not bookable must be accepted, and must still clear.
+{
+  const accepted = parseParitySweep({
+    total: 111,
+    compared: 100,
+    runUrl: "https://github.com/x/y/actions/runs/1",
+    findings: [{ verdict: "staff-not-bookable", count: 9, agents: ["admin@x"] }],
+  });
+  assert(!("error" in accepted), "a sweep carrying the quiet verdict is accepted, not refused");
+  if (!("error" in accepted)) {
+    const j = classifyParitySweep(accepted);
+    eq(j.action, "all-clear", "and nine deliberately quiet rows still leave the sweep healthy");
+    eq(j.standing, 9, "counted, so the roster can be read in full");
   }
 }
 
