@@ -238,7 +238,7 @@ export const ALERT_CATALOG: AlertEntry[] = [
   {
     key: "recompute_headroom",
     kind: "condition",
-    why: "Recompute is falling behind its budget; a cycle that keeps up ends it.",
+    why: "Recompute has been behind its budget for longer than the freshness window; keeping up for as long again ends it (#2021).",
   },
   {
     key: "bucket_slots_stale",

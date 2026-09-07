@@ -119,20 +119,24 @@ export function recomputeHeadroomAlert(
   due: number,
   totalBuckets: number,
   utilizationPct: number,
+  behindMinutes: number,
 ): string {
   return (
-    `Bucket recompute is falling behind. Refreshed only ${recomputed} of ${due} due buckets ` +
-    `within its time budget on consecutive cycles (${totalBuckets} buckets total, last cycle ` +
-    `used ${utilizationPct}%). Availability may start going stale. To scale: widen the ` +
+    `Bucket recompute is falling behind. It has not refreshed every due bucket within its ` +
+    `time budget for ${behindMinutes} minutes running, most recently ${recomputed} of ${due} ` +
+    `(${totalBuckets} buckets total, last cycle used ${utilizationPct}%). Availability may ` +
+    `start going stale. To scale: widen the ` +
     `freshness window, which moves the staleness alarm out with it so this does not just ` +
     `swap one page for another, or move to the Durable Objects design.`
   );
 }
 
-/** It caught up. */
-export function recomputeHeadroomRecovery(): string {
-  return "Bucket recompute has caught up. It refreshed every bucket that was due within " +
-          "its time budget this cycle, so availability is being kept fresh again. No action is needed.";
+/** It caught up, and stayed caught up for the whole re-arm window (#2021). */
+export function recomputeHeadroomRecovery(rearmMinutes: number): string {
+  return (
+    `Bucket recompute has caught up. It has refreshed every due bucket within its time budget ` +
+    `for ${rearmMinutes} minutes running, so availability is being kept fresh again. No action is needed.`
+  );
 }
 
 /** Cached slot rows are going stale after a recompute pass. */

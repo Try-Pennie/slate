@@ -18,7 +18,7 @@ import {
   STALE_ALARM_MS,
   STALE_ALARM_MARGIN_MS,
 } from "../src/lib/availability/precompute-cron.ts";
-import { recomputeHeadroomAlert } from "../src/lib/monitor/cron-alert-copy.ts";
+import { recomputeHeadroomAlert, recomputeHeadroomRecovery } from "../src/lib/monitor/cron-alert-copy.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -84,8 +84,12 @@ const DASHES = new RegExp("[\\u2013\\u2014]");
 
 // --- the alert names the pair, so following it cannot trip the other ---------
 {
-  const text = recomputeHeadroomAlert(7, 24, 62, 96);
+  const text = recomputeHeadroomAlert(7, 24, 62, 96, 5);
   assert(/freshness window/i.test(text), "the remediation still names the freshness window");
+  assert(
+    /for 5 minutes running/.test(text),
+    "the page says how long the lane has been behind, not the vague 'consecutive cycles' (#2021)",
+  );
   assert(
     /stale/i.test(text),
     "and says the staleness alarm moves with it, so widening the window does not manufacture a second page",
@@ -93,6 +97,12 @@ const DASHES = new RegExp("[\\u2013\\u2014]");
   assert(!DASHES.test(text), "no dashes in alert copy");
   assert(!text.startsWith("Slate"), "an alert never opens with the word Slate");
   assert(text.length < 600, "and it stays readable on a phone mid-incident");
+  const recovery = recomputeHeadroomRecovery(5);
+  assert(
+    /for 5 minutes running/.test(recovery),
+    "and the all-clear says how long it has been keeping up, since one caught-up minute is no longer a recovery",
+  );
+  assert(!DASHES.test(recovery), "no dashes in recovery copy");
 }
 
 finish();
