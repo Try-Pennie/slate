@@ -54,7 +54,7 @@ const subscribeNothing = () => () => {};
  */
 export function AnchoredPanel({
   open,
-  onClose,
+  onDismiss,
   triggerRef,
   align = "end",
   gap = 4,
@@ -66,8 +66,22 @@ export function AnchoredPanel({
   ...aria
 }: {
   open: boolean;
-  /** Called when the panel should close because of something outside it. */
-  onClose: () => void;
+  /**
+   * Called when the panel is DISMISSED: an outside mousedown, or the page
+   * scrolling underneath it. Both are incidental gestures aimed at something
+   * else on the page, not decisions about the panel's contents.
+   *
+   * IT IS NOT A CANCEL, and the name says so because the old one (`onClose`) did
+   * not, and cost somebody their typed input (#2048). The time off form wired
+   * this to a handler that restored the values held before the panel opened, so a
+   * click aimed anywhere else on the page, or a scroll, silently erased a date
+   * that had just been picked, with no undo and nothing said.
+   *
+   * A panel whose contents can be abandoned owes the reader an explicit Cancel
+   * and Escape for that, and must close on a dismissal keeping whatever is in it
+   * (L628).
+   */
+  onDismiss: () => void;
   triggerRef: RefObject<HTMLElement | null>;
   /**
    * The positioned element itself. The panel IS the menu or dialog rather than a
@@ -198,14 +212,14 @@ export function AnchoredPanel({
       // answering false, so the type check is required rather than defensive.
       const t = e.target;
       if (t instanceof Node && panelRef.current?.contains(t)) return;
-      onClose();
+      onDismiss();
     };
     const onResize = () => place();
     const onDown = (e: MouseEvent) => {
       const target = e.target as Node;
       if (panelRef.current?.contains(target)) return;
       if (triggerRef.current?.contains(target)) return;
-      onClose();
+      onDismiss();
     };
     // `true` so a scroll inside the table's own scroll container is caught too;
     // a scroll event on an element does not bubble.
@@ -217,7 +231,7 @@ export function AnchoredPanel({
       window.removeEventListener("resize", onResize);
       document.removeEventListener("mousedown", onDown);
     };
-  }, [open, onClose, place, triggerRef]);
+  }, [open, onDismiss, place, triggerRef]);
 
   // The portal itself needs a DOM, so nothing renders until mount either way.
   if (!mounted) return null;

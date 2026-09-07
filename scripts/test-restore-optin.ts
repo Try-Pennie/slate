@@ -199,7 +199,14 @@ return <input type="hidden" name={name} value={resolved} />;
     ["the read", real.replace(/useRestoredValue\s*\(/g, "noRestore(")],
     // The result assigned but never used, which is the shape that passed a
     // check on whether the function was merely called.
-    ["the use", real.replace(/restored \?\? defaultValue/g, "defaultValue")],
+    //
+    // It takes the name out of the FALLBACK JOIN rather than naming the whole
+    // chain, because the chain is what changes: it was `restored ?? defaultValue`
+    // until a third source was added (#2048) and the overlay silently stopped
+    // matching, which made it replace nothing and prove nothing. The assertion
+    // below that the overlay CHANGED the source is what reported that, and it is
+    // the reason this is written against the one thing the shape cannot lose.
+    ["the use", real.replace(/restored \?\? /g, "")],
     ["the marker", real.replace(/data-restore-own="true"/g, 'data-nothing="true"')],
   ] as [string, string][]) {
     assert(broken !== real, `the overlay removing ${label} changed the real source`);

@@ -131,7 +131,7 @@ export function RowActionsMenu({
 
       <AnchoredPanel
         open={open}
-        onClose={() => setOpen(false)}
+        onDismiss={() => setOpen(false)}
         triggerRef={triggerRef}
         panelRef={menuRef}
         onPlaced={focusFirstItem}

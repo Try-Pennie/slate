@@ -51,6 +51,7 @@ import { useRestoredValue } from "@/components/ui/SaveForm";
 export function TimeField({
   name,
   defaultValue,
+  value,
   ariaLabel,
   className = "",
   round = "down",
@@ -65,6 +66,29 @@ export function TimeField({
    */
   name?: string;
   defaultValue?: string;
+  /**
+   * A caller-owned 24 hour "HH:MM" this field must stay IN STEP with, for a caller
+   * that keeps the value somewhere else and renders this control only for the
+   * picking (#2048).
+   *
+   * `defaultValue` is read once, into the initial state, which is right for the
+   * four hours screens: the field owns its value from then on. It was wrong for the
+   * time off form's combined date and time field, which keeps the value in its own
+   * typeable segments and mounted this control beside them. Typing a time into the
+   * segments while the popup was open never reached the popup, so one value was
+   * shown by two controls that disagreed about it (L605).
+   *
+   * Each distinct value is adopted ONCE, tracked by `seenValue`, because the value
+   * is snapped on the way in and a snapped value differs from the one that arrived,
+   * which without the guard would re-adopt on every render forever.
+   *
+   * A change this field itself reported is NOT re-adopted: the incoming value is
+   * compared against what the field is standing on, so a REFUSED entry keeps the
+   * text somebody has to see in order to correct it. That path matters, since
+   * refusing rather than snapping a typed time is deliberate (#1764) and adopting
+   * our own "" back over it would erase the thing being complained about.
+   */
+  value?: string;
   ariaLabel: string;
   className?: string;
   round?: "down" | "up";
@@ -86,13 +110,20 @@ export function TimeField({
   // the next render, which is why the restore reaches the field rather than the
   // DOM.
   const restored = useRestoredValue(name);
-  const source = restored ?? defaultValue;
+  const source = restored ?? value ?? defaultValue;
   const initial = source ? snap(source) : "";
   const initialText = formatTimeOfDay(initial) ?? "";
 
   const [text, setText] = useState(initialText);
   const [committed, setCommitted] = useState(initial && formatTimeOfDay(initial) ? initial : "");
   const [open, setOpen] = useState(false);
+  /**
+   * The last `value` this field has taken, so each distinct one is adopted once.
+   * Adjusting state from a changed prop during render is React's own pattern for
+   * this, and is used rather than an effect so the field never paints one frame
+   * showing the value it is about to replace.
+   */
+  const [seenValue, setSeenValue] = useState(value);
   /**
    * The row the keyboard is on, or null for none. Null matters: with a highlight
    * fixed at 0 the FIRST arrow press would skip past the first option, so typing
@@ -108,6 +139,19 @@ export function TimeField({
    * the one option matching its own label.
    */
   const [dirty, setDirty] = useState(false);
+
+  if (value !== undefined && value !== seenValue) {
+    setSeenValue(value);
+    const next = value ? snap(value) : "";
+    // Only when it says something different from what this field is standing on:
+    // a value that came back from this field's own `onValueChange` is already here,
+    // and re-adopting it would clear a refused entry's text.
+    if (next !== committed) {
+      setText(formatTimeOfDay(next) ?? "");
+      setCommitted(next && formatTimeOfDay(next) ? next : "");
+      setDirty(false);
+    }
+  }
 
   const inputRef = useRef<HTMLInputElement>(null);
   /**
@@ -359,7 +403,7 @@ export function TimeField({
       <AnchoredPanel
         open={open}
         keepMounted
-        onClose={() => setOpen(false)}
+        onDismiss={() => setOpen(false)}
         triggerRef={inputRef}
         align="start"
       >
