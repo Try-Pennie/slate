@@ -174,7 +174,9 @@
   <h3>Two lines, light</h3>
   <p class="cap">Below <b>762px</b> the line will not hold. The break is at the period, never mid
   clause, so the second line always begins "Anything you do". The strip grows to <b>43px</b> and the
-  page below it moves down by 13px.</p>
+  page below it moves down by 13px. <b>That pixel figure is not a specification.</b> It was measured
+  in this file's own typography, and the app's header will break at a different width; the rule to
+  build to is IM4, that a break can only ever land between the two clauses.</p>
   <div class="stage"><div class="win" data-theme="light" data-w="620" style="width:620px"></div></div>
 
   <h3>One line, dark</h3>
@@ -246,7 +248,11 @@
 
   <h2>Measurements</h2>
   <p class="sub">Every number here was measured rather than estimated, with a 24 character name against
-  the roster's real maximum of 22, so the worst real case is slightly better than what is drawn above.</p>
+  the roster's real maximum of 22, so the worst real case is slightly better than what is drawn above.
+  The CONTRAST figures are properties of the colours and carry over to the app unchanged. The WIDTH and
+  HEIGHT figures were measured in this file's own type and spacing, so they will move in the app: treat
+  them as the shape of the behaviour, not as targets, and re-measure them there if a number is ever
+  needed.</p>
   <table>
     <tr><th>Quantity</th><th>Value</th></tr>
     <tr><td>graphite label on the mustard strip</td><td class="n">8.61:1</td></tr>
@@ -256,7 +262,7 @@
     <tr><td>strip height, one line</td><td class="n">30px</td></tr>
     <tr><td>strip height, two lines</td><td class="n">43px</td></tr>
     <tr><td>strip height at 430px wide</td><td class="n">77px</td></tr>
-    <tr><td>widest one line layout holds until</td><td class="n">762px</td></tr>
+    <tr><td>widest one line layout holds until, in THIS file's typography</td><td class="n">762px</td></tr>
     <tr><td>identity clause starts wrapping inside itself</td><td class="n">512px</td></tr>
   </table>
 
@@ -278,9 +284,10 @@
     <li><span class="req">IM5.</span> The exit control is pinned and never shrinks. No window width may
     move it off the edge or onto its own row.</li>
     <li><span class="req">IM6.</span> The page content begins below the strip's <em>measured</em>
-    height, never a hardcoded value, because that height is 30, 43 or 77px depending on width. Either
-    read it after layout or make the strip and the content siblings in a column so the height is never
-    named twice.</li>
+    height, never a hardcoded value, because that height varies with width (30, 43 and 77px in this
+    file, and different numbers in the app). Either read it after layout or make the strip and the
+    content siblings in a column so the height is never named twice. The point of the requirement is
+    that no number is hardcoded, so do not copy the three above into the app.</li>
     <li><span class="req">IM7.</span> The exit control is an outlined graphite button, not a sky one.
     Sky remains the only colour that means "do this", so the marker must not compete with the page's
     own primary action.</li>
