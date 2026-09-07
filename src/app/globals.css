@@ -850,3 +850,16 @@ html {
 :root[data-impersonating="on"] .pn-skip-link:focus {
   top: calc(var(--impersonation-strip-h, 30px) + 0.5rem);
 }
+
+/* The nav link's pending slot (#2045). The box is always in the layout so a
+   click moves nothing; only its visibility changes. `visibility` rather than
+   `display` or a conditional render, because those three differ in exactly the
+   way that matters here: only `visibility` keeps the geometry. */
+.pn-link-pending {
+  display: inline-flex;
+  align-items: center;
+  visibility: hidden;
+}
+.pn-link-pending[data-pending] {
+  visibility: visible;
+}
