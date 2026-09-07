@@ -12,6 +12,9 @@ interface TableFixture {
   cursor?: { last_ts: string | null } | null;
   /** The newest un-skipped watermark row (null = no rows). */
   newest?: Record<string, unknown> | null;
+  /** The oldest un-skipped row past the cursor (null = nothing waiting). */
+  oldestPending?: Record<string, unknown> | null;
+  oldestError?: string;
   /** Rows past the cursor. */
   backlog?: number | null;
   cursorError?: string;
@@ -30,6 +33,7 @@ function fakeDb(fixtures: Record<string, TableFixture>) {
   function builder(table: string) {
     const f = fixtures[table] ?? {};
     let isCount = false;
+    let ascending = false;
     const b: Record<string, unknown> = {};
     const chain = (op: string) => (col: string, val: unknown) => {
       filters.push({ table, op, col, val });
@@ -43,12 +47,21 @@ function fakeDb(fixtures: Record<string, TableFixture>) {
       is: chain("is"),
       eq: chain("eq"),
       gt: chain("gt"),
-      order: () => b,
+      order: (col: string, opts: { ascending: boolean }) => {
+        filters.push({ table, op: "order", col, val: opts.ascending ? "asc" : "desc" });
+        ascending = opts.ascending;
+        return b;
+      },
       limit: () => b,
-      maybeSingle: async () =>
-        table === "export_cursor"
-          ? { data: f.cursor ?? null, error: f.cursorError ? { message: f.cursorError } : null }
-          : { data: f.newest ?? null, error: f.newestError ? { message: f.newestError } : null },
+      maybeSingle: async () => {
+        if (table === "export_cursor") {
+          return { data: f.cursor ?? null, error: f.cursorError ? { message: f.cursorError } : null };
+        }
+        if (ascending) {
+          return { data: f.oldestPending ?? null, error: f.oldestError ? { message: f.oldestError } : null };
+        }
+        return { data: f.newest ?? null, error: f.newestError ? { message: f.newestError } : null };
+      },
       then: (resolve: (r: unknown) => unknown) =>
         resolve(
           isCount
@@ -67,25 +80,68 @@ function fakeDb(fixtures: Record<string, TableFixture>) {
 function allHealthy(over: Record<string, TableFixture> = {}): Record<string, TableFixture> {
   const base: Record<string, TableFixture> = { export_cursor: { cursor: { last_ts: "2026-07-31T12:00:00Z" } } };
   for (const t of ["bookings", "webhook_deliveries", "booking_outbox", "booking_events", "audit_log", "routing_decisions"]) {
-    base[t] = { newest: { updated_at: "2026-07-31T12:05:00Z", created_at: "2026-07-31T12:05:00Z" }, backlog: 2 };
+    base[t] = {
+      newest: { updated_at: "2026-07-31T12:05:00Z", created_at: "2026-07-31T12:05:00Z" },
+      oldestPending: { updated_at: "2026-07-31T12:03:00Z", created_at: "2026-07-31T12:03:00Z" },
+      backlog: 2,
+    };
   }
   return { ...base, ...over };
 }
 
+/** The clock the lane reads at: 12:10, so the oldest waiting row (12:03) is 7 minutes old. */
+const NOW_MS = Date.parse("2026-07-31T12:10:00Z");
+
 describe("measureExportLag", () => {
-  it("measures how far each table's newest row is past the export cursor", async () => {
+  it("measures the AGE of the oldest row still waiting for export, against the injected clock (#1713)", async () => {
+    // Not newest minus cursor: on a sparse table that is the gap between the two
+    // newest rows and reads a seven minute old row as hours of lag (L537).
     fakeDb(allHealthy());
-    const rows = await measureExportLag();
+    const rows = await measureExportLag(NOW_MS);
     expect(rows).toHaveLength(6);
     const bookings = rows.find((r) => r.table === "bookings")!;
-    expect(bookings.lagMs).toBe(5 * 60_000);
+    expect(bookings.oldestPendingTs).toBe("2026-07-31T12:03:00Z");
+    expect(bookings.lagMs).toBe(7 * 60_000);
     expect(bookings.backlog).toBe(2);
   });
 
-  it("reports no lag when the newest row predates the cursor (nothing is waiting)", async () => {
-    fakeDb(allHealthy({ bookings: { newest: { updated_at: "2026-07-31T11:00:00Z" }, backlog: 0 } }));
-    const bookings = (await measureExportLag()).find((r) => r.table === "bookings")!;
+  it("reads the oldest waiting row strictly past the cursor, oldest first, skipping redacted rows", async () => {
+    const { filters } = fakeDb(allHealthy());
+    await measureExportLag(NOW_MS);
+    const asc = filters.filter((f) => f.table === "bookings" && f.op === "order" && f.val === "asc");
+    expect(asc).toHaveLength(1);
+    // The gt on the cursor is applied to BOTH reads (backlog count and oldest row).
+    expect(filters.filter((f) => f.table === "bookings" && f.op === "gt")).toHaveLength(2);
+    // The skip-redacted predicate reaches the oldest-row read as well: a redacted
+    // row can never be exported and would otherwise age forever as "waiting".
+    expect(filters.filter((f) => f.table === "bookings" && f.op === "is" && f.col === "pii_redacted_at")).toHaveLength(3);
+  });
+
+  it("reports no lag when nothing is waiting past the cursor", async () => {
+    fakeDb(allHealthy({ bookings: { newest: { updated_at: "2026-07-31T11:00:00Z" }, oldestPending: null, backlog: 0 } }));
+    const bookings = (await measureExportLag(NOW_MS)).find((r) => r.table === "bookings")!;
+    expect(bookings.oldestPendingTs).toBeNull();
     expect(bookings.lagMs).toBe(0);
+  });
+
+  it("reproduces the 2026-09-02 night: one seven minute old row on a sparse table is not hours of lag", async () => {
+    fakeDb(
+      allHealthy({
+        export_cursor: { cursor: { last_ts: "2026-09-02T00:11:36Z" } },
+        audit_log: {
+          newest: { created_at: "2026-09-02T02:53:14Z" },
+          oldestPending: { created_at: "2026-09-02T02:53:14Z" },
+          backlog: 1,
+        },
+      }),
+    );
+    const audit = (await measureExportLag(Date.parse("2026-09-02T03:00:04Z"))).find((r) => r.table === "audit_log")!;
+    expect(audit.lagMs).toBe(6 * 60_000 + 50_000);
+  });
+
+  it("throws when the oldest-row read errors, never reporting a healthy zero lag", async () => {
+    fakeDb(allHealthy({ bookings: { newest: { updated_at: "2026-07-31T12:05:00Z" }, oldestError: "asc read failed" } }));
+    await expect(measureExportLag(NOW_MS)).rejects.toThrow(/asc read failed/);
   });
 
   it("excludes redacted rows, which can never be exported and would freeze the gate forever", async () => {
@@ -133,8 +189,12 @@ describe("measureExportLag", () => {
   it("reports an unreadable lag rather than a healthy zero when a timestamp cannot be parsed", async () => {
     // A raw Date.parse would yield NaN here and compare false against every
     // threshold, landing on "not lagging" and permitting a delete (#1169/#1171).
-    fakeDb(allHealthy({ bookings: { newest: { updated_at: "not a date" }, backlog: 1 } }));
-    const bookings = (await measureExportLag()).find((r) => r.table === "bookings")!;
+    fakeDb(
+      allHealthy({
+        bookings: { newest: { updated_at: "2026-07-31T12:05:00Z" }, oldestPending: { updated_at: "not a date" }, backlog: 1 },
+      }),
+    );
+    const bookings = (await measureExportLag(NOW_MS)).find((r) => r.table === "bookings")!;
     expect(Number.isNaN(bookings.lagMs)).toBe(true);
   });
 

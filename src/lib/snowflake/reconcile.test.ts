@@ -88,6 +88,7 @@ describe("evaluateRecon drift cause (#1230)", () => {
     table,
     cursorTs: "2026-08-03T12:00:00.000Z",
     newestTs: "2026-08-03T12:00:00.000Z",
+    oldestPendingTs: null,
     lagMs: 0,
     backlog: 0,
     ...over,
@@ -113,7 +114,7 @@ describe("evaluateRecon drift cause (#1230)", () => {
       [],
       [lag("bookings", { lagMs: 3 * 60 * 60_000, backlog: 540 })],
     );
-    expect(r.reasons[0]).toMatch(/export lane is 3 hours behind/);
+    expect(r.reasons[0]).toMatch(/oldest row waiting for export is 3 hours old/);
     expect(r.reasons[0]).toMatch(/540 rows waiting/);
     expect(r.reasons[0]).toMatch(/clears itself once the lane catches up/);
     expect(r.reasons[0]).not.toMatch(/never export/);
@@ -340,7 +341,7 @@ describe("reconcileSnowflakeMirror", () => {
     // Every mirrored table's lane is current, so a drift can only be rows sitting
     // behind the watermark.
     vi.mocked(measureExportLag).mockResolvedValue([
-      { table: "audit_log", cursorTs: "2026-08-03T12:00:00.000Z", newestTs: "2026-08-03T12:00:00.000Z", lagMs: 0, backlog: 0 },
+      { table: "audit_log", cursorTs: "2026-08-03T12:00:00.000Z", newestTs: "2026-08-03T12:00:00.000Z", oldestPendingTs: "2026-08-03T12:00:00.000Z", lagMs: 0, backlog: 0 },
     ] as never);
 
     const r = await reconcileSnowflakeMirror();
@@ -375,8 +376,8 @@ describe("reconcileSnowflakeMirror", () => {
     };
     vi.mocked(supabaseAdmin).mockReturnValue(db as never);
     vi.mocked(measureExportLag).mockResolvedValue([
-      { table: "bookings", cursorTs: "2026-08-03T12:00:00.000Z", newestTs: "2026-08-03T12:00:00.000Z", lagMs: 0, backlog: 0 },
-      { table: "audit_log", cursorTs: "2026-08-03T12:00:00.000Z", newestTs: "2026-08-03T12:00:00.000Z", lagMs: 0, backlog: 0 },
+      { table: "bookings", cursorTs: "2026-08-03T12:00:00.000Z", newestTs: "2026-08-03T12:00:00.000Z", oldestPendingTs: "2026-08-03T12:00:00.000Z", lagMs: 0, backlog: 0 },
+      { table: "audit_log", cursorTs: "2026-08-03T12:00:00.000Z", newestTs: "2026-08-03T12:00:00.000Z", oldestPendingTs: "2026-08-03T12:00:00.000Z", lagMs: 0, backlog: 0 },
     ] as never);
 
     const r = await reconcileSnowflakeMirror();
@@ -402,7 +403,7 @@ describe("reconcileSnowflakeMirror", () => {
     configured();
     vi.mocked(supabaseAdmin).mockReturnValue(dbWithCount(300) as never);
     vi.mocked(measureExportLag).mockResolvedValue([
-      { table: "audit_log", cursorTs: null, newestTs: "2026-08-03T12:00:00.000Z", lagMs: Infinity, backlog: 300 },
+      { table: "audit_log", cursorTs: null, newestTs: "2026-08-03T12:00:00.000Z", oldestPendingTs: "2026-08-03T12:00:00.000Z", lagMs: Infinity, backlog: 300 },
     ] as never);
 
     const r = await reconcileSnowflakeMirror();
@@ -431,7 +432,7 @@ describe("reconcileSnowflakeMirror", () => {
     };
     vi.mocked(supabaseAdmin).mockReturnValue(db as never);
     vi.mocked(measureExportLag).mockResolvedValue([
-      { table: "bookings", cursorTs: "2026-08-03T12:00:00.000Z", newestTs: "2026-08-03T12:00:00.000Z", lagMs: 0, backlog: 0 },
+      { table: "bookings", cursorTs: "2026-08-03T12:00:00.000Z", newestTs: "2026-08-03T12:00:00.000Z", oldestPendingTs: "2026-08-03T12:00:00.000Z", lagMs: 0, backlog: 0 },
     ] as never);
 
     await expect(reconcileSnowflakeMirror()).rejects.toThrow(/does not exist/);

@@ -52,7 +52,7 @@ export const CRON_ROUTES: Record<string, string | string[]> = {
   // straddle DST; the route's isApprovalsDigestTime gate lets one fire.
   "0 11 * * *": "/api/cron/ooo-approvals",
   "0 12 * * *": "/api/cron/ooo-approvals",
-  // Daily 3am UTC retention lanes (each under its own lock): prune
+  // Daily 03:05 UTC retention lanes (each under its own lock): prune
   // routing_decisions older than 12 months, blank webhook_deliveries payload PII
   // on terminal deliveries older than the 90-day window (#1073), redact
   // consumer PII on bookings whose appointment is past the 24-month window (#1071),
@@ -61,7 +61,13 @@ export const CRON_ROUTES: Record<string, string | string[]> = {
   // the same 24-month contact data from the Snowflake mirror (#1180). The prune
   // sits here rather than on the every-minute trigger deliberately, because that
   // invocation is the one already short of CPU headroom.
-  "0 3 * * *": [
+  //
+  // 03:05 rather than 03:00 (#1713): every retention lane gates on the export lane
+  // being current, and the export lane fires on every tenth minute, so an exact
+  // 03:00 start had the gate reading the mirror while the tick it was judging was
+  // still working through six tables. scripts/test-cron-routes.ts pins the minute
+  // off the export lane's step.
+  "5 3 * * *": [
     "/api/cron/prune-routing",
     "/api/cron/prune-webhook-payloads",
     "/api/cron/prune-bookings-pii",

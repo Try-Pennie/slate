@@ -82,7 +82,7 @@ export function driftCause(drift: number, lag: TableLag | undefined): string {
   }
   if (lag.lagMs > MAX_EXPORT_LAG_MS) {
     return (
-      `the export lane is ${formatLag(lag.lagMs)} behind the newest row, with ${lag.backlog} rows waiting to ` +
+      `the oldest row waiting for export is ${formatLag(lag.lagMs)} old, with ${lag.backlog} rows waiting to ` +
       `export, so this clears itself once the lane catches up`
     );
   }
@@ -91,7 +91,7 @@ export function driftCause(drift: number, lag: TableLag | undefined): string {
   const stranded = drift - lag.backlog;
   if (stranded <= 0) {
     return (
-      `the export lane is current (${formatLag(lag.lagMs)} behind the newest row) with ${lag.backlog} rows ` +
+      `the export lane is current (its oldest waiting row is ${formatLag(lag.lagMs)} old) with ${lag.backlog} rows ` +
       `waiting, so this should clear on the next export tick`
     );
   }
@@ -100,7 +100,7 @@ export function driftCause(drift: number, lag: TableLag | undefined): string {
   // sitting in the alert wrapper, because the wrapper also carries a failed
   // positive control, where re-exporting is the wrong advice (L36).
   return (
-    `the export lane is current (${formatLag(lag.lagMs)} behind the newest row, ${lag.backlog} rows waiting), ` +
+    `the export lane is current (its oldest waiting row is ${formatLag(lag.lagMs)} old, ${lag.backlog} rows waiting), ` +
     `so ${stranded} of these rows sit behind its strictly forward watermark and will never export on their own ` +
     `until they are re-exported (src/lib/snowflake/reexport.ts)`
   );

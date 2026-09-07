@@ -284,9 +284,21 @@ data 24 months, delivered outbox rows 30 days. `bookings` are never hard-deleted
 retention redacts in place and migration 0089 blocks the cascade outright.
 
 **The outer gate is an export-lag reading, not a row count (#1139).** Before any of
-this, a lane checks that the export lane is keeping up: per mirrored table, how far
-the newest exportable row sits past the export cursor. Past an hour behind (six
-missed 10-minute export ticks) the lane refuses and alerts. It reads only Supabase.
+this, a lane checks that the export lane is keeping up: per mirrored table, how long
+the oldest exportable row past the export cursor has been waiting, measured against
+the clock the lane read at. Past an hour (six missed 10-minute export ticks) the lane
+refuses and alerts. It reads only Supabase.
+
+The reading is an AGE, not the gap between the two newest rows, and the difference
+is #1713. `newest - cursor` reads zero while everything is exported and, the moment
+one row lands, reads the interval between that row and the one before it, which on a
+sparse table is hours however healthy the lane is. On 2026-09-02 a time off request
+filed at 02:53 UTC, with the previous audit row at 00:11, scored "3 hours behind" at
+03:00 while being seven minutes old, and all three lanes refused for the night, holding
+four webhook payloads with contact data a day past their window. The lanes also run at
+03:05 rather than 03:00 now, so the gate never reads the mirror while the export tick
+it is judging is still running; `scripts/test-cron-routes.ts` pins that minute off the
+export lane's step.
 
 That replaced a Supabase-vs-Snowflake row-count reconciliation, which could not
 survive its own success: the count flags only "Snowflake is behind", which goes

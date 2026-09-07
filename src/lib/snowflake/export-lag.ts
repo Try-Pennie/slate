@@ -1,6 +1,7 @@
 /**
  * The IO half of the export-lag deletion gate (#1139): read, per mirrored table,
- * how far the export cursor has fallen behind the newest exportable row.
+ * how long the oldest exportable row past the export cursor has been waiting
+ * (#1713; the age itself is computed in export-lag-core.ts).
  *
  * Every read here is Supabase-only and deliberately so. See export-lag-core.ts
  * for why this replaced the Supabase-vs-Snowflake row-count reconciliation as
@@ -21,10 +22,9 @@
 
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { unwrap, unwrapCount } from "@/lib/db/result";
-import { parseStampMs } from "@/lib/date/stamp";
 import { MIRROR_TABLES } from "./export-core";
 import { applySkipRedacted } from "./skip-redacted";
-import type { TableLag } from "./export-lag-core";
+import { exportLagAgeMs, type TableLag } from "./export-lag-core";
 
 /** The minimal PostgREST surface these reads need. */
 type LagRead = { count: number | null; data: unknown; error: { message: string } | null };
@@ -73,6 +73,30 @@ async function newestWatermark(db: LagDb, table: string, watermark: string): Pro
   return value == null ? null : String(value);
 }
 
+/**
+ * The oldest exportable row strictly past the cursor, or null when nothing is
+ * waiting. Its age against the clock IS the lag reading (#1713). The same strict
+ * `>` as the backlog count below, for the same reason: a row AT the cursor
+ * timestamp may or may not have been exported, and that has always been true of
+ * this gate; the per-row read-back at delete time is what settles a single row.
+ */
+async function oldestPendingWatermark(
+  db: LagDb,
+  table: string,
+  watermark: string,
+  cursorTs: string,
+): Promise<string | null> {
+  // cap-safe: limit(1) + maybeSingle, a single-row read.
+  const res = await applySkipRedacted(table, db.from(table).select(watermark))
+    .gt(watermark, cursorTs)
+    .order(watermark, { ascending: true })
+    .limit(1)
+    .maybeSingle();
+  const row = unwrap(res as { data: unknown; error: { message: string } | null }, `export-lag oldest pending ${table}`);
+  const value = (row as Record<string, unknown> | null)?.[watermark];
+  return value == null ? null : String(value);
+}
+
 /** Rows past the cursor still awaiting export. Diagnostic only. */
 async function backlogPastCursor(
   db: LagDb,
@@ -91,42 +115,38 @@ async function backlogPastCursor(
 }
 
 /**
- * Measure the export lag for every mirrored table.
+ * Measure the export lag for every mirrored table, as of `nowMs`.
+ *
+ * The clock is a parameter so the measured night in the tests is the real one
+ * rather than whatever time the suite happens to run at; production passes
+ * nothing and gets the Worker's clock.
  *
  * Throws if any read fails: an unmeasured mirror must never present as a
  * healthy one, because the caller's next move is to delete data.
  */
-export async function measureExportLag(): Promise<TableLag[]> {
+export async function measureExportLag(nowMs: number = Date.now()): Promise<TableLag[]> {
   const db = supabaseAdmin() as unknown as LagDb;
   const rows: TableLag[] = [];
 
   for (const spec of MIRROR_TABLES) {
     const cursorTs = await exportedThrough(spec.table);
     const newestTs = await newestWatermark(db, spec.table, spec.watermark);
+    // No cursor means nothing is in the warehouse and the lag is Infinity by
+    // definition, so the oldest-row read is skipped rather than spent.
+    const oldestPendingTs =
+      cursorTs === null || newestTs === null
+        ? null
+        : await oldestPendingWatermark(db, spec.table, spec.watermark, cursorTs);
     const backlog = await backlogPastCursor(db, spec.table, spec.watermark, cursorTs);
-    rows.push({ table: spec.table, cursorTs, newestTs, backlog, lagMs: lagBetween(cursorTs, newestTs) });
+    rows.push({
+      table: spec.table,
+      cursorTs,
+      newestTs,
+      oldestPendingTs,
+      backlog,
+      lagMs: exportLagAgeMs({ cursorTs, newestTs, oldestPendingTs, nowMs }),
+    });
   }
 
   return rows;
-}
-
-/**
- * How far `newestTs` sits past `cursorTs`, in ms.
- *
- * Three non-obvious cases, each of which has to land on the fail-safe side:
- *   - no rows at all: 0, because an empty table cannot be behind and must not
- *     freeze the other lanes;
- *   - rows but no cursor: Infinity, because NOTHING is in the warehouse yet;
- *   - a timestamp that will not parse: NaN, which the evaluator treats as a
- *     fault. Routed through parseStampMs rather than Date.parse precisely so a
- *     bad value cannot silently compare false against the bound and read as
- *     healthy (#1169/#1171).
- */
-export function lagBetween(cursorTs: string | null, newestTs: string | null): number {
-  if (newestTs === null) return 0;
-  if (cursorTs === null) return Number.POSITIVE_INFINITY;
-  const newest = parseStampMs(newestTs);
-  const cursor = parseStampMs(cursorTs);
-  if (newest === null || cursor === null) return Number.NaN;
-  return Math.max(0, newest - cursor);
 }
