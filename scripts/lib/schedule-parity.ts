@@ -1,4 +1,4 @@
-// The comparison behind `pnpm verify:schedule-parity` (#1754). Pure: no network,
+// The comparison behind `pnpm verify:calcom-parity` (#1754). Pure: no network,
 // no clock, no database, so `scripts/test-schedule-parity.ts` drives every verdict
 // offline.
 //
