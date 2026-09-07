@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { RowActionsMenu } from "@/components/ui/RowActionsMenu";
 
@@ -178,7 +178,47 @@ describe("the menu escapes a clipping ancestor (#1843)", () => {
     expect(menu.parentElement).toBe(document.body);
   });
 
-  it("closes when the surface behind it scrolls, rather than hovering beside another row", async () => {
+  // #2052 reversed what a scroll does: the panel FOLLOWS its row rather than
+  // going, which is why the old assertion here (that a scroll closes it) is
+  // replaced rather than adjusted. The concern behind it survives as the closing
+  // condition: a menu must not hover beside an unrelated row, and once the row is
+  // off screen there is nothing to hover beside.
+  //
+  // jsdom has no layout and reports every rect as zero, so the trigger's rect is
+  // stubbed: without that, every trigger reads as off screen and this would pass
+  // for a reason that has nothing to do with scrolling.
+  const setTriggerRect = (rect: Partial<DOMRect>) => {
+    const btn = screen.getByRole("button", { name: "Actions for Ada" });
+    btn.getBoundingClientRect = () =>
+      ({ top: 0, left: 0, right: 0, bottom: 0, width: 0, height: 0, x: 0, y: 0,
+         toJSON: () => ({}), ...rect }) as DOMRect;
+  };
+  it("stays open and follows the row while the row is still on screen", async () => {
+    const user = userEvent.setup();
+    render(
+      <RowActionsMenu label="Actions for Ada">
+        <button role="menuitem" type="button">View as Ada</button>
+      </RowActionsMenu>,
+    );
+    await user.click(screen.getByRole("button", { name: "Actions for Ada" }));
+    const menu = screen.getByRole("menu");
+    const placedAt = menu.style.top;
+
+    setTriggerRect({ top: 300, bottom: 340, left: 100, right: 300, width: 200, height: 40 });
+    fireEvent.scroll(window);
+
+    // Waits on the REPOSITION, not on a duration. That is both the condition the
+    // handler produces and a stronger claim than survival: a menu that merely
+    // stayed open would satisfy "is still there" without having followed
+    // anything, since it was open before the scroll (L290).
+    await waitFor(() => expect(menu.style.top).not.toBe(placedAt));
+    expect(
+      screen.queryByRole("menu"),
+      "scrolling to see the row is not a decision to close its menu",
+    ).toBeTruthy();
+  });
+
+  it("closes once the row it belongs to has scrolled out of the window", async () => {
     const user = userEvent.setup();
     render(
       <RowActionsMenu label="Actions for Ada">
@@ -188,10 +228,14 @@ describe("the menu escapes a clipping ancestor (#1843)", () => {
     await user.click(screen.getByRole("button", { name: "Actions for Ada" }));
     expect(screen.queryByRole("menu")).toBeTruthy();
 
+    setTriggerRect({ top: -200, bottom: -160, left: 100, right: 300, width: 200, height: 40 });
     fireEvent.scroll(window);
-    expect(
-      screen.queryByRole("menu"),
-      "a fixed panel does not move with its row, so it must go rather than mislead",
-    ).toBeNull();
+
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("menu"),
+        "with the row gone there is nothing to point at, so the menu must go too",
+      ).toBeNull(),
+    );
   });
 });

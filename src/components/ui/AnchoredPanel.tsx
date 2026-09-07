@@ -15,6 +15,7 @@ import { createPortal } from "react-dom";
 import {
   anchoredPosition,
   anchoredPanelZ,
+  triggerIsOnScreen,
 } from "@/components/ui/anchored-position";
 
 /**
@@ -64,10 +65,21 @@ const subscribeNothing = () => () => {};
  * the ancestor chain entirely; `fixed` is then what keeps the coordinates in
  * viewport space.
  *
- * IT CLOSES ON SCROLL rather than following the trigger. A fixed panel does not
- * move with the row it belongs to, and a menu hovering beside an unrelated row
- * is worse than one that has gone. Repositioning on every scroll frame was the
- * alternative and it buys nothing here: these panels are all short lived.
+ * IT FOLLOWS THE TRIGGER ON SCROLL, and closes only once the trigger has left
+ * the viewport (#2052).
+ *
+ * This reverses what #1843 decided, so the old reasoning is kept rather than
+ * quietly replaced: a fixed panel does not move with the row it belongs to, and
+ * a menu hovering beside an unrelated row is worse than one that has gone. That
+ * is true, and it was argued from the roster's row menu. It was wrong for a
+ * picker somebody is filling IN. Scrolling to see the field being edited, or an
+ * inertial flick on a trackpad, shut the calendar mid pick, and #2048 is what
+ * that cost when the same path also threw the value away.
+ *
+ * Repositioning serves both, because the original concern reduces to a trigger
+ * that is no longer on screen, which is now the only thing that dismisses. The
+ * work is one rect read and two style writes, coalesced onto an animation frame
+ * so a scroll cannot queue more than one.
  *
  * WHERE it goes is `anchored-position.ts`, which is pure and node tested at sizes
  * jsdom cannot produce, since jsdom has no layout and reports every rect as zero.
@@ -226,14 +238,29 @@ export function AnchoredPanel({
 
   useEffect(() => {
     if (!open) return;
+    let frame = 0;
     const onScroll = (e: Event) => {
       // A scroll INSIDE the panel is the person reading a long list, not the page
-      // moving underneath it, so it must not dismiss. The target of a window or
-      // document scroll is not a Node, and `contains` THROWS on one rather than
-      // answering false, so the type check is required rather than defensive.
+      // moving underneath it, so it must not move or dismiss anything. The target
+      // of a window or document scroll is not a Node, and `contains` THROWS on
+      // one rather than answering false, so the type check is required rather
+      // than defensive.
       const t = e.target;
       if (t instanceof Node && panelRef.current?.contains(t)) return;
-      onDismiss();
+      // Coalesced onto one animation frame: a scroll fires far faster than the
+      // page paints, and every call here reads a rect, which forces layout.
+      if (frame) return;
+      frame = requestAnimationFrame(() => {
+        frame = 0;
+        const trigger = triggerRef.current;
+        if (!trigger) return;
+        const r = trigger.getBoundingClientRect();
+        if (!triggerIsOnScreen(r, { width: window.innerWidth, height: window.innerHeight })) {
+          onDismiss();
+          return;
+        }
+        place();
+      });
     };
     const onResize = () => place();
     const onDown = (e: MouseEvent) => {
@@ -248,6 +275,9 @@ export function AnchoredPanel({
     window.addEventListener("resize", onResize);
     document.addEventListener("mousedown", onDown);
     return () => {
+      // The pending frame is cancelled, or a panel closed mid scroll would place
+      // itself once more after it had gone.
+      if (frame) cancelAnimationFrame(frame);
       window.removeEventListener("scroll", onScroll, true);
       window.removeEventListener("resize", onResize);
       document.removeEventListener("mousedown", onDown);

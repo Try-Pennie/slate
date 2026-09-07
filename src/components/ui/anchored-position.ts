@@ -101,6 +101,34 @@ export function anchoredPosition(
  * `scripts/test-anchored-panel-stacking.ts` reads both of those numbers out of
  * the source rather than trusting this comment, so the three cannot drift.
  */
+/**
+ * Whether the trigger is still somewhere on screen (#2052).
+ *
+ * A panel FOLLOWS its trigger as the page scrolls, and this is the one condition
+ * that ends it: once the control the panel belongs to has scrolled out of the
+ * window there is nothing left to point at, and a panel hovering over unrelated
+ * content is worse than one that has gone.
+ *
+ * PARTIALLY visible counts as present, deliberately. Half a field is still a
+ * field somebody is looking at, and closing its picker at that moment is the
+ * complaint this exists to answer: scrolling to bring the field being edited into
+ * view is exactly when the panel used to vanish.
+ *
+ * A shared EDGE is not an overlap: a trigger whose bottom is the viewport's top
+ * occupies no visible pixels, so it is gone rather than present.
+ */
+export function triggerIsOnScreen(
+  trigger: Pick<Box, "top" | "bottom" | "left" | "right">,
+  viewport: { width: number; height: number },
+): boolean {
+  return (
+    trigger.bottom > 0 &&
+    trigger.top < viewport.height &&
+    trigger.right > 0 &&
+    trigger.left < viewport.width
+  );
+}
+
 export const ANCHORED_PANEL_Z = 50;
 
 /**
