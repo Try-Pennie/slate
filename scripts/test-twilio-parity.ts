@@ -15,7 +15,7 @@ import {
   IRRELEVANT_TAGS,
   MANAGER_TAG_PREFIX,
   type SlateSide,
-} from "./lib/twilio-roster.ts";
+} from "@/lib/twilio/roster";
 import { assert, eq, finish } from "./lib/harness.ts";
 
 const worker = (teams: string[], email = "someone@trypennie.com") =>

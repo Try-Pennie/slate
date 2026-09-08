@@ -130,6 +130,9 @@ const FAMILY_BY_KEY: Record<string, AlertFamily> = {
 
   // The roster or the routing inputs disagree with Salesforce, or with themselves.
   agent_sync_failures: "the-roster-or-routing-data-is-wrong",
+  // #2097. The same family: while Twilio cannot be read, the Redistribute tag is
+  // not being acted on, so Slate's idea of who may take a booked call is wrong.
+  twilio_sync_failures: "the-roster-or-routing-data-is-wrong",
   // #1908. The lead's own routing input is missing, so they are routed to the Low
   // pool rather than their real tier. Same family as the rest: the routing data is
   // wrong, and the fix is upstream of Slate rather than inside it.

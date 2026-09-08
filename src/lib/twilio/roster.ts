@@ -77,6 +77,16 @@ export const MANAGER_TAG_PREFIX = "Team ";
 export const NOT_LEGAL_ELIGIBLE_TAG = "Not Legal Eligible";
 export const REDISTRIBUTE_TAG = "Redistribute";
 
+/**
+ * What Slate writes on `users.attributes` to record that IT took somebody out of
+ * the bookable pool because of that tag (#2097).
+ *
+ * Beside the tag rather than in the planner, because the two are one fact seen from
+ * either side, and a second spelling of the mark is how the flip off and the flip
+ * back on stop being inverses of each other.
+ */
+export const REDISTRIBUTE_MARK = "Y";
+
 /** What one Twilio worker says about somebody. */
 export interface TwilioSide {
   email: string;

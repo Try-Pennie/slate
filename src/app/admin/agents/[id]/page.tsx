@@ -48,6 +48,7 @@ import { Pill } from "@/components/ui/Pill";
 import { ViewAsButton } from "@/components/admin/ViewAsButton";
 import type { Attributes, Organization, User } from "@/lib/db/types";
 import { BookablePill } from "@/components/ui/BookablePill";
+import { isMarkedRedistribute } from "@/lib/twilio/roster-plan";
 import { AdminPageHeader } from "@/components/admin/AdminPageHeader";
 import { SelectField } from "@/components/ui/SelectField";
 
@@ -356,6 +357,22 @@ export default async function AgentProfilePage({
                   </SubmitButton>
                 )}
               </SaveForm>
+            )}
+            {/* #2097: WHY they are out of the pool. The hourly sync takes an agent
+                out for the Twilio Redistribute tag, so without this an admin meets a
+                bare "No" beside a control that will be silently undone within the
+                hour, which is a thing people flip twice and then stop trusting
+                (L109). The remedy names the place they will act (Twilio) rather than
+                the mechanism that enforced it (L399).
+
+                The toggle stays usable: an override for the rest of the hour is a
+                legitimate thing to want, and it says here that it will not last. */}
+            {isMarkedRedistribute(agent.attributes) && (
+              <p className={`basis-full text-xs text-fg-muted ${proseCls}`}>
+                Not bookable because Twilio marks them redistribute. Remove that tag
+                in Twilio and the next roster sync puts them back in the pool; making
+                them bookable here is undone by the following sync.
+              </p>
             )}
             {/* Read only on purpose (#1474). Salesforce owns this link: the hourly
                 roster sync converges on Agent_Manager__c, clearing a link

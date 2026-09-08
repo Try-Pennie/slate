@@ -68,6 +68,9 @@ wrangler secret put SLACK_ALERTS_CHANNEL    # optional; default alert channel id
 wrangler secret put SLACK_INFO_CHANNEL      # optional; quieter info-only channel (#567). Empty = falls back to SLACK_ALERTS_CHANNEL.
 wrangler secret put SLACK_SIGNING_SECRET    # optional; verifies inbound Slack Approve/Decline requests. Empty = /api/slack/interactions rejects everything.
 wrangler secret put CALCOM_API_KEY          # optional; cal.com dual-write during cutover (needs OOO_CALCOM_DUAL_WRITE). Empty = dual-write no-op.
+wrangler secret put TWILIO_API_KEY_SID      # required; TaskRouter-scoped API key SID. The hourly roster sync reads Twilio for the Redistribute tag (#2097). Empty (any of the three) = the Twilio half REFUSES by name and pages on twilio_sync_failures; nobody is taken out of the bookable pool for the tag.
+wrangler secret put TWILIO_API_KEY_SECRET   # required; the matching API key secret.
+wrangler secret put TWILIO_WORKSPACE_SID    # required; the TaskRouter workspace holding the workers. Not really a secret, but set here so all three live in one place rather than split with wrangler.jsonc.
 wrangler secret put REASSIGN_API_KEY        # optional; bearer for the reassign API. Empty = POST /api/bookings/reassign returns 503.
 wrangler secret put OFFBOARDING_API_KEY     # optional; bearer for deactivate/reactivate. Empty = offboarding endpoints return 503.
 wrangler secret put BOOKABLE_API_KEY        # optional; bearer for the bookable-toggle API. Empty = POST /api/users/bookable returns 503.

@@ -34,6 +34,26 @@ eq(
   "agent dropped from every SF flag still keeps Slate-managed keys",
 );
 
+// #2097: `users.attributes` now has TWO writers, the Salesforce sync and the Twilio
+// half of the same run, and this merge is the Salesforce one. The redistribute mark is
+// what tells the Twilio half who IT took out of the pool, so a merge that dropped it
+// would silently end the reverse flip: the agent stays out of the pool for good, and
+// nothing anywhere reports it. Pinned here rather than trusted to the spread, because
+// this is the file somebody edits when they change what Salesforce owns.
+eq(
+  mergeSfAttributes(
+    { debt_team: ["low"], redistribute: "Y" },
+    { debt_team: ["high"], role: "Sales" },
+  ),
+  { redistribute: "Y", debt_team: ["high"], role: "Sales" },
+  "the Twilio redistribute mark survives a Salesforce sync",
+);
+
+assert(
+  !(SF_MANAGED_KEYS as readonly string[]).includes("redistribute"),
+  "and Salesforce does not own it, so nothing here may clear it",
+);
+
 assert(
   SF_MANAGED_KEYS.includes("debt_team") &&
     SF_MANAGED_KEYS.includes("backend_service") &&

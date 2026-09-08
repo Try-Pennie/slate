@@ -11,6 +11,35 @@ export function agentSyncFailureAlert(message: string): string {
   return `The hourly Salesforce agent sync failed on consecutive runs (${message}). Agent teams and the roster may be stale until it succeeds or someone runs Sync from the admin page.`;
 }
 
+/**
+ * The Twilio half of the roster sync could not read Twilio (#2097).
+ *
+ * Its own key, not folded into `agent_sync_failures`, because the two send somebody
+ * to different places and either half can fail while the other works: the Salesforce
+ * one is a Salesforce or a credentials problem, and this one is a Twilio key, a
+ * Twilio outage, or a deployment that never had the three secrets set.
+ *
+ * The REASON is the whole message here rather than a raw error, because the five ways
+ * the read can fail each carry their own wording and their own instruction already
+ * (`src/lib/twilio/client.ts`). What this adds is the consequence, which is the part
+ * a reader cannot infer: while it is failing, nobody is being taken out of the pool
+ * for carrying the Redistribute tag.
+ */
+export function twilioSyncFailureAlert(reason: string): string {
+  return (
+    `The roster sync could not read Twilio, so no agent was taken out of the bookable pool for the Redistribute tag ` +
+    `and nobody was put back in. Salesforce still synced. ${reason}`
+  );
+}
+
+/** It can read Twilio again. */
+export function twilioSyncRecovery(): string {
+  return (
+    "The roster sync can read Twilio again, so the Redistribute tag is being acted on once more. " +
+    "Anybody tagged while it was failing has been taken out of the bookable pool. No action is needed."
+  );
+}
+
 /** It works again. */
 export function agentSyncRecovery(): string {
   return "The hourly Salesforce agent sync is working again. The agent roster and team " +

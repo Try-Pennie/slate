@@ -27,6 +27,8 @@ import {
   salesforceUserIdConflictRecovery,
 } from "@/lib/monitor/cron-alert-copy";
 import { hasUserIdConflicts } from "@/lib/salesforce/user-id-link";
+import { defaultTwilioSyncDeps, syncTwilioRedistribute, type TwilioSyncResult } from "@/lib/twilio/sync";
+import { twilioSyncFailureAlert, twilioSyncRecovery } from "@/lib/monitor/cron-alert-copy";
 
 export const AGENTS_LOCK_KEY = "cron_agents";
 const AGENTS_LOCK_TTL_MS = 10 * 60 * 1000;
@@ -38,6 +40,16 @@ export type RosterSyncOutcome =
   | {
       skipped?: undefined;
       sync: SyncResult;
+      /**
+       * The Twilio half (#2097): what it changed, or WHY it could not be read.
+       *
+       * Never absent and never an empty default. A Twilio read that failed and a
+       * Twilio read that found nobody tagged are different facts, and a default
+       * would let the caller report the second while the first happened (L214), so
+       * this is a discriminated pair the banner and the cron response both have to
+       * branch on.
+       */
+      twilio: { ok: true; result: TwilioSyncResult } | { ok: false; reason: string };
       hoursApplied: number;
       emptyBuckets: string[];
       emptyBucketsAggregated: boolean;
@@ -56,6 +68,51 @@ export async function runRosterSync(): Promise<RosterSyncOutcome> {
   try {
     const sync = await syncSalesforceAgents();
     const org = await ensureDefaultOrg();
+
+    // The Twilio half, after Salesforce and BEFORE the bucket coverage check
+    // (#2097). Both orderings are load bearing:
+    //
+    //  - after Salesforce, because the Salesforce half can make somebody bookable
+    //    on their first debt team and Twilio's Redistribute tag has to beat that.
+    //    The other order would admit a withheld agent for an hour every hour.
+    //  - before `alertOnEmptyBuckets`, because taking twelve agents out of the pool
+    //    can be what empties a bucket, and the alarm has to see the state the run
+    //    actually leaves rather than the one before its own flips.
+    //
+    // Contained, so a Twilio failure cannot destroy the Salesforce half's report:
+    // by this point those writes have already committed, and throwing here would
+    // make the run indistinguishable from one where Salesforce failed. It is a
+    // REFUSAL rather than a skip all the same: its own alert, its own line in the
+    // banner, its own log. What it must never be is silent, because a Twilio half
+    // that quietly does nothing has every symptom of a healthy run.
+    let twilio: { ok: true; result: TwilioSyncResult } | { ok: false; reason: string };
+    try {
+      const result = await syncTwilioRedistribute(await defaultTwilioSyncDeps(org.id));
+      twilio = { ok: true, result };
+      // alert-key: twilio_sync_failures
+      // all-clear-proof: src/app/api/cron/agents/route.test.ts - "sends NO Twilio
+      // all-clear when the Twilio read failed" drives this runner with the Twilio
+      // step throwing and asserts resolveAlert is never reached for its key.
+      //
+      // Hung off the MEASURED success, which is the only thing that can know Twilio
+      // is readable. A run that threw above never reaches this line, so a Twilio
+      // half that could not measure anything clears nothing (#1134, #1152).
+      const cleared = await resolveAlert("twilio_sync_failures", twilioSyncRecovery()).catch(() => false);
+      if (cleared) log.info("agents", { msg: "twilio sync failure alert cleared" });
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      twilio = { ok: false, reason };
+      log.error("agents", { msg: "twilio half of the roster sync failed" }, err);
+      // alert-text-ok: every one of the read's five refusals is a short sentence
+      // this code wrote, carrying its own instruction. It is not a raw error.
+      // alert-key: twilio_sync_failures
+      await sendThrottledAlert(
+        "twilio_sync_failures",
+        SYNC_ALERT_COOLDOWN_MS,
+        twilioSyncFailureAlert(reason),
+      ).catch(() => {});
+    }
+
     const hoursApplied = await ensureDefaultSchedules(org.id);
     // After the roster settles, flag any bucket that now routes to nobody (#327).
     // Best-effort: a monitoring miss must never fail the roster reconcile.
@@ -140,6 +197,7 @@ export async function runRosterSync(): Promise<RosterSyncOutcome> {
 
     return {
       sync,
+      twilio,
       hoursApplied,
       emptyBuckets: coverage.empty,
       emptyBucketsAggregated: coverage.aggregated,

@@ -180,3 +180,11 @@ export const calcomBaseUrl = (): string =>
   (process.env.CALCOM_BASE_URL ?? "https://api.cal.com/v2").replace(/\/$/, "");
 export const calcomOrgId = (): string => process.env.CALCOM_ORG_ID ?? "";
 export const calcomApiKey = (): string => process.env.CALCOM_API_KEY ?? "";
+
+// Twilio TaskRouter, the source of the `Redistribute` tag and of legal eligibility
+// (#2097). Empty is a REFUSAL rather than a default: the read throws by name when
+// any of the three is unset, because a Twilio half that quietly does nothing has
+// every symptom of a healthy run (see src/lib/twilio/client.ts).
+export const twilioApiKeySid = (): string => process.env.TWILIO_API_KEY_SID ?? "";
+export const twilioApiKeySecret = (): string => process.env.TWILIO_API_KEY_SECRET ?? "";
+export const twilioWorkspaceSid = (): string => process.env.TWILIO_WORKSPACE_SID ?? "";

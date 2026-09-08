@@ -151,6 +151,8 @@ import {
 } from "@/lib/snowflake/alert-copy";
 import {
   agentSyncFailureAlert,
+  twilioSyncFailureAlert,
+  twilioSyncRecovery,
   agentSyncRecovery,
   salesforceManagerAmbiguousAlert,
   salesforceManagerAmbiguousRecovery,
@@ -1994,6 +1996,17 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     text: agentSyncFailureAlert("SF token failed: 522 error code: 522") },
   { key: "agent_sync_failures", state: "working again", channel: "recovery",
     text: agentSyncRecovery() },
+  // #2097. Each of the five refusals reads differently, and the two that matter most
+  // are shown: a deployment that never had the secrets, which is the one whose
+  // symptoms all look healthy, and an ordinary Twilio outage.
+  { key: "twilio_sync_failures", state: "the deployment has no Twilio credentials", channel: "alert",
+    text: twilioSyncFailureAlert(
+      "Twilio is not configured on this deployment: TWILIO_API_KEY_SID, TWILIO_API_KEY_SECRET and TWILIO_WORKSPACE_SID must all be set (see DEPLOY.md).",
+    ) },
+  { key: "twilio_sync_failures", state: "Twilio refused the key", channel: "alert",
+    text: twilioSyncFailureAlert("Twilio refused the credentials (401). The API key has to be TaskRouter scoped.") },
+  { key: "twilio_sync_failures", state: "reading Twilio again", channel: "recovery",
+    text: twilioSyncRecovery() },
   // Each shape alone, then all three together, because the sentence is assembled
   // from parts and a reader has to be able to see each one read on its own.
   { key: "salesforce_user_id_conflicts", state: "one stored id disagrees", channel: "alert",
