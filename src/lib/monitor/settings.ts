@@ -34,7 +34,8 @@ export type MonitorAlertKey =
   | "edge_limiter_unusable"
   | "hydration_all_failing"
   | "calendar_window_uncovered"
-  | "schedule_parity_drift";
+  | "schedule_parity_drift"
+  | "agents_on_unset_hours";
 
 export const ALERT_KEYS: MonitorAlertKey[] = [
   "availability_data_anomaly",
@@ -61,6 +62,7 @@ export const ALERT_KEYS: MonitorAlertKey[] = [
   "hydration_all_failing",
   "calendar_window_uncovered",
   "schedule_parity_drift",
+  "agents_on_unset_hours",
 ];
 
 /**
@@ -199,6 +201,12 @@ export const ALERT_FIELDS: {
     help: "The daily comparison found an agent the two systems hold different working hours, days, timezone or pool membership for. While both systems are live this changes who a lead is booked with, or when, and nothing inside Slate can see it: a stored week is valid whether or not it matches the one the agent keeps.",
   },
   {
+    key: "agents_on_unset_hours",
+    urgency: "alert",
+    label: "Agents offered on hours nobody set",
+    help: "A bookable agent's working week is still the seeded default, so leads are offered times that are right only by coincidence. It ends when their hours are set by them, an admin, or the cal.com import.",
+  },
+  {
     key: "ooo_calcom_unprotected",
     urgency: "alert",
     label: "Time off not blocked in cal.com",
@@ -319,6 +327,9 @@ export const MONITOR_DEFAULTS = {
     // anywhere else. Turn it up on the settings screen if a known drift is being
     // lived with, rather than muting the check.
     schedule_parity_drift: 24 * 60 * 60_000,
+    // Hours nobody set (#1753): a slow condition that ends when a person or the
+    // import writes the week, so once a day, like the other staffing nudges.
+    agents_on_unset_hours: 24 * 60 * 60_000,
     // Routing dead zone (#327): unchanged from the constant this replaced. A bucket
     // with nobody stays wrong until someone is staffed onto it, so it repeats while
     // it lasts, six-hourly. Tunable since a deliberately dark roster (#1272) turned

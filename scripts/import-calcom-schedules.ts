@@ -243,6 +243,7 @@ for (const c of changes) {
     const { data, error } = await db.rpc("replace_availability_rules", {
       p_schedule_id: c.scheduleId,
       p_rules: c.plan.rules,
+      p_source: "calcom-import",
     });
     if (error) throw new Error(`rules: ${error.message}`);
     // Judge on the count the database reports, never on the absence of an error: a

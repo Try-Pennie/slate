@@ -188,6 +188,9 @@ export interface AvailabilitySchedule {
   user_id: string;
   timezone: string;
   created_at: string;
+  /** Who last wrote this week (#1753, migration 0117); null = before the stamp existed. */
+  hours_source: "seed" | "agent" | "admin" | "calcom-import" | null;
+  hours_set_at: string | null;
 }
 
 /** weekday: 1=Mon .. 7=Sun (Luxon). Minutes are local to the schedule timezone. */

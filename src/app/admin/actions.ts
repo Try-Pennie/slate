@@ -163,6 +163,8 @@ async function requireManageAgent(
  */
 async function replaceUserSchedule(
   userId: string,
+  /** Who is writing (#1753): the agent themselves, or an admin acting on them. */
+  source: "agent" | "admin",
   /**
    * The plan, already validated by the caller through `planScheduleReplacement`
    * (a window PER DAY, #1308) or `planUniformSchedule` (one window on several
@@ -182,6 +184,7 @@ async function replaceUserSchedule(
   const { data, error } = await db.rpc("replace_availability_rules", {
     p_schedule_id: scheduleId,
     p_rules: plan.rules,
+    p_source: source,
   });
   if (error) {
     throw new Error(`Your hours could not be saved: ${error.message}`);
@@ -201,6 +204,8 @@ async function replaceUserSchedule(
 async function applyOrgDefaultToUser(
   orgId: string,
   userId: string,
+  /** Who pressed the button (#1753): the agent on /me, or an admin on their page. */
+  source: "agent" | "admin",
 ): Promise<void> {
   const db = supabaseAdmin();
   // #1629: both reads decide what gets WRITTEN to the agent's schedule. The org
@@ -235,6 +240,7 @@ async function applyOrgDefaultToUser(
   // `planUniformSchedule` is for: put this agent back on the company's hours.
   await replaceUserSchedule(
     userId,
+    source,
     planUniformSchedule(
       o.default_weekdays,
       o.default_start_minute,
@@ -313,7 +319,7 @@ export async function setMyWorkingHours(form: FormData): Promise<void> {
     String(form.get("timezone") ?? "America/New_York"),
   );
   if (!plan.ok) redirect(`/me?error=${encodeURIComponent(plan.error)}`);
-  await replaceUserSchedule(me.id, plan);
+  await replaceUserSchedule(me.id, "agent", plan);
   revalidatePath("/me");
   // #1988: the save said nothing at all, so it looked exactly like a click that
   // did nothing. Post-redirect-get with a NAMED outcome, the same shape every
@@ -326,7 +332,7 @@ export async function setMyWorkingHours(form: FormData): Promise<void> {
 export async function useMyDefaultHours(): Promise<void> {
   const me = await currentUser();
   if (!me) return;
-  await applyOrgDefaultToUser(me.org_id, me.id);
+  await applyOrgDefaultToUser(me.org_id, me.id, "agent");
   revalidatePath("/me");
   // #1988: same button, same silence. This one writes a whole week the person
   // did not type, so it needs the confirmation more than the other, not less.
@@ -755,7 +761,7 @@ export async function setWorkingHours(form: FormData): Promise<void> {
   if (!plan.ok) {
     redirect(`/admin/agents/${userId}?error=${encodeURIComponent(plan.error)}`);
   }
-  await replaceUserSchedule(userId, plan);
+  await replaceUserSchedule(userId, "admin", plan);
   // #1769: the form that calls this lives on the agent's own page, so that is the
   // route that has to be refreshed. Revalidating only /admin left the page the
   // person is looking at showing what it showed before they pressed the button.
@@ -1157,6 +1163,7 @@ export async function useDefaultHours(form: FormData): Promise<void> {
   // means, had no callers at all.
   await replaceUserSchedule(
     userId,
+    "admin",
     planUniformSchedule(
       o.default_weekdays,
       o.default_start_minute,
