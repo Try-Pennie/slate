@@ -795,6 +795,51 @@ to.
 systems are live. It is a hand-run command, so it finds what it finds on the day
 somebody runs it, and #2031 covers putting it on a schedule.
 
+# Is the shadow run trustworthy today? (`pnpm verify:parallel-run-readiness`)
+
+The fifth command in the family above, and the one to run right before the pilot
+bookings (#2066). On 2026-09-07 answering "is the parallel run trustworthy today"
+took a database query plus reading eight issues, because each precondition is
+measured somewhere in Slate and nowhere together. This reads production, writes
+nothing, and judges five things through the code that already owns each of them
+(L107): no alert cooldown stretched above its default, the daily cal.com comparison
+fresh and not reporting drift, nobody waiting to become bookable behind a refused
+activation, every bookable agent's calendar present and hydrated to the booking
+horizon (the hydration monitor's own judge), and no real bucket empty (the empty
+bucket alarm's own eligibility predicate).
+
+```
+pnpm verify:parallel-run-readiness
+```
+
+**Only READY passes, and it says how many agents and buckets it measured**, because
+zero of either is the shape of a broken read and never a healthy morning (L98). Every
+other outcome exits on its own code, worst first, and lists every finding rather
+than only the worst, so a reader is not sent to fix a cooldown while three buckets
+have nobody in them. The judgement lives in `scripts/lib/parallel-run-readiness.ts`
+and is pinned offline by `scripts/test-parallel-run-readiness.ts`.
+
+| exit | what it met |
+|---|---|
+| 0 | READY |
+| 1 | no Supabase credentials here; nothing was read |
+| 2 | a section could not be read, so nothing beneath it is vouched for |
+| 3 | zero bookable agents or zero real buckets: nothing was judged |
+| 4 | **a real bucket has nobody to route to** |
+| 5 | **a bookable agent has no calendar row**, so they read as free all day |
+| 6 | a calendar is not hydrated to the booking horizon |
+| 7 | an alert cooldown is stretched above its default |
+| 8 | the cal.com comparison is reporting drift |
+| 9 | the cal.com comparison has not reached a verdict inside its 30 hour bound |
+| 10 | somebody is waiting to become bookable behind a refused activation |
+
+A deliberately dropped check, so nobody adds it back by accident: a bookable agent
+sitting on the seeded default week is NOT reported. The seeded week is also a real
+week some agents genuinely keep, so the proxy would be a standing false finding;
+telling the two apart needs the stamp #1753 asks for, and belongs there.
+
+**It retires at cutover (#65)** with the rest of the family.
+
 # Capped single-page reads (the `// cap-safe:` convention)
 
 PostgREST returns at most **one 1000-row page** per list read. Code that then
