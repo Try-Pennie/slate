@@ -53,6 +53,30 @@ const salesforce = vi.hoisted(() => ({
   syncSalesforceAgents: vi.fn(),
   AGENTS_SYNC_STREAK_KEY: "cron_agents_failures",
 }));
+// #2071: the button runs the whole hourly job through this, under its lock.
+const rosterSync = vi.hoisted(() => ({ runRosterSync: vi.fn() }));
+/** A finished run with the counts the banner reads, all zero unless overridden. */
+const syncOutcome = (over: Record<string, unknown> = {}) => ({
+  hoursApplied: 0,
+  emptyBuckets: [],
+  emptyBucketsAggregated: false,
+  sync: {
+    updated: 0,
+    inserted: 0,
+    deactivated: 0,
+    createdUntiered: 0,
+    bookableFlipped: [],
+    bookablePending: [],
+    managersCreated: 0,
+    managersLinked: 0,
+    managersUnlinked: 0,
+    managersUnresolved: 0,
+    managersAmbiguous: 0,
+    managerNamesAmbiguous: 0,
+    managersPromoted: 0,
+    ...over,
+  },
+});
 const streak = vi.hoisted(() => ({
   clearFailureStreak: vi.fn(async () => {}),
   recordFailureStreak: vi.fn(async () => 1),
@@ -221,6 +245,7 @@ vi.mock("@/lib/rate-limit", () => rateLimit);
 vi.mock("@/lib/offboarding/service", () => offboarding);
 vi.mock("@/lib/bookable/service", () => bookable);
 vi.mock("@/lib/salesforce/sync", () => salesforce);
+vi.mock("@/lib/salesforce/run-roster-sync", () => rosterSync);
 vi.mock("@/lib/notify/streak", () => streak);
 // #1922: the booker copy write, seamed so the redirect TARGET can be asserted
 // without driving the whole event-type store through the table fake. What is
@@ -899,31 +924,63 @@ describe("setBookable Google guard (#912)", () => {
   });
 });
 
-// #491: a manual admin "Sync from Salesforce" that succeeds must clear the
-// hourly cron's consecutive-failure streak, so a human fixing a failing sync
-// fully quiets the alarm instead of the cron re-alerting on its next hiccup.
-describe("syncSalesforceNow streak reset (#491)", () => {
+// #491 and #2071: "Sync from Salesforce" runs the WHOLE hourly job through
+// runRosterSync (which owns the lock and the streak clear), lands back on the page
+// the button is on, and is open to managers. The streak behaviour itself is pinned
+// where the runner is exercised, in the cron route's suite.
+describe("syncSalesforceNow (#491, #2071)", () => {
   beforeEach(() => {
-    auth.requireAdmin.mockResolvedValue(admin);
+    auth.requireManager.mockResolvedValue(admin);
+    rosterSync.runRosterSync.mockReset();
   });
 
-  it("clears the failure streak on a successful sync", async () => {
-    salesforce.syncSalesforceAgents.mockResolvedValueOnce({
-      updated: 2,
-      inserted: 0,
-      managersLinked: 0,
-      managersCreated: 0,
-      managersPromoted: 0,
-      deactivated: 0,
-    });
-    await expect(syncSalesforceNow()).rejects.toThrow(/NEXT_REDIRECT:\/admin\?synced/);
-    expect(streak.clearFailureStreak).toHaveBeenCalledWith("cron_agents_failures");
+  it("is gated at manager, not admin, and lands back on the roster page", async () => {
+    rosterSync.runRosterSync.mockResolvedValueOnce(syncOutcome({ updated: 2 }));
+    await expect(syncSalesforceNow()).rejects.toThrow(/NEXT_REDIRECT:\/admin\/agents\?synced/);
+    expect(auth.requireManager).toHaveBeenCalled();
+    expect(auth.requireAdmin).not.toHaveBeenCalled();
+    expect(rosterSync.runRosterSync).toHaveBeenCalledTimes(1);
   });
 
-  it("does NOT clear the streak when the sync fails", async () => {
-    salesforce.syncSalesforceAgents.mockRejectedValueOnce(new Error("SF down"));
-    await expect(syncSalesforceNow()).rejects.toThrow(/NEXT_REDIRECT:\/admin\?sync_error/);
-    expect(streak.clearFailureStreak).not.toHaveBeenCalled();
+  it("reports a failure on the same page, as a failure", async () => {
+    rosterSync.runRosterSync.mockRejectedValueOnce(new Error("SF down"));
+    await expect(syncSalesforceNow()).rejects.toThrow(/NEXT_REDIRECT:\/admin\/agents\?sync_error=SF%20down/);
+  });
+
+  it("says a run is already under way rather than starting a second one", async () => {
+    rosterSync.runRosterSync.mockResolvedValueOnce({ skipped: "overlapping-run" });
+    let redirected = "";
+    try {
+      await syncSalesforceNow();
+    } catch (e) {
+      redirected = decodeURIComponent(String((e as Error).message));
+    }
+    expect(redirected).toContain("/admin/agents?sync_error=");
+    expect(redirected).toContain("already running");
+  });
+
+  // #2071: the three onboarding facts the presser is usually asking about.
+  it("names who was added, who became bookable, and who is waiting on a calendar", async () => {
+    rosterSync.runRosterSync.mockResolvedValueOnce(
+      syncOutcome({
+        inserted: 2,
+        createdUntiered: 2,
+        bookableFlipped: ["a@x", "b@x", "c@x"],
+        bookablePending: ["d@x"],
+      }),
+    );
+    let redirected = "";
+    try {
+      await syncSalesforceNow();
+    } catch (e) {
+      redirected = decodeURIComponent(String((e as Error).message));
+    }
+    expect(redirected).toContain("2 new hires added not yet bookable");
+    expect(redirected).toContain("3 agents made bookable");
+    expect(redirected).toContain("1 agent waiting to become bookable until a Google calendar exists");
+    // Counts, never addresses: an email in a URL is an identity in browser history.
+    expect(redirected).not.toContain("@x");
+    expect(redirected).not.toContain("undefined");
   });
 
   // #1653: the admin who presses this button is usually pressing it BECAUSE a
@@ -932,18 +989,9 @@ describe("syncSalesforceNow streak reset (#491)", () => {
   // answering to nobody need opposite fixes, so they are two sentences (L11); one
   // line covering both told the reader neither.
   it("says separately that a manager name was shared and that one matched nobody", async () => {
-    salesforce.syncSalesforceAgents.mockResolvedValueOnce({
-      updated: 2,
-      inserted: 0,
-      managersLinked: 0,
-      managersUnlinked: 0,
-      managersUnresolved: 1,
-      managersAmbiguous: 15,
-      managerNamesAmbiguous: 1,
-      managersCreated: 0,
-      managersPromoted: 0,
-      deactivated: 0,
-    });
+    rosterSync.runRosterSync.mockResolvedValueOnce(
+      syncOutcome({ updated: 2, managersUnresolved: 1, managersAmbiguous: 15, managerNamesAmbiguous: 1 }),
+    );
     let redirected = "";
     try {
       await syncSalesforceNow();
@@ -960,18 +1008,7 @@ describe("syncSalesforceNow streak reset (#491)", () => {
   // The count has always been per AGENT. The old line called it a manager name, so
   // one unmatched name shared by a team of fifteen rendered as fifteen names.
   it("counts the unmatched refusal in agents, not in picklist names", async () => {
-    salesforce.syncSalesforceAgents.mockResolvedValueOnce({
-      updated: 0,
-      inserted: 0,
-      managersLinked: 0,
-      managersUnlinked: 0,
-      managersUnresolved: 15,
-      managersAmbiguous: 0,
-      managerNamesAmbiguous: 0,
-      managersCreated: 0,
-      managersPromoted: 0,
-      deactivated: 0,
-    });
+    rosterSync.runRosterSync.mockResolvedValueOnce(syncOutcome({ managersUnresolved: 15 }));
     let redirected = "";
     try {
       await syncSalesforceNow();

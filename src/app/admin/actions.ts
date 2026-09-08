@@ -71,8 +71,7 @@ import { shortErrorReason } from "@/lib/notify/error-text";
 import type { WebhookFormat } from "@/lib/db/types";
 import { applyBookableByUserId } from "@/lib/bookable/service";
 import { applyLifecycleByUserId } from "@/lib/offboarding/service";
-import { syncSalesforceAgents, AGENTS_SYNC_STREAK_KEY } from "@/lib/salesforce/sync";
-import { clearFailureStreak } from "@/lib/notify/streak";
+import { runRosterSync } from "@/lib/salesforce/run-roster-sync";
 import { replayDeadLetteredDeliveries, resendDelivery } from "@/lib/webhooks/emit";
 import { webhookUrlError } from "@/lib/webhooks/url";
 import { acquireLock } from "@/lib/locks";
@@ -334,16 +333,60 @@ export async function useMyDefaultHours(): Promise<void> {
   redirect(`/me${savedQuery("working-hours")}`);
 }
 
+/**
+ * "Sync from Salesforce", from the roster page (#491, #2071).
+ *
+ * Managers may press it, not only admins: the person who has just added a hire in
+ * Salesforce and cannot see them here is a manager, and telling them to wait for
+ * the top of the hour is the wrong answer to "where are my agents". It runs the
+ * WHOLE hourly job under the hour's own lock (`runRosterSync`), so a press does
+ * everything the schedule would have, and a press while a run is under way says
+ * so rather than starting a second one.
+ *
+ * The banner comes back to THIS page (L608), and it says what changed in the terms
+ * the presser cares about: who was added, who became bookable, and who is waiting
+ * on a Google calendar. Counts rather than names in the query string, since the
+ * roster below already lists the people and an email in a URL is an identity in
+ * browser history for no gain.
+ */
 export async function syncSalesforceNow(): Promise<void> {
-  await requireAdmin();
-  let summary: string;
+  await requireManager();
+  const back = "/admin/agents";
+  // The run and the redirects are kept apart: a redirect is thrown, so one inside
+  // the try would be caught below and reported as a failure.
+  let outcome: Awaited<ReturnType<typeof runRosterSync>>;
   try {
-    const r = await syncSalesforceAgents();
+    outcome = await runRosterSync();
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    revalidatePath(back);
+    redirect(`${back}?sync_error=${encodeURIComponent(message.slice(0, 200))}`);
+    return;
+  }
+  if (outcome.skipped) {
+    revalidatePath(back);
+    redirect(`${back}?sync_error=${encodeURIComponent("a sync is already running; try again in a minute")}`);
+    return;
+  }
+  let summary: string;
+  {
+    const r = outcome.sync;
     const plural = (n: number, one: string, many = `${one}s`) =>
       `${n} ${n === 1 ? one : many}`;
     const parts = [
       `${r.updated + r.inserted} agents synced`,
       r.inserted ? `${r.inserted} added` : null,
+      // #2071: the three onboarding facts, each its own line, because the presser
+      // is usually asking about one of them.
+      r.createdUntiered
+        ? `${plural(r.createdUntiered, "new hire")} added not yet bookable (no debt team yet)`
+        : null,
+      r.bookableFlipped.length
+        ? `${plural(r.bookableFlipped.length, "agent")} made bookable from a first debt team or the Sales profile`
+        : null,
+      r.bookablePending.length
+        ? `${plural(r.bookablePending.length, "agent")} waiting to become bookable until a Google calendar exists for them`
+        : null,
       r.managersLinked
         ? `${plural(r.managersLinked, "agent")} reassigned to a manager`
         : null,
@@ -370,20 +413,13 @@ export async function syncSalesforceNow(): Promise<void> {
       r.managersCreated ? `${plural(r.managersCreated, "new manager")}` : null,
       r.managersPromoted ? `${r.managersPromoted} promoted to manager` : null,
       r.deactivated ? `${plural(r.deactivated, "user")} deactivated` : null,
+      outcome.hoursApplied ? `${plural(outcome.hoursApplied, "agent")} given the default working hours` : null,
     ].filter(Boolean);
     summary =
       parts.length > 1 ? parts.join(" · ") : `${parts[0]} (already up to date)`;
-    // A successful hand remediation fully quiets the hourly cron's alarm (#491):
-    // clear its consecutive-failure streak so the next automatic hiccup starts
-    // from zero instead of re-alerting on a problem the admin just fixed.
-    await clearFailureStreak(AGENTS_SYNC_STREAK_KEY);
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    revalidatePath("/admin");
-    redirect(`/admin?sync_error=${encodeURIComponent(message.slice(0, 200))}`);
   }
-  revalidatePath("/admin");
-  redirect(`/admin?synced=${encodeURIComponent(summary)}`);
+  revalidatePath(back);
+  redirect(`${back}?synced=${encodeURIComponent(summary)}`);
 }
 
 function num(form: FormData, key: string, fallback: number): number {
