@@ -52,6 +52,13 @@ export interface ReadinessFacts {
     uncovered: string[];
   } | null;
   emptyBuckets: { realBuckets: number; empty: string[] } | null;
+  /**
+   * Bookable agents on hours nobody set (#1753): the seeding stamp, or a pre stamp
+   * row still shaped exactly like the org default. null = unreadable. Honest since
+   * the stamp exists; before it this was a proxy that named every agent whose real
+   * week happened to equal the seed, which is why it was left out of the first cut.
+   */
+  unsetHours: string[] | null;
 }
 
 export type ReadinessFinding =
@@ -63,7 +70,8 @@ export type ReadinessFinding =
   | "alarm-muted"
   | "parity-drifting"
   | "parity-stale"
-  | "bookable-pending";
+  | "bookable-pending"
+  | "hours-unset";
 
 /**
  * Worst FIRST. The reasoning for each rung:
@@ -88,6 +96,10 @@ export const READINESS_ORDER: readonly ReadinessFinding[] = [
   "parity-drifting",
   "parity-stale",
   "bookable-pending",
+  // Last: the agent IS offered, on a plausible week, so a lead is booked with
+  // somebody who exists and may simply not be there at that hour. Real, and the
+  // slowest to bite.
+  "hours-unset",
 ] as const;
 
 /**
@@ -105,6 +117,7 @@ export const READINESS_EXIT = {
   parityDrifting: 8,
   parityStale: 9,
   bookablePending: 10,
+  hoursUnset: 11,
 } as const;
 
 const EXIT_FOR: Record<ReadinessFinding, number> = {
@@ -117,6 +130,7 @@ const EXIT_FOR: Record<ReadinessFinding, number> = {
   "parity-drifting": READINESS_EXIT.parityDrifting,
   "parity-stale": READINESS_EXIT.parityStale,
   "bookable-pending": READINESS_EXIT.bookablePending,
+  "hours-unset": READINESS_EXIT.hoursUnset,
 };
 
 export interface ReadinessJudgement {
@@ -187,6 +201,14 @@ export function judgeReadiness(f: ReadinessFacts): ReadinessJudgement {
     }
   }
 
+  if (f.unsetHours === null) unreadable.push("hours sources");
+  else if (f.unsetHours.length) {
+    findings.push({
+      kind: "hours-unset",
+      detail: `${f.unsetHours.length} bookable agent(s) on working hours nobody set: ${names(f.unsetHours)}`,
+    });
+  }
+
   if (f.emptyBuckets === null) unreadable.push("buckets");
   else if (f.emptyBuckets.empty.length) {
     findings.push({
@@ -213,7 +235,7 @@ export function judgeReadiness(f: ReadinessFacts): ReadinessJudgement {
       ? `measured ${f.calendars.bookableAgents} bookable agents and ${f.emptyBuckets.realBuckets} real buckets`
       : "measured only part of the picture";
   if (findings.length === 0) {
-    return { exit: READINESS_EXIT.ready, findings, summary: `READY: ${measured}; no alarm muted, comparison fresh, nobody waiting, every calendar hydrated, no empty bucket` };
+    return { exit: READINESS_EXIT.ready, findings, summary: `READY: ${measured}; no alarm muted, comparison fresh, nobody waiting, every calendar hydrated, every week set by somebody, no empty bucket` };
   }
   return {
     exit: EXIT_FOR[findings[0].kind],

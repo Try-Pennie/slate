@@ -26,6 +26,7 @@ function healthy(over: Partial<ReadinessFacts> = {}): ReadinessFacts {
     pendingBookable: [],
     calendars: { bookableAgents: 102, missingRows: [], uncovered: [] },
     emptyBuckets: { realBuckets: 60, empty: [] },
+    unsetHours: [],
     ...over,
   };
 }
@@ -63,6 +64,7 @@ function healthy(over: Partial<ReadinessFacts> = {}): ReadinessFacts {
     ["a bookable agent with no calendar row", { calendars: { bookableAgents: 102, missingRows: ["a@x"], uncovered: [] } }, READINESS_EXIT.calendarMissing],
     ["a calendar not hydrated to the horizon", { calendars: { bookableAgents: 102, missingRows: [], uncovered: ["b@x"] } }, READINESS_EXIT.calendarUncovered],
     ["an empty real bucket", { emptyBuckets: { realBuckets: 60, empty: ["120", "121", "122"] } }, READINESS_EXIT.bucketEmpty],
+    ["an agent on hours nobody set", { unsetHours: ["cfrank@x", "jsaminu@x"] }, READINESS_EXIT.hoursUnset],
   ];
   const seen = new Map<number, number>();
   for (const [what, over, expected] of cases) {

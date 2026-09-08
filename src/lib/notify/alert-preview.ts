@@ -32,6 +32,7 @@ import {
 } from "@/lib/notify/alerts";
 import { retentionAlertText, LANE_STALE_BOUNDS_MS, VERDICT_STALE_BOUNDS_MS } from "@/lib/monitor/health";
 import { PARKED_VERDICT_DETECTORS } from "@/lib/monitor/verdict-freshness";
+import { formatUnsetHoursAlert, formatUnsetHoursRecovery } from "@/lib/monitor/unset-hours";
 import {
   classifyParitySweep,
   buildScheduleParityAlert,
@@ -1284,6 +1285,21 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     state: "availability reconverged",
     channel: "recovery",
     text: formatAvailabilityRecovery(),
+  },
+  {
+    key: "agents_on_unset_hours",
+    state: "bookable agents still on the seeded week",
+    channel: "alert",
+    text: formatUnsetHoursAlert([
+      { id: "u1", email: "cfrank@trypennie.com", name: "C Frank" },
+      { id: "u2", email: "jsaminu@trypennie.com", name: null },
+    ]),
+  },
+  {
+    key: "agents_on_unset_hours",
+    state: "every week set by somebody",
+    channel: "recovery",
+    text: formatUnsetHoursRecovery(),
   },
   {
     // The fixture is the real 2026-09-07 sweep: 21 of 102 agents drifted in the five

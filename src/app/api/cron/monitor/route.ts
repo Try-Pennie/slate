@@ -181,6 +181,8 @@ import { ACTIVE_BOOKING_STATUSES } from "@/lib/booking/bulk-reassign-store";
 import { selectAllPages } from "@/lib/supabase/paginate";
 import type { Attributes, Bucket } from "@/lib/db/types";
 import { log } from "@/lib/log";
+import { runUnsetHoursCheck, type UnsetHoursAgent, type HoursSource } from "@/lib/monitor/unset-hours";
+import type { OrgDefaults } from "@/lib/schedule-core";
 
 export const dynamic = "force-dynamic";
 
@@ -1094,6 +1096,65 @@ export async function GET(req: NextRequest) {
         notify: sendThrottledInfo,
         cooldownMs: settings.cooldownMs.agents_without_schedule,
         log: (m) => log.info("schedule-coverage", { msg: m }),
+      }),
+    );
+
+    // --- Hours nobody set (#1753): a bookable agent still on the seeded week is
+    // offered times that are right only by coincidence, and a stored week is a
+    // valid week whether or not the agent keeps it. The stamp (`hours_source`,
+    // migration 0117) decides for rows written since it existed; for the rows
+    // before it, a week still shaped exactly like the org default was never
+    // touched. Its own reads, in its own boundary, like schedule_coverage above:
+    // it does not consume the shared setup state, so it is not gated on it. ---
+    await steps.run("unset_hours", null, () =>
+      runUnsetHoursCheck({
+        load: async () => {
+          const [agents, scheds, rules, orgRow] = await Promise.all([
+            selectAllPages<UnsetHoursAgent>("monitor unset-hours bookable agents", (from, to) =>
+              db
+                .from("users")
+                .select("id, name, email")
+                .eq("bookable", true)
+                .is("deactivated_at", null)
+                .eq("is_test", false)
+                .range(from, to),
+            ),
+            selectAllPages<{ id: string; user_id: string; timezone: string; hours_source: HoursSource | null }>(
+              "monitor unset-hours schedules",
+              (from, to) =>
+                db.from("availability_schedules").select("id, user_id, timezone, hours_source").range(from, to),
+            ),
+            selectAllPages<{ schedule_id: string; weekday: number; start_minute: number; end_minute: number }>(
+              "monitor unset-hours rules",
+              (from, to) =>
+                db.from("availability_rules").select("schedule_id, weekday, start_minute, end_minute").range(from, to),
+            ),
+            db
+              .from("organizations")
+              .select("default_timezone, default_start_minute, default_end_minute, default_weekdays")
+              .limit(1)
+              .maybeSingle(),
+          ]);
+          const org = unwrap(orgRow, "monitor unset-hours org defaults") as OrgDefaults | null;
+          if (!org) throw new Error("no organization row");
+          const rulesBySchedule = new Map<string, typeof rules>();
+          for (const r of rules) rulesBySchedule.set(r.schedule_id, [...(rulesBySchedule.get(r.schedule_id) ?? []), r]);
+          return {
+            org,
+            agents,
+            schedules: scheds.map((sc) => ({
+              user_id: sc.user_id,
+              timezone: sc.timezone,
+              hours_source: sc.hours_source,
+              rules: rulesBySchedule.get(sc.id) ?? [],
+            })),
+          };
+        },
+        // alert-key: agents_on_unset_hours
+        notify: (key, ms, text) => sendThrottledAlert(key, ms, text),
+        // alert-key: agents_on_unset_hours
+        resolve: (key, text) => resolveAlert(key, text),
+        cooldownMs: settings.cooldownMs.agents_on_unset_hours,
       }),
     );
 

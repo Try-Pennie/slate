@@ -271,6 +271,9 @@ export interface Database {
         Args: {
           p_schedule_id: string;
           p_rules: { weekday: number; start_minute: number; end_minute: number }[];
+          /** Who is writing (#1753, migration 0117): seed, agent, admin or
+           *  calcom-import. Required, so an unstamped week cannot be written. */
+          p_source: "seed" | "agent" | "admin" | "calcom-import";
         };
         Returns: number;
       };

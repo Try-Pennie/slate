@@ -102,6 +102,9 @@ export async function ensureDefaultSchedules(orgId: string): Promise<number> {
     const { data: written, error: rpcError } = await db.rpc("replace_availability_rules", {
       p_schedule_id: scheduleId,
       p_rules: wanted,
+      // #1753: the fill is a SEED, and saying so is what lets the unset hours
+      // detector tell this week from one somebody chose.
+      p_source: "seed",
     });
     if (rpcError) {
       refillFailures.push(`${scheduleId}: ${rpcError.message}`);
@@ -141,6 +144,10 @@ export async function ensureDefaultSchedules(orgId: string): Promise<number> {
       missing.map((u) => ({
         user_id: u.id,
         timezone: defaults.default_timezone,
+        // #1753: this path writes the rules directly rather than through the RPC,
+        // so it stamps the seed itself. A new agent's week is nobody's choice yet.
+        hours_source: "seed" as const,
+        hours_set_at: new Date().toISOString(),
       })),
       { onConflict: "user_id", ignoreDuplicates: true },
     )

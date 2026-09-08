@@ -190,6 +190,13 @@ export const ALERT_CATALOG: AlertEntry[] = [
     why: "The running deployment cannot use its request rate limits, which stays true until a deploy puts them back, so the reader needs to be told when it is over (#1529).",
   },
   {
+    key: "agents_on_unset_hours",
+    kind: "condition",
+    why:
+      "A bookable agent is offered on the seeded week nobody chose; it ends when " +
+      "their hours are set or imported, and the same daily sweep sees it (#1753).",
+  },
+  {
     key: "schedule_parity_drift",
     kind: "condition",
     why:

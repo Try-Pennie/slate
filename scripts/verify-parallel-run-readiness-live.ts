@@ -25,6 +25,7 @@ const { CANARY_STALE_BOUNDS_MS } = await import("@/lib/monitor/health");
 const { readHeartbeatMs } = await import("@/lib/monitor/heartbeat");
 const { isAlertFiring } = await import("@/lib/notify/dispatch");
 const { loadBookingHorizonDays } = await import("@/lib/booking/settings");
+const { agentsOnUnsetHours } = await import("@/lib/monitor/unset-hours");
 const { judgeReadiness } = await import("./lib/parallel-run-readiness.ts");
 type ReadinessFacts = import("./lib/parallel-run-readiness.ts").ReadinessFacts;
 
@@ -103,6 +104,36 @@ const emptyBuckets = await section("buckets", async () => {
   return { realBuckets: buckets.length, empty: empty.sort() };
 });
 
+const unsetHours = await section("hours sources", async () => {
+  const agents = (unwrap(
+    await db.from("users").select("id, email, name").eq("bookable", true).is("deactivated_at", null).eq("is_test", false),
+    "bookable agents",
+  ) ?? []) as { id: string; email: string; name: string | null }[];
+  if (agents.length === 0) return [];
+  const org = unwrap(
+    await db.from("organizations").select("default_timezone, default_start_minute, default_end_minute, default_weekdays").limit(1).maybeSingle(),
+    "org defaults",
+  ) as { default_timezone: string; default_start_minute: number; default_end_minute: number; default_weekdays: number[] } | null;
+  if (!org) throw new Error("no organization row");
+  // cap-safe: one schedule per agent, roster bounded at ~200
+  const scheds = (unwrap(
+    await db.from("availability_schedules").select("id, user_id, timezone, hours_source").in("user_id", agents.map((a) => a.id)),
+    "schedules",
+  ) ?? []) as { id: string; user_id: string; timezone: string; hours_source: "seed" | "agent" | "admin" | "calcom-import" | null }[];
+  // cap-safe: at most seven rules per schedule for a roster bounded at ~200
+  const rules = (unwrap(
+    await db.from("availability_rules").select("schedule_id, weekday, start_minute, end_minute").in("schedule_id", scheds.map((s) => s.id)),
+    "rules",
+  ) ?? []) as { schedule_id: string; weekday: number; start_minute: number; end_minute: number }[];
+  const rulesBySchedule = new Map<string, typeof rules>();
+  for (const r of rules) rulesBySchedule.set(r.schedule_id, [...(rulesBySchedule.get(r.schedule_id) ?? []), r]);
+  return agentsOnUnsetHours({
+    org,
+    agents,
+    schedules: scheds.map((s) => ({ user_id: s.user_id, timezone: s.timezone, hours_source: s.hours_source, rules: rulesBySchedule.get(s.id) ?? [] })),
+  }).map((a) => a.email ?? a.id);
+});
+
 const facts: ReadinessFacts = {
   nowMs,
   stretchedCooldowns,
@@ -110,6 +141,7 @@ const facts: ReadinessFacts = {
   pendingBookable,
   calendars,
   emptyBuckets,
+  unsetHours,
 };
 const verdict = judgeReadiness(facts);
 console.log(verdict.summary);
