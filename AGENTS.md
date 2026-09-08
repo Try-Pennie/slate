@@ -755,11 +755,12 @@ the real answer is that nothing was compared.
 | 15 | **hours differ** |
 | 16 | **days differ** |
 | 17 | **the timezone differs** |
-| 21 | not bookable in Slate, hosts in cal.com, carries no routing attributes |
+| 21 | not bookable in Slate, hosts in cal.com, and no bucket's criteria can match them |
 | 22 | a cal.com host with no Slate record at all |
-| 23 | **bookable in Slate and not a cal.com host**, so Slate offers somebody the incumbent never routes to |
+| 23 | **bookable in Slate and not a cal.com host at all**, so Slate offers somebody the incumbent never routes to |
 | 24 | **an agent Slate will not route who cal.com still can** |
 | 25 | **somebody who has left Slate and can still be booked in cal.com** |
+| 26 | **bookable in Slate while cal.com withholds them from every routed decision** |
 
 The ordering across the two halves lives in ONE table
 (`OUTCOME_ORDER`), written out rather than folded together from the two halves'
@@ -768,6 +769,27 @@ be a decision somebody made, not an accident of two numbers picked months apart.
 The sweep exits on its worst row, so one departed host among a hundred
 agreements is the finding, and an agent wrong in two ways is named by the more
 severe one while still carrying BOTH reasons.
+
+**Being a host is not the same as being routable, and reading the host list alone was
+wrong in both directions** (#2088). The event type's `hosts[]` says who CAN take a
+booking; six of the seven live routing forms then carry `Redistribute Team (does not
+equal) yes` on every route, so the pool cal.com actually routes to is narrower. Until
+2026-09-08 that meant two agents Slate correctly held back were paged on daily (exit
+24) while twelve agents Slate offers and cal.com never routes to read as agreement.
+The withheld set is `REDISTRIBUTE_EXCLUDED` in `scripts/lib/roster-parity.ts` and it
+is **recorded by hand on purpose**: cal.com will not report per-user attribute values
+(`/organizations/{org}/users/{id}/attributes` answers 404 on both API versions), and
+the routing forms give the condition without saying who satisfies it. It will go
+stale, which is accepted rather than solved, since the whole comparison retires at
+cutover; the run says how many withheld addresses are no longer hosts, and that count
+is the drift signal.
+
+**Exit 21 asks whether a bucket can match them, not whether they carry attributes**
+(#2094). The looser question paged daily on an agent whose only attribute was
+`{"role":"Sales"}`, which no bucket keys on. It is answered by calling the shipped
+pool predicate over the live criteria (`matchableAgentIds`), and the run REFUSES with
+exit 2 on a bucket list it could not read, because an empty one makes every agent look
+unreachable and takes the whole roster half quiet.
 
 The states where an agent cannot be compared each get their own code, on purpose:
 "no cal.com account", "no schedule in cal.com", "the read failed" and "the payload

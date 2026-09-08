@@ -78,6 +78,7 @@ const { makeCalGet, pickDefaultSchedule, emailIndex, loadBookableRoster, readEve
 );
 const { compareAgentSchedule, VERDICT_RANK } = await import("./lib/schedule-parity.ts");
 const { compareRosters, ROSTER_VERDICT_RANK } = await import("./lib/roster-parity.ts");
+const { matchableAgentIds } = await import("./lib/bucket-matchability.ts");
 const { OUTCOME_ORDER, EXIT_CODE, worstOutcome } = await import("./lib/calcom-parity-outcome.ts");
 type ScheduleVerdict = import("./lib/schedule-parity.ts").ScheduleVerdict;
 type RosterVerdict = import("./lib/roster-parity.ts").RosterVerdict;
@@ -154,9 +155,10 @@ if (agents.length === 0) {
 // are by definition absent from the bookable set.
 // cap-safe: users is a roster-bounded table, ~142 rows against a 200-agent design target
 const allUsers = (unwrap(
-  await db.from("users").select("email, role, bookable, deactivated_at, is_test, attributes"),
+  await db.from("users").select("id, email, role, bookable, deactivated_at, is_test, attributes"),
   "all users",
 ) ?? []) as {
+  id: string;
   email: string;
   role: string;
   bookable: boolean;
@@ -164,6 +166,35 @@ const allUsers = (unwrap(
   is_test: boolean;
   attributes: Record<string, unknown> | null;
 }[];
+
+// Who could any bucket actually route to (#2094). Answered through the shipped pool
+// predicate over the live criteria, never a rule written beside it.
+//
+// cap-safe: buckets is roster-bounded, 62 rows against a fixed 60-code key space
+const realBuckets = (unwrap(
+  await db.from("buckets").select("code, criteria").eq("is_test", false),
+  "real buckets",
+) ?? []) as { code: string; criteria: Record<string, unknown> }[];
+// cap-safe: bucket_members is roster-bounded and holds three rows in production
+const manualMembers = (unwrap(
+  await db.from("bucket_members").select("user_id").eq("active", true),
+  "manual bucket members",
+) ?? []) as { user_id: string }[];
+if (realBuckets.length === 0) {
+  // REFUSED rather than reported. An empty bucket list makes every agent look
+  // unmatchable, which turns the page this feeds into silence for the whole roster:
+  // the fail-open direction, and indistinguishable from a healthy day (L98).
+  stop(
+    EXIT.nothingToCompare,
+    "read no real buckets from Slate, so nothing can be said about who a bucket could match. " +
+      "Every agent would score as unreachable and the roster half would go quiet.",
+  );
+}
+const matchable = matchableAgentIds(
+  allUsers.map((u) => ({ id: u.id, attributes: (u.attributes ?? {}) as never })),
+  realBuckets as never[],
+  new Set(manualMembers.map((m) => m.user_id)),
+);
 
 // One read for the whole org rather than one lookup per agent: the same listing
 // answers every email, and it is the read most likely to be rate limited.
@@ -216,9 +247,7 @@ const membership = compareRosters(
     bookable: u.bookable,
     deactivatedAt: u.deactivated_at,
     isTest: u.is_test,
-    // Any recorded Salesforce attribute at all: a bucket's criteria key on these,
-    // so an agent carrying none cannot be matched by one.
-    hasRoutingAttributes: !!u.attributes && Object.keys(u.attributes).length > 0,
+    matchableByAnyBucket: matchable.has(u.id),
   })),
   hostEmails,
 );
@@ -233,6 +262,16 @@ if (hostsWithNoOrgUser > 0) {
   console.log(
     `note: ${hostsWithNoOrgUser} host(s) on the event type have no row in the org user listing, ` +
       "so they could not be resolved to an address and are not compared\n",
+  );
+}
+if (membership.withheldNoLongerHosting > 0) {
+  // Not a finding, and deliberately not one: the withheld list is recorded by hand
+  // because cal.com will not report per-user attribute values, so the only signal
+  // that it has drifted is entries that are no longer hosts. Said out loud rather
+  // than left for somebody to notice (#2088).
+  console.log(
+    `note: ${membership.withheldNoLongerHosting} withheld address(es) are no longer hosts on this event type, ` +
+      "so the recorded Redistribute Team list may be out of date\n",
   );
 }
 const membershipRows = [...membership.rows]

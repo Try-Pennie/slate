@@ -23,6 +23,24 @@
 // same trap the hours comparison hit with cosmetic timezone names, one issue
 // earlier, which is why it is designed in here rather than discovered again.
 
+/**
+ * What cal.com can do with somebody, which is NOT the same as whether it lists them.
+ *
+ * The event type's `hosts[]` says who CAN take a booking. Six of cal.com's seven
+ * routing forms then carry a `Redistribute Team (does not equal) yes` clause on
+ * every route, so the pool it actually ROUTES to is narrower than the list. Reading
+ * the list alone was wrong in both directions on 2026-09-08: two agents Slate
+ * correctly held back were paged on daily as divergent, while twelve agents Slate
+ * offers and cal.com never routes to were reported as agreement (#2088).
+ */
+export type CalcomStanding =
+  /** Not on the event type's host list at all. */
+  | "not-a-host"
+  /** A host, and nothing withholds them, so a lead can reach them. */
+  | "routable"
+  /** A host cal.com withholds from every routed decision (`REDISTRIBUTE_EXCLUDED`). */
+  | "excluded";
+
 /** A Slate user as this comparison needs them. */
 export interface SlateRosterMember {
   email: string;
@@ -32,15 +50,20 @@ export interface SlateRosterMember {
   deactivatedAt: string | null;
   isTest: boolean;
   /**
-   * Whether they carry Salesforce routing attributes, so a bucket could match
-   * them at all.
+   * Whether ANY real bucket could actually match them.
    *
-   * Read from SLATE rather than cal.com because cal.com does not expose per-user
-   * attribute values: `/organizations/{org}/users/{id}/attributes` answers 404
-   * (measured 2026-09-07). Both systems take the roster from Salesforce, so
-   * Slate's copy is the same fact rather than a substitute for it.
+   * This used to be "carries any Salesforce attribute at all", which is a proxy for
+   * the question rather than the question (L63), and the reason string below has
+   * always claimed the stronger thing. `rsegui@` carried `{"role":"Sales"}` and
+   * nothing else; every one of the 60 buckets keys on `debt_team`, some also on
+   * `backend_service` or `legal_eligible!`, and none keys on `role`, so no bucket
+   * could ever reach them. They were paged on daily as held back (#2094).
+   *
+   * Computed by the caller through the SHIPPED pool predicate over the live bucket
+   * criteria (`matchableAgentIds`), never by a rule written beside it, so it cannot
+   * disagree with what routing does.
    */
-  hasRoutingAttributes: boolean;
+  matchableByAnyBucket: boolean;
 }
 
 export type RosterVerdict =
@@ -57,8 +80,10 @@ export type RosterVerdict =
   /** A cal.com host account that is deliberately not a Slate user, named in
    *  `KNOWN_NON_SLATE_HOSTS` with its reason. Expected, and can never fail a run. */
   | "known-not-in-slate"
-  /** Slate offers somebody cal.com does not route to. */
+  /** Slate offers somebody cal.com does not list as a host at all. */
   | "bookable-not-hosting"
+  /** Slate offers somebody cal.com lists and deliberately withholds from routing. */
+  | "bookable-not-routable"
   /** An agent Slate will not route who cal.com still can. */
   | "held-back-still-hosting"
   /** They have left, and cal.com can still book them. The reason this exists. */
@@ -86,8 +111,12 @@ export const ROSTER_VERDICT_RANK: Record<RosterVerdict, number> = {
   "not-bookable-by-design": 1,
   "absent-from-slate": 2,
   "bookable-not-hosting": 3,
-  "held-back-still-hosting": 4,
-  "departed-still-hosting": 5,
+  // Above "not a host at all", because it is the stronger statement: cal.com holds
+  // this person and deliberately withholds them, so Slate offering them is a
+  // decision the incumbent has explicitly made the other way.
+  "bookable-not-routable": 4,
+  "held-back-still-hosting": 5,
+  "departed-still-hosting": 6,
 };
 
 /**
@@ -117,6 +146,40 @@ export const KNOWN_NON_SLATE_HOSTS: Readonly<Record<string, string>> = {
   "hariom-cal@trypennie.com":
     "a cal.com host account that is deliberately not a Slate user (Dan, 2026-09-08), so there is nothing to reconcile and nothing anybody should do about it",
 };
+
+/**
+ * cal.com members it WITHHOLDS from every routed decision, each with why.
+ *
+ * `Redistribute Team = YES` in cal.com. Six of the seven live routing forms carry
+ * `Redistribute Team (does not equal) yes` on every route, so a member marked YES
+ * cannot be reached by any of them, while still appearing on the event type's host
+ * list. Guided App Completion carries the clause on none of its 26 routes, which is
+ * an open question on #2033 and deliberately parked: BC confirmed on 2026-09-08
+ * that the seven forms were split for tracking rather than for routing.
+ *
+ * **This list can only come from a person.** cal.com will not report per-user
+ * attribute values (`/organizations/{org}/users/{id}/attributes` answers 404 on
+ * both API versions, measured 2026-09-07), and the routing forms give the CONDITION
+ * without saying who satisfies it. Read out of the cal.com UI by Dan on 2026-09-08
+ * (Settings, Organization, Members, filtered on Redistribute Team = YES), 16 of 16.
+ *
+ * It will go stale, and that is accepted rather than solved: the whole comparison
+ * retires at cutover (#65), when cal.com stops routing anything. The run reports how
+ * many of these are no longer hosts, which is the signal that it has drifted.
+ *
+ * Keys lowercased, since that is how both sides' addresses are matched.
+ */
+export const REDISTRIBUTE_EXCLUDED: Readonly<Record<string, string>> = Object.freeze(
+  Object.fromEntries(
+    [
+      "ajohnson", "jnazarzai", "pjones", "rsegui", "swhiting", "mmcbride", "chammar", "cfrank",
+      "jperea", "kcoutain", "agarcia", "nprice", "jfonseca", "mroberts", "rdaboub", "nshort",
+    ].map((local) => [
+      `${local}@trypennie.com`,
+      "marked Redistribute Team = YES in cal.com, so every routing form that carries the clause withholds them (Dan's read of the cal.com UI, 2026-09-08)",
+    ]),
+  ),
+);
 
 /** The roles that are hosts in cal.com and deliberately not bookable in Slate. */
 const STAFF_ROLES = new Set(["admin", "manager", "team_lead", "super_admin"]);
@@ -150,11 +213,15 @@ export interface RosterRow {
  */
 export function classifyRosterMember(
   slate: SlateRosterMember | null,
-  isCalcomHost: boolean,
+  standing: CalcomStanding,
   absentEmail: string | null,
 ): { verdict: RosterVerdict; reason: string } {
   if (slate === null) {
-    if (!isCalcomHost) return { verdict: "agree", reason: "" };
+    if (standing === "not-a-host") return { verdict: "agree", reason: "" };
+    // `excluded` is deliberately NOT separated here. Nobody is in that state today,
+    // and what this branch reports is Slate's roster being incomplete rather than a
+    // routing risk, so a verdict of its own would be a category nothing writes to
+    // (L90). It is one line to split if somebody ever lands in it.
     const known = absentEmail === null ? undefined : KNOWN_NON_SLATE_HOSTS[absentEmail.toLowerCase()];
     if (known !== undefined) return { verdict: "known-not-in-slate", reason: known };
     return {
@@ -163,8 +230,16 @@ export function classifyRosterMember(
     };
   }
 
+  // Departure stays loud whether or not cal.com withholds them from routing, and
+  // that is deliberate. The stand down for `excluded` rests on one reason, that no
+  // routed decision can reach them, and a departed person carries a second harm the
+  // exclusion says nothing about: they are still in the incumbent's configuration,
+  // so a direct link reaches them, and the catch all route every form carries has an
+  // EMPTY condition, so the redistribute clause does not apply to it (#1908 measured
+  // that path carrying about 2% of bookings). A stand down must be no broader than
+  // its reason (L324).
   if (slate.deactivatedAt !== null) {
-    return isCalcomHost
+    return standing !== "not-a-host"
       ? {
           verdict: "departed-still-hosting",
           reason:
@@ -179,15 +254,33 @@ export function classifyRosterMember(
   if (slate.isTest) return { verdict: "agree", reason: "" };
 
   if (slate.bookable) {
-    return isCalcomHost
-      ? { verdict: "agree", reason: "" }
-      : {
-          verdict: "bookable-not-hosting",
-          reason: "bookable in Slate and not a host in cal.com, so Slate offers somebody the incumbent never routes to",
-        };
+    if (standing === "routable") return { verdict: "agree", reason: "" };
+    if (standing === "excluded") {
+      return {
+        verdict: "bookable-not-routable",
+        reason:
+          "bookable in Slate while cal.com withholds them from every routed decision, " +
+          "so Slate offers a lead somebody the incumbent has decided not to route to",
+      };
+    }
+    return {
+      verdict: "bookable-not-hosting",
+      reason: "bookable in Slate and not a host in cal.com at all, so Slate offers somebody the incumbent never routes to",
+    };
   }
 
-  if (!isCalcomHost) return { verdict: "agree", reason: "" };
+  if (standing === "not-a-host") return { verdict: "agree", reason: "" };
+  // BOTH systems withhold them, which is agreement however loudly the host list
+  // implies otherwise. This is what kept the page lit over `cfrank@` and `rsegui@`
+  // for as long as the check read the list instead of the routing (#2088).
+  //
+  // The scope of that claim, stated so nobody reads more into it: this comparison
+  // is about ONE event type and the routing forms that feed it, every one of which
+  // carries the redistribute clause on every route. It says nothing about the catch
+  // all route, which has an empty condition and lands on a different event type
+  // (#1908), so "agreement" here means no ROUTED lead reaches them rather than that
+  // cal.com could never produce one by another path.
+  if (standing === "excluded") return { verdict: "agree", reason: "" };
 
   if (STAFF_ROLES.has(slate.role)) {
     return {
@@ -195,10 +288,10 @@ export function classifyRosterMember(
       reason: `${article(slate.role)} ${slate.role.replace(/_/g, " ")} who hosts in cal.com and is deliberately not bookable in Slate`,
     };
   }
-  if (!slate.hasRoutingAttributes) {
+  if (!slate.matchableByAnyBucket) {
     return {
       verdict: "not-bookable-by-design",
-      reason: "not bookable in Slate and hosts in cal.com, but carries no routing attributes, so no bucket can match them",
+      reason: "not bookable in Slate and hosts in cal.com, but no bucket's criteria can match their attributes, so no lead could reach them here anyway",
     };
   }
   return {
@@ -209,6 +302,8 @@ export function classifyRosterMember(
 
 export interface RosterComparison {
   rows: RosterRow[];
+  /** How many withheld addresses cal.com no longer lists as hosts (a staleness signal). */
+  withheldNoLongerHosting: number;
   /**
    * Whether cal.com named NO hosts at all.
    *
@@ -239,7 +334,7 @@ export function compareRosters(
   for (const member of slateMembers) {
     const key = member.email.toLowerCase();
     seen.add(key);
-    const { verdict, reason } = classifyRosterMember(member, hosts.has(key), null);
+    const { verdict, reason } = classifyRosterMember(member, standingOf(key, hosts), null);
     rows.push({ email: member.email, verdict, reason });
   }
   // A host with no Slate row is carried through rather than dropped: iterating
@@ -247,11 +342,30 @@ export function compareRosters(
   // invisible, which is half of what this exists to find.
   for (const host of hosts) {
     if (seen.has(host)) continue;
-    const { verdict, reason } = classifyRosterMember(null, true, host);
+    const { verdict, reason } = classifyRosterMember(null, standingOf(host, hosts), host);
     rows.push({ email: host, verdict, reason });
   }
 
-  return { rows, hostsEmpty: hosts.size === 0 };
+  return {
+    rows,
+    hostsEmpty: hosts.size === 0,
+    // Withheld addresses that are no longer hosts. Not a finding: it is the one
+    // signal that the hand-recorded list has drifted from cal.com, which it will,
+    // and the run says the number rather than pretending the list is current.
+    withheldNoLongerHosting: Object.keys(REDISTRIBUTE_EXCLUDED).filter((e) => !hosts.has(e)).length,
+  };
+}
+
+/**
+ * What cal.com can do with one address.
+ *
+ * Being withheld only means anything for somebody cal.com actually HOLDS: an
+ * address on the list who is not a host is simply not a host, and saying otherwise
+ * would report a routing decision about a person cal.com cannot route to at all.
+ */
+function standingOf(emailKey: string, hosts: Set<string>): CalcomStanding {
+  if (!hosts.has(emailKey)) return "not-a-host";
+  return emailKey in REDISTRIBUTE_EXCLUDED ? "excluded" : "routable";
 }
 
 /**

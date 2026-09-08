@@ -27,6 +27,7 @@ import {
   worstRosterVerdict,
   ROSTER_VERDICT_RANK,
   KNOWN_NON_SLATE_HOSTS,
+  REDISTRIBUTE_EXCLUDED,
   type SlateRosterMember,
 } from "./lib/roster-parity.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
@@ -40,18 +41,18 @@ function slate(over: Partial<SlateRosterMember> = {}): SlateRosterMember {
     bookable: true,
     deactivatedAt: null,
     isTest: false,
-    hasRoutingAttributes: true,
+    matchableByAnyBucket: true,
     ...over,
   };
 }
 
 // --- the ordinary case ---------------------------------------------------------
 {
-  const r = classifyRosterMember(slate(), true, null);
+  const r = classifyRosterMember(slate(), "routable", null);
   eq(r.verdict, "agree", "a bookable Slate agent who hosts in cal.com is the healthy case");
 }
 {
-  const r = classifyRosterMember(null, true, null);
+  const r = classifyRosterMember(null, "routable", null);
   eq(r.verdict, "absent-from-slate", "a cal.com host Slate has never heard of cannot be reconciled");
 }
 
@@ -60,14 +61,14 @@ function slate(over: Partial<SlateRosterMember> = {}): SlateRosterMember {
   // The agent who left on 2026-07-21. Slate knows she is gone; cal.com kept
   // routing her real leads for six weeks. This is the one that must outrank
   // everything else, because it is the only one that books somebody who has left.
-  const r = classifyRosterMember(slate({ deactivatedAt: "2026-07-21T00:00:00Z", bookable: false }), true, null);
+  const r = classifyRosterMember(slate({ deactivatedAt: "2026-07-21T00:00:00Z", bookable: false }), "routable", null);
   eq(r.verdict, "departed-still-hosting", "somebody who has left Slate and still hosts in cal.com is the worst finding");
   assert(r.reason.includes("2026-07-21"), "and the reason carries the date they left, so nobody has to go and look it up");
 }
 {
   // Deactivated in Slate AND already removed from cal.com. Nothing to report: the
   // two systems agree that this person is gone.
-  const r = classifyRosterMember(slate({ deactivatedAt: "2026-07-21T00:00:00Z", bookable: false }), false, null);
+  const r = classifyRosterMember(slate({ deactivatedAt: "2026-07-21T00:00:00Z", bookable: false }), "not-a-host", null);
   eq(r.verdict, "agree", "somebody gone from both systems is agreement, not a finding");
 }
 
@@ -76,7 +77,7 @@ function slate(over: Partial<SlateRosterMember> = {}): SlateRosterMember {
   // rvillar@ today: became a manager, set non-bookable in Slate on 2026-09-02, and
   // still a host on the review event type. Not as bad as a departure, because they
   // are still employed and reachable, but cal.com can put a real lead on them.
-  const r = classifyRosterMember(slate({ bookable: false }), true, null);
+  const r = classifyRosterMember(slate({ bookable: false }), "routable", null);
   eq(r.verdict, "held-back-still-hosting", "an agent Slate will not route who cal.com still can is a finding");
   assert(
     r.reason.includes("cal.com can still route"),
@@ -88,7 +89,7 @@ function slate(over: Partial<SlateRosterMember> = {}): SlateRosterMember {
   // through attribute routing, so it is reported quietly rather than as a risk.
   // Attributes are read from Slate because cal.com does not expose per-user
   // attribute values: `/organizations/{org}/users/{id}/attributes` answers 404.
-  const r = classifyRosterMember(slate({ bookable: false, hasRoutingAttributes: false }), true, null);
+  const r = classifyRosterMember(slate({ bookable: false, matchableByAnyBucket: false }), "routable", null);
   eq(r.verdict, "not-bookable-by-design", "an agent with no routing attributes cannot be routed to, so it is not a risk");
 }
 
@@ -99,7 +100,7 @@ function slate(over: Partial<SlateRosterMember> = {}): SlateRosterMember {
   // the roster can be read in full, and they must never be able to fail a run:
   // a check that is red every day for a reason nobody should fix stops being read.
   for (const role of ["admin", "manager", "team_lead", "super_admin"]) {
-    const r = classifyRosterMember(slate({ role, bookable: false }), true, null);
+    const r = classifyRosterMember(slate({ role, bookable: false }), "routable", null);
     eq(r.verdict, "staff-not-bookable", `a ${role} hosting in cal.com is expected, not a finding`);
     // The report is read by people, and half these roles begin with a vowel.
     assert(
@@ -127,7 +128,7 @@ function slate(over: Partial<SlateRosterMember> = {}): SlateRosterMember {
   // worst finding hide behind the quietest category.
   const r = classifyRosterMember(
     slate({ role: "admin", bookable: false, deactivatedAt: "2026-08-01T00:00:00Z" }),
-    true,
+    "routable",
     null,
   );
   eq(r.verdict, "departed-still-hosting", "leaving outranks the role, so a departed admin is not filed as expected");
@@ -137,13 +138,13 @@ function slate(over: Partial<SlateRosterMember> = {}): SlateRosterMember {
 {
   // Slate offering somebody cal.com never routes. Zero today, and worth catching:
   // it means Slate is putting a name in front of leads that the incumbent does not.
-  const r = classifyRosterMember(slate(), false, null);
+  const r = classifyRosterMember(slate(), "not-a-host", null);
   eq(r.verdict, "bookable-not-hosting", "a bookable Slate agent absent from cal.com's host list is a finding");
 }
 {
   // Test agents are Slate's own smoke fixtures (#396) and have no cal.com identity
   // by design. Reporting them would make the sweep permanently red on purpose.
-  const r = classifyRosterMember(slate({ isTest: true }), false, null);
+  const r = classifyRosterMember(slate({ isTest: true }), "not-a-host", null);
   eq(r.verdict, "agree", "a test agent absent from cal.com is expected");
 }
 
@@ -204,7 +205,7 @@ function slate(over: Partial<SlateRosterMember> = {}): SlateRosterMember {
       (KNOWN_NON_SLATE_HOSTS[email] ?? "").trim().length > 0,
       `${email} carries a written reason, because an entry with none was never reasoned about (L233)`,
     );
-    const r = classifyRosterMember(null, true, email);
+    const r = classifyRosterMember(null, "routable", email);
     eq(r.verdict, "known-not-in-slate", `${email} is a known non Slate host rather than a missing one`);
     eq(r.reason, KNOWN_NON_SLATE_HOSTS[email], `${email} reports the recorded reason, not a generic one`);
   }
@@ -221,7 +222,7 @@ function slate(over: Partial<SlateRosterMember> = {}): SlateRosterMember {
 {
   // THE POSITIVE CONTROL. Without this the exemption could silence the verdict
   // wholesale and every assertion above would still pass (L1).
-  const r = classifyRosterMember(null, true, "brand-new-hire@trypennie.com");
+  const r = classifyRosterMember(null, "routable", "brand-new-hire@trypennie.com");
   eq(r.verdict, "absent-from-slate", "a host who is NOT on the list is still reported as missing from Slate");
   assert(
     ROSTER_VERDICT_RANK["absent-from-slate"] > ROSTER_VERDICT_RANK.agree,
@@ -233,7 +234,7 @@ function slate(over: Partial<SlateRosterMember> = {}): SlateRosterMember {
   // all". The day one of these accounts becomes a real Slate user it is judged on
   // its merits, so a stale entry cannot hide a genuine finding.
   const email = Object.keys(KNOWN_NON_SLATE_HOSTS)[0];
-  const r = classifyRosterMember(slate({ email, bookable: false }), true, email);
+  const r = classifyRosterMember(slate({ email, bookable: false }), "routable", email);
   eq(
     r.verdict,
     "held-back-still-hosting",
@@ -278,6 +279,77 @@ function slate(over: Partial<SlateRosterMember> = {}): SlateRosterMember {
     "known-not-in-slate",
     "an exempted host is recognised whatever case cal.com reports it in",
   );
+}
+
+// --- cal.com withholding somebody it still lists as a host (#2088) --------------
+// The host list on the event type says who CAN take a booking. Six of cal.com's
+// seven routing forms then exclude a named set on every route, so the pool it
+// actually routes to is narrower than the list. Reading the list alone reports the
+// wrong thing in both directions, and both were live on 2026-09-08.
+{
+  const exempt = Object.keys(REDISTRIBUTE_EXCLUDED);
+  assert(exempt.length > 0, "the withheld list has at least one entry, or this path is dead code");
+  for (const email of exempt) {
+    eq(email, email.toLowerCase(), `${email} is stored lowercased, since that is how addresses are matched`);
+    assert(
+      (REDISTRIBUTE_EXCLUDED[email] ?? "").trim().length > 0,
+      `${email} carries a written reason (L233)`,
+    );
+  }
+}
+{
+  // BOTH systems withhold them, which is agreement however loudly the host list
+  // implies otherwise. This is the pair that kept the page lit: cfrank@ and rsegui@.
+  const r = classifyRosterMember(slate({ bookable: false }), "excluded", null);
+  eq(r.verdict, "agree", "not bookable in Slate and withheld by cal.com is agreement, not a finding");
+}
+{
+  // The other direction, and the one worth paging on: Slate offers somebody the
+  // incumbent deliberately never routes to. Twelve agents on 2026-09-08.
+  const r = classifyRosterMember(slate({ bookable: true }), "excluded", null);
+  eq(r.verdict, "bookable-not-routable", "bookable in Slate and withheld by cal.com is a real disagreement");
+  assert(
+    ROSTER_VERDICT_RANK["bookable-not-routable"] > ROSTER_VERDICT_RANK.agree,
+    "and it outranks agreement, so it pages",
+  );
+}
+{
+  // THE POSITIVE CONTROL for this pair. Without it, treating every host as withheld
+  // would satisfy both assertions above while silencing the verdict that matters.
+  const held = classifyRosterMember(slate({ bookable: false }), "routable", null);
+  eq(held.verdict, "held-back-still-hosting", "a host cal.com CAN route to still pages when Slate holds them back");
+  const ok = classifyRosterMember(slate({ bookable: true }), "routable", null);
+  eq(ok.verdict, "agree", "and a bookable agent cal.com can route to is still the healthy case");
+}
+{
+  // Withheld and not a host are DIFFERENT states and must not share a verdict: one
+  // is cal.com deliberately holding somebody back, the other is cal.com not having
+  // them at all, and they send a reader to different places (L11).
+  const notHost = classifyRosterMember(slate({ bookable: true }), "not-a-host", null);
+  eq(notHost.verdict, "bookable-not-hosting", "not a host at all keeps its own verdict");
+  const excluded = classifyRosterMember(slate({ bookable: true }), "excluded", null);
+  assert(
+    excluded.verdict !== notHost.verdict && excluded.reason !== notHost.reason,
+    "and withheld says something different, in its own words",
+  );
+}
+
+// --- can any bucket actually match them (#2094) ----------------------------------
+// The check used to ask whether the person carried ANY attribute, and the reason it
+// prints says "so no bucket can match them", which is a different question. rsegui@
+// carried {"role":"Sales"} and nothing else; no bucket keys on role, so no bucket
+// could ever reach them, and they were paged on daily as held back.
+{
+  const r = classifyRosterMember(slate({ bookable: false, matchableByAnyBucket: false }), "routable", null);
+  eq(
+    r.verdict,
+    "not-bookable-by-design",
+    "somebody no bucket can match is a standing note, not a page, however many attributes they carry",
+  );
+}
+{
+  const r = classifyRosterMember(slate({ bookable: false, matchableByAnyBucket: true }), "routable", null);
+  eq(r.verdict, "held-back-still-hosting", "and somebody a bucket CAN match is still the page it exists for");
 }
 
 finish();

@@ -39,6 +39,10 @@ export type ParityOutcome = Exclude<RosterVerdict | ScheduleVerdict, "agree" | Q
  * finding on purpose: an agent nobody could check is a gap in coverage, and a
  * measured difference is a defect somebody can go and fix.
  *
+ * `bookable-not-routable` sits just above `bookable-not-hosting` because it is the
+ * stronger statement of the same problem: cal.com holds this person and has decided
+ * not to route to them, where the other means it simply does not list them.
+ *
  * Last is a zone name that keeps the same clock, which changes nothing a lead
  * sees. It is reported so drift is knowable and ranked last so it can never bury
  * something real, which it did on the very first live sweep.
@@ -52,6 +56,7 @@ export const OUTCOME_ORDER: readonly ParityOutcome[] = [
   "timezone-differs",
   "days-differ",
   "hours-differ",
+  "bookable-not-routable",
   "bookable-not-hosting",
   "absent-from-slate",
   "not-bookable-by-design",
@@ -106,6 +111,7 @@ export const EXIT_CODE: Record<ParityOutcome, number> = {
   "not-bookable-by-design": 21,
   "absent-from-slate": 22,
   "bookable-not-hosting": 23,
+  "bookable-not-routable": 26,
   "held-back-still-hosting": 24,
   "departed-still-hosting": 25,
 };
