@@ -23,6 +23,7 @@
     "import:calcom-schedules": "node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/import-calcom-schedules.ts",
     "verify:availability-truth": "node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/verify-availability-truth-live.ts",
     "verify:calcom-parity": "node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/verify-calcom-parity-live.ts",
+    "verify:parallel-run-readiness": "node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/verify-parallel-run-readiness-live.ts",
     "verify:burst-counter": "node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/verify-burst-counter-live.ts",
     "verify:ooo-protection": "node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/verify-ooo-protection-live.ts"
   },
