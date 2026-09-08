@@ -26,7 +26,12 @@ export type MeTab = {
 export const ME_TABS: readonly MeTab[] = [
   // First, because /me lands here: the hours are what decide whether an agent
   // gets calls at all, so they are in front of them on every visit.
-  { href: "/me", label: "My Availability" },
+  //
+  // #2107: it has its own address, in the same shape as every other page in the
+  // product, and /me redirects to it. Everything that sends somebody to their own
+  // availability reads this href rather than writing an address out, so the tab
+  // and the page cannot drift (L41).
+  { href: "/me/my-availability", label: "My Availability" },
   // "My Requests" named the mechanism and not the subject, so it said nothing
   // about what was being requested. The manager-side twin is "Team Time Off".
   { href: "/me/time-off", label: "My Time Off" },

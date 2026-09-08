@@ -594,16 +594,22 @@ assert(
 // catch it. It also pins the direction the widening was for: the schedule read
 // is the one whose empty answer draws a plausible default week over hours that
 // are about to be replaced.
-const mePagePath = join(ROOT, "src", "app", "me", "page.tsx");
+// #2107 moved the page to its own address; the directory above is scanned
+// recursively so the coverage is unchanged, but a control that names a file has
+// to follow it, or it reverts nothing and proves nothing (L100).
+const mePagePath = join(ROOT, "src", "app", "me", "my-availability", "page.tsx");
 const meSrc = readFileSync(mePagePath, "utf8");
-assert(scanSwallowedErrorReads(meSrc, mePagePath).length === 0, "the real me/page.tsx is clean");
+assert(
+  scanSwallowedErrorReads(meSrc, mePagePath).length === 0,
+  "the real my-availability page is clean",
+);
 const meReverted = meSrc.replace(
   /const \{ data: schedule, error: schedErr \} = await db/,
   "const { data: schedule } = await db",
 );
 assert(
   meReverted !== meSrc,
-  "the /me revert control actually changed page.tsx (else it proves nothing)",
+  "the availability revert control actually changed the page (else it proves nothing)",
 );
 const meFindings = scanSwallowedErrorReads(meReverted, mePagePath);
 // #1648 tightened this from `.some(...)` to an exact count, for the same reason

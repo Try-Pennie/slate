@@ -6,6 +6,7 @@ import { canManageAgents } from "@/lib/auth/roles";
 import { isAllowedEmail } from "@/lib/auth/domain";
 import { googleHostedDomain } from "@/lib/env";
 import { log } from "@/lib/log";
+import { ME_TABS } from "@/lib/me/nav";
 import {
   DEFAULT_THEME_PREFERENCE,
   THEME_COOKIE,
@@ -82,7 +83,7 @@ export async function GET(req: NextRequest) {
   await ensureWatches(slateUser.id); // never throws; returns a status
 
   // Managers + admins get the admin console; agents land on their own page.
-  const dest = canManageAgents(slateUser.role) ? "/admin" : "/me";
+  const dest = canManageAgents(slateUser.role) ? "/admin" : ME_TABS[0].href;
   const res = NextResponse.redirect(`${origin}${dest}`);
   // Seed the theme cookie from the account so the preference follows the user
   // onto this device (the boot script reads it before first paint).

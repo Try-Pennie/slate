@@ -10,6 +10,7 @@
 import { readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { assert, finish } from "./lib/harness.ts";
+import { ME_TABS } from "@/lib/me/nav";
 import {
   BOUNDARY_TITLE,
   BOUNDARY_BODY,
@@ -96,7 +97,10 @@ assert(
   boundaryWayBack("/admin/agents/abc")?.href === "/admin",
   "an admin path offers the overview",
 );
-assert(boundaryWayBack("/me")?.href === "/me", "an agent's own page offers their availability");
+assert(
+  boundaryWayBack("/me")?.href === ME_TABS[0].href,
+  "an agent's own page offers their availability, by the address the tab uses (#2107)",
+);
 assert(
   (boundaryWayBack("/admin")?.label ?? "").length > 0,
   "the way back is labelled, not a bare URL",

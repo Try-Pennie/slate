@@ -115,6 +115,7 @@ import {
 } from "@/lib/schedule-replacement";
 import type { Attributes, Criteria, Role, User } from "@/lib/db/types";
 import { seederOwnsCode } from "@/lib/xbc";
+import { ME_TABS } from "@/lib/me/nav";
 
 /**
  * Asserts the signed-in user is a manager+ who may edit `userId` (escalation
@@ -280,14 +281,20 @@ export async function setMyWorkingHours(form: FormData): Promise<void> {
     perDayFrom(form),
     String(form.get("timezone") ?? "America/New_York"),
   );
-  if (!plan.ok) redirect(`/me?error=${encodeURIComponent(plan.error)}`);
+  // #2107: the availability page's own address, from the tab list, on all three
+  // of these. A redirect carrying an outcome must name the page it is actually
+  // on: /me is a redirect now, and a redirect whose target redirects again DROPS
+  // the query string (L586), so a saved notice sent to /me would arrive nowhere
+  // and the form would look like it had done nothing.
+  const availability = ME_TABS[0].href;
+  if (!plan.ok) redirect(`${availability}?error=${encodeURIComponent(plan.error)}`);
   await replaceUserSchedule(me.id, "agent", plan);
-  revalidatePath("/me");
+  revalidatePath(availability);
   // #1988: the save said nothing at all, so it looked exactly like a click that
   // did nothing. Post-redirect-get with a NAMED outcome, the same shape every
   // other settings form here uses, and the redirect is AFTER the write so a
   // refusal (which throws out of `planScheduleReplacement`) never reaches it.
-  redirect(`/me${savedQuery("working-hours")}`);
+  redirect(`${availability}${savedQuery("working-hours")}`);
 }
 
 // #2103: `useMyDefaultHours` was deleted here, and the deletion matters more
@@ -1286,7 +1293,10 @@ export async function startImpersonation(form: FormData): Promise<void> {
     action: "impersonate.start",
     targetUserId: target.id,
   });
-  redirect("/me");
+  // Straight to the page rather than through /me's redirect: this is where
+  // "view as" lands somebody, and the address is read from the tab list so it
+  // cannot drift from the page it names (#2107).
+  redirect(ME_TABS[0].href);
 }
 
 /** Stop impersonating and revert to your own session. Safe for anyone to call. */

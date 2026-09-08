@@ -43,6 +43,7 @@ vi.mock("@/lib/supabase/server", () => server);
 vi.mock("@/lib/log", () => logger);
 
 import { GET } from "./route";
+import { ME_TABS } from "@/lib/me/nav";
 
 const SESSION = {
   session: {
@@ -118,7 +119,9 @@ describe("auth callback when provisioning refuses (#1648)", () => {
 
     const res = await GET(request());
 
-    expect(res.headers.get("location")).toBe("https://slate.trypennie.app/me");
+    expect(res.headers.get("location")).toBe(
+      `https://slate.trypennie.app${ME_TABS[0].href}`,
+    );
     expect(signOut).not.toHaveBeenCalled();
     expect(logged.errors).toEqual([]);
   });
