@@ -273,7 +273,6 @@ import {
   setAgentAttributes,
   setOooCalendarId,
   useDefaultHours,
-  useMyDefaultHours,
   setDefaultBucket,
   setBookingHorizon,
   setEventDescription,
@@ -1382,15 +1381,10 @@ describe("the reads that decide authorization or a write must refuse, not guess 
       expect(schedule.upsertUserSchedule).toHaveBeenCalledWith("u2", "America/Chicago");
     });
 
-    // The same pair on the SELF service path, which reaches them through a
-    // different function. A test on one would say nothing about the other.
-    it("refuses on the agent's own use of the default hours too", async () => {
-      auth.currentUser.mockResolvedValue({ id: "m1", role: "agent", org_id: "o1" });
-      dbState.rowsByTable.organizations = orgDefaults;
-      dbState.errorByTable.availability_schedules = { message: "deadlock detected" };
-      await expect(useMyDefaultHours()).rejects.toThrow(/agent schedule timezone/);
-      expect(schedule.upsertUserSchedule).not.toHaveBeenCalled();
-    });
+    // #2103: the self service path this paired with is gone, along with the
+    // server action behind it AND the shared helper, which turned out to have
+    // no other caller. The admin's own default hours action carries its own
+    // copy of those reads and is covered above.
   });
 
   // 4. setDefaultBucket. An empty valid set makes EVERY code invalid, so a failed

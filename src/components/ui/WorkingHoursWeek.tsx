@@ -278,22 +278,33 @@ export function WorkingHoursWeek({
                   <span aria-hidden="true">+</span>
                 </button>
 
-                {/* #1873: in the row it operates ON. It used to sit at the foot
-                    of the form next to Save, so an editing aid that changes
-                    nothing durable was a peer of the commit, and its subject
-                    (Monday) was six rows away from it. It is the only one of the
-                    three controls here that writes nothing, and it is the only
-                    one still styled as text. */}
-                {weekday === 1 && (
-                  <button
-                    type="button"
-                    onClick={copyMonday}
-                    className="ml-auto self-center text-xs text-pennie-blue underline dark:text-pennie-sky"
-                  >
-                    Copy Monday to every working day
-                  </button>
-                )}
               </div>
+
+              {/* #1873: in the row it operates ON. It used to sit at the foot of
+                  the form next to Save, so an editing aid that changes nothing
+                  durable was a peer of the commit, and its subject (Monday) was
+                  six rows away from it. It is the only one of the three controls
+                  here that writes nothing, and it is the only one still styled
+                  as text, which is why #2103 did not promote it to a button.
+
+                  #2103 moved it OUT of the controls row and onto its own line.
+                  It was the last child of a `flex-wrap` row carrying `ml-auto`,
+                  so once that row wrapped (which it does at every width an agent
+                  actually uses, because the day name, two time fields and the
+                  add button already fill it) the link was thrown to the far
+                  right edge of the card and sat directly under the `+`. Dan:
+                  "this is ugly". On its own line it starts where every other
+                  line in the row starts, and it can never collide with a control
+                  again, whatever the width. */}
+              {weekday === 1 && (
+                <button
+                  type="button"
+                  onClick={copyMonday}
+                  className="mt-2 text-xs text-pennie-blue underline dark:text-pennie-sky"
+                >
+                  Copy Monday to every working day
+                </button>
+              )}
             </div>
           );
         })}

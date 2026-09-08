@@ -31,7 +31,7 @@ const SHELL_USE = /<PageShell[\s/>]/;
  * page by whichever provider covers it, and a page under such a layout carries
  * neither itself.
  */
-const LAYOUTS = ["src/app/admin/layout.tsx"];
+const LAYOUTS = ["src/app/admin/layout.tsx", "src/app/me/layout.tsx"];
 
 function pages(dir: string): string[] {
   const out: string[] = [];
@@ -89,7 +89,17 @@ const mainTag = (text: string) =>
   stripComments(text).match(new RegExp(`<main[^>]*\\sid="${targetId}"[^>]*>`, "s"));
 
 for (const file of providers) {
-  const tag = mainTag(readFileSync(file, "utf8"));
+  const text = readFileSync(file, "utf8");
+  // #2103: a layout may provide the target by rendering the SHELL rather than
+  // writing its own `<main>`. /me does, and it is the better of the two: one
+  // element, defined once, carrying both the width and the focus target. The
+  // shell itself is in this list too, so what that layout delegates to is still
+  // checked here, on the file that actually writes the tag.
+  if (file !== SHELL && SHELL_USE.test(text)) {
+    assert(true, `${file} reaches the target through ${SHELL}`);
+    continue;
+  }
+  const tag = mainTag(text);
   assert(
     tag !== null,
     tag !== null
@@ -124,6 +134,17 @@ for (const [, file] of layoutDirs) {
     `${file} renders the header for the pages beneath it`,
   );
 }
+
+/**
+ * How a LAYOUT provides the target: its own `<main id>`, or the shell (#2103).
+ *
+ * The console writes its own, because its content column is one part of a three
+ * part row. /me renders `<PageShell>`, which is the same target one indirection
+ * further along. Both are real; a check that demanded the first would have
+ * refused the better of the two.
+ */
+const layoutTargetIsOwnMain = (file: string): boolean =>
+  mainTag(readFileSync(file, "utf8")) !== null;
 
 const withHeader = all.filter(
   (p) => readFileSync(p, "utf8").includes("AppHeader") || layoutFor(p) !== null,
@@ -170,8 +191,12 @@ assert(
   shared.length >= 10,
   `and most of them reach it through a shared provider (${shared.length} of ${withHeader.length})`,
 );
-const viaShell = withHeader.filter(
-  (p) => targetFor(p, readFileSync(p, "utf8")) === "shell",
+// #2103: pages stopped rendering the shell directly when /me got a layout, so
+// this counts whatever DOES render it. Left as pages only, it would be red with
+// the honest meaning "there is nothing left to check", which is a guard
+// reporting on itself rather than on the tree.
+const viaShell = [...withHeader, ...LAYOUTS].filter((p) =>
+  SHELL_USE.test(readFileSync(p, "utf8")),
 );
 assert(
   viaShell.length >= 1,
@@ -210,10 +235,26 @@ assert(
   );
 
   // 3. one page stops reaching the shell and has no target of its own.
-  const victim = viaShell[0]!;
-  const orphaned = readFileSync(victim, "utf8").replace(/<PageShell/g, "<div");
+  //
+  //    #2103: no page renders the shell any more, because both internal areas
+  //    took their chrome into a layout. So the victim is SYNTHETIC: a page path
+  //    under no layout, which is the shape a new standalone internal page would
+  //    have on the day somebody adds one. Driving it against a real page would
+  //    now be driving it against a layout, and `targetFor` answers "layout" for
+  //    those whatever their markup says, so the control would pass on a page it
+  //    never actually orphaned (L159).
+  const synthetic = "src/app/somewhere-new/page.tsx";
+  assert(
+    layoutFor(synthetic) === null,
+    "the synthetic page really sits under no layout, or this control proves nothing",
+  );
   eq(
-    targetFor(victim, orphaned),
+    targetFor(synthetic, '<PageShell width="narrow">hello</PageShell>'),
+    "shell",
+    "a standalone page rendering the shell reaches the target",
+  );
+  eq(
+    targetFor(synthetic, "<div>hello</div>"),
     null,
     "a page that stops rendering the shell and has no <main> of its own is caught",
   );
@@ -224,16 +265,32 @@ assert(
     const covered = withHeader.filter((p) => p.startsWith(dir));
     assert(covered.length > 0, `${file} actually covers pages (${covered.length})`);
     const layoutText = readFileSync(file, "utf8");
-    const tag = mainTag(layoutText)![0];
-    const broken = stripComments(layoutText).replace(
-      tag,
-      tag.replace(`id="${targetId}"`, 'id="gone"'),
-    );
-    eq(
-      mainTag(broken),
-      null,
-      `removing the target from ${file} is caught, so its pages are not silently orphaned`,
-    );
+    if (layoutTargetIsOwnMain(file)) {
+      const tag = mainTag(layoutText)![0];
+      const broken = stripComments(layoutText).replace(
+        tag,
+        tag.replace(`id="${targetId}"`, 'id="gone"'),
+      );
+      eq(
+        mainTag(broken),
+        null,
+        `removing the target from ${file} is caught, so its pages are not silently orphaned`,
+      );
+    } else {
+      // The shell-rendering layout: what orphans its pages is dropping the
+      // shell, not editing a `<main>` it never wrote. Same defect, one
+      // indirection along, and it has to be driven at the place it can happen.
+      assert(
+        SHELL_USE.test(layoutText),
+        `${file} reaches the target through the shell`,
+      );
+      const broken = stripComments(layoutText).replace(/<PageShell[^>]*>/g, "<div>");
+      eq(
+        SHELL_USE.test(broken) || mainTag(broken) !== null,
+        false,
+        `a ${file} that stops rendering the shell is caught, so its pages are not silently orphaned`,
+      );
+    }
   }
 }
 

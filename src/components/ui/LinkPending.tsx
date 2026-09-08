@@ -20,13 +20,34 @@ import { Spinner } from "@/components/ui/Spinner";
  * Only ONE of them speaks. The load bar carries `role="status"`, the spinner is
  * `aria-hidden`, and a test pins that there is exactly one status region here:
  * two would announce the same wait twice.
+ *
+ * WHICH CUES A NAV GETS IS ITS OWN DECISION (#2103), and it is a required prop
+ * rather than a default so `tsc` names every call site. A behaviour each site
+ * must remember to opt into is enforced by nothing, and the site that forgot is
+ * indistinguishable from the site that chose (L621).
+ *
+ * `spinner` is the sidebar: twenty entries, where "which one did I click" is a
+ * real question and the top bar cannot answer it.
+ *
+ * `bar` is the header: three tabs, where the question does not arise and the
+ * reserved slot is instead the widest thing between them. Dan, 2026-09-08: "we
+ * separated these nav items to account for the spinner but I think we should
+ * just move them closer together, get rid of the spinner, and do a skeleton
+ * loader on the page instead." The skeleton (`src/app/me/loading.tsx`) is what
+ * replaces it, and it says more than a spinner did: it shows the shape of the
+ * page that is coming rather than only that something is happening.
+ *
+ * The load bar is in BOTH, deliberately. It is fixed positioned so it costs no
+ * layout width, and it carries the only `role="status"` for the wait, so
+ * dropping it from the header would leave a screen reader with nothing while a
+ * force-dynamic page fetched.
  */
-export function LinkPending() {
+export function LinkPending({ marker }: { marker: "spinner" | "bar" }) {
   const { pending } = useLinkStatus();
   return (
     <>
       {/* THE SLOT IS RESERVED, NOT ADDED (#2045).
-          
+
           The spinner used to appear as a new in-flow child the moment the link
           was clicked, so it took width from its siblings and everything to its
           right jumped sideways for as long as the page took to commit. In the
@@ -52,15 +73,22 @@ export function LinkPending() {
 
           The spinner brings its own spacing (#1792): the sidebar's Link has no
           gap utility, so one relying on its parent for it sat flush against the
-          label's last letter. That spacing is now the RESERVED width too. */}
-      <span
-        data-link-pending-slot=""
-        data-pending={pending ? "" : undefined}
-        aria-hidden="true"
-        className="pn-link-pending"
-      >
-        <Spinner size="sm" />
-      </span>
+          label's last letter. That spacing is now the RESERVED width too.
+
+          #2103: and that permanent cost is exactly why the header no longer pays
+          it. The slot is absent under `marker="bar"` rather than hidden, because
+          a hidden one still holds its width, which is the whole gap complained
+          about. */}
+      {marker === "spinner" && (
+        <span
+          data-link-pending-slot=""
+          data-pending={pending ? "" : undefined}
+          aria-hidden="true"
+          className="pn-link-pending"
+        >
+          <Spinner size="sm" />
+        </span>
+      )}
       {pending && (
         <span className="pn-loadbar" role="status" aria-label="Loading the page" />
       )}
