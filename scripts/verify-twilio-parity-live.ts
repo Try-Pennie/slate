@@ -111,13 +111,22 @@ if (workers.length === 0) {
 }
 
 const byEmail = new Map<string, TwilioSide[]>();
-let unreadable = 0;
+// Counted SEPARATELY, because they are different faults and one message cannot
+// honestly name both (L11): a corrupt attributes string is a Twilio data problem
+// somebody should look at, and valid JSON with no email is almost always a queue or
+// automation entity and is ordinary.
+let corruptAttributes = 0;
+let noEmail = 0;
 for (const w of workers) {
-  const side = readWorker(w.attributes);
-  if (!side) { unreadable++; continue; }
-  const list = byEmail.get(side.email) ?? [];
-  list.push(side);
-  byEmail.set(side.email, list);
+  const read = readWorker(w.attributes);
+  if (!read.ok) {
+    if (read.why === "unreadable-attributes") corruptAttributes++;
+    else noEmail++;
+    continue;
+  }
+  const list = byEmail.get(read.side.email) ?? [];
+  list.push(read.side);
+  byEmail.set(read.side.email, list);
 }
 
 // cap-safe: users is a roster-bounded table, ~148 rows against a 200-agent design target
@@ -140,7 +149,10 @@ const asList = (v: unknown): string[] =>
 console.log(
   `twilio parity: ${workers.length} Twilio worker(s) covering ${byEmail.size} address(es), ` +
     `against ${realUsers.length} non-test Slate user(s)` +
-    (unreadable > 0 ? `\nnote: ${unreadable} worker(s) carry no readable email and were not compared` : ""),
+    (noEmail > 0 ? `\nnote: ${noEmail} worker(s) carry no email, so nothing can match them to a Slate row` : "") +
+    (corruptAttributes > 0
+      ? `\nnote: ${corruptAttributes} worker(s) have an attributes blob that is not readable JSON, which is a fault in Twilio's data`
+      : ""),
 );
 
 const rows: { email: string; verdict: TwilioVerdict; detail: string }[] = [];

@@ -90,22 +90,35 @@ export interface TwilioSide {
   unmappedTags: string[];
 }
 
+/** Why a worker could not be read, kept apart because they are different faults. */
+export type UnreadableWorker =
+  /** The `attributes` string is not JSON. A Twilio data fault worth knowing about. */
+  | "unreadable-attributes"
+  /** Valid JSON carrying no email, so nothing can match it to a Slate row. */
+  | "no-email";
+
+export type WorkerRead = { ok: true; side: TwilioSide } | { ok: false; why: UnreadableWorker };
+
 /**
  * Read one worker's `attributes` blob into the facts we compare.
  *
- * Returns null when there is no readable email, because a worker we cannot name
- * cannot be matched to a Slate row and counting it as anything would be a guess.
+ * The two ways this fails are REPORTED SEPARATELY rather than folded into one
+ * absent value (L11). A corrupt attributes string is a fault in Twilio's data and
+ * somebody should look at it; a worker with valid JSON and no email is almost always
+ * a queue or automation entity and is ordinary. One count covering both would name
+ * whichever cause the message happened to describe, and the message would be wrong
+ * about the other half.
  */
-export function readWorker(attributesJson: string | null | undefined): TwilioSide | null {
+export function readWorker(attributesJson: string | null | undefined): WorkerRead {
   let parsed: unknown;
   try {
     parsed = JSON.parse(attributesJson || "{}");
   } catch {
-    return null;
+    return { ok: false, why: "unreadable-attributes" };
   }
   const attrs = (parsed ?? {}) as { email?: unknown; teams?: unknown };
   const email = typeof attrs.email === "string" ? attrs.email.trim().toLowerCase() : "";
-  if (!email) return null;
+  if (!email) return { ok: false, why: "no-email" };
 
   const teams = Array.isArray(attrs.teams) ? attrs.teams.map((t) => String(t).trim()) : [];
   const debtTeams: string[] = [];
@@ -130,7 +143,12 @@ export function readWorker(attributesJson: string | null | undefined): TwilioSid
     if (!unmappedTags.includes(tag)) unmappedTags.push(tag);
   }
 
-  return { email, debtTeams, backendServices, notLegalEligible, redistribute, unmappedTags };
+  return { ok: true, side: { email, debtTeams, backendServices, notLegalEligible, redistribute, unmappedTags } };
+}
+
+/** The side, or null. For call sites that genuinely do not care which fault it was. */
+export function workerSideOrNull(read: WorkerRead): TwilioSide | null {
+  return read.ok ? read.side : null;
 }
 
 /**
