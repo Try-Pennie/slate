@@ -200,55 +200,17 @@ async function replaceUserSchedule(
   }
 }
 
-/** Applies the org default schedule to a user, keeping their tz if already set. */
-async function applyOrgDefaultToUser(
-  orgId: string,
-  userId: string,
-  /** Who pressed the button (#1753): the agent on /me, or an admin on their page. */
-  source: "agent" | "admin",
-): Promise<void> {
-  const db = supabaseAdmin();
-  // #1629: both reads decide what gets WRITTEN to the agent's schedule. The org
-  // read swallowed into a null then threw an unattributable TypeError on the very
-  // next line; `unwrap` names the read that failed instead.
-  const org = unwrap(
-    await db
-      .from("organizations")
-      .select(
-        "default_timezone, default_start_minute, default_end_minute, default_weekdays",
-      )
-      .eq("id", orgId)
-      .single(),
-    "org default schedule",
-  );
-  const o = org as {
-    default_timezone: string;
-    default_start_minute: number;
-    default_end_minute: number;
-    default_weekdays: number[];
-  };
-  // An unreadable schedule read as "this agent has no timezone of their own" and
-  // the write below then REPLACED their real one with the org default. A silent
-  // timezone change moves every hour they are bookable.
-  const existing = unwrap(
-    await db.from("availability_schedules").select("timezone").eq("user_id", userId).maybeSingle(),
-    "agent schedule timezone",
-  );
-  const tz =
-    (existing as { timezone: string } | null)?.timezone ?? o.default_timezone;
-  // The org default IS one window on several days, which is exactly what
-  // `planUniformSchedule` is for: put this agent back on the company's hours.
-  await replaceUserSchedule(
-    userId,
-    source,
-    planUniformSchedule(
-      o.default_weekdays,
-      o.default_start_minute,
-      o.default_end_minute,
-      tz,
-    ),
-  );
-}
+// #2103: `applyOrgDefaultToUser` was deleted here with its only caller.
+//
+// It turns out it had exactly one: the agent's own "use the company hours"
+// button. The ADMIN equivalent (`useDefaultHours`, below) never called it and
+// carries its own copy of the same reads, which is the shape L370 describes:
+// the org defaults were shared as DATA while the logic applying them was
+// duplicated, so the shared helper read as the single source of truth while a
+// second implementation sat beside it. That duplication is pre-existing and is
+// left as it stands rather than refactored on the way past; what is fixed here
+// is that the unused half is gone rather than sitting there looking load
+// bearing.
 
 /**
  * The week as the per-day hours form submits it (#1308): a checkbox and its own
@@ -328,16 +290,17 @@ export async function setMyWorkingHours(form: FormData): Promise<void> {
   redirect(`/me${savedQuery("working-hours")}`);
 }
 
-/** Agent self-service: apply the org default hours to myself. */
-export async function useMyDefaultHours(): Promise<void> {
-  const me = await currentUser();
-  if (!me) return;
-  await applyOrgDefaultToUser(me.org_id, me.id, "agent");
-  revalidatePath("/me");
-  // #1988: same button, same silence. This one writes a whole week the person
-  // did not type, so it needs the confirmation more than the other, not less.
-  redirect(`/me${savedQuery("working-hours")}`);
-}
+// #2103: `useMyDefaultHours` was deleted here, and the deletion matters more
+// than the two controls that called it. This file is "use server", so every
+// export is a callable endpoint: leaving it behind would have kept a route any
+// signed in person could invoke to replace their whole week with the org
+// default, reachable by nothing on any screen and watched by nobody (L29).
+//
+// Nothing is lost. A new agent's week is seeded by `ensureDefaultSchedules`
+// inside the same `runRosterSync` that inserts them, so the "apply the company
+// hours to me" button was a manual route to something that had already
+// happened. An admin can still apply the org default from the agent's own page,
+// which is a different actor writing a different person's hours.
 
 /**
  * "Sync from Salesforce", from the roster page (#491, #2071).

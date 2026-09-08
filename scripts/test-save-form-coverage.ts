@@ -186,7 +186,6 @@ const MIGRATED: [string, string][] = [
   ["src/app/admin/ooo/page.tsx", "retryOooAction"],
   ["src/app/admin/webhooks/page.tsx", "setWebhookEndpoint"],
   ["src/app/admin/webhooks/page.tsx", "resendWebhookDelivery"],
-  ["src/app/me/page.tsx", "useMyDefaultHours"],
   ["src/components/ReasonOptionsEditor.tsx", "setReasonOptions"],
   ["src/app/admin/agents/[id]/page.tsx", "setUserRole"],
   ["src/app/admin/agents/[id]/page.tsx", "setBookable"],

@@ -95,7 +95,7 @@ export function AdminSidebar({ groups }: { groups: AdminNavGroup[] }) {
                       }`}
                     >
                       {item.label}
-                      <LinkPending />
+                      <LinkPending marker="spinner" />
                     </Link>
                   </li>
                 );

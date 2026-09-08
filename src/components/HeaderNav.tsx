@@ -50,6 +50,10 @@ export function HeaderNav({ tabs }: { tabs: HeaderTab[] }) {
   const pathname = usePathname() ?? "";
   const active = activeTab(pathname, tabs);
   return (
+    // #2103: the tabs sit at their own spacing now that no spinner slot is
+    // reserved between them. That slot held about 26px of permanent width per
+    // tab whether or not anything was loading, which in a row of three was the
+    // widest thing on the bar.
     <nav aria-label="Slate sections" className="flex items-center gap-5">
       {tabs.map((tab) => {
         const current = tab.href === active;
@@ -66,7 +70,7 @@ export function HeaderNav({ tabs }: { tabs: HeaderTab[] }) {
           >
             {tab.label}
             {tab.badge}
-            <LinkPending />
+            <LinkPending marker="bar" />
           </Link>
         );
       })}

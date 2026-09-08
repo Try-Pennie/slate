@@ -101,7 +101,6 @@ import {
   setOrgDefaultHours,
   useDefaultHours,
   setMyWorkingHours,
-  useMyDefaultHours,
 } from "./actions";
 
 /**
@@ -228,14 +227,12 @@ describe("saving working hours confirms it saved (#1988)", () => {
     expect(redirect).toHaveBeenCalledWith("/me?ok=working-hours");
   });
 
-  it("confirms the company default button too, on both pages", async () => {
+  // #2103: the agent's half of this went with `useMyDefaultHours`. The company
+  // default is no longer something an agent applies to themselves, so there is
+  // no second page for this confirmation to be checked on.
+  it("confirms the company default button on the agent's admin page", async () => {
     await expect(useDefaultHours(hoursForm())).rejects.toThrow(/ok=working-hours/);
     expect(redirect).toHaveBeenCalledWith("/admin/agents/u1?ok=working-hours");
-
-    redirect.mockClear();
-    auth.currentUser.mockResolvedValue({ id: "me1", role: "agent", org_id: "o1" });
-    await expect(useMyDefaultHours()).rejects.toThrow(/ok=working-hours/);
-    expect(redirect).toHaveBeenCalledWith("/me?ok=working-hours");
   });
 
   // The half that matters most, and it is the reason the confirmation is placed

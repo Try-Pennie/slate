@@ -1,19 +1,15 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
-import { SaveForm } from "@/components/ui/SaveForm";
 import { currentUser } from "@/lib/auth";
 import { supabaseAdmin } from "@/lib/supabase/admin";
-import { setMyWorkingHours, useMyDefaultHours } from "@/app/admin/actions";
-import { AppHeader } from "@/components/AppHeader";
+import { setMyWorkingHours } from "@/app/admin/actions";
 import { UnreadableNotice } from "@/components/ui/UnreadableNotice";
-import { btnCls, cardCls, proseCls } from "@/components/ui/styles";
+import { cardCls, proseCls } from "@/components/ui/styles";
 import { InfoIcon } from "@/components/icons";
 import { WorkingHoursForm } from "@/components/ui/WorkingHoursForm";
-import { SubmitButton } from "@/components/ui/SubmitButton";
 import { workingHoursDays } from "@/lib/schedule-week";
 import { savedOutcome, savedSentence } from "@/lib/admin/save-outcomes";
 import { SettingsSaveNotice } from "@/app/admin/settings/SettingsSaveNotice";
-import { PageShell } from "@/components/ui/PageShell";
 import { BookablePill } from "@/components/ui/BookablePill";
 import { AdminPageHeader } from "@/components/admin/AdminPageHeader";
 import { ME_TABS } from "@/lib/me/nav";
@@ -96,130 +92,110 @@ export default async function MePage({
 
   return (
     <>
-      <AppHeader
-        email={me.email}
-        role={me.role}
-        themePreference={me.theme_preference}
-        userId={me.id}
-        orgId={me.org_id}
-        bookable={me.bookable}
-        avatarUrl={me.avatar_url}
-      />
-      <PageShell width="narrow">
-        {/* The pill is INSIDE the children rather than in the header's `aside`
-            slot, and that is deliberate. Setting `aside` switches the component
-            into its row layout, which renders the title `pn-h4` instead of
-            `pn-h3`; this greeting and the identical one on /me/time-off would
-            then be two sizes of the same heading on two sibling pages, which
-            reads as two levels rather than one (L634). Caught by screenshotting
-            it rather than by reading either file, since each is correct alone.
+      {/* The pill is INSIDE the children rather than in the header's `aside`
+          slot, and that is deliberate. Setting `aside` switches the component
+          into its row layout, which renders the title `pn-h4` instead of
+          `pn-h3`; this greeting and the identical one on /me/time-off would
+          then be two sizes of the same heading on two sibling pages, which
+          reads as two levels rather than one (L634). Caught by screenshotting
+          it rather than by reading either file, since each is correct alone.
 
-            The pill is on this page at all because of what it tells the reader
-            (Dan, 2026-09-08): an agent who thinks they should be getting calls
-            and is not can see why without asking anybody. `wording="self"` says
-            "Not bookable yet", because the reader is the agent. */}
-        <AdminPageHeader title={firstName ? `Hi, ${firstName}.` : "Hi there."}>
-          {/* The steer matters more than the description. The failure it exists
-              to prevent is an agent editing their weekly hours to take next
-              Tuesday off and never putting them back, which silently narrows
-              their availability for good. So the consequence is stated rather
-              than implied: a change here applies to every week. */}
-          <p>
-            These are your regular weekly hours, and a change here applies to
-            every week. For a single day or a vacation,{" "}
-            <Link
-              href={timeOffHref}
-              className="font-semibold text-pennie-blue underline dark:text-pennie-sky"
-            >
-              request time off
-            </Link>{" "}
-            instead.
-          </p>
-          <p className="mt-3">
-            <BookablePill bookable={me.bookable} wording="self" />
-          </p>
-        </AdminPageHeader>
-
-        {!hoursUnreadable && rules.length === 0 && (
-          <div className="flex flex-wrap items-center justify-between gap-3 rounded-md bg-pennie-sky-soft p-4 text-sm text-fg dark:bg-accent/15">
-            <span className="flex items-center gap-2.5">
-              <InfoIcon
-                width={20}
-                height={20}
-                className="shrink-0 text-pennie-blue dark:text-pennie-sky"
-              />
-              You have no working hours set, so you won&apos;t get bookings.
-            </span>
-            <SaveForm action={useMyDefaultHours} name="my-default-hours">
-              <SubmitButton className={btnCls} pendingLabel="Applying company hours">
-                Use default hours
-              </SubmitButton>
-            </SaveForm>
-          </div>
-        )}
-
-        <section className={cardCls}>
-          <h2 className="mb-1 text-sm font-semibold">Working hours</h2>
-          {hoursUnreadable ? (
-            /* #1647: the form and BOTH reset controls are withheld, not
-               disabled with a warning beside them. Every one of them
-               replaces the whole week, so any of them pressed here writes a
-               guess over hours nobody has read. The notice says which way
-               round it is, because the empty version of this card reads as
-               "you have no hours" and that is the frightening direction. */
-            <UnreadableNotice className="mt-3">
-              Your working hours could not be read just now, so they are not
-              shown and cannot be changed from here. Your saved hours are
-              unaffected. Reload to try again.
-            </UnreadableNotice>
-          ) : (
-            <>
-              <p className={`mb-4 text-xs text-fg-muted ${proseCls}`}>
-                Set your home timezone and weekly hours. Leads always see times
-                in their own timezone.
-              </p>
-              {/* #1988: pressing Save wrote the week and then said
-                  nothing, so it looked exactly like a click that did
-                  nothing. The sentence is built from the week this render
-                  just READ, not from what the action meant to write, so it
-                  reports what is actually stored (L78). */}
-              {savedOutcome(sp.ok) === "working-hours" ? (
-                <div className="mb-4">
-                  <SettingsSaveNotice ok saved={savedSentence("working-hours") ?? ""} />
-                </div>
-              ) : null}
-              {/* #1994: a week the server refused says WHY. These sentences
-                  name the day and what is wrong with it, and until now none
-                  of them could be read: a thrown error is redacted in
-                  production and arrived as the generic error boundary. */}
-              {sp.error ? (
-                <div className="mb-4">
-                  <SettingsSaveNotice ok={false} error={sp.error} saved="" />
-                </div>
-              ) : null}
-              <WorkingHoursForm
-                action={setMyWorkingHours}
-                days={hoursDays}
-                timezone={sched?.timezone ?? "America/New_York"}
-                timezoneLabel="Your timezone"
-              />
-              <SaveForm action={useMyDefaultHours} name="my-default-hours-reset" className="mt-3">
-                <SubmitButton
-                  className="text-xs text-pennie-blue underline dark:text-pennie-sky"
-                  pendingLabel="Applying company hours"
-                >
-                  Reset to company default hours
-                </SubmitButton>
-              </SaveForm>
-            </>
-          )}
-        </section>
-
-        <p className="text-sm text-fg-muted">
-          Your manager controls whether you&apos;re bookable and which teams
-          you&apos;re on.
+          The pill is on this page at all because of what it tells the reader
+          (Dan, 2026-09-08): an agent who thinks they should be getting calls
+          and is not can see why without asking anybody. `wording="self"` says
+          "Not bookable yet", because the reader is the agent. */}
+      <AdminPageHeader title={firstName ? `Hi, ${firstName}.` : "Hi there."}>
+        {/* The steer matters more than the description. The failure it exists
+            to prevent is an agent editing their weekly hours to take next
+            Tuesday off and never putting them back, which silently narrows
+            their availability for good. So the consequence is stated rather
+            than implied: a change here applies to every week. */}
+        <p>
+          These are your regular weekly hours, and a change here applies to
+          every week. For a single day or a vacation,{" "}
+          <Link
+            href={timeOffHref}
+            className="font-semibold text-pennie-blue underline dark:text-pennie-sky"
+          >
+            request time off
+          </Link>{" "}
+          instead.
         </p>
-      </PageShell>
+        <p className="mt-3">
+          <BookablePill bookable={me.bookable} wording="self" />
+        </p>
+      </AdminPageHeader>
+
+      {/* #2103: the warning stays, its button does not. The button applied the
+          company default week, and a new agent never needed it: `runRosterSync`
+          calls `ensureDefaultSchedules` in the same run that inserts them, so
+          their week is seeded before they can open this page. It was a manual
+          route to something that had already happened, and it taught an agent
+          about a company default they have no other reason to know exists (Dan,
+          2026-09-08).
+
+          The sentence is not left as a notice with no remedy (L109): the form
+          directly below it is the remedy, and it is the one an agent should be
+          using. */}
+      {!hoursUnreadable && rules.length === 0 && (
+        <div className="flex items-center gap-2.5 rounded-md bg-pennie-sky-soft p-4 text-sm text-fg dark:bg-accent/15">
+          <InfoIcon
+            width={20}
+            height={20}
+            className="shrink-0 text-pennie-blue dark:text-pennie-sky"
+          />
+          You have no working hours set, so you won&apos;t get bookings.
+        </div>
+      )}
+
+      <section className={cardCls}>
+        <h2 className="mb-1 text-sm font-semibold">Working hours</h2>
+        {hoursUnreadable ? (
+          /* #1647: the form and BOTH reset controls are withheld, not
+             disabled with a warning beside them. Every one of them
+             replaces the whole week, so any of them pressed here writes a
+             guess over hours nobody has read. The notice says which way
+             round it is, because the empty version of this card reads as
+             "you have no hours" and that is the frightening direction. */
+          <UnreadableNotice className="mt-3">
+            Your working hours could not be read just now, so they are not
+            shown and cannot be changed from here. Your saved hours are
+            unaffected. Reload to try again.
+          </UnreadableNotice>
+        ) : (
+          <>
+            <p className={`mb-4 text-xs text-fg-muted ${proseCls}`}>
+              Set your home timezone and weekly hours. Leads always see times
+              in their own timezone.
+            </p>
+            {/* #1988: pressing Save wrote the week and then said
+                nothing, so it looked exactly like a click that did
+                nothing. The sentence is built from the week this render
+                just READ, not from what the action meant to write, so it
+                reports what is actually stored (L78). */}
+            {savedOutcome(sp.ok) === "working-hours" ? (
+              <div className="mb-4">
+                <SettingsSaveNotice ok saved={savedSentence("working-hours") ?? ""} />
+              </div>
+            ) : null}
+            {/* #1994: a week the server refused says WHY. These sentences
+                name the day and what is wrong with it, and until now none
+                of them could be read: a thrown error is redacted in
+                production and arrived as the generic error boundary. */}
+            {sp.error ? (
+              <div className="mb-4">
+                <SettingsSaveNotice ok={false} error={sp.error} saved="" />
+              </div>
+            ) : null}
+            <WorkingHoursForm
+              action={setMyWorkingHours}
+              days={hoursDays}
+              timezone={sched?.timezone ?? "America/New_York"}
+              timezoneLabel="Your timezone"
+            />
+          </>
+        )}
+      </section>
     </>
   );
 }

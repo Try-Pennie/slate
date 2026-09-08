@@ -26,7 +26,7 @@ const SHELL = "src/components/ui/PageShell.tsx";
  * still has to take that width from the shell's table rather than writing its own,
  * or "one place" quietly becomes two.
  */
-const LAYOUTS = ["src/app/admin/layout.tsx"];
+const LAYOUTS = ["src/app/admin/layout.tsx", "src/app/me/layout.tsx"];
 
 /**
  * The internal surfaces, and only those. The lead-facing pages (`/book`,
@@ -103,9 +103,13 @@ assert(
 const layoutDirs = LAYOUTS.map((l) => [l.replace(/\/layout\.tsx$/, "/"), l] as const);
 for (const [, file] of LAYOUTS.map((l) => [null, l] as const)) {
   const text = stripComments(readFileSync(file, "utf8"));
+  // Two legitimate ways to take the width from the shared table: name a variant
+  // (the console builds its own three column row and needs the raw class) or
+  // render the shell itself (which /me does, and which is the stronger form
+  // because it also brings the skip link target with it).
   assert(
-    /PAGE_WIDTHS\.\w+/.test(text),
-    `${file} names a PageShell width rather than writing one`,
+    /PAGE_WIDTHS\.\w+/.test(text) || /<PageShell[\s/>]/.test(text),
+    `${file} takes its width from the shell rather than writing one`,
   );
   assert(
     !HARDCODED_WIDTH.test(text),
@@ -133,8 +137,15 @@ assert(
   //    markup so the fixture is the thing that would actually be written back.
   const shellMain = mainTags(shell)[0];
   assert(shellMain !== undefined, "the shell writes the <main> the pages used to write");
-  const viaShell = internal.filter((p) => /<PageShell[\s/>]/.test(readFileSync(p, "utf8")));
-  assert(viaShell.length >= 1, `at least one internal page still renders the shell directly (${viaShell.length})`);
+  // #2103: the pages themselves stopped rendering the shell when /me got a
+  // layout, so this control now reverts whatever DOES render it, page or layout.
+  // Pinning it to a page would have made the control unsatisfiable and the
+  // honest reading of that red is "there is nothing left to revert", which is a
+  // guard reporting on itself rather than on the tree.
+  const viaShell = [...internal, ...LAYOUTS].filter((p) =>
+    /<PageShell[\s/>]/.test(readFileSync(p, "utf8")),
+  );
+  assert(viaShell.length >= 1, `something still renders the shell directly (${viaShell.length})`);
   const reverted = readFileSync(viaShell[0]!, "utf8").replace(
     /<PageShell[^>]*>/,
     shellMain!.replace("${PAGE_WIDTHS[width]}", "max-w-4xl").replace(/[{}`]/g, ""),

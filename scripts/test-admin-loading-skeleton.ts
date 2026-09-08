@@ -26,9 +26,53 @@ function code(text: string): string {
   return text.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
 }
 
-const FILE = "src/app/admin/loading.tsx";
-assert(existsSync(FILE), "the console segment has a loading boundary");
-const loading = readFileSync(FILE, "utf8");
+// #2103: /me got a boundary too, and for a sharper reason than the console's.
+// The header's tabs no longer draw a per-link spinner (`LinkPending marker="bar"`),
+// so a skeleton is now the ONLY thing standing between the click and the page.
+// Without it a click on My Availability or My Time Off would leave the previous
+// page on screen with nothing at all saying a new one is coming.
+//
+// The shared properties are checked over BOTH, from one list, so a third boundary
+// is covered by construction rather than by somebody remembering to copy this
+// file (L41, L96).
+const BOUNDARIES = [
+  "src/app/admin/loading.tsx",
+  "src/app/me/loading.tsx",
+];
+
+for (const file of BOUNDARIES) {
+  assert(existsSync(file), `${file} exists, so its segment has a loading boundary`);
+}
+
+// --- the chrome survives the boundary ----------------------------------------
+//
+// The failure that makes a loading boundary WORSE than no boundary. Next swaps
+// everything below the nearest layout, so a segment whose PAGES render their own
+// header has that header replaced by the skeleton: click a tab and the header
+// disappears and comes back, which is the "things you did not click moved" fault
+// (#2045) at the largest possible scale.
+//
+// /me shipped exactly that shape, with `<AppHeader/>` inside each page and no
+// layout at all, and it only became a problem the moment it got a boundary.
+for (const file of BOUNDARIES) {
+  const dir = file.slice(0, file.lastIndexOf("/"));
+  const layout = `${dir}/layout.tsx`;
+  assert(existsSync(layout), `${dir} renders its chrome from a layout, not its pages`);
+  assert(
+    /<AppHeader/.test(readFileSync(layout, "utf8")),
+    `${layout} is where the header is drawn, so the skeleton cannot replace it`,
+  );
+  const pages = readdirSync(dir, { recursive: true, encoding: "utf8" })
+    .filter((f) => /(^|\/)page\.tsx$/.test(f))
+    .map((f) => `${dir}/${f}`);
+  assert(pages.length > 0, `the sweep found ${dir}'s pages (${pages.length})`);
+  for (const page of pages) {
+    assert(
+      !/<AppHeader/.test(readFileSync(page, "utf8")),
+      `${page} leaves the header to the layout`,
+    );
+  }
+}
 
 // --- it is a skeleton, not an empty boundary ---------------------------------
 //
@@ -36,16 +80,17 @@ const loading = readFileSync(FILE, "utf8");
 // boundary still commits the navigation instantly, and commits it to a BLANK
 // column, which reads as "there is nothing here" rather than as "this is coming"
 // (L10). Asserted on what it draws, not on the file merely existing.
-{
-  const shapes = loading.match(/pn-skeleton/g) ?? [];
-  assert(shapes.length >= 4, `it draws real placeholder shapes (${shapes.length})`);
+for (const file of BOUNDARIES) {
+  const src = readFileSync(file, "utf8");
+  const shapes = src.match(/pn-skeleton/g) ?? [];
+  assert(shapes.length >= 4, `${file} draws real placeholder shapes (${shapes.length})`);
   assert(
-    /export default function/.test(loading),
-    "and it is a real component rather than a stub export",
+    /export default function/.test(src),
+    `${file} is a real component rather than a stub export`,
   );
   assert(
-    !/return\s*(null|<>\s*<\/>|<\/>)/.test(loading),
-    "it never renders nothing, which would commit the navigation to a blank column",
+    !/return\s*(null|<>\s*<\/>|<\/>)/.test(src),
+    `${file} never renders nothing, which would commit the navigation to a blank column`,
   );
 }
 
@@ -56,21 +101,33 @@ const loading = readFileSync(FILE, "utf8");
 // WHICH page is coming. A second live region here would announce the same wait
 // twice, so the skeleton is hidden from assistive tech entirely.
 {
-  assert(/aria-hidden/.test(code(loading)), "the skeleton is hidden from assistive tech");
-  eq(
-    (code(loading).match(/role="status"/g) ?? []).length,
-    0,
-    "and carries no live region of its own",
-  );
+  for (const file of BOUNDARIES) {
+    const src = code(readFileSync(file, "utf8"));
+    assert(/aria-hidden/.test(src), `${file} is hidden from assistive tech`);
+    eq((src.match(/role="status"/g) ?? []).length, 0, `${file} carries no live region of its own`);
+    // A positive control on `code`: it must not simply be emptying the file, or
+    // every count above is trivially zero (L98).
+    assert(src.includes("pn-skeleton"), `stripping comments leaves ${file}'s real markup`);
+  }
   const linkPending = readFileSync("src/components/ui/LinkPending.tsx", "utf8");
   eq(
     (code(linkPending).match(/role="status"/g) ?? []).length,
     1,
     "because the one that speaks lives on the link, and there is still exactly one",
   );
-  // A positive control on `code`: it must not simply be emptying the file, or
-  // every count above is trivially zero (L98).
-  assert(code(loading).includes("pn-skeleton"), "stripping comments leaves the real markup");
+  // #2103: and it survives BOTH markers. The header keeps the load bar precisely
+  // so that dropping its spinner does not take the announcement with it, and a
+  // marker that rendered nothing at all would pass every check above while
+  // leaving a screen reader silent through the whole fetch.
+  assert(
+    /marker === "spinner"/.test(code(linkPending)),
+    "the spinner is what the marker withholds",
+  );
+  const barBranchDropsTheBar = /marker === "bar"[\s\S]{0,200}pn-loadbar/.test(code(linkPending));
+  assert(
+    !barBranchDropsTheBar,
+    "and the load bar is outside the marker branch, so both navs announce",
+  );
 }
 
 // --- the skeleton's tone is a real one ---------------------------------------

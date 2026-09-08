@@ -12,14 +12,12 @@ import {
   NO_MANAGER_REVIEWER,
   UNNAMED_MANAGER_REVIEWER,
 } from "@/lib/ooo/core";
-import { AppHeader } from "@/components/AppHeader";
 import { UnreadableNotice } from "@/components/ui/UnreadableNotice";
 import { proseCls } from "@/components/ui/styles";
 import { Pill, type PillVariant } from "@/components/ui/Pill";
 import { OooForm } from "@/components/ui/OooForm";
 import { RequestActions } from "@/components/ui/RequestActions";
 import type { OooRequest, OooStatus, User } from "@/lib/db/types";
-import { PageShell } from "@/components/ui/PageShell";
 import { AdminPageHeader } from "@/components/admin/AdminPageHeader";
 
 export const dynamic = "force-dynamic";
@@ -269,159 +267,148 @@ export default async function MeTimeOffPage({
 
   return (
     <>
-      <AppHeader
-        email={me.email}
-        role={me.role}
-        themePreference={me.theme_preference}
-        userId={me.id}
-        orgId={me.org_id}
-        bookable={me.bookable}
-        avatarUrl={me.avatar_url}
-      />
-      <PageShell width="narrow">
-        {/* The greeting plus at-a-glance status. #1838 made this the same card
-            the console uses; Dan chose to convert /me too, so no navy page
-            header survives anywhere in the app. */}
-        <AdminPageHeader title={firstName ? `Hi, ${firstName}.` : "Hi there."}>
-          <p>
-            {oooUnreadable ? (
-              // #1647: every other sentence in this band is a count, and a
-              // count off a read that never ran is the one thing this greeting
-              // must not say. Plain copy rather than the rose notice: the
-              // announced version of this lives once, on the list below, so a
-              // screen reader is told the same thing once rather than twice.
-              "Your time off could not be read just now, so there is nothing summarized here. Reload to try again."
-            ) : !hasRequests ? (
-              // #1499: no manager of record is not a blocker. It routes to
-              // whoever moderates all time off, and the copy says so rather
-              // than naming a step nobody can perform (the admin field is read
-              // only, because Salesforce owns the link).
-              oooRequestIntro(reviewerName)
-            ) : summary.pending === 0 && summary.upcomingApproved === 0 ? (
-              "Nothing pending. Need another day off? Request it below."
-            ) : (
-              <>
-                {summary.pending > 0 && (
-                  <span>
-                    <span className="font-semibold tabular-nums text-fg">
-                      {summary.pending}
-                    </span>{" "}
-                    waiting on {reviewerName ?? NO_MANAGER_REVIEWER}
-                  </span>
-                )}
-                {summary.pending > 0 && summary.upcomingApproved > 0 && (
-                  <span className="px-2 text-fg-muted">·</span>
-                )}
-                {summary.upcomingApproved > 0 && (
-                  <span>
-                    <span className="font-semibold tabular-nums text-fg">
-                      {summary.upcomingApproved}
-                    </span>{" "}
-                    approved and coming up
-                  </span>
-                )}
-              </>
-            )}
-          </p>
-        </AdminPageHeader>
-
-        <section className="space-y-6">
-          <header>
-            <h2 className="pn-h3">
-              {editing || editUnresolvable
-                ? "Change your request"
-                : "Request time off"}
-            </h2>
-            <p className={`mt-1.5 text-sm text-fg-muted ${proseCls}`}>
-              {oooApproverLine(reviewerName)}
-            </p>
-          </header>
-
-          {sp.ooo_error && (
-            <div
-              role="alert"
-              className="rounded-md border border-[var(--error)] px-5 py-4 text-sm text-error"
-            >
-              {sp.ooo_error}
-            </div>
-          )}
-
-          {editUnresolvable ? (
-            /* #1647: a change was asked for and the request it is about could not
-               be read. Rendering the form anyway is not a degraded change, it is
-               a NEW request: `editing` is null, so the action is submitMyOoo and
-               the agent ends up with two requests for the same days. */
-            <UnreadableNotice>
-              That request could not be read just now, so it cannot be changed
-              here yet. Nothing has been altered. Reload to try again.
-            </UnreadableNotice>
+      {/* The greeting plus at-a-glance status. #1838 made this the same card
+          the console uses; Dan chose to convert /me too, so no navy page
+          header survives anywhere in the app. */}
+      <AdminPageHeader title={firstName ? `Hi, ${firstName}.` : "Hi there."}>
+        <p>
+          {oooUnreadable ? (
+            // #1647: every other sentence in this band is a count, and a
+            // count off a read that never ran is the one thing this greeting
+            // must not say. Plain copy rather than the rose notice: the
+            // announced version of this lives once, on the list below, so a
+            // screen reader is told the same thing once rather than twice.
+            "Your time off could not be read just now, so there is nothing summarized here. Reload to try again."
+          ) : !hasRequests ? (
+            // #1499: no manager of record is not a blocker. It routes to
+            // whoever moderates all time off, and the copy says so rather
+            // than naming a step nobody can perform (the admin field is read
+            // only, because Salesforce owns the link).
+            oooRequestIntro(reviewerName)
+          ) : summary.pending === 0 && summary.upcomingApproved === 0 ? (
+            "Nothing pending. Need another day off? Request it below."
           ) : (
-            <OooForm
-              key={sp.t ?? sp.edit ?? "new"}
-              action={editing ? modifyMyOoo : submitMyOoo}
-              editing={editingForForm}
-              managerName={reviewerName}
-              defaultTz={defaultTz}
-              tzOptions={tzChoices}
-              bounds={bounds}
-              successMessage={sp.ooo ?? null}
-              successKind={sp.ooo_kind ?? null}
-            />
-          )}
-
-          <div className="space-y-8">
-            <div>
-              <p className="pn-eyebrow text-fg-muted">
-                Upcoming
-                {!oooUnreadable && upcoming.length > 0 && (
-                  <span className="tabular-nums"> ({upcoming.length})</span>
-                )}
-              </p>
-              {oooUnreadable ? (
-                /* The empty version of this list answers "have I already asked
-                   for these days?" with a wrong no, and the reply to that answer
-                   is to ask again. */
-                <UnreadableNotice className="mt-3">
-                  Your time off requests could not be read just now, so none are
-                  listed. This is not a sign that you have none. Reload to try
-                  again.
-                </UnreadableNotice>
-              ) : upcoming.length === 0 ? (
-                <p className="mt-3 rounded-md border border-dashed border-border px-4 py-8 text-center text-sm text-fg-muted">
-                  No upcoming time off. Use the form above to request a day.
-                </p>
-              ) : (
-                <RequestList items={upcoming} editingId={editing?.id} />
+            <>
+              {summary.pending > 0 && (
+                <span>
+                  <span className="font-semibold tabular-nums text-fg">
+                    {summary.pending}
+                  </span>{" "}
+                  waiting on {reviewerName ?? NO_MANAGER_REVIEWER}
+                </span>
               )}
-            </div>
+              {summary.pending > 0 && summary.upcomingApproved > 0 && (
+                <span className="px-2 text-fg-muted">·</span>
+              )}
+              {summary.upcomingApproved > 0 && (
+                <span>
+                  <span className="font-semibold tabular-nums text-fg">
+                    {summary.upcomingApproved}
+                  </span>{" "}
+                  approved and coming up
+                </span>
+              )}
+            </>
+          )}
+        </p>
+      </AdminPageHeader>
 
-            {!oooUnreadable && past.length > 0 && (
-              <details className="group">
-                <summary className="flex cursor-pointer list-none items-center gap-1.5 rounded-sm [&::-webkit-details-marker]:hidden">
-                  <svg
-                    viewBox="0 0 16 16"
-                    aria-hidden="true"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="2"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    className="h-3.5 w-3.5 shrink-0 text-fg-muted transition-transform duration-150 group-open:rotate-90 motion-reduce:transition-none"
-                  >
-                    <path d="M6 4l4 4-4 4" />
-                  </svg>
-                  <span className="pn-eyebrow text-fg-muted">
-                    Past <span className="tabular-nums">({past.length})</span>
-                  </span>
-                </summary>
-                <div className="mt-3">
-                  <RequestList items={past} />
-                </div>
-              </details>
+      <section className="space-y-6">
+        <header>
+          <h2 className="pn-h3">
+            {editing || editUnresolvable
+              ? "Change your request"
+              : "Request time off"}
+          </h2>
+          <p className={`mt-1.5 text-sm text-fg-muted ${proseCls}`}>
+            {oooApproverLine(reviewerName)}
+          </p>
+        </header>
+
+        {sp.ooo_error && (
+          <div
+            role="alert"
+            className="rounded-md border border-[var(--error)] px-5 py-4 text-sm text-error"
+          >
+            {sp.ooo_error}
+          </div>
+        )}
+
+        {editUnresolvable ? (
+          /* #1647: a change was asked for and the request it is about could not
+             be read. Rendering the form anyway is not a degraded change, it is
+             a NEW request: `editing` is null, so the action is submitMyOoo and
+             the agent ends up with two requests for the same days. */
+          <UnreadableNotice>
+            That request could not be read just now, so it cannot be changed
+            here yet. Nothing has been altered. Reload to try again.
+          </UnreadableNotice>
+        ) : (
+          <OooForm
+            key={sp.t ?? sp.edit ?? "new"}
+            action={editing ? modifyMyOoo : submitMyOoo}
+            editing={editingForForm}
+            managerName={reviewerName}
+            defaultTz={defaultTz}
+            tzOptions={tzChoices}
+            bounds={bounds}
+            successMessage={sp.ooo ?? null}
+            successKind={sp.ooo_kind ?? null}
+          />
+        )}
+
+        <div className="space-y-8">
+          <div>
+            <p className="pn-eyebrow text-fg-muted">
+              Upcoming
+              {!oooUnreadable && upcoming.length > 0 && (
+                <span className="tabular-nums"> ({upcoming.length})</span>
+              )}
+            </p>
+            {oooUnreadable ? (
+              /* The empty version of this list answers "have I already asked
+                 for these days?" with a wrong no, and the reply to that answer
+                 is to ask again. */
+              <UnreadableNotice className="mt-3">
+                Your time off requests could not be read just now, so none are
+                listed. This is not a sign that you have none. Reload to try
+                again.
+              </UnreadableNotice>
+            ) : upcoming.length === 0 ? (
+              <p className="mt-3 rounded-md border border-dashed border-border px-4 py-8 text-center text-sm text-fg-muted">
+                No upcoming time off. Use the form above to request a day.
+              </p>
+            ) : (
+              <RequestList items={upcoming} editingId={editing?.id} />
             )}
           </div>
-        </section>
-      </PageShell>
+
+          {!oooUnreadable && past.length > 0 && (
+            <details className="group">
+              <summary className="flex cursor-pointer list-none items-center gap-1.5 rounded-sm [&::-webkit-details-marker]:hidden">
+                <svg
+                  viewBox="0 0 16 16"
+                  aria-hidden="true"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  className="h-3.5 w-3.5 shrink-0 text-fg-muted transition-transform duration-150 group-open:rotate-90 motion-reduce:transition-none"
+                >
+                  <path d="M6 4l4 4-4 4" />
+                </svg>
+                <span className="pn-eyebrow text-fg-muted">
+                  Past <span className="tabular-nums">({past.length})</span>
+                </span>
+              </summary>
+              <div className="mt-3">
+                <RequestList items={past} />
+              </div>
+            </details>
+          )}
+        </div>
+      </section>
     </>
   );
 }

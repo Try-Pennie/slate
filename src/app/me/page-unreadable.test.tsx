@@ -53,7 +53,6 @@ vi.mock("@/components/AppHeader", () => ({ AppHeader: () => null }));
 // instead of silently resolving to a no-op.
 vi.mock("@/app/admin/actions", () => ({
   setMyWorkingHours: vi.fn(),
-  useMyDefaultHours: vi.fn(),
 }));
 
 import MePage from "./page";
@@ -152,6 +151,26 @@ describe("MePage with every read healthy (the control)", () => {
     expect(screen.getByText("Not bookable yet")).toBeTruthy();
   });
 
+  it("offers no company default hours control and no manager reminder", async () => {
+    // #2103. Both were removed on Dan's read of the rendered page: an agent does
+    // not need to know the company default exists, and the manager line was a
+    // standing reminder of something they cannot act on.
+    //
+    // Removing the control costs nothing, because a new agent never needed it:
+    // `runRosterSync` calls `ensureDefaultSchedules` in the same run that
+    // inserts them, so their week is already seeded by the time they can open
+    // this page. The button was a manual route to something that had already
+    // happened.
+    mockDb();
+    render(await MePage(props()));
+    expect(screen.queryByRole("button", { name: /default hours/i })).toBeNull();
+    expect(screen.queryByText(/company default/i)).toBeNull();
+    expect(screen.queryByText(/your manager controls/i)).toBeNull();
+    // The control that DOES write is still here, so this is not passing on a
+    // page that failed to render (L159).
+    expect(screen.getByRole("button", { name: "Save" })).toBeTruthy();
+  });
+
   it("sends a single day off to the time off page instead of this form", async () => {
     // The failure this steer exists to prevent: an agent edits their weekly
     // hours to take next Tuesday off and never puts them back, which narrows
@@ -172,9 +191,11 @@ describe("MePage when the working hours cannot be read (#1647)", () => {
     // No form at all: a ticked default week is the guess that gets saved.
     expect(screen.queryByLabelText("Monday")).toBeNull();
     expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
-    // Both writes that replace the week: the form's save and the two reset
-    // buttons, either of which overwrites hours nobody has read.
-    expect(screen.queryByRole("button", { name: /default hours/i })).toBeNull();
+    // #2103: this used to also assert the two "default hours" buttons were
+    // withheld. They are gone from the page entirely now, so asserting their
+    // absence here would pass whatever this branch did (L159). Save is the only
+    // control left that replaces the week, and it is the one that matters.
+    //
     // And no claim the read never measured. "You have no working hours set" is
     // the sentence that makes pressing the button the obvious thing to do.
     expect(screen.queryByText(/You have no working hours set/i)).toBeNull();
@@ -185,7 +206,6 @@ describe("MePage when the working hours cannot be read (#1647)", () => {
     render(await MePage(props()));
     expect(screen.getByText(/working hours could not be read/i)).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
-    expect(screen.queryByRole("button", { name: /default hours/i })).toBeNull();
     expect(screen.queryByText(/You have no working hours set/i)).toBeNull();
   });
 
