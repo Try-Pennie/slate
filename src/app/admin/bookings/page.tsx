@@ -1,7 +1,7 @@
 import { redirect } from "next/navigation";
 import { currentUser } from "@/lib/auth";
 import { canManageAgents } from "@/lib/auth/roles";
-import { oooOnlyFor } from "@/lib/env";
+import { consoleHiddenFor } from "@/lib/env";
 import BookingLookup from "@/components/BookingLookup";
 import { AdminPageHeader, AdminDenied } from "@/components/admin/AdminPageHeader";
 import { cardCls, proseCls } from "@/components/ui/styles";
@@ -12,7 +12,7 @@ export default async function BookingLookupPage() {
   const me = await currentUser();
   if (!me) redirect("/login");
   if (!canManageAgents(me.role)) return <AdminDenied need="a manager or admin" />;
-  if (oooOnlyFor(me.role)) redirect("/admin/ooo");
+  if (consoleHiddenFor(me.role)) redirect("/admin/ooo");
 
   return (
     <>

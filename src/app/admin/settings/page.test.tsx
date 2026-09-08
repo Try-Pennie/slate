@@ -8,7 +8,7 @@ import userEvent from "@testing-library/user-event";
 // scheduling is live a below-admin caller gets the deny notice. Real
 // canEditOrgSettings is exercised; auth, redirect and the launch flag are mocked.
 const auth = vi.hoisted(() => ({ currentUser: vi.fn() }));
-const env = vi.hoisted(() => ({ oooOnlyFor: vi.fn(() => false) }));
+const env = vi.hoisted(() => ({ consoleHiddenFor: vi.fn(() => false) }));
 const redirect = vi.hoisted(() =>
   vi.fn((url: string) => {
     throw new Error(`NEXT_REDIRECT:${url}`);
@@ -52,7 +52,7 @@ vi.mock("@/lib/auth", () => auth);
 vi.mock("next/navigation", () => ({ redirect }));
 vi.mock("@/lib/env", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/env")>()),
-  oooOnlyFor: env.oooOnlyFor,
+  consoleHiddenFor: env.consoleHiddenFor,
 }));
 vi.mock("@/lib/supabase/admin", () => ({ supabaseAdmin: () => ({ from }) }));
 vi.mock("@/components/AppHeader", () => ({ AppHeader: () => null }));
@@ -79,7 +79,7 @@ const ADMIN = {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  env.oooOnlyFor.mockReturnValue(false);
+  env.consoleHiddenFor.mockReturnValue(false);
   db.reads = [];
   db.throwSettings = false;
   db.results = {
@@ -105,13 +105,13 @@ describe("AlertSettings guard", () => {
 
   it("diverts a non-super-admin to /admin/ooo while the OOO-only flag is on", async () => {
     auth.currentUser.mockResolvedValueOnce({ id: "ad1", role: "admin", org_id: "o1" });
-    env.oooOnlyFor.mockReturnValueOnce(true);
+    env.consoleHiddenFor.mockReturnValueOnce(true);
     await expect(AlertSettingsPage(props)).rejects.toThrow(/NEXT_REDIRECT:\/admin\/ooo/);
   });
 
   it("shows the deny notice to a below-admin caller once scheduling is live", async () => {
     auth.currentUser.mockResolvedValueOnce({ id: "m1", role: "manager", org_id: "o1" });
-    env.oooOnlyFor.mockReturnValueOnce(false);
+    env.consoleHiddenFor.mockReturnValueOnce(false);
     render(await AlertSettingsPage(props));
     expect(screen.getByText(/admin account to open this page/i)).toBeTruthy();
   });

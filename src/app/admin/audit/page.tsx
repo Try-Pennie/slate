@@ -1,7 +1,7 @@
 import { redirect } from "next/navigation";
 import { currentUser } from "@/lib/auth";
 import { canEditOrgSettings } from "@/lib/auth/roles";
-import { oooOnlyFor } from "@/lib/env";
+import { consoleHiddenFor } from "@/lib/env";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { unwrap, unwrapCount } from "@/lib/db/result";
 import { log } from "@/lib/log";
@@ -38,7 +38,7 @@ export default async function AuditLogPage({
   const me = await currentUser();
   if (!me) redirect("/login");
   if (!canEditOrgSettings(me.role)) return <AdminDenied need="an admin" />;
-  if (oooOnlyFor(me.role)) redirect("/admin/ooo");
+  if (consoleHiddenFor(me.role)) redirect("/admin/ooo");
   const isAdmin = true;
 
   const db = supabaseAdmin();

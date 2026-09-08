@@ -13,7 +13,7 @@ import { render, screen } from "@testing-library/react";
 // distinction (measured healthy / measured bad / could not measure) lives on
 // every row, and the unreadable half of it is covered in page-unreadable.test.tsx.
 const auth = vi.hoisted(() => ({ currentUser: vi.fn() }));
-const env = vi.hoisted(() => ({ oooOnlyFor: vi.fn(() => false) }));
+const env = vi.hoisted(() => ({ consoleHiddenFor: vi.fn(() => false) }));
 const admin = vi.hoisted(() => ({ supabaseAdmin: vi.fn() }));
 const heartbeat = vi.hoisted(() => ({ readAllHeartbeatMs: vi.fn(async () => ({})) }));
 const redirect = vi.hoisted(() =>
@@ -26,7 +26,7 @@ vi.mock("@/lib/auth", () => auth);
 vi.mock("next/navigation", () => ({ redirect, notFound: vi.fn() }));
 vi.mock("@/lib/env", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/env")>()),
-  oooOnlyFor: env.oooOnlyFor,
+  consoleHiddenFor: env.consoleHiddenFor,
 }));
 vi.mock("@/lib/supabase/admin", () => admin);
 vi.mock("@/lib/monitor/heartbeat", () => heartbeat);
@@ -121,7 +121,7 @@ const pageText = () => document.body.textContent ?? "";
 
 beforeEach(() => {
   vi.clearAllMocks();
-  env.oooOnlyFor.mockReturnValue(false);
+  env.consoleHiddenFor.mockReturnValue(false);
   auth.currentUser.mockResolvedValue(SUPER_ADMIN);
   mockDb();
   heartbeat.readAllHeartbeatMs.mockResolvedValue(lanesStampedAgo());

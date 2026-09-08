@@ -1,7 +1,7 @@
 import { redirect } from "next/navigation";
 import { currentUser } from "@/lib/auth";
 import { supabaseAdmin } from "@/lib/supabase/admin";
-import { oooOnlyFor } from "@/lib/env";
+import { consoleHiddenFor } from "@/lib/env";
 import { unwrap } from "@/lib/db/result";
 import { TeamAccessPanel } from "@/components/TeamAccessPanel";
 import { AdminPageHeader, AdminDenied } from "@/components/admin/AdminPageHeader";
@@ -28,7 +28,7 @@ export default async function TeamAccessPage({
   // Granting Slate access to somebody outside the debt team is a super admin
   // action, and the server action enforces that itself. This is presentation.
   if (me.role !== "super_admin") return <AdminDenied need="a super admin" />;
-  if (oooOnlyFor(me.role)) redirect("/admin/ooo");
+  if (consoleHiddenFor(me.role)) redirect("/admin/ooo");
 
   // #1629: unwrap rather than `(data ?? [])`. An unreadable roster draws the same
   // empty queue an actually-empty one draws, and this page's whole subject is who

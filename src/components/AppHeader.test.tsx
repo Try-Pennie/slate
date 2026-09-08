@@ -52,7 +52,7 @@ const supabaseAdmin = vi.hoisted(() =>
   })),
 );
 vi.mock("@/lib/supabase/admin", () => ({ supabaseAdmin }));
-vi.mock("@/lib/env", () => ({ oooOnlyFor: () => false }));
+vi.mock("@/lib/env", () => ({ consoleHiddenFor: () => false }));
 
 const logSpy = vi.hoisted(() => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn() }));
 vi.mock("@/lib/log", () => ({ log: logSpy }));
@@ -162,7 +162,7 @@ describe("the header does not wait on the badge (#1847)", () => {
   it("resolves without having issued the badge's reads at all", async () => {
     render(await AppHeader(withIds));
 
-    expect(screen.getByText("Team Requests")).toBeTruthy();
+    expect(screen.getByText("Team Time Off")).toBeTruthy();
     expect(db.trace).toContain("agent_calendars:issued");
 
     expect(db.trace).not.toContain("users:issued");

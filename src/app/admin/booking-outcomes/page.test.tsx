@@ -8,7 +8,7 @@ import { render, screen } from "@testing-library/react";
 // canEditOrgSettings is exercised; auth, redirect, the launch flag, the DB client,
 // and the header chrome are mocked.
 const auth = vi.hoisted(() => ({ currentUser: vi.fn() }));
-const env = vi.hoisted(() => ({ oooOnlyFor: vi.fn(() => false) }));
+const env = vi.hoisted(() => ({ consoleHiddenFor: vi.fn(() => false) }));
 const rpc = vi.hoisted(() => vi.fn());
 const admin = vi.hoisted(() => ({ supabaseAdmin: vi.fn(() => ({ rpc })) }));
 const redirect = vi.hoisted(() =>
@@ -21,7 +21,7 @@ vi.mock("@/lib/auth", () => auth);
 vi.mock("next/navigation", () => ({ redirect }));
 vi.mock("@/lib/env", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/env")>()),
-  oooOnlyFor: env.oooOnlyFor,
+  consoleHiddenFor: env.consoleHiddenFor,
 }));
 vi.mock("@/lib/supabase/admin", () => admin);
 vi.mock("@/components/AppHeader", () => ({ AppHeader: () => null }));
@@ -32,7 +32,7 @@ const ADMIN = { id: "ad1", role: "admin", org_id: "o1", email: "a@x", theme_pref
 
 beforeEach(() => {
   vi.clearAllMocks();
-  env.oooOnlyFor.mockReturnValue(false);
+  env.consoleHiddenFor.mockReturnValue(false);
 });
 
 describe("BookingOutcomesPage", () => {

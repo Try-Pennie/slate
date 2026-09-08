@@ -2,7 +2,7 @@ import { redirect } from "next/navigation";
 import { DateTime } from "luxon";
 import { currentUser } from "@/lib/auth";
 import { canManageAgents } from "@/lib/auth/roles";
-import { oooOnlyFor } from "@/lib/env";
+import { consoleHiddenFor } from "@/lib/env";
 import { cardCls, proseCls } from "@/components/ui/styles";
 import { BUSINESS_ZONE } from "@/lib/booking/business-hours";
 import { loadBucketSupply } from "@/lib/admin/bucket-supply-load";
@@ -34,7 +34,7 @@ export default async function BucketAvailabilityPage() {
   }
   // Mirror /admin: during the OOO only launch, everyone below super admin is
   // limited to the OOO surfaces.
-  if (oooOnlyFor(me.role)) redirect("/admin/ooo");
+  if (consoleHiddenFor(me.role)) redirect("/admin/ooo");
 
   const report = await loadBucketSupply(me.org_id);
   const zoneLabel = DateTime.now().setZone(BUSINESS_ZONE).toFormat("ZZZZ");

@@ -1,7 +1,7 @@
 import { redirect } from "next/navigation";
 import { currentUser } from "@/lib/auth";
 import { canEditOrgSettings } from "@/lib/auth/roles";
-import { oooOnlyFor } from "@/lib/env";
+import { consoleHiddenFor } from "@/lib/env";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import ReasonOptionsEditor from "@/components/ReasonOptionsEditor";
 import { SettingsSaveNotice } from "@/app/admin/settings/SettingsSaveNotice";
@@ -32,7 +32,7 @@ export default async function ReasonOptionsPage({
   const saved = savedSentence(savedOutcome(sp.ok));
   const me = await currentUser();
   if (!me) redirect("/login");
-  if (oooOnlyFor(me.role)) redirect("/admin/ooo");
+  if (consoleHiddenFor(me.role)) redirect("/admin/ooo");
   if (!canEditOrgSettings(me.role)) {
     return (
       <main className="p-8 text-sm text-fg-muted">

@@ -4,7 +4,8 @@ import { ImpersonationFrame } from "@/components/ImpersonationFrame";
 import { SubmitButton } from "@/components/ui/SubmitButton";
 import { HeaderNav, type HeaderTab } from "@/components/HeaderNav";
 import { PAGE_WIDTHS } from "@/components/ui/PageShell";
-import { oooOnlyFor } from "@/lib/env";
+import { consoleHiddenFor } from "@/lib/env";
+import { ME_TABS } from "@/lib/me/nav";
 import {
   atLeast,
   canManageAgents,
@@ -54,16 +55,13 @@ export async function AppHeader({
   avatarUrl?: string | null;
 }) {
   // The approval queue is a manager surface; agents manage their own time off
-  // from /me, so they don't get the tab.
+  // from /me/time-off, so they don't get the tab.
   const r = role ?? "";
-  const oooOnly = oooOnlyFor(role);
-  // Approval queue: managers and up. Agent roster: same, but hidden in the
-  // OOO-only phase (so effectively admins+ until scheduling goes live).
+  const consoleHidden = consoleHiddenFor(role);
+  // Approval queue: managers and up. The console: same, but held back until the
+  // launch flag flips (so effectively super admins only for now).
   const showTimeOff = isRole(r) && atLeast(r, "manager");
-  const showAdmin = !oooOnly && isRole(r) && canManageAgents(r);
-  // Agents in OOO-only mode have a single page ("My Requests"); everyone else
-  // keeps the "My Availability" label since they also have other tabs.
-  const meLabel = oooOnly && r === "agent" ? "My Requests" : "My Availability";
+  const showAdmin = !consoleHidden && isRole(r) && canManageAgents(r);
   // Persistent banner so an impersonating admin always knows + can get out, plus
   // a one-time notice when a "view as" session was silently dropped (#652).
   const impersonation = await getImpersonationView();
@@ -82,7 +80,13 @@ export async function AppHeader({
   // rather than assumed, and the issue is corrected to say so.
   //
   // The pending count still waits for the staff ids, because it filters on them.
-  const wantsCalendar = Boolean(userId) && !oooOnly;
+  //
+  // Everybody signed in, not only the people who could reach the console. The
+  // banner is for a BOOKABLE person whose calendar Slate cannot sync, which is
+  // an agent, and until now the launch flag meant an agent was the one person
+  // who never saw it. `calendarHeaderStatus` still decides who gets the loud
+  // version: `urgent` is gated on `bookable`, so a manager sees nothing.
+  const wantsCalendar = Boolean(userId);
   // #1847: ONLY the calendar read is awaited here now.
   //
   // The staff id read and the pending count moved into
@@ -133,12 +137,19 @@ export async function AppHeader({
   // /admin and /admin/ooo alike, so there is no page left in a position to say.
   const tabs: HeaderTab[] = [
     ...(showAdmin ? [{ href: "/admin", label: "Admin" }] : []),
-    { href: "/me", label: meLabel },
+    // Read from the list rather than written out here, so a tab and its page
+    // cannot drift apart (L41). `scripts/test-me-nav.ts` resolves every one of
+    // them to a real page file.
+    ...ME_TABS.map((t) => ({ href: t.href, label: t.label })),
     ...(showTimeOff
       ? [
           {
             href: "/admin/ooo",
-            label: "Team Requests",
+            // The twin of "My Time Off" one line up. It was "Team Requests"
+            // while the agent's own said "My Requests", and neither said what
+            // was being requested (Dan, 2026-09-08). They move together, or the
+            // product has two words for one thing (L118).
+            label: "Team Time Off",
             // #1847: the count arrives under its own boundary, so the tab
             // renders now and the badge a moment later. `null` while it loads,
             // not a placeholder pill: a badge is absent far more often than it

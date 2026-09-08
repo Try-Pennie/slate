@@ -46,5 +46,9 @@ export const config = {
   // Only run on admin/app pages — keep public booking + API + webhooks fast.
   // Classic middleware.ts runs on the Edge runtime (what OpenNext/Cloudflare needs);
   // Next 16's proxy.ts is Node-only, so we keep this convention despite the warning.
-  matcher: ["/admin/:path*", "/me", "/login"],
+  // `/me/:path*` and not `/me`: the time off page moved to a CHILD route on
+  // 2026-09-08, and an exact "/me" would have left it with no session refresh
+  // and none of the SECURITY_HEADERS above (#592), which is a clickjacking
+  // regression nothing would have reported. Next matches the parent too.
+  matcher: ["/admin/:path*", "/me/:path*", "/login"],
 };

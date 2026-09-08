@@ -16,24 +16,24 @@ import type { OooRequest } from "@/lib/db/types";
 
 /**
  * Agent self-service time off actions. Void server actions have no return
- * channel, so outcomes travel back as /me?ooo=<ok message>&ooo_error=<error>
+ * channel, so outcomes travel back as /me/time-off?ooo=<ok message>&ooo_error=<error>
  * and the page renders the banner.
  */
 
 type Outcome = "sent" | "changed" | "cancelled";
 
 function done(message: string, kind: Outcome = "sent"): never {
-  revalidatePath("/me");
+  revalidatePath("/me/time-off");
   // The nonce makes every success URL unique so the form (keyed on it) remounts
   // and clears its fields, even on back-to-back submits with the same message.
   // `kind` lets the banner pick the right header/icon (a cancel isn't a "sent").
   redirect(
-    `/me?ooo=${encodeURIComponent(message)}&ooo_kind=${kind}&t=${Date.now()}#time-off`,
+    `/me/time-off?ooo=${encodeURIComponent(message)}&ooo_kind=${kind}&t=${Date.now()}`,
   );
 }
 
 function failed(error: string): never {
-  redirect(`/me?ooo_error=${encodeURIComponent(error)}#time-off`);
+  redirect(`/me/time-off?ooo_error=${encodeURIComponent(error)}`);
 }
 
 /** Just the request fields the confirmation copy reads. */

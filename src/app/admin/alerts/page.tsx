@@ -3,7 +3,7 @@ import { redirect } from "next/navigation";
 import { SaveForm } from "@/components/ui/SaveForm";
 import { currentUser } from "@/lib/auth";
 import { canEditOrgSettings } from "@/lib/auth/roles";
-import { oooOnlyFor } from "@/lib/env";
+import { consoleHiddenFor } from "@/lib/env";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { setMonitorSettings } from "@/app/admin/actions";
 import {
@@ -40,7 +40,7 @@ export default async function AlertSettingsPage({
   const me = await currentUser();
   if (!me) redirect("/login");
   if (!canEditOrgSettings(me.role)) return <AdminDenied need="an admin" />;
-  if (oooOnlyFor(me.role)) redirect("/admin/ooo");
+  if (consoleHiddenFor(me.role)) redirect("/admin/ooo");
 
   // Read stored values to prefill. Guarded: the tables may not exist yet during
   // a migrate-before-deploy window, and a missing table must not 500 the page.

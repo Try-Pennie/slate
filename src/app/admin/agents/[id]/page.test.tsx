@@ -11,7 +11,7 @@ import userEvent from "@testing-library/user-event";
 // manager never sees buttons that 403 on a peer/higher-ranked profile. Real role
 // helpers are exercised; auth, navigation, the launch flag and the DB are mocked.
 const auth = vi.hoisted(() => ({ currentUser: vi.fn() }));
-const env = vi.hoisted(() => ({ oooOnlyFor: vi.fn(() => false) }));
+const env = vi.hoisted(() => ({ consoleHiddenFor: vi.fn(() => false) }));
 const redirect = vi.hoisted(() =>
   vi.fn((url: string) => {
     throw new Error(`NEXT_REDIRECT:${url}`);
@@ -110,7 +110,7 @@ vi.mock("@/lib/auth", () => auth);
 vi.mock("next/navigation", () => ({ redirect, notFound }));
 vi.mock("@/lib/env", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/env")>()),
-  oooOnlyFor: env.oooOnlyFor,
+  consoleHiddenFor: env.consoleHiddenFor,
 }));
 vi.mock("@/lib/supabase/admin", () => ({ supabaseAdmin: () => ({ from }) }));
 vi.mock("@/components/AppHeader", () => ({ AppHeader: () => null }));
@@ -156,7 +156,7 @@ const MANAGE_BUTTONS = [
 
 beforeEach(() => {
   vi.clearAllMocks();
-  env.oooOnlyFor.mockReturnValue(false);
+  env.consoleHiddenFor.mockReturnValue(false);
   dbState.agent = null;
   dbState.sched = null;
   dbState.usersList = [];
@@ -320,7 +320,7 @@ describe("AgentProfilePage guard", () => {
 
   it("diverts a manager to /admin/ooo while the OOO-only flag is on", async () => {
     auth.currentUser.mockResolvedValueOnce({ id: "m1", role: "manager", org_id: "o1" });
-    env.oooOnlyFor.mockReturnValueOnce(true);
+    env.consoleHiddenFor.mockReturnValueOnce(true);
     await expect(AgentProfilePage(props)).rejects.toThrow(/NEXT_REDIRECT:\/admin\/ooo/);
   });
 

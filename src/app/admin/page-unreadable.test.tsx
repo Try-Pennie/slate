@@ -19,7 +19,7 @@ import { fireEvent, render, screen } from "@testing-library/react";
 // out of its way.
 const auth = vi.hoisted(() => ({ currentUser: vi.fn() }));
 const env = vi.hoisted(() => ({
-  oooOnlyFor: vi.fn(() => false),
+  consoleHiddenFor: vi.fn(() => false),
   appUrl: vi.fn(() => "https://slate.test"),
   reassignApiKey: vi.fn(() => "key"),
 }));
@@ -41,7 +41,7 @@ vi.mock("next/navigation", () => ({
 }));
 vi.mock("@/lib/env", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/env")>()),
-  oooOnlyFor: env.oooOnlyFor,
+  consoleHiddenFor: env.consoleHiddenFor,
   appUrl: env.appUrl,
   reassignApiKey: env.reassignApiKey,
 }));
@@ -292,7 +292,7 @@ const fails = (message: string): Result => ({ data: null, error: { message } });
 
 beforeEach(() => {
   vi.clearAllMocks();
-  env.oooOnlyFor.mockReturnValue(false);
+  env.consoleHiddenFor.mockReturnValue(false);
   heartbeat.readAllHeartbeatMs.mockResolvedValue({});
   auth.currentUser.mockResolvedValue(SUPER_ADMIN);
 });

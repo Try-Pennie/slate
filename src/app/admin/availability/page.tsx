@@ -2,7 +2,7 @@ import { redirect } from "next/navigation";
 import { DateTime } from "luxon";
 import { currentUser } from "@/lib/auth";
 import { canManageAgents } from "@/lib/auth/roles";
-import { oooOnlyFor } from "@/lib/env";
+import { consoleHiddenFor } from "@/lib/env";
 import { cardCls, proseCls } from "@/components/ui/styles";
 import { BUSINESS_ZONE } from "@/lib/booking/business-hours";
 import { loadAvailabilityGrid, GRID_DAYS } from "@/lib/admin/availability-grid-load";
@@ -30,7 +30,7 @@ export default async function AvailabilityGridPage() {
       </main>
     );
   }
-  if (oooOnlyFor(me.role)) redirect("/admin/ooo");
+  if (consoleHiddenFor(me.role)) redirect("/admin/ooo");
 
   const grid = await loadAvailabilityGrid();
   const zoneLabel = DateTime.now().setZone(BUSINESS_ZONE).toFormat("ZZZZ");

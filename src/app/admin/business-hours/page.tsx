@@ -3,7 +3,7 @@ import { SaveForm } from "@/components/ui/SaveForm";
 import { DateTime } from "luxon";
 import { currentUser } from "@/lib/auth";
 import { canEditOrgSettings } from "@/lib/auth/roles";
-import { oooOnlyFor } from "@/lib/env";
+import { consoleHiddenFor } from "@/lib/env";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import {
   setBusinessHours,
@@ -61,7 +61,7 @@ export default async function BusinessHoursPage({
   const me = await currentUser();
   if (!me) redirect("/login");
   if (!canEditOrgSettings(me.role)) return <AdminDenied need="an admin" />;
-  if (oooOnlyFor(me.role)) redirect("/admin/ooo");
+  if (consoleHiddenFor(me.role)) redirect("/admin/ooo");
 
   // could-not-measure state there was, `coverage = { ok: false }`, whose wording
   // names the ROSTER. A failed WEEK read therefore drew seven unchecked weekdays

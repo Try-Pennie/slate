@@ -14,7 +14,7 @@ import { render, screen } from "@testing-library/react";
 
 const auth = vi.hoisted(() => ({ currentUser: vi.fn() }));
 const admin = vi.hoisted(() => ({ supabaseAdmin: vi.fn() }));
-const env = vi.hoisted(() => ({ oooOnlyFor: vi.fn(() => false) }));
+const env = vi.hoisted(() => ({ consoleHiddenFor: vi.fn(() => false) }));
 const redirect = vi.hoisted(() =>
   vi.fn((url: string) => {
     throw new Error(`NEXT_REDIRECT:${url}`);
@@ -31,7 +31,7 @@ vi.mock("next/navigation", () => ({
 }));
 vi.mock("@/lib/env", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/env")>()),
-  oooOnlyFor: env.oooOnlyFor,
+  consoleHiddenFor: env.consoleHiddenFor,
 }));
 vi.mock("@/lib/supabase/admin", () => admin);
 

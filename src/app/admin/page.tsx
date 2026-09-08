@@ -2,7 +2,7 @@ import { redirect } from "next/navigation";
 import type { ReactNode } from "react";
 import { currentUser } from "@/lib/auth";
 import { canManageAgents } from "@/lib/auth/roles";
-import { oooOnlyFor } from "@/lib/env";
+import { consoleHiddenFor } from "@/lib/env";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { isActive } from "@/lib/active-user";
 import { loadLaneHealth } from "@/lib/monitor/lane-health-view";
@@ -191,7 +191,7 @@ export default async function AdminHealthPage() {
   const me = await currentUser();
   if (!me) redirect("/login");
   if (!canManageAgents(me.role)) return <AdminDenied need="a manager or admin" />;
-  if (oooOnlyFor(me.role)) redirect("/admin/ooo");
+  if (consoleHiddenFor(me.role)) redirect("/admin/ooo");
 
   const db = supabaseAdmin();
   const [usersRes, calsRes, outboxRes, reservationRes] = await Promise.all([

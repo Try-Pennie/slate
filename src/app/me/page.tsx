@@ -1,168 +1,49 @@
+import Link from "next/link";
 import { redirect } from "next/navigation";
 import { SaveForm } from "@/components/ui/SaveForm";
-import { DateTime } from "luxon";
 import { currentUser } from "@/lib/auth";
-import { oooOnlyFor } from "@/lib/env";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { setMyWorkingHours, useMyDefaultHours } from "@/app/admin/actions";
-import { cancelMyOoo, modifyMyOoo, submitMyOoo } from "@/app/me/actions";
-import {
-  formatWhenLine,
-  normalizeTzLabel,
-  oooApproverLine,
-  oooRequestIntro,
-  stripModifiedMarkers,
-  NO_MANAGER_REVIEWER,
-  UNNAMED_MANAGER_REVIEWER,
-} from "@/lib/ooo/core";
 import { AppHeader } from "@/components/AppHeader";
 import { UnreadableNotice } from "@/components/ui/UnreadableNotice";
 import { btnCls, cardCls, proseCls } from "@/components/ui/styles";
-import { Pill, type PillVariant } from "@/components/ui/Pill";
 import { InfoIcon } from "@/components/icons";
 import { WorkingHoursForm } from "@/components/ui/WorkingHoursForm";
 import { SubmitButton } from "@/components/ui/SubmitButton";
 import { workingHoursDays } from "@/lib/schedule-week";
 import { savedOutcome, savedSentence } from "@/lib/admin/save-outcomes";
 import { SettingsSaveNotice } from "@/app/admin/settings/SettingsSaveNotice";
-import { OooForm } from "@/components/ui/OooForm";
-import { RequestActions } from "@/components/ui/RequestActions";
-import type { OooRequest, OooStatus, User } from "@/lib/db/types";
 import { PageShell } from "@/components/ui/PageShell";
 import { BookablePill } from "@/components/ui/BookablePill";
 import { AdminPageHeader } from "@/components/admin/AdminPageHeader";
+import { ME_TABS } from "@/lib/me/nav";
 
 export const dynamic = "force-dynamic";
 
-const OOO_TIMEZONES = [
-  "America/New_York",
-  "America/Chicago",
-  "America/Denver",
-  "America/Phoenix",
-  "America/Los_Angeles",
-  "America/Anchorage",
-  "Pacific/Honolulu",
-];
-
-const STATUS_PILL: Record<OooStatus, PillVariant> = {
-  pending: "status-pending",
-  approved: "status-ok",
-  rejected: "status-error",
-  cancelled: "outline",
-};
-
-// Module scope so the Date.now() calls don't trip react-hooks/purity in render.
-// A pending request is always editable/cancellable (even one whose window has
-// passed while it waited on a manager); an approved one only while it's still
-// upcoming, since changing an elapsed approval does nothing useful.
-function isChangeable(r: OooRequest): boolean {
-  if (r.status === "pending") return true;
-  return r.status === "approved" && Date.parse(r.ends_at) > Date.now();
-}
-
-function summarize(requests: OooRequest[]): {
-  pending: number;
-  upcomingApproved: number;
-} {
-  const now = Date.now();
-  return {
-    pending: requests.filter((r) => r.status === "pending").length,
-    upcomingApproved: requests.filter(
-      (r) => r.status === "approved" && Date.parse(r.ends_at) > now,
-    ).length,
-  };
-}
-
-/** Upcoming = still awaiting (pending) or approved and not yet over. */
-function isUpcoming(r: OooRequest): boolean {
-  if (r.status === "pending") return true;
-  if (r.status === "approved") return Date.parse(r.ends_at) > Date.now();
-  return false;
-}
-
-// Selectable date window for time-off: full calendar years, two back to two
-// forward (e.g. in 2026 -> Jan 1 2024 through Dec 31 2028). Module scope so the
-// Date.now() call doesn't trip react-hooks/purity in render.
-function dateBounds(zone: string): {
-  minISO: string;
-  maxISO: string;
-  todayISO: string;
-} {
-  const today = DateTime.now().setZone(zone).startOf("day");
-  return {
-    minISO: today.startOf("year").minus({ years: 2 }).toISODate()!,
-    maxISO: today.endOf("year").plus({ years: 2 }).toISODate()!,
-    todayISO: today.toISODate()!,
-  };
-}
-
-
-/** Flat divider list of requests (shared by the Upcoming and Past sections). */
-function RequestList({
-  items,
-  editingId,
-}: {
-  items: OooRequest[];
-  editingId?: string;
-}) {
-  return (
-    <ul className="mt-1 divide-y divide-border">
-      {items.map((r) => {
-        const isEditing = r.id === editingId;
-        return (
-        <li
-          key={r.id}
-          className={`flex items-start justify-between gap-4 py-4 ${
-            isEditing
-              ? "rounded-lg bg-pennie-sky-soft/60 px-3 dark:bg-accent/10"
-              : ""
-          }`}
-        >
-          <div className="min-w-0">
-            <span className="block font-semibold tabular-nums text-fg">
-              {formatWhenLine(
-                r.starts_at,
-                r.ends_at,
-                r.display_tz_id,
-                r.display_tz_label,
-              )}
-            </span>
-            <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-fg-muted">
-              <Pill variant={STATUS_PILL[r.status]}>{r.status}</Pill>
-              <span>{r.reason}</span>
-            </div>
-            {r.status === "rejected" && r.rejection_note && (
-              <p className="mt-1 text-sm text-error">{r.rejection_note}</p>
-            )}
-          </div>
-          {isChangeable(r) &&
-            (isEditing ? (
-              <span className="inline-flex shrink-0 items-center gap-1.5 px-3 py-1.5 text-sm font-semibold text-pennie-blue dark:text-pennie-sky">
-                <span
-                  aria-hidden="true"
-                  className="h-1.5 w-1.5 rounded-full bg-pennie-sky"
-                />
-                Editing above
-              </span>
-            ) : (
-              <RequestActions requestId={r.id} cancelAction={cancelMyOoo} />
-            ))}
-        </li>
-        );
-      })}
-    </ul>
-  );
-}
-
+/**
+ * My Availability: the hours somebody can be booked in.
+ *
+ * TWO THINGS CHANGED HERE ON 2026-09-08, and they are separate.
+ *
+ * The page SPLIT. It used to carry time off as well, which pushed the working
+ * hours card below a form most visits did not need. Time off is now
+ * `/me/time-off`, and this is the landing page, because the hours are what
+ * decide whether an agent gets calls at all.
+ *
+ * And it stopped being hidden. `AGENT_SCHEDULING_LIVE` gated this whole surface
+ * behind `consoleHiddenFor`, so for 112 agents it did not exist: the form, the reset
+ * controls and the bookable pill were all built, tested and unreachable. The
+ * flag was written while the scheduling tool was unfinished and the reasoning
+ * outlived the condition. It still hides the CONSOLE from managers and admins,
+ * which is a live decision; it no longer decides whether a person may read their
+ * own hours. Note the action it guarded never consulted it either
+ * (`setMyWorkingHours` has always only required a signed-in user), so what the
+ * flag hid was the form, never the write.
+ */
 export default async function MePage({
   searchParams,
 }: {
   searchParams: Promise<{
-    ooo?: string;
-    ooo_kind?: string;
-    ooo_error?: string;
-    edit?: string;
-    t?: string;
     /** Set by the two hours actions on a successful write (#1988). */
     ok?: string;
     /** A refusal the person can act on, from the same actions (#1994). */
@@ -173,14 +54,10 @@ export default async function MePage({
   const me = await currentUser();
   if (!me) redirect("/login");
 
-  const oooOnly = oooOnlyFor(me.role);
-
-  // #1647: every read on this page binds `error`. Each one feeds a surface that
-  // either OFFERS A WRITE over what it shows or makes a claim about what is
-  // stored, so a dropped error draws exactly the screen a genuinely empty answer
-  // draws, and the obvious correction is a write made from a reading that never
-  // happened. They are checked one at a time below and one failing read never
-  // blanks the sections whose reads succeeded.
+  // #1647: both reads bind `error`. They feed a surface that OFFERS A WRITE over
+  // what it shows, so a dropped error draws exactly the screen a genuinely empty
+  // answer draws, and the obvious correction is a write made from a reading that
+  // never happened.
   const db = supabaseAdmin();
   const { data: schedule, error: schedErr } = await db
     .from("availability_schedules")
@@ -214,87 +91,8 @@ export default async function MePage({
   // the rest on save.
   const hoursDays = workingHoursDays(rules);
 
-  const { data: oooData, error: oooErr } = await db
-    .from("ooo_requests")
-    .select("*")
-    .eq("user_id", me.id)
-    .order("created_at", { ascending: false })
-    .limit(25);
-  // Empty means "you have asked for no time off", on the page somebody opens to
-  // ask exactly that, and it also silently turns a CHANGE into a new request: the
-  // edit below resolves against this list, so a failed read leaves `editing` null
-  // and the change form becomes a fresh submission for the same days.
-  const oooUnreadable = oooErr != null;
-  const oooRequests = (oooData ?? []) as OooRequest[];
-  const { data: managerData, error: managerErr } = me.manager_id
-    ? await db.from("users").select("name, email").eq("id", me.manager_id).maybeSingle()
-    : { data: null, error: null };
-  const manager = managerData as Pick<User, "name" | "email"> | null;
-  // Three states, not two. `null` here is read as "no manager of record", which
-  // routes the copy to the moderator pool, and saying that to somebody who HAS a
-  // manager is a claim the read never measured (L11). This branch is reachable
-  // only when `me.manager_id` is set, so a manager provably exists; the reviewer
-  // is named generically rather than not at all.
-  const reviewerName = managerErr
-    ? UNNAMED_MANAGER_REVIEWER
-    : (manager?.name ?? manager?.email ?? null);
-
-  const editing =
-    sp.edit !== undefined
-      ? (oooRequests.find((r) => r.id === sp.edit && isChangeable(r)) ?? null)
-      : null;
-  // A change was asked for and the list that would resolve it could not be read.
-  // Distinct from "that request is not changeable", which is a real answer.
-  const editUnresolvable = sp.edit !== undefined && oooUnreadable;
-  // The one place an unreadable schedule degrades rather than refusing, and it is
-  // the safe class (#1647): this is the zone the time off picker OPENS on, shown
-  // as a labelled select the person reads and submits, and nothing here replaces
-  // stored hours. Falling back to the roster's canonical zone leaves a visible,
-  // correctable default instead of taking time off away over an hours read.
-  const defaultTz = editing?.display_tz_id ?? sched?.timezone ?? "America/New_York";
-  const tzOptions = OOO_TIMEZONES.includes(defaultTz)
-    ? OOO_TIMEZONES
-    : [defaultTz, ...OOO_TIMEZONES];
-  const editStart = editing
-    ? DateTime.fromISO(editing.starts_at, { zone: editing.display_tz_id })
-    : null;
-  const editEnd = editing
-    ? DateTime.fromISO(editing.ends_at, { zone: editing.display_tz_id })
-    : null;
-  const bounds = dateBounds(defaultTz);
-  const tzChoices = tzOptions.map((tz) => ({
-    value: tz,
-    label: `${tz.split("/")[1]?.replace(/_/g, " ") ?? tz} (${normalizeTzLabel(tz)})`,
-  }));
-  const editingForForm = editing
-    ? {
-        id: editing.id,
-        whenLine: formatWhenLine(
-          editing.starts_at,
-          editing.ends_at,
-          editing.display_tz_id,
-          editing.display_tz_label,
-        ),
-        approved: editing.status === "approved",
-        allDay: editing.all_day,
-        startDate: editStart?.toISODate() ?? undefined,
-        startTime: editStart?.toFormat("HH:mm") ?? undefined,
-        endDate: editEnd?.toISODate() ?? undefined,
-        endTime: editEnd?.toFormat("HH:mm") ?? undefined,
-        reason: editing.reason,
-        // Don't surface the internal "[Modified …]" marker in the editable field.
-        notes: stripModifiedMarkers(editing.notes ?? ""),
-      }
-    : null;
-
   const firstName = me.name?.trim().split(/\s+/)[0] ?? null;
-  const summary = summarize(oooRequests);
-  const hasRequests = oooRequests.length > 0;
-  // Soonest-first for upcoming; most-recent-first (query order) for past.
-  const upcoming = oooRequests
-    .filter(isUpcoming)
-    .sort((a, b) => Date.parse(a.starts_at) - Date.parse(b.starts_at));
-  const past = oooRequests.filter((r) => !isUpcoming(r));
+  const timeOffHref = ME_TABS[1].href;
 
   return (
     <>
@@ -308,246 +106,119 @@ export default async function MePage({
         avatarUrl={me.avatar_url}
       />
       <PageShell width="narrow">
-        {oooOnly ? (
-          /* The greeting plus at-a-glance status. #1838 made this the same card
-             the console uses; Dan chose to convert /me too, so no navy page
-             header survives anywhere in the app. */
-          <AdminPageHeader title={firstName ? `Hi, ${firstName}.` : "Hi there."}>
-            <p>
-              {oooUnreadable ? (
-                // #1647: every other sentence in this band is a count, and a
-                // count off a read that never ran is the one thing this greeting
-                // must not say. Plain copy rather than the rose notice: the
-                // announced version of this lives once, on the list below, so a
-                // screen reader is told the same thing once rather than twice.
-                "Your time off could not be read just now, so there is nothing summarized here. Reload to try again."
-              ) : !hasRequests ? (
-                // #1499: no manager of record is not a blocker. It routes to
-                // whoever moderates all time off, and the copy says so rather
-                // than naming a step nobody can perform (the admin field is read
-                // only, because Salesforce owns the link).
-                oooRequestIntro(reviewerName)
-              ) : summary.pending === 0 && summary.upcomingApproved === 0 ? (
-                "Nothing pending. Need another day off? Request it below."
-              ) : (
-                <>
-                  {summary.pending > 0 && (
-                    <span>
-                      <span className="font-semibold tabular-nums text-fg">
-                        {summary.pending}
-                      </span>{" "}
-                      waiting on {reviewerName ?? NO_MANAGER_REVIEWER}
-                    </span>
-                  )}
-                  {summary.pending > 0 && summary.upcomingApproved > 0 && (
-                    <span className="px-2 text-fg-muted">·</span>
-                  )}
-                  {summary.upcomingApproved > 0 && (
-                    <span>
-                      <span className="font-semibold tabular-nums text-fg">
-                        {summary.upcomingApproved}
-                      </span>{" "}
-                      approved and coming up
-                    </span>
-                  )}
-                </>
-              )}
-            </p>
-          </AdminPageHeader>
-        ) : (
-          <>
-            <div>
-              <h1 className="pn-h3">Your availability</h1>
-              <p className={`mt-1 flex flex-wrap items-center gap-2 text-sm text-fg-muted ${proseCls}`}>
-                <span>{me.name ?? me.email}</span>
-                {/* #1823: the same component the admin screens use, so the
-                    variant is one decision. The wording stays "yet" here
-                    because the reader is the agent. */}
-                <BookablePill bookable={me.bookable} wording="self" />
-              </p>
-            </div>
+        {/* The pill is INSIDE the children rather than in the header's `aside`
+            slot, and that is deliberate. Setting `aside` switches the component
+            into its row layout, which renders the title `pn-h4` instead of
+            `pn-h3`; this greeting and the identical one on /me/time-off would
+            then be two sizes of the same heading on two sibling pages, which
+            reads as two levels rather than one (L634). Caught by screenshotting
+            it rather than by reading either file, since each is correct alone.
 
-            {!hoursUnreadable && rules.length === 0 && (
-              <div className="flex flex-wrap items-center justify-between gap-3 rounded-md bg-pennie-sky-soft p-4 text-sm text-fg dark:bg-accent/15">
-                <span className="flex items-center gap-2.5">
-                  <InfoIcon
-                    width={20}
-                    height={20}
-                    className="shrink-0 text-pennie-blue dark:text-pennie-sky"
-                  />
-                  You have no working hours set, so you won&apos;t get bookings.
-                </span>
-                <SaveForm action={useMyDefaultHours} name="my-default-hours">
-                  <SubmitButton className={btnCls} pendingLabel="Applying company hours">
-                    Use default hours
-                  </SubmitButton>
-                </SaveForm>
-              </div>
-            )}
+            The pill is on this page at all because of what it tells the reader
+            (Dan, 2026-09-08): an agent who thinks they should be getting calls
+            and is not can see why without asking anybody. `wording="self"` says
+            "Not bookable yet", because the reader is the agent. */}
+        <AdminPageHeader title={firstName ? `Hi, ${firstName}.` : "Hi there."}>
+          {/* The steer matters more than the description. The failure it exists
+              to prevent is an agent editing their weekly hours to take next
+              Tuesday off and never putting them back, which silently narrows
+              their availability for good. So the consequence is stated rather
+              than implied: a change here applies to every week. */}
+          <p>
+            These are your regular weekly hours, and a change here applies to
+            every week. For a single day or a vacation,{" "}
+            <Link
+              href={timeOffHref}
+              className="font-semibold text-pennie-blue underline dark:text-pennie-sky"
+            >
+              request time off
+            </Link>{" "}
+            instead.
+          </p>
+          <p className="mt-3">
+            <BookablePill bookable={me.bookable} wording="self" />
+          </p>
+        </AdminPageHeader>
 
-            <section className={cardCls}>
-              <h2 className="mb-1 text-sm font-semibold">Working hours</h2>
-              {hoursUnreadable ? (
-                /* #1647: the form and BOTH reset controls are withheld, not
-                   disabled with a warning beside them. Every one of them
-                   replaces the whole week, so any of them pressed here writes a
-                   guess over hours nobody has read. The notice says which way
-                   round it is, because the empty version of this card reads as
-                   "you have no hours" and that is the frightening direction. */
-                <UnreadableNotice className="mt-3">
-                  Your working hours could not be read just now, so they are not
-                  shown and cannot be changed from here. Your saved hours are
-                  unaffected. Reload to try again.
-                </UnreadableNotice>
-              ) : (
-                <>
-                  <p className={`mb-4 text-xs text-fg-muted ${proseCls}`}>
-                    Set your home timezone and weekly hours. Leads always see times
-                    in their own timezone.
-                  </p>
-                  {/* #1988: pressing Save wrote the week and then said
-                      nothing, so it looked exactly like a click that did
-                      nothing. The sentence is built from the week this render
-                      just READ, not from what the action meant to write, so it
-                      reports what is actually stored (L78). */}
-                  {savedOutcome(sp.ok) === "working-hours" ? (
-                    <div className="mb-4">
-                      <SettingsSaveNotice ok saved={savedSentence("working-hours") ?? ""} />
-                    </div>
-                  ) : null}
-                  {/* #1994: a week the server refused says WHY. These sentences
-                      name the day and what is wrong with it, and until now none
-                      of them could be read: a thrown error is redacted in
-                      production and arrived as the generic error boundary. */}
-                  {sp.error ? (
-                    <div className="mb-4">
-                      <SettingsSaveNotice ok={false} error={sp.error} saved="" />
-                    </div>
-                  ) : null}
-                  <WorkingHoursForm
-                    action={setMyWorkingHours}
-                    days={hoursDays}
-                    timezone={sched?.timezone ?? "America/New_York"}
-                    timezoneLabel="Your timezone"
-                  />
-                  <SaveForm action={useMyDefaultHours} name="my-default-hours-reset" className="mt-3">
-                    <SubmitButton
-                      className="text-xs text-pennie-blue underline dark:text-pennie-sky"
-                      pendingLabel="Applying company hours"
-                    >
-                      Reset to company default hours
-                    </SubmitButton>
-                  </SaveForm>
-                </>
-              )}
-            </section>
-          </>
+        {!hoursUnreadable && rules.length === 0 && (
+          <div className="flex flex-wrap items-center justify-between gap-3 rounded-md bg-pennie-sky-soft p-4 text-sm text-fg dark:bg-accent/15">
+            <span className="flex items-center gap-2.5">
+              <InfoIcon
+                width={20}
+                height={20}
+                className="shrink-0 text-pennie-blue dark:text-pennie-sky"
+              />
+              You have no working hours set, so you won&apos;t get bookings.
+            </span>
+            <SaveForm action={useMyDefaultHours} name="my-default-hours">
+              <SubmitButton className={btnCls} pendingLabel="Applying company hours">
+                Use default hours
+              </SubmitButton>
+            </SaveForm>
+          </div>
         )}
 
-        {/* Time off (shared by agents and managers viewing their own page) */}
-        <section id="time-off" className="scroll-mt-20 space-y-6">
-          <header>
-            <h2 className="pn-h3">
-              {editing || editUnresolvable
-                ? "Change your request"
-                : "Request time away"}
-            </h2>
-            <p className={`mt-1.5 text-sm text-fg-muted ${proseCls}`}>
-              {oooApproverLine(reviewerName)}
-            </p>
-          </header>
-
-          {sp.ooo_error && (
-            <div
-              role="alert"
-              className="rounded-md border border-[var(--error)] px-5 py-4 text-sm text-error"
-            >
-              {sp.ooo_error}
-            </div>
-          )}
-
-          {editUnresolvable ? (
-            /* #1647: a change was asked for and the request it is about could not
-               be read. Rendering the form anyway is not a degraded change, it is
-               a NEW request: `editing` is null, so the action is submitMyOoo and
-               the agent ends up with two requests for the same days. */
-            <UnreadableNotice>
-              That request could not be read just now, so it cannot be changed
-              here yet. Nothing has been altered. Reload to try again.
+        <section className={cardCls}>
+          <h2 className="mb-1 text-sm font-semibold">Working hours</h2>
+          {hoursUnreadable ? (
+            /* #1647: the form and BOTH reset controls are withheld, not
+               disabled with a warning beside them. Every one of them
+               replaces the whole week, so any of them pressed here writes a
+               guess over hours nobody has read. The notice says which way
+               round it is, because the empty version of this card reads as
+               "you have no hours" and that is the frightening direction. */
+            <UnreadableNotice className="mt-3">
+              Your working hours could not be read just now, so they are not
+              shown and cannot be changed from here. Your saved hours are
+              unaffected. Reload to try again.
             </UnreadableNotice>
           ) : (
-            <OooForm
-              key={sp.t ?? sp.edit ?? "new"}
-              action={editing ? modifyMyOoo : submitMyOoo}
-              editing={editingForForm}
-              managerName={reviewerName}
-              defaultTz={defaultTz}
-              tzOptions={tzChoices}
-              bounds={bounds}
-              successMessage={sp.ooo ?? null}
-              successKind={sp.ooo_kind ?? null}
-            />
-          )}
-
-          <div className="space-y-8">
-            <div>
-              <p className="pn-eyebrow text-fg-muted">
-                Upcoming
-                {!oooUnreadable && upcoming.length > 0 && (
-                  <span className="tabular-nums"> ({upcoming.length})</span>
-                )}
+            <>
+              <p className={`mb-4 text-xs text-fg-muted ${proseCls}`}>
+                Set your home timezone and weekly hours. Leads always see times
+                in their own timezone.
               </p>
-              {oooUnreadable ? (
-                /* The empty version of this list answers "have I already asked
-                   for these days?" with a wrong no, and the reply to that answer
-                   is to ask again. */
-                <UnreadableNotice className="mt-3">
-                  Your time off requests could not be read just now, so none are
-                  listed. This is not a sign that you have none. Reload to try
-                  again.
-                </UnreadableNotice>
-              ) : upcoming.length === 0 ? (
-                <p className="mt-3 rounded-md border border-dashed border-border px-4 py-8 text-center text-sm text-fg-muted">
-                  No upcoming time off. Use the form above to request a day.
-                </p>
-              ) : (
-                <RequestList items={upcoming} editingId={editing?.id} />
-              )}
-            </div>
-
-            {!oooUnreadable && past.length > 0 && (
-              <details className="group">
-                <summary className="flex cursor-pointer list-none items-center gap-1.5 rounded-sm [&::-webkit-details-marker]:hidden">
-                  <svg
-                    viewBox="0 0 16 16"
-                    aria-hidden="true"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="2"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    className="h-3.5 w-3.5 shrink-0 text-fg-muted transition-transform duration-150 group-open:rotate-90 motion-reduce:transition-none"
-                  >
-                    <path d="M6 4l4 4-4 4" />
-                  </svg>
-                  <span className="pn-eyebrow text-fg-muted">
-                    Past <span className="tabular-nums">({past.length})</span>
-                  </span>
-                </summary>
-                <div className="mt-3">
-                  <RequestList items={past} />
+              {/* #1988: pressing Save wrote the week and then said
+                  nothing, so it looked exactly like a click that did
+                  nothing. The sentence is built from the week this render
+                  just READ, not from what the action meant to write, so it
+                  reports what is actually stored (L78). */}
+              {savedOutcome(sp.ok) === "working-hours" ? (
+                <div className="mb-4">
+                  <SettingsSaveNotice ok saved={savedSentence("working-hours") ?? ""} />
                 </div>
-              </details>
-            )}
-          </div>
+              ) : null}
+              {/* #1994: a week the server refused says WHY. These sentences
+                  name the day and what is wrong with it, and until now none
+                  of them could be read: a thrown error is redacted in
+                  production and arrived as the generic error boundary. */}
+              {sp.error ? (
+                <div className="mb-4">
+                  <SettingsSaveNotice ok={false} error={sp.error} saved="" />
+                </div>
+              ) : null}
+              <WorkingHoursForm
+                action={setMyWorkingHours}
+                days={hoursDays}
+                timezone={sched?.timezone ?? "America/New_York"}
+                timezoneLabel="Your timezone"
+              />
+              <SaveForm action={useMyDefaultHours} name="my-default-hours-reset" className="mt-3">
+                <SubmitButton
+                  className="text-xs text-pennie-blue underline dark:text-pennie-sky"
+                  pendingLabel="Applying company hours"
+                >
+                  Reset to company default hours
+                </SubmitButton>
+              </SaveForm>
+            </>
+          )}
         </section>
 
-        {!oooOnly && (
-          <p className="text-sm text-fg-muted">
-            Your manager controls whether you&apos;re bookable and which teams
-            you&apos;re on.
-          </p>
-        )}
+        <p className="text-sm text-fg-muted">
+          Your manager controls whether you&apos;re bookable and which teams
+          you&apos;re on.
+        </p>
       </PageShell>
     </>
   );

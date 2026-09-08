@@ -1,7 +1,7 @@
 import { redirect, notFound } from "next/navigation";
 import { currentUser } from "@/lib/auth";
 import { canManageAgents } from "@/lib/auth/roles";
-import { oooOnlyFor } from "@/lib/env";
+import { consoleHiddenFor } from "@/lib/env";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { unwrap } from "@/lib/db/result";
 import { cardCls } from "@/components/ui/styles";
@@ -47,7 +47,7 @@ export default async function BookingDetailPage({
     role: me.role,
     orgId: me.org_id,
     canManage: canManageAgents,
-    oooOnly: oooOnlyFor,
+    oooOnly: consoleHiddenFor,
     // #1629: a null booking here is `notfound()`, so a swallowed error told an
     // admin looking up a booking that it does not exist. On the surface somebody
     // opens because they suspect a booking went missing, that is the one answer

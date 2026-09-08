@@ -17,8 +17,20 @@ import { render, screen } from "@testing-library/react";
 // something: it stores a TUESDAY-only rule, which the fallback week never
 // produces, so "the form is not showing a guess" and "the page rendered
 // nothing at all" cannot both satisfy the same assertion (L159).
+//
+// THE TIME OFF TESTS MOVED to `time-off/page-unreadable.test.tsx` on
+// 2026-09-08, when this page split in two. They were not dropped: the same
+// unreadable-read behaviours are asserted there, against the page that now
+// renders them.
+//
+// One test was CONSUMED by the split rather than moved (L373): "leaves the time
+// off section working when only the hours failed". It guarded a coupling that
+// no longer exists, because the two are separate routes issuing separate reads,
+// so nothing here can take time off down with it. The rule it defended still
+// stands; there is simply no mechanism left that could violate it, and a test
+// whose premise the change removed goes red for a reason that looks exactly
+// like a real defect.
 const auth = vi.hoisted(() => ({ currentUser: vi.fn() }));
-const env = vi.hoisted(() => ({ oooOnlyFor: vi.fn(() => false) }));
 const admin = vi.hoisted(() => ({ supabaseAdmin: vi.fn() }));
 const redirect = vi.hoisted(() =>
   vi.fn((url: string) => {
@@ -34,10 +46,6 @@ vi.mock("next/navigation", () => ({
   useSearchParams: () => new URLSearchParams(),
   usePathname: () => "/me",
 }));
-vi.mock("@/lib/env", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("@/lib/env")>()),
-  oooOnlyFor: env.oooOnlyFor,
-}));
 vi.mock("@/lib/supabase/admin", () => admin);
 vi.mock("@/components/AppHeader", () => ({ AppHeader: () => null }));
 // Every server action a form on this page points at. Named individually rather
@@ -46,11 +54,6 @@ vi.mock("@/components/AppHeader", () => ({ AppHeader: () => null }));
 vi.mock("@/app/admin/actions", () => ({
   setMyWorkingHours: vi.fn(),
   useMyDefaultHours: vi.fn(),
-}));
-vi.mock("@/app/me/actions", () => ({
-  cancelMyOoo: vi.fn(),
-  modifyMyOoo: vi.fn(),
-  submitMyOoo: vi.fn(),
 }));
 
 import MePage from "./page";
@@ -69,8 +72,6 @@ const ME = {
 
 type Result = { data: unknown; error: { message: string } | null };
 
-const iso = (days: number) => new Date(Date.now() + days * 86_400_000).toISOString();
-
 /**
  * A schedule that is genuinely NOT the default week: one Tuesday rule, 8 to 4,
  * in Chicago. The `workingHoursDays` fallback ticks Monday to Friday at 9 to 5,
@@ -83,27 +84,6 @@ const HEALTHY: Record<string, Result> = {
     data: [{ weekday: 2, start_minute: 480, end_minute: 960 }],
     error: null,
   },
-  ooo_requests: {
-    data: [
-      {
-        id: "r1",
-        user_id: "u1",
-        manager_id: "m1",
-        status: "pending",
-        starts_at: iso(3),
-        ends_at: iso(4),
-        display_tz_id: "America/Chicago",
-        display_tz_label: "CT",
-        all_day: true,
-        reason: "Family wedding",
-        notes: null,
-        rejection_note: null,
-        created_at: iso(-1),
-      },
-    ],
-    error: null,
-  },
-  users: { data: { name: "Mona Lisa", email: "mona@x.com" }, error: null },
 };
 
 function mockDb(overrides: Record<string, Result> = {}) {
@@ -128,7 +108,6 @@ const fails = (message: string): Result => ({ data: null, error: { message } });
 
 beforeEach(() => {
   vi.clearAllMocks();
-  env.oooOnlyFor.mockReturnValue(false);
   auth.currentUser.mockResolvedValue(ME);
 });
 
@@ -151,10 +130,37 @@ describe("MePage with every read healthy (the control)", () => {
     // The save is offered, and the "you have no hours" banner is not raised.
     expect(screen.getByRole("button", { name: "Save" })).toBeTruthy();
     expect(screen.queryByText(/You have no working hours set/i)).toBeNull();
-    // The requests list and the reviewer both read.
-    expect(screen.getByText(/Family wedding/)).toBeTruthy();
-    expect(screen.getAllByText(/Mona Lisa/).length).toBeGreaterThan(0);
     expect(screen.queryByText(/could not be read/i)).toBeNull();
+  });
+
+  it("shows the agent whether they are bookable", async () => {
+    // Dan's reason for putting it here (2026-09-08): an agent who thinks they
+    // should be getting calls and is not can see why without asking anybody.
+    // Before the split this pill was on a page no agent could open.
+    mockDb();
+    render(await MePage(props()));
+    expect(screen.getByText("Bookable")).toBeTruthy();
+  });
+
+  it("says a not-bookable agent is not bookable, rather than saying nothing", async () => {
+    // The absence of the pill would read as "nothing to report", which is the
+    // opposite of what it means. `wording="self"` says "yet", because the
+    // reader is the agent and the state is one they are working towards.
+    mockDb();
+    auth.currentUser.mockResolvedValue({ ...ME, bookable: false });
+    render(await MePage(props()));
+    expect(screen.getByText("Not bookable yet")).toBeTruthy();
+  });
+
+  it("sends a single day off to the time off page instead of this form", async () => {
+    // The failure this steer exists to prevent: an agent edits their weekly
+    // hours to take next Tuesday off and never puts them back, which narrows
+    // their availability for good with nothing reporting it.
+    mockDb();
+    render(await MePage(props()));
+    const link = screen.getByRole("link", { name: /request time off/i });
+    expect(link.getAttribute("href")).toBe("/me/time-off");
+    expect(screen.getByText(/applies to every week/i)).toBeTruthy();
   });
 });
 
@@ -183,56 +189,4 @@ describe("MePage when the working hours cannot be read (#1647)", () => {
     expect(screen.queryByText(/You have no working hours set/i)).toBeNull();
   });
 
-  it("leaves the time off section working when only the hours failed", async () => {
-    mockDb({ availability_schedules: fails("availability_schedules read exploded") });
-    render(await MePage(props()));
-    // Time off is the only surface an agent has for it, so an hours read error
-    // must not take it down with it.
-    expect(screen.getByText(/Family wedding/)).toBeTruthy();
-    expect(screen.getByRole("button", { name: /Request time off/i })).toBeTruthy();
-  });
-});
-
-describe("MePage when the time off requests cannot be read (#1647)", () => {
-  it("says so rather than reporting no upcoming time off", async () => {
-    mockDb({ ooo_requests: fails("ooo_requests read exploded") });
-    render(await MePage(props()));
-    expect(screen.getByText(/time off requests could not be read/i)).toBeTruthy();
-    // The empty state answers "have I already asked for this?" with a wrong no.
-    expect(screen.queryByText(/No upcoming time off/i)).toBeNull();
-  });
-
-  it("withholds the change form when the request being edited could not be read", async () => {
-    mockDb({ ooo_requests: fails("ooo_requests read exploded") });
-    render(await MePage(props({ edit: "r1" })));
-    // Without this the page silently downgrades a change into a NEW request, so
-    // the agent submits a second one for the same days.
-    expect(screen.queryByRole("button", { name: /Request time off/i })).toBeNull();
-    expect(screen.getByText(/That request could not be read/i)).toBeTruthy();
-  });
-
-  it("summarizes nothing rather than a quiet week on the OOO-only header", async () => {
-    env.oooOnlyFor.mockReturnValue(true);
-    mockDb({ ooo_requests: fails("ooo_requests read exploded") });
-    render(await MePage(props()));
-    expect(screen.queryByText(/Need a day off\?/i)).toBeNull();
-    expect(screen.queryByText(/Nothing pending/i)).toBeNull();
-  });
-});
-
-describe("MePage when the manager row cannot be read (#1647)", () => {
-  it("names the manager it knows exists rather than the no-manager pool", async () => {
-    mockDb({ users: fails("users read exploded") });
-    render(await MePage(props()));
-    // manager_id is set, so "a team lead or admin signs off on these" tells an
-    // agent who HAS a manager that they have none: a claim nothing measured.
-    expect(screen.queryByText(/a team lead or admin/i)).toBeNull();
-    expect(screen.getAllByText(/Your manager signs off on these/i).length).toBeGreaterThan(0);
-  });
-
-  it("still names a real manager when the row reads (the control)", async () => {
-    mockDb();
-    render(await MePage(props()));
-    expect(screen.getAllByText(/Mona Lisa signs off on these/i).length).toBeGreaterThan(0);
-  });
 });

@@ -5,7 +5,8 @@
  *
  * WHERE TO SET EACH VAR IN PRODUCTION (Cloudflare Worker):
  * - Non-secret runtime config + launch flags (OOO_CALCOM_DUAL_WRITE,
- *   AGENT_SCHEDULING_LIVE, CALCOM_BASE_URL, CALCOM_ORG_ID, calendar ids/emails):
+ *   AGENT_SCHEDULING_LIVE (the console gate), CALCOM_BASE_URL, CALCOM_ORG_ID,
+ *   calendar ids/emails):
  *   put them in `wrangler.jsonc` under `vars`. They're version-controlled and
  *   redeployed every time.
  * - Sensitive values (SUPABASE_SECRET_KEY, SLACK_BOT_TOKEN, CALCOM_API_KEY,
@@ -127,21 +128,34 @@ export const mainOooCalendarId = (): string => requireEnv("MAIN_OOO_CAL_ID");
 export const oooCalendarActorEmail = (): string =>
   process.env.OOO_CALENDAR_ACTOR_EMAIL ?? mainOooCalendarId();
 
-// Phased launch: until agent scheduling self-service goes live, agents see
-// only the OOO tool (request time off) and nothing about availability/bookings.
-// Default off = OOO-only phase; set "true" to reveal the scheduling UI.
+// Phased launch: until the console goes live, everyone below super admin is
+// held out of /admin. Default off = console hidden; set "true" to open it.
 export const agentSchedulingLive = (): boolean =>
   process.env.AGENT_SCHEDULING_LIVE === "true";
 
 /**
- * The single OOO-only launch gate: until agent scheduling goes live, everyone
- * below super admin sees just the time-off tool, not the booking/availability/
- * roster surfaces. Only super admins keep full access in this pre-launch phase
- * (the scheduling tool isn't ready). Used by /me, the header nav, and the admin
- * route guards so they can't drift apart. Flip AGENT_SCHEDULING_LIVE to restore
- * role-appropriate access for everyone at launch.
+ * Whether the CONSOLE is hidden from this person: every /admin route, and the
+ * sidebar that lists them. Until the flag is flipped only super admins reach it,
+ * and anyone else arriving at a console route is sent to `/admin/ooo`, the one
+ * page they do have there.
+ *
+ * IT NO LONGER REACHES `/me`, and that is the point of the rename (2026-09-08).
+ * It was `oooOnlyFor`, and it hid an agent's OWN working hours from them: the
+ * form, the two reset controls and the bookable pill were built, tested and
+ * unreachable for 112 agents. The reason given was that the scheduling tool was
+ * not ready, which stopped being true long before anybody re-read the flag. The
+ * old name asserted the consequence ("this person only gets the OOO tool") and
+ * would have gone on asserting it after it became false, which is how a name
+ * recruits the next person into keeping a rule nobody still believes (L263).
+ *
+ * What it governs now is one live decision: the console is about OTHER people
+ * (the roster, buckets, tiers, routing, bookings), and opening that to the
+ * managers and admins who cannot see it today is a separate call from letting
+ * somebody read their own hours.
+ *
+ * Used by the admin route guards and the header nav so they cannot drift apart.
  */
-export const oooOnlyFor = (role: string | undefined): boolean => {
+export const consoleHiddenFor = (role: string | undefined): boolean => {
   if (agentSchedulingLive()) return false;
   const r = role ?? "";
   return !(isRole(r) && atLeast(r, "super_admin"));

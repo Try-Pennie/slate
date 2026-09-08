@@ -199,7 +199,7 @@ export function OooForm({
             <p>{state.error}</p>
             {state.conflictRequestId && (
               <a
-                href={`/me?edit=${state.conflictRequestId}#time-off`}
+                href={`/me/time-off?edit=${state.conflictRequestId}`}
                 className="mt-2 inline-flex items-center gap-1 font-semibold text-error underline underline-offset-2 hover:no-underline"
               >
                 Open that request to change it
@@ -331,7 +331,7 @@ export function OooForm({
           </SubmitButton>
           {editing && (
             <a
-              href="/me#time-off"
+              href="/me/time-off"
               className="rounded-md px-3 py-1.5 text-sm font-semibold text-fg-muted transition-colors hover:bg-pennie-sky-soft hover:text-fg dark:hover:bg-accent/15"
             >
               Keep it as is

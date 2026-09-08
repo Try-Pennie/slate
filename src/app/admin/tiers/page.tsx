@@ -2,7 +2,7 @@ import { redirect } from "next/navigation";
 import { currentUser } from "@/lib/auth";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { canManageAgents } from "@/lib/auth/roles";
-import { oooOnlyFor } from "@/lib/env";
+import { consoleHiddenFor } from "@/lib/env";
 import { cardCls } from "@/components/ui/styles";
 import { Pill, type PillVariant } from "@/components/ui/Pill";
 import { UnreadableNotice } from "@/components/ui/UnreadableNotice";
@@ -89,7 +89,7 @@ export default async function TiersPage() {
   }
   // Mirror /admin: during the OOO-only launch, everyone below super admin is
   // limited to the OOO surfaces (scheduling config isn't live yet).
-  if (oooOnlyFor(me.role)) {
+  if (consoleHiddenFor(me.role)) {
     redirect("/admin/ooo");
   }
 

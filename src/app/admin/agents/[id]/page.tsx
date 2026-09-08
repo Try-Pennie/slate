@@ -11,7 +11,7 @@ import {
 } from "@/lib/auth/roles";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { isActive } from "@/lib/active-user";
-import { oooOnlyFor } from "@/lib/env";
+import { consoleHiddenFor } from "@/lib/env";
 import {
   setUserRole,
   setBookable,
@@ -123,7 +123,7 @@ export default async function AgentProfilePage({
   }
   // OOO-only launch: agent management is part of the booking tool; managers are
   // limited to the OOO surfaces until scheduling goes live. Admins keep it.
-  if (oooOnlyFor(me.role)) {
+  if (consoleHiddenFor(me.role)) {
     redirect("/admin/ooo");
   }
   const isAdmin = canEditOrgSettings(me.role);

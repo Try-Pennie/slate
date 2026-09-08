@@ -2,7 +2,7 @@ import { redirect } from "next/navigation";
 import { SaveForm } from "@/components/ui/SaveForm";
 import { currentUser } from "@/lib/auth";
 import { canManageAgents, ROLES } from "@/lib/auth/roles";
-import { oooOnlyFor } from "@/lib/env";
+import { consoleHiddenFor } from "@/lib/env";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { rosterFiltersFromParams } from "@/lib/admin/roster-filter";
 import { syncSalesforceNow } from "@/app/admin/actions";
@@ -36,7 +36,7 @@ export default async function AgentRosterPage({
   const me = await currentUser();
   if (!me) redirect("/login");
   if (!canManageAgents(me.role)) return <AdminDenied need="a manager or admin" />;
-  if (oooOnlyFor(me.role)) redirect("/admin/ooo");
+  if (consoleHiddenFor(me.role)) redirect("/admin/ooo");
 
   // Exclude the synthetic smoke-test agent (#396) from the roster and the counts.
   const usersRes = await supabaseAdmin()

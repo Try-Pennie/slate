@@ -16,7 +16,7 @@ import { render, screen } from "@testing-library/react";
 // in the history as a bare id, so the audit trail stops naming who did what
 // exactly when somebody is reading it to find out.
 const auth = vi.hoisted(() => ({ currentUser: vi.fn() }));
-const env = vi.hoisted(() => ({ oooOnlyFor: vi.fn(() => false) }));
+const env = vi.hoisted(() => ({ consoleHiddenFor: vi.fn(() => false) }));
 const redirect = vi.hoisted(() =>
   vi.fn((url: string) => {
     throw new Error(`NEXT_REDIRECT:${url}`);
@@ -109,7 +109,7 @@ const bookingRow = () => ({
 
 beforeEach(() => {
   vi.clearAllMocks();
-  env.oooOnlyFor.mockReturnValue(false);
+  env.consoleHiddenFor.mockReturnValue(false);
   dbState.booking = null;
   dbState.bookingError = null;
   dbState.roster = [];
