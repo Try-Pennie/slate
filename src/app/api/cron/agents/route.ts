@@ -23,9 +23,14 @@ const AGENTS_STREAK_WINDOW_S = 3 * 60 * 60;
  * deactivated) and give any schedule-less agent the org default working hours so
  * they are never silently unavailable once flipped bookable.
  *
- * The job itself is `runRosterSync`, shared with the admin "Sync from Salesforce"
- * button so a hand run does the whole hour's work under the same lock. What is
- * only this route's is the bearer check and the failure streak.
+ * Since #2097 the job also reads Twilio TaskRouter, so an agent carrying the
+ * `Redistribute` tag is taken out of the bookable pool and one who no longer carries
+ * it is put back. A Twilio failure is contained: it never destroys the Salesforce
+ * half's report, and it is never silent either (its own alert, its own line).
+ *
+ * The job itself is `runRosterSync`, shared with the admin "Sync from Salesforce and
+ * Twilio" button so a hand run does the whole hour's work under the same lock. What
+ * is only this route's is the bearer check and the failure streak.
  */
 export async function GET(req: NextRequest) {
   if (!isAuthorizedCron(req)) {
@@ -37,6 +42,10 @@ export async function GET(req: NextRequest) {
     if (outcome.skipped) return NextResponse.json({ skipped: outcome.skipped });
     return NextResponse.json({
       ...outcome.sync,
+      // #2097: the Twilio half, as the discriminated pair the runner produced. A
+      // response that flattened it to counts could not tell a read that failed from
+      // one that found nobody tagged, and those are opposite facts.
+      twilio: outcome.twilio,
       hoursApplied: outcome.hoursApplied,
       emptyBuckets: outcome.emptyBuckets,
       // Whether those buckets paged once for the set instead of once each, so the

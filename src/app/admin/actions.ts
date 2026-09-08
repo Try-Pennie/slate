@@ -72,6 +72,7 @@ import type { WebhookFormat } from "@/lib/db/types";
 import { applyBookableByUserId } from "@/lib/bookable/service";
 import { applyLifecycleByUserId } from "@/lib/offboarding/service";
 import { runRosterSync } from "@/lib/salesforce/run-roster-sync";
+import type { TwilioSyncResult } from "@/lib/twilio/sync";
 import { replayDeadLetteredDeliveries, resendDelivery } from "@/lib/webhooks/emit";
 import { webhookUrlError } from "@/lib/webhooks/url";
 import { acquireLock } from "@/lib/locks";
@@ -390,12 +391,57 @@ export async function syncSalesforceNow(): Promise<void> {
       r.managersPromoted ? `${r.managersPromoted} promoted to manager` : null,
       r.deactivated ? `${plural(r.deactivated, "user")} deactivated` : null,
       outcome.hoursApplied ? `${plural(outcome.hoursApplied, "agent")} given the default working hours` : null,
+      // #2097: what the TWILIO half changed. The label used to say Salesforce and the
+      // job now reads two sources, so a run that took twelve agents out of the pool
+      // for a Twilio tag would otherwise report half of what it did.
+      ...(outcome.twilio.ok ? twilioParts(outcome.twilio.result, plural) : []),
     ].filter(Boolean);
     summary =
       parts.length > 1 ? parts.join(" · ") : `${parts[0]} (already up to date)`;
   }
   revalidatePath(back);
-  redirect(`${back}?synced=${encodeURIComponent(summary)}`);
+  // A failed Twilio half rides BESIDE the success rather than replacing it (#2097).
+  // The Salesforce writes committed, so reporting the run as a failure would be a
+  // lie; reporting it as a plain success would hide that nobody was taken out of the
+  // pool for the Redistribute tag, and a silent Twilio half has every symptom of a
+  // healthy one. Its own parameter, so the page draws it as a refusal instead of
+  // burying a failure sentence in a green wash.
+  const twilioError = outcome.twilio.ok
+    ? ""
+    : `&twilio_error=${encodeURIComponent(outcome.twilio.reason.slice(0, 200))}`;
+  redirect(`${back}?synced=${encodeURIComponent(summary)}${twilioError}`);
+}
+
+/**
+ * The Twilio half's lines, in the order a reader cares about them (L609): who is out
+ * of the pool now, who is back in, and who could not be let back in.
+ *
+ * Counts, never addresses: the summary travels in a URL, and an email in a URL is an
+ * identity in browser history and in every referrer.
+ */
+function twilioParts(
+  r: TwilioSyncResult,
+  plural: (n: number, one: string, many?: string) => string,
+): (string | null)[] {
+  return [
+    r.turnedOff.length
+      ? `${plural(r.turnedOff.length, "agent")} taken out of the bookable pool because Twilio marks them redistribute`
+      : null,
+    r.turnedBackOn.length
+      ? `${plural(r.turnedBackOn.length, "agent")} put back in the pool because Twilio no longer marks them redistribute`
+      : null,
+    // Dan, 2026-09-08: on the page, not only in Slack an hour later. The gate refuses
+    // anybody with no reachable Google calendar, which is the ordinary state for
+    // somebody whose tag came off before their Google account was provisioned.
+    r.reactivationRefused.length
+      ? `${plural(r.reactivationRefused.length, "agent")} could not be put back in the pool until a Google calendar exists for them`
+      : null,
+    // A flip that threw. Said out loud, because the counts above are the only
+    // evidence anybody looks at and one agent missing from them is the whole fault.
+    r.flipFailures
+      ? `${plural(r.flipFailures, "agent")} could not be flipped at all, so press this again in a minute`
+      : null,
+  ];
 }
 
 function num(form: FormData, key: string, fallback: number): number {

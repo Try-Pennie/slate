@@ -55,11 +55,35 @@ const salesforce = vi.hoisted(() => ({
 }));
 // #2071: the button runs the whole hourly job through this, under its lock.
 const rosterSync = vi.hoisted(() => ({ runRosterSync: vi.fn() }));
-/** A finished run with the counts the banner reads, all zero unless overridden. */
-const syncOutcome = (over: Record<string, unknown> = {}) => ({
+/**
+ * A finished run with the counts the banner reads, all zero unless overridden.
+ *
+ * `twilio` defaults to a healthy read that changed nothing (#2097). It is a
+ * discriminated pair rather than a bag of counts, because a Twilio read that FAILED
+ * and one that found nobody tagged are different facts and the banner has to say
+ * different things about them.
+ */
+const twilioOk = (over: Record<string, unknown> = {}) => ({
+  ok: true as const,
+  result: {
+    workers: 142,
+    addresses: 140,
+    turnedOff: [] as string[],
+    turnedBackOn: [] as string[],
+    reactivationRefused: [] as string[],
+    markedWithNoWorker: [] as string[],
+    corruptAttributes: 0,
+    noEmail: 0,
+    unmappedTags: [] as string[],
+    flipFailures: 0,
+    ...over,
+  },
+});
+const syncOutcome = (over: Record<string, unknown> = {}, twilio: unknown = twilioOk()) => ({
   hoursApplied: 0,
   emptyBuckets: [],
   emptyBucketsAggregated: false,
+  twilio,
   sync: {
     updated: 0,
     inserted: 0,
@@ -980,6 +1004,92 @@ describe("syncSalesforceNow (#491, #2071)", () => {
     // Counts, never addresses: an email in a URL is an identity in browser history.
     expect(redirected).not.toContain("@x");
     expect(redirected).not.toContain("undefined");
+  });
+
+  // #2097: the button now runs the Twilio half too, so the banner has to name what
+  // Twilio changed. A label saying Salesforce over a run that also flipped agents
+  // out of the pool for a Twilio tag reports half of what happened.
+  it("names who Twilio took out of the pool and who it put back", async () => {
+    rosterSync.runRosterSync.mockResolvedValueOnce(
+      syncOutcome({ updated: 2 }, twilioOk({ turnedOff: ["a@x", "b@x"], turnedBackOn: ["c@x"] })),
+    );
+    let redirected = "";
+    try {
+      await syncSalesforceNow();
+    } catch (e) {
+      redirected = decodeURIComponent(String((e as Error).message));
+    }
+    expect(redirected).toContain("2 agents");
+    expect(redirected).toMatch(/redistribute/i);
+    expect(redirected).toContain("1 agent");
+    // Counts, never addresses: an email in a URL is an identity in browser history.
+    expect(redirected).not.toContain("@x");
+    expect(redirected).not.toContain("undefined");
+  });
+
+  // Dan, 2026-09-08: the refusal has to be on the page the presser is on, not only
+  // in Slack an hour later. The activation gate turns down an agent with no
+  // reachable Google calendar, and that is the ORDINARY case for somebody whose tag
+  // was removed before their Google account was provisioned.
+  it("says on the page when somebody could not be put back in the pool", async () => {
+    rosterSync.runRosterSync.mockResolvedValueOnce(
+      syncOutcome({ updated: 2 }, twilioOk({ reactivationRefused: ["a@x", "b@x"] })),
+    );
+    let redirected = "";
+    try {
+      await syncSalesforceNow();
+    } catch (e) {
+      redirected = decodeURIComponent(String((e as Error).message));
+    }
+    expect(redirected).toContain("2 agents");
+    expect(redirected).toContain("Google calendar");
+    expect(redirected).not.toContain("@x");
+  });
+
+  // The half-failed run. The Salesforce banner must still report what Salesforce
+  // did, AND the page must say the Twilio half did not happen, because a silent
+  // Twilio half has every symptom of a healthy one.
+  it("reports a failed Twilio half beside a successful Salesforce one, not instead of it", async () => {
+    rosterSync.runRosterSync.mockResolvedValueOnce(
+      syncOutcome({ updated: 7 }, { ok: false, reason: "Twilio refused the credentials (401)." }),
+    );
+    let redirected = "";
+    try {
+      await syncSalesforceNow();
+    } catch (e) {
+      redirected = decodeURIComponent(String((e as Error).message));
+    }
+    expect(redirected).toContain("synced=");
+    expect(redirected).toContain("7 agents synced");
+    // Its own parameter, so the page can draw it as a refusal rather than burying a
+    // failure sentence inside a green success wash.
+    expect(redirected).toContain("twilio_error=");
+    expect(redirected).toContain("401");
+  });
+
+  it("says when a flip threw, because the counts above are the only evidence anybody reads", async () => {
+    rosterSync.runRosterSync.mockResolvedValueOnce(
+      syncOutcome({ updated: 2 }, twilioOk({ turnedOff: ["a@x"], flipFailures: 1 })),
+    );
+    let redirected = "";
+    try {
+      await syncSalesforceNow();
+    } catch (e) {
+      redirected = decodeURIComponent(String((e as Error).message));
+    }
+    expect(redirected).toContain("1 agent could not be flipped at all");
+  });
+
+  it("says nothing about Twilio when it read fine and changed nobody", async () => {
+    rosterSync.runRosterSync.mockResolvedValueOnce(syncOutcome({ updated: 2 }));
+    let redirected = "";
+    try {
+      await syncSalesforceNow();
+    } catch (e) {
+      redirected = decodeURIComponent(String((e as Error).message));
+    }
+    expect(redirected).not.toMatch(/redistribute/i);
+    expect(redirected).not.toContain("twilio_error=");
   });
 
   // #1653: the admin who presses this button is usually pressing it BECAUSE a

@@ -30,6 +30,24 @@ const streak = vi.hoisted(() => ({
   recordFailureStreak: vi.fn(),
   clearFailureStreak: vi.fn(async () => {}),
 }));
+// #2097: the Twilio half. Mocked rather than left real, because the real one reads
+// the deployment's credentials and would refuse in every test here, which is a
+// perfectly correct refusal that would make the whole suite about Twilio.
+const twilio = vi.hoisted(() => ({
+  syncTwilioRedistribute: vi.fn(async () => ({
+    workers: 142,
+    addresses: 140,
+    turnedOff: [] as string[],
+    turnedBackOn: [] as string[],
+    reactivationRefused: [] as string[],
+    markedWithNoWorker: [] as string[],
+    corruptAttributes: 0,
+    noEmail: 0,
+    unmappedTags: [] as string[],
+    flipFailures: 0,
+  })),
+  defaultTwilioSyncDeps: vi.fn(async () => ({}) as never),
+}));
 
 vi.mock("@/lib/cron", () => cron);
 vi.mock("@/lib/locks", () => locks);
@@ -39,6 +57,7 @@ vi.mock("@/lib/schedule", () => schedule);
 vi.mock("@/lib/availability/service", () => availability);
 vi.mock("@/lib/notify/dispatch", () => dispatch);
 vi.mock("@/lib/notify/streak", () => streak);
+vi.mock("@/lib/twilio/sync", () => twilio);
 
 import { GET } from "./route";
 
@@ -86,10 +105,13 @@ describe("GET /api/cron/agents", () => {
   // #1151: a failing roster sync is a CONDITION, so a clean pass says it is over.
   it("announces recovery on a clean pass, so the earlier page can be closed", async () => {
     await GET(req());
-    // Three conditions this lane owns, so a clean pass closes all of them: the
-    // sync failing, the roster disagreeing with Salesforce about a user id
-    // (#1587), and a manager name answering to more than one user (#1653).
+    // Four conditions this lane owns, so a clean pass closes all of them: Twilio
+    // being unreadable (#2097), the Salesforce sync failing, the roster disagreeing
+    // with Salesforce about a user id (#1587), and a manager name answering to more
+    // than one user (#1653). Twilio's is first because its step runs before the
+    // bucket coverage check, which has to see the state the run's own flips leave.
     expect(dispatch.resolveAlert.mock.calls.map((c: unknown[]) => c[0])).toEqual([
+      "twilio_sync_failures",
       "agent_sync_failures",
       "salesforce_user_id_conflicts",
       "salesforce_manager_ambiguous",
@@ -102,6 +124,32 @@ describe("GET /api/cron/agents", () => {
     sync.syncSalesforceAgents.mockRejectedValueOnce(new Error("SF unreachable"));
     await GET(req());
     expect(dispatch.resolveAlert).not.toHaveBeenCalled();
+  });
+
+  // #2097, the same silent path in the Twilio half. A read that FAILED is not
+  // evidence that Twilio is readable, so the recovery for its own key must not be
+  // sent, while the Salesforce half's recovery still is: they are two conditions and
+  // one status field between them would have either clearing both (L53).
+  it("sends NO Twilio all-clear when the Twilio read failed", async () => {
+    twilio.syncTwilioRedistribute.mockRejectedValueOnce(new Error("Twilio refused the credentials (401)."));
+    await GET(req());
+    const cleared = dispatch.resolveAlert.mock.calls.map((c: unknown[]) => c[0]);
+    expect(cleared).not.toContain("twilio_sync_failures");
+    expect(cleared).toContain("agent_sync_failures");
+  });
+
+  it("pages on its own key when Twilio cannot be read, and still reports the Salesforce half", async () => {
+    twilio.syncTwilioRedistribute.mockRejectedValueOnce(new Error("Twilio refused the credentials (401)."));
+    const res = await GET(req());
+    // 200, deliberately: the Salesforce writes committed. A 500 would record a
+    // Salesforce failure streak for a Twilio fault and page about the wrong system.
+    expect(res.status).toBe(200);
+    expect(streak.recordFailureStreak).not.toHaveBeenCalled();
+    const paged = dispatch.sendThrottledAlert.mock.calls.map((c: unknown[]) => c[0]);
+    expect(paged).toEqual(["twilio_sync_failures"]);
+    // And the response says which half failed, rather than looking like a run where
+    // nobody happened to be tagged.
+    expect(await res.json()).toMatchObject({ twilio: { ok: false } });
   });
 
   it("stays quiet on a single (self-healing) failure", async () => {

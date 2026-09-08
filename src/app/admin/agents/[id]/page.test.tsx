@@ -697,6 +697,26 @@ describe("AgentProfilePage routing attributes are read only (#1874)", () => {
     expect(panel.textContent).toMatch(/hourly roster sync/i);
   });
 
+  // #2097. The hourly sync takes an agent out of the pool for a Twilio tag, so an
+  // admin arrives at a bare "Bookable: No" beside a toggle that Twilio will silently
+  // undo within the hour. An unexplained state next to a control that reverts is the
+  // shape people flip twice and then stop trusting (L109), so the page says who
+  // decided it and where the fix is.
+  it("says WHY an agent Twilio withholds is not bookable, and where the fix is", async () => {
+    await withAttrs({ redistribute: "Y" });
+    const body = document.body.textContent ?? "";
+    expect(body).toMatch(/redistribute/i);
+    // The remedy has to name the place they will act, not the constraint (L399):
+    // the tag is removed in Twilio, and the next sync is what puts them back.
+    expect(body).toMatch(/Twilio/);
+    expect(body).toMatch(/roster sync/i);
+  });
+
+  it("says nothing about redistribute for an agent Twilio does not withhold", async () => {
+    await withAttrs({ debt_team: ["low"] });
+    expect(document.body.textContent ?? "").not.toMatch(/redistribute/i);
+  });
+
   // The one Slate owns. Routing really does match on it (`legal_eligible!`) and
   // nothing else writes it, so it stays a control.
   it("keeps legal eligible editable, with its own save", async () => {

@@ -590,7 +590,7 @@ export function BucketCriteriaPicker({
       <div>
         <span className={labelCls}>{CRITERIA_RULE_LABEL}</span>
         <p className="mt-1 text-xs text-fg-muted">
-          No agent attributes synced yet. Sync from Salesforce to route by attribute.
+          No agent attributes synced yet. Sync the roster to route by attribute.
         </p>
         {/* The stored criteria are still posted back: an unreadable catalog must
             not silently clear a bucket's routing on the next save. Not when read

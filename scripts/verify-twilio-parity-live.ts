@@ -30,9 +30,9 @@ loadEnvFiles([".env.local", ".dev.vars"]);
 
 const { supabaseAdmin } = await import("@/lib/supabase/admin");
 const { unwrap } = await import("@/lib/db/result");
-const { readWorker, mergeWorkers, compareOne, TWILIO_VERDICT_RANK } = await import("./lib/twilio-roster.ts");
-type TwilioSide = import("./lib/twilio-roster.ts").TwilioSide;
-type TwilioVerdict = import("./lib/twilio-roster.ts").TwilioVerdict;
+const { readWorker, mergeWorkers, compareOne, TWILIO_VERDICT_RANK } = await import("@/lib/twilio/roster");
+type TwilioSide = import("@/lib/twilio/roster").TwilioSide;
+type TwilioVerdict = import("@/lib/twilio/roster").TwilioVerdict;
 
 /** Every way this ends, each on its own code. Finding nothing to compare is never a pass (L98). */
 const EXIT: Record<string, number> = {

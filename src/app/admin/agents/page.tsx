@@ -29,6 +29,8 @@ export default async function AgentRosterPage({
     imp_error?: string;
     synced?: string;
     sync_error?: string;
+    /** The Twilio half refused while Salesforce succeeded (#2097). */
+    twilio_error?: string;
   }>;
 }) {
   const sp = await searchParams;
@@ -82,9 +84,12 @@ export default async function AgentRosterPage({
       <AdminPageHeader title="Agent roster">
         Everyone Slate can route a lead to, and whether they are bookable.
       </AdminPageHeader>
+      {/* The job reads Salesforce and Twilio (#2097), so it is named for what it
+          does rather than for one of its two sources. One vocabulary for it in
+          every place it is mentioned, including the button (L605). */}
       {sp.synced && (
         <div className="rounded-md bg-[var(--pennie-green-wash)] px-5 py-4 text-sm text-pennie-graphite">
-          Salesforce sync complete. {sp.synced}.
+          Roster sync complete. {sp.synced}.
         </div>
       )}
       {sp.sync_error && (
@@ -92,8 +97,19 @@ export default async function AgentRosterPage({
           role="alert"
           className="rounded-md border border-[var(--error)] px-5 py-4 text-sm text-error"
         >
-          Salesforce sync failed: {sp.sync_error}
+          Roster sync failed: {sp.sync_error}
         </div>
+      )}
+      {/* Half a run. It sits BESIDE the success wash above rather than replacing
+          it: the Salesforce writes committed, so calling the run a failure would be
+          a lie, and calling it a plain success would hide that the Redistribute tag
+          was not acted on at all. */}
+      {sp.twilio_error && (
+        <UnreadableNotice>
+          Twilio could not be read, so nobody was taken out of the bookable pool for
+          the Redistribute tag and nobody was put back in. Salesforce still synced.{" "}
+          {sp.twilio_error}
+        </UnreadableNotice>
       )}
       <section id="agents" className={cardCls}>
         {rosterUnreadable && (
