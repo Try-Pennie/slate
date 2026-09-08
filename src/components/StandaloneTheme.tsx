@@ -1,5 +1,16 @@
 import { themeBootScript } from "@/lib/theme/boot";
 
+/**
+ * Both scripts this component can emit, built once at module load from literal
+ * preferences. There are exactly two, neither is derived from a request, and the
+ * component only picks one, which is what makes the inline script below safe to
+ * read at a glance rather than by tracing where `theme` came from.
+ */
+const SCRIPTS: Readonly<Record<"light" | "dark", string>> = Object.freeze({
+  light: themeBootScript({ kind: "preference", preference: "light" }),
+  dark: themeBootScript({ kind: "preference", preference: "dark" }),
+});
+
 interface StandaloneThemeProps {
   /** Resolved from the URL server-side; the union keeps the inline script safe. */
   theme: "light" | "dark";
@@ -23,13 +34,12 @@ interface StandaloneThemeProps {
  * whichever one the person making it happened to be looking at.
  */
 export default function StandaloneTheme({ theme }: StandaloneThemeProps) {
-  return (
-    <script
-      // Known-safe: the builder embeds only a value from the preference union,
-      // and `theme` is a "light" | "dark" literal rather than user input.
-      dangerouslySetInnerHTML={{
-        __html: themeBootScript({ kind: "preference", preference: theme }),
-      }}
-    />
-  );
+  // Written as two branches rather than one indexed lookup so that each inline
+  // script is a constant this file can be read straight down to verify: nothing
+  // from a request reaches the script text, and the static analyser can see it
+  // as plainly as a person can.
+  if (theme === "dark") {
+    return <script dangerouslySetInnerHTML={{ __html: SCRIPTS.dark }} />;
+  }
+  return <script dangerouslySetInnerHTML={{ __html: SCRIPTS.light }} />;
 }
