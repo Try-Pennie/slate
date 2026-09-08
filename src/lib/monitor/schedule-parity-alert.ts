@@ -57,6 +57,13 @@ export const PARITY_VERDICT_CLASS = {
   // no entry for this one, so the endpoint refused the whole payload and the daily
   // check reported nothing while looking configured.
   "staff-not-bookable": "standing",
+  // A cal.com host address that is deliberately not a Slate user, named with its
+  // reason in `KNOWN_NON_SLATE_HOSTS` (scripts/lib/roster-parity.ts). It is
+  // `absent-from-slate` with the one thing that makes that verdict actionable
+  // removed: there is no missing row to create. Paging on it would leave this
+  // check red for as long as the account exists, and it is still COUNTED in the
+  // standing total, so the exemption is knowable rather than invisible.
+  "known-not-in-slate": "standing",
   // Worth closing, never worth waking somebody for: they carry no routing
   // attributes, so no bucket could match them however long this sits.
   "not-bookable-by-design": "standing",

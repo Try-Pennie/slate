@@ -54,6 +54,9 @@ export type RosterVerdict =
   | "not-bookable-by-design"
   /** A cal.com host with no Slate row at all, so nothing can reconcile them. */
   | "absent-from-slate"
+  /** A cal.com host account that is deliberately not a Slate user, named in
+   *  `KNOWN_NON_SLATE_HOSTS` with its reason. Expected, and can never fail a run. */
+  | "known-not-in-slate"
   /** Slate offers somebody cal.com does not route to. */
   | "bookable-not-hosting"
   /** An agent Slate will not route who cal.com still can. */
@@ -69,17 +72,50 @@ export type RosterVerdict =
  * will ever change them. Given a rank of their own they would fail every run
  * forever, and a permanently red check is one nobody reads by the second week.
  *
+ * `known-not-in-slate` sits there too, for the same reason and with the same
+ * consequence: it is an address nobody is ever going to add to Slate, so a rank of
+ * its own would keep a page standing for as long as the account exists.
+ *
  * Departure outranks everything, including role, because it is the only state
  * that puts a real lead in front of somebody who has gone.
  */
 export const ROSTER_VERDICT_RANK: Record<RosterVerdict, number> = {
   agree: 0,
   "staff-not-bookable": 0,
+  "known-not-in-slate": 0,
   "not-bookable-by-design": 1,
   "absent-from-slate": 2,
   "bookable-not-hosting": 3,
   "held-back-still-hosting": 4,
   "departed-still-hosting": 5,
+};
+
+/**
+ * cal.com host addresses that are deliberately NOT Slate users, each with why.
+ *
+ * `absent-from-slate` pages, and it has to: a host missing from Slate is routinely
+ * a new hire nobody added, and at cutover they take no leads while looking fine on
+ * every screen. So the exemption is BY NAME here rather than by softening that
+ * verdict, which would blind the check to the case it exists for.
+ *
+ * The condition being exempted is "an account that hosts in cal.com and is
+ * deliberately not a Slate user", written as that reason rather than as a bare
+ * list, because an exemption recorded as one named case stops covering the moment
+ * a second case satisfies the same reason (L362). It cannot be derived from data:
+ * cal.com will not say what an account is for, and per-user attribute values
+ * answer 404 (measured 2026-09-07), so somebody has to say so once, here.
+ *
+ * Keys are lowercased, since that is how both sides' addresses are matched.
+ *
+ * It is SELF LIMITING by construction: only `compareRosters`' host loop, which
+ * runs for addresses with no Slate row at all, ever consults it. The day one of
+ * these becomes a real Slate user it is judged on its merits, so a stale entry
+ * cannot hide a genuine finding. `scripts/test-roster-parity.ts` pins that, and
+ * carries the positive control that an UNLISTED absent host still pages.
+ */
+export const KNOWN_NON_SLATE_HOSTS: Readonly<Record<string, string>> = {
+  "hariom-cal@trypennie.com":
+    "a cal.com host account that is deliberately not a Slate user (Dan, 2026-09-08), so there is nothing to reconcile and nothing anybody should do about it",
 };
 
 /** The roles that are hosts in cal.com and deliberately not bookable in Slate. */
@@ -103,18 +139,28 @@ export interface RosterRow {
  * The order of the checks is the design. Leaving is asked FIRST, before the role,
  * because ranking by role would let the worst finding hide inside the quietest
  * category: a departed admin is a departure, not an expected staff account.
+ *
+ * `absentEmail` is the address being judged when there is no Slate row, and it is
+ * REQUIRED rather than defaulted, because the only thing it does is let the
+ * exemption above apply: a caller that forgot it would silently get a page that
+ * stands forever, which is the defect this parameter exists to prevent (L168). It
+ * is ignored when `slate` is given, since the address is on the row itself and two
+ * sources for one value can only disagree (L70). Pass null where there is nothing
+ * to say.
  */
 export function classifyRosterMember(
   slate: SlateRosterMember | null,
   isCalcomHost: boolean,
+  absentEmail: string | null,
 ): { verdict: RosterVerdict; reason: string } {
   if (slate === null) {
-    return isCalcomHost
-      ? {
-          verdict: "absent-from-slate",
-          reason: "hosts in cal.com and has no Slate record at all, so neither system can reconcile them",
-        }
-      : { verdict: "agree", reason: "" };
+    if (!isCalcomHost) return { verdict: "agree", reason: "" };
+    const known = absentEmail === null ? undefined : KNOWN_NON_SLATE_HOSTS[absentEmail.toLowerCase()];
+    if (known !== undefined) return { verdict: "known-not-in-slate", reason: known };
+    return {
+      verdict: "absent-from-slate",
+      reason: "hosts in cal.com and has no Slate record at all, so neither system can reconcile them",
+    };
   }
 
   if (slate.deactivatedAt !== null) {
@@ -193,7 +239,7 @@ export function compareRosters(
   for (const member of slateMembers) {
     const key = member.email.toLowerCase();
     seen.add(key);
-    const { verdict, reason } = classifyRosterMember(member, hosts.has(key));
+    const { verdict, reason } = classifyRosterMember(member, hosts.has(key), null);
     rows.push({ email: member.email, verdict, reason });
   }
   // A host with no Slate row is carried through rather than dropped: iterating
@@ -201,7 +247,7 @@ export function compareRosters(
   // invisible, which is half of what this exists to find.
   for (const host of hosts) {
     if (seen.has(host)) continue;
-    const { verdict, reason } = classifyRosterMember(null, true);
+    const { verdict, reason } = classifyRosterMember(null, true, host);
     rows.push({ email: host, verdict, reason });
   }
 

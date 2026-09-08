@@ -20,7 +20,7 @@ import type { ScheduleVerdict } from "./schedule-parity.ts";
  * the list below, so `tsc` enforces the exemption in both directions: it may not
  * be given an exit code, and every other verdict must have one.
  */
-type QuietVerdict = "staff-not-bookable";
+type QuietVerdict = "staff-not-bookable" | "known-not-in-slate";
 
 /** Everything either half can report that a run can actually exit on. */
 export type ParityOutcome = Exclude<RosterVerdict | ScheduleVerdict, "agree" | QuietVerdict>;
@@ -70,6 +70,11 @@ export const OUTCOME_ORDER: readonly ParityOutcome[] = [
  * indistinguishable from one that was forgotten, and the check that would have
  * caught the forgotten one has to be told about the correct one somewhere.
  *
+ * `known-not-in-slate`: a cal.com host address that is deliberately not a Slate
+ * user, named with its reason in `KNOWN_NON_SLATE_HOSTS` (`roster-parity.ts`).
+ * Same argument as the staff accounts: nothing is ever going to change it, so an
+ * exit code for it would fail every run for as long as the account exists.
+ *
  * `staff-not-bookable`: nine admins, managers and team leads host in cal.com and
  * are correctly not bookable in Slate. Nothing will ever change them, so an
  * outcome for them would fail every run forever, and a permanently red check is
@@ -78,6 +83,7 @@ export const OUTCOME_ORDER: readonly ParityOutcome[] = [
  */
 export const DELIBERATELY_QUIET: readonly QuietVerdict[] = [
   "staff-not-bookable",
+  "known-not-in-slate",
 ] as const;
 
 /**
