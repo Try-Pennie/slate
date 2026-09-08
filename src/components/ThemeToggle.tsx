@@ -1,15 +1,20 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { setThemePreference } from "@/app/theme-actions";
 import type { ThemePreference } from "@/lib/db/types";
+import {
+  applyThemePreference,
+  readThemePreference,
+  rememberThemePreference,
+} from "@/lib/theme/client";
 
 /**
- * Account-tied theme control. Three choices — System / Light / Dark — where
- * System follows the device's `prefers-color-scheme` and updates live if the OS
- * flips. The choice is applied instantly (data-theme + cookie) and persisted to
- * the user's account via a server action; the no-flash script in layout.tsx
- * reads the cookie on the next load. Initial value comes from the account.
+ * Account-tied theme control. Three choices, System / Light / Dark, where System
+ * follows the device and updates live if the OS flips. The choice is applied
+ * instantly (data-theme + cookie) and persisted to the account by a server
+ * action; the boot script in `@/lib/theme/boot` reads the cookie on the next
+ * load so nothing flashes.
  *
  * #1746: this was a native `<select>`, mounted inside the already-open account
  * menu, so choosing a theme opened a browser-drawn popup on top of the app's own
@@ -27,6 +32,20 @@ import type { ThemePreference } from "@/lib/db/types";
  * checked state. The inputs are visually hidden and the segment they label is
  * what gets painted, so the focus ring is drawn on the segment (`.pn-seg` in
  * globals.css) rather than on a 1px input.
+ *
+ * #2100, TWO THINGS THIS NO LONGER DOES, and both were the same defect.
+ *
+ * It does not apply anything on mount, and it does not own the device
+ * subscription. It lives inside a panel that renders nothing while closed, so
+ * both of those only existed while a popup was open, and the mount effect
+ * re-applied the preference the PAGE had been rendered with every time the popup
+ * reopened: choose Light, close the menu, open it again, and the page went back
+ * to dark. Painting before the first paint belongs to the boot script and
+ * following the device belongs to ThemeSync, which the header mounts.
+ *
+ * Its selected value now comes from what this device last recorded rather than
+ * from the prop, for the same reason: the prop is a copy taken when the page was
+ * rendered, nothing revalidates it, and after a choice it is simply out of date.
  */
 
 const OPTIONS: { value: ThemePreference; label: string }[] = [
@@ -35,56 +54,32 @@ const OPTIONS: { value: ThemePreference; label: string }[] = [
   { value: "dark", label: "Dark" },
 ];
 
-function resolve(pref: ThemePreference): "light" | "dark" {
-  if (pref === "system") {
-    return window.matchMedia("(prefers-color-scheme: dark)").matches
-      ? "dark"
-      : "light";
-  }
-  return pref;
-}
-
-function apply(pref: ThemePreference) {
-  document.documentElement.setAttribute("data-theme", resolve(pref));
-}
-
-/**
- * The no-flash cookie the root layout's inline script reads on the next load, so
- * a page does not paint in the old theme first. At module scope beside `apply`
- * for the same reason: both write to the document, and react-hooks/immutability
- * refuses a document write made from inside the component body.
- */
-function remember(pref: ThemePreference) {
-  document.cookie = `slate-theme=${pref}; path=/; max-age=31536000; samesite=lax`;
-}
-
 export function ThemeToggle({
-  preference = "system",
+  preference,
 }: {
-  preference?: ThemePreference;
+  /** The signed in person's own account preference, as the page was rendered. */
+  preference: ThemePreference;
 }) {
-  const [pref, setPref] = useState<ThemePreference>(preference);
-
-  // Reconcile to the account preference on mount (covers a new device where the
-  // cookie wasn't seeded yet) and, while on System, track live OS changes.
-  useEffect(() => {
-    apply(pref);
-    if (pref !== "system") return;
-    const mq = window.matchMedia("(prefers-color-scheme: dark)");
-    const onChange = () => apply("system");
-    mq.addEventListener("change", onChange);
-    return () => mq.removeEventListener("change", onChange);
-  }, [pref]);
+  // The cookie is written by every path that changes this (here, the server
+  // action, login, and the header's boot script), so it is the newest record of
+  // what this browser is set to. The prop is the fallback for a device that has
+  // no cookie yet.
+  const [pref, setPref] = useState<ThemePreference>(
+    () => readThemePreference() ?? preference,
+  );
+  const [unsaved, setUnsaved] = useState(false);
 
   function choose(next: ThemePreference) {
     setPref(next);
-    apply(next);
-    remember(next);
-    // swallow-ok: a client-side cosmetic preference. The toggle has already
-    // applied the theme locally, so a failed persist only means the next visit
-    // starts from the system default. This is a client component, so the
-    // server-side logger is not available here anyway.
-    void setThemePreference(next).catch(() => {});
+    setUnsaved(false);
+    applyThemePreference(next);
+    rememberThemePreference(next);
+    // The apply and the cookie above already happened, so this browser keeps the
+    // choice whatever the account write does. What a failure costs is the NEXT
+    // sign in and every other device, which is why it is said out loud rather
+    // than swallowed: before #2100 a write that never landed was indistinguishable
+    // from one that did.
+    void setThemePreference(next).catch(() => setUnsaved(true));
   }
 
   return (
@@ -128,6 +123,12 @@ export function ThemeToggle({
           );
         })}
       </div>
+      {unsaved && (
+        <p role="status" className="mt-1.5 text-xs text-fg-muted">
+          Saved on this device only. Your account did not record it, so your next
+          sign in starts from your old theme.
+        </p>
+      )}
     </fieldset>
   );
 }

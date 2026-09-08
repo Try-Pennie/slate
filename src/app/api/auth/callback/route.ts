@@ -6,6 +6,11 @@ import { canManageAgents } from "@/lib/auth/roles";
 import { isAllowedEmail } from "@/lib/auth/domain";
 import { googleHostedDomain } from "@/lib/env";
 import { log } from "@/lib/log";
+import {
+  DEFAULT_THEME_PREFERENCE,
+  THEME_COOKIE,
+  THEME_COOKIE_MAX_AGE,
+} from "@/lib/theme/boot";
 
 export const dynamic = "force-dynamic";
 
@@ -80,10 +85,10 @@ export async function GET(req: NextRequest) {
   const dest = canManageAgents(slateUser.role) ? "/admin" : "/me";
   const res = NextResponse.redirect(`${origin}${dest}`);
   // Seed the theme cookie from the account so the preference follows the user
-  // onto this device (the no-flash script reads it before first paint).
-  res.cookies.set("slate-theme", slateUser.theme_preference ?? "system", {
+  // onto this device (the boot script reads it before first paint).
+  res.cookies.set(THEME_COOKIE, slateUser.theme_preference ?? DEFAULT_THEME_PREFERENCE, {
     path: "/",
-    maxAge: 60 * 60 * 24 * 365,
+    maxAge: THEME_COOKIE_MAX_AGE,
     sameSite: "lax",
   });
   return res;

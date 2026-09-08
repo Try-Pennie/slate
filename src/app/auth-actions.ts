@@ -5,6 +5,7 @@ import { redirect } from "next/navigation";
 import { supabaseServer } from "@/lib/supabase/server";
 import { IMPERSONATE_COOKIE } from "@/lib/auth/impersonation";
 import { log } from "@/lib/log";
+import { THEME_COOKIE } from "@/lib/theme/boot";
 
 /**
  * End the current staff session (#1031). Before this there was no sign-out
@@ -34,6 +35,6 @@ export async function signOut(): Promise<void> {
     }
   }
   store.delete(IMPERSONATE_COOKIE);
-  store.delete("slate-theme");
+  store.delete(THEME_COOKIE);
   redirect("/login");
 }
