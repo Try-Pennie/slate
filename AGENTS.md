@@ -817,6 +817,82 @@ to.
 systems are live. It is a hand-run command, so it finds what it finds on the day
 somebody runs it, and #2031 covers putting it on a schedule.
 
+# Does Slate hold the same facts as cal.com's source? (`pnpm verify:twilio-parity`)
+
+The sixth command in the family above, and the one that measures a divergence the
+other five structurally cannot see (#2096).
+
+**Slate and cal.com take the same routing facts from different systems.** Slate reads
+each agent's debt tiers and backend service from Salesforce booleans (`LowDebt__c`
+and friends, `src/lib/salesforce/sync.ts`). cal.com is fed the same facts by a
+Pipedream job that reads each **Twilio TaskRouter** worker's `teams` tags and writes
+them onto cal.com attributes. Nothing reconciles Salesforce against Twilio, so every
+agreement `verify:calcom-parity` reports rests on somebody keeping those two in step,
+and a divergence there looks like a Slate defect while both syncs are working
+perfectly.
+
+The Twilio tag to attribute mapping is copied deliberately from that live workflow
+rather than invented (`TEAM_TO_DEBT_TIER` and `TEAM_TO_BACKEND` in
+`scripts/lib/twilio-roster.ts`), so this measures what cal.com ACTUALLY receives. A
+tag the mapping does not know is REPORTED rather than dropped, because a tier added
+in Twilio would otherwise be invisible to the check written to notice drift.
+
+**`Redistribute` is why it was written.** That tag means an agent should not be taking
+booked calls at all (Dan, 2026-09-08), and it exists ONLY in Twilio: the Salesforce
+User object carries 14 custom fields and none is this one, and cal.com will not report
+per-user attribute values (`/organizations/{org}/users/{id}/attributes` answers 404 on
+both API versions). So Twilio is the only place Slate can read it, and until this
+command there was no way to see it from inside Slate at all.
+
+**It writes nothing**: no Slate row, no Twilio worker, no cal.com attribute, no alert.
+It is deliberately not named `test-*.ts`, because that glob is the offline unit suite
+and this needs live Twilio plus the Supabase secret key from `.env.local`.
+
+```
+pnpm verify:twilio-parity
+```
+
+Needs `TWILIO_API_KEY_SID`, `TWILIO_API_KEY_SECRET` and `TWILIO_WORKSPACE_SID` in
+`.env.local`. The key must be TaskRouter scoped; it is used as basic auth exactly as
+the Pipedream job does.
+
+**Only agreement passes, and it says how many addresses it compared**, because zero is
+the shape of a broken read and never a healthy roster (L98). Every other outcome exits
+on its own code, worst first.
+
+| exit | what it met |
+|---|---|
+| 0 | Slate and Twilio agree on every address compared |
+| 1 | no Twilio credentials here; nothing was attempted |
+| 2 | no workers, no Slate users, or nothing with facts on both sides |
+| 3 | Twilio did not answer, or refused the credentials |
+| 4 | Twilio answered with something unreadable |
+| 11 | in Slate and no Twilio worker carries their address, so cal.com is fed nothing for them |
+| 12 | two or more Twilio workers share one address, and their tags were unioned to compare |
+| 13 | a Twilio tag this mapping does not know |
+| 14 | a Twilio worker with no Slate record at all |
+| 15 | **legal eligibility differs** |
+| 16 | **the backend service differs** |
+| 17 | **the debt tiers differ** |
+| 18 | **carries Redistribute in Twilio and is still bookable in Slate** |
+
+Exit 18 is ranked worst because it is the only finding here that misroutes a lead the
+day it appears rather than being latent. The two Twilio configuration faults (12 and
+13) rank BELOW every difference about a person on purpose, so a duplicated worker
+cannot bury a real disagreement.
+
+A departed Slate agent ranks level with agreement and can never name a run: their
+Twilio tags are not a disagreement about somebody taking calls.
+
+Decision logic is pinned offline by `scripts/test-twilio-parity.ts`, which drives
+every verdict, the tag mapping, the duplicate union and the ranking through hand
+written fixtures with no network. Its control that matters: exit 18 must NOT fire once
+Slate has the agent not bookable, or the check would report the fix as the fault.
+
+**This does NOT retire at cutover**, unlike the rest of the family. Twilio stays the
+place managers tag agents after cal.com is off, so this comparison becomes the way
+Slate learns about `Redistribute` rather than a parallel-run check.
+
 # Is the shadow run trustworthy today? (`pnpm verify:parallel-run-readiness`)
 
 The fifth command in the family above, and the one to run right before the pilot
