@@ -1,7 +1,7 @@
 import { redirect } from "next/navigation";
 import { currentUser } from "@/lib/auth";
 import { canManageAgents, canEditOrgSettings } from "@/lib/auth/roles";
-import { appUrl, oooOnlyFor, reassignApiKey } from "@/lib/env";
+import { appUrl, consoleHiddenFor, reassignApiKey } from "@/lib/env";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { unwrap } from "@/lib/db/result";
 import { RecentRoutingTable, type RecentRoutingRow } from "@/components/RecentRoutingTable";
@@ -16,7 +16,7 @@ export default async function RecentRoutingPage() {
   const me = await currentUser();
   if (!me) redirect("/login");
   if (!canManageAgents(me.role)) return <AdminDenied need="a manager or admin" />;
-  if (oooOnlyFor(me.role)) redirect("/admin/ooo");
+  if (consoleHiddenFor(me.role)) redirect("/admin/ooo");
   const isAdmin = canEditOrgSettings(me.role);
 
   const db = supabaseAdmin();

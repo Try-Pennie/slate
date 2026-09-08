@@ -104,8 +104,11 @@ Change one by editing `wrangler.jsonc` and redeploying.
 - `GOOGLE_HOSTED_DOMAIN` (required): the server-side SSO domain gate (e.g.
   `trypennie.com`). Empty = any Google account may sign in. Its build-time
   `NEXT_PUBLIC_GOOGLE_HOSTED_DOMAIN` twin is set in 2a.
-- `AGENT_SCHEDULING_LIVE`: launch flag. `"false"` = OOO-only phase; `"true"` reveals
-  scheduling self-service to agents.
+- `AGENT_SCHEDULING_LIVE`: launch flag over the CONSOLE. `"false"` = only super
+  admins reach `/admin`; `"true"` opens it to the managers and admins whose roles
+  already allow it. It does NOT gate an agent's own hours: `/me` (My Availability)
+  and `/me/time-off` are unconditional, since 2026-09-08. It used to hide both,
+  which left the working hours form built and unreachable for 112 agents.
 - `OOO_CALENDAR_ACTOR_EMAIL` (optional): impersonation actor for OOO calendar writes.
   Unset = defaults to `MAIN_OOO_CAL_ID`.
 - `OOO_APPROVALS_TO` / `OOO_APPROVALS_BCC` / `OOO_APPROVALS_REPLY_TO`: recipients of

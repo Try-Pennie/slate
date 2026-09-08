@@ -2,7 +2,7 @@ import { redirect } from "next/navigation";
 import { SaveForm } from "@/components/ui/SaveForm";
 import { currentUser } from "@/lib/auth";
 import { canEditOrgSettings } from "@/lib/auth/roles";
-import { oooOnlyFor } from "@/lib/env";
+import { consoleHiddenFor } from "@/lib/env";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { setEventDescription } from "@/app/admin/actions";
 import { EVENT_DESCRIPTION_MAX } from "@/lib/booking/settings";
@@ -24,7 +24,7 @@ export default async function BookerCopyPage({
   const me = await currentUser();
   if (!me) redirect("/login");
   if (!canEditOrgSettings(me.role)) return <AdminDenied need="an admin" />;
-  if (oooOnlyFor(me.role)) redirect("/admin/ooo");
+  if (consoleHiddenFor(me.role)) redirect("/admin/ooo");
 
   // #1335: the event types whose lead-facing description is editable here.
   // Guarded like its old neighbours, so a missing table during a

@@ -1,5 +1,5 @@
 import { currentUser } from "@/lib/auth";
-import { oooOnlyFor } from "@/lib/env";
+import { consoleHiddenFor } from "@/lib/env";
 import { AppHeader } from "@/components/AppHeader";
 import { AdminSidebar } from "@/components/admin/AdminSidebar";
 import { adminNavFor } from "@/lib/admin/nav";
@@ -30,7 +30,7 @@ export default async function AdminLayout({
   // for nobody would be chrome around a redirect.
   if (!me) return <>{children}</>;
 
-  const groups = adminNavFor(me.role, oooOnlyFor(me.role));
+  const groups = adminNavFor(me.role, consoleHiddenFor(me.role));
 
   return (
     <>

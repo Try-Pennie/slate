@@ -52,7 +52,7 @@ const supabaseAdmin = vi.hoisted(() =>
   })),
 );
 vi.mock("@/lib/supabase/admin", () => ({ supabaseAdmin }));
-vi.mock("@/lib/env", () => ({ oooOnlyFor: () => false }));
+vi.mock("@/lib/env", () => ({ consoleHiddenFor: () => false }));
 
 const logSpy = vi.hoisted(() => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn() }));
 vi.mock("@/lib/log", () => ({ log: logSpy }));

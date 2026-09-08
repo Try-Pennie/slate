@@ -1,7 +1,7 @@
 import { redirect } from "next/navigation";
 import { currentUser } from "@/lib/auth";
 import { canEditOrgSettings } from "@/lib/auth/roles";
-import { oooOnlyFor } from "@/lib/env";
+import { consoleHiddenFor } from "@/lib/env";
 import { ErasureWorklist } from "@/components/ErasureWorklist";
 import { loadErasureWorklist } from "@/lib/snowflake/erasure-worklist-load";
 
@@ -30,7 +30,7 @@ export const dynamic = "force-dynamic";
 export default async function ErasureWorklistPage() {
   const me = await currentUser();
   if (!me) redirect("/login");
-  if (oooOnlyFor(me.role)) redirect("/admin/ooo");
+  if (consoleHiddenFor(me.role)) redirect("/admin/ooo");
   if (!canEditOrgSettings(me.role)) {
     return (
       <main className="p-8 text-sm text-fg-muted">
