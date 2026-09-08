@@ -1,7 +1,13 @@
 // @vitest-environment jsdom
 import { describe, it, expect } from "vitest";
 import { render } from "@testing-library/react";
-import { Pill, PILL_TEXT_INSET_PX, ALL_VARIANTS, type PillVariant } from "./Pill";
+import {
+  Pill,
+  PILL_TEXT_INSET_PX,
+  PILL_LABEL_OPTICAL_NUDGE_PX,
+  ALL_VARIANTS,
+  type PillVariant,
+} from "./Pill";
 
 // #1054 USED TO BE PINNED HERE, and #1838 consumed it.
 //
@@ -139,4 +145,57 @@ describe("the role ladder (#1844)", () => {
     }
   });
 
+});
+
+// #2081: the dot and the word in the Bookable pill are not centred on each other.
+//
+// `items-center` centres each child's BOX. A word's box is its line box, whose
+// centre sits below the centre of the letters themselves, because the box
+// reserves descender space that "Yes" and "No" never use (L591). Measured in
+// Chrome on the pill's own type (PP Mori SemiBold 13px, ascent 10, descent 3,
+// cap height 9.1) the word read 1.05px high of the mark, in both states.
+//
+// The word is the half that moves: putting the mark on the word's centre instead
+// would leave the pair riding high in the oval. Moving the label down lands the
+// word's optical centre on the pill's centre, which is where the mark already is,
+// so both are centred in the oval AND on each other.
+describe("optical centring of the label (#2081)", () => {
+  it("knows how far the label has to move, and why", () => {
+    // Measured, not chosen: offset = (ascent - descent - capHeight) / 2.
+    // Re-measure with a canvas TextMetrics read on the rendered pill if the
+    // pill's font, weight or size ever changes.
+    const ascent = 10;
+    const descent = 3;
+    const capHeight = 9.1;
+    const opticalError = (ascent - descent - capHeight) / 2; // -1.05px, word high
+    expect(Math.round(-opticalError)).toBe(PILL_LABEL_OPTICAL_NUDGE_PX);
+  });
+
+  it("moves the label, and only the label", () => {
+    const { container } = render(
+      <Pill variant="status-ok" mark={<span data-testid="mark" className="h-2 w-2" />}>
+        Yes
+      </Pill>,
+    );
+
+    const label = container.querySelector("[data-pill-label]");
+    expect(label?.textContent).toBe("Yes");
+    expect(label?.className).toContain(`top-[${PILL_LABEL_OPTICAL_NUDGE_PX}px]`);
+
+    // The mark is already on the pill's centre, so it must stay outside the
+    // nudge. A pair moved together is the same pair.
+    const mark = container.querySelector('[data-testid="mark"]');
+    expect(mark).toBeTruthy();
+    expect(label?.contains(mark!)).toBe(false);
+  });
+
+  it("centres the word in every pill, not only the one with a mark", () => {
+    // Otherwise a bookable pill's word would sit a pixel below the role pill
+    // beside it in the same row, which is a new misalignment rather than a fix.
+    const { container } = render(<Pill variant="outline">Deactivated</Pill>);
+
+    expect(container.querySelector("[data-pill-label]")?.className).toContain(
+      `top-[${PILL_LABEL_OPTICAL_NUDGE_PX}px]`,
+    );
+  });
 });

@@ -57,6 +57,34 @@ export const PILL_TEXT_INSET_PX = BORDER_PX + PAD_X_PX;
  */
 const ALIGN_TO_COLUMN_CLS = "-ml-[9px]";
 
+/**
+ * How far the LABEL sits below where `items-center` puts it, so the word is
+ * centred by its letters rather than by its box (#2081).
+ *
+ * `items-center` centres each child's box, and a word's box is its line box,
+ * which reserves descender space that most labels here never use. So the letters
+ * sit above the centre of their own box, and a mark centred beside them reads as
+ * low even though both are perfectly centred in the pill (L591).
+ *
+ * MEASURED, not chosen. In Chrome on the pill's own type (PP Mori SemiBold 13px)
+ * the font reports ascent 10, descent 3, cap height 9.1, so the letters' centre
+ * sits (ascent - descent - capHeight) / 2 = 1.05px above the box centre, in both
+ * the Yes and No states. Re-measure with a canvas TextMetrics read on a rendered
+ * pill if the pill's font, size or weight changes; Pill.test.tsx carries the
+ * arithmetic.
+ *
+ * THE LABEL MOVES, NOT THE MARK. Putting the mark on the word's centre instead
+ * would align the pair to each other and leave both riding high in the oval.
+ * Moving the label down puts the word's optical centre where the mark already
+ * is, which is the pill's centre, so the two are centred on each other AND in
+ * the oval. Every pill's label gets it, not only the one with a mark, or a
+ * bookable pill's word would sit a pixel below the role pill beside it.
+ */
+export const PILL_LABEL_OPTICAL_NUDGE_PX = 1;
+
+/** Literal for the same reason as the cancellation above: Tailwind reads source. */
+const LABEL_OPTICAL_CLS = "relative top-[1px]";
+
 export type PillVariant =
   | "role-agent"
   | "role-manager"
@@ -124,11 +152,22 @@ export function Pill({
   className,
   title,
   alignToColumn,
+  mark,
 }: {
   variant: PillVariant;
   children: ReactNode;
   className?: string;
   title?: string;
+  /**
+   * A small leading shape drawn before the label (#2081), such as the bookable
+   * pill's filled disc or ring.
+   *
+   * It is a prop rather than just another child because the pill treats the two
+   * differently: the mark is centred on the pill's own centre, and the label is
+   * centred on its letters. Passing a mark as a child would put it inside that
+   * optical nudge and move the pair together, which is the same pair.
+   */
+  mark?: ReactNode;
   /**
    * Set on a pill that starts a TABLE CELL, so its label lines up with the
    * column header's rather than 9px right of it (#1821).
@@ -148,7 +187,10 @@ export function Pill({
         alignToColumn ? `${ALIGN_TO_COLUMN_CLS} ` : ""
       }${variantCls}${className ? ` ${className}` : ""}`}
     >
-      {children}
+      {mark}
+      <span data-pill-label="" className={LABEL_OPTICAL_CLS}>
+        {children}
+      </span>
     </span>
   );
 }

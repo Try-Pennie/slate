@@ -70,19 +70,26 @@ export function BookablePill({
     <Pill
       variant={bookable ? "status-ok" : "outline"}
       alignToColumn={alignToColumn}
+      // #2081: through `mark` rather than as a child, because the pill centres
+      // the two differently. The mark belongs on the pill's own centre; the word
+      // has to be centred on its letters, which sit above the centre of their
+      // line box. Passed as a child it would ride along with the label's nudge
+      // and the pair would still disagree.
+      mark={
+        <span
+          aria-hidden="true"
+          data-bookable-mark={bookable ? "filled" : "hollow"}
+          // A filled disc against a ring, so the shapes differ and the distinction
+          // does not rest on the tone. The ring is drawn with a border rather than
+          // a fill, which is what makes it hollow at 8px.
+          className={
+            bookable
+              ? "h-2 w-2 shrink-0 rounded-full bg-[var(--pennie-green-mark)]"
+              : "h-2 w-2 shrink-0 rounded-full border-[1.5px] border-[var(--fg-muted)]"
+          }
+        />
+      }
     >
-      <span
-        aria-hidden="true"
-        data-bookable-mark={bookable ? "filled" : "hollow"}
-        // A filled disc against a ring, so the shapes differ and the distinction
-        // does not rest on the tone. The ring is drawn with a border rather than
-        // a fill, which is what makes it hollow at 8px.
-        className={
-          bookable
-            ? "h-2 w-2 shrink-0 rounded-full bg-[var(--pennie-green-mark)]"
-            : "h-2 w-2 shrink-0 rounded-full border-[1.5px] border-[var(--fg-muted)]"
-        }
-      />
       {label}
     </Pill>
   );
