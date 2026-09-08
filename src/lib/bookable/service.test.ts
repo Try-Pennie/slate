@@ -10,6 +10,8 @@ import type { Reachability } from "@/lib/google/reachability-classify";
 // mocked; the reachability probe and alerter are injected.
 
 const updates: Array<{ id: string; bookable: boolean }> = [];
+/** Every patch as written, so the columns BESIDE bookable can be asserted (#2071). */
+const patches: Array<{ id: string; patch: Record<string, unknown> }> = [];
 let currentUser: { id: string; bookable: boolean; email: string } | null = null;
 
 vi.mock("@/lib/supabase/admin", () => ({
@@ -18,9 +20,10 @@ vi.mock("@/lib/supabase/admin", () => ({
       select: () => ({
         eq: () => ({ maybeSingle: async () => ({ data: currentUser, error: null }) }),
       }),
-      update: (patch: { bookable: boolean }) => ({
+      update: (patch: { bookable: boolean } & Record<string, unknown>) => ({
         eq: async (_col: string, id: string) => {
           updates.push({ id, bookable: patch.bookable });
+          patches.push({ id, patch });
           return { error: null };
         },
       }),
@@ -28,7 +31,7 @@ vi.mock("@/lib/supabase/admin", () => ({
   }),
 }));
 
-import { applyBookableByEmail, applyBookableByUserId } from "./service";
+import { applyBookableByEmail, applyBookableByUserId, writeBookable } from "./service";
 
 // checkReachable yields the given outcomes in order (last one repeats), so a
 // test can model the retry: e.g. deps("transient", "reachable").
@@ -183,5 +186,29 @@ describe("pool-exit cleanup on deactivation", () => {
     const res = await applyBookableByUserId("u9", false, d);
     expect(res.status).toBe("noop");
     expect(d.cleanupOnPoolExit).not.toHaveBeenCalled();
+  });
+});
+
+// #2071: the Salesforce sync plans a flip when a hire gains a first debt team, and
+// remembers a refusal in users.bookable_pending_since so the next hour can tell it
+// from a manager somebody deliberately held out of the pool. ANY explicit bookable
+// write answers that question, whether the sync finally succeeded or a person
+// decided either way, so the one write that flips the flag also settles the mark.
+// Without this, a person switching a hire off by hand would be overridden an hour
+// later by a sync still retrying the decision they had just made.
+describe("writeBookable settles the sync's pending mark (#2071)", () => {
+  beforeEach(() => {
+    updates.length = 0;
+    patches.length = 0;
+  });
+
+  it("clears bookable_pending_since in the same write when switching ON", async () => {
+    await writeBookable("u1", true);
+    expect(patches).toEqual([{ id: "u1", patch: { bookable: true, bookable_pending_since: null } }]);
+  });
+
+  it("clears it when switching OFF too, so a human hold stops the retry", async () => {
+    await writeBookable("u1", false);
+    expect(patches).toEqual([{ id: "u1", patch: { bookable: false, bookable_pending_since: null } }]);
   });
 });

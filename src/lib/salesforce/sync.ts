@@ -29,6 +29,14 @@ import {
   type SlateRosterRow,
 } from "@/lib/salesforce/user-id-link";
 import { fetchSfWithRetry } from "@/lib/salesforce/retry";
+import {
+  agentProfileSoql,
+  planOnboardingFlip,
+  qualifiesForBooking,
+  type FlipReason,
+} from "@/lib/salesforce/onboarding";
+import { applyBookableByUserId, type BookableResult } from "@/lib/bookable/service";
+import { recordAudit } from "@/lib/audit";
 import { unwrap } from "@/lib/db/result";
 import { log } from "@/lib/log";
 import type { Attributes, Role, User } from "@/lib/db/types";
@@ -207,6 +215,19 @@ export interface SyncResult {
   inserted: number;
   updated: number;
   deactivated: number;
+  /**
+   * Hires created this run who do not yet qualify to book (#2071): on the Chatter
+   * Free profile with no debt team. Counted because the old rule never created
+   * them at all, and a row that exists but is not bookable is the state that
+   * needs to be visible rather than inferred.
+   */
+  createdUntiered: number;
+  /** Emails made bookable this run because Salesforce moved them to Sales or gave
+   *  them a first debt team, through the same gated service the admin toggle uses. */
+  bookableFlipped: string[];
+  /** Emails whose flip was planned and refused by the activation gate (no Google
+   *  calendar yet). They stay marked pending and are retried every run. */
+  bookablePending: string[];
   managersCreated: number;
   managersLinked: number;
   /**
@@ -260,14 +281,43 @@ export interface SyncResult {
 }
 
 /**
- * Syncs active Salesforce agents (with any debt team) into Slate `users`,
- * matched by email. New agents come in bookable=false. Never-logged-in agents
+ * The side effects of making somebody bookable, injectable so the planner's
+ * decision can be tested through the sync without a live Google probe (#2071).
+ */
+export interface SyncDeps {
+  applyBookable: (userId: string, bookable: boolean) => Promise<BookableResult>;
+  recordAudit: typeof recordAudit;
+  nowIso: () => string;
+}
+
+const defaultSyncDeps: SyncDeps = {
+  applyBookable: (userId, bookable) => applyBookableByUserId(userId, bookable),
+  recordAudit,
+  nowIso: () => new Date().toISOString(),
+};
+
+/** One planned flip, carried from the roster loop to the attempt after inserts. */
+interface PlannedFlip {
+  email: string;
+  reason: FlipReason;
+  attributes: Attributes;
+  /** Known for an existing row; resolved after the insert re-read for a new one. */
+  userId: string | null;
+}
+
+/**
+ * Syncs active Salesforce agents into Slate `users`, matched by email: anybody
+ * on the Sales or Chatter Free profile, plus anybody carrying a debt team on any
+ * other profile (#2071). New agents come in bookable=false, and become bookable
+ * automatically the first time Salesforce moves them to Sales or gives them a
+ * debt team (see `onboarding.ts` for the rule and why it is a transition, never a
+ * level). Never-logged-in agents
  * and managers whose Salesforce account is INACTIVE are deleted (booking history
  * survives via the agent snapshot on bookings); a user merely absent from the
  * debt-team query is kept. Anyone who has logged in (auth_user_id set) and
  * admins/super admins are never deleted.
  */
-export async function syncSalesforceAgents(): Promise<SyncResult> {
+export async function syncSalesforceAgents(deps: SyncDeps = defaultSyncDeps): Promise<SyncResult> {
   const { token, instanceUrl } = await sfToken();
   // The SELECT and the WHERE are derived from the same two field maps the
   // attributes are built from, so a field added for a new tier is queried and
@@ -279,7 +329,9 @@ export async function syncSalesforceAgents(): Promise<SyncResult> {
     `SELECT Id, Email, Name, Profile.Name, Agent_Manager__c, ` +
     `${debtFields.join(", ")}, ` +
     `${backendFields.join(", ")} FROM User ` +
-    `WHERE IsActive = true AND (${debtFilter}) AND Email != null`;
+    // Profiles first, tiers second (#2071): a hire on Chatter Free has no tier
+    // yet and is exactly the person this used to leave with no Slate row at all.
+    `WHERE IsActive = true AND Email != null AND (${agentProfileSoql()} OR ${debtFilter})`;
 
   const sfUsers = await queryAll(instanceUrl, token, soql);
   const db = supabaseAdmin();
@@ -298,16 +350,34 @@ export async function syncSalesforceAgents(): Promise<SyncResult> {
   const existing = unwrap(
     await db
       .from("users")
-      .select("id, email, attributes, salesforce_user_id")
+      .select("id, email, attributes, salesforce_user_id, bookable, deactivated_at, bookable_pending_since")
       .eq("org_id", org.id),
     "sf-existing-agents",
   );
+  type ExistingRow = {
+    id: string;
+    email: string;
+    attributes: Attributes;
+    bookable?: boolean | null;
+    deactivated_at?: string | null;
+    bookable_pending_since?: string | null;
+  };
   const byEmail = new Map(
     (existing ?? []).map((u) => {
-      const row = u as { id: string; email: string; attributes: Attributes };
+      const row = u as ExistingRow;
       return [normalizeEmail(row.email), row];
     }),
   );
+
+  // #2071: who this run should try to make bookable. Decided row by row from the
+  // attributes Slate HELD against the ones Salesforce holds now, before either is
+  // written, and the pending mark travels in the SAME write as the new attributes.
+  // That ordering is the crash safety: a run that dies after writing attributes
+  // and before attempting the flip has already left the mark, so the next hour
+  // retries rather than seeing tiers against tiers and doing nothing.
+  const flips: PlannedFlip[] = [];
+  const nowIso = deps.nowIso();
+  let createdUntiered = 0;
 
   const inserts: Partial<User>[] = [];
   // Existing-agent field refreshes as upsert rows keyed on the id PK. `org_id`
@@ -324,14 +394,36 @@ export async function syncSalesforceAgents(): Promise<SyncResult> {
     const attributes = toAttributes(u);
     const current = byEmail.get(email);
     if (current) {
-      updates.push({
+      const plan = planOnboardingFlip({
+        prev: current.attributes ?? {},
+        next: attributes,
+        bookable: current.bookable === true,
+        deactivated: current.deactivated_at != null,
+        pending: current.bookable_pending_since != null,
+      });
+      const row: Partial<User> = {
         id: current.id,
         org_id: org.id,
         email: normalizeEmail(current.email),
         name: u.Name,
         attributes: mergeSfAttributes(current.attributes, attributes),
-      });
+      };
+      if (plan.action === "flip") {
+        // A retry already carries its mark; a fresh transition gets one now, in
+        // this write, for the reason in the comment above the loop.
+        if (plan.reason !== "retry") row.bookable_pending_since = nowIso;
+        flips.push({ email, reason: plan.reason, attributes, userId: current.id });
+      }
+      updates.push(row);
     } else {
+      const plan = planOnboardingFlip({
+        prev: null,
+        next: attributes,
+        bookable: false,
+        deactivated: false,
+        pending: false,
+      });
+      if (!qualifiesForBooking(attributes)) createdUntiered += 1;
       inserts.push({
         org_id: org.id,
         email,
@@ -339,8 +431,27 @@ export async function syncSalesforceAgents(): Promise<SyncResult> {
         role: "agent",
         attributes,
         bookable: false,
+        ...(plan.action === "flip" ? { bookable_pending_since: nowIso } : {}),
       });
+      if (plan.action === "flip") flips.push({ email, reason: plan.reason, attributes, userId: null });
     }
+  }
+
+  // A pending mark on a row this run's roster did not mention (the person's
+  // Salesforce record dropped out of the query between the mark and the retry) is
+  // still an intent nobody settled. Retried here so it cannot sit forever; the
+  // planner's own deactivated and bookable checks still apply.
+  const seen = new Set(sfUsers.map((u) => normalizeEmail(u.Email ?? "")));
+  for (const [email, row] of byEmail) {
+    if (seen.has(email)) continue;
+    const plan = planOnboardingFlip({
+      prev: row.attributes ?? {},
+      next: row.attributes ?? {},
+      bookable: row.bookable === true,
+      deactivated: row.deactivated_at != null,
+      pending: row.bookable_pending_since != null,
+    });
+    if (plan.action === "flip") flips.push({ email, reason: plan.reason, attributes: row.attributes ?? {}, userId: row.id });
   }
 
   const updated = updates.length;
@@ -473,6 +584,55 @@ export async function syncSalesforceAgents(): Promise<SyncResult> {
       return [row.id, row.manager_id];
     }),
   );
+
+  // #2071: attempt every planned flip through the SAME service the admin toggle
+  // uses, so the activation gate (no Google calendar means refused and alerted,
+  // never a silent admit), the log line and the pool bookkeeping all apply. A
+  // refusal leaves the pending mark in place for next hour; a success clears it
+  // inside `writeBookable`, as does any later human decision either way.
+  const bookableFlipped: string[] = [];
+  const bookablePending: string[] = [];
+  for (const flip of flips) {
+    const userId = flip.userId ?? idByEmail.get(flip.email) ?? null;
+    if (!userId) {
+      // The insert re-read did not return them, which the batch insert above would
+      // have thrown on. Said rather than skipped, because a planned flip that
+      // quietly evaporates is the shape this whole change exists to end.
+      log.warn("agents", { msg: "planned flip has no row", email: flip.email, reason: flip.reason });
+      bookablePending.push(flip.email);
+      continue;
+    }
+    const result = await deps.applyBookable(userId, true);
+    if (result.status === "applied") {
+      bookableFlipped.push(flip.email);
+      // Actor null: an operator process, not a signed in person. The details say
+      // which Salesforce change did it, so the trail answers "who made them
+      // bookable" with "Salesforce did, by ticking Low Debt" rather than a blank.
+      await deps.recordAudit({
+        orgId: org.id,
+        actorId: null,
+        action: "agent.bookable",
+        targetUserId: userId,
+        details: {
+          bookable: true,
+          via: "salesforce-sync",
+          reason: flip.reason,
+          debt_team: flip.attributes.debt_team ?? [],
+          profile: flip.attributes.role ?? null,
+        },
+      });
+    } else if (result.status === "blocked") {
+      bookablePending.push(flip.email);
+    } else if (result.status === "noop") {
+      // Already bookable, so the intent is settled and the mark is stale. Cleared
+      // here because nothing was written for a noop, so nothing else will.
+      const { error } = await db
+        .from("users")
+        .update({ bookable_pending_since: null })
+        .eq("id", userId);
+      if (error) throw new Error(`SF pending clear failed: ${error.message}`);
+    }
+  }
 
   // Apply links; only write when the value actually changes. Grouped by manager
   // (#91) so every agent gaining the same manager is one write, not one round-trip
@@ -716,6 +876,9 @@ export async function syncSalesforceAgents(): Promise<SyncResult> {
     inserted: inserts.length,
     updated,
     deactivated: toDeactivate.length,
+    createdUntiered,
+    bookableFlipped,
+    bookablePending,
     managersCreated: plan.managersToCreate.length,
     managersLinked,
     managersUnlinked,

@@ -106,9 +106,18 @@ async function checkActivationGate(
 }
 
 /** The one write that flips a user's bookable flag (shared with the admin
- *  action, #281). Orthogonal to `deactivated_at` (this never touches it). */
+ *  action, #281). Orthogonal to `deactivated_at` (this never touches it).
+ *
+ *  It also settles `bookable_pending_since` (#2071): that mark records that the
+ *  Salesforce sync planned to make somebody bookable and was refused, and ANY
+ *  explicit bookable write answers the question it was asking, whether the sync
+ *  finally succeeded or a person decided either way. Clearing it here, in the one
+ *  write, is what stops the sync retrying a decision a human has already made. */
 export async function writeBookable(userId: string, bookable: boolean): Promise<void> {
-  await supabaseAdmin().from("users").update({ bookable }).eq("id", userId);
+  await supabaseAdmin()
+    .from("users")
+    .update({ bookable, bookable_pending_since: null })
+    .eq("id", userId);
 }
 
 /**

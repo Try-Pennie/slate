@@ -55,6 +55,14 @@ export interface User {
   /** Whether this agent can receive bookings (gates the round-robin pool). */
   bookable: boolean;
   /**
+   * The Salesforce sync planned to make this person bookable (they were moved to
+   * Sales or given a first debt team) and the activation gate refused, usually
+   * for a Google calendar that does not exist yet (#2071). Retried every sync
+   * while set; cleared by any explicit bookable write, the sync's or a person's.
+   * null = no flip is owed.
+   */
+  bookable_pending_since: string | null;
+  /**
    * Offboarding marker (#265): when set, the user has left and is excluded from
    * the booking pool, round-robin, sync/watch loop, admin roster, and manager
    * picker — but the row is retained so history (bookings, OOO) stays intact.

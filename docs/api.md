@@ -486,7 +486,10 @@ Source: `src/app/api/users/bookable/route.ts` (#281), over
 `src/lib/bookable/service.ts`. The roster/onboarding automation POSTs here to
 move an agent in or out of the booking pool. `bookable` is orthogonal to the
 offboarding state above: this never touches `deactivated_at`. Agents synced from
-Salesforce land `bookable=false` and are promoted through this endpoint.
+Salesforce land `bookable=false`. Since #2071 the hourly roster sync promotes them
+itself the first time Salesforce moves them to the Sales profile or gives them a
+debt team, through the same gated service this endpoint uses; this endpoint remains
+the route for a promotion or demotion made by hand or by another automation.
 
 **Auth:** `Authorization: Bearer <BOOKABLE_API_KEY>`. Wrong key: `401`. No key
 configured: `503`.

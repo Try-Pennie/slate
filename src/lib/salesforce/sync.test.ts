@@ -109,6 +109,24 @@ const store = vi.hoisted(() => {
 });
 vi.mock("@/lib/supabase/admin", () => ({ supabaseAdmin: () => store.makeDb() }));
 
+// #2071: the sync now makes a hire bookable through the same gated service the
+// admin toggle uses. Mocked for the whole file, because the fixtures above have
+// an agent whose stored attributes are {} and whose Salesforce record carries a
+// tier, which is exactly the transition that flips, and the real service would
+// probe Google.
+const bookable = vi.hoisted(() => ({
+  applyBookableByUserId: vi.fn(
+    async (userId: string): Promise<{ status: string; userId: string; bookable?: boolean; reason?: string }> => ({
+      status: "applied",
+      userId,
+      bookable: true,
+    }),
+  ),
+}));
+const audit = vi.hoisted(() => ({ recordAudit: vi.fn(async (_entry: Record<string, unknown>) => {}) }));
+vi.mock("@/lib/bookable/service", () => bookable);
+vi.mock("@/lib/audit", () => audit);
+
 import { syncSalesforceAgents } from "@/lib/salesforce/sync";
 
 function sfResponse(records: unknown[]) {
@@ -135,7 +153,7 @@ describe("syncSalesforceAgents batching + fail-loud (#91)", () => {
         return { ok: true, json: async () => ({ access_token: "tok", instance_url: "https://sf.example" }) };
       }
       const q = decodeURIComponent((url.split("q=")[1] ?? "").replace(/\+/g, " "));
-      if (q.includes("IsActive = true AND (")) {
+      if (q.includes("IsActive = true AND Email != null AND (")) {
         return sfResponse([
           { Email: "a@x.com", Name: "Agent A", Agent_Manager__c: "Mona Manager", HighDebt__c: true },
           { Email: "b@x.com", Name: "Agent B", Agent_Manager__c: "Mona Manager", HighDebt__c: true },
@@ -211,7 +229,7 @@ describe("syncSalesforceAgents batching + fail-loud (#91)", () => {
           return { ok: true, json: async () => ({ access_token: "tok", instance_url: "https://sf.example" }) };
         }
         const q = decodeURIComponent((url.split("q=")[1] ?? "").replace(/\+/g, " "));
-        if (q.includes("IsActive = true AND (")) {
+        if (q.includes("IsActive = true AND Email != null AND (")) {
           return sfResponse([{ Email: "a@x.com", Name: "Agent A", Agent_Manager__c: null, HighDebt__c: true }]);
         }
         return sfResponse([]);
@@ -240,7 +258,7 @@ describe("syncSalesforceAgents batching + fail-loud (#91)", () => {
           return { ok: true, json: async () => ({ access_token: "tok", instance_url: "https://sf.example" }) };
         }
         const q = decodeURIComponent((url.split("q=")[1] ?? "").replace(/\+/g, " "));
-        if (q.includes("IsActive = true AND (")) {
+        if (q.includes("IsActive = true AND Email != null AND (")) {
           return sfResponse([
             { Email: "a@x.com", Name: "Agent A", Agent_Manager__c: "Nobody Matching", HighDebt__c: true },
           ]);
@@ -265,7 +283,7 @@ describe("syncSalesforceAgents batching + fail-loud (#91)", () => {
           return { ok: true, json: async () => ({ access_token: "tok", instance_url: "https://sf.example" }) };
         }
         const q = decodeURIComponent((url.split("q=")[1] ?? "").replace(/\+/g, " "));
-        if (q.includes("IsActive = true AND (")) {
+        if (q.includes("IsActive = true AND Email != null AND (")) {
           return sfResponse([{ Email: "a@x.com", Name: "Agent A", Agent_Manager__c: null, HighDebt__c: true }]);
         }
         return sfResponse([]);
@@ -287,7 +305,7 @@ describe("syncSalesforceAgents batching + fail-loud (#91)", () => {
           return { ok: true, json: async () => ({ access_token: "tok", instance_url: "https://sf.example" }) };
         }
         const q = decodeURIComponent((url.split("q=")[1] ?? "").replace(/\+/g, " "));
-        if (q.includes("IsActive = true AND (")) {
+        if (q.includes("IsActive = true AND Email != null AND (")) {
           return sfResponse([{ Email: "a@x.com", Name: "Agent A", Agent_Manager__c: null, HighDebt__c: true }]);
         }
         return sfResponse([]);
@@ -348,7 +366,7 @@ describe("salesforce_user_id linking (#1587)", () => {
       }
       const q = decodeURIComponent((url.split("q=")[1] ?? "").replace(/\+/g, " "));
       sentQueries.push(q);
-      if (q.includes("IsActive = true AND (")) return sfResponse(opts.debtTeam);
+      if (q.includes("IsActive = true AND Email != null AND (")) return sfResponse(opts.debtTeam);
       if (q.includes("IsActive = true AND Email != null AND Email IN")) {
         return sfResponse(opts.byEmail ?? []);
       }
@@ -537,7 +555,7 @@ describe("manager name ambiguity (#1653)", () => {
       }
       const q = decodeURIComponent((url.split("q=")[1] ?? "").replace(/\+/g, " "));
       sentQueries.push(q);
-      if (q.includes("IsActive = true AND (")) return sfResponse(opts.debtTeam);
+      if (q.includes("IsActive = true AND Email != null AND (")) return sfResponse(opts.debtTeam);
       if (q.includes("LastName IN (")) return sfResponse(opts.byLastName ?? []);
       if (q.includes("Name IN (")) return sfResponse(opts.byName ?? []);
       return sfResponse([]);
@@ -739,5 +757,148 @@ describe("manager name ambiguity (#1653)", () => {
     // The number that matters to a reader is how many PEOPLE have no settled
     // approver, which is not the number of duplicated picklist values.
     expect(result.managersAmbiguous).toBe(2);
+  });
+});
+
+// #2071: how a hire becomes bookable. The rule is pinned in
+// scripts/test-salesforce-onboarding.ts; this is the wiring: that the roster
+// query admits the onboarding profiles, that the pending mark travels in the same
+// write as the attributes, that the flip goes through the gated service and is
+// recorded, and that a refusal leaves the mark for the next hour.
+describe("a hire becomes bookable on the first tier or the Sales profile (#2071)", () => {
+  const sfRoster = (records: unknown[]) => {
+    sf.fetchSfWithRetry.mockImplementation(async (url: string) => {
+      if (url.includes("oauth2/token")) {
+        return { ok: true, json: async () => ({ access_token: "tok", instance_url: "https://sf.example" }) };
+      }
+      const q = decodeURIComponent((url.split("q=")[1] ?? "").replace(/\+/g, " "));
+      if (q.includes("IsActive = true AND Email != null AND (")) return sfResponse(records);
+      return sfResponse([]);
+    });
+  };
+  const rosterQuery = () => {
+    const call = sf.fetchSfWithRetry.mock.calls
+      .map((c) => decodeURIComponent(String(c[0]).split("q=")[1] ?? "").replace(/\+/g, " "))
+      .find((q) => q.includes("FROM User WHERE IsActive"));
+    return call ?? "";
+  };
+
+  beforeEach(() => {
+    store.calls.length = 0;
+    store.config.errorOn = undefined;
+    store.config.existing = [];
+    store.config.afterInsert = [];
+    store.config.reapable = [];
+    bookable.applyBookableByUserId.mockClear();
+    bookable.applyBookableByUserId.mockImplementation(async (userId: string) => ({
+      status: "applied",
+      userId,
+      bookable: true,
+    }));
+    audit.recordAudit.mockClear();
+  });
+
+  it("asks Salesforce for the Sales and Chatter Free profiles, not only for tiers", async () => {
+    sfRoster([]);
+    await syncSalesforceAgents();
+    const q = rosterQuery();
+    expect(q).toContain("Profile.Name IN ('Sales', 'Chatter Free User')");
+    expect(q).toMatch(/OR .*LowDebt__c=true/);
+  });
+
+  it("creates a Chatter Free hire not bookable, with no flip owed, and counts them", async () => {
+    sfRoster([{ Email: "new@x.com", Name: "New Hire", Profile: { Name: "Chatter Free User" } }]);
+    store.config.afterInsert = [{ id: "u9", email: "new@x.com", manager_id: null, role: "agent" }];
+    const result = await syncSalesforceAgents();
+    const insert = store.calls.find((c) => c.op === "insert" && c.table === "users");
+    const row = (insert?.payload as Record<string, unknown>[])[0];
+    expect(row).toMatchObject({ email: "new@x.com", role: "agent", bookable: false });
+    expect(row.bookable_pending_since).toBeUndefined();
+    expect(bookable.applyBookableByUserId).not.toHaveBeenCalled();
+    expect(result.createdUntiered).toBe(1);
+    expect(result.bookableFlipped).toEqual([]);
+  });
+
+  it("flips a hire whose first tier just arrived, marks them pending in the same write, and records who did it", async () => {
+    store.config.existing = [
+      { id: "u1", email: "hire@x.com", attributes: { role: "Chatter Free User" }, bookable: false, deactivated_at: null, bookable_pending_since: null },
+    ];
+    store.config.afterInsert = [{ id: "u1", email: "hire@x.com", manager_id: null, role: "agent" }];
+    sfRoster([{ Email: "hire@x.com", Name: "Hire", Profile: { Name: "Sales" }, LowDebt__c: true, AchieveBackendServicer__c: true }]);
+
+    const result = await syncSalesforceAgents();
+
+    const upsert = store.calls.find((c) => c.op === "upsert");
+    const row = (upsert?.payload as Record<string, unknown>[])[0];
+    expect(row.attributes).toMatchObject({ role: "Sales", debt_team: ["low"] });
+    expect(typeof row.bookable_pending_since).toBe("string");
+
+    expect(bookable.applyBookableByUserId).toHaveBeenCalledWith("u1", true);
+    expect(audit.recordAudit).toHaveBeenCalledTimes(1);
+    const entry = audit.recordAudit.mock.calls[0][0] as Record<string, unknown>;
+    expect(entry).toMatchObject({ actorId: null, action: "agent.bookable", targetUserId: "u1" });
+    expect(entry.details).toMatchObject({ via: "salesforce-sync", reason: "first-tier", debt_team: ["low"] });
+    expect(result.bookableFlipped).toEqual(["hire@x.com"]);
+    expect(result.bookablePending).toEqual([]);
+  });
+
+  it("leaves a refused flip pending and records nothing, so next hour retries it", async () => {
+    store.config.existing = [
+      { id: "u1", email: "hire@x.com", attributes: { role: "Chatter Free User" }, bookable: false, deactivated_at: null, bookable_pending_since: null },
+    ];
+    store.config.afterInsert = [{ id: "u1", email: "hire@x.com", manager_id: null, role: "agent" }];
+    sfRoster([{ Email: "hire@x.com", Name: "Hire", Profile: { Name: "Sales" } }]);
+    bookable.applyBookableByUserId.mockResolvedValueOnce({ status: "blocked", userId: "u1", reason: "google_not_provisioned" });
+
+    const result = await syncSalesforceAgents();
+
+    expect(result.bookablePending).toEqual(["hire@x.com"]);
+    expect(result.bookableFlipped).toEqual([]);
+    expect(audit.recordAudit).not.toHaveBeenCalled();
+    // The mark went out with the attributes, before the attempt, so it survives.
+    const upsert = store.calls.find((c) => c.op === "upsert");
+    expect(typeof (upsert?.payload as Record<string, unknown>[])[0].bookable_pending_since).toBe("string");
+  });
+
+  it("retries a pending flip even when nothing about the attributes changed", async () => {
+    store.config.existing = [
+      { id: "u1", email: "hire@x.com", attributes: { role: "Sales", debt_team: ["low"] }, bookable: false, deactivated_at: null, bookable_pending_since: "2026-09-08T10:00:00Z" },
+    ];
+    store.config.afterInsert = [{ id: "u1", email: "hire@x.com", manager_id: null, role: "agent" }];
+    sfRoster([{ Email: "hire@x.com", Name: "Hire", Profile: { Name: "Sales" }, LowDebt__c: true }]);
+
+    const result = await syncSalesforceAgents();
+
+    expect(bookable.applyBookableByUserId).toHaveBeenCalledWith("u1", true);
+    expect(result.bookableFlipped).toEqual(["hire@x.com"]);
+    const entry = audit.recordAudit.mock.calls[0][0] as Record<string, unknown>;
+    expect(entry.details).toMatchObject({ reason: "retry" });
+  });
+
+  it("never overturns a person's hold: tiers against tiers is not a transition", async () => {
+    // rvillar on 2026-09-08: a manager holding tiers, set non-bookable by hand.
+    store.config.existing = [
+      { id: "u1", email: "mgr@x.com", attributes: { role: "Sales Manager", debt_team: ["medium", "high"] }, bookable: false, deactivated_at: null, bookable_pending_since: null },
+    ];
+    store.config.afterInsert = [{ id: "u1", email: "mgr@x.com", manager_id: null, role: "agent" }];
+    sfRoster([{ Email: "mgr@x.com", Name: "Mgr", Profile: { Name: "Sales Manager" }, MediumDebt__c: true, HighDebt__c: true }]);
+
+    const result = await syncSalesforceAgents();
+
+    expect(bookable.applyBookableByUserId).not.toHaveBeenCalled();
+    expect(result.bookableFlipped).toEqual([]);
+    const upsert = store.calls.find((c) => c.op === "upsert");
+    expect((upsert?.payload as Record<string, unknown>[])[0].bookable_pending_since).toBeUndefined();
+  });
+
+  it("never puts somebody who has left back in the pool because of a Salesforce edit", async () => {
+    store.config.existing = [
+      { id: "u1", email: "gone@x.com", attributes: { role: "Chatter Free User" }, bookable: false, deactivated_at: "2026-08-24T00:00:00Z", bookable_pending_since: null },
+    ];
+    store.config.afterInsert = [{ id: "u1", email: "gone@x.com", manager_id: null, role: "agent" }];
+    sfRoster([{ Email: "gone@x.com", Name: "Gone", Profile: { Name: "Sales" }, LowDebt__c: true }]);
+
+    await syncSalesforceAgents();
+    expect(bookable.applyBookableByUserId).not.toHaveBeenCalled();
   });
 });

@@ -1,0 +1,150 @@
+// The whole hourly roster job, as one locked call (#2071).
+//
+// It used to live inside the cron route, and the admin's "Sync from Salesforce"
+// button called only its first step, `syncSalesforceAgents`. So a person pressing
+// the button after adding somebody in Salesforce got the roster row and none of
+// what the hour would have done next: no working hours for the new agent (they
+// stayed without a schedule until the top of the hour), no check that a bucket now
+// routes to nobody, no all clear for the conflicts the run had just settled, and no
+// lock, so a press at :00 could run alongside the scheduled pass.
+//
+// Both callers now come here. The cron route keeps only what is genuinely its own
+// (the bearer check and the failure streak that pages on consecutive misses), and
+// the button keeps only its banner.
+import { syncSalesforceAgents, AGENTS_SYNC_STREAK_KEY, type SyncResult } from "@/lib/salesforce/sync";
+import { ensureDefaultOrg } from "@/lib/provision";
+import { ensureDefaultSchedules } from "@/lib/schedule";
+import { alertOnEmptyBuckets } from "@/lib/availability/service";
+import { acquireLock, releaseLock } from "@/lib/locks";
+import { sendThrottledAlert, resolveAlert } from "@/lib/notify/dispatch";
+import { clearFailureStreak } from "@/lib/notify/streak";
+import { log } from "@/lib/log";
+import {
+  agentSyncRecovery,
+  salesforceManagerAmbiguousAlert,
+  salesforceManagerAmbiguousRecovery,
+  salesforceUserIdConflictAlert,
+  salesforceUserIdConflictRecovery,
+} from "@/lib/monitor/cron-alert-copy";
+import { hasUserIdConflicts } from "@/lib/salesforce/user-id-link";
+
+export const AGENTS_LOCK_KEY = "cron_agents";
+const AGENTS_LOCK_TTL_MS = 10 * 60 * 1000;
+const SYNC_ALERT_COOLDOWN_MS = 6 * 60 * 60 * 1000;
+
+export type RosterSyncOutcome =
+  /** Another run holds the lock. Nothing was done, and the caller says so. */
+  | { skipped: "overlapping-run" }
+  | {
+      skipped?: undefined;
+      sync: SyncResult;
+      hoursApplied: number;
+      emptyBuckets: string[];
+      emptyBucketsAggregated: boolean;
+    };
+
+/**
+ * Run the roster job under its lock. Throws when the sync itself fails, and the
+ * caller decides what a failure means (the cron records a streak, the button shows
+ * an error). Everything on the SUCCESS path is here, because it is the same work
+ * whoever asked for it, and a manual run that skipped any of it would leave the
+ * roster in a state only the next scheduled hour could finish.
+ */
+export async function runRosterSync(): Promise<RosterSyncOutcome> {
+  const lock = await acquireLock(AGENTS_LOCK_KEY, AGENTS_LOCK_TTL_MS);
+  if (!lock) return { skipped: "overlapping-run" };
+  try {
+    const sync = await syncSalesforceAgents();
+    const org = await ensureDefaultOrg();
+    const hoursApplied = await ensureDefaultSchedules(org.id);
+    // After the roster settles, flag any bucket that now routes to nobody (#327).
+    // Best-effort: a monitoring miss must never fail the roster reconcile.
+    const coverage = await alertOnEmptyBuckets().catch(() => ({
+      empty: [] as string[],
+      aggregated: false,
+    }));
+    // Clean pass: reset the streak so a later isolated failure starts from zero.
+    await clearFailureStreak(AGENTS_SYNC_STREAK_KEY);
+    // #1151: a failing roster sync is a CONDITION, and this successful run IS the
+    // recovery. Hung off the healthy path, which is the only place that can know
+    // the sync works; resolveAlert is a no-op unless a page was delivered, so a
+    // sync that never failed stays silent. Best-effort: the roster already synced,
+    // and a Slack problem must not turn a good run into a failure.
+    // all-clear-proof: src/app/api/cron/agents/route.test.ts - "sends NO all-clear
+    // when the sync itself failed" drives this runner through the route with the
+    // sync throwing and asserts resolveAlert is never reached.
+    // alert-key: agent_sync_failures
+    const clearedSync = await resolveAlert("agent_sync_failures", agentSyncRecovery()).catch(
+      () => false,
+    );
+    if (clearedSync) log.info("agents", { msg: "sync failure alert cleared" });
+
+    // #1587: the shared cross system rep key. A row the sync deliberately left
+    // alone is invisible from every other angle: the run succeeds, the roster
+    // looks synced, and the only trace is a count nobody reads. It pages instead.
+    //
+    // Both directions hang off THIS point, which is reached only after the sync
+    // returned a real result. A run that threw never gets here, so a sync that
+    // could not measure anything clears nothing (#1134, #1152).
+    const idConflicts = {
+      linked: sync.salesforceIdsLinked,
+      disagreements: sync.salesforceIdDisagreements,
+      ambiguous: sync.salesforceIdAmbiguous,
+      claimed: sync.salesforceIdClaimed,
+      unresolved: sync.salesforceIdsUnresolved,
+    };
+    if (hasUserIdConflicts(idConflicts)) {
+      // alert-key: salesforce_user_id_conflicts
+      await sendThrottledAlert(
+        "salesforce_user_id_conflicts",
+        SYNC_ALERT_COOLDOWN_MS,
+        salesforceUserIdConflictAlert(
+          idConflicts.disagreements,
+          idConflicts.ambiguous,
+          idConflicts.claimed,
+        ),
+      ).catch(() => {});
+    } else {
+      // alert-key: salesforce_user_id_conflicts
+      const clearedIds = await resolveAlert(
+        "salesforce_user_id_conflicts",
+        salesforceUserIdConflictRecovery(),
+      ).catch(() => false);
+      if (clearedIds) log.info("agents", { msg: "salesforce user id conflict alert cleared" });
+    }
+
+    // #1653: a manager name answering to more than one Salesforce user. Its own
+    // condition, not folded into the id conflicts above, because the two are
+    // independent checks and one status field between them would have either
+    // clearing both (L53).
+    //
+    // Only the AMBIGUOUS refusal pages. A manager name that matched NOBODY leaves
+    // the rep with no manager, which every consumer correctly sees as no manager;
+    // a name that matched several may leave a link naming the wrong human, and
+    // wrong is worse than missing. That is the same asymmetry #1587 settled.
+    if (sync.managersAmbiguous > 0) {
+      // alert-key: salesforce_manager_ambiguous
+      await sendThrottledAlert(
+        "salesforce_manager_ambiguous",
+        SYNC_ALERT_COOLDOWN_MS,
+        salesforceManagerAmbiguousAlert(sync.managersAmbiguous, sync.managerNamesAmbiguous),
+      ).catch(() => {});
+    } else {
+      // alert-key: salesforce_manager_ambiguous
+      const clearedManagers = await resolveAlert(
+        "salesforce_manager_ambiguous",
+        salesforceManagerAmbiguousRecovery(),
+      ).catch(() => false);
+      if (clearedManagers) log.info("agents", { msg: "salesforce manager ambiguity alert cleared" });
+    }
+
+    return {
+      sync,
+      hoursApplied,
+      emptyBuckets: coverage.empty,
+      emptyBucketsAggregated: coverage.aggregated,
+    };
+  } finally {
+    await releaseLock(AGENTS_LOCK_KEY, lock);
+  }
+}
