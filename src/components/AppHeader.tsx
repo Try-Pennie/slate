@@ -18,6 +18,8 @@ import { calendarHeaderStatus } from "@/lib/calendar/header-status";
 import { PendingApprovalsBadge } from "@/components/header/PendingApprovalsBadge";
 import { stopImpersonation } from "@/app/admin/actions";
 import { ImpersonationDropNotice } from "@/components/ImpersonationDropNotice";
+import { ThemeSync } from "@/components/ThemeSync";
+import { ownThemePreference, themeBootScript } from "@/lib/theme/boot";
 import type { ThemePreference } from "@/lib/db/types";
 
 // Module scope so the Date.now() call doesn't trip react-hooks/purity in render.
@@ -40,7 +42,7 @@ function hasLiveWatch(rows: { watch_expiration: string | null }[]): boolean {
 export async function AppHeader({
   email,
   role,
-  themePreference = "system",
+  themePreference,
   userId,
   orgId,
   bookable,
@@ -48,7 +50,13 @@ export async function AppHeader({
 }: {
   email: string;
   role?: string;
-  themePreference?: ThemePreference;
+  /**
+   * The preference of the user this page was rendered FOR. While an admin is
+   * viewing as somebody else that is the impersonated person, which is why the
+   * header resolves whose theme to paint through `ownThemePreference` rather
+   * than using this directly (#2100).
+   */
+  themePreference: ThemePreference;
   userId?: string;
   orgId?: string;
   bookable?: boolean;
@@ -65,6 +73,10 @@ export async function AppHeader({
   // Persistent banner so an impersonating admin always knows + can get out, plus
   // a one-time notice when a "view as" session was silently dropped (#652).
   const impersonation = await getImpersonationView();
+  // Whose theme this session paints: the signed in person's, never the person
+  // they are viewing as (#2100). `themePreference` is the page's user, which
+  // under "view as" is somebody else entirely.
+  const ownTheme = ownThemePreference(impersonation, themePreference);
 
   // Google Calendar sync status (#87). A live push-watch means real-time sync,
   // but a watch lapses and auto-renews on the cron and the 1-min backstop syncs
@@ -175,6 +187,31 @@ export async function AppHeader({
         provides a focusable target, and every page really reaches the shell), since
         a skip link pointing at nothing is a control that appears to work and moves
         focus nowhere. */}
+    {/* #2100: the theme is painted HERE, before the first paint, from the
+        signed in person's own account row.
+        
+        It used to be applied by an effect inside the account menu, which
+        renders nothing while closed, so opening the menu is what themed the
+        page: it painted light, and flipped when somebody clicked their
+        initials. This script also mirrors the preference into the cookie, which
+        is what the root layout reads on every OTHER surface, so a session that
+        never came through the OAuth callback stops being permanently unthemed.
+        
+        `ownThemePreference` is the rule that the theme belongs to whoever is
+        signed in, never to whoever they are viewing as. */}
+    <script
+      dangerouslySetInnerHTML={{
+        __html: themeBootScript({
+          kind: "preference",
+          preference: ownTheme,
+          remember: true,
+        }),
+      }}
+    />
+    {/* Keeps a System preference following the device for the whole visit.
+        Mounted by the header rather than by the account panel, because a panel
+        that renders nothing while closed cannot hold a subscription. */}
+    <ThemeSync preference={ownTheme} />
     <a href="#main" className="pn-skip-link">
       Skip to content
     </a>
@@ -257,7 +294,8 @@ export async function AppHeader({
             email={email}
             role={role}
             avatarUrl={avatarUrl}
-            themePreference={themePreference}
+            themePreference={ownTheme}
+            impersonating={impersonation.status === "active"}
             calendar={calendar.menu}
           />
         </div>

@@ -21,12 +21,16 @@ export function AccountMenu({
   themePreference,
   calendar,
   avatarUrl,
+  impersonating = false,
 }: {
   email: string;
   role?: string;
+  /** The SIGNED IN person's own preference, never the one being viewed as. */
   themePreference: ThemePreference;
   calendar: CalendarMenuStatus;
   avatarUrl?: string | null;
+  /** True while this session is viewing as somebody else (#2100). */
+  impersonating?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const [imgOk, setImgOk] = useState(true);
@@ -162,10 +166,22 @@ export function AccountMenu({
 
           {/* #1746: the control carries its own <legend>Theme</legend>, so the
               heading that used to sit here would be a second, unlinked copy of
-              the same word. */}
-          <div className="mt-3 border-t border-border pt-3">
-            <ThemeToggle preference={themePreference} />
-          </div>
+              the same word.
+
+              #2100: absent while viewing as somebody else, rather than shown and
+              refusing. The page belongs to the person being impersonated and the
+              write belongs to the admin, so a control here could only ever
+              display one and change the other. It is removed rather than
+              disabled because a disabled control still invites the press and
+              still has to explain itself. The theme keeps being APPLIED
+              throughout, from the admin's own preference: that half lives in the
+              header, which is where it has to be anyway, since this panel
+              renders nothing while it is closed. */}
+          {!impersonating && (
+            <div className="mt-3 border-t border-border pt-3">
+              <ThemeToggle preference={themePreference} />
+            </div>
+          )}
 
           <SaveForm
             action={signOut}

@@ -141,32 +141,52 @@ describe("ThemeToggle", () => {
     expect(actions.setThemePreference).toHaveBeenCalledWith("dark");
   });
 
-  it("resolves System against the device rather than to a fixed theme", () => {
+  it("resolves System against the device when System is chosen", async () => {
     stubMatchMedia(true);
-    render(<ThemeToggle preference="system" />);
+    render(<ThemeToggle preference="light" />);
+
+    await userEvent.click(screen.getByRole("radio", { name: /^system$/i }));
 
     expect(document.documentElement.getAttribute("data-theme")).toBe("dark");
   });
 
-  it("keeps following the device while on System", () => {
-    const media = stubMatchMedia(false);
-    render(<ThemeToggle preference="system" />);
-    expect(document.documentElement.getAttribute("data-theme")).toBe("light");
+  // #2100: FOLLOWING the device for the rest of the visit is no longer this
+  // component's job, and applying anything on mount never was. Both moved to
+  // ThemeSync, which is mounted by the header rather than by a panel that
+  // renders nothing while closed; see src/components/ThemeSync.test.tsx. What
+  // the theme is on a fresh load is settled before hydration by the boot script,
+  // covered in scripts/test-theme-boot.ts.
 
-    media.flip(true);
-
-    expect(document.documentElement.getAttribute("data-theme")).toBe("dark");
-  });
-
-  it("stops following the device once an explicit theme is chosen", async () => {
-    const media = stubMatchMedia(false);
-    render(<ThemeToggle preference="system" />);
-
+  it("keeps the chosen theme when the account menu closes and opens again", async () => {
+    // THE REGRESSION (#2100). The panel renders nothing while closed, so closing
+    // the menu destroys this component and reopening it mounts a new one from
+    // the same server prop, because nothing revalidated the page. On a dark
+    // device that put the page back to dark and the control back to System,
+    // discarding the choice somebody had just made.
+    const media = stubMatchMedia(true);
+    const opened = render(<ThemeToggle preference="system" />);
     await userEvent.click(screen.getByRole("radio", { name: /^light$/i }));
-    media.flip(true);
-
-    // Pinned to light: a device flip must not move an explicit choice.
     expect(document.documentElement.getAttribute("data-theme")).toBe("light");
+
+    opened.unmount();
+    render(<ThemeToggle preference="system" />);
+
+    expect(
+      (screen.getByRole("radio", { name: /^light$/i }) as HTMLInputElement).checked,
+    ).toBe(true);
+    expect(document.documentElement.getAttribute("data-theme")).toBe("light");
+    expect(media.listenerCount()).toBe(0);
+  });
+
+  it("shows what this device last recorded rather than what the page was rendered with", () => {
+    stubMatchMedia(false);
+    document.cookie = "slate-theme=dark; path=/";
+
+    render(<ThemeToggle preference="system" />);
+
+    expect(
+      (screen.getByRole("radio", { name: /^dark$/i }) as HTMLInputElement).checked,
+    ).toBe(true);
   });
 
   it("still applies and remembers the theme locally when the account persist fails", async () => {
@@ -181,6 +201,29 @@ describe("ThemeToggle", () => {
 
     expect(document.documentElement.getAttribute("data-theme")).toBe("dark");
     expect(document.cookie).toContain("slate-theme=dark");
+  });
+
+  it("says so when the account did not record the choice", async () => {
+    // #2100: the persist was fire and forget with a swallowed rejection, so a
+    // write that never landed looked exactly like one that did. It still
+    // applies locally (above), but the person is told what did not happen,
+    // because the consequence lands on their next sign in rather than now.
+    stubMatchMedia(false);
+    actions.setThemePreference.mockRejectedValue(new Error("offline"));
+    render(<ThemeToggle preference="light" />);
+
+    await userEvent.click(screen.getByRole("radio", { name: /^dark$/i }));
+
+    expect(screen.getByRole("status").textContent ?? "").toMatch(/this device/i);
+  });
+
+  it("says nothing when the account did record the choice", async () => {
+    stubMatchMedia(false);
+    render(<ThemeToggle preference="light" />);
+
+    await userEvent.click(screen.getByRole("radio", { name: /^dark$/i }));
+
+    expect(screen.queryByRole("status")).toBeNull();
   });
 
   it("gives every segment a 44px target", () => {

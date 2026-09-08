@@ -58,10 +58,27 @@ const logSpy = vi.hoisted(() => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn() 
 vi.mock("@/lib/log", () => ({ log: logSpy }));
 
 import { AppHeader } from "@/components/AppHeader";
+import { themeBootScript } from "@/lib/theme/boot";
 
-const props = { email: "admin@trypennie.com", role: "admin", active: "admin" as const };
+const props = {
+  email: "admin@trypennie.com",
+  role: "admin",
+  active: "admin" as const,
+  themePreference: "light" as const,
+};
 
 beforeEach(() => {
+  // jsdom implements no matchMedia, and the header now mounts ThemeSync, which
+  // subscribes to one (#2100).
+  vi.stubGlobal(
+    "matchMedia",
+    vi.fn(() => ({
+      matches: false,
+      media: "(prefers-color-scheme: dark)",
+      addEventListener: () => {},
+      removeEventListener: () => {},
+    })),
+  );
   view.v = { status: "none" };
   db.oooCountError = null;
   db.oooCount = 0;
@@ -179,5 +196,62 @@ describe("the header does not wait on the badge (#1847)", () => {
   it("still holds the calendar read, whose banner must not arrive late", async () => {
     render(await AppHeader(withIds));
     expect(db.trace).toContain("agent_calendars:settled");
+  });
+});
+
+describe("AppHeader theme (#2100)", () => {
+  // The measured cause of #2100: the theme control read the IMPERSONATED
+  // person's preference and wrote the ADMIN's account row, so under "view as"
+  // the two halves could never agree and a choice looked discarded. The header
+  // is where that is settled now, because it is the one surface that knows both
+  // identities and is mounted for the whole visit.
+  const asAdminViewingAgent = {
+    status: "active",
+    real: { id: "admin-1", theme_preference: "dark" },
+    target: {
+      id: "agent-9",
+      name: "Agent Nine",
+      email: "a9@x.com",
+      role: "agent",
+      theme_preference: "system",
+    },
+  };
+
+  it("paints the signed in person's own theme, not the one they are viewing as", async () => {
+    view.v = asAdminViewingAgent;
+    // The page renders FOR the agent, so this prop is the agent's preference.
+    const { container } = render(await AppHeader({ ...props, themePreference: "system" }));
+
+    const script = [...container.querySelectorAll("script")]
+      .map((s) => s.innerHTML)
+      .find((t) => t.includes("data-theme"));
+    expect(script).toBe(
+      themeBootScript({ kind: "preference", preference: "dark", remember: true }),
+    );
+  });
+
+  it("paints your own theme when you are signed in as yourself", async () => {
+    view.v = { status: "none" };
+    const { container } = render(await AppHeader({ ...props, themePreference: "system" }));
+
+    const script = [...container.querySelectorAll("script")]
+      .map((s) => s.innerHTML)
+      .find((t) => t.includes("data-theme"));
+    expect(script).toBe(
+      themeBootScript({ kind: "preference", preference: "system", remember: true }),
+    );
+  });
+
+  it("applies the theme outside the account menu, so opening it is not what themes the page", async () => {
+    view.v = { status: "none" };
+    const { container } = render(await AppHeader(props));
+
+    // The panel renders nothing until it is opened, so anything inside it cannot
+    // be what paints the page. The script is in the header's own markup.
+    const script = [...container.querySelectorAll("script")].find((s) =>
+      s.innerHTML.includes("data-theme"),
+    );
+    expect(script).toBeTruthy();
+    expect(screen.queryByRole("radiogroup", { name: /theme/i })).toBeNull();
   });
 });
