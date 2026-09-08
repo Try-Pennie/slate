@@ -96,6 +96,7 @@ vi.mock("@/lib/bookable/service", () => ({ applyBookableByUserId: vi.fn(), apply
 vi.mock("@/lib/salesforce/sync", () => ({ syncSalesforceAgents: vi.fn(), AGENTS_SYNC_STREAK_KEY: "k" }));
 vi.mock("@/lib/notify/streak", () => ({ clearFailureStreak: vi.fn(), recordFailureStreak: vi.fn(), recordConsecutiveStreak: vi.fn() }));
 
+import { ME_TABS } from "@/lib/me/nav";
 import {
   setWorkingHours,
   setOrgDefaultHours,
@@ -224,7 +225,11 @@ describe("saving working hours confirms it saved (#1988)", () => {
   it("sends an agent saving their own hours back to their own page", async () => {
     auth.currentUser.mockResolvedValue({ id: "me1", role: "agent", org_id: "o1" });
     await expect(setMyWorkingHours(hoursForm())).rejects.toThrow(/ok=working-hours/);
-    expect(redirect).toHaveBeenCalledWith("/me?ok=working-hours");
+    // #2107: the availability page's own address, read from the tab list. It
+    // matters that this is not "/me": that is a redirect, and a redirect whose
+    // target redirects again drops the query string, so the saved notice would
+    // never arrive (L586).
+    expect(redirect).toHaveBeenCalledWith(`${ME_TABS[0].href}?ok=working-hours`);
   });
 
   // #2103: the agent's half of this went with `useMyDefaultHours`. The company

@@ -1,3 +1,4 @@
+import { ME_TABS } from "@/lib/me/nav";
 /**
  * What a person reads when a page could not finish (#1970).
  *
@@ -59,7 +60,7 @@ export function boundaryWayBack(
     return { href: "/admin", label: BOUNDARY_HOME };
   }
   if (pathname.startsWith("/me")) {
-    return { href: "/me", label: "Go to your availability" };
+    return { href: ME_TABS[0].href, label: "Go to your availability" };
   }
   return null;
 }
