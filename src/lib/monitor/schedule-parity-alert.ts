@@ -48,6 +48,10 @@ export const PARITY_VERDICT_CLASS = {
   "days-differ": "paging",
   "hours-differ": "paging",
   "bookable-not-hosting": "paging",
+  // Slate offers a lead somebody cal.com holds and has decided not to route to
+  // (#2088). It pages for the same reason its neighbour does, and it is the louder
+  // of the two: the incumbent made this decision explicitly.
+  "bookable-not-routable": "paging",
   "absent-from-slate": "paging",
   // Nine admins, managers and team leads who host in cal.com and are correctly not
   // bookable in Slate. It is the commonest non-agreement the sweep produces, and it
@@ -87,7 +91,8 @@ const PAGING_LABEL: Record<string, string> = {
   "timezone-differs": "are in a different timezone",
   "days-differ": "work different days",
   "hours-differ": "work different hours",
-  "bookable-not-hosting": "Slate offers and cal.com never routes to",
+  "bookable-not-hosting": "Slate offers and cal.com does not list at all",
+  "bookable-not-routable": "Slate offers and cal.com withholds from routing",
   "absent-from-slate": "host in cal.com and have no Slate record",
 };
 
