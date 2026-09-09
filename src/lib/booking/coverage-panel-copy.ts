@@ -49,16 +49,23 @@ export function coveragePanelWhere(whose = "that agent's"): string {
 }
 
 /**
- * What the panel is, and when a reader needs it, which is the question they are
- * actually asking when they land on it.
+ * What the panel DOES to a booking, which is the question a reader lands on it
+ * with.
+ *
+ * It used to open with the four situations above as a list, `for any reason:
+ * they have left the pool, Salesforce changed who owns their leads, one booking
+ * needs escalating, or they are out sick with nothing filed`. Nobody arrives
+ * here wondering whether their reason qualifies (#2121): they arrive holding a
+ * reason, and the list sat four cases long above the controls pushing the three
+ * sentences that carry information further down. The situations are recorded in
+ * the module docstring above, which answers the maintainer's question of why the
+ * panel exists rather than the reader's question of what pressing it will do.
  */
 export function coveragePanelDescription(agentName: string): string {
   return (
-    `Move ${agentName}'s upcoming bookings to another advisor, for any reason: they have ` +
-    `left the pool, Salesforce changed who owns their leads, one booking needs escalating, ` +
-    `or they are out sick with nothing filed. Each booking keeps its exact time, the ` +
-    `customer gets one short note that a different advisor will meet them, and anything ` +
-    `that cannot be placed stays put for you to handle by hand.`
+    `Move ${agentName}'s upcoming bookings to another advisor. Each booking keeps its ` +
+    `exact time, the customer gets one short note that a different advisor will meet ` +
+    `them, and anything that cannot be placed stays put for you to handle by hand.`
   );
 }
 
