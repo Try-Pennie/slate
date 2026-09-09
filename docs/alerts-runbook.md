@@ -201,7 +201,8 @@ on purpose and is waiting for somebody.
 Keys: `agent_sync_failures`, `agents_without_routing`, `agents_without_schedule`,
 `roster_coverage_gap`, `salesforce_user_id_conflicts`, `salesforce_manager_ambiguous`,
 `misroute:*`, `rr_ordering_degraded`, `reassign-unknown-reason-code`,
-`booker_empty_reason`, `schedule_parity_drift`, `agents_on_unset_hours`.
+`booker_empty_reason`, `schedule_parity_drift`, `agents_on_unset_hours`,
+`legal_relaxed:*`.
 
 **What fired it.** Slate's picture of who works here, who they report to, or what they
 are eligible for disagrees with Salesforce, or with itself.
@@ -212,6 +213,26 @@ are eligible for disagrees with Salesforce, or with itself.
 - `/admin` for the agent list, `/admin/agents/<id>` for one agent's attributes and hours.
 - An agent with no schedule is expected before go-live (every agent sets their own hours
   at cutover) and is a real problem after it.
+
+**`legal_relaxed:*` means somebody took a legal call who is not marked for it**
+(#2158). It is not a mistake to undo: the bucket's `legal_eligible != N` rule matched
+nobody, so rather than showing that lead nothing, the rule was dropped and the tier's
+whole pool was offered. The booking is real and the lead has a call.
+
+- Measured on 2026-09-09, ten of the sixty real buckets are in this state, and they
+  are every code whose legal digit is 1 and whose backend digit is 0 or 1: 101, 111,
+  201, 211, 301, 311, 401, 411, 501, 511. A legal lead on Beyond or Achieve is not
+  affected, because those routes carry no legal filter at all.
+- The cause is that no agent carries a legal eligibility value. Exactly one of 126
+  Twilio workers holds the `Legal Eligible` tag and that agent is withheld for
+  another reason, so `not N` selects nobody. `pnpm verify:twilio-parity` reports the
+  current state.
+- **The fix is tagging, not code** (#2141). The notice stops on its own the moment
+  agents carry the value, and until then every legal booking on those codes arrives
+  this way, so treat a steady trickle as the known state rather than as news.
+- To see WHICH bookings took it, the notice is throttled to one per bucket per hour
+  and cannot tell you: read `bookings.routing_trace->>'legal_relaxed'` instead, which
+  is stamped on every one.
 
 **`schedule_parity_drift` is the one that compares Slate against cal.com** (#2031), so
 it is answered differently from the rest of this family. It fires from the daily

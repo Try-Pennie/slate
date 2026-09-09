@@ -106,7 +106,7 @@ describe("loadMembersAvailability", () => {
     }));
     dbHolder.db = fakeDb({ ...POOL_TABLES(), busy_blocks: busy });
 
-    const [member] = await loadMembersAvailability(BUCKET, FROM, TO);
+    const [member] = (await loadMembersAvailability(BUCKET, FROM, TO)).members;
 
     expect(member.userId).toBe("u1");
     expect(member.busy).toHaveLength(1001);
@@ -120,7 +120,7 @@ describe("loadMembersAvailability", () => {
       calls,
     });
 
-    const [member] = await loadMembersAvailability(BUCKET, FROM, TO);
+    const [member] = (await loadMembersAvailability(BUCKET, FROM, TO)).members;
 
     expect(member.dayCounts?.get("2026-07-13")).toBe(1500);
     // The RPC was handed the app-resolved tz so its local-day bucketing can't diverge
@@ -150,10 +150,10 @@ describe("eligible-resolver threading (#508)", () => {
     // so an empty result proves the injected resolver decided eligibility.
     dbHolder.db = fakeDb(POOL_TABLES());
     const resolver = vi.fn((_b: Bucket) =>
-      Promise.resolve({ ids: [] as string[], fallbackApplied: false }),
+      Promise.resolve({ ids: [] as string[], fallbackApplied: false, legalRelaxed: false }),
     );
 
-    const members = await loadMembersAvailability(BUCKET, FROM, TO, resolver);
+    const { members } = await loadMembersAvailability(BUCKET, FROM, TO, resolver);
 
     expect(members).toHaveLength(0);
     expect(resolver).toHaveBeenCalledTimes(1);
@@ -187,7 +187,7 @@ describe("eligible-resolver threading (#508)", () => {
       ...POOL_TABLES(),
     });
     const resolver = vi.fn((_b: Bucket) =>
-      Promise.resolve({ ids: [] as string[], fallbackApplied: false }),
+      Promise.resolve({ ids: [] as string[], fallbackApplied: false, legalRelaxed: false }),
     );
 
     const result = await getBucketSlots("311", FROM, TO, resolver);

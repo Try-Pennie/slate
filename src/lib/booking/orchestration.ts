@@ -52,6 +52,7 @@ import type { RecordRoutingDecisionInput } from "../routing/record.ts";
 import { tierKeyOf } from "../routing/tiers.ts";
 import { walkTierLadder } from "../routing/tier-fallback.ts";
 import { tierFallbackAlert } from "../routing/tier-alert.ts";
+import { legalRelaxedAlert } from "../routing/legal-alert.ts";
 import {
   MANAGE_PHONE_NOT_CHANGEABLE,
   MANAGE_PHONE_NOT_FOUND,
@@ -552,7 +553,7 @@ export interface BookingDeps {
     eventType: EventType,
     startMs: number,
     preview?: boolean,
-  ): Promise<{ candidates: string[]; memberCount: number }>;
+  ): Promise<{ candidates: string[]; memberCount: number; legalRelaxed: boolean }>;
   /**
    * The ORG's opening hours (#1295, gate 1). Used by the two paths in this module
    * that judge a slot themselves: the in-place reschedule guard, and `checkBookable`,
@@ -1242,8 +1243,8 @@ async function assignAgent(
   startIso: string,
   endIso: string,
   preview = false,
-): Promise<AssignResult & { candidates: string[] }> {
-  const { candidates, memberCount } = await deps.roundRobinCandidates(
+): Promise<AssignResult & { candidates: string[]; legalRelaxed: boolean }> {
+  const { candidates, memberCount, legalRelaxed } = await deps.roundRobinCandidates(
     bucket,
     eventType,
     Date.parse(startIso),
@@ -1274,7 +1275,7 @@ async function assignAgent(
     if (anyUnverified) throw new VerifyUnavailableError();
     throw new SlotUnavailableError();
   }
-  return { ...assignment, candidates };
+  return { ...assignment, candidates, legalRelaxed };
 }
 
 interface TierAssignResult {
@@ -1286,6 +1287,10 @@ interface TierAssignResult {
   email: string;
   candidates: string[];
   rungsDropped: number;
+  /** #2158: the bucket's legal rule matched nobody, so it was dropped and the
+   *  tier's whole pool was used. Carried out here rather than recomputed, so the
+   *  trace and the notice describe the pool this booking actually came from. */
+  legalRelaxed: boolean;
 }
 
 /**
@@ -1318,12 +1323,12 @@ async function assignAgentWithTierFallback(
       if (resolved.bucket.is_test && !allowTestBuckets) return { hit: false };
       const { startIso, endIso } = bookingWindow(startInstantIso, resolved.eventType.duration_min);
       try {
-        const { userId, email, candidates } = await assignAgent(
+        const { userId, email, candidates, legalRelaxed } = await assignAgent(
           deps, resolved.bucket, resolved.eventType, startIso, endIso, preview,
         );
         return {
           hit: true,
-          value: { bucket: resolved.bucket, eventType: resolved.eventType, startIso, endIso, userId, email, candidates },
+          value: { bucket: resolved.bucket, eventType: resolved.eventType, startIso, endIso, userId, email, candidates, legalRelaxed },
         };
       } catch (err) {
         if (err instanceof SlotUnavailableError || err instanceof NoEligibleAgentsError) {
@@ -1979,6 +1984,10 @@ export async function createBooking(
       requested_tier: tierKeyOf(input.bucketCode),
       booked_tier: tierKeyOf(bookedBucket.code),
       rungs_dropped: tier.rungsDropped,
+      // #2158: recorded as well as alerted. The notice is throttled per bucket per
+      // hour, and the question afterwards is always "which bookings", which a
+      // throttled Slack message can never answer.
+      legal_relaxed: tier.legalRelaxed,
     },
   };
   const event: ReservationPayload["event"] = {
@@ -2199,6 +2208,19 @@ async function completeReservation(
       // alert-key: tier_fallback:*
       // alert-key: tier_fallback_deep:*
       await sendThrottledAlert(tierAlert.key, tierAlert.cooldownMs, tierAlert.text).catch(() => {});
+    }
+    // #2158: a lead who asked for legal help was routed to somebody nobody has
+    // cleared for it. That compromise is only acceptable while it is reported, so
+    // this is sent on every booking that took it, throttled per bucket.
+    if (booking.routing_trace?.legal_relaxed) {
+      const relaxedAlert = legalRelaxedAlert({
+        requestedCode: bucketCode,
+        pooledAgents: booking.routing_trace?.considered?.length ?? 0,
+      });
+      if (relaxedAlert) {
+        // alert-key: legal_relaxed:*
+        await sendThrottledAlert(relaxedAlert.key, relaxedAlert.cooldownMs, relaxedAlert.text).catch(() => {});
+      }
     }
   }
 

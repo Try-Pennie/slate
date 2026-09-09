@@ -102,8 +102,8 @@ function makeTierDropDeps(): BookingDeps {
     // must NOT cascade as a misconfiguration.
     roundRobinCandidates: async (bucket) =>
       bucket.code === "511"
-        ? { candidates: [], memberCount: 0 }
-        : { candidates: ["a"], memberCount: 1 },
+        ? { candidates: [], memberCount: 0 , legalRelaxed: false}
+        : { candidates: ["a"], memberCount: 1 , legalRelaxed: false},
     // Gate 1 (#1295) open all week, so these stay about the tier cascade.
     businessHours: async () => ({
       zone: "America/New_York",
@@ -231,7 +231,7 @@ describe("tier-drop alert dispatch", () => {
   it("does NOT dispatch a tier_fallback alert when the requested bucket itself has an agent free", async () => {
     const deps = makeTierDropDeps();
     // Override: "511" has a free agent → no cascade
-    deps.roundRobinCandidates = async () => ({ candidates: ["a"], memberCount: 1 });
+    deps.roundRobinCandidates = async () => ({ candidates: ["a"], memberCount: 1 , legalRelaxed: false});
 
     await createBooking(tierDropInput, deps);
 
@@ -239,5 +239,69 @@ describe("tier-drop alert dispatch", () => {
       typeof key === "string" && key.startsWith("tier_fallback:"),
     );
     expect(tierDropCalls).toHaveLength(0);
+  });
+});
+
+describe("legal relaxation alert dispatch (#2158)", () => {
+  it("dispatches legal_relaxed:<requestedCode> when the booking's pool was widened", async () => {
+    const deps = makeTierDropDeps();
+    // The requested bucket has an agent free, so no tier drop: this isolates the
+    // legal notice from the tier one, which is the pair most likely to be confused.
+    deps.roundRobinCandidates = async () => ({
+      candidates: ["a", "b", "c"],
+      memberCount: 3,
+      legalRelaxed: true,
+    });
+
+    await createBooking(tierDropInput, deps);
+
+    const call = dispatch.sendThrottledAlert.mock.calls.find(([key]) =>
+      typeof key === "string" && key.startsWith("legal_relaxed:"),
+    );
+    expect(call).toBeDefined();
+    const [key, cooldownMs, text] = call!;
+    expect(key).toBe("legal_relaxed:511");
+    expect(typeof cooldownMs).toBe("number");
+    // It has to say what the compromise WAS. A notice that only says a rule was
+    // relaxed leaves the reader to work out that somebody uncleared took a legal
+    // call, which is the whole reason this is sent.
+    expect(String(text)).toContain("not marked legal eligible");
+    expect(String(text)).toContain("511");
+  });
+
+  it("stays silent when nothing was relaxed, so the notice keeps meaning something", async () => {
+    const deps = makeTierDropDeps();
+    deps.roundRobinCandidates = async () => ({
+      candidates: ["a"],
+      memberCount: 1,
+      legalRelaxed: false,
+    });
+
+    await createBooking(tierDropInput, deps);
+
+    const calls = dispatch.sendThrottledAlert.mock.calls.filter(([key]) =>
+      typeof key === "string" && key.startsWith("legal_relaxed:"),
+    );
+    expect(calls).toHaveLength(0);
+  });
+
+  it("records it on the booking too, because the notice is throttled and cannot name the bookings", async () => {
+    const deps = makeTierDropDeps();
+    let saved: Booking | null = null;
+    deps.insertBooking = async (row) => {
+      const booking = { ...row, id: "bk-new" } as unknown as Booking;
+      saved = booking;
+      return { ok: true as const, booking };
+    };
+    deps.roundRobinCandidates = async () => ({
+      candidates: ["a", "b"],
+      memberCount: 2,
+      legalRelaxed: true,
+    });
+
+    await createBooking(tierDropInput, deps);
+
+    expect(saved).not.toBeNull();
+    expect(saved!.routing_trace?.legal_relaxed).toBe(true);
   });
 });

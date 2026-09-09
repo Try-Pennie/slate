@@ -486,6 +486,11 @@ export const ALERT_CATALOG: AlertEntry[] = [
     why: "Same, for a deep fallback: it describes one completed routing decision.",
   },
   {
+    key: "legal_relaxed:*",
+    kind: "incident",
+    why: "One booking was routed past a legal eligibility rule that matched nobody; it describes a routing decision already taken, and the ONGOING version is empty_buckets:*.",
+  },
+  {
     key: "bookable_blocked:*",
     kind: "incident",
     why: "One activation attempt was refused; the operator retries and the refusal has no ongoing state.",
