@@ -15,13 +15,20 @@ import {
   TWILIO_VERDICT_RANK,
   IRRELEVANT_TAGS,
   MANAGER_TAG_PREFIX,
+  MANAGER_TAG_PREFIX as PREFIX,
   LEGAL_ELIGIBLE_YES,
   LEGAL_ELIGIBLE_NO,
   type SlateSide,
 } from "@/lib/twilio/roster";
 import { assert, eq, finish } from "./lib/harness.ts";
 
+// Carries the manager tag by DEFAULT, so a case about debt tiers is not also a
+// case about manager assignment. The manager cases below pass their own teams.
 const worker = (teams: string[], email = "someone@trypennie.com") =>
+  JSON.stringify({ email, teams: [...teams, `${PREFIX}Mike Dugan`] });
+
+/** A worker with exactly the tags given, for the cases that are about the absence. */
+const bareWorker = (teams: string[], email = "someone@trypennie.com") =>
   JSON.stringify({ email, teams });
 
 /** The read's side, for the cases that are about the mapping rather than the faults. */
@@ -33,6 +40,7 @@ function slate(over: Partial<SlateSide> = {}): SlateSide {
     debtTeams: ["low"],
     backendServices: ["achieve"],
     legalEligible: LEGAL_ELIGIBLE_NO,
+    managerName: "Mike Dugan",
     bookable: true,
     deactivated: false,
     ...over,
@@ -153,15 +161,15 @@ function slate(over: Partial<SlateSide> = {}): SlateSide {
   // A configuration fault in Twilio must not bury a real difference about a person.
   const w = side(worker(["High Debt: 50k+", "Achieve", "Brand New Team"]));
   eq(
-    compareOne(w, slate({ debtTeams: ["low"] }), 1).verdict,
+    compareOne(w, slate({ debtTeams: ["low"] }), { duplicates: 1 }).verdict,
     "debt-teams-differ",
     "a row that is both duplicated and different is named by the difference",
   );
 }
 {
   const w = side(worker(["Low Debt: 20k - 30k", "Achieve", "Brand New Team"]));
-  eq(compareOne(w, slate(), 0).verdict, "unmapped-tag", "an unknown tag is still reported on an otherwise matching row");
-  eq(compareOne(w, slate(), 2).verdict, "duplicate-worker", "and duplication outranks it, being the sharper fault");
+  eq(compareOne(w, slate()).verdict, "unmapped-tag", "an unknown tag is still reported on an otherwise matching row");
+  eq(compareOne(w, slate(), { duplicates: 2 }).verdict, "duplicate-worker", "and duplication outranks it, being the sharper fault");
 }
 
 // --- legal eligibility, which Twilio owns (#2098) --------------------------------
@@ -231,6 +239,109 @@ function slate(over: Partial<SlateSide> = {}): SlateSide {
     compareOne(w, slate({ debtTeams: ["low"], legalEligible: LEGAL_ELIGIBLE_NO })).verdict,
     "debt-teams-differ",
     "a row that both contradicts itself and differs is named by the difference",
+  );
+}
+
+// --- manager of record (#2099) ---------------------------------------------------
+// Twilio carries manager assignment as a `Team <Manager Name>` tag, and Slate takes
+// it from Salesforce's `Agent_Manager__c`. Nothing compared them, and a disagreement
+// sends a time off request to somebody who is not that person's manager any more.
+//
+// This does NOT switch the source. Salesforce stays the recorded owner and the OOO
+// approver chain is built on it; the point is to notice a divergence.
+const KNOWN = new Set(["mike dugan", "brad lawrence", "rachel villar"]);
+
+{
+  const w = side(bareWorker(["Low Debt: 20k - 30k", "Achieve", `${PREFIX}Mike Dugan`]))!;
+  eq(w.managerTags, ["Mike Dugan"], "the tag is read as a name, with the prefix stripped");
+  eq(w.unmappedTags.length, 0, "and is not reported as a tag nobody knows");
+  eq(
+    compareOne(w, slate({ managerName: "Mike Dugan" }), { managerNames: KNOWN }).verdict,
+    "agree",
+    "the same manager on both sides is the healthy case",
+  );
+}
+{
+  const w = side(bareWorker(["Low Debt: 20k - 30k", "Achieve", `${PREFIX}Brad Lawrence`]));
+  const r = compareOne(w, slate({ managerName: "Mike Dugan" }), { managerNames: KNOWN });
+  eq(r.verdict, "manager-differs", "two systems naming different managers is a finding");
+  assert(r.detail.includes("Mike Dugan") && r.detail.includes("Brad Lawrence"), "and the detail names both, since either one could be the wrong side");
+}
+{
+  // Case and padding are how a person types a name, not a disagreement about one.
+  const w = side(bareWorker(["Low Debt: 20k - 30k", "Achieve", `${PREFIX}  mike DUGAN `]));
+  eq(
+    compareOne(w, slate({ managerName: "Mike Dugan" }), { managerNames: KNOWN }).verdict,
+    "agree",
+    "names match on case and surrounding space, as addresses do everywhere else here",
+  );
+}
+{
+  const w = side(bareWorker(["Low Debt: 20k - 30k", "Achieve", `${PREFIX}Somebody Nobody Hired`]));
+  const r = compareOne(w, slate({ managerName: "Mike Dugan" }), { managerNames: KNOWN });
+  eq(r.verdict, "manager-not-in-slate", "a tag naming somebody Slate has no user for is its own finding, not just a difference");
+  assert(r.detail.includes("Somebody Nobody Hired"), "and says the name, since that is the whole of what has to be looked up");
+}
+{
+  const w = side(bareWorker(["Low Debt: 20k - 30k", "Achieve", `${PREFIX}Mike Dugan`]));
+  const r = compareOne(w, slate({ managerName: null }), { managerNames: KNOWN });
+  eq(r.verdict, "manager-absent-from-slate", "Twilio naming a manager Slate has not linked is its own finding");
+  assert(r.detail.includes("Mike Dugan"), "naming who Twilio thinks it is");
+}
+{
+  const w = side(bareWorker(["Low Debt: 20k - 30k", "Achieve"]));
+  const r = compareOne(w, slate({ managerName: "Brad Lawrence" }), { managerNames: KNOWN });
+  eq(r.verdict, "manager-absent-from-twilio", "and a worker with no team tag at all, for somebody Slate has a manager for, is the mirror finding");
+}
+{
+  // THE CONTROL that keeps this quiet on the twenty workers who legitimately carry
+  // no team tag. Sixteen are managers and admins with no manager of their own, and
+  // four are agents Slate has no manager for either. Without this, the check would
+  // report a fifth of the roster on the day it shipped and stop being read (L36).
+  const w = side(bareWorker(["Low Debt: 20k - 30k", "Achieve"]));
+  eq(
+    compareOne(w, slate({ managerName: null }), { managerNames: KNOWN }).verdict,
+    "agree",
+    "neither side naming a manager is agreement, not a finding",
+  );
+}
+{
+  const w = side(bareWorker([`${PREFIX}Mike Dugan`, `${PREFIX}Brad Lawrence`, "Low Debt: 20k - 30k", "Achieve"]))!;
+  eq(w.managerTags, ["Brad Lawrence", "Mike Dugan"], "both tags are kept, sorted, rather than one silently winning");
+  eq(
+    compareOne(w, slate({ managerName: "Mike Dugan" }), { managerNames: KNOWN }).verdict,
+    "manager-tags-contradict",
+    "a worker carrying two team tags is reported, even when one of them agrees, because picking the agreeing one hides the fault (L340)",
+  );
+}
+{
+  // Ranked BELOW every difference about what somebody can be routed for: a wrong
+  // approver is worth knowing and does not misroute a lead.
+  const w = side(bareWorker(["High Debt: 50k+", "Achieve", `${PREFIX}Brad Lawrence`]));
+  eq(
+    compareOne(w, slate({ debtTeams: ["low"], managerName: "Mike Dugan" }), { managerNames: KNOWN }).verdict,
+    "debt-teams-differ",
+    "a row that differs on both is named by the routing difference",
+  );
+}
+{
+  // And ABOVE the Twilio configuration faults, because it is a disagreement about a
+  // person rather than a fault in how a worker is set up.
+  const w = side(bareWorker(["Low Debt: 20k - 30k", "Achieve", `${PREFIX}Brad Lawrence`, "Brand New Team"]));
+  eq(
+    compareOne(w, slate({ managerName: "Mike Dugan" }), { duplicates: 1, managerNames: KNOWN }).verdict,
+    "manager-differs",
+    "a duplicated worker does not bury a manager disagreement",
+  );
+}
+{
+  // With no roster to check against, the comparison must not INVENT the stronger
+  // finding: an unknown name is only unknown once somebody has looked.
+  const w = side(bareWorker(["Low Debt: 20k - 30k", "Achieve", `${PREFIX}Somebody Nobody Hired`]));
+  eq(
+    compareOne(w, slate({ managerName: "Mike Dugan" })).verdict,
+    "manager-differs",
+    "without a list of Slate names, an unrecognised tag is reported as a difference rather than as a missing user",
   );
 }
 

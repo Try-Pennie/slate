@@ -876,6 +876,11 @@ on its own code, worst first.
 | 17 | **the debt tiers differ** |
 | 18 | **carries Redistribute in Twilio and is still bookable in Slate** |
 | 19 | one worker carries BOTH legal tags, so Twilio contradicts itself |
+| 20 | **manager of record differs** |
+| 21 | the team tag names somebody Slate has no user for |
+| 22 | Twilio names a manager and Slate has nobody linked |
+| 23 | Slate names a manager and the worker carries no team tag |
+| 24 | one worker carries two or more team tags |
 
 Exit 18 is ranked worst because it is the only finding here that misroutes a lead the
 day it appears rather than being latent. The three Twilio configuration faults (12, 13
@@ -883,6 +888,27 @@ and 19) rank BELOW every difference about a person on purpose, so a duplicated w
 cannot bury a real disagreement. Exit 19 has the highest NUMBER of the three and the
 lowest rank among them is 12, because the exit codes name the outcome and the ranking
 decides which one names a run; they are two different questions.
+
+**Manager of record is compared, never moved (#2099).** Twilio carries manager
+assignment as a `Team <Manager Name>` tag and Slate takes it from Salesforce's
+`Agent_Manager__c`, which stays the recorded owner: the OOO approver chain is built
+on it, and this notices a divergence rather than resolving one. Names are matched on
+case and surrounding space. The five outcomes are separate because they send five
+different people to do five different things, and the four about a person rank BELOW
+every difference about what somebody can be routed for, since a wrong approver sends
+a time off request astray and does not misroute a lead.
+
+Two silences are agreement rather than findings. A worker carrying no team tag for
+somebody Slate has no manager for is quiet, which is what keeps this off the twenty
+workers who legitimately carry none: sixteen are managers and admins with no manager
+of their own. And exit 21 fires only when the roster was actually supplied to check
+against, because an unrecognised name is only unrecognised once somebody has looked.
+The known-name set deliberately includes departed users, since a tag naming somebody
+who left explains itself and is not a typo to hunt for.
+
+Measured live 2026-09-09, with every other fact forced to agree so the manager half
+is not masked by a higher ranked verdict: 128 agree and one finding, jlodato@, whose
+Slate manager is Brad Lawrence and whose Twilio worker carries no team tag.
 
 **Legal eligibility has a positive tag, and it is the one that decides (#2098).** Dan,
 2026-09-09: "The default is N. Y is the only one called out." So Slate stores `Y` only
