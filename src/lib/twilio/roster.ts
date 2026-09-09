@@ -165,6 +165,14 @@ export interface TwilioSide {
   legalEligible: boolean;
   /** The worker carries the `Redistribute` tag, so cal.com withholds them. */
   redistribute: boolean;
+  /**
+   * The manager names carried as `Team <Manager Name>` tags, prefix stripped.
+   *
+   * A LIST rather than one name, because a worker carrying two is a real Twilio
+   * fault and taking the first would resolve it silently in whichever direction
+   * the tag order happened to fall (L340, L419).
+   */
+  managerTags: string[];
   /** Tags this mapping does not recognise, reported rather than dropped. */
   unmappedTags: string[];
 }
@@ -203,6 +211,7 @@ export function readWorker(attributesJson: string | null | undefined): WorkerRea
   const debtTeams: string[] = [];
   const backendServices: string[] = [];
   const unmappedTags: string[] = [];
+  const managerTags: string[] = [];
   let notLegalEligible = false;
   let legalEligible = false;
   let redistribute = false;
@@ -217,14 +226,32 @@ export function readWorker(attributesJson: string | null | undefined): WorkerRea
     const backend = TEAM_TO_BACKEND[tag];
     if (backend !== undefined) { if (!backendServices.includes(backend)) backendServices.push(backend); continue; }
     if (IRRELEVANT_TAGS.includes(tag)) continue;
-    if (tag.startsWith(MANAGER_TAG_PREFIX)) continue;
+    if (tag.startsWith(MANAGER_TAG_PREFIX)) {
+      // Kept rather than dropped since #2099: manager of record is a second source
+      // for a fact Slate takes from Salesforce, and nothing compared the two.
+      const name = tag.slice(MANAGER_TAG_PREFIX.length).trim();
+      if (name !== "" && !managerTags.includes(name)) managerTags.push(name);
+      continue;
+    }
     // A tag nobody mapped and nobody classified. Reported, never dropped: a new tier
     // added in Twilio would otherwise be invisible to the very check written to
     // notice drift (L217).
     if (!unmappedTags.includes(tag)) unmappedTags.push(tag);
   }
 
-  return { ok: true, side: { email, debtTeams, backendServices, notLegalEligible, legalEligible, redistribute, unmappedTags } };
+  return {
+    ok: true,
+    side: {
+      email,
+      debtTeams,
+      backendServices,
+      notLegalEligible,
+      legalEligible,
+      redistribute,
+      managerTags: managerTags.sort(),
+      unmappedTags,
+    },
+  };
 }
 
 /** The side, or null. For call sites that genuinely do not care which fault it was. */
@@ -249,6 +276,7 @@ export function mergeWorkers(sides: TwilioSide[]): { merged: TwilioSide; duplica
     notLegalEligible: sides.some((s) => s.notLegalEligible),
     legalEligible: sides.some((s) => s.legalEligible),
     redistribute: sides.some((s) => s.redistribute),
+    managerTags: [...new Set(sides.flatMap((s) => s.managerTags))].sort(),
     unmappedTags: [...new Set(sides.flatMap((s) => s.unmappedTags))].sort(),
   };
   return { merged, duplicates: sides.length - 1 };
@@ -272,6 +300,14 @@ export interface SlateSide {
    * agent and excludes an explicit "N".
    */
   legalEligible: string | null;
+  /**
+   * The NAME of Slate's manager of record for this person, or null.
+   *
+   * A name rather than an id, because Twilio's side is a name and there is nothing
+   * shared to key on. Salesforce's `Agent_Manager__c` remains the recorded owner of
+   * this fact: #2099 notices a divergence and never resolves one.
+   */
+  managerName: string | null;
   bookable: boolean;
   deactivated: boolean;
 }
@@ -298,6 +334,16 @@ export type TwilioVerdict =
   | "legal-differs"
   /** One worker carries both legal tags, so Twilio contradicts itself. */
   | "legal-tags-contradict"
+  /** Both systems name a manager, and they are different people. */
+  | "manager-differs"
+  /** The tag names somebody Slate has no user for at all. */
+  | "manager-not-in-slate"
+  /** Twilio names a manager and Slate has not linked one. */
+  | "manager-absent-from-slate"
+  /** Slate names a manager and the worker carries no team tag. */
+  | "manager-absent-from-twilio"
+  /** One worker carries two or more team tags, so Twilio contradicts itself. */
+  | "manager-tags-contradict"
   /** Twilio withholds them and Slate still offers them. */
   | "redistribute-still-bookable";
 
@@ -315,13 +361,23 @@ export const TWILIO_VERDICT_RANK: Record<TwilioVerdict, number> = {
   // above, so it ranks with them rather than with the disagreements about a
   // person, and cannot bury one.
   "legal-tags-contradict": 4,
-  "absent-from-slate": 5,
-  "legal-differs": 6,
-  "backend-differs": 7,
-  "debt-teams-differ": 8,
+  // A worker carrying two team tags is a Twilio configuration fault like the three
+  // above, so it ranks with them.
+  "manager-tags-contradict": 5,
+  // The four manager findings rank BELOW every difference about what somebody can
+  // be routed for and above the configuration faults: a wrong approver sends a time
+  // off request to the wrong person and does not misroute a lead (#2099).
+  "manager-absent-from-twilio": 6,
+  "manager-absent-from-slate": 7,
+  "manager-not-in-slate": 8,
+  "manager-differs": 9,
+  "absent-from-slate": 10,
+  "legal-differs": 11,
+  "backend-differs": 12,
+  "debt-teams-differ": 13,
   // Worst: Slate is offering a lead to somebody the incumbent withholds, and it is
   // the one finding here that is already wrong today rather than latent.
-  "redistribute-still-bookable": 9,
+  "redistribute-still-bookable": 14,
 };
 
 /** How a stored or derived legal value reads to somebody acting on the finding. */
@@ -333,6 +389,23 @@ function describeLegal(value: string | null): string {
   // into the nearest bucket, because guessing is what a reader cannot check.
   return `stored as ${JSON.stringify(value)}`;
 }
+
+/**
+ * What the comparison needs beyond the two sides.
+ *
+ * `managerNames` is roster wide knowledge, so it cannot live on either side: it is
+ * what turns "these two disagree" into "and nobody in Slate is called that", which
+ * is a different thing for somebody to go and do. Omitted, the comparison reports
+ * the weaker finding rather than inventing the stronger one.
+ */
+export interface CompareContext {
+  /** How many extra Twilio workers share this address. */
+  duplicates?: number;
+  /** Every Slate user's name, lowercased, for judging a tag that matches nobody. */
+  managerNames?: ReadonlySet<string>;
+}
+
+const norm = (s: string) => s.trim().toLowerCase();
 
 const same = (a: string[], b: string[]) =>
   a.length === b.length && [...a].sort().every((v, i) => v === [...b].sort()[i]);
@@ -347,8 +420,9 @@ const same = (a: string[], b: string[]) =>
 export function compareOne(
   twilio: TwilioSide | null,
   slate: SlateSide | null,
-  duplicates = 0,
+  context: CompareContext = {},
 ): { verdict: TwilioVerdict; detail: string } {
+  const duplicates = context.duplicates ?? 0;
   if (slate === null) {
     if (twilio === null) return { verdict: "agree", detail: "" };
     // Judged by the REASON rather than by listing the sixteen that exist today, so a
@@ -394,7 +468,45 @@ export function compareOne(
       detail: `legal eligibility: Slate says ${describeLegal(slate.legalEligible)}, Twilio says ${describeLegal(wantLegal)}`,
     };
   }
-  // These two rank BELOW the attribute differences on purpose: each is a fault in the
+  // Manager of record (#2099), asked after everything that decides which pool
+  // somebody is in. A wrong approver sends a time off request to the wrong person,
+  // which is worth knowing and does not misroute a lead.
+  //
+  // A worker carrying TWO team tags is asked last, with the other configuration
+  // faults, because one of the two routinely agrees and naming the row by that
+  // agreement would hide the contradiction.
+  const tag = twilio.managerTags.length === 1 ? twilio.managerTags[0]! : null;
+  if (twilio.managerTags.length <= 1) {
+    const slateName = slate.managerName?.trim() ? slate.managerName.trim() : null;
+    if (tag === null && slateName !== null) {
+      return {
+        verdict: "manager-absent-from-twilio",
+        detail: `manager of record: Slate says ${slateName}, and their Twilio worker carries no ${MANAGER_TAG_PREFIX.trim()} tag`,
+      };
+    }
+    if (tag !== null && slateName === null) {
+      return {
+        verdict: "manager-absent-from-slate",
+        detail: `manager of record: Twilio says ${tag}, and Slate has nobody linked`,
+      };
+    }
+    if (tag !== null && slateName !== null && norm(tag) !== norm(slateName)) {
+      // Only a name nothing in Slate answers to gets the stronger verdict, and only
+      // when somebody has actually supplied the roster to check against.
+      if (context.managerNames && !context.managerNames.has(norm(tag))) {
+        return {
+          verdict: "manager-not-in-slate",
+          detail: `manager of record: Twilio says ${tag}, who is not a Slate user, while Slate says ${slateName}`,
+        };
+      }
+      return {
+        verdict: "manager-differs",
+        detail: `manager of record: Slate says ${slateName}, Twilio says ${tag}`,
+      };
+    }
+  }
+
+  // These rank BELOW the attribute differences on purpose: each is a fault in the
   // Twilio configuration rather than a disagreement about a person, and they must not
   // bury a real difference. They are asked last so a row with both is named by the
   // difference, which is the actionable half.
@@ -408,6 +520,12 @@ export function compareOne(
     return {
       verdict: "unmapped-tag",
       detail: `Twilio tags this comparison does not know: ${twilio.unmappedTags.join(", ")}`,
+    };
+  }
+  if (twilio.managerTags.length > 1) {
+    return {
+      verdict: "manager-tags-contradict",
+      detail: `carries ${twilio.managerTags.length} ${MANAGER_TAG_PREFIX.trim()} tags in Twilio (${twilio.managerTags.join(", ")}), so nothing can say who their manager is`,
     };
   }
   if (twilio.legalEligible && twilio.notLegalEligible) {

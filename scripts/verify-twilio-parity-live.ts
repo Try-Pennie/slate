@@ -50,6 +50,11 @@ const EXIT: Record<string, number> = {
   "debt-teams-differ": 17,
   "redistribute-still-bookable": 18,
   "legal-tags-contradict": 19,
+  "manager-differs": 20,
+  "manager-not-in-slate": 21,
+  "manager-absent-from-slate": 22,
+  "manager-absent-from-twilio": 23,
+  "manager-tags-contradict": 24,
 };
 
 function stop(code: number, why: string): never {
@@ -132,17 +137,35 @@ for (const w of workers) {
 
 // cap-safe: users is a roster-bounded table, ~148 rows against a 200-agent design target
 const slateUsers = (unwrap(
-  await supabaseAdmin().from("users").select("email, bookable, deactivated_at, is_test, attributes"),
+  await supabaseAdmin()
+    .from("users")
+    .select("id, email, name, bookable, deactivated_at, is_test, attributes, manager_id"),
   "all users",
 ) ?? []) as {
+  id: string;
   email: string;
+  name: string | null;
   bookable: boolean;
   deactivated_at: string | null;
   is_test: boolean;
   attributes: Record<string, unknown> | null;
+  manager_id: string | null;
 }[];
 const realUsers = slateUsers.filter((u) => !u.is_test);
 if (realUsers.length === 0) stop(EXIT.nothingToCompare, "read no non-test Slate users, so nothing was compared");
+
+// Manager of record (#2099). Twilio names a manager, Slate stores an id, so the
+// comparison is by NAME and this is what turns one into the other.
+//
+// The known-name set is built from EVERY user, including deactivated ones and
+// managers, because the question it answers is "does anybody in Slate answer to
+// this name", and a departed manager still explains a stale tag. Narrowing it to
+// the live roster would report a tag naming somebody who left as naming nobody,
+// which sends a reader hunting for a typo that is not there (L11).
+const nameById = new Map(slateUsers.map((u) => [u.id, (u.name ?? "").trim()] as const));
+const managerNames = new Set(
+  slateUsers.map((u) => (u.name ?? "").trim().toLowerCase()).filter((n) => n !== ""),
+);
 
 const asList = (v: unknown): string[] =>
   Array.isArray(v) ? v.map(String).sort() : typeof v === "string" ? [v] : [];
@@ -177,10 +200,11 @@ for (const u of realUsers) {
       legalEligible: attrs.legal_eligible === undefined || attrs.legal_eligible === null
         ? null
         : String(attrs.legal_eligible),
+      managerName: u.manager_id ? (nameById.get(u.manager_id) || null) : null,
       bookable: u.bookable,
       deactivated: u.deactivated_at !== null,
     },
-    duplicates,
+    { duplicates, managerNames },
   );
   rows.push({ email: u.email, verdict, detail });
 }
