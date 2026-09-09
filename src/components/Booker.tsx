@@ -972,6 +972,54 @@ export default function Booker({
     </div>
   );
 
+  /**
+   * How a time is WRITTEN: the reader's timezone, and 12 or 24 hour (#2160).
+   *
+   * One row, above the day strip, because they are one question ("how are these
+   * times spelled") and because both are settled before the reader starts
+   * choosing rather than after. They used to sit below the strip on two separate
+   * lines, right aligned and left aligned, so nothing said they belonged together.
+   *
+   * Not rendered once a time is chosen: that step shows one time the reader has
+   * already read and picked, and offering the two settings again there would
+   * invite them to change the spelling of a decision rather than the decision.
+   */
+  const displayControls = selectedSlot ? null : (
+    <div
+      data-display-controls
+      className="mb-4 flex flex-wrap items-center justify-between gap-x-4 gap-y-2 text-xs"
+    >
+      <div className="flex min-w-0 items-center gap-1.5">
+        <span className={c.faint}>
+          <GlobeIcon />
+        </span>
+        <label htmlFor="booker-tz" className="sr-only">
+          Timezone
+        </label>
+        <SelectField
+          id="booker-tz"
+          ariaLabel="Timezone"
+          value={zone}
+          onChange={setZone}
+          className="max-w-full"
+          options={selectOptions.map((o) => ({ value: o.id, label: o.label }))}
+        />
+      </div>
+      <div className={`inline-flex shrink-0 rounded-md border ${c.toggleBorder}`}>
+        {[true, false].map((is12) => (
+          <button
+            key={String(is12)}
+            onClick={() => setHour12(is12)}
+            aria-pressed={hour12 === is12}
+            className={`min-h-9 px-3 tabular-nums ${is12 ? "rounded-l-[9px]" : "rounded-r-[9px]"} ${hour12 === is12 ? c.toggleOn : c.toggleOff}`}
+          >
+            {is12 ? "12h" : "24h"}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+
   // Times / booking form (the 420px
   // cap is for the scrolling slot list only).
   const timesPanel = (
@@ -1096,39 +1144,10 @@ export default function Booker({
       ) : (
         <>
           {/* The day the times belong to is headed inside SlotTimes ("Times on
-              Sat, Aug 15"), so this row carries only the clock format toggle.
-              The polite announcement lives there too, mounted across every state
-              swap so a settled count is heard rather than silence (#633). */}
-          <div className="mb-1 flex items-center justify-end">
-            <div className={`inline-flex rounded-md border text-xs ${c.toggleBorder}`}>
-              {[true, false].map((is12) => (
-                <button
-                  key={String(is12)}
-                  onClick={() => setHour12(is12)}
-                  aria-pressed={hour12 === is12}
-                  className={`min-h-9 px-3 tabular-nums ${is12 ? "rounded-l-[9px]" : "rounded-r-[9px]"} ${hour12 === is12 ? c.toggleOn : c.toggleOff}`}
-                >
-                  {is12 ? "12h" : "24h"}
-                </button>
-              ))}
-            </div>
-          </div>
-          <div className="mb-3 flex items-center gap-1.5 text-xs">
-            <span className={c.faint}>
-              <GlobeIcon />
-            </span>
-            <label htmlFor="booker-tz" className="sr-only">
-              Timezone
-            </label>
-            <SelectField
-              id="booker-tz"
-              ariaLabel="Timezone"
-              value={zone}
-              onChange={setZone}
-              className="max-w-full"
-              options={selectOptions.map((o) => ({ value: o.id, label: o.label }))}
-            />
-          </div>
+              Sat, Aug 15"). The two controls that decide how a time is WRITTEN
+              live above the day strip now (#2160), not here. The polite
+              announcement lives in SlotTimes, mounted across every state swap so
+              a settled count is heard rather than silence (#633). */}
           {errorAlert && <div className="mb-3">{errorAlert}</div>}
           <div className="-mx-2 -my-1 flex-1 overflow-y-auto px-2 py-1">
             {/* The shared times panel (#1336) owns every state here, including
@@ -1237,6 +1256,7 @@ export default function Booker({
         <div className="flex flex-col">
           {/* px-6 pt-6 aligns the strip's chips with the padded times list below. */}
           <div className="px-6 pt-6">
+            {displayControls}
             {loading ? (
               // As many placeholder chips as days are about to arrive, so the
               // row does not change width as content lands.
