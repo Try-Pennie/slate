@@ -112,8 +112,15 @@ export const NEXT_DAYS_COPY = {
    *  each doing real calendar work per bookable agent. */
   stillLooking: "Still looking… this is taking longer than usual.",
   /** Could not look, which is a different screen from having looked and found
-   *  nothing. */
+   *  nothing. This one is for a request that never landed, so trying again is
+   *  advice that can actually work. */
   failed: "Could not look further ahead. Check your connection.",
+  /** #2155: the reply arrived, said 200, and carried something this page cannot
+   *  read. Trying again gets the same reply, so the advice has to differ: the
+   *  commonest cause is a page older than the server it is talking to, and a
+   *  reload fixes that. Telling this lead to check their connection would send
+   *  them to do a thing that cannot work (L11). */
+  unreadable: "Something went wrong looking further ahead. Please reload the page and try again.",
   retry: "Try again",
   /** Looked, and there is genuinely nothing to offer. */
   foundNothing: "We could not find a day to offer yet. Please check back.",
