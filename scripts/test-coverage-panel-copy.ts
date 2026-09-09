@@ -41,11 +41,18 @@ assert(
   !/while they are out|time off|absen/i.test(said),
   "does not describe itself as being about time off, which is the automatic case",
 );
-// The four situations that are the reason it exists. Named, because "when do I
-// need this" is the question a reader lands on it with.
+// #2121: the four situations are NOT named. Nobody arrives at this panel
+// wondering whether their reason qualifies, and the list ran four cases long
+// above the controls, pushing the three sentences that carry information further
+// down. The situations stay recorded in the module docstring, where they explain
+// to a maintainer why the panel exists, which is a different question.
 for (const when of [/left the pool/i, /Salesforce/i, /escalat/i, /out sick/i]) {
-  assert(when.test(said), `names the situation ${when}`);
+  assert(!when.test(said), `does not list the occasion ${when} above the controls`);
 }
+assert(
+  !/for any reason/i.test(said),
+  "does not open by ruling on whether the reader's reason qualifies",
+);
 // What it does to a booking, which the old copy got right and must not lose.
 assert(/keeps its exact time/i.test(said), "says the time does not change");
 assert(/one short note/i.test(said), "says the customer is told once");
