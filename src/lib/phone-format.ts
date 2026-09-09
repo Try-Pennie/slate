@@ -124,6 +124,50 @@ function formatPhoneNumberAsTyped(value: string): string {
 }
 
 /**
+ * Where the caret goes after the field has reformatted itself (#2162).
+ *
+ * A controlled input whose value is rewritten on every keystroke drops the caret
+ * at the END, so a lead correcting one digit in the middle of a number they have
+ * already typed cannot: the digit they type appears at the end instead. Dan found
+ * it by putting the cursor between the 6 and the 7 of a number and typing.
+ *
+ * The position is counted in DIGITS, never in characters. This formatter adds and
+ * removes a bracket, a space and a hyphen as the number grows, so a character
+ * offset drifts by one every time a separator appears or disappears, and only at
+ * particular lengths, which is the kind of wrongness nobody notices for months.
+ *
+ * `raw` is what the browser produced (the value with the edit already applied, no
+ * formatting), `rawCaret` is where it left the caret, and `formatted` is what is
+ * about to be rendered. The answer is clamped to `formatted`, because the
+ * formatter can return something SHORTER than what was typed: it caps at ten
+ * digits and strips a leading country code, and an unclamped caret then sits past
+ * the end of the value, which throws in some browsers and silently misplaces in
+ * others.
+ */
+export function caretAfterFormat(raw: string, rawCaret: number, formatted: string): number {
+  const before = raw.slice(0, Math.max(0, rawCaret));
+  const target = (before.match(/\d/g) ?? []).length;
+
+  // Nothing typed ahead of the caret: sit before the first digit rather than
+  // outside the opening bracket, which is not a place a lead can mean.
+  if (target === 0) {
+    const firstDigit = formatted.search(/\d/);
+    return firstDigit === -1 ? formatted.length : firstDigit;
+  }
+
+  let seen = 0;
+  for (let i = 0; i < formatted.length; i++) {
+    if (formatted[i] >= "0" && formatted[i] <= "9") {
+      seen += 1;
+      if (seen === target) return i + 1;
+    }
+  }
+  // Fewer digits survived than were typed ahead of the caret (the cap, or a
+  // stripped country code), so the end is the only position that still exists.
+  return formatted.length;
+}
+
+/**
  * Is this a number Pennie can call? Ten digits, or eleven beginning with 1.
  *
  * THE rule (#1356). Every surface asks this one function, so the field, the
