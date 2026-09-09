@@ -18,7 +18,6 @@ import {
   setOooCalendarId,
   setWorkingHours,
   useDefaultHours,
-  setAgentAttributes,
   setUserLifecycle,
 } from "@/app/admin/actions";
 import BulkReassignCoverage from "@/components/BulkReassignCoverage";
@@ -39,7 +38,6 @@ import {
   notBookableContrast,
 } from "@/lib/offboarding/account-status-copy";
 import {
-  btnCls,
   btnSecondaryCls,
   cardCls,
   inputCls,
@@ -579,71 +577,51 @@ export default async function AgentProfilePage({
               <p className="text-sm">{attrValue(backendServiceOf(agent))}</p>
             </div>
             <div>
-              <span className={labelCls} id="legal-eligible-label">
-                Legal eligible
-              </span>
-              {canManageThisAgent ? (
-                <SaveForm
-                  name="agent-attributes"
-                  action={setAgentAttributes}
-                  className="flex items-end gap-2"
-                >
-                  <input type="hidden" name="user_id" value={agent.id} />
-                  <SelectField
-                    name="legal_eligible"
-                    ariaLabel="Legal eligible"
-                    defaultValue={
-                      agent.attributes?.legal_eligible === true
-                        ? "true"
-                        : agent.attributes?.legal_eligible === false
-                          ? "false"
-                          : ""
-                    }
-                    className="w-28"
-                    options={[
-                      { value: "", label: "Not set" },
-                      { value: "true", label: "Yes" },
-                      { value: "false", label: "No" },
-                    ]}
-                  />
-                  {/* The visible label is one word so the field group stays a
-                      field rather than becoming a sentence, and the accessible
-                      name says WHICH save, because this page carries several and
-                      a screen reader cannot tell three buttons reading "Save"
-                      apart. The name contains the visible label (WCAG 2.5.3). */}
-                  <SubmitButton
-                    className={btnCls}
-                    pendingLabel="Saving"
-                    ariaLabel="Save legal eligible"
-                  >
-                    Save
-                  </SubmitButton>
-                </SaveForm>
-              ) : (
-                /* Read only is not the same as hidden, and this is the field a
-                   reader is most likely to be checking, since routing matches on
-                   it. Somebody who may not change it used to get a sentence about
-                   permission and NO value, so the panel answered "what can this
-                   agent be routed for" with two thirds of the answer. The three
-                   states are told apart: Not set is not No. */
-                <p className="text-sm">
-                  {attrValue(
-                    agent.attributes?.legal_eligible === true
-                      ? "Yes"
-                      : agent.attributes?.legal_eligible === false
-                        ? "No"
-                        : null,
-                  )}
-                </p>
-              )}
+              <span className={labelCls}>Legal eligible</span>
+              {/* #2120: READ ONLY, like the two beside it, and the panel now
+                  writes nothing at all.
+
+                  The dropdown that stood here could not do its job. Routing
+                  excludes an agent only when the stored value is the STRING "N"
+                  (`legal_eligible!`, which is cal.com's "does not equal N"), and
+                  the control wrote the BOOLEAN true or false, so picking No wrote
+                  `false`, which is not "N", and the agent stayed in every bucket
+                  the choice was meant to take them out of. A control that looks
+                  like it excludes somebody and does nothing is worse than no
+                  control (L109), and nothing on the screen could ever have shown
+                  the difference.
+
+                  It is also not where the fact lives. Legal eligibility reaches
+                  cal.com as a `Not Legal Eligible` tag on the person's Twilio
+                  worker, pushed onto their cal.com attributes by the Pipedream
+                  job, which is the same route Redistribute takes (#2097). Nobody
+                  sets it in cal.com, and Salesforce deliberately never writes it
+                  (`SF_MANAGED_KEYS`). Offering a second place to type it is how
+                  the two drift, which is the class `verify:twilio-parity` exists
+                  to report. Dan chose Twilio as the source on 2026-09-09.
+
+                  Nothing was lost by removing it: 0 of 127 live users carried the
+                  field, so it had never once been used.
+
+                  Shown AS STORED rather than translated, for the same reason an
+                  off ladder debt team is (L113): what is really there is what a
+                  reader needs. `Not set` is not `No`, and naming an unset agent
+                  "Yes" because routing lets them through would present an
+                  inference as a recorded fact (L192). */}
+              <p className="text-sm">
+                {attrValue(
+                  agent.attributes?.legal_eligible === true
+                    ? "Yes"
+                    : agent.attributes?.legal_eligible === false
+                      ? "No"
+                      : agent.attributes?.legal_eligible == null
+                        ? null
+                        : String(agent.attributes.legal_eligible),
+                )}
+              </p>
             </div>
           </div>
 
-          {!canManageThisAgent && (
-            <p className="mt-3 text-xs text-fg-muted">
-              Only someone who outranks this agent can change their legal eligibility.
-            </p>
-          )}
         </section>
 
         {/* Move this agent's upcoming bookings to somebody else (#974). The id
