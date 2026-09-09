@@ -1,6 +1,5 @@
 import Booker from "@/components/Booker";
-import LegalFooter from "@/components/LegalFooter";
-import StandaloneTheme from "@/components/StandaloneTheme";
+import StandaloneBookerShell from "@/components/StandaloneBookerShell";
 import { ClientErrorBeacon } from "@/components/ClientErrorBeacon";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { loadBookingHorizonDays } from "@/lib/booking/settings";
@@ -80,10 +79,7 @@ export default async function BookEntry({
   const theme = first(sp, "theme") === "dark" ? ("dark" as const) : ("light" as const);
 
   return (
-    <main>
-      {/* #706: standalone renders paint the theme at the document root so a dark
-          booker has no beige gutter. The embed leaves the host in control. */}
-      {!embedded && <StandaloneTheme theme={theme} />}
+    <StandaloneBookerShell embedded={embedded} theme={theme}>
       {/* #1368: a bundle that throws before the customer can submit produces no
           request at all, so every server side detector stays green while nobody
           can book. This is the only signal for that. It mounts inside Slate's own
@@ -106,10 +102,6 @@ export default async function BookEntry({
         horizonDays={horizonDays}
         rescheduleReasons={reasonOptions.reschedule.active}
       />
-      {/* #1041: only when standalone. The embed sits inside a trypennie.com page
-          that already carries Pennie's policies, and adding a second copy of them
-          inside the iframe would be noise; this page has nothing around it. */}
-      {!embedded && <LegalFooter />}
-    </main>
+    </StandaloneBookerShell>
   );
 }

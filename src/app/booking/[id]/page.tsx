@@ -1,6 +1,5 @@
 import Booker from "@/components/Booker";
-import LegalFooter from "@/components/LegalFooter";
-import StandaloneTheme from "@/components/StandaloneTheme";
+import StandaloneBookerShell from "@/components/StandaloneBookerShell";
 import { loadBookingHorizonDays } from "@/lib/booking/settings";
 import { loadReasonOptions } from "@/lib/booking/reason-options";
 import { resolveRequestedCode } from "@/lib/routing/catchall";
@@ -62,10 +61,7 @@ export default async function BookingPage({
   const reasonOptions = await loadReasonOptions();
 
   return (
-    <main>
-      {/* #706: standalone renders paint the theme at the document root so a dark
-          booker has no beige gutter. The embed leaves the host in control. */}
-      {!embedded && <StandaloneTheme theme={theme} />}
+    <StandaloneBookerShell embedded={embedded} theme={theme}>
       <Booker
         bucketCode={bucketCode}
         requestedCode={requestedCode}
@@ -82,10 +78,6 @@ export default async function BookingPage({
         horizonDays={horizonDays}
         rescheduleReasons={reasonOptions.reschedule.active}
       />
-      {/* #1041: only when standalone. The embed sits inside a trypennie.com page
-          that already carries Pennie's policies, and adding a second copy of them
-          inside the iframe would be noise; this page has nothing around it. */}
-      {!embedded && <LegalFooter />}
-    </main>
+    </StandaloneBookerShell>
   );
 }
