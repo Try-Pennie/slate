@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, cleanup } from "@testing-library/react";
 
 // #974: the bulk coverage-reassign admin panel. getJson/postJson are mocked so
 // this exercises the panel's behavior: a live preview count, starting a sweep,
@@ -15,6 +15,10 @@ vi.mock("@/lib/http", () => http);
 
 import BulkReassignCoverage from "@/components/BulkReassignCoverage";
 import { REASSIGN_REASONS } from "@/lib/booking/core";
+import {
+  ACTIONABLE_ITEM_STATUSES,
+  SKIPPED_ITEM_STATUSES,
+} from "@/lib/booking/bulk-reassign";
 
 const progressFixture = {
   job: { id: "job1", out_user_id: "out1", status: "done" },
@@ -252,6 +256,56 @@ describe("BulkReassignCoverage: what the move says it did (#2122)", () => {
     // because a control that cannot do what it says is worse than none.
     expect(screen.getByRole("link", { name: /place by hand/i })).toBeTruthy();
     expect(screen.getAllByRole("link", { name: /place by hand/i })).toHaveLength(1);
+  });
+
+  // The predicate is asked of the ENGINE's own list, not of a string compared in
+  // the component. Driven FROM the constant, so a status added to it is covered
+  // here by construction and the two sides cannot drift into disagreeing about
+  // what a skip is (L263). The drift would be a Place by hand link on a booking
+  // that no longer exists, which is a control that cannot do what it says.
+  it("offers no control for any status the engine calls a skip", async () => {
+    for (const status of SKIPPED_ITEM_STATUSES) {
+      cleanup();
+      await openOnJob({
+        ...mixedFixture,
+        actionable: [],
+        summary: { total: 1, counts: { pending: 0, moved: 0, unplaceable: 0, skipped: 1, failed: 0 }, done: true },
+        skipped: [
+          {
+            bookingId: "bk-gone",
+            status,
+            detail: "Booking was cancelled before it could be moved.",
+            startsAt: "2026-07-26T15:00:00.000Z",
+            attendeeName: "Alex",
+          },
+        ],
+      });
+      expect(screen.getByText(/cancelled before it could be moved/)).toBeTruthy();
+      expect(screen.queryByRole("link", { name: /place by hand/i })).toBeNull();
+    }
+  });
+
+  // And the positive half, or the assertion above passes on a panel that renders
+  // no links at all (L159).
+  it("does offer the control for a status the engine calls actionable", async () => {
+    for (const status of ACTIONABLE_ITEM_STATUSES) {
+      cleanup();
+      await openOnJob({
+        ...mixedFixture,
+        skipped: [],
+        summary: { total: 1, counts: { pending: 0, moved: 0, unplaceable: 1, skipped: 0, failed: 0 }, done: true },
+        actionable: [
+          {
+            bookingId: "bk-stuck",
+            status,
+            detail: "No agent was free at the original time.",
+            startsAt: "2026-07-25T17:00:00.000Z",
+            attendeeName: "Kris",
+          },
+        ],
+      });
+      expect(screen.getByRole("link", { name: /place by hand/i })).toBeTruthy();
+    }
   });
 
   it("drops the instruction above the rows, since every row carries it", async () => {
