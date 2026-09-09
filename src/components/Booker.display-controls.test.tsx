@@ -56,7 +56,7 @@ describe("Booker display controls (#2160)", () => {
     render(<Booker {...baseProps} />);
 
     const strip = await dayChip();
-    const zone = screen.getByLabelText("Timezone");
+    const zone = screen.getByRole("combobox", { name: "Timezone" });
     const twelve = screen.getByRole("button", { name: "12h" });
     const twentyFour = screen.getByRole("button", { name: "24h" });
 
@@ -78,7 +78,7 @@ describe("Booker display controls (#2160)", () => {
 
     expect(screen.getAllByRole("button", { name: "12h" })).toHaveLength(1);
     expect(screen.getAllByRole("button", { name: "24h" })).toHaveLength(1);
-    expect(screen.getAllByLabelText("Timezone")).toHaveLength(1);
+    expect(screen.getAllByRole("combobox", { name: "Timezone" })).toHaveLength(1);
   });
 
   it("still changes how the times are written", async () => {
@@ -96,13 +96,74 @@ describe("Booker display controls (#2160)", () => {
     expect(await screen.findByRole("button", { name: /^\d{2}:\d{2}$/ })).toBeTruthy();
   });
 
-  it("hides the display controls once a time is chosen, since nothing is being read then", async () => {
+  it("keeps the display controls usable on the details step, where the day strip is still live", async () => {
     render(<Booker {...baseProps} />);
     await userEvent.click(await dayChip());
     await userEvent.click(await screen.findByRole("button", { name: /:\d{2}/ }));
 
     await screen.findByLabelText("Name");
-    expect(screen.queryByRole("button", { name: "12h" })).toBeNull();
-    expect(screen.queryByLabelText("Timezone")).toBeNull();
+
+    // The strip above them stays clickable on this step (a day chip takes the
+    // lead back to that day's times), so a row that vanished while the control
+    // under it stayed put would read as a layout fault rather than a boundary.
+    expect(await dayChip()).toBeTruthy();
+    expect(screen.getByRole("button", { name: "12h" })).toBeTruthy();
+    expect(screen.getByRole("combobox", { name: "Timezone" })).toBeTruthy();
+  });
+
+  it("changes only the spelling: switching zone on the details step books the same instant", async () => {
+    let posted: Record<string, unknown> | null = null;
+    global.fetch = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+      if (String(url).includes("/api/availability")) {
+        return { ok: true, json: async () => availability } as Response;
+      }
+      posted = JSON.parse(String(init?.body));
+      return { ok: true, status: 200, json: async () => ({ startsAt: slotIso }) } as Response;
+    }) as unknown as typeof fetch;
+
+    render(<Booker {...baseProps} />);
+    await userEvent.click(await dayChip());
+    await userEvent.click(await screen.findByRole("button", { name: /:\d{2}/ }));
+    await screen.findByLabelText("Name");
+
+    const before = screen.getByTestId("chosen-time").textContent;
+
+    // A zone the fixture is never in, so the displayed time has to move. The
+    // rows exist only while the picker is open, so open it first.
+    await userEvent.click(screen.getByRole("combobox", { name: "Timezone" }));
+    await userEvent.click(await screen.findByRole("option", { name: /Pacific/i }));
+    await waitFor(() => {
+      expect(screen.getByTestId("chosen-time").textContent).not.toBe(before);
+    });
+
+    await userEvent.type(screen.getByLabelText("Name"), "Dana Lead");
+    await userEvent.type(screen.getByLabelText("Email"), "dana@example.com");
+    await userEvent.type(screen.getByLabelText("Phone"), "(203) 561-5295");
+    await userEvent.click(screen.getByRole("button", { name: /confirm booking/i }));
+
+    await waitFor(() => expect(posted).not.toBeNull());
+    // The instant the lead picked, unchanged: only its spelling moved.
+    expect(posted!.start).toBe(slotIso);
+    // And the zone they switched to IS recorded, because that is the zone they
+    // read the time in and it is what the confirmation and the invite quote back.
+    expect(String(posted!.timezone)).toMatch(/Los_Angeles|Pacific/i);
+  });
+
+  it("reformats the CHOSEN time on the details step, not only the list behind it", async () => {
+    render(<Booker {...baseProps} />);
+    await userEvent.click(await dayChip());
+    await userEvent.click(await screen.findByRole("button", { name: /:\d{2}/ }));
+
+    // The details step carries its own summary of the time that was picked. If
+    // the toggle reformatted the list and not this line, the two halves of the
+    // screen would disagree about what is being booked.
+    const summary = await screen.findByTestId("chosen-time");
+    expect(summary.textContent).toMatch(/\d{1,2}:\d{2}\s*(am|pm)/i);
+
+    await userEvent.click(screen.getByRole("button", { name: "24h" }));
+    await waitFor(() => {
+      expect(screen.getByTestId("chosen-time").textContent).toMatch(/\d{2}:\d{2}/);
+    });
+    expect(screen.getByTestId("chosen-time").textContent).not.toMatch(/am|pm/i);
   });
 });
