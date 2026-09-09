@@ -248,18 +248,33 @@ export interface BulkReassignSummary {
   done: boolean;
 }
 
+/**
+ * Every status an item can hold, as a list, in ONE place.
+ *
+ * Written as a `Record` first so `tsc` names a status somebody adds to the union
+ * and forgets here; the array is derived from it. Both the counter below and
+ * `isBulkReassignProgress` read this, so the thing that COUNTS statuses and the
+ * thing that JUDGES whether a payload carries them all can never answer
+ * differently about which statuses exist (L41, L263).
+ */
+const ITEM_STATUS_PRESENT: Record<BulkReassignItemStatus, true> = {
+  pending: true,
+  moved: true,
+  unplaceable: true,
+  skipped: true,
+  failed: true,
+  cancelled: true,
+};
+export const BULK_REASSIGN_ITEM_STATUSES = Object.keys(ITEM_STATUS_PRESENT) as BulkReassignItemStatus[];
+
 /** Count a job's items by status for the admin progress view. Pure. */
 export function summarizeBulkReassignItems(
   items: { status: BulkReassignItemStatus }[],
 ): BulkReassignSummary {
-  const counts: Record<BulkReassignItemStatus, number> = {
-    pending: 0,
-    moved: 0,
-    unplaceable: 0,
-    skipped: 0,
-    failed: 0,
-    cancelled: 0,
-  };
+  const counts = Object.fromEntries(BULK_REASSIGN_ITEM_STATUSES.map((s) => [s, 0])) as Record<
+    BulkReassignItemStatus,
+    number
+  >;
   for (const it of items) counts[it.status]++;
   return { total: items.length, counts, done: counts.pending === 0 };
 }
@@ -327,6 +342,64 @@ export function buildBulkReassignProgress(
   // One shape for both lists, from one function, so the panel can draw them with
   // one row component and the two cannot drift into different fields.
   return { job, summary, actionable: rowsOf(ACTIONABLE_ITEM_STATUSES), skipped: rowsOf(SKIPPED_ITEM_STATUSES) };
+}
+
+/**
+ * Is this reply really a progress payload (#2135)?
+ *
+ * The panel used to read `progress.summary.done` off whatever a 200 carried, so a
+ * body of the wrong shape threw during render and the admin page's error boundary
+ * blanked the WHOLE page rather than the one panel. `getJson` refuses a non-ok
+ * response, so the case this exists for is the successful but wrong one: a shape
+ * change, a page older than the server it is talking to (L598), or something else
+ * answering 200.
+ *
+ * It checks what the panel READS, and the counts are checked against
+ * `BULK_REASSIGN_ITEM_STATUSES` rather than a second list written here, so a status
+ * added to the engine is required of the payload without anybody remembering.
+ * A field the panel does not read is ignored: refusing an unfamiliar extra would
+ * turn every additive server change into an unreadable reply for pages already open.
+ */
+export function isBulkReassignProgress(value: unknown): value is BulkReassignProgress {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const v = value as Record<string, unknown>;
+
+  const job = v.job;
+  if (typeof job !== "object" || job === null || typeof (job as { id?: unknown }).id !== "string") {
+    return false;
+  }
+
+  const summary = v.summary;
+  if (typeof summary !== "object" || summary === null) return false;
+  const s = summary as Record<string, unknown>;
+  if (!Number.isFinite(s.total) || typeof s.done !== "boolean") return false;
+  const counts = s.counts;
+  if (typeof counts !== "object" || counts === null) return false;
+  const c = counts as Record<string, unknown>;
+  for (const status of BULK_REASSIGN_ITEM_STATUSES) {
+    if (!Number.isFinite(c[status])) return false;
+  }
+
+  return isProgressRowList(v.actionable) && isProgressRowList(v.skipped);
+}
+
+/** One `actionable` / `skipped` row, as the panel draws it. A row whose status is
+ *  not one the engine can produce is refused, because the panel decides whether to
+ *  offer "Place by hand" by asking whether that status is a skip, and an unknown
+ *  status would silently answer no. */
+function isProgressRowList(value: unknown): boolean {
+  if (!Array.isArray(value)) return false;
+  return value.every((row) => {
+    if (typeof row !== "object" || row === null) return false;
+    const r = row as Record<string, unknown>;
+    if (typeof r.bookingId !== "string") return false;
+    if (!BULK_REASSIGN_ITEM_STATUSES.includes(r.status as BulkReassignItemStatus)) return false;
+    return (
+      (r.detail === null || typeof r.detail === "string") &&
+      (r.startsAt === null || typeof r.startsAt === "string") &&
+      (r.attendeeName === null || typeof r.attendeeName === "string")
+    );
+  });
 }
 
 export type ParsedRange =

@@ -10,9 +10,12 @@
 // Run: node --experimental-strip-types scripts/test-coverage-panel-copy.ts
 import {
   COVERAGE_PANEL_NAME,
+  coverageNothingMovedNotice,
+  coverageNothingToMoveSentence,
   coveragePanelDescription,
   coveragePanelTimeOffNote,
   coveragePanelWhere,
+  coverageProgressUnreadableNotice,
 } from "../src/lib/booking/coverage-panel-copy.ts";
 import { assert, finish } from "./lib/harness.ts";
 
@@ -69,12 +72,82 @@ assert(
   "and names the time off case that DOES come back here, so the reassurance is not read as never",
 );
 
+
+/**
+ * The zero outcome, on the arrival the panel is opened ON (#2136).
+ *
+ * It used to read "in the range you chose", which is true only when the reader
+ * set the range on this panel. A time off approval enqueues a sweep and the Team
+ * Time Off row links straight to it, and offboarding enqueues an open ended one,
+ * so on those arrivals nobody chose anything and the sentence names a decision
+ * the reader did not make.
+ */
+const named = coverageNothingToMoveSentence(
+  "Adam",
+  "2026-08-12T00:00:00.000Z",
+  "2026-08-19T23:59:59.999Z",
+  "UTC",
+);
+assert(!/you chose|your range|the range you/i.test(named), "never claims the reader chose the window");
+assert(/Aug 12/.test(named) && /Aug 19/.test(named), "names the window it is talking about");
+assert(/nothing was reassigned/i.test(named), "still says what the outcome was");
+
+const openEnded = coverageNothingToMoveSentence("Adam", "2026-08-12T00:00:00.000Z", null, "UTC");
+assert(/Aug 12/.test(openEnded), "names the start of an open ended sweep");
+assert(
+  /onward/i.test(openEnded) && !/between/i.test(openEnded),
+  "and says it runs onward rather than inventing an end",
+);
+
+// A window it could not read is said WITHOUT naming one. An unreadable bound is
+// the one case where naming a date would be a claim nothing measured (L11), and
+// the panel must not print "Invalid Date" at a reader either.
+for (const [name, start, end] of [
+  ["an unreadable start", "not-a-date", null],
+  ["an unreadable end", "2026-08-12T00:00:00.000Z", "wobbly"],
+  ["a missing start", null, null],
+] as const) {
+  const vague = coverageNothingToMoveSentence("Adam", start, end, "UTC");
+  assert(/nothing was reassigned/i.test(vague), `${name}: still says what the outcome was`);
+  assert(
+    !/Invalid Date|NaN|undefined|null/.test(vague),
+    `${name}: prints no broken date at the reader`,
+  );
+  assert(!/between|onward/i.test(vague), `${name}: names no window it could not read`);
+}
+
+/**
+ * The zero outcome on the run the reader started HERE (#2142). It goes back to the
+ * form, so the sentence says what the run did rather than offering to "start
+ * another" a move nobody started.
+ */
+const moved = coverageNothingMovedNotice("Adam");
+assert(/nothing/i.test(moved), "says nothing moved");
+assert(!/another/i.test(moved), "never says another, because nothing was started");
+
+/**
+ * A reply the panel could not read (#2135). Its own state, and it may claim only
+ * what was actually measured: something arrived and could not be read. It is NOT
+ * the lost contact message, which is about no reply at all, and the two carry
+ * different remedies because a stale page is fixed by reloading and a lost
+ * connection is not.
+ */
+const unreadable = coverageProgressUnreadableNotice();
+assert(/read/i.test(unreadable), "says the reply could not be read");
+assert(/keeps running|still running/i.test(unreadable), "says the move itself is unaffected");
+assert(/reload/i.test(unreadable), "and names the remedy that actually clears a stale page");
+assert(!/lost contact/i.test(unreadable), "does not borrow the lost contact wording");
+
 // copy rules
 for (const [name, text] of [
   ["description", said],
   ["time off note", note],
   ["name", COVERAGE_PANEL_NAME],
   ["where", where],
+  ["nothing to move, window named", named],
+  ["nothing to move, open ended", openEnded],
+  ["nothing moved on this run", moved],
+  ["unreadable progress", unreadable],
 ] as const) {
   // Written as escapes, not literals: the pre push style gate cannot tell a line
   // BANNING the character from a line using it, and it is right not to try.

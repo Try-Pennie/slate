@@ -17,14 +17,22 @@ import BulkReassignCoverage from "@/components/BulkReassignCoverage";
 import { REASSIGN_REASONS } from "@/lib/booking/core";
 import {
   ACTIONABLE_ITEM_STATUSES,
+  isBulkReassignProgress,
   SKIPPED_ITEM_STATUSES,
+  summarizeBulkReassignItems,
 } from "@/lib/booking/bulk-reassign";
 
 const progressFixture = {
-  job: { id: "job1", out_user_id: "out1", status: "done" },
+  job: {
+    id: "job1",
+    out_user_id: "out1",
+    status: "done",
+    range_start: "2026-08-12T00:00:00.000Z",
+    range_end: "2026-08-19T23:59:59.999Z",
+  },
   summary: {
     total: 2,
-    counts: { pending: 0, moved: 1, unplaceable: 1, skipped: 0, failed: 0 },
+    counts: { pending: 0, moved: 1, unplaceable: 1, skipped: 0, failed: 0, cancelled: 0 },
     done: true,
   },
   actionable: [
@@ -45,7 +53,7 @@ const mixedFixture = {
   ...progressFixture,
   summary: {
     total: 3,
-    counts: { pending: 0, moved: 1, unplaceable: 1, skipped: 1, failed: 0 },
+    counts: { pending: 0, moved: 1, unplaceable: 1, skipped: 1, failed: 0, cancelled: 0 },
     done: true,
   },
   skipped: [
@@ -62,7 +70,7 @@ const mixedFixture = {
 /** A move that had nothing to move: the #2122 p0. */
 const emptyFixture = {
   ...progressFixture,
-  summary: { total: 0, counts: { pending: 0, moved: 0, unplaceable: 0, skipped: 0, failed: 0 }, done: true },
+  summary: { total: 0, counts: { pending: 0, moved: 0, unplaceable: 0, skipped: 0, failed: 0, cancelled: 0 }, done: true },
   actionable: [],
   skipped: [],
 };
@@ -70,8 +78,14 @@ const emptyFixture = {
 /** Mid run, so the mark has something waiting and something being worked on. */
 const runningFixture = {
   ...progressFixture,
-  job: { id: "job1", out_user_id: "out1", status: "active" },
-  summary: { total: 10, counts: { pending: 6, moved: 4, unplaceable: 0, skipped: 0, failed: 0 }, done: false },
+  job: {
+    id: "job1",
+    out_user_id: "out1",
+    status: "active",
+    range_start: "2026-08-12T00:00:00.000Z",
+    range_end: "2026-08-19T23:59:59.999Z",
+  },
+  summary: { total: 10, counts: { pending: 6, moved: 4, unplaceable: 0, skipped: 0, failed: 0, cancelled: 0 }, done: false },
   actionable: [],
   skipped: [],
 };
@@ -190,13 +204,13 @@ describe("BulkReassignCoverage: what the move says it did (#2122)", () => {
     await openOnJob(emptyFixture);
 
     expect(screen.getByText("Nothing to move")).toBeTruthy();
-    expect(screen.getByText(/no upcoming bookings in the range you chose/i)).toBeTruthy();
+    expect(screen.getByText(/no upcoming bookings between/i)).toBeTruthy();
     // The defect itself: no bar, no percentage, and no claim that a move completed.
     expect(document.querySelector('[role="progressbar"]')).toBeNull();
     expect(screen.queryByText(/Move complete/)).toBeNull();
     expect(document.body.textContent).not.toMatch(/100\s*%/);
     // And a way onward, so the panel is not a dead end.
-    expect(screen.getByRole("button", { name: /start another/i })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /start a move/i })).toBeTruthy();
   });
 
   it("draws one mark per booking, telling the three outcomes apart", async () => {
@@ -269,7 +283,7 @@ describe("BulkReassignCoverage: what the move says it did (#2122)", () => {
       await openOnJob({
         ...mixedFixture,
         actionable: [],
-        summary: { total: 1, counts: { pending: 0, moved: 0, unplaceable: 0, skipped: 1, failed: 0 }, done: true },
+        summary: summarizeBulkReassignItems([{ status }]),
         skipped: [
           {
             bookingId: "bk-gone",
@@ -293,7 +307,7 @@ describe("BulkReassignCoverage: what the move says it did (#2122)", () => {
       await openOnJob({
         ...mixedFixture,
         skipped: [],
-        summary: { total: 1, counts: { pending: 0, moved: 0, unplaceable: 1, skipped: 0, failed: 0 }, done: true },
+        summary: summarizeBulkReassignItems([{ status }]),
         actionable: [
           {
             bookingId: "bk-stuck",
@@ -311,5 +325,195 @@ describe("BulkReassignCoverage: what the move says it did (#2122)", () => {
   it("drops the instruction above the rows, since every row carries it", async () => {
     await openOnJob(mixedFixture);
     expect(document.body.textContent).not.toMatch(/Open each one to place it by hand/i);
+  });
+});
+
+/**
+ * The fixtures above stand in for what the server sends, so they are held to the
+ * predicate the panel judges a real reply by (#2135). Without this, a fixture
+ * that drifted from the server's shape would quietly exercise the unreadable
+ * path while every assertion below still read as coverage (L48).
+ */
+describe("BulkReassignCoverage fixtures", () => {
+  it("are shapes the panel would accept from the server", () => {
+    for (const [name, fixture] of [
+      ["progress", progressFixture],
+      ["mixed", mixedFixture],
+      ["empty", emptyFixture],
+      ["running", runningFixture],
+    ] as const) {
+      expect(isBulkReassignProgress(fixture), name).toBe(true);
+    }
+  });
+});
+
+/**
+ * A 200 the panel cannot read (#2135).
+ *
+ * `const done = progress?.summary.done` guarded a null progress and not a progress
+ * whose `summary` is missing, so an unexpected body threw during render and the
+ * admin page's error boundary blanked the WHOLE page. Seen live on 2026-09-09.
+ * `getJson` already refuses a non-ok response, so this is the successful but wrong
+ * case: a shape change, a page older than the server (L598), or something else
+ * answering 200.
+ */
+describe("BulkReassignCoverage: a progress reply it cannot read (#2135)", () => {
+  const openOnUnreadable = async (body: unknown) => {
+    http.getJson.mockImplementation(async (url: string) =>
+      url.includes("jobId=")
+        ? { ok: true, status: 200, data: body }
+        : { ok: true, status: 200, data: { count: 5 } },
+    );
+    render(
+      <BulkReassignCoverage
+        agentId="out1"
+        agentName="Adam"
+        reassignReasons={REASSIGN_REASONS}
+        initialJobId="job1"
+      />,
+    );
+  };
+
+  it("says so, in its own words, instead of throwing", async () => {
+    // The exact body observed live: a 200 whose summary is not there.
+    await openOnUnreadable({ job: { id: "job1" }, actionable: [], skipped: [] });
+
+    expect(await screen.findByText(/couldn't read the move's progress/i)).toBeTruthy();
+    // Not a blank and not a success (L10, L11).
+    expect(screen.queryByText(/Move complete/)).toBeNull();
+    expect(screen.queryByText("Nothing to move")).toBeNull();
+    expect(document.querySelector('[role="progressbar"]')).toBeNull();
+  });
+
+  it("is a THIRD state, not the lost contact one", async () => {
+    await openOnUnreadable({ error: "Not found" });
+    await screen.findByText(/couldn't read the move's progress/i);
+    // Lost contact is a reply that never came. This one came and did not fit, and
+    // the remedy is different, so the two must not share a message.
+    expect(screen.queryByText(/lost contact/i)).toBeNull();
+    expect(screen.getByText(/reloading this page/i)).toBeTruthy();
+  });
+
+  it("recovers on the next readable poll rather than staying stuck", async () => {
+    let reads = 0;
+    http.getJson.mockImplementation(async (url: string) => {
+      if (!url.includes("jobId=")) return { ok: true, status: 200, data: { count: 5 } };
+      reads += 1;
+      return { ok: true, status: 200, data: reads === 1 ? { nonsense: true } : progressFixture };
+    });
+    vi.useFakeTimers();
+    try {
+      render(
+        <BulkReassignCoverage
+          agentId="out1"
+          agentName="Adam"
+          reassignReasons={REASSIGN_REASONS}
+          initialJobId="job1"
+        />,
+      );
+      // The first poll is unreadable.
+      await vi.waitFor(() => expect(reads).toBeGreaterThan(0));
+      // The panel keeps polling, so a reply it can read puts it back on progress.
+      await vi.advanceTimersByTimeAsync(3100);
+      await vi.waitFor(() => expect(reads).toBeGreaterThan(1));
+      await vi.waitFor(() =>
+        expect(document.body.textContent).not.toMatch(/couldn't read the move's progress/i),
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+/**
+ * The same shape question, on the OTHER read in this panel (#2135). Swept for in
+ * the fix's own diff, because the place a defect class is most likely to be
+ * repeated is the change that fixes it (L387).
+ */
+describe("BulkReassignCoverage: a preview count it cannot read", () => {
+  it("says the count is unknown rather than printing it at the reader", async () => {
+    http.getJson.mockImplementation(async (url: string) =>
+      url.includes("jobId=")
+        ? { ok: true, status: 200, data: progressFixture }
+        : { ok: true, status: 200, data: { count: { total: 5 } } },
+    );
+    render(<BulkReassignCoverage agentId="out1" agentName="Adam" reassignReasons={REASSIGN_REASONS} />);
+
+    expect(await screen.findByText(/enter a range to see how many bookings would move/i)).toBeTruthy();
+    expect(document.body.textContent).not.toMatch(/\[object Object\]|NaN|undefined bookings/);
+  });
+});
+
+/**
+ * The zero outcome (#2142, #2136). Two arrivals, two different truths.
+ */
+describe("BulkReassignCoverage: a move that had nothing to move", () => {
+  it("goes back to the form when the reader started it here, and never says another", async () => {
+    let previews = 0;
+    http.getJson.mockImplementation(async (url: string) => {
+      if (url.includes("jobId=")) return { ok: true, status: 200, data: emptyFixture };
+      previews += 1;
+      // The race this state IS: the preview counted bookings, the engine found
+      // none by the time it ran. The preview agrees on the next read.
+      return { ok: true, status: 200, data: { count: previews === 1 ? 5 : 0 } };
+    });
+    http.postJson.mockResolvedValueOnce({ ok: true, status: 200, data: { jobId: "job1", itemCount: 0 } });
+
+    render(<BulkReassignCoverage agentId="out1" agentName="Adam" reassignReasons={REASSIGN_REASONS} />);
+    fireEvent.click(await screen.findByRole("button", { name: /move these bookings/i }));
+
+    // Back on the form, with the range controls the reader would reach for next.
+    expect(await screen.findByText(/nothing moved/i)).toBeTruthy();
+    expect(screen.getByLabelText(/^From$/)).toBeTruthy();
+    expect(screen.getByLabelText(/Until/)).toBeTruthy();
+    expect(screen.getByRole("button", { name: /move these bookings/i })).toBeTruthy();
+    // The false claim: nothing was started, so nothing can be started AGAIN.
+    expect(screen.queryByRole("button", { name: /start another/i })).toBeNull();
+    expect(screen.queryByText("Nothing to move")).toBeNull();
+  });
+
+  it("keeps the range the reader chose rather than resetting it", async () => {
+    http.getJson.mockImplementation(async (url: string) =>
+      url.includes("jobId=")
+        ? { ok: true, status: 200, data: emptyFixture }
+        : { ok: true, status: 200, data: { count: 0 } },
+    );
+    http.postJson.mockResolvedValueOnce({ ok: true, status: 200, data: { jobId: "job1", itemCount: 0 } });
+
+    render(<BulkReassignCoverage agentId="out1" agentName="Adam" reassignReasons={REASSIGN_REASONS} />);
+    const until = screen.getByLabelText(/Until/) as HTMLInputElement;
+    fireEvent.change(until, { target: { value: "2026-09-30" } });
+    const from = screen.getByLabelText(/^From$/) as HTMLInputElement;
+    const chosenFrom = from.value;
+
+    fireEvent.click(await screen.findByRole("button", { name: /move these bookings/i }));
+    await screen.findByText(/nothing moved/i);
+
+    expect((screen.getByLabelText(/Until/) as HTMLInputElement).value).toBe("2026-09-30");
+    expect((screen.getByLabelText(/^From$/) as HTMLInputElement).value).toBe(chosenFrom);
+  });
+
+  it("names the window instead of claiming the reader chose it, on a sweep it was opened on", async () => {
+    http.getJson.mockImplementation(async (url: string) =>
+      url.includes("jobId=")
+        ? { ok: true, status: 200, data: emptyFixture }
+        : { ok: true, status: 200, data: { count: 5 } },
+    );
+    render(
+      <BulkReassignCoverage
+        agentId="out1"
+        agentName="Adam"
+        reassignReasons={REASSIGN_REASONS}
+        initialJobId="job1"
+      />,
+    );
+
+    expect(await screen.findByText("Nothing to move")).toBeTruthy();
+    // A time off approval or an offboarding chose this window, not the reader.
+    expect(document.body.textContent).not.toMatch(/range you chose/i);
+    expect(screen.getByText(/no upcoming bookings between/i)).toBeTruthy();
+    // Nothing was started here either, so the reset control cannot say another.
+    expect(screen.queryByRole("button", { name: /start another/i })).toBeNull();
+    expect(screen.getByRole("button", { name: /start a move/i })).toBeTruthy();
   });
 });

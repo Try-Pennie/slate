@@ -126,7 +126,7 @@ describe("GET /admin/agents/[id]/bulk-reassign", () => {
   it("returns job progress when a jobId is given", async () => {
     const progress = {
       job: { id: "job1", out_user_id: "out1", status: "active" },
-      summary: { total: 3, counts: { pending: 1, moved: 1, unplaceable: 1, skipped: 0, failed: 0 }, done: false },
+      summary: { total: 3, counts: { pending: 1, moved: 1, unplaceable: 1, skipped: 0, failed: 0, cancelled: 0 }, done: false },
       actionable: [{ bookingId: "bk1", status: "unplaceable", detail: "no agent free", startsAt: "x", attendeeName: "Kris" }],
     };
     service.getBulkReassignProgress.mockResolvedValueOnce(progress);
@@ -138,7 +138,7 @@ describe("GET /admin/agents/[id]/bulk-reassign", () => {
   it("404s a jobId that belongs to a DIFFERENT agent (no cross-agent leakage)", async () => {
     service.getBulkReassignProgress.mockResolvedValueOnce({
       job: { id: "job1", out_user_id: "someone_else", status: "active" },
-      summary: { total: 0, counts: { pending: 0, moved: 0, unplaceable: 0, skipped: 0, failed: 0 }, done: true },
+      summary: { total: 0, counts: { pending: 0, moved: 0, unplaceable: 0, skipped: 0, failed: 0, cancelled: 0 }, done: true },
       actionable: [],
     });
     const res = await GET(getReq("?jobId=job1"), params);
