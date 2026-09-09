@@ -22,9 +22,8 @@ import {
   setUserLifecycle,
 } from "@/app/admin/actions";
 import BulkReassignCoverage from "@/components/BulkReassignCoverage";
-import { DebtTeamLedger, LEDGER_LEGEND } from "@/components/admin/DebtTeamLedger";
 import { backendServiceOf, teamsOf } from "@/lib/admin/agent-display";
-import { debtTeamCoverage } from "@/lib/admin/debt-team";
+import { debtTeamCoverage, debtTeamValueText } from "@/lib/admin/debt-team";
 import PoolExitConfirmButton from "@/components/PoolExitConfirmButton";
 import { previewBulkReassign } from "@/lib/booking/service";
 import { log } from "@/lib/log";
@@ -164,15 +163,13 @@ export default async function AgentProfilePage({
   // keep their own isAdmin gates, which are already correct.
   const canManageThisAgent = canManageUser(me.role, agent.role, isSelf);
 
-  // #2120: whether there is ANY coverage to DRAW, asked of the same function the
-  // ladder itself draws from rather than of the raw attribute. A blank is not a
-  // team, and `debtTeamCoverage` already drops one, so branching on the array's
-  // length would put the wordless empty ladder back for exactly the agent whose
-  // stored value is an empty string, with the branch and the ladder answering
-  // different questions about one value (L70).
-  const debtTeams = teamsOf(agent);
-  const debtCoverage = debtTeamCoverage(debtTeams);
-  const hasDebtTeams = debtCoverage.ranks.length > 0 || debtCoverage.offLadder.length > 0;
+  // #2120: the agent's debt coverage, read once, from the two functions the
+  // roster's ladder also composes from. `teamsOf` reads whichever shape the sync
+  // stored (an array on most agents, a bare string on a few) and
+  // `debtTeamCoverage` splits it into rungs and everything else, dropping a blank
+  // on the way, so the panel can never print an empty string for an agent whose
+  // stored value is `[""]`.
+  const debtCoverage = debtTeamCoverage(teamsOf(agent));
   // #1878: whether the role is shown as a CONTROL or as read only text. ONE
   // predicate with both branches hanging off it, so the role cannot end up named
   // nowhere the way it would if each branch tested its own condition.
@@ -537,88 +534,115 @@ export default async function AgentProfilePage({
               and the record of who was made bookable untouched.
 
               And the debt teams printed the stored keys, `very_high, high,
-              medium`. `DebtTeamLedger` is the answer the roster already reached
-              for that (#1796, #1812): five rungs from the one `DEBT_TIER`
-              vocabulary, drawn as a band rather than decoded from a comma list.
-              This panel was the second copy that never got converted (L613), and
-              the backend had the same problem in miniature, so it takes the same
-              vocabulary treatment through `backendServiceOf`. */}
-          <div className="mt-4 flex flex-wrap items-start gap-x-8 gap-y-4">
-            <div>
-              {/* The ladder's letters are its own legend on the roster because the
-                  expansion sits once on the column HEADER. There is no column
-                  header here, so the field label carries it, derived from the same
-                  constant rather than spelled out again: V and U are the two
-                  letters nobody guesses. `title` for a pointer, `sr-only` for a
-                  screen reader, matching the roster's own treatment. */}
-              {/* heading-gloss-ok: a plural marker, not a gloss. An agent can hold several. */}
-              <span className={labelCls} title={LEDGER_LEGEND}>
-                Debt team(s)
-                <span className="sr-only">{` (${LEDGER_LEGEND})`}</span>
-              </span>
-              {/* No team at all draws NO ladder. Five faint letters carrying no
-                  words is what a reader who cannot hear the accessible name
-                  meets, and beside a sibling field reading "Not set" that reads
-                  as a panel which failed to load rather than as an agent with no
-                  team (L10, L67). The roster keeps its five slots in that case
-                  because a COLUMN needs the fixed width to align down every row,
-                  which is the whole argument for drawing it; there is no column
-                  here, so the words win. The same words as the field beside it,
-                  because it is the same state (L118).
+              medium`, which is the machine spelling of a vocabulary `DEBT_TIER`
+              has paired with labels all along. They read as FULL WORDS here (Dan,
+              2026-09-09: "make the debt teams full words here so it's clear").
+              Not as the roster's ladder: five letters earn their place in a
+              COLUMN, where they align down every row and that alignment is the
+              entire argument for drawing a mark instead of writing the words. A
+              single record has no column, so the letters would buy nothing and
+              cost a legend the reader has to go and find. Both surfaces compose
+              from one function (`debtTeamValueText`), so they cannot drift into
+              saying different things about one agent (L41). The backend had the
+              same problem in miniature, so it takes the same vocabulary treatment
+              through `backendServiceOf`.
 
-                  A stored value that is not one of the five rungs still counts as
-                  coverage and still draws, or the panel that exists to say what
-                  an agent covers would under report them (L113). */}
-              <p className="text-sm">
-                {hasDebtTeams ? (
-                  <DebtTeamLedger teams={debtTeams} />
-                ) : (
-                  attrValue(null)
-                )}
-              </p>
+              #2120, LEGAL ELIGIBLE JOINS THE ROW (Dan, same day: "legal eligible
+              can be in line with the rest and smaller"). It sat below a rule as a
+              second block, which read as a separate concern from the two fields
+              above it; it is the third routing attribute and belongs beside them.
+              Its height stays 44px because that is the touch target rule, so
+              "smaller" is bought in WIDTH and in losing the divider rather than
+              by shrinking what a finger has to hit. */}
+          <div
+            data-attr-row
+            className="mt-4 flex flex-wrap items-start gap-x-8 gap-y-4"
+          >
+            <div>
+              {/* heading-gloss-ok: a plural marker, not a gloss. An agent can hold several. */}
+              <span className={labelCls}>Debt team(s)</span>
+              {/* A blank beside a label reads as a panel that failed to load
+                  rather than as an agent with no team (L10, L67), so the absent
+                  case is named in the SAME words its neighbours use for the same
+                  state (L118). The question is asked of the function that
+                  composes the words, never of the raw attribute, or a stored
+                  blank prints an empty string here while the ladder correctly
+                  shows nothing (L70).
+
+                  A stored value that is not one of the five rungs is still
+                  coverage and is still named, as stored, or the panel that exists
+                  to say what an agent covers would under report them (L113). */}
+              <p className="text-sm">{attrValue(debtTeamValueText(debtCoverage))}</p>
             </div>
             <div>
               <span className={labelCls}>Backend</span>
               <p className="text-sm">{attrValue(backendServiceOf(agent))}</p>
             </div>
+            <div>
+              <span className={labelCls} id="legal-eligible-label">
+                Legal eligible
+              </span>
+              {canManageThisAgent ? (
+                <SaveForm
+                  name="agent-attributes"
+                  action={setAgentAttributes}
+                  className="flex items-end gap-2"
+                >
+                  <input type="hidden" name="user_id" value={agent.id} />
+                  <SelectField
+                    name="legal_eligible"
+                    ariaLabel="Legal eligible"
+                    defaultValue={
+                      agent.attributes?.legal_eligible === true
+                        ? "true"
+                        : agent.attributes?.legal_eligible === false
+                          ? "false"
+                          : ""
+                    }
+                    className="w-28"
+                    options={[
+                      { value: "", label: "Not set" },
+                      { value: "true", label: "Yes" },
+                      { value: "false", label: "No" },
+                    ]}
+                  />
+                  {/* The visible label is one word so the field group stays a
+                      field rather than becoming a sentence, and the accessible
+                      name says WHICH save, because this page carries several and
+                      a screen reader cannot tell three buttons reading "Save"
+                      apart. The name contains the visible label (WCAG 2.5.3). */}
+                  <SubmitButton
+                    className={btnCls}
+                    pendingLabel="Saving"
+                    ariaLabel="Save legal eligible"
+                  >
+                    Save
+                  </SubmitButton>
+                </SaveForm>
+              ) : (
+                /* Read only is not the same as hidden, and this is the field a
+                   reader is most likely to be checking, since routing matches on
+                   it. Somebody who may not change it used to get a sentence about
+                   permission and NO value, so the panel answered "what can this
+                   agent be routed for" with two thirds of the answer. The three
+                   states are told apart: Not set is not No. */
+                <p className="text-sm">
+                  {attrValue(
+                    agent.attributes?.legal_eligible === true
+                      ? "Yes"
+                      : agent.attributes?.legal_eligible === false
+                        ? "No"
+                        : null,
+                  )}
+                </p>
+              )}
+            </div>
           </div>
 
           {!canManageThisAgent && (
-            <p className="mt-4 text-xs text-fg-muted">
+            <p className="mt-3 text-xs text-fg-muted">
               Only someone who outranks this agent can change their legal eligibility.
             </p>
-          )}
-          {canManageThisAgent && (
-            <SaveForm
-              name="agent-attributes"
-              action={setAgentAttributes}
-              className="mt-4 flex flex-wrap items-end gap-x-4 gap-y-3 border-t border-border pt-4"
-            >
-              <input type="hidden" name="user_id" value={agent.id} />
-              <div>
-                <label className={labelCls}>Legal eligible</label>
-                <SelectField
-                  name="legal_eligible"
-                  ariaLabel="Legal eligible"
-                  defaultValue={
-                    agent.attributes?.legal_eligible === true
-                      ? "true"
-                      : agent.attributes?.legal_eligible === false
-                        ? "false"
-                        : ""
-                  }
-                  className="w-40"
-                  options={[
-                    { value: "", label: "Not set" },
-                    { value: "true", label: "Yes" },
-                    { value: "false", label: "No" },
-                  ]}
-                />
-              </div>
-              <SubmitButton className={btnCls} pendingLabel="Saving">
-                Save legal eligible
-              </SubmitButton>
-            </SaveForm>
           )}
         </section>
 

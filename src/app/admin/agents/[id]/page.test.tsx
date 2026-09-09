@@ -675,27 +675,25 @@ describe("AgentProfilePage routing attributes are read only (#1874)", () => {
   it("still shows the values, since read only is not the same as hidden", async () => {
     await withAttrs({ debt_team: ["ultra_high", "very_high"], backend_service: "achieve", role: "Sales" });
 
-    // #2120: as the ladder the roster already draws, not as the stored keys. The
-    // keys are the machine spelling of a vocabulary that has labels, and a comma
-    // list cannot say what the values are, which is a band of rungs.
+    // #2120: in full words, not the stored keys and not the roster's ladder. The
+    // keys are the machine spelling of a vocabulary that has labels, and the
+    // ladder's five letters earn their place in a COLUMN, where they align down
+    // every row; a single record has no column, so the letters would buy nothing
+    // and cost a legend the reader has to go and find.
     expect(screen.queryByText("ultra_high, very_high")).toBeNull();
-    const ledger = document.querySelector("[data-ledger]") as HTMLElement;
-    expect(ledger).toBeTruthy();
-    expect(ledger.getAttribute("aria-label")).toBe("Covers Very High to Ultra High");
+    expect(document.querySelector("[data-ledger]")).toBeNull();
+    expect(screen.getByText("Very High to Ultra High")).toBeTruthy();
 
     // The backend gets the same vocabulary treatment, for the same reason.
     expect(screen.getByText("Achieve")).toBeTruthy();
     expect(screen.queryByText("achieve")).toBeNull();
   });
 
-  // The ladder's letters are its own legend on the roster because the expansion
-  // sits ONCE on the column header. There is no column header here, so the field
-  // label carries it, or V and U are two letters nobody guesses.
-  it("carries the ladder's legend, since this panel has no column header to hold it", async () => {
-    await withAttrs({ debt_team: ["low"] });
-    const panel = screen.getByText("Routing attributes").closest("section") as HTMLElement;
-    expect(panel.textContent).toMatch(/V Very High/);
-    expect(panel.textContent).toMatch(/U Ultra High/);
+  // The words and the roster's accessible name are one composition, so a reader
+  // comparing the two screens can never be told different things about one agent.
+  it("says a gap as a list, since a range would claim a rung this agent does not cover", async () => {
+    await withAttrs({ debt_team: ["low", "high"] });
+    expect(screen.getByText("Low, High")).toBeTruthy();
   });
 
   // #2120: `role` is the Salesforce Profile name, and NOTHING routes on it: all
@@ -710,45 +708,30 @@ describe("AgentProfilePage routing attributes are read only (#1874)", () => {
     expect(panel.textContent).not.toMatch(/\bSales\b/);
   });
 
-  // An agent with no debt team at all draws NO ladder. Five faint letters and no
-  // words is what a reader who cannot see the aria-label meets, and beside a
-  // sibling field reading "Not set" it reads as a panel that failed to load
-  // rather than as an agent with no team (L10, L67). The roster keeps its five
-  // slots because a COLUMN needs the fixed width to align down; there is no
-  // column here, so the words win.
-  it("names an absent debt team in words, not as an empty ladder", async () => {
+  // A blank beside a label reads as a panel that failed to load, not as an agent
+  // with no team (L10, L67). Named in the SAME words the fields beside it use for
+  // the same state, because one meaning on one surface gets one vocabulary (L118).
+  it("names an absent debt team in the same words its neighbours use", async () => {
     await withAttrs({});
-    expect(document.querySelector("[data-ledger]")).toBeNull();
     const panel = screen.getByText("Routing attributes").closest("section") as HTMLElement;
-    // The SAME words the field beside it uses for the same state: one vocabulary
-    // for one meaning on one surface (L118).
-    expect(panel.querySelectorAll("*")).toBeTruthy();
-    expect((panel.textContent ?? "").match(/Not set/g)?.length).toBeGreaterThanOrEqual(2);
+    expect((panel.textContent ?? "").match(/Not set/g)?.length).toBeGreaterThanOrEqual(3);
   });
 
-  // A blank is not a team. Branching on the raw attribute rather than on what the
-  // ladder can actually DRAW puts the empty ladder back for exactly this agent,
-  // and the two would be asking different questions about one value (L70).
+  // A blank is not a team. Asking the raw attribute rather than the function that
+  // composes the words would print an empty string for exactly this agent, and
+  // the two would be answering different questions about one value (L70).
   it("names a blank stored team as absent, since a blank is not a team", async () => {
     await withAttrs({ debt_team: ["", "  "] });
-    expect(document.querySelector("[data-ledger]")).toBeNull();
-  });
-
-  it("draws the ladder as soon as there is any coverage to show", async () => {
-    await withAttrs({ debt_team: ["low"] });
-    const ledger = document.querySelector("[data-ledger]") as HTMLElement;
-    expect(ledger).toBeTruthy();
-    expect(ledger.getAttribute("aria-label")).toBe("Covers Low");
+    const panel = screen.getByText("Routing attributes").closest("section") as HTMLElement;
+    expect((panel.textContent ?? "").match(/Not set/g)?.length).toBeGreaterThanOrEqual(3);
   });
 
   // A value that is not one of the five rungs is still coverage, and dropping it
-  // to the empty state would under report the agent on the panel that exists to
-  // show what they cover (L113).
-  it("draws the ladder for a stored value that is not a rung", async () => {
-    await withAttrs({ debt_team: ["credit"] });
-    const ledger = document.querySelector("[data-ledger]") as HTMLElement;
-    expect(ledger).toBeTruthy();
-    expect(screen.getByText("credit")).toBeTruthy();
+  // would under report the agent on the panel that exists to show what they
+  // cover (L113). Shown as stored, so it reads as a data question.
+  it("names a stored value that is not a rung, rather than dropping it", async () => {
+    await withAttrs({ debt_team: ["low", "credit"] });
+    expect(screen.getByText("Low, plus credit")).toBeTruthy();
   });
 
   // #2120: the panel explained the INTERFACE. "What this agent can be routed for.
@@ -792,5 +775,46 @@ describe("AgentProfilePage routing attributes are read only (#1874)", () => {
     await withAttrs({ legal_eligible: false });
     expect(screen.getByRole("combobox", { name: /legal eligible/i })).toBeTruthy();
     expect(screen.getByRole("button", { name: /save legal eligible/i })).toBeTruthy();
+  });
+
+  // Dan, 2026-09-09: "legal eligible can be in line with the rest and smaller".
+  // It sat below a rule as a second block, which read as a separate concern from
+  // the two fields above it. It is the third routing attribute, so it belongs in
+  // the same row.
+  it("puts legal eligible in the same row as the other two attributes", async () => {
+    await withAttrs({ debt_team: ["low"], backend_service: "achieve", legal_eligible: true });
+    const panel = screen.getByText("Routing attributes").closest("section") as HTMLElement;
+    const row = panel.querySelector("[data-attr-row]") as HTMLElement;
+    expect(row).toBeTruthy();
+    for (const label of ["Debt team(s)", "Backend", "Legal eligible"]) {
+      expect(row.textContent).toContain(label);
+    }
+    // The rule that made it a second block is gone with it.
+    expect(panel.querySelector(".border-t")).toBeNull();
+  });
+
+  // Read only is not the same as hidden, and this is the field a reader is most
+  // likely to be checking: routing matches on it. Somebody who may not change it
+  // used to get a sentence about permission and NO value, so the panel answered
+  // "what can this agent be routed for" with two thirds of the answer.
+  it("shows legal eligible to a reader who may not change it", async () => {
+    auth.currentUser.mockResolvedValueOnce({ id: "m1", role: "manager", org_id: "o1" });
+    dbState.agent = { ...agentOf("admin"), attributes: { legal_eligible: true } };
+    render(await AgentProfilePage(props));
+
+    const panel = screen.getByText("Routing attributes").closest("section") as HTMLElement;
+    expect(panel.querySelector("[data-attr-row]")?.textContent).toContain("Legal eligible");
+    expect(screen.getByText("Yes")).toBeTruthy();
+    expect(screen.queryByRole("combobox", { name: /legal eligible/i })).toBeNull();
+  });
+
+  // The three states are told apart. Not set is not the same as No, and a
+  // reader deciding whether somebody can take a legal lead needs to know which
+  // of the two they are looking at.
+  it("tells an unset legal eligibility apart from a No", async () => {
+    auth.currentUser.mockResolvedValueOnce({ id: "m1", role: "manager", org_id: "o1" });
+    dbState.agent = { ...agentOf("admin"), attributes: { legal_eligible: false } };
+    render(await AgentProfilePage(props));
+    expect(screen.getByText("No")).toBeTruthy();
   });
 });

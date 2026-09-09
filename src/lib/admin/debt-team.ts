@@ -149,20 +149,48 @@ function bandPhrase(ranks: number[]): string {
 }
 
 /**
- * The whole coverage in words: the band plus anything off the ladder. This is the
- * accessible text and the hover title, so a reader who cannot see the glyph, or
- * who wants it spelled out, gets every stored value in one sentence.
+ * The coverage as a VALUE: the band plus anything off the ladder, and nothing
+ * else (#2120).
+ *
+ * Dan, looking at the agent page: "make the debt teams full words here so it's
+ * clear". The ladder earns its place in a COLUMN, where five fixed positions
+ * align down every row and that alignment is the entire argument for drawing a
+ * mark rather than writing the words. A single record has no column to align to,
+ * so the letters buy nothing there and cost a legend the reader has to go and
+ * find.
  *
  * A contiguous band reads as a range because that is how a person says it; a gap
  * has to read as a list, because "Low to Ultra High" would be a lie about an
- * agent who does not take the middle.
+ * agent who does not take the middle. An off ladder value is shown exactly AS
+ * STORED, including its case, because the reader needs to see it is a data
+ * question and not a formatting one (L113).
+ *
+ * `null` when there is nothing to say, deliberately: the surface names that
+ * state in its own words, beside whatever its sibling fields call it, and a
+ * second wording invented here would put two vocabularies for one meaning on one
+ * screen (L118).
  */
-export function debtTeamLabel(coverage: DebtTeamCoverage): string {
+export function debtTeamValueText(coverage: DebtTeamCoverage): string | null {
   const { ranks, offLadder } = coverage;
-  if (ranks.length === 0 && offLadder.length === 0) return "No team set";
+  if (ranks.length === 0 && offLadder.length === 0) return null;
 
   const band = ranks.length === 0 ? "" : bandPhrase(ranks);
-  if (offLadder.length === 0) return `Covers ${band}`;
+  if (offLadder.length === 0) return band;
   const extra = offLadder.join(", ");
-  return band ? `Covers ${band}, plus ${extra}` : `Covers ${extra}`;
+  return band ? `${band}, plus ${extra}` : extra;
+}
+
+/**
+ * The whole coverage as a SENTENCE: the accessible text and the hover title, so
+ * a reader who cannot see the glyph, or who wants it spelled out, gets every
+ * stored value in one line.
+ *
+ * Composed FROM the value above rather than beside it. The roster announces this
+ * and the agent page prints the value, and two compositions of one fact drift in
+ * the direction nobody notices, because each reads as correct on the screen it is
+ * on (L41, L263).
+ */
+export function debtTeamLabel(coverage: DebtTeamCoverage): string {
+  const value = debtTeamValueText(coverage);
+  return value === null ? "No team set" : `Covers ${value}`;
 }
