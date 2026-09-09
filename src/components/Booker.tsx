@@ -980,11 +980,16 @@ export default function Booker({
    * choosing rather than after. They used to sit below the strip on two separate
    * lines, right aligned and left aligned, so nothing said they belonged together.
    *
-   * Not rendered once a time is chosen: that step shows one time the reader has
-   * already read and picked, and offering the two settings again there would
-   * invite them to change the spelling of a decision rather than the decision.
+   * Rendered on the DETAILS step too (#2172, Dan 2026-09-09). Hiding them there
+   * was wrong for a reason specific to this screen: the day strip directly below
+   * the row stays visible and stays live, since a day chip takes the lead back to
+   * that day's times. A row that appeared and disappeared while the control under
+   * it stayed put reads as a layout fault rather than as a step boundary.
+   *
+   * Changing the zone on that step moves nothing: the chosen slot is held as an
+   * instant, so only its spelling changes.
    */
-  const displayControls = selectedSlot ? null : (
+  const displayControls = (
     <div
       data-display-controls
       className="mb-4 flex flex-wrap items-center justify-between gap-x-4 gap-y-2 text-xs"
@@ -1033,7 +1038,11 @@ export default function Booker({
           >
             ‹ Back
           </button>
-          <p className={`text-sm font-semibold ${c.title}`}>
+          {/* #2172: this line is the details step's own statement of what is
+              being booked, so it reads `hour12` and `zone` through the same
+              `fmtTime` the list does. Two formatters here would let the summary
+              and the times disagree about the same instant. */}
+          <p data-testid="chosen-time" className={`text-sm font-semibold ${c.title}`}>
             {selectedDate?.toFormat("ccc d")} · {fmtTime(selectedSlot)}
           </p>
           {(["name", "email", "phone"] as const).map((field) => (
