@@ -11,7 +11,8 @@ import { useSlotPicker } from "@/components/use-slot-picker";
 import { rescheduleOffersAlternatives } from "@/lib/booking/nearest-slots";
 import { NearestTimesPanel } from "@/components/NearestTimes";
 import { validateAttendee, type AttendeeErrors } from "@/lib/attendee";
-import { formatPhoneAsTyped, prefillPhone } from "@/lib/phone-format";
+import { prefillPhone } from "@/lib/phone-format";
+import { usePhoneCaret } from "@/lib/usePhoneCaret";
 import { HONEYPOT_FIELD } from "@/lib/booking/honeypot";
 import { getJson, postJson, REQUEST_TIMEOUT_MS } from "@/lib/http";
 import { useStalledAfter } from "@/lib/useStalledAfter";
@@ -309,6 +310,13 @@ export default function Booker({
   const [fieldErrors, setFieldErrors] = useState<AttendeeErrors>({});
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // #1332 shapes the number as it is typed; #2162 keeps the caret where the lead
+  // put it while that happens. Both live in the hook, so the manage page cannot
+  // have one without the other.
+  const phone = usePhoneCaret((formatted) => {
+    setAttendee((a) => ({ ...a, phone: formatted }));
+    setFieldErrors((f) => (f.phone ? { ...f, phone: undefined } : f));
+  });
   const [confirmed, setConfirmed] = useState<{
     start: string;
     manageUrl?: string | null;
@@ -1071,19 +1079,18 @@ export default function Booker({
                   fieldErrors[field] ? `booker-${field}-error` : undefined
                 }
                 value={attendee[field]}
-                onChange={(e) => {
-                  // #1332: the phone number is how the advisor reaches the lead,
-                  // so it is shaped and capped as they type rather than rejected
-                  // at submit, which is the worst moment to send them back.
-                  const next =
-                    field === "phone"
-                      ? formatPhoneAsTyped(e.target.value)
-                      : e.target.value;
-                  setAttendee((a) => ({ ...a, [field]: next }));
-                  setFieldErrors((f) =>
-                    f[field] ? { ...f, [field]: undefined } : f,
-                  );
-                }}
+                ref={field === "phone" ? phone.attach : undefined}
+                onChange={
+                  field === "phone"
+                    ? phone.onChange
+                    : (e) => {
+                        const next = e.target.value;
+                        setAttendee((a) => ({ ...a, [field]: next }));
+                        setFieldErrors((f) =>
+                          f[field] ? { ...f, [field]: undefined } : f,
+                        );
+                      }
+                }
               />
               {fieldErrors[field] && (
                 <p

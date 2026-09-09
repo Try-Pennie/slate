@@ -20,7 +20,7 @@ import { rescheduleOffersAlternatives } from "@/lib/booking/nearest-slots";
 import { postJson, REQUEST_TIMEOUT_MS } from "@/lib/http";
 import { useStalledAfter } from "@/lib/useStalledAfter";
 import { formatSlotTime } from "@/lib/booking/slot-label";
-import { formatPhoneAsTyped } from "@/lib/phone-format";
+import { usePhoneCaret } from "@/lib/usePhoneCaret";
 import { countdownPhrase, advisorFirstName } from "@/lib/booking/countdown";
 import {
   BEFORE_COPY,
@@ -173,6 +173,13 @@ export default function ManageBooking({
   const [editingPhone, setEditingPhone] = useState(false);
   const [phoneDraft, setPhoneDraft] = useState(attendeePhone ?? "");
   const [phoneError, setPhoneError] = useState<string | null>(null);
+  // The booker's own as-you-type formatter AND its caret handling, through one
+  // hook (#2162), so an impossible number cannot be typed in either place and
+  // neither surface can lose the lead's cursor while the other keeps it.
+  const { attach: attachPhoneInput, onChange: onPhoneChange } = usePhoneCaret((formatted) => {
+    setPhoneDraft(formatted);
+    setPhoneError(null);
+  });
   const [savingPhone, setSavingPhone] = useState(false);
   const [phoneSaved, setPhoneSaved] = useState(false);
   const phoneStalled = useStalledAfter(savingPhone);
@@ -584,13 +591,8 @@ export default function ManageBooking({
                         value={phoneDraft}
                         aria-describedby="manage-phone-hint"
                         aria-invalid={phoneError ? true : undefined}
-                        // The booker's own as-you-type formatter, so an impossible
-                        // number cannot be typed in either place and the two
-                        // surfaces cannot drift on what a number looks like.
-                        onChange={(e) => {
-                          setPhoneDraft(formatPhoneAsTyped(e.target.value));
-                          setPhoneError(null);
-                        }}
+                        ref={attachPhoneInput}
+                        onChange={onPhoneChange}
                         className="mt-2 h-[44px] w-full rounded-lg border border-border bg-[var(--field)] px-3 text-fg placeholder:text-fg-muted"
                       />
                       <p id="manage-phone-hint" className="mt-1.5 text-sm text-fg-muted">
