@@ -4,7 +4,15 @@ import { useEffect, useState } from "react";
 
 import type { ReasonOption } from "@/lib/booking/core";
 import type { BulkReassignActionableItem, BulkReassignProgress } from "@/lib/booking/bulk-reassign";
+import { SKIPPED_ITEM_STATUSES } from "@/lib/booking/bulk-reassign";
 import { formatSlotTime } from "@/lib/booking/slot-label";
+import {
+  moveOutcomeSentence,
+  moveProgressLabel,
+  moveSegments,
+  isMoveStalled,
+  type MoveMark,
+} from "@/lib/booking/move-progress";
 import {
   COVERAGE_PANEL_NAME,
   coveragePanelDescription,
@@ -12,7 +20,6 @@ import {
 } from "@/lib/booking/coverage-panel-copy";
 import { getJson, postJson } from "@/lib/http";
 import { btnCls, btnSecondaryCls, cardCls, inputCls, labelCls, proseCls } from "@/components/ui/styles";
-import { Pill } from "@/components/ui/Pill";
 import { SelectField } from "@/components/ui/SelectField";
 
 const POLL_MS = 3000;
@@ -29,13 +36,30 @@ function toRange(from: string, to: string): { from?: string; to: string | null }
   };
 }
 
-const STATUS_LABEL: Record<string, string> = {
-  moved: "Moved",
-  unplaceable: "Couldn't place",
-  skipped: "Skipped",
-  failed: "Failed",
-  pending: "In progress",
+/**
+ * How each outcome is drawn (#2122). Three, not two, and the third is why the
+ * mark used to disagree with its own counts: a skip is not a failure.
+ *
+ * NOT SKY anywhere. Sky is the only colour that may mean "do this" and a progress
+ * mark is not an action. Green Mark is the one green in the palette legible with
+ * no word beside it (3.57:1 on a white card); the dark theme uses the palette
+ * green, which its own record scopes to that side. Rose is the palette's error
+ * colour, drawn as an outline so a run of them does not become a red block.
+ * A skip takes the quiet letter tone, which is the ledger's own turned-down mark:
+ * it carries rhythm and extent rather than an identity, which is exactly what a
+ * booking nobody has to act on is.
+ */
+const MARK_CLASS: Record<MoveMark, string> = {
+  moved: "bg-[var(--pennie-green-mark)] dark:bg-[var(--pennie-green)]",
+  attention:
+    "bg-[color-mix(in_srgb,var(--error)_10%,transparent)] ring-2 ring-inset ring-[var(--error)]",
+  skipped: "bg-[var(--ledger-off)]",
+  // The one being worked on. The ONLY motion on the screen, and it stops on its
+  // own when the run ends, because a finished row has nothing left to say.
+  next: "bg-[var(--ledger-off)] animate-pulse motion-reduce:animate-none",
+  waiting: "bg-[var(--pennie-mercury)] dark:bg-[var(--ledger-off)]",
 };
+
 
 /**
  * Admin panel to reassign an out agent's upcoming bookings onto covering agents
@@ -83,6 +107,13 @@ export default function BulkReassignCoverage({
   const [progress, setProgress] = useState<BulkReassignProgress | null>(null);
   const [pollFailures, setPollFailures] = useState(0);
   const [lastUpdated, setLastUpdated] = useState<number | null>(null);
+  /**
+   * How many consecutive polls have come back with the SAME settled count
+   * (#2122). The stall signal is the work advancing, not the request returning:
+   * a poll that succeeds over a drain that has stopped is a live emitter over
+   * dead work (L106).
+   */
+  const [unchangedPolls, setUnchangedPolls] = useState(0);
 
   // Live preview count, debounced on the range. Skipped once a job is running.
   // setState only inside the (async) timer callback, never synchronously in the
@@ -121,7 +152,12 @@ export default function BulkReassignCoverage({
       );
       if (cancelled) return;
       if (res && res.ok && res.data) {
-        setProgress(res.data);
+        const next = res.data;
+        setProgress((prev) => {
+          const settled = (p: BulkReassignProgress) => p.summary.total - p.summary.counts.pending;
+          setUnchangedPolls((n) => (prev && settled(prev) === settled(next) ? n + 1 : 0));
+          return next;
+        });
         setLastUpdated(Date.now());
         setPollFailures(0);
       } else {
@@ -264,6 +300,7 @@ export default function BulkReassignCoverage({
           progress={progress}
           lostContact={lostContact}
           lastUpdated={lastUpdated}
+          unchangedPolls={unchangedPolls}
           onReset={reset}
         />
       )}
@@ -275,11 +312,14 @@ function Progress({
   progress,
   lostContact,
   lastUpdated,
+  unchangedPolls,
   onReset,
 }: {
   progress: BulkReassignProgress | null;
   lostContact: boolean;
   lastUpdated: number | null;
+  /** Consecutive polls that returned the same settled count. */
+  unchangedPolls: number;
   onReset: () => void;
 }) {
   if (lostContact) {
@@ -299,50 +339,135 @@ function Progress({
     return <p className="mt-4 text-sm text-fg-muted">Starting the move…</p>;
   }
 
-  const { summary, actionable } = progress;
-  const c = summary.counts;
-  const finished = summary.total - c.pending;
-  const pct = summary.total === 0 ? 100 : Math.round((finished / summary.total) * 100);
+  const { summary, actionable, skipped } = progress;
+  const mark = moveSegments(summary);
+  const said = moveOutcomeSentence(summary);
+  const label = moveProgressLabel(summary);
+
+  // #2122: NOTHING TO MOVE IS ITS OWN SCREEN, and it is the p0.
+  //
+  // This used to draw a finished bar over zero work (`pct = total === 0 ? 100`),
+  // with a green Done pill and the heading "Move complete" beside a figure
+  // reading "Moved 0". A completed bar and a count of nothing contradict each
+  // other, the bar was the loudest thing on the panel, and nothing said what had
+  // actually happened, which is that this agent had no upcoming bookings. It is
+  // also the state an admin lands on straight from a time off approval, which is
+  // exactly when somebody needs to know whether coverage happened.
+  if (summary.total === 0) {
+    return (
+      <div className="mt-4">
+        <p className="pn-h4">Nothing to move</p>
+        <p className={`mt-2 text-sm text-fg-muted ${proseCls}`}>
+          This agent had no upcoming bookings in the range you chose, so nothing was
+          reassigned.
+        </p>
+        <button type="button" className={`${btnSecondaryCls} mt-4`} onClick={onReset}>
+          Start another
+        </button>
+      </div>
+    );
+  }
 
   return (
     <div className="mt-4">
-      <div className="flex items-center justify-between">
-        <p className="pn-h4">{summary.done ? "Move complete" : "Moving…"}</p>
-        <Pill variant={summary.done ? "status-ok" : "outline"}>{summary.done ? "Done" : `${pct}%`}</Pill>
-      </div>
+      <p className="pn-h4">{summary.done ? "Move complete" : "Moving"}</p>
 
-      <div className="mt-2 h-2 w-full overflow-hidden rounded-full bg-fg/10" role="progressbar" aria-valuenow={pct}>
-        <div className="h-full bg-pennie-sky" style={{ width: `${pct}%` }} />
-      </div>
+      {/* The mark carries the proportion and NOTHING repeats it: no percentage
+          pill, no "x of y" on the headline row. A mark beside its own caption
+          cannot earn its place, which is the rule the tier ledger already
+          learned (#1812).
 
-      <dl className="mt-4 grid grid-cols-2 gap-x-6 gap-y-1 text-sm sm:grid-cols-3">
-        {(["moved", "unplaceable", "skipped", "failed", "pending"] as const).map((k) =>
-          c[k] > 0 || k === "moved" ? (
-            <div key={k} className="flex items-center justify-between">
-              <dt className="text-fg-muted">{STATUS_LABEL[k]}</dt>
-              <dd className="tabular-nums text-fg">{c[k]}</dd>
+          One segment per booking, so the unit of the mark is the unit of the
+          work. Nothing lands as it arrives: at 40 arriving one after another any
+          landing with geometry in it reads as the whole row twitching. The one
+          being worked on breathes instead, and it is the only thing moving on the
+          screen, which is the single thing a still row cannot say (a stalled poll
+          and a slow one are otherwise the same picture).
+
+          NOT SKY. Sky is the only colour that may mean "do this" and a progress
+          mark is not an action. Green for moved, rose for the ones a person still
+          has to place, and the quiet letter tone for a skip, which is neither. */}
+      {mark && label && (
+        <div
+          className="mt-3"
+          role="progressbar"
+          aria-valuemin={label.min}
+          aria-valuemax={label.max}
+          aria-valuenow={label.now}
+          aria-valuetext={label.text}
+          aria-label={label.text}
+        >
+          {mark.kind === "segments" ? (
+            <div
+              className="flex h-3.5"
+              style={{ gap: mark.marks.length > 8 ? "2px" : "4px" }}
+            >
+              {mark.marks.map((m, i) => (
+                <span key={i} className={`flex-1 rounded-[2px] ${MARK_CLASS[m]}`} />
+              ))}
             </div>
-          ) : null,
-        )}
-      </dl>
+          ) : (
+            // Above 60 a segment is about 6.5px on this card and the row reads as
+            // a hatched texture rather than a proportion, so it becomes one fill,
+            // which says the same thing at any count.
+            <div className="h-3.5 w-full overflow-hidden rounded-[2px] bg-[var(--pennie-mercury)] dark:bg-[var(--ledger-off)]">
+              <div
+                className="h-full bg-[var(--pennie-green-mark)] transition-[width] duration-300 ease-out motion-reduce:transition-none dark:bg-[var(--pennie-green)]"
+                style={{ width: `${(mark.settled / mark.total) * 100}%` }}
+              />
+            </div>
+          )}
+        </div>
+      )}
 
-      {!summary.done && (
+      {/* The counts, once, as a line a person would say. While it runs it carries
+          no full stop, because it is a reading rather than a sentence and a stop
+          on it makes an unfinished thing look finished. Each exception is counted
+          here and explained on its own row below, so the reason is on the screen
+          once. */}
+      <p className="mt-3 text-sm text-fg-muted" aria-live="polite">
+        <span className="tabular-nums">{said}</span>
+      </p>
+
+      {/* The only note left is the one the mark cannot give: that the job has
+          stopped reporting. "One at a time" was obvious from watching it and
+          "N to go" was the count again. */}
+      {isMoveStalled(unchangedPolls, summary.done) && (
         <p className="mt-2 text-xs text-fg-muted" aria-live="polite">
-          Working through {summary.total} booking{summary.total === 1 ? "" : "s"}, one at a time
-          {lastUpdated ? `. Last update ${formatAgo(lastUpdated)}.` : "…"}
+          Nothing has moved for a while. It keeps running in the background
+          {lastUpdated === null ? "" : `, last checked ${formatAgo(lastUpdated)}`}.
         </p>
       )}
 
+      {/* #2122: the instruction is gone and the rows carry it. Dan, on the design
+          round: "this is an instruction with no way to complete. how does the
+          manager find them". Every row already says Place by hand on it, so a
+          sentence above them telling somebody to open each one states the same
+          thing a third time, after the count and before the control that does it. */}
       {actionable.length > 0 && (
-        <div className="mt-5">
+        <div className="mt-5 border-t border-border pt-4">
           <p className="pn-eyebrow text-fg-muted">Couldn&apos;t place ({actionable.length})</p>
-          <p className="mt-1 text-xs text-fg-muted">
-            No available advisor was free at these times. Open each one to place it by hand (you can
-            override the pool or daily cap there).
-          </p>
-          <ul className="mt-3 divide-y divide-border">
+          <ul className="mt-2 divide-y divide-border">
             {actionable.map((it) => (
-              <ActionableRow key={it.bookingId} item={it} />
+              <MoveOutcomeRow key={it.bookingId} item={it} />
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {/* #2122: the skips, which used to be a bare number nobody could act on.
+          Dan, meeting it: "now it says nothing about the skipped one. what am I
+          supposed to do about that". The answer is nothing, and that is why the
+          count alone was unreadable. Each row carries the engine's own reason
+          ("Booking no longer exists", "Booking was cancelled before it could be
+          moved"), and NO control, because offering one would imply there is
+          something to press. */}
+      {skipped.length > 0 && (
+        <div className="mt-5 border-t border-border pt-4">
+          <p className="pn-eyebrow text-fg-muted">Skipped ({skipped.length})</p>
+          <ul className="mt-2 divide-y divide-border">
+            {skipped.map((it) => (
+              <MoveOutcomeRow key={it.bookingId} item={it} />
             ))}
           </ul>
         </div>
@@ -357,7 +482,25 @@ function Progress({
   );
 }
 
-function ActionableRow({ item }: { item: BulkReassignActionableItem }) {
+/**
+ * One booking the move did not simply place, in either list (#2122).
+ *
+ * ONE row component for both, because they are the same row: a name, a time and
+ * the reason, differing only in whether anybody has to do anything. Two copies
+ * would drift, and the half that drifts first is the reason line, which is the
+ * only part carrying what actually happened.
+ *
+ * The control appears only where there IS one. A skip means the booking was gone,
+ * cancelled or completed, so there is nothing to place: offering "Place by hand"
+ * on it would be a control that cannot do what it says.
+ */
+function MoveOutcomeRow({ item }: { item: BulkReassignActionableItem }) {
+  // Asked of the SAME list the engine classifies by, never of a string compared
+  // here. Two definitions of "is this a skip" on either side of a boundary are
+  // never compared and can drift indefinitely while each reads as correct (L263),
+  // and the drift here would put a Place by hand link on a booking that no longer
+  // exists.
+  const canPlace = !SKIPPED_ITEM_STATUSES.includes(item.status);
   return (
     <li className="flex items-center justify-between gap-3 py-2 text-sm">
       <span className="min-w-0">
@@ -367,12 +510,14 @@ function ActionableRow({ item }: { item: BulkReassignActionableItem }) {
         </span>
         {item.detail && <span className="block truncate text-xs text-fg-muted">{item.detail}</span>}
       </span>
-      <a
-        href={`/admin/bookings/${item.bookingId}`}
-        className="shrink-0 text-pennie-blue underline dark:text-pennie-sky"
-      >
-        Place by hand
-      </a>
+      {canPlace && (
+        <a
+          href={`/admin/bookings/${item.bookingId}`}
+          className="shrink-0 text-pennie-blue underline dark:text-pennie-sky"
+        >
+          Place by hand
+        </a>
+      )}
     </li>
   );
 }

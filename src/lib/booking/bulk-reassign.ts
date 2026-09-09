@@ -5,6 +5,13 @@ import type { Booking, BulkReassignItem, BulkReassignItemStatus, BulkReassignJob
  *  (#974): no covering agent could be placed, or the move exhausted its retries. */
 export const ACTIONABLE_ITEM_STATUSES: BulkReassignItemStatus[] = ["unplaceable", "failed"];
 
+/** The statuses where NOBODY has to do anything (#2122): the booking was gone,
+ *  cancelled or completed before the sweep reached it, so there was no move to
+ *  make. Named beside the actionable ones because the panel has to tell them
+ *  apart, and drawing a skip as a failure is what made the mark disagree with its
+ *  own counts. */
+export const SKIPPED_ITEM_STATUSES: BulkReassignItemStatus[] = ["skipped"];
+
 /**
  * How many items the bulk-reassign drain processes per tick. Each item does a
  * live verify wave plus a reassign (a Google create + delete), so this is kept
@@ -277,6 +284,21 @@ export interface BulkReassignProgress {
   summary: BulkReassignSummary;
   /** Unplaceable + failed items, each linkable to the single-reassign force-override. */
   actionable: BulkReassignActionableItem[];
+  /**
+   * Items nobody has to do anything about (#2122): the booking was gone,
+   * cancelled or completed before the sweep reached it, so there was no move to
+   * make.
+   *
+   * A SEPARATE list from `actionable`, deliberately. Actionable means a person
+   * still has to place it by hand; a skip means the appointment is not happening.
+   * Merging them is the conflation the panel's mark used to make, where a skip was
+   * drawn in the same rose as a failure and the boxes outnumbered the count.
+   *
+   * Carried at all because the count alone was unreadable: a number with no
+   * consequence is a fact the reader has to work out, and every skip already holds
+   * its own detail saying which of the three it was.
+   */
+  skipped: BulkReassignActionableItem[];
 }
 
 /**
@@ -292,16 +314,19 @@ export function buildBulkReassignProgress(
   bookingCtx: Map<string, ActionableBookingContext>,
 ): BulkReassignProgress {
   const summary = summarizeBulkReassignItems(items);
-  const actionable = items
-    .filter((it) => ACTIONABLE_ITEM_STATUSES.includes(it.status))
-    .map((it) => ({
-      bookingId: it.booking_id,
-      status: it.status,
-      detail: it.detail,
-      startsAt: bookingCtx.get(it.booking_id)?.startsAt ?? null,
-      attendeeName: bookingCtx.get(it.booking_id)?.attendeeName ?? null,
-    }));
-  return { job, summary, actionable };
+  const rowsOf = (statuses: readonly BulkReassignItemStatus[]) =>
+    items
+      .filter((it) => statuses.includes(it.status))
+      .map((it) => ({
+        bookingId: it.booking_id,
+        status: it.status,
+        detail: it.detail,
+        startsAt: bookingCtx.get(it.booking_id)?.startsAt ?? null,
+        attendeeName: bookingCtx.get(it.booking_id)?.attendeeName ?? null,
+      }));
+  // One shape for both lists, from one function, so the panel can draw them with
+  // one row component and the two cannot drift into different fields.
+  return { job, summary, actionable: rowsOf(ACTIONABLE_ITEM_STATUSES), skipped: rowsOf(SKIPPED_ITEM_STATUSES) };
 }
 
 export type ParsedRange =
