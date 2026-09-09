@@ -1,6 +1,8 @@
 import { redirect } from "next/navigation";
 import { SaveForm } from "@/components/ui/SaveForm";
 import { currentUser } from "@/lib/auth";
+import { consoleHiddenFor } from "@/lib/env";
+import { ConsoleComingSoonNote, ConsoleLink } from "@/components/ui/ConsoleLink";
 import { atLeast, canManageAgents, canModerateAllOoo } from "@/lib/auth/roles";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import {
@@ -109,6 +111,10 @@ export default async function OooQueuePage({
   // Team leads, admins, and super admins moderate the whole org; a regular
   // manager is scoped to their own reports.
   const seesAll = canModerateAllOoo(me.role);
+  // #2119: whether the console routes this page points at would redirect this
+  // viewer straight back here. Resolved ONCE, by the page that knows who is
+  // looking, and handed to every control that offers such a destination.
+  const consoleHidden = consoleHiddenFor(me.role);
   // #1468: the retry is a narrower power than moderating. Read it from the SAME
   // predicate the action enforces, so the button can never be offered to someone
   // the action will refuse (a team lead used to see it and get "Not authorized").
@@ -702,6 +708,15 @@ export default async function OooQueuePage({
               · last {HISTORY_DAYS} days
             </span>
           </p>
+          {/* #2119: the reason ONCE for the section, not once per row. These
+              controls appear on every approved request that has a sweep, and the
+              first build put the sentence inside each one, which at the real count
+              was a wall of the identical sentence down the page (L579). Rendered
+              only when there is something for it to explain, so a manager with no
+              coverage sweeps is not told about a control they cannot see. */}
+          {consoleHidden && coverageJobByRequest.size > 0 && (
+            <ConsoleComingSoonNote className="mt-2 text-xs text-fg-muted" />
+          )}
           {history.length === 0 ? (
             <p className="mt-3 text-sm text-fg-muted">Nothing decided yet.</p>
           ) : (
@@ -755,14 +770,24 @@ export default async function OooQueuePage({
                     </div>
                     <div className="flex flex-wrap items-center gap-3">
                       {/* #1239: straight to the sweep that is moving this agent's
-                          appointments, carrying the job so the panel opens on it. */}
+                          appointments, carrying the job so the panel opens on it.
+
+                          #2119: through `ConsoleLink`, because the destination is
+                          a CONSOLE route and every console route redirects a
+                          manager back to this very page. As a plain anchor it did
+                          not refuse and did not explain: it appeared to do
+                          nothing, and pressing it again was the only diagnosis
+                          available. Managers are the only people using Slate
+                          before cutover and this is the one link out of the one
+                          page they work on, so it read as the product being
+                          broken rather than as a feature not being open yet. */}
                       {coverageJobByRequest.has(r.id) && (
-                        <a
-                          className={btnSecondaryCls}
+                        <ConsoleLink
+                          consoleHidden={consoleHidden}
                           href={`/admin/agents/${r.user_id}?job=${coverageJobByRequest.get(r.id)}#coverage`}
                         >
                           View the coverage sweep
-                        </a>
+                        </ConsoleLink>
                       )}
                       {canRetry && r.status === "approved" && failures.length > 0 && (
                         <SaveForm action={retryOooAction} name={`ooo-retry-${r.id}`}>

@@ -6,6 +6,10 @@ import { render, screen } from "@testing-library/react";
 // below-manager caller gets the deny notice instead of the request queue. Real
 // canManageAgents is exercised; only auth and the navigation redirect are mocked.
 const auth = vi.hoisted(() => ({ currentUser: vi.fn() }));
+// #2119: the console flag decides whether the coverage sweep control is a link
+// or a Coming soon state, so the test drives it rather than inheriting whatever
+// the environment happens to say.
+const env = vi.hoisted(() => ({ consoleHiddenFor: vi.fn(() => false) }));
 const redirect = vi.hoisted(() =>
   vi.fn((url: string) => {
     throw new Error(`NEXT_REDIRECT:${url}`);
@@ -91,13 +95,25 @@ vi.mock("@/components/AppHeader", () => ({ AppHeader: () => null }));
 vi.mock("@/lib/ooo/history-load", () => ({ loadOrgOooHistory: async () => [] }));
 
 vi.mock("@/lib/auth", () => auth);
+vi.mock("@/lib/env", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/env")>()),
+  consoleHiddenFor: env.consoleHiddenFor,
+}));
 vi.mock("next/navigation", () => ({ redirect }));
 
 import OooQueuePage from "./page";
 
 const props = { searchParams: Promise.resolve({}) };
 
-beforeEach(() => vi.clearAllMocks());
+beforeEach(() => {
+  vi.clearAllMocks();
+  // `clearAllMocks` clears CALLS, not implementations, so a `mockReturnValue` set
+  // by one describe survives into every test after it and silently changes what
+  // the page under test believes (L439). The console flag is reset by hand to the
+  // state most of this file assumes: the console is open, and only the tests about
+  // #2119 say otherwise.
+  env.consoleHiddenFor.mockReturnValue(false);
+});
 
 describe("OooQueuePage guard", () => {
   it("redirects an unauthenticated visitor to /login", async () => {
@@ -364,6 +380,7 @@ describe("OooQueuePage: link to the coverage sweep (#1239)", () => {
   });
 
   it("links the row to the sweep's own progress panel", async () => {
+    env.consoleHiddenFor.mockReturnValue(false);
     dbState.jobs = [{ id: "job-1", ooo_request_id: "r-approved" }];
 
     render(await OooQueuePage(props));
@@ -374,7 +391,44 @@ describe("OooQueuePage: link to the coverage sweep (#1239)", () => {
     expect(link.getAttribute("href")).toBe("/admin/agents/u-agent?job=job-1#coverage");
   });
 
+  // #2119. The destination is a console route, and every console route redirects
+  // everyone below super admin back to THIS page. So as a plain anchor the button
+  // did not refuse and did not explain: it appeared to do nothing, and pressing it
+  // again was the only diagnosis available (L109, L148). Managers are the only
+  // people using Slate before cutover and this is the one link out of the one page
+  // they work on.
+  describe("when the destination is hidden from this viewer", () => {
+    beforeEach(() => {
+      env.consoleHiddenFor.mockReturnValue(true);
+      dbState.jobs = [{ id: "job-1", ooo_request_id: "r-approved" }];
+    });
+
+    it("offers no link, and leaves no address in the markup", async () => {
+      render(await OooQueuePage(props));
+
+      expect(screen.queryByRole("link", { name: /coverage/i })).toBeNull();
+      // Not merely un-clickable: an href that survives is still reached by a
+      // middle click, a right click and copy-link.
+      expect(document.querySelector('[href*="/admin/agents"]')).toBeNull();
+    });
+
+    it("says Coming soon, and why, where the reader can see it", async () => {
+      render(await OooQueuePage(props));
+
+      const control = screen.getByRole("button", { name: /coverage sweep/i });
+      expect(control.getAttribute("aria-disabled")).toBe("true");
+      expect(document.body.textContent).toMatch(/coming soon/i);
+      // The reason is tied to the control, so somebody arriving on it by keyboard
+      // hears why rather than meeting the same silence the dead link gave them.
+      const describedBy = control.getAttribute("aria-describedby");
+      expect(document.getElementById(describedBy!)?.textContent).toMatch(
+        /marked Coming soon opens when agent scheduling goes live/i,
+      );
+    });
+  });
+
   it("offers no link when no sweep was ever enqueued for the request", async () => {
+    env.consoleHiddenFor.mockReturnValue(false);
     render(await OooQueuePage(props));
 
     expect(screen.queryByRole("link", { name: /coverage/i })).toBeNull();
@@ -386,6 +440,7 @@ describe("OooQueuePage: link to the coverage sweep (#1239)", () => {
   // reports a sweep that does not exist. Losing the whole page, or linking to a
   // job id that came back null, would both be worse than the missing shortcut.
   it("still renders the queue, without a link, when the sweep lookup fails", async () => {
+    env.consoleHiddenFor.mockReturnValue(false);
     dbState.jobs = [{ id: "job-1", ooo_request_id: "r-approved" }];
     dbState.jobsError = true;
 
