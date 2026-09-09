@@ -431,7 +431,7 @@ describe("BulkReassignCoverage: a progress reply it cannot read (#2135)", () => 
  * repeated is the change that fixes it (L387).
  */
 describe("BulkReassignCoverage: a preview count it cannot read", () => {
-  it("says the count is unknown rather than printing it at the reader", async () => {
+  it("says it could not count, rather than printing the reply or asking for a range already entered", async () => {
     http.getJson.mockImplementation(async (url: string) =>
       url.includes("jobId=")
         ? { ok: true, status: 200, data: progressFixture }
@@ -439,7 +439,10 @@ describe("BulkReassignCoverage: a preview count it cannot read", () => {
     );
     render(<BulkReassignCoverage agentId="out1" agentName="Adam" reassignReasons={REASSIGN_REASONS} />);
 
-    expect(await screen.findByText(/enter a range to see how many bookings would move/i)).toBeTruthy();
+    // Its OWN line. "Enter a range" is what the panel says before anybody has
+    // asked, and saying it to somebody who has entered one reads as healthy (L11).
+    expect(await screen.findByText(/couldn't count the bookings in this range/i)).toBeTruthy();
+    expect(screen.queryByText(/enter a range to see how many bookings would move/i)).toBeNull();
     expect(document.body.textContent).not.toMatch(/\[object Object\]|NaN|undefined bookings/);
   });
 });

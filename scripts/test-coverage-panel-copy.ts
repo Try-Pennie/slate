@@ -15,6 +15,7 @@ import {
   coveragePanelDescription,
   coveragePanelTimeOffNote,
   coveragePanelWhere,
+  coveragePreviewLine,
   coverageProgressUnreadableNotice,
 } from "../src/lib/booking/coverage-panel-copy.ts";
 import { assert, finish } from "./lib/harness.ts";
@@ -138,6 +139,39 @@ assert(/keeps running|still running/i.test(unreadable), "says the move itself is
 assert(/reload/i.test(unreadable), "and names the remedy that actually clears a stale page");
 assert(!/lost contact/i.test(unreadable), "does not borrow the lost contact wording");
 
+
+/**
+ * The line under the range controls, which is the only thing telling a reader how
+ * much work they are about to start.
+ *
+ * Its four states are one function because they are one line, and because a count
+ * that could not be READ used to fall into the same null as a count nobody had
+ * asked for yet, so a failed read said "Enter a range to see how many bookings
+ * would move" at somebody who had entered one (L10, L11).
+ */
+const previewLines = {
+  unasked: coveragePreviewLine({ kind: "unasked" }),
+  counting: coveragePreviewLine({ kind: "counting" }),
+  unreadable: coveragePreviewLine({ kind: "unreadable" }),
+  none: coveragePreviewLine({ kind: "count", count: 0 }),
+  one: coveragePreviewLine({ kind: "count", count: 1 }),
+  many: coveragePreviewLine({ kind: "count", count: 5 }),
+};
+assert(/1 booking would/.test(previewLines.one), "counts one booking in the singular");
+assert(/5 bookings would/.test(previewLines.many), "and several in the plural");
+assert(/no upcoming bookings/i.test(previewLines.none), "says a range holding nothing holds nothing");
+assert(
+  /couldn't count|could not count/i.test(previewLines.unreadable),
+  "says a count it could not read was not read",
+);
+assert(
+  previewLines.unreadable !== previewLines.unasked,
+  "and never borrows the line for a range nobody has entered, which is the message that reads as healthy",
+);
+// Every state distinct, or two causes are one outcome in practice (L11, L260).
+const seen = new Set(Object.values(previewLines));
+assert(seen.size === Object.keys(previewLines).length, "every preview state says something of its own");
+
 // copy rules
 for (const [name, text] of [
   ["description", said],
@@ -148,6 +182,7 @@ for (const [name, text] of [
   ["nothing to move, open ended", openEnded],
   ["nothing moved on this run", moved],
   ["unreadable progress", unreadable],
+  ...Object.entries(previewLines).map(([k, v]) => [`preview ${k}`, v] as const),
 ] as const) {
   // Written as escapes, not literals: the pre push style gate cannot tell a line
   // BANNING the character from a line using it, and it is right not to try.

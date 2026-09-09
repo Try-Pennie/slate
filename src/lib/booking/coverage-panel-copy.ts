@@ -168,3 +168,37 @@ export function coverageProgressUnreadableNotice(): string {
     `and reloading this page usually clears this.`
   );
 }
+
+/**
+ * What the range preview has to say, as one value rather than a number beside a
+ * flag explaining how the number was obtained (L544).
+ *
+ * `unreadable` is the state that did not exist: a count that came back in a shape
+ * nothing could read fell into the same null as a count nobody had asked for yet,
+ * so a failed read told a reader who had entered a range to enter one (L10, L11).
+ */
+export type CoveragePreviewState =
+  | { kind: "unasked" }
+  | { kind: "counting" }
+  | { kind: "unreadable" }
+  | { kind: "count"; count: number };
+
+/**
+ * The one line under the range controls. All four states here rather than three
+ * inline in the component and a fourth added beside them, because they are one
+ * sentence taking one of four values and splitting them is how two of them drift.
+ */
+export function coveragePreviewLine(state: CoveragePreviewState): string {
+  switch (state.kind) {
+    case "counting":
+      return "Counting bookings in range…";
+    case "unreadable":
+      return "Couldn't count the bookings in this range. Try again in a moment.";
+    case "count":
+      return state.count === 0
+        ? "No upcoming bookings in this range."
+        : `${state.count} booking${state.count === 1 ? "" : "s"} would be reassigned.`;
+    case "unasked":
+      return "Enter a range to see how many bookings would move.";
+  }
+}

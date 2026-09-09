@@ -19,7 +19,9 @@ import {
   coverageNothingToMoveSentence,
   coveragePanelDescription,
   coveragePanelTimeOffNote,
+  coveragePreviewLine,
   coverageProgressUnreadableNotice,
+  type CoveragePreviewState,
 } from "@/lib/booking/coverage-panel-copy";
 import { getJson, postJson } from "@/lib/http";
 import { btnCls, btnSecondaryCls, cardCls, inputCls, labelCls, proseCls } from "@/components/ui/styles";
@@ -100,8 +102,13 @@ export default function BulkReassignCoverage({
   const [reasonCode, setReasonCode] = useState(() => reassignReasons[0]?.code ?? "");
   const [reasonDetail, setReasonDetail] = useState("");
 
-  const [preview, setPreview] = useState<number | null>(null);
-  const [previewLoading, setPreviewLoading] = useState(false);
+  /**
+   * The count, and how it was obtained, as ONE value (L544). It was a number or
+   * null beside a loading flag, and null meant three different things: nobody has
+   * asked yet, the read failed, and the reply could not be read. The last of those
+   * showed the reader "Enter a range" when they had entered one (L10, L11).
+   */
+  const [preview, setPreview] = useState<CoveragePreviewState>({ kind: "unasked" });
 
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -147,23 +154,25 @@ export default function BulkReassignCoverage({
     if (r.to) params.set("to", r.to);
     const t = setTimeout(async () => {
       if (cancelled) return;
-      setPreviewLoading(true);
+      setPreview({ kind: "counting" });
       const res = await getJson<{ count?: unknown }>(`${base}?${params.toString()}`).catch(() => null);
       if (cancelled) return;
-      setPreviewLoading(false);
       // The same shape question the poll asks (#2135), swept for in this file's
-      // own diff: a count that is not a number would reach the reader as
-      // "[object Object] bookings would be reassigned", and would enable the
-      // button by failing the `=== 0` test. Unreadable is treated as unknown,
-      // which is the state that already says "Enter a range".
+      // own diff: a count that is not a number would otherwise reach the reader
+      // inside a sentence, and would enable the button by failing the `=== 0`
+      // test. A read that failed and a reply that could not be counted are the
+      // same fact to a reader, which is that nobody knows the number.
       const raw = res && res.ok ? res.data?.count : undefined;
-      const count = typeof raw === "number" && Number.isFinite(raw) ? raw : null;
-      setPreview(count);
+      const next: CoveragePreviewState =
+        typeof raw === "number" && Number.isFinite(raw)
+          ? { kind: "count", count: raw }
+          : { kind: "unreadable" };
+      setPreview(next);
       // The "nothing moved" line stands only while the range really does hold
-      // nothing. The moment the count disagrees with it, the count is the more
+      // nothing. The moment a count disagrees with it, the count is the more
       // useful of the two and takes the line back, so the panel never shows an
       // outcome that the number beside it would contradict.
-      if (count !== null && count !== 0) setNothingMoved(false);
+      if (next.kind === "count" && next.count !== 0) setNothingMoved(false);
     }, 350);
     return () => {
       cancelled = true;
@@ -352,15 +361,7 @@ export default function BulkReassignCoverage({
               about itself, and then the outcome (#2142). Two lines would state
               the same fact twice on one surface (L605). */}
           <p className="mt-4 text-sm text-fg" aria-live="polite">
-            {nothingMoved
-              ? coverageNothingMovedNotice(agentName)
-              : previewLoading
-                ? "Counting bookings in range…"
-                : preview === null
-                  ? "Enter a range to see how many bookings would move."
-                  : preview === 0
-                    ? "No upcoming bookings in this range."
-                    : `${preview} booking${preview === 1 ? "" : "s"} would be reassigned.`}
+            {nothingMoved ? coverageNothingMovedNotice(agentName) : coveragePreviewLine(preview)}
           </p>
 
           {error && <p className="mt-3 text-sm text-[var(--error)]">{error}</p>}
@@ -368,7 +369,12 @@ export default function BulkReassignCoverage({
           <button
             type="button"
             className={`${btnCls} mt-4 disabled:cursor-not-allowed disabled:opacity-50`}
-            disabled={starting || previewLoading || preview === 0 || (reasonCode === "other" && !reasonDetail.trim())}
+            disabled={
+              starting ||
+              preview.kind === "counting" ||
+              (preview.kind === "count" && preview.count === 0) ||
+              (reasonCode === "other" && !reasonDetail.trim())
+            }
             onClick={start}
           >
             {starting ? "Starting…" : "Move these bookings"}
