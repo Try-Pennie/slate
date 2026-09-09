@@ -38,10 +38,14 @@ interface LifecycleOutcome {
  * This is the OFFBOARDING AUTOMATION's path: the only callers are the bearer-key
  * gated lifecycle endpoints (`/api/users/deactivate`, `/api/users/reactivate`,
  * `/api/users/lifecycle`). Nobody is present in those requests, so there is no
- * decision to put in front of anyone and the sweep runs on its own. The admin UI
- * deactivates through `applyLifecycleByUserId` below, which deliberately does NOT
- * sweep: an admin has a human right there and keeps the confirm step, because
- * deactivating from the agent page can mean several things.
+ * decision to put in front of anyone and the sweep runs on its own.
+ *
+ * The admin UI deactivates through `applyLifecycleByUserId` below, which sweeps
+ * only when the admin ASKED it to (#2124): there is a person right there, so the
+ * confirm puts the question to them rather than deciding on their behalf in
+ * either direction. Both paths run this same function, so the window, the
+ * idempotency key, the failure handling and the reported outcome are the same
+ * whichever way an agent leaves.
  *
  * Idempotent: the write to apply is decided by the pure `planLifecycleChange` from
  * the current row, and the write itself is a compare-and-swap, so a retrying (or
@@ -76,15 +80,42 @@ export async function applyLifecycleByEmail(
  * the caller already has the row's id (RBAC-checked). Shares `flipLifecycle`
  * with the by-email path so both write identically.
  *
- * Deliberately no automatic coverage sweep (#1241). An admin deactivating on the
- * agent page has the coverage panel one click away and is asked to confirm, and
- * that confirm step is the whole reason the automation path may skip it. Do not
- * "consolidate" the sweep into `flipLifecycle`: it would silently start moving
- * customers' appointments out from under an admin who was only pausing somebody.
+ * THE COVERAGE SWEEP IS THE CALLER'S CHOICE (#2124), and the recorded reason it
+ * used to be refused here is answered rather than deleted.
+ *
+ * #1241 wrote: "Deliberately no automatic coverage sweep. An admin deactivating on
+ * the agent page has the coverage panel one click away and is asked to confirm,
+ * and that confirm step is the whole reason the automation path may skip it. Do
+ * not consolidate the sweep into `flipLifecycle`: it would silently start moving
+ * customers' appointments out from under an admin who was only pausing somebody."
+ *
+ * The objection was about SILENCE, not about the sweep, and the cost of leaving it
+ * was real: deactivating an agent who held upcoming calls left those customers
+ * with an advisor who had left, until somebody noticed and opened the coverage
+ * panel by hand, and nothing on any screen said so.
+ *
+ * Dan settled it on 2026-09-09: "can we add a warning asking if they'd like to
+ * sweep? that way it's a deliberate choice". So the confirm ASKS, and a press that
+ * asks is not silent. The "only pausing somebody" case is also a different control
+ * (Not bookable under Access), which the panel already points at.
+ *
+ * The flag DEFAULTS TO NOT SWEEPING, and that is the load-bearing part. A default
+ * of true would make every existing caller start moving customers' appointments
+ * the moment this shipped, which is precisely the silent change the comment above
+ * refused. A caller has to say so.
  */
+export interface LifecycleOptions {
+  /**
+   * Move the departed agent's remaining appointments, because somebody chose to.
+   * Ignored on reactivate, where `planOffboardingCoverageSweep` refuses anyway.
+   */
+  sweepCoverage?: boolean;
+}
+
 export async function applyLifecycleByUserId(
   userId: string,
   action: LifecycleAction,
+  options: LifecycleOptions = {},
 ): Promise<LifecycleResult> {
   const data = unwrap(
     await supabaseAdmin()
@@ -96,7 +127,11 @@ export async function applyLifecycleByUserId(
     "offboarding-lookup-by-id",
   );
   const outcome = await flipLifecycle(data as LifecycleRow | null, action);
-  return outcome.result;
+  // The SAME function the automation path uses, so the window, the idempotency
+  // key, the failure handling and the reported outcome cannot differ between the
+  // two ways an agent leaves (L41). Two copies of "what happens to their
+  // appointments" would drift, and the drift would be invisible on both sides.
+  return options.sweepCoverage ? withAutomaticCoverage(outcome, action) : outcome.result;
 }
 
 type LifecycleRow = { id: string; deactivated_at: string | null };

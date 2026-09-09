@@ -117,6 +117,10 @@ import {
 import type { Criteria, Role, User } from "@/lib/db/types";
 import { seederOwnsCode } from "@/lib/xbc";
 import { ME_TABS } from "@/lib/me/nav";
+import {
+  COVERAGE_CHOICE_FIELD,
+  readCoverageChoice,
+} from "@/lib/offboarding/coverage-choice";
 
 /**
  * Asserts the signed-in user is a manager+ who may edit `userId` (escalation
@@ -1249,6 +1253,18 @@ export async function setBookable(form: FormData): Promise<void> {
  * immediately); reactivating yourself is moot since you couldn't reach this page
  * while deactivated. requireManageAgent enforces the manager+ / strict-outrank
  * escalation gate and writes the audit row.
+ *
+ * #2124: the confirm ASKS what happens to the agent's upcoming bookings, and the
+ * answer arrives as the pressed button's own value. Only the explicit "move"
+ * sweeps; anything else, including a form that carries no answer at all, leaves
+ * them where they are.
+ *
+ * That default is deliberate and it is the safe one. A missing or misspelled
+ * value must not be able to start moving customers' appointments, because nobody
+ * asked for it and nothing on the screen would say it happened. The opposite
+ * mistake, a move the admin chose that did not run, is loud: the agent is
+ * deactivated with their bookings still on them, which the `inactive_agent_bookings`
+ * monitor pages about within the hour.
  */
 // outcome-ok: the account status it changes is shown on this page and visibly flips, and the controls offered change with it
 export async function setUserLifecycle(form: FormData): Promise<void> {
@@ -1260,7 +1276,12 @@ export async function setUserLifecycle(form: FormData): Promise<void> {
     throw new Error("You cannot deactivate your own account.");
   }
   await requireManageAgent(userId, action === "deactivate" ? "agent.deactivate" : "agent.reactivate");
-  await applyLifecycleByUserId(userId, action);
+  // The field and its values come from the component that writes them, so the
+  // two cannot drift into disagreeing about a wire value (L263). A drift here is
+  // silent in the worst direction: every press would fall to not sweeping while
+  // the admin believed they had chosen to move.
+  const sweepCoverage = readCoverageChoice(form.get(COVERAGE_CHOICE_FIELD));
+  await applyLifecycleByUserId(userId, action, { sweepCoverage });
   revalidatePath("/admin");
   revalidatePath(`/admin/agents/${userId}`);
 }

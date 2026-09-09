@@ -128,6 +128,35 @@ describe("SubmitButton", () => {
       expect(screen.getByRole("button", { name: "Save hours" }).getAttribute("aria-label")).toBeNull();
     });
 
+    // #2124: two submits in one form, and the server has to know which was
+    // pressed. The browser posts the name and value of the button that submitted,
+    // and no others, which is what lets one form carry two different decisions
+    // without a second action or a hidden field somebody has to keep in step.
+    it("carries a name and value, so one form can offer two decisions", () => {
+      const action = () => new Promise<void>(() => {});
+      render(
+        <form action={action}>
+          <SubmitButton pendingLabel="Moving" name="coverage" value="move">Move them</SubmitButton>
+          <SubmitButton pendingLabel="Leaving" name="coverage" value="leave">Leave them</SubmitButton>
+        </form>,
+      );
+      const [move, leave] = screen.getAllByRole("button") as HTMLButtonElement[];
+      expect([move!.name, move!.value]).toEqual(["coverage", "move"]);
+      expect([leave!.name, leave!.value]).toEqual(["coverage", "leave"]);
+    });
+
+    it("posts no name at all when it is not given one", () => {
+      const action = () => new Promise<void>(() => {});
+      render(
+        <form action={action}>
+          <SubmitButton pendingLabel="Saving">Save</SubmitButton>
+        </form>,
+      );
+      // An empty `name` would post an empty key, so the attribute must be absent
+      // rather than blank.
+      expect(screen.getByRole("button").getAttribute("name")).toBeNull();
+    });
+
     it("crosses each threshold at the moment it is reached, not a tick later", () => {
       // The boundaries themselves, because an off by one here is what makes a
       // state either unreachable or permanent.

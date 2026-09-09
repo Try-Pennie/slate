@@ -772,6 +772,59 @@ describe("setUserLifecycle (#278)", () => {
     auth.requireManager.mockResolvedValue(admin);
   });
 
+  // #2124: the confirm asks whether to move the agent's upcoming bookings, and
+  // the answer arrives as the pressed button's own value. These four are the
+  // whole contract, and the asymmetry is the safety argument: only the explicit
+  // "move" sweeps.
+  it("sweeps when the admin pressed the move choice", async () => {
+    dbState.single = { role: "agent" };
+    await setUserLifecycle(form({ user_id: "u2", action: "deactivate", coverage: "move" }));
+    expect(offboarding.applyLifecycleByUserId).toHaveBeenCalledWith("u2", "deactivate", {
+      sweepCoverage: true,
+    });
+  });
+
+  it("does not sweep when the admin pressed the leave choice", async () => {
+    dbState.single = { role: "agent" };
+    await setUserLifecycle(form({ user_id: "u2", action: "deactivate", coverage: "leave" }));
+    expect(offboarding.applyLifecycleByUserId).toHaveBeenCalledWith("u2", "deactivate", {
+      sweepCoverage: false,
+    });
+  });
+
+  // A form carrying no answer must not move anybody's appointment: nobody asked,
+  // and nothing on the screen would say it happened. The opposite mistake is
+  // loud, since the agent is left deactivated holding bookings and the
+  // inactive_agent_bookings monitor pages within the hour (L72).
+  it("does not sweep when no choice was posted at all", async () => {
+    dbState.single = { role: "agent" };
+    await setUserLifecycle(form({ user_id: "u2", action: "deactivate" }));
+    expect(offboarding.applyLifecycleByUserId).toHaveBeenCalledWith("u2", "deactivate", {
+      sweepCoverage: false,
+    });
+  });
+
+  it("does not sweep on a value it does not recognise", async () => {
+    dbState.single = { role: "agent" };
+    await setUserLifecycle(form({ user_id: "u2", action: "deactivate", coverage: "MOVE" }));
+    expect(offboarding.applyLifecycleByUserId).toHaveBeenCalledWith("u2", "deactivate", {
+      sweepCoverage: false,
+    });
+  });
+
+  // The choice is still read after the authorization gate, never before it: a
+  // caller who may not manage this agent must be refused whatever they asked for.
+  it("refuses before reading the choice when the actor may not manage the target", async () => {
+    // A target the admin does not strictly outrank, so the real escalation gate
+    // refuses. Driven through the REAL guard rather than a mocked rejection, or
+    // the test would prove only that a rejected promise rejects.
+    dbState.single = { role: "super_admin" };
+    await expect(
+      setUserLifecycle(form({ user_id: "u2", action: "deactivate", coverage: "move" })),
+    ).rejects.toThrow();
+    expect(offboarding.applyLifecycleByUserId).not.toHaveBeenCalled();
+  });
+
   it("ignores an unknown action without touching auth or the service", async () => {
     await setUserLifecycle(form({ user_id: "u2", action: "frobnicate" }));
     expect(auth.requireManager).not.toHaveBeenCalled();
@@ -788,7 +841,11 @@ describe("setUserLifecycle (#278)", () => {
   it("deactivates a lower-ranked target and audits agent.deactivate", async () => {
     dbState.single = { role: "agent" };
     await setUserLifecycle(form({ user_id: "u2", action: "deactivate" }));
-    expect(offboarding.applyLifecycleByUserId).toHaveBeenCalledWith("u2", "deactivate");
+    // #2124: the third argument is the admin's answer to "move their upcoming
+    // bookings?", and the default is NOT moving.
+    expect(offboarding.applyLifecycleByUserId).toHaveBeenCalledWith("u2", "deactivate", {
+      sweepCoverage: false,
+    });
     expect(recordAudit).toHaveBeenCalledWith(
       expect.objectContaining({ action: "agent.deactivate", targetUserId: "u2" }),
     );
@@ -797,7 +854,9 @@ describe("setUserLifecycle (#278)", () => {
   it("reactivates through the service with the reactivate direction", async () => {
     dbState.single = { role: "agent" };
     await setUserLifecycle(form({ user_id: "u2", action: "reactivate" }));
-    expect(offboarding.applyLifecycleByUserId).toHaveBeenCalledWith("u2", "reactivate");
+    expect(offboarding.applyLifecycleByUserId).toHaveBeenCalledWith("u2", "reactivate", {
+      sweepCoverage: false,
+    });
     expect(recordAudit).toHaveBeenCalledWith(
       expect.objectContaining({ action: "agent.reactivate", targetUserId: "u2" }),
     );
@@ -841,7 +900,11 @@ describe("requireManageAgent fails closed on a target that does not exist (#1046
 
     await setUserLifecycle(form({ user_id: "u2", action: "deactivate" }));
 
-    expect(offboarding.applyLifecycleByUserId).toHaveBeenCalledWith("u2", "deactivate");
+    // #2124: the third argument is the admin's answer to "move their upcoming
+    // bookings?", and the default is NOT moving.
+    expect(offboarding.applyLifecycleByUserId).toHaveBeenCalledWith("u2", "deactivate", {
+      sweepCoverage: false,
+    });
     expect(recordAudit).toHaveBeenCalledWith(
       expect.objectContaining({ action: "agent.deactivate", targetUserId: "u2" }),
     );

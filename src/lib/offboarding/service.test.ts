@@ -342,12 +342,21 @@ describe("the offboarding API sweeps the departed agent's appointments (#1241)",
   });
 });
 
-// The narrow scope, as a tested invariant rather than a side effect of which
-// function happens to call which. An admin deactivating on the agent page keeps
-// the confirm step and the coverage panel; only the automated endpoint, which has
-// nobody to ask, sweeps on its own.
-describe("the admin UI path never auto-sweeps (#1241)", () => {
-  it("deactivating by user id enqueues nothing", async () => {
+// #2124: the admin path sweeps when, and only when, the admin ASKED it to.
+//
+// Dan, 2026-09-09: "can we add a warning asking if they'd like to sweep? that way
+// it's a deliberate choice". That answers the objection #1241 recorded for
+// refusing the sweep here, which was that consolidating it would "silently start
+// moving customers' appointments out from under an admin who was only pausing
+// somebody". The objection was about SILENCE, not about the sweep, and a press
+// that asks is not silent.
+//
+// The default is what matters most and it is NOT sweeping: the caller has to say
+// so. A boolean that defaults to true would make every existing caller start
+// moving appointments the moment it shipped, which is exactly the silent change
+// the recorded comment refused.
+describe("the admin UI path sweeps only when asked (#2124)", () => {
+  it("enqueues nothing when the caller does not ask", async () => {
     row = { id: "u1", deactivated_at: null };
     const res = await applyLifecycleByUserId("u1", "deactivate");
     expect(res).toMatchObject({ status: "applied", deactivate: true });
@@ -355,9 +364,80 @@ describe("the admin UI path never auto-sweeps (#1241)", () => {
     expect(booking.startBulkReassign).not.toHaveBeenCalled();
   });
 
-  it("reactivating by user id enqueues nothing either", async () => {
-    row = { id: "u1", deactivated_at: "2026-06-01T00:00:00.000Z" };
-    await applyLifecycleByUserId("u1", "reactivate");
+  it("enqueues nothing when the caller asks NOT to, which is the leave them choice", async () => {
+    row = { id: "u1", deactivated_at: null };
+    await applyLifecycleByUserId("u1", "deactivate", { sweepCoverage: false });
     expect(booking.startBulkReassign).not.toHaveBeenCalled();
+  });
+
+  it("sweeps when the admin chose to move the bookings", async () => {
+    row = { id: "u1", deactivated_at: null };
+    booking.startBulkReassign.mockResolvedValue({ jobId: "job1", itemCount: 3 });
+
+    const res = await applyLifecycleByUserId("u1", "deactivate", { sweepCoverage: true });
+
+    expect(res).toMatchObject({ status: "applied", deactivate: true, coverageSweep: "queued" });
+    expect(booking.startBulkReassign).toHaveBeenCalledTimes(1);
+    const arg = booking.startBulkReassign.mock.calls[0][0];
+    // Open ended from the moment they left, the same window the automation uses:
+    // everything still ahead of them is theirs no longer.
+    expect(arg).toMatchObject({ outUserId: "u1", rangeEndIso: null });
+    expect(typeof arg.rangeStartIso).toBe("string");
+    expect(arg.offboardingDeactivatedAtIso).toBe(arg.rangeStartIso);
+  });
+
+  // The whole point of asking. An admin who chose to move nothing, and one whose
+  // agent HELD nothing, must be distinguishable, or the panel cannot say what it
+  // did (L11).
+  it("reports none, not queued, when the agent held nothing to move", async () => {
+    row = { id: "u1", deactivated_at: null };
+    booking.startBulkReassign.mockResolvedValue({ jobId: "job1", itemCount: 0 });
+
+    const res = await applyLifecycleByUserId("u1", "deactivate", { sweepCoverage: true });
+    expect(res).toMatchObject({ coverageSweep: "none" });
+  });
+
+  // Same ordering the automation path chose (#1237): the deactivation is what
+  // stops the agent being offered for anything NEW, and rolling it back to report
+  // a coverage problem would leave them taking fresh bookings, which is worse.
+  it("keeps the deactivation and reports the failure when the enqueue throws", async () => {
+    row = { id: "u1", deactivated_at: null };
+    booking.startBulkReassign.mockRejectedValue(new Error("queue down"));
+
+    const res = await applyLifecycleByUserId("u1", "deactivate", { sweepCoverage: true });
+    expect(res).toMatchObject({ status: "applied", deactivate: true, coverageSweep: "failed" });
+    // And the write really happened, so the agent is out of the pool.
+    expect(updates).toHaveLength(1);
+  });
+
+  // Reactivating has nothing to sweep by construction, and asking for one must not
+  // invent a window: `planOffboardingCoverageSweep` refuses on the action, so this
+  // is a check that the flag cannot reach past it.
+  it("never sweeps on reactivate, even when asked", async () => {
+    row = { id: "u1", deactivated_at: "2026-06-01T00:00:00.000Z" };
+    await applyLifecycleByUserId("u1", "reactivate", { sweepCoverage: true });
+    expect(booking.startBulkReassign).not.toHaveBeenCalled();
+  });
+
+  it("sweeps nothing for an id that matched nobody", async () => {
+    row = null;
+    const res = await applyLifecycleByUserId("u1", "deactivate", { sweepCoverage: true });
+    expect(res).toMatchObject({ status: "not_found" });
+    expect(booking.startBulkReassign).not.toHaveBeenCalled();
+  });
+
+  // A repeat press converges on ONE sweep rather than accumulating them, the same
+  // way the automation path does: the key is the STORED stamp, so the second call
+  // (a no-op transition) keys on the same one.
+  it("a second press carries the same idempotency key rather than a new one", async () => {
+    row = { id: "u1", deactivated_at: null };
+    await applyLifecycleByUserId("u1", "deactivate", { sweepCoverage: true });
+    const first = booking.startBulkReassign.mock.calls[0][0].offboardingDeactivatedAtIso;
+
+    row = { id: "u1", deactivated_at: first };
+    await applyLifecycleByUserId("u1", "deactivate", { sweepCoverage: true });
+    const second = booking.startBulkReassign.mock.calls[1][0].offboardingDeactivatedAtIso;
+
+    expect(second).toBe(first);
   });
 });
