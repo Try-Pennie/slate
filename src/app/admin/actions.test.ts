@@ -1,4 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+// Type only, so it is erased and cannot pull the real module in ahead of the mocks.
+import type { TwilioSyncResult } from "@/lib/twilio/sync";
 
 // Denial branches for the two escalation-sensitive admin server actions (#676).
 // setUserRole composes canSetRole / isSelfDemotion / canChangeRole; the role
@@ -63,21 +65,29 @@ const rosterSync = vi.hoisted(() => ({ runRosterSync: vi.fn() }));
  * and one that found nobody tagged are different facts and the banner has to say
  * different things about them.
  */
-const twilioOk = (over: Record<string, unknown> = {}) => ({
+// TYPED as the real result, so a field added to `TwilioSyncResult` fails the build
+// here rather than at run time. It was a bag of unknowns, and #2098's four new
+// fields turned every banner test into "Cannot read properties of undefined",
+// which says nothing about which fixture is short (L52).
+const twilioOk = (over: Partial<TwilioSyncResult> = {}) => ({
   ok: true as const,
   result: {
     workers: 142,
     addresses: 140,
-    turnedOff: [] as string[],
-    turnedBackOn: [] as string[],
-    reactivationRefused: [] as string[],
-    markedWithNoWorker: [] as string[],
+    turnedOff: [],
+    turnedBackOn: [],
+    reactivationRefused: [],
+    markedWithNoWorker: [],
+    legalEligible: [],
+    legalExcluded: [],
+    withoutWorker: [],
+    legalWriteFailures: 0,
     corruptAttributes: 0,
     noEmail: 0,
-    unmappedTags: [] as string[],
+    unmappedTags: [],
     flipFailures: 0,
     ...over,
-  },
+  } satisfies TwilioSyncResult,
 });
 const syncOutcome = (over: Record<string, unknown> = {}, twilio: unknown = twilioOk()) => ({
   hoursApplied: 0,
@@ -1120,6 +1130,38 @@ describe("syncSalesforceNow (#491, #2071)", () => {
       redirected = decodeURIComponent(String((e as Error).message));
     }
     expect(redirected).toContain("1 agent could not be flipped at all");
+  });
+
+  // #2098: both directions, because a run that only reported exclusions would make
+  // somebody being cleared for legal work read as a quiet run.
+  it("says which way legal eligibility moved, in both directions", async () => {
+    rosterSync.runRosterSync.mockResolvedValueOnce(
+      syncOutcome({ updated: 0 }, twilioOk({ legalEligible: ["a@x"], legalExcluded: ["b@x", "c@x"] })),
+    );
+    let redirected = "";
+    try {
+      await syncSalesforceNow();
+    } catch (e) {
+      redirected = decodeURIComponent(String((e as Error).message));
+    }
+    expect(redirected).toContain("1 agent recorded as eligible for legal work");
+    expect(redirected).toContain("2 agents recorded as not eligible for legal work");
+  });
+
+  it("says when a legal write threw, separately from a flip that threw", async () => {
+    rosterSync.runRosterSync.mockResolvedValueOnce(
+      syncOutcome({ updated: 0 }, twilioOk({ legalWriteFailures: 2 })),
+    );
+    let redirected = "";
+    try {
+      await syncSalesforceNow();
+    } catch (e) {
+      redirected = decodeURIComponent(String((e as Error).message));
+    }
+    expect(redirected).toContain("2 agents whose legal eligibility could not be recorded");
+    // The two failures send a reader to different places, so one line must never
+    // answer for the other (L11).
+    expect(redirected).not.toContain("could not be flipped at all");
   });
 
   it("says nothing about Twilio when it read fine and changed nobody", async () => {

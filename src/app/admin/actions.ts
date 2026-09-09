@@ -440,10 +440,26 @@ function twilioParts(
     r.reactivationRefused.length
       ? `${plural(r.reactivationRefused.length, "agent")} could not be put back in the pool until a Google calendar exists for them`
       : null,
+    // Legal eligibility (#2098), after the pool changes and before the failures,
+    // because it changes which of the ten legal buckets somebody is offered rather
+    // than whether they can be booked at all.
+    //
+    // Both directions are said. A run that only ever reported the exclusions would
+    // make somebody being cleared for legal work look like a quiet run, which is
+    // the same defect the manager unlink line above exists to fix (#1474).
+    r.legalEligible.length
+      ? `${plural(r.legalEligible.length, "agent")} recorded as eligible for legal work, from their Twilio tag`
+      : null,
+    r.legalExcluded.length
+      ? `${plural(r.legalExcluded.length, "agent")} recorded as not eligible for legal work, which is what Twilio says for anybody it does not call out`
+      : null,
     // A flip that threw. Said out loud, because the counts above are the only
     // evidence anybody looks at and one agent missing from them is the whole fault.
     r.flipFailures
       ? `${plural(r.flipFailures, "agent")} could not be flipped at all, so press this again in a minute`
+      : null,
+    r.legalWriteFailures
+      ? `${plural(r.legalWriteFailures, "agent")} whose legal eligibility could not be recorded, so press this again in a minute`
       : null,
   ];
 }

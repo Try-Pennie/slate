@@ -49,6 +49,7 @@ const EXIT: Record<string, number> = {
   "backend-differs": 16,
   "debt-teams-differ": 17,
   "redistribute-still-bookable": 18,
+  "legal-tags-contradict": 19,
 };
 
 function stop(code: number, why: string): never {
@@ -170,7 +171,12 @@ for (const u of realUsers) {
       email: key,
       debtTeams: asList(attrs.debt_team),
       backendServices: asList(attrs.backend_service),
-      legalEligibleN: String(attrs.legal_eligible ?? "") === "N",
+      // As STORED, so a row nobody has written and one written to "N" stay apart:
+      // routing treats them differently, since a negated criterion admits an unset
+      // agent and excludes an explicit "N" (#2098).
+      legalEligible: attrs.legal_eligible === undefined || attrs.legal_eligible === null
+        ? null
+        : String(attrs.legal_eligible),
       bookable: u.bookable,
       deactivated: u.deactivated_at !== null,
     },

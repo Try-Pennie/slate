@@ -3,6 +3,11 @@
 // The Twilio half of the hourly roster job (#2097): the read, the flips, the writes
 // and the order they happen in.
 //
+// #2098 added the legal eligibility value, which rides in the SAME attributes
+// payload as the mark rather than a second write. That is why the payloads below
+// carry `legal_eligible` beside `redistribute`: two writes built from one base row
+// would drop each other silently (L443).
+//
 // TWO THINGS THIS PINS THAT NOTHING ELSE CAN.
 //
 // The ORDER of each flip's two writes, which is what makes a run that dies half way
@@ -69,7 +74,11 @@ function deps(
   const d = deps();
   const r = await syncTwilioRedistribute(d.deps);
   eq(r.turnedOff, ["a@trypennie.com"], "a bookable agent Twilio withholds is turned off");
-  eq(d.calls, ['attrs:u1:{"redistribute":"Y"}', "flip:u1:false"], "the mark is written BEFORE the flip, so a crash between them converges next hour");
+  eq(
+    d.calls,
+    ['attrs:u1:{"legal_eligible":"N","redistribute":"Y"}', "flip:u1:false"],
+    "the mark is written BEFORE the flip, so a crash between them converges next hour",
+  );
   eq(r.turnedBackOn.length, 0, "and nobody is turned back on");
   eq(d.audits.length, 1, "the flip is audited");
   eq((d.audits[0] as { action: string }).action, "agent.bookable", "as a bookable change, the same action the admin toggle records");
@@ -96,7 +105,11 @@ const backOn = {
   const d = deps(backOn);
   const r = await syncTwilioRedistribute(d.deps);
   eq(r.turnedBackOn, ["a@trypennie.com"], "an agent whose tag Twilio dropped is turned back on");
-  eq(d.calls, ["flip:u1:true", 'attrs:u1:{"debt_team":["low"]}'], "the flip runs BEFORE the mark is cleared, so a refusal keeps the mark and retries");
+  eq(
+    d.calls,
+    ["flip:u1:true", 'attrs:u1:{"debt_team":["low"],"legal_eligible":"N"}'],
+    "the flip runs BEFORE the mark is cleared, so a refusal keeps the mark and retries",
+  );
   eq((d.audits[0] as { details: Record<string, unknown> }).details.reason, "redistribute-removed", "audited with its own reason, not the same one as turning somebody off");
 }
 
@@ -119,7 +132,7 @@ const backOn = {
     (userId, bookable) => ({ status: "noop", userId, bookable }),
   );
   const r = await syncTwilioRedistribute(d.deps);
-  eq(d.calls, ["flip:u1:true", "attrs:u1:{}"], "a noop still clears the stale mark");
+  eq(d.calls, ["flip:u1:true", 'attrs:u1:{"legal_eligible":"N"}'], "a noop still clears the stale mark");
   eq(r.turnedBackOn.length, 0, "and is not reported as a change, because nothing changed");
   eq(d.audits.length, 0, "nor audited");
 }
@@ -233,6 +246,115 @@ const backOn = {
   eq(r.noEmail, 1, "and one carrying no email separately, because it is usually a queue entity and ordinary");
   eq(r.unmappedTags, ["Brand New Tier"], "a tag this mapping has never heard of is reported, never dropped");
   eq(r.markedWithNoWorker, ["c@trypennie.com"], "and a marked agent Twilio holds no worker for is named, since doing nothing is otherwise invisible");
+}
+
+// --- legal eligibility (#2098) -------------------------------------------------
+// Dan, 2026-09-09: "The default is N. Y is the only one called out."
+
+{
+  const d = deps({
+    fetchWorkers: async () => [worker("a@trypennie.com", ["Low Debt: 20k - 30k"])],
+    loadRoster: async () => [row({ attributes: { debt_team: ["low"] } })],
+  });
+  const r = await syncTwilioRedistribute(d.deps);
+  eq(r.legalExcluded, ["a@trypennie.com"], "an agent Twilio does not call out is written to excluded");
+  eq(r.legalEligible.length, 0, "and nobody is written the other way");
+  eq(
+    d.calls,
+    ['attrs:u1:{"debt_team":["low"],"legal_eligible":"N"}'],
+    "one write, carrying the row's other attributes, and no flip",
+  );
+}
+
+{
+  const d = deps({
+    fetchWorkers: async () => [worker("a@trypennie.com", ["Legal Eligible"])],
+    loadRoster: async () => [row({ attributes: {} })],
+  });
+  const r = await syncTwilioRedistribute(d.deps);
+  eq(r.legalEligible, ["a@trypennie.com"], "the positive tag is what makes somebody eligible");
+  eq(r.legalExcluded.length, 0, "and they are not also counted as excluded");
+}
+
+{
+  // THE CONTROL that stops this writing the whole roster every hour, which is the
+  // failure a run of 125 pointless writes would be. Without it, a sync that wrote
+  // everybody would satisfy the two cases above (L1).
+  const d = deps({
+    fetchWorkers: async () => [worker("a@trypennie.com", ["Low Debt: 20k - 30k"])],
+    loadRoster: async () => [row({ attributes: { legal_eligible: "N" } })],
+  });
+  const r = await syncTwilioRedistribute(d.deps);
+  eq(d.calls.length, 0, "a row already holding what Twilio says is not written at all");
+  eq(r.legalExcluded.length + r.legalEligible.length, 0, "and nothing is reported as changed");
+}
+
+{
+  // A flip and a legal change on one person is ONE write, not two over the same
+  // JSON column, and the count still says the legal value moved.
+  const d = deps({
+    fetchWorkers: async () => [worker("a@trypennie.com", ["Redistribute"])],
+    loadRoster: async () => [row({ attributes: {} })],
+  });
+  const r = await syncTwilioRedistribute(d.deps);
+  eq(
+    d.calls,
+    ['attrs:u1:{"legal_eligible":"N","redistribute":"Y"}', "flip:u1:false"],
+    "the mark and the legal value travel together, and still before the flip",
+  );
+  eq(r.turnedOff, ["a@trypennie.com"], "the flip is reported");
+  eq(r.legalExcluded, ["a@trypennie.com"], "and so is the legal change, because they are two different facts about the same person");
+}
+
+{
+  // The refused reactivation writes NOTHING, so it must not claim the legal value
+  // landed either: a count of writes that never happened is the same defect as an
+  // all clear off a query that never ran (#1134).
+  const d = deps(
+    {
+      fetchWorkers: async () => [worker("a@trypennie.com", ["Low Debt: 20k - 30k"])],
+      loadRoster: async () => [row({ bookable: false, attributes: { redistribute: "Y" } })],
+    },
+    (userId) => ({ status: "blocked", userId, reason: "google_unreachable" }),
+  );
+  const r = await syncTwilioRedistribute(d.deps);
+  eq(d.calls, ["flip:u1:true"], "nothing is written when the gate refuses");
+  eq(r.legalExcluded.length, 0, "and no legal change is claimed");
+  eq(r.reactivationRefused, ["a@trypennie.com"], "only the refusal is reported");
+}
+
+{
+  // Writing N on an ABSENCE is deliberate, and it is reported, because it is also
+  // what a partial Twilio read would look like from the inside.
+  const d = deps({
+    fetchWorkers: async () => [worker("a@trypennie.com", ["Low Debt: 20k - 30k"])],
+    loadRoster: async () => [row(), row({ id: "u2", email: "b@trypennie.com", attributes: {} })],
+  });
+  const r = await syncTwilioRedistribute(d.deps);
+  eq(r.withoutWorker, ["b@trypennie.com"], "a Slate row Twilio holds no worker for is named");
+  eq(r.legalExcluded.length, 2, "and is written to excluded like everybody else, because the default is N");
+}
+
+{
+  // One bad write must not take the rest with it, the same boundary the flips have.
+  const d = deps({
+    fetchWorkers: async () => [
+      worker("a@trypennie.com", ["Legal Eligible"]),
+      worker("b@trypennie.com", ["Legal Eligible"]),
+      worker("c@trypennie.com", ["Legal Eligible"]),
+    ],
+    loadRoster: async () => [
+      row({ id: "u1", email: "a@trypennie.com" }),
+      row({ id: "u2", email: "b@trypennie.com" }),
+      row({ id: "u3", email: "c@trypennie.com" }),
+    ],
+    writeAttributes: async (userId) => {
+      if (userId === "u2") throw new Error("database went away");
+    },
+  });
+  const r = await syncTwilioRedistribute(d.deps);
+  eq(r.legalEligible, ["a@trypennie.com", "c@trypennie.com"], "the writes either side of the failure still land");
+  eq(r.legalWriteFailures, 1, "and the one that failed is counted rather than swallowed");
 }
 
 finish();

@@ -29,8 +29,8 @@
 // (`docs/cloudflare-platform-notes.md`), and no per run cap is imposed because a cap
 // would hide a backlog rather than report one.
 import { fetchTwilioWorkers, TwilioReadError } from "@/lib/twilio/client";
-import { mergeWorkers, readWorker, type TwilioSide } from "@/lib/twilio/roster";
-import { planRedistribute, type TwilioRosterRow } from "@/lib/twilio/roster-plan";
+import { mergeWorkers, readWorker, LEGAL_ELIGIBLE_YES, type TwilioSide } from "@/lib/twilio/roster";
+import { planTwilioRoster, type TwilioRosterRow } from "@/lib/twilio/roster-plan";
 import { applyBookableByUserId, type BookableResult } from "@/lib/bookable/service";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { unwrap } from "@/lib/db/result";
@@ -68,6 +68,32 @@ export interface TwilioSyncResult {
   reactivationRefused: string[];
   /** Marked by Slate, and Twilio holds no worker for them, so nothing was done. */
   markedWithNoWorker: string[];
+  /**
+   * Emails whose stored legal eligibility was written to Y, and to N (#2098).
+   *
+   * Counted only once the write LANDED. A refused reactivation writes nothing at
+   * all, and claiming the legal value moved there would be a count of a write that
+   * never happened (#1134).
+   */
+  legalEligible: string[];
+  legalExcluded: string[];
+  /**
+   * Every in scope Slate row Twilio holds no worker for.
+   *
+   * They are written to N like everybody else, because the default is N, so this
+   * is a count of values written on an ABSENCE. It is also the only visible shape
+   * of a PARTIAL Twilio read: a read that returned nothing is refused outright,
+   * and one that returned half the roster would quietly exclude the other half.
+   */
+  withoutWorker: string[];
+  /**
+   * Legal writes that threw, so the run carried on with the rest (L73).
+   *
+   * Its own count rather than folded into `flipFailures`, because the two send a
+   * reader to different places: a flip failure leaves somebody bookable who should
+   * not be, and this leaves a stored value the next hour will write again.
+   */
+  legalWriteFailures: number;
   /** Workers whose `attributes` string is not JSON: a fault in Twilio's data. */
   corruptAttributes: number;
   /** Valid JSON carrying no email, which is usually a queue entity and ordinary. */
@@ -127,10 +153,13 @@ export async function syncTwilioRedistribute(deps: TwilioSyncDeps): Promise<Twil
     throw new Error("Twilio sync read no Slate users at all, so nothing was judged and no agent was flipped");
   }
 
-  const plan = planRedistribute(roster, merged);
+  const plan = planTwilioRoster(roster, merged);
   const turnedOff: string[] = [];
   const turnedBackOn: string[] = [];
   const reactivationRefused: string[] = [];
+  const legalEligible: string[] = [];
+  const legalExcluded: string[] = [];
+  const legal = { eligible: legalEligible, excluded: legalExcluded };
 
   let flipFailures = 0;
   for (const flip of plan.flips) {
@@ -139,10 +168,24 @@ export async function syncTwilioRedistribute(deps: TwilioSyncDeps): Promise<Twil
     // not leave the other eleven bookable while the run reports a Twilio read
     // failure, which is a different fault in a different system.
     try {
-      await runFlip(flip, deps, { turnedOff, turnedBackOn, reactivationRefused });
+      await runFlip(flip, deps, { turnedOff, turnedBackOn, reactivationRefused, legal });
     } catch (err) {
       flipFailures++;
       log.error("twilio-sync", { msg: "flip failed, carrying on with the rest", user_id: flip.userId, action: flip.action }, err);
+    }
+  }
+
+  // The legal values for everybody the run is not flipping. Their own boundary,
+  // one row at a time, for the same reason the flips have one: this is the write
+  // that touches the WHOLE roster, so one bad row must not take the rest with it.
+  let legalWriteFailures = 0;
+  for (const write of plan.legalWrites) {
+    try {
+      await deps.writeAttributes(write.userId, write.attributes);
+      (write.value === LEGAL_ELIGIBLE_YES ? legalEligible : legalExcluded).push(write.email);
+    } catch (err) {
+      legalWriteFailures++;
+      log.error("twilio-sync", { msg: "legal eligibility write failed, carrying on", user_id: write.userId }, err);
     }
   }
 
@@ -153,6 +196,15 @@ export async function syncTwilioRedistribute(deps: TwilioSyncDeps): Promise<Twil
     // `pnpm verify:twilio-parity` already reports it as its own verdict (exit 13);
     // saying it in both places would be the same fact twice (L605).
     log.warn("twilio-sync", { msg: "Twilio tags this mapping does not know", tags: unmappedTags.join(", ") });
+  }
+  if (plan.withoutWorker.length > 0) {
+    // Not in the admin banner. A Slate row with no Twilio worker is Twilio
+    // configuration a manager cannot act on from the roster page, and the count
+    // matters most when it is LARGE, which is what a partial read looks like.
+    log.warn("twilio-sync", {
+      msg: "Slate rows Twilio holds no worker for, written to legal excluded on an absence",
+      count: plan.withoutWorker.length,
+    });
   }
   if (plan.markedWithNoWorker.length > 0) {
     log.warn("twilio-sync", {
@@ -168,6 +220,10 @@ export async function syncTwilioRedistribute(deps: TwilioSyncDeps): Promise<Twil
     turnedBackOn,
     reactivationRefused,
     markedWithNoWorker: plan.markedWithNoWorker,
+    legalEligible,
+    legalExcluded,
+    withoutWorker: plan.withoutWorker,
+    legalWriteFailures,
     corruptAttributes,
     noEmail,
     unmappedTags,
@@ -177,13 +233,28 @@ export async function syncTwilioRedistribute(deps: TwilioSyncDeps): Promise<Twil
 
 /** One flip, both directions, with the two writes in the order the header explains. */
 async function runFlip(
-  flip: ReturnType<typeof planRedistribute>["flips"][number],
+  flip: ReturnType<typeof planTwilioRoster>["flips"][number],
   deps: TwilioSyncDeps,
-  out: { turnedOff: string[]; turnedBackOn: string[]; reactivationRefused: string[] },
+  out: {
+    turnedOff: string[];
+    turnedBackOn: string[];
+    reactivationRefused: string[];
+    legal: { eligible: string[]; excluded: string[] };
+  },
 ): Promise<void> {
+  // Counted where the write LANDS, never where it is planned, so a payload that
+  // never reached the database cannot be reported as a value that changed.
+  const countLegal = () => {
+    if (!flip.legal.changed) return;
+    (flip.legal.value === LEGAL_ELIGIBLE_YES ? out.legal.eligible : out.legal.excluded).push(flip.email);
+  };
+
   if (flip.action === "turn-off") {
-    // Mark first. See the header for why this order and not the other.
+    // Mark first. See the header for why this order and not the other. The legal
+    // value rides in the SAME payload rather than a second write over the same
+    // column, which would build from a base this one has already changed (L443).
     await deps.writeAttributes(flip.userId, flip.attributes);
+    countLegal();
     const result = await deps.applyBookable(flip.userId, false);
     if (result.status === "applied") {
       out.turnedOff.push(flip.email);
@@ -219,6 +290,7 @@ async function runFlip(
     return;
   }
   await deps.writeAttributes(flip.userId, flip.attributes);
+  countLegal();
   // A noop is a STALE MARK, not a change: somebody an admin had already turned
   // back on. The mark still had to go, and nothing else changed, so it is neither
   // reported as a flip nor audited.

@@ -835,7 +835,7 @@ describe("AgentProfilePage routing attributes are read only (#1874)", () => {
   // the two fields above it. It is the third routing attribute, so it reads as
   // the third value in the row.
   it("puts legal eligible in the same row as the other two attributes", async () => {
-    await withAttrs({ debt_team: ["low"], backend_service: "achieve", legal_eligible: true });
+    await withAttrs({ debt_team: ["low"], backend_service: "achieve", legal_eligible: "Y" });
     const panel = screen.getByText("Routing attributes").closest("section") as HTMLElement;
     const row = panel.querySelector("[data-attr-row]") as HTMLElement;
     expect(row).toBeTruthy();
@@ -852,7 +852,7 @@ describe("AgentProfilePage routing attributes are read only (#1874)", () => {
   // answer.
   it("shows legal eligibility to every reader, including one who cannot manage this agent", async () => {
     auth.currentUser.mockResolvedValueOnce({ id: "m1", role: "manager", org_id: "o1" });
-    dbState.agent = { ...agentOf("admin"), attributes: { legal_eligible: true } };
+    dbState.agent = { ...agentOf("admin"), attributes: { legal_eligible: "Y" } };
     render(await AgentProfilePage(props));
 
     const panel = screen.getByText("Routing attributes").closest("section") as HTMLElement;
@@ -860,11 +860,12 @@ describe("AgentProfilePage routing attributes are read only (#1874)", () => {
     expect(screen.getByText("Yes")).toBeTruthy();
   });
 
-  // The three states are told apart. Not set is not the same as No: nothing has
-  // been recorded for anybody yet, and naming that "Yes" because routing lets an
-  // unset agent through would present an inference as a recorded fact (L192).
+  // The three states are told apart. Not set is not the same as No: it means the
+  // hourly Twilio sync has not reached this row, which routing reads as the
+  // permissive answer, so naming it "No" would claim an exclusion nothing recorded
+  // and naming it "Yes" would present an inference as a fact (L11, L192).
   it("tells an unset legal eligibility apart from a No", async () => {
-    await withAttrs({ legal_eligible: false });
+    await withAttrs({ legal_eligible: "N" });
     expect(screen.getByText("No")).toBeTruthy();
 
     cleanup();
@@ -874,12 +875,25 @@ describe("AgentProfilePage routing attributes are read only (#1874)", () => {
     expect(panel.textContent).toMatch(/Not set/);
   });
 
-  // The value routing actually acts on, which no control ever wrote. Shown as
-  // stored rather than translated, for the same reason an off ladder debt team
-  // is: the reader needs to see what is really there (L113).
-  it("shows the excluded value routing matches on", async () => {
-    await withAttrs({ legal_eligible: "N" });
+  // #2098: the Twilio sync writes "Y" or "N" for every agent, from the
+  // `Legal Eligible` tag, so those two are the product's own vocabulary and are
+  // read as words rather than as the letters routing matches on (L611).
+  it("reads the stored letters as words", async () => {
+    await withAttrs({ legal_eligible: "Y" });
     const panel = screen.getByText("Routing attributes").closest("section") as HTMLElement;
-    expect(panel.textContent).toContain("N");
+    expect(panel.textContent).toContain("Yes");
+    expect(panel.textContent).not.toMatch(/\bY\b/);
+  });
+
+  // A value in NEITHER vocabulary is shown as stored, and the only one that exists
+  // is what the retired control wrote: the boolean false, which routing admits to
+  // every legal bucket because it is not the string "N" (#2120). Calling it "No"
+  // is the exact claim that control could not deliver, so it is not made here
+  // either: what is really there is what a reader can act on (L113).
+  it("shows a value in neither vocabulary as stored, rather than calling it No", async () => {
+    await withAttrs({ legal_eligible: false });
+    const panel = screen.getByText("Routing attributes").closest("section") as HTMLElement;
+    expect(panel.textContent).toContain("false");
+    expect(panel.textContent).not.toMatch(/\bNo\b/);
   });
 });
