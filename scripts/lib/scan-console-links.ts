@@ -113,15 +113,33 @@ export function redirectsHiddenViewer(src: string): boolean {
  * take it out of the scan, which fails in the GREEN direction and is exactly how a
  * guard rots into a no-op (L103).
  */
-export function readRoutes(appDir: string, io: ConsoleLinkIo): RouteEntry[] {
+export function readRoutes(
+  appDir: string,
+  io: ConsoleLinkIo,
+  onUnreadable?: (file: string) => void,
+): RouteEntry[] {
   return io
     .listFiles(appDir)
     .filter((f) => PAGE_FILE.test(f))
-    .map((file) => ({
-      route: routeOfPageFile(appDir, file),
-      file,
-      hidden: redirectsHiddenViewer(io.readFile(file)),
-    }))
+    .map((file) => {
+      let src: string;
+      try {
+        src = io.readFile(file);
+      } catch {
+        // A page whose source cannot be read cannot be classified either way, and
+        // both answers weaken the scan silently: reachable adds a surface with no
+        // links to find, hidden removes a destination worth reporting. So it is
+        // REPORTED and the caller refuses, rather than the scan throwing a raw
+        // stack or quietly picking one (L11, L98).
+        onUnreadable?.(file);
+        src = "";
+      }
+      return {
+        route: routeOfPageFile(appDir, file),
+        file,
+        hidden: redirectsHiddenViewer(src),
+      };
+    })
     .sort((a, b) => a.route.localeCompare(b.route));
 }
 
@@ -284,6 +302,16 @@ export interface ScanResult {
   dead: DeadLink[];
   /** Controls whose description points at a note no reachable page renders. */
   dangling: DanglingNote[];
+  /**
+   * Files the scan reached and could NOT read, repo relative.
+   *
+   * Reported rather than skipped. A file whose links are invisible produces the
+   * same empty `dead` list as a file with no links, so a silent skip makes an
+   * unreadable tree indistinguishable from a clean one, which is the exact shape
+   * this guard exists to catch elsewhere (L11, L98). The caller must refuse on a
+   * non-empty list.
+   */
+  unreadable: string[];
   /** How many reachable pages were walked. Zero is a broken scan, never a clean tree. */
   pagesScanned: number;
   /** How many hidden routes were found. Zero means the flag moved, not that all is well. */
@@ -304,6 +332,7 @@ export function scanConsoleLinks(
   // and remembered (L286). Comments are blanked here too, since every reader wants
   // them gone and blanking is the expensive part.
   const srcCache = new Map<string, string | null>();
+  const unreadable = new Set<string>();
   const read = (f: string): string | null => {
     if (srcCache.has(f)) return srcCache.get(f)!;
     let out: string | null;
@@ -311,12 +340,13 @@ export function scanConsoleLinks(
       out = blankComments(io.readFile(f));
     } catch {
       out = null;
+      unreadable.add(f);
     }
     srcCache.set(f, out);
     return out;
   };
 
-  const routes = readRoutes(appDir, io);
+  const routes = readRoutes(appDir, io, (f) => unreadable.add(f));
   const hidden = routes.filter((r) => r.hidden);
   const reachable = routes.filter((r) => !r.hidden);
   const dead: DeadLink[] = [];
@@ -375,6 +405,7 @@ export function scanConsoleLinks(
   return {
     dead: dead.filter((d) => (seen.has(key(d)) ? false : (seen.add(key(d)), true))),
     dangling,
+    unreadable: [...unreadable].map(rel).sort(),
     pagesScanned: reachable.length,
     hiddenRoutes: hidden.length,
   };

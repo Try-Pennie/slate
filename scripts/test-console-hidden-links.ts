@@ -334,4 +334,32 @@ assert(
   `every Coming soon control has a note to describe it\n${describeDangling(result.dangling)}`,
 );
 
+// A file the scan could not read contributes no links, which is the same empty
+// result a file with no links gives, so skipping one silently would make an
+// unreadable tree indistinguishable from a clean one (L11, L98).
+eq(result.unreadable.length, 0, `every file the scan reached was readable: ${result.unreadable.join(", ")}`);
+
+// And that refusal is real rather than a field nothing can populate: a page whose
+// source cannot be read is REPORTED.
+{
+  const missing = join(appDir, "admin", "ooo", "page.tsx");
+  const blinded = scanConsoleLinks({
+    appDir,
+    srcDir,
+    repoRoot,
+    io: {
+      readFile: (f) => {
+        if (f === missing) throw new Error("ENOENT");
+        return readCached(f);
+      },
+      exists: existsCached,
+      listFiles: listCached,
+    },
+  });
+  assert(
+    blinded.unreadable.some((f) => f.endsWith(join("admin", "ooo", "page.tsx"))),
+    `an unreadable file is reported, not skipped. Got: ${JSON.stringify(blinded.unreadable)}`,
+  );
+}
+
 finish();
