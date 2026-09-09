@@ -100,6 +100,34 @@ describe("SubmitButton", () => {
       expect(container.querySelector('[role="status"]')?.textContent).toBe("");
     });
 
+    it("takes a fuller accessible name than its visible label (#2120)", () => {
+      // A row of fields where each carries its own save cannot spell the field
+      // out on every button without the row becoming a row of sentences, and a
+      // page with several buttons all reading "Save" is one a screen reader
+      // cannot tell apart. The accessible name CONTAINS the visible label, which
+      // is what keeps a voice control user able to say what they see (WCAG 2.5.3).
+      const action = () => new Promise<void>(() => {});
+      render(
+        <form action={action}>
+          <SubmitButton pendingLabel="Saving" ariaLabel="Save legal eligible">
+            Save
+          </SubmitButton>
+        </form>,
+      );
+      const btn = screen.getByRole("button", { name: "Save legal eligible" });
+      expect(btn.textContent).toBe("Save");
+    });
+
+    it("keeps its visible text as its name when no fuller one is given", () => {
+      const action = () => new Promise<void>(() => {});
+      render(
+        <form action={action}>
+          <SubmitButton pendingLabel="Saving">Save hours</SubmitButton>
+        </form>,
+      );
+      expect(screen.getByRole("button", { name: "Save hours" }).getAttribute("aria-label")).toBeNull();
+    });
+
     it("crosses each threshold at the moment it is reached, not a tick later", () => {
       // The boundaries themselves, because an off by one here is what makes a
       // state either unreachable or permanent.

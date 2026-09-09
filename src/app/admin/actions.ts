@@ -114,7 +114,7 @@ import {
   type ScheduleReplacementPlan,
   type ScheduleRule,
 } from "@/lib/schedule-replacement";
-import type { Attributes, Criteria, Role, User } from "@/lib/db/types";
+import type { Criteria, Role, User } from "@/lib/db/types";
 import { seederOwnsCode } from "@/lib/xbc";
 import { ME_TABS } from "@/lib/me/nav";
 
@@ -1692,61 +1692,31 @@ export async function replayFailedWebhooks(form: FormData): Promise<void> {
 }
 
 /**
- * The one routing attribute Slate owns (#1874).
+ * `setAgentAttributes` is GONE (#2120), and the routing attributes panel writes
+ * nothing at all now.
  *
- * `debt_team`, `backend_service` and `role` are Salesforce's
- * (`SF_MANAGED_KEYS`): the hourly roster sync deletes and rewrites all three, so
- * anything set here was undone within the hour. The panel offering them as free
- * text was therefore a typo waiting to happen AND an override that silently
- * reverted, and both are gone: those three are read only now, and this action
- * writes exactly one key.
+ * It survived #1874 as the writer of one key, `legal_eligible`, on the reasoning
+ * that routing matches on it and nothing else writes it. The first half was true
+ * and the second was the problem.
  *
- * `legal_eligible` stays, because routing really does match on it
- * (`legal_eligible!` in the XBC criteria) and nothing else writes it.
+ * IT COULD NOT DO ITS JOB. Routing excludes an agent only when the stored value
+ * is the STRING "N" (`legal_eligible!`, cal.com's "does not equal N"), and this
+ * wrote the BOOLEAN true or false. `String(false)` is "false", so picking No left
+ * the agent in every bucket the choice was meant to take them out of, with
+ * nothing on any screen able to show the difference (L109).
+ *
+ * AND IT WAS THE SECOND PLACE TO SET A FACT THAT LIVES IN TWILIO. Legal
+ * eligibility reaches cal.com as a `Not Legal Eligible` tag on the person's
+ * TaskRouter worker, pushed onto their cal.com attributes by the Pipedream job,
+ * the same route Redistribute takes (#2097). Nobody sets it in cal.com, and
+ * Salesforce deliberately never writes it. Slate reads that tag rather than
+ * offering somewhere else to type it: Dan chose Twilio as the source on
+ * 2026-09-09.
+ *
+ * Deleted rather than kept for a future caller, because the writer that lands
+ * next is the Twilio sync and not a form. Nothing was lost on the way: 0 of 127
+ * live users carried the field, so it had never once been used.
  */
-export async function setAgentAttributes(form: FormData): Promise<void> {
-  const userId = String(form.get("user_id") ?? "");
-  if (!userId) return;
-  await requireManageAgent(userId, "agent.attributes");
-  const db = supabaseAdmin();
-
-  // #1874: MERGED over what is stored, never rebuilt from the form.
-  //
-  // This wrote `update({ attributes })` with an object built only from the form
-  // fields, which was correct only while the form carried every key. The moment
-  // it stopped carrying the three Salesforce ones, that same statement would have
-  // deleted an agent's debt teams on every legal eligible save, taking them out
-  // of every bucket until the next sync put them back (L510).
-  //
-  // The read throws rather than defaulting: an unreadable row here would merge
-  // over `{}`, which is the same wipe by a different route, and an empty
-  // attributes object is a legitimate value so nothing downstream could tell.
-  const existing = unwrap(
-    await db.from("users").select("attributes").eq("id", userId).maybeSingle(),
-    "agent attributes",
-  ) as { attributes: Attributes | null } | null;
-
-  const attributes: Attributes = { ...(existing?.attributes ?? {}) };
-  const legal = String(form.get("legal_eligible") ?? "").trim();
-  // "" is the "Not set" option, and it has to REMOVE the key rather than skip
-  // it: with a merge, skipping would make clearing the field impossible, and
-  // `legal_eligible!` treats an unset agent differently from a false one.
-  if (legal === "true" || legal === "false") attributes.legal_eligible = legal === "true";
-  else delete attributes.legal_eligible;
-
-  await db
-    .from("users")
-    .update({ attributes })
-    .eq("id", userId);
-  // #1769: the form that calls this lives on the agent's own page, so that is the
-  // route that has to be refreshed. Revalidating only /admin left the page the
-  // person is looking at showing what it showed before they pressed the button.
-  revalidatePath("/admin");
-  revalidatePath(`/admin/agents/${userId}`);
-  // #1990: as above. These decide which pools the agent is routed into, and the
-  // page shows them back unchanged whether the write happened or not.
-  redirect(`/admin/agents/${userId}${savedQuery("agent-attributes")}`);
-}
 
 export async function setWebhookEndpoint(form: FormData): Promise<void> {
   const admin = await requireAdmin();

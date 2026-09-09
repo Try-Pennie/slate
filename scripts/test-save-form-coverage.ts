@@ -190,7 +190,6 @@ const MIGRATED: [string, string][] = [
   ["src/app/admin/agents/[id]/page.tsx", "setUserRole"],
   ["src/app/admin/agents/[id]/page.tsx", "setBookable"],
   ["src/app/admin/agents/[id]/page.tsx", "setOooCalendarId"],
-  ["src/app/admin/agents/[id]/page.tsx", "setAgentAttributes"],
   ["src/app/admin/agents/[id]/page.tsx", "setUserLifecycle"],
   ["src/app/admin/ooo/page.tsx", "rejectOooAction"],
   ["src/app/admin/webhooks/page.tsx", "replayFailedWebhooks"],

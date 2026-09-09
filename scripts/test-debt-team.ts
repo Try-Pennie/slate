@@ -24,6 +24,7 @@ import {
   debtTeamCoverage,
   debtTeamLabel,
   debtTeamRungLabel,
+  debtTeamValueText,
 } from "@/lib/admin/debt-team";
 import { DEBT_TIER } from "@/lib/xbc";
 
@@ -119,6 +120,73 @@ import { DEBT_TIER } from "@/lib/xbc";
   }
   // Blank strings are not data and must not become an off ladder chip.
   eq(debtTeamCoverage(["", " "]).offLadder.length, 0, "a blank value is not a team");
+}
+
+// --- the same coverage, spelled out for a single record (#2120) ------------
+//
+// Dan, looking at the agent page: "make the debt teams full words here so it's
+// clear". The ladder earns its place in a COLUMN, where five fixed positions
+// align down 136 rows and that alignment is the whole argument for drawing it.
+// A single record has no column to align to, so the letters buy nothing and cost
+// a legend the reader has to find. The words come from the SAME coverage the
+// ladder draws, so the two surfaces can never disagree about one agent (L41).
+{
+  const say = (teams: string[]) => debtTeamValueText(debtTeamCoverage(teams));
+
+  eq(say(["low"]), "Low", "one rung is its label");
+  eq(
+    say(["medium", "high", "very_high", "ultra_high"]),
+    "Medium to Ultra High",
+    "a contiguous band reads as a range, which is how a person says it",
+  );
+  eq(
+    say(["low", "high"]),
+    "Low, High",
+    "a gap must read as a list: a range would claim the middle rung it does not cover",
+  );
+  eq(
+    say(["low", "medium", "high", "very_high", "ultra_high"]),
+    "every tier",
+    "the whole ladder says so rather than naming both ends",
+  );
+
+  // The off ladder rule the glyph already follows (L113): a stored value that is
+  // not a rung is shown, or the panel that exists to say what an agent covers
+  // under reports them.
+  eq(say(["low", "credit"]), "Low, plus credit", "an off ladder value is named too");
+  eq(
+    say(["credit"]),
+    "credit",
+    "an off ladder value alone is still the answer, and keeps the case it was stored in",
+  );
+
+  // Absent is the caller's business, not a sentence pretending to be a value.
+  // The panel prints the same "Not set" its sibling field uses, and a builder
+  // that returned its own wording here would be a second vocabulary for one
+  // state (L118).
+  eq(say([]), null, "no coverage is null, so the caller names it in its own words");
+  eq(say(["", "  "]), null, "a blank is not coverage either");
+
+  // The ladder's accessible name is this value with a verb in front, and nothing
+  // else. Asserted over every shape rather than on one, because the two surfaces
+  // saying different things about one agent is the failure this shares a
+  // derivation to prevent (L41).
+  for (const teams of [
+    ["low"],
+    ["medium", "high"],
+    ["low", "credit"],
+    ["credit"],
+    ["low", "medium", "high", "very_high", "ultra_high"],
+    ["low", "high"],
+  ]) {
+    const c = debtTeamCoverage(teams);
+    eq(
+      debtTeamLabel(c),
+      `Covers ${debtTeamValueText(c)}`,
+      `the record and the roster say the same thing about ${JSON.stringify(teams)}`,
+    );
+  }
+  eq(debtTeamLabel(debtTeamCoverage([])), "No team set", "and the empty case is still named");
 }
 
 finish();

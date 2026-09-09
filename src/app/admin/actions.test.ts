@@ -131,19 +131,6 @@ const dbState = vi.hoisted(() => ({
   rowsByTable: {} as Record<string, unknown>,
   errorByTable: {} as Record<string, { message: string } | undefined>,
   /**
-   * Fail the Nth single-row read of a table, counting from 1 (#1874).
-   *
-   * The per-table seam above fails EVERY read of that table, which cannot reach
-   * an action that reads one table twice: `setAgentAttributes` reads `users` for
-   * the authorization check and again for the attributes to merge over, and a
-   * seam that fails both is answered by the FIRST refusal, so the assertion
-   * passes on a version where the second read is still swallowed (L140: a test
-   * asserting that something threw is satisfied by any throw, including one from
-   * its own fixture).
-   */
-  errorOnNthReadByTable: {} as Record<string, { nth: number; error: { message: string } }>,
-  readsByTable: {} as Record<string, number>,
-  /**
    * The RPC behind a schedule write. `null` means "report back the number of
    * rules you were handed", which is what a working database does; a test that
    * wants the count check to FAIL sets a number here instead.
@@ -208,11 +195,6 @@ const from = vi.hoisted(() =>
     // Falls through to `single` / `singleError` when the table is not registered,
     // which is what keeps every test written before #1649 working unchanged.
     const readOne = async () => {
-      dbState.readsByTable[_table] = (dbState.readsByTable[_table] ?? 0) + 1;
-      const nth = dbState.errorOnNthReadByTable[_table];
-      if (nth && dbState.readsByTable[_table] === nth.nth) {
-        return { data: null, error: nth.error };
-      }
       const err = dbState.errorByTable[_table];
       if (err) return { data: null, error: err };
       if (Object.hasOwn(dbState.rowsByTable, _table)) {
@@ -294,7 +276,6 @@ import {
   setBookable,
   syncSalesforceNow,
   setWorkingHours,
-  setAgentAttributes,
   setOooCalendarId,
   useDefaultHours,
   setDefaultBucket,
@@ -339,8 +320,6 @@ beforeEach(() => {
   dbState.countError = null;
   dbState.rowsByTable = {};
   dbState.errorByTable = {};
-  dbState.errorOnNthReadByTable = {};
-  dbState.readsByTable = {};
   dbState.rpcWritten = null;
   dbState.rpcError = null;
   locks.acquireLock.mockResolvedValue("claim");
@@ -1416,7 +1395,6 @@ describe("the reads that decide authorization or a write must refuse, not guess 
       for (const drive of [
         () => setBookable(form({ user_id: "u2", bookable: "true" })),
         () => setUserLifecycle(form({ user_id: "u2", action: "deactivate" })),
-        () => setAgentAttributes(form({ user_id: "u2", debt_team: "low" })),
         () => setWorkingHours(form({ user_id: "u2", day_1: "on", start_1: "09:00", end_1: "17:00" })),
       ]) {
         vi.clearAllMocks();
@@ -1617,86 +1595,6 @@ describe("the reads that decide authorization or a write must refuse, not guess 
 // #1874. The routing attributes panel is read only for the three keys Salesforce
 // owns, so this action writes exactly one: `legal_eligible`.
 //
-// THE TRAP THIS PINS. It used to write `update({ attributes })` with an object
-// built only from the form fields, which is correct only while the form carries
-// every key. The moment the form stopped carrying the Salesforce three, that same
-// statement would have deleted an agent's debt teams on every legal eligible
-// save, taking them out of every bucket until the next hourly sync put them back
-// (L510). Nothing on screen would have said so: the panel reads the stored value,
-// which would have been genuinely empty.
-describe("setAgentAttributes merges rather than rebuilding (#1874)", () => {
-  const stored = {
-    debt_team: ["ultra_high", "very_high"],
-    backend_service: "achieve",
-    role: "Sales",
-  };
-
-  beforeEach(() => {
-    auth.requireManager.mockResolvedValue(admin);
-    auth.requireAdmin.mockResolvedValue(admin);
-    dbState.single = { role: "agent" };
-    dbState.rowsByTable.users = { role: "agent", attributes: stored };
-  });
-
-  /** The attributes object this action actually wrote. */
-  const written = () =>
-    (update.mock.calls.at(-1)?.[0] as { attributes: Record<string, unknown> }).attributes;
-
-  it("keeps every Salesforce owned key when setting legal eligible", async () => {
-    // #1990: a successful save now ends in a redirect, which the mock throws as
-    // the real one does, so reaching it IS reaching the end of the write.
-    await expect(
-      setAgentAttributes(form({ user_id: "u2", legal_eligible: "true" })),
-    ).rejects.toThrow(/ok=agent-attributes/);
-    expect(written()).toEqual({ ...stored, legal_eligible: true });
-  });
-
-  it("clears legal eligible on Not set, which a merge would otherwise make impossible", async () => {
-    dbState.rowsByTable.users = { role: "agent", attributes: { ...stored, legal_eligible: true } };
-    await expect(
-      setAgentAttributes(form({ user_id: "u2", legal_eligible: "" })),
-    ).rejects.toThrow(/ok=agent-attributes/);
-    // Removed, not set to false: `legal_eligible!` treats an unset agent
-    // differently from one explicitly marked N.
-    expect("legal_eligible" in written()).toBe(false);
-    expect(written()).toEqual(stored);
-  });
-
-  // The panel no longer sends these, but the action is a route of its own and a
-  // form is anything a caller posts.
-  it("ignores routing values posted to it, since Salesforce owns them", async () => {
-    await expect(
-      setAgentAttributes(
-        form({
-          user_id: "u2",
-          debt_team: "colossal",
-          backend_service: "nonsense",
-          agent_role: "sales_agent",
-          legal_eligible: "false",
-        }),
-      ),
-    ).rejects.toThrow(/ok=agent-attributes/);
-    expect(written()).toEqual({ ...stored, legal_eligible: false });
-  });
-
-  // Merging over an unreadable row is the same wipe by a different route, and an
-  // empty attributes object is a legitimate value, so nothing downstream could
-  // tell it from an agent who genuinely has none.
-  it("refuses when the stored attributes could not be read, rather than merging over nothing", async () => {
-    // The SECOND users read, so the authorization read still succeeds and the
-    // refusal can only have come from this one. Failing every users read would
-    // be answered by the authorization refusal, and the assertion would pass on
-    // a version where this read is still swallowed (L140).
-    dbState.errorOnNthReadByTable = { users: { nth: 2, error: { message: "statement timeout" } } };
-    await expect(
-      setAgentAttributes(form({ user_id: "u2", legal_eligible: "true" })),
-    ).rejects.toThrow(/agent attributes/);
-    // Merging over an unreadable row is the same wipe by a different route, and
-    // an empty attributes object is a legitimate value, so nothing downstream
-    // could tell it from an agent who genuinely has none.
-    expect(update).not.toHaveBeenCalled();
-  });
-});
 
 // #1922. Six actions redirected to `/admin/settings`, which since #1748 is not a
 // screen: it is a bare redirect to `/admin`, kept so an old bookmark lands
@@ -1996,10 +1894,6 @@ describe("an action refreshes the page its form is on (#1769)", () => {
     expect(revalidatePath).toHaveBeenCalledWith("/admin/agents/u2");
   });
 
-  it("setAgentAttributes refreshes the agent page", async () => {
-    await setAgentAttributes(form({ user_id: "u2" })).catch(() => {});
-    expect(revalidatePath).toHaveBeenCalledWith("/admin/agents/u2");
-  });
 
   it("setOooCalendarId refreshes the agent page", async () => {
     await setOooCalendarId(form({ user_id: "u2", ooo_calendar_id: "cal@example.com" })).catch(

@@ -40,6 +40,7 @@ export function SubmitButton({
   buttonRef,
   role,
   formAction,
+  ariaLabel,
 }: {
   children: React.ReactNode;
   pendingLabel: string;
@@ -59,6 +60,16 @@ export function SubmitButton({
   formAction?: (form: FormData) => Promise<void>;
   /** Shown in place of `pendingLabel` once the wait stops being normal. */
   slowLabel?: string;
+  /**
+   * A fuller accessible name than the visible label (#2120).
+   *
+   * For a save that sits INSIDE a field group, where spelling the field out on
+   * the button would make a row of controls into a row of sentences, but where a
+   * page carrying several buttons all reading "Save" is one a screen reader
+   * cannot tell apart. It must CONTAIN the visible label, so somebody driving by
+   * voice can still say what they see (WCAG 2.5.3).
+   */
+  ariaLabel?: string;
 }) {
   const { pending } = useFormStatus();
   // The clock is read only inside the interval callback, never in the effect body
@@ -86,6 +97,7 @@ export function SubmitButton({
       formAction={formAction}
       disabled={pending}
       aria-busy={pending}
+      aria-label={ariaLabel}
       className={className}
     >
       {pending ? (

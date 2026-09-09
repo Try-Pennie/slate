@@ -18,10 +18,11 @@ import {
   setOooCalendarId,
   setWorkingHours,
   useDefaultHours,
-  setAgentAttributes,
   setUserLifecycle,
 } from "@/app/admin/actions";
 import BulkReassignCoverage from "@/components/BulkReassignCoverage";
+import { backendServiceOf, teamsOf } from "@/lib/admin/agent-display";
+import { debtTeamCoverage, debtTeamValueText } from "@/lib/admin/debt-team";
 import PoolExitConfirmButton from "@/components/PoolExitConfirmButton";
 import { previewBulkReassign } from "@/lib/booking/service";
 import { log } from "@/lib/log";
@@ -37,7 +38,6 @@ import {
   notBookableContrast,
 } from "@/lib/offboarding/account-status-copy";
 import {
-  btnCls,
   btnSecondaryCls,
   cardCls,
   inputCls,
@@ -46,7 +46,7 @@ import {
 } from "@/components/ui/styles";
 import { Pill } from "@/components/ui/Pill";
 import { ViewAsButton } from "@/components/admin/ViewAsButton";
-import type { Attributes, Organization, User } from "@/lib/db/types";
+import type { Organization, User } from "@/lib/db/types";
 import { BookablePill } from "@/components/ui/BookablePill";
 import { isMarkedRedistribute } from "@/lib/twilio/roster-plan";
 import { AdminPageHeader } from "@/components/admin/AdminPageHeader";
@@ -79,11 +79,18 @@ async function upcomingBookingCount(agentId: string): Promise<number | null> {
  * An absent value is NAMED rather than rendered blank. These were text inputs,
  * where empty reads as an empty box; as text, a blank line beside a label reads
  * as the page having failed to load something.
+ *
+ * #2120: it takes an already-resolved label now, rather than a raw
+ * `Attributes[string]`. Two of its three callers went (the debt teams draw the
+ * ladder, the Salesforce profile is off the panel), and the one that remains
+ * hands it a value that has already been read out of whichever shape it was
+ * stored in and matched against its vocabulary. The array, number and boolean
+ * branches had no caller left, so they are gone rather than kept as a shape
+ * nothing produces (L29).
  */
-function attrValue(v: Attributes[string] | undefined): React.ReactNode {
-  const text = Array.isArray(v) ? v.join(", ") : v == null ? "" : String(v);
-  if (!text) return <span className="text-[color:var(--pn-muted)]">Not set</span>;
-  return text;
+function attrValue(label: string | null): React.ReactNode {
+  if (!label) return <span className="text-[color:var(--pn-muted)]">Not set</span>;
+  return label;
 }
 
 // nav-ok: a row in the roster opens this, so no navigation entry can name it: the address contains the agent's id
@@ -153,6 +160,14 @@ export default async function AgentProfilePage({
   // those controls on the SAME predicate. Admin-only controls (role, OOO calendar)
   // keep their own isAdmin gates, which are already correct.
   const canManageThisAgent = canManageUser(me.role, agent.role, isSelf);
+
+  // #2120: the agent's debt coverage, read once, from the two functions the
+  // roster's ladder also composes from. `teamsOf` reads whichever shape the sync
+  // stored (an array on most agents, a bare string on a few) and
+  // `debtTeamCoverage` splits it into rungs and everything else, dropping a blank
+  // on the way, so the panel can never print an empty string for an agent whose
+  // stored value is `[""]`.
+  const debtCoverage = debtTeamCoverage(teamsOf(agent));
   // #1878: whether the role is shown as a CONTROL or as read only text. ONE
   // predicate with both branches hanging off it, so the role cannot end up named
   // nowhere the way it would if each branch tested its own condition.
@@ -479,84 +494,134 @@ export default async function AgentProfilePage({
         {/* Routing attributes */}
         <section className={cardCls}>
           <p className="pn-eyebrow text-fg-muted">Routing attributes</p>
-          {/* #1874: three of these are READ ONLY, and that is the whole change.
-              They were free text boxes, and `debt_team` and `backend_service`
-              are what routing MATCHES on: a typo produces no error, it produces
-              an agent who silently belongs to no bucket, and the only symptom is
-              a pool one person shorter than expected.
+          {/* #1874: `debt_team` and `backend_service` are READ ONLY, and that was
+              the whole of that change. They were free text boxes, and routing
+              MATCHES on both: a typo produces no error, it produces an agent who
+              silently belongs to no bucket, and the only symptom is a pool one
+              person shorter than expected.
 
               A picker would have made the value unrepresentable, and it would
-              still have been an override that silently reverted: all three are
-              in `SF_MANAGED_KEYS`, so the hourly roster sync deletes and
-              rewrites them. An editable control that is undone within the hour
-              is worse than none, which is the call #1474 already made for the
-              manager field. Dan chose read only for all three on 2026-09-04.
-
-              `role` is here because Salesforce sends it (the Profile name,
-              "Sales" or "Sales Manager"), and NOTHING reads it: all 60 buckets
-              key on debt_team, backend_service and legal_eligible. It is
-              labelled as what it is rather than sitting unlabelled under a
-              heading about routing.
+              still have been an override that silently reverted: both are in
+              `SF_MANAGED_KEYS`, so the hourly roster sync deletes and rewrites
+              them. An editable control that is undone within the hour is worse
+              than none, which is the call #1474 already made for the manager
+              field. Dan chose read only on 2026-09-04.
 
               `legal_eligible` stays editable because routing does match on it
-              (`legal_eligible!`) and nothing else writes it. */}
-          <p className={`mt-1 text-xs text-fg-muted ${proseCls}`}>
-            What this agent can be routed for. The first three come from Salesforce and are
-            rewritten by the hourly roster sync, so they are shown here rather than edited.
-          </p>
-          <div className="mt-4 flex flex-wrap items-start gap-x-8 gap-y-4">
+              (`legal_eligible!`) and nothing else writes it.
+
+              #2120: THREE THINGS WENT, and each was the panel doing something the
+              reader did not ask for.
+
+              The paragraph that stood here explained the INTERFACE, not the
+              domain: "What this agent can be routed for. The first three come
+              from Salesforce and are rewritten by the hourly roster sync, so
+              they are shown here rather than edited". That says what the panel
+              is and which system owns it, which is a sentence written for
+              whoever built it (L604). The read only-ness is already carried by
+              there being no control to type in, and the reason it is read only
+              is this comment, which is where a maintainer meets it.
+
+              `Salesforce profile` rendered `attributes.role`, and NOTHING routes
+              on it: all 60 buckets key on debt_team, backend_service and
+              legal_eligible. A field nothing routes on, under a heading about
+              routing, is a fact the reader has to work out is irrelevant. Its
+              only other reader is the audit trail, which records it as
+              `details.profile` when Salesforce makes somebody bookable
+              (`salesforce/sync.ts`), so taking it off the screen leaves the data
+              and the record of who was made bookable untouched.
+
+              And the debt teams printed the stored keys, `very_high, high,
+              medium`, which is the machine spelling of a vocabulary `DEBT_TIER`
+              has paired with labels all along. They read as FULL WORDS here (Dan,
+              2026-09-09: "make the debt teams full words here so it's clear").
+              Not as the roster's ladder: five letters earn their place in a
+              COLUMN, where they align down every row and that alignment is the
+              entire argument for drawing a mark instead of writing the words. A
+              single record has no column, so the letters would buy nothing and
+              cost a legend the reader has to go and find. Both surfaces compose
+              from one function (`debtTeamValueText`), so they cannot drift into
+              saying different things about one agent (L41). The backend had the
+              same problem in miniature, so it takes the same vocabulary treatment
+              through `backendServiceOf`.
+
+              #2120, LEGAL ELIGIBLE JOINS THE ROW (Dan, same day: "legal eligible
+              can be in line with the rest and smaller"). It sat below a rule as a
+              second block, which read as a separate concern from the two fields
+              above it; it is the third routing attribute and belongs beside them.
+              Its height stays 44px because that is the touch target rule, so
+              "smaller" is bought in WIDTH and in losing the divider rather than
+              by shrinking what a finger has to hit. */}
+          <div
+            data-attr-row
+            className="mt-4 flex flex-wrap items-start gap-x-8 gap-y-4"
+          >
             <div>
               {/* heading-gloss-ok: a plural marker, not a gloss. An agent can hold several. */}
               <span className={labelCls}>Debt team(s)</span>
-              <p className="text-sm">{attrValue(agent.attributes?.debt_team)}</p>
+              {/* A blank beside a label reads as a panel that failed to load
+                  rather than as an agent with no team (L10, L67), so the absent
+                  case is named in the SAME words its neighbours use for the same
+                  state (L118). The question is asked of the function that
+                  composes the words, never of the raw attribute, or a stored
+                  blank prints an empty string here while the ladder correctly
+                  shows nothing (L70).
+
+                  A stored value that is not one of the five rungs is still
+                  coverage and is still named, as stored, or the panel that exists
+                  to say what an agent covers would under report them (L113). */}
+              <p className="text-sm">{attrValue(debtTeamValueText(debtCoverage))}</p>
             </div>
             <div>
               <span className={labelCls}>Backend</span>
-              <p className="text-sm">{attrValue(agent.attributes?.backend_service)}</p>
+              <p className="text-sm">{attrValue(backendServiceOf(agent))}</p>
             </div>
             <div>
-              <span className={labelCls}>Salesforce profile</span>
-              <p className="text-sm">{attrValue(agent.attributes?.role)}</p>
+              <span className={labelCls}>Legal eligible</span>
+              {/* #2120: READ ONLY, like the two beside it, and the panel now
+                  writes nothing at all.
+
+                  The dropdown that stood here could not do its job. Routing
+                  excludes an agent only when the stored value is the STRING "N"
+                  (`legal_eligible!`, which is cal.com's "does not equal N"), and
+                  the control wrote the BOOLEAN true or false, so picking No wrote
+                  `false`, which is not "N", and the agent stayed in every bucket
+                  the choice was meant to take them out of. A control that looks
+                  like it excludes somebody and does nothing is worse than no
+                  control (L109), and nothing on the screen could ever have shown
+                  the difference.
+
+                  It is also not where the fact lives. Legal eligibility reaches
+                  cal.com as a `Not Legal Eligible` tag on the person's Twilio
+                  worker, pushed onto their cal.com attributes by the Pipedream
+                  job, which is the same route Redistribute takes (#2097). Nobody
+                  sets it in cal.com, and Salesforce deliberately never writes it
+                  (`SF_MANAGED_KEYS`). Offering a second place to type it is how
+                  the two drift, which is the class `verify:twilio-parity` exists
+                  to report. Dan chose Twilio as the source on 2026-09-09.
+
+                  Nothing was lost by removing it: 0 of 127 live users carried the
+                  field, so it had never once been used.
+
+                  Shown AS STORED rather than translated, for the same reason an
+                  off ladder debt team is (L113): what is really there is what a
+                  reader needs. `Not set` is not `No`, and naming an unset agent
+                  "Yes" because routing lets them through would present an
+                  inference as a recorded fact (L192). */}
+              <p className="text-sm">
+                {attrValue(
+                  agent.attributes?.legal_eligible === true
+                    ? "Yes"
+                    : agent.attributes?.legal_eligible === false
+                      ? "No"
+                      : agent.attributes?.legal_eligible == null
+                        ? null
+                        : String(agent.attributes.legal_eligible),
+                )}
+              </p>
             </div>
           </div>
 
-          {!canManageThisAgent && (
-            <p className="mt-4 text-xs text-fg-muted">
-              Only someone who outranks this agent can change their legal eligibility.
-            </p>
-          )}
-          {canManageThisAgent && (
-            <SaveForm
-              name="agent-attributes"
-              action={setAgentAttributes}
-              className="mt-4 flex flex-wrap items-end gap-x-4 gap-y-3 border-t border-border pt-4"
-            >
-              <input type="hidden" name="user_id" value={agent.id} />
-              <div>
-                <label className={labelCls}>Legal eligible</label>
-                <SelectField
-                  name="legal_eligible"
-                  ariaLabel="Legal eligible"
-                  defaultValue={
-                    agent.attributes?.legal_eligible === true
-                      ? "true"
-                      : agent.attributes?.legal_eligible === false
-                        ? "false"
-                        : ""
-                  }
-                  className="w-40"
-                  options={[
-                    { value: "", label: "Not set" },
-                    { value: "true", label: "Yes" },
-                    { value: "false", label: "No" },
-                  ]}
-                />
-              </div>
-              <SubmitButton className={btnCls} pendingLabel="Saving">
-                Save legal eligible
-              </SubmitButton>
-            </SaveForm>
-          )}
         </section>
 
         {/* Move this agent's upcoming bookings to somebody else (#974). The id
