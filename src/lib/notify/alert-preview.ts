@@ -153,6 +153,10 @@ import {
   agentSyncFailureAlert,
   twilioSyncFailureAlert,
   twilioSyncRecovery,
+  twilioWriteFailureAlert,
+  twilioWriteFailureRecovery,
+  twilioOrphanedMarkAlert,
+  twilioOrphanedMarkRecovery,
   agentSyncRecovery,
   salesforceManagerAmbiguousAlert,
   salesforceManagerAmbiguousRecovery,
@@ -2007,6 +2011,25 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     text: twilioSyncFailureAlert("Twilio refused the credentials (401). The API key has to be TaskRouter scoped.") },
   { key: "twilio_sync_failures", state: "reading Twilio again", channel: "recovery",
     text: twilioSyncRecovery() },
+  // #2114: the half AFTER the read. Each count is previewed on its own as well as
+  // together, because each one sends a reader somewhere different and the combined
+  // message is the only place their ordering can be read.
+  { key: "twilio_write_failures", state: "a flip keeps throwing", channel: "alert",
+    text: twilioWriteFailureAlert({ flips: 2, sweeps: 0, legal: 0 }) },
+  { key: "twilio_write_failures", state: "a coverage move could not be queued", channel: "alert",
+    text: twilioWriteFailureAlert({ flips: 0, sweeps: 1, legal: 0 }) },
+  { key: "twilio_write_failures", state: "a legal eligibility write would not land", channel: "alert",
+    text: twilioWriteFailureAlert({ flips: 0, sweeps: 0, legal: 4 }) },
+  { key: "twilio_write_failures", state: "all three at once", channel: "alert",
+    text: twilioWriteFailureAlert({ flips: 1, sweeps: 2, legal: 3 }) },
+  { key: "twilio_write_failures", state: "the writes are landing again", channel: "recovery",
+    text: twilioWriteFailureRecovery() },
+  { key: "twilio_marked_no_worker", state: "one agent", channel: "alert",
+    text: twilioOrphanedMarkAlert(1) },
+  { key: "twilio_marked_no_worker", state: "several agents", channel: "alert",
+    text: twilioOrphanedMarkAlert(3) },
+  { key: "twilio_marked_no_worker", state: "every mark has a worker again", channel: "recovery",
+    text: twilioOrphanedMarkRecovery() },
   // Each shape alone, then all three together, because the sentence is assembled
   // from parts and a reader has to be able to see each one read on its own.
   { key: "salesforce_user_id_conflicts", state: "one stored id disagrees", channel: "alert",

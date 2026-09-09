@@ -288,6 +288,19 @@ export const VERDICT_STALE_BOUNDS_MS: Record<string, number> = {
   // failing over and over, and 6 hours is a long maintenance window rather than a
   // measure of anything the detector does.
   "verdict:ooo-protection": 6 * 60 * MIN,
+  // The Twilio half of the hourly roster sync (#2114). Six missed runs.
+  //
+  // It is the only thing watching that job at all: the hourly roster sync has no
+  // entry in LANE_NAMES, so nothing stamps a heartbeat for it, and
+  // `twilio_sync_failures` only fires on a run that HAPPENED and failed. A job
+  // that has stopped being dispatched produces neither, and reads exactly like a
+  // healthy roster nobody is changing.
+  //
+  // Six hours rather than two, for the same reason the ooo-protection bound is
+  // six: it is a maintenance window, not a measure of the cadence. A scheduled job
+  // can be delayed by hours under platform load (L386), and a bound that pages on
+  // ordinary jitter is one nobody reads by the second week.
+  "verdict:twilio-roster": 6 * 60 * MIN,
 };
 
 /**

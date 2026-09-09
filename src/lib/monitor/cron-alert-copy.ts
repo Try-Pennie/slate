@@ -40,6 +40,88 @@ export function twilioSyncRecovery(): string {
   );
 }
 
+/**
+ * The writes that did not land (#2114).
+ *
+ * The READ failing is already paged. What was not, until this, is the half after
+ * it: a flip that keeps throwing, a coverage sweep that could not be queued, a
+ * legal value that would not write. Each was counted, logged and put in the sync
+ * banner, and reported by nothing at all on an unattended hourly run, which is the
+ * shape #1394 exists to prevent: a count nobody reads is indistinguishable from a
+ * count of zero.
+ *
+ * The FLIP LEADS whenever there is one, because it is the only one of the three
+ * that misroutes a lead today: the agent is still in the pool, so Slate is still
+ * offering somebody Twilio withholds. The other two are latent, and each is still
+ * named with its own count rather than folded into a total, because they send a
+ * reader to three different places (L11, L609).
+ */
+export function twilioWriteFailureAlert(counts: {
+  flips: number;
+  sweeps: number;
+  legal: number;
+}): string {
+  const parts: string[] = [];
+  if (counts.flips > 0) {
+    parts.push(
+      `${agents(counts.flips)} Twilio withholds could not be taken out of the bookable pool, so Slate is still offering them to leads`,
+    );
+  }
+  if (counts.sweeps > 0) {
+    parts.push(
+      `${agents(counts.sweeps)} left the pool and the move of their upcoming calls could not be queued, so those calls are still with them: move them from the coverage panel on their profile`,
+    );
+  }
+  if (counts.legal > 0) {
+    parts.push(`${agents(counts.legal)} could not have their legal eligibility recorded`);
+  }
+  return (
+    `The roster sync read Twilio and could not finish acting on it, on two runs in a row. ` +
+    `${parts.join(". ")}. Check the Worker logs for tag=twilio-sync.`
+  );
+}
+
+/** The writes are landing again. */
+export function twilioWriteFailureRecovery(): string {
+  return (
+    "The roster sync is acting on Twilio again: the flips, the coverage moves and the legal " +
+    "eligibility writes all landed on the latest run. No action is needed."
+  );
+}
+
+/**
+ * Slate is holding somebody out of the pool and Twilio no longer has a worker for
+ * them (#2114).
+ *
+ * Deliberately does NOT say to press sync again. Re-running changes nothing while
+ * the worker is missing: the sync correctly does nothing on an absence, because a
+ * source that is present and silent about one person is not the same as one saying
+ * the tag is gone (L214). The repair is in Twilio, or it is a person deciding to
+ * put them back by hand, and a message naming an action that cannot change the
+ * state is worse than no message (L111).
+ */
+export function twilioOrphanedMarkAlert(count: number): string {
+  return (
+    `${agents(count)} ${count === 1 ? "is" : "are"} out of the bookable pool because Slate marked them ` +
+    `redistribute, and Twilio now holds no worker for ${count === 1 ? "that address" : "those addresses"}. ` +
+    `Nothing can say whether the tag was removed or the worker went away, so Slate is leaving them out. ` +
+    `Either restore the Twilio worker, or turn them back on from their profile.`
+  );
+}
+
+/** Every mark has a worker again. */
+export function twilioOrphanedMarkRecovery(): string {
+  return (
+    "Every agent Slate is holding out of the pool for redistribute has a Twilio worker again, " +
+    "so the tag can be read for all of them. No action is needed."
+  );
+}
+
+/** "1 agent" / "4 agents", so a count of one never renders as a plural. */
+function agents(n: number): string {
+  return `${n} agent${n === 1 ? "" : "s"}`;
+}
+
 /** It works again. */
 export function agentSyncRecovery(): string {
   return "The hourly Salesforce agent sync is working again. The agent roster and team " +

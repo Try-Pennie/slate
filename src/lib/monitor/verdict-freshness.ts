@@ -42,12 +42,14 @@ export const AVAILABILITY_TRUTH_VERDICT_LANE = "verdict:availability-truth";
 export const FAILURE_RATE_VERDICT_LANE = "verdict:booking-failure-rate";
 export const LOW_VOLUME_VERDICT_LANE = "verdict:low-booking-volume";
 export const OOO_PROTECTION_VERDICT_LANE = "verdict:ooo-protection";
+export const TWILIO_ROSTER_VERDICT_LANE = "verdict:twilio-roster";
 
 export type DetectorVerdictLane =
   | typeof AVAILABILITY_TRUTH_VERDICT_LANE
   | typeof FAILURE_RATE_VERDICT_LANE
   | typeof LOW_VOLUME_VERDICT_LANE
-  | typeof OOO_PROTECTION_VERDICT_LANE;
+  | typeof OOO_PROTECTION_VERDICT_LANE
+  | typeof TWILIO_ROSTER_VERDICT_LANE;
 
 /**
  * Did this availability truth tick compare real calendars and decide?
@@ -95,6 +97,25 @@ export function lowVolumeReachedVerdict(result: LowVolumeResult): boolean {
  */
 export function oooProtectionReachedVerdict(result: OooProtectionResult): boolean {
   return result.status !== "unreadable";
+}
+
+/**
+ * Did this roster sync actually read Twilio and judge the roster? (#2114)
+ *
+ * The Twilio half either returns a result or refuses by name, so there is no
+ * "measured but not enough to judge" state to exclude here. What this stamp adds
+ * is the thing nothing else watches: the hourly roster job has NO lane heartbeat
+ * of its own, so a run that stops happening altogether says nothing, and the
+ * failure alert only fires when a run happens and fails. A job that is simply not
+ * running produces neither, and reads exactly like a healthy quiet roster (#1394).
+ *
+ * A refused read stamps nothing, deliberately: that is already paged by
+ * `twilio_sync_failures`, and stamping there would report the detector as
+ * concluding while it is blind, which is the whole substitution this family exists
+ * to stop.
+ */
+export function twilioRosterReachedVerdict(twilio: { ok: boolean }): boolean {
+  return twilio.ok;
 }
 
 /**

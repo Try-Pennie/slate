@@ -135,6 +135,16 @@ export const ALERT_CATALOG: AlertEntry[] = [
     why: "The roster sync cannot read Twilio, so the Redistribute tag is not being acted on; it stays true until a run reads Twilio successfully, which is the recovery.",
   },
   {
+    key: "twilio_write_failures",
+    kind: "condition",
+    why: "The roster sync can read Twilio and cannot finish acting on it: a flip, a coverage move or a legal write keeps throwing. It stays true until a run lands them all, which is the recovery.",
+  },
+  {
+    key: "twilio_marked_no_worker",
+    kind: "condition",
+    why: "Slate is holding somebody out of the pool for redistribute and Twilio holds no worker for their address, so nothing can say whether the tag went or the worker did. It stays true until the worker is restored or somebody turns them back on.",
+  },
+  {
     key: "salesforce_user_id_conflicts",
     kind: "condition",
     why: "Part of the roster cannot be given a Salesforce user id (a disagreement, a shared email, or an id another row holds); it stays true until somebody fixes those records, and the hourly sync re-measures it.",
