@@ -36,23 +36,60 @@
  */
 
 /**
- * The panel's own description: what deactivating means, what it does not do, and
- * what reactivating does not bring back.
+ * The panel's own description: what deactivating means, and what it asks.
  *
  * Ends by naming the OTHER axis and where it is, because the question this panel
  * has to answer is which of the two a reader wants. The bookable toggle stays up
  * in Access deliberately: it is an everyday control and this is a departure, so
  * they are separated by consequence (the #1873 rule), and the difference is
- * carried by this sentence rather than by putting a routine switch beside a
+ * carried by that sentence rather than by putting a routine switch beside a
  * destructive one.
+ *
+ * #2123 CUT TWO THINGS. The list of what an agent drops out of ran "the booking
+ * pool, the round robin, the calendar sync and every picker": four internal
+ * systems to make one point, and three of the four are things a reader has no way
+ * to check. One is enough, and the booking pool is the one they can see.
+ *
+ * And the closing sentence explained REACTIVATING inside the explanation of
+ * deactivating. It has moved to `reactivateExplanation` below, where that control
+ * actually is, rather than being deleted: the claim it corrects is the one thing
+ * on this panel a reader previously acted on and got wrong, and losing it would
+ * put the false belief straight back.
+ *
+ * #2124 REWROTE THE MIDDLE. It said "It does not move their upcoming bookings:
+ * those stay with them until somebody moves them", which stopped being true the
+ * moment deactivating started asking. The panel says a choice is coming, because
+ * a screen describing behaviour the product no longer has is worse than one
+ * saying nothing at all.
  */
 export function deactivateExplanation(): string {
   return (
-    `Deactivating says this person has left. They drop out of the booking pool, the ` +
-    `round robin, the calendar sync and every picker, and their history is kept. It does ` +
-    `not move their upcoming bookings: those stay with them until somebody moves them. ` +
-    `Reactivating brings the account back, but it does not make them bookable again: ` +
-    `that stays a separate decision.`
+    `Deactivating says this person has left. They drop out of the booking pool and ` +
+    `their history is kept. If they still hold upcoming bookings, you choose at the ` +
+    `confirm whether to move those to another advisor or leave them where they are.`
+  );
+}
+
+/**
+ * What reactivating does, said where reactivating is offered (#2123).
+ *
+ * This is the fact that used to close `deactivateExplanation`, and it is here for
+ * the reason it was moved rather than dropped: "Fully reversible by reactivating"
+ * was the one claim on this panel that was FALSE, and a reader who believes it
+ * brings a returning agent back and then wonders why they receive nothing.
+ * Deactivating clears `bookable` in the same write (#1324) and reactivating
+ * deliberately does not restore it, because re-admitting somebody to the routing
+ * pool is the decision `users.bookable` exists to make deliberately.
+ *
+ * It is shown only when the account IS deactivated, which is the only time the
+ * Reactivate control is on the page, so it explains the control in front of the
+ * reader rather than one they cannot see.
+ */
+export function reactivateExplanation(): string {
+  return (
+    `Reactivating brings the account back, and it does not make them bookable again: ` +
+    `that stays a separate decision under Access. Any upcoming bookings that were ` +
+    `moved when they left stay with whoever took them.`
   );
 }
 

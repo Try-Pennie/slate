@@ -111,6 +111,138 @@ describe("ConfirmAction (#1873)", () => {
 // #1875: the destructive treatment reaches the opener and the confirm, and never
 // Cancel. Backing out is not the destructive choice, and painting the safe way
 // out in the warning colour is how a reader stops reading the colour at all.
+// #2124: a confirm that offers TWO ways to go ahead, not one.
+//
+// Deactivating an agent who holds upcoming bookings has to ask whether to move
+// them, because doing it either way without asking is the defect: sweeping
+// silently moves customers' appointments out from under the admin, and not
+// sweeping strands those customers with an advisor who has left. So the press
+// asks, and both answers are a way FORWARD rather than a way out.
+describe("ConfirmAction offers a second decision when one is given (#2124)", () => {
+  const withAlternative = {
+    alternative: {
+      label: "Deactivate and leave them",
+      pendingLabel: "Deactivating",
+      name: "coverage",
+      value: "leave",
+    },
+  };
+
+  it("renders both decisions, and Cancel is still separate from either", async () => {
+    const user = userEvent.setup();
+    render(subject(withAlternative));
+    await user.click(opener());
+
+    expect(confirm()).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Deactivate and leave them" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Cancel" })).toBeTruthy();
+  });
+
+  // The two answers must be TELLABLE APART by the server, or the choice is
+  // decoration: the browser posts the pressed button's name and value and no
+  // other's.
+  it("gives the alternative its own name and value, and leaves the primary bare", async () => {
+    const user = userEvent.setup();
+    render(
+      subject({
+        ...withAlternative,
+        confirmName: "coverage",
+        confirmValue: "move",
+      }),
+    );
+    await user.click(opener());
+
+    const move = confirm() as HTMLButtonElement;
+    const leave = screen.getByRole("button", { name: "Deactivate and leave them" }) as HTMLButtonElement;
+    expect([move.name, move.value]).toEqual(["coverage", "move"]);
+    expect([leave.name, leave.value]).toEqual(["coverage", "leave"]);
+  });
+
+  it("submits the form from the alternative too, not only from the primary", async () => {
+    const user = userEvent.setup();
+    render(subject(withAlternative));
+    await user.click(opener());
+    await user.click(screen.getByRole("button", { name: "Deactivate and leave them" }));
+
+    expect(save).toHaveBeenCalledTimes(1);
+  });
+
+  // Both go ahead, so both wear the caller's treatment. Cancel is the only
+  // neutral one, which is the #1875 rule: backing out is never the destructive
+  // choice, and painting one of two ways FORWARD as the safe way out would be a
+  // lie about what it does.
+  it("dresses both decisions in the caller's treatment, and only Cancel neutrally", async () => {
+    const user = userEvent.setup();
+    render(subject({ ...withAlternative, className: btnDangerCls }));
+    await user.click(opener());
+
+    expect(confirm().className).toBe(btnDangerCls);
+    expect(
+      screen.getByRole("button", { name: "Deactivate and leave them" }).className,
+    ).toBe(btnDangerCls);
+    expect(screen.getByRole("button", { name: "Cancel" }).className).toBe(btnSecondaryCls);
+  });
+
+  // `useFormStatus` reports the FORM, not the button, so both submits go pending
+  // together and each would swap to ITS OWN pending label. Pressing "leave" would
+  // then make the other button read "Moving them and deactivating", which claims
+  // the opposite of what is happening, on the one screen where the difference is
+  // the whole decision (L11).
+  it("shows only the decision that was taken once one is pressed", async () => {
+    const user = userEvent.setup();
+    render(subject(withAlternative));
+    await user.click(opener());
+    await user.click(screen.getByRole("button", { name: "Deactivate and leave them" }));
+
+    expect(screen.queryByRole("button", { name: "Apply company hours anyway" })).toBeNull();
+    expect(screen.getByRole("button", { name: /Deactivating|Deactivate and leave them/ })).toBeTruthy();
+  });
+
+  it("keeps the primary and drops the alternative when the primary is taken", async () => {
+    const user = userEvent.setup();
+    render(subject(withAlternative));
+    await user.click(opener());
+    await user.click(confirm());
+
+    expect(screen.queryByRole("button", { name: "Deactivate and leave them" })).toBeNull();
+  });
+
+  // And backing out has to put both back, or a reader who cancels and reopens is
+  // offered only the choice they abandoned.
+  it("offers both again after a cancel and a second open", async () => {
+    const user = userEvent.setup();
+    render(subject(withAlternative));
+    await user.click(opener());
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    await user.click(opener());
+
+    expect(confirm()).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Deactivate and leave them" })).toBeTruthy();
+  });
+
+  it("offers exactly one decision when no alternative is given", async () => {
+    const user = userEvent.setup();
+    render(subject());
+    await user.click(opener());
+
+    const submits = screen
+      .getAllByRole("button")
+      .filter((b) => (b as HTMLButtonElement).type === "submit");
+    expect(submits).toHaveLength(1);
+  });
+
+  // Focus still lands on the FIRST decision, which is the one a reader should
+  // take: the alternative must not steal the focus move that makes this usable
+  // from a keyboard.
+  it("still moves focus to the first decision, not to the alternative", async () => {
+    const user = userEvent.setup();
+    render(subject(withAlternative));
+    await user.click(opener());
+
+    expect(document.activeElement).toBe(confirm());
+  });
+});
+
 describe("ConfirmAction keeps Cancel neutral (#1875)", () => {
   it("dresses the opener and the confirm in the caller's treatment", async () => {
     const user = userEvent.setup();

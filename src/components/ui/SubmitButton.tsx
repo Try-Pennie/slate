@@ -41,6 +41,9 @@ export function SubmitButton({
   role,
   formAction,
   ariaLabel,
+  name,
+  value,
+  onPress,
 }: {
   children: React.ReactNode;
   pendingLabel: string;
@@ -70,6 +73,24 @@ export function SubmitButton({
    * voice can still say what they see (WCAG 2.5.3).
    */
   ariaLabel?: string;
+  /**
+   * The name and value this button posts when IT is the one that submits (#2124).
+   *
+   * The browser sends the pair belonging to the button that was pressed and no
+   * other, so one form can offer two different decisions without a second server
+   * action or a hidden field somebody has to keep in step with the control.
+   */
+  name?: string;
+  value?: string;
+  /**
+   * Fired when this button is the one submitting, BEFORE the submit runs.
+   *
+   * For a form offering more than one decision, where the caller has to know
+   * which was taken: `useFormStatus` reports the form and cannot tell them apart,
+   * so every button would otherwise report the whole form's progress in its own
+   * words.
+   */
+  onPress?: () => void;
 }) {
   const { pending } = useFormStatus();
   // The clock is read only inside the interval callback, never in the effect body
@@ -98,6 +119,9 @@ export function SubmitButton({
       disabled={pending}
       aria-busy={pending}
       aria-label={ariaLabel}
+      name={name}
+      value={value}
+      onClick={onPress}
       className={className}
     >
       {pending ? (

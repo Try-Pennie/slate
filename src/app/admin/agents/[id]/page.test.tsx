@@ -304,6 +304,44 @@ describe("AgentProfilePage deactivate confirm (#1215)", () => {
   });
 });
 
+// #2123: each control is explained where it IS. The reactivating sentence used to
+// sit inside the explanation of deactivating, which is a fact a reader has to hold
+// until it becomes relevant. It is not deleted with the trim, because the claim it
+// corrects is the one thing on this panel a reader previously acted on and got
+// wrong ("Fully reversible by reactivating" was false), and losing it would put
+// that belief straight back.
+describe("AgentProfilePage explains the control it is showing (#2123)", () => {
+  const withStatus = async (deactivatedAt: string | null) => {
+    auth.currentUser.mockResolvedValueOnce({ id: "ad1", role: "admin", org_id: "o1" });
+    dbState.agent = { ...agentOf("agent"), deactivated_at: deactivatedAt };
+    render(await AgentProfilePage(props));
+    return screen.getByText("Account status").closest("section") as HTMLElement;
+  };
+
+  it("explains deactivating on an active account, and says nothing about reactivating", async () => {
+    const panel = await withStatus(null);
+    expect(panel.textContent).toMatch(/Deactivating says this person has left/i);
+    expect(panel.textContent).not.toMatch(/Reactivating brings the account back/i);
+  });
+
+  it("explains reactivating on a deactivated account, including what it does not restore", async () => {
+    const panel = await withStatus("2026-06-01T00:00:00.000Z");
+    expect(panel.textContent).toMatch(/Reactivating brings the account back/i);
+    expect(panel.textContent).toMatch(/does not make them bookable again/i);
+    expect(panel.textContent).not.toMatch(/Deactivating says this person has left/i);
+  });
+
+  // The list of internal systems is gone. Naming four to make one point spends
+  // the reader's attention on three things they cannot check.
+  it("names one system a reader can check, not four", async () => {
+    const panel = await withStatus(null);
+    expect(panel.textContent).toMatch(/booking pool/i);
+    for (const named of [/round robin/i, /calendar sync/i, /every picker/i]) {
+      expect(panel.textContent).not.toMatch(named);
+    }
+  });
+});
+
 describe("AgentProfilePage guard", () => {
   it("redirects an unauthenticated visitor to /login", async () => {
     auth.currentUser.mockResolvedValueOnce(null);

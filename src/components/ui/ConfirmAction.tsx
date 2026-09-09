@@ -39,6 +39,9 @@ export function ConfirmAction({
   className,
   extra,
   formAction,
+  confirmName,
+  confirmValue,
+  alternative,
 }: {
   /** The opener's text. Submits nothing. */
   label: string;
@@ -60,9 +63,48 @@ export function ConfirmAction({
   /** An extra way out beside Cancel (a link to the panel that fixes the cause). */
   extra?: React.ReactNode;
   formAction?: (form: FormData) => Promise<void>;
+  /**
+   * The name and value the primary decision posts, when there are two of them and
+   * the server has to tell which was pressed (#2124).
+   */
+  confirmName?: string;
+  confirmValue?: string;
+  /**
+   * A SECOND way to go ahead, differently (#2124).
+   *
+   * Not a way out: Cancel is the way out, and it stays separate and neutral. This
+   * is for a press whose consequence the reader has to choose between, where
+   * deciding either way without asking would be the defect. Deactivating an agent
+   * who holds upcoming bookings is the case it was built for: sweeping silently
+   * moves customers' appointments out from under the admin, and not sweeping
+   * strands those customers with an advisor who has left.
+   *
+   * It wears the caller's treatment, like the primary, because both go ahead.
+   * Painting one of two ways forward in the neutral treatment would read as the
+   * safe way out, which is a lie about what it does.
+   */
+  alternative?: {
+    label: string;
+    pendingLabel: string;
+    name: string;
+    value: string;
+  };
 }) {
   const [confirming, setConfirming] = useState(false);
   const [returning, setReturning] = useState(false);
+  /**
+   * Which decision was taken, when there are two (#2124).
+   *
+   * `useFormStatus` reports the FORM, not the button, so both submits go pending
+   * together and each swaps to ITS OWN pending label. Pressing "leave" would then
+   * leave the other button reading "Moving them and deactivating", which claims
+   * the opposite of what is happening, on the one screen where the difference
+   * between the two IS the decision (L11).
+   *
+   * So the one that was not taken is removed on the press. Cleared on cancel, or
+   * a reader who backs out and reopens is offered only the choice they abandoned.
+   */
+  const [taken, setTaken] = useState<"primary" | "alternative" | null>(null);
   const openRef = useRef<HTMLButtonElement>(null);
   const confirmRef = useRef<HTMLButtonElement>(null);
 
@@ -88,18 +130,40 @@ export function ConfirmAction({
     <div role="alert" className="rounded-sm border border-border bg-[var(--field)] p-4">
       <p className="text-sm text-fg">{message}</p>
       <div className="mt-3 flex flex-wrap items-center gap-3">
-        <SubmitButton
-          buttonRef={confirmRef}
-          className={className}
-          pendingLabel={pendingLabel}
-          formAction={formAction}
-        >
-          {confirmLabel}
-        </SubmitButton>
+        {taken !== "alternative" && (
+          <SubmitButton
+            buttonRef={confirmRef}
+            className={className}
+            pendingLabel={pendingLabel}
+            formAction={formAction}
+            name={confirmName}
+            value={confirmValue}
+            onPress={() => setTaken("primary")}
+          >
+            {confirmLabel}
+          </SubmitButton>
+        )}
+        {alternative && taken !== "primary" && (
+          // Second, because the first is the one a reader should take and focus
+          // lands there. Ordering by what is done most often, and by which
+          // consequence is the safer one, rather than by the shape of the data
+          // (L609).
+          <SubmitButton
+            className={className}
+            pendingLabel={alternative.pendingLabel}
+            formAction={formAction}
+            name={alternative.name}
+            value={alternative.value}
+            onPress={() => setTaken("alternative")}
+          >
+            {alternative.label}
+          </SubmitButton>
+        )}
         <button
           type="button"
           className={btnSecondaryCls}
           onClick={() => {
+            setTaken(null);
             setReturning(true);
             setConfirming(false);
           }}

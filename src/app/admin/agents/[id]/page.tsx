@@ -36,6 +36,7 @@ import { savedOutcome, savedSentence } from "@/lib/admin/save-outcomes";
 import {
   deactivateExplanation,
   notBookableContrast,
+  reactivateExplanation,
 } from "@/lib/offboarding/account-status-copy";
 import {
   btnSecondaryCls,
@@ -692,9 +693,16 @@ export default async function AgentProfilePage({
               reactivating", which is the one claim on this panel that is false:
               deactivating clears `bookable` in the same write and reactivating
               deliberately does not restore it. A test that checked the button
-              rendered would have passed straight through that. */}
+              rendered would have passed straight through that.
+
+              #2123: each control is explained where it IS. An active account
+              offers Deactivate, so it reads what deactivating does; a deactivated
+              one offers Reactivate, so it reads what reactivating does and does
+              not restore. The explanation of a control the reader cannot see is
+              a fact they have to hold until it becomes relevant, which is what
+              put the reactivating sentence inside the deactivating one. */}
           <p className={`mt-3 text-xs text-fg-muted ${proseCls}`}>
-            {deactivateExplanation()}
+            {active ? deactivateExplanation() : reactivateExplanation()}
           </p>
           <p className={`mt-2 text-xs text-fg-muted ${proseCls}`}>{notBookableContrast()}</p>
         </section>

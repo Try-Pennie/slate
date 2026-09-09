@@ -1,6 +1,11 @@
 "use client";
 
 import { COVERAGE_PANEL_NAME } from "@/lib/booking/coverage-panel-copy";
+import {
+  COVERAGE_CHOICE_FIELD,
+  COVERAGE_CHOICE_LEAVE,
+  COVERAGE_CHOICE_MOVE,
+} from "@/lib/offboarding/coverage-choice";
 import { btnDangerCls, btnSecondaryCls } from "@/components/ui/styles";
 import { ConfirmAction } from "@/components/ui/ConfirmAction";
 import { SubmitButton } from "@/components/ui/SubmitButton";
@@ -57,12 +62,14 @@ const COPY: Record<
 > = {
   deactivate: {
     label: "Deactivate account",
-    confirm: "Deactivate anyway",
+    // #2124: the confirm names the OUTCOME it produces rather than saying
+    // "anyway", because there are two ways forward now and "anyway" cannot tell
+    // them apart.
+    confirm: "Move them and deactivate",
     // Names the action rather than saying "Saving", so a press never reads as
     // nothing having happened while the work runs (#1769).
-    pending: "Deactivating account",
-    effect:
-      "Deactivating removes them from the booking pool, but it does not move those appointments",
+    pending: "Moving them and deactivating",
+    effect: "",
   },
   not_bookable: {
     label: "Make not bookable",
@@ -72,6 +79,7 @@ const COPY: Record<
       "Making them not bookable takes them out of the booking pool, but it does not move those appointments",
   },
 };
+
 
 export default function PoolExitConfirmButton({
   action,
@@ -114,17 +122,53 @@ export default function PoolExitConfirmButton({
   // (#1873), because applying company default hours needed the identical
   // interaction and two copies of it would drift. What stays here is the COPY,
   // which is the half that differs per control.
+  //
+  // #2124: DEACTIVATING ASKS. Dan: "can we add a warning asking if they'd like to
+  // sweep? that way it's a deliberate choice." Both answers go ahead, so both are
+  // decisions rather than ways out, and the message states what each one leaves
+  // behind rather than only warning about the appointments.
+  //
+  // Moving is FIRST and takes the focus, because it is the outcome that does not
+  // strand a customer (L609). Leaving is offered rather than hidden: an agent
+  // really can leave mid notice with the appointments deliberately kept, and the
+  // panel below still moves them later either way.
+  //
+  // The bookable toggle gets NO choice. It is a pause: the person still works
+  // here, so moving their appointments to somebody else is not what that control
+  // means, and offering it would put a departure's decision on an everyday switch.
+  const isDeactivate = action === "deactivate";
+
   return (
     <ConfirmAction
       label={copy.label}
       confirmLabel={copy.confirm}
       pendingLabel={copy.pending}
       className={treatment}
+      confirmName={isDeactivate ? COVERAGE_CHOICE_FIELD : undefined}
+      confirmValue={isDeactivate ? COVERAGE_CHOICE_MOVE : undefined}
+      alternative={
+        isDeactivate
+          ? {
+              label: "Deactivate and leave them",
+              pendingLabel: "Deactivating account",
+              name: COVERAGE_CHOICE_FIELD,
+              value: COVERAGE_CHOICE_LEAVE,
+            }
+          : undefined
+      }
       message={
-        <>
-          {held} {copy.effect}: the customers stay booked with {agentName} and will meet
-          nobody. Move them in the panel below, either before or after this.
-        </>
+        isDeactivate ? (
+          <>
+            {held} Moving them hands each one to another advisor at the same time, and
+            the customer gets one short note. Leaving them means the customers stay
+            booked with {agentName} and will meet nobody.
+          </>
+        ) : (
+          <>
+            {held} {copy.effect}: the customers stay booked with {agentName} and will meet
+            nobody. Move them in the panel below, either before or after this.
+          </>
+        )
       }
       extra={
         <a className="text-xs underline text-fg-muted" href={`/admin/agents/${agentId}#coverage`}>
