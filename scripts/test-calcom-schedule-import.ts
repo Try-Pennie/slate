@@ -40,7 +40,7 @@ const uniform = {
 {
   // Luxon puts Sunday at 7, not 0. Getting this wrong shifts an agent's whole week
   // by a day and every slot with it.
-  const m = mapCalcomSchedule({ timeZone: "UTC", availability: [{ days: ["Sunday", "Saturday"], startTime: "10:00", endTime: "14:00" }] });
+  const m = mapCalcomSchedule({ timeZone: "America/New_York", availability: [{ days: ["Sunday", "Saturday"], startTime: "10:00", endTime: "14:00" }] });
   assert(m.ok, "a weekend schedule maps");
   if (m.ok) eq(m.rules.map((r) => r.weekday).sort(), [6, 7], "Saturday is 6 and Sunday is 7");
 }
@@ -61,7 +61,7 @@ const uniform = {
   }
 }
 {
-  const m = mapCalcomSchedule({ timeZone: "UTC", availability: [{ days: ["Monday"], startTime: "08:15", endTime: "16:45" }] });
+  const m = mapCalcomSchedule({ timeZone: "America/New_York", availability: [{ days: ["Monday"], startTime: "08:15", endTime: "16:45" }] });
   assert(m.ok, "quarter-hour boundaries map");
   if (m.ok) eq(m.rules[0], { weekday: 1, start_minute: 495, end_minute: 1005 }, "to exact minutes, never rounded");
 }
@@ -80,40 +80,40 @@ const uniform = {
   assert(!m.ok, "a timezone no clock recognises is refused, never written");
 }
 {
-  const m = mapCalcomSchedule({ timeZone: "UTC", availability: [] });
+  const m = mapCalcomSchedule({ timeZone: "America/New_York", availability: [] });
   assert(!m.ok, "an empty availability list is refused: it is not a five-day week");
 }
 {
-  const m = mapCalcomSchedule({ timeZone: "UTC" });
+  const m = mapCalcomSchedule({ timeZone: "America/New_York" });
   assert(!m.ok, "a missing availability list is refused");
 }
 {
-  const m = mapCalcomSchedule({ timeZone: "UTC", availability: [{ days: ["Frunsday"], startTime: "08:00", endTime: "17:00" }] });
+  const m = mapCalcomSchedule({ timeZone: "America/New_York", availability: [{ days: ["Frunsday"], startTime: "08:00", endTime: "17:00" }] });
   assert(!m.ok, "an unrecognised day name is refused, never dropped");
 }
 {
   // Dropping the bad entry would produce a SHORTER week that still looks like a
   // real answer, and the agent would simply stop being offered on that day.
-  const m = mapCalcomSchedule({ timeZone: "UTC", availability: [{ days: ["Monday", "Frunsday"], startTime: "08:00", endTime: "17:00" }] });
+  const m = mapCalcomSchedule({ timeZone: "America/New_York", availability: [{ days: ["Monday", "Frunsday"], startTime: "08:00", endTime: "17:00" }] });
   assert(!m.ok, "one bad day poisons the whole schedule rather than shortening it");
 }
 {
-  const m = mapCalcomSchedule({ timeZone: "UTC", availability: [{ days: ["Monday"], startTime: "8am", endTime: "17:00" }] });
+  const m = mapCalcomSchedule({ timeZone: "America/New_York", availability: [{ days: ["Monday"], startTime: "8am", endTime: "17:00" }] });
   assert(!m.ok, "an unparseable time is refused");
 }
 {
-  const m = mapCalcomSchedule({ timeZone: "UTC", availability: [{ days: ["Monday"], startTime: "25:00", endTime: "26:00" }] });
+  const m = mapCalcomSchedule({ timeZone: "America/New_York", availability: [{ days: ["Monday"], startTime: "25:00", endTime: "26:00" }] });
   assert(!m.ok, "an out-of-range time is refused");
 }
 {
   // Slate's rules are minutes from local midnight within ONE day, so a window that
   // ends before it starts cannot be represented and must not be written as if it
   // could: it would be a zero-length or negative day nobody would notice.
-  const m = mapCalcomSchedule({ timeZone: "UTC", availability: [{ days: ["Monday"], startTime: "22:00", endTime: "06:00" }] });
+  const m = mapCalcomSchedule({ timeZone: "America/New_York", availability: [{ days: ["Monday"], startTime: "22:00", endTime: "06:00" }] });
   assert(!m.ok, "an overnight window is refused rather than written backwards");
 }
 {
-  const m = mapCalcomSchedule({ timeZone: "UTC", availability: [{ days: ["Monday"], startTime: "09:00", endTime: "09:00" }] });
+  const m = mapCalcomSchedule({ timeZone: "America/New_York", availability: [{ days: ["Monday"], startTime: "09:00", endTime: "09:00" }] });
   assert(!m.ok, "a zero-length window is refused");
 }
 
@@ -264,7 +264,7 @@ const current = {
   // mistaken for an overlap: refusing them would strand an agent whose cal.com week
   // happens to be entered as two halves.
   const m = mapCalcomSchedule({
-    timeZone: "UTC",
+    timeZone: "America/New_York",
     availability: [
       { days: ["Wednesday"], startTime: "08:00", endTime: "12:00" },
       { days: ["Wednesday"], startTime: "12:00", endTime: "17:00" },
@@ -278,7 +278,7 @@ const current = {
   // import still needs a refusal path at all. It is refused by Slate's validator
   // rather than by anything here, so there is one rule about what a week may be.
   const m = mapCalcomSchedule({
-    timeZone: "UTC",
+    timeZone: "America/New_York",
     availability: [
       { days: ["Thursday"], startTime: "08:00", endTime: "13:00" },
       { days: ["Thursday"], startTime: "12:00", endTime: "17:00" },
