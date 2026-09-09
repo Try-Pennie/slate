@@ -45,6 +45,7 @@ import {
 } from "@/lib/booking/core";
 import {
   ACTIONABLE_ITEM_STATUSES,
+  SKIPPED_ITEM_STATUSES,
   buildBulkReassignProgress,
   drainBulkReassign,
   type BulkReassignDeps,
@@ -2346,10 +2347,12 @@ export async function getBulkReassignProgress(jobId: string): Promise<BulkReassi
   const job = await loadBulkReassignJob(jobId);
   if (!job) return null;
   const items = await loadBulkReassignItems(jobId);
-  const actionableIds = items
-    .filter((it) => ACTIONABLE_ITEM_STATUSES.includes(it.status))
-    .map((it) => it.booking_id);
-  const ctx = await loadActionableBookingContext(actionableIds);
+  // #2122: the SKIPPED bookings need their context too, or the panel lists them
+  // with a blank name and no time. They are fetched in the same read rather than a
+  // second one: the ids go into one lookup, and a skip is bounded by the same job.
+  const shown = [...ACTIONABLE_ITEM_STATUSES, ...SKIPPED_ITEM_STATUSES];
+  const shownIds = items.filter((it) => shown.includes(it.status)).map((it) => it.booking_id);
+  const ctx = await loadActionableBookingContext(shownIds);
   return buildBulkReassignProgress(job, items, ctx);
 }
 

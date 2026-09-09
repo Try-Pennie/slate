@@ -338,6 +338,48 @@ async function run() {
     byId.bkC.startsAt === null && byId.bkC.attendeeName === null,
     "an actionable item with no context row degrades to null display fields, not a crash",
   );
+
+  // #2122: the SKIPPED items come back too, as their own list.
+  //
+  // Dan, meeting a count of 1 with nothing beside it: "now it says nothing about
+  // the skipped one. what am I supposed to do about that". The answer is nothing,
+  // and that is precisely why the count alone was unreadable: a number with no
+  // consequence is a fact the reader has to work out. Every skip this engine
+  // writes carries its own detail ("Booking no longer exists", "Booking was
+  // cancelled before it could be moved"), so the panel can say which and why.
+  //
+  // They are a SEPARATE list from `actionable` and not merged into it, because
+  // actionable means a person still has to place it by hand and a skip means
+  // nobody has to do anything. Merging them would be the same conflation the mark
+  // had, where a skip was drawn as a failure.
+  assert(
+    prog.skipped.length === 1 && prog.skipped[0]!.bookingId === "bkD",
+    "the skipped items come back as their own list",
+  );
+  assert(
+    !prog.actionable.some((a) => a.status === "skipped"),
+    "and a skip is never in the actionable list, because nobody has to place it",
+  );
+  assert(
+    prog.skipped[0]!.startsAt === null && prog.skipped[0]!.attendeeName === null,
+    "a skipped item with no context row degrades to null display fields too",
+  );
+
+  // With context, it reads like an actionable row does: same shape, so the panel
+  // renders both from one row component rather than two that drift.
+  const ctx2 = new Map<string, ActionableBookingContext>([
+    ["bkD", { startsAt: "2026-07-26T09:00:00.000Z", attendeeName: "Alex" }],
+  ]);
+  const prog2 = buildBulkReassignProgress(job, progItems, ctx2);
+  assert(
+    prog2.skipped[0]!.attendeeName === "Alex" && prog2.skipped[0]!.startsAt === "2026-07-26T09:00:00.000Z",
+    "a skipped item is enriched from the same context map",
+  );
+
+  // Nothing skipped is an EMPTY list, never absent: a caller mapping over it must
+  // not have to guard, and an absent field would read as "could not tell".
+  const progNone = buildBulkReassignProgress(job, [itemRow({ id: "x", booking_id: "bkZ", status: "moved" })], new Map());
+  assert(Array.isArray(progNone.skipped) && progNone.skipped.length === 0, "no skips is an empty list");
 }
 
 await run();
