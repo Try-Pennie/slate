@@ -36,7 +36,11 @@ function keyRequest(bucketId: string): Request {
   );
 }
 
-type EligibleResult = { ids: string[]; fallbackApplied: boolean };
+/** #2158: `legalRelaxed` travels with the pool through the cache too. A cached
+ *  entry that dropped the field would make the booking path believe a widened
+ *  pool was the bucket's own, and the notice would never be sent for any booking
+ *  the recompute lane had warmed. */
+type EligibleResult = { ids: string[]; fallbackApplied: boolean; legalRelaxed: boolean };
 
 /**
  * Eligible agents for `bucket`, served from the 60-second Cloudflare Cache API

@@ -60,6 +60,12 @@ const FAMILY_BY_KEY: Record<string, AlertFamily> = {
   thin_tier_staffing: "the-booker-is-offering-nothing-or-too-little",
   tier_fallback: "the-booker-is-offering-nothing-or-too-little",
   tier_fallback_deep: "the-booker-is-offering-nothing-or-too-little",
+  // #2158: the booker is NOT offering too little here, it offered plenty. What is
+  // wrong is who it offered: the bucket's legal rule matched nobody, so the rule
+  // was dropped. The remedy is roster data (agents carrying a legal eligibility
+  // value), which is why it sits with the routing data family rather than with the
+  // tier notices it otherwise resembles.
+  legal_relaxed: "the-roster-or-routing-data-is-wrong",
   no_eligible_agents: "the-booker-is-offering-nothing-or-too-little",
   low_booking_volume: "the-booker-is-offering-nothing-or-too-little",
   booking_failure_rate: "the-booker-is-offering-nothing-or-too-little",

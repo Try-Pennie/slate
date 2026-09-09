@@ -99,6 +99,7 @@ import {
   formatAvailabilityDriftAggregateAllClear,
 } from "@/lib/monitor/availability-truth";
 import { tierFallbackAlert } from "@/lib/routing/tier-alert";
+import { legalRelaxedAlert } from "@/lib/routing/legal-alert";
 import {
   oooAgentCalendarAlert,
   oooAgentDmAlert,
@@ -1911,6 +1912,10 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     channel: "alert",
     text: tierFallbackAlert({ requestedCode: "411", effectiveCode: "400", rungsDropped: 3 })?.text ?? "",
   },
+  { key: "legal_relaxed:*", state: "a legal bucket matched nobody, so the tier's whole pool was used", channel: "alert",
+    text: legalRelaxedAlert({ requestedCode: "411", pooledAgents: 17 })?.text ?? "" },
+  { key: "legal_relaxed:*", state: "the same, where the widened pool holds one person", channel: "alert",
+    text: legalRelaxedAlert({ requestedCode: "521", pooledAgents: 1 })?.text ?? "" },
 
   // --- the warehouse mirror ---------------------------------------------------
   { key: "snowflake_healthcheck", state: "self-check failing", channel: "alert",

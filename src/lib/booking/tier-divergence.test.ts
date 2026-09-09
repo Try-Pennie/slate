@@ -104,8 +104,8 @@ function makeDeps(): BookingDeps {
     // must NOT cascade as a misconfiguration.
     roundRobinCandidates: async (bucket) =>
       bucket.code === "511"
-        ? { candidates: [], memberCount: 0 }
-        : { candidates: ["a"], memberCount: 1 },
+        ? { candidates: [], memberCount: 0 , legalRelaxed: false}
+        : { candidates: ["a"], memberCount: 1 , legalRelaxed: false},
     // Gate 1 (#1295) open all week, so these stay about the tier cascade.
     businessHours: async () => ({
       zone: "America/New_York",
@@ -236,7 +236,7 @@ describe("tier divergence measure (#827)", () => {
   it("emits nothing when the displayed tier equals the booked tier", async () => {
     const deps = makeDeps();
     // No cascade (511 has a free agent) and the cache shows tier-5 too.
-    deps.roundRobinCandidates = async () => ({ candidates: ["a"], memberCount: 1 });
+    deps.roundRobinCandidates = async () => ({ candidates: ["a"], memberCount: 1 , legalRelaxed: false});
     deps.displayedTier = async () => tierKeyOf("511");
 
     await createBooking(bookInput, deps);
