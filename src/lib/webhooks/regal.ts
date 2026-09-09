@@ -16,8 +16,9 @@ const EVENT_NAMES: Record<WebhookEvent, string> = {
   "booking.completed": "Slate Booking Completed",
 };
 
-// Normalize daylight/standard variants to a single label, matching the old
-// Pipedream component.
+// Collapse a zone's two seasonal abbreviations to one label, matching the old
+// Pipedream component: EST and EDT are one zone at two times of year, and a
+// single "ET" spares the reader working out which one they are looking at.
 const TZ_NORMALIZE: Record<string, string> = {
   EST: "ET",
   EDT: "ET",
@@ -33,9 +34,43 @@ const TZ_NORMALIZE: Record<string, string> = {
   HDT: "HT",
 };
 
-function tzAbbreviation(timeZone: string): string {
-  const abbr = DateTime.now().setZone(timeZone).toFormat("ZZZZ"); // e.g. EST, GMT-5
-  if (TZ_NORMALIZE[abbr]) return TZ_NORMALIZE[abbr];
+/**
+ * Does this zone actually carry two abbreviations across the year? (#2117)
+ *
+ * This is the collapse's OWN REASON written as a condition, rather than a list
+ * of the zones it should skip. A zone that reads the same all year has no pair
+ * to collapse, so collapsing it drops information and buys nothing, and for
+ * Arizona it buys something worse than nothing: Phoenix is MST every day, so
+ * from March to November it sits an hour behind Denver while both used to
+ * collapse to "MT". A dialer agent reading "2:00 PM MT" against a Phoenix
+ * booking in July is an hour early, and nothing in the payload says which
+ * Mountain was meant. Eight months of the year, on the second commonest zone on
+ * this roster (28 of 148 schedules on 2026-09-09).
+ *
+ * Written as the reason rather than as `if (zone === "America/Phoenix")` because
+ * Hawaii satisfies it too, and so would any zone that stops observing daylight
+ * time (L362, L615). The instant's own year is used rather than a fixed one, so
+ * a zone that changes its rules is judged by the rules in force for the booking.
+ */
+function hasSeasonalForms(at: DateTime): boolean {
+  const january = at.set({ month: 1, day: 15 });
+  const july = at.set({ month: 7, day: 15 });
+  return january.toFormat("ZZZZ") !== july.toFormat("ZZZZ");
+}
+
+/**
+ * The label for the zone a booking was made in, read AT THE BOOKING'S INSTANT.
+ *
+ * It used to read `DateTime.now()`, so a booking's label described the moment
+ * the webhook was sent rather than the moment being labelled. The collapse hid
+ * that completely for every zone it covered, since "ET" is the answer in both
+ * seasons, which is why it survived: the defect and the fix render identically
+ * on every zone anybody tested (#2117).
+ */
+function tzAbbreviation(at: DateTime): string {
+  const abbr = at.toFormat("ZZZZ"); // e.g. EST, GMT-5
+  const collapsed = TZ_NORMALIZE[abbr];
+  if (collapsed) return hasSeasonalForms(at) ? collapsed : abbr;
 
   // Raw offsets (Luxon "GMT-5"/"GMT+5:30" or "-05") -> "UTC-5"/"UTC+5:30".
   const m = abbr.match(/^(?:GMT|UTC)?([+-])(\d{1,2})(?::(\d{2}))?$/);
@@ -111,7 +146,7 @@ export function buildRegalEvent(
       status: p.status === "cancelled" ? "CANCELLED" : "ACCEPTED",
       location: "Phone Call",
       slateBookingDayOfWeek: start.toFormat("cccc"),
-      slateBookingTimeZone: tzAbbreviation(tz),
+      slateBookingTimeZone: tzAbbreviation(start),
       // NOT display copy, so deliberately NOT the shared time formatter (#1765).
       // This is a payload field Regal reads, its shape is pinned by
       // scripts/test-regal.ts ("09:00 AM"), and changing it changes a contract

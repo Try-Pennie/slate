@@ -4,6 +4,8 @@ import { buildRegalEvent } from "../src/lib/webhooks/regal.ts";
 import type { BookingEventPayload } from "../src/lib/webhooks/types.ts";
 import type { WebhookEvent } from "../src/lib/db/types.ts";
 import { assert, finish } from "./lib/harness.ts";
+import { DateTime } from "luxon";
+import { CURATED_ZONES } from "../src/lib/booking/timezones.ts";
 
 const payload: BookingEventPayload = {
   booking_id: "11111111-1111-1111-1111-111111111111",
@@ -283,5 +285,143 @@ for (const event of ["booking.created", "booking.rescheduled", "booking.cancelle
   assert(built.eventSource === "slate", `#779 CONTRACT: ${event} keeps eventSource 'slate' (Regal filters on it)`);
   assert(!!built.traits, `#779 CONTRACT: ${event} keeps its traits envelope (identity + opt-in)`);
 }
+
+
+// --- Arizona keeps its own label (the collapse must stay unambiguous) --------
+//
+// EST/EDT collapse to "ET" because they are one zone at two times of year, and
+// one label spares the reader decoding which. That reason does NOT extend to a
+// zone with no daylight time: Phoenix is MST all year, so in summer it sits an
+// hour behind Denver while both collapse to "MT". A dialer agent reading
+// "2:00 PM MT" on a Phoenix booking in July is an hour early.
+//
+// The invariant is not "Arizona is special", it is ONE LABEL MEANS ONE CLOCK:
+// two zones may share a label only while they share an offset at that instant.
+// Driven over the whole year, so the three weeks when only one of two zones has
+// changed its clocks are included rather than assumed away.
+const zonedPayload = (timezone: string, startsAt: string): BookingEventPayload => ({
+  ...payload,
+  timezone,
+  starts_at: startsAt,
+  ends_at: startsAt,
+});
+
+const labelFor = (timezone: string, startsAt: string): string =>
+  buildRegalEvent("booking.created", zonedPayload(timezone, startsAt)).properties
+    .slateBookingTimeZone as string;
+
+// Summer: Phoenix is MST (-7), Denver is MDT (-6). One label cannot mean both.
+{
+  const july = "2026-07-15T19:00:00.000Z";
+  const phoenix = labelFor("America/Phoenix", july);
+  const denver = labelFor("America/Denver", july);
+  assert(
+    phoenix !== denver,
+    `#2117: in July Phoenix and Denver are an hour apart, so their labels differ (got ${phoenix} and ${denver})`,
+  );
+  assert(phoenix === "MST", `#2117: Phoenix reads MST in July, its real year round abbreviation (got ${phoenix})`);
+  assert(denver === "MT", `#2117: Denver still collapses to MT in July (got ${denver})`);
+}
+
+// Winter: they ARE the same clock, so sharing "MT" is correct and must survive.
+// Without this the fix could pass by giving Arizona a permanent label nobody
+// asked for, which is a different answer to a question nobody asked.
+{
+  const january = "2026-01-15T19:00:00.000Z";
+  const phoenix = labelFor("America/Phoenix", january);
+  const denver = labelFor("America/Denver", january);
+  assert(
+    phoenix === "MST" && denver === "MT",
+    `#2117: in January Phoenix reads MST and Denver MT (got ${phoenix} and ${denver})`,
+  );
+}
+
+// The collapse itself is the point of the field and must not be lost: a zone
+// that really does keep daylight time reads the same label in both seasons.
+for (const [zone, label] of [
+  ["America/New_York", "ET"],
+  ["America/Chicago", "CT"],
+  ["America/Denver", "MT"],
+  ["America/Los_Angeles", "PT"],
+  ["America/Anchorage", "AKT"],
+] as const) {
+  const winter = labelFor(zone, "2026-01-15T19:00:00.000Z");
+  const summer = labelFor(zone, "2026-07-15T19:00:00.000Z");
+  assert(
+    winter === label && summer === label,
+    `#2117: ${zone} collapses to ${label} in both seasons (got ${winter} and ${summer})`,
+  );
+}
+
+// Hawaii changes too, from HT to HST, and that is the rule applying rather than
+// leaking. Honolulu has one abbreviation all year exactly as Phoenix does, so
+// there is no pair to collapse and "HST" is both correct and what Hawaii writes.
+// Scoping the rule to Arizona alone would have been an exemption named for one
+// case instead of for its reason (L362), and it would go stale the moment another
+// zone stops observing daylight time. Measured on 2026-09-09 before shipping
+// this: of 148 agent schedules, 0 are in Hawaii or Alaska, and every booking in
+// the store is America/New_York, so no live record carries the old label.
+{
+  const winter = labelFor("Pacific/Honolulu", "2026-01-15T19:00:00.000Z");
+  const summer = labelFor("Pacific/Honolulu", "2026-07-15T19:00:00.000Z");
+  assert(
+    winter === "HST" && summer === "HST",
+    `#2117: Honolulu reads HST all year, having no seasonal pair to collapse (got ${winter} and ${summer})`,
+  );
+}
+
+// The label must describe the BOOKING's instant, not the moment the webhook is
+// sent. The collapse hid this: a zone whose two seasonal forms both read "ET"
+// looks correct either way. London is not offered in the picker, but the booking
+// API accepts any zone string, and it has two forms that do NOT collapse, so it
+// tells the two apart. Both directions are asserted in one run on purpose: a
+// clock read once can only produce one of these two answers, whatever today is
+// (L130).
+{
+  const winter = labelFor("Europe/London", "2026-01-15T12:00:00.000Z");
+  const summer = labelFor("Europe/London", "2026-07-15T12:00:00.000Z");
+  assert(
+    winter === "GMT" && summer === "UTC+1",
+    `#2117: the label is read at the booking's instant, not at send time (got ${winter} and ${summer})`,
+  );
+}
+
+// The general invariant, swept over every offered zone at every month, so a zone
+// added to the picker later cannot reintroduce this quietly.
+{
+  // Swept over what the picker OFFERS plus what the store actually HOLDS. The
+  // curated list alone would miss America/Boise, which is a real stored zone on
+  // 9 of 148 schedules, is outside the picker, and collapses to "MT" exactly as
+  // Denver does, so it can collide with Phoenix in precisely the same way (L217).
+  const SWEPT_ZONES = [
+    ...CURATED_ZONES,
+    { id: "America/Boise", label: "stored, outside the picker" },
+    { id: "America/Indiana/Indianapolis", label: "stored, outside the picker" },
+  ];
+  let collisions = 0;
+  let compared = 0;
+  for (let month = 1; month <= 12; month++) {
+    const startsAt = DateTime.fromObject(
+      { year: 2026, month, day: 15, hour: 19 },
+      { zone: "utc" },
+    ).toISO() as string;
+    const seen = new Map<string, number>();
+    for (const z of SWEPT_ZONES) {
+      const label = labelFor(z.id, startsAt);
+      const offset = DateTime.fromISO(startsAt).setZone(z.id).offset;
+      compared++;
+      const previous = seen.get(label);
+      if (previous !== undefined && previous !== offset) {
+        collisions++;
+        console.error(`   collision: ${label} means both ${previous / 60}h and ${offset / 60}h in month ${month}`);
+      }
+      seen.set(label, offset);
+    }
+  }
+  // A sweep that compared nothing would report zero collisions too (L98).
+  assert(compared === SWEPT_ZONES.length * 12, `#2117: the sweep really ran (${compared} labels compared)`);
+  assert(collisions === 0, `#2117: one label means one clock, every offered zone, every month (${collisions} collisions)`);
+}
+
 
 finish();
