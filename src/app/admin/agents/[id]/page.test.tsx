@@ -675,26 +675,95 @@ describe("AgentProfilePage routing attributes are read only (#1874)", () => {
   it("still shows the values, since read only is not the same as hidden", async () => {
     await withAttrs({ debt_team: ["ultra_high", "very_high"], backend_service: "achieve", role: "Sales" });
 
-    expect(screen.getByText("ultra_high, very_high")).toBeTruthy();
-    expect(screen.getByText("achieve")).toBeTruthy();
-    // Labelled for what it is: nothing routes on it, so calling it Role under a
-    // heading about routing is the misleading part.
-    expect(screen.getByText("Salesforce profile")).toBeTruthy();
-    expect(screen.getByText("Sales")).toBeTruthy();
+    // #2120: as the ladder the roster already draws, not as the stored keys. The
+    // keys are the machine spelling of a vocabulary that has labels, and a comma
+    // list cannot say what the values are, which is a band of rungs.
+    expect(screen.queryByText("ultra_high, very_high")).toBeNull();
+    const ledger = document.querySelector("[data-ledger]") as HTMLElement;
+    expect(ledger).toBeTruthy();
+    expect(ledger.getAttribute("aria-label")).toBe("Covers Very High to Ultra High");
+
+    // The backend gets the same vocabulary treatment, for the same reason.
+    expect(screen.getByText("Achieve")).toBeTruthy();
+    expect(screen.queryByText("achieve")).toBeNull();
   });
 
-  it("names an absent value rather than drawing a blank line", async () => {
+  // The ladder's letters are its own legend on the roster because the expansion
+  // sits ONCE on the column header. There is no column header here, so the field
+  // label carries it, or V and U are two letters nobody guesses.
+  it("carries the ladder's legend, since this panel has no column header to hold it", async () => {
+    await withAttrs({ debt_team: ["low"] });
+    const panel = screen.getByText("Routing attributes").closest("section") as HTMLElement;
+    expect(panel.textContent).toMatch(/V Very High/);
+    expect(panel.textContent).toMatch(/U Ultra High/);
+  });
+
+  // #2120: `role` is the Salesforce Profile name, and NOTHING routes on it: all
+  // 60 buckets key on debt_team, backend_service and legal_eligible. A field
+  // nothing routes on, under a heading about routing, is a fact the reader has to
+  // work out is irrelevant. The audit trail still records it (`details.profile`),
+  // so the data and the record of who was made bookable are untouched.
+  it("does not print the Salesforce profile, which nothing routes on", async () => {
+    await withAttrs({ debt_team: ["low"], backend_service: "achieve", role: "Sales" });
+    const panel = screen.getByText("Routing attributes").closest("section") as HTMLElement;
+    expect(panel.textContent).not.toMatch(/Salesforce profile/i);
+    expect(panel.textContent).not.toMatch(/\bSales\b/);
+  });
+
+  // An agent with no debt team at all draws NO ladder. Five faint letters and no
+  // words is what a reader who cannot see the aria-label meets, and beside a
+  // sibling field reading "Not set" it reads as a panel that failed to load
+  // rather than as an agent with no team (L10, L67). The roster keeps its five
+  // slots because a COLUMN needs the fixed width to align down; there is no
+  // column here, so the words win.
+  it("names an absent debt team in words, not as an empty ladder", async () => {
     await withAttrs({});
-    // As inputs, empty read as an empty box. As text, a blank beside a label
-    // reads as the page having failed to load something.
-    expect(screen.getAllByText("Not set").length).toBeGreaterThanOrEqual(3);
+    expect(document.querySelector("[data-ledger]")).toBeNull();
+    const panel = screen.getByText("Routing attributes").closest("section") as HTMLElement;
+    // The SAME words the field beside it uses for the same state: one vocabulary
+    // for one meaning on one surface (L118).
+    expect(panel.querySelectorAll("*")).toBeTruthy();
+    expect((panel.textContent ?? "").match(/Not set/g)?.length).toBeGreaterThanOrEqual(2);
   });
 
-  it("says the three come from Salesforce and are rewritten by the sync", async () => {
+  // A blank is not a team. Branching on the raw attribute rather than on what the
+  // ladder can actually DRAW puts the empty ladder back for exactly this agent,
+  // and the two would be asking different questions about one value (L70).
+  it("names a blank stored team as absent, since a blank is not a team", async () => {
+    await withAttrs({ debt_team: ["", "  "] });
+    expect(document.querySelector("[data-ledger]")).toBeNull();
+  });
+
+  it("draws the ladder as soon as there is any coverage to show", async () => {
+    await withAttrs({ debt_team: ["low"] });
+    const ledger = document.querySelector("[data-ledger]") as HTMLElement;
+    expect(ledger).toBeTruthy();
+    expect(ledger.getAttribute("aria-label")).toBe("Covers Low");
+  });
+
+  // A value that is not one of the five rungs is still coverage, and dropping it
+  // to the empty state would under report the agent on the panel that exists to
+  // show what they cover (L113).
+  it("draws the ladder for a stored value that is not a rung", async () => {
+    await withAttrs({ debt_team: ["credit"] });
+    const ledger = document.querySelector("[data-ledger]") as HTMLElement;
+    expect(ledger).toBeTruthy();
+    expect(screen.getByText("credit")).toBeTruthy();
+  });
+
+  // #2120: the panel explained the INTERFACE. "What this agent can be routed for.
+  // The first three come from Salesforce and are rewritten by the hourly roster
+  // sync, so they are shown here rather than edited" tells the reader what the
+  // panel is and which system owns it, which is a sentence written for whoever
+  // built it. The read only-ness is carried by there being no control, and the
+  // reason lives in the code comment where a maintainer will meet it.
+  it("explains no part of itself", async () => {
     await withAttrs({});
     const panel = screen.getByText("Routing attributes").closest("section") as HTMLElement;
-    expect(panel.textContent).toMatch(/come from Salesforce/i);
-    expect(panel.textContent).toMatch(/hourly roster sync/i);
+    expect(panel.textContent).not.toMatch(/come from Salesforce/i);
+    expect(panel.textContent).not.toMatch(/hourly roster sync/i);
+    expect(panel.textContent).not.toMatch(/rather than edited/i);
+    expect(panel.textContent).not.toMatch(/What this agent can be routed for/i);
   });
 
   // #2097. The hourly sync takes an agent out of the pool for a Twilio tag, so an
