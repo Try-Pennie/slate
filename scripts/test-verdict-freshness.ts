@@ -23,6 +23,8 @@ import {
   FAILURE_RATE_VERDICT_LANE,
   LOW_VOLUME_VERDICT_LANE,
   OOO_PROTECTION_VERDICT_LANE,
+  TWILIO_ROSTER_VERDICT_LANE,
+  twilioRosterReachedVerdict,
   truthReachedVerdict,
   failureRateReachedVerdict,
   lowVolumeReachedVerdict,
@@ -131,6 +133,18 @@ const HOUR = 60 * 60_000;
   assert(!lowVolumeReachedVerdict({ status: "unverified" }), "low volume: unverified is NOT a verdict");
 }
 
+// --- the Twilio half of the roster sync (#2114) --------------------------------
+{
+  assert(
+    twilioRosterReachedVerdict({ ok: true }),
+    "twilio roster: a run that read Twilio and judged the roster IS a verdict",
+  );
+  assert(
+    !twilioRosterReachedVerdict({ ok: false }),
+    "twilio roster: a refused read is NOT a verdict, or the detector would report itself as concluding while blind",
+  );
+}
+
 // --- the bounds ---------------------------------------------------------------
 {
   const lanes = Object.keys(VERDICT_STALE_BOUNDS_MS).sort();
@@ -141,6 +155,7 @@ const HOUR = 60 * 60_000;
         FAILURE_RATE_VERDICT_LANE,
         LOW_VOLUME_VERDICT_LANE,
         OOO_PROTECTION_VERDICT_LANE,
+        TWILIO_ROSTER_VERDICT_LANE,
       ]
         .sort()
         .join(","),

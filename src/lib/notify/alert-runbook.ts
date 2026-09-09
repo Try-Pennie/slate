@@ -133,6 +133,14 @@ const FAMILY_BY_KEY: Record<string, AlertFamily> = {
   // #2097. The same family: while Twilio cannot be read, the Redistribute tag is
   // not being acted on, so Slate's idea of who may take a booked call is wrong.
   twilio_sync_failures: "the-roster-or-routing-data-is-wrong",
+  // #2114. The same family, one step later: Twilio was read fine and Slate could
+  // not finish acting on it, so an agent Twilio withholds may still be in the
+  // pool, or somebody's calls are still with an agent who has left it.
+  twilio_write_failures: "the-roster-or-routing-data-is-wrong",
+  // #2114. Slate is holding somebody out of the pool and Twilio no longer has a
+  // worker for them, so nothing can say whether the tag went or the worker did.
+  // The repair is in Twilio or on the agent's profile, both upstream of any run.
+  twilio_marked_no_worker: "the-roster-or-routing-data-is-wrong",
   // #1908. The lead's own routing input is missing, so they are routed to the Low
   // pool rather than their real tier. Same family as the rest: the routing data is
   // wrong, and the fix is upstream of Slate rather than inside it.

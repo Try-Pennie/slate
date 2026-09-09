@@ -17,7 +17,7 @@ import { ensureDefaultSchedules } from "@/lib/schedule";
 import { alertOnEmptyBuckets } from "@/lib/availability/service";
 import { acquireLock, releaseLock } from "@/lib/locks";
 import { sendThrottledAlert, resolveAlert } from "@/lib/notify/dispatch";
-import { clearFailureStreak } from "@/lib/notify/streak";
+import { clearFailureStreak, recordConsecutiveStreak } from "@/lib/notify/streak";
 import { log } from "@/lib/log";
 import {
   agentSyncRecovery,
@@ -25,13 +25,39 @@ import {
   salesforceManagerAmbiguousRecovery,
   salesforceUserIdConflictAlert,
   salesforceUserIdConflictRecovery,
+  twilioSyncFailureAlert,
+  twilioSyncRecovery,
+  twilioWriteFailureAlert,
+  twilioWriteFailureRecovery,
+  twilioOrphanedMarkAlert,
+  twilioOrphanedMarkRecovery,
 } from "@/lib/monitor/cron-alert-copy";
 import { hasUserIdConflicts } from "@/lib/salesforce/user-id-link";
 import { defaultTwilioSyncDeps, syncTwilioRedistribute, type TwilioSyncResult } from "@/lib/twilio/sync";
-import { twilioSyncFailureAlert, twilioSyncRecovery } from "@/lib/monitor/cron-alert-copy";
+import { recordDetectorVerdict } from "@/lib/monitor/verdict-store";
+import {
+  TWILIO_ROSTER_VERDICT_LANE,
+  twilioRosterReachedVerdict,
+} from "@/lib/monitor/verdict-freshness";
 
 export const AGENTS_LOCK_KEY = "cron_agents";
 const AGENTS_LOCK_TTL_MS = 10 * 60 * 1000;
+
+/**
+ * The Twilio write failures streak (#2114).
+ *
+ * TWO consecutive runs, not one. The plan is a pure function of the current
+ * state, so a run that failed retries the same work an hour later; the first
+ * failure is a blip that fixes itself and the second is the retry failing too,
+ * which is the first moment anything is known that a person could act on.
+ *
+ * The window is three hours, comfortably over the hourly cadence, so two
+ * genuinely consecutive runs land in one window rather than each looking like
+ * the first.
+ */
+const TWILIO_WRITE_STREAK_KEY = "twilio_write_failures";
+const TWILIO_WRITE_STREAK_WINDOW_S = 3 * 60 * 60;
+const TWILIO_WRITE_STREAK_ALERT_AT = 2;
 const SYNC_ALERT_COOLDOWN_MS = 6 * 60 * 60 * 1000;
 
 export type RosterSyncOutcome =
@@ -99,6 +125,7 @@ export async function runRosterSync(): Promise<RosterSyncOutcome> {
       // half that could not measure anything clears nothing (#1134, #1152).
       const cleared = await resolveAlert("twilio_sync_failures", twilioSyncRecovery()).catch(() => false);
       if (cleared) log.info("agents", { msg: "twilio sync failure alert cleared" });
+      await reportTwilioWriteOutcome(result);
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
       twilio = { ok: false, reason };
@@ -112,6 +139,21 @@ export async function runRosterSync(): Promise<RosterSyncOutcome> {
         twilioSyncFailureAlert(reason),
       ).catch(() => {});
     }
+
+    // #2114: the stamp that says the Twilio half CONCLUDED, as opposed to ran.
+    // Hung off the measured result, so a refused read stamps nothing: that is
+    // already paged, and stamping there would report the detector as concluding
+    // while it is blind. Best effort, like every other verdict stamp.
+    await recordDetectorVerdict(
+      TWILIO_ROSTER_VERDICT_LANE,
+      twilioRosterReachedVerdict(twilio),
+    ).catch((err) =>
+      // `recordHeartbeat` already swallows its own database errors, so reaching
+      // here means something unexpected. It must not fail the roster run, and it
+      // must not be silent either: a stamp that never lands makes this detector
+      // page as blind while it is in fact concluding.
+      log.warn("agents", { msg: "twilio roster verdict stamp failed" }, err),
+    );
 
     const hoursApplied = await ensureDefaultSchedules(org.id);
     // After the roster settles, flag any bucket that now routes to nobody (#327).
@@ -204,5 +246,73 @@ export async function runRosterSync(): Promise<RosterSyncOutcome> {
     };
   } finally {
     await releaseLock(AGENTS_LOCK_KEY, lock);
+  }
+}
+
+/**
+ * Page when the Twilio half read fine and could not finish acting on it (#2114).
+ *
+ * Two separate conditions, because they are two different faults with two
+ * different repairs (L11):
+ *
+ *  - a WRITE that keeps throwing (a flip, a coverage move, a legal value). It
+ *    retries every hour on its own, so it pages on the SECOND consecutive run
+ *    rather than the first, and clears the moment a run lands everything.
+ *  - a MARK Twilio holds no worker for. Nothing retries that and nothing fixes
+ *    it: the sync correctly does nothing on an absence, so it is a standing state
+ *    somebody has to end, and it clears when every mark has a worker again.
+ *
+ * Both are best effort: the roster already synced, and a Slack problem must never
+ * turn a good run into a failure.
+ */
+async function reportTwilioWriteOutcome(result: TwilioSyncResult): Promise<void> {
+  const failures = {
+    flips: result.flipFailures,
+    sweeps: result.coverageSweepFailures,
+    legal: result.legalWriteFailures,
+  };
+  const anyFailed = failures.flips + failures.sweeps + failures.legal > 0;
+  if (anyFailed) {
+    const streak = await recordConsecutiveStreak(
+      TWILIO_WRITE_STREAK_KEY,
+      TWILIO_WRITE_STREAK_WINDOW_S,
+      TWILIO_WRITE_STREAK_ALERT_AT,
+    );
+    // alert-key: twilio_write_failures
+    if (streak) {
+      await sendThrottledAlert(
+        "twilio_write_failures",
+        SYNC_ALERT_COOLDOWN_MS,
+        twilioWriteFailureAlert(failures),
+      ).catch(() => {});
+    }
+  } else {
+    // Hung off the MEASURED clean run, which is the only thing that can know the
+    // writes are landing. A run that threw never reaches this function at all, so
+    // a Twilio half that could not measure anything clears nothing (#1134, #1152).
+    await clearFailureStreak(TWILIO_WRITE_STREAK_KEY);
+    // alert-key: twilio_write_failures
+    const cleared = await resolveAlert(
+      "twilio_write_failures",
+      twilioWriteFailureRecovery(),
+    ).catch(() => false);
+    if (cleared) log.info("agents", { msg: "twilio write failure alert cleared" });
+  }
+
+  const orphaned = result.markedWithNoWorker.length;
+  if (orphaned > 0) {
+    // alert-key: twilio_marked_no_worker
+    await sendThrottledAlert(
+      "twilio_marked_no_worker",
+      SYNC_ALERT_COOLDOWN_MS,
+      twilioOrphanedMarkAlert(orphaned),
+    ).catch(() => {});
+  } else {
+    // alert-key: twilio_marked_no_worker
+    const cleared = await resolveAlert(
+      "twilio_marked_no_worker",
+      twilioOrphanedMarkRecovery(),
+    ).catch(() => false);
+    if (cleared) log.info("agents", { msg: "twilio orphaned mark alert cleared" });
   }
 }

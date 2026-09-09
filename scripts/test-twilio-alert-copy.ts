@@ -8,7 +8,14 @@
 // for, and those rot separately. The five refusals each carry their own cause and
 // their own instruction; what the alert has to add is the CONSEQUENCE, which is the
 // part a reader cannot infer and the only reason the page is urgent at all.
-import { twilioSyncFailureAlert, twilioSyncRecovery } from "@/lib/monitor/cron-alert-copy";
+import {
+  twilioSyncFailureAlert,
+  twilioSyncRecovery,
+  twilioWriteFailureAlert,
+  twilioWriteFailureRecovery,
+  twilioOrphanedMarkAlert,
+  twilioOrphanedMarkRecovery,
+} from "@/lib/monitor/cron-alert-copy";
 import { alertEntry } from "@/lib/notify/alert-catalog";
 import { assert, eq, finish } from "./lib/harness.ts";
 
@@ -63,6 +70,85 @@ const REFUSED = "Twilio refused the credentials (401). The API key has to be Tas
   ] as const) {
     assert(!/^Slate\b/.test(text), `${name} does not open by repeating Slate's own name`);
     assert(!/undefined|NaN|\[object/.test(text), `${name} renders no leaked value`);
+  }
+}
+
+// --- the writes that did not land (#2114) ---------------------------------------
+// The read failing is already paged. What was not is the half AFTER the read: a
+// flip that keeps throwing, a coverage sweep that could not be queued, a legal
+// value that would not write. Each was counted, written to the log, put in the
+// sync banner, and reported by nothing on an unattended hourly run.
+
+{
+  const text = twilioWriteFailureAlert({ flips: 2, sweeps: 0, legal: 0 });
+  assert(/still bookable|still be booked|still offering/i.test(text), "a failed flip leads with the consequence, which is an agent Slate is still offering");
+  assert(text.includes("2"), "and says how many");
+  assert(!/coverage sweep|legal/i.test(text), "and says nothing about the two that did not happen");
+}
+
+{
+  const text = twilioWriteFailureAlert({ flips: 0, sweeps: 1, legal: 0 });
+  assert(/upcoming|booked|call/i.test(text), "a failed coverage sweep is about the calls left behind");
+  assert(/coverage/i.test(text), "and names where to go and move them");
+  assert(!/still bookable/i.test(text), "and does not claim an agent is still being offered, which is a different fault");
+}
+
+{
+  const text = twilioWriteFailureAlert({ flips: 0, sweeps: 0, legal: 3 });
+  assert(/legal/i.test(text), "a failed legal write says which fact did not land");
+  assert(text.includes("3"), "and how many agents it covers");
+}
+
+{
+  // All three at once. The flip leads, because it is the only one of the three that
+  // misroutes a lead today (L609), and every count is still named rather than one
+  // answering for the others (L11).
+  const text = twilioWriteFailureAlert({ flips: 1, sweeps: 2, legal: 3 });
+  const flipAt = text.search(/still bookable|still be booked|still offering/i);
+  const sweepAt = text.search(/coverage/i);
+  assert(flipAt >= 0 && sweepAt > flipAt, `the flip is said first (got: ${text})`);
+  for (const n of ["1", "2", "3"]) assert(text.includes(n), `the count ${n} survives into the message`);
+}
+
+{
+  const text = twilioWriteFailureRecovery();
+  assert(/no action/i.test(text), "the all clear says nothing is owed");
+  assert(!/[0-9]/.test(text), "and quotes no count, because the run that cleared it measured none");
+}
+
+// --- a mark Twilio no longer has a worker for (#2114) ---------------------------
+{
+  const text = twilioOrphanedMarkAlert(3);
+  assert(text.includes("3"), "the count is named");
+  assert(/not bookable|out of the (bookable )?pool/i.test(text), "the consequence is that they are held out of the pool");
+  assert(
+    /Twilio/.test(text) && /worker/i.test(text),
+    "and the cause is that Twilio holds no worker for them, which is where the repair is",
+  );
+  assert(
+    !/press|sync again/i.test(text),
+    "it does NOT tell somebody to press sync again: re-running changes nothing while the worker is missing (L111)",
+  );
+}
+
+{
+  const one = twilioOrphanedMarkAlert(1);
+  assert(/\b1 agent\b/.test(one), `one agent reads as singular (got: ${one})`);
+  assert(!/1 agents/.test(one), "not as a plural with a one in front of it");
+}
+
+{
+  const text = twilioOrphanedMarkRecovery();
+  assert(/no action/i.test(text), "the all clear says nothing is owed");
+}
+
+// --- both are conditions, so both must resolve ----------------------------------
+{
+  for (const key of ["twilio_write_failures", "twilio_marked_no_worker"]) {
+    const entry = alertEntry(key);
+    assert(entry !== undefined, `${key} is in the catalog`);
+    eq(entry?.kind, "condition", `${key} is a condition: it is an ongoing state a later run ends`);
+    assert((entry?.why ?? "").length > 20, `${key} says why it is classified that way`);
   }
 }
 

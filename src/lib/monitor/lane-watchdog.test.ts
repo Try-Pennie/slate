@@ -94,6 +94,9 @@ const healthy = () => ({
   // never concluded and let the healthy tick below pass on its grace window
   // rather than on health.
   "verdict:availability-truth": ago(10 * MIN),
+  // #2114: the Twilio half of the hourly roster sync. It concludes on every run
+  // that can read Twilio, so a healthy fleet has a stamp inside the hour.
+  "verdict:twilio-roster": ago(20 * MIN),
   // The one remaining PARKED detector (#1561) is deliberately absent, because
   // that is what production looks like: the failure rate check has reached one
   // verdict in its life, off a smoke canary coincidence, and while it is parked

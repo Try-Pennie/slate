@@ -16,6 +16,7 @@ import {
   FAILURE_RATE_VERDICT_LANE,
   LOW_VOLUME_VERDICT_LANE,
   OOO_PROTECTION_VERDICT_LANE,
+  TWILIO_ROSTER_VERDICT_LANE,
   parkedDetector,
 } from "@/lib/monitor/verdict-freshness";
 
@@ -141,6 +142,11 @@ const VERDICT_SUBJECT: Record<string, { what: string; cost: string; look: string
     what: "the check asking whether approved time off is still blocking the hours it covers",
     cost: "an agent's time off could stop blocking anything and nobody would hear, which is how a lead gets booked into a day someone is away",
     look: 'the Worker logs for msg="tick" under tag=ooo-protection and whether the approved requests can be read at all',
+  },
+  [TWILIO_ROSTER_VERDICT_LANE]: {
+    what: "the hourly roster sync's Twilio half, which takes an agent out of the bookable pool when Twilio marks them redistribute",
+    cost: "somebody tagged redistribute would go on being offered to leads, and anybody whose tag came off would stay out of the pool",
+    look: 'the Worker logs for tag=twilio-sync and tag=agents, and whether the hourly agents cron is running at all',
   },
 };
 

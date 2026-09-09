@@ -29,6 +29,15 @@ const dispatch = vi.hoisted(() => ({
 const streak = vi.hoisted(() => ({
   recordFailureStreak: vi.fn(),
   clearFailureStreak: vi.fn(async () => {}),
+  // #2114: the Twilio write failures streak. Defaults to false, so a single
+  // failing run stays quiet and only a test that says otherwise pages.
+  recordConsecutiveStreak: vi.fn(async () => false),
+}));
+// #2114: the verdict stamp. Mocked so the route glue can be asserted without a
+// database, and so the assertion is about WHETHER it stamped rather than about
+// whether a heartbeat write succeeded.
+const verdict = vi.hoisted(() => ({
+  recordDetectorVerdict: vi.fn(async () => {}),
 }));
 // #2097: the Twilio half. Mocked rather than left real, because the real one reads
 // the deployment's credentials and would refuse in every test here, which is a
@@ -64,10 +73,17 @@ vi.mock("@/lib/availability/service", () => availability);
 vi.mock("@/lib/notify/dispatch", () => dispatch);
 vi.mock("@/lib/notify/streak", () => streak);
 vi.mock("@/lib/twilio/sync", () => twilio);
+vi.mock("@/lib/monitor/verdict-store", () => verdict);
 
 import { GET } from "./route";
 
 const req = () => ({}) as unknown as Parameters<typeof GET>[0];
+
+/** The healthy Twilio result, so a case can override one field and mean it. */
+const twilioResult = async () =>
+  (await twilio.syncTwilioRedistribute.getMockImplementation()!()) as Awaited<
+    ReturnType<typeof twilio.syncTwilioRedistribute>
+  >;
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -103,7 +119,13 @@ describe("GET /api/cron/agents", () => {
   it("clears the failure streak and does not alert on a clean pass", async () => {
     const res = await GET(req());
     expect(res.status).toBe(200);
-    expect(streak.clearFailureStreak).toHaveBeenCalledTimes(1);
+    // Two streaks this lane owns, cleared by name rather than by count so a third
+    // one added later cannot be waved through by the number happening to match:
+    // the Salesforce sync's, and the Twilio writes' (#2114).
+    expect(streak.clearFailureStreak.mock.calls.map((c: unknown[]) => c[0]).sort()).toEqual([
+      "cron_agents_failures",
+      "twilio_write_failures",
+    ]);
     expect(streak.recordFailureStreak).not.toHaveBeenCalled();
     expect(dispatch.sendThrottledAlert).not.toHaveBeenCalled();
   });
@@ -111,13 +133,16 @@ describe("GET /api/cron/agents", () => {
   // #1151: a failing roster sync is a CONDITION, so a clean pass says it is over.
   it("announces recovery on a clean pass, so the earlier page can be closed", async () => {
     await GET(req());
-    // Four conditions this lane owns, so a clean pass closes all of them: Twilio
-    // being unreadable (#2097), the Salesforce sync failing, the roster disagreeing
-    // with Salesforce about a user id (#1587), and a manager name answering to more
-    // than one user (#1653). Twilio's is first because its step runs before the
-    // bucket coverage check, which has to see the state the run's own flips leave.
+    // Six conditions this lane owns, so a clean pass closes all of them: Twilio
+    // being unreadable (#2097), its writes not landing and a mark with no worker
+    // (#2114), the Salesforce sync failing, the roster disagreeing with Salesforce
+    // about a user id (#1587), and a manager name answering to more than one user
+    // (#1653). The Twilio ones are first because that step runs before the bucket
+    // coverage check, which has to see the state the run's own flips leave.
     expect(dispatch.resolveAlert.mock.calls.map((c: unknown[]) => c[0])).toEqual([
       "twilio_sync_failures",
+      "twilio_write_failures",
+      "twilio_marked_no_worker",
       "agent_sync_failures",
       "salesforce_user_id_conflicts",
       "salesforce_manager_ambiguous",
@@ -156,6 +181,82 @@ describe("GET /api/cron/agents", () => {
     // And the response says which half failed, rather than looking like a run where
     // nobody happened to be tagged.
     expect(await res.json()).toMatchObject({ twilio: { ok: false } });
+  });
+
+  // #2114: the half AFTER the read. Until this, a flip that kept throwing, a
+  // coverage move that could not be queued and a legal value that would not write
+  // were counted, logged, put in the sync banner, and reported by nothing at all on
+  // an unattended hourly run.
+  it("stays quiet on the FIRST run whose Twilio writes failed, because the next hour retries them", async () => {
+    twilio.syncTwilioRedistribute.mockResolvedValueOnce({
+      ...(await twilioResult()),
+      flipFailures: 1,
+    });
+    streak.recordConsecutiveStreak.mockResolvedValueOnce(false);
+    await GET(req());
+    const paged = dispatch.sendThrottledAlert.mock.calls.map((c: unknown[]) => c[0]);
+    expect(paged).not.toContain("twilio_write_failures");
+    // And it did not clear it either: this run measured a failure.
+    expect(dispatch.resolveAlert.mock.calls.map((c: unknown[]) => c[0])).not.toContain(
+      "twilio_write_failures",
+    );
+  });
+
+  it("pages once the retry fails too, naming which write it was", async () => {
+    twilio.syncTwilioRedistribute.mockResolvedValueOnce({
+      ...(await twilioResult()),
+      flipFailures: 2,
+      coverageSweepFailures: 1,
+    });
+    streak.recordConsecutiveStreak.mockResolvedValueOnce(true);
+    await GET(req());
+    const call = dispatch.sendThrottledAlert.mock.calls.find(
+      (c: unknown[]) => c[0] === "twilio_write_failures",
+    );
+    expect(call).toBeTruthy();
+    expect(String(call?.[2])).toContain("2 agents");
+    expect(String(call?.[2])).toContain("coverage panel");
+  });
+
+  // The mark with no worker is NOT streaked: nothing retries it and nothing fixes
+  // it on its own, so it is a standing state somebody has to end.
+  it("pages on the first run that finds a mark Twilio holds no worker for", async () => {
+    twilio.syncTwilioRedistribute.mockResolvedValueOnce({
+      ...(await twilioResult()),
+      markedWithNoWorker: ["a@trypennie.com", "b@trypennie.com"],
+    });
+    await GET(req());
+    const call = dispatch.sendThrottledAlert.mock.calls.find(
+      (c: unknown[]) => c[0] === "twilio_marked_no_worker",
+    );
+    expect(call).toBeTruthy();
+    expect(String(call?.[2])).toContain("2 agents");
+    expect(streak.recordConsecutiveStreak).not.toHaveBeenCalled();
+  });
+
+  // #1394: the stamp that says the Twilio half CONCLUDED, as opposed to ran. The
+  // hourly roster job has no lane heartbeat of its own, so this is the only thing
+  // that would notice it silently stopping.
+  it("stamps the verdict on a run that read Twilio", async () => {
+    await GET(req());
+    expect(verdict.recordDetectorVerdict).toHaveBeenCalledWith("verdict:twilio-roster", true);
+  });
+
+  it("stamps NOTHING when the Twilio read failed, so a blind half never reads as concluding", async () => {
+    twilio.syncTwilioRedistribute.mockRejectedValueOnce(new Error("Twilio refused the credentials (401)."));
+    await GET(req());
+    expect(verdict.recordDetectorVerdict).toHaveBeenCalledWith("verdict:twilio-roster", false);
+  });
+
+  // The silent path again (#1152), in this half: a Twilio read that FAILED never
+  // reaches the write report at all, so neither of its keys is cleared off a run
+  // that measured nothing.
+  it("clears neither write condition when the Twilio read failed", async () => {
+    twilio.syncTwilioRedistribute.mockRejectedValueOnce(new Error("Twilio refused the credentials (401)."));
+    await GET(req());
+    const cleared = dispatch.resolveAlert.mock.calls.map((c: unknown[]) => c[0]);
+    expect(cleared).not.toContain("twilio_write_failures");
+    expect(cleared).not.toContain("twilio_marked_no_worker");
   });
 
   it("stays quiet on a single (self-healing) failure", async () => {
