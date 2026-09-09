@@ -865,6 +865,12 @@ export interface BulkReassignJob {
    *  on one sweep. Also the record of WHY such a job has no `created_by`: it has no
    *  human actor and its moves are recorded as system-initiated. */
   offboarding_deactivated_at: string | null;
+  /** The Twilio redistribute pool exit that triggered this sweep (#2115): the
+   *  moment the hourly roster sync marked the agent, stored on their own
+   *  `attributes.redistribute_at` in the same write. NULL for every other sweep.
+   *  Unique per (agent, mark), so a sync that crashed mid flip converges on one
+   *  sweep. Also the record of WHY such a job has no `created_by`. */
+  redistribute_marked_at: string | null;
   created_at: string;
   updated_at: string;
 }

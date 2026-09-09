@@ -58,7 +58,52 @@ describe("startBulkReassign", () => {
       // #1241: null too, for the same reason: this sweep has a person behind it,
       // not an offboarding deactivation.
       offboardingDeactivatedAtIso: null,
+      // #2115: and not a Twilio redistribute pool exit either.
+      redistributeMarkedAtIso: null,
     });
+  });
+
+  // #2115: the hourly Twilio flip takes an agent out of the pool with nobody to
+  // ask, so it queues the same sweep, carries no actor, and is keyed on the moment
+  // Slate marked them. Both halves travel together, as they do for offboarding.
+  it("passes the mark through for a sweep the Twilio redistribute flip triggered (#2115)", async () => {
+    store.loadUserOrgId.mockResolvedValueOnce("org9");
+    store.createBulkReassignJob.mockResolvedValueOnce({ jobId: "job4", itemCount: 3 });
+    await startBulkReassign({
+      outUserId: "out1",
+      rangeStartIso: "2026-09-09T12:00:00.000Z",
+      rangeEndIso: null,
+      reason,
+      actor: null,
+      redistributeMarkedAtIso: "2026-09-09T12:00:00.000Z",
+    });
+    expect(store.createBulkReassignJob).toHaveBeenCalledWith(
+      expect.objectContaining({
+        createdBy: null,
+        redistributeMarkedAtIso: "2026-09-09T12:00:00.000Z",
+        offboardingDeactivatedAtIso: null,
+      }),
+    );
+  });
+
+  // The guard that keeps the two lines above from weakening it: a sweep with no
+  // actor and no recorded reason for having none is still refused, because moving a
+  // customer's appointment on it could never be explained afterwards (L93).
+  it("still refuses a sweep with no actor and no reason for having none", async () => {
+    await expect(
+      startBulkReassign({
+        outUserId: "out1",
+        rangeStartIso: "2026-09-09T12:00:00.000Z",
+        rangeEndIso: null,
+        reason,
+        actor: null,
+      }),
+    ).rejects.toThrow(/accountable actor/);
+    expect(store.createBulkReassignJob).not.toHaveBeenCalled();
+    // Refused BEFORE the org lookup, so a job with nobody accountable never
+    // reaches the database at all. Queueing an org here would also have left an
+    // unconsumed mock for whichever test ran next (L439).
+    expect(store.loadUserOrgId).not.toHaveBeenCalled();
   });
 
   // #1241: an offboarding sweep has nobody in the request at all, so it carries no

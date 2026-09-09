@@ -2294,6 +2294,11 @@ export interface StartBulkReassignInput {
    *  deactivation), so a retried or concurrent offboarding call converges on ONE
    *  sweep rather than moving customers' bookings twice. */
   offboardingDeactivatedAtIso?: string | null;
+  /** The Twilio redistribute pool exit this sweep covers (#2115), when the hourly
+   *  roster sync triggered it. Makes the enqueue idempotent by database key on
+   *  (agent, mark), so a sync that crashed between the mark and the flip converges
+   *  on ONE sweep rather than moving customers' bookings twice. */
+  redistributeMarkedAtIso?: string | null;
 }
 
 /**
@@ -2308,7 +2313,7 @@ export async function startBulkReassign(
   // can say why. Refused here, at the one place every sweep is created, rather
   // than at the drain, where the job row already exists and the bookings are
   // already snapshotted.
-  if (!input.actor && !input.offboardingDeactivatedAtIso) {
+  if (!input.actor && !input.offboardingDeactivatedAtIso && !input.redistributeMarkedAtIso) {
     throw new Error("a coverage sweep with no accountable actor must record why it has none");
   }
   const orgId = await loadUserOrgId(input.outUserId);
@@ -2324,6 +2329,7 @@ export async function startBulkReassign(
     actingAsUserId: input.actor?.actingAsUserId ?? null,
     oooRequestId: input.oooRequestId ?? null,
     offboardingDeactivatedAtIso: input.offboardingDeactivatedAtIso ?? null,
+    redistributeMarkedAtIso: input.redistributeMarkedAtIso ?? null,
   });
 }
 

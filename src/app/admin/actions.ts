@@ -440,6 +440,15 @@ function twilioParts(
     r.reactivationRefused.length
       ? `${plural(r.reactivationRefused.length, "agent")} could not be put back in the pool until a Google calendar exists for them`
       : null,
+    // What the agents taken out of the pool were holding (#2115). Right after the
+    // pool change that caused it, because it is the consequence of that line rather
+    // than a separate event, and the coverage panel is where somebody follows it up.
+    r.coverageSweeps.length
+      ? `${plural(r.coverageSweeps.reduce((n, c) => n + c.bookings, 0), "upcoming call")} being moved off ${plural(r.coverageSweeps.length, "agent")} who left the pool`
+      : null,
+    r.coverageSweepFailures
+      ? `${plural(r.coverageSweepFailures, "agent")} left the pool and their upcoming calls could not be queued for a move, so use the coverage panel on their profile`
+      : null,
     // Legal eligibility (#2098), after the pool changes and before the failures,
     // because it changes which of the ten legal buckets somebody is offered rather
     // than whether they can be booked at all.

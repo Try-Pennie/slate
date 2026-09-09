@@ -21,6 +21,15 @@
 //    expected case: the activation gate turns down anybody with no reachable Google
 //    calendar.
 //
+// TAKING SOMEBODY OUT OF THE POOL STRANDS WHAT THEY HAVE BOOKED, so the flip queues
+// the same coverage sweep the offboarding automation does (#2115, Dan 2026-09-09).
+// The admin toggle asks a person to confirm first; this has nobody to ask, so it
+// takes the sweep rather than the question. Measured 2026-09-09, right after the
+// first live run turned twelve agents not bookable, zero of them held an upcoming
+// booking, because cal.com is still taking every lead. After cutover Slate holds
+// the real book and this is what stops a lead's call sitting with an agent who can
+// no longer be routed to.
+//
 // COST, derived rather than assumed: one Twilio call for the whole roster (142
 // workers against a page size of 200), one roster read, and per flip about 6
 // subrequests through the bookable service. The twelve agent backlog this ships
@@ -32,6 +41,7 @@ import { fetchTwilioWorkers, TwilioReadError } from "@/lib/twilio/client";
 import { mergeWorkers, readWorker, LEGAL_ELIGIBLE_YES, type TwilioSide } from "@/lib/twilio/roster";
 import { planTwilioRoster, type TwilioRosterRow } from "@/lib/twilio/roster-plan";
 import { applyBookableByUserId, type BookableResult } from "@/lib/bookable/service";
+import { startBulkReassign } from "@/lib/booking/service";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { unwrap } from "@/lib/db/result";
 import { ensureDefaultOrg } from "@/lib/provision";
@@ -42,6 +52,19 @@ import type { TwilioWorker } from "@/lib/twilio/client";
 
 export interface TwilioSyncDeps {
   orgId: string;
+  /** Injected, so the stamp a flip is keyed on is one value a test can assert on. */
+  nowIso: () => string;
+  /**
+   * Queue the coverage sweep that moves what the agent already has booked (#2115).
+   *
+   * Idempotent on `markedAtIso` by a database unique index, so a run that dies
+   * between the mark and the flip converges on ONE sweep rather than moving
+   * customers' bookings twice.
+   */
+  startCoverageSweep: (input: {
+    outUserId: string;
+    markedAtIso: string;
+  }) => Promise<{ itemCount: number }>;
   fetchWorkers: () => Promise<TwilioWorker[]>;
   loadRoster: () => Promise<TwilioRosterRow[]>;
   applyBookable: (userId: string, bookable: boolean) => Promise<BookableResult>;
@@ -86,6 +109,24 @@ export interface TwilioSyncResult {
    * and one that returned half the roster would quietly exclude the other half.
    */
   withoutWorker: string[];
+  /**
+   * The coverage sweeps queued for agents this run took out of the pool, and how
+   * many calls each one took (#2115).
+   *
+   * An agent holding NOTHING produces no entry, which is not the same as a sweep
+   * that could not be queued: those are counted apart, so "found nothing" and
+   * "could not look" are never one number (L98, L11).
+   */
+  coverageSweeps: { email: string; bookings: number }[];
+  /**
+   * Coverage sweeps that threw, so the flip went ahead anyway.
+   *
+   * The flip is NOT held back on this. An agent Twilio withholds who is still
+   * bookable misroutes a lead today, which is the sharper harm, and the calls left
+   * behind are caught by `inactive_agent_bookings`, which watches for exactly a not
+   * bookable agent still holding appointments.
+   */
+  coverageSweepFailures: number;
   /**
    * Legal writes that threw, so the run carried on with the rest (L73).
    *
@@ -153,13 +194,15 @@ export async function syncTwilioRedistribute(deps: TwilioSyncDeps): Promise<Twil
     throw new Error("Twilio sync read no Slate users at all, so nothing was judged and no agent was flipped");
   }
 
-  const plan = planTwilioRoster(roster, merged);
+  const plan = planTwilioRoster(roster, merged, deps.nowIso());
   const turnedOff: string[] = [];
   const turnedBackOn: string[] = [];
   const reactivationRefused: string[] = [];
   const legalEligible: string[] = [];
   const legalExcluded: string[] = [];
   const legal = { eligible: legalEligible, excluded: legalExcluded };
+  const coverageSweeps: { email: string; bookings: number }[] = [];
+  const counters = { coverageSweepFailures: 0 };
 
   let flipFailures = 0;
   for (const flip of plan.flips) {
@@ -168,7 +211,14 @@ export async function syncTwilioRedistribute(deps: TwilioSyncDeps): Promise<Twil
     // not leave the other eleven bookable while the run reports a Twilio read
     // failure, which is a different fault in a different system.
     try {
-      await runFlip(flip, deps, { turnedOff, turnedBackOn, reactivationRefused, legal });
+      await runFlip(flip, deps, {
+        turnedOff,
+        turnedBackOn,
+        reactivationRefused,
+        legal,
+        coverageSweeps,
+        counters,
+      });
     } catch (err) {
       flipFailures++;
       log.error("twilio-sync", { msg: "flip failed, carrying on with the rest", user_id: flip.userId, action: flip.action }, err);
@@ -220,6 +270,8 @@ export async function syncTwilioRedistribute(deps: TwilioSyncDeps): Promise<Twil
     turnedBackOn,
     reactivationRefused,
     markedWithNoWorker: plan.markedWithNoWorker,
+    coverageSweeps,
+    coverageSweepFailures: counters.coverageSweepFailures,
     legalEligible,
     legalExcluded,
     withoutWorker: plan.withoutWorker,
@@ -240,6 +292,8 @@ async function runFlip(
     turnedBackOn: string[];
     reactivationRefused: string[];
     legal: { eligible: string[]; excluded: string[] };
+    coverageSweeps: { email: string; bookings: number }[];
+    counters: { coverageSweepFailures: number };
   },
 ): Promise<void> {
   // Counted where the write LANDS, never where it is planned, so a payload that
@@ -255,6 +309,31 @@ async function runFlip(
     // column, which would build from a base this one has already changed (L443).
     await deps.writeAttributes(flip.userId, flip.attributes);
     countLegal();
+    // Then the coverage sweep, BEFORE the flip (#2115). The order is the crash
+    // safety: a run that dies here leaves a marked and still bookable agent, whom
+    // the next hour plans again, reads the same stamp from, and converges onto the
+    // same sweep by its unique key. Queued after the flip instead, that agent is no
+    // longer bookable, nothing re-plans them, and the sweep is lost in silence.
+    //
+    // Its own boundary, and the flip is NOT held back on it: an agent Twilio
+    // withholds who is still bookable misroutes a lead today, which is the sharper
+    // harm, and calls left behind are caught by `inactive_agent_bookings`.
+    if (flip.markedAtIso) {
+      try {
+        const { itemCount } = await deps.startCoverageSweep({
+          outUserId: flip.userId,
+          markedAtIso: flip.markedAtIso,
+        });
+        if (itemCount > 0) out.coverageSweeps.push({ email: flip.email, bookings: itemCount });
+      } catch (err) {
+        out.counters.coverageSweepFailures++;
+        log.error(
+          "twilio-sync",
+          { msg: "coverage sweep could not be queued, taking them out of the pool anyway", user_id: flip.userId },
+          err,
+        );
+      }
+    }
     const result = await deps.applyBookable(flip.userId, false);
     if (result.status === "applied") {
       out.turnedOff.push(flip.email);
@@ -317,6 +396,26 @@ export async function defaultTwilioSyncDeps(orgId?: string): Promise<TwilioSyncD
   const id = orgId ?? (await ensureDefaultOrg()).id;
   return {
     orgId: id,
+    nowIso: () => new Date().toISOString(),
+    // The same sweep the offboarding automation queues (#1241) and the admin
+    // coverage panel starts, so an agent leaving the pool is covered identically
+    // whichever thing took them out of it. No human actor: nobody is present in an
+    // hourly cron tick, and `redistributeMarkedAtIso` is the record of WHY there is
+    // none, which is what `coverageSweepActor` reads.
+    startCoverageSweep: async ({ outUserId, markedAtIso }) => {
+      const { itemCount } = await startBulkReassign({
+        outUserId,
+        // Open ended, from the moment Slate marked them: everything still ahead of
+        // them is theirs no longer. `coverageSelectionBounds` still refuses to move
+        // an appointment already under way.
+        rangeStartIso: markedAtIso,
+        rangeEndIso: null,
+        reason: { code: "coverage", detail: null },
+        actor: null,
+        redistributeMarkedAtIso: markedAtIso,
+      });
+      return { itemCount };
+    },
     fetchWorkers: () => fetchTwilioWorkers(),
     loadRoster: async () => {
       // cap-safe: users is a roster-bounded table, ~148 rows against a 200-agent design target
