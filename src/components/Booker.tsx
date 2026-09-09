@@ -17,6 +17,7 @@ import { HONEYPOT_FIELD } from "@/lib/booking/honeypot";
 import { getJson, postJson, REQUEST_TIMEOUT_MS } from "@/lib/http";
 import { useStalledAfter } from "@/lib/useStalledAfter";
 import { BobbingDots } from "@/components/BobbingDots";
+import { ConfirmationMark } from "@/components/ConfirmationMark";
 import { messageLines } from "@/lib/booking/slot-picker";
 import {
   BOOKING_ERROR_COPY,
@@ -696,18 +697,7 @@ export default function Booker({
             delight moment); confirmation is a one-time swap, so the single iframe
             resize it triggers is not the animated-height jitter guarded above. */}
         <div className="pn-confirm-enter p-10 text-center">
-          <div className="mx-auto flex max-w-72 items-center justify-center rounded-xl bg-pennie-sky-soft px-6 py-5">
-            {/* Plain <img>: OpenNext on Cloudflare has no image loader configured. */}
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img
-              src="/brand/pic-1-coins.png"
-              alt=""
-              aria-hidden="true"
-              width={144}
-              height={144}
-              className="h-36 w-36 object-contain"
-            />
-          </div>
+          <ConfirmationMark />
           <h2
             ref={confirmedHeadingRef}
             tabIndex={-1}

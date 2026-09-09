@@ -18,6 +18,7 @@ import {
 import { DateTime } from "luxon";
 import { messageLines } from "@/lib/booking/slot-picker";
 import { RESCHEDULE_REASONS } from "@/lib/booking/core";
+import { CONFIRMATION_MARK } from "@/lib/booking/confirmation-mark";
 
 // #625: the confirm POST must not freeze the button in "Booking your call…" if
 // the request rejects at the network layer (flaky mobile). It surfaces an error
@@ -232,10 +233,11 @@ describe("Booker confirm", () => {
   });
 
   // #637: the embed is the primary lead surface, but its confirmation used to
-  // show only a 64px check badge while the standalone page got the branded coins
-  // illustration. The design system calls for one branded delight moment on
-  // success, so both surfaces now render the same illustration.
-  it("shows the branded coins illustration on the embedded confirmation (#637)", async () => {
+  // show only a 64px check badge while the standalone page got the branded
+  // graphic. The design system calls for one branded delight moment on success,
+  // so both surfaces render the SAME mark. That decision stands; #2163 only
+  // changed which asset it is, so this asserts sameness rather than a filename.
+  it("shows the same branded mark on the embedded confirmation as the standalone page (#637)", async () => {
     global.fetch = vi.fn(async (url: RequestInfo | URL) => {
       if (String(url).includes("/api/availability")) {
         return { ok: true, json: async () => availability } as Response;
@@ -254,8 +256,13 @@ describe("Booker confirm", () => {
     await fillAndConfirm();
 
     await screen.findByText("You're all set");
-    const coins = document.querySelector('img[src="/brand/pic-1-coins.png"]');
-    expect(coins).not.toBeNull();
+    // Whichever form the mark takes for this viewer (the animation, or the still
+    // under reduced motion), the embed gets it. What #637 forbids is the embed
+    // being fobbed off with something smaller than the standalone page shows.
+    const mark = document.querySelector(
+      `video[src="${CONFIRMATION_MARK.video}"], img[src="${CONFIRMATION_MARK.still}"]`,
+    );
+    expect(mark).not.toBeNull();
   });
 
   // #637: the confirmation offered no way back to the booking. It now links to
