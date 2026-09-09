@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 
 import type { ReasonOption } from "@/lib/booking/core";
 import type { BulkReassignActionableItem, BulkReassignProgress } from "@/lib/booking/bulk-reassign";
-import { SKIPPED_ITEM_STATUSES } from "@/lib/booking/bulk-reassign";
+import { isBulkReassignProgress, SKIPPED_ITEM_STATUSES } from "@/lib/booking/bulk-reassign";
 import { formatSlotTime } from "@/lib/booking/slot-label";
 import {
   moveOutcomeSentence,
@@ -15,8 +15,13 @@ import {
 } from "@/lib/booking/move-progress";
 import {
   COVERAGE_PANEL_NAME,
+  coverageNothingMovedNotice,
+  coverageNothingToMoveSentence,
   coveragePanelDescription,
   coveragePanelTimeOffNote,
+  coveragePreviewLine,
+  coverageProgressUnreadableNotice,
+  type CoveragePreviewState,
 } from "@/lib/booking/coverage-panel-copy";
 import { getJson, postJson } from "@/lib/http";
 import { btnCls, btnSecondaryCls, cardCls, inputCls, labelCls, proseCls } from "@/components/ui/styles";
@@ -97,8 +102,13 @@ export default function BulkReassignCoverage({
   const [reasonCode, setReasonCode] = useState(() => reassignReasons[0]?.code ?? "");
   const [reasonDetail, setReasonDetail] = useState("");
 
-  const [preview, setPreview] = useState<number | null>(null);
-  const [previewLoading, setPreviewLoading] = useState(false);
+  /**
+   * The count, and how it was obtained, as ONE value (L544). It was a number or
+   * null beside a loading flag, and null meant three different things: nobody has
+   * asked yet, the read failed, and the reply could not be read. The last of those
+   * showed the reader "Enter a range" when they had entered one (L10, L11).
+   */
+  const [preview, setPreview] = useState<CoveragePreviewState>({ kind: "unasked" });
 
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -106,6 +116,23 @@ export default function BulkReassignCoverage({
   const [jobId, setJobId] = useState<string | null>(initialJobId ?? null);
   const [progress, setProgress] = useState<BulkReassignProgress | null>(null);
   const [pollFailures, setPollFailures] = useState(0);
+  /**
+   * A progress reply that ARRIVED and could not be read (#2135). Its own state,
+   * beside running and lost contact: a reply that never came and a reply that did
+   * not fit are different facts with different remedies, and neither is a blank
+   * (L10, L11).
+   */
+  const [unreadable, setUnreadable] = useState(false);
+  /**
+   * Did the reader start this move on this panel, or arrive on one somebody else
+   * enqueued (#2136)? A time off approval enqueues a sweep and the Team Time Off
+   * row links straight to it, so on that arrival nobody chose the range, and the
+   * two arrivals owe different sentences and different controls.
+   */
+  const [startedHere, setStartedHere] = useState(false);
+  /** A move started here that moved nothing, said on the form rather than on a
+   *  screen of its own (#2142). */
+  const [nothingMoved, setNothingMoved] = useState(false);
   const [lastUpdated, setLastUpdated] = useState<number | null>(null);
   /**
    * How many consecutive polls have come back with the SAME settled count
@@ -127,11 +154,25 @@ export default function BulkReassignCoverage({
     if (r.to) params.set("to", r.to);
     const t = setTimeout(async () => {
       if (cancelled) return;
-      setPreviewLoading(true);
-      const res = await getJson<{ count?: number }>(`${base}?${params.toString()}`).catch(() => null);
+      setPreview({ kind: "counting" });
+      const res = await getJson<{ count?: unknown }>(`${base}?${params.toString()}`).catch(() => null);
       if (cancelled) return;
-      setPreviewLoading(false);
-      setPreview(res && res.ok ? (res.data?.count ?? null) : null);
+      // The same shape question the poll asks (#2135), swept for in this file's
+      // own diff: a count that is not a number would otherwise reach the reader
+      // inside a sentence, and would enable the button by failing the `=== 0`
+      // test. A read that failed and a reply that could not be counted are the
+      // same fact to a reader, which is that nobody knows the number.
+      const raw = res && res.ok ? res.data?.count : undefined;
+      const next: CoveragePreviewState =
+        typeof raw === "number" && Number.isFinite(raw)
+          ? { kind: "count", count: raw }
+          : { kind: "unreadable" };
+      setPreview(next);
+      // The "nothing moved" line stands only while the range really does hold
+      // nothing. The moment a count disagrees with it, the count is the more
+      // useful of the two and takes the line back, so the panel never shows an
+      // outcome that the number beside it would contradict.
+      if (next.kind === "count" && next.count !== 0) setNothingMoved(false);
     }, 350);
     return () => {
       cancelled = true;
@@ -147,12 +188,41 @@ export default function BulkReassignCoverage({
     if (!jobId || done) return;
     let cancelled = false;
     const tick = async () => {
-      const res = await getJson<BulkReassignProgress>(`${base}?jobId=${encodeURIComponent(jobId)}`).catch(
+      // Deliberately `unknown` (#2135). `getJson<BulkReassignProgress>` was a
+      // promise about a body nothing had read: a 200 of the wrong shape threw
+      // during render and the admin page's error boundary blanked the WHOLE page.
+      // Typing it unknown makes `tsc` refuse to let this be used as progress
+      // until the predicate has said it is.
+      const res = await getJson<unknown>(`${base}?jobId=${encodeURIComponent(jobId)}`).catch(
         () => null,
       );
       if (cancelled) return;
-      if (res && res.ok && res.data) {
+      if (res && res.ok && isBulkReassignProgress(res.data)) {
         const next = res.data;
+        /**
+         * A move the reader started HERE that had nothing to move is the FORM's
+         * own state, not a screen (#2142).
+         *
+         * The old screen said "Nothing to move" and offered `Start another`, and
+         * `another` was the one word in it carrying meaning: the run placed
+         * nothing and touched no booking, so nothing had been started. Worse, it
+         * stated a fact about the range and then took away the two controls that
+         * change it. Back on the form those controls are under the reader's hand
+         * and the count re-reads as they are edited.
+         *
+         * A sweep the reader ARRIVED on keeps its screen, because there is no
+         * form state that corresponds to a window somebody else chose (#2136).
+         */
+        if (startedHere && next.summary.total === 0) {
+          setJobId(null);
+          setProgress(null);
+          setPollFailures(0);
+          setLastUpdated(null);
+          setUnreadable(false);
+          setStartedHere(false);
+          setNothingMoved(true);
+          return;
+        }
         setProgress((prev) => {
           const settled = (p: BulkReassignProgress) => p.summary.total - p.summary.counts.pending;
           setUnchangedPolls((n) => (prev && settled(prev) === settled(next) ? n + 1 : 0));
@@ -160,6 +230,12 @@ export default function BulkReassignCoverage({
         });
         setLastUpdated(Date.now());
         setPollFailures(0);
+        setUnreadable(false);
+      } else if (res && res.ok) {
+        // The reply arrived; it is not progress. Polling continues, because a
+        // page that is merely older than the server recovers on its own once the
+        // shapes line up again, and the panel says so rather than going blank.
+        setUnreadable(true);
       } else {
         setPollFailures((n) => n + 1);
       }
@@ -170,7 +246,7 @@ export default function BulkReassignCoverage({
       cancelled = true;
       clearInterval(iv);
     };
-  }, [base, jobId, done]);
+  }, [base, jobId, done, startedHere]);
 
   async function start() {
     setStarting(true);
@@ -189,6 +265,9 @@ export default function BulkReassignCoverage({
     }
     setProgress(null);
     setPollFailures(0);
+    setUnreadable(false);
+    setNothingMoved(false);
+    setStartedHere(true);
     setJobId(res.data.jobId);
   }
 
@@ -198,9 +277,13 @@ export default function BulkReassignCoverage({
     setError(null);
     setPollFailures(0);
     setLastUpdated(null);
+    setUnreadable(false);
+    setStartedHere(false);
   }
 
   const lostContact = pollFailures >= MAX_POLL_FAILURES;
+
+
 
   return (
     <section className={cardCls}>
@@ -274,14 +357,11 @@ export default function BulkReassignCoverage({
             </div>
           </div>
 
+          {/* One line, which is the count until a run has something to report
+              about itself, and then the outcome (#2142). Two lines would state
+              the same fact twice on one surface (L605). */}
           <p className="mt-4 text-sm text-fg" aria-live="polite">
-            {previewLoading
-              ? "Counting bookings in range…"
-              : preview === null
-                ? "Enter a range to see how many bookings would move."
-                : preview === 0
-                  ? "No upcoming bookings in this range."
-                  : `${preview} booking${preview === 1 ? "" : "s"} would be reassigned.`}
+            {nothingMoved ? coverageNothingMovedNotice(agentName) : coveragePreviewLine(preview)}
           </p>
 
           {error && <p className="mt-3 text-sm text-[var(--error)]">{error}</p>}
@@ -289,7 +369,12 @@ export default function BulkReassignCoverage({
           <button
             type="button"
             className={`${btnCls} mt-4 disabled:cursor-not-allowed disabled:opacity-50`}
-            disabled={starting || previewLoading || preview === 0 || (reasonCode === "other" && !reasonDetail.trim())}
+            disabled={
+              starting ||
+              preview.kind === "counting" ||
+              (preview.kind === "count" && preview.count === 0) ||
+              (reasonCode === "other" && !reasonDetail.trim())
+            }
             onClick={start}
           >
             {starting ? "Starting…" : "Move these bookings"}
@@ -297,8 +382,10 @@ export default function BulkReassignCoverage({
         </>
       ) : (
         <Progress
+          agentName={agentName}
           progress={progress}
           lostContact={lostContact}
+          unreadable={unreadable}
           lastUpdated={lastUpdated}
           unchangedPolls={unchangedPolls}
           onReset={reset}
@@ -309,14 +396,19 @@ export default function BulkReassignCoverage({
 }
 
 function Progress({
+  agentName,
   progress,
   lostContact,
+  unreadable,
   lastUpdated,
   unchangedPolls,
   onReset,
 }: {
+  agentName: string;
   progress: BulkReassignProgress | null;
   lostContact: boolean;
+  /** A reply arrived and was not progress (#2135). */
+  unreadable: boolean;
   lastUpdated: number | null;
   /** Consecutive polls that returned the same settled count. */
   unchangedPolls: number;
@@ -331,6 +423,23 @@ function Progress({
         </p>
         <button type="button" className={`${btnSecondaryCls} mt-3`} onClick={onReset}>
           Start another
+        </button>
+      </div>
+    );
+  }
+  // #2135. Checked BEFORE the "starting" line, because a reply that arrived and
+  // did not fit is not a move that has yet to report: leaving it under the
+  // spinner is the blank this issue is about, one state further along.
+  if (unreadable) {
+    return (
+      <div className="mt-4">
+        <p className="text-sm text-[var(--error)]">{coverageProgressUnreadableNotice()}</p>
+        <button
+          type="button"
+          className={`${btnSecondaryCls} mt-3`}
+          onClick={() => window.location.reload()}
+        >
+          Reload the page
         </button>
       </div>
     );
@@ -358,11 +467,12 @@ function Progress({
       <div className="mt-4">
         <p className="pn-h4">Nothing to move</p>
         <p className={`mt-2 text-sm text-fg-muted ${proseCls}`}>
-          This agent had no upcoming bookings in the range you chose, so nothing was
-          reassigned.
+          {coverageNothingToMoveSentence(agentName, progress.job.range_start, progress.job.range_end)}
         </p>
+        {/* NOT "Start another" (#2142). Whoever is reading this arrived on a sweep
+            somebody else enqueued, so they have started nothing to start again. */}
         <button type="button" className={`${btnSecondaryCls} mt-4`} onClick={onReset}>
-          Start another
+          Start a move
         </button>
       </div>
     );
