@@ -12,6 +12,7 @@ import {
   planUniformSchedule,
 } from "../src/lib/schedule-replacement.ts";
 import { assert, finish } from "./lib/harness.ts";
+import { CURATED_ZONES } from "../src/lib/booking/timezones.ts";
 
 /** A real zone, so the day rules are what these cases are testing (#1671). */
 const ZONE = "America/New_York";
@@ -169,12 +170,20 @@ const ZONE = "America/New_York";
   assert(good.ok === true, "a real IANA zone is accepted");
   assert(good.ok === true && good.timezone === "America/Los_Angeles", "the plan carries the zone");
 
-  // The exact values measured with Luxon on the issue: two that ARE valid and
-  // must keep working, and the two that produce NaN weekdays.
-  for (const valid of ["America/New_York", "EST5EDT", "UTC"]) {
+  // The exact values measured with Luxon on the issue: ones that ARE valid and
+  // must keep working, and the ones that produce NaN weekdays.
+  //
+  // #2126 narrowed this. Being readable by Luxon is still NECESSARY, and it is no
+  // longer SUFFICIENT: the zone must also be one this team books in, which is the
+  // server side half of the fixed list #1849 decided on and never enforced. So
+  // `EST5EDT` still passes, being New York's rules under another name, and `UTC`
+  // no longer does. That is a real change to what this validator accepts and it
+  // is deliberate: an agent stored on UTC is a value the hours picker cannot
+  // show, and the picker's fallback then silently rewrites it on the next save.
+  for (const valid of ["America/New_York", "EST5EDT"]) {
     assert(
       planUniformSchedule([1], 480, 1020, valid).ok === true,
-      `${valid} is a zone Luxon can read, so it is accepted`,
+      `${valid} is a zone Luxon can read AND one this team books in, so it is accepted`,
     );
   }
   for (const bad of ["Eastern", "", "  ", "Not/AZone", "America/New York"]) {
@@ -307,6 +316,71 @@ const ZONE = "America/New_York";
       plan.rules.map((r) => `${r.weekday}@${r.start_minute}`).join(",") ===
         "1@480,1@840,1@1080,2@480",
       `ordered by weekday then start time (got ${plan.rules.map((r) => `${r.weekday}@${r.start_minute}`).join(",")})`,
+    );
+  }
+}
+
+
+
+// --- a zone the picker cannot show (#2126) ---
+//
+// The list of zones anybody can pick was fixed to seven US ones (#1849), and the
+// rule that anything outside it is refused ON THE SERVER was written down and
+// enforced nowhere. Measured on 2026-09-09: ten live agents, nine of them
+// bookable, held a zone the picker cannot show, because the cal.com import
+// (#1738) wrote each agent's zone straight through and nothing compared it to the
+// list. Their hours page then showed Eastern preselected, since that is what the
+// picker falls back to, so any save silently moved a Boise agent's whole bookable
+// day two hours.
+//
+// Refusing them outright would be wrong: Boise IS Mountain, to the minute, so a
+// refusal would reject a correct week and leave nine people unable to save at
+// all. So an unoffered zone is resolved to the offered zone whose clock it
+// MATCHES, and refused only when no offered zone matches. The match is MEASURED
+// rather than listed, so a zone nobody thought of is handled on its merits and a
+// zone that only looks similar is refused.
+{
+  const boise = planUniformSchedule([1], 480, 1020, "America/Boise");
+  assert(boise.ok === true, "a Boise week is accepted rather than refused");
+  assert(
+    boise.ok === true && boise.timezone === "America/Denver",
+    `#2126: Boise is stored as the offered zone with the identical clock (got ${boise.ok === true ? boise.timezone : "refused"})`,
+  );
+
+  const indiana = planUniformSchedule([1], 480, 1020, "America/Indiana/Indianapolis");
+  assert(
+    indiana.ok === true && indiana.timezone === "America/New_York",
+    `#2126: Indianapolis is stored as New York, the same clock (got ${indiana.ok === true ? indiana.timezone : "refused"})`,
+  );
+
+  // MEASURED, not listed: Creston is in Canada and appears in no mapping anybody
+  // wrote, and it keeps Mountain standard all year exactly as Phoenix does. A
+  // hand written table of the zones seen on this roster would refuse it.
+  const creston = planUniformSchedule([1], 480, 1020, "America/Creston");
+  assert(
+    creston.ok === true && creston.timezone === "America/Phoenix",
+    `#2126: a zone nobody listed resolves on its clock alone (got ${creston.ok === true ? creston.timezone : "refused"})`,
+  );
+
+  // Every offered zone passes through untouched. Without this the resolution
+  // could quietly rewrite one offered zone as another that happens to match.
+  for (const offered of CURATED_ZONES) {
+    const plan = planUniformSchedule([1], 480, 1020, offered.id);
+    assert(
+      plan.ok === true && plan.timezone === offered.id,
+      `#2126: ${offered.id} is offered, so it is stored exactly as chosen (got ${plan.ok === true ? plan.timezone : "refused"})`,
+    );
+  }
+
+  // A real zone with no offered equivalent is REFUSED, naming the field. These
+  // are readable zones, so the older check (#1671) passes them: this is the new
+  // one doing the work.
+  for (const away of ["Europe/London", "Asia/Tokyo", "UTC", "America/Sao_Paulo"]) {
+    const plan = planUniformSchedule([1], 480, 1020, away);
+    assert(plan.ok === false, `#2126: ${away} is not a zone this roster offers, so it is refused`);
+    assert(
+      plan.ok === false && /time ?zone/i.test(plan.error),
+      `#2126: ${away} is refused by NAMING the timezone (got: ${plan.ok === false ? plan.error : ""})`,
     );
   }
 }
