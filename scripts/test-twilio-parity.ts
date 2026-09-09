@@ -182,6 +182,29 @@ function slate(over: Partial<SlateSide> = {}): SlateSide {
   }
 }
 {
+  // The four the FIRST LIVE RUN of the roster sync reported (#2116). Each was
+  // unclassified, so each was written to the log every hour and could name a
+  // `pnpm verify:twilio-parity` run as `unmapped-tag` for somebody who agreed on
+  // everything else, which is how a real signal turns into noise and a check stops
+  // being read (L36, L217).
+  //
+  // Named here rather than left to the loop above, which iterates whatever the list
+  // happens to hold and so cannot fail before they are in it (L1).
+  for (const tag of ["AI Agent", "New Recruit", "Red", "Short Links"]) {
+    const w = side(worker(["Low Debt: 20k - 30k", "Achieve", tag]))!;
+    eq(w.unmappedTags.length, 0, `"${tag}" was measured on the live roster and is classified`);
+    eq(compareOne(w, slate()).verdict, "agree", `and a row carrying "${tag}" agrees rather than reporting it`);
+  }
+}
+{
+  // The one that is only true of the real data: Twilio stores it as `"New Recruit "`
+  // with a trailing space. `readWorker` trims every tag before matching, so the
+  // classification holds, and this pins that it does rather than leaving the live
+  // roster to find out.
+  const w = side(worker(["Low Debt: 20k - 30k", " New Recruit "]))!;
+  eq(w.unmappedTags.length, 0, "a classified tag padded with spaces, as Twilio actually stores it, still matches");
+}
+{
   // Manager assignment, matched by PREFIX rather than by naming the seven managers,
   // because a list of names goes stale the first time somebody changes job (L362).
   // Slate takes manager of record from Salesforce, never from Twilio.

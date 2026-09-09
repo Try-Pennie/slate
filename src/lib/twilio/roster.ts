@@ -60,6 +60,28 @@ export const IRRELEVANT_TAGS: readonly string[] = [
   // take a booking.
   "Cross Team Transfers",
   "1.9 Disposition - Not Manager",
+  // The four the first live run of the roster sync reported (#2116). Each is
+  // measured rather than guessed: the counts and the addresses below are from a
+  // read of all 142 workers on 2026-09-09, and each carries its own reason,
+  // because an entry with none beside neighbours that each have one is evidence
+  // nobody reasoned about it (L233).
+  //
+  // Five workers, and every one is a Regal voice agent rather than a person:
+  // "AI Agent Marcia", two "Zoe" outbound agents and an alert agent, all on
+  // regal.ai or regalvoice.com. Nothing Slate books can carry it.
+  "AI Agent",
+  // One worker, agent_pennie-mgmt_7@regal.ai, named "Transfer Test". A Regal
+  // automation entity, not a person joining the roster, so this is not the hiring
+  // cohort the words suggest. Twilio stores it as `"New Recruit "` with a trailing
+  // space, which matches because `readWorker` trims every tag before comparing.
+  "New Recruit",
+  // One worker, the Regal support login login+pennie-mgmt@regalvoice.com. The same
+  // colour cohort family as "Green" above, and on a vendor account either way.
+  "Red",
+  // One worker, bnelms@trypennie.com, a manager. Access to a tool rather than a
+  // fact about who can take a booking, and the only one of these four on our own
+  // domain, so the only one that could ever have named a parity run.
+  "Short Links",
 ];
 
 /**
