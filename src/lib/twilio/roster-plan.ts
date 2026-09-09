@@ -78,6 +78,17 @@ export interface PlannedRedistribute {
    * flipped or lose the ones where it really moved.
    */
   legal: { value: LegalEligible; changed: boolean };
+  /**
+   * The moment Slate marked them, for a `turn-off` only, and null on the way back
+   * in (#2115).
+   *
+   * It is the coverage sweep's idempotency key AND the sweep's window start, and it
+   * is READ BACK from the row whenever one is already stored: a run that died
+   * between the mark and the flip leaves a marked and still bookable agent, and
+   * minting a fresh stamp next hour would be a fresh key, so the unique index would
+   * never fire and the sweep would run twice.
+   */
+  markedAtIso: string | null;
 }
 
 /**
@@ -132,14 +143,32 @@ export function isMarkedRedistribute(attributes: Attributes | null | undefined):
   return String(attributes?.redistribute ?? "") === REDISTRIBUTE_MARK;
 }
 
-function withMark(attributes: Attributes | null): Attributes {
-  return { ...(attributes ?? {}), redistribute: REDISTRIBUTE_MARK };
+function withMark(attributes: Attributes | null, markedAtIso: string): Attributes {
+  return { ...(attributes ?? {}), redistribute: REDISTRIBUTE_MARK, redistribute_at: markedAtIso };
 }
 
 function withoutMark(attributes: Attributes | null): Attributes {
   const next = { ...(attributes ?? {}) };
   delete next.redistribute;
+  // The stamp goes WITH the mark. Left behind, a later pool exit would key its
+  // coverage sweep onto the stamp of the previous one, and the unique index would
+  // refuse the new sweep while the old job explained nothing about it.
+  delete next.redistribute_at;
   return next;
+}
+
+/**
+ * The stamp already stored for this mark, or null when there is nothing usable.
+ *
+ * A value that is not a readable instant cannot key anything, so it is replaced
+ * rather than carried into the database as a corrupt key. `Date.parse` answers NaN
+ * for an unreadable string and every comparison with NaN is false, so this asks
+ * `Number.isFinite` rather than letting the unreadable value through (L50).
+ */
+function storedMarkStamp(attributes: Attributes | null | undefined): string | null {
+  const raw = attributes?.redistribute_at;
+  if (typeof raw !== "string" || raw.trim() === "") return null;
+  return Number.isFinite(Date.parse(raw)) ? raw : null;
 }
 
 /** The stored legal value, in the one shape the comparison and the write agree on. */
@@ -156,6 +185,9 @@ function withLegal(attributes: Attributes | null, value: LegalEligible): Attribu
  * Decide every flip, from the roster Slate holds and the workers Twilio answered
  * with.
  *
+ * `nowIso` is injected rather than read from the clock, so the stamp a flip carries
+ * is a value a test can assert on and two runs in one test cannot disagree.
+ *
  * `twilioByEmail` is keyed on the lowercased address, as `readWorker` produces it.
  * An EMPTY map flips nobody in either direction: the caller refuses a read that
  * returned no workers before ever getting here, and this is the second half of that
@@ -168,6 +200,7 @@ function withLegal(attributes: Attributes | null, value: LegalEligible): Attribu
 export function planTwilioRoster(
   rows: TwilioRosterRow[],
   twilioByEmail: Map<string, TwilioSide>,
+  nowIso: string,
 ): RedistributePlan {
   const flips: PlannedRedistribute[] = [];
   const legalWrites: LegalWrite[] = [];
@@ -192,12 +225,14 @@ export function planTwilioRoster(
       // Twilio withholds them. Only a flip is planned, and only from inside the
       // pool: an agent already out of it is left exactly as they are.
       if (row.bookable) {
+        const markedAtIso = storedMarkStamp(row.attributes) ?? nowIso;
         flips.push({
           userId: row.id,
           email,
           action: "turn-off",
-          attributes: withMark(base),
+          attributes: withMark(base, markedAtIso),
           legal: { value: wantLegal, changed: legalChanged },
+          markedAtIso,
         });
         continue;
       }
@@ -214,6 +249,7 @@ export function planTwilioRoster(
           action: "turn-back-on",
           attributes: withoutMark(base),
           legal: { value: wantLegal, changed: legalChanged },
+          markedAtIso: null,
         });
         continue;
       }

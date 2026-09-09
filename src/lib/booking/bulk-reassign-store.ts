@@ -118,6 +118,13 @@ export interface CreateBulkReassignJobInput {
    *  offboarding call reads the same stamp back and converges on one sweep. Absent
    *  for every other sweep. */
   offboardingDeactivatedAtIso?: string | null;
+  /** The Twilio redistribute pool exit this sweep covers (#2115), when the hourly
+   *  roster sync triggered it. The moment Slate marked the agent, stored on their
+   *  own `attributes.redistribute_at` in the same write as the mark, which is both
+   *  the window start and, paired with the agent, the idempotency key: a sync that
+   *  died mid flip reads the same stamp back and converges on one sweep. Absent for
+   *  every other sweep. */
+  redistributeMarkedAtIso?: string | null;
 }
 
 /** Postgres unique-violation. The ONLY error class that means "a sweep already
@@ -144,6 +151,7 @@ export async function createBulkReassignJob(
 ): Promise<{ jobId: string; itemCount: number; snapshot: CoverageBookingRow[] }> {
   const oooRequestId = input.oooRequestId ?? null;
   const offboardingDeactivatedAt = input.offboardingDeactivatedAtIso ?? null;
+  const redistributeMarkedAt = input.redistributeMarkedAtIso ?? null;
   // The rows this run snapshotted, kept so the caller can describe the work to a
   // person (#1239) without asking the database the same question a second time and
   // getting a different answer. The enqueue layer itself only ever needs the ids.
@@ -174,6 +182,7 @@ export async function createBulkReassignJob(
           acting_as_user_id: input.actingAsUserId,
           ooo_request_id: oooRequestId,
           offboarding_deactivated_at: offboardingDeactivatedAt,
+          redistribute_marked_at: redistributeMarkedAt,
         })
         .select("id")
         .single();
@@ -199,6 +208,23 @@ export async function createBulkReassignJob(
             .eq("offboarding_deactivated_at", offboardingDeactivatedAt)
             .maybeSingle(),
           "find-existing-offboarding-sweep",
+        ) as { id: string } | null;
+        return row ?? null;
+      }
+      // #2115: a redistribute sweep is keyed on (agent, mark) instead. Same
+      // convergent conflict path, a third unique index, so the lookup has to ask
+      // the question THAT index answers.
+      if (redistributeMarkedAt) {
+        const row = unwrap(
+          await supabaseAdmin()
+            .from("bulk_reassign_jobs")
+            // cap-safe: the unique index on (out_user_id, redistribute_marked_at)
+            // means this matches at most one row.
+            .select("id")
+            .eq("out_user_id", input.outUserId)
+            .eq("redistribute_marked_at", redistributeMarkedAt)
+            .maybeSingle(),
+          "find-existing-redistribute-sweep",
         ) as { id: string } | null;
         return row ?? null;
       }

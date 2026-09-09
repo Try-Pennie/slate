@@ -78,6 +78,8 @@ const twilioOk = (over: Partial<TwilioSyncResult> = {}) => ({
     turnedBackOn: [],
     reactivationRefused: [],
     markedWithNoWorker: [],
+    coverageSweeps: [],
+    coverageSweepFailures: 0,
     legalEligible: [],
     legalExcluded: [],
     withoutWorker: [],
@@ -1162,6 +1164,44 @@ describe("syncSalesforceNow (#491, #2071)", () => {
     // The two failures send a reader to different places, so one line must never
     // answer for the other (L11).
     expect(redirected).not.toContain("could not be flipped at all");
+  });
+
+  // #2115: taking somebody out of the pool strands what they have booked, so the
+  // flip queues the move and the banner says how much is moving.
+  it("says how many upcoming calls are moving off the agents who left the pool", async () => {
+    rosterSync.runRosterSync.mockResolvedValueOnce(
+      syncOutcome(
+        { updated: 0 },
+        twilioOk({
+          turnedOff: ["a@x", "b@x"],
+          coverageSweeps: [
+            { email: "a@x", bookings: 3 },
+            { email: "b@x", bookings: 1 },
+          ],
+        }),
+      ),
+    );
+    let redirected = "";
+    try {
+      await syncSalesforceNow();
+    } catch (e) {
+      redirected = decodeURIComponent(String((e as Error).message));
+    }
+    expect(redirected).toContain("4 upcoming calls being moved off 2 agents who left the pool");
+  });
+
+  it("names a sweep that could not be queued and where to go instead", async () => {
+    rosterSync.runRosterSync.mockResolvedValueOnce(
+      syncOutcome({ updated: 0 }, twilioOk({ turnedOff: ["a@x"], coverageSweepFailures: 1 })),
+    );
+    let redirected = "";
+    try {
+      await syncSalesforceNow();
+    } catch (e) {
+      redirected = decodeURIComponent(String((e as Error).message));
+    }
+    expect(redirected).toContain("could not be queued for a move");
+    expect(redirected).toContain("coverage panel");
   });
 
   it("says nothing about Twilio when it read fine and changed nobody", async () => {

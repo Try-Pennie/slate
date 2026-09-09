@@ -31,6 +31,9 @@ import { assert, eq, finish } from "./lib/harness.ts";
 
 const worker = (email: string, teams: string[]) => ({ attributes: JSON.stringify({ email, teams }) });
 
+/** Injected, so the stamp the sweep is keyed on is a value a test can assert on. */
+const NOW = "2026-09-09T12:00:00.000Z";
+
 function row(over: Partial<TwilioRosterRow> = {}): TwilioRosterRow {
   return { id: "u1", email: "a@trypennie.com", bookable: true, deactivated: false, isTest: false, attributes: {}, ...over };
 }
@@ -46,11 +49,21 @@ function row(over: Partial<TwilioRosterRow> = {}): TwilioRosterRow {
 function deps(
   over: Partial<TwilioSyncDeps> = {},
   answer?: (userId: string, bookable: boolean) => BookableResult,
+  sweepAnswer?: (userId: string) => { itemCount: number },
 ) {
   const calls: string[] = [];
   const audits: Record<string, unknown>[] = [];
   const base: TwilioSyncDeps = {
     orgId: "org1",
+    nowIso: () => NOW,
+    // What the sweep ANSWERS is a separate knob from the sweep itself, for the same
+    // reason the flip's is: the recording has to happen on every path, and an
+    // override that returned a count without recording would leave the order
+    // assertion comparing against a stub that never spoke.
+    startCoverageSweep: async ({ outUserId, markedAtIso }) => {
+      calls.push(`sweep:${outUserId}:${markedAtIso}`);
+      return sweepAnswer ? sweepAnswer(outUserId) : { itemCount: 0 };
+    },
     fetchWorkers: async () => [worker("a@trypennie.com", ["Redistribute"])],
     loadRoster: async () => [row()],
     applyBookable: async (userId, bookable) => {
@@ -76,8 +89,12 @@ function deps(
   eq(r.turnedOff, ["a@trypennie.com"], "a bookable agent Twilio withholds is turned off");
   eq(
     d.calls,
-    ['attrs:u1:{"legal_eligible":"N","redistribute":"Y"}', "flip:u1:false"],
-    "the mark is written BEFORE the flip, so a crash between them converges next hour",
+    [
+      `attrs:u1:{"legal_eligible":"N","redistribute":"Y","redistribute_at":"${NOW}"}`,
+      `sweep:u1:${NOW}`,
+      "flip:u1:false",
+    ],
+    "the mark is written, then the coverage sweep is enqueued, then the flip: a crash anywhere in that order converges next hour",
   );
   eq(r.turnedBackOn.length, 0, "and nobody is turned back on");
   eq(d.audits.length, 1, "the flip is audited");
@@ -299,7 +316,11 @@ const backOn = {
   const r = await syncTwilioRedistribute(d.deps);
   eq(
     d.calls,
-    ['attrs:u1:{"legal_eligible":"N","redistribute":"Y"}', "flip:u1:false"],
+    [
+      `attrs:u1:{"legal_eligible":"N","redistribute":"Y","redistribute_at":"${NOW}"}`,
+      `sweep:u1:${NOW}`,
+      "flip:u1:false",
+    ],
     "the mark and the legal value travel together, and still before the flip",
   );
   eq(r.turnedOff, ["a@trypennie.com"], "the flip is reported");
@@ -355,6 +376,78 @@ const backOn = {
   const r = await syncTwilioRedistribute(d.deps);
   eq(r.legalEligible, ["a@trypennie.com", "c@trypennie.com"], "the writes either side of the failure still land");
   eq(r.legalWriteFailures, 1, "and the one that failed is counted rather than swallowed");
+}
+
+// --- what the agent already has booked (#2115) ---------------------------------
+// Taking somebody out of the pool strands whatever they have booked, and the admin
+// toggle asks a person before doing it. This flip has nobody to ask, so it queues
+// the same coverage sweep, on Dan's call (2026-09-09).
+
+{
+  const d = deps({}, undefined, () => ({ itemCount: 3 }));
+  const r = await syncTwilioRedistribute(d.deps);
+  eq(r.coverageSweeps, [{ email: "a@trypennie.com", bookings: 3 }], "the sweep says how many calls it took, per agent");
+  eq(r.coverageSweepFailures, 0, "and nothing failed");
+}
+
+{
+  // A sweep that found nothing is not reported as work done, and is still
+  // distinguishable from one that could not run, because the failures are counted
+  // apart (L98, L11).
+  const d = deps();
+  const r = await syncTwilioRedistribute(d.deps);
+  eq(r.coverageSweeps.length, 0, "an agent holding nothing produces no line");
+  eq(r.coverageSweepFailures, 0, "and no failure either, so the two are told apart");
+  eq(r.turnedOff, ["a@trypennie.com"], "and the flip still happened");
+}
+
+{
+  // THE ORDER THAT MAKES A CRASH SAFE. Enqueued BEFORE the flip, so a run that dies
+  // in between leaves a marked and still bookable agent whom the next hour plans
+  // again, reads the same stamp from, and converges onto the SAME sweep by the
+  // unique key. Enqueued after the flip, that agent is no longer bookable, nothing
+  // re-plans them, and the sweep is lost with nothing saying so.
+  const d = deps();
+  await syncTwilioRedistribute(d.deps);
+  const sweep = d.calls.findIndex((c) => c.startsWith("sweep:"));
+  const flip = d.calls.findIndex((c) => c.startsWith("flip:"));
+  const attrs = d.calls.findIndex((c) => c.startsWith("attrs:"));
+  assert(attrs < sweep && sweep < flip, `the order is mark, sweep, flip (got ${d.calls.join(" ")})`);
+}
+
+{
+  // A sweep that could not be enqueued must NOT stop the flip. An agent Twilio
+  // withholds who is still bookable misroutes a lead today, which is the sharper
+  // harm; the bookings left behind are caught by `inactive_agent_bookings`, which
+  // watches for exactly a not bookable agent still holding calls.
+  const d = deps({}, undefined, () => {
+    throw new Error("database went away");
+  });
+  const r = await syncTwilioRedistribute(d.deps);
+  eq(r.coverageSweepFailures, 1, "the failure is counted rather than swallowed");
+  eq(r.turnedOff, ["a@trypennie.com"], "and the agent is still taken out of the pool");
+  eq(r.coverageSweeps.length, 0, "with nothing claimed about calls that were never queued");
+}
+
+{
+  // The stamp the sweep is keyed on is the one in the attributes payload, not a
+  // second reading of the clock. Two different values here would mean the retry
+  // could never find the job it created.
+  const d = deps({}, undefined, () => ({ itemCount: 1 }));
+  await syncTwilioRedistribute(d.deps);
+  const written = d.calls.find((c) => c.startsWith("attrs:"))!;
+  const swept = d.calls.find((c) => c.startsWith("sweep:"))!;
+  assert(written.includes(NOW) && swept.endsWith(NOW), "the stamp written and the stamp swept on are the same value");
+}
+
+{
+  // Nobody is swept back INTO the pool: coming back off redistribute takes no
+  // bookings from anybody.
+  const d = deps(backOn, undefined, () => ({ itemCount: 9 }));
+  const r = await syncTwilioRedistribute(d.deps);
+  eq(r.turnedBackOn, ["a@trypennie.com"], "the agent is put back in the pool");
+  eq(r.coverageSweeps.length, 0, "and no coverage sweep is queued for them");
+  assert(!d.calls.some((c) => c.startsWith("sweep:")), "the sweep is never even asked for");
 }
 
 finish();

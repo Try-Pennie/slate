@@ -147,6 +147,22 @@ const STAMP = "2026-08-31T14:00:00.000Z";
 }
 
 {
+  // #2115: the Twilio redistribute flip is the THIRD sweep with no human in it,
+  // and its cases live here because this is where the shared actor's cases live.
+  const actor = coverageSweepActor({
+    created_by: null,
+    acting_as_user_id: null,
+    offboarding_deactivated_at: null,
+    redistribute_marked_at: STAMP,
+  });
+  eq(
+    actor.kind,
+    "system",
+    "a sweep the Twilio redistribute flip triggered has no human actor and says so",
+  );
+}
+
+{
   // A staff actor wins even on an offboarding job: if somebody is recorded, the
   // move is theirs.
   const actor = coverageSweepActor({

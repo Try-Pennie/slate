@@ -124,6 +124,64 @@ beforeEach(() => {
   snapshotRows = [...SNAPSHOT];
 });
 
+// #2115: the third cause column, same shape and same reason. The hourly Twilio flip
+// takes an agent out of the pool with nobody to ask, and a sync that dies between
+// the mark and the flip is re-planned next hour, so the enqueue has to converge.
+describe("a redistribute coverage sweep is keyed on the mark (#2115)", () => {
+  const MARKED_AT = "2026-09-09T12:00:00.000Z";
+  const redistributeInput = {
+    ...offboardingInput,
+    rangeStartIso: MARKED_AT,
+    offboardingDeactivatedAtIso: null,
+    redistributeMarkedAtIso: MARKED_AT,
+  };
+
+  it("stamps the mark on the job row, so the unique index has something to bite on", async () => {
+    const res = await createBulkReassignJob(redistributeInput);
+
+    expect(res).toEqual({ jobId: "job-new", itemCount: 2, snapshot: SNAPSHOT });
+    expect(calls.inserted[0]).toMatchObject({
+      out_user_id: "u9",
+      redistribute_marked_at: MARKED_AT,
+      // No human actor, no time-off request and no offboarding: this sweep's whole
+      // accountability record is the column above.
+      created_by: null,
+      ooo_request_id: null,
+      offboarding_deactivated_at: null,
+    });
+  });
+
+  it("converges onto the existing sweep when the same mark is enqueued twice", async () => {
+    insertConflicts = true;
+    existingJob = { id: "job-existing" };
+
+    const res = await createBulkReassignJob(redistributeInput);
+
+    expect(res.jobId).toBe("job-existing");
+    // Looked up by the pair THIS index is on, not by either of the other two keys.
+    expect(calls.jobLookupFilters).toContainEqual(["out_user_id", "u9"]);
+    expect(calls.jobLookupFilters).toContainEqual(["redistribute_marked_at", MARKED_AT]);
+    expect(calls.jobLookupFilters.some(([col]) => col === "offboarding_deactivated_at")).toBe(false);
+    expect(calls.jobLookupFilters.some(([col]) => col === "ooo_request_id")).toBe(false);
+    // Re-snapshotted rather than merely refused, so a half-written first attempt
+    // still ends up with its work (#1235).
+    expect(calls.itemsUpserted[0].map((r) => r.booking_id)).toEqual(["bk1", "bk2"]);
+    expect(res.snapshot).toEqual(SNAPSHOT);
+  });
+
+  it("throws rather than reporting success when the conflicting sweep cannot be found", async () => {
+    insertConflicts = true;
+    existingJob = null;
+
+    await expect(createBulkReassignJob(redistributeInput)).rejects.toThrow(/conflicted/);
+  });
+
+  it("leaves the column null for every other sweep", async () => {
+    await createBulkReassignJob({ ...offboardingInput });
+    expect(calls.inserted[0]).toMatchObject({ redistribute_marked_at: null });
+  });
+});
+
 describe("an offboarding coverage sweep is keyed on the deactivation (#1241)", () => {
   it("stamps the deactivation on the job row, so the unique index has something to bite on", async () => {
     const res = await createBulkReassignJob(offboardingInput);

@@ -33,6 +33,8 @@ import {
 import { assert, eq, finish } from "./lib/harness.ts";
 
 const MARK = "Y";
+/** The clock is injected, so the stamp a flip carries is assertable (L524). */
+const NOW = "2026-09-09T12:00:00.000Z";
 
 function row(over: Partial<TwilioRosterRow> = {}): TwilioRosterRow {
   return {
@@ -163,11 +165,11 @@ const twilio = (...sides: TwilioSide[]) => new Map(sides.map((s) => [s.email, s]
 {
   // The two writes the flip needs, kept beside the plan so the caller cannot
   // invent its own spelling of the mark.
-  const plan = planTwilioRoster([row()], twilio(side(["Redistribute"])));
+  const plan = planTwilioRoster([row()], twilio(side(["Redistribute"])), NOW);
   eq(
     plan.flips[0]?.attributes,
-    { legal_eligible: LEGAL_ELIGIBLE_NO, redistribute: MARK },
-    "turning somebody off writes the mark, and the legal value rides in the SAME payload rather than a second write over the same column",
+    { legal_eligible: LEGAL_ELIGIBLE_NO, redistribute: MARK, redistribute_at: NOW },
+    "turning somebody off writes the mark and its stamp, and the legal value rides in the SAME payload rather than a second write over the same column",
   );
   const back = planTwilioRoster(
     [row({ bookable: false, attributes: { redistribute: MARK, debt_team: ["low"], legal_eligible: LEGAL_ELIGIBLE_NO } })],
@@ -256,6 +258,76 @@ const twilio = (...sides: TwilioSide[]) => new Map(sides.map((s) => [s.email, s]
   // nobody cleared is the harm, and being held back is recoverable.
   const plan = planTwilioRoster([row({ attributes: {} })], twilio(side(["Legal Eligible", "Not Legal Eligible"])));
   eq(plan.legalWrites[0]?.value, LEGAL_ELIGIBLE_NO, "a worker carrying both legal tags is excluded");
+}
+
+// --- the stamp the coverage sweep is keyed on (#2115) --------------------------
+// Taking somebody out of the pool strands what they already have booked, so the
+// flip enqueues a coverage sweep. That sweep needs an idempotency key the database
+// can enforce, and the key is the moment Slate marked them.
+
+{
+  const plan = planTwilioRoster([row()], twilio(side(["Redistribute"])), NOW);
+  eq(
+    (plan.flips[0]?.attributes as Record<string, unknown>).redistribute_at,
+    NOW,
+    "the mark carries the moment it was made, in the same payload",
+  );
+  eq(plan.flips[0]?.markedAtIso, NOW, "and the flip names it, so the caller cannot invent a second one");
+}
+
+{
+  // THE CASE THE KEY EXISTS FOR. A run that died between the mark and the flip
+  // leaves a marked and still bookable agent. Next hour plans them again, and it
+  // must READ THE STORED STAMP rather than mint a new one: a fresh stamp is a fresh
+  // key, so the unique index would never fire and the sweep would run twice.
+  const EARLIER = "2026-09-09T10:00:00.000Z";
+  const plan = planTwilioRoster(
+    [row({ bookable: true, attributes: { redistribute: MARK, redistribute_at: EARLIER } })],
+    twilio(side(["Redistribute"])),
+    NOW,
+  );
+  eq(plan.flips[0]?.markedAtIso, EARLIER, "a retry reuses the stamp already stored, so both runs converge on one sweep");
+  eq(
+    (plan.flips[0]?.attributes as Record<string, unknown>).redistribute_at,
+    EARLIER,
+    "and writes it back unchanged rather than moving the key under the job",
+  );
+}
+
+{
+  // Coming back off redistribute clears the stamp WITH the mark. A stamp left
+  // behind would key a later pool exit onto a months old job, which the unique
+  // index would then refuse.
+  const plan = planTwilioRoster(
+    [row({ bookable: false, attributes: { redistribute: MARK, redistribute_at: NOW, debt_team: ["low"] } })],
+    twilio(side([])),
+    NOW,
+  );
+  eq(plan.flips[0]?.action, "turn-back-on", "the agent is put back in the pool");
+  const attrs = plan.flips[0]?.attributes as Record<string, unknown>;
+  assert(!("redistribute_at" in attrs), "and the stamp goes with the mark, so a later exit gets its own key");
+}
+
+{
+  // A stamp that is not a stamp cannot key anything, so it is replaced rather than
+  // carried into the database as a corrupt key.
+  for (const bad of ["", "   ", "not a date"]) {
+    const plan = planTwilioRoster(
+      [row({ bookable: true, attributes: { redistribute: MARK, redistribute_at: bad } })],
+      twilio(side(["Redistribute"])),
+      NOW,
+    );
+    eq(plan.flips[0]?.markedAtIso, NOW, `a stored stamp of ${JSON.stringify(bad)} is replaced rather than used as a key`);
+  }
+}
+
+{
+  // A row needing only a legal write carries no stamp: nothing is being taken out
+  // of the pool, so there is no sweep to key.
+  const plan = planTwilioRoster([row({ attributes: {} })], twilio(side(["Low Debt: 20k - 30k"])), NOW);
+  eq(plan.legalWrites.length, 1, "the legal write is planned");
+  const attrs = plan.legalWrites[0]?.attributes as Record<string, unknown>;
+  assert(!("redistribute_at" in attrs), "and no stamp is invented for somebody who is not leaving the pool");
 }
 
 finish();
