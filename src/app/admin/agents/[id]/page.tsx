@@ -50,6 +50,7 @@ import { ViewAsButton } from "@/components/admin/ViewAsButton";
 import type { Organization, User } from "@/lib/db/types";
 import { BookablePill } from "@/components/ui/BookablePill";
 import { isMarkedRedistribute } from "@/lib/twilio/roster-plan";
+import { LEGAL_ELIGIBLE_YES, LEGAL_ELIGIBLE_NO } from "@/lib/twilio/roster";
 import { AdminPageHeader } from "@/components/admin/AdminPageHeader";
 import { SelectField } from "@/components/ui/SelectField";
 
@@ -72,6 +73,24 @@ async function upcomingBookingCount(agentId: string): Promise<number | null> {
     log.error("admin-agent", { msg: "upcoming booking count failed", user_id: agentId }, err);
     return null;
   }
+}
+
+/**
+ * The stored legal eligibility value, as a word (#2098).
+ *
+ * Null for a row nobody has written, which `attrValue` then names as not set.
+ * That state is deliberately NOT collapsed into "No": routing admits an unset
+ * agent to the ten legal buckets and excludes an explicit "N", so the two send a
+ * reader to different places (L11).
+ */
+function legalEligibleLabel(value: unknown): string | null {
+  if (value === undefined || value === null) return null;
+  if (value === LEGAL_ELIGIBLE_YES) return "Yes";
+  if (value === LEGAL_ELIGIBLE_NO) return "No";
+  // A value in neither vocabulary, which today means one the retired admin control
+  // wrote as a boolean. Shown as stored rather than sorted into the nearest word,
+  // because a reader cannot check a guess.
+  return String(value);
 }
 
 /**
@@ -604,22 +623,21 @@ export default async function AgentProfilePage({
                   Nothing was lost by removing it: 0 of 127 live users carried the
                   field, so it had never once been used.
 
-                  Shown AS STORED rather than translated, for the same reason an
-                  off ladder debt team is (L113): what is really there is what a
-                  reader needs. `Not set` is not `No`, and naming an unset agent
-                  "Yes" because routing lets them through would present an
-                  inference as a recorded fact (L192). */}
-              <p className="text-sm">
-                {attrValue(
-                  agent.attributes?.legal_eligible === true
-                    ? "Yes"
-                    : agent.attributes?.legal_eligible === false
-                      ? "No"
-                      : agent.attributes?.legal_eligible == null
-                        ? null
-                        : String(agent.attributes.legal_eligible),
-                )}
-              </p>
+                  #2098 gave it a writer, and that changed what a reader needs
+                  here. The premise for showing the raw stored value was that
+                  nothing wrote it, so whatever was there was worth seeing exactly
+                  (L316): a stored value came from nowhere the product could
+                  explain. The hourly Twilio sync now writes "Y" or "N" for every
+                  agent, from the `Legal Eligible` tag, so those two are the
+                  product's own vocabulary and are shown as words (L611).
+
+                  `Not set` still stands on its own and is NOT called "No". It
+                  means the sync has not reached this row yet, which routing reads
+                  as the permissive answer rather than as an exclusion, and those
+                  are two different situations for whoever is looking (L11). A
+                  value in neither vocabulary is shown as stored, for the same
+                  reason an off ladder debt team is (L113). */}
+              <p className="text-sm">{attrValue(legalEligibleLabel(agent.attributes?.legal_eligible))}</p>
             </div>
           </div>
 

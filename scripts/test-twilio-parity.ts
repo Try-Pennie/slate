@@ -11,9 +11,12 @@ import {
   workerSideOrNull,
   mergeWorkers,
   compareOne,
+  twilioLegalEligible,
   TWILIO_VERDICT_RANK,
   IRRELEVANT_TAGS,
   MANAGER_TAG_PREFIX,
+  LEGAL_ELIGIBLE_YES,
+  LEGAL_ELIGIBLE_NO,
   type SlateSide,
 } from "@/lib/twilio/roster";
 import { assert, eq, finish } from "./lib/harness.ts";
@@ -29,7 +32,7 @@ function slate(over: Partial<SlateSide> = {}): SlateSide {
     email: "someone@trypennie.com",
     debtTeams: ["low"],
     backendServices: ["achieve"],
-    legalEligibleN: false,
+    legalEligible: LEGAL_ELIGIBLE_NO,
     bookable: true,
     deactivated: false,
     ...over,
@@ -120,8 +123,12 @@ function slate(over: Partial<SlateSide> = {}): SlateSide {
   eq(compareOne(w, slate({ backendServices: ["achieve"] })).verdict, "backend-differs", "so is a different backend");
 }
 {
-  const w = side(worker(["Low Debt: 20k - 30k", "Achieve", "Not Legal Eligible"]));
-  eq(compareOne(w, slate({ legalEligibleN: false })).verdict, "legal-differs", "so is legal eligibility");
+  const w = side(worker(["Low Debt: 20k - 30k", "Achieve", "Legal Eligible"]));
+  eq(
+    compareOne(w, slate({ legalEligible: LEGAL_ELIGIBLE_NO })).verdict,
+    "legal-differs",
+    "so is legal eligibility, when Twilio calls somebody out and Slate has not",
+  );
 }
 {
   eq(
@@ -155,6 +162,76 @@ function slate(over: Partial<SlateSide> = {}): SlateSide {
   const w = side(worker(["Low Debt: 20k - 30k", "Achieve", "Brand New Team"]));
   eq(compareOne(w, slate(), 0).verdict, "unmapped-tag", "an unknown tag is still reported on an otherwise matching row");
   eq(compareOne(w, slate(), 2).verdict, "duplicate-worker", "and duplication outranks it, being the sharper fault");
+}
+
+// --- legal eligibility, which Twilio owns (#2098) --------------------------------
+// Dan, 2026-09-09: "The default is N. Y is the only one called out." So the tag that
+// decides this is the POSITIVE one, and every other state, including the explicit
+// negative tag and a worker carrying neither, means excluded. That is the opposite
+// reading from the one the negated bucket criteria suggest, and it is the reason
+// this vocabulary is derived in one place rather than at each call site.
+{
+  const yes = side(worker(["Low Debt: 20k - 30k", "Legal Eligible"]))!;
+  eq(twilioLegalEligible(yes), LEGAL_ELIGIBLE_YES, "the positive tag is the only thing that makes somebody eligible");
+  assert(yes.legalEligible, "and the side carries it as its own fact");
+
+  const silent = side(worker(["Low Debt: 20k - 30k"]))!;
+  eq(twilioLegalEligible(silent), LEGAL_ELIGIBLE_NO, "a worker Twilio says nothing about is excluded, because the default is N");
+
+  const explicitNo = side(worker(["Low Debt: 20k - 30k", "Not Legal Eligible"]))!;
+  eq(twilioLegalEligible(explicitNo), LEGAL_ELIGIBLE_NO, "and so is one carrying the explicit negative tag");
+  assert(explicitNo.notLegalEligible, "which is still read as its own fact, so the two tags can be told apart");
+}
+{
+  // Neither tag is reported as unknown, or the roster sync would log two of its own
+  // vocabulary every hour.
+  const w = side(worker(["Low Debt: 20k - 30k", "Achieve", "Legal Eligible", "Not Legal Eligible"]))!;
+  eq(w.unmappedTags.length, 0, "both legal tags are part of the vocabulary, not unmapped");
+  eq(
+    twilioLegalEligible(w),
+    LEGAL_ELIGIBLE_NO,
+    "a worker carrying BOTH tags is excluded: the contradiction resolves the safe way, since offering legal work to somebody nobody has cleared is the harm",
+  );
+  eq(
+    compareOne(w, slate({ legalEligible: LEGAL_ELIGIBLE_NO })).verdict,
+    "legal-tags-contradict",
+    "and the contradiction is reported rather than quietly resolved (L340)",
+  );
+}
+{
+  const both = side(worker(["Legal Eligible", "Not Legal Eligible"]))!;
+  const clean = side(worker(["Legal Eligible"]))!;
+  const { merged } = mergeWorkers([clean, side(worker(["Low Debt: 20k - 30k"]))!]);
+  assert(merged.legalEligible, "a positive tag on either duplicate worker counts, as every other tag does");
+  assert(both.legalEligible && both.notLegalEligible, "and a contradicting worker carries both, rather than one erasing the other");
+}
+{
+  // A value Slate has never been given is NOT the same as a measured N, and the
+  // detail has to say which, because "not set" and "excluded" send a reader to two
+  // different places (L11).
+  const w = side(worker(["Low Debt: 20k - 30k", "Achieve"]));
+  const r = compareOne(w, slate({ legalEligible: null }));
+  eq(r.verdict, "legal-differs", "an unset Slate value is a difference from Twilio's measured N");
+  assert(r.detail.includes("not set"), "and the detail names it as not set rather than calling it excluded");
+}
+{
+  // THE POSITIVE CONTROL for the whole vocabulary: once Slate holds what Twilio
+  // says, in both directions, the comparison is quiet. Without this, a rule that
+  // reported everybody would satisfy every assertion above (L1).
+  const yes = side(worker(["Low Debt: 20k - 30k", "Achieve", "Legal Eligible"]));
+  eq(compareOne(yes, slate({ legalEligible: LEGAL_ELIGIBLE_YES })).verdict, "agree", "Y on both sides agrees");
+  const no = side(worker(["Low Debt: 20k - 30k", "Achieve"]));
+  eq(compareOne(no, slate({ legalEligible: LEGAL_ELIGIBLE_NO })).verdict, "agree", "and N on both sides agrees");
+}
+{
+  // Ranked BELOW the differences about a person, like the other Twilio
+  // configuration faults, so a contradicting worker cannot bury a real difference.
+  const w = side(worker(["High Debt: 50k+", "Achieve", "Legal Eligible", "Not Legal Eligible"]));
+  eq(
+    compareOne(w, slate({ debtTeams: ["low"], legalEligible: LEGAL_ELIGIBLE_NO })).verdict,
+    "debt-teams-differ",
+    "a row that both contradicts itself and differs is named by the difference",
+  );
 }
 
 // --- the ranking ----------------------------------------------------------------

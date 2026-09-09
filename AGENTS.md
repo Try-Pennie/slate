@@ -875,11 +875,28 @@ on its own code, worst first.
 | 16 | **the backend service differs** |
 | 17 | **the debt tiers differ** |
 | 18 | **carries Redistribute in Twilio and is still bookable in Slate** |
+| 19 | one worker carries BOTH legal tags, so Twilio contradicts itself |
 
 Exit 18 is ranked worst because it is the only finding here that misroutes a lead the
-day it appears rather than being latent. The two Twilio configuration faults (12 and
-13) rank BELOW every difference about a person on purpose, so a duplicated worker
-cannot bury a real disagreement.
+day it appears rather than being latent. The three Twilio configuration faults (12, 13
+and 19) rank BELOW every difference about a person on purpose, so a duplicated worker
+cannot bury a real disagreement. Exit 19 has the highest NUMBER of the three and the
+lowest rank among them is 12, because the exit codes name the outcome and the ranking
+decides which one names a run; they are two different questions.
+
+**Legal eligibility has a positive tag, and it is the one that decides (#2098).** Dan,
+2026-09-09: "The default is N. Y is the only one called out." So Slate stores `Y` only
+for a worker carrying `Legal Eligible`, and `N` for every other state: the explicit
+`Not Legal Eligible` tag, a worker carrying neither, and a Slate row Twilio holds no
+worker for at all. A worker carrying BOTH tags is stored as `N` and reported as exit
+19, because withholding somebody from legal work is recoverable and offering it to
+somebody nobody cleared is not.
+
+That reading is the opposite of what the bucket criteria suggest. `legal_eligible!:
+"N"` admits an UNSET agent, so for as long as nobody wrote the field every agent was
+offered the ten legal buckets. The criteria stay correct once every agent holds an
+explicit value, since "not N" and "is Y" then select the same people, which is why
+this shipped as a write rather than as a change to sixty buckets.
 
 A departed Slate agent ranks level with agreement and can never name a run: their
 Twilio tags are not a disagreement about somebody taking calls.
