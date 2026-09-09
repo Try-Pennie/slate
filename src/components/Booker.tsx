@@ -14,6 +14,12 @@ import { validateAttendee, type AttendeeErrors } from "@/lib/attendee";
 import { prefillPhone } from "@/lib/phone-format";
 import { usePhoneCaret } from "@/lib/usePhoneCaret";
 import { HONEYPOT_FIELD } from "@/lib/booking/honeypot";
+import {
+  isNextDaysReply,
+  NEXT_DAYS_FAILURE,
+  nextDaysFailureFor,
+  type NextDaysFailure,
+} from "@/lib/booking/next-days-reply";
 import { getJson, postJson, REQUEST_TIMEOUT_MS } from "@/lib/http";
 import { useStalledAfter } from "@/lib/useStalledAfter";
 import { BobbingDots } from "@/components/BobbingDots";
@@ -283,7 +289,7 @@ export default function Booker({
   // until asked for; an empty array means we looked and there is genuinely nothing.
   const [nextDaySlots, setNextDaySlots] = useState<string[] | null>(null);
   const [loadingNext, setLoadingNext] = useState(false);
-  const [nextFailed, setNextFailed] = useState(false);
+  const [nextFailure, setNextFailure] = useState<NextDaysFailure | null>(null);
   const [hour12, setHour12] = useState(true);
   // #1332: a prefilled number is what the advisor ends up calling, and most real
   // leads arrive with one from the landing page, so it reads the same as a typed
@@ -866,23 +872,28 @@ export default function Booker({
   /** Look past the bounded window for the first days we can actually offer. */
   async function revealNextDays() {
     setLoadingNext(true);
-    setNextFailed(false);
+    setNextFailure(null);
     // #1364: through the shared helper, so this read carries the same request
     // ceiling as every other lead-facing call. It had no timeout at all, and this
     // is the slowest action in the product (up to eight windows, each doing real
     // calendar work per bookable agent), so a wedged request left "Looking" on
     // screen indefinitely with no way for a lead to tell it had died. The abort
     // arrives here as `ok: false`, which is already the failed screen below.
-    const res = await getJson<{ slots?: string[] }>(
+    const res = await getJson<unknown>(
       `/api/availability/next?bucket=${encodeURIComponent(bucketCode)}`,
       { timeoutMs: REQUEST_TIMEOUT_MS, cache: "no-store" },
     );
-    if (res.ok) {
-      setNextDaySlots(res.data.slots ?? []);
+    // An error state and an empty state are different screens: "we looked and
+    // there is nothing" must never be shown for "we could not look". #2155: that
+    // included a 200 whose payload this page cannot read, which used to be read as
+    // an empty result, on the LAST thing offered to a lead who has already found
+    // nothing nearby. The reply is typed `unknown`, so tsc refuses to let it be
+    // used as slots until the guard has said it is.
+    const failure = nextDaysFailureFor(res);
+    if (failure === null && res.ok && isNextDaysReply(res.data)) {
+      setNextDaySlots(res.data.slots);
     } else {
-      // An error state and an empty state are different screens: "we looked and
-      // there is nothing" must never be shown for "we could not look".
-      setNextFailed(true);
+      setNextFailure(failure);
     }
     setLoadingNext(false);
   }
@@ -926,9 +937,11 @@ export default function Booker({
       )}
       {isClosure && nextDaySlots === null && (
         <>
-          {nextFailed && (
+          {nextFailure !== null && (
             <p role="alert" className="text-sm text-[var(--error)]">
-              {NEXT_DAYS_COPY.failed}
+              {nextFailure === NEXT_DAYS_FAILURE.unreadable
+                ? NEXT_DAYS_COPY.unreadable
+                : NEXT_DAYS_COPY.failed}
             </p>
           )}
           <button
@@ -944,7 +957,7 @@ export default function Booker({
                 <BobbingDots />
                 {NEXT_DAYS_COPY.looking}
               </span>
-            ) : nextFailed ? (
+            ) : nextFailure !== null ? (
               NEXT_DAYS_COPY.retry
             ) : (
               NEXT_DAYS_COPY.ask
