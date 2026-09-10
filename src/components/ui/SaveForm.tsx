@@ -16,6 +16,7 @@ import {
   clearStash,
   entriesToRestored,
   readStash,
+  restoredAnything,
   restoredValue,
   stashForm,
   type RestoredForm,
@@ -218,7 +219,12 @@ export function SaveForm({
             </button>
           </div>
         )}
-        {restored && !stale && (
+        {/* #2075: only when something was actually typed. A form of one button
+            restores an empty set, and this sentence over one tells the reader
+            about a state that cannot exist for it (L604). On the agents header it
+            also pushed the Sync button off the line beside the heading, because a
+            paragraph in a one line row displaces what is next to it. */}
+        {restoredAnything(restored) && !stale && (
           <p role="status" className="mb-4 text-sm text-fg-muted">
             What you had typed before the last reload has been put back. Check it
             and press save.

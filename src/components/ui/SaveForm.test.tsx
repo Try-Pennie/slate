@@ -331,6 +331,61 @@ describe("SaveForm puts back what was typed (#1994)", () => {
 // #2076: the guard is SaveForm's, not each caller's. Dan lost fourteen alert
 // floors he had typed by clicking a link, on one of the eleven call sites that had
 // never opted in.
+// #2075: the restored draft notice on a form with nothing to type.
+describe("SaveForm only announces a restore that restored something (#2075)", () => {
+  const NOTICE = /put back/i;
+
+  it("says nothing over a form of one button", () => {
+    // The agents header is a one line row, heading left and Sync right. A
+    // paragraph inside the action slot pushed the button off the line beside the
+    // heading every time it fired, and it was telling the reader about a state
+    // that cannot exist for a form with no fields (L604).
+    window.sessionStorage.setItem(
+      restoreKey(window.location.pathname, "salesforce-sync"),
+      JSON.stringify({}),
+    );
+    render(
+      <SaveForm action={async () => {}} name="salesforce-sync" unsaved="nothing typed here">
+        <button type="submit">Sync from Salesforce</button>
+      </SaveForm>,
+    );
+    expect(document.body.textContent).not.toMatch(NOTICE);
+  });
+
+  it("says nothing when every restored value is empty", () => {
+    // A cleared field and an untouched one are the same thing to somebody reading
+    // "what you had typed has been put back".
+    window.sessionStorage.setItem(
+      restoreKey(window.location.pathname, "blank"),
+      JSON.stringify({ note: [""], other: ["  "] }),
+    );
+    render(
+      <SaveForm action={async () => {}} name="blank" unsaved="changes">
+        <input name="note" defaultValue="" />
+        <button type="submit">Save</button>
+      </SaveForm>,
+    );
+    expect(document.body.textContent).not.toMatch(NOTICE);
+  });
+
+  it("still says it when something really was typed", () => {
+    // THE CONTROL. Without it, a version that never rendered the notice at all
+    // would satisfy both cases above while losing the whole point of the restore
+    // (L1).
+    window.sessionStorage.setItem(
+      restoreKey(window.location.pathname, "typed"),
+      JSON.stringify({ note: ["a week of hours"] }),
+    );
+    render(
+      <SaveForm action={async () => {}} name="typed" unsaved="changes">
+        <input name="note" defaultValue="" />
+        <button type="submit">Save</button>
+      </SaveForm>,
+    );
+    expect(document.body.textContent).toMatch(NOTICE);
+  });
+});
+
 describe("every SaveForm guards unsaved work by default (#2076)", () => {
   it("warns before an in app navigation once something has been typed", async () => {
     render(
