@@ -441,10 +441,12 @@ describe("Booker refuses a second booking (#1337)", () => {
     expect(screen.queryByText("You already have a call booked")).toBeNull();
   });
 
-  it("still offers the move after a picked time, once they are back in the picker", async () => {
-    // The landing panel must not leave the flow in a state where the confirm's own
-    // panel has lost its move: they are the same panel, and only the landing one
-    // has no time behind it.
+  // #2203: the whole point of recognising them on arrival. The details form
+  // collects NOTHING on this path: the lead is already identified by the id in
+  // the link, so the only thing typing name, email and phone could achieve is a
+  // 409 handing back the very call the panel showed them two clicks earlier
+  // (L676). Picking a time takes them straight to the move.
+  it("takes a recognised lead from the picker to the move with no form in between", async () => {
     global.fetch = declineWith({
       disclose: true,
       startsAt: existingIso,
@@ -461,10 +463,166 @@ describe("Booker refuses a second booking (#1337)", () => {
     );
     await screen.findByText("You already have a call booked");
     fireEvent.click(screen.getByRole("button", { name: MOVE_COPY.pickAnotherTime }));
-    await fillAndConfirm();
+    await pickFirstDay();
+    await userEvent.click(await screen.findByRole("button", { name: /:\d{2}/ }));
+
+    // The panel is back, with the time behind it, so the move is offered.
     await screen.findByText("You already have a call booked");
     expect(screen.getByText(MOVE_COPY.reasonLegend)).toBeTruthy();
     expect(screen.getByRole("button", { name: /^Move my call to/ })).toBeTruthy();
+    // And they were never asked to identify themselves again.
+    expect(screen.queryByLabelText("Name")).toBeNull();
+    expect(screen.queryByLabelText("Email")).toBeNull();
+    expect(screen.queryByLabelText("Phone")).toBeNull();
+  });
+
+  it("sends no blank details with a move nobody typed details for", async () => {
+    // Without this the fix ships broken in the other direction: the move posts
+    // `attendee: { name: "", email: "", phone: "" }` from the untouched state, and
+    // `updateBookingContact` judges every field a caller SENDS, so three "Enter
+    // your ..." refusals come back and the move fails for a correction the lead
+    // never asked for (#2164).
+    const posted: { url: string; body: Record<string, unknown> }[] = [];
+    global.fetch = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+      const u = String(url);
+      if (u.includes("/api/availability")) {
+        return { ok: true, json: async () => availability } as Response;
+      }
+      posted.push({ url: u, body: JSON.parse(String(init?.body ?? "{}")) });
+      return { ok: true, status: 200, json: async () => ({ startsAt: slotIso }) } as Response;
+    }) as unknown as typeof fetch;
+
+    render(
+      <Booker
+        {...baseProps}
+        salesforceId="003xx"
+        landingCall={{ disclose: true, startsAt: existingIso, advisorName: null, manageToken: "tok-old", mayCancel: true }}
+      />,
+    );
+    await screen.findByText("You already have a call booked");
+    fireEvent.click(screen.getByRole("button", { name: MOVE_COPY.pickAnotherTime }));
+    await pickFirstDay();
+    await userEvent.click(await screen.findByRole("button", { name: /:\d{2}/ }));
+    await screen.findByText(MOVE_COPY.reasonLegend);
+    fireEvent.click(screen.getAllByRole("radio")[0]);
+    fireEvent.click(screen.getByRole("button", { name: /^Move my call to/ }));
+
+    await waitFor(() => expect(posted).toHaveLength(1));
+    expect(posted[0].url).toContain("/api/bookings/tok-old/reschedule");
+    expect(posted[0].body.start).toBeTruthy();
+    expect(posted[0].body.attendee).toBeUndefined();
+  });
+
+  it("carries the details the link DID arrive with onto the move", async () => {
+    // THE OTHER DIRECTION, and the reason the rule is "only what has a value"
+    // rather than "never send details". A landing link routinely carries the
+    // lead's name and email, which is the same correction #2164 applied when they
+    // were typed into the form, so dropping them would trade one defect for another.
+    const posted: Record<string, unknown>[] = [];
+    global.fetch = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+      const u = String(url);
+      if (u.includes("/api/availability")) {
+        return { ok: true, json: async () => availability } as Response;
+      }
+      posted.push(JSON.parse(String(init?.body ?? "{}")));
+      return { ok: true, status: 200, json: async () => ({ startsAt: slotIso }) } as Response;
+    }) as unknown as typeof fetch;
+
+    render(
+      <Booker
+        {...baseProps}
+        salesforceId="003xx"
+        attendee={{ name: "Dana Lead", email: "dana@example.com", phone: "" }}
+        landingCall={{ disclose: true, startsAt: existingIso, advisorName: null, manageToken: "tok-old", mayCancel: true }}
+      />,
+    );
+    await screen.findByText("You already have a call booked");
+    fireEvent.click(screen.getByRole("button", { name: MOVE_COPY.pickAnotherTime }));
+    await pickFirstDay();
+    await userEvent.click(await screen.findByRole("button", { name: /:\d{2}/ }));
+    await screen.findByText(MOVE_COPY.reasonLegend);
+    fireEvent.click(screen.getAllByRole("radio")[0]);
+    fireEvent.click(screen.getByRole("button", { name: /^Move my call to/ }));
+
+    await waitFor(() => expect(posted).toHaveLength(1));
+    // The two that carry a value, and only those: an empty phone is not a
+    // correction to a blank number, it is somebody who typed nothing.
+    expect(posted[0].attendee).toEqual({ name: "Dana Lead", email: "dana@example.com" });
+  });
+
+  it("puts a recognised lead back on their call when they keep the time they have", async () => {
+    // They still HAVE a call, so the way back is the panel about it. Dropping them
+    // into the anonymous picker would set up the same 409 this removes (L676).
+    global.fetch = vi.fn(async () => ({ ok: true, json: async () => availability }) as Response) as unknown as typeof fetch;
+    render(
+      <Booker
+        {...baseProps}
+        salesforceId="003xx"
+        landingCall={{ disclose: true, startsAt: existingIso, advisorName: null, manageToken: "tok-old", mayCancel: true }}
+      />,
+    );
+    await screen.findByText("You already have a call booked");
+    fireEvent.click(screen.getByRole("button", { name: MOVE_COPY.pickAnotherTime }));
+    await pickFirstDay();
+    await userEvent.click(await screen.findByRole("button", { name: /:\d{2}/ }));
+    await screen.findByText(MOVE_COPY.reasonLegend);
+    fireEvent.click(screen.getByRole("button", { name: /^Keep my / }));
+
+    expect(await screen.findByRole("button", { name: MOVE_COPY.pickAnotherTime })).toBeTruthy();
+    expect(screen.queryByText(MOVE_COPY.reasonLegend)).toBeNull();
+  });
+
+  it("keeps a recognised lead recognised when the move is refused", async () => {
+    // The refusal path is the one that reintroduces the defect quietly: it puts
+    // them back in the picker, and putting them back ANONYMOUS means the next time
+    // they choose sends them to the form to be told, by a 409, about the call they
+    // never stopped having (L676).
+    global.fetch = declineWith(
+      { disclose: true, startsAt: existingIso, advisorName: null, manageToken: "tok-old", mayCancel: true },
+      { ok: false, status: 409, body: { reason: "slot_taken" } },
+    );
+    render(
+      <Booker
+        {...baseProps}
+        salesforceId="003xx"
+        landingCall={{ disclose: true, startsAt: existingIso, advisorName: null, manageToken: "tok-old", mayCancel: true }}
+      />,
+    );
+    await screen.findByText("You already have a call booked");
+    fireEvent.click(screen.getByRole("button", { name: MOVE_COPY.pickAnotherTime }));
+    await pickFirstDay();
+    await userEvent.click(await screen.findByRole("button", { name: /:\d{2}/ }));
+    await screen.findByText(MOVE_COPY.reasonLegend);
+    fireEvent.click(screen.getAllByRole("radio")[0]);
+    fireEvent.click(screen.getByRole("button", { name: /^Move my call to/ }));
+
+    // Told what happened, back among the times, and asked for nothing.
+    expect(await screen.findByRole("alert")).toBeTruthy();
+    await pickFirstDay();
+    await userEvent.click(await screen.findByRole("button", { name: /:\d{2}/ }));
+    expect(await screen.findByText(MOVE_COPY.reasonLegend)).toBeTruthy();
+    expect(screen.queryByLabelText("Name")).toBeNull();
+  });
+
+  it("still asks an UNrecognised lead for their details", async () => {
+    // THE CONTROL. The form is where an anonymous lead's identity comes from, so a
+    // version that removed it for everybody would satisfy every test above while
+    // making the product unbookable by anyone the link does not name (L1).
+    global.fetch = declineWith({
+      disclose: true,
+      startsAt: existingIso,
+      advisorName: "Aisha Bello",
+      manageToken: "tok-old",
+      mayCancel: true,
+    });
+    render(<Booker {...baseProps} />);
+    await pickFirstDay();
+    await userEvent.click(await screen.findByRole("button", { name: /:\d{2}/ }));
+
+    expect(screen.getByLabelText("Name")).toBeTruthy();
+    expect(screen.getByLabelText("Email")).toBeTruthy();
+    expect(screen.getByLabelText("Phone")).toBeTruthy();
+    expect(screen.queryByText("You already have a call booked")).toBeNull();
   });
 
   // #2167: the exit. Cancel lived only on the manage link inside the calendar
