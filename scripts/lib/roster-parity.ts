@@ -38,7 +38,7 @@ export type CalcomStanding =
   | "not-a-host"
   /** A host, and nothing withholds them, so a lead can reach them. */
   | "routable"
-  /** A host cal.com withholds from every routed decision (`REDISTRIBUTE_EXCLUDED`). */
+  /** A host cal.com withholds from every routed decision (a `WithheldSet` member). */
   | "excluded";
 
 /** A Slate user as this comparison needs them. */
@@ -148,38 +148,86 @@ export const KNOWN_NON_SLATE_HOSTS: Readonly<Record<string, string>> = {
 };
 
 /**
- * cal.com members it WITHHOLDS from every routed decision, each with why.
+ * The addresses cal.com WITHHOLDS from every routed decision.
  *
  * `Redistribute Team = YES` in cal.com. Six of the seven live routing forms carry
  * `Redistribute Team (does not equal) yes` on every route, so a member marked YES
- * cannot be reached by any of them, while still appearing on the event type's host
+ * cannot be reached by any of them while still appearing on the event type's host
  * list. Guided App Completion carries the clause on none of its 26 routes, which is
  * an open question on #2033 and deliberately parked: BC confirmed on 2026-09-08
  * that the seven forms were split for tracking rather than for routing.
  *
- * **This list can only come from a person.** cal.com will not report per-user
- * attribute values (`/organizations/{org}/users/{id}/attributes` answers 404 on
- * both API versions, measured 2026-09-07), and the routing forms give the CONDITION
- * without saying who satisfies it. Read out of the cal.com UI by Dan on 2026-09-08
- * (Settings, Organization, Members, filtered on Redistribute Team = YES), 16 of 16.
+ * IT IS A PARAMETER, AND IT COMES FROM TWILIO (#2153). It used to be a constant in
+ * this file, sixteen addresses read out of the cal.com UI by hand on 2026-09-08,
+ * because cal.com will not report per-user attribute values
+ * (`/organizations/{org}/users/{id}/attributes` answers 404 on both API versions)
+ * and the routing forms give the CONDITION without saying who satisfies it. Nothing
+ * maintained it, and one day later the command was already reporting that two of
+ * the sixteen were no longer hosts.
  *
- * It will go stale, and that is accepted rather than solved: the whole comparison
- * retires at cutover (#65), when cal.com stops routing anything. The run reports how
- * many of these are no longer hosts, which is the signal that it has drifted.
+ * Measured on 2026-09-10, the hand list was wrong in both directions: Twilio tagged
+ * 22 people, 8 of whom the list had never heard of, while 2 of its entries carried
+ * no tag at all. Twilio is where a manager actually sets this, and the Pipedream job
+ * that reads those tags is what puts `Redistribute Team = YES` on the cal.com member
+ * in the first place, so reading the tags reads the source of the very value this
+ * needs rather than a person's snapshot of its effect.
  *
- * Keys lowercased, since that is how both sides' addresses are matched.
+ * NOT `users.attributes.redistribute`, which #2153 proposed and which is a different
+ * fact. That key is Slate's record of whom IT took out of the bookable pool because
+ * of the tag, so an agent who was already not bookable when the tag appeared is
+ * never marked: measured the same day, it covered 13 of the 22 tagged people. Using
+ * it would have reported the other 9 as routable and put this check back in exactly
+ * the false agreement #2088 fixed.
+ *
+ * Addresses lowercased, since that is how both sides are matched.
  */
-export const REDISTRIBUTE_EXCLUDED: Readonly<Record<string, string>> = Object.freeze(
-  Object.fromEntries(
-    [
-      "ajohnson", "jnazarzai", "pjones", "rsegui", "swhiting", "mmcbride", "chammar", "cfrank",
-      "jperea", "kcoutain", "agarcia", "nprice", "jfonseca", "mroberts", "rdaboub", "nshort",
-    ].map((local) => [
-      `${local}@trypennie.com`,
-      "marked Redistribute Team = YES in cal.com, so every routing form that carries the clause withholds them (Dan's read of the cal.com UI, 2026-09-08)",
-    ]),
-  ),
-);
+export type WithheldSet = ReadonlySet<string>;
+
+/** One Twilio worker, as far as building the withheld set is concerned. */
+export interface WithheldWorkerRead {
+  ok: boolean;
+  side?: { email: string; redistribute: boolean };
+}
+
+/**
+ * The addresses to withhold, from what Twilio answered.
+ *
+ * A worker that could not be READ contributes nothing and is not an error here:
+ * `readWorker` refuses a corrupt attributes blob and a worker with no email, both of
+ * which are ordinary in that workspace (queue entities, vendor automations). What is
+ * NOT ordinary is the whole read failing, and that is the caller's refusal, because
+ * an empty set and a failed read are the same value and only the caller can tell
+ * them apart (L98).
+ */
+export function withheldFromWorkers(reads: readonly WithheldWorkerRead[]): Set<string> {
+  const out = new Set<string>();
+  for (const read of reads) {
+    if (!read.ok || !read.side?.redistribute) continue;
+    const email = read.side.email.trim().toLowerCase();
+    if (email !== "") out.add(email);
+  }
+  return out;
+}
+
+/** Whether this environment can answer who cal.com withholds (#2153). */
+export type WithheldReadiness =
+  | { ok: true }
+  | { ok: false; missing: string[] };
+
+/**
+ * The three Twilio variables the withheld set needs, checked together.
+ *
+ * Its own refusal rather than folded into the cal.com key's, because they are two
+ * different things to go and fix (L11), and it NAMES the ones that are missing
+ * rather than saying Twilio is not configured, so somebody who set two of three is
+ * told which one they missed.
+ */
+export function withheldReadiness(env: Record<string, string | undefined>): WithheldReadiness {
+  const missing = ["TWILIO_API_KEY_SID", "TWILIO_API_KEY_SECRET", "TWILIO_WORKSPACE_SID"].filter(
+    (name) => (env[name] ?? "").trim() === "",
+  );
+  return missing.length === 0 ? { ok: true } : { ok: false, missing };
+}
 
 /** The roles that are hosts in cal.com and deliberately not bookable in Slate. */
 const STAFF_ROLES = new Set(["admin", "manager", "team_lead", "super_admin"]);
@@ -302,7 +350,12 @@ export function classifyRosterMember(
 
 export interface RosterComparison {
   rows: RosterRow[];
-  /** How many withheld addresses cal.com no longer lists as hosts (a staleness signal). */
+  /**
+   * How many withheld addresses cal.com no longer lists as hosts.
+   *
+   * A drift signal rather than a finding, and since #2153 it measures Twilio
+   * against cal.com rather than a hand list against cal.com.
+   */
   withheldNoLongerHosting: number;
   /**
    * Whether cal.com named NO hosts at all.
@@ -326,6 +379,7 @@ export interface RosterComparison {
 export function compareRosters(
   slateMembers: SlateRosterMember[],
   calcomHostEmails: Set<string>,
+  withheld: WithheldSet,
 ): RosterComparison {
   const hosts = new Set([...calcomHostEmails].map((e) => e.toLowerCase()));
   const rows: RosterRow[] = [];
@@ -334,7 +388,7 @@ export function compareRosters(
   for (const member of slateMembers) {
     const key = member.email.toLowerCase();
     seen.add(key);
-    const { verdict, reason } = classifyRosterMember(member, standingOf(key, hosts), null);
+    const { verdict, reason } = classifyRosterMember(member, standingOf(key, hosts, withheld), null);
     rows.push({ email: member.email, verdict, reason });
   }
   // A host with no Slate row is carried through rather than dropped: iterating
@@ -342,17 +396,20 @@ export function compareRosters(
   // invisible, which is half of what this exists to find.
   for (const host of hosts) {
     if (seen.has(host)) continue;
-    const { verdict, reason } = classifyRosterMember(null, standingOf(host, hosts), host);
+    const { verdict, reason } = classifyRosterMember(null, standingOf(host, hosts, withheld), host);
     rows.push({ email: host, verdict, reason });
   }
 
   return {
     rows,
     hostsEmpty: hosts.size === 0,
-    // Withheld addresses that are no longer hosts. Not a finding: it is the one
-    // signal that the hand-recorded list has drifted from cal.com, which it will,
-    // and the run says the number rather than pretending the list is current.
-    withheldNoLongerHosting: Object.keys(REDISTRIBUTE_EXCLUDED).filter((e) => !hosts.has(e)).length,
+    // Withheld addresses that are no longer hosts. Not a finding: it is the signal
+    // that Twilio and cal.com have drifted apart, which is now what it measures.
+    // Somebody carrying the tag whom cal.com does not list as a host means the
+    // Pipedream job has not carried the tag across, or they have left the event
+    // type; either way the two systems disagree about somebody and the run says the
+    // number rather than pretending they agree.
+    withheldNoLongerHosting: [...withheld].filter((e) => !hosts.has(e)).length,
   };
 }
 
@@ -363,9 +420,9 @@ export function compareRosters(
  * address on the list who is not a host is simply not a host, and saying otherwise
  * would report a routing decision about a person cal.com cannot route to at all.
  */
-function standingOf(emailKey: string, hosts: Set<string>): CalcomStanding {
+function standingOf(emailKey: string, hosts: Set<string>, withheld: WithheldSet): CalcomStanding {
   if (!hosts.has(emailKey)) return "not-a-host";
-  return emailKey in REDISTRIBUTE_EXCLUDED ? "excluded" : "routable";
+  return withheld.has(emailKey) ? "excluded" : "routable";
 }
 
 /**

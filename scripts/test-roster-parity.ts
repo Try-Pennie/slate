@@ -27,10 +27,21 @@ import {
   worstRosterVerdict,
   ROSTER_VERDICT_RANK,
   KNOWN_NON_SLATE_HOSTS,
-  REDISTRIBUTE_EXCLUDED,
+  withheldFromWorkers,
+  withheldReadiness,
   type SlateRosterMember,
 } from "./lib/roster-parity.ts";
+import { readWorker } from "@/lib/twilio/roster";
 import { assert, eq, finish } from "./lib/harness.ts";
+
+/**
+ * Nobody is withheld, for the cases that are not about withholding.
+ *
+ * Named rather than written as `new Set()` at each call site, so a reader can see
+ * at a glance which cases deliberately hold that input constant and which are
+ * about it.
+ */
+const NOBODY_WITHHELD: ReadonlySet<string> = new Set<string>();
 
 /** A Slate user as the comparison sees them. Defaults are the ordinary case, so
  *  each test states only what makes its own case different. */
@@ -157,6 +168,7 @@ function slate(over: Partial<SlateRosterMember> = {}): SlateRosterMember {
       slate({ email: "c@trypennie.com", role: "admin", bookable: false }),
     ],
     new Set(["a@trypennie.com", "b@trypennie.com", "c@trypennie.com", "ghost@trypennie.com"]),
+    NOBODY_WITHHELD,
   );
   eq(result.rows.length, 4, "every agent on either side is accounted for, including one Slate has never seen");
   eq(
@@ -169,14 +181,14 @@ function slate(over: Partial<SlateRosterMember> = {}): SlateRosterMember {
 {
   // Case matters, because the two systems disagree about it and an unmatched
   // address is reported as somebody missing from a roster they are actually on.
-  const result = compareRosters([slate({ email: "Mixed.Case@TryPennie.com" })], new Set(["mixed.case@trypennie.com"]));
+  const result = compareRosters([slate({ email: "Mixed.Case@TryPennie.com" })], new Set(["mixed.case@trypennie.com"]), NOBODY_WITHHELD);
   eq(result.rows[0].verdict, "agree", "addresses match without regard to case");
 }
 {
   // An empty host list is never agreement. cal.com answering with no hosts, or an
   // event type that has moved, would otherwise read as every Slate agent being
   // absent from cal.com, which is a hundred findings about one broken read (L98).
-  const result = compareRosters([slate()], new Set());
+  const result = compareRosters([slate()], new Set(), NOBODY_WITHHELD);
   assert(result.hostsEmpty, "no hosts at all is flagged as its own condition, not scored as a hundred divergences");
 }
 {
@@ -247,6 +259,7 @@ function slate(over: Partial<SlateRosterMember> = {}): SlateRosterMember {
   const result = compareRosters(
     [slate({ email: "a@trypennie.com" })],
     new Set(["a@trypennie.com", known, "ghost@trypennie.com"]),
+    NOBODY_WITHHELD,
   );
   eq(result.rows.length, 3, "every address on either side is still accounted for");
   eq(
@@ -262,7 +275,7 @@ function slate(over: Partial<SlateRosterMember> = {}): SlateRosterMember {
 }
 {
   const known = Object.keys(KNOWN_NON_SLATE_HOSTS)[0];
-  const result = compareRosters([slate({ email: "a@trypennie.com" })], new Set(["a@trypennie.com", known]));
+  const result = compareRosters([slate({ email: "a@trypennie.com" })], new Set(["a@trypennie.com", known]), NOBODY_WITHHELD);
   eq(
     worstRosterVerdict(result.rows.map((r) => r.verdict)),
     "agree",
@@ -273,7 +286,7 @@ function slate(over: Partial<SlateRosterMember> = {}): SlateRosterMember {
   // Case, for the same reason the address match is case insensitive: the list is
   // written by hand and cal.com's spelling is not ours to control.
   const known = Object.keys(KNOWN_NON_SLATE_HOSTS)[0];
-  const result = compareRosters([], new Set([known.toUpperCase()]));
+  const result = compareRosters([], new Set([known.toUpperCase()]), NOBODY_WITHHELD);
   eq(
     result.rows[0]?.verdict,
     "known-not-in-slate",
@@ -287,15 +300,50 @@ function slate(over: Partial<SlateRosterMember> = {}): SlateRosterMember {
 // actually routes to is narrower than the list. Reading the list alone reports the
 // wrong thing in both directions, and both were live on 2026-09-08.
 {
-  const exempt = Object.keys(REDISTRIBUTE_EXCLUDED);
-  assert(exempt.length > 0, "the withheld list has at least one entry, or this path is dead code");
-  for (const email of exempt) {
-    eq(email, email.toLowerCase(), `${email} is stored lowercased, since that is how addresses are matched`);
-    assert(
-      (REDISTRIBUTE_EXCLUDED[email] ?? "").trim().length > 0,
-      `${email} carries a written reason (L233)`,
-    );
-  }
+  // #2153: the withheld set arrives from Twilio's tags rather than from a list in
+  // the source, so what is worth pinning is that the set REACHES the verdict. A set
+  // that was accepted and never consulted would report the twelve agents #2088
+  // fixed as agreement again, and every assertion below about `"excluded"` would
+  // still pass, because those call the classifier directly.
+  const withheld = new Set(["withheld@trypennie.com"]);
+  const result = compareRosters(
+    [slate({ email: "withheld@trypennie.com", bookable: true }), slate({ email: "open@trypennie.com", bookable: true })],
+    new Set(["withheld@trypennie.com", "open@trypennie.com"]),
+    withheld,
+  );
+  eq(
+    result.rows.find((r) => r.email === "withheld@trypennie.com")?.verdict,
+    "bookable-not-routable",
+    "somebody in the withheld set is judged as withheld, so the set is actually consulted",
+  );
+  eq(
+    result.rows.find((r) => r.email === "open@trypennie.com")?.verdict,
+    "agree",
+    "and somebody outside it is not, so it is not withholding everybody",
+  );
+}
+{
+  // THE CONTROL for the refusal the caller makes on an unreadable Twilio read. An
+  // empty set is a legitimate value here (nobody is tagged), and it is
+  // indistinguishable from a read that failed, which is why the command exits
+  // rather than passing one in (L98).
+  const result = compareRosters(
+    [slate({ email: "a@trypennie.com", bookable: true })],
+    new Set(["a@trypennie.com"]),
+    NOBODY_WITHHELD,
+  );
+  eq(result.rows[0]?.verdict, "agree", "an empty withheld set withholds nobody, which is why the caller must refuse a failed read rather than pass one");
+}
+{
+  // The drift signal, which since #2153 measures Twilio against cal.com rather
+  // than a hand list against cal.com: somebody carrying the tag whom cal.com does
+  // not list as a host means the two have come apart.
+  const result = compareRosters(
+    [slate({ email: "a@trypennie.com", bookable: true })],
+    new Set(["a@trypennie.com"]),
+    new Set(["a@trypennie.com", "gone@trypennie.com"]),
+  );
+  eq(result.withheldNoLongerHosting, 1, "a withheld address cal.com no longer hosts is counted");
 }
 {
   // BOTH systems withhold them, which is agreement however loudly the host list
@@ -350,6 +398,65 @@ function slate(over: Partial<SlateRosterMember> = {}): SlateRosterMember {
 {
   const r = classifyRosterMember(slate({ bookable: false, matchableByAnyBucket: true }), "routable", null);
   eq(r.verdict, "held-back-still-hosting", "and somebody a bucket CAN match is still the page it exists for");
+}
+
+// --- where the withheld set comes from (#2153) ---------------------------------
+// It was sixteen addresses typed into this file from the cal.com UI on 2026-09-08,
+// and nothing maintained it. Measured 2026-09-10 it was wrong in both directions:
+// Twilio tagged 22 people, 8 of whom it had never heard of, while 2 of its entries
+// carried no tag. Twilio is where a manager sets this and what the Pipedream job
+// reads to put `Redistribute Team = YES` on the cal.com member, so it is the source.
+
+/** Built through the REAL reader, so the tag spelling is the shipped one (L48). */
+const workerRead = (email: string, teams: string[]) => readWorker(JSON.stringify({ email, teams }));
+
+{
+  const withheld = withheldFromWorkers([
+    workerRead("tagged@trypennie.com", ["Redistribute", "Low Debt: 20k - 30k"]),
+    workerRead("open@trypennie.com", ["Low Debt: 20k - 30k"]),
+  ]);
+  eq([...withheld], ["tagged@trypennie.com"], "only a worker carrying the tag is withheld");
+}
+{
+  const withheld = withheldFromWorkers([workerRead("Mixed.Case@TryPennie.com", ["Redistribute"])]);
+  eq([...withheld], ["mixed.case@trypennie.com"], "addresses are lowercased, since that is how both sides are matched");
+}
+{
+  // A worker the reader REFUSES contributes nothing and is not an error: a corrupt
+  // attributes blob and a worker with no email are both ordinary in that workspace
+  // (queue entities, vendor automations). The read failing as a WHOLE is the
+  // caller's refusal, because it cannot be told from this apart from up there.
+  const withheld = withheldFromWorkers([
+    { ok: false },
+    readWorker("not json at all"),
+    readWorker(JSON.stringify({ teams: ["Redistribute"] })),
+    workerRead("real@trypennie.com", ["Redistribute"]),
+  ]);
+  eq([...withheld], ["real@trypennie.com"], "workers that could not be read are skipped rather than counted");
+}
+{
+  eq([...withheldFromWorkers([])].length, 0, "no workers withholds nobody, which is why an unreadable read must refuse rather than compare");
+}
+
+{
+  const ready = withheldReadiness({
+    TWILIO_API_KEY_SID: "SK1",
+    TWILIO_API_KEY_SECRET: "s",
+    TWILIO_WORKSPACE_SID: "WS1",
+  });
+  assert(ready.ok, "all three variables set is ready");
+}
+{
+  // NAMED, not "Twilio is not configured": somebody who set two of three has to be
+  // told which one they missed, or the message sends them to re-check all three.
+  const ready = withheldReadiness({ TWILIO_API_KEY_SID: "SK1", TWILIO_WORKSPACE_SID: "WS1" });
+  assert(!ready.ok, "a missing variable is refused");
+  eq(ready.ok ? [] : ready.missing, ["TWILIO_API_KEY_SECRET"], "and the refusal names exactly the one that is missing");
+}
+{
+  const ready = withheldReadiness({ TWILIO_API_KEY_SID: "  ", TWILIO_API_KEY_SECRET: "", TWILIO_WORKSPACE_SID: undefined });
+  assert(!ready.ok, "a blank value is not a value");
+  eq(ready.ok ? [] : ready.missing.length, 3, "and every missing one is named, so a reader fixes them in one go");
 }
 
 finish();

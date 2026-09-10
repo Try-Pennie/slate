@@ -722,8 +722,11 @@ pnpm verify:calcom-parity                                   # sweep the roster
 PARITY_AGENT=someone@trypennie.com pnpm verify:calcom-parity  # one agent's hours
 ```
 
-`CALCOM_API_KEY` is required (a wrangler secret on the deployment, so it has to
-be in `.env.local` to run this). `CALCOM_ORG_ID` defaults to 19474,
+`CALCOM_API_KEY` is required, and so are the three Twilio variables that say who
+cal.com withholds (`TWILIO_API_KEY_SID`, `TWILIO_API_KEY_SECRET`,
+`TWILIO_WORKSPACE_SID`, the same TaskRouter scoped key `verify:twilio-parity` uses).
+The cal.com key is a wrangler secret on the deployment, so it has to
+be in `.env.local` to run this. `CALCOM_ORG_ID` defaults to 19474,
 `CALCOM_TEAM_ID` to 19546 (Loan Consultation), `CALCOM_EVENT_TYPE_ID` to 1314152
 (the review event the landing pages use), and `CALCOM_PACE_MS` to 250. The pacing
 is not cosmetic: cal.com meters the schedules endpoint hard and the first import
@@ -741,11 +744,12 @@ the real answer is that nothing was compared.
 | exit | what it met |
 |---|---|
 | 0 | the two rosters agree and every agent holds the same week |
-| 1 | no `CALCOM_API_KEY` here; nothing was attempted |
+| 1 | no `CALCOM_API_KEY`, or no Twilio credentials, here; nothing was attempted |
 | 2 | no bookable agents in Slate, or the named agent does not exist |
 | 4 | cal.com did not answer (the org listing, or the team's event types) |
 | 5 | cal.com answered with something unreadable |
 | 6 | the event type is not on that team, or named no hosts at all |
+| 7 | **Twilio could not be read**, so who cal.com withholds is unknown |
 | 9 | a zone name differs and keeps the same clock |
 | 10 | an agent bookable in Slate has no cal.com account |
 | 11 | a cal.com account holds no schedule, or one with no windows set |
@@ -776,13 +780,26 @@ booking; six of the seven live routing forms then carry `Redistribute Team (does
 equal) yes` on every route, so the pool cal.com actually routes to is narrower. Until
 2026-09-08 that meant two agents Slate correctly held back were paged on daily (exit
 24) while twelve agents Slate offers and cal.com never routes to read as agreement.
-The withheld set is `REDISTRIBUTE_EXCLUDED` in `scripts/lib/roster-parity.ts` and it
-is **recorded by hand on purpose**: cal.com will not report per-user attribute values
-(`/organizations/{org}/users/{id}/attributes` answers 404 on both API versions), and
-the routing forms give the condition without saying who satisfies it. It will go
-stale, which is accepted rather than solved, since the whole comparison retires at
-cutover; the run says how many withheld addresses are no longer hosts, and that count
-is the drift signal.
+**The withheld set comes from Twilio** (#2153). cal.com will not report per-user
+attribute values (`/organizations/{org}/users/{id}/attributes` answers 404 on both
+API versions) and the routing forms give the condition without saying who satisfies
+it, so the set was a hand-typed constant for two days, read out of the cal.com UI on
+2026-09-08. Nothing maintained it, and by 2026-09-10 it was wrong in both directions:
+Twilio tagged 22 people, 8 of whom it had never heard of, while 2 of its entries
+carried no tag at all. The Pipedream job that reads those tags is what puts
+`Redistribute Team = YES` on the cal.com member in the first place, so the command
+reads the tags and needs `TWILIO_API_KEY_SID`, `TWILIO_API_KEY_SECRET` and
+`TWILIO_WORKSPACE_SID` alongside the cal.com key. A Twilio read it cannot make is
+**exit 7 and no comparison at all**: an empty withheld set turns every withheld agent
+into agreement, which is the false agreement #2088 fixed. The run still says how many
+withheld addresses cal.com no longer hosts, and that count now measures Twilio
+against cal.com rather than a person's snapshot against cal.com.
+
+Not `users.attributes.redistribute`, which is a different fact. That key is Slate's
+record of whom IT took out of the bookable pool because of the tag, so an agent who
+was already not bookable when the tag appeared is never marked: measured 2026-09-10
+it covered 13 of the 22 tagged people, and using it would have reported the other 9
+as routable.
 
 **Exit 21 asks whether a bucket can match them, not whether they carry attributes**
 (#2094). The looser question paged daily on an agent whose only attribute was
