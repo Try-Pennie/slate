@@ -6,7 +6,9 @@
 // #2098 added the legal eligibility value, which rides in the SAME attributes
 // payload as the mark rather than a second write. That is why the payloads below
 // carry `legal_eligible` beside `redistribute`: two writes built from one base row
-// would drop each other silently (L443).
+// would drop each other silently (L443). #2152 put the debt tiers and the backend
+// service in that same payload, for the same reason, and added the flip a first
+// tier asks for.
 //
 // TWO THINGS THIS PINS THAT NOTHING ELSE CAN.
 //
@@ -35,7 +37,7 @@ const worker = (email: string, teams: string[]) => ({ attributes: JSON.stringify
 const NOW = "2026-09-09T12:00:00.000Z";
 
 function row(over: Partial<TwilioRosterRow> = {}): TwilioRosterRow {
-  return { id: "u1", email: "a@trypennie.com", bookable: true, deactivated: false, isTest: false, attributes: {}, ...over };
+  return { id: "u1", email: "a@trypennie.com", bookable: true, deactivated: false, pending: false, isTest: false, attributes: {}, ...over };
 }
 
 /**
@@ -70,8 +72,11 @@ function deps(
       calls.push(`flip:${userId}:${bookable}`);
       return answer ? answer(userId, bookable) : { status: "applied", userId, bookable };
     },
-    writeAttributes: async (userId, attributes) => {
-      calls.push(`attrs:${userId}:${JSON.stringify(attributes)}`);
+    writeAttributes: async ({ userId, attributes, bookablePendingSince }) => {
+      // The pending mark is recorded WITH the attributes rather than beside them,
+      // because they are one statement and a test that could not see the pair would
+      // pass on an implementation that wrote them separately (#2152).
+      calls.push(`attrs:${userId}:${JSON.stringify(attributes)}${bookablePendingSince ? `:pending=${bookablePendingSince}` : ""}`);
     },
     recordAudit: (async (entry: Record<string, unknown>) => {
       audits.push(entry);
@@ -149,7 +154,11 @@ const backOn = {
     (userId, bookable) => ({ status: "noop", userId, bookable }),
   );
   const r = await syncTwilioRedistribute(d.deps);
-  eq(d.calls, ["flip:u1:true", 'attrs:u1:{"legal_eligible":"N"}'], "a noop still clears the stale mark");
+  eq(
+    d.calls,
+    ["flip:u1:true", 'attrs:u1:{"legal_eligible":"N","debt_team":["low"]}'],
+    "a noop still clears the stale mark, and the payload carries the tiers the same tags gave",
+  );
   eq(r.turnedBackOn.length, 0, "and is not reported as a change, because nothing changed");
   eq(d.audits.length, 0, "nor audited");
 }
@@ -299,7 +308,7 @@ const backOn = {
   // everybody would satisfy the two cases above (L1).
   const d = deps({
     fetchWorkers: async () => [worker("a@trypennie.com", ["Low Debt: 20k - 30k"])],
-    loadRoster: async () => [row({ attributes: { legal_eligible: "N" } })],
+    loadRoster: async () => [row({ attributes: { legal_eligible: "N", debt_team: ["low"] } })],
   });
   const r = await syncTwilioRedistribute(d.deps);
   eq(d.calls.length, 0, "a row already holding what Twilio says is not written at all");
@@ -369,13 +378,13 @@ const backOn = {
       row({ id: "u2", email: "b@trypennie.com" }),
       row({ id: "u3", email: "c@trypennie.com" }),
     ],
-    writeAttributes: async (userId) => {
+    writeAttributes: async ({ userId }) => {
       if (userId === "u2") throw new Error("database went away");
     },
   });
   const r = await syncTwilioRedistribute(d.deps);
   eq(r.legalEligible, ["a@trypennie.com", "c@trypennie.com"], "the writes either side of the failure still land");
-  eq(r.legalWriteFailures, 1, "and the one that failed is counted rather than swallowed");
+  eq(r.attributeWriteFailures, 1, "and the one that failed is counted rather than swallowed");
 }
 
 // --- what the agent already has booked (#2115) ---------------------------------
@@ -448,6 +457,112 @@ const backOn = {
   eq(r.turnedBackOn, ["a@trypennie.com"], "the agent is put back in the pool");
   eq(r.coverageSweeps.length, 0, "and no coverage sweep is queued for them");
   assert(!d.calls.some((c) => c.startsWith("sweep:")), "the sweep is never even asked for");
+}
+
+// --- the routing attributes, and the flip a first tier asks for (#2152) --------
+
+{
+  const d = deps({
+    fetchWorkers: async () => [worker("a@trypennie.com", ["Med Debt: 30k - 50k", "Beyond"])],
+    loadRoster: async () => [row({ attributes: { legal_eligible: "N", debt_team: ["low"] } })],
+  });
+  const r = await syncTwilioRedistribute(d.deps);
+  eq(
+    d.calls,
+    ['attrs:u1:{"legal_eligible":"N","debt_team":["medium"],"backend_service":["beyond"]}'],
+    "one write carries every Twilio owned value, so nothing is written over the same column twice",
+  );
+  eq(r.tiersChanged, ["a@trypennie.com"], "the tier change is counted");
+  eq(r.backendChanged, ["a@trypennie.com"], "and so is the backend one");
+  eq(r.legalEligible.length + r.legalExcluded.length, 0, "and the legal value, which did not move, is counted neither way");
+}
+
+{
+  // A count of a write that never happened is the defect (#1134), and it is worth
+  // its own case because the payload was built either way.
+  const d = deps({
+    fetchWorkers: async () => [worker("a@trypennie.com", ["Med Debt: 30k - 50k"])],
+    loadRoster: async () => [row({ attributes: { legal_eligible: "N", debt_team: ["low"] } })],
+    writeAttributes: async () => {
+      throw new Error("database went away");
+    },
+  });
+  const r = await syncTwilioRedistribute(d.deps);
+  eq(r.tiersChanged.length, 0, "a write that threw is not counted as a tier that changed");
+  eq(r.attributeWriteFailures, 1, "it is counted as the failure it is");
+}
+
+{
+  // The first tier is what makes a new hire bookable. The pending mark travels in
+  // the SAME statement as the attributes, so a crash before the flip leaves an
+  // intent the Salesforce half retries rather than a tier nobody acted on.
+  const d = deps({
+    fetchWorkers: async () => [worker("a@trypennie.com", ["Low Debt: 20k - 30k"])],
+    loadRoster: async () => [row({ bookable: false, attributes: { role: "Chatter Free User", legal_eligible: "N" } })],
+  });
+  const r = await syncTwilioRedistribute(d.deps);
+  eq(
+    d.calls,
+    [
+      'attrs:u1:{"role":"Chatter Free User","legal_eligible":"N","debt_team":["low"]}:pending=' + NOW,
+      "flip:u1:true",
+    ],
+    "the attributes and the pending mark are written first, then the flip is attempted",
+  );
+  eq(r.activated, ["a@trypennie.com"], "and the activation is reported");
+  eq(d.audits.length, 1, "with an audit row, like every other flip");
+  eq((d.audits[0] as { details: { reason: string } }).details.reason, "first-tier", "naming why");
+}
+
+{
+  // The gate refuses anybody with no reachable Google calendar, which is the
+  // ordinary state for a hire whose Twilio tag arrives before their account does.
+  const d = deps(
+    {
+      fetchWorkers: async () => [worker("a@trypennie.com", ["Low Debt: 20k - 30k"])],
+      loadRoster: async () => [row({ bookable: false, attributes: { role: "Chatter Free User", legal_eligible: "N" } })],
+    },
+    (userId) => ({ status: "blocked", userId, reason: "google_unreachable" }),
+  );
+  const r = await syncTwilioRedistribute(d.deps);
+  eq(r.activationRefused, ["a@trypennie.com"], "a refused activation is reported rather than counted as done");
+  eq(r.activated.length, 0, "and is not also counted as activated");
+  eq(r.tiersChanged, ["a@trypennie.com"], "the tier itself still landed, because that write went first");
+  eq(d.audits.length, 0, "nothing is audited, because nobody entered the pool");
+}
+
+{
+  // The activation is its own boundary: a flip that throws must leave the write
+  // that already landed alone, and the next hour retries from the pending mark.
+  const d = deps(
+    {
+      fetchWorkers: async () => [worker("a@trypennie.com", ["Low Debt: 20k - 30k"])],
+      loadRoster: async () => [row({ bookable: false, attributes: { role: "Chatter Free User", legal_eligible: "N" } })],
+    },
+    () => {
+      throw new Error("google went away");
+    },
+  );
+  const r = await syncTwilioRedistribute(d.deps);
+  eq(r.activated.length, 0, "a flip that threw is not reported as an activation");
+  eq(r.activationFailures, 1, "it is counted as an activation failure");
+  eq(
+    r.attributeWriteFailures,
+    0,
+    "and NOT as an attribute write failure, because the attributes landed and a reader sent to check them would find them correct",
+  );
+  eq(r.tiersChanged, ["a@trypennie.com"], "and the tier write that already landed still counts");
+}
+
+{
+  // A row that needs no attribute change and no flip must not be written at all,
+  // which is what keeps this from touching all 129 rows every hour.
+  const d = deps({
+    fetchWorkers: async () => [worker("a@trypennie.com", ["Low Debt: 20k - 30k"])],
+    loadRoster: async () => [row({ bookable: true, attributes: { role: "Sales", legal_eligible: "N", debt_team: ["low"] } })],
+  });
+  await syncTwilioRedistribute(d.deps);
+  eq(d.calls.length, 0, "an agent whose stored attributes already match their tags is left alone");
 }
 
 finish();

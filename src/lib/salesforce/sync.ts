@@ -4,11 +4,11 @@ import { ensureDefaultOrg } from "@/lib/provision";
 import { sfClientId, sfClientSecret, sfInstanceUrl } from "@/lib/env";
 import { mergeSfAttributes } from "@/lib/salesforce/attributes";
 import {
-  SF_BACKEND_VALUES,
-  SF_DEBT_VALUES,
-  type SfBackendValue,
-  type SfDebtValue,
-} from "@/lib/salesforce/sync-vocabulary";
+  BACKEND_VALUES,
+  DEBT_TIER_VALUES,
+  type BackendValue,
+  type DebtTierValue,
+} from "@/lib/routing/attribute-vocabulary";
 import { resolveManagerSync } from "@/lib/salesforce/manager-sync";
 import {
   exactNameMatch,
@@ -49,24 +49,29 @@ import type { Attributes, Role, User } from "@/lib/db/types";
  */
 export const AGENTS_SYNC_STREAK_KEY = "cron_agents_failures";
 
-// SF User custom booleans -> Slate attribute values.
 /**
  * Which Salesforce checkbox carries each routing value (#1874).
  *
+ * IT NO LONGER WRITES ANYTHING (#2152). Twilio is the source of an agent's debt
+ * tiers and backend service, and these booleans survive for the one job they still
+ * do: deciding WHICH Salesforce records are in scope. The query admits anybody on
+ * an agent profile, plus anybody carrying a tier on any other profile, which is how
+ * a tiered manager stays in the roster. Dropping them would have changed who Slate
+ * syncs at all, which is a different question from who routing matches, so it was
+ * left exactly as it was.
+ *
  * A `Record` over the vocabulary rather than a list of pairs, so tsc requires
  * exactly one field per value: a value routing has never heard of is rejected,
- * and a value routing DOES match on cannot be left out. Since the admin form
- * became read only this is the only writer of these attributes, so this is where
- * the vocabulary is enforced.
+ * and a value routing DOES match on cannot be left out.
  */
-const DEBT_FIELD: Record<SfDebtValue, keyof SfUser> = {
+const DEBT_FIELD: Record<DebtTierValue, keyof SfUser> = {
   ultra_high: "UltraHighDebt__c",
   very_high: "VeryHighDebt__c",
   high: "HighDebt__c",
   medium: "MediumDebt__c",
   low: "LowDebt__c",
 };
-const BACKEND_FIELD: Record<SfBackendValue, keyof SfUser> = {
+const BACKEND_FIELD: Record<BackendValue, keyof SfUser> = {
   beyond: "BeyondBackendServicer__c",
   achieve: "AchieveBackendServicer__c",
 };
@@ -199,14 +204,18 @@ function toManagerCandidate(u: SfUser): SfManagerCandidate {
   };
 }
 
+/**
+ * The attributes SALESFORCE owns, which since #2152 is the profile and nothing
+ * else.
+ *
+ * `debt_team` and `backend_service` used to be built here from the checkboxes
+ * above. They come from the agent's Twilio TaskRouter tags now, which is what
+ * feeds cal.com, so the two systems can no longer disagree about a fact one of
+ * them was only ever a second copy of. Everything Twilio does not carry stays
+ * here: the profile, and manager of record (#2099).
+ */
 function toAttributes(u: SfUser): Attributes {
-  // Iterated over the VOCABULARY, so the order an agent's values land in is the
-  // vocabulary's order (highest debt first) rather than an object literal's.
-  const debt = SF_DEBT_VALUES.filter((v) => u[DEBT_FIELD[v]]);
-  const backend = SF_BACKEND_VALUES.filter((v) => u[BACKEND_FIELD[v]]);
   const attrs: Attributes = {};
-  if (debt.length) attrs.debt_team = debt;
-  if (backend.length) attrs.backend_service = backend;
   if (u.Profile?.Name) attrs.role = u.Profile.Name;
   return attrs;
 }
@@ -217,9 +226,13 @@ export interface SyncResult {
   deactivated: number;
   /**
    * Hires created this run who do not yet qualify to book (#2071): on the Chatter
-   * Free profile with no debt team. Counted because the old rule never created
-   * them at all, and a row that exists but is not bookable is the state that
-   * needs to be visible rather than inferred.
+   * Free profile, with no debt team on the row Slate just wrote. Counted because
+   * the old rule never created them at all, and a row that exists but is not
+   * bookable is the state that needs to be visible rather than inferred.
+   *
+   * Since #2152 a hire's tiers arrive from Twilio rather than from Salesforce, so
+   * a row created here carries none by construction and it is the Twilio half of
+   * the same run that writes the first one and asks for the flip.
    */
   createdUntiered: number;
   /** Emails made bookable this run because Salesforce moved them to Sales or gave
@@ -319,11 +332,12 @@ interface PlannedFlip {
  */
 export async function syncSalesforceAgents(deps: SyncDeps = defaultSyncDeps): Promise<SyncResult> {
   const { token, instanceUrl } = await sfToken();
-  // The SELECT and the WHERE are derived from the same two field maps the
-  // attributes are built from, so a field added for a new tier is queried and
-  // read by construction rather than by remembering three places.
-  const debtFields = SF_DEBT_VALUES.map((v) => DEBT_FIELD[v]);
-  const backendFields = SF_BACKEND_VALUES.map((v) => BACKEND_FIELD[v]);
+  // The SELECT and the WHERE are derived from the same two field maps, so a field
+  // added for a new tier is queried by construction rather than by remembering two
+  // places. Since #2152 they decide only WHO is in scope: the values themselves
+  // come from Twilio.
+  const debtFields = DEBT_TIER_VALUES.map((v) => DEBT_FIELD[v]);
+  const backendFields = BACKEND_VALUES.map((v) => BACKEND_FIELD[v]);
   const debtFilter = debtFields.map((f) => `${f}=true`).join(" OR ");
   const soql =
     `SELECT Id, Email, Name, Profile.Name, Agent_Manager__c, ` +
@@ -412,7 +426,11 @@ export async function syncSalesforceAgents(deps: SyncDeps = defaultSyncDeps): Pr
         // A retry already carries its mark; a fresh transition gets one now, in
         // this write, for the reason in the comment above the loop.
         if (plan.reason !== "retry") row.bookable_pending_since = nowIso;
-        flips.push({ email, reason: plan.reason, attributes, userId: current.id });
+        // The MERGED attributes, not the Salesforce ones, because the audit row
+        // names the debt teams and since #2152 those come from Twilio. Passing the
+        // Salesforce half alone would write an empty tier list into the trail for
+        // an agent who plainly has tiers.
+        flips.push({ email, reason: plan.reason, attributes: row.attributes as Attributes, userId: current.id });
       }
       updates.push(row);
     } else {
@@ -607,7 +625,9 @@ export async function syncSalesforceAgents(deps: SyncDeps = defaultSyncDeps): Pr
       bookableFlipped.push(flip.email);
       // Actor null: an operator process, not a signed in person. The details say
       // which Salesforce change did it, so the trail answers "who made them
-      // bookable" with "Salesforce did, by ticking Low Debt" rather than a blank.
+      // bookable" with "Salesforce did, by moving them to Sales" rather than a
+      // blank. The debt teams beside it are the ones the row will actually route
+      // on, which since #2152 came from Twilio rather than from this sync.
       await deps.recordAudit({
         orgId: org.id,
         actorId: null,

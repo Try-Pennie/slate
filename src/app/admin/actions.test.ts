@@ -82,8 +82,13 @@ const twilioOk = (over: Partial<TwilioSyncResult> = {}) => ({
     coverageSweepFailures: 0,
     legalEligible: [],
     legalExcluded: [],
+    tiersChanged: [],
+    backendChanged: [],
+    activated: [],
+    activationRefused: [],
     withoutWorker: [],
-    legalWriteFailures: 0,
+    attributeWriteFailures: 0,
+    activationFailures: 0,
     corruptAttributes: 0,
     noEmail: 0,
     unmappedTags: [],
@@ -1150,9 +1155,9 @@ describe("syncSalesforceNow (#491, #2071)", () => {
     expect(redirected).toContain("2 agents recorded as not eligible for legal work");
   });
 
-  it("says when a legal write threw, separately from a flip that threw", async () => {
+  it("says when an attribute write threw, separately from a flip that threw", async () => {
     rosterSync.runRosterSync.mockResolvedValueOnce(
-      syncOutcome({ updated: 0 }, twilioOk({ legalWriteFailures: 2 })),
+      syncOutcome({ updated: 0 }, twilioOk({ attributeWriteFailures: 2 })),
     );
     let redirected = "";
     try {
@@ -1160,7 +1165,7 @@ describe("syncSalesforceNow (#491, #2071)", () => {
     } catch (e) {
       redirected = decodeURIComponent(String((e as Error).message));
     }
-    expect(redirected).toContain("2 agents whose legal eligibility could not be recorded");
+    expect(redirected).toContain("2 agents whose routing attributes could not be recorded");
     // The two failures send a reader to different places, so one line must never
     // answer for the other (L11).
     expect(redirected).not.toContain("could not be flipped at all");

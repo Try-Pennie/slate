@@ -75,39 +75,54 @@ const REFUSED = "Twilio refused the credentials (401). The API key has to be Tas
 
 // --- the writes that did not land (#2114) ---------------------------------------
 // The read failing is already paged. What was not is the half AFTER the read: a
-// flip that keeps throwing, a coverage sweep that could not be queued, a legal
-// value that would not write. Each was counted, written to the log, put in the
-// sync banner, and reported by nothing on an unattended hourly run.
+// flip that keeps throwing, a coverage sweep that could not be queued, an attribute
+// write that would not land, and since #2152 a first debt team that could not be put
+// in the pool. Each was counted, written to the log, put in the sync banner, and
+// reported by nothing on an unattended hourly run.
 
 {
-  const text = twilioWriteFailureAlert({ flips: 2, sweeps: 0, legal: 0 });
+  const text = twilioWriteFailureAlert({ flips: 2, sweeps: 0, attributes: 0, activations: 0 });
   assert(/still bookable|still be booked|still offering/i.test(text), "a failed flip leads with the consequence, which is an agent Slate is still offering");
   assert(text.includes("2"), "and says how many");
-  assert(!/coverage sweep|legal/i.test(text), "and says nothing about the two that did not happen");
+  assert(!/coverage sweep|routing attributes|first debt team/i.test(text), "and says nothing about the three that did not happen");
 }
 
 {
-  const text = twilioWriteFailureAlert({ flips: 0, sweeps: 1, legal: 0 });
+  const text = twilioWriteFailureAlert({ flips: 0, sweeps: 1, attributes: 0, activations: 0 });
   assert(/upcoming|booked|call/i.test(text), "a failed coverage sweep is about the calls left behind");
   assert(/coverage/i.test(text), "and names where to go and move them");
   assert(!/still bookable/i.test(text), "and does not claim an agent is still being offered, which is a different fault");
 }
 
 {
-  const text = twilioWriteFailureAlert({ flips: 0, sweeps: 0, legal: 3 });
-  assert(/legal/i.test(text), "a failed legal write says which fact did not land");
+  const text = twilioWriteFailureAlert({ flips: 0, sweeps: 0, attributes: 3, activations: 0 });
+  assert(/routing attributes/i.test(text), "a failed attribute write says which facts did not land");
+  assert(/debt tier/i.test(text), "naming them, since #2152 put three facts in one write and a reader has to know which are stale");
   assert(text.includes("3"), "and how many agents it covers");
 }
 
 {
-  // All three at once. The flip leads, because it is the only one of the three that
+  // #2152. Its own line, because the attributes DID land here: only the flip into
+  // the pool did not, so a reader sent to check the tiers would find them correct.
+  const text = twilioWriteFailureAlert({ flips: 0, sweeps: 0, attributes: 0, activations: 2 });
+  assert(/first debt team/i.test(text), "a failed activation says what happened to them");
+  assert(/pool|taking calls/i.test(text), "and what it costs, which is that they are not taking calls yet");
+  assert(
+    !/could not have their routing attributes recorded/i.test(text),
+    "and never claims their attributes are unrecorded, which would send a reader to check a value that is fine (L11)",
+  );
+  assert(text.includes("2"), "and how many agents it covers");
+}
+
+{
+  // All four at once. The flip leads, because it is the only one of the four that
   // misroutes a lead today (L609), and every count is still named rather than one
   // answering for the others (L11).
-  const text = twilioWriteFailureAlert({ flips: 1, sweeps: 2, legal: 3 });
+  const text = twilioWriteFailureAlert({ flips: 1, sweeps: 2, attributes: 3, activations: 4 });
   const flipAt = text.search(/still bookable|still be booked|still offering/i);
   const sweepAt = text.search(/coverage/i);
   assert(flipAt >= 0 && sweepAt > flipAt, `the flip is said first (got: ${text})`);
-  for (const n of ["1", "2", "3"]) assert(text.includes(n), `the count ${n} survives into the message`);
+  for (const n of ["1", "2", "3", "4"]) assert(text.includes(n), `the count ${n} survives into the message`);
 }
 
 {

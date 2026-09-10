@@ -822,20 +822,51 @@ somebody runs it, and #2031 covers putting it on a schedule.
 The sixth command in the family above, and the one that measures a divergence the
 other five structurally cannot see (#2096).
 
-**Slate and cal.com take the same routing facts from different systems.** Slate reads
-each agent's debt tiers and backend service from Salesforce booleans (`LowDebt__c`
-and friends, `src/lib/salesforce/sync.ts`). cal.com is fed the same facts by a
-Pipedream job that reads each **Twilio TaskRouter** worker's `teams` tags and writes
-them onto cal.com attributes. Nothing reconciles Salesforce against Twilio, so every
-agreement `verify:calcom-parity` reports rests on somebody keeping those two in step,
-and a divergence there looks like a Slate defect while both syncs are working
-perfectly.
+**Slate and cal.com used to take the same routing facts from different systems, and
+since #2152 they do not.** Slate read each agent's debt tiers and backend service
+from Salesforce booleans (`LowDebt__c` and friends) while cal.com was fed the same
+facts by a Pipedream job reading each **Twilio TaskRouter** worker's `teams` tags.
+Nothing reconciled the two, so every agreement `verify:calcom-parity` reported rested
+on somebody keeping them in step, and a divergence there looked like a Slate defect
+while both syncs were working perfectly. Dan settled the seven agents they disagreed
+about on 2026-09-09 (#2148) with a standing rule, "let's use twilio as the source of
+truth", and #2152 put that rule in the sync instead of in a person's memory: the
+hourly roster job reads the tags and writes `debt_team` and `backend_service` onto
+`users.attributes` (`src/lib/twilio/sync.ts`). Salesforce keeps what Twilio does not
+carry, which is the profile and manager of record (#2099).
 
-The Twilio tag to attribute mapping is copied deliberately from that live workflow
-rather than invented (`TEAM_TO_DEBT_TIER` and `TEAM_TO_BACKEND` in
-`scripts/lib/twilio-roster.ts`), so this measures what cal.com ACTUALLY receives. A
-tag the mapping does not know is REPORTED rather than dropped, because a tier added
-in Twilio would otherwise be invisible to the check written to notice drift.
+**So this command agrees by construction about the facts Twilio owns**, and its
+remaining job is roster MEMBERSHIP: a Twilio worker with no Slate row, a Slate row no
+worker carries the address of, a duplicated worker, a tag nobody mapped. Those are
+the states a shared source cannot make agree, and they are still worth a run.
+
+The Twilio tag to attribute mapping is copied deliberately from the live Pipedream
+workflow rather than invented (`TEAM_TO_DEBT_TIER` and `TEAM_TO_BACKEND` in
+`src/lib/twilio/roster.ts`), so Slate stores what cal.com ACTUALLY receives. A tag
+the mapping does not know is REPORTED rather than dropped, because a tier added in
+Twilio would otherwise be invisible to the check written to notice drift, and
+`scripts/test-routing-attribute-vocabulary.ts` holds the mapping against the routing
+vocabulary in BOTH directions, so a tier no tag can produce (an agent who can never
+hold it, and buckets that are permanently empty) fails the build.
+
+**Three things the mirror does deliberately**, each measured against production
+before it shipped on 2026-09-10, when 129 of 129 in scope rows had a Twilio worker
+and two differed:
+
+- A tag that has gone TAKES ITS VALUE WITH IT. A merge would leave an agent in a pool
+  the source says they are not in, which is the failure the issue was opened about.
+- A row Twilio holds NO worker for keeps its stored tiers, while its legal
+  eligibility is still written to N. Silence about somebody is not a source saying
+  their tiers are gone (L214), and the two directions are not equally recoverable:
+  withholding legal work is, and emptying every pool an agent belongs to on a partial
+  read is not. The count is reported as `withoutWorker`.
+- A FIRST debt tier makes somebody bookable, through the same activation gate the
+  Salesforce half uses (#2071). The transition belongs to whoever writes the fact
+  that causes it: a sync that wrote the tier and left the flip to the other half
+  would detect nothing, because by the time that half read the row the tier would
+  already be there, and "has a tier and is not bookable" is the shape of somebody an
+  admin deliberately held back (L60). A refused activation keeps its pending mark and
+  the Salesforce half retries it, so one intent has one owner.
 
 **`Redistribute` is why it was written.** That tag means an agent should not be taking
 booked calls at all (Dan, 2026-09-08), and it exists ONLY in Twilio: the Salesforce

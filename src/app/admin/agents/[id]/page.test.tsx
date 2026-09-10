@@ -733,10 +733,11 @@ describe("AgentProfilePage account status sits last and looks its weight (#1875)
 // shorter than expected.
 //
 // A picker would have made a bad value unrepresentable and would still have been
-// an override that silently reverted, because all three are in `SF_MANAGED_KEYS`
-// and the hourly roster sync deletes and rewrites them. Dan chose read only for
-// all three (2026-09-04), which is the call #1474 already made for the manager
-// field: an editable control that is undone within the hour is worse than none.
+// an override that silently reverted, because the hourly roster sync deletes and
+// rewrites all three. Dan chose read only for all three (2026-09-04), which is the
+// call #1474 already made for the manager field: an editable control that is undone
+// within the hour is worse than none. #2152 changed which half of that sync rewrites
+// the two routing values, from Salesforce to Twilio, and not that one does.
 describe("AgentProfilePage routing attributes are read only (#1874)", () => {
   const withAttrs = async (attributes: Record<string, unknown>) => {
     auth.currentUser.mockResolvedValueOnce({ id: "ad1", role: "admin", org_id: "o1" });

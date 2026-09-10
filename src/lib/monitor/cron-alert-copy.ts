@@ -59,7 +59,8 @@ export function twilioSyncRecovery(): string {
 export function twilioWriteFailureAlert(counts: {
   flips: number;
   sweeps: number;
-  legal: number;
+  attributes: number;
+  activations: number;
 }): string {
   const parts: string[] = [];
   if (counts.flips > 0) {
@@ -72,8 +73,22 @@ export function twilioWriteFailureAlert(counts: {
       `${agents(counts.sweeps)} left the pool and the move of their upcoming calls could not be queued, so those calls are still with them: move them from the coverage panel on their profile`,
     );
   }
-  if (counts.legal > 0) {
-    parts.push(`${agents(counts.legal)} could not have their legal eligibility recorded`);
+  if (counts.attributes > 0) {
+    // Named as the routing attributes rather than as legal eligibility since
+    // #2152: the same write now carries the debt tiers and the backend service,
+    // and a message naming only one of the three sends a reader to check the one
+    // fact that may be perfectly fine.
+    parts.push(
+      `${agents(counts.attributes)} could not have their routing attributes recorded, so their debt tiers, backend service and legal eligibility are whatever Slate held before`,
+    );
+  }
+  if (counts.activations > 0) {
+    // Apart from the attribute failures above: their routing attributes DID land,
+    // and it is only the flip into the pool that did not, so a reader sent to check
+    // the tiers would find them perfectly correct (L11).
+    parts.push(
+      `${agents(counts.activations)} ${counts.activations === 1 ? "was" : "were"} given their first debt team and could not be put in the bookable pool, so they are not taking calls yet`,
+    );
   }
   return (
     `The roster sync read Twilio and could not finish acting on it, on two runs in a row. ` +
@@ -84,8 +99,8 @@ export function twilioWriteFailureAlert(counts: {
 /** The writes are landing again. */
 export function twilioWriteFailureRecovery(): string {
   return (
-    "The roster sync is acting on Twilio again: the flips, the coverage moves and the legal " +
-    "eligibility writes all landed on the latest run. No action is needed."
+    "The roster sync is acting on Twilio again: the flips, the coverage moves, the routing " +
+    "attribute writes and the pool activations all landed on the latest run. No action is needed."
   );
 }
 
