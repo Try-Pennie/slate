@@ -1,20 +1,27 @@
 // Twilio TaskRouter is what actually feeds cal.com's routing attributes, and Slate
 // has never read it (#2096).
 //
-// THE FINDING THIS EXISTS TO MEASURE. Slate takes each agent's debt tiers and
-// backend service from Salesforce booleans (`LowDebt__c` and friends). cal.com takes
-// the same facts from a Pipedream job that reads each Twilio worker's `teams` tags
-// and writes them onto cal.com attributes. Two sources for one set of facts, and
-// nothing reconciles them, so the parity comparison's agreement is maintained by
-// whoever keeps Salesforce and Twilio in step rather than by anything structural.
+// THE FINDING THIS WAS BUILT TO MEASURE, AND THEN FIXED. Slate took each agent's
+// debt tiers and backend service from Salesforce booleans (`LowDebt__c` and
+// friends) while cal.com took the same facts from a Pipedream job reading each
+// Twilio worker's `teams` tags. Two sources for one set of facts, and nothing
+// reconciled them, so the parity comparison's agreement was maintained by whoever
+// kept Salesforce and Twilio in step rather than by anything structural.
 //
 // `Redistribute` is the sharp case: it exists ONLY as a Twilio tag. It is not a
 // Salesforce field (the User object carries 14 custom fields and none is this one,
 // checked 2026-09-08) and cal.com will not report per-user attribute values, so
 // Twilio is the only place Slate can read it from.
 //
+// SINCE #2152 THIS IS ALSO THE SOURCE, not only the second opinion. Slate reads
+// each agent's debt tiers and backend service from these tags and writes them onto
+// `users.attributes`, so the reconciliation this file was built for is answered by
+// construction for those two facts and its remaining job is roster membership.
+// Salesforce keeps what Twilio does not carry: the profile, and manager of record.
+//
 // PURE, apart from `fetchTwilioWorkers`: the mapping and the diff are driven offline
 // by `scripts/test-twilio-parity.ts`.
+import { DEBT_TIER_VALUES, BACKEND_VALUES, type DebtTierValue, type BackendValue } from "@/lib/routing/attribute-vocabulary";
 
 /**
  * Twilio team tag to the Slate attribute it means.
@@ -23,7 +30,7 @@
  * measures what cal.com ACTUALLY receives. If the workflow's mapping changes, this is
  * wrong and the diff will say everybody disagrees, which is the loud direction.
  */
-export const TEAM_TO_DEBT_TIER: Readonly<Record<string, string>> = {
+export const TEAM_TO_DEBT_TIER: Readonly<Record<string, DebtTierValue>> = {
   "Low Debt: 20k - 30k": "low",
   "Med Debt: 30k - 50k": "medium",
   "High Debt: 50k+": "high",
@@ -31,7 +38,7 @@ export const TEAM_TO_DEBT_TIER: Readonly<Record<string, string>> = {
   "Ultra High Debt: 100k+": "ultra_high",
 };
 
-export const TEAM_TO_BACKEND: Readonly<Record<string, string>> = {
+export const TEAM_TO_BACKEND: Readonly<Record<string, BackendValue>> = {
   Achieve: "achieve",
   Beyond: "beyond",
 };
@@ -152,8 +159,14 @@ export const REDISTRIBUTE_MARK = "Y";
 /** What one Twilio worker says about somebody. */
 export interface TwilioSide {
   email: string;
-  debtTeams: string[];
-  backendServices: string[];
+  /**
+   * In the ROUTING vocabulary's order, highest debt first, not the tag order the
+   * worker happened to carry. That order is what an agent's stored array holds
+   * (#2152), and a value's position in it is the only thing that keeps two rows
+   * carrying the same tiers from reading as different (L228).
+   */
+  debtTeams: DebtTierValue[];
+  backendServices: BackendValue[];
   /** The worker carries the explicit `Not Legal Eligible` tag. */
   notLegalEligible: boolean;
   /**
@@ -208,8 +221,8 @@ export function readWorker(attributesJson: string | null | undefined): WorkerRea
   if (!email) return { ok: false, why: "no-email" };
 
   const teams = Array.isArray(attrs.teams) ? attrs.teams.map((t) => String(t).trim()) : [];
-  const debtTeams: string[] = [];
-  const backendServices: string[] = [];
+  const debtTeams = new Set<DebtTierValue>();
+  const backendServices = new Set<BackendValue>();
   const unmappedTags: string[] = [];
   const managerTags: string[] = [];
   let notLegalEligible = false;
@@ -222,9 +235,9 @@ export function readWorker(attributesJson: string | null | undefined): WorkerRea
     if (tag === LEGAL_ELIGIBLE_TAG) { legalEligible = true; continue; }
     if (tag === REDISTRIBUTE_TAG) { redistribute = true; continue; }
     const tier = TEAM_TO_DEBT_TIER[tag];
-    if (tier !== undefined) { if (!debtTeams.includes(tier)) debtTeams.push(tier); continue; }
+    if (tier !== undefined) { debtTeams.add(tier); continue; }
     const backend = TEAM_TO_BACKEND[tag];
-    if (backend !== undefined) { if (!backendServices.includes(backend)) backendServices.push(backend); continue; }
+    if (backend !== undefined) { backendServices.add(backend); continue; }
     if (IRRELEVANT_TAGS.includes(tag)) continue;
     if (tag.startsWith(MANAGER_TAG_PREFIX)) {
       // Kept rather than dropped since #2099: manager of record is a second source
@@ -243,8 +256,8 @@ export function readWorker(attributesJson: string | null | undefined): WorkerRea
     ok: true,
     side: {
       email,
-      debtTeams,
-      backendServices,
+      debtTeams: inVocabularyOrder(DEBT_TIER_VALUES, debtTeams),
+      backendServices: inVocabularyOrder(BACKEND_VALUES, backendServices),
       notLegalEligible,
       legalEligible,
       redistribute,
@@ -252,6 +265,17 @@ export function readWorker(attributesJson: string | null | undefined): WorkerRea
       unmappedTags,
     },
   };
+}
+
+/**
+ * The values this worker carries, in the vocabulary's own order.
+ *
+ * Iterated over the VOCABULARY rather than sorted, so the order is the one the
+ * routing table declares (highest debt first) rather than whichever order the tags
+ * happened to be listed in or an alphabetical sort would give.
+ */
+function inVocabularyOrder<T extends string>(vocabulary: readonly T[], held: Set<T>): T[] {
+  return vocabulary.filter((v) => held.has(v));
 }
 
 /** The side, or null. For call sites that genuinely do not care which fault it was. */
@@ -271,8 +295,11 @@ export function mergeWorkers(sides: TwilioSide[]): { merged: TwilioSide; duplica
   const first = sides[0]!;
   const merged: TwilioSide = {
     email: first.email,
-    debtTeams: [...new Set(sides.flatMap((s) => s.debtTeams))].sort(),
-    backendServices: [...new Set(sides.flatMap((s) => s.backendServices))].sort(),
+    // In the vocabulary's order, like the reader that produced each side, because a
+    // union that sorted alphabetically would give a merged worker a different order
+    // from an unmerged one and the stored array would flip between the two.
+    debtTeams: inVocabularyOrder(DEBT_TIER_VALUES, new Set(sides.flatMap((s) => s.debtTeams))),
+    backendServices: inVocabularyOrder(BACKEND_VALUES, new Set(sides.flatMap((s) => s.backendServices))),
     notLegalEligible: sides.some((s) => s.notLegalEligible),
     legalEligible: sides.some((s) => s.legalEligible),
     redistribute: sides.some((s) => s.redistribute),

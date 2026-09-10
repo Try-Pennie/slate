@@ -819,7 +819,10 @@ describe("a hire becomes bookable on the first tier or the Sales profile (#2071)
     expect(result.bookableFlipped).toEqual([]);
   });
 
-  it("flips a hire whose first tier just arrived, marks them pending in the same write, and records who did it", async () => {
+  it("flips a hire moved to the Sales profile, marks them pending in the same write, and records who did it", async () => {
+    // Salesforce's half of the transition is the PROFILE since #2152: the tiers
+    // come from Twilio, so a hire who has none yet is flipped by the move to Sales
+    // and the audit names the tiers the row actually holds, which is none.
     store.config.existing = [
       { id: "u1", email: "hire@x.com", attributes: { role: "Chatter Free User" }, bookable: false, deactivated_at: null, bookable_pending_since: null },
     ];
@@ -830,16 +833,34 @@ describe("a hire becomes bookable on the first tier or the Sales profile (#2071)
 
     const upsert = store.calls.find((c) => c.op === "upsert");
     const row = (upsert?.payload as Record<string, unknown>[])[0];
-    expect(row.attributes).toMatchObject({ role: "Sales", debt_team: ["low"] });
+    expect(row.attributes).toEqual({ role: "Sales" });
     expect(typeof row.bookable_pending_since).toBe("string");
 
     expect(bookable.applyBookableByUserId).toHaveBeenCalledWith("u1", true);
     expect(audit.recordAudit).toHaveBeenCalledTimes(1);
     const entry = audit.recordAudit.mock.calls[0][0] as Record<string, unknown>;
     expect(entry).toMatchObject({ actorId: null, action: "agent.bookable", targetUserId: "u1" });
-    expect(entry.details).toMatchObject({ via: "salesforce-sync", reason: "first-tier", debt_team: ["low"] });
+    expect(entry.details).toMatchObject({ via: "salesforce-sync", reason: "sales-profile", debt_team: [] });
     expect(result.bookableFlipped).toEqual(["hire@x.com"]);
     expect(result.bookablePending).toEqual([]);
+  });
+
+  it("writes no debt team or backend service of its own, and leaves the ones Twilio wrote alone", async () => {
+    // #2152. The Salesforce checkboxes still decide WHO is in scope, and no longer
+    // decide what anybody's tiers are: a run that kept writing them would strip
+    // whatever the Twilio half of the same hour had written, every hour.
+    store.config.existing = [
+      { id: "u1", email: "agent@x.com", attributes: { role: "Sales", debt_team: ["high"], backend_service: ["beyond"], legal_eligible: "Y" }, bookable: true, deactivated_at: null, bookable_pending_since: null },
+    ];
+    store.config.afterInsert = [{ id: "u1", email: "agent@x.com", manager_id: null, role: "agent" }];
+    // Salesforce says something completely different from what the row holds.
+    sfRoster([{ Email: "agent@x.com", Name: "Agent", Profile: { Name: "Sales" }, LowDebt__c: true, AchieveBackendServicer__c: true }]);
+
+    await syncSalesforceAgents();
+
+    const upsert = store.calls.find((c) => c.op === "upsert");
+    const row = (upsert?.payload as Record<string, unknown>[])[0];
+    expect(row.attributes).toEqual({ role: "Sales", debt_team: ["high"], backend_service: ["beyond"], legal_eligible: "Y" });
   });
 
   it("leaves a refused flip pending and records nothing, so next hour retries it", async () => {
@@ -872,7 +893,11 @@ describe("a hire becomes bookable on the first tier or the Sales profile (#2071)
     expect(bookable.applyBookableByUserId).toHaveBeenCalledWith("u1", true);
     expect(result.bookableFlipped).toEqual(["hire@x.com"]);
     const entry = audit.recordAudit.mock.calls[0][0] as Record<string, unknown>;
-    expect(entry.details).toMatchObject({ reason: "retry" });
+    // The tiers in the trail are the ones the ROW holds, which since #2152 came
+    // from Twilio. Read from the Salesforce half alone they would be empty for an
+    // agent who plainly has them, and the trail's whole job is answering what the
+    // state was (L529).
+    expect(entry.details).toMatchObject({ reason: "retry", debt_team: ["low"] });
   });
 
   it("never overturns a person's hold: tiers against tiers is not a transition", async () => {

@@ -550,14 +550,20 @@ export default async function AgentProfilePage({
               person shorter than expected.
 
               A picker would have made the value unrepresentable, and it would
-              still have been an override that silently reverted: both are in
-              `SF_MANAGED_KEYS`, so the hourly roster sync deletes and rewrites
-              them. An editable control that is undone within the hour is worse
-              than none, which is the call #1474 already made for the manager
-              field. Dan chose read only on 2026-09-04.
+              still have been an override that silently reverted: the hourly
+              roster sync deletes and rewrites them. An editable control that is
+              undone within the hour is worse than none, which is the call #1474
+              already made for the manager field. Dan chose read only on
+              2026-09-04.
 
-              `legal_eligible` stays editable because routing does match on it
-              (`legal_eligible!`) and nothing else writes it.
+              #2152 changed WHICH sync rewrites them, not whether one does: they
+              came from Salesforce checkboxes and come from the agent's Twilio
+              TaskRouter tags now, which is what feeds cal.com. So the reason this
+              is read only is unchanged and the place to correct a wrong value
+              moved: it is the Twilio worker's `teams` tags.
+
+              `legal_eligible` is no longer editable either, for the same reason:
+              #2120 took that control away when Twilio became its source.
 
               #2120: THREE THINGS WENT, and each was the panel doing something the
               reader did not ask for.
@@ -645,9 +651,10 @@ export default async function AgentProfilePage({
                   worker, pushed onto their cal.com attributes by the Pipedream
                   job, which is the same route Redistribute takes (#2097). Nobody
                   sets it in cal.com, and Salesforce deliberately never writes it
-                  (`SF_MANAGED_KEYS`). Offering a second place to type it is how
-                  the two drift, which is the class `verify:twilio-parity` exists
-                  to report. Dan chose Twilio as the source on 2026-09-09.
+                  (`SF_MANAGED_KEYS`, which since #2152 holds the profile alone).
+                  Offering a second place to type it is how the two drift, which
+                  is the class `verify:twilio-parity` exists to report. Dan chose
+                  Twilio as the source on 2026-09-09.
 
                   Nothing was lost by removing it: 0 of 127 live users carried the
                   field, so it had never once been used.

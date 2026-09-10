@@ -2,12 +2,17 @@
 //
 //   pnpm verify:twilio-parity
 //
-// WHY. Slate reads each agent's debt tiers and backend service from Salesforce
-// booleans (`LowDebt__c` and friends, `src/lib/salesforce/sync.ts`). cal.com is fed
-// the same facts by a Pipedream job that reads each Twilio TaskRouter worker's
-// `teams` tags. Two sources for one set of facts, and nothing reconciles them, so
-// the agreement `pnpm verify:calcom-parity` reports is maintained by whoever keeps
-// Salesforce and Twilio in step rather than by anything structural (#2096).
+// WHY. Slate read each agent's debt tiers and backend service from Salesforce
+// booleans (`LowDebt__c` and friends) while cal.com was fed the same facts by a
+// Pipedream job reading each Twilio TaskRouter worker's `teams` tags. Two sources
+// for one set of facts, and nothing reconciled them, so the agreement
+// `pnpm verify:calcom-parity` reported was maintained by whoever kept Salesforce and
+// Twilio in step rather than by anything structural (#2096).
+//
+// SINCE #2152 SLATE READS THE TAGS ITSELF, so those facts agree by construction and
+// what is left for this command to find is roster MEMBERSHIP: a worker with no Slate
+// row, a Slate row with no worker, a duplicated worker, a tag nobody mapped. Still
+// worth running, and no longer the thing standing between a mistake and a misroute.
 //
 // `Redistribute` is the reason this was written. It exists ONLY as a Twilio tag: the
 // Salesforce User object carries 14 custom fields and none is this one (checked

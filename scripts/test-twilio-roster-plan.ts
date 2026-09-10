@@ -23,6 +23,7 @@
 // (two of them with no calendar row) are never touched by this, because Slate did
 // not put them there.
 import { planTwilioRoster, isMarkedRedistribute, type TwilioRosterRow } from "@/lib/twilio/roster-plan";
+import { DEBT_TIER_VALUES } from "@/lib/routing/attribute-vocabulary";
 import {
   readWorker,
   workerSideOrNull,
@@ -42,6 +43,7 @@ function row(over: Partial<TwilioRosterRow> = {}): TwilioRosterRow {
     email: "someone@trypennie.com",
     bookable: true,
     deactivated: false,
+    pending: false,
     isTest: false,
     attributes: {},
     ...over,
@@ -173,7 +175,7 @@ const twilio = (...sides: TwilioSide[]) => new Map(sides.map((s) => [s.email, s]
   );
   const back = planTwilioRoster(
     [row({ bookable: false, attributes: { redistribute: MARK, debt_team: ["low"], legal_eligible: LEGAL_ELIGIBLE_NO } })],
-    twilio(side([])),
+    twilio(side(["Low Debt: 20k - 30k"])),
   );
   eq(
     back.flips[0]?.attributes,
@@ -188,9 +190,13 @@ const twilio = (...sides: TwilioSide[]) => new Map(sides.map((s) => [s.email, s]
 {
   const plan = planTwilioRoster([row({ attributes: {} })], twilio(side(["Low Debt: 20k - 30k"])));
   eq(plan.flips.length, 0, "a row needing only a legal value is not a flip");
-  eq(plan.legalWrites.length, 1, "it is a write of its own");
-  eq(plan.legalWrites[0]?.value, LEGAL_ELIGIBLE_NO, "and a worker Twilio says nothing about is excluded");
-  eq(plan.legalWrites[0]?.attributes, { legal_eligible: LEGAL_ELIGIBLE_NO }, "written onto the row's own attributes");
+  eq(plan.attributeWrites.length, 1, "it is a write of its own");
+  eq(plan.attributeWrites[0]?.changes.legal.value, LEGAL_ELIGIBLE_NO, "and a worker Twilio says nothing about is excluded");
+  eq(
+    plan.attributeWrites[0]?.attributes,
+    { legal_eligible: LEGAL_ELIGIBLE_NO, debt_team: ["low"] },
+    "written onto the row's own attributes, alongside the tiers the same tags carry",
+  );
 }
 
 {
@@ -198,9 +204,9 @@ const twilio = (...sides: TwilioSide[]) => new Map(sides.map((s) => [s.email, s]
     [row({ attributes: { debt_team: ["low"] } })],
     twilio(side(["Low Debt: 20k - 30k", "Legal Eligible"])),
   );
-  eq(plan.legalWrites[0]?.value, LEGAL_ELIGIBLE_YES, "the positive tag is the only thing that makes somebody eligible");
+  eq(plan.attributeWrites[0]?.changes.legal.value, LEGAL_ELIGIBLE_YES, "the positive tag is the only thing that makes somebody eligible");
   eq(
-    plan.legalWrites[0]?.attributes,
+    plan.attributeWrites[0]?.attributes,
     { debt_team: ["low"], legal_eligible: LEGAL_ELIGIBLE_YES },
     "and every other attribute on the row survives the write",
   );
@@ -211,10 +217,10 @@ const twilio = (...sides: TwilioSide[]) => new Map(sides.map((s) => [s.email, s]
   // it, a planner that emitted a write for everybody would satisfy every assertion
   // above while costing one write per agent per hour forever (L1).
   const plan = planTwilioRoster(
-    [row({ attributes: { legal_eligible: LEGAL_ELIGIBLE_NO } })],
+    [row({ attributes: { debt_team: ["low"], legal_eligible: LEGAL_ELIGIBLE_NO } })],
     twilio(side(["Low Debt: 20k - 30k"])),
   );
-  eq(plan.legalWrites.length, 0, "a row already holding what Twilio says is not written again");
+  eq(plan.attributeWrites.length, 0, "a row already holding what Twilio says is not written again");
 }
 
 {
@@ -222,7 +228,7 @@ const twilio = (...sides: TwilioSide[]) => new Map(sides.map((s) => [s.email, s]
     [row({ attributes: { legal_eligible: LEGAL_ELIGIBLE_YES } })],
     twilio(side(["Low Debt: 20k - 30k"])),
   );
-  eq(plan.legalWrites[0]?.value, LEGAL_ELIGIBLE_NO, "somebody whose positive tag has been taken away is written back to excluded");
+  eq(plan.attributeWrites[0]?.changes.legal.value, LEGAL_ELIGIBLE_NO, "somebody whose positive tag has been taken away is written back to excluded");
 }
 
 {
@@ -233,7 +239,7 @@ const twilio = (...sides: TwilioSide[]) => new Map(sides.map((s) => [s.email, s]
     [row({ attributes: { legal_eligible: false } as never })],
     twilio(side(["Low Debt: 20k - 30k"])),
   );
-  eq(plan.legalWrites[0]?.value, LEGAL_ELIGIBLE_NO, "a value in no vocabulary is corrected rather than read as already excluded");
+  eq(plan.attributeWrites[0]?.changes.legal.value, LEGAL_ELIGIBLE_NO, "a value in no vocabulary is corrected rather than read as already excluded");
 }
 
 {
@@ -241,7 +247,7 @@ const twilio = (...sides: TwilioSide[]) => new Map(sides.map((s) => [s.email, s]
   // so it is reported: this count is also what a partial Twilio read would show up as.
   const plan = planTwilioRoster([row()], new Map());
   eq(plan.withoutWorker, ["someone@trypennie.com"], "a Slate row Twilio holds no worker for is named");
-  eq(plan.legalWrites[0]?.value, LEGAL_ELIGIBLE_NO, "and still written to excluded, because the default is N");
+  eq(plan.attributeWrites[0]?.changes.legal.value, LEGAL_ELIGIBLE_NO, "and still written to excluded, because the default is N");
 }
 
 {
@@ -249,7 +255,7 @@ const twilio = (...sides: TwilioSide[]) => new Map(sides.map((s) => [s.email, s]
     [row({ deactivated: true, attributes: {} }), row({ id: "u2", email: "b@trypennie.com", isTest: true, attributes: {} })],
     twilio(side(["Legal Eligible"]), side(["Legal Eligible"], "b@trypennie.com")),
   );
-  eq(plan.legalWrites.length, 0, "a departed agent and a SMOKE test agent are written neither way");
+  eq(plan.attributeWrites.length, 0, "a departed agent and a SMOKE test agent are written neither way");
   eq(plan.withoutWorker.length, 0, "and neither is reported as unseen by Twilio");
 }
 
@@ -257,7 +263,7 @@ const twilio = (...sides: TwilioSide[]) => new Map(sides.map((s) => [s.email, s]
   // A worker contradicting itself is held OUT of legal work: offering it to somebody
   // nobody cleared is the harm, and being held back is recoverable.
   const plan = planTwilioRoster([row({ attributes: {} })], twilio(side(["Legal Eligible", "Not Legal Eligible"])));
-  eq(plan.legalWrites[0]?.value, LEGAL_ELIGIBLE_NO, "a worker carrying both legal tags is excluded");
+  eq(plan.attributeWrites[0]?.changes.legal.value, LEGAL_ELIGIBLE_NO, "a worker carrying both legal tags is excluded");
 }
 
 // --- the stamp the coverage sweep is keyed on (#2115) --------------------------
@@ -300,7 +306,7 @@ const twilio = (...sides: TwilioSide[]) => new Map(sides.map((s) => [s.email, s]
   // index would then refuse.
   const plan = planTwilioRoster(
     [row({ bookable: false, attributes: { redistribute: MARK, redistribute_at: NOW, debt_team: ["low"] } })],
-    twilio(side([])),
+    twilio(side(["Low Debt: 20k - 30k"])),
     NOW,
   );
   eq(plan.flips[0]?.action, "turn-back-on", "the agent is put back in the pool");
@@ -325,9 +331,193 @@ const twilio = (...sides: TwilioSide[]) => new Map(sides.map((s) => [s.email, s]
   // A row needing only a legal write carries no stamp: nothing is being taken out
   // of the pool, so there is no sweep to key.
   const plan = planTwilioRoster([row({ attributes: {} })], twilio(side(["Low Debt: 20k - 30k"])), NOW);
-  eq(plan.legalWrites.length, 1, "the legal write is planned");
-  const attrs = plan.legalWrites[0]?.attributes as Record<string, unknown>;
+  eq(plan.attributeWrites.length, 1, "the legal write is planned");
+  const attrs = plan.attributeWrites[0]?.attributes as Record<string, unknown>;
   assert(!("redistribute_at" in attrs), "and no stamp is invented for somebody who is not leaving the pool");
+}
+
+// --- the routing attributes themselves (#2152) ---------------------------------
+// Twilio is the source of an agent's debt tiers and backend service, not a second
+// opinion about them. Dan, 2026-09-09: "let's use twilio as the source of truth."
+
+{
+  const plan = planTwilioRoster(
+    [row({ attributes: { role: "Sales", legal_eligible: LEGAL_ELIGIBLE_NO } })],
+    twilio(side(["Med Debt: 30k - 50k", "Beyond"])),
+  );
+  eq(
+    plan.attributeWrites[0]?.attributes,
+    { role: "Sales", legal_eligible: LEGAL_ELIGIBLE_NO, debt_team: ["medium"], backend_service: ["beyond"] },
+    "the tags become the stored routing attributes, and the profile Salesforce owns is left alone",
+  );
+  eq(plan.attributeWrites[0]?.changes.debtTeams.changed, true, "and the tier change is reported");
+  eq(plan.attributeWrites[0]?.changes.backendServices.changed, true, "and so is the backend one");
+}
+
+{
+  // The direction a mirror exists for and a merge would never do. A tag taken away
+  // has to take its value with it, or the agent stays in a pool the source says
+  // they are not in, which is the whole failure this issue was opened about.
+  const plan = planTwilioRoster(
+    [row({ attributes: { debt_team: ["low", "medium"], backend_service: ["achieve"], legal_eligible: LEGAL_ELIGIBLE_NO } })],
+    twilio(side(["Low Debt: 20k - 30k"])),
+  );
+  eq(
+    plan.attributeWrites[0]?.attributes,
+    { debt_team: ["low"], legal_eligible: LEGAL_ELIGIBLE_NO },
+    "a tier and a backend Twilio no longer carries are removed, not merged with",
+  );
+}
+
+{
+  const plan = planTwilioRoster(
+    [row({ attributes: { debt_team: ["low"], legal_eligible: LEGAL_ELIGIBLE_NO } })],
+    twilio(side(["High Debt: 50k+", "Low Debt: 20k - 30k", "Ultra High Debt: 100k+"])),
+  );
+  eq(
+    (plan.attributeWrites[0]?.attributes as Record<string, unknown>).debt_team,
+    ["ultra_high", "high", "low"],
+    "the tiers land in the vocabulary's order, highest debt first, whatever order the tags were listed in",
+  );
+}
+
+{
+  // A guard whose expected order came from the thing under test would prove only
+  // that it agrees with itself (L70), so the order is checked against the shipped
+  // vocabulary rather than restated.
+  const plan = planTwilioRoster(
+    [row({ attributes: {} })],
+    twilio(side(["Low Debt: 20k - 30k", "Med Debt: 30k - 50k", "High Debt: 50k+", "Very High Debt: 70k+", "Ultra High Debt: 100k+"])),
+  );
+  eq(
+    (plan.attributeWrites[0]?.attributes as Record<string, unknown>).debt_team,
+    [...DEBT_TIER_VALUES],
+    "a worker carrying every tag stores exactly the vocabulary, in its own order",
+  );
+}
+
+{
+  // THE ASYMMETRY, and the reason it is not an oversight. Silence about somebody is
+  // not a source saying their tiers are gone (L214), and a partial read that emptied
+  // every pool they belong to is not recoverable the way withholding legal work is.
+  const plan = planTwilioRoster(
+    [row({ attributes: { debt_team: ["low"], backend_service: ["beyond"], legal_eligible: LEGAL_ELIGIBLE_NO } })],
+    new Map(),
+  );
+  eq(plan.attributeWrites.length, 0, "a row Twilio holds no worker for keeps its tiers, so nothing is written");
+  eq(plan.withoutWorker, ["someone@trypennie.com"], "and is counted, because doing nothing is otherwise invisible");
+}
+
+{
+  // A worker that IS present and carries no team tags is an answer, not a silence,
+  // so it does clear them.
+  const plan = planTwilioRoster(
+    [row({ attributes: { debt_team: ["low"], legal_eligible: LEGAL_ELIGIBLE_NO } })],
+    twilio(side([])),
+  );
+  eq(plan.attributeWrites[0]?.attributes, { legal_eligible: LEGAL_ELIGIBLE_NO }, "a worker with no tags at all removes the tiers");
+}
+
+{
+  // An agent with no tiers has never carried the key, which is what Salesforce
+  // wrote and what every reader was written against. Storing an empty array would
+  // be a third state nobody handles.
+  const plan = planTwilioRoster([row({ attributes: { legal_eligible: LEGAL_ELIGIBLE_NO } })], twilio(side([])));
+  eq(plan.attributeWrites.length, 0, "no tiers against no key is not a change, so the whole roster is not rewritten every hour");
+}
+
+{
+  // The junk the retired admin control could write (#2120). It is not a list, so it
+  // must not compare equal to writing nothing.
+  const plan = planTwilioRoster(
+    [row({ attributes: { debt_team: "low" as never, legal_eligible: LEGAL_ELIGIBLE_NO } })],
+    twilio(side([])),
+  );
+  eq(plan.attributeWrites.length, 1, "a value that is not a list is corrected rather than read as already empty");
+  const attrs = plan.attributeWrites[0]?.attributes as Record<string, unknown>;
+  assert(!("debt_team" in attrs), "and the key goes");
+}
+
+{
+  const flip = planTwilioRoster(
+    [row({ attributes: { debt_team: ["low"] } })],
+    twilio(side(["Redistribute", "Med Debt: 30k - 50k"])),
+    NOW,
+  );
+  eq(
+    flip.flips[0]?.attributes,
+    { debt_team: ["medium"], legal_eligible: LEGAL_ELIGIBLE_NO, redistribute: MARK, redistribute_at: NOW },
+    "a flip's payload carries the tiers too, so the mark and the attributes are never two writes over one column",
+  );
+  eq(flip.attributeWrites.length, 0, "and the row is not in both lists");
+}
+
+// --- the first tier is what makes a new hire bookable (#2071, #2152) -----------
+// The transition belongs to whoever WRITES the fact that causes it. Salesforce owns
+// the profile; Twilio owns the tier since #2152, so it owns this flip.
+
+{
+  const plan = planTwilioRoster(
+    [row({ bookable: false, attributes: { role: "Chatter Free User" } })],
+    twilio(side(["Low Debt: 20k - 30k"])),
+  );
+  eq(plan.attributeWrites[0]?.activate, true, "a hire given their first debt team is put in the pool");
+}
+
+{
+  const plan = planTwilioRoster(
+    [row({ bookable: false, attributes: { role: "Chatter Free User", debt_team: ["low"] } })],
+    twilio(side(["Med Debt: 30k - 50k"])),
+  );
+  eq(plan.attributeWrites[0]?.activate, false, "changing which tier somebody holds is not a first tier, so nobody is put back in the pool");
+}
+
+{
+  // THE CASE THE TRANSITION RULE EXISTS FOR (L60). "Has a tier and is not bookable"
+  // is exactly the shape of somebody an admin deliberately held back, so a level
+  // check would overturn every one of them on the next hourly run.
+  const plan = planTwilioRoster(
+    [row({ bookable: false, attributes: { role: "Sales", debt_team: ["low"], legal_eligible: LEGAL_ELIGIBLE_NO } })],
+    twilio(side(["Low Debt: 20k - 30k"])),
+  );
+  eq(plan.attributeWrites.length, 0, "an agent somebody turned off, whose tags still agree, is left alone entirely");
+}
+
+{
+  const plan = planTwilioRoster(
+    [row({ bookable: false, pending: true, attributes: { role: "Chatter Free User" } })],
+    twilio(side(["Low Debt: 20k - 30k"])),
+  );
+  eq(plan.attributeWrites[0]?.activate, false, "a pending row is not activated here: the Salesforce half owns the retry, and two owners means two flips an hour for one intent");
+}
+
+{
+  const plan = planTwilioRoster(
+    [row({ bookable: false, attributes: { role: "Chatter Free User" } })],
+    twilio(side(["Low Debt: 20k - 30k", "Redistribute"])),
+  );
+  eq(plan.attributeWrites[0]?.activate, false, "somebody Twilio withholds is never put in the pool by their tier");
+  eq(plan.flips.length, 0, "and is not flipped either, because they are already out of it");
+}
+
+{
+  const plan = planTwilioRoster(
+    [row({ bookable: true, attributes: { role: "Chatter Free User" } })],
+    twilio(side(["Low Debt: 20k - 30k"])),
+  );
+  eq(plan.attributeWrites[0]?.activate, false, "somebody already in the pool is not activated again");
+}
+
+{
+  const plan = planTwilioRoster(
+    [row({ bookable: false, attributes: { role: "Sales" } })],
+    twilio(side(["Low Debt: 20k - 30k"])),
+  );
+  eq(
+    plan.attributeWrites[0]?.activate,
+    false,
+    "somebody who already qualified on their Salesforce profile is Salesforce's flip to make, not this one's",
+  );
 }
 
 finish();

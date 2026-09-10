@@ -4,6 +4,14 @@
 // cal.com. `Redistribute` means the agent should not be taking booked calls (Dan,
 // 2026-09-08) and exists nowhere else, so this is the only way Slate can learn it.
 //
+// SINCE #2152 IT ALSO WRITES THE ROUTING ATTRIBUTES THEMSELVES. Debt tiers and
+// backend service used to come from Salesforce booleans while cal.com took them
+// from these same tags, so the agreement between the two was maintained by whoever
+// kept both in step (Dan, 2026-09-09: "let's use twilio as the source of truth").
+// A person's memory is not a mechanism, so the tags are read here and written onto
+// `users.attributes`, and `pnpm verify:twilio-parity` agrees by construction about
+// those facts, leaving it the roster membership half to answer.
+//
 // EVERY FLIP GOES THROUGH `applyBookable`, never a direct update. Leaving the pool
 // also has to stop the agent's Google calendar watches and prune their cached busy
 // time (#239/#248), and it is where the audit row and the log line come from. A raw
@@ -39,7 +47,7 @@
 // would hide a backlog rather than report one.
 import { fetchTwilioWorkers, TwilioReadError } from "@/lib/twilio/client";
 import { mergeWorkers, readWorker, LEGAL_ELIGIBLE_YES, type TwilioSide } from "@/lib/twilio/roster";
-import { planTwilioRoster, type TwilioRosterRow } from "@/lib/twilio/roster-plan";
+import { planTwilioRoster, type TwilioChanges, type TwilioRosterRow } from "@/lib/twilio/roster-plan";
 import { applyBookableByUserId, type BookableResult } from "@/lib/bookable/service";
 import { startBulkReassign } from "@/lib/booking/service";
 import { supabaseAdmin } from "@/lib/supabase/admin";
@@ -68,7 +76,20 @@ export interface TwilioSyncDeps {
   fetchWorkers: () => Promise<TwilioWorker[]>;
   loadRoster: () => Promise<TwilioRosterRow[]>;
   applyBookable: (userId: string, bookable: boolean) => Promise<BookableResult>;
-  writeAttributes: (userId: string, attributes: Attributes) => Promise<void>;
+  /**
+   * The row's attributes, and optionally the pending mark, in ONE write.
+   *
+   * An object rather than positional arguments, because the two are the same shape
+   * at the call site and a swapped pair reads as correct (the #1587 lesson). The
+   * mark travels WITH the attributes on purpose: it records that a flip was asked
+   * for, so a run that dies between the two leaves an intent the next hour retries
+   * rather than a tier nobody acted on.
+   */
+  writeAttributes: (input: {
+    userId: string;
+    attributes: Attributes;
+    bookablePendingSince?: string;
+  }) => Promise<void>;
   recordAudit: typeof recordAudit;
 }
 
@@ -101,6 +122,34 @@ export interface TwilioSyncResult {
   legalEligible: string[];
   legalExcluded: string[];
   /**
+   * Emails whose debt tiers or backend service were rewritten from their Twilio
+   * tags (#2152), counted only once the write LANDED.
+   *
+   * Separate counts because they send a reader to different places: a tier decides
+   * which of the sixty buckets somebody is in, and the backend decides which flow
+   * reaches them at all.
+   */
+  tiersChanged: string[];
+  backendChanged: string[];
+  /**
+   * Emails made bookable this run because their FIRST debt tier arrived from
+   * Twilio, and those whose activation the gate refused (#2071, #2152).
+   *
+   * The refusal keeps the pending mark, and it is the SALESFORCE half of the same
+   * hourly job that retries it: one owner for one retry.
+   */
+  activated: string[];
+  activationRefused: string[];
+  /**
+   * Activations that THREW, so the run carried on with the rest (L73).
+   *
+   * Its own count rather than folded into `attributeWriteFailures`, because the
+   * attributes did land: saying they could not be recorded would send a reader to
+   * check a value that is perfectly correct (L11). The pending mark landed with
+   * them, so the Salesforce half retries next hour.
+   */
+  activationFailures: number;
+  /**
    * Every in scope Slate row Twilio holds no worker for.
    *
    * They are written to N like everybody else, because the default is N, so this
@@ -128,13 +177,13 @@ export interface TwilioSyncResult {
    */
   coverageSweepFailures: number;
   /**
-   * Legal writes that threw, so the run carried on with the rest (L73).
+   * Attribute writes that threw, so the run carried on with the rest (L73).
    *
    * Its own count rather than folded into `flipFailures`, because the two send a
    * reader to different places: a flip failure leaves somebody bookable who should
    * not be, and this leaves a stored value the next hour will write again.
    */
-  legalWriteFailures: number;
+  attributeWriteFailures: number;
   /** Workers whose `attributes` string is not JSON: a fault in Twilio's data. */
   corruptAttributes: number;
   /** Valid JSON carrying no email, which is usually a queue entity and ordinary. */
@@ -200,7 +249,11 @@ export async function syncTwilioRedistribute(deps: TwilioSyncDeps): Promise<Twil
   const reactivationRefused: string[] = [];
   const legalEligible: string[] = [];
   const legalExcluded: string[] = [];
-  const legal = { eligible: legalEligible, excluded: legalExcluded };
+  const tiersChanged: string[] = [];
+  const backendChanged: string[] = [];
+  const activated: string[] = [];
+  const activationRefused: string[] = [];
+  const landed: Landed = { legalEligible, legalExcluded, tiersChanged, backendChanged };
   const coverageSweeps: { email: string; bookings: number }[] = [];
   const counters = { coverageSweepFailures: 0 };
 
@@ -215,7 +268,7 @@ export async function syncTwilioRedistribute(deps: TwilioSyncDeps): Promise<Twil
         turnedOff,
         turnedBackOn,
         reactivationRefused,
-        legal,
+        landed,
         coverageSweeps,
         counters,
       });
@@ -225,17 +278,53 @@ export async function syncTwilioRedistribute(deps: TwilioSyncDeps): Promise<Twil
     }
   }
 
-  // The legal values for everybody the run is not flipping. Their own boundary,
-  // one row at a time, for the same reason the flips have one: this is the write
-  // that touches the WHOLE roster, so one bad row must not take the rest with it.
-  let legalWriteFailures = 0;
-  for (const write of plan.legalWrites) {
+  // The attributes for everybody the run is not flipping. Their own boundary, one
+  // row at a time, for the same reason the flips have one: this is the write that
+  // touches the WHOLE roster, so one bad row must not take the rest with it.
+  let attributeWriteFailures = 0;
+  let activationFailures = 0;
+  for (const write of plan.attributeWrites) {
     try {
-      await deps.writeAttributes(write.userId, write.attributes);
-      (write.value === LEGAL_ELIGIBLE_YES ? legalEligible : legalExcluded).push(write.email);
+      // The pending mark rides in the SAME write as the attributes when this row is
+      // being activated, so a run that dies before the flip leaves an intent the
+      // Salesforce half retries rather than a tier nobody acted on.
+      await deps.writeAttributes({
+        userId: write.userId,
+        attributes: write.attributes,
+        ...(write.activate ? { bookablePendingSince: deps.nowIso() } : {}),
+      });
+      countLanded(write.email, write.changes, landed);
     } catch (err) {
-      legalWriteFailures++;
-      log.error("twilio-sync", { msg: "legal eligibility write failed, carrying on", user_id: write.userId }, err);
+      attributeWriteFailures++;
+      log.error("twilio-sync", { msg: "attribute write failed, carrying on", user_id: write.userId }, err);
+      continue;
+    }
+    if (!write.activate) continue;
+    // The first tier makes somebody bookable (#2071). Its own boundary: the write
+    // above has already landed, so a refused or failed flip leaves the pending mark
+    // and the Salesforce half tries again next hour.
+    try {
+      const result = await deps.applyBookable(write.userId, true);
+      if (result.status === "applied") {
+        activated.push(write.email);
+        await deps.recordAudit({
+          orgId: deps.orgId,
+          actorId: null,
+          action: "agent.bookable",
+          targetUserId: write.userId,
+          details: { bookable: true, via: "twilio-sync", reason: "first-tier" },
+        });
+      } else if (result.status === "blocked") {
+        activationRefused.push(write.email);
+        log.warn("twilio-sync", {
+          msg: "first tier activation refused, pending mark kept for the Salesforce retry",
+          user_id: write.userId,
+          reason: result.reason,
+        });
+      }
+    } catch (err) {
+      activationFailures++;
+      log.error("twilio-sync", { msg: "first tier activation failed, carrying on", user_id: write.userId }, err);
     }
   }
 
@@ -274,13 +363,47 @@ export async function syncTwilioRedistribute(deps: TwilioSyncDeps): Promise<Twil
     coverageSweepFailures: counters.coverageSweepFailures,
     legalEligible,
     legalExcluded,
+    tiersChanged,
+    backendChanged,
+    activated,
+    activationRefused,
+    activationFailures,
     withoutWorker: plan.withoutWorker,
-    legalWriteFailures,
+    attributeWriteFailures,
     corruptAttributes,
     noEmail,
     unmappedTags,
     flipFailures,
   };
+}
+
+/**
+ * Where each fact's count lands, once its write has actually landed (L12).
+ *
+ * One object rather than four arrays threaded through two call sites, because the
+ * flip path and the plain write path must count the same way: a fact counted in one
+ * and not the other is a report that is true of half the roster.
+ */
+interface Landed {
+  legalEligible: string[];
+  legalExcluded: string[];
+  tiersChanged: string[];
+  backendChanged: string[];
+}
+
+/**
+ * Count what this row's write moved, and nothing it did not.
+ *
+ * Called only AFTER the write returns. Counting at plan time would report every
+ * agent whose payload was built, including the ones whose write threw, and the
+ * counts are the only evidence anybody reads (#1134).
+ */
+function countLanded(email: string, changes: TwilioChanges, out: Landed): void {
+  if (changes.legal.changed) {
+    (changes.legal.value === LEGAL_ELIGIBLE_YES ? out.legalEligible : out.legalExcluded).push(email);
+  }
+  if (changes.debtTeams.changed) out.tiersChanged.push(email);
+  if (changes.backendServices.changed) out.backendChanged.push(email);
 }
 
 /** One flip, both directions, with the two writes in the order the header explains. */
@@ -291,24 +414,21 @@ async function runFlip(
     turnedOff: string[];
     turnedBackOn: string[];
     reactivationRefused: string[];
-    legal: { eligible: string[]; excluded: string[] };
+    landed: Landed;
     coverageSweeps: { email: string; bookings: number }[];
     counters: { coverageSweepFailures: number };
   },
 ): Promise<void> {
   // Counted where the write LANDS, never where it is planned, so a payload that
   // never reached the database cannot be reported as a value that changed.
-  const countLegal = () => {
-    if (!flip.legal.changed) return;
-    (flip.legal.value === LEGAL_ELIGIBLE_YES ? out.legal.eligible : out.legal.excluded).push(flip.email);
-  };
+  const countLanded_ = () => countLanded(flip.email, flip.changes, out.landed);
 
   if (flip.action === "turn-off") {
     // Mark first. See the header for why this order and not the other. The legal
     // value rides in the SAME payload rather than a second write over the same
     // column, which would build from a base this one has already changed (L443).
-    await deps.writeAttributes(flip.userId, flip.attributes);
-    countLegal();
+    await deps.writeAttributes({ userId: flip.userId, attributes: flip.attributes });
+    countLanded_();
     // Then the coverage sweep, BEFORE the flip (#2115). The order is the crash
     // safety: a run that dies here leaves a marked and still bookable agent, whom
     // the next hour plans again, reads the same stamp from, and converges onto the
@@ -368,8 +488,8 @@ async function runFlip(
     log.warn("twilio-sync", { msg: "flip into the pool found no row", user_id: flip.userId });
     return;
   }
-  await deps.writeAttributes(flip.userId, flip.attributes);
-  countLegal();
+  await deps.writeAttributes({ userId: flip.userId, attributes: flip.attributes });
+  countLanded_();
   // A noop is a STALE MARK, not a change: somebody an admin had already turned
   // back on. The mark still had to go, and nothing else changed, so it is neither
   // reported as a flip nor audited.
@@ -422,7 +542,7 @@ export async function defaultTwilioSyncDeps(orgId?: string): Promise<TwilioSyncD
       const rows = (unwrap(
         await supabaseAdmin()
           .from("users")
-          .select("id, email, bookable, deactivated_at, is_test, attributes")
+          .select("id, email, bookable, deactivated_at, bookable_pending_since, is_test, attributes")
           .eq("org_id", id),
         "twilio-sync.roster",
       ) ?? []) as {
@@ -430,6 +550,7 @@ export async function defaultTwilioSyncDeps(orgId?: string): Promise<TwilioSyncD
         email: string;
         bookable: boolean;
         deactivated_at: string | null;
+        bookable_pending_since: string | null;
         is_test: boolean;
         attributes: Attributes | null;
       }[];
@@ -438,13 +559,23 @@ export async function defaultTwilioSyncDeps(orgId?: string): Promise<TwilioSyncD
         email: r.email,
         bookable: r.bookable === true,
         deactivated: r.deactivated_at !== null,
+        pending: r.bookable_pending_since !== null,
         isTest: r.is_test === true,
         attributes: r.attributes,
       }));
     },
     applyBookable: (userId, bookable) => applyBookableByUserId(userId, bookable),
-    writeAttributes: async (userId, attributes) => {
-      const { error } = await supabaseAdmin().from("users").update({ attributes }).eq("id", userId);
+    writeAttributes: async ({ userId, attributes, bookablePendingSince }) => {
+      const { error } = await supabaseAdmin()
+        .from("users")
+        .update({
+          attributes,
+          // Only when an activation is being asked for. Written in the SAME
+          // statement, so a crash between the two cannot leave a tier with no
+          // record that anybody wanted a flip because of it.
+          ...(bookablePendingSince ? { bookable_pending_since: bookablePendingSince } : {}),
+        })
+        .eq("id", userId);
       if (error) throw new Error(`Twilio attribute write failed: ${error.message}`);
     },
     recordAudit,

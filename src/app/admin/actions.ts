@@ -456,6 +456,24 @@ function twilioParts(
     // Both directions are said. A run that only ever reported the exclusions would
     // make somebody being cleared for legal work look like a quiet run, which is
     // the same defect the manager unlink line above exists to fix (#1474).
+    // The routing attributes themselves (#2152), first of the three, because a
+    // changed tier moves somebody between buckets and is the one a reader will go
+    // and check.
+    r.tiersChanged.length
+      ? `${plural(r.tiersChanged.length, "agent")} whose debt teams now match their Twilio tags`
+      : null,
+    r.backendChanged.length
+      ? `${plural(r.backendChanged.length, "agent")} whose backend service now matches their Twilio tags`
+      : null,
+    // A first tier is what makes a new hire bookable, so it is said apart from the
+    // tier line above: one is a pool change and this is somebody starting to take
+    // calls.
+    r.activated.length
+      ? `${plural(r.activated.length, "agent")} made bookable by their first debt team`
+      : null,
+    r.activationRefused.length
+      ? `${plural(r.activationRefused.length, "agent")} could not be made bookable by their first debt team until a Google calendar exists for them`
+      : null,
     r.legalEligible.length
       ? `${plural(r.legalEligible.length, "agent")} recorded as eligible for legal work, from their Twilio tag`
       : null,
@@ -467,8 +485,11 @@ function twilioParts(
     r.flipFailures
       ? `${plural(r.flipFailures, "agent")} could not be flipped at all, so press this again in a minute`
       : null,
-    r.legalWriteFailures
-      ? `${plural(r.legalWriteFailures, "agent")} whose legal eligibility could not be recorded, so press this again in a minute`
+    r.attributeWriteFailures
+      ? `${plural(r.attributeWriteFailures, "agent")} whose routing attributes could not be recorded, so press this again in a minute`
+      : null,
+    r.activationFailures
+      ? `${plural(r.activationFailures, "agent")} whose first debt team landed and who could not be put in the pool, so press this again in a minute`
       : null,
   ];
 }
