@@ -7,11 +7,13 @@ import {
   VerifyUnavailableError,
   RescheduleLockUnavailableError,
   NoEligibleAgentsError,
+  ContactRefusedError,
 } from "@/lib/booking/service";
 import { validateReason } from "@/lib/booking/core";
 import { loadReasonOptions } from "@/lib/booking/reason-options";
 import { recordApiOutcome } from "@/lib/monitor/record-api-outcome";
 import { internalErrorResponse } from "@/lib/api/errors";
+import { INPUT_LIMITS } from "@/lib/booking/input-limits";
 import { manageWithinLimit } from "@/lib/rate-limit";
 // From the pure core rather than the re-export, so a test can stub the limiter without
 // also having to hand back a working clientIp.
@@ -26,6 +28,26 @@ const schema = z.object({
   start: z.string().refine((s) => !Number.isNaN(Date.parse(s)), "Invalid start"),
   reason: z.string().optional(),
   reasonDetail: z.string().optional(),
+  /**
+   * The lead's own details, when they typed them on the way here (#2164).
+   *
+   * The booker's move panel is only reached by filling the form, and a lead's
+   * commonest reason to come back is that the details they gave first were wrong.
+   * Optional because every other caller of this endpoint (the emailed manage
+   * link's own reschedule) has nobody typing anything.
+   *
+   * The shape check here is only a ceiling: a multi-MB blob is refused before it
+   * reaches Postgres or a Google event body (#1034). Whether these are details we
+   * can actually use is decided by the shared attendee rule inside the service, so
+   * this route can never become a second, laxer opinion about an email address.
+   */
+  attendee: z
+    .object({
+      name: z.string().max(INPUT_LIMITS.contact).optional(),
+      email: z.string().max(INPUT_LIMITS.contact).optional(),
+      phone: z.string().max(INPUT_LIMITS.contact).optional(),
+    })
+    .optional(),
 });
 
 export async function POST(
@@ -65,11 +87,12 @@ export async function POST(
   }
 
   try {
-    const { booking, manageUrl } = await rescheduleBooking(
+    const { booking, manageUrl, contactChanged } = await rescheduleBooking(
       token,
       parsed.data.start,
       reason.reason,
       "customer",
+      parsed.data.attendee,
     );
     // A lead moving their own call is a booking ATTEMPT, and its refusals below are
     // counted (#1318). The success has to be counted with them or the share stops being
@@ -88,8 +111,20 @@ export async function POST(
       startsAt: booking.starts_at,
       endsAt: booking.ends_at,
       manageUrl,
+      // #2164: what else this move changed, so the screen can say it. Omitted
+      // entirely when nothing moved, rather than sent as three falses, because the
+      // caller's question is "was there anything to tell them".
+      ...(contactChanged ? { contactChanged } : {}),
     });
   } catch (err) {
+    // #2164: the details they typed were refused, and nothing moved. A 400 with
+    // the sentence about the value itself, because that is what the reader has to
+    // act on; the time they picked is still there and still theirs to take.
+    if (err instanceof ContactRefusedError) {
+      recordApiOutcome("error", "", "reschedule_contact_refused", { by: "manageToken", token });
+      // refusal: reschedule_contact_refused
+      return NextResponse.json({ error: err.message }, { status: 400 });
+    }
     // Outage (couldn't verify), not a full slot — retryable (#319).
     if (err instanceof VerifyUnavailableError) {
       recordApiOutcome("error", "", "reschedule_verify_unavailable", { by: "manageToken", token });

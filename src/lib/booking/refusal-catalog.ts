@@ -475,6 +475,19 @@ export const REFUSAL_CATALOG: RefusalPath[] = [
       "booker pages for, reached by a lead who already has an appointment.",
   },
   {
+    id: "reschedule_contact_refused",
+    surface: "embed booker",
+    outcome: "400, told which of the details they typed cannot be used, with the call left where it is",
+    counting: { kind: "error", code: "reschedule_contact_refused" },
+    rateSignal: { kind: "covered" },
+    why:
+      "A lead moving the call they already have is carrying the details they typed on this visit " +
+      "onto it (#2164), and one of them is not a value we can use. The move is refused rather than " +
+      "made without them, because writing them is the point of having been given them and moving " +
+      "the call while dropping them is what that issue was opened to end. It is a typo in a field, " +
+      "so it belongs with the other shape refusals rather than in a rate that pages.",
+  },
+  {
     id: "reschedule_verify_unavailable",
     surface: "manage page",
     outcome: "503, told it is temporary and to retry",

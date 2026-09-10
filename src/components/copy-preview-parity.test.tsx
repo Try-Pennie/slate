@@ -33,6 +33,8 @@ import {
   PICKER_COPY,
   allTimesTaken,
   closedUntil,
+  MOVE_COPY,
+  movedContactNote,
 } from "@/lib/booking/booker-copy";
 import {
   BEFORE_COPY,
@@ -159,6 +161,63 @@ describe("the preview shows what the booker actually renders (#1343)", () => {
 
     expect(await screen.findByText(CONFIRMED_COPY.heading)).toBeTruthy();
     expect(pageText()).toContain(CONFIRMED_COPY.manageLink);
+  });
+
+  // #2164: a lead who already has a call, comes back, and types different details.
+  // The booker recognises them, offers the move, and the move carries the new
+  // details onto the call. What it says afterwards is the half only a mounted
+  // component can prove: a static scan cannot tell whether this sentence reached a
+  // customer or only the preview.
+  it("uses the builder's words for what a move ALSO changed", async () => {
+    global.fetch = vi.fn(async (url: RequestInfo | URL) => {
+      if (String(url).includes("/api/availability")) {
+        return { ok: true, json: async () => availability } as Response;
+      }
+      if (String(url).includes("/reschedule")) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            startsAt: slotIso,
+            contactChanged: { name: false, email: true, phone: true },
+          }),
+        } as Response;
+      }
+      // The confirm: declined, because this person already has a call. Nothing is
+      // created and the move is offered instead (#1337).
+      return {
+        ok: false,
+        status: 409,
+        json: async () => ({
+          existingCall: {
+            disclose: true,
+            startsAt: slotIso,
+            advisorName: "Sam Advisor",
+            manageToken: "tok-existing",
+          },
+        }),
+      } as Response;
+    }) as unknown as typeof fetch;
+
+    render(<Booker {...bookerProps} />);
+    await act(async () => {});
+    fireEvent.click(screen.getByRole("button", { name: /^(TODAY|MON|TUE|WED|THU|FRI|SAT|SUN)/ }));
+    fireEvent.click(screen.getByRole("button", { name: /:\d{2}/ }));
+    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Dana Lead" } });
+    fireEvent.change(screen.getByLabelText("Email"), { target: { value: "new@example.com" } });
+    fireEvent.change(screen.getByLabelText("Phone"), { target: { value: "(203) 561-5295" } });
+    fireEvent.click(screen.getByRole("button", { name: DETAILS_COPY.confirm }));
+
+    // The move panel, reached by the 409 above. A reason is mandatory before it
+    // will move anything (#326).
+    await screen.findByText(MOVE_COPY.reasonLegend);
+    fireEvent.click(screen.getAllByRole("radio")[0]);
+    fireEvent.click(screen.getByRole("button", { name: /^Move my call/ }));
+
+    expect(await screen.findByText(CONFIRMED_COPY.heading)).toBeTruthy();
+    expect(pageText()).toContain(
+      movedContactNote({ name: false, email: true, phone: true }),
+    );
   });
 });
 

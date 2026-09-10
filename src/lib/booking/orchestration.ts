@@ -296,6 +296,21 @@ export type ExistingCall =
  * deliberately DOES create when a cross-bucket rebook must land in a new bucket
  * before the old one is cancelled (#364).
  */
+/**
+ * The lead's corrected details could not be accepted, so nothing moved (#2164).
+ *
+ * Its own type rather than a generic failure, because the message inside it is a
+ * sentence about the value they typed ("Enter a valid email address") and the
+ * route has to give it back to them against the right field rather than as a
+ * reason the move failed.
+ */
+export class ContactRefusedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ContactRefusedError";
+  }
+}
+
 export class ExistingCallError extends Error {
   readonly existingCall: ExistingCall;
   constructor(existingCall: ExistingCall) {
@@ -455,6 +470,16 @@ export interface BookingResult {
    * only; the service layer turns this into a log breadcrumb.
    */
   rescheduleDecline?: RescheduleDeclineReason;
+  /**
+   * Which of the lead's own details this move also corrected (#2164), or null
+   * when it corrected none and undefined when none were offered.
+   *
+   * Carried out so the screen can SAY what happened rather than leaving the lead
+   * to hope: they typed a new email and phone on the way to moving the call, and
+   * an action that quietly applies half of what somebody asked for is one they
+   * cannot check (L608).
+   */
+  contactChanged?: ContactChange | null;
 }
 
 /**
@@ -635,6 +660,12 @@ export interface BookingDeps {
    * fields and a phone correction must never touch the time.
    */
   updateEventDescription(email: string, eventId: string, description: string): Promise<void>;
+  /** The lead's own details on the invite, in one PATCH (#2164). */
+  updateEventContact(
+    email: string,
+    eventId: string,
+    patch: { summary?: string; description?: string; attendeeEmail?: string; attendeeName?: string },
+  ): Promise<void>;
   // db
   getUser(userId: string): Promise<User>;
   /** Batched userId -> email resolver for a verify-on-book wave (skips emailless). */
@@ -647,6 +678,11 @@ export interface BookingDeps {
    * and which did not is the exact defect this control exists to avoid (L12).
    */
   updateBookingPhone(bookingId: string, phone: string): Promise<void>;
+  /** The lead's own details on the booking row, in one write (#2164). */
+  updateBookingContact(
+    bookingId: string,
+    patch: { attendee_name?: string; attendee_email?: string; attendee_phone?: string },
+  ): Promise<void>;
   insertBooking(row: BookingInsert): Promise<InsertBookingResult>;
   /** One write for many blocks (#762). The reconcile-missing sweep can re-create up
    *  to RECONCILE_LIMIT rows, and a write per row was that many serial round-trips
@@ -2921,7 +2957,32 @@ export async function rescheduleBooking(
   deps: BookingDeps,
   nowMs: number = Date.now(),
   actor?: BookingActor,
+  /**
+   * The lead's own details, when they typed them on the way here (#2164).
+   *
+   * The booker's move panel is reached by entering a name, an email and a phone
+   * number, and a lead's commonest reason to come back is that the first ones were
+   * wrong. Applied BEFORE the move, never after, and that ordering is the whole
+   * point: the calendar event this reschedule writes and the `booking.rescheduled`
+   * payload it emits are both built from the row, so a correction landing after
+   * them would reach neither and the advisor would ring the number the lead just
+   * replaced.
+   *
+   * Undefined on every other caller, which is every path where nobody typed
+   * anything: the manage link's own reschedule, the admin move, the API.
+   */
+  contact?: { name?: string; email?: string; phone?: string },
 ): Promise<BookingResult> {
+  // Applied first, so everything below reads the details the lead just gave. A
+  // refusal here stops the move: writing them is the point of having been given
+  // them, and moving the call while silently dropping them is the one outcome
+  // this was opened to end (L12).
+  let contactChanged: ContactChange | null = null;
+  if (contact) {
+    const res = await updateBookingContact(token, contact, deps);
+    if (!res.ok) throw new ContactRefusedError(res.error);
+    contactChanged = contactUnchanged(res.changed) ? null : res.changed;
+  }
   // #538: fold the in-place guard's working-hours read into the context load so
   // it costs no extra round-trip on the hot reschedule path.
   const ctx = await deps.loadBookingContext(token, { withWorkingHours: true });
@@ -2967,7 +3028,7 @@ export async function rescheduleBooking(
     // its own target, so its live lease is never clobbered, and there is no
     // read->delete window for such a re-pin to slip into.
     await deps.releaseRescheduleIfTarget(booking.id, startIso);
-    return { booking, manageUrl: manageUrl(deps, token) };
+    return { booking, manageUrl: manageUrl(deps, token), contactChanged };
   }
 
   // Idempotency guard 2 — claim the per-booking lease (#439). The discriminated
@@ -2976,14 +3037,17 @@ export async function rescheduleBooking(
   // fresh-after-abandon) enters the try/finally, so the release rule holds.
   const claim = await deps.claimReschedule(booking.id, startIso);
   if (claim.outcome === "idempotent" || claim.outcome === "noop") {
-    return { booking, manageUrl: manageUrl(deps, token) };
+    return { booking, manageUrl: manageUrl(deps, token), contactChanged };
   }
   if (claim.outcome === "conflict") {
     throw new RescheduleConflictError();
   }
 
   try {
-    return await applyReschedule(deps, token, ctx, startIso, endIso, reason, initiator, claim, nowMs, actor);
+    const result = await applyReschedule(
+      deps, token, ctx, startIso, endIso, reason, initiator, claim, nowMs, actor,
+    );
+    return { ...result, contactChanged };
   } finally {
     await deps.releaseReschedule(booking.id);
   }
@@ -3863,14 +3927,91 @@ export async function updateBookingPhone(
   rawPhone: string,
   deps: BookingDeps,
 ): Promise<UpdatePhoneResult> {
-  const phone = rawPhone.trim();
-  const invalid = validateAttendee({ phone }).phone;
+  const res = await updateBookingContact(token, { phone: rawPhone }, deps);
+  return res.ok
+    ? { ok: true, phone: res.phone, ...(res.staleInvite ? { staleInvite: res.staleInvite } : {}) }
+    : { ok: false, error: res.error };
+}
+
+/** Which of the lead's own details a write actually moved. */
+export interface ContactChange {
+  name: boolean;
+  email: boolean;
+  phone: boolean;
+}
+
+export type UpdateContactResult =
+  | {
+      ok: true;
+      /** The stored, formatted number, whether or not this write moved it. */
+      phone: string;
+      changed: ContactChange;
+      staleInvite?: { agentEmail: string; bookingId: string };
+    }
+  | { ok: false; error: string };
+
+/** True when this write moved nothing at all, so nothing was said or sent. */
+export function contactUnchanged(changed: ContactChange): boolean {
+  return !changed.name && !changed.email && !changed.phone;
+}
+
+/**
+ * The lead's own details on a booking: their name, their email and the number
+ * their advisor will ring (#1341 for the number, #2164 for the other two).
+ *
+ * A field left UNDEFINED is not touched. That is what lets the manage page's one
+ * field control and the booker's whole form share this: the phone route sends one
+ * key, the move sends three, and neither can reach anything else on the row.
+ *
+ * NOTHING IS WRITTEN WHEN NOTHING MOVED. A lead who reopens their link and
+ * retypes the same details must not cost a row write, an invite rewrite and an
+ * email to both people saying their event was updated.
+ *
+ * The invite is derived from the row, so it is refreshed AFTER the write, never
+ * instead of it. Its failure is contained: the details are saved, and saying
+ * otherwise would push the lead to retype what we already hold (L12).
+ *
+ * L33, stated rather than assumed: this pair is deliberately NOT outboxed. The
+ * must-not-lose half is the row, and it commits first, so a crash between the two
+ * loses the PAGE about a stale invite, never the correction itself. The residual
+ * is one advisor reading old details off an invite with nothing saying so, which
+ * is bounded and repairable from the booking. An outbox step would close it; it is
+ * not worth a durable queue for a body rewrite.
+ *
+ * Every patch failure is treated the same on purpose: gone, refused or unwell, the
+ * invite is stale either way, and splitting them would produce two pages that ask
+ * for the same repair.
+ */
+export async function updateBookingContact(
+  token: string,
+  contact: { name?: string; email?: string; phone?: string },
+  deps: BookingDeps,
+): Promise<UpdateContactResult> {
+  // Only the fields this caller actually sent are judged. Handing the validator a
+  // field nobody supplied would refuse the write for a value nobody typed, and its
+  // errors are all "enter your ..." sentences about an empty field.
+  const asked: { name?: string; email?: string; phone?: string } = {};
+  if (contact.name !== undefined) asked.name = contact.name.trim();
+  if (contact.email !== undefined) asked.email = contact.email.trim();
+  if (contact.phone !== undefined) asked.phone = contact.phone.trim();
+  // Only the fields this caller SENT are judged. `validateAttendee` speaks for the
+  // whole form, so reading its verdict on a field nobody supplied would refuse a
+  // one field correction with "Enter your name" about a name that was never in
+  // question.
+  //
+  // In the order the form shows them, so a lead correcting two things at once is
+  // told about the first one they would look at.
+  const errors = validateAttendee(asked);
+  const invalid =
+    (asked.name !== undefined ? errors.name : undefined) ??
+    (asked.email !== undefined ? errors.email : undefined) ??
+    (asked.phone !== undefined ? errors.phone : undefined);
   if (invalid) return { ok: false, error: invalid };
 
   const found = await deps.loadBookingContext(token);
   if (!found) return { ok: false, error: MANAGE_PHONE_NOT_FOUND };
-  const { booking } = found;
-  // A call that has happened or been called off has no number left to correct,
+  const { booking, eventType } = found;
+  // A call that has happened or been called off has no details left to correct,
   // and offering one would say we had not noticed. The page already hides the
   // control in those states; this is the same rule on the server, because a
   // client side gate is not a gate.
@@ -3880,44 +4021,57 @@ export async function updateBookingPhone(
 
   // Formatted as the booker formats it, so the page reads back what it shows
   // everywhere else rather than the raw keystrokes.
-  const stored = formatPhoneAsTyped(phone);
-  await deps.updateBookingPhone(booking.id, stored);
+  const nextPhone = asked.phone === undefined ? booking.attendee_phone : formatPhoneAsTyped(asked.phone);
+  const nextName = asked.name === undefined ? booking.attendee_name : asked.name;
+  const nextEmail = asked.email === undefined ? booking.attendee_email : asked.email;
 
-  // The invite is derived from the row, so it is refreshed AFTER the write, never
-  // instead of it. Its failure is contained: the number is saved, and saying
-  // otherwise would push the lead to retype a number we already hold (L12).
-  //
-  // L33, stated rather than assumed: this pair is deliberately NOT outboxed. The
-  // must-not-lose half is the row, and it commits first, so a crash between the
-  // two loses the PAGE about a stale invite, never the correction itself. The
-  // residual is one advisor reading an old number off an invite with nothing
-  // saying so, which is bounded and repairable from the booking. An outbox step
-  // would close it; it is not worth a durable queue for a body rewrite.
-  //
-  // Every patch failure is treated the same on purpose: gone, refused or unwell,
-  // the invite is stale either way, and splitting them would produce two pages
-  // that ask for the same repair.
+  const changed: ContactChange = {
+    name: nextName !== booking.attendee_name,
+    // Compared without regard to case, because an address that differs only in
+    // case is the same mailbox: rewriting the invite for it would email both
+    // people about nothing.
+    email: (nextEmail ?? "").toLowerCase() !== (booking.attendee_email ?? "").toLowerCase(),
+    phone: nextPhone !== booking.attendee_phone,
+  };
+  const stored = nextPhone ?? "";
+  if (contactUnchanged(changed)) return { ok: true, phone: stored, changed };
+
+  await deps.updateBookingContact(booking.id, {
+    ...(changed.name ? { attendee_name: nextName ?? "" } : {}),
+    ...(changed.email ? { attendee_email: nextEmail ?? "" } : {}),
+    ...(changed.phone ? { attendee_phone: stored } : {}),
+  });
+  // The in-memory row too, so a caller that goes on to use this context (the move,
+  // #2164) builds its calendar event and its webhook payload from the details the
+  // lead just gave rather than the ones it read a moment ago.
+  if (changed.name) booking.attendee_name = nextName ?? null;
+  if (changed.email) booking.attendee_email = nextEmail ?? null;
+  if (changed.phone) booking.attendee_phone = stored;
+
   if (booking.gcal_event_id && booking.agent_email) {
     try {
-      await deps.updateEventDescription(
-        booking.agent_email,
-        booking.gcal_event_id,
-        eventDescription(stored, manageUrl(deps, token)),
-      );
+      await deps.updateEventContact(booking.agent_email, booking.gcal_event_id, {
+        // Each field is sent only when it moved, so the PATCH says exactly what
+        // changed and `sendUpdates` is decided by whether the invitee did.
+        ...(changed.phone ? { description: eventDescription(stored, manageUrl(deps, token)) } : {}),
+        ...(changed.name ? { summary: eventSummary(eventType.name, nextName ?? null) } : {}),
+        ...(changed.email ? { attendeeEmail: nextEmail ?? undefined, attendeeName: nextName ?? undefined } : {}),
+      });
     } catch (err) {
-      log.warn("manage-phone", {
-        msg: "invite body not refreshed",
+      log.warn("manage-contact", {
+        msg: "invite not refreshed",
         booking_id: booking.id,
         reason: shortErrorReason(err),
       });
       return {
         ok: true,
         phone: stored,
+        changed,
         staleInvite: { agentEmail: booking.agent_email, bookingId: booking.id },
       };
     }
   }
-  return { ok: true, phone: stored };
+  return { ok: true, phone: stored, changed };
 }
 
 export async function getBookingByToken(

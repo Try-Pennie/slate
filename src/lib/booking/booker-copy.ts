@@ -338,6 +338,44 @@ export function keepExistingTime(shortDay: string): string {
   return `Keep my ${shortDay} time`;
 }
 
+/**
+ * What a move ALSO changed, when the lead typed different details on the way to it
+ * (#2164).
+ *
+ * A lead's commonest reason to come back to their link is that the details they
+ * gave first were wrong, so the move carries the new ones onto the call. Saying so
+ * is the other half of that: an action that quietly applies part of what somebody
+ * asked for is one they cannot check, and the only way to find out would be to
+ * wait for a call that never comes (L608).
+ *
+ * Null when nothing moved, so the screen shows no line rather than a sentence
+ * claiming a change nobody made.
+ *
+ * IT DOES NOT SAY WHERE THE CONFIRMATION IS GOING, and the first draft did. Read
+ * on the rendered screen, that sentence sat directly under "A calendar invite is
+ * on its way to new@example.com", so the address appeared twice in two lines and
+ * the second one told the reader nothing the first had not (L605). The line above
+ * is built from the address they just typed, which is the corrected one, so it is
+ * already right.
+ */
+export function movedContactNote(changed: {
+  name: boolean;
+  email: boolean;
+  phone: boolean;
+}): string | null {
+  const parts = [
+    changed.name ? "name" : null,
+    changed.email ? "email address" : null,
+    changed.phone ? "phone number" : null,
+  ].filter((p): p is string => p !== null);
+  if (parts.length === 0) return null;
+  const list =
+    parts.length === 1
+      ? parts[0]
+      : `${parts.slice(0, -1).join(", ")} and ${parts[parts.length - 1]}`;
+  return `We have updated your ${list} for this call.`;
+}
+
 // --- the honeypot (#1033) -----------------------------------------------------
 // Read only by a bot, and by a screen reader that ignores aria-hidden containers.
 // It is here so the preview shows every string the markup carries, including the

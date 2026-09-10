@@ -239,6 +239,15 @@ export function makeDeps(opts: FakeOpts) {
     updateEventTime: [] as { id: string }[],
     updateEventDescription: [] as { email: string; id: string; description: string }[],
     updateBookingPhone: [] as { bookingId: string; phone: string }[],
+    updateEventContact: [] as {
+      email: string;
+      id: string;
+      patch: { summary?: string; description?: string; attendeeEmail?: string; attendeeName?: string };
+    }[],
+    updateBookingContact: [] as {
+      bookingId: string;
+      patch: { attendee_name?: string; attendee_email?: string; attendee_phone?: string };
+    }[],
     insertBusyBlock: [] as { user_id: string; starts_at: string; ends_at: string; source: string }[],
     /** #762: how many batched WRITES the sweep issued, not how many rows it wrote. */
     insertBusyBlocks: 0,
@@ -271,6 +280,8 @@ export function makeDeps(opts: FakeOpts) {
       // #884: whether fire() handed this emission a send scheduler (deps.deferSend).
       // true on user-facing paths (confirm/cancel/reschedule), false on cron drains.
       deferred: boolean;
+      /** Who the payload is about (#2164). */
+      attendee: { name: string | null; email: string | null; phone: string | null };
     }[],
     bookingEvents: [] as {
       booking_id: string;
@@ -443,6 +454,25 @@ export function makeDeps(opts: FakeOpts) {
     updateEventDescription: async (email, id, description) => {
       calls.updateEventDescription.push({ email, id, description });
       if (opts.updateEventDescriptionThrows) throw new Error("google 503");
+    },
+    updateEventContact: async (email, id, patch) => {
+      calls.updateEventContact.push({ email, id, patch });
+      // The same seam the description-only patch uses, since they are one Google
+      // call: a test that turns the invite rewrite off must turn off both or the
+      // failure path it means to drive is only half reached.
+      if (opts.updateEventDescriptionThrows) throw new Error("google 503");
+      if (patch.description !== undefined) {
+        calls.updateEventDescription.push({ email, id, description: patch.description });
+      }
+    },
+    updateBookingContact: async (bookingId, patch) => {
+      if (opts.updateBookingPhoneThrows) throw new Error("db write failed");
+      calls.updateBookingContact.push({ bookingId, patch });
+      // Recorded on the phone list too when the number moved, so a test written
+      // about a phone correction reads the same either way.
+      if (patch.attendee_phone !== undefined) {
+        calls.updateBookingPhone.push({ bookingId, phone: patch.attendee_phone });
+      }
     },
     updateBookingPhone: async (bookingId, phone) => {
       if (opts.updateBookingPhoneThrows) throw new Error("db write failed");
@@ -754,6 +784,11 @@ export function makeDeps(opts: FakeOpts) {
         bucket_code: payload.bucket_code,
         suppressed,
         deferred: typeof deferSend === "function",
+        // #2164: who the payload is ABOUT, not only which event it is. A move that
+        // carries a lead's corrected details is only carried downstream if the
+        // payload holds them, and a fake that dropped the attendee could not tell
+        // a payload built before the correction from one built after it.
+        attendee: payload.attendee,
       });
     },
     newManageToken: () => "tok-fixed",

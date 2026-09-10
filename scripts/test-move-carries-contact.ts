@@ -1,0 +1,247 @@
+// A lead who comes back and types DIFFERENT details, then moves the call they
+// already have (#2164). Run:
+//   node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/test-move-carries-contact.ts
+//
+// WHAT THIS EXISTS TO STOP. Seen live on the 2026-09-09 pilot booking. A lead
+// booked on `/booking/pilot-dwright-1`, came back to the same link, and entered a
+// different email and phone. The Salesforce id in the path is a strong match, so
+// the booker correctly recognised the existing call and offered the move; the move
+// changed the time and nothing else. The booking kept the original address, Google
+// rewrote the invite for it, Regal received `booking.rescheduled` against it, and
+// nothing on screen said so. A real lead's commonest reason to come back with
+// different details is that the first ones were wrong, so the advisor then rings
+// the number they just replaced.
+//
+// THE ORDERING IS THE POINT, and it is what a test has to hold. The calendar event
+// and the webhook payload are both built from the booking row, so the correction
+// has to land BEFORE the move rather than after it: applied afterwards it would
+// reach neither, and both halves would go out against the details the lead came
+// back to replace.
+import { rescheduleBooking, updateBookingContact } from "../src/lib/booking/orchestration.ts";
+import { movedContactNote } from "../src/lib/booking/booker-copy.ts";
+import {
+  createAsserter,
+  makeDeps,
+  makeBooking,
+  bucket,
+  eventType,
+} from "./lib/booking-fakes.ts";
+
+const { assert, finish } = createAsserter();
+
+const TOKEN = "tok-move";
+/** Far enough ahead that no minimum notice rule refuses it. */
+const NEW_START = "2026-10-01T15:00:00.000Z";
+
+function world(
+  overrides: Parameters<typeof makeDeps>[0] = {},
+  bookingOverrides: Partial<ReturnType<typeof makeBooking>> = {},
+) {
+  const booking = makeBooking({
+    id: "bk-1",
+    manage_token: TOKEN,
+    attendee_name: "Dana Old",
+    attendee_email: "old@example.com",
+    attendee_phone: "(215) 555-0100",
+    gcal_event_id: "gcal-1",
+    ...bookingOverrides,
+  });
+  return makeDeps({ ...overrides, existing: { booking, bucket, eventType } });
+}
+
+const reason = { code: "other" as const, detail: "changed my mind" };
+
+async function run() {
+  // --- the correction lands on the booking, before anything reads it ------------
+  {
+    const { deps, calls } = world();
+    const res = await updateBookingContact(
+      TOKEN,
+      { name: "Dana New", email: "new@example.com", phone: "2155559999" },
+      deps,
+    );
+    assert(res.ok, "the corrected details are accepted");
+    assert(calls.updateBookingContact.length === 1, "and written in ONE write, not three");
+    const patch = calls.updateBookingContact[0].patch;
+    assert(
+      patch.attendee_name === "Dana New" &&
+        patch.attendee_email === "new@example.com" &&
+        patch.attendee_phone === "(215) 555-9999",
+      `every field the lead changed is in it, the number formatted as the booker formats it (got ${JSON.stringify(patch)})`,
+    );
+    assert(
+      res.ok && res.changed.name && res.changed.email && res.changed.phone,
+      "and the caller is told which of them moved, so the screen can say it",
+    );
+  }
+
+  // --- the invite is rewritten, and WHO is invited moves with the address -------
+  //
+  // The advisor reads the number off the invite and the lead reads the invite in
+  // whichever inbox it reached, so a correction that stops at the database leaves
+  // both of them with the details the lead came back to replace.
+  {
+    const { deps, calls } = world();
+    await updateBookingContact(TOKEN, { email: "new@example.com" }, deps);
+    assert(calls.updateEventContact.length === 1, "the invite is patched once");
+    const patch = calls.updateEventContact[0].patch;
+    assert(patch.attendeeEmail === "new@example.com", "the attendee is the new address");
+    assert(
+      patch.description === undefined && patch.summary === undefined,
+      "and nothing else is sent, because nothing else moved",
+    );
+  }
+
+  // --- nothing moved, so nothing happens ---------------------------------------
+  //
+  // THE CONTROL. Without it, a version that wrote the row and rewrote the invite
+  // on every move would satisfy every assertion above, and every returning lead
+  // who retyped the SAME details would cost a write, an invite rewrite, and an
+  // email to both people saying their event had been updated (L1).
+  {
+    const { deps, calls } = world();
+    const res = await updateBookingContact(
+      TOKEN,
+      { name: "Dana Old", email: "old@example.com", phone: "(215) 555-0100" },
+      deps,
+    );
+    assert(res.ok, "retyping the same details is not an error");
+    assert(calls.updateBookingContact.length === 0, "and writes nothing at all");
+    assert(calls.updateEventContact.length === 0, "and rewrites no invite");
+    assert(
+      res.ok && !res.changed.name && !res.changed.email && !res.changed.phone,
+      "and reports that nothing moved, so the screen says nothing",
+    );
+  }
+
+  {
+    // An address that differs only in case is the same mailbox. Rewriting the
+    // invite for it would email both people about nothing.
+    const { deps, calls } = world();
+    const res = await updateBookingContact(TOKEN, { email: "OLD@Example.com" }, deps);
+    assert(res.ok && !res.changed.email, "a case-only difference is not a change");
+    assert(calls.updateBookingContact.length === 0, "so nothing is written");
+  }
+
+  // --- a value we cannot use refuses, and the call does NOT move ---------------
+  //
+  // Refusing is the only honest answer: writing them is the point of having been
+  // given them, and moving the call while dropping them is what this issue is
+  // about (L12).
+  {
+    const { deps, calls } = world();
+    let thrown: unknown;
+    try {
+      await rescheduleBooking(
+        TOKEN, NEW_START, reason, "customer", deps, Date.parse("2026-09-10T12:00:00.000Z"),
+        undefined, { email: "not-an-address" },
+      );
+    } catch (err) {
+      thrown = err;
+    }
+    assert(
+      thrown instanceof Error && thrown.name === "ContactRefusedError",
+      `the move is refused by its own type (got ${String(thrown)})`,
+    );
+    assert(
+      thrown instanceof Error && /valid email/i.test(thrown.message),
+      "carrying the sentence about the value they typed, not a generic failure",
+    );
+    assert(calls.updateBookingContact.length === 0, "nothing is written");
+    assert(calls.commitReschedule.length === 0, "and the call does not move");
+  }
+
+  {
+    // The fields nobody sent are not judged. A move that carried only a corrected
+    // number must not be refused with "Enter your name" about a name that was
+    // never in question (L11).
+    const { deps } = world();
+    const res = await updateBookingContact(TOKEN, { phone: "2155559999" }, deps);
+    assert(res.ok, `a one field correction is accepted (got ${res.ok ? "" : res.error})`);
+  }
+
+  // --- the move carries them, and carries them FIRST ---------------------------
+  {
+    const { deps, calls } = world();
+    const res = await rescheduleBooking(
+      TOKEN, NEW_START, reason, "customer", deps, Date.parse("2026-09-10T12:00:00.000Z"),
+      undefined, { name: "Dana New", email: "new@example.com", phone: "2155559999" },
+    );
+    assert(calls.updateBookingContact.length === 1, "the correction is written");
+    assert(calls.commitReschedule.length === 1, "and the call moves");
+    // THE ORDERING, asserted through the thing it exists for rather than through a
+    // list of call names: the payload downstream receives is built from the row, so
+    // it carries the corrected address only if the correction landed first. This is
+    // the exact half that went wrong on the pilot booking, where Regal received
+    // `booking.rescheduled` against the address the lead had just replaced.
+    const moved = calls.webhooks.filter((w) => w.event === "booking.rescheduled");
+    assert(moved.length === 1, `one rescheduled event went out (got ${moved.length})`);
+    assert(
+      moved[0]?.attendee?.email === "new@example.com",
+      `and it carries the corrected address (got ${JSON.stringify(moved[0]?.attendee)})`,
+    );
+    assert(
+      moved[0]?.attendee?.phone === "(215) 555-9999",
+      "and the corrected number, so a dialler working from it rings the right one",
+    );
+    assert(
+      res.contactChanged?.email === true,
+      "and the result says what else changed, so the screen can say it",
+    );
+  }
+
+  {
+    // A move that changed nothing but the time reports NO contact change, so the
+    // screen shows no line rather than a sentence claiming one.
+    const { deps } = world();
+    const res = await rescheduleBooking(
+      TOKEN, NEW_START, reason, "customer", deps, Date.parse("2026-09-10T12:00:00.000Z"),
+      undefined, { name: "Dana Old", email: "old@example.com", phone: "(215) 555-0100" },
+    );
+    assert(res.contactChanged === null, "nothing moved, so nothing is claimed");
+  }
+
+  {
+    // Every other caller of the reschedule (the emailed manage link, the admin
+    // move, the API) passes nothing, and must be untouched by this.
+    const { deps, calls } = world();
+    const res = await rescheduleBooking(
+      TOKEN, NEW_START, reason, "customer", deps, Date.parse("2026-09-10T12:00:00.000Z"),
+    );
+    assert(calls.updateBookingContact.length === 0, "a move with no details typed writes none");
+    assert(res.contactChanged === null, "and claims none");
+    assert(calls.commitReschedule.length === 1, "while still moving the call");
+  }
+
+  // --- what the lead is told ----------------------------------------------------
+  {
+    assert(
+      movedContactNote({ name: false, email: false, phone: false }) === null,
+      "no change means no sentence",
+    );
+    const one = movedContactNote({ name: false, email: false, phone: true });
+    assert(one === "We have updated your phone number for this call.", `one field reads as one (got ${one})`);
+    const two = movedContactNote({ name: true, email: false, phone: true });
+    assert(
+      two === "We have updated your name and phone number for this call.",
+      `two are joined with "and" and no comma (got ${two})`,
+    );
+    const all = movedContactNote({ name: true, email: true, phone: true });
+    assert(
+      all === "We have updated your name, email address and phone number for this call.",
+      `three take a comma and an "and" (got ${all})`,
+    );
+    // It does NOT name the address. The line above it on that screen already says
+    // where the invite is going, built from the same corrected value, so naming it
+    // again is the same fact twice in two lines (L605). Found by reading the
+    // rendered screen, which is the only place it was visible.
+    assert(
+      !(all ?? "").includes("@"),
+      "and no address, because the line above it already names where the invite is going",
+    );
+  }
+
+  finish();
+}
+
+void run();

@@ -25,7 +25,14 @@ const service = vi.hoisted(() => {
       this.name = "NoEligibleAgentsError";
     }
   }
+  class ContactRefusedError extends Error {
+    constructor(message: string) {
+      super(message);
+      this.name = "ContactRefusedError";
+    }
+  }
   return {
+    ContactRefusedError,
     rescheduleBooking: vi.fn(),
     RescheduleConflictError,
     SlotUnavailableError,
@@ -111,6 +118,75 @@ describe("POST /bookings/[token]/reschedule", () => {
     const res = await POST(req({ start: "2026-07-01T15:00:00.000Z", reason: "schedule_conflict" }), params);
     expect(res.status).toBe(200);
     expect((await res.json()).startsAt).toBe("2026-07-01T15:00:00.000Z");
+  });
+
+  // #2164: a lead who comes back and types different details is correcting them,
+  // and the move is where that correction has to land.
+  it("hands the details the lead typed to the booking layer", async () => {
+    service.rescheduleBooking.mockResolvedValueOnce({
+      booking: { id: "bk1", starts_at: "2026-07-01T15:00:00.000Z", ends_at: "2026-07-01T15:30:00.000Z" },
+      manageUrl: "https://slate.test/booking/manage/tok1",
+      contactChanged: { name: false, email: true, phone: true },
+    });
+    const res = await POST(
+      req({
+        start: "2026-07-01T15:00:00.000Z",
+        reason: "schedule_conflict",
+        attendee: { name: "Dana", email: "new@example.com", phone: "2155559999" },
+      }),
+      params,
+    );
+    expect(res.status).toBe(200);
+    expect(service.rescheduleBooking).toHaveBeenCalledWith(
+      "tok1",
+      "2026-07-01T15:00:00.000Z",
+      expect.anything(),
+      "customer",
+      { name: "Dana", email: "new@example.com", phone: "2155559999" },
+    );
+    // Said back, so the screen can tell the lead what else this move changed.
+    expect((await res.json()).contactChanged).toEqual({ name: false, email: true, phone: true });
+  });
+
+  it("says nothing about the details when the move changed none of them", async () => {
+    service.rescheduleBooking.mockResolvedValueOnce({
+      booking: { id: "bk1", starts_at: "2026-07-01T15:00:00.000Z", ends_at: "2026-07-01T15:30:00.000Z" },
+      manageUrl: "https://slate.test/booking/manage/tok1",
+      contactChanged: null,
+    });
+    const res = await POST(req({ start: "2026-07-01T15:00:00.000Z", reason: "schedule_conflict" }), params);
+    // Absent, not three falses: the caller's question is whether there is anything
+    // to tell them, and a key that is always there invites a line that says nothing.
+    expect(Object.keys(await res.json())).not.toContain("contactChanged");
+  });
+
+  it("refuses the whole move when a detail cannot be used, with the sentence about that value", async () => {
+    service.rescheduleBooking.mockRejectedValueOnce(
+      new service.ContactRefusedError("Enter a valid email address"),
+    );
+    const res = await POST(
+      req({
+        start: "2026-07-01T15:00:00.000Z",
+        reason: "schedule_conflict",
+        attendee: { email: "nope" },
+      }),
+      params,
+    );
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toBe("Enter a valid email address");
+  });
+
+  it("refuses a multi-megabyte detail before the booking layer sees it (#1034)", async () => {
+    const res = await POST(
+      req({
+        start: "2026-07-01T15:00:00.000Z",
+        reason: "schedule_conflict",
+        attendee: { email: "a".repeat(5000) },
+      }),
+      params,
+    );
+    expect(res.status).toBe(400);
+    expect(service.rescheduleBooking).not.toHaveBeenCalled();
   });
 
   it("rejects a missing reason with 400 without touching the booking layer (#326)", async () => {

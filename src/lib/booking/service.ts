@@ -30,6 +30,7 @@ import {
   isFree,
   updateEventTime,
   updateEventDescription,
+  updateEventContact,
 } from "@/lib/google/calendar";
 import {
   insertFailureLogFields,
@@ -347,6 +348,7 @@ export {
   ExistingCallError,
   ExistingCallCheckUnavailableError,
   RescheduleConflictError,
+  ContactRefusedError,
   VerifyUnavailableError,
   RescheduleLockUnavailableError,
   NoEligibleAgentsError,
@@ -832,6 +834,7 @@ function realDeps(deferSend?: WebhookSendScheduler): BookingDeps {
     },
     updateEventTime,
     updateEventDescription,
+    updateEventContact,
     emitWebhook,
     appBaseUrl: appUrl,
     newManageToken: () => nanoid(24),
@@ -905,6 +908,15 @@ function realDeps(deferSend?: WebhookSendScheduler): BookingDeps {
         .update({ attendee_phone: phone })
         .eq("id", bookingId);
       if (error) throw new Error(`booking phone update failed: ${error.message}`);
+    },
+
+    // #2164: the lead's own details, in ONE write. Same rule as the phone update
+    // above: a failed update THROWS rather than resolving, because the lead is
+    // told their details are saved off the back of this call and a swallowed
+    // error would make that a lie (L12).
+    updateBookingContact: async (bookingId, patch) => {
+      const { error } = await supabaseAdmin().from("bookings").update(patch).eq("id", bookingId);
+      if (error) throw new Error(`booking contact update failed: ${error.message}`);
     },
 
     findBookingByIdempotencyKey: async (key) => {
@@ -1870,10 +1882,11 @@ async function rescheduleWithLog(
   reason: ValidatedReason,
   initiator: BookingEventInitiator,
   actor?: BookingActor,
+  contact?: { name?: string; email?: string; phone?: string },
 ): Promise<BookingResult> {
   try {
     const res = await orchestration.rescheduleBooking(
-      token, newStartIso, reason, initiator, realDeps(deferWebhookSend), Date.now(), actor,
+      token, newStartIso, reason, initiator, realDeps(deferWebhookSend), Date.now(), actor, contact,
     );
     logRescheduleSuccess(res.booking.id, initiator, res.rescheduleDecline);
     return res;
@@ -1931,6 +1944,14 @@ export async function findDuplicateBookingWarning(input: {
  * claim nothing measured. It is throttled per booking, because a lead retyping
  * the same number must not repage.
  */
+/** The lead's own details on a booking (#2164), for a caller that is not moving it. */
+export async function updateBookingContact(
+  token: string,
+  contact: { name?: string; email?: string; phone?: string },
+): Promise<orchestration.UpdateContactResult> {
+  return orchestration.updateBookingContact(token, contact, realDeps());
+}
+
 export async function updateBookingPhone(
   token: string,
   phone: string,
@@ -2054,9 +2075,11 @@ export function rescheduleBooking(
   newStartIso: string,
   reason: ValidatedReason,
   initiator: BookingEventInitiator,
+  /** The lead's own details, when they typed them on the way here (#2164). */
+  contact?: { name?: string; email?: string; phone?: string },
 ): Promise<BookingResult> {
   return alertOnBookingFailure(() =>
-    rescheduleWithLog(token, newStartIso, reason, initiator),
+    rescheduleWithLog(token, newStartIso, reason, initiator, undefined, contact),
   );
 }
 
