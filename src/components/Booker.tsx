@@ -33,6 +33,8 @@ import {
   DUPLICATE_COPY,
   HONEYPOT_LABEL,
   MOVE_COPY,
+  BOOKER_CANCEL_COPY,
+  cancelConsequenceFor,
   movedContactNote,
   CLOSED_BODY,
   UNCLASSIFIED_EMPTY_NOTICE,
@@ -82,13 +84,19 @@ type DuplicateWarning =
   | { disclose: true; startsAt: string; manageUrl: string }
   | { disclose: false };
 
-/** The call this lead already has, returned by /booking instead of creating a
- *  second one (#1337). Graded exactly as the warning above: a weak one-signal
- *  match carries nothing, so there is no time to show and no token to move
- *  with. Mirrors `ExistingCall` in `src/lib/booking/orchestration.ts`. */
-type ExistingCall =
-  | { disclose: true; startsAt: string; advisorName: string | null; manageToken: string }
-  | { disclose: false };
+/**
+ * The call this lead already has, returned by /booking instead of creating a second
+ * one (#1337). Graded exactly as the warning above: a weak one-signal match carries
+ * nothing, so there is no time to show and no token to move with.
+ *
+ * IMPORTED rather than mirrored (#2167). It was a hand written copy of the server's
+ * shape, which is two spellings of one contract that nothing holds together: the
+ * `mayCancel` field added here would have been absent from the copy, the panel
+ * would have read `undefined`, and the cancel would simply never have appeared with
+ * every test that mounts the component still green (L263, L317). `import type` is
+ * erased, so no server module reaches the bundle.
+ */
+import type { ExistingCall } from "@/lib/booking/orchestration";
 
 interface BookerProps {
   bucketCode: string;
@@ -116,6 +124,13 @@ interface BookerProps {
    *  reschedule records a mandatory reason and the lead is asked for it here
    *  (Dan, 2026-08-07), so the UI and the server share one live set. */
   rescheduleReasons: ReasonOption[];
+  /**
+   * Active CANCEL reason options, resolved from the store server side (#346), for
+   * the cancel offered to a lead the link recognises (#2167). A cancel records a
+   * mandatory reason exactly as a reschedule does, so the UI and the server share
+   * one live set rather than each holding a list.
+   */
+  cancelReasons: ReasonOption[];
   /** Org-wide booking horizon in days (#216), resolved server-side and passed in.
    *  REQUIRED on purpose: a required prop makes tsc flag any construction site that
    *  forgets it, so the old hardcoded HORIZON_DAYS=4 divergence (AUD-076) can't come
@@ -270,6 +285,7 @@ export default function Booker({
   parentOrigin,
   horizonDays,
   rescheduleReasons,
+  cancelReasons,
 }: BookerProps) {
   // #1849: a fixed US list. A lead whose browser reports a non US zone is shown
   // Eastern rather than their own. Nothing is mis-booked, because the stored
@@ -308,6 +324,14 @@ export default function Booker({
    * by looking at the slot would silently turn into the landing one there (L55).
    */
   const [onLanding, setOnLanding] = useState(Boolean(landingCall));
+  // #2167: cancelling the call they already have, from the panel that recognised
+  // them. Its own three states: not asked, confirming, and done. `cancelled` is a
+  // SCREEN rather than a flag on the panel, because after it there is no call left
+  // for the panel to be about.
+  const [confirmingCancel, setConfirmingCancel] = useState(false);
+  const [cancelled, setCancelled] = useState(false);
+  const [cancelReason, setCancelReason] = useState("");
+  const [cancelDetail, setCancelDetail] = useState("");
   const [moveReason, setMoveReason] = useState("");
   const [moveDetail, setMoveDetail] = useState("");
   // #1329 / #1339: the first bookable days on the far side of a closure, fetched
@@ -561,6 +585,42 @@ export default function Booker({
     }
   }
 
+  const cancelReasonValid = validateReason(
+    { code: cancelReason, detail: cancelDetail },
+    cancelReasons,
+  ).ok;
+
+  /**
+   * Cancel the call this lead already has (#2167), through the same lead cancel
+   * endpoint the manage page uses, so the reason, the audit trail and the webhook
+   * are identical whichever door they came in by.
+   *
+   * Offered only when the server said `mayCancel`, which is the strong id tiers.
+   */
+  async function cancelExistingCall() {
+    if (!existingCall?.disclose || !existingCall.mayCancel) return;
+    setSubmitting(true);
+    setError(null);
+    try {
+      const { ok, data } = await postJson<{ error?: string }>(
+        `/api/bookings/${encodeURIComponent(existingCall.manageToken)}/cancel`,
+        { reason: cancelReason, reasonDetail: cancelDetail || undefined },
+        { timeoutMs: REQUEST_TIMEOUT_MS },
+      );
+      if (ok) {
+        // Read back on the page they are on, rather than left to be inferred from
+        // a panel that quietly changed shape (L608).
+        setCancelled(true);
+        setExistingCall(null);
+        setConfirmingCancel(false);
+        return;
+      }
+      setError(data.error ?? BOOKER_CANCEL_COPY.failed);
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
   const moveReasonValid = validateReason(
     { code: moveReason, detail: moveDetail },
     rescheduleReasons,
@@ -679,7 +739,11 @@ export default function Booker({
                 />
               </div>
               )}
-              {error && (
+              {/* One error on the panel, wherever the reader is looking. While the
+                  cancel confirmation is open it carries its own, inside the box the
+                  decision is being made in, so this one stands down rather than
+                  saying the same thing twice on one screen (L605). */}
+              {error && !confirmingCancel && (
                 <p
                   role="alert"
                   className="mt-4 flex items-start gap-2 text-sm text-[var(--error)]"
@@ -690,6 +754,62 @@ export default function Booker({
                   {error}
                 </p>
               )}
+              {/* #2167: the exit. Its own confirmation, because a cancel destroys
+                  something and puts nothing in its place, and the sentence inside
+                  it names the call being given up rather than saying "cannot be
+                  undone" about no call in particular. */}
+              {existingCall.mayCancel && confirmingCancel ? (
+                <div className="mt-6 rounded-lg border border-[var(--error)] bg-[rgba(196,61,61,0.04)] p-4">
+                  <p className={`text-sm font-semibold ${c.title}`}>
+                    {BOOKER_CANCEL_COPY.heading}
+                  </p>
+                  <p className={`mt-1 text-sm ${c.muted}`}>
+                    {cancelConsequenceFor(
+                      `${longDay(existingCall.startsAt)} at ${fmtTime(existingCall.startsAt)}`,
+                    )}
+                  </p>
+                  <div className="mt-4">
+                    <ReasonPicker
+                      legend={BOOKER_CANCEL_COPY.reasonLegend}
+                      options={cancelReasons}
+                      code={cancelReason}
+                      detail={cancelDetail}
+                      onCode={setCancelReason}
+                      onDetail={setCancelDetail}
+                      idPrefix="booker-cancel-reason"
+                    />
+                  </div>
+                  {error && (
+                    <p role="alert" className="mt-4 flex items-start gap-2 text-sm text-[var(--error)]">
+                      <span className="mt-0.5 shrink-0">
+                        <AlertIcon />
+                      </span>
+                      {error}
+                    </p>
+                  )}
+                  <div className="mt-4 flex flex-col gap-3">
+                    <button
+                      onClick={() => void cancelExistingCall()}
+                      disabled={submitting || !cancelReasonValid}
+                      className="inline-flex min-h-12 items-center justify-center rounded-lg bg-[var(--error)] px-5 text-sm font-semibold text-white transition-opacity hover:opacity-90 disabled:opacity-60"
+                    >
+                      {submitting ? BOOKER_CANCEL_COPY.confirming : BOOKER_CANCEL_COPY.confirm}
+                    </button>
+                    <button
+                      onClick={() => {
+                        setConfirmingCancel(false);
+                        setCancelReason("");
+                        setCancelDetail("");
+                        setError(null);
+                      }}
+                      disabled={submitting}
+                      className={`inline-flex min-h-12 items-center justify-center rounded-lg border px-5 text-sm font-semibold disabled:opacity-60 ${c.toggleBorder} ${c.body} ${c.navHover}`}
+                    >
+                      {BOOKER_CANCEL_COPY.keep}
+                    </button>
+                  </div>
+                </div>
+              ) : (
               <div className="mt-6 flex flex-col gap-3">
                 {onLanding ? (
                   <button
@@ -730,7 +850,20 @@ export default function Booker({
                     </button>
                   </>
                 )}
+                {/* Last, and quietest. Rare and irreversible goes at the bottom
+                    (L609), and it is a plain control rather than a red one until
+                    it is pressed: nothing is destroyed by opening the question. */}
+                {existingCall.mayCancel && (
+                  <button
+                    onClick={() => setConfirmingCancel(true)}
+                    disabled={submitting}
+                    className={`inline-flex min-h-12 items-center justify-center rounded-lg px-5 text-sm font-semibold underline underline-offset-2 hover:no-underline disabled:opacity-60 ${c.muted}`}
+                  >
+                    {BOOKER_CANCEL_COPY.start}
+                  </button>
+                )}
               </div>
+              )}
               {submitting && stalled && (
                 <p role="status" className={`mt-4 text-center text-xs ${c.muted}`}>
                   {DETAILS_COPY.stillWorking}
@@ -745,6 +878,32 @@ export default function Booker({
               {DUPLICATE_COPY.checkYourEmail}
             </p>
           )}
+        </div>
+      </div>
+    );
+  }
+
+  // #2167: the call is gone, said on the page they were standing on. Its own screen
+  // rather than a line on the panel, because after this there is no call for the
+  // panel to be about, and they came here to book: the way on is offered.
+  if (cancelled) {
+    return (
+      <div ref={rootRef} data-theme={theme} className={shell}>
+        <div className="mx-auto max-w-md p-8 text-center">
+          <h2 className={`text-xl font-semibold ${c.title}`}>
+            {BOOKER_CANCEL_COPY.doneHeading}
+          </h2>
+          <button
+            onClick={() => {
+              setCancelled(false);
+              setOnLanding(false);
+              setSelectedSlot(null);
+            }}
+            className={`mt-6 inline-flex min-h-12 items-center justify-center rounded-lg px-5 text-sm font-semibold ${c.confirm}`}
+            style={confirmStyle}
+          >
+            {BOOKER_CANCEL_COPY.doneBookAgain}
+          </button>
         </div>
       </div>
     );

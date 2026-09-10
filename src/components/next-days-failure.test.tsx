@@ -10,7 +10,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import Booker from "@/components/Booker";
-import { RESCHEDULE_REASONS } from "@/lib/booking/core";
+import { CANCEL_REASONS, RESCHEDULE_REASONS } from "@/lib/booking/core";
 import { NEXT_DAYS_COPY } from "@/lib/booking/booker-copy";
 
 const baseProps = {
@@ -19,6 +19,7 @@ const baseProps = {
   attendee: { name: "", email: "", phone: "" },
   prefill: {},
   rescheduleReasons: RESCHEDULE_REASONS,
+  cancelReasons: CANCEL_REASONS,
   horizonDays: 4,
 };
 

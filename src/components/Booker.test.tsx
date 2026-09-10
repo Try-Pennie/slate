@@ -12,13 +12,14 @@ import {
   UNCLASSIFIED_EMPTY_NOTICE,
   UNCLASSIFIED_EMPTY_RETRY,
   MOVE_COPY,
+  BOOKER_CANCEL_COPY,
   US_ONLY_PHONE_NOTICE,
   allTimesTaken,
   closedNoReopenDate,
 } from "@/lib/booking/booker-copy";
 import { DateTime } from "luxon";
 import { messageLines } from "@/lib/booking/slot-picker";
-import { RESCHEDULE_REASONS } from "@/lib/booking/core";
+import { CANCEL_REASONS, RESCHEDULE_REASONS } from "@/lib/booking/core";
 import { CONFIRMATION_MARK } from "@/lib/booking/confirmation-mark";
 
 // #625: the confirm POST must not freeze the button in "Booking your call…" if
@@ -47,6 +48,7 @@ const baseProps = {
   // reschedule reason, so the live option set is a prop. Coded defaults keep the
   // reason-label assertions valid.
   rescheduleReasons: RESCHEDULE_REASONS,
+  cancelReasons: CANCEL_REASONS,
   // The suite's fixtures assume a 4-day window (see the horizon comments below).
   horizonDays: 4,
 };
@@ -402,6 +404,7 @@ describe("Booker refuses a second booking (#1337)", () => {
           startsAt: existingIso,
           advisorName: "Aisha Bello",
           manageToken: "tok-old",
+          mayCancel: true,
         }}
       />,
     );
@@ -419,7 +422,7 @@ describe("Booker refuses a second booking (#1337)", () => {
       <Booker
         {...baseProps}
         salesforceId="003xx"
-        landingCall={{ disclose: true, startsAt: existingIso, advisorName: null, manageToken: "tok-old" }}
+        landingCall={{ disclose: true, startsAt: existingIso, advisorName: null, manageToken: "tok-old", mayCancel: true }}
       />,
     );
     await screen.findByText("You already have a call booked");
@@ -447,12 +450,13 @@ describe("Booker refuses a second booking (#1337)", () => {
       startsAt: existingIso,
       advisorName: "Aisha Bello",
       manageToken: "tok-old",
+      mayCancel: true,
     });
     render(
       <Booker
         {...baseProps}
         salesforceId="003xx"
-        landingCall={{ disclose: true, startsAt: existingIso, advisorName: null, manageToken: "tok-old" }}
+        landingCall={{ disclose: true, startsAt: existingIso, advisorName: null, manageToken: "tok-old", mayCancel: true }}
       />,
     );
     await screen.findByText("You already have a call booked");
@@ -463,12 +467,127 @@ describe("Booker refuses a second booking (#1337)", () => {
     expect(screen.getByRole("button", { name: /^Move my call to/ })).toBeTruthy();
   });
 
+  // #2167: the exit. Cancel lived only on the manage link inside the calendar
+  // invite, so a lead who lost that email, or never received it (the pilot
+  // booking's went to an address they do not read), had NO way to cancel from
+  // Slate at all. The panel that recognises them is the one place the product
+  // knows exactly who they are, and it was the one place it withheld this.
+  it("cancels the call they already have, through the lead cancel path", async () => {
+    const calls: { url: string; body: unknown }[] = [];
+    global.fetch = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+      const u = String(url);
+      if (u.includes("/api/availability")) {
+        return { ok: true, json: async () => availability } as Response;
+      }
+      calls.push({ url: u, body: JSON.parse(String(init?.body ?? "{}")) });
+      return { ok: true, status: 200, json: async () => ({}) } as Response;
+    }) as unknown as typeof fetch;
+
+    render(
+      <Booker
+        {...baseProps}
+        salesforceId="003xx"
+        landingCall={{ disclose: true, startsAt: existingIso, advisorName: null, manageToken: "tok-old", mayCancel: true }}
+      />,
+    );
+    await screen.findByText("You already have a call booked");
+
+    // The control OPENS the question. Nothing is destroyed by pressing it.
+    fireEvent.click(screen.getByRole("button", { name: BOOKER_CANCEL_COPY.start }));
+    expect(calls).toHaveLength(0);
+    expect(screen.getByText(BOOKER_CANCEL_COPY.heading)).toBeTruthy();
+    // The specific consequence, naming the call being given up, not "this cannot
+    // be undone" about no call in particular.
+    expect(document.body.textContent).toContain("This gives up your call on");
+
+    // A reason is mandatory, exactly as it is on the manage page (#326).
+    const confirm = screen.getByRole("button", { name: BOOKER_CANCEL_COPY.confirm });
+    expect((confirm as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(screen.getAllByRole("radio")[0]);
+    fireEvent.click(screen.getByRole("button", { name: BOOKER_CANCEL_COPY.confirm }));
+
+    await screen.findByText(BOOKER_CANCEL_COPY.doneHeading);
+    expect(calls).toHaveLength(1);
+    expect(calls[0].url).toContain("/api/bookings/tok-old/cancel");
+    expect((calls[0].body as { reason?: string }).reason).toBeTruthy();
+  });
+
+  it("keeps the call when they back out of the confirmation", async () => {
+    const calls: string[] = [];
+    global.fetch = vi.fn(async (url: RequestInfo | URL) => {
+      const u = String(url);
+      if (u.includes("/api/availability")) {
+        return { ok: true, json: async () => availability } as Response;
+      }
+      calls.push(u);
+      return { ok: true, status: 200, json: async () => ({}) } as Response;
+    }) as unknown as typeof fetch;
+
+    render(
+      <Booker
+        {...baseProps}
+        salesforceId="003xx"
+        landingCall={{ disclose: true, startsAt: existingIso, advisorName: null, manageToken: "tok-old", mayCancel: true }}
+      />,
+    );
+    await screen.findByText("You already have a call booked");
+    fireEvent.click(screen.getByRole("button", { name: BOOKER_CANCEL_COPY.start }));
+    fireEvent.click(screen.getByRole("button", { name: BOOKER_CANCEL_COPY.keep }));
+    expect(calls).toHaveLength(0);
+    expect(screen.getByRole("button", { name: MOVE_COPY.pickAnotherTime })).toBeTruthy();
+  });
+
+  it("says so when the cancel does not land, and leaves the call alone", async () => {
+    global.fetch = vi.fn(async (url: RequestInfo | URL) => {
+      const u = String(url);
+      if (u.includes("/api/availability")) {
+        return { ok: true, json: async () => availability } as Response;
+      }
+      return { ok: false, status: 500, json: async () => ({ error: "Could not cancel" }) } as Response;
+    }) as unknown as typeof fetch;
+
+    render(
+      <Booker
+        {...baseProps}
+        salesforceId="003xx"
+        landingCall={{ disclose: true, startsAt: existingIso, advisorName: null, manageToken: "tok-old", mayCancel: true }}
+      />,
+    );
+    await screen.findByText("You already have a call booked");
+    fireEvent.click(screen.getByRole("button", { name: BOOKER_CANCEL_COPY.start }));
+    fireEvent.click(screen.getAllByRole("radio")[0]);
+    fireEvent.click(screen.getByRole("button", { name: BOOKER_CANCEL_COPY.confirm }));
+
+    expect(await screen.findByRole("alert")).toBeTruthy();
+    // NOT the cancelled screen: a refusal must never read as the call being gone.
+    expect(screen.queryByText(BOOKER_CANCEL_COPY.doneHeading)).toBeNull();
+  });
+
+  it("does not offer the cancel on a match that only names the call", async () => {
+    // THE CONTROL, and the rule #1340 exists for. A medium match is an email AND a
+    // phone both matching, which is enough to name the call and to move it into a
+    // time this same person just picked. Cancelling is the one action here that
+    // destroys something and puts nothing in its place, so it is the id tiers only.
+    global.fetch = vi.fn(async () => ({ ok: true, json: async () => availability }) as Response) as unknown as typeof fetch;
+    render(
+      <Booker
+        {...baseProps}
+        salesforceId="003xx"
+        landingCall={{ disclose: true, startsAt: existingIso, advisorName: null, manageToken: "tok-old", mayCancel: false }}
+      />,
+    );
+    await screen.findByText("You already have a call booked");
+    expect(screen.queryByRole("button", { name: BOOKER_CANCEL_COPY.start })).toBeNull();
+    expect(screen.getByRole("button", { name: MOVE_COPY.pickAnotherTime })).toBeTruthy();
+  });
+
   it("names the existing call and offers to move it, creating nothing", async () => {
     global.fetch = declineWith({
       disclose: true,
       startsAt: existingIso,
       advisorName: "Aisha Bello",
       manageToken: "tok-old",
+      mayCancel: true,
     });
     render(<Booker {...baseProps} />);
     await fillAndConfirm();
@@ -488,6 +607,7 @@ describe("Booker refuses a second booking (#1337)", () => {
       startsAt: existingIso,
       advisorName: "Aisha Bello",
       manageToken: "tok-old",
+      mayCancel: true,
     });
     global.fetch = fetchMock;
     render(<Booker {...baseProps} />);
@@ -520,6 +640,7 @@ describe("Booker refuses a second booking (#1337)", () => {
       startsAt: existingIso,
       advisorName: "Aisha Bello",
       manageToken: "tok-old",
+      mayCancel: true,
     });
     render(<Booker {...baseProps} />);
     await fillAndConfirm();
@@ -536,7 +657,7 @@ describe("Booker refuses a second booking (#1337)", () => {
   // left with neither call moved nor a new one booked.
   it("tells the lead and returns them to the picker when the slot goes before the Move", async () => {
     global.fetch = declineWith(
-      { disclose: true, startsAt: existingIso, advisorName: "Aisha Bello", manageToken: "tok-old" },
+      { disclose: true, startsAt: existingIso, advisorName: "Aisha Bello", manageToken: "tok-old", mayCancel: true },
       { ok: false, status: 409, body: { error: "That time is no longer available." } },
     );
     render(<Booker {...baseProps} />);
@@ -599,6 +720,7 @@ describe("Booker refuses a second booking (#1337)", () => {
             startsAt: existingIso,
             advisorName: "Aisha Bello",
             manageToken: "tok-old",
+            mayCancel: true,
           },
         }),
       } as Response;

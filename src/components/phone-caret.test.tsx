@@ -27,6 +27,7 @@ const baseProps = {
   attendee: { name: "", email: "", phone: "" },
   prefill: {},
   rescheduleReasons: RESCHEDULE_REASONS,
+  cancelReasons: CANCEL_REASONS,
   horizonDays: 4,
 };
 

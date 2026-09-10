@@ -19,7 +19,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import Booker from "@/components/Booker";
-import { RESCHEDULE_REASONS } from "@/lib/booking/core";
+import { CANCEL_REASONS, RESCHEDULE_REASONS } from "@/lib/booking/core";
 import { CONFIRMATION_MARK } from "@/lib/booking/confirmation-mark";
 
 const slotIso = new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString();
@@ -35,6 +35,7 @@ const baseProps = {
   attendee: { name: "", email: "", phone: "" },
   prefill: {},
   rescheduleReasons: RESCHEDULE_REASONS,
+  cancelReasons: CANCEL_REASONS,
   horizonDays: 4,
 };
 
