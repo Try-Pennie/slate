@@ -45,6 +45,16 @@ import { assert, eq, finish } from "./lib/harness.ts";
   eq(found.length, 1, "an opt out with NO reason is not an opt out (L233)");
 }
 {
+  // The JSX form of the same emptiness, which the first version of this accepted:
+  // the comment's own terminator is a non-space character, so it read as a reason
+  // (#2112, found by writing the same rule again for marks).
+  const found = scanUnsavedGuard(
+    "f.tsx",
+    `{/* unsaved-ok: */}\n<form method="GET">\n  <input name="q" />\n</form>`,
+  );
+  eq(found.length, 1, "and neither is an empty one in a JSX comment");
+}
+{
   // The form it actually has to be written on is JSX, where `//` is not a comment
   // and the only way to say anything is a `{/* ... */}` block. A convention that
   // read only `//` would be one nobody could obey where it is needed.

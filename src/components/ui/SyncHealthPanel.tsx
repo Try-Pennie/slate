@@ -1,5 +1,6 @@
 import type { ReactElement } from "react";
 import { shortFailureReason } from "@/lib/notify/error-text";
+import { MarkedLabel } from "@/components/ui/MarkedLabel";
 
 /** One persistently-failing agent calendar, shaped for admin display (#273). */
 export interface SyncHealthRow {
@@ -28,10 +29,12 @@ export interface SyncHealthRow {
 export function SyncHealthPanel({ agents }: { agents: SyncHealthRow[] }): ReactElement {
   if (agents.length === 0) {
     return (
-      <span className="inline-flex items-center gap-1.5 text-xs text-fg-muted tabular-nums">
-        <span className="inline-block h-2 w-2 rounded-full bg-pennie-green" />
+      <MarkedLabel
+        className="gap-1.5 text-xs text-fg-muted tabular-nums"
+        mark={<span className="h-2 w-2 rounded-full bg-pennie-green" />}
+      >
         all calendars syncing
-      </span>
+      </MarkedLabel>
     );
   }
 
@@ -40,9 +43,13 @@ export function SyncHealthPanel({ agents }: { agents: SyncHealthRow[] }): ReactE
       role="alert"
       className="rounded-xl border border-[var(--border)] bg-[var(--bg-alt)] px-5 py-4"
     >
-      <p className="flex items-center gap-2 text-sm font-semibold text-fg">
-        <span className="inline-block h-2 w-2 rounded-full bg-pennie-yellow" />
-        {agents.length} agent{agents.length === 1 ? "" : "s"} with a calendar problem
+      <p className="text-sm font-semibold text-fg">
+        <MarkedLabel
+          className="gap-2"
+          mark={<span className="h-2 w-2 rounded-full bg-pennie-yellow" />}
+        >
+          {agents.length} agent{agents.length === 1 ? "" : "s"} with a calendar problem
+        </MarkedLabel>
       </p>
       <ul className="mt-3 space-y-2">
         {agents.map((a) => {
