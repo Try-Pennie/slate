@@ -46,6 +46,10 @@
 // Env:
 //   CALCOM_API_KEY   required. A wrangler secret on the deployment; add it to
 //                    .env.local to run this.
+//   TWILIO_API_KEY_SID, TWILIO_API_KEY_SECRET, TWILIO_WORKSPACE_SID
+//                    required since #2153: the tags there are what say who cal.com
+//                    actually routes to. TaskRouter scoped, the same key
+//                    verify:twilio-parity uses.
 //   CALCOM_ORG_ID    default 19474 (trypennie)
 //   CALCOM_TEAM_ID   default 19546 (Loan Consultation), which owns the event type
 //   CALCOM_EVENT_TYPE_ID  default 1314152 (the review event the landing pages use)
@@ -55,6 +59,10 @@
 //   PARITY_AGENT     one email instead of the whole roster. Narrows the HOURS half
 //                    only: membership is a comparison of two whole rosters and
 //                    means nothing scoped to one person.
+// env-ok: TWILIO_API_KEY_SID (required; a TaskRouter-scoped API key, the basic-auth
+//   username, exactly as the Pipedream job that feeds cal.com uses it)
+// env-ok: TWILIO_API_KEY_SECRET (required; the matching secret)
+// env-ok: TWILIO_WORKSPACE_SID (required; the TaskRouter workspace holding the workers)
 // env-ok: CALCOM_ORG_ID (optional; defaults to 19474, the live org, and a scheduled
 // run has no reason to point elsewhere)
 // env-ok: CALCOM_TEAM_ID (optional; defaults to 19546, Loan Consultation)
@@ -77,7 +85,11 @@ const { makeCalGet, pickDefaultSchedule, emailIndex, loadBookableRoster, readEve
   "./lib/calcom-roster.ts"
 );
 const { compareAgentSchedule, VERDICT_RANK } = await import("./lib/schedule-parity.ts");
-const { compareRosters, ROSTER_VERDICT_RANK } = await import("./lib/roster-parity.ts");
+const { compareRosters, ROSTER_VERDICT_RANK, withheldFromWorkers, withheldReadiness } = await import(
+  "./lib/roster-parity.ts"
+);
+const { fetchTwilioWorkers, TwilioReadError } = await import("@/lib/twilio/client");
+const { readWorker } = await import("@/lib/twilio/roster");
 const { matchableAgentIds } = await import("./lib/bucket-matchability.ts");
 const { OUTCOME_ORDER, EXIT_CODE, worstOutcome } = await import("./lib/calcom-parity-outcome.ts");
 type ScheduleVerdict = import("./lib/schedule-parity.ts").ScheduleVerdict;
@@ -96,6 +108,16 @@ const EXIT = {
   calcomUnreachable: 4,
   calcomUnreadable: 5,
   noHosts: 6,
+  /**
+   * Twilio could not be read, so who cal.com actually routes to is unknown (#2153).
+   *
+   * It REFUSES rather than comparing without it, and that is the whole point of the
+   * exit. An empty withheld set makes every withheld agent read as routable, which
+   * is the false agreement #2088 fixed: twelve agents Slate offers and cal.com never
+   * routes to, reported as agreement. A check that answers "they agree" when it
+   * could not read one of its two inputs is worse than one that says nothing (L98).
+   */
+  twilioUnreadable: 7,
 } as const;
 
 // Which finding names the run, and its code, both live in
@@ -104,6 +126,7 @@ const EXIT = {
 // two rank scales written months apart.
 
 const calcomKey = process.env.CALCOM_API_KEY ?? "";
+const twilioReady = withheldReadiness(process.env);
 const org = envOr(process.env.CALCOM_ORG_ID, "19474");
 const teamId = envOr(process.env.CALCOM_TEAM_ID, "19546");
 const eventTypeId = readEventTypeId(process.env.CALCOM_EVENT_TYPE_ID, 1314152);
@@ -120,6 +143,18 @@ if (!calcomKey) {
     EXIT.notConfigured,
     "no CALCOM_API_KEY here, so nothing was attempted. It is a wrangler secret on the " +
       "deployment; add it to .env.local to run this.",
+  );
+}
+
+// #2153: the withheld set comes from Twilio now, so its credentials are as required
+// as cal.com's. Said as its own refusal rather than folded into the line above,
+// because they are two different things to go and fix (L11).
+if (!twilioReady.ok) {
+  stop(
+    EXIT.notConfigured,
+    `${twilioReady.missing.join(", ")} ${twilioReady.missing.length === 1 ? "is" : "are"} not set here, and ` +
+      "Twilio is what says who cal.com actually routes to, so nothing was attempted. The key must be " +
+      "TaskRouter scoped.",
   );
 }
 
@@ -239,6 +274,29 @@ console.log(
     `against ${hostEmails.size} host(s) on event type ${eventTypeId} and ${index.index.size} org user(s)\n`,
 );
 
+// --- who cal.com actually routes to ---------------------------------------------
+// The event type's hosts[] says who CAN take a booking; six of the seven live
+// routing forms then carry `Redistribute Team (does not equal) yes` on every route,
+// so the pool cal.com really routes to is narrower. cal.com will not report per-user
+// attribute values, and the tag it derives that attribute from lives in Twilio, so
+// this reads the source rather than a person's snapshot of its effect (#2153).
+//
+// It REFUSES on an unreadable read rather than comparing without it: an empty
+// withheld set turns every withheld agent into agreement, which is the exact false
+// agreement #2088 fixed.
+let withheld: Set<string>;
+try {
+  const workers = await fetchTwilioWorkers();
+  withheld = withheldFromWorkers(workers.map((w) => readWorker(w.attributes)));
+} catch (err) {
+  stop(
+    EXIT.twilioUnreadable,
+    `Twilio could not be read, so who cal.com withholds is unknown and nothing was compared: ` +
+      `${err instanceof TwilioReadError ? err.message : String(err)}`,
+  );
+}
+console.log(`Twilio withholds ${withheld.size} address(es) from cal.com's routed decisions\n`);
+
 // --- membership -----------------------------------------------------------------
 const membership = compareRosters(
   allUsers.map((u) => ({
@@ -250,6 +308,7 @@ const membership = compareRosters(
     matchableByAnyBucket: matchable.has(u.id),
   })),
   hostEmails,
+  withheld,
 );
 if (membership.hostsEmpty) {
   stop(
@@ -265,13 +324,13 @@ if (hostsWithNoOrgUser > 0) {
   );
 }
 if (membership.withheldNoLongerHosting > 0) {
-  // Not a finding, and deliberately not one: the withheld list is recorded by hand
-  // because cal.com will not report per-user attribute values, so the only signal
-  // that it has drifted is entries that are no longer hosts. Said out loud rather
-  // than left for somebody to notice (#2088).
+  // Not a finding, and deliberately not one. Since #2153 it measures TWILIO against
+  // cal.com: somebody carrying the Redistribute tag whom cal.com does not list as a
+  // host is a person the two systems disagree about, which is worth saying and is
+  // nobody's mistake. Said out loud rather than left for somebody to notice (#2088).
   console.log(
-    `note: ${membership.withheldNoLongerHosting} withheld address(es) are no longer hosts on this event type, ` +
-      "so the recorded Redistribute Team list may be out of date\n",
+    `note: ${membership.withheldNoLongerHosting} address(es) Twilio withholds are not hosts on this event type, ` +
+      "so the two have drifted apart about somebody\n",
   );
 }
 const membershipRows = [...membership.rows]
