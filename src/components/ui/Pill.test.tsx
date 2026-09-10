@@ -4,6 +4,7 @@ import { render } from "@testing-library/react";
 import {
   Pill,
   PILL_TEXT_INSET_PX,
+  PILL_MARK_TEXT_INSET_PX,
   PILL_LABEL_OPTICAL_NUDGE_PX,
   ALL_VARIANTS,
   type PillVariant,
@@ -55,6 +56,42 @@ describe("Pill in a table cell", () => {
       </Pill>,
     );
     expect(cls(container as unknown as HTMLElement)).toContain(`-ml-[${PILL_TEXT_INSET_PX}px]`);
+  });
+
+  // #2082: the cancellation aligns whatever comes FIRST inside the pill, and
+  // wherever a mark leads that is the mark. In the roster's Bookable column the
+  // header lined up with the dot and the word sat 12px right, while the Role column
+  // beside it lined up correctly, which is the drift `alignToColumn` exists to
+  // remove.
+  it("cancels the mark and the gap too, so the LABEL is what lines up", () => {
+    expect(PILL_MARK_TEXT_INSET_PX).toBe(21);
+    const { container } = render(
+      <Pill variant="status-ok" alignToColumn mark={<span data-mark="" />}>
+        Yes
+      </Pill>,
+    );
+    expect(cls(container as unknown as HTMLElement)).toContain(`-ml-[${PILL_MARK_TEXT_INSET_PX}px]`);
+    // And not the no-mark cancellation, which would leave the word 12px right.
+    expect(cls(container as unknown as HTMLElement)).not.toContain(`-ml-[${PILL_TEXT_INSET_PX}px]`);
+  });
+
+  it("gives the mark a box of a size it knows, so that arithmetic is possible at all", () => {
+    // The pill cannot measure an arbitrary node, and asking every call site to
+    // declare a width is the "every call site has to remember" this component
+    // exists to end (L550, L621). 8px box plus the pill's own 4px gap is the 12
+    // the sum above adds to the text inset.
+    const { container } = render(
+      <Pill variant="status-ok" mark={<span data-mark="" />}>
+        Yes
+      </Pill>,
+    );
+    const box = container.querySelector("[data-pill-mark]") as HTMLElement;
+    expect(box).toBeTruthy();
+    expect(box.className).toContain("h-2");
+    expect(box.className).toContain("w-2");
+    expect(box.className).toContain("shrink-0");
+    expect(box.querySelector("[data-mark]")).toBeTruthy();
+    expect(cls(container as unknown as HTMLElement)).toContain("gap-1");
   });
 
   it("keeps its inset everywhere else, which is correct in a sentence or a row", () => {
