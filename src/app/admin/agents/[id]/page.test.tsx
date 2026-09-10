@@ -669,6 +669,71 @@ describe("AgentProfilePage names the role once, and the header carries view as (
 // The copy claims are asserted in scripts/test-account-status-copy.ts, where the
 // sentences live. These are the PAGE facts: where the section sits, and that the
 // two opposite decisions in it no longer look identical.
+// #2145: the rare, the dangerous and the irreversible go behind one disclosure.
+// Dan: "let's put all of this into a collapsed section ... I want deactivate
+// account hard to reach especially."
+describe("AgentProfilePage puts the rare and the dangerous behind a disclosure (#2145)", () => {
+  const renderWith = async (query: Record<string, string> = {}) => {
+    auth.currentUser.mockResolvedValueOnce({ id: "m1", role: "manager", org_id: "o1" });
+    dbState.agent = agentOf("agent");
+    render(
+      await AgentProfilePage({
+        params: Promise.resolve({ id: "a1" }),
+        searchParams: Promise.resolve(query),
+      }),
+    );
+  };
+
+  const disclosure = () => document.querySelector("details") as HTMLDetailsElement | null;
+
+  it("is closed on arrival, so deactivate is never one click from an ordinary visit", async () => {
+    await renderWith();
+    expect(disclosure()).toBeTruthy();
+    expect(disclosure()!.open).toBe(false);
+    // Inside it, all three: what they route for, the mover, and the account.
+    expect(disclosure()!.textContent).toContain("Routing attributes");
+    expect(disclosure()!.textContent).toContain(COVERAGE_PANEL_NAME);
+    expect(disclosure()!.textContent).toContain("Account status");
+  });
+
+  it("names the operations rather than the panels", async () => {
+    await renderWith();
+    const summary = document.querySelector("summary");
+    // A reader deciding whether to open it needs to know what they could DO in
+    // there. "Routing attributes, coverage and account status" would be a list of
+    // section headings, which is a gloss on the interface (L604).
+    expect(summary?.textContent).toMatch(/bookings/i);
+    expect(summary?.textContent).toMatch(/account/i);
+  });
+
+  it("opens when the page is addressed with a job, so the time off queue's link lands on it", async () => {
+    // #1239: the queue deep links to the sweep an approval enqueued. A disclosure
+    // closed over the target would make that link land on nothing.
+    await renderWith({ job: "job-1" });
+    expect(disclosure()!.open).toBe(true);
+  });
+
+  it("leaves the things somebody came for open above it", async () => {
+    await renderWith();
+    const hours = screen.getByText("Working hours");
+    expect(disclosure()!.contains(hours)).toBe(false);
+  });
+
+  it("hides no signal: a departed agent still says so beside their name", async () => {
+    auth.currentUser.mockResolvedValueOnce({ id: "m1", role: "manager", org_id: "o1" });
+    dbState.agent = { ...agentOf("agent"), deactivated_at: "2026-08-01T00:00:00Z" };
+    render(await AgentProfilePage(props));
+    // The word appears inside the closed section too (the account panel names the
+    // state it is in), so this asks the question that matters: is there one
+    // OUTSIDE it. That is the whole point: the status a reader needs at a glance
+    // from in there is already at the top of the page.
+    const outside = screen
+      .getAllByText("Deactivated")
+      .filter((el) => !disclosure()!.contains(el));
+    expect(outside.length).toBe(1);
+  });
+});
+
 describe("AgentProfilePage account status sits last and looks its weight (#1875)", () => {
   const renderAs = async (agent: Record<string, unknown>) => {
     auth.currentUser.mockResolvedValueOnce({ id: "m1", role: "manager", org_id: "o1" });

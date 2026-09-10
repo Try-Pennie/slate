@@ -540,6 +540,49 @@ export default async function AgentProfilePage({
           )}
         </section>
 
+        {/* #2145: the rare, the dangerous and the irreversible, behind one
+            disclosure, closed on every visit.
+
+            Dan, 2026-09-09: "let's put all of this into a collapsed section. It's
+            not typically something people will be looking at and I want deactivate
+            account hard to reach especially."
+
+            This does not argue with the rule that a page's purpose is always open
+            (L610), which is about hiding the content the reader came for. Nobody
+            opens an agent's page to deactivate them: they come for hours,
+            bookability and calendar health, all of which stay open above. These
+            three are exactly the material the ordering rule puts last (L609), and a
+            disclosure is the next step past last.
+
+            NOT REMEMBERED per viewer, deliberately. A remembered open state would
+            leave the destructive control one click away for whoever last used it,
+            which is the opposite of what it is for.
+
+            IT HIDES NO SIGNAL. The one status a reader needs at a glance from in
+            here is that this person has left, and that is already a pill beside
+            their name at the top of the page.
+
+            A native details and summary, so the keyboard and the screen reader
+            contract comes for free rather than being owed (L568).
+
+            `open` when the page is addressed with a job, because the time off queue
+            deep links to the sweep an approval enqueued (#1239) and a disclosure
+            closed over the target would make that link land on nothing. */}
+        <details className="group" open={Boolean(openJobId)}>
+          <summary className={`${cardCls} cursor-pointer list-none`}>
+            <span className="flex flex-wrap items-center justify-between gap-2">
+              <span className="text-sm font-semibold text-fg">
+                {/* The OPERATIONS, not the panels (L604). A reader deciding
+                    whether to open this needs to know what they could do in
+                    there, not what the sections inside are called. */}
+                Move their bookings, close their account, and what they route for
+              </span>
+              <span aria-hidden="true" className="text-fg-muted transition-transform group-open:rotate-180">
+                &#9662;
+              </span>
+            </span>
+          </summary>
+          <div className="mt-4 space-y-4">
         {/* Routing attributes */}
         <section className={cardCls}>
           <p className="pn-eyebrow text-fg-muted">Routing attributes</p>
@@ -760,6 +803,8 @@ export default async function AgentProfilePage({
           </p>
           <p className={`mt-2 text-xs text-fg-muted ${proseCls}`}>{notBookableContrast()}</p>
         </section>
+          </div>
+        </details>
 
       </>
     </>
