@@ -150,7 +150,7 @@ describe("eligible-resolver threading (#508)", () => {
     // so an empty result proves the injected resolver decided eligibility.
     dbHolder.db = fakeDb(POOL_TABLES());
     const resolver = vi.fn((_b: Bucket) =>
-      Promise.resolve({ ids: [] as string[], fallbackApplied: false, legalRelaxed: false }),
+      Promise.resolve({ ids: [] as string[], fallbackApplied: false }),
     );
 
     const { members } = await loadMembersAvailability(BUCKET, FROM, TO, resolver);
@@ -187,7 +187,7 @@ describe("eligible-resolver threading (#508)", () => {
       ...POOL_TABLES(),
     });
     const resolver = vi.fn((_b: Bucket) =>
-      Promise.resolve({ ids: [] as string[], fallbackApplied: false, legalRelaxed: false }),
+      Promise.resolve({ ids: [] as string[], fallbackApplied: false }),
     );
 
     const result = await getBucketSlots("311", FROM, TO, resolver);

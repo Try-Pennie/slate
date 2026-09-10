@@ -10,7 +10,7 @@ import type { Attributes, Criteria } from "@/lib/db/types";
  * A key ending in "!" negates: the agent must NOT have any of the wanted
  * values for that attribute, and an UNSET attribute passes — cal.com's
  * "Legal Eligible does not equal N" semantics, where only explicitly-marked
- * agents are excluded (e.g. criteria `{ "legal_eligible!": "N" }`).
+ * agents are excluded (e.g. criteria `{ "backend_service!": "achieve" }`).
  */
 export function matchesCriteria(
   attributes: Attributes | null | undefined,

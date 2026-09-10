@@ -64,7 +64,6 @@ const eligible = vi.hoisted(() => ({
   eligibleAgentIdsCached: vi.fn(async () => ({
     ids: ["u1", "u2"],
     fallbackApplied: false,
-    legalRelaxed: false,
   })),
 }));
 vi.mock("@/lib/availability/eligible-cache", () => eligible);
@@ -358,7 +357,6 @@ describe("GET /api/availability, a bucket with nobody in it (#2158)", () => {
     eligible.eligibleAgentIdsCached.mockResolvedValue({
       ids: [],
       fallbackApplied: false,
-      legalRelaxed: false,
     });
   });
 
@@ -416,7 +414,6 @@ describe("GET /api/availability, a bucket with nobody in it (#2158)", () => {
     eligible.eligibleAgentIdsCached.mockResolvedValue({
       ids: ["u1"],
       fallbackApplied: false,
-      legalRelaxed: false,
     });
     cache.getBucketSlotsWithFallback.mockResolvedValue(emptyRealBucket());
 

@@ -65,12 +65,6 @@ const FAMILY_BY_KEY: Record<string, AlertFamily> = {
   // staffing of the requested pool, and a Beyond pool that overflows every day is
   // the same conversation as a tier that drops every day.
   tier_fallback_overflow: "the-booker-is-offering-nothing-or-too-little",
-  // #2158: the booker is NOT offering too little here, it offered plenty. What is
-  // wrong is who it offered: the bucket's legal rule matched nobody, so the rule
-  // was dropped. The remedy is roster data (agents carrying a legal eligibility
-  // value), which is why it sits with the routing data family rather than with the
-  // tier notices it otherwise resembles.
-  legal_relaxed: "the-roster-or-routing-data-is-wrong",
   // #2158: this one IS the booker offering nothing, and to a real person, so it
   // sits with the family whose first check is the availability health endpoint.
   booker_unstaffed: "the-booker-is-offering-nothing-or-too-little",

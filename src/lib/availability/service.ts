@@ -10,7 +10,6 @@ import {
 } from "@/lib/availability/compute";
 import { loadBusinessHours } from "@/lib/booking/business-hours-load";
 import { agentIdsFromPool } from "@/lib/availability/pool";
-import { withoutLegalRestriction } from "@/lib/routing/legal-relax";
 import {
   applyFallback,
   payPeriod,
@@ -94,42 +93,18 @@ export async function resolveBucketAgentIds(bucket: Bucket): Promise<string[]> {
 }
 
 /**
- * The same pool, plus whether the LEGAL restriction had to be dropped to find one
- * (#2158).
+ * The agents a bucket's criteria match, with the manual members unioned in.
  *
- * Ten of the sixty real buckets match nobody, and they are exactly the codes
- * carrying `legal_eligible!`, because no agent carries a legal eligibility value
- * yet (#2141). The tier drop cannot rescue them: it keeps the legal digit, so
- * every rung it tries is another empty legal bucket. Rather than offering that
- * lead nothing, the legal clause is dropped and the tier's whole pool is used,
- * which is the same set of people the neighbouring non-legal code already routes
- * to.
- *
- * `legalRelaxed` is carried out rather than swallowed because the compromise is
- * only acceptable while somebody is told: the booking path turns it into a Slack
- * notice, and the routing trace records it on the booking (L11, and Dan's call on
- * 2026-09-09).
- *
- * It is tried ONLY when the matched pool is empty, so a staffed legal bucket
- * keeps its restriction and nothing changes for the fifty codes that work.
+ * It used to also report whether a LEGAL restriction had been dropped to find
+ * anybody (#2158). Ten codes carried `legal_eligible!` and matched nobody, so
+ * every lead on them was served by widening the criteria at request time and
+ * telling somebody about it in Slack. #2218 removed the criterion from those
+ * buckets instead, so there is nothing left to widen and the pool is simply the
+ * pool.
  */
-export async function resolveBucketAgentPool(
-  bucket: Bucket,
-): Promise<{ ids: string[]; legalRelaxed: boolean }> {
+export async function resolveBucketAgentPool(bucket: Bucket): Promise<{ ids: string[] }> {
   const { orgAgents, manualMemberIds, criteria } = await resolveBucketPool(bucket);
-  const matched = agentIdsFromPool(orgAgents, manualMemberIds, criteria);
-  if (matched.length > 0) return { ids: matched, legalRelaxed: false };
-
-  const relaxed = withoutLegalRestriction(criteria);
-  if (relaxed === null) return { ids: matched, legalRelaxed: false };
-
-  const widened = agentIdsFromPool(orgAgents, manualMemberIds, relaxed);
-  // Widening and still finding nobody is NOT a relaxation to report: there is
-  // nothing to tell anybody about, and an alert would name a booking that was
-  // never made.
-  return widened.length > 0
-    ? { ids: widened, legalRelaxed: true }
-    : { ids: matched, legalRelaxed: false };
+  return { ids: agentIdsFromPool(orgAgents, manualMemberIds, criteria) };
 }
 
 /**
@@ -145,11 +120,11 @@ export async function resolveBucketAgentPool(
  */
 export type EligibleResolver = (
   bucket: Bucket,
-) => Promise<{ ids: string[]; fallbackApplied: boolean; legalRelaxed: boolean }>;
+) => Promise<{ ids: string[]; fallbackApplied: boolean }>;
 
 export async function eligibleAgentIds(
   bucket: Bucket,
-): Promise<{ ids: string[]; fallbackApplied: boolean; legalRelaxed: boolean }> {
+): Promise<{ ids: string[]; fallbackApplied: boolean }> {
   const pool = await resolveBucketAgentPool(bucket);
   const matched = pool.ids;
   // The fallback is only consulted when the matched pool is empty, so skip the
@@ -157,7 +132,7 @@ export async function eligibleAgentIds(
   // agent who is no longer bookable (or, with offboarding, deactivated); never
   // route to them just because the pool came up empty.
   if (matched.length > 0 || !bucket.fallback_user_id) {
-    return { ...applyFallback(matched, bucket.fallback_user_id, false), legalRelaxed: pool.legalRelaxed };
+    return applyFallback(matched, bucket.fallback_user_id, false);
   }
   const db = supabaseAdmin();
   const fallback = unwrap(
@@ -171,7 +146,7 @@ export async function eligibleAgentIds(
       .maybeSingle(),
     "fallback agent",
   );
-  return { ...applyFallback(matched, bucket.fallback_user_id, !!fallback), legalRelaxed: pool.legalRelaxed };
+  return applyFallback(matched, bucket.fallback_user_id, !!fallback);
 }
 
 /** IO the empty-bucket sweep needs; defaulted to real impls, injectable in tests. */
@@ -376,14 +351,11 @@ export async function loadMembersAvailability(
   from: string,
   to: string,
   resolveEligible: EligibleResolver = eligibleAgentIds,
-): Promise<{ members: MemberAvailability[]; legalRelaxed: boolean }> {
+): Promise<{ members: MemberAvailability[] }> {
   const db = supabaseAdmin();
 
-  // #2158: `legalRelaxed` travels WITH the members rather than being recomputed
-  // later, because recomputing it would be a second definition of the same
-  // question and a second read on the booking path (L107).
-  const { ids: userIds, legalRelaxed } = await resolveEligible(bucket);
-  if (userIds.length === 0) return { members: [], legalRelaxed };
+  const { ids: userIds } = await resolveEligible(bucket);
+  if (userIds.length === 0) return { members: [] };
 
   // The daily-cap count is per agent per LOCAL day, so the bookings read must cover
   // the FULL local day of every day in [from, to] — not just the requested window.
@@ -451,7 +423,6 @@ export async function loadMembersAvailability(
   const rules = schedules.flatMap((s) => s.availability_rules ?? []);
   return {
     members: assembleMemberAvailability(userIds, schedules, rules, busy, dayCountsByUser),
-    legalRelaxed,
   };
 }
 
@@ -553,7 +524,7 @@ export async function roundRobinCandidates(
   eventType: EventType,
   startMs: number,
   preview = false,
-): Promise<{ candidates: string[]; memberCount: number; legalRelaxed: boolean }> {
+): Promise<{ candidates: string[]; memberCount: number }> {
   const endIso = new Date(
     startMs + eventType.duration_min * 60_000,
   ).toISOString();
@@ -585,7 +556,7 @@ export async function roundRobinCandidates(
   // and the free list alone cannot tell them apart. The members are already loaded
   // here, so this costs nothing.
   const memberCount = members.length;
-  if (free.length <= 1) return { candidates: free, memberCount, legalRelaxed: pool.legalRelaxed };
+  if (free.length <= 1) return { candidates: free, memberCount };
   // Per-bucket equal-share (#305): anchor the pay period on the SLOT's start so a
   // next-period slot balances against next-period meetings. On the real assignment
   // path, log the equal-share vs recency divergence (#321) for pre-cutover
@@ -601,7 +572,6 @@ export async function roundRobinCandidates(
       preview,
     ),
     memberCount,
-    legalRelaxed: pool.legalRelaxed,
   };
 }
 
