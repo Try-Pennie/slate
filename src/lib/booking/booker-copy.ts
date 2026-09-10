@@ -59,6 +59,20 @@ export function allTimesTaken(): string {
   return "All times are taken right now. Check back soon.";
 }
 
+/**
+ * The bucket has NOBODY in it (#2158).
+ *
+ * "All times are taken" is untrue in both halves here: nothing is taken, and soon
+ * may be never. It says nobody is available rather than naming a reason, because
+ * the reason is ours (a bucket nobody has staffed) and is not the lead's to carry.
+ * No "check back", because nothing about this state changes on its own and telling
+ * somebody to come back to the same screen tomorrow is the failure #1328 was
+ * written about.
+ */
+export function noAdvisorsAvailable(): string {
+  return "We do not have anyone available to book right now. Please try again later.";
+}
+
 export function closedUntil(reopensOnIso: string, zone: string): string {
   return `We are closed until ${longDayLabel(reopensOnIso, zone)}.`;
 }

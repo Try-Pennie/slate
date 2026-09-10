@@ -486,6 +486,11 @@ export const ALERT_CATALOG: AlertEntry[] = [
     why: "Same, for a deep fallback: it describes one completed routing decision.",
   },
   {
+    key: "booker_unstaffed:*",
+    kind: "incident",
+    why: "One customer opened an unstaffed bucket and was shown nothing; that visit is over and they have gone. The ONGOING version is empty_buckets:*, which the monitor watches and does clear, exactly as no_eligible_agents:* pairs with it on the booking side.",
+  },
+  {
     key: "legal_relaxed:*",
     kind: "incident",
     why: "One booking was routed past a legal eligibility rule that matched nobody; it describes a routing decision already taken, and the ONGOING version is empty_buckets:*.",

@@ -612,7 +612,10 @@ export async function GET(req: NextRequest) {
     // would silence the check in exactly the state it exists to notice. ---
     const emptyReasonHealth = await steps.run("empty_reason", null, () =>
       runEmptyReasonCheck({
-        inputs: { hours: businessHours, horizonDays, nowMs: now },
+        // #2158: null, not zero. This check asks whether the classifier can still
+        // work out a reason from the WEEK, and has no bucket in hand; a zero here
+        // would make it assert that nobody works anywhere, on no measurement at all.
+        inputs: { hours: businessHours, horizonDays, nowMs: now, pooledAgents: null },
         streak: () =>
           recordFailureStreak(EMPTY_REASON_STREAK_KEY, EMPTY_REASON_STREAK_WINDOW_S),
         clearStreak: () => clearFailureStreak(EMPTY_REASON_STREAK_KEY),

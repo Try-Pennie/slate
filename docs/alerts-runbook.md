@@ -61,12 +61,24 @@ starve its neighbours (`docs/cloudflare-platform-notes.md`).
 Keys: `empty_buckets:*`, `bucket_slots_stale`, `availability_booked_solid`,
 `availability_data_anomaly`, `availability_drift:*`, `fallback_covered_availability`,
 `thin_tier_staffing`, `tier_fallback:*`, `tier_fallback_deep:*`, `no_eligible_agents:*`,
-`low_booking_volume`, `booking_failure_rate`, `calendar_window_uncovered`.
+`low_booking_volume`, `booking_failure_rate`, `calendar_window_uncovered`,
+`booker_unstaffed:*`.
 
 **What fired it.** Something between the roster and the cache means a lead sees fewer
 times than they should, or none. The alerts are deliberately split by CAUSE, because
 "booked solid" is a staffing fact and "data anomaly" is a bug, and they call for
 opposite responses (#570).
+
+**`booker_unstaffed:*` means a real customer arrived and was shown nothing**
+(#2158). It is the same state `empty_buckets:*` reports, said by a different
+witness: that one measures whether anybody is looking, and this one fires because
+somebody was. Before cutover almost nobody is, so treat this as the more urgent of
+the two.
+
+- Staff the bucket, or take its link out of use. Nothing else clears it, and the
+  customer who triggered it has already gone.
+- It is throttled to one per bucket per half hour, so the count in Slack is not the
+  count of customers who met it.
 
 **First checks.**
 - `GET /api/health/availability`: 503 with `staffedBuckets` tells you whether the

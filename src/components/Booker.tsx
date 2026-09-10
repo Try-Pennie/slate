@@ -40,6 +40,7 @@ import {
   descriptionParagraphs,
   phonePrefillNotice,
   allTimesTaken,
+  noAdvisorsAvailable,
   closedNoReopenDate,
   closedUntil,
   confirmedAnnouncement,
@@ -131,6 +132,10 @@ interface AvailabilityResponse {
    *  server could not tell, in which case the vaguer copy is the honest one. */
   emptyBecause?:
     | { kind: "closed"; reopensOn: string | null }
+    /** #2158: nobody in the bucket's pool at all. Kept apart from `busy` because
+     *  the two call for opposite responses and, said as one word, a lead reads
+     *  the wrong one. */
+    | { kind: "unstaffed" }
     | { kind: "busy" }
     | null;
 }
@@ -846,16 +851,21 @@ export default function Booker({
   // why. That is not the same as a view with nothing in it for other reasons, so
   // the third state requires an empty PAYLOAD rather than merely an empty view.
   const serverReturnedNothing = meta !== null && meta.slots.length === 0;
-  const emptyCause: "closed" | "busy" | "unknown" =
+  const emptyCause: "closed" | "busy" | "unstaffed" | "unknown" =
     meta?.emptyBecause?.kind ?? (serverReturnedNothing ? "unknown" : "busy");
   const emptyMessage =
     closure !== null
       ? closure.reopensOn
         ? closedUntil(closure.reopensOn, zone)
         : closedNoReopenDate()
-      : emptyCause === "busy"
-        ? allTimesTaken()
-        : UNCLASSIFIED_EMPTY_NOTICE;
+      : // #2158: a FOURTH cause, and the one "all times are taken" was most wrong
+        // about. An unstaffed bucket has nothing taken and no soon to check back
+        // at, so it gets its own sentence with no invitation to return.
+        emptyCause === "unstaffed"
+        ? noAdvisorsAvailable()
+        : emptyCause === "busy"
+          ? allTimesTaken()
+          : UNCLASSIFIED_EMPTY_NOTICE;
 
   // Dan, 2026-08-12: the far ahead search is offered for a CLOSURE only. A week
   // that is merely full is a staffing problem to fix rather than a reason to send a

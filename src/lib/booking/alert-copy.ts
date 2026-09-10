@@ -229,3 +229,25 @@ export function stalePhoneInviteAlert(agentEmail: string, bookingId: string): st
     `log lines; booking id ${bookingId}.`
   );
 }
+
+/**
+ * A lead just met a bucket with nobody in it (#2158, Dan's call 2026-09-09).
+ *
+ * Deliberately a second signal beside `empty_buckets:*` rather than a
+ * replacement. That one measures the state whether or not anybody is looking,
+ * which matters because before cutover almost nobody is; this one says a real
+ * person reached it and was shown nothing, which is the fact worth interrupting
+ * somebody for.
+ */
+export function bookerUnstaffedAlert(code: string): string {
+  return (
+    `A customer opened the booking page for bucket ${code} and it has nobody to route to, ` +
+    `so they were shown no times at all. Staff that bucket, or take the link out of use. ` +
+    `The hourly sweep reports the same buckets as empty_buckets:${code}; this one means somebody actually arrived.`
+  );
+}
+
+/** How often the notice above may repeat for one bucket. Short, because a lead
+ *  meeting a dead end is a live loss rather than a standing condition, and long
+ *  enough that one bot refreshing the page cannot fill the channel. */
+export const BOOKER_UNSTAFFED_COOLDOWN_MS = 30 * 60 * 1000;

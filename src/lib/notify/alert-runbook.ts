@@ -66,6 +66,9 @@ const FAMILY_BY_KEY: Record<string, AlertFamily> = {
   // value), which is why it sits with the routing data family rather than with the
   // tier notices it otherwise resembles.
   legal_relaxed: "the-roster-or-routing-data-is-wrong",
+  // #2158: this one IS the booker offering nothing, and to a real person, so it
+  // sits with the family whose first check is the availability health endpoint.
+  booker_unstaffed: "the-booker-is-offering-nothing-or-too-little",
   no_eligible_agents: "the-booker-is-offering-nothing-or-too-little",
   low_booking_volume: "the-booker-is-offering-nothing-or-too-little",
   booking_failure_rate: "the-booker-is-offering-nothing-or-too-little",
