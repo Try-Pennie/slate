@@ -10,6 +10,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { allXbcCodes, bucketSpecForXbc } from "../src/lib/xbc.ts";
+import { refreshBuckets } from "./lib/seed-bucket-request.ts";
 
 const env = Object.fromEntries(
   readFileSync(join(import.meta.dirname, "../.env.local"), "utf8")
@@ -91,7 +92,7 @@ const refreshed = specs
     criteria: spec.criteria,
   }));
 
-async function upsert(rows: Record<string, unknown>[], what: string) {
+async function insert(rows: Record<string, unknown>[], what: string) {
   if (!rows.length) {
     console.log(`${what}: none`);
     return;
@@ -106,10 +107,38 @@ async function upsert(rows: Record<string, unknown>[], what: string) {
   console.log(`${what}: ${body.length}`);
 }
 
+/**
+ * THE REFRESH IS AN UPDATE, AND COULD NEVER HAVE BEEN AN UPSERT (#2218).
+ *
+ * These rows went through the same POST above until 2026-09-10. PostgREST builds
+ * a `merge-duplicates` POST as an INSERT with an ON CONFLICT clause, so every
+ * column a row omits is NULL on the tentative insert, and `event_type_id` is NOT
+ * NULL. Run against production it answered 400 `23502` on the first row and wrote
+ * nothing, and it had been in that state since #1935 stopped the seeder writing
+ * `event_type_id`, which is the change that made a refresh row partial. Nothing
+ * caught it because this is a hand run command whose failure is loud only to
+ * whoever runs it.
+ *
+ * The loop lives in `scripts/lib/seed-bucket-request.ts` so it can be driven
+ * without a database: what is worth testing is that it counts what the database
+ * CHANGED rather than what it sent, and refuses a filter that matched nothing.
+ */
+async function refresh(rows: Record<string, unknown>[], what: string) {
+  if (!rows.length) {
+    console.log(`${what}: none`);
+    return;
+  }
+  const changed = await refreshBuckets(rows as Parameters<typeof refreshBuckets>[0], {
+    base: BASE,
+    headers: H,
+  });
+  console.log(`${what}: ${changed}`);
+}
+
 // Created first: a code that appears in both lists would be a bug, and this
 // order makes it loud rather than letting the refresh quietly win.
-await upsert(created, "buckets created");
-await upsert(refreshed, "buckets refreshed (name and criteria only)");
+await insert(created, "buckets created");
+await refresh(refreshed, "buckets refreshed (name and criteria only)");
 
 const all = await get<{ code: string; name: string }[]>(
   `buckets?select=code,name&org_id=eq.${org.id}&order=code`,
