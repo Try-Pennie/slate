@@ -77,6 +77,13 @@ export const PARITY_VERDICT_CLASS = {
   // A zone NAME that keeps the same clock. Denver against Boise differs on 0 of
   // 9,600 sampled hours, so it changes nothing a lead sees; reported so drift is
   // knowable, and never allowed to bury something real.
+  // A real difference on a week the AGENT set for themselves (#2092). The daily
+  // lane corrects hours from cal.com automatically now and deliberately refuses to
+  // overwrite these, so nothing automatic will ever clear it: paging daily would
+  // leave the check red for as long as the agent keeps their own hours, which is
+  // from cutover onwards for everybody (#1454). Counted in the standing total, so
+  // it is knowable rather than invisible.
+  "hours-set-by-agent": "standing",
   "timezone-name-differs": "standing",
   "calcom-unreadable": "unmeasured",
   "calcom-unreachable": "unmeasured",
@@ -104,6 +111,22 @@ export interface ParityFinding {
   agents: string[];
 }
 
+/**
+ * What the daily lane repaired by itself before it swept (#2092).
+ *
+ * ABSENT and zero are different facts and are kept apart. Absent means no apply
+ * ran at all (the step crashed, or somebody swept by hand), so re-importing is
+ * still the remedy and the message says so. Zero means the import ran and found
+ * nothing to write, so naming that command would be advice that cannot work
+ * (L111). Collapsing the two would make the commonest healthy morning
+ * indistinguishable from a broken apply step.
+ */
+export interface ParityCorrection {
+  count: number;
+  /** Who, so the reader can check what was written to whom. Capped by the sender. */
+  agents: string[];
+}
+
 /** A finished sweep, as the runner reports it. */
 export interface ParitySweep {
   /** Agents looked at. */
@@ -112,6 +135,8 @@ export interface ParitySweep {
   compared: number;
   findings: ParityFinding[];
   runUrl: string;
+  /** Absent when no apply ran. See `ParityCorrection`. */
+  corrected?: ParityCorrection;
 }
 
 export interface ParityJudgement {
@@ -126,6 +151,9 @@ export interface ParityJudgement {
   unmeasured: number;
   /** Only the paging findings, worst first, in `PARITY_VERDICT_CLASS` order. */
   paging: ParityFinding[];
+  /** Carried through untouched: what the lane repaired is a fact about the run,
+   *  not a verdict, so it takes no part in deciding whether anybody is paged. */
+  corrected?: ParityCorrection;
   runUrl: string;
 }
 
@@ -162,6 +190,7 @@ export function classifyParitySweep(sweep: ParitySweep): ParityJudgement {
     standing,
     unmeasured,
     paging,
+    corrected: sweep.corrected,
     runUrl: sweep.runUrl,
   };
 }
@@ -180,13 +209,29 @@ function agentWord(n: number): string {
   return n === 1 ? "agent" : "agents";
 }
 
+/** What the lane wrote this morning, or nothing when no apply ran (#2092). */
+function correctionLine(c: ParityCorrection | undefined): string | null {
+  if (!c || c.count === 0) return null;
+  const named = c.agents.slice(0, NAMED_AGENT_CAP);
+  const rest = c.count - named.length;
+  const who = named.length > 0 ? `: ${named.join(", ")}${rest > 0 ? ` and ${rest} more` : ""}` : "";
+  return `${c.count} ${agentWord(c.count)} were corrected from cal.com automatically${who}.`;
+}
+
 /**
- * The page. Headline, then one line per kind of difference, then what to run.
+ * The page. Headline, what the lane fixed, one line per kind of difference left,
+ * then what a person still has to do.
  *
- * The remedy is named because it is one command for the commonest case by far:
- * every hours, days and zone difference on 2026-09-07 was fixed by re-importing.
- * The roster findings have no such command and deliberately get none here, since
- * the answer to somebody who has left is a person deciding which system is wrong.
+ * THE REMEDY LINE DEPENDS ON WHETHER THE LANE APPLIED. It used to be unconditional,
+ * because re-importing was the fix for every hours, days and zone difference seen
+ * on 2026-09-07. Since #2092 the lane runs that import itself before it sweeps, so
+ * telling the reader to run it is naming a command whose only effect is to repeat
+ * what already happened, which is a dead instruction (L111). What is left after an
+ * apply is what the import REFUSED (a week the agent owns, a week Slate's validator
+ * will not take) or could not write, and that needs a person rather than a re-run.
+ *
+ * The roster findings have no command either way, deliberately: the answer to
+ * somebody who has left is a person deciding which system is wrong.
  */
 export function buildScheduleParityAlert(j: ParityJudgement): string {
   const head = `${j.drifted} of ${j.total} ${agentWord(j.total)} differ between Slate and cal.com.`;
@@ -194,13 +239,21 @@ export function buildScheduleParityAlert(j: ParityJudgement): string {
     (f) => `${f.count} ${PAGING_LABEL[f.verdict] ?? f.verdict}${agentList(f)}`,
   );
   const tail: string[] = [];
+  const corrected = correctionLine(j.corrected);
+  if (corrected) tail.push(corrected);
   if (j.unmeasured > 0) {
     tail.push(`${j.unmeasured} could not be read, so nothing is claimed about them.`);
   }
   const hoursDrift = j.paging.some((f) =>
     f.verdict === "hours-differ" || f.verdict === "days-differ" || f.verdict === "timezone-differs",
   );
-  if (hoursDrift) tail.push("Re-import the hours with APPLY=1 pnpm import:calcom-schedules");
+  if (hoursDrift) {
+    tail.push(
+      j.corrected === undefined
+        ? "Re-import the hours with APPLY=1 pnpm import:calcom-schedules"
+        : "The import already ran this morning and could not fix these, so they need a person. The run says which it refused.",
+    );
+  }
   return [head, ...lines, ...tail, j.runUrl].join("\n");
 }
 
@@ -214,6 +267,11 @@ export function buildScheduleParityAllClear(j: ParityJudgement): string {
   const parts = [
     `Both systems agree again: ${j.compared} of ${j.total} ${agentWord(j.total)} compared, no differences.`,
   ];
+  // A morning where the lane repaired twenty agents and a morning where nothing
+  // had drifted are not the same event, and rendering them identically hides the
+  // whole thing the lane does (L680).
+  const corrected = correctionLine(j.corrected);
+  if (corrected) parts.push(corrected);
   if (j.standing > 0) {
     parts.push(`${j.standing} still have no week to compare on one side, unchanged.`);
   }
@@ -280,7 +338,33 @@ export function parseParitySweep(body: unknown): ParitySweep | { error: string }
       : [];
     findings.push({ verdict, count, agents });
   }
-  return { total, compared, findings, runUrl };
+
+  // What the lane repaired (#2092). OPTIONAL, so a hand run sweep and every
+  // deployment that predates the apply step are still accepted; present and
+  // malformed is REFUSED rather than dropped, because a number rendered into a
+  // message somebody acts on may not be a guess.
+  let corrected: ParityCorrection | undefined;
+  if (b.corrected !== undefined) {
+    if (typeof b.corrected !== "object" || b.corrected === null || Array.isArray(b.corrected)) {
+      return { error: "corrected is not an object" };
+    }
+    const c = b.corrected as Record<string, unknown>;
+    const count = wholeNumber(c.count);
+    if (count === null) return { error: "corrected has no count" };
+    // A lane cannot have repaired more agents than the sweep looked at. It is the
+    // same refusal `compared > total` gets above and for the same reason: a count
+    // that cannot be true makes every other number in the message unreadable.
+    if (count > total) return { error: "corrected is greater than total" };
+    const agents = Array.isArray(c.agents)
+      ? c.agents
+          .filter((a): a is string => typeof a === "string")
+          .slice(0, WIRE_AGENT_CAP)
+          .map((a) => a.slice(0, WIRE_AGENT_CHARS))
+      : [];
+    corrected = { count, agents };
+  }
+
+  return { total, compared, findings, runUrl, corrected };
 }
 
 function wholeNumber(v: unknown): number | null {

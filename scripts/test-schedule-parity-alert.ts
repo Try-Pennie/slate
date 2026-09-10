@@ -182,4 +182,124 @@ function sweep(over: Partial<ParitySweep> = {}): ParitySweep {
   }
 }
 
+// --- what the lane corrected itself (#2092) ---------------------------------------
+//
+// The daily lane re-imports drifted hours from cal.com before it sweeps, so the
+// message has to say what it wrote. Two reasons it is not cosmetic. A reader who
+// is told 4 agents differ and is not told the lane already fixed 17 has no idea
+// whether this is a system holding steady or one falling apart. And the remedy
+// line that used to say "re-import the hours" is advice that cannot work once the
+// lane has just run that import: naming a command whose only effect is to repeat
+// what already happened is a dead instruction (L111).
+{
+  const applied = classifyParitySweep(
+    sweep({
+      compared: 102,
+      findings: [{ verdict: "hours-differ", count: 4, agents: ["a@x"] }],
+      corrected: { count: 17, agents: ["b@x", "c@x"] },
+    }),
+  );
+  const text = buildScheduleParityAlert(applied);
+  assert(/17/.test(text), "the page says how many the lane corrected by itself");
+  assert(/b@x/.test(text), "and names them, so the reader can check what was written to whom");
+  assert(
+    !/APPLY=1/.test(text),
+    "and does NOT tell the reader to run the import the lane just ran (L111)",
+  );
+  assert(!/undefined|NaN|\[object/.test(text), "nothing leaks into the corrected line");
+  assert(!/[\u2014\u2013]/.test(text), "no dashes as punctuation");
+}
+{
+  // The lane did not apply at all: the apply step crashed, or somebody ran the
+  // sweep by hand. `corrected` is ABSENT rather than zero, because those are
+  // different facts and the remedy depends on which one it is. Absent keeps the
+  // old instruction, since re-importing really is the fix and nothing has tried it.
+  const text = buildScheduleParityAlert(
+    classifyParitySweep(sweep({ findings: [{ verdict: "hours-differ", count: 4, agents: ["a@x"] }] })),
+  );
+  assert(
+    /APPLY=1/.test(text),
+    "with no apply reported, the page still names the command that fixes it",
+  );
+}
+{
+  // The lane applied and found nothing to write. That is a real and different
+  // fact from not having applied, and it must not silently read as the latter:
+  // it is the ordinary healthy morning, and the remedy line still has to go,
+  // because the import HAS run and repeating it changes nothing.
+  const text = buildScheduleParityAlert(
+    classifyParitySweep(
+      sweep({
+        findings: [{ verdict: "hours-differ", count: 4, agents: ["a@x"] }],
+        corrected: { count: 0, agents: [] },
+      }),
+    ),
+  );
+  assert(
+    !/APPLY=1/.test(text),
+    "a lane that applied and wrote nothing still does not tell the reader to run the import",
+  );
+  assert(
+    /could not/.test(text) || /left/.test(text),
+    `it says the import ran and did not fix these instead (${text})`,
+  );
+}
+{
+  // The all clear carries it too. A morning where the lane corrected twenty agents
+  // and everything now agrees is NOT the same event as a morning where nothing had
+  // drifted, and a message that renders both identically hides the whole thing the
+  // lane is doing (L680).
+  const clear = buildScheduleParityAllClear(
+    classifyParitySweep(sweep({ corrected: { count: 20, agents: ["b@x"] } })),
+  );
+  assert(/20/.test(clear), "the all clear says how many the lane corrected on the way");
+  const quiet = buildScheduleParityAllClear(classifyParitySweep(sweep()));
+  assert(!/corrected/.test(quiet), "and a morning with nothing to correct does not mention it");
+}
+{
+  // Over the wire, `corrected` is as untrusted as everything else the runner
+  // sends: it is rendered into a message somebody reads on a phone and acts on.
+  const good = parseParitySweep({
+    total: 102,
+    compared: 102,
+    runUrl: "https://github.com/x/y/actions/runs/1",
+    findings: [],
+    corrected: { count: 3, agents: ["a@x", "b@x"] },
+  });
+  assert(!("error" in good), "a well formed corrected block is accepted");
+  if (!("error" in good)) eq(good.corrected?.count, 3, "and its count is carried");
+
+  const absent = parseParitySweep({
+    total: 102,
+    compared: 102,
+    runUrl: "https://github.com/x/y/actions/runs/1",
+    findings: [],
+  });
+  assert(!("error" in absent), "and it stays optional, so a hand run sweep is still accepted");
+  if (!("error" in absent)) {
+    eq(absent.corrected, undefined, "an absent block is absent, never a zero standing in for it");
+  }
+
+  const nonsense = parseParitySweep({
+    total: 102,
+    compared: 102,
+    runUrl: "https://github.com/x/y/actions/runs/1",
+    findings: [],
+    corrected: { count: -1, agents: [] },
+  });
+  assert("error" in nonsense, "a count that is not a count is refused rather than rendered");
+
+  const impossible = parseParitySweep({
+    total: 10,
+    compared: 10,
+    runUrl: "https://github.com/x/y/actions/runs/1",
+    findings: [],
+    corrected: { count: 99, agents: [] },
+  });
+  assert(
+    "error" in impossible,
+    "and a lane claiming to have corrected more agents than it looked at is refused",
+  );
+}
+
 finish();

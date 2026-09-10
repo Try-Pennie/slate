@@ -65,6 +65,13 @@ export const OUTCOME_ORDER: readonly ParityOutcome[] = [
   "no-slate-schedule",
   "no-calcom-schedule",
   "no-calcom-user",
+  // Last, beside the zone alias, because no automatic run will ever clear it and a
+  // verdict that names a run every morning is one nobody reads by the second week
+  // (L36). It is still an OUTCOME with its own code rather than a quiet verdict:
+  // unlike the staff accounts, this one CAN change (the agent edits their week, or
+  // somebody corrects cal.com), so a run that meets nothing else should still say
+  // so rather than exit zero.
+  "hours-set-by-agent",
   "timezone-name-differs",
 ] as const;
 
@@ -100,6 +107,7 @@ export const DELIBERATELY_QUIET: readonly QuietVerdict[] = [
  */
 export const EXIT_CODE: Record<ParityOutcome, number> = {
   "timezone-name-differs": 9,
+  "hours-set-by-agent": 27,
   "no-calcom-user": 10,
   "no-calcom-schedule": 11,
   "no-slate-schedule": 12,

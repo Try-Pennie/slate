@@ -170,6 +170,17 @@ export interface RosterAgent {
   scheduleId: string | null;
   timezone: string | null;
   rules: { weekday: number; start_minute: number; end_minute: number }[];
+  /**
+   * Who last wrote this week (`hours_source`, migration 0117), or null for a row
+   * written before the stamp existed.
+   *
+   * Read HERE rather than by each caller, because both of them now need it and for
+   * the same reason: the importer refuses to overwrite a week an agent set for
+   * themselves, and the parity sweep has to report that difference as one no
+   * automatic run will clear rather than paging on it daily (#2092). Two reads of
+   * the same fact would be free to disagree about who owns somebody's hours.
+   */
+  hoursSource: string | null;
 }
 
 /**
@@ -202,10 +213,10 @@ export async function loadBookableRoster(
   const scheds = (unwrap(
     await db
       .from("availability_schedules")
-      .select("id, user_id, timezone")
+      .select("id, user_id, timezone, hours_source")
       .in("user_id", agents.map((a) => a.id)),
     "schedules",
-  ) ?? []) as { id: string; user_id: string; timezone: string }[];
+  ) ?? []) as { id: string; user_id: string; timezone: string; hours_source: string | null }[];
 
   const rules = scheds.length === 0
     ? []
@@ -234,6 +245,9 @@ export async function loadBookableRoster(
       scheduleId: sched?.id ?? null,
       timezone: sched?.timezone ?? null,
       rules: sched ? (rulesBySchedule.get(sched.id) ?? []) : [],
+      // `?? null` is the SCHEDULE being absent, not an unreadable stamp: an agent
+      // with no schedule row has no week for anybody to have written.
+      hoursSource: sched?.hours_source ?? null,
     };
   });
 }

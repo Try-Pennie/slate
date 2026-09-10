@@ -49,6 +49,12 @@ export interface ParitySummary {
   findings: { verdict: string; count: number; agents: string[] }[];
 }
 
+/** What the lane's apply step repaired before the sweep ran (#2092). */
+export interface ParityCorrectionSummary {
+  count: number;
+  agents: string[];
+}
+
 /** How many agents one finding names. Matched by a second cap at the endpoint. */
 const SUMMARY_AGENT_CAP = 8;
 
@@ -98,6 +104,16 @@ export interface ReportInput {
   runUrl: string;
   /** Returns null when the sweep left nothing behind. */
   readSummary: () => ParitySummary | null;
+  /**
+   * What the apply step wrote, or null when no apply ran (#2092).
+   *
+   * Null and a zero count are deliberately different and both reach the app: null
+   * means nothing tried, so re-importing is still the remedy the alert names; zero
+   * means the import ran and found nothing to write, so naming that command would
+   * be advice that cannot work. A reader who cannot tell those apart cannot tell a
+   * healthy morning from a broken apply step.
+   */
+  readApplied?: () => ParityCorrectionSummary | null;
   post: (url: string, body: unknown, apiKey: string) => Promise<{ status: number; body: unknown }>;
 }
 
@@ -128,9 +144,25 @@ export async function reportOutcome(input: ReportInput): Promise<ReportResult> {
     };
   }
 
+  // A correction this cannot read is reported as NO apply rather than as zero. The
+  // sweep's own findings are what page somebody, and they are already in hand: a
+  // note about the repair failing to parse must never cost the run its report.
+  let corrected: ParityCorrectionSummary | null = null;
+  if (input.readApplied) {
+    try {
+      corrected = input.readApplied();
+    } catch {
+      corrected = null;
+    }
+  }
+
   let reply: { status: number; body: unknown };
   try {
-    reply = await input.post(`${base}/api/smoke/schedule-parity`, { ...summary, runUrl: input.runUrl }, input.apiKey);
+    reply = await input.post(
+      `${base}/api/smoke/schedule-parity`,
+      { ...summary, runUrl: input.runUrl, ...(corrected ? { corrected } : {}) },
+      input.apiKey,
+    );
   } catch (err) {
     return { exit: REPORT_EXIT.noReply, reason: `nothing answered: ${text(err)}` };
   }

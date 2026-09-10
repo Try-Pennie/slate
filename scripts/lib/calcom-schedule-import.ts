@@ -146,6 +146,56 @@ export function diffSchedule(
 }
 
 /**
+ * Who last wrote a Slate week (`availability_schedules.hours_source`, migration
+ * 0117). `null` means the row was written before the stamp existed.
+ */
+export type HoursSource = "seed" | "agent" | "admin" | "calcom-import";
+
+/** The refusal for an agent's own week, in one place so the importer, the parity
+ *  comparison and the tests all say the same thing about the same person (L41). */
+export const AGENT_OWNS_HOURS =
+  "the agent set these hours in Slate themselves, so cal.com does not overwrite them";
+
+/**
+ * Sources cal.com is allowed to replace.
+ *
+ * Everything NOT in this set is refused, including a name nobody has taught this
+ * rule, so a writer added later defaults to leaving people's hours alone rather
+ * than to overwriting them. `null` is in it deliberately and it is the whole
+ * roster: measured 2026-09-10, 79 of 90 bookable agents carried no stamp at all,
+ * because migration 0117 shipped six days after the import that wrote them.
+ * Refusing an unstamped week would leave this inert for 88 percent of the roster
+ * while the daily page went on naming exactly the agents it would not fix (L662).
+ */
+const OVERWRITABLE: readonly (HoursSource | null)[] = [null, "seed", "admin", "calcom-import"];
+
+/**
+ * Whether cal.com may overwrite the week Slate holds for an agent, and why not.
+ *
+ * This is the guard #2092 rests on. The daily lane applies a drift correction
+ * itself now, so the importer runs unattended every morning, and the one thing an
+ * unattended writer must never do is replace hours somebody set for themselves.
+ * cal.com is the authority for these values ONLY while it is the system people
+ * maintain, and an agent who has set their own week in Slate has stopped being one
+ * of those people. It is also the guard that survives cutover (#65) without anybody
+ * remembering to switch it off: once agents set their own hours (#1454) every one
+ * of those rows is stamped `agent` by construction, and this stops touching them.
+ *
+ * Dan's rule, 2026-09-10: "it just needs to not overwrite a changed hours. If I
+ * changed them or another import changed them, that's fine." So an admin's edit is
+ * deliberately overwritable, and only the agent's own week is not.
+ *
+ * Returns the reason it may not be written, or null when it may. A reason rather
+ * than a boolean, so the sentence a person reads is derived here and cannot drift
+ * from the rule that produced it.
+ */
+export function hoursOverwriteRefusal(hoursSource: string | null): string | null {
+  if (OVERWRITABLE.includes(hoursSource as HoursSource | null)) return null;
+  if (hoursSource === "agent") return AGENT_OWNS_HOURS;
+  return `Slate does not recognise who wrote these hours (${hoursSource}), so cal.com leaves them alone`;
+}
+
+/**
  * How long to wait before retrying a cal.com read, or null to stop trying.
  *
  * The first real import run met this at agent 15: cal.com answered 429 for 89 of

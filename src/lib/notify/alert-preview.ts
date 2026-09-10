@@ -1331,11 +1331,47 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     ),
   },
   {
+    // The state the lane produces on an ordinary morning since #2092: it corrected
+    // most of the drift itself and what is left needs a person. Previewed
+    // separately from the state above because the two read differently in the part
+    // that matters, the last line: with an apply reported, the message must NOT
+    // tell the reader to run the import the lane has just run (L111).
+    key: "schedule_parity_drift",
+    state: "the lane corrected what it could and something is left",
+    channel: "alert",
+    text: buildScheduleParityAlert(
+      classifyParitySweep({
+        total: 102,
+        compared: 100,
+        runUrl: "https://github.com/Try-Pennie/slate/actions/runs/1",
+        findings: [
+          { verdict: "hours-differ", count: 2, agents: ["jsullivan@", "pdelacerda@"] },
+          { verdict: "no-calcom-schedule", count: 2, agents: ["jsaminu@"] },
+        ],
+        corrected: { count: 17, agents: ["forellana@", "jarias@", "lcastillo@", "mharris@"] },
+      }),
+    ),
+  },
+  {
     key: "schedule_parity_drift",
     state: "the two systems agree again",
     channel: "recovery",
     text: buildScheduleParityAllClear(
       classifyParitySweep({ total: 102, compared: 100, runUrl: "https://github.com/x/y", findings: [] }),
+    ),
+  },
+  {
+    key: "schedule_parity_drift",
+    state: "they agree again after the lane corrected some of them",
+    channel: "recovery",
+    text: buildScheduleParityAllClear(
+      classifyParitySweep({
+        total: 102,
+        compared: 100,
+        runUrl: "https://github.com/x/y",
+        findings: [],
+        corrected: { count: 4, agents: ["dshearer@", "sconner@", "chammar@", "jarmstrong@"] },
+      }),
     ),
   },
   {
