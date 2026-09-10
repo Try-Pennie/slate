@@ -22,6 +22,7 @@ import { join } from "node:path";
 import { assert, eq, fail, finish } from "./lib/harness.ts";
 import {
   declaredExemptions,
+  contradictoryExemptions,
   findUncoveredEnv,
   parseWorkflowSteps,
   readEnvNames,
@@ -392,6 +393,65 @@ jobs:
   assert(
     found.has("secrets.BOOKING_API_KEY"),
     "including a secret the canary genuinely depends on",
+  );
+}
+
+// --- an exemption that says the value is REQUIRED is not an exemption -----------
+//
+// `env-ok` means one thing: this variable is genuinely local only, and CI wanting
+// it absent is the correct state. A declaration whose reason opens with "required"
+// asserts the exact opposite, and the scanner could not tell, because it matched
+// the NAME and never read the reason beside it.
+//
+// That is not hypothetical. #2153 made the cal.com parity sweep read Twilio's
+// worker tags, declared the three credentials `// env-ok: TWILIO_... (required; ...)`,
+// and never wired them into the workflow. The guard written to catch exactly that
+// had been told to look away from them. The daily lane died on 2026-09-10, the
+// first morning after the merge, and the only signal was a heartbeat that would
+// have gone stale thirty hours later.
+{
+  const declared = "// env-ok: SOME_KEY (required; the API key the sweep cannot run without)";
+  const bad = contradictoryExemptions(declared);
+  eq(bad.length, 1, "an exemption whose reason says required is reported");
+  if (bad[0]) eq(bad[0].variable, "SOME_KEY", "and it names the variable");
+
+  // The controls, both directions. Without these the check could be satisfied by a
+  // rule that fires on everything, or on nothing.
+  eq(
+    contradictoryExemptions("// env-ok: SOME_KEY (optional; defaults to 250)").length,
+    0,
+    "an optional one is left alone, which is what the opt-out is for",
+  );
+  eq(
+    contradictoryExemptions("// env-ok: SOME_KEY (local only)").length,
+    0,
+    "and so is a local-only one",
+  );
+  eq(
+    contradictoryExemptions("// env-ok: SOME_KEY (not required in CI; the default is what we want)").length,
+    0,
+    "a reason that says NOT required is not the contradiction being hunted",
+  );
+}
+{
+  // The real tree, which is the only place this can rot. A declaration added later
+  // with a required reason must fail here rather than be found by a dead lane.
+  const offenders = readdirSync(join(ROOT, "scripts"))
+    // This file is excluded and it has to be: it cannot test the pattern without
+    // writing the pattern, so a scanner run over the whole tree matches its own
+    // fixtures and reports itself (L245). The exclusion is by exact name, so it
+    // covers this file and nothing else.
+    .filter((f) => f.endsWith(".ts") && f !== "test-workflow-env-coverage.ts")
+    .flatMap((f) =>
+      contradictoryExemptions(readFileSync(join(ROOT, "scripts", f), "utf8")).map((c) => ({
+        file: f,
+        variable: c.variable,
+      })),
+    );
+  eq(
+    offenders.length,
+    0,
+    `no script declares a REQUIRED variable exempt from wiring (${offenders.map((o) => `${o.file}:${o.variable}`).join(", ")})`,
   );
 }
 

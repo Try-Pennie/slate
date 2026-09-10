@@ -59,10 +59,6 @@
 //   PARITY_AGENT     one email instead of the whole roster. Narrows the HOURS half
 //                    only: membership is a comparison of two whole rosters and
 //                    means nothing scoped to one person.
-// env-ok: TWILIO_API_KEY_SID (required; a TaskRouter-scoped API key, the basic-auth
-//   username, exactly as the Pipedream job that feeds cal.com uses it)
-// env-ok: TWILIO_API_KEY_SECRET (required; the matching secret)
-// env-ok: TWILIO_WORKSPACE_SID (required; the TaskRouter workspace holding the workers)
 // env-ok: CALCOM_ORG_ID (optional; defaults to 19474, the live org, and a scheduled
 // run has no reason to point elsewhere)
 // env-ok: CALCOM_TEAM_ID (optional; defaults to 19546, Loan Consultation)
