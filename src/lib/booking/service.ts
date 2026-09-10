@@ -1944,6 +1944,40 @@ export async function findDuplicateBookingWarning(input: {
  * claim nothing measured. It is throttled per booking, because a lead retyping
  * the same number must not repage.
  */
+/**
+ * The call this lead already has, asked at the BOOKER'S LANDING (#2166).
+ *
+ * `/booking/{salesforceId}` carries the id in the path, which is the same strong
+ * match the confirm recognises them by, so they are known from the first render and
+ * the notice does not have to wait for a picked time and a filled form.
+ *
+ * IT NEVER THROWS, and that is the one difference from the confirm path's use of
+ * the same grader. There, a read it could not make must refuse, because the harm is
+ * creating a second call for somebody who already has one. Here the harm of not
+ * knowing is that the lead is shown the ordinary picker, and the confirm still
+ * refuses at the end of it: the gate is unmoved, so failing open costs a notice
+ * arriving late rather than a duplicate booking.
+ */
+export async function existingCallForLanding(identity: {
+  salesforceId?: string | null;
+  externalId?: string | null;
+}): Promise<orchestration.ExistingCall | null> {
+  try {
+    return await orchestration.findExistingCallForIdentity(
+      {
+        externalId: identity.externalId ?? null,
+        salesforceId: identity.salesforceId ?? null,
+        email: null,
+        phone: null,
+      },
+      realDeps(),
+    );
+  } catch (err) {
+    log.warn("booking", { msg: "landing existing-call check failed, showing the picker" }, err);
+    return null;
+  }
+}
+
 /** The lead's own details on a booking (#2164), for a caller that is not moving it. */
 export async function updateBookingContact(
   token: string,

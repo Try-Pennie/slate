@@ -3,6 +3,7 @@ import StandaloneBookerShell from "@/components/StandaloneBookerShell";
 import { loadBookingHorizonDays } from "@/lib/booking/settings";
 import { loadReasonOptions } from "@/lib/booking/reason-options";
 import { resolveRequestedCode } from "@/lib/routing/catchall";
+import { existingCallForLanding } from "@/lib/booking/service";
 
 export const dynamic = "force-dynamic";
 // Lead-facing: the brand is Pennie; Slate stays internal.
@@ -59,6 +60,13 @@ export default async function BookingPage({
   // #1337: a lead who already has a call is offered the Move, which records a
   // mandatory reschedule reason chosen right there.
   const reasonOptions = await loadReasonOptions();
+  // #2166: the id in the path IS the identity, graded as a strong match by the
+  // same rule the confirm uses, so this lead is known from the first render. Asked
+  // here rather than left to the confirm, where the notice would arrive one picked
+  // time and one filled form too late and read as the product having forgotten
+  // them. It never throws: a check that could not run shows the ordinary picker,
+  // and the confirm still refuses at the end of it.
+  const landingCall = await existingCallForLanding({ salesforceId: id });
 
   return (
     <StandaloneBookerShell embedded={embedded} theme={theme}>
@@ -77,6 +85,7 @@ export default async function BookingPage({
         brandColor={first(sp, "brand") || (embedded ? PENNIE_SKY : undefined)}
         horizonDays={horizonDays}
         rescheduleReasons={reasonOptions.reschedule.active}
+        landingCall={landingCall}
       />
     </StandaloneBookerShell>
   );

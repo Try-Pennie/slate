@@ -121,6 +121,17 @@ interface BookerProps {
    *  forgets it, so the old hardcoded HORIZON_DAYS=4 divergence (AUD-076) can't come
    *  back through a silent default. */
   horizonDays: number;
+  /**
+   * The call this lead ALREADY has, resolved server side from the id in the path
+   * (#2166).
+   *
+   * On `/booking/{salesforceId}` the lead is known from the first render, so the
+   * notice is put in front of them before they pick a time rather than after the
+   * confirm refuses. Null on `/book` with no id, where nothing identifies them
+   * until they submit their details and the confirm check is the first moment
+   * anybody can be recognised.
+   */
+  landingCall?: ExistingCall | null;
 }
 
 interface AvailabilityResponse {
@@ -250,6 +261,7 @@ export default function Booker({
   bucketCode,
   requestedCode,
   salesforceId,
+  landingCall,
   attendee: initialAttendee,
   prefill,
   embedded = false,
@@ -286,7 +298,16 @@ export default function Booker({
   // call. Nothing was created. The screen offers to move that call into the slot
   // they just picked; `disclose: false` means the match was one signal only, so
   // nothing about it may be shown and there is nothing to move from here (#1340).
-  const [existingCall, setExistingCall] = useState<ExistingCall | null>(null);
+  const [existingCall, setExistingCall] = useState<ExistingCall | null>(landingCall ?? null);
+  /**
+   * True while the panel on screen is the LANDING one, which has no picked time
+   * behind it and so cannot offer a move.
+   *
+   * Its own flag rather than inferred from `selectedSlot` being null: the confirm
+   * path clears the slot on some refusals, and a panel that decided what to offer
+   * by looking at the slot would silently turn into the landing one there (L55).
+   */
+  const [onLanding, setOnLanding] = useState(Boolean(landingCall));
   const [moveReason, setMoveReason] = useState("");
   const [moveDetail, setMoveDetail] = useState("");
   // #1329 / #1339: the first bookable days on the far side of a closure, fetched
@@ -636,12 +657,16 @@ export default function Booker({
                     read live and simply left out when it is unavailable. */}
                 {existingCall.advisorName ? `, with ${existingCall.advisorName}.` : "."}
               </p>
-              {newWhen && (
+              {newWhen && !onLanding && (
                 <p className={`mt-4 text-sm ${c.body}`}>
                   Would you like to move it to <span className="tabular-nums">{newWhen}</span>{" "}
                   instead?
                 </p>
               )}
+              {/* #2166: the LANDING panel has no picked time behind it, so it
+                  cannot offer a move and does not ask for a reason for one. The
+                  way on is the picker, which is what the lead came for. */}
+              {!onLanding && (
               <div className="mt-5">
                 <ReasonPicker
                   legend={MOVE_COPY.reasonLegend}
@@ -653,6 +678,7 @@ export default function Booker({
                   idPrefix="booker-move-reason"
                 />
               </div>
+              )}
               {error && (
                 <p
                   role="alert"
@@ -665,30 +691,45 @@ export default function Booker({
                 </p>
               )}
               <div className="mt-6 flex flex-col gap-3">
-                <button
-                  onClick={() => void moveExistingCall()}
-                  disabled={submitting || !moveReasonValid || !selectedSlot}
-                  className={`inline-flex min-h-12 items-center justify-center rounded-lg px-5 text-sm font-semibold disabled:opacity-60 ${c.confirm}`}
-                  style={confirmStyle}
-                >
-                  {submitting
-                    ? MOVE_COPY.moving
-                    : newWhen
-                      ? moveToTime(newWhen)
-                      : MOVE_COPY.moveNoTime}
-                </button>
-                <button
-                  onClick={() => {
-                    setExistingCall(null);
-                    setSelectedSlot(null);
-                    setMoveReason("");
-                    setMoveDetail("");
-                  }}
-                  disabled={submitting}
-                  className={`inline-flex min-h-12 items-center justify-center rounded-lg border px-5 text-sm font-semibold disabled:opacity-60 ${c.toggleBorder} ${c.body} ${c.navHover}`}
-                >
-                  {keepExistingTime(shortDay(existingCall.startsAt))}
-                </button>
+                {onLanding ? (
+                  <button
+                    onClick={() => {
+                      setExistingCall(null);
+                      setOnLanding(false);
+                    }}
+                    className={`inline-flex min-h-12 items-center justify-center rounded-lg px-5 text-sm font-semibold ${c.confirm}`}
+                    style={confirmStyle}
+                  >
+                    {MOVE_COPY.pickAnotherTime}
+                  </button>
+                ) : (
+                  <>
+                    <button
+                      onClick={() => void moveExistingCall()}
+                      disabled={submitting || !moveReasonValid || !selectedSlot}
+                      className={`inline-flex min-h-12 items-center justify-center rounded-lg px-5 text-sm font-semibold disabled:opacity-60 ${c.confirm}`}
+                      style={confirmStyle}
+                    >
+                      {submitting
+                        ? MOVE_COPY.moving
+                        : newWhen
+                          ? moveToTime(newWhen)
+                          : MOVE_COPY.moveNoTime}
+                    </button>
+                    <button
+                      onClick={() => {
+                        setExistingCall(null);
+                        setSelectedSlot(null);
+                        setMoveReason("");
+                        setMoveDetail("");
+                      }}
+                      disabled={submitting}
+                      className={`inline-flex min-h-12 items-center justify-center rounded-lg border px-5 text-sm font-semibold disabled:opacity-60 ${c.toggleBorder} ${c.body} ${c.navHover}`}
+                    >
+                      {keepExistingTime(shortDay(existingCall.startsAt))}
+                    </button>
+                  </>
+                )}
               </div>
               {submitting && stalled && (
                 <p role="status" className={`mt-4 text-center text-xs ${c.muted}`}>

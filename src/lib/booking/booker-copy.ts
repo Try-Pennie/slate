@@ -328,6 +328,15 @@ export const MOVE_COPY = {
   reasonLegend: "Why are you rescheduling?",
   moving: "Moving your call…",
   moveNoTime: "Move my call",
+  /**
+   * The way on from the LANDING panel (#2166), which has no picked time behind it.
+   *
+   * A verb phrase for what they came to do, not a dismissal: a lead who opens their
+   * link already has a call, and the reason they opened it is that they want a
+   * different time. "Close" or "Continue" would make them work out that the picker
+   * is still there.
+   */
+  pickAnotherTime: "Pick another time",
 } as const;
 
 export function moveToTime(when: string): string {

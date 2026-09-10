@@ -1818,12 +1818,34 @@ async function findExistingCall(
   input: CreateBookingInput,
   deps: BookingDeps,
 ): Promise<ExistingCall | null> {
-  const identity: PersonIdentity = {
-    externalId: input.externalId ?? null,
-    salesforceId: input.salesforceId ?? null,
-    email: input.attendee.email ?? null,
-    phone: input.attendee.phone ?? null,
-  };
+  return findExistingCallForIdentity(
+    {
+      externalId: input.externalId ?? null,
+      salesforceId: input.salesforceId ?? null,
+      email: input.attendee.email ?? null,
+      phone: input.attendee.phone ?? null,
+    },
+    deps,
+  );
+}
+
+/**
+ * The call this person already has, graded for disclosure, from an identity alone.
+ *
+ * Split out of the confirm path in #2166 so the BOOKER'S LANDING can ask the same
+ * question. On `/booking/{salesforceId}` the id in the path is a strong match, the
+ * same identity the confirm recognises them by, so the lead is known from the first
+ * render and there is nothing to wait for. Asking it later means the notice arrives
+ * one picked time and one filled form too late, which reads as the product having
+ * forgotten them.
+ *
+ * ONE grader for both, deliberately. Two would be two opinions about who may be
+ * shown a booking, and the looser one would decide (L70, #1340).
+ */
+export async function findExistingCallForIdentity(
+  identity: PersonIdentity,
+  deps: BookingDeps,
+): Promise<ExistingCall | null> {
   let match: PersonMatch | null;
   try {
     match = findPersonMatch(identity, await deps.findActiveBookingsForPerson(identity));
