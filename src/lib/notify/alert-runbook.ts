@@ -60,6 +60,11 @@ const FAMILY_BY_KEY: Record<string, AlertFamily> = {
   thin_tier_staffing: "the-booker-is-offering-nothing-or-too-little",
   tier_fallback: "the-booker-is-offering-nothing-or-too-little",
   tier_fallback_deep: "the-booker-is-offering-nothing-or-too-little",
+  // #1909: a Beyond bucket had nobody free and an Achieve agent in the SAME debt
+  // tier took the booking. Same family as its two siblings: the remedy is the
+  // staffing of the requested pool, and a Beyond pool that overflows every day is
+  // the same conversation as a tier that drops every day.
+  tier_fallback_overflow: "the-booker-is-offering-nothing-or-too-little",
   // #2158: the booker is NOT offering too little here, it offered plenty. What is
   // wrong is who it offered: the bucket's legal rule matched nobody, so the rule
   // was dropped. The remedy is roster data (agents carrying a legal eligibility

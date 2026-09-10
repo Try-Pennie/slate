@@ -486,6 +486,11 @@ export const ALERT_CATALOG: AlertEntry[] = [
     why: "Same, for a deep fallback: it describes one completed routing decision.",
   },
   {
+    key: "tier_fallback_overflow:*",
+    kind: "incident",
+    why: "One Beyond booking was taken by an Achieve agent in the same debt tier (#1909); it describes one completed routing decision, like its two siblings above.",
+  },
+  {
     key: "booker_unstaffed:*",
     kind: "incident",
     why: "One customer opened an unstaffed bucket and was shown nothing; that visit is over and they have gone. The ONGOING version is empty_buckets:*, which the monitor watches and does clear, exactly as no_eligible_agents:* pairs with it on the booking side.",
