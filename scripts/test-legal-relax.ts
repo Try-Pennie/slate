@@ -12,32 +12,41 @@ import {
   LEGAL_CRITERIA_KEY,
   withoutLegalRestriction,
 } from "../src/lib/routing/legal-relax.ts";
-import { bucketSpecForXbc } from "../src/lib/xbc.ts";
+import { allXbcCodes, bucketSpecForXbc } from "../src/lib/xbc.ts";
 
-// 1. The real criteria, taken from the code that BUILDS every bucket, not from a
-//    fixture written here. A rule calibrated against its author's idea of the
-//    shape is a rule about the author (L48).
+// 1. THE WIDENING IS NOW UNREACHABLE, and that is what this block proves (#2218).
+//
+//    It used to assert the opposite: that 411's real criteria carry the legal
+//    restriction, so the relaxation had something to act on. Dropping the
+//    criterion from all sixty codes consumed that premise (L373), and the honest
+//    replacement is the fact that replaced it, read from the code that BUILDS
+//    every bucket rather than from a fixture written here (L48).
+//
+//    This is the SAFETY claim of dropping the criterion, so it is asserted rather
+//    than assumed: `resolveEligibleAgents` reaches the widening only when a pool
+//    is empty AND the criteria carry the key, so with no code carrying it the
+//    widening cannot fire, and removing it later cannot change what any lead is
+//    offered. Every code, not one example, because a criterion left on a single
+//    bucket would leave the widening live for exactly that bucket.
 {
-  const legal = bucketSpecForXbc("411");
-  assert(legal !== null, "411 is a valid XBC");
-  assert(
-    hasLegalRestriction(legal!.criteria),
-    `411's real criteria carry the legal restriction: ${JSON.stringify(legal!.criteria)}`,
-  );
+  for (const code of allXbcCodes()) {
+    const spec = bucketSpecForXbc(code)!;
+    assert(
+      !hasLegalRestriction(spec.criteria),
+      `${code} carries no legal restriction: ${JSON.stringify(spec.criteria)}`,
+    );
+    assert(
+      withoutLegalRestriction(spec.criteria) === null,
+      `${code} has nothing to widen, which is what null means here`,
+    );
+  }
 
-  const relaxed = withoutLegalRestriction(legal!.criteria);
-  assert(relaxed !== null, "411 relaxes");
-  assert(!(LEGAL_CRITERIA_KEY in relaxed!), "the legal key is gone");
-  assert(relaxed!.debt_team === legal!.criteria.debt_team, "the debt tier is kept");
-
-  // The relaxed criteria must equal what the neighbouring non-legal code already
-  // uses, because that is the claim: this is the pool that code would have used,
-  // not a new one invented here.
-  const nonLegal = bucketSpecForXbc("412");
-  assert(nonLegal !== null, "412 is a valid XBC");
+  // And the three legal digits of one tier and backend now select the same pool,
+  // which is the pool the widening was handing them anyway.
   assert(
-    JSON.stringify(relaxed) === JSON.stringify(nonLegal!.criteria),
-    `relaxed 411 equals 412's criteria: ${JSON.stringify(relaxed)} vs ${JSON.stringify(nonLegal!.criteria)}`,
+    JSON.stringify(bucketSpecForXbc("411")!.criteria) ===
+      JSON.stringify(bucketSpecForXbc("412")!.criteria),
+    "411 and 412 select the same pool",
   );
 }
 
@@ -74,24 +83,18 @@ import { bucketSpecForXbc } from "../src/lib/xbc.ts";
   assert(JSON.stringify(original) === before, "the caller's criteria are untouched");
 }
 
-// 5. EVERY code the measurement found empty must relax, and no other code should.
-//    Enumerated from the XBC contract rather than from the ten codes typed by
-//    hand, so a code that starts carrying the restriction is covered by
-//    construction (L96).
+// 5. NO code relaxes any more (#2218). This block used to name the ten codes the
+//    measurement found empty and require exactly those to relax; the criterion is
+//    gone from all sixty, so the set is empty and saying so is the assertion. It
+//    is kept rather than deleted because it is enumerated from the XBC contract,
+//    so a criterion reintroduced on any code fails here as well as in test-xbc.
 {
-  const relaxable: string[] = [];
-  for (const adv of "12345") {
-    for (const bes of "0123") {
-      for (const leg of "012") {
-        const spec = bucketSpecForXbc(`${adv}${bes}${leg}`);
-        if (spec && hasLegalRestriction(spec.criteria)) relaxable.push(spec.code);
-      }
-    }
-  }
-  const expected = ["101", "111", "201", "211", "301", "311", "401", "411", "501", "511"];
+  const relaxable = allXbcCodes().filter((code) =>
+    hasLegalRestriction(bucketSpecForXbc(code)!.criteria),
+  );
   assert(
-    JSON.stringify(relaxable.sort()) === JSON.stringify(expected.sort()),
-    `exactly the ten measured empty codes relax, got ${JSON.stringify(relaxable)}`,
+    relaxable.length === 0,
+    `no code carries a legal restriction to relax, got ${JSON.stringify(relaxable)}`,
   );
 }
 
