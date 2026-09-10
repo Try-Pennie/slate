@@ -72,8 +72,14 @@ assert(files.length > 200, `the scan really read the tree (${files.length} files
 // A file git still tracks but the working tree no longer has (a deletion not yet
 // staged) makes `readFileSync` throw, and a throw here ABORTS the scan partway
 // through: it then reports the offenders it happened to reach and reads as
-// progress. That is the same shape as a scanner blind to a pattern (L98), so an
-// unreadable file is reported and skipped rather than allowed to end the run.
+// progress. Measured while writing this, that took the count from 197 to 13 and
+// dropped every Twilio file the scan had not reached yet, which read as the
+// removal being nearly done. That is the same shape as a scanner blind to a
+// pattern (L98).
+//
+// So an unreadable file ends this run rather than the scan: it is named, counted
+// and skipped, and the run fails on it, because a file that was not scanned
+// cannot be reported as carrying nothing.
 let offenders = 0;
 let unreadable = 0;
 for (const file of files) {
@@ -81,7 +87,11 @@ for (const file of files) {
   try {
     text = readFileSync(file, "utf8");
   } catch {
+    // NAMED, not just counted. A skipped file could be the one carrying the
+    // reference, so a reader has to be able to see which was skipped rather than
+    // read a smaller offender count as a cleaner tree (L11).
     unreadable++;
+    fail(`${file} is tracked but could not be read, so it was NOT scanned`);
     continue;
   }
   const lines = text.split("\n");
@@ -94,11 +104,6 @@ for (const file of files) {
 if (offenders === 0) {
   assert(true, "nothing references the retired legal relaxation");
 }
-// Reported rather than swallowed: a tree where most files could not be read is a
-// scan that proved nothing, whatever its offender count says.
-assert(
-  unreadable * 20 < files.length,
-  `most of the tree was readable (${unreadable} of ${files.length} were not)`,
-);
+assert(unreadable === 0, `every tracked file was scanned (${files.length} read, ${unreadable} not)`);
 
 finish();
