@@ -768,7 +768,7 @@ describe("AgentProfilePage routing attributes are read only (#1874)", () => {
     // and cost a legend the reader has to go and find.
     expect(screen.queryByText("ultra_high, very_high")).toBeNull();
     expect(document.querySelector("[data-ledger]")).toBeNull();
-    expect(screen.getByText("Very High to Ultra High")).toBeTruthy();
+    expect(screen.getByText("Very High, Ultra High")).toBeTruthy();
 
     // The backend gets the same vocabulary treatment, for the same reason.
     expect(screen.getByText("Achieve")).toBeTruthy();

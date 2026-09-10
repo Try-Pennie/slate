@@ -84,14 +84,26 @@ import { DEBT_TIER } from "@/lib/xbc";
   const label = (teams: string[]) => debtTeamLabel(debtTeamCoverage(teams));
   eq(label([]), "No team set", "nothing set says so, rather than rendering blank");
   eq(label(["low"]), "Covers Low", "one tier");
-  eq(label(["low", "medium", "high"]), "Covers Low to High", "a contiguous band reads as a range");
-  eq(label(["medium", "high", "very_high", "ultra_high"]), "Covers Medium to Ultra High", "the top four");
-  eq(label(["low", "medium", "high", "very_high", "ultra_high"]), "Covers every tier", "all five");
+  // #2143: every team is NAMED, contiguous or not. A range names two of the three
+  // teams an agent covers and leaves the reader to work out the rest from a ladder
+  // they have to already know the order of, which is the piece of domain knowledge
+  // this field exists to save them looking up.
+  eq(label(["low", "medium", "high"]), "Covers Low, Medium, High", "a contiguous band names every team in it");
+  eq(
+    label(["medium", "high", "very_high", "ultra_high"]),
+    "Covers Medium, High, Very High, Ultra High",
+    "the top four, named rather than banded",
+  );
+  eq(
+    label(["low", "medium", "high", "very_high", "ultra_high"]),
+    "Covers Low, Medium, High, Very High, Ultra High",
+    "and all five, where a phrase for the whole ladder said nothing at all",
+  );
   eq(label(["low", "high", "ultra_high"]), "Covers Low, High, Ultra High", "a gap reads as a list");
   eq(label(["ultra_high_beyond"]), "Covers ultra_high_beyond", "an off ladder value alone");
   eq(
     label(["low", "medium", "ultra_high_beyond"]),
-    "Covers Low to Medium, plus ultra_high_beyond",
+    "Covers Low, Medium, plus ultra_high_beyond",
     "a band and an off ladder value together, neither hidden",
   );
   // No underscore anywhere a reader can see it, EXCEPT inside a value that is
@@ -136,8 +148,8 @@ import { DEBT_TIER } from "@/lib/xbc";
   eq(say(["low"]), "Low", "one rung is its label");
   eq(
     say(["medium", "high", "very_high", "ultra_high"]),
-    "Medium to Ultra High",
-    "a contiguous band reads as a range, which is how a person says it",
+    "Medium, High, Very High, Ultra High",
+    "a contiguous band names every team, so the reader never recites the ladder (#2143)",
   );
   eq(
     say(["low", "high"]),
@@ -146,8 +158,8 @@ import { DEBT_TIER } from "@/lib/xbc";
   );
   eq(
     say(["low", "medium", "high", "very_high", "ultra_high"]),
-    "every tier",
-    "the whole ladder says so rather than naming both ends",
+    "Low, Medium, High, Very High, Ultra High",
+    "and the whole ladder is named too, since a phrase for it named nothing",
   );
 
   // The off ladder rule the glyph already follows (L113): a stored value that is
