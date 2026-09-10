@@ -62,9 +62,20 @@ export function bucketSpecForXbc(code: string): BucketSpec | null {
 
   const name = `${tier.label} | ${backend.label} | ${legal.label}`;
 
+  // The LEGAL digit names the bucket and routes nothing (#2218). Ten codes used
+  // to carry `legal_eligible!: "N"`, and Dan retired the attribute on 2026-09-10,
+  // so that was a rule nobody set. It was also matching nobody: measured that day,
+  // 90 of the 90 bookable agents were marked `N` and the rule admitted only
+  // not-N, so those ten pools were empty and every lead on them was already being
+  // served by the #2158 widening, which dropped the clause and offered the tier's
+  // whole pool. Dropping it here offers the same people without routing around a
+  // compromise at request time.
+  //
+  // All sixty codes stay valid and every bucket keeps its name: the landing pages
+  // still send the third digit and historical bookings still carry it. `LEGAL` is
+  // a label table now.
   const criteria: Criteria = { debt_team: tier.key };
   if (backend.key) criteria.backend_service = backend.key;
-  if (leg === "1" && backend.key === null) criteria["legal_eligible!"] = "N";
   return { code, name, criteria };
 }
 

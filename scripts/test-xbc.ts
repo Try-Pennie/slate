@@ -14,10 +14,10 @@ const UH = "ultra_high";
 const golden: Record<string, Record<string, string>> = {
   // Low
   "100": { debt_team: LO },
-  "101": { debt_team: LO, "legal_eligible!": "N" },
+  "101": { debt_team: LO },
   "102": { debt_team: LO },
   "110": { debt_team: LO },
-  "111": { debt_team: LO, "legal_eligible!": "N" },
+  "111": { debt_team: LO },
   "112": { debt_team: LO },
   "120": { debt_team: LO, backend_service: "beyond" },
   "121": { debt_team: LO, backend_service: "beyond" },
@@ -27,10 +27,10 @@ const golden: Record<string, Record<string, string>> = {
   "132": { debt_team: LO, backend_service: "achieve" },
   // Medium
   "200": { debt_team: MD },
-  "201": { debt_team: MD, "legal_eligible!": "N" },
+  "201": { debt_team: MD },
   "202": { debt_team: MD },
   "210": { debt_team: MD },
-  "211": { debt_team: MD, "legal_eligible!": "N" },
+  "211": { debt_team: MD },
   "212": { debt_team: MD },
   "220": { debt_team: MD, backend_service: "beyond" },
   "221": { debt_team: MD, backend_service: "beyond" },
@@ -40,10 +40,10 @@ const golden: Record<string, Record<string, string>> = {
   "232": { debt_team: MD, backend_service: "achieve" },
   // High
   "300": { debt_team: HI },
-  "301": { debt_team: HI, "legal_eligible!": "N" },
+  "301": { debt_team: HI },
   "302": { debt_team: HI },
   "310": { debt_team: HI },
-  "311": { debt_team: HI, "legal_eligible!": "N" },
+  "311": { debt_team: HI },
   "312": { debt_team: HI },
   "320": { debt_team: HI, backend_service: "beyond" },
   "321": { debt_team: HI, backend_service: "beyond" },
@@ -53,10 +53,10 @@ const golden: Record<string, Record<string, string>> = {
   "332": { debt_team: HI, backend_service: "achieve" },
   // Very High
   "400": { debt_team: VH },
-  "401": { debt_team: VH, "legal_eligible!": "N" },
+  "401": { debt_team: VH },
   "402": { debt_team: VH },
   "410": { debt_team: VH },
-  "411": { debt_team: VH, "legal_eligible!": "N" },
+  "411": { debt_team: VH },
   "412": { debt_team: VH },
   "420": { debt_team: VH, backend_service: "beyond" },
   "421": { debt_team: VH, backend_service: "beyond" },
@@ -66,10 +66,10 @@ const golden: Record<string, Record<string, string>> = {
   "432": { debt_team: VH, backend_service: "achieve" },
   // Ultra High
   "500": { debt_team: UH },
-  "501": { debt_team: UH, "legal_eligible!": "N" },
+  "501": { debt_team: UH },
   "502": { debt_team: UH },
   "510": { debt_team: UH },
-  "511": { debt_team: UH, "legal_eligible!": "N" },
+  "511": { debt_team: UH },
   "512": { debt_team: UH },
   "520": { debt_team: UH, backend_service: "beyond" },
   "521": { debt_team: UH, backend_service: "beyond" },
@@ -120,20 +120,39 @@ eq(
   "421/422 route identically (BEYOND ignores legal, like cal.com)",
 );
 
-// --- the legal rule is ALWAYS the negation, never a positive allowlist,
-// and only on Both/None+Legal codes ---
+// --- NO code carries a legal criterion, in either form (#2218) ---
+//
+// Dan, 2026-09-10: the legal eligible attribute is no longer used, so every rule
+// Slate carried about it was a rule nobody set. The ten codes that had one were
+// matching zero bookable agents (measured 2026-09-10: 90 of 90 bookable agents
+// were marked N and the rule admitted only not-N), and were living entirely on
+// the #2158 widening, which dropped the clause and offered the tier's whole pool.
+// Removing the criterion offers those leads the same people the widening already
+// gave them, without the compromise being routed around at request time.
+//
+// The CODES stay: all sixty are still valid, the landing pages still send the
+// third digit and historical bookings still carry it. Only the criterion goes,
+// so a Legal code now routes exactly as its Non-Legal and No Legal Param
+// neighbours always did.
 for (const code of allXbcCodes()) {
   const spec = bucketSpecForXbc(code)!;
-  assert(
-    !("legal_eligible" in spec.criteria),
-    `${code} never uses a positive legal_eligible allowlist`,
-  );
-  const [, bes, leg] = code.split("");
-  const shouldLimit = leg === "1" && (bes === "0" || bes === "1");
-  assert(
-    ("legal_eligible!" in spec.criteria) === shouldLimit,
-    `${code} legal rule present iff Both/None backend AND legal lead`,
-  );
+  for (const key of ["legal_eligible", "legal_eligible!"]) {
+    assert(!(key in spec.criteria), `${code} carries no ${key} criterion`);
+  }
+}
+
+// The three legal digits of one tier and backend route IDENTICALLY now, which is
+// the whole behavioural claim of this change. Asserted across every tier and
+// backend rather than on one example, so a criterion reintroduced on a single
+// code cannot pass.
+for (const adv of ["1", "2", "3", "4", "5"]) {
+  for (const bes of ["0", "1", "2", "3"]) {
+    const [none, legal, nonLegal] = ["0", "1", "2"].map(
+      (leg) => bucketSpecForXbc(`${adv}${bes}${leg}`)!.criteria,
+    );
+    eq<unknown>(legal, none, `${adv}${bes}1 routes as ${adv}${bes}0`);
+    eq<unknown>(nonLegal, none, `${adv}${bes}2 routes as ${adv}${bes}0`);
+  }
 }
 
 // --- enumeration + invalid codes ---
