@@ -93,8 +93,11 @@ describe("BookablePill", () => {
   });
 
   it("passes alignToColumn through, so a table cell can line it up", () => {
+    // 21px, not 9: this pill LEADS WITH A MARK, so the cancellation has to clear
+    // the dot and the gap as well or the header lines up with the dot and the word
+    // sits 12px right of it (#2082). The arithmetic lives in Pill.test.tsx.
     const { container } = render(<BookablePill bookable wording="short" alignToColumn />);
-    expect(pill(container as unknown as HTMLElement).className).toMatch(/-ml-\[9px\]/);
+    expect(pill(container as unknown as HTMLElement).className).toMatch(/-ml-\[21px\]/);
   });
 
   it("resolves the two states to the same variants whichever wording is used", () => {
