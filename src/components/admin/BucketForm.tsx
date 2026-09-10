@@ -9,6 +9,7 @@ import { btnCls, inputCls, labelCls } from "@/components/ui/styles";
 import type { RosterEntry } from "@/lib/admin/bucket-member-picker";
 import type { Bucket, EventType } from "@/lib/db/types";
 import { SelectField } from "@/components/ui/SelectField";
+import { UnsavedGuard } from "@/components/ui/UnsavedGuard";
 
 /**
  * The routing pool editor (#1748). Both of these were local helpers on the old
@@ -66,6 +67,9 @@ export function BucketForm({
       action={editing ? updateBucket : createBucket}
       className="space-y-3 rounded-md border border-border p-3"
     >
+      {/* #2076: a bucket's name, code and criteria are typed by hand and exist
+          nowhere else until this saves. */}
+      <UnsavedGuard what="changes to this bucket" />
       {editing && <input type="hidden" name="bucket_id" value={bucket.id} />}
       {editing && (
         <>

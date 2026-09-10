@@ -186,6 +186,7 @@ export function AccountMenu({
           <SaveForm
             action={signOut}
             name="sign-out"
+            unsaved="nothing typed here"
             onStale="reload"
             className="mt-3 border-t border-border pt-3"
           >

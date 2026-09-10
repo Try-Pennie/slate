@@ -160,7 +160,11 @@ export default async function AuditLogPage({
 
         {/* The filter. A GET form, so every view is a URL somebody can link to
             or come back to, and so it works with no JavaScript. */}
-        <form method="GET" action="/admin/audit" className="mb-3 flex flex-wrap items-end gap-2">
+        {/* unsaved-ok: a filter row holds a view, not work. Losing what is in one
+          is an annoyance, and a guard that fires on filters is the one people
+          learn to click through, after which it is not protecting the alert
+          floors either (L36, #2076). */}
+      <form method="GET" action="/admin/audit" className="mb-3 flex flex-wrap items-end gap-2">
           <label className="flex flex-col gap-1 text-xs text-fg-muted">
             Action
             <SelectField

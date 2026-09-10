@@ -172,7 +172,7 @@ export default async function WebhooksPage({
             worst of the three: it said "no API key set" in the same muted grey
             as "API key stored", which is the exact failure this issue is about,
             and after adding the marker there were two captions of one fact (L558). */}
-        <SaveForm action={setWebhookEndpoint} name="webhook-endpoint" className="space-y-3">
+        <SaveForm action={setWebhookEndpoint} name="webhook-endpoint" unsaved="changes to this endpoint" className="space-y-3">
           <div className="flex flex-wrap items-end gap-3">
             <div className="flex-1">
               <label className={labelCls}>URL</label>
@@ -315,6 +315,7 @@ export default async function WebhooksPage({
         </p>
         <SaveForm
           name="webhook-replay"
+          unsaved="nothing typed here"
           action={replayFailedWebhooks}
           className="mb-3 flex flex-wrap items-center gap-2"
         >
@@ -412,7 +413,7 @@ export default async function WebhooksPage({
                       </td>
                       <td className="py-1.5">
                         {view.resendable ? (
-                          <SaveForm action={resendWebhookDelivery} name={`webhook-resend-${d.id}`}>
+                          <SaveForm action={resendWebhookDelivery} name={`webhook-resend-${d.id}`} unsaved="nothing typed here">
                             <input type="hidden" name="delivery_id" value={d.id} />
                             <SubmitButton className={btnSecondaryCls} pendingLabel="Resending…">
                               Resend

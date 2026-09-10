@@ -671,7 +671,7 @@ export default async function OooQueuePage({
                       </p>
                     )}
                     <div className="mt-4 flex flex-wrap items-center gap-3">
-                      <SaveForm action={approveOooAction} name={`ooo-approve-${r.id}`}>
+                      <SaveForm action={approveOooAction} name={`ooo-approve-${r.id}`} unsaved="nothing typed here">
                         <input type="hidden" name="request_id" value={r.id} />
                         <SubmitButton className={btnCls} pendingLabel="Approving…">
                           Approve
@@ -679,6 +679,7 @@ export default async function OooQueuePage({
                       </SaveForm>
                       <SaveForm
                         name={`ooo-reject-${r.id}`}
+                        unsaved="this rejection note"
                         action={rejectOooAction}
                         className="flex flex-1 flex-wrap items-center gap-2"
                       >
@@ -790,7 +791,7 @@ export default async function OooQueuePage({
                         </ConsoleLink>
                       )}
                       {canRetry && r.status === "approved" && failures.length > 0 && (
-                        <SaveForm action={retryOooAction} name={`ooo-retry-${r.id}`}>
+                        <SaveForm action={retryOooAction} name={`ooo-retry-${r.id}`} unsaved="nothing typed here">
                           <input type="hidden" name="request_id" value={r.id} />
                           <SubmitButton className={btnSecondaryCls} pendingLabel="Retrying calendar updates">
                             Retry calendar updates

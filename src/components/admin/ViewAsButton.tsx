@@ -63,6 +63,7 @@ export function ViewAsButton({
     <SaveForm
       action={startImpersonation}
       name={`view-as-${target.email}`}
+      unsaved="nothing typed here"
       // #1998: reload rather than a notice. This form is deliberately taken out
       // of the layout and the accessibility tree below so the button can be the
       // menu's own child, and an alert rendered inside that would be a

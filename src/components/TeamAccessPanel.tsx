@@ -98,7 +98,7 @@ export function TeamAccessPanel({
           was protecting still holds: this row aligns its children on their bottom
           edges, so anything added inside the email column pushes the select and
           the button down by its height to meet it. */}
-      <SaveForm action={grantStaffAccess} name="staff-access">
+      <SaveForm action={grantStaffAccess} name="staff-access" unsaved="this access change">
         <div className="flex flex-wrap items-end gap-3">
         <div className="min-w-0 flex-1">
           <label className="sr-only" htmlFor="staff-email">
@@ -295,6 +295,7 @@ function Lookalike({
         <SaveForm
           action={grantStaffAccess}
           name={`staff-access-lookalike-${lookalike.email}`}
+          unsaved="this access change"
           className="mt-2"
         >
           <input type="hidden" name="email" value={lookalike.email} />

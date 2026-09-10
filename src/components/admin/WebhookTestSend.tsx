@@ -5,6 +5,7 @@ import { SubmitButton } from "@/components/ui/SubmitButton";
 import { Pill } from "@/components/ui/Pill";
 import { btnSecondaryCls, inputCls, labelCls } from "@/components/ui/styles";
 import type { WebhookTestState } from "@/app/admin/actions";
+import { UnsavedGuard } from "@/components/ui/UnsavedGuard";
 
 /**
  * Send one sample event at a URL you paste, and read what came back (#1951).
@@ -31,6 +32,8 @@ export function WebhookTestSend({
   return (
     <div className="space-y-3">
       <form action={formAction} className="space-y-2">
+        {/* #2076: the address to test against is typed here and nowhere else. */}
+        <UnsavedGuard what="the address you typed" />
         <label className={labelCls} htmlFor="webhook-test-target">
           Send a test to
         </label>

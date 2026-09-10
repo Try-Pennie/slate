@@ -1,7 +1,6 @@
 import { WorkingHoursWeek } from "@/components/ui/WorkingHoursWeek";
 import { SaveForm } from "@/components/ui/SaveForm";
 import { labelCls } from "@/components/ui/styles";
-import { UnsavedGuard } from "@/components/ui/UnsavedGuard";
 import { SelectField } from "@/components/ui/SelectField";
 import type { WorkingHoursDay } from "@/lib/schedule-week";
 import { timezoneOptions, resolveZone } from "@/lib/booking/timezones";
@@ -64,10 +63,14 @@ export function WorkingHoursForm({
     // boundary, and what they typed comes back after the reload. This is the
     // exact form Dan lost a save on twice in one morning, and the exact form
     // #1966 lost a week of hours from.
-    <SaveForm action={action} name="working-hours" className="space-y-4">
-      {/* #1966: this is the form Dan lost a week of hours from, by
-          refreshing. */}
-      <UnsavedGuard what="changes to these hours" />
+    // #1966: this is the form Dan lost a week of hours from, by refreshing.
+    // The guard comes from SaveForm itself since #2076.
+    <SaveForm
+      action={action}
+      name="working-hours"
+      unsaved="changes to these hours"
+      className="space-y-4"
+    >
       {userId && <input type="hidden" name="user_id" value={userId} />}
 
       <WorkingHoursWeek

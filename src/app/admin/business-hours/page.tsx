@@ -263,7 +263,7 @@ export default async function BusinessHoursPage({
           bucket. A change refreshes availability across all buckets within a minute
           or two.
         </p>
-        <SaveForm action={setBookingHorizon} name="booking-horizon" className="space-y-4">
+        <SaveForm action={setBookingHorizon} name="booking-horizon" unsaved="changes to the booking window" className="space-y-4">
           <div>
             {/* heading-gloss-ok: the accepted RANGE of the number, derived from the same
                   constants the server validates against. */}
@@ -317,7 +317,7 @@ export default async function BusinessHoursPage({
             <p className={`mb-4 ${proseCls} text-xs text-fg-muted`}>
               What a new agent starts with. Existing agents are not changed.
             </p>
-            <SaveForm action={setOrgDefaultHours} name="org-default-hours" className="flex flex-wrap items-end gap-3">
+            <SaveForm action={setOrgDefaultHours} name="org-default-hours" unsaved="changes to the default hours" className="flex flex-wrap items-end gap-3">
               <div>
                 <label className={labelCls} htmlFor="default_timezone">
                   Timezone
