@@ -1,3 +1,7 @@
+import { sendThrottledAlert } from "@/lib/notify/dispatch";
+import { bookerUnstaffedAlert, BOOKER_UNSTAFFED_COOLDOWN_MS } from "@/lib/booking/alert-copy";
+import { eligibleAgentIdsCached } from "@/lib/availability/eligible-cache";
+import type { Bucket } from "@/lib/db/types";
 import { NextResponse, type NextRequest } from "next/server";
 import { getBucketSlotsWithFallback } from "@/lib/availability/slot-cache";
 import { filterSlotsFromNow } from "@/lib/availability/compute";
@@ -90,7 +94,28 @@ async function handle(req: NextRequest) {
   // Computed only when the result is actually empty, so the ordinary hot path pays
   // nothing extra, and best-effort: if the reason cannot be worked out the client
   // falls back to the vaguer copy rather than the request failing.
-  const emptyBecause = slots.length === 0 ? await whyEmpty(now) : null;
+  const emptyBecause =
+    slots.length === 0 ? await whyEmpty(now, result.bucket) : null;
+
+  // #2158, Dan's call: a lead meeting a bucket with nobody in it is worth
+  // knowing about the moment it happens, not only when the hourly sweep next
+  // looks. It fires only on a REAL bucket (the SMOKE fixtures are staffed on
+  // purpose and the canary watches them), only when the pool is genuinely empty
+  // rather than merely unread, and it is throttled per bucket, because this is
+  // the hot path and one bot can load it as often as it likes.
+  //
+  // It is deliberately a SECOND signal rather than a replacement for
+  // `empty_buckets:*`: that one measures the state whether or not anybody is
+  // looking, which matters because before cutover almost nobody is (#1394). This
+  // one says a person just met it.
+  if (emptyBecause?.kind === "unstaffed" && !result.bucket.is_test) {
+    // alert-key: booker_unstaffed:*
+    await sendThrottledAlert(
+      `booker_unstaffed:${result.bucket.code}`,
+      BOOKER_UNSTAFFED_COOLDOWN_MS,
+      bookerUnstaffedAlert(result.bucket.code),
+    ).catch(() => {});
+  }
 
   // Rule #259: leads must never see routing internals, even in the network
   // payload. Tier-drop is intentionally invisible: we report the REQUESTED
@@ -130,8 +155,8 @@ async function handle(req: NextRequest) {
  * blocker is dropped here (the lead is served the vaguer copy either way) and kept
  * in the log line, which is where a forensic reader looks.
  */
-async function whyEmpty(nowMs: number): Promise<EmptyReason | null> {
-  const [hours, horizonDays] = await Promise.all([
+async function whyEmpty(nowMs: number, bucket: Bucket): Promise<EmptyReason | null> {
+  const [hours, horizonDays, pooledAgents] = await Promise.all([
     loadBusinessHoursCached().catch((err) => {
       log.warn("availability", { msg: "could not read the org's week" }, err);
       return null;
@@ -140,6 +165,17 @@ async function whyEmpty(nowMs: number): Promise<EmptyReason | null> {
       log.warn("availability", { msg: "could not read the booking horizon" }, err);
       return null;
     }),
+    // #2158: the one thing that can tell a full bucket from an empty one, since
+    // both produce the same empty list. Through the 60s cached resolver, and only
+    // on this branch, so the ordinary hot path pays nothing. A failed read is
+    // NULL, never zero: zero would tell every lead nobody works here on the
+    // strength of a query that never ran.
+    eligibleAgentIdsCached(bucket)
+      .then((r) => r.ids.length)
+      .catch((err) => {
+        log.warn("availability", { msg: "could not count the bucket's pool" }, err);
+        return null;
+      }),
   ]);
   // An UNEXPECTED throw from the classifier still serves the window. This route's
   // whole failure mode is that showing a lead no times looks exactly like a full
@@ -147,7 +183,7 @@ async function whyEmpty(nowMs: number): Promise<EmptyReason | null> {
   // carries the times themselves (#1049).
   let outcome: ReturnType<typeof explainEmptyWindow>;
   try {
-    outcome = explainEmptyWindow({ hours, horizonDays, nowMs });
+    outcome = explainEmptyWindow({ hours, horizonDays, nowMs, pooledAgents });
   } catch (err) {
     log.warn("availability", { msg: "the empty-window classifier threw" }, err);
     return null;

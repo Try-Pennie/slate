@@ -39,6 +39,7 @@ import {
   UNCLASSIFIED_EMPTY_NOTICE,
   UNCLASSIFIED_EMPTY_RETRY,
   allTimesTaken,
+  noAdvisorsAvailable,
   closedNoReopenDate,
   closedUntil,
   confirmedAnnouncement,
@@ -137,6 +138,10 @@ export function bookerCopyScreens(): CopyScreen[] {
         "neither is the same as not knowing which it is.",
       lines: [
         { state: "every time in the window is taken", text: allTimesTaken() },
+        {
+          state: "the bucket has nobody in it at all",
+          text: noAdvisorsAvailable(),
+        },
         { state: "closed, with a known reopening day", text: closedUntil("2026-08-17", ZONE) },
         {
           state: "and what follows it, only when there is a day to point at",

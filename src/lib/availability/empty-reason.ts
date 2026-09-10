@@ -25,8 +25,18 @@ export type EmptyReason =
        *  than a closure, and must not be reported as a date. */
       reopensOn: string | null;
     }
-  /** The org was open on at least one searched day and still produced nothing:
-   *  either genuinely full, or nobody rostered. Either way not a closure. */
+  /**
+   * The org was open and the bucket has NOBODY in its pool (#2158). Not a full
+   * week: nothing is taken, and "soon" may be never. Ten of the sixty real
+   * buckets were in this state when it was measured on 2026-09-09.
+   *
+   * Distinct from `busy` because the two call for opposite responses and, said
+   * as one word, the wrong one is what a lead reads: `busy` is an ordinary
+   * evening, and this is a misconfiguration nobody has noticed.
+   */
+  | { kind: "unstaffed" }
+  /** The org was open on at least one searched day, people are in the pool, and
+   *  it still produced nothing: genuinely full. Not a closure. */
   | { kind: "busy" };
 
 /** How far ahead to look for the reopening day. A month is generous for a holiday
@@ -59,6 +69,15 @@ export function emptyReason(input: {
   /** How many calendar days were searched, inclusive of `fromDay`. */
   searchedDays: number;
   zone: string;
+  /**
+   * How many agents are in the bucket's pool, or NULL when the count could not be
+   * read (#2158).
+   *
+   * Null is not zero, and the difference matters more here than anywhere else in
+   * this file: a failed read arriving as zero would tell every lead that nobody
+   * works here, on the strength of a query that never ran (L215).
+   */
+  pooledAgents: number | null;
 }): EmptyReason {
   const hours = { rules: input.businessHours, exceptions: input.exceptions };
   const start = DateTime.fromISO(input.fromDay, { zone: input.zone });
@@ -70,8 +89,10 @@ export function emptyReason(input: {
 
   for (let i = 0; i < input.searchedDays; i++) {
     if (openOn(start.plus({ days: i }))) {
-      // At least one searched day was open, so this is supply, not a closure.
-      return { kind: "busy" };
+      // At least one searched day was open, so this is supply, not a closure. Which
+      // KIND of supply problem is what the pool size decides, and it is the only
+      // thing that can: an empty bucket and a full one produce the same empty list.
+      return input.pooledAgents === 0 ? { kind: "unstaffed" } : { kind: "busy" };
     }
   }
 
@@ -97,6 +118,12 @@ export interface EmptyWindowInputs {
   hours: { zone: string; rules: BusinessWindow[]; exceptions: BusinessHoursException[] } | null;
   horizonDays: number | null;
   nowMs: number;
+  /**
+   * How many agents are in this bucket's pool, or null when the count could not
+   * be read (#2158). REQUIRED, so tsc names every caller rather than letting a
+   * new one silently default to a state that tells leads nobody works here.
+   */
+  pooledAgents: number | null;
 }
 
 /**
@@ -156,6 +183,7 @@ export function explainEmptyWindow(input: EmptyWindowInputs): EmptyWindowExplana
       // was shut" means exactly that rather than some other span.
       searchedDays: searchWindowDays(input.horizonDays!),
       zone: hours.zone,
+      pooledAgents: input.pooledAgents ?? null,
     }),
     blockedBy: null,
   };

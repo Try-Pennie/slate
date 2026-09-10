@@ -57,6 +57,17 @@ const hours = vi.hoisted(() => ({
   })),
 }));
 const settings = vi.hoisted(() => ({ loadBookingHorizonDays: vi.fn(async () => 4) }));
+// #2158: the pool count is the only thing that can tell an EMPTY bucket from a
+// FULL one, since both produce the same empty slot list. Defaulted to a staffed
+// pool so every pre-existing case keeps meaning what it meant.
+const eligible = vi.hoisted(() => ({
+  eligibleAgentIdsCached: vi.fn(async () => ({
+    ids: ["u1", "u2"],
+    fallbackApplied: false,
+    legalRelaxed: false,
+  })),
+}));
+vi.mock("@/lib/availability/eligible-cache", () => eligible);
 vi.mock("@/lib/booking/business-hours-load", () => hours);
 vi.mock("@/lib/booking/settings", () => settings);
 
@@ -328,5 +339,98 @@ describe("GET /api/availability empty-state reason (#1328)", () => {
 
     expect(res.status).toBe(200);
     expect((await res.json()).emptyBecause).toBeNull();
+  });
+});
+
+
+// #2158 -----------------------------------------------------------------------
+
+describe("GET /api/availability, a bucket with nobody in it (#2158)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    hours.loadBusinessHoursCached.mockResolvedValue({
+      zone: "America/New_York",
+      rules: [1, 2, 3, 4, 5, 6, 7].map((weekday) => ({ weekday, start_minute: 480, end_minute: 1020 })),
+      exceptions: [],
+      source: "stored" as const,
+    });
+    settings.loadBookingHorizonDays.mockResolvedValue(4);
+    eligible.eligibleAgentIdsCached.mockResolvedValue({
+      ids: [],
+      fallbackApplied: false,
+      legalRelaxed: false,
+    });
+  });
+
+  /** An empty result on a real, open bucket. */
+  function emptyRealBucket(isTest = false) {
+    return { ...slotsFor(isTest), slots: [], bucket: { code: "120", is_test: isTest } };
+  }
+
+  it("tells the booker the bucket is unstaffed, not that it is busy", async () => {
+    cache.getBucketSlotsWithFallback.mockResolvedValue(emptyRealBucket());
+    const body = await (await get("120")).json();
+    expect(body.emptyBecause).toEqual({ kind: "unstaffed" });
+  });
+
+  it("sends one throttled notice, keyed to the bucket, saying somebody actually arrived", async () => {
+    cache.getBucketSlotsWithFallback.mockResolvedValue(emptyRealBucket());
+    await get("120");
+
+    const call = sendThrottledAlert.mock.calls.find(([key]) =>
+      typeof key === "string" && key.startsWith("booker_unstaffed:"),
+    );
+    expect(call).toBeDefined();
+    expect(call![0]).toBe("booker_unstaffed:120");
+    expect(typeof call![1]).toBe("number");
+    expect(String(call![2])).toContain("nobody to route to");
+  });
+
+  it("says nothing for the SMOKE fixtures, which are staffed on purpose and watched by the canary", async () => {
+    cache.getBucketSlotsWithFallback.mockResolvedValue(emptyRealBucket(true));
+    await get("120", "Bearer smoke-key");
+
+    const calls = sendThrottledAlert.mock.calls.filter(([key]) =>
+      typeof key === "string" && key.startsWith("booker_unstaffed:"),
+    );
+    expect(calls).toHaveLength(0);
+  });
+
+  it("says nothing, and claims nothing, when the pool count could not be read", async () => {
+    // A failed read is not an empty pool. Reporting it as one would tell every
+    // lead nobody works here on the strength of a query that never ran, and would
+    // page about it too.
+    eligible.eligibleAgentIdsCached.mockRejectedValue(new Error("supabase down"));
+    cache.getBucketSlotsWithFallback.mockResolvedValue(emptyRealBucket());
+
+    const res = await get("120");
+    const body = await res.json();
+    expect(res.status).toBe(200);
+    expect(body.emptyBecause).toEqual({ kind: "busy" });
+    expect(
+      sendThrottledAlert.mock.calls.filter(([k]) => String(k).startsWith("booker_unstaffed:")),
+    ).toHaveLength(0);
+  });
+
+  it("says nothing when the bucket has people in it and is merely full", async () => {
+    eligible.eligibleAgentIdsCached.mockResolvedValue({
+      ids: ["u1"],
+      fallbackApplied: false,
+      legalRelaxed: false,
+    });
+    cache.getBucketSlotsWithFallback.mockResolvedValue(emptyRealBucket());
+
+    const body = await (await get("120")).json();
+    expect(body.emptyBecause).toEqual({ kind: "busy" });
+    expect(
+      sendThrottledAlert.mock.calls.filter(([k]) => String(k).startsWith("booker_unstaffed:")),
+    ).toHaveLength(0);
+  });
+
+  it("does not count the pool at all when there are times to offer", async () => {
+    cache.getBucketSlotsWithFallback.mockResolvedValue(slotsFor(false));
+    await get("SMOKE");
+    // The ordinary hot path must pay nothing for this.
+    expect(eligible.eligibleAgentIdsCached).not.toHaveBeenCalled();
   });
 });
