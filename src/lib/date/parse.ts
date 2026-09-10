@@ -51,6 +51,39 @@ export function formatClockTime(dt: DateTime): string | null {
   return formatTimeOfDay(dt.toFormat("HH:mm"));
 }
 
+/**
+ * THE long date spelling, US order: `Friday, January 1, 2027`, or
+ * `Friday, January 1` without the year. Null for an invalid `DateTime`.
+ *
+ * One spelling for every surface (#2221), and the date sibling of
+ * {@link formatClockTime}. The rule "US order everywhere, never 17 August" was
+ * already written down, twice, in a comment beside two separate hand rolled
+ * copies in `ManageBooking` and `booker-copy`. Nothing enforced it, so the three
+ * admin surfaces written afterwards spelled the same fact the other way round
+ * and the business hours page confirmed a holiday as `Friday 1 January 2027`. A
+ * rule stated only in a comment beside one copy is enforced by nothing (L407),
+ * and sharing a rule's data while copying the code that applies it is not
+ * consolidation (L370): what makes this one real is the guard in
+ * `scripts/test-one-time-rule.ts`, not this docstring.
+ *
+ * It renders in the `DateTime`'s OWN zone, so the caller decides which day this
+ * is and the machine's zone never quietly moves it. The LOCALE is the opposite:
+ * it is pinned here rather than inherited. `ManageBooking` built this date with
+ * `Intl.DateTimeFormat("en-US", ...)`, which names its locale, while Luxon's
+ * `toFormat` follows the `DateTime`'s, which defaults to the machine's. Folding
+ * the two together without the pin would make the words on a lead's confirmation
+ * screen depend on the runtime's locale, and every English machine would report
+ * that as fine (L504).
+ *
+ * Null rather than a fallback string, for the same reason {@link formatClockTime}
+ * answers null: a formatter returning a plausible looking date for a value
+ * nobody chose would put it on screen as fact (L67).
+ */
+export function formatLongDate(dt: DateTime, opts?: { year?: boolean }): string | null {
+  if (!dt.isValid) return null;
+  return dt.setLocale("en-US").toFormat(opts?.year ? "cccc, LLLL d, yyyy" : "cccc, LLLL d");
+}
+
 /** Every quarter hour of the day as "HH:MM", 00:00 through 23:45. */
 export const QUARTER_HOUR_TIMES: string[] = Array.from({ length: 96 }, (_, i) => {
   const minutes = i * 15;

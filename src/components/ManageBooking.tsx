@@ -2,6 +2,7 @@
 
 import { useMemo, useState } from "react";
 import { DateTime } from "luxon";
+import { formatLongDate } from "@/lib/date/parse";
 
 import {
   deviceTimeZone,
@@ -75,14 +76,15 @@ function XIcon() {
   );
 }
 
-/** US order everywhere (#1336): "Monday, August 17", never "17 August". */
+/**
+ * US order everywhere: "Monday, August 17", never "17 August" (#1336).
+ *
+ * The rule now lives in `formatLongDate` rather than in this comment beside a
+ * hand rolled copy of it, which is what let three admin surfaces spell the same
+ * fact the other way round (#2221).
+ */
 function longDay(iso: string, timeZone: string) {
-  return new Intl.DateTimeFormat("en-US", {
-    timeZone,
-    weekday: "long",
-    month: "long",
-    day: "numeric",
-  }).format(new Date(iso));
+  return formatLongDate(DateTime.fromISO(iso, { zone: timeZone })) ?? "";
 }
 
 /** Time alone, e.g. "10:00am". Lowercase meridiem to match the booker. */

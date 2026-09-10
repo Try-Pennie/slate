@@ -24,29 +24,42 @@ import { assert, fail, finish } from "./lib/harness.ts";
 const HOME = "src/lib/date/parse.ts";
 
 /**
- * Components only, which is exactly what the issue asks and no more. The server's
- * own defensive snap in `src/app/admin/actions.ts` is a different concern with a
- * different reason (a value arriving from outside a form), and pulling it in here
- * would make this guard an argument rather than a rule.
+ * ALL of `src`, not components only (#2221).
+ *
+ * It was components only while the rules were about time, which was exactly what
+ * #1765 asked and no more. The long DATE rule cannot live inside that boundary:
+ * two of the nine copies of the long date format were in `src/lib`
+ * (`booker-copy.ts`) and `src/app`, so a components only scan would have reported
+ * a clean tree over the very files the issue was about (L98).
+ *
+ * Widening was measured before it was done rather than assumed safe: across all
+ * 537 files of `src`, the existing TIME rules trip exactly one further site,
+ * `src/lib/webhooks/regal.ts`, which is a machine payload field pinned by
+ * `scripts/test-regal.ts` and already carried its reason in prose. It now carries
+ * the opt-out marker as well, which is the whole cost of the widening.
  */
-function componentFiles(): string[] {
+function scannedFiles(): string[] {
   // The env is scrubbed because the pre-push hook exports GIT_DIR and friends, and
   // an inherited GIT_DIR makes this read the real repo rather than its own cwd
   // (#848/#853). scripts/test-git-env-isolation.ts enforces it.
-  return execFileSync("git", ["ls-files", "src/components"], {
+  return execFileSync("git", ["ls-files", "src"], {
     encoding: "utf8",
     env: scrubbedGitEnv(),
   })
     .split("\n")
-    .filter((f) => /\.tsx?$/.test(f) && !/\.test\.tsx?$/.test(f));
+    .filter((f) => /\.tsx?$/.test(f) && !/\.test\.tsx?$/.test(f) && f !== HOME);
 }
 
 
-// --- the components ---
+// --- the tree ---
 {
-  const offenders = componentFiles().flatMap((f) => scanTimeRules(f, readFileSync(f, "utf8")));
+  const files = scannedFiles();
+  // A scan of nothing reports the same empty list a clean tree does (L98), so the
+  // count is asserted before its result is read.
+  assert(files.length > 100, `the scan really read the tree (${files.length} files)`);
+  const offenders = files.flatMap((f) => scanTimeRules(f, readFileSync(f, "utf8")));
   if (offenders.length === 0) {
-    assert(true, "no component carries its own time conversion, snapping, padding or spelling");
+    assert(true, "nothing in src carries its own time or long date spelling");
   } else {
     for (const o of offenders) fail(`${o.file}:${o.line} ${o.why}`);
   }
@@ -62,6 +75,7 @@ function componentFiles(): string[] {
     "snapTimeOfDay",
     "formatTimeOfDay",
     "formatClockTime",
+    "formatLongDate",
     "resolveTypedTime",
     "roundUpToQuarterHour",
     "roundDownToQuarterHour",
@@ -99,7 +113,62 @@ function componentFiles(): string[] {
   caught('return dt.toFormat("ccc d LLL, h:mm a");', "a time spelled inside a longer format");
   caught('return start.toFormat("hh:mm a");', "the two digit hour spelling");
 
-  allowed('return dt.toFormat("ccc, LLL d yyyy");', "a DATE format, which is a different fact");
+  // --- the long DATE spelling (#2221) ---
+  caught('return d.toFormat("cccc d LLLL yyyy");', "the British order that shipped on the admin page");
+  caught('return d.toFormat("cccc d LLLL");', "the same order without a year");
+  caught('return d.toFormat("cccc, LLLL d, yyyy");', "the CORRECT order, still a second copy of it");
+  caught('return d.toFormat("cccc, LLLL d");', "the correct order without a year, also a second copy");
+  caught('return d.toFormat("LLLL d, cccc");', "the two tokens the other way round");
+  caught(
+    'const f = new Intl.DateTimeFormat("en-US", { timeZone, weekday: "long", month: "long", day: "numeric" });',
+    "the same date built with Intl on one line",
+  );
+  caught(
+    [
+      'return new Intl.DateTimeFormat("en-US", {',
+      "  timeZone,",
+      '  weekday: "long",',
+      '  month: "long",',
+      '  day: "numeric",',
+      "}).format(new Date(iso));",
+    ].join("\n"),
+    "the same date built with Intl across several lines, which a line scan cannot see",
+  );
+
+  caught(
+    ['const dayLabel = DateTime.fromISO(day.iso, { zone }).toFormat(', '  "cccc d LLLL",', ");"].join("\n"),
+    "a long date whose format string prettier wrapped onto its own line",
+  );
+
+  allowed('return dt.toFormat("ccc, LLL d yyyy");', "an ABBREVIATED date, a different format");
+  allowed('return dt.toFormat("cccc");', "a bare weekday, which is not a date");
+  allowed('return dt.toFormat("LLLL yyyy");', "a month and year, which carries no day");
+  allowed(
+    'return new Intl.DateTimeFormat("en-US", { timeZone, weekday: "short", month: "short", day: "numeric" }).format(d);',
+    "the abbreviated Intl date",
+  );
+  allowed(
+    'return new Intl.DateTimeFormat("en-US", { timeZone, hour: "numeric", minute: "2-digit" }).format(d);',
+    "an Intl TIME, which names no weekday",
+  );
+  allowed(
+    'return d.toFormat("cccc, LLLL d, yyyy"); // one-date-rule-ok: the shared formatter itself',
+    "the long date opt-out with a reason",
+  );
+  caught(
+    'return d.toFormat("cccc, LLLL d, yyyy"); // one-date-rule-ok:',
+    "a long date opt-out carrying no reason",
+  );
+  // The two opt-outs are SEPARATE tokens, so a second rule does not silently widen
+  // an exemption somebody wrote about the first (L448).
+  caught(
+    'return d.toFormat("cccc, LLLL d"); // one-time-rule-ok: a webhook payload field',
+    "the TIME opt-out does not exempt a long date",
+  );
+  caught(
+    'return start.toFormat("hh:mm a"); // one-date-rule-ok: a date reason',
+    "the DATE opt-out does not exempt a time",
+  );
   allowed('return dt.toFormat("HH:mm");', "the 24 hour spelling, which has only ever had one form");
   allowed("import { padTwo, snapTimeOfDay } from \"@/lib/date/parse\";", "importing the shared rules");
   allowed("const step = Math.floor(minutes / 60);", "arithmetic that is not the snapping rule");
@@ -128,6 +197,22 @@ function componentFiles(): string[] {
   assert(
     hits.length >= 2,
     `reverting the deleted snapMinute into the real component is caught (${hits.length} findings)`,
+  );
+
+  // The same control for the DATE rule, in the file the issue was reported
+  // against: put the British order back and require this guard to catch it there.
+  const exceptions = readFileSync("src/components/ui/BusinessHoursExceptions.tsx", "utf8");
+  const britishBack = exceptions.replace(
+    /formatLongDate\([^)]*\)/,
+    'd.toFormat("cccc d LLLL yyyy")',
+  );
+  assert(
+    britishBack !== exceptions,
+    "the overlay found the shared formatter in the real component, so the control below is real",
+  );
+  assert(
+    scanTimeRules("src/components/ui/BusinessHoursExceptions.tsx", britishBack).length > 0,
+    "putting the British order back into the real component is caught",
   );
 }
 

@@ -84,12 +84,12 @@ describe("BucketSupplyTable (#1254)", () => {
     // drift back to holding its own sentence while the builder read fine (L41).
     expect(
       screen.getByText(
-        supplyCellTitle(cells[0], "120 Low | Beyond | No Legal Param", "Tuesday 4 August"),
+        supplyCellTitle(cells[0], "120 Low | Beyond | No Legal Param", "Tuesday, August 4"),
       ),
     ).toBeTruthy();
     expect(
       screen.getByText(
-        supplyCellTitle(cells[1], "120 Low | Beyond | No Legal Param", "Wednesday 5 August"),
+        supplyCellTitle(cells[1], "120 Low | Beyond | No Legal Param", "Wednesday, August 5"),
       ),
     ).toBeTruthy();
   });

@@ -1,4 +1,5 @@
 import { DateTime } from "luxon";
+import { formatLongDate } from "@/lib/date/parse";
 import { BUSINESS_ZONE } from "@/lib/booking/business-hours";
 import { gridTotals, type AvailabilityGrid } from "@/lib/admin/availability-grid";
 import { CELL_TREATMENTS, cellTitle, treatmentFor } from "@/lib/admin/availability-grid-copy";
@@ -81,9 +82,8 @@ export function AvailabilityGridTable({ grid }: { grid: AvailabilityGrid }) {
                 {grid.days.map((day) => {
                   const cell = day.cells[hourIndex];
                   const style = treatmentFor(cell.kind);
-                  const dayLabel = DateTime.fromISO(day.iso, { zone: BUSINESS_ZONE }).toFormat(
-                    "cccc d LLLL",
-                  );
+                  const dayLabel =
+                    formatLongDate(DateTime.fromISO(day.iso, { zone: BUSINESS_ZONE })) ?? day.iso;
                   const title = cellTitle(cell, dayLabel, hour);
                   return (
                     <td key={day.iso} className="p-0.5">

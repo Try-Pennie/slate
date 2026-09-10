@@ -42,9 +42,9 @@ describe("AvailabilityGridTable (#1302)", () => {
 
     // The exact builder output, on screen. Anything less would let the component
     // drift back to holding its own sentence while the builder read fine (L41).
-    expect(screen.getByText(cellTitle(ALL_STATES[0], "Monday 24 August", 9))).toBeTruthy();
-    expect(screen.getByText(cellTitle(ALL_STATES[2], "Wednesday 26 August", 9))).toBeTruthy();
-    expect(screen.getByText(cellTitle(ALL_STATES[4], "Friday 28 August", 9))).toBeTruthy();
+    expect(screen.getByText(cellTitle(ALL_STATES[0], "Monday, August 24", 9))).toBeTruthy();
+    expect(screen.getByText(cellTitle(ALL_STATES[2], "Wednesday, August 26", 9))).toBeTruthy();
+    expect(screen.getByText(cellTitle(ALL_STATES[4], "Friday, August 28", 9))).toBeTruthy();
   });
 
   it("carries a letter as well as a colour, for every state that is not an absence", () => {

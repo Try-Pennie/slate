@@ -1,4 +1,5 @@
 import { DateTime } from "luxon";
+import { formatLongDate } from "@/lib/date/parse";
 import {
   dayIsClosed,
   debtTierDigitOf,
@@ -71,7 +72,7 @@ export function BucketSupplyTable({
   const totals = supplyTotals(rows, 0);
   const closedToday = dayIsClosed(rows, 0);
   const todayLabel = days[0]
-    ? DateTime.fromISO(days[0].iso, { zone }).toFormat("cccc d LLLL")
+    ? (formatLongDate(DateTime.fromISO(days[0].iso, { zone })) ?? "today")
     : "today";
 
   // One `tbody` per DEBT TIER, descending, each opening with a `scope="rowgroup"`
@@ -295,9 +296,8 @@ export function BucketSupplyTable({
                     </td>
                     {row.cells.map((cell, i) => {
                       const style = cellStyle(cell);
-                      const dayLabel = DateTime.fromISO(days[i].iso, { zone }).toFormat(
-                        "cccc d LLLL",
-                      );
+                      const dayLabel =
+                        formatLongDate(DateTime.fromISO(days[i].iso, { zone })) ?? days[i].iso;
                       const title = supplyCellTitle(cell, bucketLabel, dayLabel);
                       return (
                         <td
