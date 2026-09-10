@@ -5,6 +5,7 @@ import { TimeField } from "@/components/ui/TimeField";
 import { SubmitButton } from "@/components/ui/SubmitButton";
 import { labelCls, btnCls } from "@/components/ui/styles";
 import type { BusinessHoursFormState } from "@/app/admin/actions";
+import { HOURS_SAVED_MESSAGE } from "@/lib/booking/business-hours-copy";
 import type { CoverageReadout } from "@/lib/booking/business-hours-coverage";
 import { coverageGapPhrases, gapsFromCoverage } from "@/lib/monitor/roster-coverage";
 import { Pill } from "@/components/ui/Pill";
@@ -160,7 +161,7 @@ export function BusinessHoursForm({
           role="status"
           className="rounded-[var(--radius-md)] border border-border bg-[var(--bg-alt)] px-4 py-3 text-sm text-fg"
         >
-          Saved. Leads see the new hours straight away.
+          {HOURS_SAVED_MESSAGE}
         </p>
       )}
 
