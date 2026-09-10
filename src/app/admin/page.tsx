@@ -180,6 +180,15 @@ function liveWatchedUserIds(
 
 function VerdictBadge({ verdict }: { verdict: Verdict }) {
   return (
+    // mark-ok: an OVAL, so its shared component is Pill rather than MarkedLabel
+    // (#2112 found this one, #2197 settles it). An oval moves its LABEL down, which
+    // puts the word's optical centre where the mark already is, so the pair is
+    // centred on each other AND in the oval; moving the mark instead would leave
+    // both riding high in it (#2081). Becoming a Pill is a decision about this
+    // badge's treatment, not a mechanical conversion: Pill is 13px semibold on
+    // every variant but role-agent, and Checked is the commonest verdict on this
+    // card, where the quietest treatment for the commonest value is what makes the
+    // exceptions visible (L609).
     <span className="inline-flex items-center gap-1.5 rounded-full border border-border px-2.5 py-0.5 text-xs text-fg-muted">
       <span className={`inline-block size-2 shrink-0 rounded-full ${VERDICT_DOT[verdict]}`} />
       {VERDICT_LABEL[verdict]}

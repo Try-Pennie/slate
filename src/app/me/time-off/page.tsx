@@ -19,6 +19,7 @@ import { OooForm } from "@/components/ui/OooForm";
 import { RequestActions } from "@/components/ui/RequestActions";
 import type { OooRequest, OooStatus, User } from "@/lib/db/types";
 import { AdminPageHeader } from "@/components/admin/AdminPageHeader";
+import { MarkedLabel } from "@/components/ui/MarkedLabel";
 
 export const dynamic = "force-dynamic";
 
@@ -124,13 +125,12 @@ function RequestList({
           </div>
           {isChangeable(r) &&
             (isEditing ? (
-              <span className="inline-flex shrink-0 items-center gap-1.5 px-3 py-1.5 text-sm font-semibold text-pennie-blue dark:text-pennie-sky">
-                <span
-                  aria-hidden="true"
-                  className="h-1.5 w-1.5 rounded-full bg-pennie-sky"
-                />
+              <MarkedLabel
+                className="shrink-0 gap-1.5 px-3 py-1.5 text-sm font-semibold text-pennie-blue dark:text-pennie-sky"
+                mark={<span className="h-1.5 w-1.5 rounded-full bg-pennie-sky" />}
+              >
                 Editing above
-              </span>
+              </MarkedLabel>
             ) : (
               <RequestActions requestId={r.id} cancelAction={cancelMyOoo} />
             ))}

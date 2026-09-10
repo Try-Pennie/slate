@@ -97,6 +97,7 @@ type DuplicateWarning =
  * erased, so no server module reaches the bundle.
  */
 import type { ExistingCall } from "@/lib/booking/orchestration";
+import { MarkedLabel } from "@/components/ui/MarkedLabel";
 
 interface BookerProps {
   bucketCode: string;
@@ -1427,13 +1428,14 @@ export default function Booker({
                 <button
                   key={iso}
                   onClick={() => setSelectedSlot(iso)}
-                  className={`flex min-h-11 w-full items-center gap-2 rounded-md border px-3 py-2.5 text-left text-sm tabular-nums ${c.slot}`}
+                  className={`flex min-h-11 w-full items-center rounded-md border px-3 py-2.5 text-left text-sm tabular-nums ${c.slot}`}
                 >
-                  <span
-                    className="h-1.5 w-1.5 rounded-full bg-pennie-green"
-                    style={dotStyle}
-                  />
-                  {fmtTime(iso)}
+                  <MarkedLabel
+                    className="gap-2"
+                    mark={<span className="h-1.5 w-1.5 rounded-full bg-pennie-green" style={dotStyle} />}
+                  >
+                    {fmtTime(iso)}
+                  </MarkedLabel>
                 </button>
               )}
             />

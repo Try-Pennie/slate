@@ -26,7 +26,11 @@ const EDITABLE = /<(textarea|select)\b|<input\b(?![^>]*\btype=(?:"|')(?:hidden|s
  * blocks, and a convention that only read `//` would be one nobody could obey where
  * it is needed.
  */
-const OPT_OUT = /unsaved-ok:\s*\S/;
+// The reason must start with a WORD rather than merely with a non-space
+// character: in a JSX comment the terminator itself is a non-space character, so
+// `{/* unsaved-ok: *\/}` satisfied the looser form and read as an exemption
+// somebody had thought about (#2112, found by writing the same rule again).
+const OPT_OUT = /unsaved-ok:[ \t]*[A-Za-z0-9]/;
 
 export interface UnguardedForm {
   file: string;

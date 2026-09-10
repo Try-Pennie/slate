@@ -8,6 +8,7 @@ import { SubmitButton } from "@/components/ui/SubmitButton";
 import { signOut } from "@/app/auth-actions";
 import type { ThemePreference } from "@/lib/db/types";
 import type { CalendarMenuStatus } from "@/lib/calendar/header-status";
+import { MarkedLabel } from "@/components/ui/MarkedLabel";
 
 /**
  * Collapses the header's secondary chrome — identity, theme, calendar status —
@@ -125,34 +126,31 @@ export function AccountMenu({
           {calendar !== "na" && (
             <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-border pt-3 text-sm">
               {calendar === "connected" && (
-                <span className="inline-flex items-center gap-2 text-fg-muted">
-                  <span
-                    aria-hidden
-                    className="h-2 w-2 rounded-full bg-[var(--pennie-green-deep)]"
-                  />
+                <MarkedLabel
+                  className="gap-2 text-fg-muted"
+                  mark={<span className="h-2 w-2 rounded-full bg-[var(--pennie-green-deep)]" />}
+                >
                   Calendar connected
-                </span>
+                </MarkedLabel>
               )}
               {calendar === "degraded" && (
                 // Real-time push is delayed but the every-minute backstop still
                 // syncs this agent, so this is informational, not the loud case.
-                <span className="inline-flex items-center gap-2 text-fg-muted">
-                  <span
-                    aria-hidden
-                    className="h-2 w-2 rounded-full bg-[var(--pennie-yellow)]"
-                  />
+                <MarkedLabel
+                  className="gap-2 text-fg-muted"
+                  mark={<span className="h-2 w-2 rounded-full bg-[var(--pennie-yellow)]" />}
+                >
                   Calendar syncing (live updates delayed)
-                </span>
+                </MarkedLabel>
               )}
               {calendar === "disconnected" && (
                 <>
-                  <span className="inline-flex items-center gap-2 font-semibold text-error">
-                    <span
-                      aria-hidden
-                      className="h-2 w-2 rounded-full bg-[var(--error)]"
-                    />
+                  <MarkedLabel
+                    className="gap-2 font-semibold text-error"
+                    mark={<span className="h-2 w-2 rounded-full bg-[var(--error)]" />}
+                  >
                     Calendar not connected
-                  </span>
+                  </MarkedLabel>
                   <a
                     href="/login"
                     className="text-pennie-blue underline dark:text-pennie-sky"
