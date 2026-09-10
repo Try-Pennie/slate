@@ -845,7 +845,30 @@ describe("a hire becomes bookable on the first tier or the Sales profile (#2071)
     expect(result.bookablePending).toEqual([]);
   });
 
-  it("writes no debt team or backend service of its own, and leaves the ones Twilio wrote alone", async () => {
+  it("counts somebody carrying tiers on a profile that will never make them bookable", async () => {
+    // #2182: becoming bookable is the Sales profile alone, so a hire left on
+    // Chatter Free with tiers is waiting on a Salesforce edit nobody has been told
+    // is owed. Nothing here advances them, which is the intent, so the run says how
+    // many are in that state rather than leaving it silent (L636).
+    store.config.existing = [
+      { id: "u1", email: "waiting@x.com", attributes: { role: "Chatter Free User", debt_team: ["low"] }, bookable: false, deactivated_at: null, bookable_pending_since: null },
+      { id: "u2", email: "fine@x.com", attributes: { role: "Sales", debt_team: ["low"] }, bookable: true, deactivated_at: null, bookable_pending_since: null },
+    ];
+    store.config.afterInsert = [{ id: "u1", email: "waiting@x.com", manager_id: null, role: "agent" }];
+    sfRoster([
+      { Email: "waiting@x.com", Name: "Waiting", Profile: { Name: "Chatter Free User" } },
+      { Email: "fine@x.com", Name: "Fine", Profile: { Name: "Sales" } },
+    ]);
+
+    const result = await syncSalesforceAgents();
+
+    expect(result.tieredNotOnSales).toBe(1);
+    // And nothing flipped them, which is the half that would undo the change.
+    expect(bookable.applyBookableByUserId).not.toHaveBeenCalled();
+    expect(result.bookableFlipped).toEqual([]);
+  });
+
+    it("writes no debt team or backend service of its own, and leaves the ones Twilio wrote alone", async () => {
     // #2152. The Salesforce checkboxes still decide WHO is in scope, and no longer
     // decide what anybody's tiers are: a run that kept writing them would strip
     // whatever the Twilio half of the same hour had written, every hour.

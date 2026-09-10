@@ -452,72 +452,35 @@ const twilio = (...sides: TwilioSide[]) => new Map(sides.map((s) => [s.email, s]
   eq(flip.attributeWrites.length, 0, "and the row is not in both lists");
 }
 
-// --- the first tier is what makes a new hire bookable (#2071, #2152) -----------
-// The transition belongs to whoever WRITES the fact that causes it. Salesforce owns
-// the profile; Twilio owns the tier since #2152, so it owns this flip.
+// --- the planner never puts anybody in the pool (#2182) ------------------------
+// It used to, when a first Twilio tier arrived. Dan's call, 2026-09-10: becoming
+// bookable stays a Salesforce decision, because a tag here says what somebody can
+// be ROUTED FOR and never that they are taking calls.
 
 {
   const plan = planTwilioRoster(
-    [row({ bookable: false, attributes: { role: "Chatter Free User" } })],
+    [row({ bookable: false, attributes: { role: "Chatter Free User", legal_eligible: LEGAL_ELIGIBLE_NO } })],
     twilio(side(["Low Debt: 20k - 30k"])),
   );
-  eq(plan.attributeWrites[0]?.activate, true, "a hire given their first debt team is put in the pool");
+  eq(plan.attributeWrites.length, 1, "a hire's first debt team is still written");
+  eq(plan.flips.length, 0, "and flips nobody into the pool");
+  assert(
+    !("activate" in (plan.attributeWrites[0] as object)),
+    "the write carries no activation at all, so no caller can act on one",
+  );
 }
 
 {
+  // The whole roster equivalent: nothing here ever produces a flip except the two
+  // the Redistribute tag demands.
   const plan = planTwilioRoster(
-    [row({ bookable: false, attributes: { role: "Chatter Free User", debt_team: ["low"] } })],
-    twilio(side(["Med Debt: 30k - 50k"])),
+    [
+      row({ id: "u1", email: "a@trypennie.com", bookable: false, attributes: { role: "Chatter Free User" } }),
+      row({ id: "u2", email: "b@trypennie.com", bookable: false, attributes: { role: "Sales" } }),
+    ],
+    twilio(side(["Low Debt: 20k - 30k"], "a@trypennie.com"), side(["High Debt: 50k+"], "b@trypennie.com")),
   );
-  eq(plan.attributeWrites[0]?.activate, false, "changing which tier somebody holds is not a first tier, so nobody is put back in the pool");
-}
-
-{
-  // THE CASE THE TRANSITION RULE EXISTS FOR (L60). "Has a tier and is not bookable"
-  // is exactly the shape of somebody an admin deliberately held back, so a level
-  // check would overturn every one of them on the next hourly run.
-  const plan = planTwilioRoster(
-    [row({ bookable: false, attributes: { role: "Sales", debt_team: ["low"], legal_eligible: LEGAL_ELIGIBLE_NO } })],
-    twilio(side(["Low Debt: 20k - 30k"])),
-  );
-  eq(plan.attributeWrites.length, 0, "an agent somebody turned off, whose tags still agree, is left alone entirely");
-}
-
-{
-  const plan = planTwilioRoster(
-    [row({ bookable: false, pending: true, attributes: { role: "Chatter Free User" } })],
-    twilio(side(["Low Debt: 20k - 30k"])),
-  );
-  eq(plan.attributeWrites[0]?.activate, false, "a pending row is not activated here: the Salesforce half owns the retry, and two owners means two flips an hour for one intent");
-}
-
-{
-  const plan = planTwilioRoster(
-    [row({ bookable: false, attributes: { role: "Chatter Free User" } })],
-    twilio(side(["Low Debt: 20k - 30k", "Redistribute"])),
-  );
-  eq(plan.attributeWrites[0]?.activate, false, "somebody Twilio withholds is never put in the pool by their tier");
-  eq(plan.flips.length, 0, "and is not flipped either, because they are already out of it");
-}
-
-{
-  const plan = planTwilioRoster(
-    [row({ bookable: true, attributes: { role: "Chatter Free User" } })],
-    twilio(side(["Low Debt: 20k - 30k"])),
-  );
-  eq(plan.attributeWrites[0]?.activate, false, "somebody already in the pool is not activated again");
-}
-
-{
-  const plan = planTwilioRoster(
-    [row({ bookable: false, attributes: { role: "Sales" } })],
-    twilio(side(["Low Debt: 20k - 30k"])),
-  );
-  eq(
-    plan.attributeWrites[0]?.activate,
-    false,
-    "somebody who already qualified on their Salesforce profile is Salesforce's flip to make, not this one's",
-  );
+  eq(plan.flips.length, 0, "neither a new hire nor somebody already on Sales is flipped by a tier");
 }
 
 finish();

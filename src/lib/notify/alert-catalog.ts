@@ -137,7 +137,7 @@ export const ALERT_CATALOG: AlertEntry[] = [
   {
     key: "twilio_write_failures",
     kind: "condition",
-    why: "The roster sync can read Twilio and cannot finish acting on it: a flip, a coverage move, a routing attribute write or a pool activation keeps throwing. It stays true until a run lands them all, which is the recovery.",
+    why: "The roster sync can read Twilio and cannot finish acting on it: a flip, a coverage move or a routing attribute write keeps throwing. It stays true until a run lands them all, which is the recovery.",
   },
   {
     key: "twilio_marked_no_worker",

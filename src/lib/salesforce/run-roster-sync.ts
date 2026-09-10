@@ -270,9 +270,8 @@ async function reportTwilioWriteOutcome(result: TwilioSyncResult): Promise<void>
     flips: result.flipFailures,
     sweeps: result.coverageSweepFailures,
     attributes: result.attributeWriteFailures,
-    activations: result.activationFailures,
   };
-  const anyFailed = failures.flips + failures.sweeps + failures.attributes + failures.activations > 0;
+  const anyFailed = failures.flips + failures.sweeps + failures.attributes > 0;
   if (anyFailed) {
     const streak = await recordConsecutiveStreak(
       TWILIO_WRITE_STREAK_KEY,

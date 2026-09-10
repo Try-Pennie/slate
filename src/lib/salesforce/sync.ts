@@ -33,6 +33,7 @@ import {
   agentProfileSoql,
   planOnboardingFlip,
   qualifiesForBooking,
+  tieredButNotOnSales,
   type FlipReason,
 } from "@/lib/salesforce/onboarding";
 import { applyBookableByUserId, type BookableResult } from "@/lib/bookable/service";
@@ -235,6 +236,17 @@ export interface SyncResult {
    * the same run that writes the first one and asks for the flip.
    */
   createdUntiered: number;
+  /**
+   * Rows carrying debt teams on a profile that will never make them bookable
+   * (#2182).
+   *
+   * Becoming bookable is the Sales profile alone now, so somebody left on Chatter
+   * Free with tiers is waiting on a Salesforce edit nobody has been told is owed.
+   * Counted rather than acted on: acting on it is the rule this change removed, and
+   * a state only a person can advance out of is invisible unless something says it
+   * is waiting (L636).
+   */
+  tieredNotOnSales: number;
   /** Emails made bookable this run because Salesforce moved them to Sales or gave
    *  them a first debt team, through the same gated service the admin toggle uses. */
   bookableFlipped: string[];
@@ -392,6 +404,7 @@ export async function syncSalesforceAgents(deps: SyncDeps = defaultSyncDeps): Pr
   const flips: PlannedFlip[] = [];
   const nowIso = deps.nowIso();
   let createdUntiered = 0;
+  let tieredNotOnSales = 0;
 
   const inserts: Partial<User>[] = [];
   // Existing-agent field refreshes as upsert rows keyed on the id PK. `org_id`
@@ -415,12 +428,16 @@ export async function syncSalesforceAgents(deps: SyncDeps = defaultSyncDeps): Pr
         deactivated: current.deactivated_at != null,
         pending: current.bookable_pending_since != null,
       });
+      // #2182: carrying tiers and not on Sales, so nothing will ever flip them.
+      // Read from the MERGED row, because the tiers come from Twilio now.
+      const merged = mergeSfAttributes(current.attributes, attributes);
+      if (tieredButNotOnSales(merged)) tieredNotOnSales += 1;
       const row: Partial<User> = {
         id: current.id,
         org_id: org.id,
         email: normalizeEmail(current.email),
         name: u.Name,
-        attributes: mergeSfAttributes(current.attributes, attributes),
+        attributes: merged,
       };
       if (plan.action === "flip") {
         // A retry already carries its mark; a fresh transition gets one now, in
@@ -897,6 +914,7 @@ export async function syncSalesforceAgents(deps: SyncDeps = defaultSyncDeps): Pr
     updated,
     deactivated: toDeactivate.length,
     createdUntiered,
+    tieredNotOnSales,
     bookableFlipped,
     bookablePending,
     managersCreated: plan.managersToCreate.length,
