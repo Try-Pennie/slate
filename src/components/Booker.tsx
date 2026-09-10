@@ -13,6 +13,9 @@ import { NearestTimesPanel } from "@/components/NearestTimes";
 import { validateAttendee, type AttendeeErrors } from "@/lib/attendee";
 import { prefillPhone } from "@/lib/phone-format";
 import { usePhoneCaret } from "@/lib/usePhoneCaret";
+import { PHONE_COPY } from "@/lib/booking/manage-copy";
+import { UnsavedGuard } from "@/components/ui/UnsavedGuard";
+import { phoneLastFour } from "@/lib/booking/phone-mask";
 import { HONEYPOT_FIELD } from "@/lib/booking/honeypot";
 import {
   isNextDaysReply,
@@ -34,6 +37,8 @@ import {
   HONEYPOT_LABEL,
   MOVE_COPY,
   BOOKER_CANCEL_COPY,
+  BOOKER_PHONE_COPY,
+  advisorWillCallEnding,
   cancelConsequenceFor,
   movedContactNote,
   CLOSED_BODY,
@@ -325,6 +330,23 @@ export default function Booker({
    * by looking at the slot would silently turn into the landing one there (L55).
    */
   const [onLanding, setOnLanding] = useState(Boolean(landingCall));
+  /**
+   * True while the picker is on screen FOR the call this lead already has (#2203).
+   *
+   * The panel is hidden while it is set, and choosing a time clears it, which is
+   * what brings the panel back with a move to offer. Both are EVENTS rather than a
+   * condition read off `selectedSlot`, for the same reason `onLanding` is its own
+   * flag: the move's own refusal path clears the slot, and a panel inferring its
+   * state from that would silently turn into the wrong one there (L55).
+   */
+  const [pickingMoveTime, setPickingMoveTime] = useState(false);
+  /**
+   * The link itself named this lead, so the product knows who they are without
+   * being told again (#2166). Everything downstream that would otherwise fall back
+   * to the anonymous flow reads this: a lead who arrived recognised stays
+   * recognised, through a picker, a kept time and a refused move alike (L676).
+   */
+  const recognisedOnArrival = Boolean(landingCall);
   // #2167: cancelling the call they already have, from the panel that recognised
   // them. Its own three states: not asked, confirming, and done. `cancelled` is a
   // SCREEN rather than a flag on the panel, because after it there is no call left
@@ -335,6 +357,22 @@ export default function Booker({
   const [cancelDetail, setCancelDetail] = useState("");
   const [moveReason, setMoveReason] = useState("");
   const [moveDetail, setMoveDetail] = useState("");
+  /**
+   * Correcting the number the advisor will ring, from the panel (#2207).
+   *
+   * `callPhoneLast4` is what the panel NAMES, seeded from the server and rewritten
+   * from what the save stored, so the line always reads back the number Slate
+   * actually holds rather than the keystrokes. Its own state rather than the prop,
+   * because a save changes it and a prop cannot (L14).
+   */
+  const [callPhoneLast4, setCallPhoneLast4] = useState<string | null>(
+    landingCall?.disclose ? landingCall.phoneLast4 : null,
+  );
+  const [editingCallPhone, setEditingCallPhone] = useState(false);
+  const [callPhoneDraft, setCallPhoneDraft] = useState("");
+  const [callPhoneError, setCallPhoneError] = useState<string | null>(null);
+  const [savingCallPhone, setSavingCallPhone] = useState(false);
+  const callPhoneStalled = useStalledAfter(savingCallPhone);
   // #1329 / #1339: the first bookable days on the far side of a closure, fetched
   // only when a lead presses the button, so the longer search is paid for by the
   // few who arrive during a shutdown rather than by every recompute pass. Null
@@ -376,6 +414,19 @@ export default function Booker({
     setAttendee((a) => ({ ...a, phone: formatted }));
     setFieldErrors((f) => (f.phone ? { ...f, phone: undefined } : f));
   });
+  // #2207: the panel's own field gets the same hook, so a lead correcting a digit
+  // in the middle of their number can do it here too. A second surface that took a
+  // number without it would be the #2162 defect back in one corner.
+  // Destructured at the call, not read off the object at each use: the hooks lint
+  // treats a member read on the hook's result during render as touching a ref,
+  // even though `attach` is deliberately a callback ref for exactly that reason
+  // (see usePhoneCaret's own note).
+  const { attach: attachCallPhone, onChange: onCallPhoneChange } = usePhoneCaret(
+    (formatted) => {
+      setCallPhoneDraft(formatted);
+      setCallPhoneError(null);
+    },
+  );
   const [confirmed, setConfirmed] = useState<{
     start: string;
     manageUrl?: string | null;
@@ -568,6 +619,12 @@ export default function Booker({
         // nothing was created (#1337). The slot they picked is kept so the offer
         // to move the existing call into it can name it.
         setExistingCall(data.existingCall);
+        // #2207: and the number it names. Set here rather than derived, so a
+        // number the lead has since corrected on this screen is not overwritten by
+        // a later render (L14).
+        setCallPhoneLast4(
+          data.existingCall.disclose ? data.existingCall.phoneLast4 : null,
+        );
       } else if (status === 409) {
         setError(BOOKING_ERROR_COPY.slotTaken);
         // #1319: remember WHICH time went, so the alternatives below can leave it out. It is
@@ -630,6 +687,49 @@ export default function Booker({
   /** Move the call this lead already has into the slot they just picked (#1337).
    *  Goes through the same lead reschedule endpoint their emailed manage link
    *  uses, so the reason, the audit trail and the webhook are identical. */
+  /**
+   * Correct the number the advisor will ring, from the panel (#2207).
+   *
+   * Through `/api/bookings/{token}/phone`, the same endpoint the manage page's own
+   * control uses, so one correction path carries the validation, the audit trail
+   * and the stale invite alert rather than two that drift (L41, L263).
+   */
+  async function saveCallPhone() {
+    if (!existingCall?.disclose) return;
+    setSavingCallPhone(true);
+    setCallPhoneError(null);
+    try {
+      const { ok, data } = await postJson<{ phone?: string; error?: string }>(
+        `/api/bookings/${encodeURIComponent(existingCall.manageToken)}/phone`,
+        { phone: callPhoneDraft },
+        { timeoutMs: REQUEST_TIMEOUT_MS },
+      );
+      if (ok && data.phone) {
+        // Named from what was STORED, never from what was typed, and still masked:
+        // a save is not a reason to start showing the whole number on a screen
+        // reached by a link.
+        setCallPhoneLast4(phoneLastFour(data.phone));
+        setEditingCallPhone(false);
+        setCallPhoneDraft("");
+        return;
+      }
+      // The server's own sentence: a number we cannot call, an incomplete number,
+      // an unknown link and a call that has already happened send the reader to
+      // four different places (L11). The field stays open holding what they typed,
+      // because a refused number must never read as saved.
+      setCallPhoneError(data.error ?? PHONE_COPY.failed);
+    } finally {
+      setSavingCallPhone(false);
+    }
+  }
+
+  /** Only the details that carry a value: see the send site below (#2203). */
+  const typedDetails: { name?: string; email?: string; phone?: string } = {};
+  if (attendee.name.trim()) typedDetails.name = attendee.name.trim();
+  if (attendee.email.trim()) typedDetails.email = attendee.email.trim();
+  if (attendee.phone.trim()) typedDetails.phone = attendee.phone.trim();
+  const hasTypedDetails = Object.keys(typedDetails).length > 0;
+
   async function moveExistingCall() {
     if (!existingCall?.disclose || !selectedSlot) return;
     setSubmitting(true);
@@ -650,11 +750,14 @@ export default function Booker({
           // the ones the call was booked with. The server writes whichever of them
           // actually moved and rewrites the invite; sending them unchanged costs
           // nothing, because it compares before it writes.
-          attendee: {
-            name: attendee.name.trim(),
-            email: attendee.email.trim(),
-            phone: attendee.phone.trim(),
-          },
+          //
+          // #2203: only the ones that actually carry a value. A lead recognised by
+          // their link never fills a form, so these are whatever the link brought,
+          // routinely nothing. `updateBookingContact` judges every field a caller
+          // SENDS, so a blank one is not "no correction", it is a correction to
+          // empty, and it comes back as "Enter your name" about a name nobody was
+          // asked for, refusing the move.
+          ...(hasTypedDetails ? { attendee: typedDetails } : {}),
         },
         { timeoutMs: REQUEST_TIMEOUT_MS },
       );
@@ -670,7 +773,12 @@ export default function Booker({
       // Nobody was holding that slot during the decision, so it can go. Say so
       // and put them back in the picker rather than failing silently or leaving
       // them with neither call moved nor a new one booked.
-      setExistingCall(null);
+      //
+      // #2203: back in the picker STILL RECOGNISED when the link named them. The
+      // call was not moved, so they still have it, and clearing it here would send
+      // them through the form to be told so by a 409 (L676).
+      if (recognisedOnArrival) setPickingMoveTime(true);
+      else setExistingCall(null);
       setSelectedSlot(null);
       setError(
         status === 409
@@ -689,13 +797,50 @@ export default function Booker({
     }
   }
 
+  /**
+   * Choosing a time, from wherever it was offered (#2203).
+   *
+   * One function rather than a `setSelectedSlot` at each surface, because the
+   * choice ENDS the move picker and a second call site that forgot to would leave
+   * a recognised lead facing the details form again, which is the defect itself
+   * back in one corner of the product (L613).
+   */
+  function chooseSlot(iso: string) {
+    setSelectedSlot(iso);
+    setPickingMoveTime(false);
+  }
+
+  /**
+   * One primary action on the panel at a time (#2207).
+   *
+   * Sky is the only action colour in the design system, so a sky fill is a claim
+   * that THIS is the thing to press. While the number field is open, the thing to
+   * press is Save, and the panel's own move or pick button steps back to the
+   * outline treatment rather than competing with it. Found by looking at the panel
+   * at a real window with the field open, which is the only thing that could have
+   * found it (L606).
+   *
+   * Here rather than at each button, because there are two of them (the landing
+   * panel's and the move panel's) and a rule applied at one site is the divergence
+   * a shared decision exists to prevent (L613).
+   */
+  const panelActionIsPrimary = !editingCallPhone;
+  const panelActionCls = panelActionIsPrimary
+    ? c.confirm
+    : `border ${c.toggleBorder} ${c.body} ${c.navHover}`;
+  const panelActionStyle = panelActionIsPrimary ? confirmStyle : undefined;
+  /** Marks whichever control currently carries the emphasis, so the "exactly one"
+   *  rule can be asserted rather than eyeballed on every change. */
+  const panelPrimaryProps = (isPrimary: boolean) =>
+    isPrimary ? { "data-testid": "panel-primary" } : {};
+
   const shell = `mx-auto max-w-4xl overflow-hidden rounded-xl shadow-xs ${c.shell}`;
 
   // #1337: declined because this person already has an active call. Nothing was
   // created. No policy voice: the rule is not explained (that makes the panel
   // about us and draws attention to something the lead never asked about), the
   // call they have is simply put in front of them with the obvious thing to do.
-  if (existingCall) {
+  if (existingCall && !pickingMoveTime) {
     const longDay = (iso: string) =>
       DateTime.fromISO(iso).setZone(zone).toFormat("cccc, LLLL d");
     const shortDay = (iso: string) =>
@@ -718,6 +863,106 @@ export default function Booker({
                     read live and simply left out when it is unavailable. */}
                 {existingCall.advisorName ? `, with ${existingCall.advisorName}.` : "."}
               </p>
+              {/* #2207: the number the call actually depends on, and the way to
+                  fix it. Named by four digits, never shown, because this panel is
+                  reached by a link (see advisorWillCallEnding). A quiet line plus
+                  a real button at rest, not an always open field: most leads never
+                  need it and should not be invited to fiddle (L49). */}
+              <div className="mt-3">
+                <p className={`text-sm ${c.muted}`}>
+                  {callPhoneLast4
+                    ? advisorWillCallEnding(callPhoneLast4)
+                    : BOOKER_PHONE_COPY.noNumber}
+                </p>
+                {editingCallPhone ? (
+                  <form
+                    className="mt-3"
+                    onSubmit={(e) => {
+                      e.preventDefault();
+                      void saveCallPhone();
+                    }}
+                  >
+                    {/* #2076: a corrected number is typed work, and this panel
+                        carries links out of it (the legal footer, and the embed
+                        host's own page). Nothing typed here is lost by clicking
+                        one. */}
+                    <UnsavedGuard
+                      what="changes to your phone number"
+                      formName="booker-call-phone"
+                    />
+                    <label
+                      htmlFor="booker-call-phone"
+                      className={`mb-1 block text-xs font-semibold ${c.muted}`}
+                    >
+                      {PHONE_COPY.label}
+                    </label>
+                    <input
+                      id="booker-call-phone"
+                      className={`min-h-12 w-full rounded-sm px-4 text-base ${c.input}`}
+                      type="tel"
+                      autoComplete="tel"
+                      inputMode="tel"
+                      aria-describedby={
+                        callPhoneError ? "booker-call-phone-error" : "booker-call-phone-hint"
+                      }
+                      aria-invalid={callPhoneError ? true : undefined}
+                      value={callPhoneDraft}
+                      ref={attachCallPhone}
+                      onChange={onCallPhoneChange}
+                    />
+                    {callPhoneError ? (
+                      <p
+                        id="booker-call-phone-error"
+                        role="alert"
+                        className="mt-1 text-sm text-[var(--error)]"
+                      >
+                        {callPhoneError}
+                      </p>
+                    ) : (
+                      <p id="booker-call-phone-hint" className={`mt-1 text-sm ${c.muted}`}>
+                        {PHONE_COPY.hint}
+                      </p>
+                    )}
+                    <div className="mt-3 flex flex-col gap-2">
+                      <button
+                        type="submit"
+                        disabled={savingCallPhone}
+                        className={`inline-flex min-h-12 items-center justify-center rounded-lg px-5 text-sm font-semibold disabled:opacity-60 ${c.confirm}`}
+                        style={confirmStyle}
+                        data-testid="panel-primary"
+                      >
+                        {savingCallPhone ? PHONE_COPY.saving : PHONE_COPY.save}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setEditingCallPhone(false);
+                          setCallPhoneDraft("");
+                          setCallPhoneError(null);
+                        }}
+                        disabled={savingCallPhone}
+                        className={`inline-flex min-h-12 items-center justify-center rounded-lg border px-5 text-sm font-semibold disabled:opacity-60 ${c.toggleBorder} ${c.body} ${c.navHover}`}
+                      >
+                        {PHONE_COPY.cancel}
+                      </button>
+                    </div>
+                    {/* Still ALIVE, distinct from started and from failed, on an
+                        action that reaches Google as well as the database. */}
+                    {savingCallPhone && callPhoneStalled && (
+                      <p role="status" className={`mt-2 text-xs ${c.muted}`}>
+                        {PHONE_COPY.stillWorking}
+                      </p>
+                    )}
+                  </form>
+                ) : (
+                  <button
+                    onClick={() => setEditingCallPhone(true)}
+                    className={`mt-1 inline-flex min-h-9 items-center text-sm font-semibold underline underline-offset-2 hover:no-underline ${c.muted}`}
+                  >
+                    {callPhoneLast4 ? PHONE_COPY.trigger : BOOKER_PHONE_COPY.addTrigger}
+                  </button>
+                )}
+              </div>
               {newWhen && !onLanding && (
                 <p className={`mt-4 text-sm ${c.body}`}>
                   Would you like to move it to <span className="tabular-nums">{newWhen}</span>{" "}
@@ -815,11 +1060,17 @@ export default function Booker({
                 {onLanding ? (
                   <button
                     onClick={() => {
-                      setExistingCall(null);
+                      // #2203: the call is KEPT. Clearing it here dropped a lead
+                      // the link had just named into the anonymous flow, which
+                      // then asked them to retype the name, email and phone it
+                      // already held, and answered with a 409 naming this very
+                      // call (L676).
                       setOnLanding(false);
+                      setPickingMoveTime(true);
                     }}
-                    className={`inline-flex min-h-12 items-center justify-center rounded-lg px-5 text-sm font-semibold ${c.confirm}`}
-                    style={confirmStyle}
+                    className={`inline-flex min-h-12 items-center justify-center rounded-lg px-5 text-sm font-semibold ${panelActionCls}`}
+                    style={panelActionStyle}
+                    {...panelPrimaryProps(panelActionIsPrimary)}
                   >
                     {MOVE_COPY.pickAnotherTime}
                   </button>
@@ -828,8 +1079,9 @@ export default function Booker({
                     <button
                       onClick={() => void moveExistingCall()}
                       disabled={submitting || !moveReasonValid || !selectedSlot}
-                      className={`inline-flex min-h-12 items-center justify-center rounded-lg px-5 text-sm font-semibold disabled:opacity-60 ${c.confirm}`}
-                      style={confirmStyle}
+                      className={`inline-flex min-h-12 items-center justify-center rounded-lg px-5 text-sm font-semibold disabled:opacity-60 ${panelActionCls}`}
+                      style={panelActionStyle}
+                      {...panelPrimaryProps(panelActionIsPrimary)}
                     >
                       {submitting
                         ? MOVE_COPY.moving
@@ -839,7 +1091,11 @@ export default function Booker({
                     </button>
                     <button
                       onClick={() => {
-                        setExistingCall(null);
+                        // #2203: a lead the link named still HAS this call, so the
+                        // way back is the panel about it. Dropping them into the
+                        // anonymous picker would set up the same refusal again.
+                        if (recognisedOnArrival) setOnLanding(true);
+                        else setExistingCall(null);
                         setSelectedSlot(null);
                         setMoveReason("");
                         setMoveDetail("");
@@ -1040,7 +1296,7 @@ export default function Booker({
         // Put the picker on that time's own day, so the rest of the surface agrees
         // with what was just chosen rather than still showing the old one.
         picker.selectDay(DateTime.fromISO(iso, { zone }).toISODate());
-        setSelectedSlot(iso);
+        chooseSlot(iso);
         setRefused(null);
         setError(null);
       }}
@@ -1427,7 +1683,7 @@ export default function Booker({
               renderSlot={(iso) => (
                 <button
                   key={iso}
-                  onClick={() => setSelectedSlot(iso)}
+                  onClick={() => chooseSlot(iso)}
                   className={`flex min-h-11 w-full items-center rounded-md border px-3 py-2.5 text-left text-sm tabular-nums ${c.slot}`}
                 >
                   <MarkedLabel

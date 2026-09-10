@@ -141,6 +141,43 @@ async function run() {
     );
   }
 
+  // --- the number the advisor will ring, named rather than shown (#2207) -------
+  // The panel let a recognised lead move and cancel and not change what we would
+  // call, once #2203 took the details form off that path. It names the number so
+  // they can tell whether it needs correcting, by its last four digits, because
+  // this panel is reached by a LINK and the manage page that shows it in full is
+  // reached by the token inside their invite.
+  {
+    const { deps } = world();
+    const call = await findExistingCallForIdentity(
+      { salesforceId: SF_ID, externalId: null, email: null, phone: null },
+      deps,
+    );
+    assert(
+      call?.disclose === true && call.phoneLast4 === "0100",
+      `the call names its number by its last four digits (got ${JSON.stringify(call)})`,
+    );
+    assert(
+      call?.disclose === true && !JSON.stringify(call).includes("555-0100"),
+      "and the whole number is never in the payload at all",
+    );
+  }
+
+  {
+    // A booking with no number on it. Null, never an empty string: the panel has
+    // to tell "no number here" from "a number ending in nothing", because the
+    // first is a sentence it must not write (L11).
+    const { deps } = world({ attendee_phone: null });
+    const call = await findExistingCallForIdentity(
+      { salesforceId: SF_ID, externalId: null, email: null, phone: null },
+      deps,
+    );
+    assert(
+      call?.disclose === true && call.phoneLast4 === null,
+      `a call carrying no number names none (got ${JSON.stringify(call)})`,
+    );
+  }
+
   finish();
 }
 
