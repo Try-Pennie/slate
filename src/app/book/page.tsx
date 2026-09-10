@@ -5,6 +5,7 @@ import { supabaseAdmin } from "@/lib/supabase/admin";
 import { loadBookingHorizonDays } from "@/lib/booking/settings";
 import { loadReasonOptions } from "@/lib/booking/reason-options";
 import { resolveRequestedCode } from "@/lib/routing/catchall";
+import { existingCallForLanding } from "@/lib/booking/service";
 
 export const dynamic = "force-dynamic";
 // Lead-facing: the brand is Pennie; Slate stays internal.
@@ -64,6 +65,21 @@ export default async function BookEntry({
   // reschedule records a mandatory reason (Dan, 2026-08-07: ask the lead), so the
   // live option set has to reach the client the same way the manage page gets it.
   const reasonOptions = await loadReasonOptions();
+  // #2166: `/book?external_id=` carries the same identity `/booking/{id}` does, and
+  // is graded the same way, so a lead who arrives by either route is told about the
+  // call they have before they pick a time. A link with NO id identifies nobody,
+  // this resolves to null, and the confirm check stays the first moment anybody can
+  // be recognised.
+  //
+  // It is asked as `salesforceId`, which is the field the CONFIRM sends for this
+  // same value (`Booker` takes `external_id` into its `salesforceId` prop and posts
+  // it under that name), so both ends grade the identical identity. Asking it as
+  // `externalId` here would query a different column from the one the booking is
+  // eventually written with, and the two checks would disagree about the same lead.
+  const externalId = first(sp, "external_id") || null;
+  const landingCall = externalId
+    ? await existingCallForLanding({ salesforceId: externalId })
+    : null;
 
   const phone =
     first(sp, "phone") ||
@@ -88,7 +104,7 @@ export default async function BookEntry({
       <Booker
         bucketCode={bucketCode}
         requestedCode={requestedCode}
-        salesforceId={first(sp, "external_id") || null}
+        salesforceId={externalId}
         attendee={{
           name: first(sp, "name"),
           email: first(sp, "email"),
@@ -101,6 +117,7 @@ export default async function BookEntry({
         parentOrigin={first(sp, "parentOrigin") || undefined}
         horizonDays={horizonDays}
         rescheduleReasons={reasonOptions.reschedule.active}
+        landingCall={landingCall}
       />
     </StandaloneBookerShell>
   );

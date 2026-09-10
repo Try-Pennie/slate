@@ -285,8 +285,14 @@ export function bookerCopyScreens(): CopyScreen[] {
     },
     {
       screen: "Booker: moving the call they already have",
-      purpose: "Reached from the duplicate notice, so it has to name the call being moved.",
+      purpose:
+        "Reached on landing when the link identifies the lead, and from the duplicate " +
+        "notice after a confirm. It has to name the call being moved.",
       lines: [
+        // #2166: the landing panel, which has no picked time behind it. It is the
+        // FIRST thing a lead sees on a link that identifies them, so it is
+        // previewed first.
+        { state: "reached on landing, so the way on is the picker", text: MOVE_COPY.pickAnotherTime },
         { state: "why they are moving it", text: MOVE_COPY.reasonLegend },
         { state: "a time is chosen", text: moveToTime(`${DAY} at ${TIME}`) },
         { state: "no time chosen yet", text: MOVE_COPY.moveNoTime },

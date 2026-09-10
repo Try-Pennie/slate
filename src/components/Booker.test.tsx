@@ -11,6 +11,7 @@ import {
   PICKER_COPY,
   UNCLASSIFIED_EMPTY_NOTICE,
   UNCLASSIFIED_EMPTY_RETRY,
+  MOVE_COPY,
   US_ONLY_PHONE_NOTICE,
   allTimesTaken,
   closedNoReopenDate,
@@ -385,6 +386,82 @@ describe("Booker refuses a second booking (#1337)", () => {
       return { ok: false, status: 409, json: async () => ({ existingCall }) } as Response;
     }) as unknown as typeof fetch;
   }
+
+  // #2166: on a link that IDENTIFIES the lead, the notice comes first. The id in
+  // the path is the same strong match the confirm recognises them by, so waiting
+  // for a picked time and a filled form put it one whole flow too late and read as
+  // the product having forgotten them.
+  it("puts the call they already have in front of them before they pick a time", async () => {
+    global.fetch = vi.fn(async () => ({ ok: true, json: async () => availability }) as Response) as unknown as typeof fetch;
+    render(
+      <Booker
+        {...baseProps}
+        salesforceId="003xx"
+        landingCall={{
+          disclose: true,
+          startsAt: existingIso,
+          advisorName: "Aisha Bello",
+          manageToken: "tok-old",
+        }}
+      />,
+    );
+    expect(await screen.findByText("You already have a call booked")).toBeTruthy();
+    expect(screen.getByText(/with Aisha Bello\./)).toBeTruthy();
+    // No time has been picked, so there is no move to offer and no reason to ask
+    // for. Offering either would be a control that cannot work (L109).
+    expect(screen.queryByRole("button", { name: /^Move my call/ })).toBeNull();
+    expect(screen.queryByText(MOVE_COPY.reasonLegend)).toBeNull();
+  });
+
+  it("lets them carry on to the picker, which is what they came for", async () => {
+    global.fetch = vi.fn(async () => ({ ok: true, json: async () => availability }) as Response) as unknown as typeof fetch;
+    render(
+      <Booker
+        {...baseProps}
+        salesforceId="003xx"
+        landingCall={{ disclose: true, startsAt: existingIso, advisorName: null, manageToken: "tok-old" }}
+      />,
+    );
+    await screen.findByText("You already have a call booked");
+    fireEvent.click(screen.getByRole("button", { name: MOVE_COPY.pickAnotherTime }));
+    expect(screen.queryByText("You already have a call booked")).toBeNull();
+    expect(await dayChip()).toBeTruthy();
+  });
+
+  it("shows the ordinary picker when nothing identifies the lead", async () => {
+    // THE CONTROL. Without it, a version that showed the panel to everybody would
+    // satisfy both cases above while stopping every anonymous lead from booking at
+    // all (L1).
+    global.fetch = vi.fn(async () => ({ ok: true, json: async () => availability }) as Response) as unknown as typeof fetch;
+    render(<Booker {...baseProps} />);
+    expect(await dayChip()).toBeTruthy();
+    expect(screen.queryByText("You already have a call booked")).toBeNull();
+  });
+
+  it("still offers the move after a picked time, once they are back in the picker", async () => {
+    // The landing panel must not leave the flow in a state where the confirm's own
+    // panel has lost its move: they are the same panel, and only the landing one
+    // has no time behind it.
+    global.fetch = declineWith({
+      disclose: true,
+      startsAt: existingIso,
+      advisorName: "Aisha Bello",
+      manageToken: "tok-old",
+    });
+    render(
+      <Booker
+        {...baseProps}
+        salesforceId="003xx"
+        landingCall={{ disclose: true, startsAt: existingIso, advisorName: null, manageToken: "tok-old" }}
+      />,
+    );
+    await screen.findByText("You already have a call booked");
+    fireEvent.click(screen.getByRole("button", { name: MOVE_COPY.pickAnotherTime }));
+    await fillAndConfirm();
+    await screen.findByText("You already have a call booked");
+    expect(screen.getByText(MOVE_COPY.reasonLegend)).toBeTruthy();
+    expect(screen.getByRole("button", { name: /^Move my call to/ })).toBeTruthy();
+  });
 
   it("names the existing call and offers to move it, creating nothing", async () => {
     global.fetch = declineWith({
