@@ -283,6 +283,20 @@ export type ExistingCall =
       advisorName: string | null;
       /** Lets the lead move THIS call into the slot they just picked. */
       manageToken: string;
+      /**
+       * Whether the panel may offer to CANCEL this call (#2167).
+       *
+       * Strong matches only, which is narrower than disclosure on purpose. A
+       * medium match is an email AND a phone both matching, which is enough to
+       * NAME the call and enough to move it into a time this same person just
+       * picked, and cancelling is the one action here that destroys something
+       * without putting anything in its place. The id tiers are the ones where
+       * the link itself is the identity.
+       *
+       * Decided on the server rather than by the panel reading a strength, so
+       * there is one owner of the rule and the client cannot loosen it (#1340).
+       */
+      mayCancel: boolean;
     }
   | { disclose: false };
 
@@ -1869,6 +1883,7 @@ export async function findExistingCallForIdentity(
       .loadAgentDisplayName(match.booking.assigned_user_id ?? null)
       .catch(() => null),
     manageToken: match.booking.manage_token,
+    mayCancel: match.strength === "strong",
   };
 }
 

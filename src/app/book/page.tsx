@@ -117,6 +117,7 @@ export default async function BookEntry({
         parentOrigin={first(sp, "parentOrigin") || undefined}
         horizonDays={horizonDays}
         rescheduleReasons={reasonOptions.reschedule.active}
+        cancelReasons={reasonOptions.cancel.active}
         landingCall={landingCall}
       />
     </StandaloneBookerShell>

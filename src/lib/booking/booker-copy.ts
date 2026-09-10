@@ -339,6 +339,50 @@ export const MOVE_COPY = {
   pickAnotherTime: "Pick another time",
 } as const;
 
+/**
+ * Cancelling the call the lead already has, from the booker panel (#2167).
+ *
+ * A lead recognised by their link is the one place the product knows exactly who
+ * they are, and it was the one place it withheld the exit: the panel offered move
+ * or keep, and cancel lived only on the manage link inside the calendar invite. A
+ * lead who lost that email, or never received it, had no way to cancel at all.
+ *
+ * The words are the booker's, not the manage page's, and that is deliberate rather
+ * than duplication. Everything a lead reads here calls it a CALL ("You already have
+ * a call booked", "Move my call"), and the manage page calls it a booking
+ * throughout. Sharing one set would put the wrong noun on one of the two screens,
+ * which is the same defect as having two words for one thing (L118). The ACTION is
+ * shared: this goes through the same lead cancel endpoint the manage page uses,
+ * with the same mandatory reason.
+ */
+export const BOOKER_CANCEL_COPY = {
+  /** The control that OPENS the confirmation. Never cancels on its own press. */
+  start: "Cancel my call",
+  heading: "Cancel your call?",
+  reasonLegend: "Why are you cancelling?",
+  confirm: "Yes, cancel it",
+  confirming: "Cancelling…",
+  /** The way out, worded as keeping what they have rather than as "no". */
+  keep: "Keep my call",
+  failed: "Could not cancel your call. Please try again.",
+  /** After it is done. They came here to book, so the way on is offered. */
+  doneHeading: "Your call is cancelled",
+  doneBookAgain: "Book a new time",
+} as const;
+
+/**
+ * What cancelling costs, naming the call being given up.
+ *
+ * The specific consequence, not a general one: "this cannot be undone" is true of
+ * every cancel anybody has ever confirmed and tells this reader nothing about which
+ * call they are about to lose. The panel above names the time, and the sentence
+ * inside a destructive confirmation has to stand on its own, because that is the
+ * one the reader is deciding from.
+ */
+export function cancelConsequenceFor(when: string): string {
+  return `This gives up your call on ${when}. It cannot be undone.`;
+}
+
 export function moveToTime(when: string): string {
   return `Move my call to ${when}`;
 }

@@ -85,6 +85,7 @@ export default async function BookingPage({
         brandColor={first(sp, "brand") || (embedded ? PENNIE_SKY : undefined)}
         horizonDays={horizonDays}
         rescheduleReasons={reasonOptions.reschedule.active}
+        cancelReasons={reasonOptions.cancel.active}
         landingCall={landingCall}
       />
     </StandaloneBookerShell>

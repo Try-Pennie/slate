@@ -9,7 +9,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen } from "@testing-library/react";
 import Booker from "@/components/Booker";
-import { RESCHEDULE_REASONS } from "@/lib/booking/core";
+import { CANCEL_REASONS, RESCHEDULE_REASONS } from "@/lib/booking/core";
 import {
   allTimesTaken,
   noAdvisorsAvailable,
@@ -22,6 +22,7 @@ const baseProps = {
   attendee: { name: "", email: "", phone: "" },
   prefill: {},
   rescheduleReasons: RESCHEDULE_REASONS,
+  cancelReasons: CANCEL_REASONS,
   horizonDays: 4,
 };
 

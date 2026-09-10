@@ -46,6 +46,8 @@ import {
   confirmedWhen,
   duplicateSetFor,
   inviteOnItsWay,
+  BOOKER_CANCEL_COPY,
+  cancelConsequenceFor,
   keepExistingTime,
   movedContactNote,
   moveToTime,
@@ -298,6 +300,20 @@ export function bookerCopyScreens(): CopyScreen[] {
         { state: "no time chosen yet", text: MOVE_COPY.moveNoTime },
         { state: "the move is running", text: MOVE_COPY.moving },
         { state: "the way out", text: keepExistingTime("Mon") },
+        // #2167: the exit. A lead who lost the invite, or never received it, had
+        // no way to cancel from Slate at all: the panel that recognised them was
+        // the one place the product knew exactly who they were and the one place
+        // it withheld this.
+        { state: "the way to cancel it, before it is confirmed", text: BOOKER_CANCEL_COPY.start },
+        { state: "confirming that cancel", text: BOOKER_CANCEL_COPY.heading },
+        { state: "what it costs, naming the call", text: cancelConsequenceFor(`${DAY} at ${TIME}`) },
+        { state: "why they are cancelling", text: BOOKER_CANCEL_COPY.reasonLegend },
+        { state: "the destructive control itself", text: BOOKER_CANCEL_COPY.confirm },
+        { state: "while it runs", text: BOOKER_CANCEL_COPY.confirming },
+        { state: "the way back out of it", text: BOOKER_CANCEL_COPY.keep },
+        { state: "a cancel that would not land", text: BOOKER_CANCEL_COPY.failed },
+        { state: "the call is gone", text: BOOKER_CANCEL_COPY.doneHeading },
+        { state: "and they came here to book", text: BOOKER_CANCEL_COPY.doneBookAgain },
         // #2164: what the move ALSO changed, when the lead typed new details on
         // the way to it. Every shape is previewed, because the sentence is
         // assembled from which fields moved and the list is where it can read
