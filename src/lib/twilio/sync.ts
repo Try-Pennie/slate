@@ -131,24 +131,7 @@ export interface TwilioSyncResult {
    */
   tiersChanged: string[];
   backendChanged: string[];
-  /**
-   * Emails made bookable this run because their FIRST debt tier arrived from
-   * Twilio, and those whose activation the gate refused (#2071, #2152).
-   *
-   * The refusal keeps the pending mark, and it is the SALESFORCE half of the same
-   * hourly job that retries it: one owner for one retry.
-   */
-  activated: string[];
-  activationRefused: string[];
-  /**
-   * Activations that THREW, so the run carried on with the rest (L73).
-   *
-   * Its own count rather than folded into `attributeWriteFailures`, because the
-   * attributes did land: saying they could not be recorded would send a reader to
-   * check a value that is perfectly correct (L11). The pending mark landed with
-   * them, so the Salesforce half retries next hour.
-   */
-  activationFailures: number;
+
   /**
    * Every in scope Slate row Twilio holds no worker for.
    *
@@ -251,8 +234,6 @@ export async function syncTwilioRedistribute(deps: TwilioSyncDeps): Promise<Twil
   const legalExcluded: string[] = [];
   const tiersChanged: string[] = [];
   const backendChanged: string[] = [];
-  const activated: string[] = [];
-  const activationRefused: string[] = [];
   const landed: Landed = { legalEligible, legalExcluded, tiersChanged, backendChanged };
   const coverageSweeps: { email: string; bookings: number }[] = [];
   const counters = { coverageSweepFailures: 0 };
@@ -282,49 +263,13 @@ export async function syncTwilioRedistribute(deps: TwilioSyncDeps): Promise<Twil
   // row at a time, for the same reason the flips have one: this is the write that
   // touches the WHOLE roster, so one bad row must not take the rest with it.
   let attributeWriteFailures = 0;
-  let activationFailures = 0;
   for (const write of plan.attributeWrites) {
     try {
-      // The pending mark rides in the SAME write as the attributes when this row is
-      // being activated, so a run that dies before the flip leaves an intent the
-      // Salesforce half retries rather than a tier nobody acted on.
-      await deps.writeAttributes({
-        userId: write.userId,
-        attributes: write.attributes,
-        ...(write.activate ? { bookablePendingSince: deps.nowIso() } : {}),
-      });
+      await deps.writeAttributes({ userId: write.userId, attributes: write.attributes });
       countLanded(write.email, write.changes, landed);
     } catch (err) {
       attributeWriteFailures++;
       log.error("twilio-sync", { msg: "attribute write failed, carrying on", user_id: write.userId }, err);
-      continue;
-    }
-    if (!write.activate) continue;
-    // The first tier makes somebody bookable (#2071). Its own boundary: the write
-    // above has already landed, so a refused or failed flip leaves the pending mark
-    // and the Salesforce half tries again next hour.
-    try {
-      const result = await deps.applyBookable(write.userId, true);
-      if (result.status === "applied") {
-        activated.push(write.email);
-        await deps.recordAudit({
-          orgId: deps.orgId,
-          actorId: null,
-          action: "agent.bookable",
-          targetUserId: write.userId,
-          details: { bookable: true, via: "twilio-sync", reason: "first-tier" },
-        });
-      } else if (result.status === "blocked") {
-        activationRefused.push(write.email);
-        log.warn("twilio-sync", {
-          msg: "first tier activation refused, pending mark kept for the Salesforce retry",
-          user_id: write.userId,
-          reason: result.reason,
-        });
-      }
-    } catch (err) {
-      activationFailures++;
-      log.error("twilio-sync", { msg: "first tier activation failed, carrying on", user_id: write.userId }, err);
     }
   }
 
@@ -365,9 +310,6 @@ export async function syncTwilioRedistribute(deps: TwilioSyncDeps): Promise<Twil
     legalExcluded,
     tiersChanged,
     backendChanged,
-    activated,
-    activationRefused,
-    activationFailures,
     withoutWorker: plan.withoutWorker,
     attributeWriteFailures,
     corruptAttributes,

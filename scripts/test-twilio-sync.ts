@@ -493,9 +493,9 @@ const backOn = {
 }
 
 {
-  // The first tier is what makes a new hire bookable. The pending mark travels in
-  // the SAME statement as the attributes, so a crash before the flip leaves an
-  // intent the Salesforce half retries rather than a tier nobody acted on.
+  // #2182: the sync writes the tier and puts NOBODY in the pool. Becoming bookable
+  // stays a Salesforce decision, because a Twilio tag says what somebody can be
+  // routed for and never that they are taking calls (Dan, 2026-09-10).
   const d = deps({
     fetchWorkers: async () => [worker("a@trypennie.com", ["Low Debt: 20k - 30k"])],
     loadRoster: async () => [row({ bookable: false, attributes: { role: "Chatter Free User", legal_eligible: "N" } })],
@@ -503,55 +503,11 @@ const backOn = {
   const r = await syncTwilioRedistribute(d.deps);
   eq(
     d.calls,
-    [
-      'attrs:u1:{"role":"Chatter Free User","legal_eligible":"N","debt_team":["low"]}:pending=' + NOW,
-      "flip:u1:true",
-    ],
-    "the attributes and the pending mark are written first, then the flip is attempted",
+    ['attrs:u1:{"role":"Chatter Free User","legal_eligible":"N","debt_team":["low"]}'],
+    "the tier is written, and nothing else happens: no pending mark and no flip",
   );
-  eq(r.activated, ["a@trypennie.com"], "and the activation is reported");
-  eq(d.audits.length, 1, "with an audit row, like every other flip");
-  eq((d.audits[0] as { details: { reason: string } }).details.reason, "first-tier", "naming why");
-}
-
-{
-  // The gate refuses anybody with no reachable Google calendar, which is the
-  // ordinary state for a hire whose Twilio tag arrives before their account does.
-  const d = deps(
-    {
-      fetchWorkers: async () => [worker("a@trypennie.com", ["Low Debt: 20k - 30k"])],
-      loadRoster: async () => [row({ bookable: false, attributes: { role: "Chatter Free User", legal_eligible: "N" } })],
-    },
-    (userId) => ({ status: "blocked", userId, reason: "google_unreachable" }),
-  );
-  const r = await syncTwilioRedistribute(d.deps);
-  eq(r.activationRefused, ["a@trypennie.com"], "a refused activation is reported rather than counted as done");
-  eq(r.activated.length, 0, "and is not also counted as activated");
-  eq(r.tiersChanged, ["a@trypennie.com"], "the tier itself still landed, because that write went first");
-  eq(d.audits.length, 0, "nothing is audited, because nobody entered the pool");
-}
-
-{
-  // The activation is its own boundary: a flip that throws must leave the write
-  // that already landed alone, and the next hour retries from the pending mark.
-  const d = deps(
-    {
-      fetchWorkers: async () => [worker("a@trypennie.com", ["Low Debt: 20k - 30k"])],
-      loadRoster: async () => [row({ bookable: false, attributes: { role: "Chatter Free User", legal_eligible: "N" } })],
-    },
-    () => {
-      throw new Error("google went away");
-    },
-  );
-  const r = await syncTwilioRedistribute(d.deps);
-  eq(r.activated.length, 0, "a flip that threw is not reported as an activation");
-  eq(r.activationFailures, 1, "it is counted as an activation failure");
-  eq(
-    r.attributeWriteFailures,
-    0,
-    "and NOT as an attribute write failure, because the attributes landed and a reader sent to check them would find them correct",
-  );
-  eq(r.tiersChanged, ["a@trypennie.com"], "and the tier write that already landed still counts");
+  eq(r.tiersChanged, ["a@trypennie.com"], "the tier change is reported");
+  eq(d.audits.length, 0, "and nothing is audited, because nobody entered the pool");
 }
 
 {

@@ -360,7 +360,7 @@ export async function syncSalesforceNow(): Promise<void> {
       // #2071: the three onboarding facts, each its own line, because the presser
       // is usually asking about one of them.
       r.createdUntiered
-        ? `${plural(r.createdUntiered, "new hire")} added not yet bookable (no debt team yet)`
+        ? `${plural(r.createdUntiered, "new hire")} added not yet bookable (not on the Sales profile yet)`
         : null,
       r.bookableFlipped.length
         ? `${plural(r.bookableFlipped.length, "agent")} made bookable from a first debt team or the Sales profile`
@@ -465,15 +465,6 @@ function twilioParts(
     r.backendChanged.length
       ? `${plural(r.backendChanged.length, "agent")} whose backend service now matches their Twilio tags`
       : null,
-    // A first tier is what makes a new hire bookable, so it is said apart from the
-    // tier line above: one is a pool change and this is somebody starting to take
-    // calls.
-    r.activated.length
-      ? `${plural(r.activated.length, "agent")} made bookable by their first debt team`
-      : null,
-    r.activationRefused.length
-      ? `${plural(r.activationRefused.length, "agent")} could not be made bookable by their first debt team until a Google calendar exists for them`
-      : null,
     r.legalEligible.length
       ? `${plural(r.legalEligible.length, "agent")} recorded as eligible for legal work, from their Twilio tag`
       : null,
@@ -487,9 +478,6 @@ function twilioParts(
       : null,
     r.attributeWriteFailures
       ? `${plural(r.attributeWriteFailures, "agent")} whose routing attributes could not be recorded, so press this again in a minute`
-      : null,
-    r.activationFailures
-      ? `${plural(r.activationFailures, "agent")} whose first debt team landed and who could not be put in the pool, so press this again in a minute`
       : null,
   ];
 }

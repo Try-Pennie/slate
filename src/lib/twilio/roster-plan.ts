@@ -57,7 +57,6 @@ import {
   type TwilioSide,
 } from "@/lib/twilio/roster";
 import type { BackendValue, DebtTierValue } from "@/lib/routing/attribute-vocabulary";
-import { planOnboardingFlip } from "@/lib/salesforce/onboarding";
 
 /** What Slate holds for one person, as far as this decision is concerned. */
 export interface TwilioRosterRow {
@@ -150,22 +149,6 @@ export interface AttributeWrite {
   /** The whole attributes object to write, merged over the row's own. */
   attributes: Attributes;
   changes: TwilioChanges;
-  /**
-   * This write gives them their FIRST debt tier while they are out of the pool, so
-   * the run should try to make them bookable (#2071, and #2152 for why it is here).
-   *
-   * The transition belongs to whoever WRITES the fact that causes it. Salesforce
-   * owns it for the profile and owned it for the tier until Twilio took the tier
-   * over; a sync that wrote the tier and left the flip to the other half would
-   * detect nothing, because by the time that half read the row the tier would
-   * already be there and "has a tier and is not bookable" is the shape of somebody
-   * an admin deliberately held back (L60).
-   *
-   * The flip still goes through the activation gate, which refuses anybody with no
-   * reachable Google calendar and leaves the pending mark for the Salesforce half
-   * to retry.
-   */
-  activate: boolean;
 }
 
 export interface RedistributePlan {
@@ -383,23 +366,8 @@ export function planTwilioRoster(
     // place the transition is visible (#2152). Somebody Twilio withholds is never
     // activated: `worker.redistribute` above has already left them out of the pool,
     // and reaching here means they were out of it before this run began.
-    //
-    // Only the TIER transition is taken. A pending row answers `retry`, which the
-    // Salesforce half owns and would otherwise be attempted twice an hour by two
-    // halves for one intent, and the profile transition is Salesforce's own fact.
-    const onboarding = worker && !worker.redistribute
-      ? planOnboardingFlip({
-          prev: row.attributes ?? {},
-          next: base,
-          bookable: row.bookable,
-          deactivated: row.deactivated,
-          pending: row.pending,
-        })
-      : { action: "none" as const };
-    const activate = onboarding.action === "flip" && onboarding.reason === "first-tier";
-
-    if (changesAnything(changes) || activate) {
-      attributeWrites.push({ userId: row.id, email, attributes: base, changes, activate });
+    if (changesAnything(changes)) {
+      attributeWrites.push({ userId: row.id, email, attributes: base, changes });
     }
   }
 

@@ -18,6 +18,7 @@ import {
   AGENT_PROFILES,
   agentProfileSoql,
   qualifiesForBooking,
+  tieredButNotOnSales,
   planOnboardingFlip,
 } from "@/lib/salesforce/onboarding";
 import { assert, eq, finish } from "./lib/harness.ts";
@@ -42,8 +43,11 @@ const live = { bookable: false, deactivated: false, pending: false };
 // --- what counts as ready to book ----------------------------------------------------
 {
   eq(qualifiesForBooking(chatter), false, "Chatter Free with no tier does not qualify");
-  eq(qualifiesForBooking(salesNoTier), true, "moving to Sales qualifies on its own");
-  eq(qualifiesForBooking(chatterLow), true, "a first tier qualifies on its own");
+  eq(qualifiesForBooking(salesNoTier), true, "the Sales profile is what qualifies somebody");
+  // #2182: a tier says what somebody can be ROUTED FOR, never that they are taking
+  // calls. It comes from Twilio since #2152, and Dan's call is that becoming
+  // bookable stays a Salesforce decision.
+  eq(qualifiesForBooking(chatterLow), false, "a debt team on another profile does NOT qualify");
   eq(qualifiesForBooking({}), false, "no attributes at all does not qualify");
   eq(qualifiesForBooking({ role: "Sales", debt_team: [] }), true, "Sales with an empty tier list still qualifies");
 }
@@ -51,9 +55,12 @@ const live = { bookable: false, deactivated: false, pending: false };
 // --- the transition, and only the transition -----------------------------------------
 {
   eq(planOnboardingFlip({ prev: chatter, next: salesNoTier, ...live }).action, "flip", "Chatter Free to Sales flips");
-  eq(planOnboardingFlip({ prev: chatter, next: chatterLow, ...live }).reason, "first-tier", "a first tier flips, and says that is why");
+  // #2182: a first debt team no longer flips anybody. It comes from Twilio since
+  // #2152, and a tag there says what somebody can be ROUTED FOR, never that they
+  // are taking calls.
+  eq(planOnboardingFlip({ prev: chatter, next: chatterLow, ...live }).action, "none", "a first tier on Chatter Free flips nobody");
   eq(planOnboardingFlip({ prev: chatter, next: salesNoTier, ...live }).reason, "sales-profile", "a profile move says that is why");
-  eq(planOnboardingFlip({ prev: chatter, next: salesLow, ...live }).reason, "first-tier", "both at once is reported as the tier, which is what routing keys on");
+  eq(planOnboardingFlip({ prev: chatter, next: salesLow, ...live }).reason, "sales-profile", "both at once is the profile move, which is the half that flips");
 
   eq(planOnboardingFlip({ prev: chatter, next: chatter, ...live }).action, "none", "no change, no flip");
   // rvillar: a manager holding tiers, set non-bookable by a person on 2026-09-02.
@@ -65,15 +72,22 @@ const live = { bookable: false, deactivated: false, pending: false };
   eq(
     planOnboardingFlip({ prev: salesLow, next: { role: "Sales", debt_team: ["low", "medium"] }, ...live }).action,
     "none",
-    "gaining a second tier is not a first tier",
+    "gaining a second tier changes nothing, as gaining the first no longer does either",
   );
+
+  // #2182: the state this narrowing creates, and the reason the roster sync counts
+  // it. Somebody left on Chatter Free with tiers is waiting on a Salesforce edit
+  // nobody has been told is owed, and nothing in here will ever advance them.
+  assert(tieredButNotOnSales(chatterLow), "tiers on a non-Sales profile is a person waiting on Salesforce");
+  assert(!tieredButNotOnSales(salesLow), "somebody already on Sales is not waiting for anything");
+  assert(!tieredButNotOnSales(chatter), "and neither is a hire with no tiers yet");
 }
 
 // --- a brand new row ---------------------------------------------------------------------
 {
   eq(planOnboardingFlip({ prev: null, next: chatter, ...live }).action, "none", "a hire arriving on Chatter Free waits");
   eq(planOnboardingFlip({ prev: null, next: salesLow, ...live }).action, "flip", "a hire arriving already on Sales with a tier flips at once");
-  eq(planOnboardingFlip({ prev: null, next: salesLow, ...live }).reason, "first-tier", "and says why");
+  eq(planOnboardingFlip({ prev: null, next: salesLow, ...live }).reason, "sales-profile", "and says why");
 }
 
 // --- states that always say no -----------------------------------------------------------

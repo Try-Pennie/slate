@@ -46,18 +46,38 @@ export function agentProfileSoql(): string {
 }
 
 /**
- * Whether these Salesforce attributes describe somebody who should be taking
- * bookings: on the Sales profile, or carrying at least one debt tier. Either alone
- * is enough, because either alone is something a person did on purpose.
+ * Whether these attributes describe somebody who should be taking bookings: on the
+ * Sales profile.
+ *
+ * THE PROFILE ALONE, since #2182. A first debt tier used to count as well, on the
+ * grounds that either is something a person did on purpose. That held while both
+ * came from Salesforce. #2152 moved the tier to Twilio, and Dan's call
+ * (2026-09-10) is that becoming bookable stays a Salesforce decision: a Twilio tag
+ * says what somebody can be ROUTED FOR, never that they are taking calls.
+ *
+ * The consequence, stated rather than left to be discovered: somebody who stays on
+ * Chatter Free and is given a tier is now never made bookable by anything. That is
+ * the intent, and it is a state somebody is waiting on a Salesforce edit in, so the
+ * roster sync counts them rather than leaving it silent (L636).
  */
 export function qualifiesForBooking(attrs: Attributes | null | undefined): boolean {
-  if (!attrs) return false;
-  if (attrs.role === SALES_PROFILE) return true;
+  return attrs?.role === SALES_PROFILE;
+}
+
+/**
+ * Whether this row is carrying tiers on a profile that will never make them
+ * bookable, so somebody is waiting on a Salesforce edit nobody has been told is
+ * owed (#2182).
+ *
+ * Counted rather than acted on. Acting would be the very rule this change removed.
+ */
+export function tieredButNotOnSales(attrs: Attributes | null | undefined): boolean {
+  if (!attrs || attrs.role === SALES_PROFILE) return false;
   const tiers = attrs.debt_team;
   return Array.isArray(tiers) && tiers.length > 0;
 }
 
-export type FlipReason = "first-tier" | "sales-profile" | "retry";
+export type FlipReason = "sales-profile" | "retry";
 
 export interface OnboardingInput {
   /** The attributes Slate held before this run; null for a row being created now. */
@@ -89,9 +109,5 @@ export function planOnboardingFlip(input: OnboardingInput): OnboardingPlan {
   if (input.pending) return { action: "flip", reason: "retry" };
   if (!qualifiesForBooking(input.next)) return { action: "none" };
   if (input.prev !== null && qualifiesForBooking(input.prev)) return { action: "none" };
-  // Reported as the tier when both arrived together, since the tier is what
-  // routing keys on and what a reader will go and check.
-  const tiers = input.next.debt_team;
-  const gainedTier = Array.isArray(tiers) && tiers.length > 0;
-  return { action: "flip", reason: gainedTier ? "first-tier" : "sales-profile" };
+  return { action: "flip", reason: "sales-profile" };
 }
