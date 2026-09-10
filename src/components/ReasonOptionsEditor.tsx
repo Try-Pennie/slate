@@ -11,7 +11,6 @@ import { ReasonSwitch } from "@/components/ui/ReasonSwitch";
 import { REASON_LABEL_MAX, slugifyCode, type ReasonOptionRow } from "@/lib/booking/reason-options";
 import type { ReasonAction } from "@/lib/booking/core";
 import { REASON_USAGE_WINDOW_DAYS, type ReasonUsageCounts } from "@/lib/booking/reason-usage";
-import { UnsavedGuard } from "@/components/ui/UnsavedGuard";
 
 /** The editor's per-row working state (a superset of what it submits). */
 interface EditRow {
@@ -163,9 +162,14 @@ export default function ReasonOptionsEditor({
   );
 
   return (
-    <SaveForm action={setReasonOptions} name="booking-reasons" className="space-y-6">
-      {/* #1966: typed lists, with no other copy of them. */}
-      <UnsavedGuard what="changes to these reasons" />
+    // #1966: typed lists, with no other copy of them. The guard comes from
+    // SaveForm itself since #2076, so it can no longer be left off.
+    <SaveForm
+      action={setReasonOptions}
+      name="booking-reasons"
+      unsaved="changes to these reasons"
+      className="space-y-6"
+    >
       {/* `data-restore-own` keeps SaveForm's blanket restore off this input: the
           value comes from the state above, which took the restored list as its
           initial value (#2008). */}

@@ -150,7 +150,7 @@ export default async function AlertSettingsPage({
           </ul>
         </div>
       )}
-      <SaveForm action={setMonitorSettings} name="alerts" className="space-y-8">
+      <SaveForm action={setMonitorSettings} name="alerts" unsaved="changes to these alert settings" className="space-y-8">
         <section className={cardCls}>
           {/* heading-gloss-ok: the UNIT of the numbers in the fields below. */}
           <h2 className="mb-1 text-sm font-semibold">Alert cooldowns (minutes)</h2>

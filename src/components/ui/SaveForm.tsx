@@ -10,6 +10,7 @@ import {
   type ReactNode,
 } from "react";
 import { btnSecondaryCls } from "@/components/ui/styles";
+import { UnsavedGuard } from "@/components/ui/UnsavedGuard";
 import { isStaleActionError, STALE_ACTION_NOTICE, STALE_ACTION_TITLE } from "@/lib/stale-action";
 import {
   clearStash,
@@ -52,9 +53,30 @@ import {
  * would do it instantly, with no way back. Offered, they keep what is on screen
  * either way.
  */
+/**
+ * The exemption from the unsaved guard, written as the REASON rather than as a
+ * screen (#2076, L362, L615).
+ *
+ * A form that holds a VIEW rather than work: a filter row, a lookup. Losing what
+ * is in one is an annoyance, not lost work, and a guard that fires on filters is
+ * the one people learn to click through, after which it is not protecting the
+ * alert floors either (L36).
+ *
+ * It takes the reason as an argument, at the call site, so the justification
+ * travels with the decision instead of being a name somebody applies. Every other
+ * exemption is a decision somebody has to argue for in the change that makes it.
+ */
+export function holdsAView(_why: string): typeof HOLDS_A_VIEW {
+  return HOLDS_A_VIEW;
+}
+
+/** The sentinel `holdsAView` returns. Compared by identity, never typed by hand. */
+export const HOLDS_A_VIEW = "\u0000holds-a-view" as const;
+
 export function SaveForm({
   action,
   name,
+  unsaved,
   children,
   className,
   onStale = "notice",
@@ -63,6 +85,22 @@ export function SaveForm({
   action: (form: FormData) => Promise<void>;
   /** Separates two forms on one page in the stash. */
   name: string;
+  /**
+   * What this form would lose, as a noun phrase ("changes to these hours"), or
+   * `holdsAView("why")` for a form that holds no work at all (#2076).
+   *
+   * REQUIRED, and that is the whole point. The guard was opt in and five of
+   * sixteen call sites took it, so Dan lost fourteen alert floors he had typed by
+   * clicking a link. A behaviour each call site must opt into cannot be enforced
+   * by a scan, because a site that never opted in is indistinguishable from one
+   * where the condition never arises (L621). Required, `tsc` enumerates every
+   * construction site, the way `businessHours` is required on `SlotRules`.
+   *
+   * Nothing has to be declared about DIRTINESS: the guard measures it, by diffing
+   * the form against the values it rendered with. A form holding only a button
+   * can never be dirty, so it is silent with no exception written for it.
+   */
+  unsaved: string;
   children: ReactNode;
   className?: string;
   /**
@@ -160,6 +198,10 @@ export function SaveForm({
   return (
     <RestoreContext.Provider value={restoredContext}>
       <form ref={formRef} action={run} className={className} {...rest}>
+        {/* #2076: by DEFAULT, not by opt in. Silent unless the form actually
+            differs from what it rendered with, so a form holding only a button
+            needs no exception written for it. */}
+        {unsaved !== HOLDS_A_VIEW && <UnsavedGuard what={unsaved} />}
         {stale && (
           <div
             role="alert"

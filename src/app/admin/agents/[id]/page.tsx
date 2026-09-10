@@ -344,7 +344,7 @@ export default async function AgentProfilePage({
                 underscores, so "team lead" cannot be spelled two ways on one
                 page (L41). */}
             {canSetThisRole ? (
-              <SaveForm action={setUserRole} name="agent-role" className="flex items-end gap-2">
+              <SaveForm action={setUserRole} name="agent-role" unsaved="this role change" className="flex items-end gap-2">
                 <input type="hidden" name="user_id" value={agent.id} />
                 <div>
                   <label className={labelCls}>Role</label>
@@ -368,7 +368,7 @@ export default async function AgentProfilePage({
               </div>
             )}
             {canManageThisAgent && (
-              <SaveForm action={setBookable} name="agent-bookable" className="flex items-end">
+              <SaveForm action={setBookable} name="agent-bookable" unsaved="this bookable change" className="flex items-end">
                 <input type="hidden" name="user_id" value={agent.id} />
                 <input
                   type="hidden"
@@ -437,7 +437,7 @@ export default async function AgentProfilePage({
           </div>
           {isAdmin && agent.role !== "agent" && (
             <SaveForm
-              name="agent-ooo-calendar"
+              name="agent-ooo-calendar" unsaved="changes to this calendar"
               action={setOooCalendarId}
               /* Not a row of two columns aligned on their bottom edges: adding
                  the hint below the box made the column taller and pushed the Save
@@ -716,7 +716,7 @@ export default async function AgentProfilePage({
                   You can&apos;t deactivate your own account.
                 </span>
               ) : (
-                <SaveForm action={setUserLifecycle} name="agent-lifecycle" className="flex items-end">
+                <SaveForm action={setUserLifecycle} name="agent-lifecycle" unsaved="nothing typed here" className="flex items-end">
                   <input type="hidden" name="user_id" value={agent.id} />
                   <input type="hidden" name="action" value="deactivate" />
                   {/* #1215: confirm (never block) when this agent still holds
@@ -733,7 +733,7 @@ export default async function AgentProfilePage({
                 </SaveForm>
               )
             ) : (
-              <SaveForm action={setUserLifecycle} name="agent-lifecycle" className="flex items-end">
+              <SaveForm action={setUserLifecycle} name="agent-lifecycle" unsaved="nothing typed here" className="flex items-end">
                 <input type="hidden" name="user_id" value={agent.id} />
                 <input type="hidden" name="action" value="reactivate" />
                 <SubmitButton className={btnSecondaryCls} pendingLabel="Reactivating account">

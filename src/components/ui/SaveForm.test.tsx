@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { Component, useState, type ReactNode } from "react";
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 // The predicate is the one thing that decides whether a failure is swallowed or
@@ -15,7 +15,7 @@ vi.mock("@/lib/stale-action", async () => {
   return { ...real, isStaleActionError: (e: unknown) => stale.is(e) };
 });
 
-import { SaveForm } from "./SaveForm";
+import { SaveForm, holdsAView } from "./SaveForm";
 import { TimeField } from "./TimeField";
 import { SelectField } from "./SelectField";
 import { restoreKey } from "@/lib/form-restore";
@@ -56,7 +56,7 @@ describe("SaveForm survives a deploy landing under the page (#1994)", () => {
       throw new Error("Failed to find Server Action");
     });
     render(
-      <SaveForm action={action} name="hours">
+      <SaveForm unsaved="changes" action={action} name="hours">
         <input name="start_1" defaultValue="08:00" aria-label="start" />
         <button type="submit">Save</button>
       </SaveForm>,
@@ -78,7 +78,7 @@ describe("SaveForm survives a deploy landing under the page (#1994)", () => {
       throw new Error("Failed to find Server Action");
     });
     render(
-      <SaveForm action={action} name="hours">
+      <SaveForm unsaved="changes" action={action} name="hours">
         <input name="start_1" defaultValue="08:00" aria-label="start" />
         <button type="submit">Save</button>
       </SaveForm>,
@@ -109,7 +109,7 @@ describe("SaveForm survives a deploy landing under the page (#1994)", () => {
     const caught: unknown[] = [];
     render(
       <CatchHere onError={(e) => caught.push(e)}>
-        <SaveForm action={action} name="hours">
+        <SaveForm unsaved="changes" action={action} name="hours">
           <button type="submit">Save</button>
         </SaveForm>
       </CatchHere>,
@@ -127,7 +127,7 @@ describe("SaveForm survives a deploy landing under the page (#1994)", () => {
     const user = userEvent.setup();
     const action = vi.fn(async () => {});
     render(
-      <SaveForm action={action} name="hours">
+      <SaveForm unsaved="changes" action={action} name="hours">
         <button type="submit">Save</button>
       </SaveForm>,
     );
@@ -152,7 +152,7 @@ describe("SaveForm reloads instead, where that is the whole recovery (#1998)", (
       throw new Error("Failed to find Server Action");
     });
     render(
-      <SaveForm action={action} name="sign-out" onStale="reload">
+      <SaveForm unsaved="changes" action={action} name="sign-out" onStale="reload">
         <button type="submit">Sign out</button>
       </SaveForm>,
     );
@@ -185,7 +185,7 @@ describe("SaveForm reloads instead, where that is the whole recovery (#1998)", (
     const caught: unknown[] = [];
     render(
       <CatchHere onError={(e) => caught.push(e)}>
-        <SaveForm action={action} name="sign-out" onStale="reload">
+        <SaveForm unsaved="changes" action={action} name="sign-out" onStale="reload">
           <button type="submit">Sign out</button>
         </SaveForm>
       </CatchHere>,
@@ -205,7 +205,7 @@ describe("SaveForm reloads instead, where that is the whole recovery (#1998)", (
       throw new Error("Failed to find Server Action");
     });
     render(
-      <SaveForm action={action} name="hours">
+      <SaveForm unsaved="changes" action={action} name="hours">
         <input name="start_1" defaultValue="08:00" aria-label="start" />
         <button type="submit">Save</button>
       </SaveForm>,
@@ -222,7 +222,7 @@ describe("SaveForm puts back what was typed (#1994)", () => {
       JSON.stringify({ note: ["half written"] }),
     );
     render(
-      <SaveForm action={vi.fn()} name="hours">
+      <SaveForm unsaved="changes" action={vi.fn()} name="hours">
         <input name="note" defaultValue="" aria-label="note" />
       </SaveForm>,
     );
@@ -241,7 +241,7 @@ describe("SaveForm puts back what was typed (#1994)", () => {
       JSON.stringify({ start_1: ["09:30"] }),
     );
     const { container } = render(
-      <SaveForm action={vi.fn()} name="hours">
+      <SaveForm unsaved="changes" action={vi.fn()} name="hours">
         <TimeField name="start_1" ariaLabel="Monday start time" defaultValue="08:00" />
       </SaveForm>,
     );
@@ -261,7 +261,7 @@ describe("SaveForm puts back what was typed (#1994)", () => {
       JSON.stringify({ timezone: ["America/Denver"] }),
     );
     const { container } = render(
-      <SaveForm action={vi.fn()} name="hours">
+      <SaveForm unsaved="changes" action={vi.fn()} name="hours">
         <SelectField
           name="timezone"
           ariaLabel="Your timezone"
@@ -292,7 +292,7 @@ describe("SaveForm puts back what was typed (#1994)", () => {
       return <input type="hidden" name="own" value={value} readOnly />;
     }
     const { container } = render(
-      <SaveForm action={vi.fn()} name="hours">
+      <SaveForm unsaved="changes" action={vi.fn()} name="hours">
         <NotOptedIn />
       </SaveForm>,
     );
@@ -302,7 +302,7 @@ describe("SaveForm puts back what was typed (#1994)", () => {
 
   it("falls back to the stored value when nothing was stashed for that field", () => {
     render(
-      <SaveForm action={vi.fn()} name="hours">
+      <SaveForm unsaved="changes" action={vi.fn()} name="hours">
         <TimeField name="start_1" ariaLabel="Monday start time" defaultValue="08:00" />
       </SaveForm>,
     );
@@ -318,12 +318,96 @@ describe("SaveForm puts back what was typed (#1994)", () => {
       JSON.stringify({ note: ["x"] }),
     );
     render(
-      <SaveForm action={vi.fn()} name="hours">
+      <SaveForm unsaved="changes" action={vi.fn()} name="hours">
         <input name="note" defaultValue="" aria-label="note" />
       </SaveForm>,
     );
     expect(
       window.sessionStorage.getItem(restoreKey(window.location.pathname, "hours")),
     ).toBeNull();
+  });
+});
+
+// #2076: the guard is SaveForm's, not each caller's. Dan lost fourteen alert
+// floors he had typed by clicking a link, on one of the eleven call sites that had
+// never opted in.
+describe("every SaveForm guards unsaved work by default (#2076)", () => {
+  it("warns before an in app navigation once something has been typed", async () => {
+    render(
+      <SaveForm action={async () => {}} name="f" unsaved="changes to these alert settings">
+        <input name="floor" defaultValue="20" />
+        <button type="submit">Save</button>
+      </SaveForm>,
+    );
+    // A link OUTSIDE the form, which is what a sidebar is.
+    const away = document.createElement("a");
+    away.setAttribute("href", "/admin/buckets");
+    document.body.appendChild(away);
+
+    fireEvent.change(screen.getByDisplayValue("20"), { target: { value: "35" } });
+    away.click();
+
+    expect(await screen.findByRole("alertdialog")).toBeTruthy();
+    expect(document.body.textContent).toContain("changes to these alert settings");
+  });
+
+  it("says nothing when a form holds only a button, with no exception written for it", () => {
+    // Dirtiness is MEASURED, not declared, so a form that cannot be dirty is
+    // silent on its own: no list of button-only forms has to be maintained.
+    render(
+      <SaveForm action={async () => {}} name="f" unsaved="nothing typed here">
+        <input type="hidden" name="id" value="u1" />
+        <button type="submit">Sync</button>
+      </SaveForm>,
+    );
+    const away = document.createElement("a");
+    away.setAttribute("href", "/admin/buckets");
+    document.body.appendChild(away);
+    away.click();
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+  });
+
+  it("says nothing when a re-render changes a value nobody touched", () => {
+    // THE CASE THAT MADE THIS THE DEFAULT DANGEROUS. A toggle carries the OPPOSITE
+    // of the current state in a hidden field, so every save flips it. Against a
+    // snapshot alone that form reads as permanently edited and warns on the next
+    // link click about work nobody did.
+    function Toggle() {
+      const [bookable, setBookable] = useState(true);
+      return (
+        <>
+          <SaveForm action={async () => {}} name="f" unsaved="this bookable change">
+            <input type="hidden" name="bookable" value={String(!bookable)} />
+            <button type="submit">Save</button>
+          </SaveForm>
+          {/* OUTSIDE the form, which is the real shape: another form's action on
+              the same page revalidates and this one re-renders. */}
+          <button type="button" onClick={() => setBookable((b) => !b)}>
+            Something else saved
+          </button>
+          <a href="/admin/buckets">Buckets</a>
+        </>
+      );
+    }
+    render(<Toggle />);
+    // The re-render, driven from outside the form the way a revalidate is.
+    fireEvent.click(screen.getByText("Something else saved"));
+    fireEvent.click(screen.getByText("Buckets"));
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+  });
+
+  it("mounts no guard at all on a form that holds a view", () => {
+    render(
+      <SaveForm action={async () => {}} name="f" unsaved={holdsAView("a filter row holds a view, not work")}>
+        <input name="q" defaultValue="" />
+        <button type="submit">Search</button>
+      </SaveForm>,
+    );
+    const away = document.createElement("a");
+    away.setAttribute("href", "/admin/buckets");
+    document.body.appendChild(away);
+    fireEvent.change(screen.getByRole("textbox"), { target: { value: "dana" } });
+    away.click();
+    expect(screen.queryByRole("alertdialog")).toBeNull();
   });
 });

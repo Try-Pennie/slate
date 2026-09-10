@@ -84,7 +84,7 @@ export default async function EventTypesPage() {
             A box left blank takes the value shown in it. The title is yours to
             pick and has to be new.
           </p>
-        <SaveForm action={createEventType} name="event-type" className="space-y-3">
+        <SaveForm action={createEventType} name="event-type" unsaved="this new call type" className="space-y-3">
           {/* #1950: every box arrives EMPTY, and the numbers appear only as
               placeholders. A `defaultValue` submits when untouched, so the six
               literals that used to sit here were values nobody typed reaching

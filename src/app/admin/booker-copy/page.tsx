@@ -77,6 +77,7 @@ export default async function BookerCopyPage({
               // one of them under one key, so a save killed by a deploy would
               // restore one event type's description onto another's field.
               name={`booker-copy-${e.id}`}
+              unsaved="changes to this description"
               // #1945: an explicit column with a real gap. `space-y-3` alone
               // could not separate the field from the button, because both were
               // inline level and sat side by side: a vertical utility has nothing

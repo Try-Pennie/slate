@@ -133,7 +133,7 @@ export default async function AgentRosterPage({
           {/* #2071: for every manager, not only admins. The person who has just
               added a hire in Salesforce and cannot see them here is a manager, and
               the page already admits nobody below that role. */}
-          <SaveForm action={syncSalesforceNow} name="salesforce-sync">
+          <SaveForm action={syncSalesforceNow} name="salesforce-sync" unsaved="nothing typed here">
             <SyncButton />
           </SaveForm>
         </div>

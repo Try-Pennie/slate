@@ -182,7 +182,7 @@ export default async function BucketsPage({
           routes to this bucket. Leave it as &ldquo;No default&rdquo; to make a missing
           code an explicit error instead of a silent guess.
         </p>
-        <SaveForm action={setDefaultBucket} name="bucket-routing" className="space-y-4">
+        <SaveForm action={setDefaultBucket} name="bucket-routing" unsaved="changes to the default bucket" className="space-y-4">
           <div>
             <label className={labelCls} htmlFor="default_bucket_code">
               Default bucket

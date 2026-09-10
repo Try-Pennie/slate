@@ -35,7 +35,30 @@ export function UnsavedGuard({ what }: { what: string }) {
 
     /** The values as they were last SAVED, which is how they were rendered. */
     saved.current = formSnapshot(form);
-    const dirty = () => saved.current !== null && formSnapshot(form) !== saved.current;
+
+    // Whether anybody has INTERACTED with this form since it was rendered.
+    //
+    // Needed once the guard became SaveForm's default (#2076), because a form's
+    // rendered values also change WITHOUT anybody touching them: a server action
+    // anywhere on the page revalidates it, and a re-render can legitimately hand a
+    // field a different value. The clearest case is a toggle whose hidden field
+    // carries the OPPOSITE of the current state, which flips on every save; against
+    // the snapshot alone that form reads as permanently edited and warns on the
+    // next link click about work nobody did.
+    //
+    // Interaction is the thing that separates the two, because a re-render fires
+    // none of these events. It only ever SUPPRESSES: the snapshot still decides,
+    // so a person who types and undoes is not dirty, and a click on a button that
+    // edits nothing is not either.
+    let touched = false;
+    const onTouch = () => {
+      touched = true;
+    };
+    form.addEventListener("input", onTouch);
+    form.addEventListener("change", onTouch);
+    form.addEventListener("click", onTouch);
+
+    const dirty = () => touched && saved.current !== null && formSnapshot(form) !== saved.current;
 
     // A submit means these values are the saved ones from now on. Taken after a
     // tick so the snapshot reads the form as it was submitted. If the save then
@@ -43,6 +66,7 @@ export function UnsavedGuard({ what }: { what: string }) {
     // the person is still on the page looking at an error, and the alternative
     // is warning them about work the screen is telling them was not saved.
     const onSubmit = () => {
+      touched = false;
       window.setTimeout(() => {
         saved.current = formSnapshot(form);
       }, 0);
@@ -59,7 +83,6 @@ export function UnsavedGuard({ what }: { what: string }) {
     window.addEventListener("beforeunload", onBeforeUnload);
 
     const onClick = (e: MouseEvent) => {
-      if (!dirty()) return;
       // Anything the person has told the browser to handle differently is left
       // alone: a new tab keeps this page and its edits, and a modified click is
       // a deliberate one.
@@ -75,6 +98,13 @@ export function UnsavedGuard({ what }: { what: string }) {
       // `beforeunload`, and a bare fragment goes nowhere.
       if (!href.startsWith("/") || href.startsWith("//")) return;
 
+      // Dirtiness LAST, because it is the only expensive question here and every
+      // check above answers most clicks without asking it (#2076). This listener
+      // is on the document, so once every form carries a guard a page with sixty
+      // of them runs sixty of these on every click anywhere; the cheap tests
+      // reject all but an in app link navigation, which is rare.
+      if (!dirty()) return;
+
       // Capture phase plus stopPropagation, so the router's own handler never
       // runs. Preventing default alone would leave the client side navigation to
       // proceed.
@@ -85,6 +115,9 @@ export function UnsavedGuard({ what }: { what: string }) {
     document.addEventListener("click", onClick, true);
 
     return () => {
+      form.removeEventListener("input", onTouch);
+      form.removeEventListener("change", onTouch);
+      form.removeEventListener("click", onTouch);
       form.removeEventListener("submit", onSubmit);
       window.removeEventListener("beforeunload", onBeforeUnload);
       document.removeEventListener("click", onClick, true);

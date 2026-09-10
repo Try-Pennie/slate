@@ -22,6 +22,7 @@ import { useStalledAfter } from "@/lib/useStalledAfter";
 import { formatSlotTime } from "@/lib/booking/slot-label";
 import { usePhoneCaret } from "@/lib/usePhoneCaret";
 import { countdownPhrase, advisorFirstName } from "@/lib/booking/countdown";
+import { UnsavedGuard } from "@/components/ui/UnsavedGuard";
 import {
   BEFORE_COPY,
   CANCEL_COPY,
@@ -578,6 +579,10 @@ export default function ManageBooking({
                         void savePhone();
                       }}
                     >
+                      {/* #2076: a corrected number is typed work, and this is a
+                          page a lead reaches from an email and leaves by a link.
+                          The number is the whole reason they opened it. */}
+                      <UnsavedGuard what="changes to your phone number" />
                       <label htmlFor="manage-phone" className="block text-sm font-semibold text-fg">
                         {PHONE_COPY.heading}
                       </label>

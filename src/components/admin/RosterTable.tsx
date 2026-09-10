@@ -130,6 +130,8 @@ export function RosterTable({
           are a picker of our own now rather than native selects, and the table
           already filtered through React state, so the fallback only ever covered
           a page whose other controls were dead anyway. */}
+      {/* unsaved-ok: the roster search and filter row holds a view, not work
+          (#2076). */}
       <form
         method="GET"
         onSubmit={(e) => e.preventDefault()}

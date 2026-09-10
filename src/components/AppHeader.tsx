@@ -227,7 +227,7 @@ export async function AppHeader({
         email={impersonation.target.email}
         role={impersonation.target.role}
       >
-        <SaveForm action={stopImpersonation} name="stop-impersonation" onStale="reload">
+        <SaveForm action={stopImpersonation} name="stop-impersonation" unsaved="nothing typed here" onStale="reload">
           <SubmitButton
             className="pn-impersonation-exit"
             pendingLabel="Returning to your own view"
