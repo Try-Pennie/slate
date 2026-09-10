@@ -31,6 +31,23 @@
  *  bucket members and criteria post several entries under one name. */
 export type RestoredForm = Record<string, string[]>;
 
+/**
+ * Whether a restored stash actually holds something a person TYPED (#2075).
+ *
+ * A form of one button restores an empty set of values, and announcing "what you
+ * had typed has been put back" over one is telling the reader about a state that
+ * cannot exist for that form: nothing was typed, so nothing came back. Worse, on
+ * the agents header that notice is a paragraph inside a one line row, so it pushed
+ * the Sync button off the line beside the heading every time it fired.
+ *
+ * A value that is present but EMPTY counts as nothing, because a cleared field and
+ * an untouched one are the same thing to somebody reading the sentence.
+ */
+export function restoredAnything(restored: RestoredForm | null | undefined): boolean {
+  if (!restored) return false;
+  return Object.values(restored).some((values) => values.some((v) => v.trim() !== ""));
+}
+
 /** Where a stash lives. `sessionStorage` in a browser, a fake in a test. */
 export interface RestoreStore {
   getItem(key: string): string | null;

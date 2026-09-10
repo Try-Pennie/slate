@@ -1,6 +1,7 @@
 "use client";
 
 import { useRef, useState, type ReactNode } from "react";
+import { copyMondayOutcome } from "@/lib/admin/working-hours-copy";
 import { TimeField } from "@/components/ui/TimeField";
 import { SubmitButton } from "@/components/ui/SubmitButton";
 import { ConfirmAction } from "@/components/ui/ConfirmAction";
@@ -132,7 +133,24 @@ export function WorkingHoursWeek({
           : { ...d, windows: monday.windows.map((m) => mint(m.start, m.end)) },
       );
     });
+    // #2106: say what it did, on the page it did it on.
+    //
+    // The successful case was as silent as the empty one: an agent pressed it with
+    // five days ticked and had to read the rows to see whether anything had
+    // happened. And an agent whose only ticked day IS Monday pressed a control that
+    // can only ever do nothing, with nothing saying so, which teaches them the
+    // control is broken rather than that their week has no other days in it (L109).
+    setCopyOutcome(copyMondayOutcome(week.filter((d) => d.weekday !== 1 && d.on).length));
   }
+
+  /**
+   * What the copy said it did, cleared by the next edit (#2106).
+   *
+   * A sentence rather than a count on the control, because the reader's question is
+   * "did that work", and the answer to it on a week with no other working days is a
+   * different sentence rather than a smaller number.
+   */
+  const [copyOutcome, setCopyOutcome] = useState<string | null>(null);
 
   const summaryDays: WorkingHoursDay[] = week.map((d) => ({
     weekday: d.weekday,
@@ -304,6 +322,11 @@ export function WorkingHoursWeek({
                 >
                   Copy Monday to every working day
                 </button>
+              )}
+              {weekday === 1 && copyOutcome && (
+                <p role="status" className="mt-1 text-xs text-fg-muted">
+                  {copyOutcome}
+                </p>
               )}
             </div>
           );

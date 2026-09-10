@@ -187,18 +187,42 @@ export default async function AlertSettingsPage({
               the staffing depth page for exactly this reason (#1898, L579). So
               it is a `title` plus an `sr-only` span, the pattern RosterTable
               already uses (#1812), which reaches a mouse and a screen reader. */}
-          <div className="space-y-5">
+          {/* The rule on each heading is what separates the groups now, so the
+              gap between them is smaller than it was: two boundary signals stacked
+              would say the same thing twice. */}
+          <div className="space-y-4">
             {ALERT_URGENCY_ORDER.map((level) => {
               const fields = COOLDOWN_FIELDS.filter((f) => f.urgency === level);
               if (fields.length === 0) return null;
               const copy = ALERT_URGENCY_COPY[level];
               return (
-                <div key={level}>
-                  <h3 className="text-xs font-semibold text-fg">
-                    {copy.label}{" "}
-                    <span className="font-normal text-fg-muted">{copy.meaning}</span>
+                // The rule lives on the GROUP, not the heading. `first:` matches
+                // the first child of its own parent, and the heading is the first
+                // child of every group, so putting it there drew no rule anywhere
+                // (seen on the page, not in a test). Here `first:` means the first
+                // group, which is what it was meant to say.
+                <div key={level} className="border-t border-border pt-4 first:border-t-0 first:pt-0">
+                  {/* #2069: Dan, clicking through this section, "these feel like
+                      they're supposed to be headers but it's not clear".
+
+                      The semantics were already right: it is a real h3 and a screen
+                      reader gets a heading. What was missing was every visual
+                      signal at once. It was `text-xs` over `text-xs` rows, so
+                      weight was the only difference, and a semibold 12px line above
+                      regular 12px rows reads as an emphasised sentence rather than
+                      a level (L634). The rows carried rules and the one element
+                      marking a boundary carried none. And the one word label shared
+                      a baseline with its explanation, which is the shape of prose.
+
+                      So it takes a size step up from the rows, a rule of its own,
+                      and its own line, with the explanation beneath it. The
+                      explanation stays: it is the only place the four levels are
+                      defined, and it is one per group rather than one per row. */}
+                  <h3 className="text-sm font-semibold text-fg">
+                    {copy.label}
                   </h3>
-                  <ul className="mt-1.5">
+                  <p className="mt-0.5 text-xs text-fg-muted">{copy.meaning}</p>
+                  <ul className="mt-2">
                     {fields.map((f) => {
                       const stored = storedByKey.get(f.key);
                       const defMin = MONITOR_DEFAULTS.cooldownMs[f.key] / 60_000;
