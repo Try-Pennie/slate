@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { DateTime } from "luxon";
+import { formatLongDate } from "@/lib/date/parse";
 
 const WEEKDAYS = ["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"];
 
@@ -142,7 +143,7 @@ export function CalendarMonth({
               aria-disabled={disabled || undefined}
               aria-pressed={selected}
               aria-current={isToday ? "date" : undefined}
-              aria-label={d.toFormat("cccc, LLLL d, yyyy")}
+              aria-label={formatLongDate(d, { year: true }) ?? d.toISODate() ?? ""}
               onClick={() => {
                 if (!disabled) onSelect(d);
               }}

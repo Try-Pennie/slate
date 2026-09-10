@@ -1,7 +1,7 @@
 "use client";
 
 import { DateTime } from "luxon";
-import { formatClockTime } from "@/lib/date/parse";
+import { formatClockTime, formatLongDate } from "@/lib/date/parse";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { ArrowRightIcon } from "@/components/icons";
@@ -863,7 +863,7 @@ export default function Booker({
   // call they have is simply put in front of them with the obvious thing to do.
   if (existingCall && !pickingMoveTime) {
     const longDay = (iso: string) =>
-      DateTime.fromISO(iso).setZone(zone).toFormat("cccc, LLLL d");
+      formatLongDate(DateTime.fromISO(iso).setZone(zone)) ?? "";
     const shortDay = (iso: string) =>
       DateTime.fromISO(iso).setZone(zone).toFormat("ccc, LLL d");
     const newWhen = selectedSlot
@@ -1419,7 +1419,7 @@ export default function Booker({
   /** The first revealed day, in words, or null when nothing has been revealed. */
   const revealedFrom =
     nextDaySlots && nextDaySlots.length > 0 && picker.days[0]
-      ? DateTime.fromISO(picker.days[0], { zone }).toFormat("cccc, LLLL d")
+      ? formatLongDate(DateTime.fromISO(picker.days[0], { zone }))
       : null;
 
   // #1329 / #1339: with nothing bookable nearby, "check back soon" gives a lead

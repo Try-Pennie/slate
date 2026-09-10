@@ -27,10 +27,17 @@
  */
 import { DateTime } from "luxon";
 import type { PhonePrefillDrop } from "../phone-format.ts";
+import { formatLongDate } from "../date/parse.ts";
 
-/** US order everywhere (#1336): "Monday, August 17", never "17 August". */
+/**
+ * US order everywhere: "Monday, August 17", never "17 August" (#1336).
+ *
+ * The rule lives in `formatLongDate` now rather than in this comment beside a
+ * second copy of it (#2221). `@/lib/date/parse` imports nothing but Luxon, so
+ * the no-alias rule above still holds and scripts can still drive this natively.
+ */
 export function longDayLabel(iso: string, zone: string): string {
-  return DateTime.fromISO(iso, { zone }).toFormat("cccc, LLLL d");
+  return formatLongDate(DateTime.fromISO(iso, { zone })) ?? "";
 }
 
 // --- the times panel ---------------------------------------------------------

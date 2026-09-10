@@ -2,6 +2,7 @@
 
 import { useActionState, useState } from "react";
 import { DateTime } from "luxon";
+import { formatLongDate } from "@/lib/date/parse";
 import { TimeField } from "@/components/ui/TimeField";
 import { SubmitButton } from "@/components/ui/SubmitButton";
 import { btnCls, btnSecondaryCls, inputCls, labelCls } from "@/components/ui/styles";
@@ -16,10 +17,16 @@ function hhmm(minute: number): string {
   return `${String(Math.floor(minute / 60)).padStart(2, "0")}:${String(minute % 60).padStart(2, "0")}`;
 }
 
-/** The date as a person writes it, never as it is stored. */
+/**
+ * The date as a person writes it, never as it is stored.
+ *
+ * Falls back to the raw ISO on an unreadable value rather than a plausible
+ * looking date, which is what {@link formatLongDate} answering null buys: a
+ * stored value nobody can read shows as itself, so it can be recognised and
+ * removed.
+ */
 function readableDate(iso: string): string {
-  const d = DateTime.fromISO(iso);
-  return d.isValid ? d.toFormat("cccc d LLLL yyyy") : iso;
+  return formatLongDate(DateTime.fromISO(iso), { year: true }) ?? iso;
 }
 
 /**
