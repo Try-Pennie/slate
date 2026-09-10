@@ -1,4 +1,4 @@
-// The legal RELAXATION is retired, and nothing may reference it again (#2218).
+// Legal eligibility is retired, and nothing may reference it again (#2218).
 //
 // #2158 widened a legal bucket that matched nobody: it dropped the
 // `legal_eligible!` clause at request time, offered the tier's whole pool, and
@@ -12,20 +12,32 @@
 // alert, and a value carried that far comes back the moment somebody restores one
 // link of it. Nothing would fail: a `false` that nobody sets is invisible.
 //
-// The ATTRIBUTE itself (`legal_eligible`) is still written by the Twilio roster
-// sync and read by the admin agent page, and goes in the next change. This guard
-// widens to cover it then; scoping it to what is actually gone keeps it honest
-// today rather than green because it was told to ignore things (L324).
+// STEP THREE WIDENS THIS TO THE ATTRIBUTE ITSELF. `legal_eligible` was written by
+// the hourly Twilio roster sync and by a Salesforce merge that preserved it across
+// every run, and read by the admin agent page and two `verify:twilio-parity`
+// verdicts. A value with a live writer creeps back: somebody restores a mapping or
+// adds a field to a payload, and nothing fails anywhere, because an unread
+// attribute is invisible. That is exactly how it came to be written by two systems
+// and read by ten buckets that matched nobody.
+//
+// The TWILIO TAGS still exist and are still read by the Pipedream job that feeds
+// cal.com. That is not Slate's business any more: what is retired here is Slate
+// storing, comparing and routing on the value.
 //
 // Run: node --experimental-strip-types --import ./scripts/register-paths.mjs \
-//        scripts/test-retired-legal-relaxation.ts
+//        scripts/test-retired-legal-eligible.ts
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { scrubbedGitEnv } from "./lib/git-env.ts";
 import { assert, fail, finish } from "./lib/harness.ts";
 
-/** The retired name, in both spellings the tree used. */
-const RETIRED = /\blegalRelaxed\b|\blegal_relaxed\b/;
+/** The retired names, in every spelling the tree used. */
+// `LEGAL_ELIGIBLE` carries no trailing word boundary on purpose: the constants
+// were `LEGAL_ELIGIBLE_TAG`, `LEGAL_ELIGIBLE_YES` and `LEGAL_ELIGIBLE_NO`, and an
+// underscore is a word character, so `\b` after it matches none of them. The
+// control below plants the real constant and would have failed on that.
+const RETIRED =
+  /\blegalRelaxed\b|\blegal_relaxed\b|\blegal_eligible\b|\blegalEligible\b|\bLegalEligible\b|\bLEGAL_ELIGIBLE/;
 
 /**
  * Where the name is still allowed to appear.
@@ -34,7 +46,7 @@ const RETIRED = /\blegalRelaxed\b|\blegal_relaxed\b/;
  * retired name would make the record wrong. This guard's own file has to name
  * what it forbids in order to forbid it (L245).
  */
-const ALLOWED = [/^supabase\/migrations\//, /^scripts\/test-retired-legal-relaxation\.ts$/];
+const ALLOWED = [/^supabase\/migrations\//, /^scripts\/test-retired-legal-eligible\.ts$/];
 
 function trackedFiles(): string[] {
   // The env is scrubbed because the pre-push hook exports GIT_DIR and friends,
@@ -58,13 +70,21 @@ assert(files.length > 200, `the scan really read the tree (${files.length} files
   const planted = [
     "  const { ids, legalRelaxed } = await resolveEligible(bucket);",
     "      legal_relaxed: tier.legalRelaxed,",
+    '  const v = attributes?.legal_eligible;',
+    "  legal: PlannedValue<LegalEligible>;",
+    'export const LEGAL_ELIGIBLE_TAG = "Legal Eligible";',
   ];
   for (const line of planted) {
     assert(RETIRED.test(line), `the scanner still matches a real removed line: ${line.trim()}`);
   }
   // And it does not match a word that merely contains it, which is what would make
   // the guard fire on unrelated code and get switched off.
-  for (const line of ["const legalRelaxationNotes = 1;", "// legal advice"]) {
+  for (const line of [
+    "const legalRelaxationNotes = 1;",
+    "// legal advice",
+    "// the lead asked for legal help",
+    "const legallyBinding = true;",
+  ]) {
     assert(!RETIRED.test(line), `the scanner leaves unrelated text alone: ${line}`);
   }
 }
@@ -98,11 +118,11 @@ for (const file of files) {
   lines.forEach((line, i) => {
     if (!RETIRED.test(line)) return;
     offenders++;
-    fail(`${file}:${i + 1} references the retired legal relaxation: ${line.trim()}`);
+    fail(`${file}:${i + 1} references retired legal eligibility: ${line.trim()}`);
   });
 }
 if (offenders === 0) {
-  assert(true, "nothing references the retired legal relaxation");
+  assert(true, "nothing references retired legal eligibility");
 }
 assert(unreadable === 0, `every tracked file was scanned (${files.length} read, ${unreadable} not)`);
 

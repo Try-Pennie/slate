@@ -15,7 +15,7 @@ import type { Attributes } from "@/lib/db/types";
  * would strip whatever the Twilio half had written.
  *
  * The keys that survive a Salesforce sync are therefore everything Twilio owns
- * (`debt_team`, `backend_service`, `legal_eligible` and the `redistribute` mark),
+ * (`debt_team`, `backend_service` and the `redistribute` mark),
  * and the ordering that makes that safe is in `run-roster-sync.ts`: Salesforce
  * runs first, Twilio second, inside one lock.
  */

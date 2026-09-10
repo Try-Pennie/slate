@@ -46,7 +46,7 @@
 // (`docs/cloudflare-platform-notes.md`), and no per run cap is imposed because a cap
 // would hide a backlog rather than report one.
 import { fetchTwilioWorkers, TwilioReadError } from "@/lib/twilio/client";
-import { mergeWorkers, readWorker, LEGAL_ELIGIBLE_YES, type TwilioSide } from "@/lib/twilio/roster";
+import { mergeWorkers, readWorker, type TwilioSide } from "@/lib/twilio/roster";
 import { planTwilioRoster, type TwilioChanges, type TwilioRosterRow } from "@/lib/twilio/roster-plan";
 import { applyBookableByUserId, type BookableResult } from "@/lib/bookable/service";
 import { startBulkReassign } from "@/lib/booking/service";
@@ -112,15 +112,6 @@ export interface TwilioSyncResult {
   reactivationRefused: string[];
   /** Marked by Slate, and Twilio holds no worker for them, so nothing was done. */
   markedWithNoWorker: string[];
-  /**
-   * Emails whose stored legal eligibility was written to Y, and to N (#2098).
-   *
-   * Counted only once the write LANDED. A refused reactivation writes nothing at
-   * all, and claiming the legal value moved there would be a count of a write that
-   * never happened (#1134).
-   */
-  legalEligible: string[];
-  legalExcluded: string[];
   /**
    * Emails whose debt tiers or backend service were rewritten from their Twilio
    * tags (#2152), counted only once the write LANDED.
@@ -230,11 +221,9 @@ export async function syncTwilioRedistribute(deps: TwilioSyncDeps): Promise<Twil
   const turnedOff: string[] = [];
   const turnedBackOn: string[] = [];
   const reactivationRefused: string[] = [];
-  const legalEligible: string[] = [];
-  const legalExcluded: string[] = [];
   const tiersChanged: string[] = [];
   const backendChanged: string[] = [];
-  const landed: Landed = { legalEligible, legalExcluded, tiersChanged, backendChanged };
+  const landed: Landed = { tiersChanged, backendChanged };
   const coverageSweeps: { email: string; bookings: number }[] = [];
   const counters = { coverageSweepFailures: 0 };
 
@@ -286,7 +275,7 @@ export async function syncTwilioRedistribute(deps: TwilioSyncDeps): Promise<Twil
     // configuration a manager cannot act on from the roster page, and the count
     // matters most when it is LARGE, which is what a partial read looks like.
     log.warn("twilio-sync", {
-      msg: "Slate rows Twilio holds no worker for, written to legal excluded on an absence",
+      msg: "Slate rows Twilio holds no worker for, whose stored values were left as they are",
       count: plan.withoutWorker.length,
     });
   }
@@ -306,8 +295,6 @@ export async function syncTwilioRedistribute(deps: TwilioSyncDeps): Promise<Twil
     markedWithNoWorker: plan.markedWithNoWorker,
     coverageSweeps,
     coverageSweepFailures: counters.coverageSweepFailures,
-    legalEligible,
-    legalExcluded,
     tiersChanged,
     backendChanged,
     withoutWorker: plan.withoutWorker,
@@ -327,8 +314,6 @@ export async function syncTwilioRedistribute(deps: TwilioSyncDeps): Promise<Twil
  * and not the other is a report that is true of half the roster.
  */
 interface Landed {
-  legalEligible: string[];
-  legalExcluded: string[];
   tiersChanged: string[];
   backendChanged: string[];
 }
@@ -341,9 +326,6 @@ interface Landed {
  * counts are the only evidence anybody reads (#1134).
  */
 function countLanded(email: string, changes: TwilioChanges, out: Landed): void {
-  if (changes.legal.changed) {
-    (changes.legal.value === LEGAL_ELIGIBLE_YES ? out.legalEligible : out.legalExcluded).push(email);
-  }
   if (changes.debtTeams.changed) out.tiersChanged.push(email);
   if (changes.backendServices.changed) out.backendChanged.push(email);
 }

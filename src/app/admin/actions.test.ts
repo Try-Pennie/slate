@@ -80,8 +80,6 @@ const twilioOk = (over: Partial<TwilioSyncResult> = {}) => ({
     markedWithNoWorker: [],
     coverageSweeps: [],
     coverageSweepFailures: 0,
-    legalEligible: [],
-    legalExcluded: [],
     tiersChanged: [],
     backendChanged: [],
     withoutWorker: [],
@@ -1136,21 +1134,6 @@ describe("syncSalesforceNow (#491, #2071)", () => {
     expect(redirected).toContain("1 agent could not be flipped at all");
   });
 
-  // #2098: both directions, because a run that only reported exclusions would make
-  // somebody being cleared for legal work read as a quiet run.
-  it("says which way legal eligibility moved, in both directions", async () => {
-    rosterSync.runRosterSync.mockResolvedValueOnce(
-      syncOutcome({ updated: 0 }, twilioOk({ legalEligible: ["a@x"], legalExcluded: ["b@x", "c@x"] })),
-    );
-    let redirected = "";
-    try {
-      await syncSalesforceNow();
-    } catch (e) {
-      redirected = decodeURIComponent(String((e as Error).message));
-    }
-    expect(redirected).toContain("1 agent recorded as eligible for legal work");
-    expect(redirected).toContain("2 agents recorded as not eligible for legal work");
-  });
 
   it("says when an attribute write threw, separately from a flip that threw", async () => {
     rosterSync.runRosterSync.mockResolvedValueOnce(
@@ -1740,7 +1723,7 @@ describe("the reads that decide authorization or a write must refuse, not guess 
 });
 
 // #1874. The routing attributes panel is read only for the three keys Salesforce
-// owns, so this action writes exactly one: `legal_eligible`.
+// owns, so this action writes exactly one.
 //
 
 // #1922. Six actions redirected to `/admin/settings`, which since #1748 is not a

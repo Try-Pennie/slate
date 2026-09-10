@@ -214,11 +214,11 @@ describe("bucketStaffingDepths", () => {
     const bucket = mkBucket({
       code: "311",
       name: "High | Achieve | Non-Legal",
-      criteria: { debt_team: "high_achieve", "legal_eligible!": "N" },
+      criteria: { debt_team: "high_achieve", "backend_service!": "beyond" },
     });
     const agents = [
-      mkAgent({ id: "eligible", attributes: { debt_team: "high_achieve" } }), // legal_eligible unset -> passes
-      mkAgent({ id: "excluded", attributes: { debt_team: "high_achieve", legal_eligible: "N" } }),
+      mkAgent({ id: "eligible", attributes: { debt_team: "high_achieve" } }), // backend_service unset -> passes
+      mkAgent({ id: "excluded", attributes: { debt_team: "high_achieve", backend_service: "beyond" } }),
     ];
     const [row] = bucketStaffingDepths([bucket], agents, []);
     expect(row.depth).toBe(1);

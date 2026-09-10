@@ -449,14 +449,7 @@ function twilioParts(
     r.coverageSweepFailures
       ? `${plural(r.coverageSweepFailures, "agent")} left the pool and their upcoming calls could not be queued for a move, so use the coverage panel on their profile`
       : null,
-    // Legal eligibility (#2098), after the pool changes and before the failures,
-    // because it changes which of the ten legal buckets somebody is offered rather
-    // than whether they can be booked at all.
-    //
-    // Both directions are said. A run that only ever reported the exclusions would
-    // make somebody being cleared for legal work look like a quiet run, which is
-    // the same defect the manager unlink line above exists to fix (#1474).
-    // The routing attributes themselves (#2152), first of the three, because a
+    // The routing attributes (#2152), before the failures, because a
     // changed tier moves somebody between buckets and is the one a reader will go
     // and check.
     r.tiersChanged.length
@@ -464,12 +457,6 @@ function twilioParts(
       : null,
     r.backendChanged.length
       ? `${plural(r.backendChanged.length, "agent")} whose backend service now matches their Twilio tags`
-      : null,
-    r.legalEligible.length
-      ? `${plural(r.legalEligible.length, "agent")} recorded as eligible for legal work, from their Twilio tag`
-      : null,
-    r.legalExcluded.length
-      ? `${plural(r.legalExcluded.length, "agent")} recorded as not eligible for legal work, which is what Twilio says for anybody it does not call out`
       : null,
     // A flip that threw. Said out loud, because the counts above are the only
     // evidence anybody looks at and one agent missing from them is the whole fault.
@@ -1748,29 +1735,16 @@ export async function replayFailedWebhooks(form: FormData): Promise<void> {
 
 /**
  * `setAgentAttributes` is GONE (#2120), and the routing attributes panel writes
- * nothing at all now.
+ * nothing at all.
  *
- * It survived #1874 as the writer of one key, `legal_eligible`, on the reasoning
- * that routing matches on it and nothing else writes it. The first half was true
- * and the second was the problem.
+ * It survived #1874 as the writer of one key, on the reasoning that routing
+ * matched on it and nothing else wrote it. The first half was true and the second
+ * was the problem: it was the second place to set a fact that lives in Twilio, and
+ * it wrote a boolean where routing compared a string, so the choice it offered
+ * changed nothing anybody could see (L109).
  *
- * IT COULD NOT DO ITS JOB. Routing excludes an agent only when the stored value
- * is the STRING "N" (`legal_eligible!`, cal.com's "does not equal N"), and this
- * wrote the BOOLEAN true or false. `String(false)` is "false", so picking No left
- * the agent in every bucket the choice was meant to take them out of, with
- * nothing on any screen able to show the difference (L109).
- *
- * AND IT WAS THE SECOND PLACE TO SET A FACT THAT LIVES IN TWILIO. Legal
- * eligibility reaches cal.com as a `Not Legal Eligible` tag on the person's
- * TaskRouter worker, pushed onto their cal.com attributes by the Pipedream job,
- * the same route Redistribute takes (#2097). Nobody sets it in cal.com, and
- * Salesforce deliberately never writes it. Slate reads that tag rather than
- * offering somewhere else to type it: Dan chose Twilio as the source on
- * 2026-09-09.
- *
- * Deleted rather than kept for a future caller, because the writer that lands
- * next is the Twilio sync and not a form. Nothing was lost on the way: 0 of 127
- * live users carried the field, so it had never once been used.
+ * The key it wrote was retired outright in #2218, so the panel now has nothing it
+ * could write even if somebody wanted it to.
  */
 
 export async function setWebhookEndpoint(form: FormData): Promise<void> {

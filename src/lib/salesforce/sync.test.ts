@@ -873,7 +873,7 @@ describe("a hire becomes bookable on the first tier or the Sales profile (#2071)
     // decide what anybody's tiers are: a run that kept writing them would strip
     // whatever the Twilio half of the same hour had written, every hour.
     store.config.existing = [
-      { id: "u1", email: "agent@x.com", attributes: { role: "Sales", debt_team: ["high"], backend_service: ["beyond"], legal_eligible: "Y" }, bookable: true, deactivated_at: null, bookable_pending_since: null },
+      { id: "u1", email: "agent@x.com", attributes: { role: "Sales", debt_team: ["high"], backend_service: ["beyond"] }, bookable: true, deactivated_at: null, bookable_pending_since: null },
     ];
     store.config.afterInsert = [{ id: "u1", email: "agent@x.com", manager_id: null, role: "agent" }];
     // Salesforce says something completely different from what the row holds.
@@ -883,7 +883,7 @@ describe("a hire becomes bookable on the first tier or the Sales profile (#2071)
 
     const upsert = store.calls.find((c) => c.op === "upsert");
     const row = (upsert?.payload as Record<string, unknown>[])[0];
-    expect(row.attributes).toEqual({ role: "Sales", debt_team: ["high"], backend_service: ["beyond"], legal_eligible: "Y" });
+    expect(row.attributes).toEqual({ role: "Sales", debt_team: ["high"], backend_service: ["beyond"] });
   });
 
   it("leaves a refused flip pending and records nothing, so next hour retries it", async () => {

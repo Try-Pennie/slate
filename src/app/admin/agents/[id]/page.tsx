@@ -50,7 +50,6 @@ import { ViewAsButton } from "@/components/admin/ViewAsButton";
 import type { Organization, User } from "@/lib/db/types";
 import { BookablePill } from "@/components/ui/BookablePill";
 import { isMarkedRedistribute } from "@/lib/twilio/roster-plan";
-import { LEGAL_ELIGIBLE_YES, LEGAL_ELIGIBLE_NO } from "@/lib/twilio/roster";
 import { AdminPageHeader } from "@/components/admin/AdminPageHeader";
 import { SelectField } from "@/components/ui/SelectField";
 
@@ -75,23 +74,6 @@ async function upcomingBookingCount(agentId: string): Promise<number | null> {
   }
 }
 
-/**
- * The stored legal eligibility value, as a word (#2098).
- *
- * Null for a row nobody has written, which `attrValue` then names as not set.
- * That state is deliberately NOT collapsed into "No": routing admits an unset
- * agent to the ten legal buckets and excludes an explicit "N", so the two send a
- * reader to different places (L11).
- */
-function legalEligibleLabel(value: unknown): string | null {
-  if (value === undefined || value === null) return null;
-  if (value === LEGAL_ELIGIBLE_YES) return "Yes";
-  if (value === LEGAL_ELIGIBLE_NO) return "No";
-  // A value in neither vocabulary, which today means one the retired admin control
-  // wrote as a boolean. Shown as stored rather than sorted into the nearest word,
-  // because a reader cannot check a guess.
-  return String(value);
-}
 
 /**
  * One stored routing attribute as a reader sees it (#1874).
@@ -605,9 +587,6 @@ export default async function AgentProfilePage({
               is read only is unchanged and the place to correct a wrong value
               moved: it is the Twilio worker's `teams` tags.
 
-              `legal_eligible` is no longer editable either, for the same reason:
-              #2120 took that control away when Twilio became its source.
-
               #2120: THREE THINGS WENT, and each was the panel doing something the
               reader did not ask for.
 
@@ -621,8 +600,8 @@ export default async function AgentProfilePage({
               is this comment, which is where a maintainer meets it.
 
               `Salesforce profile` rendered `attributes.role`, and NOTHING routes
-              on it: all 60 buckets key on debt_team, backend_service and
-              legal_eligible. A field nothing routes on, under a heading about
+              on it: every bucket keys on debt_team and backend_service. A field
+              nothing routes on, under a heading about
               routing, is a fact the reader has to work out is irrelevant. Its
               only other reader is the audit trail, which records it as
               `details.profile` when Salesforce makes somebody bookable
@@ -643,13 +622,9 @@ export default async function AgentProfilePage({
               same problem in miniature, so it takes the same vocabulary treatment
               through `backendServiceOf`.
 
-              #2120, LEGAL ELIGIBLE JOINS THE ROW (Dan, same day: "legal eligible
-              can be in line with the rest and smaller"). It sat below a rule as a
-              second block, which read as a separate concern from the two fields
-              above it; it is the third routing attribute and belongs beside them.
-              Its height stays 44px because that is the touch target rule, so
-              "smaller" is bought in WIDTH and in losing the divider rather than
-              by shrinking what a finger has to hit. */}
+              #2218 RETIRED LEGAL ELIGIBLE, which used to be the third field in
+              this row. Dan, 2026-09-10: the attribute is no longer used, so the
+              ten bucket criteria keyed on it went and nothing stores it. */}
           <div
             data-attr-row
             className="mt-4 flex flex-wrap items-start gap-x-8 gap-y-4"
@@ -673,50 +648,6 @@ export default async function AgentProfilePage({
             <div>
               <span className={labelCls}>Backend</span>
               <p className="text-sm">{attrValue(backendServiceOf(agent))}</p>
-            </div>
-            <div>
-              <span className={labelCls}>Legal eligible</span>
-              {/* #2120: READ ONLY, like the two beside it, and the panel now
-                  writes nothing at all.
-
-                  The dropdown that stood here could not do its job. Routing
-                  excludes an agent only when the stored value is the STRING "N"
-                  (`legal_eligible!`, which is cal.com's "does not equal N"), and
-                  the control wrote the BOOLEAN true or false, so picking No wrote
-                  `false`, which is not "N", and the agent stayed in every bucket
-                  the choice was meant to take them out of. A control that looks
-                  like it excludes somebody and does nothing is worse than no
-                  control (L109), and nothing on the screen could ever have shown
-                  the difference.
-
-                  It is also not where the fact lives. Legal eligibility reaches
-                  cal.com as a `Not Legal Eligible` tag on the person's Twilio
-                  worker, pushed onto their cal.com attributes by the Pipedream
-                  job, which is the same route Redistribute takes (#2097). Nobody
-                  sets it in cal.com, and Salesforce deliberately never writes it
-                  (`SF_MANAGED_KEYS`, which since #2152 holds the profile alone).
-                  Offering a second place to type it is how the two drift, which
-                  is the class `verify:twilio-parity` exists to report. Dan chose
-                  Twilio as the source on 2026-09-09.
-
-                  Nothing was lost by removing it: 0 of 127 live users carried the
-                  field, so it had never once been used.
-
-                  #2098 gave it a writer, and that changed what a reader needs
-                  here. The premise for showing the raw stored value was that
-                  nothing wrote it, so whatever was there was worth seeing exactly
-                  (L316): a stored value came from nowhere the product could
-                  explain. The hourly Twilio sync now writes "Y" or "N" for every
-                  agent, from the `Legal Eligible` tag, so those two are the
-                  product's own vocabulary and are shown as words (L611).
-
-                  `Not set` still stands on its own and is NOT called "No". It
-                  means the sync has not reached this row yet, which routing reads
-                  as the permissive answer rather than as an exclusion, and those
-                  are two different situations for whoever is looking (L11). A
-                  value in neither vocabulary is shown as stored, for the same
-                  reason an off ladder debt team is (L113). */}
-              <p className="text-sm">{attrValue(legalEligibleLabel(agent.attributes?.legal_eligible))}</p>
             </div>
           </div>
 

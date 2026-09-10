@@ -95,8 +95,8 @@ export async function resolveBucketAgentIds(bucket: Bucket): Promise<string[]> {
 /**
  * The agents a bucket's criteria match, with the manual members unioned in.
  *
- * It used to also report whether a LEGAL restriction had been dropped to find
- * anybody (#2158). Ten codes carried `legal_eligible!` and matched nobody, so
+ * It used to also report whether a legal restriction had been dropped to find
+ * anybody (#2158). Ten codes carried that criterion and matched nobody, so
  * every lead on them was served by widening the criteria at request time and
  * telling somebody about it in Slack. #2218 removed the criterion from those
  * buckets instead, so there is nothing left to widen and the pool is simply the

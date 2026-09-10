@@ -369,7 +369,7 @@ export async function syncSalesforceAgents(deps: SyncDeps = defaultSyncDeps): Pr
   const sfIdCandidates: SfIdCandidate[] = idCandidates(sfUsers);
 
   // Existing Slate agents by email (attributes too: Slate-managed keys like
-  // legal_eligible must survive the sync - see mergeSfAttributes). Fail loud
+  // the Twilio owned keys must survive the sync, see mergeSfAttributes). Fail loud
   // (unwrap, #963): a swallowed read error left this null, so every SF agent
   // looked brand new and was re-inserted (the #277 class). An empty roster is a
   // null-safe pass; only a real query error throws.

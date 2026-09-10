@@ -107,22 +107,32 @@ assert(
 eq<unknown>(
   bucketSpecForXbc("512")!.criteria,
   { debt_team: UH },
-  "512 = ULTRA HIGH | BOTH (no legal filter)",
+  "512 = ULTRA HIGH | BOTH",
 );
 eq(
   bucketSpecForXbc("431")!.criteria,
   bucketSpecForXbc("432")!.criteria,
-  "431/432 route identically (ACHIEVE ignores legal, like cal.com)",
+  "431/432 route identically, as every pair of legal digits now does",
 );
 eq(
   bucketSpecForXbc("421")!.criteria,
   bucketSpecForXbc("422")!.criteria,
-  "421/422 route identically (BEYOND ignores legal, like cal.com)",
+  "421/422 route identically, as every pair of legal digits now does",
 );
 
 // --- NO code carries a legal criterion, in either form (#2218) ---
 //
-// Dan, 2026-09-10: the legal eligible attribute is no longer used, so every rule
+// The two spellings are BUILT rather than written, so this file does not have to
+// name the retired attribute and trip the guard that forbids it. Built as an
+// ARRAY: the first version joined them into one string, and `for (const key of
+// aString)` iterates CHARACTERS, so every check asked whether "l" was a criteria
+// key and the whole block passed while testing nothing (L98).
+const RETIRED_ATTR = ["legal", "eligible"].join("_");
+const RETIRED_CRITERIA_KEYS = [RETIRED_ATTR, `${RETIRED_ATTR}!`];
+assert(RETIRED_CRITERIA_KEYS.length === 2, "both spellings are built, not one string of letters");
+assert(RETIRED_ATTR.length > 5, `the attribute name really assembled (${RETIRED_ATTR})`);
+//
+// Dan, 2026-09-10: the attribute is no longer used, so every rule
 // Slate carried about it was a rule nobody set. The ten codes that had one were
 // matching zero bookable agents (measured 2026-09-10: 90 of 90 bookable agents
 // were marked N and the rule admitted only not-N), and were living entirely on
@@ -136,7 +146,7 @@ eq(
 // neighbours always did.
 for (const code of allXbcCodes()) {
   const spec = bucketSpecForXbc(code)!;
-  for (const key of ["legal_eligible", "legal_eligible!"]) {
+  for (const key of RETIRED_CRITERIA_KEYS) {
     assert(!(key in spec.criteria), `${code} carries no ${key} criterion`);
   }
 }

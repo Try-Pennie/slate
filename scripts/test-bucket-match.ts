@@ -2,7 +2,7 @@ import { bucketsMatchingAgent, type BucketForMatch } from "../src/lib/availabili
 import { assert, finish } from "./lib/harness.ts";
 
 const AGENT = "agent-1";
-const attrs = { debt_team: "A", legal_eligible: "Y" };
+const attrs = { debt_team: "A", backend_service: "achieve" };
 
 const buckets: BucketForMatch[] = [
   { code: "manual", criteria: {}, manualMemberIds: ["agent-1"], fallbackUserId: null },        // manual member, no criteria

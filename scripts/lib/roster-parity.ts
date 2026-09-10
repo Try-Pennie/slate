@@ -56,7 +56,7 @@ export interface SlateRosterMember {
    * the question rather than the question (L63), and the reason string below has
    * always claimed the stronger thing. `rsegui@` carried `{"role":"Sales"}` and
    * nothing else; every one of the 60 buckets keys on `debt_team`, some also on
-   * `backend_service` or `legal_eligible!`, and none keys on `role`, so no bucket
+   * `backend_service`, and none keys on `role`, so no bucket
    * could ever reach them. They were paged on daily as held back (#2094).
    *
    * Computed by the caller through the SHIPPED pool predicate over the live bucket
