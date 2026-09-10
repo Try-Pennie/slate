@@ -597,29 +597,58 @@ export async function syncEvents(
 /**
  * Rewrite an event's description on the agent's primary calendar (#1341).
  *
- * Only the body: a phone correction must never move the time, so this PATCHes
- * `description` alone and shares nothing with `updateEventTime`.
+ * Only the body: a phone correction must never move the time, so this shares
+ * nothing with `updateEventTime`.
  *
- * `sendUpdates=none`, unlike the time patch beside it. Google syncs the event's
- * CONTENT to every attendee either way; this parameter decides only whether they
- * are EMAILED about it. A moved time is news to both people. A number the lead
- * just typed on our own page is not, and mailing them "your event was updated"
- * for their own correction is noise. The advisor's copy still carries the new
- * number, which is the whole point.
- *
- * A deleted event surfaces as the same typed `EventGone` the time patch uses, so
- * a caller can tell "the event is not there" from "Google is unwell" rather than
- * reading both as one generic failure.
+ * Kept as its own name over `updateEventContact` below because the phone
+ * correction is a one field edit and reads as one at its call site.
  */
 export async function updateEventDescription(
   email: string,
   eventId: string,
   description: string,
 ): Promise<void> {
+  await updateEventContact(email, eventId, { description });
+}
+
+/**
+ * The lead's own details on the invite: the summary, the body, and WHO is invited
+ * (#2164).
+ *
+ * One PATCH rather than one per field, because they change together: a lead who
+ * corrects their email on the way to moving a call routinely corrects the number
+ * beside it, and two patches would be two ways for the invite to end up half
+ * right.
+ *
+ * `sendUpdates` is decided by whether the ATTENDEE moved, and that is the whole
+ * rule. Google syncs an event's content to its attendees either way; this
+ * parameter decides only whether they are emailed. A new address has never been
+ * invited to anything, so it must be told, and the old one must learn it is out.
+ * A number or a name the lead just typed on our own page is not news to them, and
+ * mailing "your event was updated" back at somebody for their own correction is
+ * noise. The advisor's copy carries the new value in both cases, which is the
+ * point.
+ *
+ * A deleted event surfaces as the same typed `EventGone` the time patch uses, so a
+ * caller can tell "the event is not there" from "Google is unwell" rather than
+ * reading both as one generic failure.
+ */
+export async function updateEventContact(
+  email: string,
+  eventId: string,
+  patch: { summary?: string; description?: string; attendeeEmail?: string; attendeeName?: string },
+): Promise<void> {
+  const body: Record<string, unknown> = {};
+  if (patch.summary !== undefined) body.summary = patch.summary;
+  if (patch.description !== undefined) body.description = patch.description;
+  if (patch.attendeeEmail !== undefined) {
+    body.attendees = [{ email: patch.attendeeEmail, displayName: patch.attendeeName }];
+  }
+  const sendUpdates = patch.attendeeEmail === undefined ? "none" : "all";
   const res = await gfetch(
     email,
-    `${BASE}/calendars/${CAL}/events/${encodeURIComponent(eventId)}?sendUpdates=none`,
-    { method: "PATCH", body: JSON.stringify({ description }) },
+    `${BASE}/calendars/${CAL}/events/${encodeURIComponent(eventId)}?sendUpdates=${sendUpdates}`,
+    { method: "PATCH", body: JSON.stringify(body) },
   );
   if (res.status === 404 || res.status === 410) throw new EventGone("events.patch.description");
   await ok(res, "events.patch.description");

@@ -47,6 +47,7 @@ import {
   duplicateSetFor,
   inviteOnItsWay,
   keepExistingTime,
+  movedContactNote,
   moveToTime,
   phoneEchoLine,
   timesAvailableAnnouncement,
@@ -291,6 +292,26 @@ export function bookerCopyScreens(): CopyScreen[] {
         { state: "no time chosen yet", text: MOVE_COPY.moveNoTime },
         { state: "the move is running", text: MOVE_COPY.moving },
         { state: "the way out", text: keepExistingTime("Mon") },
+        // #2164: what the move ALSO changed, when the lead typed new details on
+        // the way to it. Every shape is previewed, because the sentence is
+        // assembled from which fields moved and the list is where it can read
+        // wrongly.
+        {
+          state: "the move also corrected all three details",
+          text: movedContactNote({ name: true, email: true, phone: true }) ?? "",
+        },
+        {
+          state: "the move also corrected the number only",
+          text: movedContactNote({ name: false, email: false, phone: true }) ?? "",
+        },
+        {
+          state: "the move also corrected the email and the number",
+          text: movedContactNote({ name: false, email: true, phone: true }) ?? "",
+        },
+        {
+          state: "the move also corrected the name only",
+          text: movedContactNote({ name: true, email: false, phone: false }) ?? "",
+        },
       ],
     },
     {

@@ -127,6 +127,8 @@ function makeTierDropDeps(): BookingDeps {
     bumpPendingEventDeletion: noop,
     updateEventTime: noop,
     updateEventDescription: noop,
+    updateEventContact: noop,
+    updateBookingContact: noop,
     updateBookingPhone: noop,
     getUser: async () => agentA,
     loadEmails: async (ids) => new Map(ids.map((id) => [id, "a@x.com"])),

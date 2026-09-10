@@ -33,6 +33,7 @@ import {
   DUPLICATE_COPY,
   HONEYPOT_LABEL,
   MOVE_COPY,
+  movedContactNote,
   CLOSED_BODY,
   UNCLASSIFIED_EMPTY_NOTICE,
   UNCLASSIFIED_EMPTY_RETRY,
@@ -333,6 +334,8 @@ export default function Booker({
     start: string;
     manageUrl?: string | null;
     duplicateWarning?: DuplicateWarning | null;
+    /** What a move ALSO changed, when the lead typed new details (#2164). */
+    contactChanged?: { name: boolean; email: boolean; phone: boolean } | null;
   } | null>(null);
   // Three distinct states for the confirm (owner rule): started → this flips the
   // still-alive cue at ~10s → the postJson timeout converts a hang to error.
@@ -554,14 +557,32 @@ export default function Booker({
         startsAt?: string;
         error?: string;
         reason?: string;
+        contactChanged?: { name: boolean; email: boolean; phone: boolean };
       }>(
         `/api/bookings/${encodeURIComponent(existingCall.manageToken)}/reschedule`,
-        { start: selectedSlot, reason: moveReason, reasonDetail: moveDetail || undefined },
+        {
+          start: selectedSlot,
+          reason: moveReason,
+          reasonDetail: moveDetail || undefined,
+          // #2164: the details on this visit, which are routinely a CORRECTION of
+          // the ones the call was booked with. The server writes whichever of them
+          // actually moved and rewrites the invite; sending them unchanged costs
+          // nothing, because it compares before it writes.
+          attendee: {
+            name: attendee.name.trim(),
+            email: attendee.email.trim(),
+            phone: attendee.phone.trim(),
+          },
+        },
         { timeoutMs: REQUEST_TIMEOUT_MS },
       );
       if (ok) {
         setExistingCall(null);
-        setConfirmed({ start: data.startsAt ?? selectedSlot, manageUrl: null });
+        setConfirmed({
+          start: data.startsAt ?? selectedSlot,
+          manageUrl: null,
+          contactChanged: data.contactChanged ?? null,
+        });
         return;
       }
       // Nobody was holding that slot during the decision, so it can go. Say so
@@ -689,6 +710,9 @@ export default function Booker({
   }
 
   if (confirmed) {
+    const movedNote = confirmed.contactChanged
+      ? movedContactNote(confirmed.contactChanged)
+      : null;
     const confirmedDay = DateTime.fromISO(confirmed.start)
       .setZone(zone)
       .toFormat("cccc, LLL d");
@@ -724,6 +748,12 @@ export default function Booker({
           <p className={`mt-1 text-xs ${c.faint}`}>
             {inviteOnItsWay(attendee.email)}
           </p>
+          {/* #2164: a move that also corrected the lead's own details says so.
+              Silently applying half of what somebody asked for is the one outcome
+              they cannot check. */}
+          {movedNote && (
+            <p className={`mt-3 text-sm ${c.muted}`}>{movedNote}</p>
+          )}
           {manageHref && (
             // Opens in a new tab so an embed lead keeps this confirmation instead
             // of navigating the iframe away to the manage page (#637).
