@@ -25,11 +25,13 @@
 // hour, so hour bucketing would report the commonest kind of drift as agreement.
 import {
   compareAgentSchedule,
+  reclassifyAgentOwnedHours,
   worstVerdict,
   describeWindows,
   zonesAgree,
   VERDICT_RANK,
   type CalcomSide,
+  type ScheduleVerdict,
 } from "./lib/schedule-parity.ts";
 import type { SlateSchedule } from "./lib/calcom-schedule-import.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
@@ -385,6 +387,11 @@ const weekdays = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"];
     "timezone-name-differs",
     "calcom-unreachable",
     "calcom-unreadable",
+    // Produced by `reclassifyAgentOwnedHours` rather than by the comparison, and
+    // it belongs in this list for exactly the reason the list exists: a verdict
+    // the sweep can emit with no rank scores as agreement by omission, and where
+    // it comes from makes no difference to that.
+    "hours-set-by-agent",
   ];
   for (const v of produced) {
     assert(v in VERDICT_RANK, `${v} carries a rank, so it can never be scored as agreement by omission`);
@@ -408,6 +415,99 @@ const weekdays = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"];
     "a split day shows both shifts and the gap between them",
   );
   eq(describeWindows([]), "nothing", "a day with no windows says so in words");
+}
+
+// --- a week the lane is not allowed to fix (#2092) -----------------------------
+//
+// The daily lane applies an hours, days or timezone correction itself now, and it
+// refuses to overwrite a week an agent set for themselves. That refusal creates a
+// state this comparison has to be able to say: a real difference that no automatic
+// run will ever clear. Left as `hours-differ` it would page every morning for as
+// long as it sat, and a permanently red check is one nobody reads by the second
+// week (L36).
+//
+// It is a SEPARATE step from the comparison on purpose. `compareAgentSchedule`
+// answers "do the two systems agree", which is a question about two weeks and
+// nothing else; this answers "is this ours to fix", which is a question about who
+// wrote the Slate side. Folding them would put an ownership rule inside a pure
+// comparison and give every one of its fixtures a field it does not care about.
+{
+  const differing = compareAgentSchedule(
+    "owner@trypennie.com",
+    { timezone: "America/New_York", rules: [{ weekday: 1, start_minute: 480, end_minute: 1020 }] },
+    calcom("America/New_York", [{ days: ["Monday"], startTime: "09:00", endTime: "17:00" }]),
+  );
+  // The control first: without it, a reclassification that fired on EVERYTHING
+  // would pass every assertion below while reporting agreement as agent-owned.
+  eq(differing.verdict, "hours-differ", "the fixture really does differ, before any reclassification");
+
+  const owned = reclassifyAgentOwnedHours(differing, "agent");
+  eq(owned.verdict, "hours-set-by-agent", "an agent's own week is reported, not paged");
+  eq(
+    owned.reasons.slice(0, differing.reasons.length),
+    differing.reasons,
+    "and it keeps every reason, so the reader still sees what actually differs",
+  );
+  assert(
+    owned.reasons.some((r) => r.includes("cal.com does not overwrite them")),
+    "with the ownership said out loud, or the reader is left wondering why nothing fixed it",
+  );
+
+  // Every other source is the lane's to fix, so the finding must stay as it is.
+  for (const source of [null, "seed", "admin", "calcom-import"]) {
+    eq(
+      reclassifyAgentOwnedHours(differing, source).verdict,
+      "hours-differ",
+      `a ${source ?? "null"} week keeps its paging verdict, or the lane's own drift goes quiet`,
+    );
+  }
+}
+{
+  // The reclassification may only touch the three findings the lane can actually
+  // repair. Anything else keeps its own verdict: an agent with no Slate hours at
+  // all is not somebody who set their own, and calling it that would file a real
+  // gap under a heading that reads as somebody's deliberate choice (L11).
+  const untouched: ScheduleVerdict[] = [
+    "agree",
+    "no-slate-schedule",
+    "no-calcom-user",
+    "no-calcom-schedule",
+    "calcom-unreachable",
+    "calcom-unreadable",
+    "timezone-name-differs",
+  ];
+  for (const verdict of untouched) {
+    const row = { email: "x@trypennie.com", verdict, reasons: ["because"] };
+    eq(
+      reclassifyAgentOwnedHours(row, "agent").verdict,
+      verdict,
+      `${verdict} is left alone even for an agent who set their own hours`,
+    );
+  }
+  for (const verdict of ["days-differ", "timezone-differs"] as ScheduleVerdict[]) {
+    const row = { email: "x@trypennie.com", verdict, reasons: ["because"] };
+    eq(
+      reclassifyAgentOwnedHours(row, "agent").verdict,
+      "hours-set-by-agent",
+      `${verdict} on an agent's own week is reported rather than paged`,
+    );
+  }
+}
+{
+  // Ranked below every finding somebody can act on and above agreement, for the
+  // same reason `timezone-name-differs` is: it is real and it must never be the
+  // thing that names a run while a lead facing difference is on the board.
+  const actionable: ScheduleVerdict[] = ["hours-differ", "days-differ", "timezone-differs", "no-slate-schedule"];
+  for (const v of actionable) {
+    assert(
+      VERDICT_RANK["hours-set-by-agent"] < VERDICT_RANK[v],
+      `hours-set-by-agent ranks below ${v}, so it can never bury something a person must fix`,
+    );
+  }
+  assert(
+    VERDICT_RANK["hours-set-by-agent"] > VERDICT_RANK.agree,
+    "and above agreement, so it is never lost",
+  );
 }
 
 finish();

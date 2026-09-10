@@ -37,7 +37,17 @@
 // cal.com holds them and the break stops being bookable.
 //
 // IT IS IDEMPOTENT and safe to re-run. An agent already matching cal.com is left
-// alone, so a run interrupted part way is repaired by running it again.
+// alone, so a run interrupted part way is repaired by running it again. That is
+// what lets the daily lane run it unattended every morning (#2092).
+//
+// env-ok: CALCOM_ORG_ID (optional; defaults to 19474, the live org, and a scheduled
+// run has no reason to point elsewhere)
+// env-ok: CALCOM_PACE_MS (optional; defaults to 250, which is what keeps cal.com from
+// answering 429 on most of the roster)
+// env-ok: PARITY_APPLY_FILE (optional; where the daily lane leaves what this run
+// wrote, so the alert can say what was corrected. Unset for a hand run, and an
+// absent file deliberately means "no apply ran" rather than "it wrote nothing")
+import { writeFileSync } from "node:fs";
 import { loadEnvFiles, envOr } from "./smoke-env.ts";
 
 loadEnvFiles([".env.local", ".dev.vars"]);
@@ -45,7 +55,7 @@ loadEnvFiles([".env.local", ".dev.vars"]);
 const { supabaseAdmin } = await import("@/lib/supabase/admin");
 const { unwrap } = await import("@/lib/db/result");
 const { planScheduleReplacement } = await import("@/lib/schedule-replacement");
-const { mapCalcomSchedule, diffSchedule, skipKindForStatus, paceMs } = await import(
+const { mapCalcomSchedule, diffSchedule, skipKindForStatus, paceMs, hoursOverwriteRefusal } = await import(
   "./lib/calcom-schedule-import.ts"
 );
 // The reads this shares with `pnpm verify:calcom-parity`. One definition of "who
@@ -73,6 +83,45 @@ const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 /** Between agents, so a 103-agent run does not trip the limit in the first place.
  *  Parsed through `paceMs`, which refuses a value a timer would treat as zero. */
 const PACE_MS = paceMs(process.env.CALCOM_PACE_MS);
+
+/**
+ * Leave what this run WROTE somewhere the daily lane's report step can read
+ * (#2092), so the alert can say what the lane corrected by itself.
+ *
+ * Written on every exit that got as far as deciding, including the one where
+ * there was nothing to write, because ABSENT and zero are different facts to
+ * whoever reads the message: absent means no apply ran at all and re-importing is
+ * still the remedy, zero means the import ran and found nothing. A file written on
+ * only one of those paths would make the commonest healthy morning read as a
+ * broken apply step.
+ *
+ * Absent variable, no file, no behaviour change for a hand run.
+ */
+function writeApplySummary(count: number, agents: string[]): void {
+  const path = process.env.PARITY_APPLY_FILE?.trim();
+  if (!path) return;
+  try {
+    writeFileSync(path, JSON.stringify({ count, agents: agents.slice(0, APPLY_AGENT_CAP) }, null, 2));
+  } catch (err) {
+    // Reported and never fatal. The hours are the point of the run and they are
+    // already written; losing the NOTE about them must not turn a successful
+    // import into a failed workflow step.
+    //
+    // What it costs, said out loud because it is a collapse of two states into
+    // one (L11): an absent file reads downstream as "no apply ran", so the alert
+    // keeps its "re-import the hours" line. That instruction is then redundant
+    // rather than false, since the import is idempotent and running it again
+    // reports the same thing, and this line is in the run log either way. A third
+    // wire state for "it ran and could not say what it did" would buy a more
+    // precise sentence for a filesystem write failing on a runner that has just
+    // completed two network passes, which is not worth a vocabulary somebody has
+    // to maintain.
+    console.error(`could not write the apply summary: ${String(err).slice(0, 120)}`);
+  }
+}
+
+/** How many agents the summary names. The alert caps it again on the way in. */
+const APPLY_AGENT_CAP = 8;
 
 function stop(code: number, why: string): never {
   console.error(`\nFAILED (${code}): ${why}`);
@@ -115,6 +164,11 @@ interface Change {
 const changes: Change[] = [];
 const unchanged: string[] = [];
 const skipped: { email: string; why: string; kind: "transient" | "permanent" }[] = [];
+/** Agents whose week really differs and that cal.com is not allowed to replace
+ *  (#2092). Kept apart from `skipped` because nothing is wrong with them and
+ *  nobody has to go and repair anything: the sweep reports them as a standing
+ *  difference, and this run simply leaves them where they are. */
+const leftAlone: { email: string; why: string; reasons: string[] }[] = [];
 
 const hhmm = (m: number) => `${String(Math.floor(m / 60)).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`;
 const render = (rs: { weekday: number; start_minute: number; end_minute: number }[]) => {
@@ -187,6 +241,16 @@ for (const agent of agents) {
     unchanged.push(agent.email);
     continue;
   }
+  // Asked AFTER the diff, never before it. An agent who owns their week and
+  // happens to match cal.com is not a finding, and reporting them every morning
+  // would put five permanent lines under a heading that means "go and do
+  // something", which is how a report stops being read (L36). It costs one cal.com
+  // read for an agent this will not write, which is the right trade.
+  const refusal = hoursOverwriteRefusal(agent.hoursSource);
+  if (refusal !== null) {
+    leftAlone.push({ email: agent.email, why: refusal, reasons: diff.reasons });
+    continue;
+  }
   changes.push({
     email: agent.email,
     userId: agent.id,
@@ -203,6 +267,10 @@ for (const agent of agents) {
 console.log(`\n--- summary ---`);
 console.log(`would change: ${changes.length}`);
 console.log(`already matching: ${unchanged.length}`);
+if (leftAlone.length > 0) {
+  console.log(`left alone, the agent owns these hours: ${leftAlone.length}`);
+  for (const a of leftAlone) console.log(`   ${a.email}: ${a.reasons.join("; ")}`);
+}
 // Transient and permanent skips are reported apart, because the action is
 // completely different: one wants another run, the other wants a person.
 const transient = skipped.filter((s) => s.kind === "transient");
@@ -223,7 +291,15 @@ if (changes.length === 0) {
   if (permanent.length > 0) {
     stop(EXIT.needsAPerson, `nothing to change, but ${permanent.length} agent(s) need a person`);
   }
-  console.log("\nEvery agent already matches cal.com.");
+  // Not "every agent matches": an agent whose own week differs and that this run
+  // is not allowed to replace has NOT been made to match, and saying so would be a
+  // claim this run did not measure (L11).
+  console.log(
+    leftAlone.length > 0
+      ? `\nEvery agent this may write already matches cal.com. ${leftAlone.length} still differ and own their own hours.`
+      : "\nEvery agent already matches cal.com.",
+  );
+  writeApplySummary(0, []);
   process.exit(EXIT.ok);
 }
 
@@ -237,6 +313,7 @@ if (!apply) {
 // dies between them leaves an agent with new hours in their old zone, which the
 // next run repairs, because the diff still reports them as changed.
 let wrote = 0;
+const writtenEmails: string[] = [];
 const writeFailures: { email: string; why: string }[] = [];
 for (const c of changes) {
   try {
@@ -263,6 +340,7 @@ for (const c of changes) {
       throw new Error(`timezone: read back ${back.length === 1 ? back[0].timezone : `${back.length} rows`}`);
     }
     wrote++;
+    writtenEmails.push(c.email);
     console.log(`wrote ${c.email}`);
   } catch (err) {
     writeFailures.push({ email: c.email, why: String(err).slice(0, 160) });
@@ -271,6 +349,10 @@ for (const c of changes) {
 }
 
 console.log(`\nwritten: ${wrote} of ${changes.length}`);
+// Only the agents actually WRITTEN, judged by the read-back above rather than by
+// the absence of an error, so the alert's "corrected" count is a claim about rows
+// this run verified rather than about ones it attempted.
+writeApplySummary(wrote, writtenEmails);
 if (writeFailures.length > 0) {
   stop(EXIT.writeFailed, `${writeFailures.length} agent(s) could not be written; re-running repairs a partial write`);
 }

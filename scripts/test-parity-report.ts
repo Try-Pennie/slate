@@ -152,4 +152,50 @@ const RUN = "https://github.com/x/y/actions/runs/1";
   eq(out.total, 1, "and it still says what it looked at");
 }
 
+// --- what the lane repaired travels with the sweep (#2092) -----------------------
+//
+// The apply step writes what it corrected and this carries it, so the alert can say
+// what the lane fixed by itself rather than paging about drift that is already
+// gone. Asserted on the BODY that actually goes over the wire, because a field the
+// report shapes and never sends is indistinguishable from one it never shaped.
+{
+  let sent: Record<string, unknown> = {};
+  const capture = async (_url: string, body: unknown) => {
+    sent = body as Record<string, unknown>;
+    return { status: 200, body: { action: "all-clear", compared: 2, drifted: 0 } };
+  };
+  const base = {
+    baseUrl: "https://slate.example",
+    apiKey: "k",
+    runUrl: RUN,
+    readSummary: () => ({ total: 2, compared: 2, findings: [] }),
+    post: capture,
+  };
+
+  await reportOutcome({ ...base, readApplied: () => ({ count: 3, agents: ["a@x"] }) });
+  eq((sent.corrected as { count: number })?.count, 3, "what the lane corrected reaches the app");
+
+  // Zero is SENT, and that is the whole point of the field being optional rather
+  // than defaulted: it says the import ran and had nothing to write, which is a
+  // different message from nothing having run.
+  await reportOutcome({ ...base, readApplied: () => ({ count: 0, agents: [] }) });
+  eq((sent.corrected as { count: number })?.count, 0, "a lane that wrote nothing still says it ran");
+
+  // No apply step at all, which is a hand run sweep and every deployment before
+  // this shipped. The field must be ABSENT, not zero.
+  await reportOutcome(base);
+  eq(sent.corrected, undefined, "with no apply step the field is absent, not a zero standing in for it");
+
+  // A note it cannot read must not cost the run its report: the findings are what
+  // page somebody and they are already in hand.
+  const survived = await reportOutcome({
+    ...base,
+    readApplied: () => {
+      throw new Error("the apply summary is corrupt");
+    },
+  });
+  eq(survived.exit, REPORT_EXIT.reported, "an unreadable apply note still reports the sweep");
+  eq(sent.corrected, undefined, "and says nothing about a repair it could not read");
+}
+
 finish();

@@ -36,7 +36,9 @@ concurrency:
 
 jobs:
   parity:
-    timeout-minutes: 20  # the sweep paces itself at 250ms per agent, so ~1 min per 100
+    # Two cal.com passes now, the import and the sweep, each paced at 250ms per
+    # agent, so roughly 1 min per 100 agents each.
+    timeout-minutes: 25
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -65,6 +67,45 @@ jobs:
             echo "configured=0" >> "$GITHUB_OUTPUT"
             echo "::notice::CALCOM_API_KEY or BOOKING_API_KEY is not set as a repo secret, so the parity sweep is skipping. Add both in Settings > Secrets and variables > Actions."
           fi
+
+      # THE CORRECTION RUNS BEFORE THE COMPARISON (#2092), and the ordering is the
+      # whole change. Detection was automatic and repair was not: the sweep paged a
+      # person to run this command by hand, so drift sat until somebody read the
+      # message. Measured across three passes the roster went 97 out of step, then
+      # 21 after five days, then 4 after one, because people are actively editing
+      # schedules in cal.com while it is still the system taking every real lead.
+      #
+      # Applying FIRST and sweeping after means the message reports the state after
+      # the repair, measured independently, rather than a subtraction computed from
+      # the writer's own read-back. The alternative (sweep, then apply only what
+      # drifted) costs the same two cal.com passes and leaves the report making a
+      # claim instead of taking a reading.
+      #
+      # WHAT IT WILL NOT WRITE: a week an agent set for themselves
+      # (`hoursOverwriteRefusal`). cal.com is the authority for these values only
+      # while it is the system people maintain, and that guard is also what retires
+      # this safely at cutover (#65) with nobody remembering to switch it off: once
+      # agents set their own hours (#1454) every such row is stamped `agent` and the
+      # import stops touching it. An agent with no cal.com windows, or a week Slate's
+      # validator refuses, stays skipped and named exactly as the hand run reports it.
+      #
+      # `continue-on-error` for the same reason the sweep below carries it: the
+      # import exits non-zero on a skip that needs a person, which is a finding
+      # rather than a broken step, and failing the job here would skip the sweep and
+      # the report and leave nobody told.
+      - name: Correct drifted hours from cal.com
+        id: apply
+        continue-on-error: true
+        if: steps.pre.outputs.configured == '1'
+        env:
+          APPLY: "1"
+          CALCOM_API_KEY: ${{ secrets.CALCOM_API_KEY }}
+          NEXT_PUBLIC_SUPABASE_URL: https://drukfvgaynzrralbzkzj.supabase.co
+          SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+          # A literal path, like PARITY_SUMMARY_FILE below: an internal handoff
+          # between two steps of the same job, not a setting anybody configures.
+          PARITY_APPLY_FILE: parity-applied.json
+        run: node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/import-calcom-schedules.ts
 
       # `continue-on-error`, because this step's exit code is the FINDING: it exits
       # non-zero on every difference by design, and a difference is what the run is
@@ -98,6 +139,11 @@ jobs:
           BOOKING_API_KEY: ${{ secrets.BOOKING_API_KEY }}
           SLATE_BASE_URL: ${{ vars.SLATE_BASE_URL }}
           PARITY_SUMMARY_FILE: parity-summary.json
+          # What the apply step above wrote, so the message can say what the lane
+          # corrected by itself. An ABSENT file (the apply step died before it
+          # decided) is deliberately different from one holding a zero, and the
+          # alert says something different for each.
+          PARITY_APPLY_FILE: parity-applied.json
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: node --experimental-strip-types scripts/report-schedule-parity.ts
 

@@ -765,6 +765,7 @@ the real answer is that nothing was compared.
 | 24 | **an agent Slate will not route who cal.com still can** |
 | 25 | **somebody who has left Slate and can still be booked in cal.com** |
 | 26 | **bookable in Slate while cal.com withholds them from every routed decision** |
+| 27 | an hours, days or timezone difference on a week the AGENT set themselves, which the lane will not overwrite |
 
 The ordering across the two halves lives in ONE table
 (`OUTCOME_ORDER`), written out rather than folded together from the two halves'
@@ -830,9 +831,60 @@ a bookable agent" drift, and the drift is silent in the worst direction, since
 the command would then report agreement about a roster the importer never wrote
 to.
 
+## The daily lane CORRECTS the drift, it does not only report it (#2092)
+
+`.github/workflows/schedule-parity.yml` runs `APPLY=1 pnpm import:calcom-schedules`
+**before** it sweeps, so an hours, days or timezone difference is repaired by the
+lane rather than paged to a person. Detection was automatic and repair was not,
+and that gap cost something measurable: across three passes the roster went 97 out
+of step, then 21 after five days, then 4 after one, because people actively edit
+schedules in cal.com while it is still the system taking every real lead.
+
+**The ordering is the change, not an implementation detail.** Applying first and
+sweeping second means the message reports the state AFTER the repair, measured
+independently by the sweep, rather than a subtraction computed from the writer's
+own read-back. Sweeping first and applying second costs the same two cal.com
+passes and leaves the report making a claim instead of taking a reading. It also
+pages about drift that the apply has already fixed.
+
+**What the lane will not write is the whole safety of it.**
+`hoursOverwriteRefusal` (`scripts/lib/calcom-schedule-import.ts`) refuses any
+schedule whose `availability_schedules.hours_source` is `agent`, and refuses a
+source it does not recognise, so a writer added later defaults to leaving people's
+hours alone. cal.com is the authority for these values ONLY while it is the system
+people maintain, and an agent who has set their own week in Slate has stopped
+being one of those people. That guard is also what retires this safely: once
+agents set their own hours (#1454) every one of those rows is stamped `agent` by
+construction and the import stops touching them, with nobody having to remember.
+
+`admin`, `seed`, `calcom-import` and an UNSTAMPED row are all overwritable. Dan's
+rule, 2026-09-10: "it just needs to not overwrite a changed hours. If I changed
+them or another import changed them, that's fine." The unstamped case is not a
+loophole, it is the roster: measured 2026-09-10, **79 of 90 bookable agents carry
+no stamp at all**, because migration 0117 shipped six days after the import that
+wrote them. Refusing those would leave the lane inert for 88 percent of the roster
+while the daily page went on naming exactly the agents it would not fix (L662).
+
+A difference the lane refuses to correct gets its OWN verdict,
+`hours-set-by-agent`, classified `standing` so it is counted and named and never
+pages. Without it, an agent who sets their own hours in Slate and differs from
+cal.com would page every morning forever, which is how a check stops being read by
+the second week (L36). It is produced by `reclassifyAgentOwnedHours`, deliberately
+a separate step from `compareAgentSchedule`: the comparison answers "do the two
+systems agree", which is a question about two weeks, and the reclassification
+answers "is this ours to fix", which is a question about who wrote the Slate side.
+
+**The alert says what the lane wrote**, and the remedy line depends on whether an
+apply ran at all. `corrected` ABSENT means no apply happened (the step died, or
+somebody swept by hand), so the message still names
+`APPLY=1 pnpm import:calcom-schedules`. `corrected` present, including a zero,
+means the import DID run, so naming that command would be a dead instruction
+(L111) and the message says what is left needs a person instead. Those two are
+kept apart on the wire, in `parseParitySweep`, and in the copy.
+
 **This retires at cutover (#65)**, since it only means anything while both
-systems are live. It is a hand-run command, so it finds what it finds on the day
-somebody runs it, and #2031 covers putting it on a schedule.
+systems are live. The hand-run command still finds what it finds on the day
+somebody runs it; the scheduled lane is what makes it daily.
 
 # Does Slate hold the same facts as cal.com's source? (`pnpm verify:twilio-parity`)
 

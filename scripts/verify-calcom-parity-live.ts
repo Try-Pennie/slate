@@ -84,7 +84,9 @@ const { paceMs, skipKindForStatus } = await import("./lib/calcom-schedule-import
 const { makeCalGet, pickDefaultSchedule, emailIndex, loadBookableRoster, readEventTypeId } = await import(
   "./lib/calcom-roster.ts"
 );
-const { compareAgentSchedule, VERDICT_RANK } = await import("./lib/schedule-parity.ts");
+const { compareAgentSchedule, reclassifyAgentOwnedHours, VERDICT_RANK } = await import(
+  "./lib/schedule-parity.ts"
+);
 const { compareRosters, ROSTER_VERDICT_RANK, withheldFromWorkers, withheldReadiness } = await import(
   "./lib/roster-parity.ts"
 );
@@ -400,7 +402,11 @@ for (const agent of agents) {
     }
   }
 
-  rows.push(compareAgentSchedule(agent.email, slate, cal));
+  // The comparison answers whether the two systems agree; the reclassification
+  // answers whether it is ours to fix. A difference on a week the AGENT set for
+  // themselves is one the daily lane deliberately refuses to overwrite (#2092), so
+  // paging on it every morning would leave this check red for as long as it sat.
+  rows.push(reclassifyAgentOwnedHours(compareAgentSchedule(agent.email, slate, cal), agent.hoursSource));
 }
 
 // --- report -------------------------------------------------------------------

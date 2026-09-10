@@ -15,7 +15,15 @@
 // Every unreadable input is REFUSED rather than defaulted. Defaulting to Eastern is
 // precisely how the roster came to claim one timezone it does not have, so a
 // mapping that silently fell back would recreate the defect it exists to fix.
-import { mapCalcomSchedule, diffSchedule, retryDelayMs, skipKindForStatus, paceMs } from "./lib/calcom-schedule-import.ts";
+import {
+  mapCalcomSchedule,
+  diffSchedule,
+  retryDelayMs,
+  skipKindForStatus,
+  paceMs,
+  hoursOverwriteRefusal,
+  AGENT_OWNS_HOURS,
+} from "./lib/calcom-schedule-import.ts";
 import { planScheduleReplacement } from "@/lib/schedule-replacement";
 import { assert, eq, finish } from "./lib/harness.ts";
 
@@ -294,6 +302,48 @@ const current = {
         `the refusal names the day, so the importer can name the agent AND the day (${plan.error})`,
       );
     }
+  }
+}
+
+// --- who cal.com may overwrite (#2092) ----------------------------------------
+//
+// The daily lane applies a drift correction itself now, so the importer is a
+// WRITER that runs unattended every morning. The one thing it must never do is
+// replace hours an agent set for themselves: cal.com is the authority for these
+// values only while it is the system people maintain, and an agent who has set
+// their own week in Slate has stopped being one of those people.
+//
+// Dan's rule, 2026-09-10: "it just needs to not overwrite a changed hours. If I
+// changed them or another import changed them, that's fine." So an admin's edit
+// and an earlier import are both fair game, and only the agent's own week is not.
+{
+  eq(
+    hoursOverwriteRefusal("agent"),
+    AGENT_OWNS_HOURS,
+    "an agent's own week is refused, and the refusal says whose it is",
+  );
+  eq(hoursOverwriteRefusal("admin"), null, "an admin's edit may be overwritten, by Dan's decision");
+  eq(hoursOverwriteRefusal("calcom-import"), null, "an earlier import may be overwritten, which is what makes this idempotent");
+  eq(hoursOverwriteRefusal("seed"), null, "the seeded default may be overwritten: it is what the import exists to replace");
+  // 79 of 90 bookable agents carried no stamp on 2026-09-10, because the stamp
+  // (migration 0117) shipped six days after the import that wrote them. Refusing
+  // those would leave the lane inert for 88 percent of the roster while the daily
+  // page went on naming exactly the agents it would not fix (L662).
+  eq(hoursOverwriteRefusal(null), null, "an unstamped week may be overwritten, or the lane covers 11 of 90 agents");
+}
+{
+  // A source outside the vocabulary is REFUSED rather than treated as unstamped.
+  // The two are not the same thing: null means the stamp did not exist yet, and an
+  // unknown name means somebody added a writer this rule has never been shown. A
+  // writer over people's working hours defaults to leaving them alone.
+  const refusal = hoursOverwriteRefusal("manager");
+  assert(refusal !== null, "a source this rule does not know is refused rather than written");
+  assert(
+    refusal !== AGENT_OWNS_HOURS,
+    "and it does not borrow the agent's refusal, which would send somebody to the wrong person (L11)",
+  );
+  if (refusal !== null) {
+    assert(refusal.includes("manager"), `the refusal names the source it did not recognise (${refusal})`);
   }
 }
 

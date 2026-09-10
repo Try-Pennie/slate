@@ -24,7 +24,13 @@
 // roster rather than tolerate noise (26 real windows sit on a half or quarter
 // hour, and 09:00 against 09:30 opens the same hour).
 import { DateTime } from "luxon";
-import { mapCalcomSchedule, type CalcomSchedule, type SlateRule, type SlateSchedule } from "./calcom-schedule-import.ts";
+import {
+  mapCalcomSchedule,
+  AGENT_OWNS_HOURS,
+  type CalcomSchedule,
+  type SlateRule,
+  type SlateSchedule,
+} from "./calcom-schedule-import.ts";
 
 /** Luxon's convention, which is Slate's: 1 = Monday .. 7 = Sunday. Named rather
  *  than numbered wherever a person reads the output: nobody acts on "day 6". */
@@ -69,7 +75,10 @@ export type ScheduleVerdict =
   | "calcom-unreadable"
   | "hours-differ"
   | "days-differ"
-  | "timezone-differs";
+  | "timezone-differs"
+  /** A real hours, days or timezone difference on a week the AGENT set for
+   *  themselves, which the daily lane deliberately will not overwrite (#2092). */
+  | "hours-set-by-agent";
 
 /**
  * Worst last. Every verdict the module can produce carries a rank, and the test
@@ -90,6 +99,12 @@ export const VERDICT_RANK: Record<ScheduleVerdict, number> = {
   // label, every one of them the same clock, and one of the ten hiding a genuine
   // Saturday-for-Friday swap underneath it.
   "timezone-name-differs": 1,
+  // Beside the zone alias, and for the same reason: real, reported, and never the
+  // thing that names a run. It differs from the alias in being a difference a lead
+  // WOULD feel; what it shares is that no automatic run will ever clear it, so
+  // paging on it daily would leave the check permanently red (L36). It sits BELOW
+  // the alias because the alias can still be repaired by the lane and this cannot.
+  "hours-set-by-agent": 1.5,
   "no-calcom-user": 2,
   "no-calcom-schedule": 3,
   "no-slate-schedule": 4,
@@ -317,6 +332,53 @@ export function compareAgentSchedule(
   }
 
   return { email, verdict: worst, reasons };
+}
+
+/**
+ * The three findings the daily lane can repair by re-importing from cal.com.
+ *
+ * Listed rather than picked out by rank, for the reason the sweep's own
+ * `CANNOT_COMPARE` list is: a rank threshold reads as a tidy rule and silently
+ * reclassifies the moment a verdict is inserted between two ranks, which is
+ * exactly what adding `timezone-name-differs` did.
+ */
+const LANE_REPAIRABLE: readonly ScheduleVerdict[] = ["hours-differ", "days-differ", "timezone-differs"];
+
+/**
+ * Report a difference the lane is not allowed to correct, instead of paging on it
+ * every morning (#2092).
+ *
+ * The daily lane applies an hours, days or timezone correction itself now, and
+ * `hoursOverwriteRefusal` stops it replacing a week an agent set for themselves.
+ * That refusal creates a state nothing could previously say: a real difference
+ * that no automatic run will ever clear. Left as `hours-differ` it pages daily for
+ * as long as it sits, and a permanently red check is one nobody reads by the
+ * second week (L36).
+ *
+ * It is a SEPARATE step from `compareAgentSchedule` on purpose. That function
+ * answers "do the two systems agree", which is a question about two weeks; this
+ * answers "is this ours to fix", which is a question about who wrote the Slate
+ * side. Folding them would put an ownership rule inside a pure comparison and give
+ * every one of its fixtures a field it does not care about.
+ *
+ * It touches ONLY the three repairable findings. An agent with no Slate hours at
+ * all is not somebody who set their own, and filing that under this heading would
+ * dress a real gap as a deliberate choice (L11).
+ */
+export function reclassifyAgentOwnedHours(
+  row: AgentComparison,
+  hoursSource: string | null,
+): AgentComparison {
+  if (hoursSource !== "agent") return row;
+  if (!LANE_REPAIRABLE.includes(row.verdict)) return row;
+  return {
+    ...row,
+    verdict: "hours-set-by-agent",
+    // The ownership is APPENDED rather than replacing the reasons. The reader
+    // still has to see what actually differs: without it the line says somebody
+    // owns their hours and never says the two systems disagree about what they are.
+    reasons: [...row.reasons, AGENT_OWNS_HOURS],
+  };
 }
 
 /**
