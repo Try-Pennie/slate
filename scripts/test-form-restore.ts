@@ -17,6 +17,7 @@ import {
   restoreKey,
   restoredValue,
   stashForm,
+  RESTORE_MAX_AGE_MS,
   type RestoreStore,
 } from "../src/lib/form-restore.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
@@ -66,8 +67,12 @@ const brokenStore: RestoreStore = {
 
   assert(stashForm(store, "/me", "working-hours", form), "the stash is written");
   const back = readStash(store, "/me", "working-hours");
-  eq(JSON.stringify(back), JSON.stringify(form), "and comes back unchanged");
-  eq(restoredValue(back, "start_1"), "08:00", "a field reads its own value");
+  // An ENVELOPE since #2077: the values, why they were kept, and when. The page
+  // needs the reason to say which of the two things happened, and the time to
+  // refuse a draft too old to mean anything.
+  eq(JSON.stringify(back?.form), JSON.stringify(form), "and the values come back unchanged");
+  eq(back?.why, "stale-save", "with the reason a stash written by a failed save carries");
+  eq(restoredValue(back?.form ?? null, "start_1"), "08:00", "a field reads its own value");
   eq(restoredValue(back, "not_a_field"), null, "and a field with nothing stashed gets null");
 }
 
@@ -143,6 +148,55 @@ const brokenStore: RestoreStore = {
     ["avatar", new File([], "x.png") as unknown as FormDataEntryValue],
   ]);
   eq(Object.keys(form).join(","), "name", "a file entry is left out entirely");
+}
+
+
+// --- keeping a draft when somebody LEAVES the page (#2077) ---------------------
+// A warning is still one click away from losing the work, and Dan's framing was
+// stronger than a warning: "I should never be able to lose something I typed by
+// going to another page." So the guard stashes rather than discards, and the page
+// it comes back on has to say which of the two things happened.
+
+{
+  const store = fakeStore();
+  const form = { note: ["half a sentence"] };
+  const NOW = Date.parse("2026-09-10T12:00:00.000Z");
+
+  assert(stashForm(store, "/admin/alerts", "alerts", form, "navigation", NOW), "a draft kept on leaving is written");
+  const back = readStash(store, "/admin/alerts", "alerts", NOW + 1000);
+  eq(back?.why, "navigation", "and says it was kept because somebody left, not because a save died");
+  eq(back?.form.note?.[0], "half a sentence", "with the values intact");
+}
+
+{
+  // THE AGE RULE. A draft that overwrites a value somebody has since changed
+  // elsewhere is worse than one quietly dropped, and the risk grows with age. The
+  // clock is a parameter, so this is instant rather than a two hour wait (L524).
+  const store = fakeStore();
+  const NOW = Date.parse("2026-09-10T12:00:00.000Z");
+  stashForm(store, "/admin/alerts", "alerts", { note: ["old"] }, "navigation", NOW);
+
+  assert(
+    readStash(store, "/admin/alerts", "alerts", NOW + RESTORE_MAX_AGE_MS - 1) !== null,
+    "a draft inside the window is still handed back",
+  );
+  eq(
+    readStash(store, "/admin/alerts", "alerts", NOW + RESTORE_MAX_AGE_MS + 1),
+    null,
+    "and one past it is refused rather than put in front of somebody as though it were fresh",
+  );
+}
+
+{
+  // A stash written BEFORE the envelope existed is a bare values object. It is
+  // read rather than dropped: it can only be one written seconds ago by a stale
+  // save in this same tab, which is exactly the person the feature was built for,
+  // so dropping it would lose their work to a version bump.
+  const store = fakeStore();
+  store.setItem(restoreKey("/me", "hours"), JSON.stringify({ start_1: ["08:00"] }));
+  const back = readStash(store, "/me", "hours");
+  eq(back?.form.start_1?.[0], "08:00", "a stash in the old shape still comes back");
+  eq(back?.why, "stale-save", "and reads as the only thing it can have been");
 }
 
 finish();

@@ -32,6 +32,40 @@
 export type RestoredForm = Record<string, string[]>;
 
 /**
+ * WHY a draft was kept, which decides what the page says when it hands it back
+ * (#2077).
+ *
+ * The two are not the same event and one message answering for both is how a
+ * person stops reading it (L11). A save that died under a deploy is something
+ * that happened TO them and the page reloaded itself; leaving a page with edits
+ * on it is something they chose, and the sentence has to say so or it reads as a
+ * fault report about an action they took on purpose.
+ */
+export type RestoreReason = "stale-save" | "navigation";
+
+/**
+ * How long a kept draft is still worth handing back (#2077).
+ *
+ * A stale draft silently overwriting a value somebody has since changed
+ * elsewhere is the failure mode, and it gets likelier the older the draft is. Two
+ * hours covers the case this was built for many times over, since a stale save
+ * hands the draft back on the reload seconds later, and it is short enough that a
+ * draft from this morning is not put in front of somebody this afternoon as
+ * though they had just typed it.
+ *
+ * `sessionStorage` already bounds this to one tab, so nothing here survives the
+ * browser closing; this is the bound WITHIN a long lived tab.
+ */
+export const RESTORE_MAX_AGE_MS = 2 * 60 * 60 * 1000;
+
+/** A stash as it comes back: the values, why they were kept, and when. */
+export interface Stash {
+  form: RestoredForm;
+  why: RestoreReason;
+  atMs: number;
+}
+
+/**
  * Whether a restored stash actually holds something a person TYPED (#2075).
  *
  * A form of one button restores an empty set of values, and announcing "what you
@@ -89,9 +123,15 @@ export function stashForm(
   path: string,
   formName: string,
   form: RestoredForm,
+  why: RestoreReason = "stale-save",
+  nowMs: number = Date.now(),
 ): boolean {
   try {
-    store.setItem(restoreKey(path, formName), JSON.stringify(form));
+    // An ENVELOPE since #2077, so the page can say which of the two things
+    // happened and can refuse a draft too old to mean anything. The clock is a
+    // parameter so a test asserts the age rule rather than waiting out a real
+    // two hours (L524).
+    store.setItem(restoreKey(path, formName), JSON.stringify({ v: 2, at: nowMs, why, form }));
     return true;
   } catch {
     return false;
@@ -109,7 +149,8 @@ export function readStash(
   store: RestoreStore,
   path: string,
   formName: string,
-): RestoredForm | null {
+  nowMs: number = Date.now(),
+): Stash | null {
   let raw: string | null;
   try {
     raw = store.getItem(restoreKey(path, formName));
@@ -124,12 +165,28 @@ export function readStash(
     return null;
   }
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
-  const out: RestoredForm = {};
-  for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
+
+  const envelope = parsed as Record<string, unknown>;
+  // A stash written before the envelope existed is a bare values object, and it
+  // is READ rather than dropped: it can only be one written seconds ago by a
+  // stale save in this same tab, which is exactly the person this feature was
+  // built for, and dropping it would lose their work to a version bump.
+  const isEnvelope = envelope.v === 2 && typeof envelope.form === "object" && envelope.form !== null;
+  const body = isEnvelope ? (envelope.form as Record<string, unknown>) : envelope;
+  const why: RestoreReason = isEnvelope && envelope.why === "navigation" ? "navigation" : "stale-save";
+  const atMs = isEnvelope && typeof envelope.at === "number" ? envelope.at : nowMs;
+
+  // Too old to mean anything. Refused rather than handed back, because a draft
+  // that overwrites a value somebody has since changed elsewhere is worse than
+  // one that was quietly dropped.
+  if (nowMs - atMs > RESTORE_MAX_AGE_MS) return null;
+
+  const form: RestoredForm = {};
+  for (const [key, value] of Object.entries(body)) {
     if (!Array.isArray(value) || !value.every((v) => typeof v === "string")) return null;
-    out[key] = value as string[];
+    form[key] = value as string[];
   }
-  return out;
+  return { form, why, atMs };
 }
 
 /** Remove a stash. Called once the values are back on screen, so a second

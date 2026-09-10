@@ -114,7 +114,7 @@ export function BusinessHoursForm({
   return (
     <form action={formAction} className="space-y-5">
       {/* #1966: a week here decides when Pennie is open to every lead. */}
-      <UnsavedGuard what="changes to when Pennie is open" />
+      <UnsavedGuard what="changes to when Pennie is open" formName="business-hours" />
       {state.error && (
         <p
           role="alert"

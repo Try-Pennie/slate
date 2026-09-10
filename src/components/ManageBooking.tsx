@@ -582,7 +582,7 @@ export default function ManageBooking({
                       {/* #2076: a corrected number is typed work, and this is a
                           page a lead reaches from an email and leaves by a link.
                           The number is the whole reason they opened it. */}
-                      <UnsavedGuard what="changes to your phone number" />
+                      <UnsavedGuard what="changes to your phone number" formName="manage-phone" />
                       <label htmlFor="manage-phone" className="block text-sm font-semibold text-fg">
                         {PHONE_COPY.heading}
                       </label>

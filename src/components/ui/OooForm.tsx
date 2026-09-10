@@ -187,7 +187,7 @@ export function OooForm({
         }`}
       >
         {/* #1966: dates and a reason somebody wrote, with no other copy. */}
-        <UnsavedGuard what="changes to this request" />
+        <UnsavedGuard what="changes to this request" formName="ooo-request" />
         {editing && <input type="hidden" name="request_id" value={editing.id} />}
 
         {state.error && (

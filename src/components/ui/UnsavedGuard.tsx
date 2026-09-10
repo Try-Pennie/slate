@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { btnCls, btnSecondaryCls } from "@/components/ui/styles";
 import { formSnapshot } from "./formSnapshot";
+import { entriesToRestored, stashForm } from "@/lib/form-restore";
 
 /**
  * Warn before leaving a form that has edits nobody has saved (#1966).
@@ -23,10 +24,12 @@ import { formSnapshot } from "./formSnapshot";
  * Mounted INSIDE the form it guards, and it finds that form itself rather than
  * being handed one, so a caller cannot point it at the wrong one.
  */
-export function UnsavedGuard({ what }: { what: string }) {
+export function UnsavedGuard({ what, formName }: { what: string; formName: string }) {
   const marker = useRef<HTMLSpanElement>(null);
   const saved = useRef<string | null>(null);
   const [leavingTo, setLeavingTo] = useState<string | null>(null);
+  /** Set when the browser would not keep the draft, so nothing promises it did. */
+  const [couldNotKeep, setCouldNotKeep] = useState(false);
   const stayRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
@@ -148,7 +151,9 @@ export function UnsavedGuard({ what }: { what: string }) {
               You have unsaved {what}
             </h2>
             <p className="mt-1 text-sm text-fg-muted">
-              Leaving this page now discards them. Nothing has been saved yet.
+              {couldNotKeep
+                ? "Your browser would not let us keep what you typed, so nothing has been kept and you are still on this page. Copy anything you need before you leave."
+                : "Nothing has been saved yet. Leaving keeps what you typed, and it will be here when you come back to this page."}
             </p>
             <div className="mt-4 flex flex-wrap gap-2">
               <button
@@ -164,6 +169,30 @@ export function UnsavedGuard({ what }: { what: string }) {
                 className={btnSecondaryCls}
                 onClick={() => {
                   const to = leavingTo;
+                  const form = marker.current?.closest("form");
+                  // #2077: KEPT, not discarded. A warning is still one click away
+                  // from losing the work, and Dan's framing was stronger than a
+                  // warning: "I should never be able to lose something I typed by
+                  // going to another page."
+                  //
+                  // Attempted BEFORE the navigation and checked, because the dialog
+                  // above has just promised it: a browser with storage full or
+                  // disabled would otherwise take them away on a promise nothing
+                  // kept (L12). On a refusal they stay where they are, with their
+                  // work, and the panel says so.
+                  if (form && typeof window !== "undefined") {
+                    const kept = stashForm(
+                      window.sessionStorage,
+                      window.location.pathname,
+                      formName,
+                      entriesToRestored(new FormData(form).entries()),
+                      "navigation",
+                    );
+                    if (!kept) {
+                      setCouldNotKeep(true);
+                      return;
+                    }
+                  }
                   // Cleared BEFORE navigating, so neither half of the guard
                   // catches its own departure: the click interceptor stands down
                   // and `beforeunload` stays quiet on the way out.
@@ -180,7 +209,7 @@ export function UnsavedGuard({ what }: { what: string }) {
                   window.location.assign(to);
                 }}
               >
-                Leave without saving
+                {couldNotKeep ? "Leave and lose it" : "Leave, and keep it for later"}
               </button>
             </div>
           </div>

@@ -69,7 +69,7 @@ export function BucketForm({
     >
       {/* #2076: a bucket's name, code and criteria are typed by hand and exist
           nowhere else until this saves. */}
-      <UnsavedGuard what="changes to this bucket" />
+      <UnsavedGuard what="changes to this bucket" formName="bucket-form" />
       {editing && <input type="hidden" name="bucket_id" value={bucket.id} />}
       {editing && (
         <>
