@@ -369,6 +369,21 @@ export default function Booker({
     landingCall?.disclose ? landingCall.phoneLast4 : null,
   );
   const [editingCallPhone, setEditingCallPhone] = useState(false);
+  /**
+   * The lead corrected the number on THIS screen (#2210).
+   *
+   * Two routes write that field: this panel through the phone endpoint, and the
+   * move through `attendee`, which for a recognised lead is whatever the LINK
+   * carried and nothing they typed. The move's copy was read at page load, so it
+   * is older, and applying it would write the stale number back over the
+   * correction with nothing reporting a fault (L443).
+   *
+   * Its own flag rather than comparing the two numbers: the panel only ever holds
+   * four digits of the stored one, so it cannot tell "they corrected it to
+   * something new" from "the link happens to agree", and only the first of those
+   * is a reason to act.
+   */
+  const [phoneCorrectedHere, setPhoneCorrectedHere] = useState(false);
   const [callPhoneDraft, setCallPhoneDraft] = useState("");
   const [callPhoneError, setCallPhoneError] = useState<string | null>(null);
   const [savingCallPhone, setSavingCallPhone] = useState(false);
@@ -709,6 +724,9 @@ export default function Booker({
         // a save is not a reason to start showing the whole number on a screen
         // reached by a link.
         setCallPhoneLast4(phoneLastFour(data.phone));
+        // #2210: from here the move must not send a number. This one is newer
+        // than anything the link carried.
+        setPhoneCorrectedHere(true);
         setEditingCallPhone(false);
         setCallPhoneDraft("");
         return;
@@ -727,7 +745,10 @@ export default function Booker({
   const typedDetails: { name?: string; email?: string; phone?: string } = {};
   if (attendee.name.trim()) typedDetails.name = attendee.name.trim();
   if (attendee.email.trim()) typedDetails.email = attendee.email.trim();
-  if (attendee.phone.trim()) typedDetails.phone = attendee.phone.trim();
+  // #2210: and never the number, once one has been corrected on this screen. The
+  // panel offers no correction for the name or the email, so those still travel:
+  // this is a rule about the one field two routes write, not about the payload.
+  if (attendee.phone.trim() && !phoneCorrectedHere) typedDetails.phone = attendee.phone.trim();
   const hasTypedDetails = Object.keys(typedDetails).length > 0;
 
   async function moveExistingCall() {

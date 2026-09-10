@@ -682,6 +682,89 @@ describe("Booker refuses a second booking (#1337)", () => {
     expect(screen.queryByText(advisorWillCallEnding("0100"))).toBeNull();
   });
 
+  // #2210: two routes write the same field and only one of them knew about the
+  // correction. The panel saves a number through the phone endpoint; the move
+  // sends `attendee` built from the link's prefill, which `updateBookingContact`
+  // applies before the move. So the stale number wins and the lead is told their
+  // save worked, which it did, and then it is undone by the next thing they do
+  // (L443: a field another writer owns must never be savable from a surface
+  // holding an older copy).
+  function moveWorld() {
+    const posted: { url: string; body: Record<string, unknown> }[] = [];
+    global.fetch = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+      const u = String(url);
+      if (u.includes("/api/availability")) {
+        return { ok: true, json: async () => availability } as Response;
+      }
+      posted.push({ url: u, body: JSON.parse(String(init?.body ?? "{}")) });
+      if (u.includes("/phone")) {
+        return { ok: true, status: 200, json: async () => ({ phone: "(215) 555-0100" }) } as Response;
+      }
+      return { ok: true, status: 200, json: async () => ({ startsAt: slotIso }) } as Response;
+    }) as unknown as typeof fetch;
+    return posted;
+  }
+
+  async function moveAfter(correct: boolean) {
+    await screen.findByText("You already have a call booked");
+    if (correct) {
+      fireEvent.click(screen.getByRole("button", { name: PHONE_COPY.trigger }));
+      await userEvent.type(screen.getByLabelText(PHONE_COPY.label), "2155550100");
+      fireEvent.click(screen.getByRole("button", { name: PHONE_COPY.save }));
+      await screen.findByText(advisorWillCallEnding("0100"));
+    }
+    fireEvent.click(screen.getByRole("button", { name: MOVE_COPY.pickAnotherTime }));
+    await pickFirstDay();
+    await userEvent.click(await screen.findByRole("button", { name: /:\d{2}/ }));
+    await screen.findByText(MOVE_COPY.reasonLegend);
+    fireEvent.click(screen.getAllByRole("radio")[0]);
+    fireEvent.click(screen.getByRole("button", { name: /^Move my call to/ }));
+  }
+
+  it("does not let the move write the link's number over one just corrected", async () => {
+    const posted = moveWorld();
+    render(
+      <Booker
+        {...baseProps}
+        salesforceId="003xx"
+        attendee={{ name: "Dana Lead", email: "dana@example.com", phone: "2035551111" }}
+        landingCall={withPhone}
+      />,
+    );
+    await moveAfter(true);
+
+    await waitFor(() => expect(posted.filter((p) => p.url.includes("/reschedule"))).toHaveLength(1));
+    const move = posted.find((p) => p.url.includes("/reschedule"))!;
+    const sent = move.body.attendee as Record<string, string> | undefined;
+    // The number they corrected stands. Nothing about it is sent again, so
+    // nothing can write over it.
+    expect(sent?.phone).toBeUndefined();
+    // And the fields the panel offers no correction for still travel, so this is
+    // a rule about the number rather than about the payload.
+    expect(sent?.name).toBe("Dana Lead");
+    expect(sent?.email).toBe("dana@example.com");
+  });
+
+  it("still carries the link's number when nothing was corrected", async () => {
+    // THE CONTROL. Without it, a fix that simply stopped sending the number would
+    // pass the test above while dropping the correction the link itself carries,
+    // which is the #2164 case (L1).
+    const posted = moveWorld();
+    render(
+      <Booker
+        {...baseProps}
+        salesforceId="003xx"
+        attendee={{ name: "Dana Lead", email: "dana@example.com", phone: "2035551111" }}
+        landingCall={withPhone}
+      />,
+    );
+    await moveAfter(false);
+
+    await waitFor(() => expect(posted.filter((p) => p.url.includes("/reschedule"))).toHaveLength(1));
+    const move = posted.find((p) => p.url.includes("/reschedule"))!;
+    expect((move.body.attendee as Record<string, string>).phone).toBe("(203) 555-1111");
+  });
+
   it("keeps exactly one primary action on the panel while the number is being corrected", async () => {
     // Found by looking at it at a real window rather than by any test (L606):
     // with the field open the panel drew TWO sky filled buttons, "Save this
