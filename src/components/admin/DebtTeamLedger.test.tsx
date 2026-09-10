@@ -92,7 +92,7 @@ describe("DebtTeamLedger", () => {
     const { container } = render(<DebtTeamLedger teams={["medium", "high", "very_high"]} />);
     const glyph = container.querySelector("[data-ledger]")!;
     expect(glyph.getAttribute("role")).toBe("img");
-    expect(glyph.getAttribute("aria-label")).toBe("Covers Medium to Very High");
+    expect(glyph.getAttribute("aria-label")).toBe("Covers Medium, High, Very High");
     // The label lives on the glyph, so the glyph itself must NOT be hidden, or
     // the name goes with it. The letters inside are.
     expect(glyph.getAttribute("aria-hidden")).toBeNull();

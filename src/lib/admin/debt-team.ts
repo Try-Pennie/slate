@@ -138,13 +138,23 @@ export function debtTeamCoverage(teams: string[]): DebtTeamCoverage {
   return { ranks: [...ranks].sort((a, b) => a - b), offLadder };
 }
 
-/** The rungs as a phrase: a range when contiguous, a list when there is a gap. */
+/**
+ * The rungs as a phrase: every team the agent covers, named, in ladder order.
+ *
+ * IT NAMES THEM ALL (#2143). It used to collapse a contiguous run into "first to
+ * last" and all five into "every tier", on the grounds that a band reads as a range
+ * because that is how a person says it. That holds when somebody is SPEAKING. It
+ * does not hold on a record whose whole purpose is to state which teams route to
+ * this agent: Dan met "Medium to Very High", which names two of the three teams the
+ * agent actually covers and leaves the reader to work out the third from a ladder
+ * they have to already know the order of. It is worse the wider the band, and "every
+ * tier" says nothing at all.
+ *
+ * So the two special cases are gone rather than replaced, which is why this is
+ * shorter than what it replaces: listing them was already the behaviour whenever
+ * there was a gap.
+ */
 function bandPhrase(ranks: number[]): string {
-  if (ranks.length === DEBT_TEAM_RUNGS.length) return "every tier";
-  if (ranks.length === 1) return debtTeamRungLabel(ranks[0]!);
-  if (ranks[ranks.length - 1]! - ranks[0]! === ranks.length - 1) {
-    return `${debtTeamRungLabel(ranks[0]!)} to ${debtTeamRungLabel(ranks[ranks.length - 1]!)}`;
-  }
   return ranks.map(debtTeamRungLabel).join(", ");
 }
 
@@ -159,11 +169,10 @@ function bandPhrase(ranks: number[]): string {
  * so the letters buy nothing there and cost a legend the reader has to go and
  * find.
  *
- * A contiguous band reads as a range because that is how a person says it; a gap
- * has to read as a list, because "Low to Ultra High" would be a lie about an
- * agent who does not take the middle. An off ladder value is shown exactly AS
- * STORED, including its case, because the reader needs to see it is a data
- * question and not a formatting one (L113).
+ * Every team is NAMED (#2143), in ladder order, whether or not the set is
+ * contiguous. An off ladder value is shown exactly AS STORED, including its case,
+ * because the reader needs to see it is a data question and not a formatting one
+ * (L113).
  *
  * `null` when there is nothing to say, deliberately: the surface names that
  * state in its own words, beside whatever its sibling fields call it, and a
