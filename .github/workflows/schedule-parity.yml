@@ -19,8 +19,11 @@ name: Schedule parity
 # side, so it needs an all clear and must not repeat every morning while it sits. Both
 # need a memory of what was said yesterday, which a runner has none of.
 #
-# Needs the CALCOM_API_KEY, BOOKING_API_KEY, SUPABASE_SECRET_KEY and SLACK_BOT_TOKEN
-# repo secrets, and the SLACK_ALERTS_CHANNEL and SLATE_BASE_URL repo variables.
+# Needs the CALCOM_API_KEY, BOOKING_API_KEY, SUPABASE_SECRET_KEY, SLACK_BOT_TOKEN and
+# the three TWILIO_* repo secrets, and the SLACK_ALERTS_CHANNEL and SLATE_BASE_URL
+# repo variables. The Twilio three became required when #2153 made the withheld set
+# come from Twilio's worker tags; they were not wired at the time, and this lane died
+# on the first morning after that merged with nothing but a stale heartbeat to say so.
 on:
   schedule:
     # 12:20 UTC, which is mid morning Eastern: late enough that a correction made in
@@ -60,12 +63,23 @@ jobs:
         env:
           CALCOM_API_KEY: ${{ secrets.CALCOM_API_KEY }}
           BOOKING_API_KEY: ${{ secrets.BOOKING_API_KEY }}
+          # Named here as well as on the sweep step so a MISSING one is reported by
+          # this step, which says what to create, rather than by the sweep failing
+          # five minutes later with a message about Twilio.
+          TWILIO_API_KEY_SID: ${{ secrets.TWILIO_API_KEY_SID }}
+          TWILIO_API_KEY_SECRET: ${{ secrets.TWILIO_API_KEY_SECRET }}
+          TWILIO_WORKSPACE_SID: ${{ secrets.TWILIO_WORKSPACE_SID }}
         run: |
-          if [ -n "$CALCOM_API_KEY" ] && [ -n "$BOOKING_API_KEY" ]; then
+          missing=""
+          for name in CALCOM_API_KEY BOOKING_API_KEY TWILIO_API_KEY_SID TWILIO_API_KEY_SECRET TWILIO_WORKSPACE_SID; do
+            eval "value=\${$name}"
+            if [ -z "$value" ]; then missing="$missing $name"; fi
+          done
+          if [ -z "$missing" ]; then
             echo "configured=1" >> "$GITHUB_OUTPUT"
           else
             echo "configured=0" >> "$GITHUB_OUTPUT"
-            echo "::notice::CALCOM_API_KEY or BOOKING_API_KEY is not set as a repo secret, so the parity sweep is skipping. Add both in Settings > Secrets and variables > Actions."
+            echo "::notice::Not set as repo secrets, so the parity sweep is skipping:$missing. Add them in Settings > Secrets and variables > Actions."
           fi
 
       # THE CORRECTION RUNS BEFORE THE COMPARISON (#2092), and the ordering is the
@@ -124,6 +138,14 @@ jobs:
           # variable would be one more setting to create before this can ever run.
           NEXT_PUBLIC_SUPABASE_URL: https://drukfvgaynzrralbzkzj.supabase.co
           SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+          # Required since #2153: Twilio's worker tags are what say who cal.com
+          # actually routes to, and the sweep REFUSES to compare without them
+          # rather than reading every withheld agent as agreement. Missing these
+          # is what killed this lane on 2026-09-10, silently, the first morning
+          # after #2153 merged.
+          TWILIO_API_KEY_SID: ${{ secrets.TWILIO_API_KEY_SID }}
+          TWILIO_API_KEY_SECRET: ${{ secrets.TWILIO_API_KEY_SECRET }}
+          TWILIO_WORKSPACE_SID: ${{ secrets.TWILIO_WORKSPACE_SID }}
           # A literal path, not a repo variable: it is an internal handoff between
           # two steps of the same job, and the report step reads the same path.
           PARITY_SUMMARY_FILE: parity-summary.json

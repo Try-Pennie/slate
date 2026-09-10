@@ -254,6 +254,41 @@ export function declaredExemptions(source: string): string[] {
 }
 
 /**
+ * Exemptions that describe a REQUIRED value, which is a contradiction (#2218).
+ *
+ * `env-ok` means exactly one thing: this variable is genuinely local only, and CI
+ * wanting it absent is the correct state. A reason that opens with "required" says
+ * the opposite, and the rest of this scanner cannot tell, because it matches the
+ * NAME and never reads the words beside it. A marker whose reason is not itself
+ * checked is one somebody can satisfy by writing anything at all (L675).
+ *
+ * That is what #2153 did: it made the cal.com parity sweep depend on three Twilio
+ * credentials, declared all three `env-ok: ... (required; ...)`, and wired none of
+ * them. The guard written to catch precisely a var no step provides had been told
+ * to look away from them, and the daily lane died the first morning after the
+ * merge with nothing but a heartbeat that would go stale thirty hours later.
+ *
+ * Matched on the FIRST word of the reason, because the house convention already
+ * writes `(required; ...)` or `(optional; ...)` or `(local only)`, and matching
+ * "required" anywhere would fire on a reason that says "not required in CI",
+ * which is a correct exemption saying so in words.
+ */
+export interface ExemptionContradiction {
+  variable: string;
+  reason: string;
+}
+
+export function contradictoryExemptions(source: string): ExemptionContradiction[] {
+  const out: ExemptionContradiction[] = [];
+  for (const m of source.matchAll(/env-ok:\s*([A-Z][A-Z0-9_]*)\s*\(?\s*([^)\n]*)/g)) {
+    const variable = m[1]!;
+    const reason = (m[2] ?? "").trim();
+    if (/^required\b/i.test(reason)) out.push({ variable, reason });
+  }
+  return out;
+}
+
+/**
  * Every var a workflow-run script reads that no step running it provides and
  * that the script does not exempt.
  *

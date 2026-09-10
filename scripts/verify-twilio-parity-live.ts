@@ -25,10 +25,6 @@
 // deliberately NOT named `test-*.ts`, because that glob is the offline unit suite and
 // this needs live Twilio plus the Supabase secret key.
 //
-// env-ok: TWILIO_API_KEY_SID (required; a TaskRouter-scoped API key, used as the
-//   basic-auth username exactly as the Pipedream job does)
-// env-ok: TWILIO_API_KEY_SECRET (required; the matching secret)
-// env-ok: TWILIO_WORKSPACE_SID (required; the TaskRouter workspace holding the workers)
 import { loadEnvFiles } from "./smoke-env.ts";
 
 loadEnvFiles([".env.local", ".dev.vars"]);

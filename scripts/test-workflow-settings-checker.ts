@@ -35,6 +35,13 @@ const REAL_SECRETS = [
   "SUPABASE_ACCESS_TOKEN",
   "SUPABASE_DB_PASSWORD",
   "SUPABASE_SECRET_KEY",
+  // Required by the daily cal.com parity lane since #2153, wired in #2218. This
+  // list is what a FULLY CONFIGURED repo holds; whether the repo really holds them
+  // is the live `pnpm check:workflow-settings` run in the pre-push hook, which is
+  // the half of this pair that can see reality.
+  "TWILIO_API_KEY_SID",
+  "TWILIO_API_KEY_SECRET",
+  "TWILIO_WORKSPACE_SID",
 ];
 
 interface Run {
