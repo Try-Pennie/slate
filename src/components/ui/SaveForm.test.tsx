@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { Component, useState, type ReactNode } from "react";
-import { describe, it, expect, vi, beforeEach } from "vitest";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 // The predicate is the one thing that decides whether a failure is swallowed or
@@ -89,9 +89,13 @@ describe("SaveForm survives a deploy landing under the page (#1994)", () => {
     await user.click(screen.getByRole("button", { name: "Save" }));
 
     // Stashed under this page and this form, so another page cannot pick it up.
+    // The stash is an envelope since #2077, so the page can say WHY a draft came
+    // back and can refuse one too old to mean anything.
     const raw = window.sessionStorage.getItem(restoreKey(window.location.pathname, "hours"));
     expect(raw).toBeTruthy();
-    expect(JSON.parse(raw!).start_1).toEqual(["09:30"]);
+    const envelope = JSON.parse(raw!);
+    expect(envelope.form.start_1).toEqual(["09:30"]);
+    expect(envelope.why).toBe("stale-save");
   });
 
   // EVERY OTHER FAILURE STILL GOES WHERE IT WENT, and this is the assertion that
@@ -332,6 +336,85 @@ describe("SaveForm puts back what was typed (#1994)", () => {
 // floors he had typed by clicking a link, on one of the eleven call sites that had
 // never opted in.
 // #2075: the restored draft notice on a form with nothing to type.
+// #2077: leaving with unsaved edits KEEPS them. A warning is still one click away
+// from losing the work, and Dan's framing was stronger than a warning: "I should
+// never be able to lose something I typed by going to another page."
+describe("leaving a dirty form keeps the draft (#2077)", () => {
+  // The guard really navigates on the way out, and jsdom answers a real
+  // `location.assign` with an unhandled TypeError: the suite still passes and the
+  // run still exits non-zero, which is a red that says nothing about the code.
+  let assign: ReturnType<typeof vi.spyOn>;
+  beforeEach(() => {
+    assign = vi.spyOn(window.location, "assign").mockImplementation(() => {});
+  });
+  afterEach(() => assign.mockRestore());
+
+  const leaveVia = async (href: string) => {
+    const away = document.createElement("a");
+    away.setAttribute("href", href);
+    document.body.appendChild(away);
+    away.click();
+    await screen.findByRole("alertdialog");
+  };
+
+  it("stashes what was typed, and says so when the page is opened again", async () => {
+    render(
+      <SaveForm action={async () => {}} name="alerts" unsaved="changes to these alert settings">
+        <input name="floor" defaultValue="20" aria-label="floor" />
+        <button type="submit">Save</button>
+      </SaveForm>,
+    );
+    fireEvent.change(screen.getByLabelText("floor"), { target: { value: "35" } });
+    await leaveVia("/admin/buckets");
+    fireEvent.click(screen.getByRole("button", { name: /keep it for later/i }));
+
+    const raw = window.sessionStorage.getItem(restoreKey(window.location.pathname, "alerts"));
+    expect(raw).toBeTruthy();
+    const envelope = JSON.parse(raw!);
+    expect(envelope.form.floor).toEqual(["35"]);
+    // The reason travels with it, because the sentence on the way back differs.
+    expect(envelope.why).toBe("navigation");
+
+    cleanup();
+    render(
+      <SaveForm action={async () => {}} name="alerts" unsaved="changes to these alert settings">
+        <input name="floor" defaultValue="20" aria-label="floor" />
+        <button type="submit">Save</button>
+      </SaveForm>,
+    );
+    expect((screen.getByLabelText("floor") as HTMLInputElement).value).toBe("35");
+    expect(document.body.textContent).toMatch(/when you left this page/i);
+    // And NOT the other sentence: a save that died under a deploy is something
+    // that happened TO them, and one message answering for both reads as a fault
+    // report about an action they took on purpose (L11).
+    expect(document.body.textContent).not.toMatch(/before the last reload/i);
+  });
+
+  it("keeps them on the page when the browser will not keep the draft", async () => {
+    // The dialog has just promised to keep it, so a storage that refuses must not
+    // let them leave on a promise nothing kept (L12).
+    const setItem = vi.spyOn(window.sessionStorage.__proto__, "setItem").mockImplementation(() => {
+      throw new Error("quota");
+    });
+    try {
+      render(
+        <SaveForm action={async () => {}} name="alerts" unsaved="changes to these alert settings">
+          <input name="floor" defaultValue="20" aria-label="floor" />
+          <button type="submit">Save</button>
+        </SaveForm>,
+      );
+      fireEvent.change(screen.getByLabelText("floor"), { target: { value: "35" } });
+      await leaveVia("/admin/buckets");
+      fireEvent.click(screen.getByRole("button", { name: /keep it for later/i }));
+
+      expect(assign).not.toHaveBeenCalled();
+      expect(screen.getByRole("alertdialog").textContent).toMatch(/would not let us keep/i);
+    } finally {
+      setItem.mockRestore();
+    }
+  });
+});
+
 describe("SaveForm only announces a restore that restored something (#2075)", () => {
   const NOTICE = /put back/i;
 

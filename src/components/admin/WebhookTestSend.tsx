@@ -33,7 +33,7 @@ export function WebhookTestSend({
     <div className="space-y-3">
       <form action={formAction} className="space-y-2">
         {/* #2076: the address to test against is typed here and nowhere else. */}
-        <UnsavedGuard what="the address you typed" />
+        <UnsavedGuard what="the address you typed" formName="webhook-test-send" />
         <label className={labelCls} htmlFor="webhook-test-target">
           Send a test to
         </label>

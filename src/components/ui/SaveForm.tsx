@@ -18,6 +18,7 @@ import {
   readStash,
   restoredAnything,
   restoredValue,
+  type Stash,
   stashForm,
   type RestoredForm,
 } from "@/lib/form-restore";
@@ -67,6 +68,12 @@ import {
  * travels with the decision instead of being a name somebody applies. Every other
  * exemption is a decision somebody has to argue for in the change that makes it.
  */
+/** What the page says when it hands a draft back, by why it was kept (#2077). */
+const RESTORED_AFTER_RELOAD =
+  "What you had typed before the last reload has been put back. Check it and press save.";
+const RESTORED_ON_LEAVE =
+  "What you had typed when you left this page has been put back. Check it and press save.";
+
 export function holdsAView(_why: string): typeof HOLDS_A_VIEW {
   return HOLDS_A_VIEW;
 }
@@ -138,10 +145,11 @@ export function SaveForm({
 
   // Read ONCE, before the fields mount, because a field takes its restored value
   // as its initial state and there is no second chance to hand it over.
-  const [restored] = useState<RestoredForm | null>(() => {
+  const [stash] = useState<Stash | null>(() => {
     if (typeof window === "undefined") return null;
     return readStash(window.sessionStorage, window.location.pathname, name);
   });
+  const restored = stash?.form ?? null;
 
   // Cleared after the fields have taken their values, so a later reload does not
   // silently re-apply values the person has since changed.
@@ -202,7 +210,7 @@ export function SaveForm({
         {/* #2076: by DEFAULT, not by opt in. Silent unless the form actually
             differs from what it rendered with, so a form holding only a button
             needs no exception written for it. */}
-        {unsaved !== HOLDS_A_VIEW && <UnsavedGuard what={unsaved} />}
+        {unsaved !== HOLDS_A_VIEW && <UnsavedGuard what={unsaved} formName={name} />}
         {stale && (
           <div
             role="alert"
@@ -226,8 +234,12 @@ export function SaveForm({
             paragraph in a one line row displaces what is next to it. */}
         {restoredAnything(restored) && !stale && (
           <p role="status" className="mb-4 text-sm text-fg-muted">
-            What you had typed before the last reload has been put back. Check it
-            and press save.
+            {/* #2077: which of the two things happened. A save that died under a
+                deploy happened TO them and the page reloaded itself; leaving a
+                page with edits on it is something they chose, and one sentence
+                answering for both reads as a fault report about a deliberate
+                action (L11). */}
+            {stash?.why === "navigation" ? RESTORED_ON_LEAVE : RESTORED_AFTER_RELOAD}
           </p>
         )}
         {children}

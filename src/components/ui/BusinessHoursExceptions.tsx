@@ -90,7 +90,7 @@ export function BusinessHoursExceptions({
       <form action={formAction} className="space-y-4">
         {/* #1966: the ADD form. The per row remove forms below hold nothing
             typed, so they carry no guard. */}
-        <UnsavedGuard what="changes to this date" />
+        <UnsavedGuard what="changes to this date" formName="business-hours-exception" />
         {state.error && (
           <p
             role="alert"

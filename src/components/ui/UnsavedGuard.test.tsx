@@ -25,7 +25,7 @@ function Page({ initial = "08:00" }: { initial?: string } = {}) {
       <a href="/admin/hours#today">Today</a>
       <a href="https://example.invalid/out">Somewhere else</a>
       <form action={() => {}}>
-        <UnsavedGuard what="changes to these hours" />
+        <UnsavedGuard what="changes to these hours" formName="f" />
         <label htmlFor="start">Monday start</label>
         <input id="start" name="start" defaultValue={initial} />
         <a href="/admin/inside-the-form">A link inside the form</a>
@@ -50,7 +50,7 @@ function ControlledPage() {
     <div>
       <a href="/admin/buckets">Buckets</a>
       <form action={() => {}}>
-        <UnsavedGuard what="changes to these hours" />
+        <UnsavedGuard what="changes to these hours" formName="f" />
         <label htmlFor="c-start">Monday start</label>
         <input id="c-start" name="start" value={value} onChange={(e) => setValue(e.target.value)} />
         <button type="submit">Save</button>
@@ -109,7 +109,7 @@ describe("UnsavedGuard (#1966)", () => {
     render(<Page />);
     await user.type(screen.getByLabelText("Monday start"), "9");
     await user.click(screen.getByRole("link", { name: "Buckets" }));
-    await user.click(screen.getByRole("button", { name: "Leave without saving" }));
+    await user.click(screen.getByRole("button", { name: "Leave, and keep it for later" }));
     expect(push).toHaveBeenCalledWith("/admin/buckets");
   });
 
