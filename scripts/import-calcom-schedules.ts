@@ -103,9 +103,19 @@ function writeApplySummary(count: number, agents: string[]): void {
   try {
     writeFileSync(path, JSON.stringify({ count, agents: agents.slice(0, APPLY_AGENT_CAP) }, null, 2));
   } catch (err) {
-    // Reported and never fatal. The writing is the point of the run and it has
-    // already happened; losing the note about it must not turn a successful import
-    // into a failed workflow step.
+    // Reported and never fatal. The hours are the point of the run and they are
+    // already written; losing the NOTE about them must not turn a successful
+    // import into a failed workflow step.
+    //
+    // What it costs, said out loud because it is a collapse of two states into
+    // one (L11): an absent file reads downstream as "no apply ran", so the alert
+    // keeps its "re-import the hours" line. That instruction is then redundant
+    // rather than false, since the import is idempotent and running it again
+    // reports the same thing, and this line is in the run log either way. A third
+    // wire state for "it ran and could not say what it did" would buy a more
+    // precise sentence for a filesystem write failing on a runner that has just
+    // completed two network passes, which is not worth a vocabulary somebody has
+    // to maintain.
     console.error(`could not write the apply summary: ${String(err).slice(0, 120)}`);
   }
 }
