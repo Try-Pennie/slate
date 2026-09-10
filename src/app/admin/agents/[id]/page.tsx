@@ -439,20 +439,49 @@ export default async function AgentProfilePage({
             <SaveForm
               name="agent-ooo-calendar"
               action={setOooCalendarId}
-              className="mt-4 flex flex-wrap items-end gap-2"
+              /* Not a row of two columns aligned on their bottom edges: adding
+                 the hint below the box made the column taller and pushed the Save
+                 button out of line with the thing it saves (L549). The box and the
+                 button are one row, and the hint sits under both. */
+              className="mt-4"
             >
               <input type="hidden" name="user_id" value={agent.id} />
               <div>
-                <label className={labelCls}>OOO calendar ID</label>
-                <input
-                  name="ooo_calendar_id"
-                  aria-label="OOO calendar ID"
-                  defaultValue={agent.ooo_calendar_id ?? ""}
-                  placeholder="c_xxxx@group.calendar.google.com"
-                  className={`${inputCls} w-80`}
-                />
+                {/* #2161. Dan, looking at this page: "what the hell is this
+                    image?" of the graphic, and then of this box, "what is this
+                    for?". It said "OOO calendar ID" over a Google calendar id,
+                    which tells a reader what to TYPE and nothing about what it
+                    does. The name and the hint now carry the domain instead: whose
+                    calendar it is, what lands on it, and that blank is a real
+                    choice rather than an unfinished one (L604). */}
+                <label htmlFor="ooo-calendar-id" className={labelCls}>
+                  Team time off calendar
+                </label>
+                <div className="flex flex-wrap items-center gap-2">
+                  <input
+                    id="ooo-calendar-id"
+                    name="ooo_calendar_id"
+                    aria-describedby="ooo-calendar-id-hint"
+                    defaultValue={agent.ooo_calendar_id ?? ""}
+                    placeholder="c_xxxx@group.calendar.google.com"
+                    /* max-w, not w-80: `inputCls` already carries `w-full`, and
+                       two width utilities on one element are decided by the order
+                       Tailwind emits them rather than the order they are written,
+                       so the fixed width silently lost the moment this stopped
+                       being a content sized flex item. A max width is a different
+                       property and cannot be overruled by it. */
+                    className={`${inputCls} max-w-80`}
+                  />
+                  <SubmitButton className={btnSecondaryCls} pendingLabel="Saving calendar">
+                    Save calendar
+                  </SubmitButton>
+                </div>
+                <p id="ooo-calendar-id-hint" className="mt-1.5 max-w-lg text-xs text-fg-muted">
+                  Approved time off for the people who report to {agent.name ?? agent.email}{" "}
+                  is added to this Google calendar. Blank sends it to the shared
+                  Pennie time off calendar instead.
+                </p>
               </div>
-              <SubmitButton className={btnSecondaryCls} pendingLabel="Saving calendar">Save calendar</SubmitButton>
             </SaveForm>
           )}
         </section>
