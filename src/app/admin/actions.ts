@@ -1869,6 +1869,20 @@ export type BusinessHoursFormState = {
    * reaches the person who caused it, while they are looking at the screen.
    */
   warning?: string | null;
+  /**
+   * WHICH save this was, so the notice can be derived from what was written
+   * rather than asserted over both outcomes (#2219).
+   *
+   * The date form confirmed a CLOSED date with "Leads see that date straight
+   * away", which is the opposite of what closing a date does, and it was the
+   * commonest save. A bare `ok: true` cannot tell a component which of the two
+   * happened, so the sentence had nothing to be derived from and one claim was
+   * written over both (L608).
+   *
+   * Absent on every outcome that wrote nothing: a refusal, and a close still
+   * waiting to be confirmed. Only a real write may produce a notice.
+   */
+  saved?: { onDate: string; isOpen: boolean } | null;
 };
 
 /**
@@ -1957,7 +1971,9 @@ export async function setBusinessHoursException(
     details: { on_date: row.on_date, is_open: row.is_open, note: row.note },
   });
   revalidatePath("/admin/business-hours");
-  return { error: null, ok: true };
+  // Reported from the row that was actually written, never from what was posted,
+  // so the notice can only ever describe a save that happened.
+  return { error: null, ok: true, saved: { onDate: row.on_date, isOpen: row.is_open } };
 }
 
 /** Drop a date exception, so that date goes back to following the weekly pattern. */

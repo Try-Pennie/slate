@@ -91,7 +91,7 @@ vi.mock("@/lib/bookable/service", () => ({ applyBookableByUserId: vi.fn(), apply
 vi.mock("@/lib/salesforce/sync", () => ({ syncSalesforceAgents: vi.fn(), AGENTS_SYNC_STREAK_KEY: "k" }));
 vi.mock("@/lib/notify/streak", () => ({ clearFailureStreak: vi.fn(), recordFailureStreak: vi.fn(), recordConsecutiveStreak: vi.fn() }));
 
-import { setBusinessHours } from "./actions";
+import { setBusinessHours, setBusinessHoursException } from "./actions";
 import { COVERAGE_UNCHECKED_WARNING } from "@/lib/monitor/roster-coverage";
 
 /** One bookable agent, Eastern, Monday to Friday 09:00 to 17:00. Every live agent
@@ -320,5 +320,56 @@ describe("setBusinessHours", () => {
       expect(state.warning).toBe(COVERAGE_UNCHECKED_WARNING);
       expect(state.warning).not.toBe(null);
     });
+  });
+});
+
+/**
+ * #2219: a saved date has to say what it DID.
+ *
+ * The page confirmed every save, closed or open, with "Saved. Leads see that
+ * date straight away." A closed date is the one leads do not see, so the
+ * commonest save asserted the opposite of what had happened. The wording lives in
+ * `business-hours-copy.ts`; what is pinned here is that the ACTION reports which
+ * of the two outcomes it wrote, since a component cannot derive a sentence from a
+ * bare `ok: true` (L608).
+ */
+describe("setBusinessHoursException", () => {
+  function dateForm(over: Record<string, string> = {}): FormData {
+    const fd = new FormData();
+    fd.set("on_date", "2027-01-01");
+    fd.set("state", "closed");
+    for (const [k, v] of Object.entries(over)) fd.set(k, v);
+    return fd;
+  }
+
+  it("reports a CLOSED save as closed, naming the date it wrote", async () => {
+    const res = await setBusinessHoursException({ error: null }, dateForm());
+    expect(res.error).toBeNull();
+    expect(res.ok).toBe(true);
+    expect(res.saved).toEqual({ onDate: "2027-01-01", isOpen: false });
+  });
+
+  it("reports an OPEN save as open, so the two outcomes are told apart", async () => {
+    const res = await setBusinessHoursException(
+      { error: null },
+      dateForm({ state: "open", start: "09:00", end: "13:00" }),
+    );
+    expect(res.ok).toBe(true);
+    expect(res.saved).toEqual({ onDate: "2027-01-01", isOpen: true });
+  });
+
+  it("reports nothing saved when the form is refused, so no notice can be drawn", async () => {
+    const res = await setBusinessHoursException({ error: null }, dateForm({ on_date: "nonsense" }));
+    expect(res.error).toBeTruthy();
+    expect(res.ok).toBeFalsy();
+    expect(res.saved ?? null).toBeNull();
+  });
+
+  it("reports nothing saved while the close is still awaiting confirmation", async () => {
+    db.bookingRows = [{ starts_at: "2027-01-01T15:00:00Z" }];
+    const res = await setBusinessHoursException({ error: null }, dateForm());
+    expect(res.confirm?.message).toBeTruthy();
+    expect(res.saved ?? null).toBeNull();
+    expect(db.upserts).toHaveLength(0);
   });
 });

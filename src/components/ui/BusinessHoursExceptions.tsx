@@ -3,6 +3,7 @@
 import { useActionState, useState } from "react";
 import { DateTime } from "luxon";
 import { formatLongDate } from "@/lib/date/parse";
+import { exceptionSavedMessage } from "@/lib/booking/business-hours-copy";
 import { TimeField } from "@/components/ui/TimeField";
 import { SubmitButton } from "@/components/ui/SubmitButton";
 import { btnCls, btnSecondaryCls, inputCls, labelCls } from "@/components/ui/styles";
@@ -119,12 +120,17 @@ export function BusinessHoursExceptions({
           </div>
         )}
 
-        {state.ok && (
+        {/* Drawn from what the action WROTE, never from `ok` alone (#2219). One
+            sentence used to be rendered over both outcomes, and it said leads
+            see the date, which is the opposite of what closing one does. An `ok`
+            carrying no saved row draws nothing rather than guessing which of the
+            two it was. */}
+        {state.ok && state.saved && (
           <p
             role="status"
             className="rounded-[var(--radius-md)] border border-border bg-[var(--bg-alt)] px-4 py-3 text-sm text-fg"
           >
-            Saved. Leads see that date straight away.
+            {exceptionSavedMessage(state.saved)}
           </p>
         )}
 
