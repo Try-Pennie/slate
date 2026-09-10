@@ -383,6 +383,43 @@ export function cancelConsequenceFor(when: string): string {
   return `This gives up your call on ${when}. It cannot be undone.`;
 }
 
+/**
+ * The number the advisor will ring, NAMED rather than shown (#2207).
+ *
+ * The existing call panel is reached by whoever holds the booking link, so it
+ * gives four digits: enough for the lead to know whether the number needs
+ * correcting, and nearly nothing to somebody who came by the link. The manage
+ * page reached by the token inside their own invite still shows it in full
+ * (`advisorWillCall` in manage-copy), and that difference is the credential, not
+ * an inconsistency.
+ *
+ * "on the number ending" rather than "at", because a masked value is not a number
+ * anybody can read back as one, and "at 5295" reads as a whole number nobody has.
+ */
+export function advisorWillCallEnding(last4: string): string {
+  return `Your advisor will call you on the number ending ${last4}.`;
+}
+
+/**
+ * The booker's half of correcting that number. Everything else is
+ * `PHONE_COPY` in manage-copy, reused rather than restated: those sentences name
+ * neither a call nor a booking, so the noun split that keeps the cancel copy
+ * separate does not apply to them, and two spellings of one control is what a
+ * shared builder exists to prevent (L41).
+ */
+export const BOOKER_PHONE_COPY = {
+  /**
+   * A booking with nobody to ring. It cannot be made through the booker, but it
+   * arrives through the API and through an import, and it is a different screen
+   * from a number that might be wrong: one asks the lead to check something, the
+   * other tells them a call cannot be placed at all (L10).
+   */
+  noNumber: "We do not have a number to call you on.",
+  /** Its own control, because "Not the right number?" asks about a number that
+   *  is not there. */
+  addTrigger: "Give us a number to call",
+} as const;
+
 export function moveToTime(when: string): string {
   return `Move my call to ${when}`;
 }
