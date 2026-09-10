@@ -18,6 +18,46 @@ async function run() {
   r = await selectWithTierFallback("511", async () => []);
   assert(r === null, "no availability anywhere => null");
 
+  // --- the Beyond overflow, through the DISPLAY cascade (#1909) ---
+  //
+  // The Low plus Beyond hole is the case the rule was written for: 120, 121 and
+  // 122 have zero eligible agents and no tier beneath them, so before the
+  // overflow rung a lead on 122 was shown nothing at all.
+  r = await selectWithTierFallback("122", async (c) => (c === "132" ? ["s1"] : []));
+  assert(
+    r?.effectiveCode === "132" && r?.rungsDropped === 1,
+    `122 reaches Achieve in its own tier (got ${r?.effectiveCode})`,
+  );
+
+  // The requested Beyond bucket still wins when it has anything at all: the
+  // overflow is a fallback, never a preference.
+  r = await selectWithTierFallback("522", async (c) => (c === "522" || c === "532" ? ["s"] : []));
+  assert(r?.effectiveCode === "522" && r?.rungsDropped === 0, "a staffed Beyond bucket is not overflowed");
+
+  // Same tier Achieve is tried BEFORE the tier below, in both backends.
+  r = await selectWithTierFallback("522", async (c) => (c === "532" || c === "422" ? ["s"] : []));
+  assert(r?.effectiveCode === "532", `the same tier Achieve rung comes first (got ${r?.effectiveCode})`);
+
+  // --- the BOOKING cascade, on the case the issue names ---
+  //
+  // Both rungs of the requested tier dry, the tier below books. What matters is
+  // that the effective code is the Beyond bucket one tier down rather than the
+  // Achieve bucket in the requested tier, and that the rung count is 2 while only
+  // ONE debt tier was actually dropped, which is why the alert reads the codes
+  // rather than this number.
+  const dryTier = await walkTierLadder<string>("522", async (c) =>
+    c === "522" || c === "532" ? { hit: false } : { hit: true, value: c },
+  );
+  assert(
+    dryTier?.effectiveCode === "422",
+    `a dry tier drops to the next Beyond rung (got ${dryTier?.effectiveCode})`,
+  );
+  assert(dryTier?.rungsDropped === 2, `two rungs were walked (got ${dryTier?.rungsDropped})`);
+  assert(
+    Number("522"[0]) - Number(dryTier!.effectiveCode[0]) === 1,
+    "and exactly one debt tier was dropped, which is what the alert says",
+  );
+
   // walkTierLadder: the shared ladder walk BOTH the display cascade
   // (selectWithTierFallback) and the booking cascade (assignAgentWithTierFallback)
   // are built on, so they can never drift on ladder or rungs-dropped logic (#499).

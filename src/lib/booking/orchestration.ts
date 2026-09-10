@@ -2289,16 +2289,18 @@ async function completeReservation(
     } catch {
       // best-effort
     }
-    // Best-effort tier-drop alert. Throttled via alert_state; a single-rung drop
-    // emits a quiet notice, a two-plus-rung drop escalates.
+    // Best-effort routing fallback alert. Throttled via alert_state; a sideways
+    // overflow and a single tier drop are quiet notices, two or more tiers
+    // escalates. The rung COUNT is deliberately not passed: since #1909 a rung is
+    // not a tier, so the alert derives both facts from the two codes itself.
     const tierAlert = tierFallbackAlert({
       requestedCode: bucketCode,
       effectiveCode: booking.routing_trace?.bucket_code ?? bucketCode,
-      rungsDropped: Math.max(0, booking.routing_trace?.rungs_dropped ?? 0),
     });
     if (tierAlert) {
       // alert-key: tier_fallback:*
       // alert-key: tier_fallback_deep:*
+      // alert-key: tier_fallback_overflow:*
       await sendThrottledAlert(tierAlert.key, tierAlert.cooldownMs, tierAlert.text).catch(() => {});
     }
     // #2158: a lead who asked for legal help was routed to somebody nobody has
