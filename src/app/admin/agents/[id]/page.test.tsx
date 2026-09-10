@@ -342,6 +342,53 @@ describe("AgentProfilePage explains the control it is showing (#2123)", () => {
   });
 });
 
+describe("the time off calendar field says what it is (#2161)", () => {
+  const asAdminViewing = async (role: "manager" | "admin" | "agent") => {
+    auth.currentUser.mockResolvedValueOnce({ id: "ad1", role: "admin", org_id: "o1" });
+    dbState.agent = agentOf(role);
+    render(await AgentProfilePage(props));
+  };
+
+  it("names whose calendar it is, rather than an internal abbreviation", async () => {
+    await asAdminViewing("manager");
+    // Dan asked what the field was for. "OOO calendar ID" is a term a reader
+    // cannot know, and the placeholder showing a Google id says only what to type.
+    expect(screen.getByLabelText(/team time off calendar/i)).toBeTruthy();
+    expect(screen.queryByLabelText(/^OOO calendar ID$/i)).toBeNull();
+  });
+
+  it("explains the DOMAIN: what lands there, and what leaving it blank does", async () => {
+    await asAdminViewing("manager");
+    const field = screen.getByLabelText(/team time off calendar/i);
+
+    // Reachable by a screen reader, not just printed near the box (L604).
+    const describedBy = field.getAttribute("aria-describedby");
+    expect(describedBy).toBeTruthy();
+    const hint = document.getElementById(describedBy!);
+    expect(hint).not.toBeNull();
+
+    // The two facts a reader cannot get from the code: what is written here, and
+    // that blank is a real choice rather than an unfinished one.
+    expect(hint!.textContent).toMatch(/approved time off/i);
+    expect(hint!.textContent).toMatch(/blank/i);
+    // And NOT a description of the control itself.
+    expect(hint!.textContent).not.toMatch(/this field|enter the|type the/i);
+  });
+
+  it("focuses the box when its label is clicked, which needs a real association", async () => {
+    await asAdminViewing("manager");
+    const field = screen.getByLabelText(/team time off calendar/i) as HTMLInputElement;
+    const label = document.querySelector(`label[for="${field.id}"]`);
+    expect(field.id).toBeTruthy();
+    expect(label).not.toBeNull();
+  });
+
+  it("is not shown on a plain agent, who has no team to write time off for", async () => {
+    await asAdminViewing("agent");
+    expect(screen.queryByLabelText(/team time off calendar/i)).toBeNull();
+  });
+});
+
 describe("AgentProfilePage guard", () => {
   it("redirects an unauthenticated visitor to /login", async () => {
     auth.currentUser.mockResolvedValueOnce(null);
