@@ -25,7 +25,7 @@ import type { Bucket } from "@/lib/db/types";
 
 /** The pool is fixed at one agent, injected, so these tests turn only on the org
  *  hours and never on eligibility resolution (which has its own suite). */
-const onlyU1 = () => Promise.resolve({ ids: ["u1"], fallbackApplied: false, legalRelaxed: false });
+const onlyU1 = () => Promise.resolve({ ids: ["u1"], fallbackApplied: false });
 
 /** Minimal chainable PostgREST stand-in: enough for the reads this path makes. */
 function fakeDb(tables: Record<string, unknown[]>): ReturnType<typeof supabaseAdmin> {

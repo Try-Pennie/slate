@@ -99,7 +99,6 @@ import {
   formatAvailabilityDriftAggregateAllClear,
 } from "@/lib/monitor/availability-truth";
 import { tierFallbackAlert } from "@/lib/routing/tier-alert";
-import { legalRelaxedAlert } from "@/lib/routing/legal-alert";
 import { bookerUnstaffedAlert } from "@/lib/booking/alert-copy";
 import {
   oooAgentCalendarAlert,
@@ -1963,10 +1962,6 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
   },
   { key: "booker_unstaffed:*", state: "a customer opened a bucket with nobody in it", channel: "alert",
     text: bookerUnstaffedAlert("120") },
-  { key: "legal_relaxed:*", state: "a legal bucket matched nobody, so the tier's whole pool was used", channel: "alert",
-    text: legalRelaxedAlert({ requestedCode: "411", pooledAgents: 17 })?.text ?? "" },
-  { key: "legal_relaxed:*", state: "the same, where the widened pool holds one person", channel: "alert",
-    text: legalRelaxedAlert({ requestedCode: "521", pooledAgents: 1 })?.text ?? "" },
 
   // --- the warehouse mirror ---------------------------------------------------
   { key: "snowflake_healthcheck", state: "self-check failing", channel: "alert",

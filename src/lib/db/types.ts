@@ -476,17 +476,6 @@ export interface RoutingTrace {
   requested_tier?: string | null;
   booked_tier?: string | null;
   rungs_dropped?: number;
-  /**
-   * #2158: the bucket's legal eligibility rule matched nobody, so it was dropped
-   * and the tier's whole pool was used. The lead asked for legal help and was
-   * given an advisor nobody has cleared for it, which is a deliberate compromise
-   * over showing them nothing.
-   *
-   * Recorded on the booking as well as alerted, because the alert is throttled per
-   * bucket per hour and the question afterwards is always "which bookings", which
-   * a throttled Slack message can never answer.
-   */
-  legal_relaxed?: boolean;
 }
 
 /** One routing decision, including attempts that produced no booking. */
