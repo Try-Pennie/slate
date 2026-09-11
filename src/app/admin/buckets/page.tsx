@@ -265,7 +265,11 @@ export default async function BucketsPage({
                   // in the error colour. `undefined` travels as "not measured"
                   // all the way to the cell (L11).
                   depthByBucketCode?.get(b.code),
-                  members.filter((m) => m.bucket_id === b.id).length,
+                  // The member IDS, not a count (#2237): membership changes who
+                  // a bucket routes to, so it is part of which POOL the row
+                  // belongs to, and a count could not tell two pools apart. The
+                  // count the table shows is derived from the same list.
+                  members.filter((m) => m.bucket_id === b.id).map((m) => m.user_id),
                 ),
               )}
               forms={Object.fromEntries(

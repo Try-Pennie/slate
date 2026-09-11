@@ -13,6 +13,7 @@ import { render, screen, fireEvent, within } from "@testing-library/react";
 // and put every one of those nodes back.
 import { BucketTable } from "./BucketTable";
 import { bucketRow, type BucketRow } from "@/lib/admin/bucket-table";
+import { bucketSpecForXbc } from "@/lib/xbc";
 import type { Bucket } from "@/lib/db/types";
 
 const bucket = (code: string, over: Partial<Bucket> = {}): Bucket => ({
@@ -22,7 +23,9 @@ const bucket = (code: string, over: Partial<Bucket> = {}): Bucket => ({
   name: `Pool ${code}`,
   event_type_id: "e1",
   assignment: "round_robin",
-  criteria: {},
+  // Derived from the code, as the seeder writes it: since #2237 a row's POOL
+  // comes from its criteria, so an empty one would put every fixture in one pool.
+  criteria: bucketSpecForXbc(code)?.criteria ?? {},
   routing_form_id: null,
   fallback_user_id: null,
   is_test: false,
@@ -32,7 +35,7 @@ const bucket = (code: string, over: Partial<Bucket> = {}): Bucket => ({
 
 const CODES = ["100", "101", "120", "432"];
 const rows: BucketRow[] = CODES.map((c) =>
-  bucketRow(bucket(c), c === "120" ? 0 : 5, 0),
+  bucketRow(bucket(c), c === "120" ? 0 : 5, []),
 );
 // A stand in for the server rendered editor, carrying a marker input so the test
 // can count what actually reached the DOM.
@@ -41,6 +44,10 @@ const forms = Object.fromEntries(
 );
 const newForm = <input data-testid="new-editor" />;
 
+// #2237: sixty codes route through fifteen pools, so six adjacent rows are
+// routinely ONE routing decision shown six times. The rows stay per bucket,
+// because each is a record somebody edits here; the column is what lets a reader
+// see the six are one, and that the Legal digit beside it changes nothing.
 const draw = () => render(<BucketTable rows={rows} forms={forms} newForm={newForm} />);
 
 describe("BucketTable", () => {
@@ -122,7 +129,7 @@ describe("BucketTable", () => {
   // A CONTROL THAT CAN ONLY EVER EMPTY THE TABLE has no use, and reads as though
   // the page is hiding something.
   it("does not offer the narrowing when nothing is short of agents", () => {
-    const healthy = CODES.map((c) => bucketRow(bucket(c), 5, 0));
+    const healthy = CODES.map((c) => bucketRow(bucket(c), 5, []));
     render(<BucketTable rows={healthy} forms={forms} newForm={newForm} />);
     expect(screen.queryByLabelText(/can take no booking/)).toBeNull();
   });
@@ -136,8 +143,46 @@ describe("BucketTable", () => {
   });
 
   it("shows the members column as soon as one pool has one", () => {
-    const withMembers = CODES.map((c) => bucketRow(bucket(c), 5, c === "100" ? 2 : 0));
+    const withMembers = CODES.map((c) => bucketRow(bucket(c), 5, c === "100" ? ["u1", "u2"] : []));
     render(<BucketTable rows={withMembers} forms={forms} newForm={newForm} />);
     expect(screen.getByRole("columnheader", { name: "Members" })).toBeTruthy();
+  });
+});
+
+
+describe("the pool column (#2237)", () => {
+  it("names the pool each code routes through", () => {
+    render(<BucketTable rows={rows} forms={forms} newForm={newForm} />);
+    const header = screen.getByRole("columnheader", { name: /pool/i });
+    expect(header).toBeTruthy();
+  });
+
+  it("shows one pool name across the codes that share it, beside the legal digit that does not", () => {
+    // 100 and 111 differ in their backend and legal digits, neither of which
+    // routes any more, so both read as the Low pool. Read out of the POOL cell
+    // by position: the Debt tier column two cells left also says "Low", and a
+    // looser assertion would be satisfied by that alone.
+    const low = ["100", "111"].map((c) => bucketRow(bucket(c), 5, []));
+    const { container } = render(<BucketTable rows={low} forms={forms} newForm={newForm} />);
+    const headers = [...container.querySelectorAll("thead th")].map((h) => h.textContent?.trim());
+    const poolAt = headers.indexOf("Pool");
+    expect(poolAt).toBeGreaterThan(headers.indexOf("Legal"));
+
+    const bodyRows = [...container.querySelectorAll("tbody tr")];
+    expect(bodyRows).toHaveLength(2);
+    for (const tr of bodyRows) {
+      expect(tr.children[poolAt]?.textContent?.trim()).toBe("Low");
+      // And the legal digit still differs between them, so the reader can see
+      // it is the thing that does NOT change the pool.
+      expect(tr.children[headers.indexOf("Legal")]?.textContent?.trim()).toBeTruthy();
+    }
+    const legals = bodyRows.map((tr) => tr.children[headers.indexOf("Legal")]?.textContent?.trim());
+    expect(new Set(legals).size).toBe(2);
+  });
+
+  it("says so rather than leaving a blank when a bucket's criteria are not the matrix", () => {
+    const custom = [bucketRow(bucket("ZZZ", { criteria: { region: "CO" } }), 5, [])];
+    render(<BucketTable rows={custom} forms={forms} newForm={newForm} />);
+    expect(screen.getByText(/not a routing pool|no pool/i)).toBeTruthy();
   });
 });
