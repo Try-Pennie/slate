@@ -115,10 +115,19 @@ export function loadtestModeVerdict(
   return { ok: true, commit: typeof payload.commit === "string" ? payload.commit : null };
 }
 
-/** What `/api/smoke/version` said about a deployment the FAULT leg is about to drive. */
+/** What `/api/smoke/version` said about a deployment the FAULT leg is about to drive.
+ *
+ *  A refusal says whether WAITING could change it (#2261). A redeploy does not
+ *  take effect the instant wrangler exits: the fault leg asked two seconds after
+ *  its own deploy and was answered by the version already serving, which reports
+ *  no faults and is built from the SAME COMMIT, so the commit check could not tell
+ *  the two apart either. Propagation is worth waiting out; a missing endpoint, a
+ *  refused key or a deployment that is not in load test mode never resolves
+ *  itself, and polling one of those just spends the deadline before saying what it
+ *  could have said at once. */
 export type FaultModeVerdict =
   | { ok: true; faultPct: number }
-  | { ok: false; why: string };
+  | { ok: false; why: string; retriable: boolean };
 
 /**
  * Whether a deployment is really running the fault percentage the leg asked for
@@ -141,7 +150,12 @@ export function faultModeVerdict(
   wanted: { faultPct: number; commit?: string },
 ): FaultModeVerdict {
   const mode = loadtestModeVerdict(status, body);
-  if (!mode.ok) return mode;
+  if (!mode.ok) {
+    // A 5xx is the deployment being momentarily unwell, which a redeploy causes
+    // and which passes; every other refusal here (a wrong key, a missing endpoint,
+    // a build that is not in load test mode) is a state waiting cannot change.
+    return { ok: false, why: mode.why, retriable: status >= 500 && status <= 599 };
+  }
   const payload =
     typeof body === "object" && body !== null ? (body as { faultPct?: unknown }) : {};
   if (typeof payload.faultPct !== "number") {
@@ -150,6 +164,7 @@ export function faultModeVerdict(
       why:
         "/api/smoke/version reports no faultPct number, so whether this deployment injects faults " +
         "at all could not be established. Nothing was driven.",
+      retriable: false,
     };
   }
   if (payload.faultPct !== wanted.faultPct) {
@@ -164,6 +179,8 @@ export function faultModeVerdict(
           `this deployment reports faultPct=0 and the leg was configured for ${wanted.faultPct}. ` +
           `It would fail no reads at all, answer every request perfectly, and satisfy the "no 5xx ` +
           `under fault" bar with no faults at all having been injected.`,
+        // The commonest shape of a redeploy that has not landed yet.
+        retriable: true,
       };
     }
     if (wanted.faultPct === 0 && payload.faultPct > 0) {
@@ -174,6 +191,9 @@ export function faultModeVerdict(
           `from a fault leg that was never restored (a run dispatched with teardown off does ` +
           `that). A steady pass against it would count those faults as the path's own 5xx. ` +
           `Redeploy with --env loadtest and no --var, then re-run.`,
+        // A restore that has just been deployed lands the same way a fault deploy
+        // does, so this is worth waiting out too.
+        retriable: true,
       };
     }
     return {
@@ -181,6 +201,7 @@ export function faultModeVerdict(
       why:
         `this deployment reports faultPct=${payload.faultPct} and the leg was configured for ` +
         `${wanted.faultPct}, so a pass against it measures a percentage nobody asked for.`,
+      retriable: true,
     };
   }
   if (wanted.commit !== undefined && mode.commit !== wanted.commit) {
@@ -188,8 +209,59 @@ export function faultModeVerdict(
       ok: false,
       why:
         `this deployment is serving commit ${mode.commit ?? "unreported"} and the fault leg ` +
-        `deployed ${wanted.commit}, so the redeploy did not take effect.`,
+        `deployed ${wanted.commit}, so the redeploy has not taken effect.`,
+      retriable: true,
     };
   }
   return { ok: true, faultPct: payload.faultPct };
+}
+
+/**
+ * How long to keep asking a freshly redeployed Worker, and when to stop (#2261).
+ *
+ * A deploy does not take effect the instant wrangler exits. The fault leg asked
+ * two seconds after its own and was answered by the version already serving,
+ * which reports no faults. The COMMIT could not catch it either: both builds come
+ * from the same commit, so the one discriminator the check had was blind to
+ * exactly this.
+ *
+ * Bounded, because a read that retries forever hangs the run rather than failing
+ * it (L110), and the deadline is the thing that turns "not yet" into "never".
+ */
+export const FAULT_PROPAGATION_DEADLINE_MS = 180_000;
+export const FAULT_PROPAGATION_POLL_MS = 5_000;
+
+export type PollStep =
+  | { action: "accept"; faultPct: number }
+  | { action: "wait"; waitMs: number; why: string }
+  | { action: "give-up"; why: string };
+
+/**
+ * What to do with one reading, given how long we have been asking.
+ *
+ * Pure over the verdict and the clock, so the whole ladder is driven in a test
+ * with no deployment, no network and no real waiting (the test speed rules): the
+ * elapsed time is passed in rather than measured.
+ *
+ * A give-up on a RETRIABLE verdict says how long it waited, because "the deploy
+ * had not landed after three minutes" and "this deployment is not in load test
+ * mode" send different people to different places (L11).
+ */
+export function faultPollStep(
+  verdict: FaultModeVerdict,
+  elapsedMs: number,
+  deadlineMs: number = FAULT_PROPAGATION_DEADLINE_MS,
+  pollMs: number = FAULT_PROPAGATION_POLL_MS,
+): PollStep {
+  if (verdict.ok) return { action: "accept", faultPct: verdict.faultPct };
+  if (!verdict.retriable) return { action: "give-up", why: verdict.why };
+  if (elapsedMs >= deadlineMs) {
+    return {
+      action: "give-up",
+      why:
+        `${verdict.why} Still true ${Math.round(deadlineMs / 1000)}s after the deploy, so this is ` +
+        `not propagation: the deploy did not take, or something else is serving this address.`,
+    };
+  }
+  return { action: "wait", waitMs: pollMs, why: verdict.why };
 }
