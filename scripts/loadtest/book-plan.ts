@@ -310,3 +310,34 @@ export function offeredSlots(body: unknown): string[] {
   }
   return out;
 }
+
+/**
+ * A phone number of this attempt's OWN, derived from its unique id (#2261).
+ *
+ * The dedupe gate is a PERSON gate, and a weak match is email OR phone
+ * (`src/lib/booking/person-dedupe.ts`): one phone matching is enough to answer
+ * `confirm_required` and refuse the booking. Every driver sent the same
+ * `+15555550100`, so the first booking of a run would have succeeded and the other
+ * five hundred and ninety nine would have been refused as the same person calling
+ * again. The run would have reported a catastrophic confirmed-per-minute failure
+ * that had nothing whatever to do with the booking path's capacity.
+ *
+ * The email was already unique per attempt, which is exactly why this hid: a
+ * reader checking that the attendees differ sees an id in the address and stops.
+ *
+ * Kept in the 555 range, which is unassignable in the real numbering plan, so no
+ * value this can produce is a number anybody actually holds. `toE164` returns the
+ * string unchanged when it cannot parse it, so distinct seeds stay distinct to the
+ * matcher either way. Seven varying digits rather than the four a fixed 555-555
+ * prefix would leave, because a run makes six hundred of these and a branch can
+ * see several runs.
+ */
+export function loadtestPhone(seed: string): string {
+  let h = 2166136261;
+  for (let i = 0; i < seed.length; i++) {
+    h ^= seed.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  const digits = String(Math.abs(h) % 10_000_000).padStart(7, "0");
+  return `+1555${digits}`;
+}

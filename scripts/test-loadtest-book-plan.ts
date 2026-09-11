@@ -26,6 +26,7 @@ import {
   chooseBurstSlot,
   burstStartAt,
   offeredSlots,
+  loadtestPhone,
 } from "./loadtest/book-plan.ts";
 import {
   AVAILABILITY_LIMITER,
@@ -299,6 +300,51 @@ const T0 = Date.parse("2026-09-15T14:00:00.000Z");
   // read. Both directions on the same input (L159).
   const got = offeredSlots({ slots: ["2026-09-15T14:00:00.000Z", "", "2026-09-15T15:00:00.000Z"] });
   eq(got.length, 2, "a blank time is dropped, not refused");
+}
+
+// --- every attempt is its own person (#2261) ----------------------------------
+//
+// The dedupe gate is a PERSON gate and a weak match is email OR phone, so ONE
+// shared number is enough to refuse every booking after the first as the same
+// person calling again. Every driver sent `+15555550100`, so a run would have
+// made one booking and been answered `confirm_required` five hundred and ninety
+// nine times, and the judge would have reported a confirmed-per-minute collapse
+// that had nothing to do with the booking path's capacity.
+//
+// The email was already unique per attempt, which is exactly why it hid.
+
+{
+  const a = loadtestPhone("run-1-0-0");
+  const b = loadtestPhone("run-1-0-1");
+  assert(a !== b, "two attempts of one driver get different numbers");
+  assert(loadtestPhone("run-1-0-0") !== loadtestPhone("run-1-1-0"), "and so do two drivers");
+  assert(loadtestPhone("run-1-0-0") !== loadtestPhone("run-2-0-0"), "and so do two runs");
+}
+
+{
+  // Deterministic, so a re-run of the same attempt is the same person and a
+  // re-driven id cannot become a second lead.
+  eq(loadtestPhone("run-1-0-0"), loadtestPhone("run-1-0-0"), "the same id gives the same number");
+}
+
+{
+  // Shaped like the number it replaces, and inside the 555 range, which is
+  // unassignable in the real numbering plan: nothing this produces is a number
+  // somebody actually holds.
+  const n = loadtestPhone("run-1-0-0");
+  assert(/^\+1555\d{7}$/.test(n), `the number is a 555 range E.164 value (${n})`);
+  eq(n.length, "+15555550100".length, "and is the same length as the one it replaces");
+}
+
+{
+  // The spread that matters: a real run makes six hundred of these, and a branch
+  // can see several runs. A generator colliding inside one run would refuse the
+  // colliding attempts for a reason the judge would read as the path failing.
+  const seen = new Set<string>();
+  for (let driver = 0; driver < 4; driver++) {
+    for (let n = 0; n < 150; n++) seen.add(loadtestPhone(`run-1-${driver}-${n}`));
+  }
+  eq(seen.size, 600, "a whole run's six hundred attempts are six hundred distinct people");
 }
 
 finish();

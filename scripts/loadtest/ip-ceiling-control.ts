@@ -14,6 +14,7 @@ import { writeFileSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { BOOKING_WRITES_PER_MINUTE } from "./book-plan.ts";
 import { ceilingVerdict } from "./preflight-checks.ts";
+import { loadtestPhone } from "./book-plan.ts";
 
 const PROD_HOST = "slate.trypennie.app";
 
@@ -58,7 +59,10 @@ async function attempt(n: number): Promise<number> {
         attendee: {
           name: "Ceiling Control",
           email: `ceiling-control-${n}@loadtest.local`,
-          phone: "+15555550100",
+          // Its own number like every other caller (#2261). These are dry runs, so
+          // the person gate cannot refuse them anyway, but one shared identity
+          // across the load machinery is the footgun this whole change removes.
+          phone: loadtestPhone(`ceiling-control-${n}`),
         },
       }),
     });

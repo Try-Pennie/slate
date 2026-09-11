@@ -22,6 +22,7 @@ import {
   requestSchedule,
   availabilityRefreshMs,
   offeredSlots,
+  loadtestPhone,
   burstReadiness,
   externalIdFor,
   pickSlot,
@@ -154,7 +155,10 @@ async function book(req: {
         attendee: {
           name: `Loadtest Lead ${req.externalId}`,
           email: `${req.externalId}@loadtest.local`,
-          phone: "+15555550100",
+          // Its OWN number (#2261). A weak dedupe match is email OR phone, so one
+          // shared number makes every booking after the first a `confirm_required`
+          // refusal of the same person calling again.
+          phone: loadtestPhone(req.externalId),
         },
       }),
     });
