@@ -55,7 +55,26 @@ describe("GET /api/smoke/version", () => {
     env.bookingApiKeyPrimary.mockReturnValue("real-key");
     const res = await get("Bearer real-key");
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ commit: "abc1234" });
+    expect(await res.json()).toEqual({ commit: "abc1234", loadtest: false });
+  });
+
+  it("reports loadtest mode, which is how the load run's preflight refuses early", async () => {
+    // #2242. The preflight asks this BEFORE it writes anything: if the deployment
+    // is not in load test mode, its own control booking would be a real calendar
+    // event with a real invitation sent, so it has to be able to refuse first.
+    // False is the answer here and everywhere but env.loadtest, which is the
+    // direction that matters (L159): a field hard wired to true would satisfy the
+    // preflight over production.
+    const saved = process.env.SLATE_LOADTEST;
+    process.env.SLATE_LOADTEST = "true";
+    try {
+      env.bookingApiKeyPrimary.mockReturnValue("real-key");
+      const res = await get("Bearer real-key");
+      expect(await res.json()).toEqual({ commit: "abc1234", loadtest: true });
+    } finally {
+      if (saved === undefined) delete process.env.SLATE_LOADTEST;
+      else process.env.SLATE_LOADTEST = saved;
+    }
   });
 
   it("accepts the secondary key too, so the key can be rotated without a deploy gap", async () => {
@@ -66,9 +85,14 @@ describe("GET /api/smoke/version", () => {
     expect((await res.json()).commit).toBe("abc1234");
   });
 
-  it("returns ONLY the commit, so the endpoint cannot grow into a config leak", async () => {
+  it("returns ONLY an enumerated pair, so the endpoint cannot grow into a config leak", async () => {
+    // The constraint is unchanged and the list is: a field may be here only if
+    // somebody decided it may. `commit` says which build is live (#1037) and
+    // `loadtest` says which mode it is in (#2242), and both are facts about the
+    // deployment rather than about its configuration. Widening this list is the
+    // deliberate act; a new key appearing without one fails here.
     env.bookingApiKeyPrimary.mockReturnValue("real-key");
     const res = await get("Bearer real-key");
-    expect(Object.keys(await res.json())).toEqual(["commit"]);
+    expect(Object.keys(await res.json()).sort()).toEqual(["commit", "loadtest"]);
   });
 });

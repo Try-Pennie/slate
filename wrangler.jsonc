@@ -214,5 +214,138 @@
 			"tag": "v1",
 			"new_sqlite_classes": ["BurstLimiter"]
 		}
-	]
+	],
+	// --- the load test environment (#2242) ----------------------------------
+	//
+	// A SECOND Worker for the booking path scale run (#2243, #2244): ten times the
+	// measured peak against a throwaway Supabase branch. It exists because there is
+	// no staging environment (ADR 0007) and a run of this shape cannot be pointed at
+	// production.
+	//
+	// Everything here is written out rather than left to inherit, and the split
+	// between the two kinds of key is the thing to understand before editing it,
+	// because it is silent in both directions:
+	//
+	//   `routes`, `triggers`, `workers_dev`, `preview_urls` and `limits` INHERIT. So
+	//   omitting `routes` does not mean "no route": it means this environment claims
+	//   `slate.trypennie.app`, and wrangler says so in its own words ("Deploying this
+	//   environment will reassign these custom domains away from the top-level
+	//   Worker"). `routes: []` is what actually detaches it, and `workers_dev: true`
+	//   is what then gives it an address at all, since the top level turned that off
+	//   in #1052. `preview_urls` stays false for the same reason it does up there.
+	//   The crons are inherited ON PURPOSE: the run measures recompute freshness and
+	//   the outbox drain UNDER the booking load, so those lanes have to be live.
+	//
+	//   `vars`, `ratelimits` and `durable_objects` DO NOT inherit, and an environment
+	//   that omits them resolves them EMPTY. That is not a smaller configuration, it
+	//   is a broken one: a missing limiter binding fails OPEN in `rate-limit.ts`
+	//   (`nativeWithinLimit` alerts and returns true), so the run would measure a
+	//   deployment with no ceilings while the judge attributed its 429s to ceilings
+	//   that were never there.
+	//
+	// The namespace ids are 2001 to 2007 rather than the production 1001 to 1007
+	// because a namespace id is ACCOUNT scoped: reusing one would have the load
+	// run's sixty writes a minute counting against the ceiling real leads are
+	// judged by. `scripts/test-wrangler-loadtest-env.ts` resolves this env through
+	// wrangler's own `unstable_readConfig` and asserts the RESOLVED result, so the
+	// inheritance rules above are measured rather than believed.
+	//
+	// The database address is NOT here. `NEXT_PUBLIC_SUPABASE_URL`, the publishable
+	// key and `NEXT_PUBLIC_APP_URL` are inlined at BUILD time (`src/lib/env.ts`), so
+	// they go into the build environment of the deploy that produces this Worker,
+	// and they also namespace the L1 caches (`slot-cache.ts`, `eligible-cache.ts`
+	// key on `appUrl()`). A committed var naming a branch would be a lie the day
+	// after the branch was thrown away; `scripts/loadtest/RUNBOOK.md` carries the
+	// build command instead.
+	"env": {
+		"loadtest": {
+			"routes": [],
+			"workers_dev": true,
+			"preview_urls": false,
+			"vars": {
+				"GOOGLE_HOSTED_DOMAIN": "trypennie.com",
+				"NEXT_PUBLIC_GOOGLE_HOSTED_DOMAIN": "trypennie.com",
+				"OOO_CALCOM_DUAL_WRITE": "true",
+				"AGENT_SCHEDULING_LIVE": "false",
+				"CALCOM_BASE_URL": "https://api.cal.com/v2",
+				"CALCOM_ORG_ID": "19474",
+				"OOO_APPROVALS_TO": "salesmanagers@trypennie.com",
+				"OOO_APPROVALS_BCC": "dwright@trypennie.com",
+				"OOO_APPROVALS_REPLY_TO": "systemsteam@trypennie.com",
+				"SNOWFLAKE_ACCOUNT": "vrkfjso-rwc54963",
+				"SNOWFLAKE_USER": "SLATE_SERVICE",
+				"SNOWFLAKE_DATABASE": "SLATE",
+				"SNOWFLAKE_SCHEMA": "PUBLIC",
+				"SNOWFLAKE_WAREHOUSE": "SLATE_WH",
+				"SNOWFLAKE_ROLE": "SLATE_ROLE",
+				// The flag every load test stub and refusal keys on. It exists HERE and
+				// nowhere else, which is the whole safety story: the Google stub, the
+				// webhook short circuit, the seen-address echo and the two refusals in
+				// `src/lib/loadtest-guard.ts` are all inert without it.
+				"SLATE_LOADTEST": "true",
+				// The lanes this deployment must not run, honoured in `worker/index.ts`
+				// (`worker/lanes-disabled.ts`). Every one of them reaches a system the
+				// isolated branch does not have and `SLATE_LOADTEST` does not stub:
+				// `agents` reads Salesforce and rewrites the roster the seed just built,
+				// `bulk-reassign` makes real Google reassignments, `monitor`,
+				// `erasure-audit` and `snowflake-reconcile` page Slack about a synthetic
+				// org, `ooo-digest` and `ooo-approvals` send real email to real managers,
+				// `snowflake-export` writes the warehouse, and the two PII prunes redact
+				// against a mirror that is not there. The kept lanes are the ones the run
+				// is measuring; the full table is in `scripts/loadtest/RUNBOOK.md`.
+				"SLATE_LANES_DISABLED": "agents,bulk-reassign,erasure-audit,monitor,ooo-approvals,ooo-digest,prune-bookings-pii,prune-warehouse-pii,snowflake-export,snowflake-reconcile"
+			},
+			"ratelimits": [
+				{
+					"name": "AVAIL_RATE_LIMITER",
+					"namespace_id": "2001",
+					"simple": { "limit": 30, "period": 60 }
+				},
+				{
+					"name": "BOOKING_RATE_LIMITER",
+					"namespace_id": "2002",
+					"simple": { "limit": 3, "period": 60 }
+				},
+				{
+					"name": "ROUTING_RATE_LIMITER",
+					"namespace_id": "2003",
+					"simple": { "limit": 20, "period": 60 }
+				},
+				{
+					"name": "BOOKINGAPI_RATE_LIMITER",
+					"namespace_id": "2004",
+					"simple": { "limit": 120, "period": 60 }
+				},
+				{
+					"name": "BOOKINGAPI_IP_RATE_LIMITER",
+					"namespace_id": "2005",
+					"simple": { "limit": 60, "period": 60 }
+				},
+				{
+					"name": "BOOKINGAPI_READ_RATE_LIMITER",
+					"namespace_id": "2006",
+					"simple": { "limit": 600, "period": 60 }
+				},
+				{
+					"name": "MANAGE_RATE_LIMITER",
+					"namespace_id": "2007",
+					"simple": { "limit": 20, "period": 60 }
+				}
+			],
+			"durable_objects": {
+				"bindings": [
+					{
+						"name": "BURST_LIMITER",
+						"class_name": "BurstLimiter"
+					}
+				]
+			},
+			"migrations": [
+				{
+					"tag": "v1",
+					"new_sqlite_classes": ["BurstLimiter"]
+				}
+			]
+		}
+	}
 }

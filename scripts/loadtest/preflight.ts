@@ -16,10 +16,14 @@
 import { writeFileSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { overlaps, type JudgedBooking } from "./judge-booking-run.ts";
-import { stubShapedEventId } from "./preflight-checks.ts";
+import { stubShapedEventId, loadtestModeVerdict } from "./preflight-checks.ts";
+import { PRODUCTION_SUPABASE_REF, PRODUCTION_HOST } from "../../src/lib/loadtest-guard.ts";
 
-const PROD_REF = "drukfvgaynzrralbzkzj";
-const PROD_HOST = "slate.trypennie.app";
+// ONE constant, shared with the app's own load test refusals (#2242). A second
+// spelling beside each script is how one of them ends up naming a project that
+// is not production (L2, L41).
+const PROD_REF = PRODUCTION_SUPABASE_REF;
+const PROD_HOST = PRODUCTION_HOST;
 
 function need(name: string): string {
   const v = (process.env[name] ?? "").trim();
@@ -60,6 +64,26 @@ async function rows(path: string): Promise<Record<string, unknown>[]> {
 function fail(why: string): never {
   console.error(`\nPREFLIGHT FAILED: ${why}`);
   process.exit(2);
+}
+
+// --- half zero: the deployment says it is a load test -------------------------
+//
+// Asked BEFORE anything is written, and it costs one request. The behavioural
+// proof further down (the event id carries the stub's shape) is the stronger of
+// the two and stays, but it can only speak AFTER a booking has been made: if
+// `SLATE_LOADTEST` is off, that booking was a real calendar event with a real
+// invitation sent, and the preflight's own control has already done the thing it
+// exists to prevent, once. This asks the deployment first.
+//
+// The decision is in `preflight-checks.ts` so every one of its refusals is driven
+// offline; here there is only the request.
+{
+  const res = await fetch(`${SLATE_BASE}/api/smoke/version`, {
+    headers: { Authorization: `Bearer ${API_KEY}` },
+  });
+  const verdict = loadtestModeVerdict(res.status, await res.json().catch(() => ({})));
+  if (!verdict.ok) fail(verdict.why);
+  console.log(`ok: the deployment reports loadtest mode (commit ${verdict.commit ?? "unreported"})`);
 }
 
 // --- half one: one real booking leaves the rows the judge looks for ------------

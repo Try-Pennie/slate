@@ -20,8 +20,12 @@ import {
 } from "./judge-booking-run.ts";
 import { DRIVERS, PER_DRIVER_PER_MINUTE, RUN_MINUTES, type DriverResult } from "./book-plan.ts";
 import type { SoakSample } from "./invariants.ts";
+import { PRODUCTION_SUPABASE_REF } from "../../src/lib/loadtest-guard.ts";
 
-const PROD_REF = "drukfvgaynzrralbzkzj";
+// ONE constant, shared with the app's own load test refusals (#2242). A second
+// spelling beside each script is how one of them ends up naming a project that
+// is not production (L2, L41).
+const PROD_REF = PRODUCTION_SUPABASE_REF;
 
 function need(name: string): string {
   const v = (process.env[name] ?? "").trim();

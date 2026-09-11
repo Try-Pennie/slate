@@ -20,6 +20,7 @@
  */
 
 import { atLeast, isRole } from "@/lib/auth/roles";
+import { isLoadtest, loadtestPointedAtProduction } from "@/lib/loadtest-guard";
 
 function requireEnv(name: string): string {
   const value = process.env[name];
@@ -41,8 +42,25 @@ export const appUrl = (): string =>
 
 // NEXT_PUBLIC_* vars must be read by their literal name (not via process.env[dynamic])
 // so Next.js can inline them into the client bundle.
-export const publicSupabaseUrl = (): string =>
-  present(process.env.NEXT_PUBLIC_SUPABASE_URL, "NEXT_PUBLIC_SUPABASE_URL");
+//
+// This is also where the load test refusal lives (#2242), and the placement is the
+// whole point of it: this is the ONE function every Supabase client in the app
+// takes its address from (the secret key client the cron lanes and API routes use,
+// the SSR client, the browser one), so a refusal here reaches every request and
+// every cron tick that would touch a database. It cannot live in `worker/index.ts`
+// where a reader looks for it first, because the literal read below is what lets
+// Next INLINE the value at build time, and wrangler's own esbuild pass over the
+// Worker entry does no such thing: a guard written there would read `undefined`
+// in production and under load test alike, and could only ever stay silent (L98).
+//
+// Production never reaches the comparison at all: `isLoadtest()` is false, so a
+// wrong constant here can refuse a load run and can never break a real request.
+export const publicSupabaseUrl = (): string => {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const refusal = loadtestPointedAtProduction({ loadtest: isLoadtest(), supabaseUrl: url });
+  if (refusal) throw new Error(refusal);
+  return present(url, "NEXT_PUBLIC_SUPABASE_URL");
+};
 
 // New-style Supabase API keys (sb_publishable_… / sb_secret_…), replacing the
 // legacy anon / service_role JWTs. Publishable is client-safe; secret bypasses RLS.

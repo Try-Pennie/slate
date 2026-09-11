@@ -22,8 +22,12 @@
 import { randomUUID } from "node:crypto";
 import { readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
+import { PRODUCTION_SUPABASE_REF } from "../../src/lib/loadtest-guard.ts";
 
-const PROD_REF = "drukfvgaynzrralbzkzj";
+// ONE constant, shared with the app's own load test refusals (#2242). A second
+// spelling beside each script is how one of them ends up naming a project that
+// is not production (L2, L41).
+const PROD_REF = PRODUCTION_SUPABASE_REF;
 const ORG_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const EVENT_TYPE_ID = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 const BACKLOG = Number(process.env.OUTBOX_BACKLOG ?? 500);
