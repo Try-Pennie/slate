@@ -29,8 +29,57 @@ function tier(over: Partial<TierDepth> & { code: string; depth: number }): TierD
     flag: over.flag ?? flagFor(over.depth),
     effectiveFlag: over.effectiveFlag ?? flagFor(effectiveDepth),
     agents: over.agents ?? [],
+    // A pool of its own unless a case says otherwise, which is what every case
+    // written before #2237 assumed.
+    poolKey: over.poolKey ?? `pool-${over.code}`,
+    poolLabel: over.poolLabel ?? null,
   };
 }
+
+// #2237: sixty codes route through fifteen pools, so one thinly staffed tier
+// arrived as six identical lines. The notice caps its list at eight names, so a
+// SINGLE thin pool filled it and hid every other finding behind "(and N more)",
+// and the headline count read six times the number of real problems.
+describe("the notice counts pools, not codes", () => {
+  const pooled = (codes: string[], label: string, depth: number) =>
+    codes.map((code) =>
+      tier({ code, depth, poolKey: `pool-${label}`, poolLabel: label, name: label }),
+    );
+
+  it("folds a pool's codes into one line that names them all", () => {
+    const notice = formatThinTierNotice(pooled(["100", "101", "102", "110", "111", "112"], "Low", 2));
+    expect(notice).toMatch(/^1 pool/);
+    expect(notice).toContain("Low");
+    for (const c of ["100", "101", "102", "110", "111", "112"]) expect(notice).toContain(c);
+    // One line of detail, not six.
+    expect(notice.split("\n").filter((l) => l.includes("Low"))).toHaveLength(1);
+  });
+
+  it("does not let one thin pool crowd every other finding out of the list", () => {
+    // Before pooling, six codes of one pool consumed six of the eight name slots.
+    const notice = formatThinTierNotice([
+      ...pooled(["100", "101", "102", "110", "111", "112"], "Low", 2),
+      ...pooled(["300", "301", "302", "310", "311", "312"], "High", 1),
+      ...pooled(["500", "501", "502"], "Ultra High with Beyond", 2),
+    ]);
+    expect(notice).toMatch(/^3 pools/);
+    expect(notice).toContain("Low");
+    expect(notice).toContain("High");
+    expect(notice).toContain("Ultra High with Beyond");
+    expect(notice).not.toContain("and 15 more");
+  });
+
+  it("names the codes when the pool has no name of its own", () => {
+    const notice = formatThinTierNotice([
+      tier({ code: "CUSTOM", depth: 1, poolKey: "k", poolLabel: null }),
+    ]);
+    expect(notice).toContain("CUSTOM");
+  });
+
+  it("says nothing at all when no tier is thin", () => {
+    expect(formatThinTierNotice([])).toBe("");
+  });
+});
 
 describe("selectThinTiers", () => {
   it("picks tiers whose EFFECTIVE depth is spof (1) or thin (2)", () => {

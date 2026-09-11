@@ -115,6 +115,73 @@ describe("TiersPage time-off-aware display (#738)", () => {
   });
 });
 
+// #2237: sixty bucket codes route through fifteen pools, and the six codes of a
+// tier carry identical numbers by construction. The page shows the fifteen
+// answers. The grouping itself is node tested; what only shows here is that the
+// page really groups, and that its counts count pools.
+describe("TiersPage groups the codes that share a pool", () => {
+  const superAdmin = {
+    id: "s1",
+    role: "super_admin",
+    org_id: "o1",
+    email: "s@x.com",
+    theme_preference: null,
+    bookable: false,
+    avatar_url: null,
+  };
+
+  const lowRow = (code: string) => ({
+    code,
+    name: `Low | Both | ${code}`,
+    depth: 1,
+    effectiveDepth: 1,
+    outCount: 0,
+    soleAgentName: "Tyler Moffett",
+    hasWorkingFallback: false,
+    flag: "spof",
+    effectiveFlag: "spof",
+    agents: [{ id: "u-tyler", name: "Tyler Moffett", out: false }],
+    poolKey: "low",
+    poolLabel: "Low",
+  });
+
+  it("draws ONE row for six codes, naming the pool and every code", async () => {
+    auth.currentUser.mockResolvedValueOnce(superAdmin);
+    const codes = ["100", "101", "102", "110", "111", "112"];
+    load.loadTierDepths.mockResolvedValueOnce(codes.map(lowRow));
+    const { container } = render(await TiersPage());
+
+    expect(container.querySelectorAll("tbody tr")).toHaveLength(1);
+    // The pool's name, not one of its six bucket names.
+    expect(screen.getByText("Low")).toBeTruthy();
+    expect(screen.getByText(codes.join(", "))).toBeTruthy();
+    // And the sole agent is named once, not six times.
+    expect(screen.getAllByRole("link", { name: "Tyler Moffett" })).toHaveLength(1);
+  });
+
+  it("says 'agent' when a pool rests on one, which five rows do at the real count", async () => {
+    auth.currentUser.mockResolvedValueOnce(superAdmin);
+    load.loadTierDepths.mockResolvedValueOnce([lowRow("100")]);
+    const { container } = render(await TiersPage());
+    const summary = container.querySelector("summary");
+    expect(summary?.textContent).toMatch(/1\s*agent\b/);
+    expect(summary?.textContent).not.toMatch(/1\s*agents/);
+  });
+
+  it("counts pools in the summary, so a number is a number of things to act on", async () => {
+    auth.currentUser.mockResolvedValueOnce(superAdmin);
+    load.loadTierDepths.mockResolvedValueOnce(
+      ["100", "101", "102", "110", "111", "112"].map(lowRow),
+    );
+    render(await TiersPage());
+    // One pool on a single agent, not six. Before this the same roster read as
+    // "6 on a single agent today", which is half a tier reported as six problems.
+    const strip = screen.getByText(/on a single agent today/i).parentElement;
+    expect(strip?.textContent).toMatch(/1\s*on a single agent today/);
+    expect(screen.getByText(/pools/i)).toBeTruthy();
+  });
+});
+
 describe("TiersPage on an unreadable roster (#1629)", () => {
   const superAdmin = {
     id: "s1",
@@ -129,8 +196,8 @@ describe("TiersPage on an unreadable roster (#1629)", () => {
   it("renders its own unreadable state, NOT the empty-roster copy", async () => {
     auth.currentUser.mockResolvedValueOnce(superAdmin);
     // What loadTierDepths does now on an unreadable table. Before #1629 it
-    // resolved [] here and this page said "No tiers yet", which on this screen
-    // reads as every tier having lost its agents.
+    // resolved [] here and this page said it had no routing pools, which on this
+    // screen reads as every pool having lost its agents.
     load.loadTierDepths.mockRejectedValueOnce(
       new Error("read failed [staffing depth buckets]: connection reset"),
     );
@@ -140,7 +207,7 @@ describe("TiersPage on an unreadable roster (#1629)", () => {
     expect(alert.textContent).toMatch(/could not be read/i);
     // The empty-state sentence must NOT appear: an unreadable roster and a roster
     // with no tiers are different screens (L10).
-    expect(screen.queryByText(/No tiers yet/i)).toBeNull();
+    expect(screen.queryByText(/No routing pools yet/i)).toBeNull();
   });
 
   it("reports no count at all rather than a zero it never measured", async () => {
@@ -163,7 +230,7 @@ describe("TiersPage on an unreadable roster (#1629)", () => {
     // An EMPTY read is a measurement, so the counts and the empty-state copy are
     // exactly what should show. This is the half the assertions above would
     // otherwise be satisfied by a page that renders nothing at all.
-    expect(screen.getByText(/No tiers yet/i)).toBeTruthy();
+    expect(screen.getByText(/No routing pools yet/i)).toBeTruthy();
     expect(screen.getByText(/with no coverage/i)).toBeTruthy();
     expect(container.querySelector("table")).toBeTruthy();
     expect(screen.queryByRole("alert")).toBeNull();

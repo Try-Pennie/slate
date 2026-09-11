@@ -6,7 +6,8 @@ import { consoleHiddenFor } from "@/lib/env";
 import { cardCls } from "@/components/ui/styles";
 import { Pill, type PillVariant } from "@/components/ui/Pill";
 import { UnreadableNotice } from "@/components/ui/UnreadableNotice";
-import { type StaffingFlag, type TierDepth } from "@/lib/routing/staffing-depth";
+import { sameTierReading, type StaffingFlag, type TierDepth } from "@/lib/routing/staffing-depth";
+import { groupRowsByPool } from "@/lib/admin/pool-rows";
 import { loadTierDepths } from "@/lib/routing/staffing-depth-load";
 import { log } from "@/lib/log";
 import { AdminPageHeader } from "@/components/admin/AdminPageHeader";
@@ -108,24 +109,33 @@ export default async function TiersPage() {
   // Summary + status reflect the EFFECTIVE (time-off-aware) flag: the real
   // short-term risk today. Roster depth stays visible per row for context (#738).
   // Each is null, never 0, when there was nothing to count over.
-  const spofCount = rows && rows.filter((r) => r.effectiveFlag === "spof").length;
-  const noneCount = rows && rows.filter((r) => r.effectiveFlag === "none").length;
-  const thinCount = rows && rows.filter((r) => r.effectiveFlag === "thin").length;
-  const outTodayCount = rows && rows.reduce((n, r) => n + r.outCount, 0);
+  // #2237: sixty bucket codes route through fifteen pools, and the six codes of a
+  // tier carry identical numbers by construction. Grouped here so the page shows
+  // the fifteen answers rather than sixty copies of them, and so every count
+  // below is a count of things a person can actually act on: "3 with no coverage"
+  // used to mean three CODES, which is half a tier.
+  const groups = rows && groupRowsByPool(rows, sameTierReading);
+  const spofCount = groups && groups.filter((g) => g.rows[0]!.effectiveFlag === "spof").length;
+  const noneCount = groups && groups.filter((g) => g.rows[0]!.effectiveFlag === "none").length;
+  const thinCount = groups && groups.filter((g) => g.rows[0]!.effectiveFlag === "thin").length;
+  // Agent-slots out is a count over CODES on purpose: it is the one number here
+  // that is about people rather than about pools, and a pool's six codes share
+  // the same agents, so counting it per pool is what makes it true.
+  const outTodayCount = groups && groups.reduce((n, g) => n + g.rows[0]!.outCount, 0);
 
   return (
     <>
       <>
         <AdminPageHeader title="Staffing depth">
-            How many currently-bookable agents can take each tier&rsquo;s bookings, and how
+            How many currently-bookable agents can take each routing pool&rsquo;s bookings, and how
             many are actually available today once you set aside anyone who is out, so a
-            tier resting on one person (now or this week) is visible before it runs out of
+            pool resting on one person (now or this week) is visible before it runs out of
             times. An agent counts as out whether they filed time off or blocked the whole
             day on their calendar. Most at risk today first.
         </AdminPageHeader>
 
         <section className={cardCls}>
-          {rows === null ? (
+          {rows === null || groups === null ? (
             <UnreadableNotice>
               Staffing depth could not be read, so this page is not showing your
               tiers. No tier has lost its agents. Reload in a moment, and if it keeps
@@ -135,7 +145,7 @@ export default async function TiersPage() {
           <>
           <div className="mb-4 flex flex-wrap items-center gap-x-6 gap-y-1 text-sm">
             <span className="text-fg-muted">
-              <span className="font-semibold tabular-nums text-fg">{rows.length}</span> tiers
+              <span className="font-semibold tabular-nums text-fg">{groups.length}</span> pools
             </span>
             <span className={(noneCount ?? 0) > 0 ? "text-error" : "text-fg-muted"}>
               <span className="font-semibold tabular-nums">{noneCount}</span> with no coverage
@@ -155,8 +165,8 @@ export default async function TiersPage() {
             <table className="w-full min-w-[640px] text-sm">
               <thead>
                 <tr className="border-b border-border bg-[var(--bg-alt)] text-left text-xs text-fg-muted">
-                  <th scope="col" className="px-4 py-2.5 font-semibold">Tier</th>
-                  <th scope="col" className="px-3 py-2.5 font-semibold">Code</th>
+                  <th scope="col" className="px-4 py-2.5 font-semibold">Pool</th>
+                  <th scope="col" className="px-3 py-2.5 font-semibold">Bucket codes</th>
                   {/* #1901: the definition is reachable rather than in the way.
                       It read "Bookable agents (available today)", a gloss every
                       reader passed through on every view to serve the one who
@@ -171,13 +181,27 @@ export default async function TiersPage() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-border">
-                {rows.map((row) => {
+                {groups.map((group) => {
+                  const row = group.rows[0]!;
                   const pill = flagPill(row.effectiveFlag);
                   const detail = rowDetail(row);
                   return (
-                    <tr key={row.code} className="align-top transition-colors hover:bg-[var(--bg-alt)]">
-                      <td className="px-4 py-3 font-semibold text-fg">{row.name}</td>
-                      <td className="px-3 py-3 text-fg-muted tabular-nums">{row.code}</td>
+                    <tr
+                      key={group.codes.join(",")}
+                      className="align-top transition-colors hover:bg-[var(--bg-alt)]"
+                    >
+                      {/* The POOL is what a person staffs, so it is named first.
+                          A pool whose criteria are not the routing matrix has no
+                          name of its own and falls back to the bucket's. */}
+                      <td className="px-4 py-3 font-semibold text-fg">
+                        {group.label ?? row.name}
+                      </td>
+                      {/* Every code the pool serves, because those are what the
+                          landing pages send and what somebody checks a booking
+                          link against. */}
+                      <td className="px-3 py-3 text-fg-muted tabular-nums">
+                        {group.codes.join(", ")}
+                      </td>
                       <td className="px-3 py-3">
                         {/* #740: click to expand the covering agents. Native
                             details/summary: keyboard-accessible, needs no client JS. */}
@@ -191,8 +215,13 @@ export default async function TiersPage() {
                             {row.outCount > 0 && (
                               <span className="text-xs text-fg-muted">({row.effectiveDepth} today)</span>
                             )}
+                            {/* Singular when a pool rests on one person, which
+                                is the row a reader most needs to take
+                                seriously: "1 agents" is the same slip #1153
+                                caught in the alerts, and grouping made five rows
+                                say it at once. */}
                             <span className="ml-1 text-xs text-fg-muted underline-offset-2 group-hover:underline">
-                              agents
+                              {row.depth === 1 ? "agent" : "agents"}
                             </span>
                           </summary>
                           <ul className="mt-2 space-y-1">
@@ -224,10 +253,10 @@ export default async function TiersPage() {
                     </tr>
                   );
                 })}
-                {rows.length === 0 && (
+                {groups.length === 0 && (
                   <tr>
                     <td colSpan={4} className="px-4 py-10 text-center text-sm text-fg-muted">
-                      No tiers yet. Create a bucket on the admin page to route bookings.
+                      No routing pools yet. Create a bucket on the admin page to route bookings.
                     </td>
                   </tr>
                 )}
