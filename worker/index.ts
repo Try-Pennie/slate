@@ -12,6 +12,8 @@
 // @ts-expect-error - generated at build time by opennextjs-cloudflare build
 import handler from "../.open-next/worker.js";
 import { routesForCron } from "./cron-routes";
+import { laneDecision } from "./lanes-disabled";
+import { loadtestServingProductionHost } from "@/lib/loadtest-guard";
 import { httpsRedirect } from "@/lib/http/https-redirect";
 import { log } from "@/lib/log";
 import { laneTimingFields, type LaneRun } from "@/lib/monitor/lane-timing";
@@ -32,6 +34,10 @@ export {
 
 interface Env {
   CRON_SECRET?: string;
+  /** "true" only on `env.loadtest` in wrangler.jsonc (#2242). */
+  SLATE_LOADTEST?: string;
+  /** Comma separated lane names this deployment must not run (#2242). */
+  SLATE_LANES_DISABLED?: string;
   [key: string]: unknown;
 }
 
@@ -43,19 +49,61 @@ const worker = {
   // Redirect Rules out of the path entirely (see @/lib/http/https-redirect).
   // Returns null for anything not positively established as plaintext, so the
   // common secure case is untouched and can never loop.
-  fetch: (request: Request, env: Env, ctx: ExecutionContext) =>
-    httpsRedirect(request) ?? handler.fetch(request, env, ctx),
+  //
+  // The load test refusal in front of both (#2242) answers a DIFFERENT question
+  // from the one in `publicSupabaseUrl`: that one asks which database this build
+  // would write to, this one asks which address it is answering on. `routes: []`
+  // on `env.loadtest` is what should make this unreachable, and this is what
+  // happens when somebody deploys a load test build over production by hand.
+  // Judged on the request's own host, which is the only thing available here.
+  fetch: (request: Request, env: Env, ctx: ExecutionContext) => {
+    const refusal = loadtestServingProductionHost({
+      loadtest: env.SLATE_LOADTEST === "true",
+      url: request.url,
+    });
+    if (refusal) {
+      log.error("loadtest-guard", { msg: "refusing every request", why: refusal });
+      return new Response("This deployment is not serving here.", {
+        status: 503,
+        headers: { "content-type": "text/plain; charset=utf-8" },
+      });
+    }
+    return httpsRedirect(request) ?? handler.fetch(request, env, ctx);
+  },
 
   async scheduled(
     controller: { cron: string },
     env: Env,
     ctx: ExecutionContext,
   ): Promise<void> {
-    const paths = routesForCron(controller.cron);
-    if (paths.length === 0) {
+    const scheduledPaths = routesForCron(controller.cron);
+    if (scheduledPaths.length === 0) {
       log.error("cron", { msg: "no route for cron expression", cron: controller.cron });
       return;
     }
+    // A load test deployment inherits every cron trigger on purpose (the run
+    // measures recompute and the outbox UNDER the booking load) and must not run
+    // the lanes that reach outside its isolated branch. An unrecognised name in
+    // the setting refuses the WHOLE tick rather than letting the lane somebody
+    // meant to hold back run unannounced (worker/lanes-disabled.ts).
+    const decision = laneDecision(scheduledPaths, env.SLATE_LANES_DISABLED);
+    if (decision.unknown.length > 0) {
+      log.error("cron", {
+        msg: "SLATE_LANES_DISABLED names no such lane, so no lane ran",
+        cron: controller.cron,
+        unknown: decision.unknown.join(","),
+      });
+      return;
+    }
+    if (decision.skipped.length > 0) {
+      log.info("cron", {
+        msg: "lanes held back by SLATE_LANES_DISABLED",
+        cron: controller.cron,
+        skipped: decision.skipped.join(","),
+      });
+    }
+    const paths = decision.run;
+    if (paths.length === 0) return;
     // Fire each lane as an independent request so a co-scheduled lane's failure
     // (or slow run) can't abort the others; each route guards itself with its
     // own lock. settle all before returning so cron tail captures every result.

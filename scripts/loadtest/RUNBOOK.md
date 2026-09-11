@@ -252,6 +252,123 @@ a non-zero exit. A late request meets an already taken slot and records a SLOT_T
 indistinguishable from the contention the control is counting, so the judge would be
 handed a staggered burst wearing a simultaneous one's clothes.
 
+## The isolated deployment the run drives (#2242)
+
+There is no staging environment (ADR 0007), so the run gets one for its own
+duration: a throwaway Supabase branch and a SECOND Cloudflare Worker,
+`env.loadtest` in `wrangler.jsonc`, deployed and torn down by the workflow.
+
+### Everything about it is inheritance, and inheritance is silent both ways
+
+Wrangler splits its keys in two and a reader of the file cannot tell which is
+which, so both halves are written out explicitly and
+`scripts/test-wrangler-loadtest-env.ts` asserts the RESOLVED config rather than
+the text:
+
+- `routes`, `triggers`, `workers_dev`, `preview_urls` and `limits` **inherit**.
+  Omitting `routes` does not mean no route, it means this environment claims
+  `slate.trypennie.app`, and wrangler says so in its own words: "Deploying this
+  environment will reassign these custom domains away from the top-level Worker."
+  `routes: []` detaches it and `workers_dev: true` is what then gives it an
+  address at all, since the top level turned workers.dev off in #1052.
+- `vars`, `ratelimits` and `durable_objects` **do not inherit**, and an
+  environment that omits them resolves them EMPTY. That is not a smaller
+  configuration, it is a broken one: a missing limiter binding fails OPEN in
+  `src/lib/rate-limit.ts`, so the run would measure a deployment with no ceilings
+  while the judge attributed its 429s to ceilings that were never there.
+
+The namespace ids are 2001 to 2007 rather than production's 1001 to 1007, because
+a namespace id is ACCOUNT scoped: sharing one would have the run's sixty writes a
+minute counting against the ceiling real leads are judged by.
+
+### The database address is a BUILD input, not a var
+
+`NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` and
+`NEXT_PUBLIC_APP_URL` are inlined at build time (`src/lib/env.ts` reads each by its
+literal name for exactly that reason), so they go into the environment of the
+build that produces this Worker rather than into `wrangler.jsonc`. A committed var
+naming a branch would be a lie the day after that branch was thrown away, and the
+guard fails one. `NEXT_PUBLIC_APP_URL` also namespaces the L1 caches
+(`slot-cache.ts` and `eligible-cache.ts` key on `appUrl()`), so the load run's
+cached slots can never be served from the same key space as production's.
+
+```
+NEXT_PUBLIC_SUPABASE_URL=https://<branch-ref>.supabase.co \
+NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=<branch publishable key> \
+NEXT_PUBLIC_APP_URL=https://slate-loadtest.<subdomain>.workers.dev \
+pnpm cf:build && npx wrangler deploy --env loadtest
+```
+
+### Two refusals, and neither answers for the other
+
+- **the database**, in `publicSupabaseUrl()` (`src/lib/env.ts`): under
+  `SLATE_LOADTEST`, a build pointed at the production project ref throws, and so
+  does one whose address cannot be read at all. That is the one place every
+  Supabase client takes its address from, so it reaches every request and every
+  cron tick that would touch data. It is NOT in the Worker entry, where a reader
+  looks first, because the inlining above is what makes the value readable and
+  wrangler's esbuild pass does none: a guard there would read `undefined` in both
+  modes and could only ever stay silent.
+- **the address**, in `worker/index.ts`: under `SLATE_LOADTEST`, a Worker
+  answering on `slate.trypennie.app` refuses every request with a 503. `routes: []`
+  is what should make that unreachable; this is what happens when somebody deploys
+  a load test build over production by hand.
+
+The production project ref is ONE constant (`PRODUCTION_SUPABASE_REF` in
+`src/lib/loadtest-guard.ts`), shared with the seed, the change path seed, the
+preflight and the judge. `/api/smoke/version` reports `loadtest` from the same
+predicate the stubs key on, and the preflight reads it before it writes anything.
+
+### Its secrets are its own, and most of them should stay unset
+
+Cloudflare secrets are per environment (`wrangler secret put --env loadtest`), so
+a fresh load test deployment starts with NONE of production's. Do not copy them
+across wholesale. It needs `SUPABASE_SECRET_KEY` (the branch's), `CRON_SECRET` and
+`BOOKING_API_KEY`, and that is the list.
+
+`SLACK_BOT_TOKEN` in particular must stay unset. The lanes that page Slack are
+held back below, but the kept ones still alert (`sync` alerts on calendar failures,
+and the fault pass makes ninety stubbed agents fail on purpose), and the notifier
+no-ops only because `slackBotToken()` is empty. Setting it would page the real
+channel about a synthetic roster for ten minutes.
+
+### Which lanes run, and which are held back
+
+The cron triggers are inherited **deliberately**: the run measures recompute
+freshness and the outbox drain UNDER the booking load, so those lanes have to be
+live. `SLATE_LANES_DISABLED` (honoured in `worker/index.ts` through
+`worker/lanes-disabled.ts`) holds back the ones that reach a system the isolated
+branch does not have and `SLATE_LOADTEST` does not stub. A name in that list that
+matches no lane refuses the WHOLE tick, rather than letting the lane somebody
+meant to hold back run unannounced.
+
+| lane | on this deployment | why |
+|---|---|---|
+| `sync` | runs, Google stubbed | the backstop the freshness sample depends on |
+| `recompute` | runs | what the freshness sampler measures |
+| `outbox` | runs, webhook POST short circuited | the drain the run is judging |
+| `selfheal` | runs, Google stubbed | the reconcile sweeps behind the no-double-booking bar |
+| `complete` | runs | the sweep that closes a finished booking |
+| `watch` | runs, Google stubbed | renewals are part of the sync lane's cost |
+| `hydrate-calendars` | runs, Google stubbed | the seeded calendars need hydrating to the horizon |
+| `prune-routing` | runs | deletes only this branch's own rows |
+| `prune-webhook-payloads` | runs | deletes only this branch's own rows |
+| `prune-busy-blocks` | runs | deletes only this branch's own rows |
+| `agents` | **held back** | reads Salesforce and would rewrite the roster the seed just built |
+| `bulk-reassign` | **held back** | makes real Google reassignments |
+| `monitor` | **held back** | pages Slack about a synthetic org |
+| `erasure-audit` | **held back** | pages Slack, and reads a warehouse the branch has no rows in |
+| `ooo-digest` | **held back** | sends real email to real managers |
+| `ooo-approvals` | **held back** | emails salesmanagers@trypennie.com |
+| `snowflake-export` | **held back** | writes the real warehouse |
+| `snowflake-reconcile` | **held back** | pages Slack on drift it would itself create |
+| `prune-bookings-pii` | **held back** | gates on an export that never ran, and redacts against a mirror that is not there |
+| `prune-warehouse-pii` | **held back** | writes the real warehouse |
+
+A lane added later is covered by construction: the known set is derived from
+`CRON_ROUTES` rather than listed beside it, so a new lane is either in the disable
+list or it runs, and the guard names it either way.
+
 ## Judging the booking path run (#2244)
 
 `.github/workflows/loadtest.yml`, **`workflow_dispatch` only**, because a run

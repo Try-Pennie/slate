@@ -54,3 +54,63 @@ export function ceilingVerdict(statuses: readonly number[]): CeilingVerdict {
     unreachable: statuses.filter((s) => s === 0).length,
   };
 }
+
+/** What `/api/smoke/version` said about the deployment the run is about to drive. */
+export type LoadtestModeVerdict =
+  | { ok: true; commit: string | null }
+  | { ok: false; why: string };
+
+/**
+ * Whether a deployment has said it is in load test mode (#2242).
+ *
+ * Asked BEFORE the preflight writes anything, and it is not a duplicate of the
+ * event-id check above: that one can only speak AFTER a booking has been made, so
+ * if the flag is off, its own control booking was already a real calendar event
+ * with a real invitation sent. This asks first. The two also measure different
+ * things, which is why both stay: this reports what the deployment BELIEVES about
+ * itself, the event id reports what it actually DID, and a build whose flag is set
+ * while the stub is never reached fails the second and passes this (L345).
+ *
+ * Four refusals rather than one, because they send four different people to four
+ * different places (L11). An ABSENT field in particular is not `false`: it is a
+ * deployment predating the field, and reading it as "not in load test mode" sends
+ * somebody to check a variable that is set correctly.
+ */
+export function loadtestModeVerdict(
+  status: number,
+  body: unknown,
+): LoadtestModeVerdict {
+  if (status !== 200) {
+    return {
+      ok: false,
+      why:
+        `/api/smoke/version answered ${status}, so whether this deployment is in load test mode ` +
+        `could not be established. Nothing was written.`,
+    };
+  }
+  // A body that is not an object at all is what `.json()` gives for a plain text
+  // error page answered with a 200, and `in` THROWS on a string or a null. An
+  // uncaught throw here would abort the preflight with a stack trace instead of a
+  // reason, which is the one thing this check exists to produce.
+  const payload: { loadtest?: unknown; commit?: unknown } =
+    typeof body === "object" && body !== null ? (body as { loadtest?: unknown; commit?: unknown }) : {};
+  if (!("loadtest" in payload)) {
+    return {
+      ok: false,
+      why:
+        "/api/smoke/version reports no loadtest field at all, so this deployment predates the " +
+        "check rather than having answered no. Deploy the current commit with --env loadtest " +
+        "and re-run.",
+    };
+  }
+  if (payload.loadtest !== true) {
+    return {
+      ok: false,
+      why:
+        `this deployment reports loadtest=${JSON.stringify(payload.loadtest)}. SLATE_LOADTEST is ` +
+        `not set on it, so a run would make six hundred REAL calendar events and send six ` +
+        `hundred real invitations. Deploy with --env loadtest.`,
+    };
+  }
+  return { ok: true, commit: typeof payload.commit === "string" ? payload.commit : null };
+}

@@ -2,6 +2,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import { bookingApiKeyPrimary, bookingApiKeySecondary } from "@/lib/env";
 import { parseApiKeys, authenticateBearer } from "@/lib/booking/api-auth";
 import { BUILD_COMMIT } from "@/lib/build-info";
+import { isLoadtest } from "@/lib/loadtest-guard";
 
 export const dynamic = "force-dynamic";
 
@@ -30,5 +31,11 @@ export async function GET(req: NextRequest) {
   if (!auth.ok) {
     return NextResponse.json({ error: auth.error }, { status: auth.status });
   }
-  return NextResponse.json({ commit: BUILD_COMMIT });
+  // `loadtest` comes from the same predicate every stub and refusal keys on
+  // (`@/lib/loadtest-guard`), never from a second read of the variable, so this
+  // cannot report a mode the rest of the deployment is not in (L70). It is what
+  // lets the load run's preflight establish, before it drives anything, that the
+  // deployment it is about to send six hundred bookings at really is stubbing
+  // Google rather than creating six hundred real calendar events.
+  return NextResponse.json({ commit: BUILD_COMMIT, loadtest: isLoadtest() });
 }
