@@ -1028,6 +1028,128 @@ Slate has the agent not bookable, or the check would report the fix as the fault
 place managers tag agents after cal.com is off, so this comparison becomes the way
 Slate learns about `Redistribute` rather than a parallel-run check.
 
+# Replaying real leads through Slate's ladder (`pnpm verify:router-replay`)
+
+The seventh command in the family above, and the only measurement of Slate's
+ROUTING that exists before cutover (#2240).
+
+cal.com has taken every real lead for months. Slate has routed nothing, so there
+is no traffic of its own to judge it by. But every cal.com routing form response
+records both the code the lead carried and the agent cal.com chose, so the same
+lead can be put to Slate and the two answers compared. That is what this does:
+about 25,000 routed leads over 30 days, replayed through `resolveRequestedCode`,
+`tierLadder` and the booker's own pool predicate.
+
+**It is not a correctness check.** cal.com is the incumbent, not the source of
+truth, and a lead both systems would send to the same person can be wrong in both.
+
+## Three things it reports separately, because they are three different findings
+
+**LADDER agreement** is the question only this command asks: given a host Slate
+would route to, does Slate's ladder place them in the pool the lead asked for?
+Measured live 2026-09-11: **100 percent of 119 leads in the primary window and 100
+percent of 149 in the secondary**, one of which needed a rung dropped.
+
+**The chance baseline** sits beside every rate, and without it the first number
+means nothing. With the legal digit retired (#2218) the big pools hold most of the
+roster: the measured baseline is **54 to 58 percent**, so a coin flip agrees more
+than half the time and only the distance above it is evidence.
+
+**ROSTER differences** are counted and reported and **cannot fail a run**. These
+are leads cal.com routed to somebody Slate will not: 30 of 150 sampled in the
+primary window, every one `host-not-bookable`, and **zero** in the 30 days before
+it, which says the divergence is recent. `pnpm verify:calcom-parity` owns that
+question and pages on it under exits 23 to 26, and a second command failing daily
+on the same finding is how both stop being read (L36). What they must never do is
+hide inside the agreement rate: folding them in put the first live headline at
+89.6 percent, which reads as Slate routing leads differently when not one lead
+disagreed about the ladder.
+
+## What agrees by construction, and the report says so at the top
+
+Since #2152 Slate's debt tiers and backend service come from the same Twilio tags
+the Pipedream job feeds cal.com, so the ATTRIBUTES both systems route on are ONE
+source. What is actually under test is everything downstream: the code resolution,
+the tier ladder with its Beyond overflow, and the pool predicate. A reader told
+only the agreement rate would take it as evidence about the half that was never in
+doubt.
+
+The attributes and pools are also TODAY'S while the leads are historical, which is
+why the primary window starts on **2026-09-10**, the day the attribute source
+became shared. The secondary window is the 30 days BEFORE that, never the 30 days
+including it: two overlapping windows cannot be compared, because the second is
+mostly the first.
+
+## Three things the live runs changed, each caught by running it
+
+- **The cap must be invisible to every rate.** A run is capped
+  (`REPLAY_MAX_FETCH`, default 2,000) against a window of 25,000 leads, so most
+  leads are never asked about. Folding those into the resolution rate made it a
+  measurement of the cap: the first run reported "only 10.5 percent of leads had a
+  readable host" when the truth was that 150 had been asked about and 139 agreed
+  (L209). An unsampled lead now moves nothing and is counted out loud.
+- **The sample must not be ordered by the reads.** Taking the head of a per form
+  list put every resolved host in one form, so the by form table showed two forms
+  with zero agreements rather than two forms nobody had asked about. Leads are
+  sorted newest first across every form before the cap.
+- **The budget is SPLIT between the two windows.** Newest first across 30 days
+  spends every read inside the primary window, and the secondary was reported with
+  exactly the primary's numbers: a copy wearing a second heading. Half the budget
+  goes to leads older than the primary start, and a half with nothing left to ask
+  about hands its remainder to the other.
+
+## Running it
+
+```
+pnpm verify:router-replay
+```
+
+`CALCOM_API_KEY` is required (a wrangler secret on the deployment, so it has to be
+in `.env.local`), plus the Supabase secret key. `CALCOM_ORG_ID` defaults to 19474,
+`REPLAY_MAX_FETCH` to 2,000, `REPLAY_SINCE` to 2026-09-10, `REPLAY_CACHE` to a file
+under `$TMPDIR`.
+
+**`REPLAY_PACE_MS` defaults to 550 and the number was MEASURED**, not guessed:
+cal.com answers `x-ratelimit-limit-default: 120` on a 60 second reset, so the
+sustainable rate is two reads a second. At 100ms the responses listing met a 429
+the retry ladder could not ride out, on the fourth of eight forms, and the run
+correctly refused rather than reporting rates about whichever forms happened to
+answer. Budget roughly ten minutes per thousand bookings, and run the first pull
+outside business hours: the key is shared with the OOO dual-write.
+
+A booking is cached under `$TMPDIR` and re-read when its start is still in the
+future (it can move or be cancelled) or when the entry is more than two days old.
+The cache holds host emails, times and status and **never the attendee**: the
+lead's own details have no business in a file on a laptop.
+
+**Only agreement passes, and every other outcome exits on its own code.** Finding
+nothing to judge is never a pass (L98).
+
+| exit | what it met |
+|---|---|
+| 0 | Slate's ladder places the leads cal.com routed |
+| 1 | no `CALCOM_API_KEY` or no Supabase credentials here; nothing was attempted |
+| 2 | no routed leads, no bookable agents, no buckets, or nothing judged |
+| 3 | a Slate read failed, so the pools to compare against are not known |
+| 4 | cal.com would not answer for the forms or their responses (a 429 here means the pacing is too fast) |
+| 5 | too few of the leads it ASKED about had a readable host |
+| 6 | too many leads fell to the catch-all, which is what a broken code lookup looks like |
+| 7 | **the ladder disagrees** |
+| 8 | not ONE booking could be read, which is a broken read rather than a thin sample |
+
+Exit 6 is a ceiling rather than a curiosity: catch-all leads are excluded from the
+agreement denominator, so a bug that pushed every lead into it would leave a tiny,
+flattering sample behind and RAISE the headline. Exit 8 is kept apart from exit 5
+because a wrong API version answers exactly like it for every uid, and calling that
+"too few hosts resolved" sends somebody to look at the data.
+
+Decision logic is pinned offline by `scripts/test-router-replay.ts`, which drives
+every class, both rates and the whole exit table through hand written fixtures with
+no network and no clock.
+
+**This retires at cutover (#65)** with the rest of the family: once Slate routes
+the leads there is no second system to replay them through.
+
 # Is the shadow run trustworthy today? (`pnpm verify:parallel-run-readiness`)
 
 The fifth command in the family above, and the one to run right before the pilot
