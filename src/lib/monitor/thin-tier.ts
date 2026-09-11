@@ -1,4 +1,5 @@
-import type { TierDepth } from "@/lib/routing/staffing-depth";
+import { sameTierReading, type TierDepth } from "@/lib/routing/staffing-depth";
+import { groupRowsByPool } from "@/lib/admin/pool-rows";
 
 // alert_state row key for the throttle; lives with the feature so the cron and
 // the settings screen refer to the one constant.
@@ -31,9 +32,13 @@ export function selectThinTiers(depths: TierDepth[]): TierDepth[] {
   return depths.filter((t) => t.effectiveFlag === "spof" || t.effectiveFlag === "thin");
 }
 
-/** Human line for one thin tier, thinnest-first ordering preserved by the caller. */
-function tierLine(t: TierDepth): string {
-  const head = `${t.code} (${t.name})`;
+/** Human line for one thin POOL, thinnest-first ordering preserved by the caller. */
+function tierLine(t: TierDepth, codes: string[], label: string | null): string {
+  // #2237: the pool is what a person staffs, and the CODES are what the landing
+  // pages send, so the line carries both. Before this it named one code per line
+  // and printed six of them for one problem.
+  const which = codes.length === 1 ? `bucket ${codes[0]}` : `buckets ${codes.join(", ")}`;
+  const head = label ? `${label} (${which})` : `${which} (${t.name})`;
   const avail = t.effectiveDepth === 1 ? "1 agent" : "2 agents";
   let body: string;
   if (t.outCount > 0) {
@@ -62,10 +67,19 @@ function tierLine(t: TierDepth): string {
  */
 export function formatThinTierNotice(tiers: TierDepth[]): string {
   if (!tiers.length) return "";
-  const lines = tiers.slice(0, NAME_CAP).map(tierLine);
-  const more = tiers.length > NAME_CAP ? ` (and ${tiers.length - NAME_CAP} more)` : "";
+  // Grouped by POOL (#2237). Sixty bucket codes route through fifteen pools, so
+  // one thinly staffed tier used to arrive as six identical lines. With the list
+  // capped at eight names, a SINGLE thin pool filled it and hid every other
+  // finding behind "(and N more)", while the headline counted six times the
+  // number of problems a person could actually act on.
+  const groups = groupRowsByPool(tiers, sameTierReading);
+  const lines = groups
+    .slice(0, NAME_CAP)
+    .map((g) => tierLine(g.rows[0]!, g.codes, g.label));
+  const more = groups.length > NAME_CAP ? ` (and ${groups.length - NAME_CAP} more)` : "";
+  const what = groups.length === 1 ? "1 pool is" : `${groups.length} pools are`;
   return (
-    `${tiers.length} tier(s) are thinly staffed (1 to 2 agents available today), ` +
+    `${what} thinly staffed (1 to 2 agents available today), ` +
     `so add coverage or set a fallback before customers hit empty availability.${more}\n` +
     lines.join("\n")
   );

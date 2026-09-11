@@ -1,5 +1,7 @@
 import type { Attributes, Bucket } from "@/lib/db/types";
 import { agentIdsFromPool } from "@/lib/availability/pool";
+import { poolKeyFor } from "@/lib/availability/pool-key";
+import { poolLabel } from "@/lib/availability/pool-label";
 
 /**
  * Proactive per-tier staffing depth (#584/#569): how many currently-bookable
@@ -54,6 +56,52 @@ export interface TierDepth {
   /** The tier's eligible agents (the drill-down, #740), each marked out-today,
    *  sorted available-first then out, name-ascending. */
   agents: { id: string; name: string; out: boolean }[];
+  /**
+   * The POOL this bucket routes through (#2237). Sixty codes resolve to fifteen,
+   * so six rows in a tier carry identical numbers by construction and the screens
+   * and the staffing notice can report the answers rather than the copies.
+   *
+   * Required, so `tsc` names every construction site rather than letting one
+   * quietly produce rows nothing can group.
+   */
+  poolKey: string;
+  /** The pool in words, or null when its criteria are not the routing matrix. */
+  poolLabel: string | null;
+}
+
+/**
+ * Whether two depth rows carry the same READING, which is what decides whether
+ * the codes of a pool may share one row on the tiers page and one line in the
+ * staffing notice (#2237).
+ *
+ * Everything a surface renders, and nothing that identifies WHICH bucket it is:
+ * the code and the bucket's own name are exactly what pooling folds. One
+ * predicate rather than one per surface, because two would be a difference
+ * nothing enforces and the drift would be silent in both directions.
+ *
+ * Rows of one pool agree by construction, since the pool key covers every input
+ * these numbers come from. That is precisely why this has to be capable of
+ * saying no: the day it is not true, the screen must show the disagreement
+ * rather than pick a winner.
+ *
+ * The fields are listed rather than walked, so a field added to `TierDepth` does
+ * not silently join the comparison without somebody deciding it should.
+ */
+export function sameTierReading(a: TierDepth, b: TierDepth): boolean {
+  return (
+    a.depth === b.depth &&
+    a.effectiveDepth === b.effectiveDepth &&
+    a.outCount === b.outCount &&
+    a.flag === b.flag &&
+    a.effectiveFlag === b.effectiveFlag &&
+    a.soleAgentName === b.soleAgentName &&
+    a.hasWorkingFallback === b.hasWorkingFallback &&
+    a.agents.length === b.agents.length &&
+    a.agents.every((agent, i) => {
+      const other = b.agents[i]!;
+      return agent.id === other.id && agent.out === other.out;
+    })
+  );
 }
 
 /** Only bookable, non-deactivated agents can be routed to (matches
@@ -118,6 +166,18 @@ export function bucketStaffingDepths(
         flag: staffingFlag(depth),
         effectiveFlag: staffingFlag(effectiveDepth),
         agents,
+        // The same key the recompute lane groups on, so the two can never
+        // disagree about which codes are one pool. Manual members are part of it
+        // here, unlike in the empty-bucket sweep, because this function already
+        // holds them and they genuinely change who a bucket routes to.
+        poolKey: poolKeyFor({
+          orgId: b.org_id,
+          eventTypeId: b.event_type_id,
+          criteria: b.criteria ?? null,
+          fallbackUserId: b.fallback_user_id,
+          memberIds: [...manualMemberIds],
+        }),
+        poolLabel: poolLabel(b.criteria ?? null),
       };
     })
     // Sort by the short-term risk first (effective), then roster depth, then code,

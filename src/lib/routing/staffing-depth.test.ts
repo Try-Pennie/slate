@@ -51,6 +51,45 @@ describe("staffingFlag", () => {
 });
 
 describe("bucketStaffingDepths", () => {
+  // #2237: sixty bucket codes route through fifteen pools, so the depth rows for
+  // six codes in a tier are identical by construction. Each row carries which
+  // pool it belongs to, so the screens and the staffing notice can report the
+  // fifteen answers rather than sixty copies of them.
+  it("gives the codes that share criteria one pool key, and names it", () => {
+    const criteria = { debt_team: "low" };
+    const buckets = ["100", "101", "102", "110", "111", "112"].map((code) =>
+      mkBucket({ code, name: `Low ${code}`, criteria }),
+    );
+    const rows = bucketStaffingDepths(buckets, [mkAgent({ id: "a", attributes: criteria })], []);
+
+    expect(new Set(rows.map((r) => r.poolKey)).size).toBe(1);
+    expect(rows.every((r) => r.poolLabel === "Low")).toBe(true);
+  });
+
+  it("separates codes whose criteria differ, even within one tier", () => {
+    const buckets = [
+      mkBucket({ code: "100", name: "Low", criteria: { debt_team: "low" } }),
+      mkBucket({ code: "120", name: "Low Beyond", criteria: { debt_team: "low", backend_service: "beyond" } }),
+    ];
+    const rows = bucketStaffingDepths(buckets, [], []);
+    expect(new Set(rows.map((r) => r.poolKey)).size).toBe(2);
+    expect(rows.map((r) => r.poolLabel).sort()).toEqual(["Low", "Low with Beyond"]);
+  });
+
+  it("separates codes that differ only by who is named on them by hand", () => {
+    // Manual membership changes who a bucket routes to, so it changes the pool,
+    // even when the criteria match exactly.
+    const criteria = { debt_team: "low" };
+    const buckets = [
+      mkBucket({ id: "b1", code: "100", name: "Low", criteria }),
+      mkBucket({ id: "b2", code: "101", name: "Low", criteria }),
+    ];
+    const rows = bucketStaffingDepths(buckets, [mkAgent({ id: "a", attributes: {} })], [
+      { bucket_id: "b1", user_id: "a" },
+    ]);
+    expect(new Set(rows.map((r) => r.poolKey)).size).toBe(2);
+  });
+
   it("names the sole agent on a single-point-of-failure tier (depth 1)", () => {
     const buckets = [
       mkBucket({ code: "522", name: "Ultra High | Beyond", criteria: { debt_team: "ultra_high_beyond" } }),

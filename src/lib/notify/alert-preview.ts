@@ -1575,22 +1575,27 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     key: "thin_tier_staffing",
     state: "a tier is resting on one agent",
     channel: "info",
+    // #2237: a pool, not a code. The six codes of a tier resolve the same agents,
+    // so the reader sees one line naming every booking link it covers rather than
+    // six identical ones filling the whole list.
     text: formatThinTierNotice([
-      {
-        code: "204",
-        name: "Debt 20k to 30k, backend",
+      ...["520", "521", "522"].map((code) => ({
+        code,
+        name: "Ultra High with Beyond",
         depth: 1,
         effectiveDepth: 1,
         outCount: 0,
         soleAgentName: "Jordan Reyes",
         hasWorkingFallback: false,
-        flag: "spof",
-        effectiveFlag: "spof",
+        flag: "spof" as const,
+        effectiveFlag: "spof" as const,
         agents: [{ id: "u1", name: "Jordan Reyes", out: false }],
-      },
+        poolKey: "ultra-high-beyond",
+        poolLabel: "Ultra High with Beyond",
+      })),
       {
         code: "311",
-        name: "Debt 30k to 50k, frontend",
+        name: "High",
         depth: 2,
         effectiveDepth: 1,
         outCount: 1,
@@ -1602,6 +1607,8 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
           { id: "u2", name: "Sam Okafor", out: false },
           { id: "u3", name: "Priya Nair", out: true },
         ],
+        poolKey: "high",
+        poolLabel: "High",
       },
     ]),
   },
