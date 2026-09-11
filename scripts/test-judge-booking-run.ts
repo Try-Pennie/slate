@@ -292,12 +292,20 @@ const bars = (r: ReturnType<typeof judgeBookingRun>) => r.findings.map((f) => f.
   });
   assert(!bars(cancelled).includes("double bookings"), "a cancelled booking holds no slot");
 
+  // The judge is told whether the index really ENFORCES, by the preflight planting
+  // a duplicate and seeing the database refuse it, rather than by a catalogue
+  // lookup. The lookup it used to do asked PostgREST for `pg_indexes`, which
+  // PostgREST does not expose: that read answers 404 everywhere, so this bar
+  // reported the index missing on EVERY run and would have been muted by the second
+  // week (L36). It is also the weaker question: an index present but not enforcing
+  // reads as fine to a name lookup (L63).
   const noIndex = broken((i) => {
     i.slotUniqueIndexPresent = false;
   });
   assert(
     bars(noIndex).includes("bookings_active_slot_uniq"),
-    "an absent index is a finding on its own, because with it gone an absence of overlaps proves nothing",
+    "an index never shown to enforce is a finding on its own, because without it an absence of " +
+      "overlaps proves nothing",
   );
 }
 

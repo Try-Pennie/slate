@@ -68,6 +68,12 @@ jobs:
           SUPABASE_URL: ${{ secrets.LOADTEST_SUPABASE_URL }}
           SUPABASE_SECRET_KEY: ${{ secrets.LOADTEST_SUPABASE_SECRET_KEY }}
         run: node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/loadtest/preflight.ts
+      # The judge reads this to learn whether the unique index really enforces, so
+      # it has to reach the judge like every other driver file.
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: preflight
+          path: results/
 
   drive:
     needs: preflight
