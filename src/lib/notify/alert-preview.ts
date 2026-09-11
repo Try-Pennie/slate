@@ -656,33 +656,55 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
   },
   {
     key: "empty_buckets:*",
-    state: "a bucket with nobody to route to",
+    state: "a pool with nobody to route to",
     channel: "alert",
-    text: emptyBucketMessage("411"),
+    text: emptyBucketMessage({
+      key: "very-high",
+      label: "Very High",
+      codes: ["400", "401", "402", "410", "411", "412"],
+      representative: "400",
+    }),
+  },
+  {
+    key: "empty_buckets:*",
+    state: "a pool of one code, whose criteria have no name",
+    channel: "alert",
+    text: emptyBucketMessage({
+      key: "custom",
+      label: null,
+      codes: ["411"],
+      representative: "411",
+    }),
   },
   {
     key: "empty_buckets:*",
     state: "recovered with a single agent",
     channel: "recovery",
-    text: recoveredBucketMessage("411", 1),
+    text: recoveredBucketMessage(
+      { key: "very-high", label: "Very High", codes: ["411"], representative: "411" },
+      1,
+    ),
   },
   {
     key: "empty_buckets:*",
     state: "recovered with several agents",
     channel: "recovery",
-    text: recoveredBucketMessage("411", 6),
+    text: recoveredBucketMessage(
+      { key: "very-high", label: "Very High", codes: ["411"], representative: "411" },
+      6,
+    ),
   },
   {
     key: "empty_buckets:*",
-    state: "the whole roster is dark (one page for sixty buckets)",
+    state: "the whole routing matrix is dark (one page for every pool)",
     channel: "alert",
-    text: emptyBucketsAggregateMessage(60, 60, 0),
+    text: emptyBucketsAggregateMessage(15, 15, 0),
   },
   {
     key: "empty_buckets:*",
-    state: "many buckets dead while agents ARE bookable",
+    state: "many pools dead while agents ARE bookable",
     channel: "alert",
-    text: emptyBucketsAggregateMessage(12, 60, 40),
+    text: emptyBucketsAggregateMessage(6, 15, 40),
   },
   {
     key: "empty_buckets:*",

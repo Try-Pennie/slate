@@ -29,9 +29,12 @@ vi.mock("@/lib/monitor/settings", () => settings);
 // Two real buckets and one SMOKE test bucket. The mock HONOURS an is_test filter,
 // so what the sweep asks for is what decides which of them it sees.
 const buckets = vi.hoisted(() => [
-  { code: "411", org_id: "o1", is_test: false },
-  { code: "412", org_id: "o1", is_test: false },
-  { code: "SMOKE1", org_id: "o1", is_test: true },
+  // Distinct criteria, so each is its own POOL (#2237). A bucket's pool comes
+  // from its criteria, and three buckets with none would be one pool, which is a
+  // different scenario from the one these cases are about.
+  { code: "411", org_id: "o1", is_test: false, criteria: { debt_team: "very_high" } },
+  { code: "412", org_id: "o1", is_test: false, criteria: { debt_team: "high" } },
+  { code: "SMOKE1", org_id: "o1", is_test: true, criteria: { debt_team: "smoke" } },
 ]);
 const bucketFilters = vi.hoisted(() => vi.fn());
 vi.mock("@/lib/supabase/admin", () => ({
@@ -101,7 +104,7 @@ describe("which buckets the sweep measures", () => {
     const aggregateClear = dispatch.resolveAlert.mock.calls.find(
       ([key]) => key === "empty_buckets:all",
     );
-    expect(aggregateClear?.[1]).toContain("1 of 2 buckets");
+    expect(aggregateClear?.[1]).toContain("1 of 2 pools");
     expect(aggregateClear?.[1]).not.toMatch(/of 3\b/);
   });
 });

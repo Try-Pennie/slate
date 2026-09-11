@@ -243,7 +243,8 @@ export function bookerUnstaffedAlert(code: string): string {
   return (
     `A customer opened the booking page for bucket ${code} and it has nobody to route to, ` +
     `so they were shown no times at all. Staff that bucket, or take the link out of use. ` +
-    `The hourly sweep reports the same buckets as empty_buckets:${code}; this one means somebody actually arrived.`
+    `The hourly sweep covers this bucket under its routing pool's empty_buckets page; ` +
+    `this one means somebody actually arrived.`
   );
 }
 

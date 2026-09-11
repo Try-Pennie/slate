@@ -43,7 +43,13 @@ import type { Bucket } from "@/lib/db/types";
 // did not alert this run", and the tests below pin that distinction: a bucket
 // with agents clears, a bucket without does not, and a run that measured nothing
 // clears nothing.
-const bucket = (code: string) => ({ code }) as Bucket;
+// #2237: the sweep now pages once per POOL, and a bucket's pool comes from its
+// criteria. So a fixture with no criteria would put every bucket in one pool,
+// which is a different scenario from the one most cases here are about. Each
+// bucket gets criteria of its OWN by default, and the cases that are about
+// pooling pass criteria they share.
+const bucket = (code: string, criteria?: Record<string, string>) =>
+  ({ code, criteria: criteria ?? { debt_team: `team-${code}` } }) as unknown as Bucket;
 
 function spies() {
   return {
@@ -73,6 +79,40 @@ describe("alertOnEmptyBuckets", () => {
     expect(
       s.clearAlert.mock.calls.map(([code]) => code).filter((c) => c !== AGGREGATE_BUCKET_CODE),
     ).toEqual(["411"]);
+  });
+
+  // #2237: sixty codes route through fifteen pools, so a tier with nobody in it
+  // is ONE finding. It used to arrive as six near identical pages, each naming a
+  // code and none naming the thing to fix. The pure decision is node tested; what
+  // only shows here is that the sweep really groups before it fans out.
+  it("pages ONCE for a pool of six codes, not once per code", async () => {
+    const s = spies();
+    const low = { debt_team: "low" };
+    const codes = ["100", "101", "102", "110", "111", "112"];
+    const res = await alertOnEmptyBuckets({
+      loadBuckets: async () => [
+        ...codes.map((c) => bucket(c, low)),
+        bucket("300", { debt_team: "high" }),
+      ],
+      countEligible: async (b) => (b.code === "300" ? 4 : 0),
+      ...s,
+    });
+
+    expect(res.empty.sort()).toEqual(codes);
+    const pages = s.sendAlert.mock.calls.filter(([code]) => code !== AGGREGATE_BUCKET_CODE);
+    expect(pages).toHaveLength(1);
+    // Keyed on the pool's lowest code, so the same page is thrown under the same
+    // key on every sweep and can actually be cleared.
+    expect(pages[0]?.[0]).toBe("100");
+    // And it names every code it speaks for, because those are what the landing
+    // pages send.
+    for (const c of codes) expect(pages[0]?.[1]).toContain(c);
+    expect(pages[0]?.[1]).toContain("Low");
+
+    // The five it speaks for are settled without a notice each, rather than left
+    // holding markers that would post five all-clears on recovery.
+    expect(s.settleSilently).toHaveBeenCalledTimes(1);
+    expect(s.settleSilently.mock.calls[0]?.[0].sort()).toEqual(codes.slice(1));
   });
 
   it("does not alert when every bucket has an eligible agent, and clears them all", async () => {
