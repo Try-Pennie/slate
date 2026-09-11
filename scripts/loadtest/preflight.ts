@@ -16,7 +16,7 @@
 import { writeFileSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { overlaps, type JudgedBooking } from "./judge-booking-run.ts";
-import { stubShapedEventId, loadtestModeVerdict } from "./preflight-checks.ts";
+import { stubShapedEventId, faultModeVerdict } from "./preflight-checks.ts";
 import { PRODUCTION_SUPABASE_REF, PRODUCTION_HOST } from "../../src/lib/loadtest-guard.ts";
 
 // ONE constant, shared with the app's own load test refusals (#2242). A second
@@ -81,9 +81,15 @@ function fail(why: string): never {
   const res = await fetch(`${SLATE_BASE}/api/smoke/version`, {
     headers: { Authorization: `Bearer ${API_KEY}` },
   });
-  const verdict = loadtestModeVerdict(res.status, await res.json().catch(() => ({})));
+  // `faultModeVerdict` rather than `loadtestModeVerdict`, because it asks BOTH
+  // questions and the second one matters here (#2262): a deployment left injecting
+  // faults by an earlier run's fault leg (a run dispatched with teardown off does
+  // exactly that) would have every one of this run's 5xx counted against the path
+  // instead of against the faults somebody else asked for. Zero is what a steady
+  // pass requires, and it is asserted rather than assumed.
+  const verdict = faultModeVerdict(res.status, await res.json().catch(() => ({})), { faultPct: 0 });
   if (!verdict.ok) fail(verdict.why);
-  console.log(`ok: the deployment reports loadtest mode (commit ${verdict.commit ?? "unreported"})`);
+  console.log("ok: the deployment reports load test mode and is injecting no faults");
 }
 
 // --- half one: one real booking leaves the rows the judge looks for ------------

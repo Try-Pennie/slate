@@ -18,7 +18,13 @@ import {
   type JudgedBooking,
   type PlatformReading,
 } from "./judge-booking-run.ts";
-import { DRIVERS, PER_DRIVER_PER_MINUTE, RUN_MINUTES, type DriverResult } from "./book-plan.ts";
+import {
+  DRIVERS,
+  PER_DRIVER_PER_MINUTE,
+  RUN_MINUTES,
+  type DriverMode,
+  type DriverResult,
+} from "./book-plan.ts";
 import type { SoakSample } from "./invariants.ts";
 import { PRODUCTION_SUPABASE_REF } from "../../src/lib/loadtest-guard.ts";
 
@@ -34,6 +40,24 @@ function need(name: string): string {
     process.exit(1);
   }
   return v;
+}
+
+/**
+ * A whole number from a setting, or a refusal by name.
+ *
+ * `Number("")` is 0 and `Number("ten")` is NaN, and NaN compares false against
+ * every threshold, so both would silently mean "this leg was not asked for" while
+ * reading as configured (L50). An unset value really does mean zero and says so;
+ * anything else unreadable stops the judge rather than quietly dropping a bar.
+ */
+function wholeNumber(raw: string | undefined, name: string): number {
+  const v = (raw ?? "").trim();
+  if (v === "") return 0;
+  if (!/^\d+$/.test(v)) {
+    console.error(`FAILED: ${name} is not a whole number: ${JSON.stringify(raw)}.`);
+    process.exit(1);
+  }
+  return Number(v);
 }
 
 const RUN_ID = need("RUN_ID");
@@ -74,7 +98,7 @@ function readJson<T>(path: string): T {
 
 /** Driver files, by mode. A file this cannot read is REPORTED as missing rather
  *  than skipped, so the judge sees an incomplete run instead of a short one. */
-function loadDrivers(mode: "steady" | "burst"): DriverResult[] {
+function loadDrivers(mode: DriverMode): DriverResult[] {
   let names: string[] = [];
   try {
     names = readdirSync(RESULTS).filter((f) => f.endsWith(".json"));
@@ -206,13 +230,39 @@ try {
   console.error("note: no per address ceiling control was found");
 }
 
+/**
+ * The fault pass, derived from the fault leg's OWN driver files rather than from a
+ * summary somebody wrote beside them (#2262).
+ *
+ * One derivation, not two (L70). A separate `fault-pass.json` holding the same
+ * three numbers would be a second place they could disagree, and the one that
+ * matters, the percentage, is not a number this side of the run knows: the driver
+ * reads it from the deployment before it sends anything, and a deployment running
+ * zero percent answers every request perfectly and satisfies the bar with no fault
+ * ever injected (L98).
+ *
+ * Absent is a run with no fault leg. That is NOT an implicit pass: whether it was
+ * asked for is `expectedLegs.faultPct`, and the judge calls a configured leg that
+ * never arrived incomplete.
+ */
+const faultDrivers = loadDrivers("fault");
 let faultPass: JudgeInput["faultPass"];
-try {
-  faultPass = readJson<NonNullable<JudgeInput["faultPass"]>>(join(RESULTS, "fault-pass.json"));
-} catch {
-  // Absent is a run with no fault leg, which the judge handles; it is NOT an
-  // implicit pass, because the judge only skips the bar when the leg is absent and
-  // fails an empty one.
+if (faultDrivers.length > 0) {
+  const attempts = faultDrivers.flatMap((d) => d.attempts);
+  const reported = [...new Set(faultDrivers.map((d) => d.faultPct ?? 0))];
+  if (reported.length > 1) {
+    // Two fault drivers that saw different percentages were not measuring one
+    // deployment, and folding them into an average would hide that (L11).
+    console.error(
+      `note: fault drivers reported different percentages (${reported.join(", ")}); the lowest is ` +
+        "carried so the judge compares against what at least one of them actually met",
+    );
+  }
+  faultPass = {
+    attempts: attempts.length,
+    fiveXx: attempts.filter((a) => a.status >= 500 && a.status <= 599).length,
+    faultPct: Math.min(...reported),
+  };
 }
 
 // Run scoped: every row this run created carries the run id in its external id, so
@@ -265,6 +315,18 @@ const input: JudgeInput = {
     new Date(finishedAt + 60_000).toISOString(),
   ),
   faultPass,
+  // What this run was CONFIGURED to include, so a leg asked for and never
+  // delivered is incomplete rather than quietly skipped. Both default to zero, so
+  // a hand run that drove only the steady pass judges exactly as it did before.
+  //
+  // env-ok: EXPECT_BURST_DRIVERS (optional; the workflow's burst matrix size, and
+  // zero for a hand run with no burst leg)
+  // env-ok: EXPECT_FAULT_PCT (optional; the workflow's fault_pct input, and zero
+  // for a hand run with no fault leg)
+  expectedLegs: {
+    burstDrivers: wholeNumber(process.env.EXPECT_BURST_DRIVERS, "EXPECT_BURST_DRIVERS"),
+    faultPct: wholeNumber(process.env.EXPECT_FAULT_PCT, "EXPECT_FAULT_PCT"),
+  },
   budgets: { cpuMsP99: cpuBudgetMs() },
 };
 

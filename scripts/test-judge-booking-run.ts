@@ -118,6 +118,7 @@ function passing(): JudgeInput {
     ipCeilingControl: { sent: 61, firstRefusedAt: 61 },
     platform: { invocations: 610, cpuMsP99: 40, outcomes: { ok: 610 } },
     faultPass: { attempts: 100, fiveXx: 0, faultPct: 10 },
+    expectedLegs: { burstDrivers: burstResults.length, faultPct: 10 },
     budgets: { cpuMsP99: 200 },
   };
 }
@@ -533,6 +534,109 @@ const bars = (r: ReturnType<typeof judgeBookingRun>) => r.findings.map((f) => f.
   // `incompleteness` is reachable on its own, so a caller can report why without
   // judging, and a complete run really does produce nothing.
   eq(incompleteness(passing()).length, 0, "a complete run has nothing to report as incomplete");
+}
+
+// --- a leg that was CONFIGURED and never arrived (#2262) ----------------------
+//
+// The bars for the burst and the fault pass are skipped when their results are
+// absent, which is right for a hand run that drove neither. What that could not
+// tell apart was a leg the workflow really ran whose artifact never got here: the
+// judge read it as "this run had no burst leg" and published a report with its
+// most important control quietly missing (L98, L11).
+
+{
+  // The quiet direction first: a run that asked for neither leg is still complete
+  // without them, which is what a hand run does.
+  const i = passing();
+  i.burstResults = [];
+  i.faultPass = undefined;
+  i.expectedLegs = { burstDrivers: 0, faultPct: 0 };
+  eq(incompleteness(i).length, 0, "a run configured with neither leg is complete without them");
+}
+
+{
+  const i = passing();
+  const want = i.burstResults.length;
+  i.burstResults = i.burstResults.slice(0, want - 1);
+  const why = incompleteness(i);
+  assert(
+    why.some((r) => r.includes("burst driver files")),
+    "a burst leg missing a driver file is incomplete",
+  );
+  assert(
+    why.some((r) => r.includes(String(want))),
+    "and the reason says how many were expected",
+  );
+}
+
+{
+  const i = passing();
+  i.burstResults = [];
+  const why = incompleteness(i);
+  assert(
+    why.some((r) => r.includes("burst driver files")),
+    "a burst leg that produced NOTHING is incomplete rather than treated as absent",
+  );
+}
+
+{
+  // A burst driver that fired fewer requests than it planned is a smaller burst
+  // than the one being judged, and "exactly one 200" is satisfiable by a burst of
+  // one.
+  const i = passing();
+  i.burstResults[0]!.attempts = i.burstResults[0]!.attempts.slice(0, 1);
+  assert(
+    incompleteness(i).some((r) => r.includes("of") && r.includes("planned requests")),
+    "a burst driver that fired a fraction of its plan is incomplete",
+  );
+}
+
+{
+  const i = passing();
+  i.burstResults[0]!.runId = "some-other-run";
+  assert(
+    incompleteness(i).some((r) => r.includes("not " + RUN)),
+    "a burst file from another run is incomplete",
+  );
+}
+
+{
+  const i = passing();
+  i.faultPass = undefined;
+  const why = incompleteness(i);
+  assert(
+    why.some((r) => r.includes("fault pass") && r.includes("never asked")),
+    "a fault leg that was configured and never arrived is incomplete",
+  );
+}
+
+{
+  // The case the whole fault leg rests on. A deployment running zero percent
+  // answers every request perfectly, so `fiveXx: 0` would PASS the bar having
+  // injected nothing at all.
+  const i = passing();
+  i.faultPass = { attempts: 120, fiveXx: 0, faultPct: 0 };
+  const why = incompleteness(i);
+  assert(
+    why.some((r) => r.includes("reporting 0 percent")),
+    "a fault pass against a deployment at zero percent is incomplete, not a pass",
+  );
+  // The other direction (L159): the same pass at the configured percentage is
+  // complete, so this is about the percentage rather than about the shape.
+  const ok = passing();
+  ok.faultPass = { attempts: 120, fiveXx: 0, faultPct: 10 };
+  eq(incompleteness(ok).length, 0, "and the same pass at ten percent is complete");
+}
+
+{
+  // A run that asked for no fault leg is not judged on one it happens to carry:
+  // the expectation is what decides, so a hand run that drove a fault pass out of
+  // curiosity still judges its bar without being called incomplete for the
+  // percentage it chose.
+  const i = passing();
+  i.expectedLegs = { burstDrivers: i.burstResults.length, faultPct: 0 };
+  i.faultPass = { attempts: 50, fiveXx: 0, faultPct: 25 };
+  eq(incompleteness(i).length, 0, "an unasked-for fault pass does not make a run incomplete");
 }
 
 finish();

@@ -23,6 +23,8 @@ import {
   DRIVERS,
   PER_DRIVER_PER_MINUTE,
   RUN_MINUTES,
+  chooseBurstSlot,
+  burstStartAt,
 } from "./loadtest/book-plan.ts";
 import {
   AVAILABILITY_LIMITER,
@@ -162,6 +164,65 @@ const T0 = Date.parse("2026-09-15T14:00:00.000Z");
   const seen = new Set<string>();
   for (let i = 0; i < 40; i++) seen.add(pickSlot(slots)!);
   eq(seen.size, 4, "over many picks every offered time is reached");
+}
+
+// --- the burst's one slot and one moment (#2262) ------------------------------
+
+{
+  // The FURTHEST offered time, not the first. The preflight books the first time
+  // its own bucket offers, minutes earlier, and the two buckets can share an
+  // agent: a burst aimed at an already booked slot meets SLOT_TAKEN on every
+  // request and fails "exactly one 200" for a reason that is not the index.
+  const slots = [
+    "2026-09-15T14:00:00.000Z",
+    "2026-09-15T14:10:00.000Z",
+    "2026-09-15T16:30:00.000Z",
+  ];
+  eq(chooseBurstSlot(slots), "2026-09-15T16:30:00.000Z", "the last offered time is chosen");
+}
+
+{
+  // Order is not trusted (L343). A response's list carries no order unless
+  // something declares one, and "the last element" of an unordered list is not
+  // "the furthest away": this is the same three times, shuffled.
+  const shuffled = [
+    "2026-09-15T16:30:00.000Z",
+    "2026-09-15T14:00:00.000Z",
+    "2026-09-15T14:10:00.000Z",
+  ];
+  eq(
+    chooseBurstSlot(shuffled),
+    "2026-09-15T16:30:00.000Z",
+    "and it is the furthest in time whatever order they arrived in",
+  );
+}
+
+{
+  // Nothing offered is NULL, so the setup step can refuse by name. An empty answer
+  // and a bucket nobody asked about produce the same file otherwise (L98).
+  eq(chooseBurstSlot([]), null, "an empty list yields no slot");
+  eq(chooseBurstSlot(["nonsense", ""]), null, "and neither does a list of unreadable times");
+}
+
+{
+  // An unreadable time is DROPPED rather than sorted: NaN compares false against
+  // everything, so it would land wherever the sort happened to put it and could
+  // be returned as the choice.
+  const mixed = ["2026-09-15T14:00:00.000Z", "not a time", "2026-09-15T15:00:00.000Z"];
+  eq(
+    chooseBurstSlot(mixed),
+    "2026-09-15T15:00:00.000Z",
+    "an unreadable time never becomes the burst's slot",
+  );
+}
+
+{
+  const now = 1_757_000_000_000;
+  eq(burstStartAt(now, 300), now + 300_000, "the moment is the lead ahead of now");
+  eq(burstStartAt(now, 0), now, "a zero lead is now");
+  // Never in the past: a negative lead would put the moment behind every driver,
+  // and burstReadiness would answer "missed" for all of them.
+  eq(burstStartAt(now, -60), now, "and a negative lead is clamped to now rather than going backwards");
 }
 
 finish();

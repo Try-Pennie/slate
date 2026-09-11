@@ -39,6 +39,10 @@ const REAL_SECRETS = [
   "CLOUDFLARE_API_TOKEN",
   "LOADTEST_BOOKING_API_KEY",
   "LOADTEST_CRON_SECRET",
+  // The fault leg REBUILDS the deployment (#2262), and the publishable key is
+  // inlined at build time, so it is a build input the workflow needs rather than a
+  // runtime one the deployment already holds.
+  "LOADTEST_SUPABASE_PUBLISHABLE_KEY",
   "LOADTEST_SUPABASE_SECRET_KEY",
   "LOADTEST_SUPABASE_URL",
   "REASSIGN_API_KEY",
