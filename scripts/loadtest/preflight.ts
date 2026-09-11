@@ -13,6 +13,8 @@
 // satisfies a check that only plants a clean pair.
 //
 // It writes to the BRANCH only and refuses production by name.
+import { writeFileSync, mkdirSync } from "node:fs";
+import { dirname } from "node:path";
 import { overlaps, type JudgedBooking } from "./judge-booking-run.ts";
 import { stubShapedEventId } from "./preflight-checks.ts";
 
@@ -35,6 +37,8 @@ const SUPA_KEY = need("SUPABASE_SECRET_KEY");
 const RUN_ID = need("RUN_ID");
 // env-ok: PREFLIGHT_CODE (optional; defaults to 112, the busiest real code, and a
 // hand run would only change it to reach a different pool)
+// env-ok: PREFLIGHT_OUT (optional; defaults to results/preflight.json, which is
+// where the workflow uploads it from)
 const CODE = process.env.PREFLIGHT_CODE ?? "112";
 
 // This one WRITES, so both refusals are by name and neither is a flag somebody
@@ -173,6 +177,7 @@ const planted = await fetch(`${SUPA}/bookings`, {
     },
   ]),
 });
+const slotUniqueIndexEnforced = !planted.ok;
 if (planted.ok) {
   const inserted = (await planted.json()) as { id: string }[];
   // It was ACCEPTED, which means `bookings_active_slot_uniq` is not doing its job
@@ -188,4 +193,24 @@ if (planted.ok) {
   );
 }
 console.log(`ok: the database refused a planted clash (${planted.status}), so the unique index is live`);
-console.log("\nPREFLIGHT PASSED");
+
+// The judge reads THIS rather than the catalogue, and that is the point.
+//
+// It used to ask PostgREST for `pg_indexes`, which PostgREST does not expose:
+// measured 2026-09-11, that read answers 404 on every environment, so the bar
+// reported "bookings_active_slot_uniq is NOT on the branch" on EVERY run. A
+// permanently red check is one nobody reads by the second week (L36).
+//
+// Proving it by BEHAVIOUR is also the stronger proof (L63): an index present in
+// the catalogue but not enforcing (invalid, or not the predicate anybody thinks it
+// is) reads as fine to a name lookup, and the thing the run actually depends on is
+// the database refusing a second active booking on one agent at one time. This
+// control just asked it to, so its answer is the measurement.
+const OUT = process.env.PREFLIGHT_OUT ?? "results/preflight.json";
+mkdirSync(dirname(OUT), { recursive: true });
+writeFileSync(
+  OUT,
+  JSON.stringify({ runId: RUN_ID, slotUniqueIndexEnforced, plantedStatus: planted.status }, null, 2),
+  "utf8",
+);
+console.log(`\nPREFLIGHT PASSED (wrote ${OUT})`);

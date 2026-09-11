@@ -276,6 +276,13 @@ It makes ONE real booking and checks three things:
   predicate really goes red on one and stays quiet on a back to back pair. Both
   directions, or a judge hard wired to report no overlaps would satisfy it.
 
+It writes that last answer to `results/preflight.json`, and the judge reads it
+rather than looking the index up in the catalogue. Two reasons: PostgREST does not
+expose `pg_indexes` at all (measured 2026-09-11, it answers 404 everywhere), so a
+catalogue lookup reported the index missing on EVERY run, which is how a check
+stops being read; and behaviour is the stronger proof anyway, because an index
+present but not enforcing reads as fine to a name lookup.
+
 ### What the judge refuses to do
 
 **It will not judge an incomplete run.** Three driver files out of four, or a
@@ -294,7 +301,7 @@ happened to arrive.
 | confirmed a minute | at or above 80 percent of target, with the full outcome mix printed so a short run says WHY |
 | latency | p50, p95 and max over ALL responses, and the p95 of the **200s** under 5,000ms |
 | 5xx and no reply | counted **separately** and both fail: a request answered badly and one never answered send two different people to two different places |
-| double bookings | no two run-scoped ACTIVE bookings overlap on one agent in `[starts_at, ends_at)`, read through a **paginating** list, and `bookings_active_slot_uniq` must be present (without it an absence of overlaps proves nothing) |
+| double bookings | no two run-scoped ACTIVE bookings overlap on one agent in `[starts_at, ends_at)`, read through a **paginating** list, and the preflight must have seen `bookings_active_slot_uniq` actually REFUSE a planted duplicate (without that, an absence of overlaps proves nothing) |
 | every 200 left a row | a booking row carrying the request's external id, an idempotency key, and a `busy_blocks` row |
 | the burst | exactly **one** 200 against the one agent pool, every other answer `SLOT_TAKEN`, and the winner really exists |
 | freshness | the worst oldest-bucket age across the window under 6 minutes |

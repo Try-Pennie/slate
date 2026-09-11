@@ -217,9 +217,31 @@ const bookings = (await listAll(
   `bookings?select=id,external_id,idempotency_key,assigned_user_id,starts_at,ends_at,status&external_id=like.${RUN_ID}-*`,
 )) as unknown as JudgedBooking[];
 const blocks = await listAll("busy_blocks?select=booking_id&booking_id=not.is.null");
-const indexes = await listAll(
-  "pg_indexes?select=indexname&indexname=eq.bookings_active_slot_uniq",
-).catch(() => [] as Record<string, unknown>[]);
+
+/**
+ * Whether `bookings_active_slot_uniq` is really enforcing, taken from the
+ * PREFLIGHT rather than from the catalogue.
+ *
+ * It used to ask PostgREST for `pg_indexes`. PostgREST does not expose that view:
+ * measured 2026-09-11 it answers 404 everywhere, so the bar reported the index
+ * missing on EVERY run and would have been muted by the second week (L36). The
+ * preflight plants a real duplicate and records whether the database refused it,
+ * which is the behaviour the run depends on rather than a name in a catalogue
+ * (L63): an index that is present but not enforcing reads as fine to a lookup.
+ *
+ * A MISSING preflight file is `false`, not `true`. The run has then not been shown
+ * the index enforcing, and the judge's finding says exactly that.
+ */
+let slotUniqueIndexPresent = false;
+try {
+  slotUniqueIndexPresent = readJson<{ slotUniqueIndexEnforced?: boolean }>(
+    join(RESULTS, "preflight.json"),
+  ).slotUniqueIndexEnforced === true;
+} catch {
+  console.error(
+    "note: no preflight result was found, so the run was never shown the unique index enforcing",
+  );
+}
 
 const startedAt = Math.min(...steady.map((d) => d.startedAtMs), Date.now());
 const finishedAt = Math.max(...steady.map((d) => d.finishedAtMs), startedAt);
@@ -232,7 +254,7 @@ const input: JudgeInput = {
   freshnessSamples: samples,
   bookings,
   bookingIdsWithBusyBlock: [...new Set(blocks.map((b) => String(b.booking_id)))],
-  slotUniqueIndexPresent: indexes.length > 0,
+  slotUniqueIndexPresent,
   ipCeilingControl: ipControl,
   platform: await platformReading(
     new Date(startedAt).toISOString(),
