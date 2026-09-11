@@ -313,13 +313,22 @@ describe("one compute per pool", () => {
     ),
   ];
 
-  /** Stand in for the drain, which has its own unit tests: run every unit. */
+  /**
+   * Stand in for the drain, which has its own unit tests: run every unit and SUM
+   * what each reported, which is the real function's contract since a unit
+   * stands for a whole pool. A stand in that returned the unit COUNT would let
+   * the route's reported total be wrong while this file stayed green.
+   */
   const drainAll = async (
     units: unknown[],
-    run: (u: unknown) => Promise<void>,
+    run: (u: unknown) => Promise<number | void>,
   ): Promise<number> => {
-    for (const u of units) await run(u);
-    return units.length;
+    let total = 0;
+    for (const u of units) {
+      const v = await run(u);
+      total += typeof v === "number" ? v : 1;
+    }
+    return total;
   };
 
   it("dispatches whole pools, not codes", async () => {
@@ -337,6 +346,40 @@ describe("one compute per pool", () => {
       .map((call) => (call[0] as { code: string }[]).map((b) => b.code).sort().join(" "))
       .sort();
     expect(dispatched).toEqual(["100 101 102 110 111 112", "120 121 122"]);
+  });
+
+  it("reports every pool's writes, not just the last one to finish", async () => {
+    // The defect this pins shipped on 2026-09-11. The route accumulated with
+    // `recomputed += await ...` inside a concurrent wave, which reads the
+    // variable BEFORE awaiting, so both pools added to zero and the second
+    // overwrote the first. Production reported one pool's worth as the whole
+    // cycle, judged itself behind on every tick, and was five cycles from a page
+    // about a fall behind that was not happening.
+    //
+    // The drain here runs both units CONCURRENTLY, because a serial stand in
+    // cannot reproduce a lost update.
+    cron.isAuthorizedCron.mockReturnValue(true);
+    precompute.listPoolBuckets.mockResolvedValueOnce(matrix);
+    precomputeCron.bucketsDueForRecompute.mockImplementation(
+      (...a: unknown[]) => a[1] as string[],
+    );
+    precomputeCron.recomputeDueBuckets.mockImplementationOnce((async (
+      units: unknown[],
+      run: (u: unknown) => Promise<number | void>,
+    ) => {
+      const settled = await Promise.all(units.map((u) => run(u)));
+      return settled.reduce<number>((n, v) => n + (typeof v === "number" ? v : 1), 0);
+    }) as never);
+    slotCache.recomputePoolSlotsForToday.mockImplementation(async (...a: unknown[]) => {
+      await new Promise((r) => setTimeout(r, 0));
+      return (a[0] as unknown[]).length;
+    });
+
+    const body = await (await GET(req())).json();
+    // Six codes in the Low pool plus three in Low with Beyond.
+    expect(body.recomputed).toBe(9);
+    expect(body.due).toBe(9);
+    expect(body.drained).toBe(true);
   });
 
   it("still reports its totals in BUCKETS, so the headroom numbers keep their meaning", async () => {

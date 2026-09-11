@@ -151,6 +151,53 @@ await (async () => {
   assert(recomputed === 2, `a failing bucket is isolated; others still recompute (got ${recomputed})`);
 })();
 
+await (async () => {
+  // #2237 follow-up: a unit of work can stand for SEVERAL things (a pool of six
+  // bucket codes), so the drain sums what each unit reports rather than counting
+  // units. The caller must not accumulate this itself: `total += await f()` reads
+  // `total` BEFORE it awaits, so several units running concurrently each add to
+  // the value they saw at the start and the last one to settle wins. That shipped
+  // and reported one pool's worth of writes as the whole cycle, which made the
+  // lane judge itself behind on every tick and put a false page five cycles out.
+  const perUnit = new Map([["a", 6], ["b", 3], ["c", 3], ["d", 6], ["e", 6], ["f", 3]]);
+  const total = await recomputeDueBuckets(
+    [...perUnit.keys()],
+    async (unit) => {
+      // An await BEFORE the return, so every unit is genuinely in flight at once:
+      // without it the additions serialise and the lost update cannot appear.
+      await new Promise((r) => setTimeout(r, 0));
+      return perUnit.get(unit)!;
+    },
+    () => true,
+    6,
+    (u) => u,
+  );
+  assert(total === 27, `sums what each unit reported, not the unit count (got ${total})`);
+})();
+
+await (async () => {
+  // A unit that reports NOTHING still counts as one, which is what every caller
+  // before pooling meant and what the three cases above rely on.
+  const total = await recomputeDueBuckets(["a", "b"], async () => {}, () => true, 2);
+  assert(total === 2, `a unit that reports no number counts as one (got ${total})`);
+})();
+
+await (async () => {
+  // And a unit that reports a number while a sibling THROWS: the thrower adds
+  // nothing and the reporter still adds its own.
+  const total = await recomputeDueBuckets(
+    ["ok", "bad"],
+    async (u) => {
+      await new Promise((r) => setTimeout(r, 0));
+      if (u === "bad") throw new Error("boom");
+      return 6;
+    },
+    () => true,
+    2,
+  );
+  assert(total === 6, `a failing unit contributes nothing and the other still counts (got ${total})`);
+})();
+
 // --- staleBucketPage: a deliberate invalidation is not a fall-behind (#1301) ---
 //
 // Saving a booking setting marks EVERY bucket's slots stale on purpose, so the

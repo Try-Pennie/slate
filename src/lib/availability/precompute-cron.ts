@@ -356,25 +356,40 @@ export function recomputeHeadroom(
  */
 export async function recomputeDueBuckets<T = string>(
   due: T[],
-  recompute: (unit: T) => Promise<void>,
+  /**
+   * Do one unit, and report HOW MANY things it refreshed. A unit stands for a
+   * whole POOL of bucket codes on the lane (#2245), so the number is routinely
+   * more than one; returning nothing means one, which is what every caller meant
+   * before pooling.
+   */
+  recompute: (unit: T) => Promise<number | void>,
   withinBudget: () => boolean,
   concurrency: number,
   /** How to name a unit in the failure log. A unit is a POOL of bucket codes on
    *  the lane (#2245) and a single code elsewhere, so the caller says. */
   describe: (unit: T) => string = (u) => String(u),
 ): Promise<number> {
-  let recomputed = 0;
+  // SUMMED HERE, deliberately, rather than by the caller.
+  //
+  // A caller accumulating this itself writes `total += await doOne(unit)`, and
+  // that reads `total` BEFORE it awaits: with a wave of units in flight at once
+  // they each add to the value they saw at the start, and the last one to settle
+  // overwrites the rest. It shipped on 2026-09-11 and reported ONE pool's writes
+  // as the whole cycle, so the lane judged itself behind on every tick and was
+  // five cycles from a page about a fall behind that was not happening. The
+  // concurrency lives in here, so the accumulation does too.
+  let refreshed = 0;
   for (let i = 0; i < due.length; i += concurrency) {
     if (!withinBudget()) break;
     const wave = due.slice(i, i + concurrency);
     const results = await Promise.allSettled(wave.map((unit) => recompute(unit)));
     results.forEach((r, j) => {
       if (r.status === "fulfilled") {
-        recomputed++;
+        refreshed += typeof r.value === "number" ? r.value : 1;
       } else {
         log.error("precompute", { msg: "recompute failed", bucket: describe(wave[j]!) }, r.reason);
       }
     });
   }
-  return recomputed;
+  return refreshed;
 }
