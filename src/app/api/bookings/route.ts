@@ -1,3 +1,4 @@
+import { stampSeenIp } from "@/lib/loadtest-echo";
 import { NextResponse, type NextRequest } from "next/server";
 import { authorizeBookingApi } from "@/lib/booking/route-auth";
 import { parseDirectBookingRequest, parseLookupQuery, parseCancelQuery, parseListQuery, LIST_ONLY_PARAMS } from "@/lib/booking/api-request";
@@ -35,7 +36,20 @@ export const dynamic = "force-dynamic";
  *
  *   POST (Bearer BOOKING_API_KEY[_2]) -> 501 | 401 | 429 | 503
  */
+/**
+ * #2243: under SLATE_LOADTEST only, every response carries the address the
+ * per-address ceiling was keyed on. A load run cannot attribute its own 429s
+ * otherwise, because a CI runner behind egress NAT shares an address with
+ * everything else on the host. The whole handler is wrapped in one place rather
+ * than each of its dozen returns being stamped, so a return added later carries it
+ * by construction (L96) and nothing about the production path changes: with the
+ * flag unset `stampSeenIp` adds a header to nothing.
+ */
 export async function POST(req: NextRequest) {
+  return stampSeenIp(await handlePost(req), req.headers);
+}
+
+async function handlePost(req: NextRequest) {
   // Three refusals, decided apart (#1429). The authorizer reports WHICH one it was
   // and records it according to the catalog, so a rotated key and a noisy caller no
   // longer raise the same number:
@@ -198,6 +212,10 @@ export async function POST(req: NextRequest) {
  * externalId and list filters mixed into a lookup request.
  */
 export async function GET(req: NextRequest) {
+  return stampSeenIp(await handleGet(req), req.headers);
+}
+
+async function handleGet(req: NextRequest) {
   // #597: reads deliberately opt OUT of the per-IP ceiling. That ceiling is sized for
   // the write path (60/min), while status polling is cheap and bursty and runs against a
   // ~10x larger per-key budget (#393). Inheriting the write ceiling here would throttle

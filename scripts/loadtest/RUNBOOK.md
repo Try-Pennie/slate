@@ -130,6 +130,112 @@ trigger for the Durable-Objects fallback (a paid, escalated decision).
      subrequests across both during a backlog). Not a subrequest-ceiling threat at 10,000,
      but a CPU contributor worth capping.
 
+## The booking path run (#2243)
+
+Everything above drives the CRON LANES. It never confirmed a booking, which is why
+`createEvent` was unstubbed for a year and nobody noticed (#2241). This section is
+the run that drives the path a lead actually takes.
+
+### What is copied from production rather than invented
+
+Both were measured on 2026-09-11 and both matter to what the run can find:
+
+- **The event type**: 20 minutes on a **10 minute** grid, 120 minutes notice, no
+  buffers. The seed used to say 30 on 15, which offers a third fewer times a day
+  and so understates how much four drivers contend for them.
+- **The roster shape** (`roster-shape.ts`): 90 agents across 5 zones, and the
+  attribute distribution. The old distribution was measured in June and gave the
+  Beyond backend **60 percent** of the roster; production gives it **two agents**.
+  That is not a rounding difference: two agents is what makes every `x2x` bucket
+  resolve to a pool of exactly **one**, and a one agent pool is the whole positive
+  control for the burst. A seed staffing those pools sixty deep produces a run that
+  cannot fail the control it was built for.
+
+Re-export the shape before a run if the roster has moved:
+
+```
+pnpm loadtest:export-shape > /tmp/shape.json
+ROSTER_SHAPE_FILE=/tmp/shape.json node --experimental-strip-types scripts/loadtest/seed.ts
+```
+
+The exporter is read only and refuses to print an empty shape. Its **pool depths**
+are recorded but are NOT an input to the seed: the seed derives depth from the
+profiles it generates, and the exported depths are what that output is checked
+against, so a generator that drifts is caught by two independently produced numbers
+rather than by trusting the generator to have applied its own input.
+
+### The seed refuses a branch whose migrations do not match
+
+Count AND highest version, both, against what the checkout ships. The highest alone
+is not enough: the migration directory has never been replayed from empty, so a
+branch can carry the newest file and be missing one in the middle, and every finding
+of the run would then be about the schema. It refuses rather than warning, because a
+seed is cheap to re-run and a ten minute run judged against the wrong schema is not.
+
+### Busy blocks are day aligned per zone
+
+They sit inside each agent's **own local** Mon to Fri 09:00 to 17:00, not at a fixed
+offset from the seed instant. The roster spans five zones, so a UTC anchored block
+lands mid morning for an Eastern agent and after hours for a Pacific one, and an
+agent whose blocks all fall outside their own hours simply reads as free all day:
+the seed would understate contention in exactly the zones the run is meant to press.
+
+### Driving it
+
+Four drivers, **fifteen a minute each for ten minutes**. Fifteen times four is
+**sixty**, which is exactly the per address write ceiling
+(`BOOKING_API_IP_LIMITER.perMinute`), and that is deliberate: the run sits on the
+ceiling so the judge can attribute the 429s it produces. The pacing constants are
+imported from the app rather than copied, so a run can never drift into measuring a
+ceiling somebody changed.
+
+```
+SLATE_BASE=https://<loadtest>.workers.dev BOOKING_API_KEY=<key> \
+RUN_ID=<run> DRIVER=0 OUT=results/driver-0.json \
+node --experimental-strip-types scripts/loadtest/book.ts
+```
+
+- **Codes are weighted by real traffic**, measured from 25,735 routed cal.com leads
+  in the 30 days to 2026-09-11. It is enormously lopsided (112 alone is 31 percent),
+  and the lopsidedness IS the load: the hot codes have the largest pools and the
+  most contended slot cache, the cold ones have one agent pools where every second
+  booking is a conflict. The sequence is interleaved so any prefix is representative.
+- **The slot is picked at RANDOM** from what the bucket offered, and it is the only
+  deliberately non-deterministic choice in the run. Four drivers each taking the
+  first offered time would contend on one slot all run, which measures the unique
+  index over and over and never measures the path at a rate.
+- **Availability reads are cached** and refreshed on a pace derived from the 30 a
+  minute per address ceiling divided by the number of drivers sharing that address.
+  A read before every booking would spend four times the budget and the run would be
+  measuring the limiter.
+- **`externalId` is `<run_id>-<driver>-<n>`**, unique across the run. A repeat is
+  not a duplicate row: `external_id` IS the Salesforce id to Slate, so the booker
+  would answer with the FIRST booking and the run would silently stop creating
+  anything.
+- **Every response is recorded** with status, outcome, wall time, the slot asked
+  for, and **the address Slate saw**, echoed on the `x-loadtest-seen-ip` header
+  under `SLATE_LOADTEST` only. A CI runner sits behind egress NAT, so it cannot work
+  out for itself which address the ceiling was keyed on, and a run that assumed its
+  own would report the limiter refusing IT when something else spent the budget.
+- **A bucket offering nothing is RECORDED**, with an outcome of its own, rather than
+  skipped in silence. An offered-nothing run and a run nobody drove otherwise
+  produce the same empty file.
+
+### The burst
+
+`MODE=burst` with `START_AT` (epoch ms) and `BURST_SLOT`, both chosen **once** by
+the setup step and handed to every driver, because a burst whose drivers each chose
+their own time is not a burst: nothing contends and everything succeeds.
+
+It runs against `122`, a real code real leads arrive on, whose pool is exactly one
+agent deep. The control is **exactly one 200 and the rest SLOT_TAKEN**, which is
+`bookings_active_slot_uniq` doing its job.
+
+A driver that wakes up **late exits without firing** and says so, in the file and on
+a non-zero exit. A late request meets an already taken slot and records a SLOT_TAKEN
+indistinguishable from the contention the control is counting, so the judge would be
+handed a staggered burst wearing a simultaneous one's clothes.
+
 ## Backstop retention decision (#440: retire #401 / #428 only if fully subsumed)
 **Decision: keep both `#401` and `#428` running. Neither is subsumed by the outbox.**
 

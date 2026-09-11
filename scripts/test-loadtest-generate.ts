@@ -3,9 +3,15 @@
 // branch DB. Faithful = attrs span all debt tiers so every XBC bucket gets a
 // pool; realistic in-window busy_blocks density; deterministic for repeatable runs.
 // Run: node --experimental-strip-types scripts/test-loadtest-generate.ts
+import { DateTime } from "luxon";
 import { generateSeed } from "./loadtest/generate.ts";
-import { assert, finish } from "./lib/harness.ts";
+import { agentIdsFromPool } from "../src/lib/availability/pool.ts";
+import { allXbcCodes, bucketSpecForXbc } from "../src/lib/xbc.ts";
+import { assert, eq, finish } from "./lib/harness.ts";
 
+// A Monday, so the four day horizon covers Mon to Thu and no weekday is skipped.
+// Stated rather than assumed: the generator skips weekends now, so a window that
+// straddled one would make every count below a function of the date.
 const NOW = Date.parse("2026-06-22T00:00:00Z");
 const DAY = 86_400_000;
 const p = {
@@ -22,10 +28,61 @@ assert(seed.users.length === 200, "one user row per agent");
 assert(seed.schedules.length === 200, "one availability_schedule per agent");
 assert(seed.rules.length === 200 * 5, "five weekday availability rules per agent");
 assert(seed.agentCalendars.length === 200, "one agent_calendar per agent (calendarsPerAgent=1)");
-assert(
-  seed.busyBlocks.length === 200 * 12 * 4,
-  `~blocksPerAgentPerDay * windowDays * agents busy_blocks; got ${seed.busyBlocks.length}`,
-);
+// Not a fixed product any more, and the reason is the point. Blocks sit in each
+// agent's OWN local day, so the same UTC instant is a different local date per
+// zone: at 2026-06-22T00:00:00Z a Pacific agent is still on Sunday, and their four
+// day window covers three working days where an Eastern agent's covers four. A
+// fixed expectation would have to pick one zone and would then be asserting that
+// every agent is in it, which is exactly the thing this replaced.
+{
+  const zoneByUser = new Map(seed.schedules.map((sc) => [sc.user_id, sc.timezone]));
+  const countByUser = new Map<string, number>();
+  for (const b of seed.busyBlocks) countByUser.set(b.user_id, (countByUser.get(b.user_id) ?? 0) + 1);
+  let mismatched = 0;
+  for (const u of seed.users) {
+    const start = DateTime.fromMillis(NOW, { zone: zoneByUser.get(u.id)! }).startOf("day");
+    let weekdays = 0;
+    for (let d = 0; d < p.windowDays; d++) if (start.plus({ days: d }).weekday <= 5) weekdays++;
+    if ((countByUser.get(u.id) ?? 0) !== weekdays * p.blocksPerAgentPerDay) mismatched++;
+  }
+  assert(
+    mismatched === 0,
+    `every agent gets blocksPerAgentPerDay on each WORKING day of their own local window; ` +
+      `${mismatched} agents did not`,
+  );
+  assert(seed.busyBlocks.length > 200 * 12 * 2, `and the seed is still dense; got ${seed.busyBlocks.length}`);
+}
+
+{
+  // The other direction, and it needs its own anchor (L159). At midnight UTC every
+  // US zone is still on the previous day, so they agree by accident and a seed that
+  // ignored zones entirely would satisfy the per agent expectation above. At 06:00Z
+  // on a Monday, Eastern is on Monday and Pacific is still on Sunday, so their four
+  // day windows cover four working days and three. Only a day aligned seed can
+  // produce that.
+  const split = generateSeed({ ...p, nowMs: Date.parse("2026-06-22T06:00:00Z") });
+  const zoneByUser = new Map(split.schedules.map((sc) => [sc.user_id, sc.timezone]));
+  const countByZone = new Map<string, Set<number>>();
+  const countByUser = new Map<string, number>();
+  for (const b of split.busyBlocks) countByUser.set(b.user_id, (countByUser.get(b.user_id) ?? 0) + 1);
+  for (const [user, n] of countByUser) {
+    const zone = zoneByUser.get(user)!;
+    const set = countByZone.get(zone) ?? new Set<number>();
+    set.add(n);
+    countByZone.set(zone, set);
+  }
+  const distinct = new Set([...countByUser.values()]);
+  assert(
+    distinct.size > 1,
+    `at an anchor where the zones are on different local days, their block counts differ; ` +
+      `got ${[...distinct].join(", ")}`,
+  );
+  assert(
+    (countByZone.get("America/New_York")?.values().next().value ?? 0) >
+      (countByZone.get("America/Los_Angeles")?.values().next().value ?? 0),
+    "and it is the zone still on Sunday that gets fewer, which is the alignment working",
+  );
+}
 
 // Faithful to prod (#273 calibration): debt_team is CUMULATIVE (an agent on a
 // tier also carries the ones below), which is what makes low-tier buckets large
@@ -49,18 +106,57 @@ assert(
   lowCount > ultraCount,
   "low tier appears in far more agents than ultra_high (the cumulative, lopsided prod shape)",
 );
+// Measured 2026-09-11: production has NO agent without a debt tier. The seed used
+// to generate 12 percent of them from a June distribution, which described a
+// roster that no longer exists.
 const unrouted = debtArrays.filter((a) => a.length === 0).length;
+assert(unrouted === 0, `every seeded agent carries a debt tier, as production does; got ${unrouted}`);
+
+// The Beyond backend is the one that matters most, and it is not a detail of the
+// distribution: production holds TWO Beyond agents out of ninety, which is what
+// makes every `x2x` bucket resolve to a pool of exactly ONE and gives the burst its
+// control (#2243). The old seed gave Beyond 60 percent of the roster, so those
+// pools were sixty deep and the control could never have fired.
+const backendArrays = seed.users.map(
+  (u) => (u.attributes.backend_service as string[] | undefined) ?? [],
+);
+const beyondAgents = backendArrays.filter((a) => a.includes("beyond")).length;
 assert(
-  unrouted >= 200 * 0.05 && unrouted <= 200 * 0.2,
-  `~10% of agents have no debt_team (unrouted, mirroring prod); got ${unrouted}`,
-);
-const backends = new Set(
-  seed.users.flatMap((u) => (u.attributes.backend_service as string[] | undefined) ?? []),
+  beyondAgents === 2,
+  `exactly two Beyond agents at 200, as production has at 90; got ${beyondAgents}`,
 );
 assert(
-  backends.has("beyond") && backends.has("achieve"),
-  "backend_service spans beyond and achieve like prod",
+  backendArrays.filter((a) => a.includes("achieve")).length > 150,
+  "and nearly the whole roster is Achieve, as production is",
 );
+// The real pool depths, computed through the BOOKER'S OWN predicate over the real
+// bucket criteria rather than asserted about the profiles (L58). The seed took the
+// shape as an input, so checking it against that same input would only prove the
+// arithmetic; this asks the shipped `agentIdsFromPool` what the seeded roster
+// actually resolves to, which is the number the run will meet.
+{
+  const orgAgents = seed.users.map((u) => ({ id: u.id, attributes: u.attributes }));
+  const depth = (code: string) =>
+    agentIdsFromPool(orgAgents, new Set<string>(), bucketSpecForXbc(code)?.criteria ?? {}).length;
+
+  // Every x2x code demands the Beyond backend, and two agents in the whole roster
+  // carry it, so each of those pools is exactly one deep. That is the burst's
+  // positive control, and it is the thing the old June distribution destroyed.
+  for (const code of ["120", "122", "222", "322", "422", "522"]) {
+    eq(depth(code), 1, `the ${code} pool holds exactly one agent, so the burst has its control`);
+  }
+  // And the ordinary pools are deep and lopsided, tier by tier, as production is.
+  assert(depth("112") > 100, `the Low pool is large at 200 agents; got ${depth("112")}`);
+  assert(
+    depth("112") > depth("212") && depth("212") > depth("312") && depth("312") > depth("412"),
+    "and the tiers thin out going up, as the cumulative shape makes them",
+  );
+  assert(depth("512") >= 1, "the top tier still has somebody in it");
+  // No bucket is left with nobody: an unstaffed pool would make every booking on it
+  // a refusal, and the run would be measuring a dead bucket.
+  const empty = allXbcCodes().filter((c) => depth(c) === 0);
+  eq(empty.length, 0, `no seeded bucket routes to nobody; ${empty.slice(0, 5).join(",")}`);
+}
 
 // Every user is bookable + active (so the lanes actually process them).
 assert(
@@ -79,17 +175,52 @@ assert(
 const scheduleIds = new Set(seed.schedules.map((s) => s.id));
 assert(seed.rules.every((r) => scheduleIds.has(r.schedule_id)), "rules reference seeded schedules");
 
-// Busy blocks fall inside the recompute horizon, with sane intervals.
-const winStart = NOW;
-const winEnd = NOW + p.windowDays * DAY;
+// Busy blocks fall inside the recompute horizon, with sane intervals. The window is
+// widened by a day at each end because the blocks are placed in each agent's own
+// LOCAL day now: a Pacific agent's Monday 09:00 is Monday 16:00 UTC, and an agent
+// east of UTC would start before the UTC day does.
+const winStart = NOW - DAY;
+const winEnd = NOW + (p.windowDays + 1) * DAY;
 assert(
   seed.busyBlocks.every((b) => {
     const s = Date.parse(b.starts_at);
     const e = Date.parse(b.ends_at);
     return s >= winStart && s < winEnd && e > s;
   }),
-  "busy_blocks are within [now, now+windowDays] and end after they start",
+  "busy_blocks are within the horizon (allowing for local days) and end after they start",
 );
+
+// The point of day alignment (#2243): a block must fall inside its OWN agent's
+// working day. A fixed UTC offset put a Pacific agent's meetings at 02:00 local,
+// where nothing could ever have booked over them, so the seed understated
+// contention in exactly the zones the booking run is meant to press.
+{
+  const zoneByUser = new Map(seed.schedules.map((sc) => [sc.user_id, sc.timezone]));
+  const outside = seed.busyBlocks.filter((b) => {
+    const zone = zoneByUser.get(b.user_id)!;
+    const local = DateTime.fromISO(b.starts_at, { zone });
+    const min = local.hour * 60 + local.minute;
+    return local.weekday > 5 || min < 540 || min >= 1020;
+  });
+  assert(
+    outside.length === 0,
+    `every busy block sits inside its own agent's local Mon-Fri 09:00-17:00; ${outside.length} did not`,
+  );
+  // The other direction (L159): the agents really are in different zones, so the
+  // assertion above is about alignment rather than about one zone trivially
+  // agreeing with UTC.
+  const zones = new Set(seed.schedules.map((sc) => sc.timezone));
+  assert(zones.size >= 4, `the seeded roster spans several zones; got ${zones.size}`);
+  // And the UTC hour of a 09:00 local block really does differ between agents,
+  // which is the fact a UTC anchored seed could not produce.
+  const utcHours = new Set(
+    seed.schedules.slice(0, 40).map((sc) => {
+      const first = seed.busyBlocks.find((b) => b.user_id === sc.user_id)!;
+      return DateTime.fromISO(first.starts_at, { zone: "utc" }).hour;
+    }),
+  );
+  assert(utcHours.size >= 3, `the same local hour lands at different UTC hours; got ${utcHours.size}`);
+}
 assert(
   seed.busyBlocks.every((b) => b.source === "gcal" || b.source === "slate"),
   "busy_blocks carry a valid source",

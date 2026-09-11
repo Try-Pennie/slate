@@ -1,3 +1,4 @@
+import { stampSeenIp } from "@/lib/loadtest-echo";
 import { NextResponse, type NextRequest } from "next/server";
 import { bookingApiKeyPrimary, bookingApiKeySecondary } from "@/lib/env";
 import {
@@ -49,6 +50,8 @@ function refuse(
   error: string,
   status: 401 | 429 | 503,
   readPath: boolean,
+  /** The request's headers, so the refusal can echo the address it was keyed on. */
+  headers: Headers,
   keyId?: "primary" | "secondary",
   /** Whether a Bearer token was actually SENT (#1450). Only meaningful for a
    *  credential refusal, and only on the write path. */
@@ -109,7 +112,14 @@ function refuse(
     counted: counting.kind === "error" ? counting.code : "no",
     own_counter: ownCounter ?? "none",
   });
-  return { ok: false, reason, response: NextResponse.json({ error }, { status }) };
+  // #2243: under SLATE_LOADTEST only, the refusal carries the address the ceiling
+  // was keyed on. This is the response a load run most needs it on: a 429 is the
+  // one outcome a runner cannot attribute for itself.
+  return {
+    ok: false,
+    reason,
+    response: stampSeenIp(NextResponse.json({ error }, { status }), headers),
+  };
 }
 
 /**
@@ -138,6 +148,7 @@ export async function authorizeBookingApi(
       auth.error,
       auth.status,
       readPath,
+      req.headers,
       undefined,
       auth.tokenPresent,
     );
@@ -148,7 +159,7 @@ export async function authorizeBookingApi(
     ? await bookingApiReadWithinLimit(auth.keyId)
     : await bookingApiWriteWithinLimit(auth.keyId);
   if (!keyEdgeOk || !(await allowRequest({ kind: "opaque", key: `key:${auth.keyId}` }, hourlyKeyRules))) {
-    return refuse("throttled_key", keyBudget, 429, readPath, auth.keyId);
+    return refuse("throttled_key", keyBudget, 429, readPath, req.headers, auth.keyId);
   }
   // #597: a coarse per-IP backstop on top of the per-key ceiling, in its own counter.
   // The key ceiling bounds total volume; this bounds any ONE machine, so a leaked key
@@ -166,6 +177,7 @@ export async function authorizeBookingApi(
         "Rate limit exceeded for this client.",
         429,
         readPath,
+        req.headers,
         auth.keyId,
       );
     }

@@ -1,8 +1,25 @@
-// Pure seed generator for the 200-agent load test (#273 Increment 5). Produces
-// in-memory rows that mirror production's shape so the recompute + sync lanes do
-// realistic work against a seeded (isolated) DB. No DB/network here — seed.ts
-// inserts what this returns. Deterministic (index-derived, no randomness) so a
-// load run is repeatable. Exercised by scripts/test-loadtest-generate.ts.
+// Pure seed generator for the load test. Produces in-memory rows that mirror
+// production's shape so the recompute, sync and BOOKING paths do realistic work
+// against a seeded (isolated) DB. No DB/network here: seed.ts inserts what this
+// returns. Deterministic (index derived, no randomness) so a load run is
+// repeatable. Exercised by scripts/test-loadtest-generate.ts.
+//
+// Two things changed for the booking path run (#2243), and both were measured
+// against production on 2026-09-11 rather than assumed:
+//
+//   the attribute distribution comes from `roster-shape.ts` instead of weights
+//   measured in June, which had the Beyond backend at 60 percent of the roster
+//   where production has two agents in it. That difference is the burst's control:
+//   every `x2x` bucket resolves to a pool of exactly ONE agent;
+//
+//   busy blocks are placed in each agent's OWN LOCAL working day rather than at a
+//   fixed offset from the seed instant. The roster spans five zones, so a UTC
+//   anchored block lands mid morning for one agent and after hours for another,
+//   and an agent whose blocks all fall outside their own hours is simply free all
+//   day: the seed would understate contention exactly where the booking path is
+//   meant to meet it.
+import { DateTime } from "luxon";
+import { PRODUCTION_SHAPE, scaleShape, zoneForIndex, type RosterShape } from "./roster-shape.ts";
 export interface SeedParams {
   agentCount: number;
   orgId: string;
@@ -13,6 +30,8 @@ export interface SeedParams {
   /** In-window busy_blocks per agent per day (realistic meeting density). */
   blocksPerAgentPerDay: number;
   calendarsPerAgent?: number;
+  /** The roster to reproduce. Defaults to production as measured 2026-09-11. */
+  shape?: RosterShape;
 }
 
 export interface SeedUser {
@@ -55,71 +74,64 @@ export interface GeneratedSeed {
   busyBlocks: SeedBusyBlock[];
 }
 
-const DAY_MS = 86_400_000;
 const hex12 = (n: number) => n.toString(16).padStart(12, "0");
 // Deterministic, valid 8-4-4-4-12 hex UUIDs, namespaced by row kind.
 const uuid = (prefix: string, n: number) => `${prefix}0000000-0000-4000-8000-${hex12(n)}`;
 
-// Production attribute distribution (bookable+active, ~111 agents, measured
-// 2026-06-22 for #273 load-test calibration). debt_team is CUMULATIVE — an agent
-// on a tier also carries the tiers below — which is what makes the low-tier
-// buckets pull large overlapping pools and concentrates recompute cost there. A
-// single-tier-each seed would miss those hot buckets and understate the load.
-const DEBT_PROFILES: { team: string[] | null; weight: number }[] = [
-  { team: ["low"], weight: 33 },
-  { team: ["medium", "low"], weight: 24 },
-  { team: ["high", "medium", "low"], weight: 14 },
-  { team: null, weight: 12 }, // unrouted: no debt_team (and no backend, below)
-  { team: ["very_high", "high", "medium"], weight: 12 },
-  { team: ["ultra_high", "very_high", "high", "medium"], weight: 8 },
-  { team: ["high", "medium"], weight: 3 },
-  { team: ["ultra_high", "very_high"], weight: 2 },
-  { team: ["very_high", "high", "medium", "low"], weight: 1 },
-  { team: ["very_high", "high"], weight: 1 },
-  { team: ["ultra_high", "very_high", "high"], weight: 1 },
-];
-// backend_service among agents that HAVE a debt_team (the null-debt 12 also have
-// no backend). The retired legal attribute (#2218) is not generated at all.
-const BACKEND_PROFILES: { svc: string[]; weight: number }[] = [
-  { svc: ["beyond"], weight: 60 },
-  { svc: ["achieve"], weight: 38 },
-  { svc: ["beyond", "achieve"], weight: 1 },
-];
+/**
+ * The working day every seeded agent keeps, in their OWN zone: Monday to Friday,
+ * 09:00 to 17:00 local, which is Slate's seeded default.
+ */
+const WORK_START_MIN = 540;
+const WORK_END_MIN = 1020;
 
-/** Expand weighted profiles into exactly n deterministic index picks (proportional). */
-function proportionalPicks(weights: number[], n: number): number[] {
-  const total = weights.reduce((s, w) => s + w, 0);
-  const picks: number[] = [];
-  weights.forEach((w, idx) => {
-    const count = Math.round((w / total) * n);
-    for (let k = 0; k < count && picks.length < n; k++) picks.push(idx);
-  });
-  while (picks.length < n) picks.push(weights.length - 1); // pad rounding shortfall
-  return picks.slice(0, n);
+/**
+ * One agent's profile per index, INTERLEAVED across the profiles rather than
+ * blocked.
+ *
+ * Blocked would put every Low-only agent first and both Beyond agents last, so any
+ * run that seeded a prefix of the roster would have no Beyond agent at all and the
+ * burst's one agent pool would be a pool of nobody. Interleaving costs nothing and
+ * makes every prefix representative.
+ */
+function profileForIndex(profiles: { agents: number }[], index: number): number {
+  const total = profiles.reduce((s, p) => s + p.agents, 0);
+  if (total === 0) return 0;
+  const order: number[] = [];
+  const remaining = profiles.map((p) => p.agents);
+  while (remaining.some((n) => n > 0)) {
+    for (let i = 0; i < remaining.length; i++) {
+      if (remaining[i]! > 0) {
+        order.push(i);
+        remaining[i]!--;
+      }
+    }
+  }
+  return order[index % order.length]!;
 }
 
 export function generateSeed(p: SeedParams): GeneratedSeed {
   const calsPerAgent = p.calendarsPerAgent ?? 1;
+  const shape = p.shape ?? PRODUCTION_SHAPE;
   const users: SeedUser[] = [];
   const schedules: SeedSchedule[] = [];
   const rules: SeedRule[] = [];
   const agentCalendars: SeedCalendar[] = [];
   const busyBlocks: SeedBusyBlock[] = [];
 
-  // Assign attributes by the measured prod distribution so per-bucket pool sizes
-  // (the recompute cost driver) match reality, not an even spread.
-  const debtPicks = proportionalPicks(DEBT_PROFILES.map((d) => d.weight), p.agentCount);
-  const backendPicks = proportionalPicks(BACKEND_PROFILES.map((b) => b.weight), p.agentCount);
+  // Attributes by the MEASURED production shape, so per bucket pool sizes match
+  // reality rather than an even spread. The pool sizes are what drive recompute
+  // cost, and the smallest of them is what the burst's control rests on.
+  const profiles = scaleShape(shape, p.agentCount);
 
   for (let i = 0; i < p.agentCount; i++) {
     const userId = uuid("a", i);
     const scheduleId = uuid("b", i);
-    const team = DEBT_PROFILES[debtPicks[i]].team;
+    const profile = profiles[profileForIndex(profiles, i)]!;
+    const timezone = zoneForIndex(shape, i, p.agentCount);
     const attrs: Record<string, string | string[]> = {};
-    if (team) {
-      attrs.debt_team = team;
-      attrs.backend_service = BACKEND_PROFILES[backendPicks[i]].svc; // only routed agents have a backend
-    }
+    if (profile.debtTeam.length > 0) attrs.debt_team = [...profile.debtTeam];
+    if (profile.backendService.length > 0) attrs.backend_service = [...profile.backendService];
 
     users.push({
       id: userId,
@@ -131,26 +143,42 @@ export function generateSeed(p: SeedParams): GeneratedSeed {
       bookable: true,
       deactivated_at: null,
     });
-    schedules.push({ id: scheduleId, user_id: userId, timezone: "America/New_York" });
-    // Mon-Fri 9:00-17:00 (minutes 540-1020), like the default working hours.
+    schedules.push({ id: scheduleId, user_id: userId, timezone });
+    // Mon-Fri 9:00-17:00 LOCAL (minutes 540-1020), like the default working hours.
     for (let weekday = 1; weekday <= 5; weekday++) {
-      rules.push({ schedule_id: scheduleId, weekday, start_minute: 540, end_minute: 1020 });
+      rules.push({
+        schedule_id: scheduleId,
+        weekday,
+        start_minute: WORK_START_MIN,
+        end_minute: WORK_END_MIN,
+      });
     }
     for (let c = 0; c < calsPerAgent; c++) {
       agentCalendars.push({ user_id: userId, calendar_id: c === 0 ? "primary" : `cal-${c}` });
     }
 
-    // In-window busy blocks: blocksPerAgentPerDay across the workday, every day
-    // of the horizon. 1-in-5 marked 'slate' (booking write-through), rest 'gcal'.
+    // Busy blocks inside the agent's OWN LOCAL working day, every day of the
+    // horizon. Day ALIGNED rather than offset from the seed instant: the roster
+    // spans five zones, so a fixed UTC offset lands mid morning for an Eastern
+    // agent and after hours for a Pacific one, and an agent whose blocks all fall
+    // outside their own hours reads as free all day. The seed would then
+    // understate contention in exactly the zones the booking run is meant to press.
+    const startOfDay = DateTime.fromMillis(p.nowMs, { zone: timezone }).startOf("day");
     for (let d = 0; d < p.windowDays; d++) {
+      const day = startOfDay.plus({ days: d });
+      // A weekend day has no working hours, so a block there would be busy time
+      // nothing could have booked over anyway. Skipped, which also means the block
+      // count varies with where the window falls, exactly as a real calendar does.
+      if (day.weekday > 5) continue;
       for (let k = 0; k < p.blocksPerAgentPerDay; k++) {
-        // spread k blocks across an 8h workday starting 09:00 UTC
-        const offsetMin = 9 * 60 + Math.floor((k * 8 * 60) / p.blocksPerAgentPerDay);
-        const startMs = p.nowMs + d * DAY_MS + offsetMin * 60_000;
+        const offsetMin =
+          WORK_START_MIN +
+          Math.floor((k * (WORK_END_MIN - WORK_START_MIN)) / p.blocksPerAgentPerDay);
+        const start = day.plus({ minutes: offsetMin });
         busyBlocks.push({
           user_id: userId,
-          starts_at: new Date(startMs).toISOString(),
-          ends_at: new Date(startMs + 30 * 60_000).toISOString(),
+          starts_at: start.toUTC().toISO()!,
+          ends_at: start.plus({ minutes: 30 }).toUTC().toISO()!,
           source: (i + d + k) % 5 === 0 ? "slate" : "gcal",
           calendar_id: "primary",
         });
