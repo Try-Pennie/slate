@@ -25,6 +25,7 @@ import {
   RUN_MINUTES,
   chooseBurstSlot,
   burstStartAt,
+  offeredSlots,
 } from "./loadtest/book-plan.ts";
 import {
   AVAILABILITY_LIMITER,
@@ -223,6 +224,81 @@ const T0 = Date.parse("2026-09-15T14:00:00.000Z");
   // Never in the past: a negative lead would put the moment behind every driver,
   // and burstReadiness would answer "missed" for all of them.
   eq(burstStartAt(now, -60), now, "and a negative lead is clamped to now rather than going backwards");
+}
+
+// --- reading what /api/availability actually answers (#2261) ------------------
+//
+// There were THREE readers of this payload and every one of them was wrong the
+// same way: each declared `slots` as `{ start?: string }[]` and mapped `s.start`,
+// which is undefined for a string, so all three resolved to an EMPTY list on a
+// perfectly healthy response. It was invisible because empty is a real answer.
+// Measured against the deployed load test Worker on 2026-09-11: bucket 112
+// offered 130 times and bucket 122 offered 94, and every reader saw nil.
+
+{
+  // The REAL shape, copied from the deployment's own response rather than from
+  // what the code believed (L58, L34): a list of ISO strings.
+  const body = {
+    bucket: "122",
+    orgName: "Loadtest Org",
+    eventType: { durationMinutes: 20 },
+    slots: ["2026-09-15T14:00:00.000Z", "2026-09-15T14:10:00.000Z"],
+    emptyBecause: null,
+  };
+  eq(offeredSlots(body).length, 2, "the real payload's times are read");
+  eq(offeredSlots(body)[0], "2026-09-15T14:00:00.000Z", "and come back as the strings they are");
+}
+
+{
+  // A genuinely empty bucket is EMPTY, not an error: the drivers record it as an
+  // outcome of its own and the preflight refuses on it by name.
+  eq(offeredSlots({ slots: [] }).length, 0, "a bucket offering nothing reads as no times");
+}
+
+{
+  // The shape all three readers assumed. It must THROW, never read as empty: a
+  // reader that returns [] for both an empty bucket and an unreadable payload is
+  // exactly what made this cost a day (L98, L11).
+  let threw = "";
+  try {
+    offeredSlots({ slots: [{ start: "2026-09-15T14:00:00.000Z" }] });
+  } catch (err) {
+    threw = (err as Error).message;
+  }
+  assert(threw !== "", "the object shape every reader assumed is REFUSED, not read as empty");
+  assert(threw.includes("start"), "and the refusal names the keys it actually saw");
+  assert(
+    threw.includes("empty list on a healthy response"),
+    "and says what that mistake looks like, since its symptom is silence",
+  );
+}
+
+{
+  // Every other way the payload can be unreadable, each refusing rather than
+  // resolving to a comfortable empty list.
+  for (const [label, body] of [
+    ["a payload that is not an object", "nope"],
+    ["a payload that is null", null],
+    ["a response with no slots field", { bucket: "122" }],
+    ["a slots field that is not an array", { slots: { first: "x" } }],
+    ["a slots list holding numbers", { slots: [1757000000000] }],
+  ] as const) {
+    let threw = false;
+    try {
+      offeredSlots(body);
+    } catch {
+      threw = true;
+    }
+    assert(threw, `${label} is refused`);
+  }
+}
+
+{
+  // An empty string is dropped rather than thrown on: it is a string, so the shape
+  // is right, and a blank time is nothing to book rather than a payload nobody can
+  // read. Both directions on the same input (L159).
+  const got = offeredSlots({ slots: ["2026-09-15T14:00:00.000Z", "", "2026-09-15T15:00:00.000Z"] });
+  eq(got.length, 2, "a blank time is dropped, not refused");
 }
 
 finish();

@@ -21,6 +21,7 @@ import { dirname } from "node:path";
 import {
   requestSchedule,
   availabilityRefreshMs,
+  offeredSlots,
   burstReadiness,
   externalIdFor,
   pickSlot,
@@ -106,14 +107,15 @@ async function slotsFor(code: string, nowMs: number): Promise<string[]> {
   const cached = slotCache.get(code);
   if (cached && nowMs - cached.fetchedAtMs < REFRESH_MS) return cached.slots;
   let slots: string[] = cached?.slots ?? [];
+  // The PARSE is deliberately outside the catch below. A read that failed and a
+  // response whose shape we cannot read are different facts: the first is a 429 or
+  // a blip the run should ride out on its cached view, and the second is a defect
+  // that would otherwise arrive as "this bucket offers nothing" on every request
+  // for the whole run (#2261).
+  let payload: unknown = null;
   try {
     const res = await fetch(`${SLATE_BASE}/api/availability?bucket=${encodeURIComponent(code)}`);
-    if (res.ok) {
-      const body = (await res.json()) as { slots?: { start?: string }[] };
-      slots = (body.slots ?? [])
-        .map((s) => (typeof s.start === "string" ? s.start : ""))
-        .filter((s) => s !== "");
-    }
+    if (res.ok) payload = await res.json();
     // A refused or unreadable read KEEPS the previous view rather than emptying it.
     // An empty list means "this bucket offers nothing", which is a real state the
     // run should be able to record; a 429 means "we asked too often", and turning
@@ -121,6 +123,10 @@ async function slotsFor(code: string, nowMs: number): Promise<string[]> {
   } catch {
     // Same reasoning: a transport fault leaves the last known view in place.
   }
+  // Outside the catch ON PURPOSE: `offeredSlots` throws on a payload it cannot
+  // read, and that must end the driver rather than resolve to the empty list every
+  // caller treats as "this bucket offers nothing".
+  if (payload !== null) slots = offeredSlots(payload);
   slotCache.set(code, { fetchedAtMs: nowMs, slots });
   return slots;
 }

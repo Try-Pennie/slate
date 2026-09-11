@@ -14,7 +14,7 @@
 //   SLATE_BASE=https://<loadtest>.workers.dev BURST_LEAD_SECONDS=300 \
 //   node --experimental-strip-types scripts/loadtest/burst-setup.ts
 import { appendFileSync } from "node:fs";
-import { chooseBurstSlot, burstStartAt, DRIVERS } from "./book-plan.ts";
+import { chooseBurstSlot, burstStartAt, offeredSlots, DRIVERS } from "./book-plan.ts";
 import { BURST_CODE } from "./code-mix.ts";
 import { PRODUCTION_SUPABASE_REF, PRODUCTION_HOST } from "../../src/lib/loadtest-guard.ts";
 
@@ -58,8 +58,11 @@ if (!res.ok) {
   );
   process.exit(2);
 }
-const body = (await res.json().catch(() => ({}))) as { slots?: { start?: string }[] };
-const offered = (body.slots ?? []).map((s) => s.start).filter((s): s is string => typeof s === "string");
+// Through the shared reader (#2261), which THROWS on a payload it cannot read
+// rather than resolving to an empty list: an unreadable shape would otherwise
+// arrive here as "this bucket offers nothing" and refuse the run for the wrong
+// reason entirely.
+const offered = offeredSlots(await res.json());
 const slot = chooseBurstSlot(offered);
 if (slot === null) {
   // Its OWN exit code. A bucket offering nothing and an availability read that

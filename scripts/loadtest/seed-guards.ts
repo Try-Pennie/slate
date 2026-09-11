@@ -62,3 +62,65 @@ export function readAgentCount(raw: string | undefined, fallback: number): numbe
   const n = Number(trimmed);
   return Number.isSafeInteger(n) && n > 0 ? n : null;
 }
+
+/**
+ * Why the branch's applied migrations could not be read, or null (#2261).
+ *
+ * The read goes through the `applied_migration_versions()` RPC, never the table.
+ * PostgREST exposes the `public` schema ONLY, so
+ * `supabase_migrations.schema_migrations` is unreachable over the API and answers
+ * 406 on every project; migration 0072 records that and ships the function for
+ * exactly this. The seed shipped reading the table and died on its own check
+ * before writing a row, which looks identical to the bad schema the check exists
+ * to catch.
+ *
+ * Each status gets its own sentence, because they send different people to
+ * different places (L11): a 404 is a branch missing migration 0072, a 401 or 403
+ * is a key that may not call a function granted to the secret key client alone,
+ * and anything else is the read itself.
+ */
+export function migrationReadRefusal(status: number, bodyText: string): string | null {
+  if (status === 200) return null;
+  const tail = bodyText.trim() === "" ? "" : ` ${bodyText.slice(0, 200)}`;
+  if (status === 404) {
+    return (
+      `applied_migration_versions() answered 404${tail}. Migration 0072 is not applied to this ` +
+      `branch, so its schema cannot be checked and the seed refuses.`
+    );
+  }
+  if (status === 401 || status === 403) {
+    return (
+      `applied_migration_versions() answered ${status}${tail}. Execute on it is granted to the ` +
+      `secret key server client only, so this key may not call it.`
+    );
+  }
+  if (status === 406) {
+    return (
+      `applied_migration_versions() answered 406${tail}. A 406 is what reading ` +
+      `supabase_migrations directly gives, so something is calling the table rather than the RPC.`
+    );
+  }
+  return (
+    `could not read the branch's applied migrations (${status}${tail}). The seed refuses to run ` +
+    `against a schema it cannot check.`
+  );
+}
+
+/**
+ * The applied versions out of the RPC's answer, or a refusal.
+ *
+ * An answer that is not an array is NOT an empty branch. Reading it as one would
+ * hand `migrationMismatch` a count of zero, which it reports as "never migrated or
+ * the migration table could not be read": a true sentence about the wrong thing,
+ * pointing at the branch when the fault is the function.
+ */
+export function appliedVersionsFrom(body: unknown): { versions: string[] } | { why: string } {
+  if (!Array.isArray(body)) {
+    return {
+      why:
+        "applied_migration_versions() did not return an array, so the branch's schema could not " +
+        "be checked. Migration 0072 may be unapplied, or something other than the RPC answered.",
+    };
+  }
+  return { versions: body.map((v) => String(v)) };
+}

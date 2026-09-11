@@ -255,3 +255,58 @@ export function chooseBurstSlot(slots: readonly string[]): string | null {
 export function burstStartAt(nowMs: number, leadSeconds: number): number {
   return nowMs + Math.max(0, Math.round(leadSeconds)) * 1000;
 }
+
+/**
+ * The times a bucket is offering, read from `/api/availability` (#2261).
+ *
+ * ONE reader, because there were three and every one of them was wrong the same
+ * way. The endpoint answers `slots` as an array of ISO **strings**; the driver,
+ * the preflight and the burst setup each declared it as `{ start?: string }[]`
+ * and mapped `s.start`, which is `undefined` for a string, so all three resolved
+ * to an EMPTY list on a perfectly healthy response.
+ *
+ * That is the whole reason this is not three declarations (L41). It was invisible
+ * because empty is a real answer: the driver records `no-slots-offered` and carries
+ * on, the preflight says "this bucket is offering no times", and a run would have
+ * reported six hundred bookings nobody could make against a branch that was
+ * offering a hundred and thirty times a bucket. Measured against the real
+ * deployment on 2026-09-11: 130 for code 112, 94 for 122, and every reader saw nil.
+ *
+ * So it THROWS on a shape it cannot read rather than returning `[]` (L98, L11). An
+ * empty answer and an unreadable one are different facts, and the second one is
+ * the one nothing noticed for a day: a reader that returns empty for both makes
+ * the next shape change silent in exactly the same way.
+ */
+export function offeredSlots(body: unknown): string[] {
+  if (typeof body !== "object" || body === null) {
+    throw new Error("the availability response was not an object, so its times could not be read");
+  }
+  const slots = (body as { slots?: unknown }).slots;
+  if (slots === undefined) {
+    throw new Error(
+      "the availability response carried no `slots` field at all, so its times could not be read",
+    );
+  }
+  if (!Array.isArray(slots)) {
+    throw new Error(`the availability response's \`slots\` was ${typeof slots}, not an array`);
+  }
+  const out: string[] = [];
+  for (const s of slots) {
+    if (typeof s === "string") {
+      if (s !== "") out.push(s);
+      continue;
+    }
+    // The exact shape all three readers assumed. Named rather than skipped,
+    // because silently dropping it is what made this cost a day.
+    const shape =
+      typeof s === "object" && s !== null
+        ? `an object with keys ${Object.keys(s as object).join(", ") || "(none)"}`
+        : typeof s;
+    throw new Error(
+      `the availability response's \`slots\` held ${shape} where an ISO string was expected. ` +
+        "The endpoint answers a list of strings; a reader expecting `{ start }` objects sees an " +
+        "empty list on a healthy response.",
+    );
+  }
+  return out;
+}
