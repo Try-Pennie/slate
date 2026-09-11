@@ -23,6 +23,7 @@ import {
   availabilityRefreshMs,
   offeredSlots,
   loadtestPhone,
+  idPrefix,
   burstReadiness,
   externalIdFor,
   pickSlot,
@@ -220,7 +221,7 @@ async function steady(mode: "steady" | "fault" = "steady", minutes = RUN_MINUTES
         driver: DRIVER,
         n: req.n,
         code: req.code,
-        externalId: externalIdFor(RUN_ID, DRIVER, req.n),
+        externalId: externalIdFor(idPrefix(RUN_ID, mode), DRIVER, req.n),
         sentAtMs: now,
         wallMs: 0,
         status: 0,
@@ -234,7 +235,7 @@ async function steady(mode: "steady" | "fault" = "steady", minutes = RUN_MINUTES
       await book({
         code: req.code,
         startIso,
-        externalId: externalIdFor(RUN_ID, DRIVER, req.n),
+        externalId: externalIdFor(idPrefix(RUN_ID, mode), DRIVER, req.n),
         n: req.n,
       }),
     );
@@ -361,7 +362,7 @@ async function burst(): Promise<void> {
   // control is that exactly one of them wins.
   const attempts = await Promise.all(
     Array.from({ length: BURST_REQUESTS }, (_, i) =>
-      book({ code, startIso, externalId: externalIdFor(RUN_ID, DRIVER, i), n: i }),
+      book({ code, startIso, externalId: externalIdFor(idPrefix(RUN_ID, "burst"), DRIVER, i), n: i }),
     ),
   );
   write({

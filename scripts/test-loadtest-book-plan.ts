@@ -27,6 +27,7 @@ import {
   burstStartAt,
   offeredSlots,
   loadtestPhone,
+  idPrefix,
 } from "./loadtest/book-plan.ts";
 import {
   AVAILABILITY_LIMITER,
@@ -345,6 +346,52 @@ const T0 = Date.parse("2026-09-15T14:00:00.000Z");
     for (let n = 0; n < 150; n++) seen.add(loadtestPhone(`run-1-${driver}-${n}`));
   }
   eq(seen.size, 600, "a whole run's six hundred attempts are six hundred distinct people");
+}
+
+// --- each leg mints its own external ids (#2261) ------------------------------
+//
+// All three legs built `<run>-<driver>-<n>`, so they COLLIDED, and `external_id`
+// IS the Salesforce id to Slate: a repeat is a strong match, answered by
+// RESCHEDULING the existing booking rather than by creating one. Neither
+// collision showed up as an error anywhere, because a reschedule is a 200.
+
+{
+  const run = "run-1";
+  const three = new Set([
+    idPrefix(run, "steady"),
+    idPrefix(run, "burst"),
+    idPrefix(run, "fault"),
+  ]);
+  eq(three.size, 3, "the three legs get three different id spaces");
+}
+
+{
+  // The live collisions. The fault pass runs as driver 0 under the same run id, so
+  // it minted exactly the ids the steady pass had used; the burst runs first and
+  // its winners took ids the steady pass then reused.
+  const run = "run-1";
+  const steadyId = externalIdFor(idPrefix(run, "steady"), 0, 0);
+  const faultId = externalIdFor(idPrefix(run, "fault"), 0, 0);
+  const burstId = externalIdFor(idPrefix(run, "burst"), 0, 0);
+  eq(new Set([steadyId, faultId, burstId]).size, 3, "the same driver and index collide no more");
+}
+
+{
+  // Every prefix stays rooted at the run id, because the judge scopes its database
+  // reads to `external_id=like.<run>-*` and an id outside that is a row the run
+  // cannot see at all.
+  const run = "run-34656052378-1";
+  for (const mode of ["steady", "burst", "fault"] as const) {
+    const id = externalIdFor(idPrefix(run, mode), 2, 7);
+    assert(id.startsWith(`${run}-`), `a ${mode} id is still inside the run's scope (${id})`);
+  }
+}
+
+{
+  // Two runs never collide either, whatever the leg.
+  const a = externalIdFor(idPrefix("run-1", "fault"), 0, 0);
+  const b = externalIdFor(idPrefix("run-2", "fault"), 0, 0);
+  assert(a !== b, "two runs' fault passes do not share ids");
 }
 
 finish();
