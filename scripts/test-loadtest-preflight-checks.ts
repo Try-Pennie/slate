@@ -240,8 +240,8 @@ import { assert, eq, finish } from "./lib/harness.ts";
   // the previous version would have the run judge a build nobody drove.
   const stale = faultModeVerdict(
     200,
-    { commit: "old1111", loadtest: true, faultPct: 10 },
-    { faultPct: 10, commit: "new2222" },
+    { commit: "aaaaaaaaaaaa", loadtest: true, faultPct: 10 },
+    { faultPct: 10, commit: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" },
   );
   assert(!stale.ok, "a deployment serving a different commit is refused");
   assert(
@@ -254,8 +254,8 @@ import { assert, eq, finish } from "./lib/harness.ts";
   assert(!stale.ok && stale.retriable, "which is why it is retriable rather than final");
   const fresh = faultModeVerdict(
     200,
-    { commit: "new2222", loadtest: true, faultPct: 10 },
-    { faultPct: 10, commit: "new2222" },
+    { commit: "bbbbbbbbbbbb", loadtest: true, faultPct: 10 },
+    { faultPct: 10, commit: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" },
   );
   assert(fresh.ok, "and the matching commit is accepted");
   // Not checked when the caller does not know which commit it deployed, so a hand
@@ -264,6 +264,48 @@ import { assert, eq, finish } from "./lib/harness.ts";
     faultModeVerdict(200, { commit: "anything", loadtest: true, faultPct: 10 }, { faultPct: 10 }).ok,
     "a caller that named no commit is not judged on one",
   );
+
+  // THE CASE A LIVE RUN MET. The deployment answers the first twelve characters,
+  // because that is what `stamp-build-info.ts` writes into the bundle, and the
+  // workflow hands this leg `github.sha`, which is all forty. An equality check
+  // calls the SAME commit a redeploy that never landed, and since that mismatch is
+  // classified as propagation it then waits out the whole deadline before saying
+  // so. Comparison goes through the stamper's own shortening (L70).
+  const FULL = "660c7aacae82658b8947ca923237f5de2932d8f3";
+  const SHORT = "660c7aacae82";
+  eq(SHORT.length, 12, "the stamper writes twelve characters");
+  assert(FULL.startsWith(SHORT), "and the short form really is the head of the full sha");
+  const sameCommit = faultModeVerdict(
+    200,
+    { commit: SHORT, loadtest: true, faultPct: 10 },
+    { faultPct: 10, commit: FULL },
+  );
+  assert(
+    sameCommit.ok,
+    "a deployment answering the short sha of the commit the leg deployed is accepted",
+  );
+  // The other direction (L159): a genuinely different commit is still caught, so
+  // the shortening did not turn the check into a no-op.
+  const reallyStale = faultModeVerdict(
+    200,
+    { commit: "111111111111", loadtest: true, faultPct: 10 },
+    { faultPct: 10, commit: FULL },
+  );
+  assert(!reallyStale.ok, "and a genuinely different commit is still refused");
+  assert(
+    !reallyStale.ok && reallyStale.why.includes(SHORT),
+    "with the refusal quoting the commit in the same form the deployment reports",
+  );
+
+  // A `commit` that is not a sha at all cannot be shortened, and that is a fault in
+  // the caller rather than propagation, so it fails at once instead of spending the
+  // deadline.
+  const nonsense = faultModeVerdict(
+    200,
+    { commit: SHORT, loadtest: true, faultPct: 10 },
+    { faultPct: 10, commit: "refs/heads/main" },
+  );
+  assert(!nonsense.ok && !nonsense.retriable, "a commit that is not a sha fails at once");
 }
 
 // A leftover faulted deployment, which is the OPPOSITE mistake and the one a
@@ -373,8 +415,8 @@ import { assert, eq, finish } from "./lib/harness.ts";
   // A commit that has not landed is the same propagation, so it waits too.
   const stale = faultModeVerdict(
     200,
-    { commit: "old1111", loadtest: true, faultPct: 10 },
-    { faultPct: 10, commit: "new2222" },
+    { commit: "aaaaaaaaaaaa", loadtest: true, faultPct: 10 },
+    { faultPct: 10, commit: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" },
   );
   assert(!stale.ok && stale.retriable, "a commit that has not landed is retriable");
   eq(faultPollStep(stale, 1_000).action, "wait", "and is waited out");
