@@ -18,8 +18,19 @@ export const LOADTEST = process.env.SLATE_LOADTEST === "true";
  * failure-streak alerting and the verify-on-book re-route all exist for a Google that
  * fails, and none of them was exercised at scale.
  *
- * `SLATE_LOADTEST_FAULT_PCT` is the percentage of calendar reads that throw. Zero (the
+ * `SLATE_LOADTEST_FAULT_PCT` is the percentage of calendar READS that throw. Zero (the
  * default) is the previous behaviour exactly, so an existing soak run is unchanged.
+ *
+ * **The confirm path's WRITES are deliberately never faulted** (#2241), and that is a
+ * decision rather than an omission. A failed calendar write on the confirm path is a
+ * 500 by design: the event could not be created, so the lead is told to try again.
+ * Injecting one would make a booking run's 5xx count a measurement of this percentage
+ * rather than of the code, and the bar #2244 judges on ("no 5xx under fault") would be
+ * unreachable for a reason nobody should fix. The fault pass still reaches the confirm
+ * path hard, through `freeBusyMany`: verify-on-book is the branch that re-routes and
+ * that answers a retriable 503, and it is faulted. What the load run therefore does
+ * NOT exercise is a failing calendar WRITE at scale, which is named here rather than
+ * left to be discovered.
  *
  * DETERMINISTIC, not random, and that is the point. A random failure rate makes a soak
  * irreproducible: a run that passed and a run that failed differ by the dice, so
@@ -209,4 +220,69 @@ export function stubWatch(channelId: string, nowMs: number): {
 export function stubFreeBusy(email = "unknown"): Interval[] {
   faultIfDue(`freeBusy:${email}`);
   return [];
+}
+
+/**
+ * The event id a synthetic create answers with (#2241).
+ *
+ * The stub gated the read and watch lanes and nothing else, so a booking path load
+ * run could not confirm a single booking: `completeReservation` calls `createEvent`
+ * live before `insertBooking`. The July soak (#440) never drove a confirm, which is
+ * why that was invisible for a year.
+ *
+ * **When a client id is supplied it is returned VERBATIM**, because that is what
+ * real Google does (an insert carrying an `id` creates the event under that id) and
+ * because Slate depends on it: `gcal_event_id` is stored as the pinned client id,
+ * and the in-place reschedule PATCHes `pin.gcal_client_id` AS the event id. A
+ * decorated id would break the move on the second step of every rescheduled
+ * booking in the run.
+ *
+ * It is also the whole of the 409 reuse semantics, with no state to keep. Real
+ * Google 409s a duplicate client id and the call GETs the existing event, so one
+ * intent yields one event however many times it is retried; a pure function of the
+ * client id has exactly that property, and a stub holding a set of created ids
+ * would not, because a Worker isolate is not the same isolate on the next request.
+ *
+ * With no client id the id is derived from the call's own content, so two bookings
+ * differ and a retry of one does not. `lt-evt-` marks it as belonging to nothing on
+ * any real calendar.
+ */
+export function stubCreateEvent(
+  input: { summary: string; start: string; end: string },
+  clientId?: string,
+): string {
+  if (clientId) return clientId;
+  const key = `${input.summary}|${input.start}|${input.end}`;
+  return `lt-evt-${keyHash(key).toString(36)}-${key.length.toString(36)}`;
+}
+
+/**
+ * The event a synthetic GET answers with (#2241).
+ *
+ * It reports every id as PRESENT, and deliberately does not model deletion. Two
+ * reasons, and the second is the one that decides it:
+ *
+ * - a stub cannot hold a set of deleted ids across Worker isolates, so a stateful
+ *   answer would vary with which isolate served the request, which is the one
+ *   thing a load run's verdict must not do;
+ * - the single loadtest consumer is `checkCreationOrphans`, which only ALERTS when
+ *   the event is confirmed still there. Reporting present is therefore the noisy
+ *   direction, never the quiet one, and an alarm that over-reports under a
+ *   synthetic Google is the right way round.
+ *
+ * The window is NOT meaningful: nothing was ever written, so there is no recorded
+ * start and end for this to report and it says so by carrying the call's own
+ * instant rather than inventing a booking's. `pnpm verify:ooo-protection`, which is
+ * the caller that does read the bounds, runs against live Google and never with
+ * this flag on.
+ */
+export function stubEventOnPrimary(eventId: string, nowMs: number): GoogleEvent {
+  faultIfDue(`events.get:${eventId}`);
+  return {
+    id: eventId,
+    status: "confirmed",
+    transparency: "opaque",
+    start: { dateTime: new Date(nowMs).toISOString() },
+    end: { dateTime: new Date(nowMs + 30 * 60_000).toISOString() },
+  };
 }
