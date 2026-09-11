@@ -48,9 +48,20 @@ const API_KEY = need("BOOKING_API_KEY");
 const RUN_ID = need("RUN_ID");
 const DRIVER = Number(process.env.DRIVER ?? "0");
 const OUT = need("OUT");
+// The burst settings are all optional and all default to what the run uses. They
+// are declared rather than wired because the steady job never sets them: a step
+// carrying five variables it does not use reads as configuration somebody chose.
+// env-ok: MODE (optional; defaults to steady, and only the burst job sets it)
 const MODE = (process.env.MODE ?? "steady") as "steady" | "burst";
+// env-ok: BURST_REQUESTS (optional; defaults to 25, which is what one burst driver fires)
 const BURST_REQUESTS = Number(process.env.BURST_REQUESTS ?? "25");
+// env-ok: BURST_GRACE_MS (optional; defaults to 2000, how late a driver may be and
+// still be part of the same burst)
 const BURST_GRACE_MS = Number(process.env.BURST_GRACE_MS ?? "2000");
+// env-ok: BURST_CODE_OVERRIDE (optional; defaults to the measured one agent pool,
+// and only a deliberate experiment would point the burst at a different code)
+// env-ok: TZ_NAME (optional; defaults to America/New_York, the zone the seeded
+// roster's largest group keeps)
 const TIMEZONE = process.env.TZ_NAME ?? "America/New_York";
 
 // A load run points at an isolated deployment and an isolated branch. Refusing

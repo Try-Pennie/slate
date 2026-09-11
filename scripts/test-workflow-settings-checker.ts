@@ -22,6 +22,12 @@ const repoRoot = new URL("..", import.meta.url).pathname;
 /** Every setting the real workflows reference today, so the happy path is real. */
 const REAL_VARS = [
   "EXPECT_HTTPS_REDIRECT",
+  // The load run's isolated deployment (#2244). It is `workflow_dispatch` only and
+  // every script it runs refuses an empty value BY NAME, so a repo that has not set
+  // these up cannot dispatch a misconfigured run; they are listed here because this
+  // case asserts that a repo where every referenced setting DOES exist passes.
+  "LOADTEST_BASE_URL",
+  "LOADTEST_WORKER_NAME",
   "NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY",
   "SLACK_ALERTS_CHANNEL",
   "SLATE_BASE_URL",
@@ -29,7 +35,12 @@ const REAL_VARS = [
 const REAL_SECRETS = [
   "BOOKING_API_KEY",
   "CALCOM_API_KEY",
+  "CLOUDFLARE_ACCOUNT_ID",
   "CLOUDFLARE_API_TOKEN",
+  "LOADTEST_BOOKING_API_KEY",
+  "LOADTEST_CRON_SECRET",
+  "LOADTEST_SUPABASE_SECRET_KEY",
+  "LOADTEST_SUPABASE_URL",
   "REASSIGN_API_KEY",
   "SLACK_BOT_TOKEN",
   "SUPABASE_ACCESS_TOKEN",

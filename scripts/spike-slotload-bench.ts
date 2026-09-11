@@ -1,3 +1,4 @@
+import { envOr } from "./smoke-env.ts";
 // THROWAWAY (benchmark). Slot-load latency: Slate vs trypennie.cal.com, same
 // xbc codes, same agents. Read-only (GET availability/slots on both). Delete after.
 //
@@ -8,7 +9,11 @@
 // bookable + synced, the Slate side is not at scale — run the full sweep AFTER the
 // flip for the real comparison; use the single-code validate to confirm wiring now.
 
-const SLATE_BASE = process.env.SLATE_BASE ?? "https://slate.trypennie.app";
+// `envOr`, not `??`: SLATE_BASE became a WIRED workflow variable when the load run
+// landed (#2244), and an unset `${{ vars.X }}` arrives as the EMPTY STRING, which
+// `??` accepts. The fallback would then never apply and this bench would point at
+// an empty base rather than at production (#1498).
+const SLATE_BASE = envOr(process.env.SLATE_BASE, "https://slate.trypennie.app");
 const CAL_BASE = "https://trypennie.cal.com";
 const ROUTER_FORM = "fa681846-d287-4f18-9d8a-5e3ff306386f";
 const TZ = "America/New_York";
