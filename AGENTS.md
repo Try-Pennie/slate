@@ -1144,9 +1144,17 @@ which is under the aggregate threshold and so never folded.
   render the same name: they would read as one on every surface at once while
   every test about a single label still passed.
 
-The sweep's pool key deliberately omits manual members, unlike the recompute
-lane's: it resolves eligibility per bucket and has no member list to hand, and
-the only three manual member rows in production are on the two test buckets.
+The sweep reads `bucket_members` and keys on the SAME `PoolInput` the recompute
+lane, the tiers page and the staffing depth use (#2253). It shipped with a coarser
+key that left manual members out, because it resolves eligibility per bucket and
+had no member list to hand, and `emptyPools` reports a pool only when EVERY code
+in it is empty: a genuinely unstaffed bucket sharing a pool with one staffed by a
+hand named member was neither paged nor cleared, but fell out of the sweep
+entirely. An alarm going quiet about the thing it watches is the worst direction
+for one to fail, and the admin page offers to name a person on any row, so it was
+one click from live. The member read is `unwrap`ped like the roster read, because
+a swallowed error arrives as "nobody is named on any bucket", which restores the
+coarse key silently on the one run that could not check.
 
 ## The screens report pools too (#2237)
 

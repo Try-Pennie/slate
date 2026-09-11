@@ -49,10 +49,25 @@ import type { Bucket } from "@/lib/db/types";
 // bucket gets criteria of its OWN by default, and the cases that are about
 // pooling pass criteria they share.
 const bucket = (code: string, criteria?: Record<string, string>) =>
-  ({ code, criteria: criteria ?? { debt_team: `team-${code}` } }) as unknown as Bucket;
+  ({
+    id: `b-${code}`,
+    code,
+    criteria: criteria ?? { debt_team: `team-${code}` },
+  }) as unknown as Bucket;
 
-function spies() {
+type ActiveMembers = () => Promise<{ bucket_id: string; user_id: string }[]>;
+
+// The hand named members are a parameter rather than something a case overrides
+// afterwards, because every case here spreads `spies()` LAST: an override written
+// before the spread is silently replaced by the default and the case passes for
+// the wrong reason.
+function spies(
+  // None by default, which is production today: three `bucket_members` rows exist
+  // and all three are on the SMOKE fixtures this sweep excludes.
+  loadActiveMembers: ActiveMembers = async () => [],
+) {
   return {
+    loadActiveMembers: vi.fn(loadActiveMembers),
     sendAlert: vi.fn(async (_code: string, _msg: string) => {}),
     clearAlert: vi.fn(async (_code: string, _msg: string) => {}),
     settleSilently: vi.fn(async (_codes: string[]) => {}),
@@ -297,5 +312,84 @@ describe("alertOnEmptyBuckets against the real notify boundary", () => {
     await expect(alertOnEmptyBuckets()).rejects.toThrow();
     expect(resolveAlert).not.toHaveBeenCalled();
     expect(sendThrottledAlert).not.toHaveBeenCalled();
+  });
+});
+
+// #2253: a bucket staffed ONLY by somebody named on it by hand.
+//
+// The sweep's pool key used to leave manual members out, because the sweep had no
+// member list to work from. That made its key COARSER than the one the recompute
+// lane, the tiers page and the staffing depth use, and `emptyPools` reports a pool
+// only when EVERY code in it is empty. So an unstaffed bucket sharing a pool with
+// a hand staffed one was neither paged nor cleared: it fell out of the sweep
+// entirely, which is an alarm failing OPEN and in silence.
+//
+// It could not bite while production carried its three `bucket_members` rows on
+// the two SMOKE buckets the sweep excludes. It bites the moment anybody names a
+// person on a real bucket, which the admin page offers on every row.
+describe("alertOnEmptyBuckets with a hand-named member (#2253)", () => {
+  const low = { debt_team: "low" };
+
+  it("still pages for the unstaffed sibling of a hand-staffed bucket", async () => {
+    // 112's only agent is the person named on it; 111's criteria match nobody.
+    const s = spies(async () => [{ bucket_id: "b-112", user_id: "u1" }]);
+    const res = await alertOnEmptyBuckets({
+      loadBuckets: async () => [bucket("111", low), bucket("112", low)],
+      countEligible: async (b) => (b.code === "112" ? 1 : 0),
+      ...s,
+    });
+
+    expect(res.empty).toEqual(["111"]);
+    const pages = s.sendAlert.mock.calls.filter(([code]) => code !== AGGREGATE_BUCKET_CODE);
+    expect(pages).toHaveLength(1);
+    expect(pages[0]?.[0]).toBe("111");
+    // It speaks for 111 alone. Naming 112 would send somebody to check a booking
+    // link that routes perfectly well.
+    expect(pages[0]?.[1]).toContain("111");
+    expect(pages[0]?.[1]).not.toContain("112");
+    // And the hand staffed one is measured healthy, so its own page may clear.
+    expect(
+      s.clearAlert.mock.calls.map(([code]) => code).filter((c) => c !== AGGREGATE_BUCKET_CODE),
+    ).toEqual(["112"]);
+  });
+
+  it("still pools the codes whose hand-named members agree", async () => {
+    // The other direction (L159): the member list is part of the key, not a
+    // reason to stop pooling. Two codes named the same person, so they are one
+    // pool and one page, exactly as two codes naming nobody are.
+    const s = spies(async () => [
+      { bucket_id: "b-111", user_id: "u1" },
+      { bucket_id: "b-112", user_id: "u1" },
+    ]);
+    const res = await alertOnEmptyBuckets({
+      loadBuckets: async () => [bucket("111", low), bucket("112", low)],
+      countEligible: async () => 0,
+      ...s,
+    });
+
+    expect(res.empty.sort()).toEqual(["111", "112"]);
+    const pages = s.sendAlert.mock.calls.filter(([code]) => code !== AGGREGATE_BUCKET_CODE);
+    expect(pages).toHaveLength(1);
+    expect(pages[0]?.[0]).toBe("111");
+    expect(pages[0]?.[1]).toContain("112");
+  });
+
+  it("clears nothing when the member read fails, since the pools were never resolved", async () => {
+    // Falling back to an empty member list would be the coarse key again, silently,
+    // which is the exact fail-open this fixes (L215). The roster read already
+    // behaves this way and the two must not disagree.
+    const s = spies(async () => {
+      throw new Error("supabase unreachable");
+    });
+    await expect(
+      alertOnEmptyBuckets({
+        loadBuckets: async () => [bucket("111", low), bucket("112", low)],
+        countEligible: async () => 0,
+        ...s,
+      }),
+    ).rejects.toThrow(/unreachable/);
+    expect(s.sendAlert).not.toHaveBeenCalled();
+    expect(s.clearAlert).not.toHaveBeenCalled();
+    expect(s.settleSilently).not.toHaveBeenCalled();
   });
 });

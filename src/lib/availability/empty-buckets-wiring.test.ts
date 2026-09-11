@@ -18,21 +18,25 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 
 const rows = vi.hoisted(() => ({
   result: { data: [] as unknown[], error: null as { message: string } | null },
+  members: { data: [] as unknown[], error: null as { message: string } | null },
 }));
 const notify = vi.hoisted(() => ({
-  sendThrottledAlert: vi.fn(async () => {}),
+  sendThrottledAlert: vi.fn(async (_key: string, _ms: number, _text: string) => {}),
   resolveAlert: vi.fn(async () => {}),
   settleAlertsSilently: vi.fn(async () => {}),
 }));
-const eligibleAgentIdsCached = vi.hoisted(() => vi.fn(async () => ({ ids: [] as string[] })));
+const eligibleAgentIdsCached = vi.hoisted(() =>
+  vi.fn(async (_b: { code: string }) => ({ ids: [] as string[] })),
+);
 
 const from = vi.hoisted(() =>
-  vi.fn(() => {
+  vi.fn((table: string) => {
     const q: Record<string, unknown> = {};
     for (const method of ["select", "eq", "is", "in", "limit", "order"]) {
       q[method] = () => q;
     }
-    q.then = (resolve: (r: unknown) => unknown) => Promise.resolve(rows.result).then(resolve);
+    const result = () => (table === "bucket_members" ? rows.members : rows.result);
+    q.then = (resolve: (r: unknown) => unknown) => Promise.resolve(result()).then(resolve);
     return q;
   }),
 );
@@ -47,7 +51,9 @@ vi.mock("./eligible-cache.ts", () => ({ eligibleAgentIdsCached }));
 import { alertOnEmptyBuckets } from "@/lib/availability/service";
 
 function bucket(code: string) {
-  return { id: `b-${code}`, code, org_id: "o1", is_test: false };
+  // One shared set of criteria, so these two are one pool unless something else
+  // separates them. That "something else" is what #2253 is about.
+  return { id: `b-${code}`, code, org_id: "o1", is_test: false, criteria: { debt_team: "low" } };
 }
 
 describe("alertOnEmptyBuckets roster read (wired, not injected)", () => {
@@ -58,6 +64,7 @@ describe("alertOnEmptyBuckets roster read (wired, not injected)", () => {
     eligibleAgentIdsCached.mockReset();
     eligibleAgentIdsCached.mockResolvedValue({ ids: [] });
     rows.result = { data: [], error: null };
+    rows.members = { data: [], error: null };
   });
 
   it("rejects and says nothing at all when the roster read errors", async () => {
@@ -90,5 +97,61 @@ describe("alertOnEmptyBuckets roster read (wired, not injected)", () => {
     const res = await alertOnEmptyBuckets();
     expect(res.empty).toEqual([]);
     expect(notify.sendThrottledAlert).not.toHaveBeenCalled();
+  });
+});
+
+// #2253: the member read is wired the same way, and for the same reason. A
+// swallowed error here arrives as "nobody is named on any bucket", which is the
+// coarse pool key this read replaced, restored in silence on the one run that
+// could not check.
+describe("alertOnEmptyBuckets member read (wired, not injected)", () => {
+  beforeEach(() => {
+    notify.sendThrottledAlert.mockClear();
+    notify.resolveAlert.mockClear();
+    notify.settleAlertsSilently.mockClear();
+    eligibleAgentIdsCached.mockReset();
+    eligibleAgentIdsCached.mockResolvedValue({ ids: [] });
+    rows.result = { data: [bucket("111"), bucket("112")], error: null };
+    rows.members = { data: [], error: null };
+    from.mockClear();
+  });
+
+  it("rejects and says nothing at all when the member read errors", async () => {
+    rows.members = {
+      data: null as never,
+      error: { message: 'relation "bucket_members" does not exist' },
+    };
+
+    await expect(alertOnEmptyBuckets()).rejects.toThrow(/empty-bucket sweep members/);
+
+    expect(notify.sendThrottledAlert).not.toHaveBeenCalled();
+    expect(notify.resolveAlert).not.toHaveBeenCalled();
+    expect(notify.settleAlertsSilently).not.toHaveBeenCalled();
+  });
+
+  it("really asks bucket_members, and asks once for the whole sweep", async () => {
+    // Both halves in one fixture (L159): the same wiring reading normally must
+    // reach the table, or the rejection above proves nothing about this read.
+    await alertOnEmptyBuckets();
+    const tables = from.mock.calls.map((c) => c[0]);
+    expect(tables).toContain("bucket_members");
+    // Sixty buckets must not cost sixty member reads.
+    expect(tables.filter((t) => t === "bucket_members")).toHaveLength(1);
+  });
+
+  it("splits the pool when one of two identical buckets is hand-staffed", async () => {
+    // The end to end shape of the defect, through the real wiring: 112 is staffed
+    // only by the person named on it, so 111 is its own pool and pages alone.
+    rows.members = { data: [{ bucket_id: "b-112", user_id: "u1" }], error: null };
+    eligibleAgentIdsCached.mockImplementation(async (b: { code: string }) => ({
+      ids: b.code === "112" ? ["u1"] : [],
+    }));
+
+    const res = await alertOnEmptyBuckets();
+
+    expect(res.empty).toEqual(["111"]);
+    const paged = notify.sendThrottledAlert.mock.calls.map((c) => c[0]);
+    expect(paged).toContain("empty_buckets:111");
+    expect(paged).not.toContain("empty_buckets:112");
   });
 });
