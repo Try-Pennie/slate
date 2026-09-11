@@ -1073,6 +1073,51 @@ telling the two apart needs the stamp #1753 asks for, and belongs there.
 
 **It retires at cutover (#65)** with the rest of the family.
 
+# One availability compute per POOL, not per bucket code (#2245)
+
+Sixty bucket codes resolve to **fifteen** distinct pools, measured against
+production on 2026-09-11. The legal digit stopped routing (#2218) and backend
+digits 0 (None) and 1 (Both) never set `backend_service` at all, so six codes per
+tier carry identical criteria. The every minute recompute lane was running the
+whole multi agent availability compute sixty times to produce fifteen answers, on
+the lane whose headroom already pages (#2021).
+
+The lane now groups before it dispatches (`groupByPool`, `poolsDueForRecompute`,
+`recomputePool`), computes once per pool, and writes **every code in that pool its
+own row**. Two things about that are load bearing:
+
+- **`bucket_slots` still holds one row per code and each row keeps its OWN bucket
+  identity.** The stored payload is read back for the routing trace's effective
+  code, the test bucket gate and the empty bucket alert key, so a shared row
+  would have five codes reporting a sixth's bucket. Collapsing the table to
+  fifteen rows was weighed and DEFERRED (Dan, 2026-09-11): it needs a bucket
+  lookup back on the booker's hot path and moves four monitors into pool space,
+  for a saving of forty five small writes. Do not do it without re-reading #2245.
+- **Freshness is asked of the POOL, never of each code.** The jitter (#1247)
+  gives every code its own deadline inside the window, so a pool has six; writing
+  all six rows at the first of them resets the clock into the next deadline a
+  minute later, and the lane would recompute a pool roughly every quarter window.
+  `scripts/test-pool-due.ts` drives three windows a minute at a time and catches
+  exactly that: the naive version refreshes nine times where the correct one
+  refreshes three.
+
+Anything that starts feeding the compute must be added to `PoolInput`
+(`src/lib/availability/pool-key.ts`) in the same change, or the lane will serve
+one pool's times under another pool's code.
+
+**`pnpm verify:pool-slot-parity`** is the proof, and it asks a question that
+holds at any instant: do the codes that share a pool offer the same times? A
+before and after diff of one code's slots cannot work, because the booking window
+walks with the clock and nobody could tell that from a regression. It reads
+production and the deployed app and writes nothing. Measured BEFORE this shipped:
+59 of 60 codes across all 15 pools agreed (one code met the endpoint's 30 a
+minute throttle). It paces itself to that throttle, sampling each pool's codes
+together so the window cannot move between two codes about to be compared, so a
+full sweep takes a few minutes. Exit codes are in
+`scripts/lib/pool-slot-parity.ts`, pinned offline by
+`scripts/test-pool-slot-parity.ts`; comparing nothing exits non-zero, never as a
+pass (L98).
+
 # Capped single-page reads (the `// cap-safe:` convention)
 
 PostgREST returns at most **one 1000-row page** per list read. Code that then

@@ -16,8 +16,11 @@ v4 · Luxon. Package manager: pnpm.
 - **Availability is cache-first.** `busy_blocks` is the cached index: Slate
   bookings write through synchronously; Google push (`/api/google/push`) +
   the 1-min `/api/cron/sync` backstop keep external changes fresh. The embed
-  reads the cache via `/api/availability` — never live Google. The only live
-  Google call on the hot path is verify-on-book at confirm time
+  reads the cache via `/api/availability` — never live Google. The recompute lane
+  computes once per POOL rather than once per bucket code (#2245: 60 codes, 15
+  pools) and writes every code in the pool its own row, each keeping its own
+  bucket identity; see AGENTS.md before changing what feeds the compute. The only
+  live Google call on the hot path is verify-on-book at confirm time
   (`src/lib/booking/service.ts`): it checks the round-robin candidates in batched
   waves (one Google call per wave, #167) and takes the first actually-free agent.
 - **A bookable time passes three gates, in one shared predicate.**

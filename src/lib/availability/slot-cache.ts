@@ -10,8 +10,10 @@ import {
   readBucketSlotsRow,
   writeBucketSlotsRow,
   recomputeBucketSlots,
+  computeBucketSlotsForWindow,
   bucketsForAgent,
 } from "./precompute";
+import { recomputePool, type PooledBucket } from "./pool-recompute";
 import { appUrl } from "@/lib/env";
 import { loadBookingHorizonDays } from "@/lib/booking/settings";
 import { loadBusinessHoursCached } from "@/lib/booking/business-hours-load";
@@ -130,6 +132,58 @@ export async function recomputeBucketSlotsForToday(
   if (cache) {
     try { await cache.delete(keyRequest(key)); } catch { /* ignore */ }
   }
+}
+
+/**
+ * Refresh a whole POOL over the org-wide horizon: one availability compute,
+ * written to every bucket code in the pool, each with its own identity (#2245).
+ * Returns how many codes were actually stored.
+ *
+ * This is what the every minute lane dispatches. Sixty codes resolve to fifteen
+ * pools, so the lane was running the compute sixty times for fifteen answers, on
+ * the lane whose headroom already pages (#2021).
+ *
+ * Deliberately NOT debounced. The per code entry point above collapses a burst of
+ * pushes for one bucket; this one is only ever called by the cron with force, and
+ * a second debounce keyed on the pool would silently skip a due pool.
+ *
+ * The window does not depend on which code computes it: `slotCacheKey` anchors
+ * `from` to the start of the UTC day and derives `to` from the horizon alone, so
+ * the representative's code decides nothing about the answer.
+ */
+export async function recomputePoolSlotsForToday(
+  pool: PooledBucket[],
+  resolveEligible?: EligibleResolver,
+  horizonDays?: number,
+): Promise<number> {
+  const representative = pool[0];
+  if (!representative) return 0;
+  const nowIso = new Date().toISOString();
+  const horizon = horizonDays ?? (await loadBookingHorizonDays());
+  const { fromIso, toIso } = slotCacheKey(representative.code, nowIso, horizon);
+
+  const outcome = await recomputePool(pool, {
+    nowMs: Date.now,
+    compute: (code) =>
+      computeBucketSlotsForWindow(code, fromIso, toIso, resolveEligible, horizon),
+    writeRow: async (code, val, computedAtMs) => {
+      await writeBucketSlotsRow(code, val, computedAtMs);
+    },
+    // The L1 key is on the fixed HORIZON_DAYS namespace, the same one the read
+    // path looks up, so read and invalidate always agree.
+    invalidate: (code) => invalidateBucketSlots(code),
+  });
+
+  if (outcome.failed.length > 0) {
+    // Counted out loud rather than swallowed: these codes keep serving their
+    // previous row, so the only other trace would be the stale alarm minutes later.
+    log.warn("slot-cache", {
+      msg: "pooled slot write failed for some codes",
+      pool: representative.code,
+      codes: outcome.failed.join(","),
+    });
+  }
+  return outcome.written.length;
 }
 
 /**

@@ -5,7 +5,8 @@ import { getBucketSlots, type BucketSlots, type EligibleResolver } from "./servi
 import { bucketsMatchingAgent, type BucketForMatch } from "./bucket-match";
 import { trimToBookableDays } from "./bookable-days";
 import { BUSINESS_ZONE } from "@/lib/booking/business-hours";
-import type { Attributes, Criteria } from "@/lib/db/types";
+import type { Attributes, Bucket, Criteria } from "@/lib/db/types";
+import type { PooledBucket } from "./pool-recompute";
 import type { InvalidationMarker } from "./precompute-cron";
 import { log } from "@/lib/log";
 import { writeSlotRow } from "@/lib/availability/slot-row-write";
@@ -33,13 +34,49 @@ export async function readBucketSlotsRow(
   return (data as { payload: unknown; computed_at: string } | null) ?? null;
 }
 
-/** All bucket codes (for the cron backstop's rotation). */
-export async function listAllBucketCodes(): Promise<string[]> {
-  const data = unwrap(
-    await supabaseAdmin().from("buckets").select("code"),
-    "listAllBucketCodes",
-  );
-  return (data ?? []).map((b) => (b as { code: string }).code);
+/**
+ * Every bucket, with both the row itself and the inputs that decide which POOL
+ * it belongs to (#2245). The cron backstop's rotation is built from this.
+ *
+ * It replaced a `select("code")` because the lane now groups before it
+ * dispatches: sixty codes resolve to fifteen pools, and computing availability
+ * once per pool instead of once per code removes three quarters of this lane's
+ * work. Both tables are roster bounded (on `SAFE_TABLES`), so this is two single
+ * page reads, and the bucket ROW is what each pooled write stamps its own
+ * identity from.
+ *
+ * Fails loud on either read (#277). An empty bucket list would leave the lane
+ * with nothing due, every row aging quietly past the freshness window, which is
+ * a stopped cache that reads as a quiet minute.
+ */
+export async function listPoolBuckets(): Promise<PooledBucket[]> {
+  const db = supabaseAdmin();
+  const [bucketsRes, membersRes] = await Promise.all([
+    db.from("buckets").select("*"),
+    db.from("bucket_members").select("bucket_id, user_id").eq("active", true),
+  ]);
+  const buckets = (unwrap(bucketsRes, "listPoolBuckets buckets") ?? []) as Bucket[];
+  const members = (unwrap(membersRes, "listPoolBuckets members") ?? []) as {
+    bucket_id: string;
+    user_id: string;
+  }[];
+
+  const byBucket = new Map<string, string[]>();
+  for (const m of members) {
+    const list = byBucket.get(m.bucket_id);
+    if (list) list.push(m.user_id);
+    else byBucket.set(m.bucket_id, [m.user_id]);
+  }
+
+  return buckets.map((b) => ({
+    code: b.code,
+    bucket: b,
+    orgId: b.org_id,
+    eventTypeId: b.event_type_id,
+    criteria: b.criteria ?? null,
+    fallbackUserId: b.fallback_user_id,
+    memberIds: byBucket.get(b.id) ?? [],
+  }));
 }
 
 /** Existing precomputed rows with their last-computed time (epoch ms). */
@@ -228,11 +265,38 @@ export async function recomputeBucketSlots(
   resolveEligible?: EligibleResolver,
   bookableDays?: number,
 ): Promise<BucketSlots | null> {
-  let fresh: BucketSlots | null = null;
   // #1048: stamped from HERE, before the compute reads anything, so the row's
   // computed_at describes the state the slots were computed from rather than the moment
   // the write happened to land.
   const startedMs = Date.now();
+  const fresh = await computeBucketSlotsForWindow(
+    code,
+    fromIso,
+    toIso,
+    resolveEligible,
+    bookableDays,
+  );
+  if (fresh) await writeBucketSlotsRow(code, fresh, startedMs);
+  return fresh;
+}
+
+/**
+ * The COMPUTE half of a recompute, with no write of its own.
+ *
+ * Split out for the pooled path (#2245), which computes one answer and then
+ * writes it to every code in the pool. Kept as one function rather than copied,
+ * so both paths share the trim, the failure handling and the log line: a second
+ * copy of "what a failed availability read means" is exactly the divergence the
+ * #277 class lives in.
+ */
+export async function computeBucketSlotsForWindow(
+  code: string,
+  fromIso: string,
+  toIso: string,
+  resolveEligible?: EligibleResolver,
+  bookableDays?: number,
+): Promise<BucketSlots | null> {
+  let fresh: BucketSlots | null = null;
   try {
     fresh = await getBucketSlots(code, fromIso, toIso, resolveEligible);
     // #1326: [fromIso, toIso) is a SEARCH window, deliberately wider than the number
@@ -257,7 +321,6 @@ export async function recomputeBucketSlots(
     log.error("precompute", { msg: "recompute skipped", bucket: code }, err);
     fresh = null;
   }
-  if (fresh) await writeBucketSlotsRow(code, fresh, startedMs);
   return fresh;
 }
 

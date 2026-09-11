@@ -5,11 +5,11 @@ import { acquireLock, releaseLock } from "@/lib/locks";
 import { RECOMPUTE_LOCK_TTL_MS } from "@/lib/google/sync-coalesce";
 import { recordHeartbeat } from "@/lib/monitor/heartbeat";
 import { sendThrottledAlert, resolveRecovered } from "@/lib/notify/dispatch";
-import { recomputeBucketSlotsForToday } from "@/lib/availability/slot-cache";
+import { recomputePoolSlotsForToday } from "@/lib/availability/slot-cache";
 import { loadBookingHorizonDays } from "@/lib/booking/settings";
 import { eligibleAgentIdsCached } from "@/lib/availability/eligible-cache";
 import {
-  listAllBucketCodes,
+  listPoolBuckets,
   listKnownBucketSlotRows,
   readMassInvalidationMarker,
   clearMassInvalidation,
@@ -22,8 +22,9 @@ import {
   recomputeHeadroomAlert,
   recomputeHeadroomRecovery,
 } from "@/lib/monitor/cron-alert-copy";
+import { groupByPool } from "@/lib/availability/pool-key";
+import { poolsDueForRecompute } from "@/lib/availability/pool-recompute";
 import {
-  bucketsDueForRecompute,
   staleBuckets,
   staleBucketPage,
   RECOMPUTE_FRESH_MS,
@@ -121,12 +122,32 @@ export async function GET(req: NextRequest) {
   }
 
   try {
-    const [known, allCodes] = await Promise.all([
+    const [known, poolBuckets] = await Promise.all([
       listKnownBucketSlotRows(),
-      listAllBucketCodes(),
+      listPoolBuckets(),
     ]);
-    // Only the buckets aging past the freshness window, oldest-first.
-    const due = bucketsDueForRecompute(known, allCodes, Date.now(), RECOMPUTE_FRESH_MS);
+    const allCodes = poolBuckets.map((b) => b.code);
+    // #2245: the unit of work is a POOL, not a code. Sixty codes resolve to
+    // fifteen distinct pools (the legal digit stopped routing in #2218, and
+    // backend digits 0 and 1 never set a backend service), so this lane was
+    // running the whole multi agent availability compute sixty times to produce
+    // fifteen answers. Grouping here and dispatching whole pools is the entire
+    // saving; every code still gets its own row, with its own identity.
+    //
+    // Freshness is asked of the pool rather than of each code, because the
+    // jitter gives each code its own deadline inside the window and writing all
+    // six rows at the first of them would bring the pool due again a minute
+    // later (see poolsDueForRecompute).
+    const duePools = poolsDueForRecompute(
+      known,
+      groupByPool(poolBuckets),
+      Date.now(),
+      RECOMPUTE_FRESH_MS,
+    );
+    // Counted in BUCKETS, not pools, so the headroom numbers and the alert copy
+    // keep meaning what they said before (L683). A due pool refreshes every one
+    // of its codes, so its whole membership is what this cycle owes.
+    const due = duePools.flatMap((pool) => pool.map((b) => b.code));
     // #216: load the org-wide horizon once for the whole tick, not per bucket.
     const horizonDays = await loadBookingHorizonDays();
     const startedMs = Date.now();
@@ -137,11 +158,19 @@ export async function GET(req: NextRequest) {
     // read per bucket instead of each re-querying the DB. The booker read + booking
     // verify keep the live resolver, so a stale cache can never mis-route a real
     // booking; the recompute row is display-only and re-verified live at book time.
-    const recomputed = await recomputeDueBuckets(
-      due,
-      (code) => recomputeBucketSlotsForToday(code, true, (b) => eligibleAgentIdsCached(b), horizonDays),
+    let recomputed = 0;
+    await recomputeDueBuckets(
+      duePools,
+      async (pool) => {
+        recomputed += await recomputePoolSlotsForToday(
+          pool,
+          (b) => eligibleAgentIdsCached(b),
+          horizonDays,
+        );
+      },
       () => withinBudget(Date.now(), deadlineMs),
       RECOMPUTE_CONCURRENCY,
+      (pool) => pool.map((b) => b.code).join("+"),
     );
     const runMs = Date.now() - startedMs;
 
@@ -152,6 +181,7 @@ export async function GET(req: NextRequest) {
       msg: "cycle",
       refreshed: recomputed,
       due: due.length,
+      pools: duePools.length,
       total: allCodes.length,
       util_pct: headroom.utilizationPct,
       drained: headroom.drained,
