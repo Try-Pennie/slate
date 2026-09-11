@@ -168,8 +168,8 @@ export function bucketStaffingDepths(
         agents,
         // The same key the recompute lane groups on, so the two can never
         // disagree about which codes are one pool. Manual members are part of it
-        // here, unlike in the empty-bucket sweep, because this function already
-        // holds them and they genuinely change who a bucket routes to.
+        // because they genuinely change who a bucket routes to, and since #2253
+        // every surface builds the key over the same inputs.
         poolKey: poolKeyFor({
           orgId: b.org_id,
           eventTypeId: b.event_type_id,

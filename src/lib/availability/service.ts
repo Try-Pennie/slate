@@ -155,6 +155,17 @@ export async function eligibleAgentIds(
 /** IO the empty-bucket sweep needs; defaulted to real impls, injectable in tests. */
 export interface EmptyBucketDeps {
   loadBuckets(): Promise<Bucket[]>;
+  /**
+   * The active `bucket_members` rows, so this sweep's pool key is the SAME key
+   * the recompute lane, the tiers page and the staffing depth build (#2253).
+   *
+   * It reads them rather than taking the coarser key it used to, because
+   * `emptyPools` reports a pool only when every code in it is empty: an
+   * unstaffed bucket sharing a pool with one staffed by a hand named member was
+   * neither paged nor cleared, and an alarm that goes quiet about the thing it
+   * watches is the worst direction for one to fail.
+   */
+  loadActiveMembers(): Promise<{ bucket_id: string; user_id: string }[]>;
   countEligible(bucket: Bucket): Promise<number>;
   /** One throttled alert per dead bucket, keyed by code so each surfaces independently. */
   sendAlert(code: string, message: string): Promise<void>;
@@ -197,6 +208,22 @@ async function realEmptyBucketDeps(): Promise<EmptyBucketDeps> {
         await supabaseAdmin().from("buckets").select("*").eq("is_test", false),
         "empty-bucket sweep roster",
       ) ?? []) as Bucket[],
+    // Unwrapped for the same reason the roster read is, and it matters more here
+    // (#2253): a swallowed error would arrive as "nobody is named on any bucket",
+    // which is the coarse key this read exists to replace, restored silently and
+    // on exactly the run that could not check.
+    //
+    // No bound needed: `bucket_members` is roster bounded (sixty buckets, a
+    // handful of hand named people each) and is on the capped read guard's
+    // SAFE_TABLES for that reason.
+    loadActiveMembers: async () =>
+      (unwrap(
+        await supabaseAdmin()
+          .from("bucket_members")
+          .select("bucket_id, user_id")
+          .eq("active", true),
+        "empty-bucket sweep members",
+      ) ?? []) as { bucket_id: string; user_id: string }[],
     // Use the 60s cross-invocation cache (#421) so all cron lanes in a tick share
     // one eligibility read per bucket rather than each re-querying the DB.
     countEligible: async (bucket) => (await eligibleAgentIdsCached(bucket)).ids.length,
@@ -242,6 +269,15 @@ export async function alertOnEmptyBuckets(
   const buckets = await d.loadBuckets();
   if (buckets.length === 0) return { empty: [], aggregated: false };
 
+  // Read once for the run and indexed here, so sixty buckets cost one query
+  // rather than sixty (the same reason the settings read is resolved per run).
+  const membersByBucket = new Map<string, string[]>();
+  for (const m of await d.loadActiveMembers()) {
+    const ids = membersByBucket.get(m.bucket_id);
+    if (ids) ids.push(m.user_id);
+    else membersByBucket.set(m.bucket_id, [m.user_id]);
+  }
+
   const coverage: BucketCoverage[] = await mapWithConcurrency(
     buckets,
     COVERAGE_CONCURRENCY,
@@ -250,20 +286,14 @@ export async function alertOnEmptyBuckets(
       eligibleCount: await d.countEligible(bucket),
       // #2237: which POOL this bucket routes through, so an unstaffed tier is one
       // page rather than six. Keyed by the same `poolKeyFor` the recompute lane
-      // groups on, so the two can never disagree about which codes are one pool.
-      //
-      // Manual members are deliberately NOT part of the key here, even though
-      // they are part of a pool's identity for the COMPUTE (#2245). This sweep
-      // resolves eligibility per bucket and has no member list to hand; the
-      // consequence of the coarser key is that two buckets differing only by
-      // manual membership would share a page, and production carries three
-      // manual member rows in total, all on the two test buckets.
+      // groups on, over the same inputs (#2253), so no two surfaces can disagree
+      // about which codes are one pool.
       poolKey: poolKeyFor({
         orgId: bucket.org_id,
         eventTypeId: bucket.event_type_id,
         criteria: bucket.criteria ?? null,
         fallbackUserId: bucket.fallback_user_id,
-        memberIds: [],
+        memberIds: membersByBucket.get(bucket.id) ?? [],
       }),
       poolLabel: poolLabel(bucket.criteria ?? null),
     }),
