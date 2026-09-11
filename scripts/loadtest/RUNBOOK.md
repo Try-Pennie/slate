@@ -240,8 +240,33 @@ node --experimental-strip-types scripts/loadtest/book.ts
 ### The burst
 
 `MODE=burst` with `START_AT` (epoch ms) and `BURST_SLOT`, both chosen **once** by
-the setup step and handed to every driver, because a burst whose drivers each chose
-their own time is not a burst: nothing contends and everything succeeds.
+the setup step (`scripts/loadtest/burst-setup.ts`) and handed to every driver,
+because a burst whose drivers each chose their own time is not a burst: nothing
+contends and everything succeeds.
+
+**It runs BEFORE the steady pass, and alone** (#2262). That is a decision rather
+than an ordering accident: the steady mix includes `122` (it is real traffic), so a
+steady driver that happened to take the burst's slot first would make every burst
+request `SLOT_TAKEN`, and "exactly one 200" would fail for a reason that has
+nothing to do with the unique index it exists to test. Twenty five simultaneous
+requests on one slot is the contention being measured either way.
+
+The setup step picks the **last** offered time rather than the first, for the same
+class of reason: the preflight books the first time ITS bucket offers, minutes
+earlier, and the two buckets can share an agent. It sorts before taking the last,
+because a list read out of a response carries no order unless something declares
+one (L343). A bucket offering nothing exits on its own code and says so, since an
+empty burst file and a run with no burst leg are otherwise the same thing (L98).
+
+It also emits the DRIVER COUNT, from the app's own `DRIVERS` constant, and both the
+matrix size and the judge's expectation read it from there. Two places holding one
+number is how a matrix grows to five while the judge goes on expecting four and
+calls every run incomplete.
+
+`burst_lead_seconds` (default 300) is how long the burst drivers have to be queued,
+checked out and installed before the shared moment. A driver that wakes late fires
+nothing, and the judge calls the run incomplete: raise the lead rather than
+re-running and hoping.
 
 It runs against `122`, a real code real leads arrive on, whose pool is exactly one
 agent deep. The control is **exactly one 200 and the rest SLOT_TAKEN**, which is
@@ -420,11 +445,11 @@ happened to arrive.
 | 5xx and no reply | counted **separately** and both fail: a request answered badly and one never answered send two different people to two different places |
 | double bookings | no two run-scoped ACTIVE bookings overlap on one agent in `[starts_at, ends_at)`, read through a **paginating** list, and the preflight must have seen `bookings_active_slot_uniq` actually REFUSE a planted duplicate (without that, an absence of overlaps proves nothing) |
 | every 200 left a row | a booking row carrying the request's external id, an idempotency key, and a `busy_blocks` row |
-| the burst | exactly **one** 200 against the one agent pool, every other answer `SLOT_TAKEN`, and the winner really exists |
+| the burst | exactly **one** 200 against the one agent pool, every other answer `SLOT_TAKEN`, and the winner really exists. A leg that was configured and produced fewer driver files than fired is **incomplete**, never a skipped bar |
 | freshness | the worst oldest-bucket age across the window under 6 minutes |
 | the per address ceiling | its own step sends 61 writes from one address in one window and requires the 61st refused |
 | platform | CPU p99 under the lane budget, and **no invocation outcome other than `ok`** |
-| the fault pass | at `SLATE_LOADTEST_FAULT_PCT=10`, zero 5xx, and a pass that made no requests fails rather than passing on an empty sample |
+| the fault pass | at `SLATE_LOADTEST_FAULT_PCT=10`, zero 5xx, and a pass that made no requests fails rather than passing on an empty sample. A pass whose deployment reported a DIFFERENT percentage is incomplete, and zero is the case that matters: it passes the bar having injected nothing |
 
 **Subrequests are deliberately not a bar**, and that is a decision rather than an
 omission. Cloudflare's observability exposes **no subrequest counter**
@@ -452,7 +477,7 @@ deployment remains" (L183).
 
 ### One hand-off before the first run
 
-The workflow references seven repo settings that do not exist yet, and
+The workflow references eight repo settings that do not exist yet, and
 `pnpm check:workflow-settings` names them with the command to create each. They
 cannot be created until the isolated Supabase branch and the `loadtest` Cloudflare
 environment exist. Nothing can be dispatched into a misconfigured state in the
@@ -525,12 +550,49 @@ failing rather than retried every minute; the booker still offers times from age
 are fine; and no lane's heartbeat goes stale, because a Google failure must not stop a
 lane running.
 
-**Not covered, and deliberately not built here:** a concurrent request-level burst
-(parallel availability reads plus simultaneous same-slot confirms). It needs a target
-that is not production, and there is not one (ADR 0007 records why there is no staging
-environment). The honest prerequisite is a Supabase branch plus a second Worker
-environment, which is the same reversal that ADR names; building the script first would
-leave a load test nobody has ever run, which is worse than not having it.
+### The booking run's fault leg (#2262)
+
+The booking path run has a fault leg of its own, and it is the only one that says
+whether that path DEGRADES rather than 5xxing. Three things about it are worth
+knowing before changing it.
+
+**It redeploys, and it has to.** `SLATE_LOADTEST_FAULT_PCT` is read once per isolate
+from the deployment's own variables, so there is no way to fault one leg of a run
+without faulting the deployment. Overlapping it with the steady pass would make that
+pass's own "no 5xx" bar a measurement of the faults this run injected on purpose, so
+the leg runs LAST and ALONE. `wrangler deploy --env loadtest --var` MERGES with the
+vars block rather than replacing it, so the load test flag, the disabled lanes and
+everything else in `env.loadtest` survive that deploy.
+
+**The percentage is MEASURED, never assumed.** A deployment that never received the
+setting fails no reads at all: it answers every request perfectly and satisfies the
+bar with no fault having happened, which is indistinguishable from a path that
+degraded beautifully (L98). So `/api/smoke/version` reports `faultPct` from the same
+constant the stub injects from (#2262, L70), and the driver asks the deployment for
+it, AND for the commit this leg just deployed, and refuses before sending a single
+request when either is not what was asked for. The number the judge sees is the one
+the deployment reported, never the one the job intended.
+
+**A faulted deployment is put back, and the preflight checks anyway.** The restore
+runs `if: always()` with no `--var`, so it ships exactly the vars block; a run
+dispatched with `teardown: false` would otherwise leave the deployment injecting
+faults and the NEXT run's steady pass would count them as the path's own 5xx. The
+preflight also refuses a deployment already reporting a fault percentage, so a
+restore that itself failed is caught at the top of the next run rather than
+inherited silently. Two guards, and each is blind where the other looks.
+
+**What it does NOT cover**, said here rather than left to be assumed: the leg faults
+the whole deployment, so the cron lanes are faulted too, but nothing about their
+behaviour is JUDGED. The bar is the booking path's 5xx count. The lane-level
+expectations in the section above (a throttled alert naming the failing agents,
+`notACalendarUser` treated as definitive, no lane heartbeat going stale) are read by
+a person from the archived log tail; no check scores them.
+
+**Not covered, and deliberately not built here:** a failing calendar WRITE at scale.
+The confirm path's writes are never faulted on purpose (`src/lib/google/loadtest-stub.ts`
+says why): a failed write there is a 500 by design, so injecting one would make the
+run's 5xx count a measurement of the percentage rather than of the code, and the bar
+would be unreachable for a reason nobody should fix.
 
 ## Teardown
 Delete the branch DB. The `SLATE_LOADTEST` flag is inert anywhere it isn't set, so no

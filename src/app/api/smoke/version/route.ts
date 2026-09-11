@@ -3,6 +3,7 @@ import { bookingApiKeyPrimary, bookingApiKeySecondary } from "@/lib/env";
 import { parseApiKeys, authenticateBearer } from "@/lib/booking/api-auth";
 import { BUILD_COMMIT } from "@/lib/build-info";
 import { isLoadtest } from "@/lib/loadtest-guard";
+import { LOADTEST_FAULT_PCT } from "@/lib/google/loadtest-stub";
 
 export const dynamic = "force-dynamic";
 
@@ -37,5 +38,16 @@ export async function GET(req: NextRequest) {
   // lets the load run's preflight establish, before it drives anything, that the
   // deployment it is about to send six hundred bookings at really is stubbing
   // Google rather than creating six hundred real calendar events.
-  return NextResponse.json({ commit: BUILD_COMMIT, loadtest: isLoadtest() });
+  // `faultPct` is the SAME constant the stub injects faults from, imported rather
+  // than re-read from the variable beside it (#2262, L70). A second read could
+  // report a percentage the stub is not using, and the whole value of reporting it
+  // is that the load run's fault leg can establish, before it sends anything, that
+  // the deployment really is faulting: a deployment running zero answers every
+  // request perfectly and would satisfy the "no 5xx under fault" bar with no fault
+  // ever injected (L98).
+  return NextResponse.json({
+    commit: BUILD_COMMIT,
+    loadtest: isLoadtest(),
+    faultPct: LOADTEST_FAULT_PCT,
+  });
 }

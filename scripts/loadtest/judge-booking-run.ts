@@ -74,6 +74,18 @@ export interface JudgeInput {
   platform: PlatformReading;
   /** The fault pass, when one ran. */
   faultPass?: { attempts: number; fiveXx: number; faultPct: number };
+  /**
+   * Which legs this run was CONFIGURED to have, so a leg that was asked for and
+   * never arrived is incomplete rather than silently skipped (#2262).
+   *
+   * Required, so `tsc` names every construction site. Without it the burst bar was
+   * gated on `burstResults.length > 0`, which cannot tell "this run had no burst
+   * leg" from "the burst leg ran and its artifact never got here": the judge read
+   * both as the first and published a report with its most important control
+   * quietly absent (L98, L11). A hand run with no burst passes zeroes and the bars
+   * are skipped exactly as before.
+   */
+  expectedLegs: { burstDrivers: number; faultPct: number };
   /** The Worker CPU budget the reading is judged against. */
   budgets: { cpuMsP99: number };
 }
@@ -175,6 +187,50 @@ export function incompleteness(input: JudgeInput): string[] {
     if (b.burstSkipped) {
       why.push(
         `burst driver ${b.driver} did not fire (${b.burstSkipped}), so the burst was not simultaneous`,
+      );
+    }
+  }
+  // A leg the run was configured to have and did not get. Counted here rather than
+  // left to the bar below, because the bar's own question ("was there exactly one
+  // winner") cannot be asked of a leg whose file never arrived, and answering it
+  // over nothing is how a missing control reads as a passing one.
+  const wantBurst = input.expectedLegs.burstDrivers;
+  if (wantBurst > 0 && input.burstResults.length !== wantBurst) {
+    why.push(
+      `${input.burstResults.length} burst driver files, expected ${wantBurst}. A burst judged on ` +
+        `fewer drivers than fired is not the contention the control counts.`,
+    );
+  }
+  const seenBurst = new Set(input.burstResults.map((b) => b.driver));
+  if (seenBurst.size !== input.burstResults.length) {
+    why.push("two burst driver files claim the same driver number, so one driver's burst is missing");
+  }
+  for (const b of input.burstResults) {
+    if (b.runId !== input.runId) {
+      why.push(`burst driver ${b.driver}'s file is from run ${b.runId}, not ${input.runId}`);
+    }
+    if (!b.burstSkipped && b.attempts.length !== b.planned) {
+      why.push(
+        `burst driver ${b.driver} fired ${b.attempts.length} of ${b.planned} planned requests, so ` +
+          `the burst was smaller than the one being judged`,
+      );
+    }
+  }
+  const wantFault = input.expectedLegs.faultPct;
+  if (wantFault > 0) {
+    if (!input.faultPass) {
+      why.push(
+        `the run was configured with a fault pass at ${wantFault} percent and no fault result ` +
+          `arrived, so the bar was never asked`,
+      );
+    } else if (input.faultPass.faultPct !== wantFault) {
+      // The deployment's own reading, not the job's intention. A pass driven
+      // against a deployment running a DIFFERENT percentage measured something
+      // nobody configured, and zero is the case that matters: it answers every
+      // request perfectly and satisfies the bar with no fault ever injected.
+      why.push(
+        `the fault pass ran against a deployment reporting ${input.faultPass.faultPct} percent, ` +
+          `not the ${wantFault} it was configured for`,
       );
     }
   }

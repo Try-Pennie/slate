@@ -177,15 +177,81 @@ export interface BookingAttempt {
 }
 
 /** What one driver writes when it finishes. The judge refuses without all of them. */
+/** Which leg of the run produced a driver file (#2262).
+ *
+ *  `fault` drives exactly as `steady` does and is a SEPARATE mode rather than a
+ *  flag beside it, because the judge gathers every driver file out of one
+ *  directory by mode: a fault pass written as `steady` would be folded into the
+ *  steady pass's own latency, outcome and 5xx numbers, and the bar that says the
+ *  path must not 5xx would then be measuring the faults the run injected on
+ *  purpose. */
+export type DriverMode = "steady" | "burst" | "fault";
+
 export interface DriverResult {
   runId: string;
   driver: number;
-  mode: "steady" | "burst";
+  mode: DriverMode;
   /** How many requests the plan held, so a short file is visible as short. */
   planned: number;
   startedAtMs: number;
   finishedAtMs: number;
   /** Set only in burst mode, and only when the driver did not fire. */
   burstSkipped?: BurstReadiness;
+  /**
+   * Set only in fault mode: the percentage the DEPLOYMENT reported it was running
+   * with, read from `/api/smoke/version` before a single request was sent.
+   *
+   * The percentage the job ASKED for is not this number. A fault pass whose
+   * deployment never received the setting injects nothing, answers every request
+   * perfectly, and satisfies the "no 5xx under fault" bar without a fault ever
+   * having happened, which is the exact shape of a check that has never once
+   * concluded (L98). So the driver records what it was told by the thing under
+   * test, and refuses before driving when that is not what was asked for.
+   */
+  faultPct?: number;
   attempts: BookingAttempt[];
+}
+
+/**
+ * Which of the offered times the burst fires at, and when (#2262).
+ *
+ * ONE slot, chosen ONCE by the setup step and handed to every driver, because a
+ * burst whose drivers each chose their own is not a burst: nothing contends and
+ * everything succeeds.
+ *
+ * The LAST offered time, not the first, and that is the whole of the choice. The
+ * preflight books the first time its own bucket offers, minutes earlier, and the
+ * two buckets can share an agent: a burst aimed at a slot that agent is already
+ * booked for meets SLOT_TAKEN on every request, and "exactly one 200" then fails
+ * for a reason that has nothing to do with the unique index it is testing. The
+ * furthest offered time is the one least likely to have been touched.
+ *
+ * Sorted here rather than trusted to arrive in order (L343): a list read out of a
+ * response carries no order unless something declares one, and "the last element"
+ * of an unordered list is not "the furthest away".
+ */
+export function chooseBurstSlot(slots: readonly string[]): string | null {
+  const readable: { iso: string; ms: number }[] = [];
+  for (const iso of slots) {
+    const ms = Date.parse(iso);
+    // An unreadable time is DROPPED rather than sorted, because NaN compares false
+    // against everything and would land wherever the sort happened to put it,
+    // making the choice depend on the input order this sort exists to remove (L50).
+    if (Number.isFinite(ms)) readable.push({ iso, ms });
+  }
+  if (readable.length === 0) return null;
+  readable.sort((a, b) => a.ms - b.ms);
+  return readable[readable.length - 1]!.iso;
+}
+
+/**
+ * The shared moment, far enough ahead that every driver is awake for it.
+ *
+ * The lead has to cover a runner being queued, checked out and installed, which is
+ * the slowest part of the whole leg. Too short and drivers wake late, fire
+ * nothing, and the judge calls the run incomplete: the burst is cheap to re-run
+ * and a ten minute run judged without its control is not.
+ */
+export function burstStartAt(nowMs: number, leadSeconds: number): number {
+  return nowMs + Math.max(0, Math.round(leadSeconds)) * 1000;
 }

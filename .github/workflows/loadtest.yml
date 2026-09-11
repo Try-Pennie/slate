@@ -11,6 +11,17 @@ name: Booking path load run
 #               cannot make six hundred real calendar events), and that the
 #               database really refuses a planted clash. Nothing downstream means
 #               anything if this does not pass.
+#   setup-burst picks the ONE bucket, the ONE slot and the ONE moment the burst
+#               fires at, because a burst whose drivers each chose their own is not
+#               a burst: nothing contends and everything succeeds.
+#   burst       four drivers firing twenty five requests each at that moment
+#               against a pool one agent deep. Exactly one 200 and the rest
+#               SLOT_TAKEN is `bookings_active_slot_uniq` doing its job under real
+#               contention rather than against a planted duplicate. It runs BEFORE
+#               the steady pass, on purpose: the steady mix includes the burst's
+#               code, so a steady driver taking that slot first would make every
+#               burst request SLOT_TAKEN and fail the control for a reason that has
+#               nothing to do with the index.
 #   drivers     four of them, fifteen a minute for ten minutes, which is exactly
 #               the per address write ceiling.
 #   freshness   the existing soak sampler, one sample a minute, so recompute is
@@ -18,12 +29,21 @@ name: Booking path load run
 #   archive     `wrangler tail` for the window, because observability's own
 #               pipeline has been measured three hours behind and a run's logs are
 #               worth having while somebody is still looking at the run.
+#   fault       redeploys with Google failing a percentage of its calendar reads
+#               and drives a short second pass, which is the only leg that says
+#               whether the path DEGRADES rather than 5xxing. It comes last and
+#               alone, because the fault percentage is a deployment wide setting:
+#               overlapping it with the steady pass would make that pass's own 5xx
+#               bar a measurement of the faults this run injected on purpose.
 #   judge       reads all of it and writes ONE dated report.
 #   teardown    runs only after the judge, so the evidence outlives the branch.
 #
 # Needs: LOADTEST_SUPABASE_URL / LOADTEST_SUPABASE_SECRET_KEY (the branch),
-# LOADTEST_BOOKING_API_KEY, LOADTEST_BASE_URL, CLOUDFLARE_API_TOKEN,
-# CLOUDFLARE_ACCOUNT_ID, LOADTEST_WORKER_NAME.
+# LOADTEST_SUPABASE_PUBLISHABLE_KEY (the fault leg REBUILDS, and the publishable
+# key is inlined at build time), LOADTEST_BOOKING_API_KEY, LOADTEST_CRON_SECRET,
+# LOADTEST_BASE_URL, CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID,
+# LOADTEST_WORKER_NAME. `pnpm check:workflow-settings` names any that do not exist
+# with the command to create each.
 on:
   workflow_dispatch:
     inputs:
@@ -35,6 +55,13 @@ on:
         description: Delete the branch and the deployment when the judge is done
         type: boolean
         default: true
+      burst_lead_seconds:
+        description: >-
+          How long the burst drivers have to be queued, checked out and installed
+          before the shared moment. A driver that wakes late fires nothing and the
+          judge calls the run incomplete, so raise this rather than re-running.
+        type: string
+        default: "300"
 
 # Never cancelled in flight. A half run leaves a seeded branch, a deployment and
 # six hundred bookings behind, and the next run would then be seeded on top of
@@ -75,8 +102,87 @@ jobs:
           name: preflight
           path: results/
 
-  drive:
+  # The burst leg runs BEFORE the steady pass and alone, which is a decision rather
+  # than an ordering accident. The steady mix includes `122` (it is real traffic),
+  # so a steady driver that happened to take the burst's slot first would make every
+  # burst request SLOT_TAKEN, and "exactly one 200" would fail for a reason that has
+  # nothing to do with the unique index it exists to test. Twenty five simultaneous
+  # requests on one slot is the contention being measured either way.
+  setup-burst:
     needs: preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      burst_code: ${{ steps.pick.outputs.burst_code }}
+      burst_slot: ${{ steps.pick.outputs.burst_slot }}
+      start_at: ${{ steps.pick.outputs.start_at }}
+      # Emitted from the app's own DRIVERS constant, so the matrix below and the
+      # judge's expectation are ONE number rather than two that drift (L41).
+      drivers: ${{ steps.pick.outputs.drivers }}
+      driver_count: ${{ steps.pick.outputs.driver_count }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # ONE bucket, ONE slot, ONE moment, chosen here and handed to every driver.
+      # It refuses on its own exit code when the bucket offers nothing, because an
+      # empty burst file and a run with no burst leg are otherwise the same thing.
+      - name: Pick the burst's bucket, slot and moment
+        id: pick
+        env:
+          SLATE_BASE: ${{ vars.LOADTEST_BASE_URL }}
+          BURST_LEAD_SECONDS: ${{ inputs.burst_lead_seconds }}
+        run: node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/loadtest/burst-setup.ts
+
+  burst:
+    needs: setup-burst
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      # Never cancel a sibling. Four drivers firing together IS the burst, and a
+      # burst missing one is judged as incomplete rather than as a smaller burst.
+      fail-fast: false
+      matrix:
+        driver: ${{ fromJSON(needs.setup-burst.outputs.drivers) }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # A driver that wakes after the grace window exits WITHOUT firing and says so,
+      # in its file and on a non-zero exit. A late request meets an already taken
+      # slot and records a SLOT_TAKEN indistinguishable from the contention the
+      # control is counting, so the judge would be handed a staggered burst wearing
+      # a simultaneous one's clothes.
+      - name: Fire at the shared moment
+        env:
+          SLATE_BASE: ${{ vars.LOADTEST_BASE_URL }}
+          BOOKING_API_KEY: ${{ secrets.LOADTEST_BOOKING_API_KEY }}
+          MODE: burst
+          DRIVER: ${{ matrix.driver }}
+          START_AT: ${{ needs.setup-burst.outputs.start_at }}
+          BURST_SLOT: ${{ needs.setup-burst.outputs.burst_slot }}
+          BURST_CODE_OVERRIDE: ${{ needs.setup-burst.outputs.burst_code }}
+          OUT: results/burst-${{ matrix.driver }}.json
+        run: node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/loadtest/book.ts
+      # ALWAYS uploaded: a driver that missed its moment wrote a file saying so, and
+      # that file is what tells the judge the burst was not simultaneous. Without it
+      # the judge sees a burst leg that produced nothing.
+      - if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: burst-${{ matrix.driver }}
+          path: results/
+
+  drive:
+    needs: burst
     runs-on: ubuntu-latest
     timeout-minutes: 20
     strategy:
@@ -106,7 +212,7 @@ jobs:
           path: results/
 
   freshness:
-    needs: preflight
+    needs: burst
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -131,7 +237,7 @@ jobs:
           path: results/
 
   ceiling:
-    needs: preflight
+    needs: burst
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -157,7 +263,7 @@ jobs:
           path: results/
 
   archive:
-    needs: preflight
+    needs: burst
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -185,8 +291,89 @@ jobs:
           name: tail
           path: results/
 
+  # The only leg that says whether the path DEGRADES rather than 5xxing.
+  #
+  # It runs LAST and ALONE, and it redeploys, because `SLATE_LOADTEST_FAULT_PCT` is
+  # a deployment wide setting rather than a per request one: there is no way to
+  # fault one leg of a run without faulting the deployment, and overlapping it with
+  # the steady pass would make that pass's own "no 5xx" bar a measurement of the
+  # faults this run injected on purpose.
+  #
+  # The redeploy is the cost of that, and it is made honest rather than assumed: the
+  # driver asks `/api/smoke/version` whether the deployment is really running the
+  # percentage AND the commit this job just deployed, and refuses before sending a
+  # single request when it is not. A deployment that never received the setting
+  # fails no reads at all, answers everything perfectly, and would satisfy the bar
+  # with no fault having happened (L98).
+  fault:
+    needs: [drive, burst, freshness, ceiling]
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # Stamped so the commit the driver checks against is a real value rather than
+      # the "dev" placeholder every unstamped build carries, which would match any
+      # other unstamped build and prove nothing about this deploy.
+      - name: Stamp the commit this leg is deploying
+        run: node --experimental-strip-types scripts/stamp-build-info.ts "$GITHUB_SHA"
+      # The same build inputs the deployment was made with. They are inlined at
+      # build time (src/lib/env.ts reads each by its literal name), so a build with
+      # production's values here would be refused at runtime by the load test guard
+      # and a build with the wrong app URL would namespace the L1 slot caches
+      # differently from the pass that just ran.
+      - name: Build against the branch
+        env:
+          NEXT_PUBLIC_APP_URL: ${{ vars.LOADTEST_BASE_URL }}
+          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.LOADTEST_SUPABASE_URL }}
+          NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: ${{ secrets.LOADTEST_SUPABASE_PUBLISHABLE_KEY }}
+          NEXT_PUBLIC_GOOGLE_HOSTED_DOMAIN: trypennie.com
+        run: pnpm cf:build
+      # `--var` MERGES with the vars block rather than replacing it, so the load
+      # test flag, the disabled lanes and every other setting in env.loadtest
+      # survive this deploy. Only the fault percentage is added.
+      - name: Deploy with Google failing a share of its reads
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: npx wrangler deploy --env loadtest --var SLATE_LOADTEST_FAULT_PCT:"${{ inputs.fault_pct }}"
+      - name: Drive a short pass against it
+        env:
+          SLATE_BASE: ${{ vars.LOADTEST_BASE_URL }}
+          BOOKING_API_KEY: ${{ secrets.LOADTEST_BOOKING_API_KEY }}
+          MODE: fault
+          DRIVER: 0
+          FAULT_PCT: ${{ inputs.fault_pct }}
+          FAULT_COMMIT: ${{ github.sha }}
+          OUT: results/fault-0.json
+        run: node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/loadtest/book.ts
+      # ALWAYS, and before the artifact, because a deployment left injecting faults
+      # is the one thing this leg can leave behind that outlives the run: a later
+      # run dispatched with teardown off would have its steady pass count those
+      # faults as the path's own 5xx. No `--var`, so it ships exactly the vars block
+      # in env.loadtest, and no rebuild, since the build from three steps up is
+      # still on disk. The preflight also refuses a deployment still reporting a
+      # fault percentage, so a restore that itself fails is caught rather than
+      # inherited.
+      - name: Put the deployment back to injecting nothing
+        if: always()
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: npx wrangler deploy --env loadtest
+      - if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: fault-0
+          path: results/
+
   judge:
-    needs: [drive, freshness, ceiling, archive]
+    needs: [setup-burst, drive, burst, freshness, ceiling, archive, fault]
     # Judged even when a driver failed: the judge's own job is to say the run was
     # incomplete, and skipping it would leave that unsaid.
     if: always()
@@ -216,6 +403,15 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           LOADTEST_WORKER_NAME: ${{ vars.LOADTEST_WORKER_NAME }}
+          # Which legs this run was CONFIGURED to have. Without them the judge
+          # cannot tell "this run had no burst leg" from "the burst leg ran and its
+          # artifact never got here", and publishes a report with its most
+          # important control quietly absent (L98). Both are literals here because
+          # this workflow always runs both; a hand run passes neither. The driver
+          # count comes from the setup step, which emits it from the app's own
+          # constant, so it can never disagree with the matrix that fired.
+          EXPECT_BURST_DRIVERS: ${{ needs.setup-burst.outputs.driver_count }}
+          EXPECT_FAULT_PCT: ${{ inputs.fault_pct }}
           REPORT: reports/loadtest-${{ github.run_id }}.md
         run: node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/loadtest/run-judge.ts
       # ALWAYS uploaded, and this is the step teardown waits on. A report that

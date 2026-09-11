@@ -31,6 +31,7 @@ import {
   type DriverResult,
 } from "./book-plan.ts";
 import { BURST_CODE } from "./code-mix.ts";
+import { faultModeVerdict } from "./preflight-checks.ts";
 
 const PROD_HOSTS = ["slate.trypennie.app", "drukfvgaynzrralbzkzj.supabase.co"];
 
@@ -51,8 +52,8 @@ const OUT = need("OUT");
 // The burst settings are all optional and all default to what the run uses. They
 // are declared rather than wired because the steady job never sets them: a step
 // carrying five variables it does not use reads as configuration somebody chose.
-// env-ok: MODE (optional; defaults to steady, and only the burst job sets it)
-const MODE = (process.env.MODE ?? "steady") as "steady" | "burst";
+// env-ok: MODE (optional; defaults to steady; only the burst and fault jobs set it)
+const MODE = (process.env.MODE ?? "steady") as "steady" | "burst" | "fault";
 // env-ok: BURST_REQUESTS (optional; defaults to 25, which is what one burst driver fires)
 const BURST_REQUESTS = Number(process.env.BURST_REQUESTS ?? "25");
 // env-ok: BURST_GRACE_MS (optional; defaults to 2000, how late a driver may be and
@@ -60,6 +61,12 @@ const BURST_REQUESTS = Number(process.env.BURST_REQUESTS ?? "25");
 const BURST_GRACE_MS = Number(process.env.BURST_GRACE_MS ?? "2000");
 // env-ok: BURST_CODE_OVERRIDE (optional; defaults to the measured one agent pool,
 // and only a deliberate experiment would point the burst at a different code)
+// env-ok: FAULT_PCT (required in fault mode only; the percentage the deployment
+// was redeployed with, which the driver then CONFIRMS with the deployment itself)
+// env-ok: FAULT_MINUTES (optional; defaults to 2, long enough for the bar to have
+// a real sample and short enough that a faulted deployment is not live for long)
+// env-ok: FAULT_COMMIT (optional; the commit the fault leg deployed, checked
+// against what the deployment reports so a redeploy that did not take is caught)
 // env-ok: TZ_NAME (optional; defaults to America/New_York, the zone the seeded
 // roster's largest group keeps)
 const TIMEZONE = process.env.TZ_NAME ?? "America/New_York";
@@ -181,10 +188,10 @@ function write(result: DriverResult): void {
   console.log(`driver ${DRIVER} (${MODE}): wrote ${result.attempts.length} attempts to ${OUT}`);
 }
 
-async function steady(): Promise<void> {
+async function steady(mode: "steady" | "fault" = "steady", minutes = RUN_MINUTES): Promise<void> {
   const startedAtMs = Date.now();
   const plan = requestSchedule({
-    total: PER_DRIVER_PER_MINUTE * RUN_MINUTES,
+    total: PER_DRIVER_PER_MINUTE * minutes,
     perMinute: PER_DRIVER_PER_MINUTE,
     startAtMs: startedAtMs,
   });
@@ -225,12 +232,62 @@ async function steady(): Promise<void> {
   write({
     runId: RUN_ID,
     driver: DRIVER,
-    mode: "steady",
+    mode,
     planned: plan.length,
     startedAtMs,
     finishedAtMs: Date.now(),
+    ...(mode === "fault" ? { faultPct: faultPctConfirmed } : {}),
     attempts,
   });
+}
+
+/** The percentage the DEPLOYMENT reported, set by `fault()` before anything is driven. */
+let faultPctConfirmed = 0;
+
+/**
+ * The fault pass: the same steady drive, against a deployment redeployed with
+ * Google failing a percentage of its calendar reads (#2262).
+ *
+ * It CONFIRMS that percentage with the deployment before it sends one request. The
+ * bar this feeds is "zero 5xx with Google failing ten percent of reads", and a
+ * deployment that never received the setting fails no reads: it answers everything
+ * perfectly and satisfies the bar with no fault having happened, which reads
+ * exactly like a path that degraded well (L98). A run is too expensive to discover
+ * that from afterwards.
+ */
+async function fault(): Promise<void> {
+  const raw = need("FAULT_PCT");
+  if (!/^\d+$/.test(raw.trim())) {
+    console.error(`FAILED: FAULT_PCT is not a whole percentage: ${JSON.stringify(raw)}.`);
+    process.exit(1);
+  }
+  const wantedPct = Number(raw.trim());
+  if (wantedPct <= 0) {
+    // Zero is not a fault pass, it is the steady pass under another name, and the
+    // judge would score its bar as met having injected nothing.
+    console.error("FAILED: FAULT_PCT is 0, so this would drive no faults and pass the bar anyway.");
+    process.exit(1);
+  }
+  const commit = (process.env.FAULT_COMMIT ?? "").trim();
+  const res = await fetch(`${SLATE_BASE}/api/smoke/version`, {
+    headers: { Authorization: `Bearer ${API_KEY}` },
+  });
+  const verdict = faultModeVerdict(res.status, await res.json().catch(() => ({})), {
+    faultPct: wantedPct,
+    commit: commit === "" ? undefined : commit,
+  });
+  if (!verdict.ok) {
+    console.error(`FAILED: ${verdict.why}`);
+    process.exit(1);
+  }
+  faultPctConfirmed = verdict.faultPct;
+  const minutes = Number((process.env.FAULT_MINUTES ?? "2").trim());
+  if (!Number.isFinite(minutes) || minutes <= 0) {
+    console.error(`FAILED: FAULT_MINUTES is not a positive number of minutes.`);
+    process.exit(1);
+  }
+  console.log(`driver ${DRIVER}: the deployment reports faultPct=${faultPctConfirmed}; driving ${minutes}m`);
+  await steady("fault", minutes);
 }
 
 async function burst(): Promise<void> {
@@ -291,4 +348,4 @@ async function burst(): Promise<void> {
   });
 }
 
-await (MODE === "burst" ? burst() : steady());
+await (MODE === "burst" ? burst() : MODE === "fault" ? fault() : steady());

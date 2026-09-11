@@ -55,7 +55,7 @@ describe("GET /api/smoke/version", () => {
     env.bookingApiKeyPrimary.mockReturnValue("real-key");
     const res = await get("Bearer real-key");
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ commit: "abc1234", loadtest: false });
+    expect(await res.json()).toEqual({ commit: "abc1234", loadtest: false, faultPct: 0 });
   });
 
   it("reports loadtest mode, which is how the load run's preflight refuses early", async () => {
@@ -70,7 +70,7 @@ describe("GET /api/smoke/version", () => {
     try {
       env.bookingApiKeyPrimary.mockReturnValue("real-key");
       const res = await get("Bearer real-key");
-      expect(await res.json()).toEqual({ commit: "abc1234", loadtest: true });
+      expect(await res.json()).toEqual({ commit: "abc1234", loadtest: true, faultPct: 0 });
     } finally {
       if (saved === undefined) delete process.env.SLATE_LOADTEST;
       else process.env.SLATE_LOADTEST = saved;
@@ -85,14 +85,26 @@ describe("GET /api/smoke/version", () => {
     expect((await res.json()).commit).toBe("abc1234");
   });
 
-  it("returns ONLY an enumerated pair, so the endpoint cannot grow into a config leak", async () => {
+  it("reports the fault percentage the stub is really injecting from", async () => {
+    // #2262. The load run's fault leg asks this before it drives, because a
+    // deployment that never received the setting fails no reads at all: it answers
+    // every request perfectly and would satisfy the "no 5xx under fault" bar with
+    // no fault having happened. Zero is the answer everywhere but a fault leg, and
+    // it is what the preflight requires before a steady pass.
+    env.bookingApiKeyPrimary.mockReturnValue("real-key");
+    const res = await get("Bearer real-key");
+    expect((await res.json()).faultPct).toBe(0);
+  });
+
+  it("returns ONLY the enumerated fields, so the endpoint cannot grow into a config leak", async () => {
     // The constraint is unchanged and the list is: a field may be here only if
     // somebody decided it may. `commit` says which build is live (#1037) and
     // `loadtest` says which mode it is in (#2242), and both are facts about the
-    // deployment rather than about its configuration. Widening this list is the
+    // deployment rather than about its configuration, and `faultPct` (#2262) says
+    // whether it is injecting Google failures. Widening this list is the
     // deliberate act; a new key appearing without one fails here.
     env.bookingApiKeyPrimary.mockReturnValue("real-key");
     const res = await get("Bearer real-key");
-    expect(Object.keys(await res.json()).sort()).toEqual(["commit", "loadtest"]);
+    expect(Object.keys(await res.json()).sort()).toEqual(["commit", "faultPct", "loadtest"]);
   });
 });

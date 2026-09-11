@@ -11,6 +11,7 @@ import {
   stubShapedEventId,
   ceilingVerdict,
   loadtestModeVerdict,
+  faultModeVerdict,
 } from "./loadtest/preflight-checks.ts";
 import { stubCreateEvent } from "../src/lib/google/loadtest-stub.ts";
 import { deterministicEventId } from "../src/lib/booking/core.ts";
@@ -165,6 +166,126 @@ import { assert, eq, finish } from "./lib/harness.ts";
   assert(!v.ok, "an unreadable body at 200 is refused");
   const w = loadtestModeVerdict(200, "not json");
   assert(!w.ok, "and so is a string body");
+}
+
+// --- the deployment is really injecting faults (#2262) ------------------------
+//
+// The bar this feeds is "zero 5xx with Google failing ten percent of reads". A
+// deployment that never received the setting fails NO reads: it answers every
+// request perfectly and satisfies the bar with no fault having happened, which is
+// indistinguishable from a path that degraded beautifully (L98). So the leg asks
+// the deployment before it drives, and zero is the case that matters most.
+
+{
+  const v = faultModeVerdict(200, { commit: "abc1234", loadtest: true, faultPct: 10 }, { faultPct: 10 });
+  assert(v.ok, "a deployment reporting the percentage asked for is accepted");
+  eq(v.ok ? v.faultPct : -1, 10, "and the percentage it reported is carried, not the one asked for");
+}
+
+{
+  // ZERO. The whole reason this check exists: it passes every bar while measuring
+  // nothing.
+  const v = faultModeVerdict(200, { commit: "abc1234", loadtest: true, faultPct: 0 }, { faultPct: 10 });
+  assert(!v.ok, "a deployment reporting zero percent is refused");
+  assert(
+    !v.ok && v.why.includes("no faults at all"),
+    "and is told that a zero pass satisfies the bar while measuring nothing",
+  );
+}
+
+{
+  // Any other disagreement, in both directions, because a pass at a percentage
+  // nobody configured is a measurement of something nobody asked about.
+  for (const [reported, wanted] of [[5, 10], [20, 10], [100, 10]] as const) {
+    const v = faultModeVerdict(200, { loadtest: true, faultPct: reported }, { faultPct: wanted });
+    assert(!v.ok, `a deployment at ${reported} percent is refused when ${wanted} was asked for`);
+    assert(
+      !v.ok && v.why.includes(String(reported)) && v.why.includes(String(wanted)),
+      `and the refusal names both numbers`,
+    );
+  }
+}
+
+{
+  // A field that is absent, or present as something other than a number, is "could
+  // not establish" rather than zero. Reading either as zero would send somebody to
+  // check a setting when the real answer is that the deployment predates the field.
+  const missing = faultModeVerdict(200, { loadtest: true }, { faultPct: 10 });
+  assert(!missing.ok, "a reply with no faultPct is refused");
+  assert(!missing.ok && missing.why.includes("no faultPct"), "and says the field was not reported");
+  const stringy = faultModeVerdict(200, { loadtest: true, faultPct: "10" }, { faultPct: 10 });
+  assert(!stringy.ok, 'a faultPct reported as the string "10" is refused');
+  assert(
+    !stringy.ok && stringy.why.includes("no faultPct number"),
+    "because a string is not the number the stub injects from",
+  );
+}
+
+{
+  // The load test gate comes FIRST, so a production deployment is refused for
+  // being production rather than for its fault percentage (L11). Otherwise the
+  // reader is sent to look at a setting on the wrong machine entirely.
+  const v = faultModeVerdict(200, { commit: "abc1234", loadtest: false, faultPct: 10 }, { faultPct: 10 });
+  assert(!v.ok, "a deployment that is not in load test mode is refused");
+  assert(
+    !v.ok && v.why.includes("REAL calendar events"),
+    "and is refused as production, not as a wrong percentage",
+  );
+}
+
+{
+  // The commit, because the fault leg REDEPLOYS: a redeploy that silently served
+  // the previous version would have the run judge a build nobody drove.
+  const stale = faultModeVerdict(
+    200,
+    { commit: "old1111", loadtest: true, faultPct: 10 },
+    { faultPct: 10, commit: "new2222" },
+  );
+  assert(!stale.ok, "a deployment serving a different commit is refused");
+  assert(
+    !stale.ok && stale.why.includes("redeploy did not take effect"),
+    "and is told the redeploy is what did not happen",
+  );
+  const fresh = faultModeVerdict(
+    200,
+    { commit: "new2222", loadtest: true, faultPct: 10 },
+    { faultPct: 10, commit: "new2222" },
+  );
+  assert(fresh.ok, "and the matching commit is accepted");
+  // Not checked when the caller does not know which commit it deployed, so a hand
+  // run is not refused for a fact it never had.
+  assert(
+    faultModeVerdict(200, { commit: "anything", loadtest: true, faultPct: 10 }, { faultPct: 10 }).ok,
+    "a caller that named no commit is not judged on one",
+  );
+}
+
+// A leftover faulted deployment, which is the OPPOSITE mistake and the one a
+// steady pass meets. A run dispatched with teardown off leaves the deployment
+// injecting faults, and the next run's steady pass would count those against the
+// path's own 5xx bar.
+{
+  const v = faultModeVerdict(200, { loadtest: true, faultPct: 10 }, { faultPct: 0 });
+  assert(!v.ok, "a deployment still injecting faults is refused when none were asked for");
+  assert(!v.ok && v.why.includes("left over"), "and is told a previous leg left it that way");
+  assert(
+    !v.ok && v.why.includes("--env loadtest"),
+    "and how to put it back, since the remedy is a command rather than a diagnosis",
+  );
+  // The three mismatch messages are genuinely three, not one wording reused: the
+  // two extremes send people to opposite places.
+  const wantedNoneGotSome = faultModeVerdict(200, { loadtest: true, faultPct: 10 }, { faultPct: 0 })!;
+  const wantedSomeGotNone = faultModeVerdict(200, { loadtest: true, faultPct: 0 }, { faultPct: 10 })!;
+  const plainMismatch = faultModeVerdict(200, { loadtest: true, faultPct: 5 }, { faultPct: 10 })!;
+  const whys = [wantedNoneGotSome, wantedSomeGotNone, plainMismatch].map((r) =>
+    r.ok ? "ok" : r.why,
+  );
+  eq(new Set(whys).size, 3, "the three fault mismatches say three different things");
+  // And the quiet case: a steady pass against a clean deployment passes.
+  assert(
+    faultModeVerdict(200, { loadtest: true, faultPct: 0 }, { faultPct: 0 }).ok,
+    "a deployment injecting no faults is accepted when none were asked for",
+  );
 }
 
 finish();

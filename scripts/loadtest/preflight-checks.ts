@@ -114,3 +114,82 @@ export function loadtestModeVerdict(
   }
   return { ok: true, commit: typeof payload.commit === "string" ? payload.commit : null };
 }
+
+/** What `/api/smoke/version` said about a deployment the FAULT leg is about to drive. */
+export type FaultModeVerdict =
+  | { ok: true; faultPct: number }
+  | { ok: false; why: string };
+
+/**
+ * Whether a deployment is really running the fault percentage the leg asked for
+ * (#2262).
+ *
+ * This is the whole integrity of the fault leg. The bar it feeds is "zero 5xx with
+ * Google failing ten percent of reads", and a deployment that never received the
+ * setting fails no reads at all: it answers every request perfectly and satisfies
+ * the bar without one fault having happened, which is indistinguishable from a
+ * path that degraded beautifully (L98). Telling wrangler to set a variable is not
+ * the same as the deployment running with it, so the leg asks the deployment.
+ *
+ * The COMMIT is checked too, because the fault leg redeploys: a redeploy that
+ * silently served the previous version would have the run judge a build nobody
+ * drove. It is compared only when the caller knows which commit it deployed.
+ */
+export function faultModeVerdict(
+  status: number,
+  body: unknown,
+  wanted: { faultPct: number; commit?: string },
+): FaultModeVerdict {
+  const mode = loadtestModeVerdict(status, body);
+  if (!mode.ok) return mode;
+  const payload =
+    typeof body === "object" && body !== null ? (body as { faultPct?: unknown }) : {};
+  if (typeof payload.faultPct !== "number") {
+    return {
+      ok: false,
+      why:
+        "/api/smoke/version reports no faultPct number, so whether this deployment injects faults " +
+        "at all could not be established. Nothing was driven.",
+    };
+  }
+  if (payload.faultPct !== wanted.faultPct) {
+    // Three causes, three messages, because they send three different people to
+    // three different places (L11). The two extremes are the ones that matter and
+    // they are opposite mistakes: a leg that wanted faults and got none, and a
+    // pass that wanted none and is about to measure somebody else's.
+    if (wanted.faultPct > 0 && payload.faultPct === 0) {
+      return {
+        ok: false,
+        why:
+          `this deployment reports faultPct=0 and the leg was configured for ${wanted.faultPct}. ` +
+          `It would fail no reads at all, answer every request perfectly, and satisfy the "no 5xx ` +
+          `under fault" bar with no faults at all having been injected.`,
+      };
+    }
+    if (wanted.faultPct === 0 && payload.faultPct > 0) {
+      return {
+        ok: false,
+        why:
+          `this deployment is still injecting faults at ${payload.faultPct} percent, left over ` +
+          `from a fault leg that was never restored (a run dispatched with teardown off does ` +
+          `that). A steady pass against it would count those faults as the path's own 5xx. ` +
+          `Redeploy with --env loadtest and no --var, then re-run.`,
+      };
+    }
+    return {
+      ok: false,
+      why:
+        `this deployment reports faultPct=${payload.faultPct} and the leg was configured for ` +
+        `${wanted.faultPct}, so a pass against it measures a percentage nobody asked for.`,
+    };
+  }
+  if (wanted.commit !== undefined && mode.commit !== wanted.commit) {
+    return {
+      ok: false,
+      why:
+        `this deployment is serving commit ${mode.commit ?? "unreported"} and the fault leg ` +
+        `deployed ${wanted.commit}, so the redeploy did not take effect.`,
+    };
+  }
+  return { ok: true, faultPct: payload.faultPct };
+}
