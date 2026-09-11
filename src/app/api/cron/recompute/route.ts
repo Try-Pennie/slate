@@ -158,16 +158,15 @@ export async function GET(req: NextRequest) {
     // read per bucket instead of each re-querying the DB. The booker read + booking
     // verify keep the live resolver, so a stale cache can never mis-route a real
     // booking; the recompute row is display-only and re-verified live at book time.
-    let recomputed = 0;
-    await recomputeDueBuckets(
+    // The pool REPORTS how many codes it refreshed and the drain sums it. Not
+    // accumulated here: `recomputed += await ...` reads the variable before it
+    // awaits, so a wave of pools running at once each add to the value they saw
+    // at the start and only the last one survives. That is what shipped, and it
+    // reported one pool's writes as the whole cycle.
+    const recomputed = await recomputeDueBuckets(
       duePools,
-      async (pool) => {
-        recomputed += await recomputePoolSlotsForToday(
-          pool,
-          (b) => eligibleAgentIdsCached(b),
-          horizonDays,
-        );
-      },
+      (pool) =>
+        recomputePoolSlotsForToday(pool, (b) => eligibleAgentIdsCached(b), horizonDays),
       () => withinBudget(Date.now(), deadlineMs),
       RECOMPUTE_CONCURRENCY,
       (pool) => pool.map((b) => b.code).join("+"),
