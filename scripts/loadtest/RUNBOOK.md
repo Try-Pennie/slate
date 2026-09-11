@@ -1,3 +1,19 @@
+# Load testing Slate
+
+Two runs live here, and they measure different things:
+
+- the **cron lane** run (#273 Increment 5), everything up to "Backstop retention
+  decision". It drives recompute, sync, watch and the outbox at 200 agents.
+- the **booking path** run (#2243, #2244), the two sections at the end. It drives
+  the path a lead actually takes.
+
+**The July soak proved the lanes and never confirmed a single booking.** That is
+worth stating plainly, because it read as a 200-agent pass for a year: the memory
+note for #440 records a soak that went green, and the confirm path was not in it.
+`createEvent` was never stubbed, so a booking could not have completed under
+`SLATE_LOADTEST` even if the run had tried (#2241). Anything relying on "the load
+test passed" should say WHICH run.
+
 # 200-agent load test (#273 Increment 5)
 
 The final gate before cutover: prove the free three-lane cron design holds at the
@@ -235,6 +251,89 @@ A driver that wakes up **late exits without firing** and says so, in the file an
 a non-zero exit. A late request meets an already taken slot and records a SLOT_TAKEN
 indistinguishable from the contention the control is counting, so the judge would be
 handed a staggered burst wearing a simultaneous one's clothes.
+
+## Judging the booking path run (#2244)
+
+`.github/workflows/loadtest.yml`, **`workflow_dispatch` only**, because a run
+creates six hundred bookings. `concurrency: { group: loadtest,
+cancel-in-progress: false }`: a half run leaves a seeded branch, a deployment and
+six hundred bookings behind, and the next run seeded on top of them would report
+clashes this one created. Every job carries a timeout.
+
+### Before anything is believed: the preflight
+
+`scripts/loadtest/preflight.ts` runs first and everything downstream rests on it.
+It makes ONE real booking and checks three things:
+
+- the booking left a row, an idempotency key and a `busy_blocks` row, and its
+  **reservation row is gone** (the confirm path deletes it on success, so its
+  ABSENCE is the assertion);
+- the `gcal_event_id` is the **stub's shape**. If it is not, `SLATE_LOADTEST` is
+  not on for that deployment and the run is about to create six hundred real
+  calendar events and send six hundred real invitations, which is the single most
+  expensive way this can go wrong;
+- the database really **refuses a planted clash**, and the judge's own overlap
+  predicate really goes red on one and stays quiet on a back to back pair. Both
+  directions, or a judge hard wired to report no overlaps would satisfy it.
+
+### What the judge refuses to do
+
+**It will not judge an incomplete run.** Three driver files out of four, or a
+sampler that stopped after two minutes, is computable and every rate looks
+plausible: the p95 of a short run is lower and the confirmed-per-minute of a
+missing driver is a quarter down, and nothing in the numbers says which. So
+`incomplete` is its own verdict on its own exit code and **nothing is measured at
+all** (L288). A burst driver that missed its moment counts as incomplete too: it
+recorded nothing, so "exactly one 200" would be answered by however many drivers
+happened to arrive.
+
+### The bars
+
+| bar | what it is |
+|---|---|
+| confirmed a minute | at or above 80 percent of target, with the full outcome mix printed so a short run says WHY |
+| latency | p50, p95 and max over ALL responses, and the p95 of the **200s** under 5,000ms |
+| 5xx and no reply | counted **separately** and both fail: a request answered badly and one never answered send two different people to two different places |
+| double bookings | no two run-scoped ACTIVE bookings overlap on one agent in `[starts_at, ends_at)`, read through a **paginating** list, and `bookings_active_slot_uniq` must be present (without it an absence of overlaps proves nothing) |
+| every 200 left a row | a booking row carrying the request's external id, an idempotency key, and a `busy_blocks` row |
+| the burst | exactly **one** 200 against the one agent pool, every other answer `SLOT_TAKEN`, and the winner really exists |
+| freshness | the worst oldest-bucket age across the window under 6 minutes |
+| the per address ceiling | its own step sends 61 writes from one address in one window and requires the 61st refused |
+| platform | CPU p99 under the lane budget, and **no invocation outcome other than `ok`** |
+| the fault pass | at `SLATE_LOADTEST_FAULT_PCT=10`, zero 5xx, and a pass that made no requests fails rather than passing on an empty sample |
+
+**Subrequests are deliberately not a bar**, and that is a decision rather than an
+omission. Cloudflare's observability exposes **no subrequest counter**
+(`docs/cloudflare-platform-notes.md`), so the bar could never be measured and the
+judge would be permanently unable to conclude, which is the shape #2240's first
+cal.com probe shipped in. The BREACH is measurable and arrives as a non-`ok`
+invocation outcome, so that is what is judged.
+
+**The platform half has a control.** The analytics API's invocation count is
+compared against the number of requests the run itself made, and a count far under
+it is reported as `unmeasured` on its own exit code rather than as a pass: the
+pipeline has been measured **three hours behind** (#1533), and a low CPU reading
+from a lagging pipeline looks exactly like a cheap run. Its `cpuTime` is in
+**microseconds**.
+
+### The report outlives the branch
+
+The judge writes ONE dated report and uploads it `if: always()`. Teardown `needs`
+the judge, so it cannot race the read; it deletes the deployment and then
+**confirms the listing is empty**, because a zero exit from `wrangler delete` is
+not the same as the deployment being gone. That confirmation checks the listing's
+own exit status before its content: piping straight into `grep` reports the
+parser's status, so a listing that failed matches nothing and the step prints "no
+deployment remains" (L183).
+
+### One hand-off before the first run
+
+The workflow references seven repo settings that do not exist yet, and
+`pnpm check:workflow-settings` names them with the command to create each. They
+cannot be created until the isolated Supabase branch and the `loadtest` Cloudflare
+environment exist. Nothing can be dispatched into a misconfigured state in the
+meantime: **every script the workflow runs refuses an empty value by name** rather
+than reading it with a `??` fallback that an empty string would slip past (#1498).
 
 ## Backstop retention decision (#440: retire #401 / #428 only if fully subsumed)
 **Decision: keep both `#401` and `#428` running. Neither is subsumed by the outbox.**

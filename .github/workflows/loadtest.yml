@@ -1,0 +1,265 @@
+name: Booking path load run
+
+# Ten times the booking path's peak against an ISOLATED branch and deployment
+# (#2243, #2244). It creates six hundred bookings, so it is `workflow_dispatch`
+# ONLY and every job that touches a system names the loadtest one.
+#
+# The shape of the run, and why each piece is here:
+#
+#   preflight   proves a booking made through this deployment leaves the rows the
+#               judge looks for, that its event id is the STUB'S shape (so the run
+#               cannot make six hundred real calendar events), and that the
+#               database really refuses a planted clash. Nothing downstream means
+#               anything if this does not pass.
+#   drivers     four of them, fifteen a minute for ten minutes, which is exactly
+#               the per address write ceiling.
+#   freshness   the existing soak sampler, one sample a minute, so recompute is
+#               measured UNDER the load rather than before or after it.
+#   archive     `wrangler tail` for the window, because observability's own
+#               pipeline has been measured three hours behind and a run's logs are
+#               worth having while somebody is still looking at the run.
+#   judge       reads all of it and writes ONE dated report.
+#   teardown    runs only after the judge, so the evidence outlives the branch.
+#
+# Needs: LOADTEST_SUPABASE_URL / LOADTEST_SUPABASE_SECRET_KEY (the branch),
+# LOADTEST_BOOKING_API_KEY, LOADTEST_BASE_URL, CLOUDFLARE_API_TOKEN,
+# CLOUDFLARE_ACCOUNT_ID, LOADTEST_WORKER_NAME.
+on:
+  workflow_dispatch:
+    inputs:
+      fault_pct:
+        description: Percentage of Google reads the stub fails during the fault pass
+        type: string
+        default: "10"
+      teardown:
+        description: Delete the branch and the deployment when the judge is done
+        type: boolean
+        default: true
+
+# Never cancelled in flight. A half run leaves a seeded branch, a deployment and
+# six hundred bookings behind, and the next run would then be seeded on top of
+# them: its overlap check would report clashes this one created.
+concurrency:
+  group: loadtest
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  RUN_ID: run-${{ github.run_id }}-${{ github.run_attempt }}
+
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: One booking, and the judge's own overlap check
+        env:
+          SLATE_BASE: ${{ vars.LOADTEST_BASE_URL }}
+          BOOKING_API_KEY: ${{ secrets.LOADTEST_BOOKING_API_KEY }}
+          SUPABASE_URL: ${{ secrets.LOADTEST_SUPABASE_URL }}
+          SUPABASE_SECRET_KEY: ${{ secrets.LOADTEST_SUPABASE_SECRET_KEY }}
+        run: node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/loadtest/preflight.ts
+
+  drive:
+    needs: preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      # Never cancel a sibling: four drivers at fifteen a minute IS the load, and a
+      # run missing one is judged as incomplete rather than as a slower run.
+      fail-fast: false
+      matrix:
+        driver: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Drive the booking API
+        env:
+          SLATE_BASE: ${{ vars.LOADTEST_BASE_URL }}
+          BOOKING_API_KEY: ${{ secrets.LOADTEST_BOOKING_API_KEY }}
+          DRIVER: ${{ matrix.driver }}
+          OUT: results/driver-${{ matrix.driver }}.json
+        run: node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/loadtest/book.ts
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: driver-${{ matrix.driver }}
+          path: results/
+
+  freshness:
+    needs: preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Sample recompute freshness once a minute, under the load
+        env:
+          SLATE_BASE: ${{ vars.LOADTEST_BASE_URL }}
+          CRON_SECRET: ${{ secrets.LOADTEST_CRON_SECRET }}
+          SUPABASE_URL: ${{ secrets.LOADTEST_SUPABASE_URL }}
+          SUPABASE_SECRET_KEY: ${{ secrets.LOADTEST_SUPABASE_SECRET_KEY }}
+          OUT: results/freshness.json
+        run: node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/loadtest/freshness-sampler.ts
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: freshness
+          path: results/
+
+  ceiling:
+    needs: preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # Its own step, and its own address budget: sixty one writes in one window
+      # must see the sixty first refused. Without it, every 429 the run attributes
+      # is a number nobody has shown the ceiling can produce.
+      - name: Prove the per address write ceiling applies
+        env:
+          SLATE_BASE: ${{ vars.LOADTEST_BASE_URL }}
+          BOOKING_API_KEY: ${{ secrets.LOADTEST_BOOKING_API_KEY }}
+          OUT: results/ip-ceiling.json
+        run: node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/loadtest/ip-ceiling-control.ts
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ip-ceiling
+          path: results/
+
+  archive:
+    needs: preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # Streamed live rather than queried afterwards: the observability pipeline has
+      # been measured three hours behind (#1533), so a run's own logs would not be
+      # readable while anybody is still looking at the run.
+      - name: Archive the Worker's logs for the window
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -o pipefail
+          mkdir -p results
+          timeout 15m npx wrangler tail --env loadtest --format json > results/tail.jsonl || true
+          wc -l results/tail.jsonl
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: tail
+          path: results/
+
+  judge:
+    needs: [drive, freshness, ceiling, archive]
+    # Judged even when a driver failed: the judge's own job is to say the run was
+    # incomplete, and skipping it would leave that unsaid.
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          path: downloaded
+      - name: Gather every driver's file into one directory
+        run: |
+          mkdir -p results
+          find downloaded -name '*.json' -exec cp {} results/ \;
+          ls -la results/
+      - name: Judge
+        env:
+          RESULTS: results
+          SUPABASE_URL: ${{ secrets.LOADTEST_SUPABASE_URL }}
+          SUPABASE_SECRET_KEY: ${{ secrets.LOADTEST_SUPABASE_SECRET_KEY }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          LOADTEST_WORKER_NAME: ${{ vars.LOADTEST_WORKER_NAME }}
+          REPORT: reports/loadtest-${{ github.run_id }}.md
+        run: node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/loadtest/run-judge.ts
+      # ALWAYS uploaded, and this is the step teardown waits on. A report that
+      # exists only in a log is one nobody reads after the branch is gone.
+      - if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: loadtest-report
+          path: reports/
+
+  teardown:
+    needs: judge
+    # Only after the judge has run AND uploaded, whatever it concluded. A teardown
+    # that raced the judge would delete the branch the judge reads from.
+    if: always() && inputs.teardown
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Delete the deployment
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: npx wrangler delete --env loadtest --force
+      # The teardown is only done when the deployment is GONE, not when the delete
+      # command exited. An empty listing is the assertion; a zero exit is not.
+      - name: Confirm nothing is left deployed
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -o pipefail
+          # The listing's own exit status is checked BEFORE its content. Piping
+          # straight into grep reports the PARSER's status, so a listing that failed
+          # (expired credentials, a network blip) matches nothing and the step
+          # prints "no deployment remains": a dead read wearing a clean teardown's
+          # clothes (#1433, L183).
+          if ! out=$(npx wrangler deployments list --env loadtest 2>&1); then
+            echo "could not list deployments, so the teardown is NOT confirmed:"
+            echo "$out"
+            exit 1
+          fi
+          if printf '%s' "$out" | grep -q "Created"; then
+            echo "the loadtest deployment is still listed after the delete"
+            exit 1
+          fi
+          echo "no loadtest deployment remains"

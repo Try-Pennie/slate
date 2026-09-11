@@ -1,0 +1,530 @@
+// The verdict on a booking path load run (#2244), driven offline.
+//
+// A fixture per failure AND a passing one, which is the point: a judge with only
+// failing fixtures is satisfied by one that fails on everything, and a judge with
+// only a passing fixture is satisfied by one that passes on everything (L1). Every
+// case below therefore starts from the SAME passing run and breaks exactly one
+// thing, so each finding is attributable to the thing it names.
+//
+// Run: node --experimental-strip-types scripts/test-judge-booking-run.ts
+import {
+  judgeBookingRun,
+  incompleteness,
+  percentiles,
+  overlaps,
+  JUDGE_EXIT,
+  OK_P95_MS,
+  FRESHNESS_MAX_SEC,
+  type JudgeInput,
+  type JudgedBooking,
+} from "./loadtest/judge-booking-run.ts";
+import type { BookingAttempt, DriverResult } from "./loadtest/book-plan.ts";
+import { assert, eq, finish } from "./lib/harness.ts";
+
+const RUN = "run-1";
+const T0 = Date.parse("2026-09-15T14:00:00.000Z");
+const TARGET = { drivers: 4, perDriverPerMinute: 15, minutes: 10 };
+const PER_DRIVER = TARGET.perDriverPerMinute * TARGET.minutes;
+
+function attempt(driver: number, n: number, over: Partial<BookingAttempt> = {}): BookingAttempt {
+  return {
+    driver,
+    n,
+    code: "112",
+    externalId: `${RUN}-${driver}-${n}`,
+    sentAtMs: T0 + n * 4000,
+    wallMs: 400,
+    status: 200,
+    outcome: "booked",
+    // Each attempt gets its OWN slot, an hour apart per driver, so the passing
+    // fixture carries no accidental overlap of its own.
+    startIso: new Date(T0 + 86_400_000 + (driver * 1000 + n) * 20 * 60_000).toISOString(),
+    seenIp: "203.0.113.9",
+    ...over,
+  };
+}
+
+function driverFile(driver: number, over: Partial<DriverResult> = {}): DriverResult {
+  return {
+    runId: RUN,
+    driver,
+    mode: "steady",
+    planned: PER_DRIVER,
+    startedAtMs: T0,
+    finishedAtMs: T0 + TARGET.minutes * 60_000,
+    attempts: Array.from({ length: PER_DRIVER }, (_, n) => attempt(driver, n)),
+    ...over,
+  };
+}
+
+function bookingFor(a: BookingAttempt, over: Partial<JudgedBooking> = {}): JudgedBooking {
+  const starts = a.startIso!;
+  return {
+    id: `bk-${a.externalId}`,
+    external_id: a.externalId,
+    idempotency_key: `key-${a.externalId}`,
+    // One agent per driver, so the passing fixture's bookings cannot collide
+    // across drivers either.
+    assigned_user_id: `agent-${a.driver}`,
+    starts_at: starts,
+    ends_at: new Date(Date.parse(starts) + 20 * 60_000).toISOString(),
+    status: "confirmed",
+    ...over,
+  };
+}
+
+/** The passing run, built once so every case below is one deliberate break from it. */
+function passing(): JudgeInput {
+  const driverResults = [0, 1, 2, 3].map((d) => driverFile(d));
+  const burstWinner = attempt(9, 0, { code: "122", startIso: "2026-09-16T15:00:00.000Z" });
+  const burstResults: DriverResult[] = [
+    {
+      runId: RUN,
+      driver: 9,
+      mode: "burst",
+      planned: 25,
+      startedAtMs: T0,
+      finishedAtMs: T0 + 2000,
+      attempts: [
+        burstWinner,
+        ...Array.from({ length: 24 }, (_, i) =>
+          attempt(9, i + 1, {
+            code: "122",
+            startIso: "2026-09-16T15:00:00.000Z",
+            status: 409,
+            outcome: "SLOT_TAKEN",
+          }),
+        ),
+      ],
+    },
+  ];
+  const bookings = [
+    ...driverResults.flatMap((r) => r.attempts.map((a) => bookingFor(a))),
+    bookingFor(burstWinner, { assigned_user_id: "agent-beyond" }),
+  ];
+  return {
+    runId: RUN,
+    target: TARGET,
+    driverResults,
+    burstResults,
+    freshnessSamples: Array.from({ length: TARGET.minutes }, (_, i) => ({
+      minute: i + 1,
+      maxAgeSec: 90,
+      total: 60,
+    })),
+    bookings,
+    bookingIdsWithBusyBlock: bookings.map((b) => b.id),
+    slotUniqueIndexPresent: true,
+    ipCeilingControl: { sent: 61, firstRefusedAt: 61 },
+    platform: { invocations: 610, cpuMsP99: 40, outcomes: { ok: 610 } },
+    faultPass: { attempts: 100, fiveXx: 0, faultPct: 10 },
+    budgets: { cpuMsP99: 200 },
+  };
+}
+
+// --- the passing run really passes -------------------------------------------
+
+{
+  const r = judgeBookingRun(passing());
+  eq(
+    `${r.verdict} ${r.findings.map((f) => f.bar).join("|")}`,
+    "pass ",
+    "a healthy run passes with no findings",
+  );
+  eq(r.exit, JUDGE_EXIT.pass, "and exits zero");
+  eq(r.measurements!.confirmed, 4 * PER_DRIVER, "every request was confirmed");
+  eq(r.measurements!.confirmedPerMinute, 60, "which is sixty a minute");
+}
+
+/** Judge a run built by breaking the passing one in exactly one way. */
+function broken(mutate: (i: JudgeInput) => void) {
+  const input = passing();
+  mutate(input);
+  return judgeBookingRun(input);
+}
+const bars = (r: ReturnType<typeof judgeBookingRun>) => r.findings.map((f) => f.bar);
+
+// --- it refuses to judge an incomplete run BEFORE computing anything ----------
+
+{
+  // The decision the whole file rests on. Three drivers of four is computable and
+  // every rate looks plausible; nothing in the numbers says a quarter is missing.
+  const r = broken((i) => i.driverResults.pop());
+  eq(r.verdict, "incomplete", "a missing driver file is incomplete, not a failure");
+  eq(r.exit, JUDGE_EXIT.incomplete, "on its own exit code");
+  eq(r.measurements, null, "and NOTHING is measured, so no rate can be quoted from a partial run");
+  assert(r.incomplete[0]!.includes("3 driver"), "the reason names what was missing");
+}
+
+{
+  const short = broken((i) => {
+    i.driverResults[0]!.attempts = i.driverResults[0]!.attempts.slice(0, 10);
+  });
+  eq(short.verdict, "incomplete", "a driver that recorded fewer attempts than planned is incomplete");
+
+  const wrongRun = broken((i) => {
+    i.driverResults[1]!.runId = "some-other-run";
+  });
+  eq(wrongRun.verdict, "incomplete", "and so is a file from a different run");
+
+  const dup = broken((i) => {
+    i.driverResults[2]!.driver = 0;
+  });
+  eq(dup.verdict, "incomplete", "and two files claiming one driver number");
+
+  const fewSamples = broken((i) => {
+    i.freshnessSamples = i.freshnessSamples.slice(0, 2);
+  });
+  eq(
+    fewSamples.verdict,
+    "incomplete",
+    "and a sampler that stopped early, because a short window never reaches the age a full one does",
+  );
+
+  // A burst driver that missed its moment is INCOMPLETE rather than failed: it
+  // recorded nothing, so there is no contention to judge and "exactly one 200"
+  // would be answered by however many drivers happened to arrive.
+  const missed = broken((i) => {
+    i.burstResults[0]!.burstSkipped = "missed";
+    i.burstResults[0]!.attempts = [];
+  });
+  eq(missed.verdict, "incomplete", "a burst driver that did not fire makes the burst unjudgeable");
+}
+
+// --- throughput ----------------------------------------------------------------
+
+{
+  const r = broken((i) => {
+    for (const a of i.driverResults[0]!.attempts) {
+      a.status = 409;
+      a.outcome = "SLOT_TAKEN";
+    }
+    for (const a of i.driverResults[1]!.attempts) {
+      a.status = 409;
+      a.outcome = "SLOT_TAKEN";
+    }
+    i.bookings = i.bookings.filter((b) => !b.external_id?.startsWith(`${RUN}-0-`) && !b.external_id?.startsWith(`${RUN}-1-`));
+    i.bookingIdsWithBusyBlock = i.bookings.map((b) => b.id);
+  });
+  assert(bars(r).includes("confirmed bookings per minute"), "half the run refused is under the floor");
+  assert(
+    r.findings.find((f) => f.bar === "confirmed bookings per minute")!.detail.includes("SLOT_TAKEN"),
+    "and the full outcome mix is printed, so a reader sees WHY rather than only that it was short",
+  );
+}
+
+// --- latency --------------------------------------------------------------------
+
+{
+  const slow = broken((i) => {
+    // The slowest tenth, so the p95 moves and the p50 does not: the bar is about
+    // the tail, and a fixture that made everything slow would pass a judge reading
+    // the median.
+    const all = i.driverResults.flatMap((r) => r.attempts);
+    for (const a of all.slice(0, Math.ceil(all.length * 0.1))) a.wallMs = OK_P95_MS + 1000;
+  });
+  assert(bars(slow).includes("latency of successful bookings"), "a slow tail fails the p95 bar");
+
+  const errored = broken((i) => {
+    i.driverResults[0]!.attempts[0]!.status = 500;
+    i.driverResults[0]!.attempts[0]!.outcome = "INTERNAL";
+    i.bookings = i.bookings.filter((b) => b.external_id !== `${RUN}-0-0`);
+    i.bookingIdsWithBusyBlock = i.bookings.map((b) => b.id);
+  });
+  assert(bars(errored).includes("server errors"), "one 5xx is a finding");
+
+  const silent = broken((i) => {
+    i.driverResults[0]!.attempts[0]!.status = 0;
+    i.driverResults[0]!.attempts[0]!.outcome = "transport: TypeError";
+    i.bookings = i.bookings.filter((b) => b.external_id !== `${RUN}-0-0`);
+    i.bookingIdsWithBusyBlock = i.bookings.map((b) => b.id);
+  });
+  assert(bars(silent).includes("unanswered requests"), "and a request that got no reply is another");
+  assert(
+    !bars(silent).includes("server errors"),
+    "kept APART from a 5xx, because they send two different people to two different places",
+  );
+
+  // A bucket offering nothing is recorded with status 0 too, and must NOT be
+  // counted as an unanswered request: nothing was ever sent.
+  const noSlots = broken((i) => {
+    i.driverResults[0]!.attempts[0]!.status = 0;
+    i.driverResults[0]!.attempts[0]!.outcome = "no-slots-offered";
+    i.bookings = i.bookings.filter((b) => b.external_id !== `${RUN}-0-0`);
+    i.bookingIdsWithBusyBlock = i.bookings.map((b) => b.id);
+  });
+  assert(
+    !bars(noSlots).includes("unanswered requests"),
+    "a bucket that offered nothing is not an unanswered request",
+  );
+}
+
+// --- the invariant the run exists to protect ------------------------------------
+
+{
+  const clash = broken((i) => {
+    // Two active bookings for ONE agent at overlapping times.
+    i.bookings.push({
+      id: "bk-clash",
+      external_id: "clash",
+      idempotency_key: "k",
+      assigned_user_id: "agent-0",
+      starts_at: i.bookings[0]!.starts_at,
+      ends_at: i.bookings[0]!.ends_at,
+      status: "confirmed",
+    });
+    i.bookingIdsWithBusyBlock = i.bookings.map((b) => b.id);
+  });
+  assert(bars(clash).includes("double bookings"), "two active bookings overlapping on one agent");
+
+  // A CANCELLED booking in the same window is not a clash: it holds no slot.
+  const cancelled = broken((i) => {
+    i.bookings.push({
+      id: "bk-cancelled",
+      external_id: "cancelled",
+      idempotency_key: "k",
+      assigned_user_id: "agent-0",
+      starts_at: i.bookings[0]!.starts_at,
+      ends_at: i.bookings[0]!.ends_at,
+      status: "cancelled",
+    });
+    i.bookingIdsWithBusyBlock = i.bookings.map((b) => b.id);
+  });
+  assert(!bars(cancelled).includes("double bookings"), "a cancelled booking holds no slot");
+
+  const noIndex = broken((i) => {
+    i.slotUniqueIndexPresent = false;
+  });
+  assert(
+    bars(noIndex).includes("bookings_active_slot_uniq"),
+    "an absent index is a finding on its own, because with it gone an absence of overlaps proves nothing",
+  );
+}
+
+// --- every 200 left a row behind -------------------------------------------------
+
+{
+  const ghost = broken((i) => {
+    i.bookings = i.bookings.filter((b) => b.external_id !== `${RUN}-2-5`);
+    i.bookingIdsWithBusyBlock = i.bookings.map((b) => b.id);
+  });
+  assert(bars(ghost).includes("a 200 with no booking row"), "a 200 that created nothing");
+
+  const noKey = broken((i) => {
+    i.bookings[3]!.idempotency_key = null;
+  });
+  assert(bars(noKey).includes("idempotency key"), "a booking row with no idempotency key");
+
+  const noBlock = broken((i) => {
+    i.bookingIdsWithBusyBlock = i.bookingIdsWithBusyBlock.slice(1);
+  });
+  assert(
+    bars(noBlock).includes("busy_blocks write-through"),
+    "an active booking with no busy_blocks row, whose slot still reads free",
+  );
+}
+
+// --- the burst --------------------------------------------------------------------
+
+{
+  const twoWon = broken((i) => {
+    const a = i.burstResults[0]!.attempts[1]!;
+    a.status = 200;
+    a.outcome = "booked";
+    i.bookings.push(bookingFor(a, { assigned_user_id: "agent-beyond-2" }));
+    i.bookingIdsWithBusyBlock = i.bookings.map((b) => b.id);
+  });
+  assert(
+    bars(twoWon).includes("the burst's one winner"),
+    "two winners against a one agent pool is the unique index not holding",
+  );
+
+  const wrongRefusal = broken((i) => {
+    const a = i.burstResults[0]!.attempts[1]!;
+    a.status = 429;
+    a.outcome = "RATE_LIMITED";
+  });
+  assert(
+    bars(wrongRefusal).includes("the burst's losers"),
+    "a loser refused for a reason OTHER than the slot being taken: the control counted contention " +
+      "that was really the rate limiter",
+  );
+
+  const noBurst = broken((i) => {
+    i.burstResults = [];
+  });
+  assert(
+    !bars(noBurst).some((b) => b.startsWith("the burst")),
+    "a run with no burst leg is judged on everything else rather than failing for its absence",
+  );
+}
+
+// --- freshness ----------------------------------------------------------------------
+
+{
+  const stale = broken((i) => {
+    i.freshnessSamples[4]!.maxAgeSec = FRESHNESS_MAX_SEC + 30;
+  });
+  assert(
+    bars(stale).includes("recompute freshness under load"),
+    "ONE sample over the bar is enough: the run reports the worst age it measured, not the average",
+  );
+}
+
+// --- the per address ceiling, proved by its own step ---------------------------------
+
+{
+  const never = broken((i) => {
+    i.ipCeilingControl = { sent: 61, firstRefusedAt: null };
+  });
+  assert(
+    bars(never).includes("the per address write ceiling"),
+    "sixty one writes from one address with none refused means the ceiling is not applying, so " +
+      "every 429 the run attributed means something else",
+  );
+
+  const notRun = broken((i) => {
+    i.ipCeilingControl = { sent: 0, firstRefusedAt: null };
+  });
+  const notRunDetail = notRun.findings.find((f) => f.bar === "the per address write ceiling")!.detail;
+  assert(
+    notRunDetail.includes("no writes at all"),
+    "a control that never ran says SO, rather than claiming the ceiling is not applying: one sends " +
+      "somebody to the limiter and the other to a job that produced no file (L11)",
+  );
+  assert(
+    !notRunDetail.includes("none was refused"),
+    "and does not borrow the other message's words",
+  );
+
+  const early = broken((i) => {
+    i.ipCeilingControl = { sent: 61, firstRefusedAt: 20 };
+  });
+  assert(
+    bars(early).includes("the per address write ceiling"),
+    "and refusing EARLY is a finding too, since the run's own pacing sits on that number",
+  );
+}
+
+// --- the platform's own numbers ------------------------------------------------------
+
+{
+  const lagging = broken((i) => {
+    // The control. The pipeline has lagged three hours (#1533), and a low reading
+    // from a lagging pipeline looks exactly like a cheap run.
+    i.platform.invocations = 3;
+  });
+  eq(lagging.verdict, "unmeasured", "an invocation count far under the run's own is UNMEASURED");
+  eq(lagging.exit, JUDGE_EXIT.unmeasured, "on its own exit code");
+  assert(
+    lagging.measurements !== null,
+    "and everything the run itself measured is still reported, since only the platform half is blind",
+  );
+
+  const absent = broken((i) => {
+    i.platform.cpuMsP99 = null;
+  });
+  eq(absent.verdict, "unmeasured", "a missing CPU reading is unmeasured rather than a pass");
+
+  const hot = broken((i) => {
+    i.platform.cpuMsP99 = 250;
+  });
+  assert(bars(hot).includes("Worker CPU"), "CPU over the lane budget is a finding");
+
+  // SUBREQUESTS are deliberately not a bar: Cloudflare exposes no counter for them,
+  // so one would leave this judge permanently unable to conclude, which is the
+  // shape #2240's first cal.com probe shipped in. The BREACH is measurable and is
+  // what is judged, through the outcome histogram.
+  const killed = broken((i) => {
+    i.platform.outcomes = { ok: 600, exceededCpu: 10 };
+  });
+  assert(bars(killed).includes("platform outcome"), "an invocation the platform cut off is a finding");
+  assert(
+    killed.findings.find((f) => f.bar === "platform outcome")!.detail.includes("exceededCpu"),
+    "named by WHICH outcome, since a CPU kill and a subrequest breach are different things to fix",
+  );
+
+  const breached = broken((i) => {
+    i.platform.outcomes = { ok: 609, scriptThrewException: 1 };
+  });
+  assert(bars(breached).includes("platform outcome"), "and so is any other non-ok outcome");
+
+  const noOutcomes = broken((i) => {
+    i.platform.outcomes = {};
+  });
+  eq(
+    noOutcomes.verdict,
+    "unmeasured",
+    "an EMPTY histogram is a reading that found nothing, never every invocation being fine",
+  );
+
+  const nullOutcomes = broken((i) => {
+    i.platform.outcomes = null;
+  });
+  eq(nullOutcomes.verdict, "unmeasured", "and an absent one is unmeasured too");
+}
+
+// --- the fault pass ---------------------------------------------------------------------
+
+{
+  const errored = broken((i) => {
+    i.faultPass = { attempts: 100, fiveXx: 4, faultPct: 10 };
+  });
+  assert(
+    bars(errored).includes("the fault pass"),
+    "a 5xx while Google is failing ten percent of reads: the path must degrade, not error",
+  );
+
+  const empty = broken((i) => {
+    i.faultPass = { attempts: 0, fiveXx: 0, faultPct: 10 };
+  });
+  assert(
+    bars(empty).includes("the fault pass"),
+    "and a fault pass that made no requests proves nothing, so zero 5xx is not a pass (L98)",
+  );
+
+  const none = broken((i) => {
+    delete i.faultPass;
+  });
+  assert(!bars(none).includes("the fault pass"), "a run with no fault pass is judged on the rest");
+}
+
+// --- the small pure pieces ---------------------------------------------------------------
+
+{
+  eq(percentiles([]), null, "no values gives null, never a zero p95 that reads as instant");
+  const p = percentiles([1, 2, 3, 4, 100])!;
+  eq(p.max, 100, "the max is the max");
+  assert(p.p95 >= p.p50, "and the p95 is at or above the p50");
+
+  const win = (s: string, e: string): JudgedBooking => ({
+    id: "x",
+    external_id: "x",
+    idempotency_key: "k",
+    assigned_user_id: "a",
+    starts_at: s,
+    ends_at: e,
+    status: "confirmed",
+  });
+  assert(
+    !overlaps(win("2026-09-15T10:00:00Z", "2026-09-15T10:20:00Z"), win("2026-09-15T10:20:00Z", "2026-09-15T10:40:00Z")),
+    "back to back calls do not overlap, because the window is half open",
+  );
+  assert(
+    overlaps(win("2026-09-15T10:00:00Z", "2026-09-15T10:20:00Z"), win("2026-09-15T10:10:00Z", "2026-09-15T10:30:00Z")),
+    "and a genuine clash does",
+  );
+  assert(
+    overlaps(win("not a date", "2026-09-15T10:20:00Z"), win("2026-09-15T10:30:00Z", "2026-09-15T10:50:00Z")),
+    "an unreadable bound reads as OVERLAPPING, never as clear: this is the one comparison whose " +
+      "permissive answer would hide a double booking",
+  );
+}
+
+{
+  // `incompleteness` is reachable on its own, so a caller can report why without
+  // judging, and a complete run really does produce nothing.
+  eq(incompleteness(passing()).length, 0, "a complete run has nothing to report as incomplete");
+}
+
+finish();
