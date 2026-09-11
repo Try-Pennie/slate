@@ -23,12 +23,15 @@ import {
   emptyBucketMessage,
   recoveredBucketMessage,
   emptyBuckets,
+  emptyPools,
   planEmptyBucketAlerts,
   emptyBucketsAggregateMessage,
   emptyBucketsAggregateRecoveredMessage,
   AGGREGATE_BUCKET_CODE,
   type BucketCoverage,
 } from "@/lib/availability/bucket-coverage";
+import { poolKeyFor } from "@/lib/availability/pool-key";
+import { poolLabel } from "@/lib/availability/pool-label";
 import { loadMonitorSettings } from "@/lib/monitor/settings";
 import { mapWithConcurrency } from "@/lib/concurrency";
 import type { Attributes, Bucket, Criteria, EventType } from "@/lib/db/types";
@@ -245,12 +248,34 @@ export async function alertOnEmptyBuckets(
     async (bucket) => ({
       code: bucket.code,
       eligibleCount: await d.countEligible(bucket),
+      // #2237: which POOL this bucket routes through, so an unstaffed tier is one
+      // page rather than six. Keyed by the same `poolKeyFor` the recompute lane
+      // groups on, so the two can never disagree about which codes are one pool.
+      //
+      // Manual members are deliberately NOT part of the key here, even though
+      // they are part of a pool's identity for the COMPUTE (#2245). This sweep
+      // resolves eligibility per bucket and has no member list to hand; the
+      // consequence of the coarser key is that two buckets differing only by
+      // manual membership would share a page, and production carries three
+      // manual member rows in total, all on the two test buckets.
+      poolKey: poolKeyFor({
+        orgId: bucket.org_id,
+        eventTypeId: bucket.event_type_id,
+        criteria: bucket.criteria ?? null,
+        fallbackUserId: bucket.fallback_user_id,
+        memberIds: [],
+      }),
+      poolLabel: poolLabel(bucket.criteria ?? null),
     }),
   );
 
   const plan = planEmptyBucketAlerts(coverage);
   const empty = emptyBuckets(coverage);
-  const emptySet = new Set(empty);
+  // Counted in POOLS (#2237), which is the unit the aggregate now decides on and
+  // the unit a reader acts in: "5 of 15" is a third of the routing matrix, where
+  // "5 of 60" was one unstaffed tier.
+  const dead = emptyPools(coverage);
+  const pools = new Set(coverage.map((c) => c.poolKey)).size;
 
   if (plan.aggregated) {
     // One page for the set, naming the count and the cause. The cause lookup is
@@ -260,12 +285,12 @@ export async function alertOnEmptyBuckets(
     await d
       .sendAlert(
         AGGREGATE_BUCKET_CODE,
-        emptyBucketsAggregateMessage(empty.length, coverage.length, agents),
+        emptyBucketsAggregateMessage(dead.length, pools, agents),
       )
       .catch(() => {});
   } else {
-    for (const code of plan.pageCodes) {
-      await d.sendAlert(code, emptyBucketMessage(code)).catch(() => {});
+    for (const pool of plan.pagePools) {
+      await d.sendAlert(pool.representative, emptyBucketMessage(pool)).catch(() => {});
     }
   }
 
@@ -274,34 +299,36 @@ export async function alertOnEmptyBuckets(
   // Driven by the MEASURED coverage, not by "we did not alert this run": a bucket
   // is cleared only because its pool was counted and is non-empty. A run that
   // could not load any bucket returned earlier and clears nothing.
-  for (const c of coverage) {
-    if (emptySet.has(c.code)) continue;
-    await d.clearAlert(c.code, recoveredBucketMessage(c.code, c.eligibleCount)).catch(() => {});
+  for (const c of plan.clear) {
+    await d.clearAlert(c.code, recoveredBucketMessage(c.pool, c.eligibleCount)).catch(() => {});
   }
 
-  // The aggregate is a condition of its own and owes the same two answers. While
-  // it holds, the per-bucket pages it replaced are settled WITHOUT a notice each
-  // (the aggregate page is the notice). When it ends, ONE all-clear that says
-  // whether anything is still dead, since some buckets may still be paging.
-  if (plan.aggregated) {
-    if (plan.settleCodes.length > 0) {
-      // Not swallowed: a marker left behind is this flood again on the next wave,
-      // as sixty all-clears, so the failure has to be visible somewhere.
-      await d
-        .settleSilently(plan.settleCodes)
-        .catch((err) =>
-          log.error(
-            "empty-buckets",
-            { msg: "settling superseded per-bucket pages failed", codes: plan.settleCodes.length },
-            err,
-          ),
-        );
-    }
-  } else {
+  // Any page a SUPERSEDING page has already covered is settled WITHOUT a notice of
+  // its own, and that now happens in both modes (#2237). The aggregate supersedes
+  // every empty pool's page; a pool's page supersedes the codes it speaks for.
+  // Posting an all-clear for each would be the same flood wearing a hat.
+  if (plan.settleCodes.length > 0) {
+    // Not swallowed: a marker left behind is this flood again on the next wave,
+    // as sixty all-clears, so the failure has to be visible somewhere.
+    await d
+      .settleSilently(plan.settleCodes)
+      .catch((err) =>
+        log.error(
+          "empty-buckets",
+          { msg: "settling superseded per-bucket pages failed", codes: plan.settleCodes.length },
+          err,
+        ),
+      );
+  }
+
+  // The aggregate is a condition of its own and owes the same two answers. When it
+  // ends, ONE all-clear that says whether anything is still dead, since some pools
+  // may still be paging.
+  if (!plan.aggregated) {
     await d
       .clearAlert(
         AGGREGATE_BUCKET_CODE,
-        emptyBucketsAggregateRecoveredMessage(empty.length, coverage.length),
+        emptyBucketsAggregateRecoveredMessage(dead.length, pools),
       )
       .catch(() => {});
   }

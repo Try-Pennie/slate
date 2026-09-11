@@ -1118,6 +1118,36 @@ full sweep takes a few minutes. Exit codes are in
 `scripts/test-pool-slot-parity.ts`; comparing nothing exits non-zero, never as a
 pass (L98).
 
+## One page per empty POOL, not one per code (#2237)
+
+The same grouping, applied to the no-eligible-agents sweep. A tier with nobody in
+it is ONE finding; it used to arrive as six near identical pages, each naming a
+code and none naming the thing to fix, and a three code pool arrived as three,
+which is under the aggregate threshold and so never folded.
+
+- `BucketCoverage` carries the pool key and the pool's NAME, both required so
+  `tsc` names every construction site.
+- A pool pages on its **lowest** code, so the key is the same on every sweep
+  whatever order the rows arrive in, and the codes it speaks for are settled
+  silently. An unstable key would page under a new name each time and never clear
+  the old.
+- The page names the pool AND lists every code it covers, because the pool is
+  what a person fixes and the codes are what the landing pages send.
+- **`AGGREGATE_EMPTY_THRESHOLD` counts pools now, and that re-aimed it** (L220).
+  Five of sixty CODES was reached by a single unstaffed tier, which is one
+  staffing problem and exactly what the per bucket page was for. Five of fifteen
+  POOLS is a third of the routing matrix. The number is unchanged; the question
+  is not.
+- The pool's NAME comes from the criteria through `DEBT_TIER` and `BACKEND`
+  (`src/lib/availability/pool-label.ts`), the same vocabulary the bucket names and
+  the roster use, and `collidingPoolLabels` fails the build if two pools ever
+  render the same name: they would read as one on every surface at once while
+  every test about a single label still passed.
+
+The sweep's pool key deliberately omits manual members, unlike the recompute
+lane's: it resolves eligibility per bucket and has no member list to hand, and
+the only three manual member rows in production are on the two test buckets.
+
 # Capped single-page reads (the `// cap-safe:` convention)
 
 PostgREST returns at most **one 1000-row page** per list read. Code that then
