@@ -408,10 +408,17 @@ jobs:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           path: downloaded
+      # `if: always()` on the download above means `downloaded/` may not exist at
+      # all: a run whose preflight failed uploaded nothing. `find` on a missing
+      # directory exits non-zero, which failed this step under `bash -e` and took
+      # the judge with it, so the run that most needed a verdict got none and said
+      # only "No such file or directory" (L98). The judge's own job is to say the
+      # run was incomplete; it cannot do that if a shell step kills it first.
       - name: Gather every driver's file into one directory
         run: |
-          mkdir -p results
+          mkdir -p results downloaded
           find downloaded -name '*.json' -exec cp {} results/ \;
+          echo "the evidence this run produced:"
           ls -la results/
       - name: Judge
         env:

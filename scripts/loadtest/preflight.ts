@@ -17,7 +17,7 @@ import { writeFileSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { overlaps, type JudgedBooking } from "./judge-booking-run.ts";
 import { stubShapedEventId, faultModeVerdict } from "./preflight-checks.ts";
-import { offeredSlots } from "./book-plan.ts";
+import { offeredSlots, loadtestPhone } from "./book-plan.ts";
 import { PRODUCTION_SUPABASE_REF, PRODUCTION_HOST } from "../../src/lib/loadtest-guard.ts";
 
 // ONE constant, shared with the app's own load test refusals (#2242). A second
@@ -122,7 +122,11 @@ const res = await fetch(`${SLATE_BASE}/api/bookings`, {
     attendee: {
       name: "Loadtest Preflight",
       email: `${externalId}@loadtest.local`,
-      phone: "+15555550100",
+      // Its OWN number, so the preflight can run more than once against one branch
+      // (#2261). A weak dedupe match is email OR phone, and a fixed number made
+      // the second preflight ever a `confirm_required` refusal naming the first
+      // one's booking. A run gets retried; the branch outlives the attempt.
+      phone: loadtestPhone(externalId),
     },
   }),
 });
