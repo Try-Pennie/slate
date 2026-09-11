@@ -12,6 +12,8 @@ import {
   ceilingVerdict,
   loadtestModeVerdict,
   faultModeVerdict,
+  faultPollStep,
+  FAULT_PROPAGATION_DEADLINE_MS,
 } from "./loadtest/preflight-checks.ts";
 import { stubCreateEvent } from "../src/lib/google/loadtest-stub.ts";
 import { deterministicEventId } from "../src/lib/booking/core.ts";
@@ -243,9 +245,13 @@ import { assert, eq, finish } from "./lib/harness.ts";
   );
   assert(!stale.ok, "a deployment serving a different commit is refused");
   assert(
-    !stale.ok && stale.why.includes("redeploy did not take effect"),
-    "and is told the redeploy is what did not happen",
+    !stale.ok && stale.why.includes("redeploy has not taken effect"),
+    "and is told the redeploy is what has not happened",
   );
+  // Deliberately "has not" rather than "did not": a commit that has not landed is
+  // usually propagation, which the poll waits out, so the wording must not read as
+  // a settled failure.
+  assert(!stale.ok && stale.retriable, "which is why it is retriable rather than final");
   const fresh = faultModeVerdict(
     200,
     { commit: "new2222", loadtest: true, faultPct: 10 },
@@ -285,6 +291,104 @@ import { assert, eq, finish } from "./lib/harness.ts";
   assert(
     faultModeVerdict(200, { loadtest: true, faultPct: 0 }, { faultPct: 0 }).ok,
     "a deployment injecting no faults is accepted when none were asked for",
+  );
+}
+
+// --- waiting out a redeploy, and knowing when to stop (#2261) -----------------
+//
+// A deploy does not take effect the instant wrangler exits. The fault leg asked
+// two seconds after its own and was answered by the version already serving,
+// which reports no faults. The COMMIT could not catch it either: both builds come
+// from the same commit, so the one discriminator the check had was blind to
+// exactly the case it needed to see.
+//
+// The whole ladder is driven here with an injected elapsed time, so nothing waits
+// for real.
+
+{
+  const ok = faultModeVerdict(200, { loadtest: true, faultPct: 10 }, { faultPct: 10 });
+  const step = faultPollStep(ok, 0);
+  eq(step.action, "accept", "a deployment already reporting the percentage is accepted at once");
+  eq(step.action === "accept" ? step.faultPct : -1, 10, "carrying what it reported");
+}
+
+{
+  // The case this exists for: not yet, so wait.
+  const notYet = faultModeVerdict(200, { loadtest: true, faultPct: 0 }, { faultPct: 10 });
+  assert(!notYet.ok && notYet.retriable, "a percentage that has not landed is retriable");
+  const step = faultPollStep(notYet, 2_000);
+  eq(step.action, "wait", "two seconds in, it waits rather than failing");
+  assert(step.action === "wait" && step.waitMs > 0, "for a real interval");
+}
+
+{
+  // And it STOPS. A read that retries forever hangs the run rather than failing it
+  // (L110), and the deadline is what turns "not yet" into "never".
+  const notYet = faultModeVerdict(200, { loadtest: true, faultPct: 0 }, { faultPct: 10 });
+  const step = faultPollStep(notYet, FAULT_PROPAGATION_DEADLINE_MS);
+  eq(step.action, "give-up", "at the deadline it gives up");
+  assert(
+    step.action === "give-up" && step.why.includes("not propagation"),
+    "and says the waiting itself is the evidence, rather than repeating the first reading",
+  );
+  assert(
+    step.action === "give-up" && step.why.includes(String(Math.round(FAULT_PROPAGATION_DEADLINE_MS / 1000))),
+    "naming how long it waited",
+  );
+  // Just under the deadline it is still waiting, so the boundary is the deadline
+  // rather than something that happened to fire early.
+  eq(
+    faultPollStep(notYet, FAULT_PROPAGATION_DEADLINE_MS - 1).action,
+    "wait",
+    "and one millisecond earlier it is still waiting",
+  );
+}
+
+{
+  // A refusal WAITING CANNOT FIX fails at once. Polling one of these just spends
+  // three minutes before saying what it could have said immediately, and the
+  // message would then blame propagation for a wrong key.
+  for (const [label, status, body] of [
+    ["a refused key", 401, {}],
+    ["a missing endpoint", 404, {}],
+    ["a deployment not in load test mode", 200, { loadtest: false, faultPct: 10 }],
+    ["a deployment reporting no faultPct at all", 200, { loadtest: true }],
+  ] as const) {
+    const v = faultModeVerdict(status, body, { faultPct: 10 });
+    assert(!v.ok && !v.retriable, `${label} is not retriable`);
+    eq(faultPollStep(v, 0).action, "give-up", `so ${label} gives up at once`);
+  }
+}
+
+{
+  // A 5xx IS retriable: a redeploy makes a deployment momentarily unwell and that
+  // passes. Both directions on the status (L159).
+  const fivexx = faultModeVerdict(503, {}, { faultPct: 10 });
+  assert(!fivexx.ok && fivexx.retriable, "a 503 is waited out");
+  const fourxx = faultModeVerdict(403, {}, { faultPct: 10 });
+  assert(!fourxx.ok && !fourxx.retriable, "a 403 is not");
+}
+
+{
+  // A commit that has not landed is the same propagation, so it waits too.
+  const stale = faultModeVerdict(
+    200,
+    { commit: "old1111", loadtest: true, faultPct: 10 },
+    { faultPct: 10, commit: "new2222" },
+  );
+  assert(!stale.ok && stale.retriable, "a commit that has not landed is retriable");
+  eq(faultPollStep(stale, 1_000).action, "wait", "and is waited out");
+}
+
+{
+  // The give-up on a retriable verdict must not read like the terminal one: it
+  // carries the original reading AND says the waiting is what makes it final.
+  const notYet = faultModeVerdict(200, { loadtest: true, faultPct: 0 }, { faultPct: 10 });
+  const late = faultPollStep(notYet, FAULT_PROPAGATION_DEADLINE_MS);
+  const terminal = faultPollStep(faultModeVerdict(401, {}, { faultPct: 10 }), 0);
+  assert(
+    late.action === "give-up" && terminal.action === "give-up" && late.why !== terminal.why,
+    "the two ways of giving up say different things",
   );
 }
 

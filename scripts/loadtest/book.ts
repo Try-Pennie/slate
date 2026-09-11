@@ -33,7 +33,7 @@ import {
   type DriverResult,
 } from "./book-plan.ts";
 import { BURST_CODE } from "./code-mix.ts";
-import { faultModeVerdict } from "./preflight-checks.ts";
+import { faultModeVerdict, faultPollStep, FAULT_PROPAGATION_DEADLINE_MS } from "./preflight-checks.ts";
 
 const PROD_HOSTS = ["slate.trypennie.app", "drukfvgaynzrralbzkzj.supabase.co"];
 
@@ -279,18 +279,35 @@ async function fault(): Promise<void> {
     process.exit(1);
   }
   const commit = (process.env.FAULT_COMMIT ?? "").trim();
-  const res = await fetch(`${SLATE_BASE}/api/smoke/version`, {
-    headers: { Authorization: `Bearer ${API_KEY}` },
-  });
-  const verdict = faultModeVerdict(res.status, await res.json().catch(() => ({})), {
-    faultPct: wantedPct,
-    commit: commit === "" ? undefined : commit,
-  });
-  if (!verdict.ok) {
-    console.error(`FAILED: ${verdict.why}`);
-    process.exit(1);
+  // POLLED, not asked once. A deploy does not take effect the instant wrangler
+  // exits: this asked two seconds after its own deploy and was answered by the
+  // version already serving, which reports no faults, and the commit could not
+  // catch it because both builds come from the same commit. The ladder is pure and
+  // lives in `preflight-checks.ts`; this is the clock and the request.
+  const startedWaitingMs = Date.now();
+  for (;;) {
+    const res = await fetch(`${SLATE_BASE}/api/smoke/version`, {
+      headers: { Authorization: `Bearer ${API_KEY}` },
+    });
+    const verdict = faultModeVerdict(res.status, await res.json().catch(() => ({})), {
+      faultPct: wantedPct,
+      commit: commit === "" ? undefined : commit,
+    });
+    const step = faultPollStep(verdict, Date.now() - startedWaitingMs);
+    if (step.action === "accept") {
+      faultPctConfirmed = step.faultPct;
+      break;
+    }
+    if (step.action === "give-up") {
+      console.error(`FAILED: ${step.why}`);
+      process.exit(1);
+    }
+    console.log(
+      `waiting for the deploy to land (${Math.round((Date.now() - startedWaitingMs) / 1000)}s of ` +
+        `${Math.round(FAULT_PROPAGATION_DEADLINE_MS / 1000)}s): ${step.why}`,
+    );
+    await sleep(step.waitMs);
   }
-  faultPctConfirmed = verdict.faultPct;
   const minutes = Number((process.env.FAULT_MINUTES ?? "2").trim());
   if (!Number.isFinite(minutes) || minutes <= 0) {
     console.error(`FAILED: FAULT_MINUTES is not a positive number of minutes.`);
