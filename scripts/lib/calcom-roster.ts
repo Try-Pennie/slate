@@ -23,9 +23,17 @@ type Unwrap = <T>(res: { data: T | null; error: { message: string } | null }, co
 
 const CAL_API = "https://api.cal.com/v2";
 
-/** cal.com's API version. Pinned: `2024-08-13` does not have the schedules
- *  endpoint at all, and answers 404 rather than saying so. */
-const CAL_API_VERSION = "2024-09-04";
+/**
+ * cal.com's API version, per endpoint family, and the two are NOT
+ * interchangeable: `2024-08-13` does not have the schedules endpoint at all and
+ * answers 404 rather than saying so, and the bookings endpoint answers only under
+ * its own. Both were measured live rather than read off documentation, because
+ * the last time a cal.com capability was assumed rather than measured the probe
+ * built on it shipped structurally unable to run (#1754).
+ */
+export const CAL_SCHEDULES_API_VERSION = "2024-09-04";
+/** `GET /bookings/{uid}`, measured live 2026-09-11. */
+export const CAL_BOOKINGS_API_VERSION = "2024-08-13";
 
 export interface CalGetResult {
   status: number;
@@ -48,14 +56,21 @@ export function makeCalGet(opts: {
   key: string;
   fetchImpl?: typeof fetch;
   sleep?: (ms: number) => Promise<void>;
-}): (path: string) => Promise<CalGetResult> {
+  /** The version this reader sends when a call does not name its own. Defaults to
+   *  the schedules one, so every existing caller is unchanged. */
+  apiVersion?: string;
+}): (path: string, apiVersion?: string) => Promise<CalGetResult> {
   const doFetch = opts.fetchImpl ?? fetch;
   const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
-  const headers = {
-    Authorization: `Bearer ${opts.key}`,
-    "cal-api-version": CAL_API_VERSION,
-  };
-  return async function calGet(path: string): Promise<CalGetResult> {
+  const defaultVersion = opts.apiVersion ?? CAL_SCHEDULES_API_VERSION;
+  // Per CALL rather than per reader (#2240), because one command now reads two
+  // endpoint families that answer under different versions, and a second reader
+  // would be a second retry ladder and a second place for the key to live.
+  return async function calGet(path: string, apiVersion?: string): Promise<CalGetResult> {
+    const headers = {
+      Authorization: `Bearer ${opts.key}`,
+      "cal-api-version": apiVersion ?? defaultVersion,
+    };
     for (let attempt = 0; ; attempt++) {
       let res: Response;
       try {

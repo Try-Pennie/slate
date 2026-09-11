@@ -13,7 +13,14 @@
 // THE RATE LIMIT IS NOT HYPOTHETICAL. The first real import run met 429 on 89 of
 // 103 agents. The ladder is driven here with an injected clock, so the retry
 // behaviour is proved without a test that waits (L524, L290).
-import { pickDefaultSchedule, emailIndex, makeCalGet, readEventTypeId } from "./lib/calcom-roster.ts";
+import {
+  pickDefaultSchedule,
+  emailIndex,
+  makeCalGet,
+  readEventTypeId,
+  CAL_SCHEDULES_API_VERSION,
+  CAL_BOOKINGS_API_VERSION,
+} from "./lib/calcom-roster.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
 // --- which of a user's schedules is the one Slate compares against -------------
@@ -200,6 +207,32 @@ import { assert, eq, finish } from "./lib/harness.ts";
   assert(
     readEventTypeId("nonsense", 1314152) !== 1314152,
     "a refusal is never the default wearing a different hat",
+  );
+}
+
+// --- the API version is per CALL, not per reader (#2240) ---------------------
+{
+  // One command now reads two endpoint families that answer under DIFFERENT
+  // versions: the schedules endpoint does not exist under the bookings one and
+  // answers 404 rather than saying so, so a reader that sent one version for both
+  // would report "no such booking" for every lead in the replay. Both halves are
+  // asserted, because a seam that only ever sends its default is not a seam (L1).
+  const sent: (string | null)[] = [];
+  const calGet = makeCalGet({
+    key: "k",
+    sleep: async () => {},
+    fetchImpl: (async (_url: string, init: RequestInit) => {
+      sent.push((init.headers as Record<string, string>)["cal-api-version"] ?? null);
+      return new Response(JSON.stringify({ data: [] }), { status: 200 });
+    }) as unknown as typeof fetch,
+  });
+  await calGet("/organizations/1/users/2/schedules");
+  await calGet("/bookings/abc", CAL_BOOKINGS_API_VERSION);
+  eq(sent[0], CAL_SCHEDULES_API_VERSION, "a call naming no version gets the schedules one");
+  eq(sent[1], CAL_BOOKINGS_API_VERSION, "a call naming its own version gets that one");
+  assert(
+    CAL_SCHEDULES_API_VERSION !== CAL_BOOKINGS_API_VERSION,
+    "the two versions really differ, or the case above proves nothing",
   );
 }
 
