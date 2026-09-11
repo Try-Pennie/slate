@@ -336,7 +336,25 @@ const bars = (r: ReturnType<typeof judgeBookingRun>) => r.findings.map((f) => f.
 // --- the burst --------------------------------------------------------------------
 
 {
-  const twoWon = broken((i) => {
+  // The bar is ONE WINNER PER AGENT, not one winner (#2261). "Exactly one" was a
+  // proxy for the burst code's pool being one agent deep, which the seed does not
+  // guarantee: a live run answered two 200s at one slot and they went to two
+  // DIFFERENT agents, which is the unique index working exactly as specified.
+  const twoOnOneAgent = broken((i) => {
+    const a = i.burstResults[0]!.attempts[1]!;
+    a.status = 200;
+    a.outcome = "booked";
+    // The SAME agent as the base fixture's winner, which is the state
+    // `bookings_active_slot_uniq` exists to make impossible.
+    i.bookings.push(bookingFor(a, { assigned_user_id: "agent-beyond" }));
+    i.bookingIdsWithBusyBlock = i.bookings.map((b) => b.id);
+  });
+  assert(
+    bars(twoOnOneAgent).includes("the burst's winners"),
+    "two winners resolving to ONE agent is the unique index not holding",
+  );
+
+  const twoOnTwoAgents = broken((i) => {
     const a = i.burstResults[0]!.attempts[1]!;
     a.status = 200;
     a.outcome = "booked";
@@ -344,8 +362,8 @@ const bars = (r: ReturnType<typeof judgeBookingRun>) => r.findings.map((f) => f.
     i.bookingIdsWithBusyBlock = i.bookings.map((b) => b.id);
   });
   assert(
-    bars(twoWon).includes("the burst's one winner"),
-    "two winners against a one agent pool is the unique index not holding",
+    !bars(twoOnTwoAgents).some((b) => b.startsWith("the burst")),
+    "and two winners on two different agents is a deeper pool, not a defect",
   );
 
   const wrongRefusal = broken((i) => {
@@ -637,6 +655,118 @@ const bars = (r: ReturnType<typeof judgeBookingRun>) => r.findings.map((f) => f.
   i.expectedLegs = { burstDrivers: i.burstResults.length, faultPct: 0 };
   i.faultPass = { attempts: 50, fiveXx: 0, faultPct: 25 };
   eq(incompleteness(i).length, 0, "an unasked-for fault pass does not make a run incomplete");
+}
+
+// --- what the first real run found (#2261) ------------------------------------
+
+{
+  // The platform half could not be read AND two other bars had already failed.
+  // Returning only the platform finding discarded them: the live run held a burst
+  // with two winners and a fault pass answering three 500s, both measured, both
+  // real, and the report said nothing but "the analytics API did not report".
+  const r = broken((i) => {
+    i.platform = { invocations: null, cpuMsP99: null, outcomes: null };
+    i.faultPass = { attempts: 30, fiveXx: 3, faultPct: 10 };
+  });
+  assert(
+    r.findings.some((f) => f.bar === "the fault pass"),
+    "a measured failure survives an unreadable platform half",
+  );
+  assert(
+    r.findings.some((f) => f.bar === "platform limits"),
+    "and the platform finding is reported beside it",
+  );
+  // And the VERDICT is a failure, not "could not conclude": a measured failure is
+  // a failure whatever the analytics did, and filing it under unmeasured is how a
+  // finding stops being read.
+  eq(r.verdict, "fail", "the run is judged failed rather than unmeasured");
+  eq(r.exit, JUDGE_EXIT.fail, "on the failure exit code");
+}
+
+{
+  // The other direction (L159): when the platform half really is the ONLY thing
+  // with anything to say, `unmeasured` is still the verdict.
+  const r = broken((i) => {
+    i.platform = { invocations: null, cpuMsP99: null, outcomes: null };
+  });
+  eq(r.verdict, "unmeasured", "a clean run with an unreadable platform half is unmeasured");
+  eq(r.findings.length, 1, "carrying the one finding it has");
+  eq(r.findings[0]!.bar, "platform limits", "which is the platform one");
+}
+
+{
+  // The same, for the invocation CONTROL: a lagging pipeline must not erase a
+  // measured failure either.
+  const r = broken((i) => {
+    i.platform = { invocations: 1, cpuMsP99: 10, outcomes: { ok: 1 } };
+    i.faultPass = { attempts: 30, fiveXx: 3, faultPct: 10 };
+  });
+  assert(
+    r.findings.some((f) => f.bar === "the fault pass"),
+    "a measured failure survives a lagging invocation count too",
+  );
+  eq(r.verdict, "fail", "and that run is failed rather than unmeasured");
+}
+
+// --- the burst is judged per AGENT, not at exactly one winner -----------------
+
+{
+  // The live case. TWO winners at one slot, on two DIFFERENT agents, which is
+  // `bookings_active_slot_uniq` working exactly as specified: the burst code's
+  // pool was two agents deep, which the seed does not guarantee to be one. A bar
+  // failing on that is red for a property of the roster.
+  const r = broken((i) => {
+    const second = { ...i.burstResults[0]!.attempts[1]!, status: 200, outcome: "created" };
+    i.burstResults[0]!.attempts[1] = second;
+    i.bookings = [
+      ...i.bookings,
+      bookingFor(second, { assigned_user_id: "agent-a-different-one" }),
+    ];
+  });
+  assert(
+    !r.findings.some((f) => f.bar.startsWith("the burst")),
+    "two winners on two different agents is not a finding",
+  );
+}
+
+{
+  // And the thing the control exists for still fails: two winners resolving to ONE
+  // agent is an agent holding two active bookings at one slot.
+  const r = broken((i) => {
+    const second = { ...i.burstResults[0]!.attempts[1]!, status: 200, outcome: "created" };
+    i.burstResults[0]!.attempts[1] = second;
+    i.bookings = [...i.bookings, bookingFor(second, { assigned_user_id: "agent-beyond" })];
+  });
+  assert(
+    r.findings.some((f) => f.bar === "the burst's winners" && f.detail.includes("two active bookings")),
+    "two winners on ONE agent is caught",
+  );
+}
+
+{
+  // A burst where nobody won proves nothing about contention: the slot was already
+  // taken before it fired. Said in its own words rather than passing quietly.
+  const r = broken((i) => {
+    for (const b of i.burstResults) {
+      b.attempts = b.attempts.map((a) => ({ ...a, status: 409, outcome: "SLOT_TAKEN" }));
+    }
+  });
+  assert(
+    r.findings.some((f) => f.bar === "the burst" && f.detail.includes("already")),
+    "a burst nobody won is a finding",
+  );
+}
+
+{
+  // A winner with no booking row still fails: the SLOT_TAKEN answers then point at
+  // nothing.
+  const r = broken((i) => {
+    i.bookings = i.bookings.filter((b) => b.external_id !== i.burstResults[0]!.attempts[0]!.externalId);
+  });
+  assert(
+    r.findings.some((f) => f.bar === "the burst's winners" && f.detail.includes("no booking row")),
+    "a winner with no booking row is caught",
+  );
 }
 
 finish();

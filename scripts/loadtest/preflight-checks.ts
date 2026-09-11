@@ -1,3 +1,5 @@
+import { normalizeCommit } from "../stamp-build-info.ts";
+
 /**
  * The decisions the load run's preflight and its ceiling control make (#2244),
  * separated from the live scripts that make them so each is testable with no
@@ -204,14 +206,36 @@ export function faultModeVerdict(
       retriable: true,
     };
   }
-  if (wanted.commit !== undefined && mode.commit !== wanted.commit) {
-    return {
-      ok: false,
-      why:
-        `this deployment is serving commit ${mode.commit ?? "unreported"} and the fault leg ` +
-        `deployed ${wanted.commit}, so the redeploy has not taken effect.`,
-      retriable: true,
-    };
+  if (wanted.commit !== undefined) {
+    // Compared through the STAMPER'S OWN shortening, never as equality (#2261).
+    // `scripts/stamp-build-info.ts` writes the first twelve characters of the sha
+    // into the bundle, and the workflow hands this leg `github.sha`, which is all
+    // forty. So the deployment answers `660c7aacae82` to a caller holding
+    // `660c7aacae82658b8947ca923237f5de2932d8f3`, an equality check calls that a
+    // redeploy that never landed, and because the mismatch is classified as
+    // propagation it then waits out the whole deadline before saying so. One
+    // derivation, taken from the code that does the stamping (L70).
+    let want: string;
+    try {
+      want = normalizeCommit(wanted.commit);
+    } catch {
+      return {
+        ok: false,
+        why:
+          `the fault leg was told it deployed "${wanted.commit}", which is not a commit sha, so ` +
+          `whether the redeploy landed cannot be established.`,
+        retriable: false,
+      };
+    }
+    if (mode.commit !== want) {
+      return {
+        ok: false,
+        why:
+          `this deployment is serving commit ${mode.commit ?? "unreported"} and the fault leg ` +
+          `deployed ${want}, so the redeploy has not taken effect.`,
+        retriable: true,
+      };
+    }
   }
   return { ok: true, faultPct: payload.faultPct };
 }

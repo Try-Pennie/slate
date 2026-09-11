@@ -341,3 +341,27 @@ export function loadtestPhone(seed: string): string {
   const digits = String(Math.abs(h) % 10_000_000).padStart(7, "0");
   return `+1555${digits}`;
 }
+
+/**
+ * The prefix every attempt's external id is built from, one space per leg (#2261).
+ *
+ * All three legs minted `<run>-<driver>-<n>`, so they COLLIDED, and `external_id`
+ * IS the Salesforce id to Slate: a repeat is a strong match, which is answered by
+ * RESCHEDULING the existing booking rather than by creating one.
+ *
+ * The first real run showed both halves of that. The fault pass runs as driver 0
+ * and minted exactly the ids the steady pass had already used, so twenty seven of
+ * its thirty requests were answered `rescheduled` and its "no 5xx under fault" bar
+ * was asked of a different operation from the one the steady pass drove. The burst
+ * runs first, and its two winners took ids the steady pass then reused, which is
+ * precisely the two `rescheduled` in a steady mix that should have been six
+ * hundred creates. Neither showed up as an error anywhere: a reschedule is a 200.
+ *
+ * Every prefix stays rooted at RUN_ID, because the judge scopes its database reads
+ * to `external_id=like.<run>-*` and an id outside that is a row the run cannot see.
+ */
+export function idPrefix(runId: string, mode: "steady" | "burst" | "fault"): string {
+  if (mode === "fault") return `${runId}-f`;
+  if (mode === "burst") return `${runId}-b`;
+  return runId;
+}
