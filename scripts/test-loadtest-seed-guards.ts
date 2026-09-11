@@ -4,7 +4,12 @@
 // expensive and looks exactly like a run judged against the right one.
 //
 // Run: node --experimental-strip-types scripts/test-loadtest-seed-guards.ts
-import { migrationMismatch, readAgentCount } from "./loadtest/seed-guards.ts";
+import {
+  migrationMismatch,
+  readAgentCount,
+  migrationReadRefusal,
+  appliedVersionsFrom,
+} from "./loadtest/seed-guards.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
 const SHIPPED = ["0001", "0002", "0003", "0004"];
@@ -83,6 +88,95 @@ const SHIPPED = ["0001", "0002", "0003", "0004"];
   eq(readAgentCount("1e3", 200), null, "exponent notation is refused rather than becoming 1000");
   eq(readAgentCount("0x10", 200), null, "and hex rather than becoming 16");
   eq(readAgentCount(" 12 ", 200), 12, "but ordinary surrounding space is fine");
+}
+
+// --- reading the branch's migrations at all (#2261) ---------------------------
+//
+// The seed shipped reading `supabase_migrations.schema_migrations` over the REST
+// API, which exposes the `public` schema ONLY and answers 406 on every Supabase
+// project. It died on its own check before writing a row, and a refusal that can
+// never succeed is indistinguishable from the bad schema the check exists to
+// catch. The read goes through `applied_migration_versions()` now, and each way
+// it can fail says its own thing.
+
+{
+  eq(migrationReadRefusal(200, ""), null, "a 200 is not a refusal");
+}
+
+{
+  const why = migrationReadRefusal(404, "")!;
+  assert(why !== null, "a 404 is refused");
+  assert(why.includes("0072"), "and names the migration that ships the function");
+  assert(!why.includes("may not call"), "rather than blaming the key");
+}
+
+{
+  for (const status of [401, 403]) {
+    const why = migrationReadRefusal(status, "")!;
+    assert(why.includes("secret key"), `a ${status} names the grant rather than the migration`);
+    assert(!why.includes("0072"), `and a ${status} does not send anybody to check a migration`);
+  }
+}
+
+{
+  // The status the old read produced on every project. It gets its own sentence,
+  // because seeing it again means something is calling the table rather than the
+  // RPC, which is a different repair from every other failure here.
+  const why = migrationReadRefusal(406, "")!;
+  assert(why.includes("rather than the RPC"), "a 406 says something is reading the table");
+}
+
+{
+  const why = migrationReadRefusal(500, "upstream exploded")!;
+  assert(why.includes("500"), "any other status is named");
+  assert(why.includes("upstream exploded"), "and carries what the server said");
+  // No two of the refusals share a message, or one answers for another (L11). Six
+  // statuses, six messages: 401 and 403 take the same branch and still name the
+  // status they saw, which is what stops a reader hunting for the wrong one.
+  const statuses = [404, 401, 403, 406, 500, 502];
+  const all = statuses.map((s) => migrationReadRefusal(s, ""));
+  eq(new Set(all).size, statuses.length, "no two statuses share a message");
+  for (const s of statuses) {
+    assert(migrationReadRefusal(s, "")!.includes(String(s)), `the ${s} refusal names its status`);
+  }
+}
+
+{
+  eq(
+    (appliedVersionsFrom(["0001", "0002"]) as { versions: string[] }).versions.length,
+    2,
+    "an array of versions is read",
+  );
+  // Numbers come back as strings, because the comparison downstream is textual and
+  // a mixed list would never match the shipped filenames.
+  eq(
+    (appliedVersionsFrom([1, 2]) as { versions: string[] }).versions[0],
+    "1",
+    "and every element is read as a string",
+  );
+  eq(
+    (appliedVersionsFrom([]) as { versions: string[] }).versions.length,
+    0,
+    "an empty array is an empty branch, which migrationMismatch then refuses by name",
+  );
+}
+
+{
+  // A non-array is NOT an empty branch. Reading it as one hands migrationMismatch a
+  // count of zero, which it reports as "never migrated or the migration table could
+  // not be read": a true sentence about the wrong thing.
+  for (const [label, body] of [
+    ["an object", { versions: [] }],
+    ["a string", "0119"],
+    ["null", null],
+    ["a number", 119],
+  ] as const) {
+    const got = appliedVersionsFrom(body);
+    assert("why" in got, `${label} is refused rather than read as an empty branch`);
+  }
+  const why = (appliedVersionsFrom(null) as { why: string }).why;
+  const empty = migrationMismatch([], SHIPPED, "0004")!;
+  assert(why !== empty, "and its message is not the one an empty branch gets");
 }
 
 finish();

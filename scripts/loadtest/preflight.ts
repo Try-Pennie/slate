@@ -17,6 +17,7 @@ import { writeFileSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { overlaps, type JudgedBooking } from "./judge-booking-run.ts";
 import { stubShapedEventId, faultModeVerdict } from "./preflight-checks.ts";
+import { offeredSlots } from "./book-plan.ts";
 import { PRODUCTION_SUPABASE_REF, PRODUCTION_HOST } from "../../src/lib/loadtest-guard.ts";
 
 // ONE constant, shared with the app's own load test refusals (#2242). A second
@@ -96,7 +97,13 @@ function fail(why: string): never {
 
 const externalId = `${RUN_ID}-preflight`;
 const avail = await fetch(`${SLATE_BASE}/api/availability?bucket=${CODE}`);
-const slots = ((await avail.json().catch(() => ({}))) as { slots?: { start?: string }[] }).slots ?? [];
+if (!avail.ok) {
+  fail(`availability for bucket ${CODE} answered ${avail.status}, so no control booking could be made`);
+}
+// Through the shared reader (#2261): all three readers of this payload declared it
+// as `{ start }` objects and it is a list of ISO strings, so every one of them saw
+// an empty list on a healthy response and this preflight could never have passed.
+const slots = offeredSlots(await avail.json());
 if (slots.length === 0) {
   // Nothing to book is not a pass: the run that follows would have nothing to book
   // either, and its empty result would look like a booking path that refused
@@ -109,7 +116,7 @@ const res = await fetch(`${SLATE_BASE}/api/bookings`, {
   headers: { Authorization: `Bearer ${API_KEY}`, "content-type": "application/json" },
   body: JSON.stringify({
     bucketCode: CODE,
-    start: slots[0]!.start,
+    start: slots[0]!,
     timezone: "America/New_York",
     externalId,
     attendee: {

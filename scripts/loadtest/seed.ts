@@ -31,7 +31,12 @@ import { allXbcCodes, bucketSpecForXbc } from "../../src/lib/xbc.ts";
 import { SHIPPED_MIGRATION_VERSION } from "../../src/lib/db/migration-version.ts";
 import { generateSeed } from "./generate.ts";
 import { PRODUCTION_SHAPE, type RosterShape } from "./roster-shape.ts";
-import { migrationMismatch, readAgentCount } from "./seed-guards.ts";
+import {
+  migrationMismatch,
+  readAgentCount,
+  migrationReadRefusal,
+  appliedVersionsFrom,
+} from "./seed-guards.ts";
 import { PRODUCTION_SUPABASE_REF } from "../../src/lib/loadtest-guard.ts";
 
 // ONE constant, shared with the app's own load test refusals (#2242). A second
@@ -135,19 +140,30 @@ async function assertMigrationsMatch(): Promise<void> {
     .filter((f) => f.endsWith(".sql"))
     .map((f) => f.slice(0, 4))
     .sort();
-  const res = await fetch(`${BASE}/supabase_migrations.schema_migrations?select=version`, {
-    headers: { apikey: KEY, Authorization: `Bearer ${KEY}`, "accept-profile": "supabase_migrations" },
+  // Through the RPC, never the table. PostgREST exposes the `public` schema ONLY,
+  // so `supabase_migrations.schema_migrations` is unreachable over the API and a
+  // direct read answers 406 on every project: migration 0072 says so in its own
+  // header and ships `applied_migration_versions()` as the read path, which the
+  // app's own drift monitor uses. Measured on a real branch 2026-09-11, the direct
+  // read answered 406 and this answered the full set.
+  //
+  // The function filters to this repo's own NNNN numbering, so a migration applied
+  // out of band (the Supabase MCP tool stamps a 14 digit timestamp) can neither
+  // hide a gap nor pin the count to a false "ahead".
+  const res = await fetch(`${BASE}/rpc/applied_migration_versions`, {
+    method: "POST",
+    headers: { apikey: KEY, Authorization: `Bearer ${KEY}`, "content-type": "application/json" },
+    body: "{}",
   });
-  if (!res.ok) {
-    throw new Error(
-      `could not read the branch's applied migrations (${res.status}). The seed refuses to ` +
-        `run against a schema it cannot check.`,
-    );
-  }
-  const applied = ((await res.json()) as { version: string }[]).map((r) => r.version);
-  // The DECISION lives in `seed-guards.ts` and is pinned offline; this is the read.
-  const why = migrationMismatch(applied, shipped, SHIPPED_MIGRATION_VERSION);
+  // Both refusals live in `seed-guards.ts` and are driven offline; this is the read.
+  const why = migrationReadRefusal(res.status, res.ok ? "" : await res.text());
   if (why) throw new Error(why);
+  const read = appliedVersionsFrom(await res.json());
+  if ("why" in read) throw new Error(read.why);
+  const applied = read.versions;
+  // The DECISION lives in `seed-guards.ts` and is pinned offline; this is the read.
+  const mismatch = migrationMismatch(applied, shipped, SHIPPED_MIGRATION_VERSION);
+  if (mismatch) throw new Error(mismatch);
   console.log(`  migrations: ${applied.length} applied, highest ${SHIPPED_MIGRATION_VERSION}`);
 }
 
