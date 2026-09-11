@@ -100,52 +100,11 @@ export const IRRELEVANT_TAGS: readonly string[] = [
  * manager of record from Salesforce's `Agent_Manager__c` and never from Twilio, so
  * this is the same fact from a second source and out of scope for this comparison.
  */
+export const REDISTRIBUTE_TAG = "Redistribute";
+
 export const MANAGER_TAG_PREFIX = "Team ";
 
 /** Tags that are their own fact rather than a tier or a backend. */
-export const NOT_LEGAL_ELIGIBLE_TAG = "Not Legal Eligible";
-export const LEGAL_ELIGIBLE_TAG = "Legal Eligible";
-export const REDISTRIBUTE_TAG = "Redistribute";
-
-/**
- * What Slate stores on `users.attributes.legal_eligible` (#2098).
- *
- * The two spellings live here because ten bucket criteria match on the exact
- * string "N" (`legal_eligible!`, cal.com's "does not equal N"), and the control
- * this replaces wrote the BOOLEAN false, which is not "N", so it excluded nobody
- * while looking like it had (#2120). A named constant is what stops the next
- * writer inventing a third spelling of one value.
- */
-export const LEGAL_ELIGIBLE_YES = "Y";
-export const LEGAL_ELIGIBLE_NO = "N";
-export type LegalEligible = typeof LEGAL_ELIGIBLE_YES | typeof LEGAL_ELIGIBLE_NO;
-
-/**
- * What Twilio says about one person's legal eligibility.
- *
- * DAN, 2026-09-09: "The default is N. Y is the only one called out." So the tag
- * that decides this is the POSITIVE one, and every other state means excluded:
- * a worker carrying neither tag, and a worker carrying the explicit negative.
- *
- * That is the opposite reading from the one the bucket criteria suggest.
- * `legal_eligible!: "N"` admits an UNSET agent, so for as long as nobody wrote
- * the field, every agent was offered the ten legal buckets. The criteria are
- * still right once every agent holds an explicit value, because "not N" and
- * "is Y" then select the same people, which is why this ships as a write rather
- * than as a change to sixty buckets.
- *
- * A worker carrying BOTH tags is excluded. The contradiction resolves toward
- * withholding, because offering legal work to somebody nobody cleared is the
- * harm and being held back from it is recoverable by a manager fixing the tag.
- * It is REPORTED as its own verdict rather than only resolved, since a
- * normalization that quietly picks a side destroys the evidence that the source
- * is contradicting itself (L340).
- */
-export function twilioLegalEligible(side: TwilioSide): LegalEligible {
-  if (side.notLegalEligible) return LEGAL_ELIGIBLE_NO;
-  return side.legalEligible ? LEGAL_ELIGIBLE_YES : LEGAL_ELIGIBLE_NO;
-}
-
 /**
  * What Slate writes on `users.attributes` to record that IT took somebody out of
  * the bookable pool because of that tag (#2097).
@@ -167,15 +126,6 @@ export interface TwilioSide {
    */
   debtTeams: DebtTierValue[];
   backendServices: BackendValue[];
-  /** The worker carries the explicit `Not Legal Eligible` tag. */
-  notLegalEligible: boolean;
-  /**
-   * The worker carries the positive `Legal Eligible` tag, which is the ONLY thing
-   * that makes somebody eligible. Kept apart from `notLegalEligible` rather than
-   * folded into one value, so a worker carrying both can be reported as the
-   * contradiction it is instead of being silently resolved.
-   */
-  legalEligible: boolean;
   /** The worker carries the `Redistribute` tag, so cal.com withholds them. */
   redistribute: boolean;
   /**
@@ -225,14 +175,10 @@ export function readWorker(attributesJson: string | null | undefined): WorkerRea
   const backendServices = new Set<BackendValue>();
   const unmappedTags: string[] = [];
   const managerTags: string[] = [];
-  let notLegalEligible = false;
-  let legalEligible = false;
   let redistribute = false;
 
   for (const tag of teams) {
     if (tag === "") continue;
-    if (tag === NOT_LEGAL_ELIGIBLE_TAG) { notLegalEligible = true; continue; }
-    if (tag === LEGAL_ELIGIBLE_TAG) { legalEligible = true; continue; }
     if (tag === REDISTRIBUTE_TAG) { redistribute = true; continue; }
     const tier = TEAM_TO_DEBT_TIER[tag];
     if (tier !== undefined) { debtTeams.add(tier); continue; }
@@ -258,8 +204,6 @@ export function readWorker(attributesJson: string | null | undefined): WorkerRea
       email,
       debtTeams: inVocabularyOrder(DEBT_TIER_VALUES, debtTeams),
       backendServices: inVocabularyOrder(BACKEND_VALUES, backendServices),
-      notLegalEligible,
-      legalEligible,
       redistribute,
       managerTags: managerTags.sort(),
       unmappedTags,
@@ -300,8 +244,6 @@ export function mergeWorkers(sides: TwilioSide[]): { merged: TwilioSide; duplica
     // from an unmerged one and the stored array would flip between the two.
     debtTeams: inVocabularyOrder(DEBT_TIER_VALUES, new Set(sides.flatMap((s) => s.debtTeams))),
     backendServices: inVocabularyOrder(BACKEND_VALUES, new Set(sides.flatMap((s) => s.backendServices))),
-    notLegalEligible: sides.some((s) => s.notLegalEligible),
-    legalEligible: sides.some((s) => s.legalEligible),
     redistribute: sides.some((s) => s.redistribute),
     managerTags: [...new Set(sides.flatMap((s) => s.managerTags))].sort(),
     unmappedTags: [...new Set(sides.flatMap((s) => s.unmappedTags))].sort(),
@@ -317,16 +259,6 @@ export interface SlateSide {
   email: string;
   debtTeams: string[];
   backendServices: string[];
-  /**
-   * What Slate has stored on `attributes.legal_eligible`, as stored, or null when
-   * nobody has ever written it.
-   *
-   * NOT a boolean. Null and "N" are different states and must stay apart: one is
-   * a measured exclusion and the other is a row the sync has never reached, and
-   * routing treats them differently, since a negated criterion admits an unset
-   * agent and excludes an explicit "N".
-   */
-  legalEligible: string | null;
   /**
    * The NAME of Slate's manager of record for this person, or null.
    *
@@ -357,10 +289,6 @@ export type TwilioVerdict =
   | "debt-teams-differ"
   /** The backend services differ. */
   | "backend-differs"
-  /** Legal eligibility differs. */
-  | "legal-differs"
-  /** One worker carries both legal tags, so Twilio contradicts itself. */
-  | "legal-tags-contradict"
   /** Both systems name a manager, and they are different people. */
   | "manager-differs"
   /** The tag names somebody Slate has no user for at all. */
@@ -387,7 +315,6 @@ export const TWILIO_VERDICT_RANK: Record<TwilioVerdict, number> = {
   // A worker contradicting itself is a Twilio configuration fault like the two
   // above, so it ranks with them rather than with the disagreements about a
   // person, and cannot bury one.
-  "legal-tags-contradict": 4,
   // A worker carrying two team tags is a Twilio configuration fault like the three
   // above, so it ranks with them.
   "manager-tags-contradict": 5,
@@ -399,7 +326,6 @@ export const TWILIO_VERDICT_RANK: Record<TwilioVerdict, number> = {
   "manager-not-in-slate": 8,
   "manager-differs": 9,
   "absent-from-slate": 10,
-  "legal-differs": 11,
   "backend-differs": 12,
   "debt-teams-differ": 13,
   // Worst: Slate is offering a lead to somebody the incumbent withholds, and it is
@@ -407,15 +333,6 @@ export const TWILIO_VERDICT_RANK: Record<TwilioVerdict, number> = {
   "redistribute-still-bookable": 14,
 };
 
-/** How a stored or derived legal value reads to somebody acting on the finding. */
-function describeLegal(value: string | null): string {
-  if (value === null || value === "") return "not set";
-  if (value === LEGAL_ELIGIBLE_YES) return "eligible";
-  if (value === LEGAL_ELIGIBLE_NO) return "excluded";
-  // A value nothing in this vocabulary wrote. Shown as stored rather than sorted
-  // into the nearest bucket, because guessing is what a reader cannot check.
-  return `stored as ${JSON.stringify(value)}`;
-}
 
 /**
  * What the comparison needs beyond the two sides.
@@ -440,9 +357,9 @@ const same = (a: string[], b: string[]) =>
 /**
  * Compare one person, worst finding first.
  *
- * Order is the design: the two attribute sets that decide which pool somebody is in
- * are asked before legal eligibility, and redistribute is asked before all of them
- * because it is the only one where a lead reaching Slate today would be misrouted.
+ * Order is the design: redistribute is asked before everything else, because it is
+ * the only one where a lead reaching Slate today would be misrouted, and the two
+ * attribute sets that decide which pool somebody is in come next.
  */
 export function compareOne(
   twilio: TwilioSide | null,
@@ -486,13 +403,6 @@ export function compareOne(
     return {
       verdict: "backend-differs",
       detail: `backend service: Slate has [${slate.backendServices.join(", ") || "none"}], Twilio has [${twilio.backendServices.join(", ") || "none"}]`,
-    };
-  }
-  const wantLegal = twilioLegalEligible(twilio);
-  if ((slate.legalEligible ?? null) !== (wantLegal as string)) {
-    return {
-      verdict: "legal-differs",
-      detail: `legal eligibility: Slate says ${describeLegal(slate.legalEligible)}, Twilio says ${describeLegal(wantLegal)}`,
     };
   }
   // Manager of record (#2099), asked after everything that decides which pool
@@ -553,12 +463,6 @@ export function compareOne(
     return {
       verdict: "manager-tags-contradict",
       detail: `carries ${twilio.managerTags.length} ${MANAGER_TAG_PREFIX.trim()} tags in Twilio (${twilio.managerTags.join(", ")}), so nothing can say who their manager is`,
-    };
-  }
-  if (twilio.legalEligible && twilio.notLegalEligible) {
-    return {
-      verdict: "legal-tags-contradict",
-      detail: `carries both ${LEGAL_ELIGIBLE_TAG} and ${NOT_LEGAL_ELIGIBLE_TAG} in Twilio, and is held out of legal work until one of them goes`,
     };
   }
   return { verdict: "agree", detail: "" };

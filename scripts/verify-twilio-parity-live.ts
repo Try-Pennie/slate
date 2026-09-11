@@ -46,11 +46,9 @@ const EXIT: Record<string, number> = {
   "duplicate-worker": 12,
   "unmapped-tag": 13,
   "absent-from-slate": 14,
-  "legal-differs": 15,
   "backend-differs": 16,
   "debt-teams-differ": 17,
   "redistribute-still-bookable": 18,
-  "legal-tags-contradict": 19,
   "manager-differs": 20,
   "manager-not-in-slate": 21,
   "manager-absent-from-slate": 22,
@@ -195,12 +193,6 @@ for (const u of realUsers) {
       email: key,
       debtTeams: asList(attrs.debt_team),
       backendServices: asList(attrs.backend_service),
-      // As STORED, so a row nobody has written and one written to "N" stay apart:
-      // routing treats them differently, since a negated criterion admits an unset
-      // agent and excludes an explicit "N" (#2098).
-      legalEligible: attrs.legal_eligible === undefined || attrs.legal_eligible === null
-        ? null
-        : String(attrs.legal_eligible),
       managerName: u.manager_id ? (nameById.get(u.manager_id) || null) : null,
       bookable: u.bookable,
       deactivated: u.deactivated_at !== null,

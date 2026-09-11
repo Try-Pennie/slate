@@ -924,11 +924,11 @@ and two differed:
 
 - A tag that has gone TAKES ITS VALUE WITH IT. A merge would leave an agent in a pool
   the source says they are not in, which is the failure the issue was opened about.
-- A row Twilio holds NO worker for keeps its stored tiers, while its legal
-  eligibility is still written to N. Silence about somebody is not a source saying
-  their tiers are gone (L214), and the two directions are not equally recoverable:
-  withholding legal work is, and emptying every pool an agent belongs to on a partial
-  read is not. The count is reported as `withoutWorker`.
+- A row Twilio holds NO worker for keeps its stored tiers and is written nothing at
+  all. Silence about somebody is not a source saying their tiers are gone (L214),
+  and emptying every pool an agent belongs to on a partial read is not recoverable.
+  The count is reported as `withoutWorker`, because doing nothing is otherwise
+  invisible.
 - A FIRST debt tier makes somebody bookable, through the same activation gate the
   Salesforce half uses (#2071). The transition belongs to whoever writes the fact
   that causes it: a sync that wrote the tier and left the flip to the other half
@@ -971,11 +971,9 @@ on its own code, worst first.
 | 12 | two or more Twilio workers share one address, and their tags were unioned to compare |
 | 13 | a Twilio tag this mapping does not know |
 | 14 | a Twilio worker with no Slate record at all |
-| 15 | **legal eligibility differs** |
 | 16 | **the backend service differs** |
 | 17 | **the debt tiers differ** |
 | 18 | **carries Redistribute in Twilio and is still bookable in Slate** |
-| 19 | one worker carries BOTH legal tags, so Twilio contradicts itself |
 | 20 | **manager of record differs** |
 | 21 | the team tag names somebody Slate has no user for |
 | 22 | Twilio names a manager and Slate has nobody linked |
@@ -983,11 +981,11 @@ on its own code, worst first.
 | 24 | one worker carries two or more team tags |
 
 Exit 18 is ranked worst because it is the only finding here that misroutes a lead the
-day it appears rather than being latent. The three Twilio configuration faults (12, 13
-and 19) rank BELOW every difference about a person on purpose, so a duplicated worker
-cannot bury a real disagreement. Exit 19 has the highest NUMBER of the three and the
-lowest rank among them is 12, because the exit codes name the outcome and the ranking
-decides which one names a run; they are two different questions.
+day it appears rather than being latent. The two Twilio configuration faults (12 and
+13) rank BELOW every difference about a person on purpose, so a duplicated worker
+cannot bury a real disagreement. The exit codes name the outcome and the ranking
+decides which one names a run; they are two different questions, which is why the
+numbers and the order do not match.
 
 **Manager of record is compared, never moved (#2099).** Twilio carries manager
 assignment as a `Team <Manager Name>` tag and Slate takes it from Salesforce's
@@ -1010,19 +1008,13 @@ Measured live 2026-09-09, with every other fact forced to agree so the manager h
 is not masked by a higher ranked verdict: 128 agree and one finding, jlodato@, whose
 Slate manager is Brad Lawrence and whose Twilio worker carries no team tag.
 
-**Legal eligibility has a positive tag, and it is the one that decides (#2098).** Dan,
-2026-09-09: "The default is N. Y is the only one called out." So Slate stores `Y` only
-for a worker carrying `Legal Eligible`, and `N` for every other state: the explicit
-`Not Legal Eligible` tag, a worker carrying neither, and a Slate row Twilio holds no
-worker for at all. A worker carrying BOTH tags is stored as `N` and reported as exit
-19, because withholding somebody from legal work is recoverable and offering it to
-somebody nobody cleared is not.
-
-That reading is the opposite of what the bucket criteria suggest. `legal_eligible!:
-"N"` admits an UNSET agent, so for as long as nobody wrote the field every agent was
-offered the ten legal buckets. The criteria stay correct once every agent holds an
-explicit value, since "not N" and "is Y" then select the same people, which is why
-this shipped as a write rather than as a change to sixty buckets.
+**Legal eligibility was retired outright (#2218).** Slate mirrored the `Legal
+Eligible` and `Not Legal Eligible` tags onto `users.attributes` and compared them
+here, on two exit codes. Dan retired the attribute on 2026-09-10: the ten bucket
+criteria keyed on it matched zero bookable agents, so nothing routed on it and
+nothing stores it now. The TAGS still exist in Twilio and still reach cal.com
+through the Pipedream job; they are simply not Slate's business, and they arrive
+here as ordinary unmapped tags.
 
 A departed Slate agent ranks level with agreement and can never name a run: their
 Twilio tags are not a disagreement about somebody taking calls.

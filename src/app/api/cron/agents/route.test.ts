@@ -52,8 +52,6 @@ const twilio = vi.hoisted(() => ({
     markedWithNoWorker: [] as string[],
     coverageSweeps: [] as { email: string; bookings: number }[],
     coverageSweepFailures: 0,
-    legalEligible: [] as string[],
-    legalExcluded: [] as string[],
     tiersChanged: [] as string[],
     backendChanged: [] as string[],
     withoutWorker: [] as string[],

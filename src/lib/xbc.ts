@@ -16,13 +16,15 @@ import type { Criteria } from "@/lib/db/types";
  * - Every code routes to its own debt team (digit 1). Backend digit 2/3
  *   requires the matching backend_service; 0 (None) and 1 (Both) leave it
  *   unconstrained.
- * - Legal digit 1 on a Both/None backend code applies cal.com's exact
- *   "Legal Eligible does not equal N" member rule (the "| LIMIT" routes,
+ * - The legal digit NAMES a bucket and routes nothing (#2218). It used to apply
+ *   cal.com's "Legal Eligible does not equal N" member rule on a Both/None
+ *   backend code (the "| LIMIT" routes,
  *   confirmed for 111 and 411/511 by form screenshots): agents explicitly
- *   marked legal_eligible=N are excluded; unmarked agents pass. With the
+ *   the attribute was retired, so all three legal digits of one tier and
+ *   backend now select the same pool. With the
  *   attribute currently unset on every agent this excludes nobody - it
  *   encodes the rule for whenever marking resumes. Beyond/Achieve routes
- *   never filter on legal, matching the form.
+ *   never filtered on it either, matching the form.
  */
 
 export const DEBT_TIER: Record<string, { key: string; label: string }> = {
@@ -63,7 +65,7 @@ export function bucketSpecForXbc(code: string): BucketSpec | null {
   const name = `${tier.label} | ${backend.label} | ${legal.label}`;
 
   // The LEGAL digit names the bucket and routes nothing (#2218). Ten codes used
-  // to carry `legal_eligible!: "N"`, and Dan retired the attribute on 2026-09-10,
+  // to carry a legal criterion, and Dan retired the attribute on 2026-09-10,
   // so that was a rule nobody set. It was also matching nobody: measured that day,
   // 90 of the 90 bookable agents were marked `N` and the rule admitted only
   // not-N, so those ten pools were empty and every lead on them was already being
@@ -72,7 +74,7 @@ export function bucketSpecForXbc(code: string): BucketSpec | null {
   // compromise at request time.
   //
   // All sixty codes stay valid and every bucket keeps its name: the landing pages
-  // still send the third digit and historical bookings still carry it. `LEGAL` is
+  // still send the third digit and historical bookings still carry it. The table is
   // a label table now.
   const criteria: Criteria = { debt_team: tier.key };
   if (backend.key) criteria.backend_service = backend.key;

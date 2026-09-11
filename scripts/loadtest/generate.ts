@@ -79,7 +79,7 @@ const DEBT_PROFILES: { team: string[] | null; weight: number }[] = [
   { team: ["ultra_high", "very_high", "high"], weight: 1 },
 ];
 // backend_service among agents that HAVE a debt_team (the null-debt 12 also have
-// no backend). legal_eligible is null for everyone in prod, so it's omitted.
+// no backend). The retired legal attribute (#2218) is not generated at all.
 const BACKEND_PROFILES: { svc: string[]; weight: number }[] = [
   { svc: ["beyond"], weight: 60 },
   { svc: ["achieve"], weight: 38 },

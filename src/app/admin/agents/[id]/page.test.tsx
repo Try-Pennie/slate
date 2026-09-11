@@ -534,9 +534,7 @@ describe("AgentProfilePage says what the pool toggle did (#1769)", () => {
   it("puts a pending state on every submit, including the slowest one", async () => {
     await renderWith();
     // Make bookable makes a LIVE Google call before it writes anything, so it is
-    // the one press that must never read as nothing having happened. Save legal
-    // eligible is no longer among them: #2120 took that control off the panel,
-    // which now writes nothing at all.
+    // the one press that must never read as nothing having happened.
     for (const name of [/set role/i, /save hours/i]) {
       expect(screen.getByRole("button", { name })).toBeTruthy();
     }
@@ -803,6 +801,14 @@ describe("AgentProfilePage account status sits last and looks its weight (#1875)
 // call #1474 already made for the manager field: an editable control that is undone
 // within the hour is worse than none. #2152 changed which half of that sync rewrites
 // the two routing values, from Salesforce to Twilio, and not that one does.
+
+/** Every field in the routing attributes row, so a count is never hardcoded. */
+function attrFields(): HTMLElement[] {
+  const panel = screen.getByText("Routing attributes").closest("section") as HTMLElement;
+  const row = panel.querySelector("[data-attr-row]") as HTMLElement;
+  return [...row.children] as HTMLElement[];
+}
+
 describe("AgentProfilePage routing attributes are read only (#1874)", () => {
   const withAttrs = async (attributes: Record<string, unknown>) => {
     auth.currentUser.mockResolvedValueOnce({ id: "ad1", role: "admin", org_id: "o1" });
@@ -848,7 +854,7 @@ describe("AgentProfilePage routing attributes are read only (#1874)", () => {
   });
 
   // #2120: `role` is the Salesforce Profile name, and NOTHING routes on it: all
-  // 60 buckets key on debt_team, backend_service and legal_eligible. A field
+  // every bucket keys on debt_team and backend_service. A field
   // nothing routes on, under a heading about routing, is a fact the reader has to
   // work out is irrelevant. The audit trail still records it (`details.profile`),
   // so the data and the record of who was made bookable are untouched.
@@ -864,8 +870,12 @@ describe("AgentProfilePage routing attributes are read only (#1874)", () => {
   // the same state, because one meaning on one surface gets one vocabulary (L118).
   it("names an absent debt team in the same words its neighbours use", async () => {
     await withAttrs({});
-    const panel = screen.getByText("Routing attributes").closest("section") as HTMLElement;
-    expect((panel.textContent ?? "").match(/Not set/g)?.length).toBeGreaterThanOrEqual(3);
+    // EVERY field in the row, counted from the row rather than from a number
+    // written here: the row held three fields until #2218 retired one of them, and
+    // a literal 3 went red for a reason that had nothing to do with absent values.
+    const fields = attrFields();
+    expect(fields.length).toBeGreaterThan(0);
+    for (const f of fields) expect(f.textContent).toMatch(/Not set/);
   });
 
   // A blank is not a team. Asking the raw attribute rather than the function that
@@ -873,8 +883,9 @@ describe("AgentProfilePage routing attributes are read only (#1874)", () => {
   // the two would be answering different questions about one value (L70).
   it("names a blank stored team as absent, since a blank is not a team", async () => {
     await withAttrs({ debt_team: ["", "  "] });
-    const panel = screen.getByText("Routing attributes").closest("section") as HTMLElement;
-    expect((panel.textContent ?? "").match(/Not set/g)?.length).toBeGreaterThanOrEqual(3);
+    const fields = attrFields();
+    expect(fields.length).toBeGreaterThan(0);
+    for (const f of fields) expect(f.textContent).toMatch(/Not set/);
   });
 
   // A value that is not one of the five rungs is still coverage, and dropping it
@@ -920,93 +931,21 @@ describe("AgentProfilePage routing attributes are read only (#1874)", () => {
     expect(document.body.textContent ?? "").not.toMatch(/redistribute/i);
   });
 
-  // #2120: legal eligible is READ ONLY too, so the panel has no control at all.
+  // #2218 RETIRED LEGAL ELIGIBLE. Six cases stood here about the third field in
+  // this row: that it offered no control, that it sat in line with the other two,
+  // that every reader saw it, and how its three stored states read as words. The
+  // attribute is gone, so all six were about a field that no longer exists (L373).
   //
-  // The dropdown could not do its job. Routing excludes an agent only when the
-  // stored value is the string "N" (`legal_eligible!`, cal.com's "does not equal
-  // N"), and this control wrote the BOOLEAN true or false, so picking No wrote
-  // `false`, which is not "N", and the agent stayed in every bucket the choice
-  // was meant to take them out of. A control that looks like it excludes
-  // somebody and does nothing is worse than no control (L109).
-  //
-  // It is also not where the fact lives. Legal eligibility reaches cal.com as a
-  // "Not Legal Eligible" tag on the person's Twilio worker, the same route
-  // Redistribute takes (#2097), and nobody sets it in cal.com. Dan chose that
-  // source on 2026-09-09, so Slate reads it rather than offering a second place
-  // to type it.
-  //
-  // Nothing is lost by removing it today: 0 of 127 live users carry the field.
-  it("offers no way to type legal eligibility either", async () => {
-    await withAttrs({ legal_eligible: false });
-    expect(screen.queryByRole("combobox", { name: /legal eligible/i })).toBeNull();
-    expect(screen.queryByRole("button", { name: /save legal eligible/i })).toBeNull();
-    expect(document.querySelector('[name="legal_eligible"]')).toBeNull();
-  });
-
-  // Dan, 2026-09-09: "legal eligible can be in line with the rest and smaller".
-  // It sat below a rule as a second block, which read as a separate concern from
-  // the two fields above it. It is the third routing attribute, so it reads as
-  // the third value in the row.
-  it("puts legal eligible in the same row as the other two attributes", async () => {
-    await withAttrs({ debt_team: ["low"], backend_service: "achieve", legal_eligible: "Y" });
+  // What survives them is the ROW, which still has to hold the two attributes that
+  // remain rather than quietly becoming a single value with a heading over it.
+  it("shows the routing attributes that remain, in one row", async () => {
+    await withAttrs({ debt_team: ["low"], backend_service: "achieve" });
     const panel = screen.getByText("Routing attributes").closest("section") as HTMLElement;
     const row = panel.querySelector("[data-attr-row]") as HTMLElement;
     expect(row).toBeTruthy();
-    for (const label of ["Debt team(s)", "Backend", "Legal eligible"]) {
+    for (const label of ["Debt team(s)", "Backend"]) {
       expect(row.textContent).toContain(label);
     }
-    // The rule that made it a second block is gone with it.
-    expect(panel.querySelector(".border-t")).toBeNull();
-  });
-
-  // Read only is not the same as hidden. Every reader sees the value, including
-  // one who could not have changed it anyway, because the panel's question is
-  // what this agent can be routed for and two thirds of the answer is not an
-  // answer.
-  it("shows legal eligibility to every reader, including one who cannot manage this agent", async () => {
-    auth.currentUser.mockResolvedValueOnce({ id: "m1", role: "manager", org_id: "o1" });
-    dbState.agent = { ...agentOf("admin"), attributes: { legal_eligible: "Y" } };
-    render(await AgentProfilePage(props));
-
-    const panel = screen.getByText("Routing attributes").closest("section") as HTMLElement;
-    expect(panel.querySelector("[data-attr-row]")?.textContent).toContain("Legal eligible");
-    expect(screen.getByText("Yes")).toBeTruthy();
-  });
-
-  // The three states are told apart. Not set is not the same as No: it means the
-  // hourly Twilio sync has not reached this row, which routing reads as the
-  // permissive answer, so naming it "No" would claim an exclusion nothing recorded
-  // and naming it "Yes" would present an inference as a fact (L11, L192).
-  it("tells an unset legal eligibility apart from a No", async () => {
-    await withAttrs({ legal_eligible: "N" });
-    expect(screen.getByText("No")).toBeTruthy();
-
-    cleanup();
-    await withAttrs({ debt_team: ["low"] });
-    const panel = screen.getByText("Routing attributes").closest("section") as HTMLElement;
-    expect(panel.textContent).not.toMatch(/\bNo\b/);
-    expect(panel.textContent).toMatch(/Not set/);
-  });
-
-  // #2098: the Twilio sync writes "Y" or "N" for every agent, from the
-  // `Legal Eligible` tag, so those two are the product's own vocabulary and are
-  // read as words rather than as the letters routing matches on (L611).
-  it("reads the stored letters as words", async () => {
-    await withAttrs({ legal_eligible: "Y" });
-    const panel = screen.getByText("Routing attributes").closest("section") as HTMLElement;
-    expect(panel.textContent).toContain("Yes");
-    expect(panel.textContent).not.toMatch(/\bY\b/);
-  });
-
-  // A value in NEITHER vocabulary is shown as stored, and the only one that exists
-  // is what the retired control wrote: the boolean false, which routing admits to
-  // every legal bucket because it is not the string "N" (#2120). Calling it "No"
-  // is the exact claim that control could not deliver, so it is not made here
-  // either: what is really there is what a reader can act on (L113).
-  it("shows a value in neither vocabulary as stored, rather than calling it No", async () => {
-    await withAttrs({ legal_eligible: false });
-    const panel = screen.getByText("Routing attributes").closest("section") as HTMLElement;
-    expect(panel.textContent).toContain("false");
-    expect(panel.textContent).not.toMatch(/\bNo\b/);
+    expect(row.textContent).not.toMatch(/legal/i);
   });
 });

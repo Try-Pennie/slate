@@ -9,7 +9,7 @@ import { assert, eq, finish } from "./lib/harness.ts";
 
 const REAL_SHAPES = [
   { criteria: { debt_team: "low" } },
-  { criteria: { debt_team: "low", "legal_eligible!": "N" } },
+  { criteria: { debt_team: "low", "backend_service!": "beyond" } },
   { criteria: { debt_team: "low", backend_service: "achieve" } },
   { criteria: { debt_team: "ultra_high" } },
 ] as never[];

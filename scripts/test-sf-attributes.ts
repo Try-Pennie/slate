@@ -12,8 +12,8 @@ import { mergeSfAttributes, SF_MANAGED_KEYS } from "../src/lib/salesforce/attrib
 import { assert, eq, finish } from "./lib/harness.ts";
 
 eq(
-  mergeSfAttributes({ role: "Chatter Free User", legal_eligible: "Y" }, { role: "Sales" }),
-  { legal_eligible: "Y", role: "Sales" },
+  mergeSfAttributes({ role: "Chatter Free User", debt_team: ["high"] }, { role: "Sales" }),
+  { debt_team: ["high"], role: "Sales" },
   "the profile is replaced by what Salesforce holds now; every other key survives",
 );
 
@@ -30,8 +30,8 @@ eq(
 );
 
 eq(
-  mergeSfAttributes({ legal_eligible: "Y" }, {}),
-  { legal_eligible: "Y" },
+  mergeSfAttributes({ debt_team: ["high"] }, {}),
+  { debt_team: ["high"] },
   "an agent Salesforce reports nothing about still keeps every key it does not own",
 );
 
@@ -42,10 +42,10 @@ eq(
 // belonging to no bucket at all.
 eq(
   mergeSfAttributes(
-    { debt_team: ["high"], backend_service: ["beyond"], legal_eligible: "N", role: "Sales" },
+    { debt_team: ["high"], backend_service: ["beyond"], role: "Sales" },
     { role: "Sales" },
   ),
-  { debt_team: ["high"], backend_service: ["beyond"], legal_eligible: "N", role: "Sales" },
+  { debt_team: ["high"], backend_service: ["beyond"], role: "Sales" },
   "the debt tiers and backend service Twilio wrote survive a Salesforce sync untouched",
 );
 

@@ -50,10 +50,6 @@ import { assert, eq, finish } from "./lib/harness.ts";
     spec !== null && spec.criteria.backend_service === undefined,
     "with no backend constraint, because a lead with no code told us nothing about their backend",
   );
-  assert(
-    spec !== null && spec.criteria["legal_eligible!"] === undefined,
-    "and no legal constraint, for the same reason",
-  );
 }
 
 // --- a real code is passed straight through --------------------------------------
@@ -86,7 +82,7 @@ import { assert, eq, finish } from "./lib/harness.ts";
 // --- unreadable, kept as its own cause --------------------------------------------
 {
   // Every shape that is not one of the sixty. `999` and `600` fail the tier digit,
-  // `150` the legal digit, `1111` the length, and `abc` everything.
+  // `150` the third digit, `1111` the length, and `abc` everything.
   for (const raw of ["999", "600", "150", "1111", "11", "abc", "1a1", "0" , "-11"]) {
     const r = resolveRequestedCode(raw);
     eq(r.kind, "catchall", `${JSON.stringify(raw)} is rescued`);

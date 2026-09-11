@@ -1,6 +1,6 @@
 // What the roster sync writes for one person, from what Twilio says about them:
-// the bookable flip Redistribute demands (#2097), the legal eligibility value
-// (#2098), and since #2152 the debt tiers and backend service themselves.
+// the bookable flip Redistribute demands (#2097), and since #2152 the debt tiers
+// and backend service themselves.
 // PURE: driven offline by `scripts/test-twilio-roster-plan.ts`.
 //
 // EVERY FACT IS PLANNED TOGETHER, and that is the reason this is one function
@@ -17,12 +17,15 @@
 // in scope rows every one had a Twilio worker, two differed, and the only bookable
 // account among them was the admin's own.
 //
-// THE ONE ASYMMETRY, and it is deliberate. A row Twilio holds NO worker for keeps
-// its stored tiers untouched, while its legal value is written to N. Silence about
-// somebody is not the same as a source saying the value is gone (L214), and the two
-// directions are not equally recoverable: withholding legal work is, and emptying
-// every pool an agent belongs to on a partial read is not. `withoutWorker` counts
-// them, because doing nothing is otherwise invisible.
+// A ROW TWILIO HOLDS NO WORKER FOR KEEPS ITS STORED TIERS UNTOUCHED. Silence about
+// somebody is not the same as a source saying the value is gone (L214), and
+// emptying every pool an agent belongs to on a partial read is not recoverable.
+// `withoutWorker` counts them, because doing nothing is otherwise invisible.
+//
+// It used to also write those rows a legal eligibility value of N, which was the
+// one place this planner acted on an absence rather than declining to. #2218
+// retired the attribute, so the absence case now writes nothing at all, which is
+// what it should always have been for a fact nobody said anything about.
 //
 // A `Redistribute` tag means the agent should not be taking booked calls (Dan,
 // 2026-09-08). It exists only in Twilio, so this is the only place Slate can learn
@@ -51,9 +54,6 @@
 import type { Attributes } from "@/lib/db/types";
 import {
   REDISTRIBUTE_MARK,
-  LEGAL_ELIGIBLE_NO,
-  twilioLegalEligible,
-  type LegalEligible,
   type TwilioSide,
 } from "@/lib/twilio/roster";
 import type { BackendValue, DebtTierValue } from "@/lib/routing/attribute-vocabulary";
@@ -94,14 +94,13 @@ export interface PlannedValue<T> {
 
 /** Everything Twilio says about one person, and what moved. */
 export interface TwilioChanges {
-  legal: PlannedValue<LegalEligible>;
   debtTeams: PlannedValue<DebtTierValue[]>;
   backendServices: PlannedValue<BackendValue[]>;
 }
 
 /** True when this row's payload changes anything at all. */
 function changesAnything(c: TwilioChanges): boolean {
-  return c.legal.changed || c.debtTeams.changed || c.backendServices.changed;
+  return c.debtTeams.changed || c.backendServices.changed;
 }
 
 export type RedistributeAction = "turn-off" | "turn-back-on";
@@ -117,7 +116,7 @@ export interface PlannedRedistribute {
    * spelling: a caller writing its own `{ redistribute: "Y" }` is a second
    * definition of the same fact, and the two drift silently (L370).
    *
-   * It also carries the legal eligibility value, because both facts live in the
+   * It carries the routing facts, because they live in the
    * same JSON column and two writes built from one base would drop each other.
    */
   attributes: Attributes;
@@ -168,15 +167,11 @@ export interface RedistributePlan {
   /**
    * Every in scope Slate row Twilio holds no worker for.
    *
-   * Reported because the legal value written for them is written on an ABSENCE:
-   * Twilio said nothing, and the default is N, so they are excluded from legal
-   * work by a source that never mentioned them. That is the opposite of what the
-   * redistribute mark does on an absence, and of what the tiers do, which are left
-   * exactly as stored. The asymmetry is deliberate in all three places, since
-   * withholding somebody is recoverable and admitting them is not, and emptying
-   * every pool they belong to is not either.
+   * Nothing is WRITTEN for them: their tiers are left exactly as stored, because
+   * silence about somebody is not a source saying their values are gone, and
+   * emptying every pool they belong to on a partial read is not recoverable.
    *
-   * It is also the only visible sign of a PARTIAL Twilio read. A read that
+   * That makes the count the only visible sign of a PARTIAL Twilio read. A read that
    * returned no workers at all is refused by the caller, but one that returned
    * half the roster would quietly exclude the other half, and this count is what
    * that looks like. Measured 2026-09-09 it is zero: all 125 live Slate users
@@ -218,11 +213,6 @@ function storedMarkStamp(attributes: Attributes | null | undefined): string | nu
   return Number.isFinite(Date.parse(raw)) ? raw : null;
 }
 
-/** The stored legal value, in the one shape the comparison and the write agree on. */
-function storedLegal(attributes: Attributes | null | undefined): string {
-  const v = attributes?.legal_eligible;
-  return v === undefined || v === null ? "" : String(v);
-}
 
 /**
  * Whether a stored list key already holds exactly what this run would write.
@@ -248,15 +238,13 @@ function listAlreadyStored(attributes: Attributes | null | undefined, key: strin
 /**
  * What Twilio says about this person, against what Slate holds.
  *
- * A row Twilio holds no worker for keeps its stored tiers (the header says why) and
- * is written to legal excluded, which is the deliberate asymmetry.
+ * A row Twilio holds no worker for keeps its stored tiers, so nothing is planned
+ * for it at all (the header says why).
  */
 function planChanges(attributes: Attributes | null, worker: TwilioSide | null): TwilioChanges {
-  const legalValue = worker ? twilioLegalEligible(worker) : LEGAL_ELIGIBLE_NO;
   const debtTeams = worker ? worker.debtTeams : storedList<DebtTierValue>(attributes, "debt_team");
   const backendServices = worker ? worker.backendServices : storedList<BackendValue>(attributes, "backend_service");
   return {
-    legal: { value: legalValue, changed: storedLegal(attributes) !== (legalValue as string) },
     debtTeams: { value: debtTeams, changed: !listAlreadyStored(attributes, "debt_team", debtTeams) },
     backendServices: {
       value: backendServices,
@@ -279,7 +267,7 @@ function storedList<T extends string>(attributes: Attributes | null | undefined,
  * against that.
  */
 function withTwilioFacts(attributes: Attributes | null, changes: TwilioChanges): Attributes {
-  const next: Attributes = { ...(attributes ?? {}), legal_eligible: changes.legal.value };
+  const next: Attributes = { ...(attributes ?? {}) };
   if (changes.debtTeams.value.length > 0) next.debt_team = [...changes.debtTeams.value];
   else delete next.debt_team;
   if (changes.backendServices.value.length > 0) next.backend_service = [...changes.backendServices.value];
@@ -299,8 +287,7 @@ function withTwilioFacts(attributes: Attributes | null, changes: TwilioChanges):
  * returned no workers before ever getting here, and this is the second half of that
  * refusal, because an empty map must never read as "nobody is tagged any more".
  *
- * It does NOT stop the legal writes, which is deliberate rather than an oversight:
- * an unseen row is written to N, and the caller's refusal is what stops a run
+ * An unseen row is planned nothing, and the caller's refusal is what stops a run
  * reaching here on a read that answered with nothing at all.
  */
 export function planTwilioRoster(
