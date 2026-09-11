@@ -137,6 +137,11 @@ export function BucketTable({
                 <th scope="col" className="py-2 pr-4">Debt tier</th>
                 <th scope="col" className="py-2 pr-4">Backend</th>
                 <th scope="col" className="py-2 pr-4">Legal</th>
+                {/* #2237: which of the fifteen pools this code routes through.
+                    It sits right of the three digits on purpose, so a reader
+                    sees the decomposition and then sees that changing the Legal
+                    digit does not change the pool. */}
+                <th scope="col" className="py-2 pr-4">Pool</th>
                 {withMembers && (
                   <th scope="col" className="py-2 pr-4 text-right">Members</th>
                 )}
@@ -232,6 +237,11 @@ function FragmentRow({
             {row.name} <span className="text-xs text-fg-muted">(made by hand)</span>
           </td>
         )}
+        <td className="py-2 pr-4">
+          {row.pool.label ?? (
+            <span className="text-xs text-fg-muted">Not a routing pool</span>
+          )}
+        </td>
         {withMembers && (
           <td className="py-2 pr-4 text-right tabular-nums">{row.manualMembers}</td>
         )}
@@ -267,7 +277,7 @@ function FragmentRow({
       </tr>
       {isOpen && (
         <tr className="border-b border-border bg-bg-alt">
-          <td colSpan={withMembers ? 7 : 6} className="px-2 py-3">
+          <td colSpan={withMembers ? 8 : 7} className="px-2 py-3">
             {form}
           </td>
         </tr>

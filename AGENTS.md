@@ -1148,6 +1148,28 @@ The sweep's pool key deliberately omits manual members, unlike the recompute
 lane's: it resolves eligibility per bucket and has no member list to hand, and
 the only three manual member rows in production are on the two test buckets.
 
+## The screens report pools too (#2237)
+
+- **`/admin/tiers`** shows fifteen rows, each naming the pool and every bucket
+  code it serves, and its counts count pools: "5 on a single agent today" used to
+  mean five CODES, which is not five problems.
+- **The thin tier notice** lists pools. Its list caps at eight names, so ONE thin
+  pool consumed six slots and hid every other finding behind "(and N more)" while
+  the headline read six times the number of real problems.
+- **`/admin/buckets` keeps a row per bucket** and gains a **Pool** column, placed
+  right of the three digits so a reader sees the decomposition and then sees that
+  the Legal digit does not change the pool. The rows stay because each is a
+  record somebody edits on that page, and collapsing them would take that away.
+  Its summary reports both numbers ("60 buckets across 15 routing pools"); it
+  used to print the ROW count under the word "pools", which said "60 pools".
+
+`groupRowsByPool` (`src/lib/admin/pool-rows.ts`) is the shared collapse, and
+`sameTierReading` is the one predicate that decides whether two rows may share a
+row or a line. A pool whose rows DISAGREE is not collapsed at all: showing one
+number under a heading covering six would drop five readings on a screen whose
+job is to report them. That cannot happen while the pool key covers every input,
+which is exactly why it is guarded.
+
 # Capped single-page reads (the `// cap-safe:` convention)
 
 PostgREST returns at most **one 1000-row page** per list read. Code that then

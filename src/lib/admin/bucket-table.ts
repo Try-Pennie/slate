@@ -1,4 +1,6 @@
 import { BACKEND, DEBT_TIER, LEGAL, seederOwnsCode } from "@/lib/xbc";
+import { poolKeyFor } from "@/lib/availability/pool-key";
+import { poolLabel } from "@/lib/availability/pool-label";
 import type { Bucket } from "@/lib/db/types";
 
 /**
@@ -49,12 +51,33 @@ export interface BucketRow {
   hasFallback: boolean;
   /** How many people are named on this bucket by hand. */
   manualMembers: number;
+  /**
+   * The POOL this bucket routes through (#2237).
+   *
+   * Sixty codes resolve to fifteen, so six adjacent rows are routinely ONE
+   * routing decision shown six times. The table keeps a row per bucket, because
+   * each is a real record somebody edits here and collapsing them would take
+   * that away; the column is what lets a reader see the six are one.
+   *
+   * `label` is null for a bucket whose criteria are not the routing matrix. The
+   * KEY is still meaningful there: two hand made buckets with identical criteria
+   * are still one pool, they just have no name for it.
+   */
+  pool: { key: string; label: string | null };
 }
 
 export function bucketRow(
   bucket: Bucket,
   eligible: number | undefined,
-  manualMembers: number,
+  /**
+   * The people named on this bucket by hand, as IDS rather than a count.
+   *
+   * The count is all the table shows, but membership changes WHO a bucket routes
+   * to, so it is part of the pool's identity: two buckets alike in every other
+   * way and differing by one manual member are two pools, and a count could not
+   * tell them apart.
+   */
+  manualMemberIds: string[],
 ): BucketRow {
   const [adv, bes, leg] = bucket.code.split("");
   const tier = adv ? DEBT_TIER[adv] : undefined;
@@ -73,7 +96,19 @@ export function bucketRow(
         : null,
     eligible: eligible === undefined ? null : eligible,
     hasFallback: bucket.fallback_user_id !== null,
-    manualMembers,
+    manualMembers: manualMemberIds.length,
+    // The same key the recompute lane and the staffing depth group on, so no two
+    // surfaces can disagree about which codes are one pool.
+    pool: {
+      key: poolKeyFor({
+        orgId: bucket.org_id,
+        eventTypeId: bucket.event_type_id,
+        criteria: bucket.criteria ?? null,
+        fallbackUserId: bucket.fallback_user_id,
+        memberIds: manualMemberIds,
+      }),
+      label: poolLabel(bucket.criteria ?? null),
+    },
   };
 }
 
@@ -172,7 +207,16 @@ export function bucketTableSummary(rows: BucketRow[]): string {
   if (rows.length === 0) return "No buckets yet.";
   const blocked = rows.filter((r) => bucketHealth(r) === "blocked").length;
   const unmeasured = rows.filter((r) => bucketHealth(r) === "unmeasured").length;
-  const pools = `${rows.length} pool${rows.length === 1 ? "" : "s"}`;
+  // Two facts, not one (#2237). This used to print the row count under the word
+  // "pools", which on the live matrix said "60 pools" about fifteen of them: the
+  // exact confusion this issue was opened about, on the screen somebody reads to
+  // understand the routing.
+  const poolCount = new Set(rows.map((r) => r.pool.key)).size;
+  const buckets = `${rows.length} bucket${rows.length === 1 ? "" : "s"}`;
+  const pools =
+    poolCount === rows.length
+      ? buckets
+      : `${buckets} across ${poolCount} routing pool${poolCount === 1 ? "" : "s"}`;
   const parts: string[] = [];
   if (blocked > 0) {
     parts.push(`${blocked} can take no booking at all`);
