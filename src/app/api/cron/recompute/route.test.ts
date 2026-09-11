@@ -19,7 +19,7 @@ const admin = vi.hoisted(() => ({
 }));
 const pace = vi.hoisted(() => ({ withinBudget: vi.fn(() => true) }));
 const precompute = vi.hoisted(() => ({
-  listAllBucketCodes: vi.fn(async () => []),
+  listPoolBuckets: vi.fn(async () => [] as unknown[]),
   listKnownBucketSlotRows: vi.fn(async () => []),
   // #1301/#1304: the deliberate-invalidation marker. `absent` is the NORMAL state
   // (nobody invalidated anything), and it is deliberately distinct from
@@ -30,12 +30,15 @@ const precompute = vi.hoisted(() => ({
   clearMassInvalidation: vi.fn(async () => {}),
 }));
 const precomputeCron = vi.hoisted(() => ({
-  bucketsDueForRecompute: vi.fn(() => []),
+  bucketsDueForRecompute: vi.fn((..._a: unknown[]) => [] as string[]),
   staleBuckets: vi.fn(() => []),
   recomputeHeadroom: vi.fn(() => ({ drained: true, utilizationPct: 0 })),
-  recomputeDueBuckets: vi.fn(async () => 0),
+  recomputeDueBuckets: vi.fn(async (..._a: unknown[]) => 0),
 }));
-const slotCache = vi.hoisted(() => ({ recomputeBucketSlotsForToday: vi.fn(async () => {}) }));
+const slotCache = vi.hoisted(() => ({
+  recomputeBucketSlotsForToday: vi.fn(async () => {}),
+  recomputePoolSlotsForToday: vi.fn(async (..._a: unknown[]) => 0),
+}));
 const dispatch = vi.hoisted(() => ({
   sendThrottledAlert: vi.fn(async (_key: string, _cooldownMs: number, _text: string) => {}),
   resolveRecovered: vi.fn(async (_r: { key: string; text: string }[]) => [] as string[]),
@@ -281,5 +284,75 @@ describe("the stale alarm during a deliberate invalidation", () => {
     precompute.readMassInvalidationMarker.mockResolvedValueOnce({ state: "absent" });
     await GET(req());
     expect(precompute.clearMassInvalidation).not.toHaveBeenCalled();
+  });
+});
+
+// #2245: the lane's saving is that it runs the availability compute once per
+// POOL rather than once per code. Sixty codes resolve to fifteen pools, so three
+// quarters of this lane's work was duplicated.
+//
+// The pure halves (which codes share a pool, when a pool falls due, how one
+// answer is written to every code with its own identity) are node tested. What
+// is only visible here is the WIRING: that the lane groups before it dispatches,
+// and hands the whole pool over rather than one code at a time. A regression to
+// per code dispatch leaves every pure test green.
+describe("one compute per pool", () => {
+  const pooled = (code: string, criteria: Record<string, string>) => ({
+    code,
+    bucket: { id: `id-${code}`, code, criteria },
+    orgId: "org-1",
+    eventTypeId: "event-1",
+    criteria,
+    fallbackUserId: null,
+    memberIds: [] as string[],
+  });
+  const matrix = [
+    ...["100", "101", "102", "110", "111", "112"].map((c) => pooled(c, { debt_team: "low" })),
+    ...["120", "121", "122"].map((c) =>
+      pooled(c, { debt_team: "low", backend_service: "beyond" }),
+    ),
+  ];
+
+  /** Stand in for the drain, which has its own unit tests: run every unit. */
+  const drainAll = async (
+    units: unknown[],
+    run: (u: unknown) => Promise<void>,
+  ): Promise<number> => {
+    for (const u of units) await run(u);
+    return units.length;
+  };
+
+  it("dispatches whole pools, not codes", async () => {
+    cron.isAuthorizedCron.mockReturnValue(true);
+    precompute.listPoolBuckets.mockResolvedValueOnce(matrix);
+    precomputeCron.bucketsDueForRecompute.mockImplementation(
+      (...a: unknown[]) => a[1] as string[],
+    );
+    precomputeCron.recomputeDueBuckets.mockImplementationOnce(drainAll as never);
+
+    await GET(req());
+
+    expect(slotCache.recomputePoolSlotsForToday).toHaveBeenCalledTimes(2);
+    const dispatched = slotCache.recomputePoolSlotsForToday.mock.calls
+      .map((call) => (call[0] as { code: string }[]).map((b) => b.code).sort().join(" "))
+      .sort();
+    expect(dispatched).toEqual(["100 101 102 110 111 112", "120 121 122"]);
+  });
+
+  it("still reports its totals in BUCKETS, so the headroom numbers keep their meaning", async () => {
+    cron.isAuthorizedCron.mockReturnValue(true);
+    precompute.listPoolBuckets.mockResolvedValueOnce(matrix);
+    precomputeCron.bucketsDueForRecompute.mockImplementation(
+      (...a: unknown[]) => a[1] as string[],
+    );
+    precomputeCron.recomputeDueBuckets.mockImplementationOnce(drainAll as never);
+    slotCache.recomputePoolSlotsForToday.mockImplementation(
+      async (...a: unknown[]) => (a[0] as unknown[]).length,
+    );
+
+    const body = await (await GET(req())).json();
+    expect(body.buckets).toBe(9);
+    expect(body.due).toBe(9);
+    expect(body.recomputed).toBe(9);
   });
 });

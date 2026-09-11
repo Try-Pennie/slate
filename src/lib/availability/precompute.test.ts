@@ -48,7 +48,7 @@ vi.mock("@/lib/supabase/admin", () => ({ supabaseAdmin: () => ({ from }) }));
 import {
   bucketsForAgent,
   bucketsForAgents,
-  listAllBucketCodes,
+  listPoolBuckets,
   listKnownBucketSlotRows,
   readBucketSlotsRow,
   touchedBucketCodes,
@@ -188,12 +188,40 @@ describe("precompute reads fail loud on a query error (#315)", () => {
     expect(await readBucketSlotsRow("411")).toBeNull();
   });
 
-  it("listAllBucketCodes throws on a query error, maps codes on success", async () => {
+  // #2245: this replaced a plain `select("code")`, because the lane groups by
+  // pool before it dispatches. An empty bucket list would leave the lane with
+  // nothing due and every row aging quietly past the freshness window, so BOTH
+  // reads have to throw rather than degrade.
+  it("listPoolBuckets throws when the bucket read fails", async () => {
     state.failTable = "buckets";
-    await expect(listAllBucketCodes()).rejects.toThrow();
+    await expect(listPoolBuckets()).rejects.toThrow();
+  });
 
-    state.failTable = null;
-    expect(await listAllBucketCodes()).toEqual(["411", "412", "413"]);
+  it("listPoolBuckets throws when the MEMBERSHIP read fails", async () => {
+    // Membership is a pool input, so a silently empty member list would merge
+    // two buckets that route to different people.
+    state.failTable = "bucket_members";
+    await expect(listPoolBuckets()).rejects.toThrow();
+  });
+
+  it("listPoolBuckets carries each bucket's pool inputs and its own row", async () => {
+    state.members = [
+      { bucket_id: "b-manual", user_id: "u1" },
+      { bucket_id: "b-manual", user_id: "u2" },
+    ];
+    const pooled = await listPoolBuckets();
+    expect(pooled.map((p) => p.code)).toEqual(["411", "412", "413"]);
+
+    const manual = pooled.find((p) => p.code === "412")!;
+    expect(manual.memberIds.sort()).toEqual(["u1", "u2"]);
+    expect(manual.orgId).toBe(ORG);
+    // The row itself rides along: it is what each pooled write stamps as the
+    // code's own identity, so a shared answer never carries a sibling's bucket.
+    expect(manual.bucket.id).toBe("b-manual");
+
+    const fallback = pooled.find((p) => p.code === "413")!;
+    expect(fallback.fallbackUserId).toBe("u3");
+    expect(fallback.memberIds).toEqual([]);
   });
 
   it("listKnownBucketSlotRows throws on a query error", async () => {

@@ -354,22 +354,25 @@ export function recomputeHeadroom(
  * than aborting the whole cycle. Returns how many buckets were refreshed. Pure
  * (injected `recompute` + `withinBudget`) so it's unit-tested without IO.
  */
-export async function recomputeDueBuckets(
-  due: string[],
-  recompute: (code: string) => Promise<void>,
+export async function recomputeDueBuckets<T = string>(
+  due: T[],
+  recompute: (unit: T) => Promise<void>,
   withinBudget: () => boolean,
   concurrency: number,
+  /** How to name a unit in the failure log. A unit is a POOL of bucket codes on
+   *  the lane (#2245) and a single code elsewhere, so the caller says. */
+  describe: (unit: T) => string = (u) => String(u),
 ): Promise<number> {
   let recomputed = 0;
   for (let i = 0; i < due.length; i += concurrency) {
     if (!withinBudget()) break;
     const wave = due.slice(i, i + concurrency);
-    const results = await Promise.allSettled(wave.map((code) => recompute(code)));
+    const results = await Promise.allSettled(wave.map((unit) => recompute(unit)));
     results.forEach((r, j) => {
       if (r.status === "fulfilled") {
         recomputed++;
       } else {
-        log.error("precompute", { msg: "recompute failed", bucket: wave[j] }, r.reason);
+        log.error("precompute", { msg: "recompute failed", bucket: describe(wave[j]!) }, r.reason);
       }
     });
   }
