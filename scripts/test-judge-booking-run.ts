@@ -115,6 +115,7 @@ function passing(): JudgeInput {
     bookings,
     bookingIdsWithBusyBlock: bookings.map((b) => b.id),
     slotUniqueIndexPresent: true,
+    overlapConstraintPresent: true,
     ipCeilingControl: { sent: 61, firstRefusedAt: 61 },
     platform: { invocations: 610, cpuMsP99: 40, outcomes: { ok: 610 } },
     faultPass: { attempts: 100, fiveXx: 0, faultPct: 10 },
@@ -766,6 +767,61 @@ const bars = (r: ReturnType<typeof judgeBookingRun>) => r.findings.map((f) => f.
   assert(
     r.findings.some((f) => f.bar === "the burst's winners" && f.detail.includes("no booking row")),
     "a winner with no booking row is caught",
+  );
+}
+
+// --- BOTH guards must have been seen to refuse (#2274) ------------------------
+//
+// The run's headline bar is "no two active bookings overlap on one agent", and an
+// ABSENCE of overlaps is only evidence if the things that prevent them were shown
+// to be working. There are two now, and they answer different questions:
+// `bookings_active_slot_uniq` refuses a second booking at the same START, and
+// `bookings_active_no_overlap` refuses one OVERLAPPING an existing booking, which
+// is the case uniqueness cannot see because appointments are longer than the grid
+// they are offered on. A branch missing either one produces a clean looking run
+// that proves nothing about the half it lost (L1, L98).
+
+{
+  const r = broken((i) => {
+    i.overlapConstraintPresent = false;
+  });
+  assert(
+    r.findings.some((f) => f.bar === "bookings_active_no_overlap"),
+    "a branch without the overlap constraint is a finding",
+  );
+  assert(
+    r.findings.some((f) => f.detail.includes("proves nothing")),
+    "and says an absence of overlaps proves nothing without it",
+  );
+}
+
+{
+  // The two are reported SEPARATELY, because they send a reader to two different
+  // migrations and one message answering for the other is how somebody looks in
+  // the wrong place (L11).
+  const neither = broken((i) => {
+    i.slotUniqueIndexPresent = false;
+    i.overlapConstraintPresent = false;
+  });
+  const bars = neither.findings.map((f) => f.bar);
+  assert(bars.includes("bookings_active_slot_uniq"), "a branch missing the unique index says so");
+  assert(bars.includes("bookings_active_no_overlap"), "and missing the overlap constraint says so too");
+  eq(
+    new Set(neither.findings.filter((f) => f.bar.startsWith("bookings_active")).map((f) => f.detail))
+      .size,
+    2,
+    "and the two messages are genuinely different",
+  );
+}
+
+{
+  // The other direction (L159): with both proven, neither is a finding, so the
+  // controls above are about the flags rather than about the bar always firing.
+  const ok = passing();
+  const r = judgeBookingRun(ok);
+  assert(
+    !r.findings.some((f) => f.bar.startsWith("bookings_active")),
+    "a run that saw both guards refuse reports neither",
   );
 }
 

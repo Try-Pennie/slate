@@ -13,6 +13,7 @@ import {
   loadtestModeVerdict,
   faultModeVerdict,
   faultPollStep,
+  overlappingProbeWindow,
   FAULT_PROPAGATION_DEADLINE_MS,
 } from "./loadtest/preflight-checks.ts";
 import { stubCreateEvent } from "../src/lib/google/loadtest-stub.ts";
@@ -431,6 +432,68 @@ import { assert, eq, finish } from "./lib/harness.ts";
   assert(
     late.action === "give-up" && terminal.action === "give-up" && late.why !== terminal.why,
     "the two ways of giving up say different things",
+  );
+}
+
+// --- the window a guard probe plants to prove the OVERLAP constraint (#2274) --
+//
+// The preflight already plants an identical window, which proves the unique
+// index. That says nothing about the overlap constraint, and the booking that
+// actually caused #2274 had a DIFFERENT start ten minutes later, which uniqueness
+// cannot see.
+
+{
+  // A 20 minute window shifts by 10: a different start, so the unique index cannot
+  // be what refuses it, and still overlapping, so the new constraint must be.
+  const w = overlappingProbeWindow("2026-09-15T17:50:00.000Z", "2026-09-15T18:10:00.000Z")!;
+  assert(w !== null, "a normal window yields an overlapping probe");
+  eq(w.startIso, "2026-09-15T18:00:00.000Z", "shifted by half its own length");
+  eq(w.endIso, "2026-09-15T18:20:00.000Z", "and the end moves with it");
+  // These are the exact instants of the live defect, which is the point.
+  assert(w.startIso !== "2026-09-15T17:50:00.000Z", "the START differs, or the unique index would refuse it");
+}
+
+{
+  // It must really OVERLAP, or the probe proves nothing. Checked as the ranges the
+  // constraint compares rather than by eye.
+  const a = { s: Date.parse("2026-09-15T17:50:00.000Z"), e: Date.parse("2026-09-15T18:10:00.000Z") };
+  const w = overlappingProbeWindow("2026-09-15T17:50:00.000Z", "2026-09-15T18:10:00.000Z")!;
+  const b = { s: Date.parse(w.startIso), e: Date.parse(w.endIso) };
+  assert(a.s < b.e && b.s < a.e, "the two windows overlap on a half open reading");
+  assert(b.s !== a.s, "and do not share a start");
+}
+
+{
+  // Derived from the window, never a hard coded ten minutes, so it stays correct if
+  // the seeded event type ever changes duration (L401).
+  const hour = overlappingProbeWindow("2026-09-15T09:00:00.000Z", "2026-09-15T10:00:00.000Z")!;
+  eq(hour.startIso, "2026-09-15T09:30:00.000Z", "an hour long window shifts by thirty minutes");
+  const ten = overlappingProbeWindow("2026-09-15T09:00:00.000Z", "2026-09-15T09:10:00.000Z")!;
+  eq(ten.startIso, "2026-09-15T09:05:00.000Z", "and a ten minute window by five");
+}
+
+{
+  // A window that cannot produce an overlapping copy yields NULL rather than a
+  // window that would be refused by nothing: planting one would report the
+  // constraint missing when it is present and working (L98).
+  eq(overlappingProbeWindow("nonsense", "2026-09-15T18:10:00.000Z"), null, "an unreadable start yields nothing");
+  eq(overlappingProbeWindow("2026-09-15T17:50:00.000Z", "nope"), null, "an unreadable end yields nothing");
+  eq(
+    overlappingProbeWindow("2026-09-15T17:50:00.000Z", "2026-09-15T17:50:00.000Z"),
+    null,
+    "a zero length window overlaps nothing, so there is no probe to plant",
+  );
+  eq(
+    overlappingProbeWindow("2026-09-15T18:10:00.000Z", "2026-09-15T17:50:00.000Z"),
+    null,
+    "and neither does an inverted one",
+  );
+  // A one minute window cannot be shifted by a whole minute and still overlap, so
+  // it is refused rather than producing a back to back pair the constraint allows.
+  eq(
+    overlappingProbeWindow("2026-09-15T09:00:00.000Z", "2026-09-15T09:01:00.000Z"),
+    null,
+    "a window too short to overlap a shifted copy yields nothing",
   );
 }
 

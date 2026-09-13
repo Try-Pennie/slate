@@ -16,7 +16,7 @@
 import { writeFileSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { overlaps, type JudgedBooking } from "./judge-booking-run.ts";
-import { stubShapedEventId, faultModeVerdict } from "./preflight-checks.ts";
+import { stubShapedEventId, faultModeVerdict, overlappingProbeWindow } from "./preflight-checks.ts";
 import { offeredSlots, loadtestPhone } from "./book-plan.ts";
 import { PRODUCTION_SUPABASE_REF, PRODUCTION_HOST } from "../../src/lib/loadtest-guard.ts";
 
@@ -235,6 +235,57 @@ if (planted.ok) {
 }
 console.log(`ok: the database refused a planted clash (${planted.status}), so the unique index is live`);
 
+// --- and an OVERLAPPING one, which the unique index cannot see (#2274) ---------
+//
+// The plant above shares the winner's START, so `bookings_active_slot_uniq`
+// refuses it and says nothing whatever about overlap. The booking that actually
+// caused #2274 started TEN MINUTES LATER and ran over the top, because
+// appointments are longer than the grid they are offered on. That is a different
+// guarantee, from a different constraint, and it needs its own plant or the run's
+// headline bar rests on something nobody checked (L1).
+const probe = overlappingProbeWindow(String(row.starts_at), String(row.ends_at));
+if (probe === null) {
+  // Refused rather than skipped: a window this cannot shift is one the control
+  // could not have been built from, and reporting the constraint unproven is the
+  // honest answer (L98).
+  fail(
+    `the control booking's window (${String(row.starts_at)} to ${String(row.ends_at)}) cannot ` +
+      "produce an overlapping probe, so bookings_active_no_overlap was never exercised",
+  );
+}
+const plantedOverlap = await fetch(`${SUPA}/bookings`, {
+  method: "POST",
+  headers: { ...H, Prefer: "return=representation" },
+  body: JSON.stringify([
+    {
+      org_id: row.org_id ?? undefined,
+      external_id: `${RUN_ID}-planted-overlap`,
+      assigned_user_id: row.assigned_user_id,
+      starts_at: probe!.startIso,
+      ends_at: probe!.endIso,
+      status: "confirmed",
+    },
+  ]),
+});
+const overlapConstraintEnforced = !plantedOverlap.ok;
+if (plantedOverlap.ok) {
+  const inserted = (await plantedOverlap.json()) as { id: string }[];
+  // Removed FIRST, like the clash above: a run left holding this row would report
+  // a double booking its own control created.
+  for (const r of inserted) {
+    await fetch(`${SUPA}/bookings?id=eq.${r.id}`, { method: "DELETE", headers: H });
+  }
+  fail(
+    "the database ACCEPTED a second active booking OVERLAPPING the first on the same agent " +
+      `(${probe!.startIso} against ${String(row.starts_at)}), so bookings_active_no_overlap is ` +
+      "not enforcing on this branch and the run could prove nothing about the case #2274 found",
+  );
+}
+console.log(
+  `ok: the database refused a planted OVERLAP (${plantedOverlap.status}), so the overlap ` +
+    "constraint is live",
+);
+
 // The judge reads THIS rather than the catalogue, and that is the point.
 //
 // It used to ask PostgREST for `pg_indexes`, which PostgREST does not expose:
@@ -251,7 +302,19 @@ const OUT = process.env.PREFLIGHT_OUT ?? "results/preflight.json";
 mkdirSync(dirname(OUT), { recursive: true });
 writeFileSync(
   OUT,
-  JSON.stringify({ runId: RUN_ID, slotUniqueIndexEnforced, plantedStatus: planted.status }, null, 2),
+  JSON.stringify(
+    {
+      runId: RUN_ID,
+      slotUniqueIndexEnforced,
+      plantedStatus: planted.status,
+      // Both guards, recorded separately, because the judge's headline bar rests
+      // on both and they are different guarantees (#2274).
+      overlapConstraintEnforced,
+      plantedOverlapStatus: plantedOverlap.status,
+    },
+    null,
+    2,
+  ),
   "utf8",
 );
 console.log(`\nPREFLIGHT PASSED (wrote ${OUT})`);
