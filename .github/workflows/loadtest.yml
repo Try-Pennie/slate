@@ -483,13 +483,18 @@ jobs:
       # cleaned up correctly (#2277), and a step that is red for doing its job is one
       # nobody reads (L36).
       #
-      # The three outcomes are separated now, each with its own wording and exit code,
-      # in scripts/loadtest/teardown-verdict.ts. The same #1433 care carries over: the
-      # Worker is called gone only on a reply that is POSITIVELY readable (HTTP 200, a
-      # Cloudflare envelope saying success, a result array, every entry named), so a
-      # refused, empty or unparseable read lands on its own refusal rather than on the
-      # pass. A read of the script BY NAME was rejected for exactly this reason: its
-      # 404 means "gone" and "wrong account" alike.
+      # The outcomes are separated now, each with its own wording and exit code, in
+      # scripts/loadtest/teardown-verdict.ts. The same #1433 care carries over, as TWO
+      # reads that each close the other's ambiguity: the account's Worker listing, which
+      # is trusted only when POSITIVELY readable (HTTP 200, a Cloudflare envelope saying
+      # success, a result array, every entry named), and then, on an absence only, a read
+      # of the Worker BY NAME. Neither answers alone. A bare 404 by name cannot tell
+      # "gone" from "wrong account id", and an absence from the listing would rest on
+      # that listing being complete, which nobody here has measured (L82): if it ever
+      # truncated, a live deployment would read as a confirmed teardown, which is worse
+      # than the red step this replaces. Absent AND 404 is the only pass; absent but
+      # present by name is its own outcome, because the Worker is still there and the
+      # listing cannot be trusted either.
       - name: Confirm nothing is left deployed
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
