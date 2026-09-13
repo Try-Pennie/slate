@@ -11,9 +11,19 @@
 // This suite is the OFFLINE half. It reads the migration and pins the two things
 // that make the guard correct rather than merely present: that it is scoped to
 // exactly the rows the existing unique index is scoped to, and that the app maps
-// its refusal to a slot clash rather than to a server error. The BEHAVIOURAL half
-// (an overlap really refused, a back to back pair really allowed) is proved
-// against a live database, and the load run's preflight carries it.
+// its refusal to a slot clash rather than to a server error.
+//
+// The BEHAVIOURAL half is the load run's preflight, which plants an OVERLAPPING
+// pair against a live branch and requires the database to refuse it, beside the
+// identical pair it already plants for the unique index. The judge reads both and
+// fails the run when either was not seen to enforce, because an absence of
+// overlaps only means something if the things preventing them were working.
+//
+// That sentence was FALSE when this file first shipped: it claimed the preflight
+// carried the behavioural half while the preflight only ever planted an identical
+// window, which the unique index refuses and which says nothing about overlap. A
+// comment asserting coverage that does not exist is worse than no comment, because
+// it is believed. Fixed by making it true rather than by softening it.
 //
 // Run: node --experimental-strip-types scripts/test-booking-overlap-guard.ts
 import { readdirSync, readFileSync } from "node:fs";

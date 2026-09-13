@@ -66,8 +66,20 @@ export interface JudgeInput {
   bookings: JudgedBooking[];
   /** Booking ids that have at least one `busy_blocks` row. */
   bookingIdsWithBusyBlock: string[];
-  /** Whether `bookings_active_slot_uniq` exists on the branch. */
+  /** Whether `bookings_active_slot_uniq` was seen to REFUSE a planted duplicate. */
   slotUniqueIndexPresent: boolean;
+  /**
+   * Whether `bookings_active_no_overlap` was seen to REFUSE a planted OVERLAP
+   * (#2274).
+   *
+   * A separate flag because it is a separate guarantee, and the run's headline bar
+   * rests on both. Uniqueness catches a second booking at the same START;
+   * appointments are longer than the grid they are offered on (20 minutes every 10
+   * in production), so adjacent offered times overlap and the second booking has a
+   * DIFFERENT start, which uniqueness cannot see. A branch carrying one and not the
+   * other produces a clean looking run that proves nothing about the half it lost.
+   */
+  overlapConstraintPresent: boolean;
   /** The separate 61-in-one-window step: how many were sent, and the 1-based
    *  position of the first refusal, or null when none was refused. */
   ipCeilingControl: { sent: number; firstRefusedAt: number | null };
@@ -348,11 +360,23 @@ export function judgeBookingRun(input: JudgeInput): JudgeResult {
   if (m.noReply > 0) fail("unanswered requests", `${m.noReply} requests got no reply at all`);
 
   // --- the invariant the whole run exists to protect --------------------------
+  // BOTH guards, reported separately: they send a reader to two different
+  // migrations, and one message answering for the other is how somebody looks in
+  // the wrong place (L11).
   if (!input.slotUniqueIndexPresent) {
     fail(
       "bookings_active_slot_uniq",
-      "the index that makes two bookings on one agent at one time impossible is NOT on the branch, " +
-        "so an absence of overlaps below proves nothing about production",
+      "the index that makes two bookings on one agent at the SAME TIME impossible is NOT enforcing " +
+        "on the branch, so an absence of overlaps below proves nothing about production",
+    );
+  }
+  if (!input.overlapConstraintPresent) {
+    fail(
+      "bookings_active_no_overlap",
+      "the constraint that makes two OVERLAPPING bookings on one agent impossible is NOT enforcing " +
+        "on the branch. Appointments are longer than the grid they are offered on, so adjacent " +
+        "offered times overlap and uniqueness cannot see them: an absence of overlaps below " +
+        "proves nothing about the case this run exists to find",
     );
   }
   const byAgent = new Map<string, JudgedBooking[]>();

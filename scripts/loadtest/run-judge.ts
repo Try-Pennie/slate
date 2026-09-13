@@ -287,13 +287,20 @@ const blocks = await listAll("busy_blocks?select=booking_id&booking_id=not.is.nu
  * the index enforcing, and the judge's finding says exactly that.
  */
 let slotUniqueIndexPresent = false;
+let overlapConstraintPresent = false;
 try {
-  slotUniqueIndexPresent = readJson<{ slotUniqueIndexEnforced?: boolean }>(
+  const pre = readJson<{ slotUniqueIndexEnforced?: boolean; overlapConstraintEnforced?: boolean }>(
     join(RESULTS, "preflight.json"),
-  ).slotUniqueIndexEnforced === true;
+  );
+  slotUniqueIndexPresent = pre.slotUniqueIndexEnforced === true;
+  // Read the same way and defaulting the same way (#2274): a preflight predating
+  // this field leaves it ABSENT, and absent must mean "never shown to enforce"
+  // rather than "fine", or an old artifact silently vouches for a guard nobody
+  // exercised.
+  overlapConstraintPresent = pre.overlapConstraintEnforced === true;
 } catch {
   console.error(
-    "note: no preflight result was found, so the run was never shown the unique index enforcing",
+    "note: no preflight result was found, so the run was never shown either guard enforcing",
   );
 }
 
@@ -309,6 +316,7 @@ const input: JudgeInput = {
   bookings,
   bookingIdsWithBusyBlock: [...new Set(blocks.map((b) => String(b.booking_id)))],
   slotUniqueIndexPresent,
+  overlapConstraintPresent,
   ipCeilingControl: ipControl,
   platform: await platformReading(
     new Date(startedAt).toISOString(),

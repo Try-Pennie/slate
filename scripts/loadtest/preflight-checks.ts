@@ -289,3 +289,42 @@ export function faultPollStep(
   }
   return { action: "wait", waitMs: pollMs, why: verdict.why };
 }
+
+/**
+ * The second booking a guard probe plants, given the first one's window (#2274).
+ *
+ * The preflight already plants an IDENTICAL window and requires the database to
+ * refuse it, which proves `bookings_active_slot_uniq`. That says nothing about
+ * `bookings_active_no_overlap`, and the two are not the same guarantee:
+ * appointments are longer than the grid they are offered on (20 minutes every 10
+ * in production), so the booking that actually caused #2274 had a DIFFERENT start
+ * ten minutes later, which uniqueness cannot see.
+ *
+ * So the overlap probe shifts the window by HALF its own length: far enough that
+ * the start differs, so the unique index cannot be the thing that refuses it, and
+ * near enough that the ranges still overlap. Deriving the shift from the window
+ * rather than hard coding ten minutes keeps it correct if the seeded event type
+ * ever changes duration (L401).
+ *
+ * Returns null when the window is unreadable or has no length, because a zero
+ * length range overlaps nothing: planting one would be refused by nothing and the
+ * probe would report the constraint missing when it is present and correct.
+ */
+export function overlappingProbeWindow(
+  startIso: string,
+  endIso: string,
+): { startIso: string; endIso: string } | null {
+  const start = Date.parse(startIso);
+  const end = Date.parse(endIso);
+  if (!Number.isFinite(start) || !Number.isFinite(end)) return null;
+  const lengthMs = end - start;
+  if (lengthMs <= 0) return null;
+  // Half a window, rounded to a whole minute so the planted row looks like a real
+  // booking rather than one landing on a second nobody's grid produces.
+  const shiftMs = Math.max(60_000, Math.round(lengthMs / 2 / 60_000) * 60_000);
+  if (shiftMs >= lengthMs) return null; // a window too short to overlap a shifted copy
+  return {
+    startIso: new Date(start + shiftMs).toISOString(),
+    endIso: new Date(end + shiftMs).toISOString(),
+  };
+}
