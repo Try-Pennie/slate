@@ -80,6 +80,33 @@ const nextConfig: NextConfig = {
           },
           { key: "X-Content-Type-Options", value: "nosniff" },
           { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
+          //   - noindex (#1756): nothing Slate serves belongs in a search index.
+          //     It is an internal booking tool plus an embeddable widget, and the
+          //     public booker at /book?xbc=<code> can create a REAL booking against
+          //     a real agent: a real calendar invite and a real Regal webhook, on a
+          //     three digit code that is trivial to guess once the host is known.
+          //     Measured 2026-09-13: production answered 200 on /book?xbc=111 with
+          //     no X-Robots-Tag and no noindex in the markup, and the robots.txt the
+          //     domain serves (Cloudflare's injected content signals file, since this
+          //     repo ships none) carries no Disallow at all. Nothing links to the
+          //     host before the embed swap (#65), but a Workers Custom Domain is in
+          //     the public certificate transparency logs, so "nothing links to it" is
+          //     not the same as "nobody can find it".
+          //
+          //     `nofollow` is here as well as `noindex` so a crawler that does reach
+          //     one page is not led from it into other bucket codes.
+          //
+          //     DO NOT pair this with a `Disallow` in robots.txt. A disallowed URL is
+          //     never FETCHED, so the crawler never sees this header, and the URL can
+          //     still be indexed from a link elsewhere. Allowing the crawl and serving
+          //     noindex is what actually keeps a page out of search.
+          //     `scripts/test-global-headers.ts` asserts both halves.
+          //
+          //     This does NOT close #1756, which asks for a database backed switch
+          //     that refuses the public booking path outright and doubles as the
+          //     cutover kill switch. It closes the one discovery path that does not
+          //     require somebody deliberately going looking.
+          { key: "X-Robots-Tag", value: "noindex, nofollow" },
         ],
       },
     ];
