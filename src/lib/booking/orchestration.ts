@@ -547,9 +547,14 @@ export interface CreateEventArgs {
 }
 
 /**
- * insertBooking outcome. `conflict` means the active-slot unique index rejected
- * the row (23505) — another booking won the verify-on-book race for this
- * agent+slot; the caller turns it into SlotUnavailableError.
+ * insertBooking outcome. `conflict` means the slot is taken: another booking won
+ * the verify-on-book race for this agent. EITHER guard can say so, and they are
+ * not the same question (#2274). `bookings_active_slot_uniq` refuses a second
+ * booking at the same START, and `bookings_active_no_overlap` refuses one
+ * OVERLAPPING an existing booking for that agent, which is the case uniqueness
+ * cannot see: appointments are longer than the grid they are offered on, so
+ * adjacent offered times overlap. The caller turns either into
+ * SlotUnavailableError, because both mean the same thing to a lead.
  */
 export type InsertBookingResult =
   | { ok: true; booking: Booking }
