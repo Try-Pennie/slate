@@ -20,6 +20,13 @@ import {
   type SfManagerCandidate,
 } from "@/lib/salesforce/manager-link";
 import { reapableUserIds } from "@/lib/salesforce/reap";
+import {
+  planRosterDivergence,
+  presenceFromRecords,
+  scanForDivergence,
+  type RosterRowForDivergence,
+  type SalesforcePresence,
+} from "@/lib/salesforce/roster-divergence";
 import { chunkRows, groupManagerLinks } from "@/lib/salesforce/sync-batch";
 import { chunkSoqlValues, sfInList } from "@/lib/salesforce/soql";
 import {
@@ -86,6 +93,12 @@ interface SfUser {
   Id?: string | null;
   Email: string | null;
   Name: string | null;
+  /**
+   * Asked for only by the presence query (#1833), which is the one place that
+   * needs to tell "Salesforce holds them and they have left" apart from
+   * "Salesforce holds them and the roster criteria no longer match them".
+   */
+  IsActive?: boolean;
   FirstName?: string | null;
   LastName?: string | null;
   Profile?: { Name?: string } | null;
@@ -141,33 +154,43 @@ async function queryAll(
 }
 
 /**
- * Returns the subset of `emails` whose Salesforce User is explicitly inactive
- * (IsActive = false). Emails with no Salesforce match are NOT returned, so the
- * caller keeps them — only a positive inactive signal triggers reaping.
- * Chunked to keep each SOQL IN list well under Salesforce's query limits.
+ * What Salesforce holds for each of `emails`: whether it has an ACTIVE record, an
+ * INACTIVE one, or (by being absent from the map) no record at all.
+ *
+ * ONE query shape answering both readers (#1833). It used to ask only
+ * `IsActive = false`, which is all the reap needs, and an address missing from
+ * that answer meant either "active" or "Salesforce has never heard of them" with
+ * no way to tell the two apart. The reconcile below needs exactly that
+ * distinction, so the question is asked once, in full, and each caller reads the
+ * part it needs: a second query would be the same question twice, one Salesforce
+ * call more, and two places for the escaping and chunking to drift (L370).
+ *
+ * The reap's own rule is unchanged by the widening: it acts on a POSITIVE
+ * inactive signal, and an address with two Salesforce records keeps both facts,
+ * so "any record is inactive" still means what it meant.
+ *
+ * Chunked by ENCODED length rather than by a row count (#1587, L81): the limit
+ * that refuses an oversized query is Salesforce's byte cap on the REST GET URI,
+ * and the list is percent encoded by the time it meets that cap, so a count of
+ * rows is not the unit the limit is expressed in.
  */
-async function queryInactiveEmails(
+async function queryPresenceByEmail(
   instanceUrl: string,
   token: string,
   emails: string[],
-): Promise<Set<string>> {
-  const out = new Set<string>();
-  // Chunked by ENCODED length rather than by a row count (#1587, L81): the limit
-  // that refuses an oversized query is Salesforce's byte cap on the REST GET URI,
-  // and the list is percent encoded by the time it meets that cap, so a count of
-  // rows is not the unit the limit is expressed in.
+): Promise<Map<string, SalesforcePresence>> {
+  const records: { email: string; isActive: boolean }[] = [];
   for (const chunk of chunkSoqlValues(emails)) {
     const rows = await queryAll(
       instanceUrl,
       token,
-      `SELECT Email FROM User WHERE IsActive = false AND Email IN (${sfInList(chunk)})`,
+      `SELECT Email, IsActive FROM User WHERE Email IN (${sfInList(chunk)})`,
     );
     for (const r of rows) {
-      const em = normalizeEmail(r.Email ?? "");
-      if (em) out.add(em);
+      records.push({ email: r.Email ?? "", isActive: r.IsActive === true });
     }
   }
-  return out;
+  return presenceFromRecords(records);
 }
 
 /**
@@ -303,6 +326,37 @@ export interface SyncResult {
   salesforceIdClaimed: number;
   /** Roster rows with no id that Salesforce could not resolve at all. */
   salesforceIdsUnresolved: number;
+
+  /**
+   * The rows Salesforce did NOT confirm this run (#1833).
+   *
+   * All five count a row the sync deliberately did not write, which is the outcome
+   * nothing else can report: the roster query simply does not return these people,
+   * so before this the run was indistinguishable from one where everybody was
+   * refreshed. Nothing here CLEARS anything; see `roster-divergence.ts` for why
+   * recording beats clearing.
+   */
+  /** In scope rows reconciled against Salesforce. Zero means a broken read, not a clean one. */
+  rosterRowsReconciled: number;
+  /** Unconfirmed because Salesforce holds their record and reports IsActive = false. */
+  rosterUnconfirmedInactive: number;
+  /**
+   * Unconfirmed because Salesforce holds them, active, and the roster query no
+   * longer matches them. This is #1833's own case: clearing somebody's balance
+   * tier flags is how they are taken off rotation, and it drops them out of the
+   * query instead of updating them.
+   */
+  rosterUnconfirmedUnmatched: number;
+  /** Unconfirmed because Salesforce returned no record at all for their address. */
+  rosterUnconfirmedAbsent: number;
+  /**
+   * The unconfirmed rows that are still BOOKABLE, by email.
+   *
+   * Separated from the counts because it is the only part that misroutes a lead:
+   * Slate goes on routing to somebody whose Salesforce record says they should not
+   * be taking calls. It is what pages; the counts are read in the log.
+   */
+  rosterUnconfirmedBookable: string[];
 }
 
 /**
@@ -603,7 +657,10 @@ export async function syncSalesforceAgents(deps: SyncDeps = defaultSyncDeps): Pr
   const afterInsert = unwrap(
     await db
       .from("users")
-      .select("id, email, manager_id, role, salesforce_user_id")
+      // `bookable`, `deactivated_at` and `is_test` are here for the reconcile at
+      // the end (#1833), which needs to know who is in scope and who is still
+      // routable. Same read, no extra round trip.
+      .select("id, email, manager_id, role, salesforce_user_id, bookable, deactivated_at, is_test")
       .eq("org_id", org.id),
     "sf-after-insert",
   );
@@ -891,22 +948,86 @@ export async function syncSalesforceAgents(deps: SyncDeps = defaultSyncDeps): Pr
     "sf-reapable",
   );
   const reapableRows = (reapable ?? []) as { id: string; email: string }[];
-  let toDeactivate: string[] = [];
-  if (reapableRows.length) {
-    const inactive = await queryInactiveEmails(
-      instanceUrl,
-      token,
-      reapableRows.map((u) => normalizeEmail(u.email)),
-    );
-    // Deactivate every SF-inactive reapable user. No "skip OOO-history managers"
-    // carve-out anymore: deactivation preserves the row, so attribution holds.
-    toDeactivate = reapableUserIds(reapableRows, inactive);
-    if (toDeactivate.length) {
-      await db
-        .from("users")
-        .update({ deactivated_at: new Date().toISOString() })
-        .in("id", toDeactivate);
-    }
+
+  // ---------------------------------------------------------------------------
+  // The rows Salesforce did NOT confirm this run (#1833).
+  //
+  // Everybody the roster query did not return is simply never written again: no
+  // error, no counter, no log line, and the lane reports success every hour. That
+  // is how a person taken off rotation goes on being routed to, because clearing
+  // their balance tier flags is what takes them off rotation and it drops them out
+  // of the query rather than updating them.
+  //
+  // It RECORDS, it never clears: see `roster-divergence.ts` for why, and for the
+  // convention it shares with the Twilio half's `withoutWorker`.
+  const divergenceRows: RosterRowForDivergence[] = (afterInsert ?? []).map((u) => {
+    const row = u as {
+      id: string;
+      email: string;
+      bookable?: boolean | null;
+      deactivated_at?: string | null;
+      is_test?: boolean | null;
+    };
+    return {
+      id: row.id,
+      email: row.email,
+      bookable: row.bookable === true,
+      deactivated: row.deactivated_at != null,
+      isTest: row.is_test === true,
+    };
+  });
+  // `seen` is the addresses the roster query returned, which is the same set the
+  // roster loop above matched rows by, so this asks exactly "which rows did that
+  // loop not write".
+  const scan = scanForDivergence(divergenceRows, { emails: seen });
+
+  // ONE Salesforce read answers the reap and the reconcile, because they are the
+  // same question about overlapping sets of addresses. Asking twice would cost a
+  // second call every hour and leave two places for the chunking to drift (L370).
+  const presenceEmails = [
+    ...new Set(
+      [
+        ...reapableRows.map((u) => normalizeEmail(u.email)),
+        ...scan.candidates.map((c) => c.email),
+      ].filter(Boolean),
+    ),
+  ];
+  const presence: Map<string, SalesforcePresence> = presenceEmails.length
+    ? await queryPresenceByEmail(instanceUrl, token, presenceEmails)
+    : new Map();
+
+  // Deactivate every SF-inactive reapable user. No "skip OOO-history managers"
+  // carve-out anymore: deactivation preserves the row, so attribution holds. The
+  // rule is unchanged by the widened read: a POSITIVE inactive record is still
+  // what acts, and an address with two Salesforce records still counts as
+  // inactive if either of them is.
+  const inactiveEmails = new Set(
+    [...presence].filter(([, held]) => held.anyInactive).map(([email]) => email),
+  );
+  const toDeactivate = reapableUserIds(reapableRows, inactiveEmails);
+  if (toDeactivate.length) {
+    await db
+      .from("users")
+      .update({ deactivated_at: new Date().toISOString() })
+      .in("id", toDeactivate);
+  }
+
+  const divergence = planRosterDivergence(scan, presence);
+  if (divergence.rows.length) {
+    // The detail goes to the log and the counts go back to the caller, which is
+    // the same split the id conflicts above make (#1133). Slate user ids only,
+    // never the person's email or name, so a log search does not become a roster
+    // export (L222); the bookable ones travel in the result, where the alert that
+    // pages on them can name how many there are.
+    log.warn("sf-sync", {
+      msg: "Salesforce did not confirm these roster rows, and nothing was changed for them",
+      reconciled: divergence.examined,
+      inactive: divergence.inactive,
+      unmatched: divergence.unmatched,
+      absent: divergence.absent,
+      still_bookable: divergence.bookable.length,
+      user_ids: divergence.rows.map((r) => r.userId).slice(0, 10).join(", "),
+    });
   }
 
   return {
@@ -931,5 +1052,10 @@ export async function syncSalesforceAgents(deps: SyncDeps = defaultSyncDeps): Pr
     salesforceIdAmbiguous: idReport.ambiguous,
     salesforceIdClaimed: idReport.claimed,
     salesforceIdsUnresolved: idReport.unresolved,
+    rosterRowsReconciled: divergence.examined,
+    rosterUnconfirmedInactive: divergence.inactive,
+    rosterUnconfirmedUnmatched: divergence.unmatched,
+    rosterUnconfirmedAbsent: divergence.absent,
+    rosterUnconfirmedBookable: divergence.bookable,
   };
 }

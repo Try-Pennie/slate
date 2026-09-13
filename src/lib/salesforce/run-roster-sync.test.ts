@@ -54,6 +54,11 @@ const cleanSync = () => ({
   salesforceIdAmbiguous: 0,
   salesforceIdClaimed: 0,
   salesforceIdsUnresolved: 0,
+  rosterRowsReconciled: 0,
+  rosterUnconfirmedInactive: 0,
+  rosterUnconfirmedUnmatched: 0,
+  rosterUnconfirmedAbsent: 0,
+  rosterUnconfirmedBookable: [],
 });
 
 beforeEach(() => {

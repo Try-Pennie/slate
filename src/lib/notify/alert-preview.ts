@@ -161,6 +161,8 @@ import {
   agentSyncRecovery,
   salesforceManagerAmbiguousAlert,
   salesforceManagerAmbiguousRecovery,
+  salesforceRosterDivergenceAlert,
+  salesforceRosterDivergenceRecovery,
   salesforceUserIdConflictAlert,
   salesforceUserIdConflictRecovery,
   bucketSlotsStaleAlert,
@@ -2133,6 +2135,15 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     text: salesforceManagerAmbiguousAlert(31, 2) },
   { key: "salesforce_manager_ambiguous", state: "every manager name is unique again", channel: "recovery",
     text: salesforceManagerAmbiguousRecovery() },
+  // #1833. The singular is the shape this really takes: one agent whose balance
+  // tiers were cleared for leave. The plural is what a narrowed roster query
+  // looks like, which is a very different morning.
+  { key: "salesforce_roster_divergence", state: "one bookable agent", channel: "alert",
+    text: salesforceRosterDivergenceAlert(1) },
+  { key: "salesforce_roster_divergence", state: "several bookable agents", channel: "alert",
+    text: salesforceRosterDivergenceAlert(7) },
+  { key: "salesforce_roster_divergence", state: "every bookable agent is confirmed again", channel: "recovery",
+    text: salesforceRosterDivergenceRecovery() },
   { key: "recompute_headroom", state: "falling behind its budget", channel: "alert",
     text: recomputeHeadroomAlert(18, 64, 60, 98, RECOMPUTE_BEHIND_CYCLES) },
   { key: "recompute_headroom", state: "caught up", channel: "recovery",

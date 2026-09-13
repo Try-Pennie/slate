@@ -110,6 +110,11 @@ const syncOutcome = (over: Record<string, unknown> = {}, twilio: unknown = twili
     managersAmbiguous: 0,
     managerNamesAmbiguous: 0,
     managersPromoted: 0,
+    rosterRowsReconciled: 0,
+    rosterUnconfirmedInactive: 0,
+    rosterUnconfirmedUnmatched: 0,
+    rosterUnconfirmedAbsent: 0,
+    rosterUnconfirmedBookable: [],
     ...over,
   },
 });
@@ -1235,6 +1240,43 @@ describe("syncSalesforceNow (#491, #2071)", () => {
     }
     expect(redirected).toContain("15 agents have a manager name nothing in Salesforce matched");
     expect(redirected).not.toContain("15 manager names");
+  });
+
+  // #1833: the admin pressing this button is the person who can act on a bookable
+  // agent the roster query stopped returning, because the toggle that takes them
+  // out of the pool is on this very screen. The line says the run left them alone,
+  // since a bare count sitting in a list of things the run DID would read as
+  // another thing it did.
+  it("names a bookable agent Salesforce no longer confirms, and says nothing was changed", async () => {
+    rosterSync.runRosterSync.mockResolvedValueOnce(
+      syncOutcome({ updated: 2, rosterUnconfirmedUnmatched: 1, rosterUnconfirmedBookable: ["onleave@x.com"] }),
+    );
+    let redirected = "";
+    try {
+      await syncSalesforceNow();
+    } catch (e) {
+      redirected = decodeURIComponent(String((e as Error).message));
+    }
+    expect(redirected).toContain("1 bookable agent no longer returned by the Salesforce roster query");
+    expect(redirected).toContain("left exactly as they are");
+    expect(redirected).not.toContain("undefined");
+    expect(redirected).not.toContain("NaN");
+  });
+
+  // The quiet half, on the screen as well as in Slack. Every unconfirmed row
+  // measured on the live roster is non bookable, so a line about them would be
+  // permanent furniture on a page whose job is to report what the run did.
+  it("says nothing when the unconfirmed rows are all out of the pool", async () => {
+    rosterSync.runRosterSync.mockResolvedValueOnce(
+      syncOutcome({ updated: 2, rosterUnconfirmedUnmatched: 20, rosterUnconfirmedAbsent: 12 }),
+    );
+    let redirected = "";
+    try {
+      await syncSalesforceNow();
+    } catch (e) {
+      redirected = decodeURIComponent(String((e as Error).message));
+    }
+    expect(redirected).not.toContain("no longer returned by the Salesforce roster query");
   });
 });
 
