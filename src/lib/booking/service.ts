@@ -6,7 +6,7 @@ import {
   markOutboxDeliveredRow,
   releaseOutboxLeaseRow,
 } from "@/lib/booking/outbox-lease";
-import { unwrap, type DbResult } from "@/lib/db/result";
+import { unwrap, isSlotClash, type DbResult } from "@/lib/db/result";
 import { appUrl } from "@/lib/env";
 import {
   resolveBucketByCode,
@@ -939,9 +939,16 @@ function realDeps(deferSend?: WebhookSendScheduler): BookingDeps {
         .select("*")
         .single();
       if (error || !data) {
-        // 23505 = unique_violation: the active-slot index rejected a racing
-        // double-book. Surface it as a conflict (→ SlotUnavailableError).
-        const conflict = error?.code === "23505";
+        // The slot was taken by a racing confirm. TWO guards can say so and both
+        // mean the same thing to a lead (#2274): `bookings_active_slot_uniq`
+        // refuses a second booking at the same START (23505), and
+        // `bookings_active_no_overlap` refuses one OVERLAPPING an existing booking
+        // for that agent (23P01), which is the case uniqueness cannot see because
+        // appointments are longer than the grid they are offered on. Either way
+        // this caller lost a race it was allowed to lose, so it becomes a
+        // SlotUnavailableError and the lead is offered another time. Reading only
+        // one of them would answer a real race with a 500.
+        const conflict = isSlotClash(error);
         // #1047: carry what identifies the ATTEMPT. There is no booking id yet (the
         // row was never written), so the joinable facts are the slot and the agent,
         // which is what ties this line to the confirm that produced it and to the
