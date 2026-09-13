@@ -38,20 +38,36 @@ function add(map: Map<string, Set<string>>, table: string, cols: string): void {
   map.set(table, set);
 }
 
-/** Every table name a set of migrations declares via `create table`. Used by the
- *  #874 completeness check so a new table can't ship unclassified. */
-export function parseDeclaredTables(sql: string): Set<string> {
+/** Every table name a chunk of SQL CREATES, before any drop is taken off. Split
+ *  out of parseDeclaredTables (#2271) so a per-file caller that needs to know
+ *  WHICH migration created a table reads it through the same regex as everything
+ *  else, rather than carrying a second copy of the rule. */
+export function parseCreatedTables(sql: string): Set<string> {
   const tables = new Set<string>();
   for (const m of sql.matchAll(/create table (?:if not exists )?(?:public\.)?(\w+)/gi)) {
     tables.add(m[1]);
   }
+  return tables;
+}
+
+/** Every table name a chunk of SQL DROPS. The other half of the pair above. */
+export function parseDroppedTables(sql: string): Set<string> {
+  const tables = new Set<string>();
+  for (const m of sql.matchAll(/drop table (?:if exists )?(?:public\.)?(\w+)/gi)) {
+    tables.add(m[1]);
+  }
+  return tables;
+}
+
+/** Every table name a set of migrations declares via `create table`. Used by the
+ *  #874 completeness check so a new table can't ship unclassified. */
+export function parseDeclaredTables(sql: string): Set<string> {
+  const tables = parseCreatedTables(sql);
   // Subtract tables a later migration drops: the NET declared set is what still
   // exists, so a dropped table is not required to carry RLS (#875) or a singleton
   // classification (#874). Migrations are append-only, so the concatenated SQL is
   // in apply order and a create-then-drop nets to gone (#290).
-  for (const m of sql.matchAll(/drop table (?:if exists )?(?:public\.)?(\w+)/gi)) {
-    tables.delete(m[1]);
-  }
+  for (const t of parseDroppedTables(sql)) tables.delete(t);
   return tables;
 }
 
