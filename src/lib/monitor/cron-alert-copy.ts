@@ -222,6 +222,37 @@ export function salesforceManagerAmbiguousRecovery(): string {
   );
 }
 
+/**
+ * A bookable agent the hourly roster query no longer returns (#1833).
+ *
+ * Only the bookable ones reach this: an unconfirmed row nobody can be routed to
+ * is a stale admin display, and an hourly page about one is how a whole family of
+ * alerts stops being read (L36). What makes this one worth a phone is that the
+ * lead goes to somebody the source says should not be taking the call.
+ */
+export function salesforceRosterDivergenceAlert(bookable: number): string {
+  return (
+    `${bookable} ${bookable === 1 ? "agent is" : "agents are"} still taking booked calls ` +
+    `while the hourly Salesforce roster query no longer returns them, ` +
+    `so their times are being offered on the last values Salesforce gave us. Clearing ` +
+    `somebody's balance tiers is how they are taken off rotation, and it drops them out of ` +
+    `that query rather than updating them, which is why nothing else reports this. Nothing ` +
+    `was changed, on purpose: a source going quiet about somebody is not the source saying ` +
+    `their record is gone, and emptying every pool they belong to could not be undone from ` +
+    `here. Either make Salesforce match them again, or turn them off in Slate, and the next ` +
+    `hourly sync settles it. The sync log line tagged sf-sync names the Slate rows.`
+  );
+}
+
+/** Every bookable agent is confirmed by Salesforce again. */
+export function salesforceRosterDivergenceRecovery(): string {
+  return (
+    "Every bookable agent is confirmed by the Salesforce roster query again, so the earlier " +
+    "page is cleared. Nobody taking booked calls is being routed on values Salesforce no " +
+    "longer holds. No action is needed."
+  );
+}
+
 /** Every roster row agrees with Salesforce again. */
 export function salesforceUserIdConflictRecovery(): string {
   return (

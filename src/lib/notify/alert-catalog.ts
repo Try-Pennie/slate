@@ -161,6 +161,18 @@ export const ALERT_CATALOG: AlertEntry[] = [
       "one status field, so clearing either would clear both.",
   },
   {
+    key: "salesforce_roster_divergence",
+    kind: "condition",
+    why:
+      "A BOOKABLE agent is still being routed leads while the hourly roster query " +
+      "no longer returns them, so Slate is offering their times on the last values " +
+      "Salesforce gave it (#1833). It stays true until Salesforce matches them " +
+      "again or somebody takes them out of the pool, and the hourly sync " +
+      "re-measures it. Only the bookable ones page: an unconfirmed row nobody can " +
+      "be routed to is a stale admin display, and an hourly page about one is how " +
+      "the whole family stops being read.",
+  },
+  {
     key: "availability_drift:*",
     kind: "condition",
     why: "A bucket is offering times that are not really free; it ends when the cache reconverges with the calendars, and the probe re-measures that bucket on every rotation.",

@@ -950,3 +950,164 @@ describe("a hire becomes bookable on the first tier or the Sales profile (#2071)
     expect(bookable.applyBookableByUserId).not.toHaveBeenCalled();
   });
 });
+
+// #1833: the rows the roster query did NOT return.
+//
+// Salesforce takes somebody off rotation by CLEARING their balance tier flags,
+// which drops them out of that query rather than updating them, so their Slate row
+// is never written again: no error, no counter, no log line, and the lane reports
+// success every hour. This is the reconcile that makes them visible, and the whole
+// point of it is that it changes nothing.
+describe("roster rows Salesforce no longer confirms (#1833)", () => {
+  /**
+   * The Salesforce side. `roster` is what the roster query returns, `present` is
+   * what the presence query answers for the addresses it is asked about, and an
+   * address in NEITHER is one Salesforce has no record of at all.
+   */
+  const sfWorld = (opts: {
+    roster: unknown[];
+    present?: { Email: string; IsActive: boolean }[];
+    presenceFails?: boolean;
+  }) => {
+    sf.fetchSfWithRetry.mockImplementation(async (url: string) => {
+      if (url.includes("oauth2/token")) {
+        return { ok: true, json: async () => ({ access_token: "tok", instance_url: "https://sf.example" }) };
+      }
+      const q = decodeURIComponent((url.split("q=")[1] ?? "").replace(/\+/g, " "));
+      if (q.includes("IsActive = true AND Email != null AND (")) return sfResponse(opts.roster);
+      if (q.includes("SELECT Email, IsActive FROM User WHERE Email IN")) {
+        if (opts.presenceFails) {
+          return { ok: false, status: 500, text: async () => "Salesforce is having a bad minute" };
+        }
+        const asked = q.slice(q.indexOf("IN ("));
+        return sfResponse((opts.present ?? []).filter((r) => asked.includes(`'${r.Email}'`)));
+      }
+      return sfResponse([]);
+    });
+  };
+  /** Every user id this run wrote anything to. */
+  const writtenIds = () =>
+    store.calls
+      .filter((c) => c.op === "upsert" || c.op === "update" || c.op === "insert")
+      .flatMap((c) => {
+        const rows = Array.isArray(c.payload) ? c.payload : [c.payload];
+        const ids = rows.map((r) => (r as { id?: string } | null)?.id).filter(Boolean);
+        const filtered = c.filters.find((f) => f[0] === "in" && f[1] === "id");
+        return [...ids, ...((filtered?.[2] as string[]) ?? [])];
+      });
+
+  beforeEach(() => {
+    store.calls.length = 0;
+    store.config.errorOn = undefined;
+    store.config.existing = [];
+    store.config.afterInsert = [];
+    store.config.reapable = [];
+    bookable.applyBookableByUserId.mockClear();
+  });
+
+  it("reports a bookable agent the roster query stopped returning, and writes NOTHING for them", async () => {
+    store.config.existing = [
+      { id: "u1", email: "a@x.com", attributes: { role: "Sales" }, bookable: true, deactivated_at: null, bookable_pending_since: null },
+      { id: "u2", email: "onleave@x.com", attributes: { role: "Sales", debt_team: ["high"] }, bookable: true, deactivated_at: null, bookable_pending_since: null },
+    ];
+    store.config.afterInsert = [
+      { id: "u1", email: "a@x.com", manager_id: null, role: "agent", salesforce_user_id: "005A", bookable: true, deactivated_at: null, is_test: false },
+      { id: "u2", email: "onleave@x.com", manager_id: null, role: "agent", salesforce_user_id: "005B", bookable: true, deactivated_at: null, is_test: false },
+    ];
+    // Salesforce still HOLDS u2, active. Their tiers were cleared, so the roster
+    // query no longer matches them: the #1833 case exactly.
+    sfWorld({
+      roster: [{ Id: "005A", Email: "a@x.com", Name: "Agent A", Profile: { Name: "Sales" }, HighDebt__c: true }],
+      present: [{ Email: "onleave@x.com", IsActive: true }],
+    });
+
+    const result = await syncSalesforceAgents();
+
+    expect(result.rosterUnconfirmedUnmatched).toBe(1);
+    expect(result.rosterUnconfirmedInactive).toBe(0);
+    expect(result.rosterUnconfirmedAbsent).toBe(0);
+    expect(result.rosterUnconfirmedBookable).toEqual(["onleave@x.com"]);
+    // The count is reported beside the findings, so no findings over nothing and no
+    // findings over the whole roster can never read alike (L98).
+    expect(result.rosterRowsReconciled).toBe(2);
+    // Recording, never clearing: a source going quiet is not the source saying the
+    // facts are gone (L214), and emptying their pools could not be undone.
+    expect(writtenIds()).not.toContain("u2");
+  });
+
+  it("tells the three reasons apart, because they send a reader to three places", async () => {
+    store.config.afterInsert = [
+      { id: "u-left", email: "left@x.com", manager_id: null, role: "agent", salesforce_user_id: null, bookable: false, deactivated_at: null, is_test: false },
+      { id: "u-onleave", email: "onleave@x.com", manager_id: null, role: "agent", salesforce_user_id: null, bookable: false, deactivated_at: null, is_test: false },
+      { id: "u-never", email: "never@x.com", manager_id: null, role: "agent", salesforce_user_id: null, bookable: false, deactivated_at: null, is_test: false },
+    ];
+    sfWorld({
+      roster: [],
+      present: [
+        { Email: "left@x.com", IsActive: false },
+        { Email: "onleave@x.com", IsActive: true },
+        // never@x.com is in no answer at all: Salesforce has no record for it.
+      ],
+    });
+
+    const result = await syncSalesforceAgents();
+
+    expect(result.rosterUnconfirmedInactive).toBe(1);
+    expect(result.rosterUnconfirmedUnmatched).toBe(1);
+    expect(result.rosterUnconfirmedAbsent).toBe(1);
+    // Nobody in the pool, so nothing pages: this is the state the live roster is in
+    // today, and an hourly page about it would carry no action (L36).
+    expect(result.rosterUnconfirmedBookable).toEqual([]);
+  });
+
+  it("says nothing about a deactivated row or a smoke test agent", async () => {
+    store.config.afterInsert = [
+      { id: "u-gone", email: "gone@x.com", manager_id: null, role: "agent", salesforce_user_id: null, bookable: false, deactivated_at: "2026-08-24T00:00:00Z", is_test: false },
+      { id: "u-smoke", email: "smoke@x.com", manager_id: null, role: "agent", salesforce_user_id: null, bookable: true, deactivated_at: null, is_test: true },
+    ];
+    sfWorld({ roster: [], present: [] });
+
+    const result = await syncSalesforceAgents();
+
+    expect(result.rosterRowsReconciled).toBe(0);
+    expect(result.rosterUnconfirmedAbsent).toBe(0);
+    expect(result.rosterUnconfirmedBookable).toEqual([]);
+  });
+
+  // The failure path. A Salesforce read that FAILED must never arrive anywhere as
+  // "nobody diverged": an empty divergence list reads as a healthy roster, which is
+  // the exact shape of the defect this reconcile exists to end (L98).
+  it("throws when the presence read fails, rather than reporting no divergence", async () => {
+    store.config.afterInsert = [
+      { id: "u-onleave", email: "onleave@x.com", manager_id: null, role: "agent", salesforce_user_id: null, bookable: true, deactivated_at: null, is_test: false },
+    ];
+    sfWorld({ roster: [], presenceFails: true });
+
+    await expect(syncSalesforceAgents()).rejects.toThrow(/SF query failed: 500/);
+  });
+
+  // The reap reads the SAME widened query now, so its own rule has to be shown to be
+  // unchanged: a positive IsActive = false on a never-logged-in row deactivates, and
+  // an ACTIVE record beside it in the same answer does not.
+  it("still deactivates a reapable row Salesforce reports inactive", async () => {
+    store.config.reapable = [
+      { id: "u-left", email: "left@x.com" },
+      { id: "u-here", email: "here@x.com" },
+    ];
+    sfWorld({
+      roster: [],
+      present: [
+        { Email: "left@x.com", IsActive: false },
+        { Email: "here@x.com", IsActive: true },
+      ],
+    });
+
+    const result = await syncSalesforceAgents();
+
+    expect(result.deactivated).toBe(1);
+    const deactivation = store.calls.find(
+      (c) => c.op === "update" && (c.payload as { deactivated_at?: string }).deactivated_at,
+    );
+    expect(deactivation?.filters.find((f) => f[0] === "in" && f[1] === "id")?.[2]).toEqual(["u-left"]);
+  });
+});

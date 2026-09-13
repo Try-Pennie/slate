@@ -103,6 +103,11 @@ beforeEach(() => {
     salesforceIdAmbiguous: 0,
     salesforceIdClaimed: 0,
     salesforceIdsUnresolved: 0,
+    rosterRowsReconciled: 0,
+    rosterUnconfirmedInactive: 0,
+    rosterUnconfirmedUnmatched: 0,
+    rosterUnconfirmedAbsent: 0,
+    rosterUnconfirmedBookable: [],
   });
   streak.recordFailureStreak.mockResolvedValue(false);
 });
@@ -133,11 +138,12 @@ describe("GET /api/cron/agents", () => {
   // #1151: a failing roster sync is a CONDITION, so a clean pass says it is over.
   it("announces recovery on a clean pass, so the earlier page can be closed", async () => {
     await GET(req());
-    // Six conditions this lane owns, so a clean pass closes all of them: Twilio
+    // Seven conditions this lane owns, so a clean pass closes all of them: Twilio
     // being unreadable (#2097), its writes not landing and a mark with no worker
     // (#2114), the Salesforce sync failing, the roster disagreeing with Salesforce
-    // about a user id (#1587), and a manager name answering to more than one user
-    // (#1653). The Twilio ones are first because that step runs before the bucket
+    // about a user id (#1587), a manager name answering to more than one user
+    // (#1653), and a bookable agent the roster query no longer returns (#1833).
+    // The Twilio ones are first because that step runs before the bucket
     // coverage check, which has to see the state the run's own flips leave.
     expect(dispatch.resolveAlert.mock.calls.map((c: unknown[]) => c[0])).toEqual([
       "twilio_sync_failures",
@@ -146,6 +152,7 @@ describe("GET /api/cron/agents", () => {
       "agent_sync_failures",
       "salesforce_user_id_conflicts",
       "salesforce_manager_ambiguous",
+      "salesforce_roster_divergence",
     ]);
   });
 
@@ -287,6 +294,11 @@ describe("GET /api/cron/agents", () => {
         salesforceIdAmbiguous: 0,
         salesforceIdClaimed: 0,
         salesforceIdsUnresolved: 0,
+        rosterRowsReconciled: 0,
+        rosterUnconfirmedInactive: 0,
+        rosterUnconfirmedUnmatched: 0,
+        rosterUnconfirmedAbsent: 0,
+        rosterUnconfirmedBookable: [],
         ...over,
       });
 
@@ -389,6 +401,11 @@ describe("GET /api/cron/agents", () => {
         salesforceIdAmbiguous: 0,
         salesforceIdClaimed: 0,
         salesforceIdsUnresolved: 0,
+        rosterRowsReconciled: 0,
+        rosterUnconfirmedInactive: 0,
+        rosterUnconfirmedUnmatched: 0,
+        rosterUnconfirmedAbsent: 0,
+        rosterUnconfirmedBookable: [],
         ...over,
       });
 
@@ -460,6 +477,101 @@ describe("GET /api/cron/agents", () => {
     // already written by this point.
     it("still returns 200 when the manager page cannot be delivered", async () => {
       withResult({ managersAmbiguous: 3 });
+      dispatch.sendThrottledAlert.mockRejectedValueOnce(new Error("slack down"));
+      const res = await GET(req());
+      expect(res.status).toBe(200);
+    });
+  });
+
+  // #1833: a roster row Salesforce no longer confirms. The roster query stops
+  // returning somebody whose balance tiers were cleared, nothing writes their row
+  // again, and the lane reports success every hour.
+  describe("roster rows Salesforce no longer confirms (#1833)", () => {
+    const withDivergence = (over: Record<string, number | string[]>) =>
+      sync.syncSalesforceAgents.mockResolvedValueOnce({
+        inserted: 0,
+        updated: 0,
+        deactivated: 0,
+        managersCreated: 0,
+        managersLinked: 0,
+        managersPromoted: 0,
+        salesforceIdsLinked: 0,
+        salesforceIdDisagreements: 0,
+        salesforceIdAmbiguous: 0,
+        salesforceIdClaimed: 0,
+        salesforceIdsUnresolved: 0,
+        rosterRowsReconciled: 129,
+        rosterUnconfirmedInactive: 0,
+        rosterUnconfirmedUnmatched: 0,
+        rosterUnconfirmedAbsent: 0,
+        rosterUnconfirmedBookable: [],
+        ...over,
+      });
+
+    const sentFor = (key: string) =>
+      dispatch.sendThrottledAlert.mock.calls.filter((c: unknown[]) => c[0] === key);
+    const resolvedKeys = () =>
+      dispatch.resolveAlert.mock.calls.map((c: unknown[]) => c[0]);
+
+    it("pages when a BOOKABLE agent is no longer confirmed, and does not also clear", async () => {
+      withDivergence({
+        rosterUnconfirmedUnmatched: 1,
+        rosterUnconfirmedBookable: ["onleave@trypennie.com"],
+      });
+      const res = await GET(req());
+      expect(res.status).toBe(200);
+      const sent = sentFor("salesforce_roster_divergence");
+      expect(sent).toHaveLength(1);
+      const text = sent[0][2] as string;
+      // The reader has to learn that nothing was cleared, which is the whole
+      // reason this is a page rather than a silent correction.
+      expect(text).toContain("Nothing was changed");
+      expect(text).toContain("1 agent is");
+      expect(text).not.toContain("undefined");
+      expect(text).not.toContain("NaN");
+      expect(resolvedKeys()).not.toContain("salesforce_roster_divergence");
+    });
+
+    // The deliberate quiet half (L36). Measured on 2026-09-13 all 39 unconfirmed
+    // rows were non bookable, so paging on the count would have been an hourly
+    // page nobody could act on from the day it shipped. The counts still travel,
+    // and the sync's own log line carries them.
+    it("does NOT page for unconfirmed rows that are not bookable", async () => {
+      withDivergence({
+        rosterUnconfirmedInactive: 4,
+        rosterUnconfirmedUnmatched: 20,
+        rosterUnconfirmedAbsent: 15,
+      });
+      await GET(req());
+      expect(sentFor("salesforce_roster_divergence")).toHaveLength(0);
+      // And it still counts as healthy for this condition, so a previous page clears.
+      expect(resolvedKeys()).toContain("salesforce_roster_divergence");
+    });
+
+    // #1152: the all-clear hangs off a MEASURED healthy result, never off "we did
+    // not alert this run". A sync that threw measured nothing at all.
+    it("sends NO all-clear for this condition when the sync itself failed", async () => {
+      sync.syncSalesforceAgents.mockRejectedValueOnce(new Error("SF unreachable"));
+      await GET(req());
+      expect(resolvedKeys()).not.toContain("salesforce_roster_divergence");
+      expect(dispatch.resolveAlert).not.toHaveBeenCalled();
+    });
+
+    // Independent of its neighbours: one status field between two checks would
+    // have either of them clearing both (L53).
+    it("pages this condition while the manager condition is clearing", async () => {
+      withDivergence({ rosterUnconfirmedBookable: ["onleave@trypennie.com"] });
+      await GET(req());
+      expect(sentFor("salesforce_roster_divergence")).toHaveLength(1);
+      expect(sentFor("salesforce_manager_ambiguous")).toHaveLength(0);
+      expect(resolvedKeys()).toContain("salesforce_manager_ambiguous");
+      expect(resolvedKeys()).not.toContain("salesforce_roster_divergence");
+    });
+
+    // A Slack outage must not turn a good roster sync into a 500: the roster is
+    // already written by this point.
+    it("still returns 200 when this page cannot be delivered", async () => {
+      withDivergence({ rosterUnconfirmedBookable: ["a@x.com", "b@x.com"] });
       dispatch.sendThrottledAlert.mockRejectedValueOnce(new Error("slack down"));
       const res = await GET(req());
       expect(res.status).toBe(200);

@@ -394,6 +394,15 @@ export async function syncSalesforceNow(): Promise<void> {
       r.managersCreated ? `${plural(r.managersCreated, "new manager")}` : null,
       r.managersPromoted ? `${r.managersPromoted} promoted to manager` : null,
       r.deactivated ? `${plural(r.deactivated, "user")} deactivated` : null,
+      // #1833: still taking booked calls, and the roster query no longer returns
+      // them. Only the BOOKABLE ones are on the page, because that is the half an
+      // admin can act on from here (the toggle is on this very screen); the rest
+      // are counted in the sync's own log line. Nothing was changed for them, and
+      // the line says so, because a count beside a list of things the run DID
+      // would otherwise read as another thing it did.
+      r.rosterUnconfirmedBookable.length
+        ? `${plural(r.rosterUnconfirmedBookable.length, "bookable agent")} no longer returned by the Salesforce roster query, left exactly as they are`
+        : null,
       outcome.hoursApplied ? `${plural(outcome.hoursApplied, "agent")} given the default working hours` : null,
       // #2097: what the TWILIO half changed. The label used to say Salesforce and the
       // job now reads two sources, so a run that took twelve agents out of the pool

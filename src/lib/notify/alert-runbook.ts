@@ -160,6 +160,7 @@ const FAMILY_BY_KEY: Record<string, AlertFamily> = {
   agents_on_unset_hours: "the-roster-or-routing-data-is-wrong",
   salesforce_user_id_conflicts: "the-roster-or-routing-data-is-wrong",
   salesforce_manager_ambiguous: "the-roster-or-routing-data-is-wrong",
+  salesforce_roster_divergence: "the-roster-or-routing-data-is-wrong",
   misroute: "the-roster-or-routing-data-is-wrong",
   rr_ordering_degraded: "the-roster-or-routing-data-is-wrong",
   reassign_unknown_reason_code: "the-roster-or-routing-data-is-wrong",

@@ -23,6 +23,8 @@ import {
   agentSyncRecovery,
   salesforceManagerAmbiguousAlert,
   salesforceManagerAmbiguousRecovery,
+  salesforceRosterDivergenceAlert,
+  salesforceRosterDivergenceRecovery,
   salesforceUserIdConflictAlert,
   salesforceUserIdConflictRecovery,
   twilioSyncFailureAlert,
@@ -235,6 +237,39 @@ export async function runRosterSync(): Promise<RosterSyncOutcome> {
         salesforceManagerAmbiguousRecovery(),
       ).catch(() => false);
       if (clearedManagers) log.info("agents", { msg: "salesforce manager ambiguity alert cleared" });
+    }
+
+    // #1833: a row the roster query no longer returns, whose agent is still in the
+    // pool. Its own condition for the same reason the two above are separate: one
+    // status field between independent checks means clearing either clears both
+    // (L53).
+    //
+    // ONLY the bookable ones page. Measured against production on 2026-09-13 all
+    // 39 unconfirmed rows were non bookable, which is a stale admin display and
+    // not a lead going to the wrong person; an hourly page carrying no action is
+    // what teaches somebody to skip the whole family (L36). The counts for the
+    // rest are in the sync's own log line. A bookable one is different in kind:
+    // clearing an agent's balance tiers is how they are taken off rotation, so
+    // this is Slate routing to somebody the source says should not be taking the
+    // call.
+    //
+    // Both directions hang off THIS point, reached only after the sync returned a
+    // real result. A run that threw never gets here, so a sync that could not
+    // measure anything clears nothing (#1134, #1152).
+    if (sync.rosterUnconfirmedBookable.length > 0) {
+      // alert-key: salesforce_roster_divergence
+      await sendThrottledAlert(
+        "salesforce_roster_divergence",
+        SYNC_ALERT_COOLDOWN_MS,
+        salesforceRosterDivergenceAlert(sync.rosterUnconfirmedBookable.length),
+      ).catch(() => {});
+    } else {
+      // alert-key: salesforce_roster_divergence
+      const clearedDivergence = await resolveAlert(
+        "salesforce_roster_divergence",
+        salesforceRosterDivergenceRecovery(),
+      ).catch(() => false);
+      if (clearedDivergence) log.info("agents", { msg: "salesforce roster divergence alert cleared" });
     }
 
     return {
