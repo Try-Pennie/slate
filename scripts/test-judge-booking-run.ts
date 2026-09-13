@@ -19,6 +19,7 @@ import {
   type JudgedBooking,
 } from "./loadtest/judge-booking-run.ts";
 import type { BookingAttempt, DriverResult } from "./loadtest/book-plan.ts";
+import { ceilingVerdict } from "./loadtest/preflight-checks.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
 const RUN = "run-1";
@@ -116,7 +117,12 @@ function passing(): JudgeInput {
     bookingIdsWithBusyBlock: bookings.map((b) => b.id),
     slotUniqueIndexPresent: true,
     overlapConstraintPresent: true,
-    ipCeilingControl: { sent: 61, firstRefusedAt: 61 },
+    // Built by the REAL verdict function from a plausible status list, so the
+    // fixture cannot describe a state the control can never produce (L48).
+    ipCeilingControl: ceilingVerdict(
+      [...Array(64).fill(200), ...Array(116).fill(429)] as number[],
+      60,
+    ),
     platform: {
       invocations: 610,
       cpuMsP99: 40,
@@ -411,7 +417,7 @@ const bars = (r: ReturnType<typeof judgeBookingRun>) => r.findings.map((f) => f.
 
 {
   const never = broken((i) => {
-    i.ipCeilingControl = { sent: 61, firstRefusedAt: null };
+    i.ipCeilingControl = ceilingVerdict(Array(180).fill(200) as number[], 60);
   });
   assert(
     bars(never).includes("the per address write ceiling"),
@@ -420,7 +426,7 @@ const bars = (r: ReturnType<typeof judgeBookingRun>) => r.findings.map((f) => f.
   );
 
   const notRun = broken((i) => {
-    i.ipCeilingControl = { sent: 0, firstRefusedAt: null };
+    i.ipCeilingControl = ceilingVerdict([], 60);
   });
   const notRunDetail = notRun.findings.find((f) => f.bar === "the per address write ceiling")!.detail;
   assert(
@@ -434,7 +440,7 @@ const bars = (r: ReturnType<typeof judgeBookingRun>) => r.findings.map((f) => f.
   );
 
   const early = broken((i) => {
-    i.ipCeilingControl = { sent: 61, firstRefusedAt: 20 };
+    i.ipCeilingControl = ceilingVerdict([...Array(11).fill(200), ...Array(169).fill(429)] as number[], 60);
   });
   assert(
     bars(early).includes("the per address write ceiling"),

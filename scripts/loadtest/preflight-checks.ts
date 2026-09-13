@@ -34,26 +34,175 @@ export function stubShapedEventId(eventId: string): boolean {
   return /^slate[0-9a-f]{64}$/.test(id);
 }
 
+/**
+ * How many multiples of the ceiling the control sends (#2275).
+ *
+ * It used to send exactly `ceiling + 1`, all at once, and require the last to be
+ * refused. Cloudflare's own documentation says the Rate Limiting API "is
+ * permissive, eventually consistent, and intentionally designed to not be used as
+ * an accurate accounting system", and that there is "a unique limit per Cloudflare
+ * location". Asking a deliberately permissive, eventually consistent counter to
+ * refuse ONE marginal request out of a simultaneous burst is close to the least
+ * likely thing it will do, so the bar could not conclude by construction (L1).
+ *
+ * An overshoot is what makes a refusal something the counter must produce rather
+ * than something it might. The exact crossing point is deliberately never
+ * asserted: an eventually consistent counter does not have one.
+ */
+export const CEILING_CONTROL_OVERSHOOT = 3;
+
+/** How many writes the control sends against a given ceiling. */
+export function ceilingControlSize(ceiling: number): number {
+  return Math.max(1, Math.ceil(ceiling * CEILING_CONTROL_OVERSHOOT));
+}
+
+/**
+ * How far below the configured ceiling a refusal may start before the ceiling is
+ * called tighter than configured.
+ *
+ * The run PACES itself at the ceiling, so a limiter that really refuses at a third
+ * of it would make every other number about the run wrong. Permissiveness only
+ * ever errs the other way, so there is no matching upper bound.
+ */
+export const CEILING_TIGHTNESS_FLOOR = 0.5;
+
+/** Every conclusion one control run can reach. Exactly one of them is a pass. */
+export const CEILING_CONCLUSION = {
+  /** Allowed for roughly the ceiling, then refused. The only pass. */
+  applies: "applies",
+  /** Nothing was sent at all. */
+  nothingSent: "nothing-sent",
+  /** Nothing reached the deployment. */
+  neverReached: "never-reached",
+  /** The key was rejected, which happens BEFORE either limiter. */
+  notAuthorized: "not-authorized",
+  /** The application refused every request, so the ceiling never had a chance to. */
+  appRefusedEverything: "app-refused-everything",
+  /** Everything was allowed, well past the ceiling. */
+  neverRefused: "never-refused",
+  /** Refusals began far below the configured ceiling. */
+  tighter: "tighter-than-configured",
+} as const;
+
+export type CeilingConclusion = (typeof CEILING_CONCLUSION)[keyof typeof CEILING_CONCLUSION];
+
 /** What one per-address ceiling control run proves. */
 export interface CeilingVerdict {
+  sent: number;
+  /** Passed the limiter and reached the handler (any status but 0, 401 and 429). */
+  allowed: number;
+  /** Refused by a limiter. */
+  refused: number;
+  /** Reached the handler and was refused by the APPLICATION, not by a ceiling. */
+  appRefused: number;
+  /** Rejected at authentication, before either limiter ran. */
+  unauthorized: number;
+  /** Never reached the deployment at all. */
+  unreachable: number;
   /** 1-based position of the first refusal, or null when nothing was refused. */
   firstRefusedAt: number | null;
-  /** Requests that never reached the deployment at all. */
-  unreachable: number;
+  conclusion: CeilingConclusion;
+  /** The sentence a reader acts on. One per conclusion, never shared (L11). */
+  detail: string;
 }
 
 /**
  * Read the ceiling control's statuses.
  *
- * A transport fault is counted as UNREACHABLE and never as a refusal. Counting it
- * as one would report the ceiling working when the control never reached the
- * deployment, which is the whole failure this control exists to rule out (L98).
+ * The classification is the fix. The previous version counted only 429 as a
+ * refusal and 0 as unreachable, and everything else as allowed, so 61 consecutive
+ * 409s from the application rendered exactly like a healthy unthrottled control
+ * and the run reported "the ceiling is not applying" about a ceiling that was
+ * working (measured: the same run's steady pass was refused four times by it).
+ *
+ * Where each status sits is decided by WHERE the handler makes that decision:
+ *   401  `authenticateBearer`, BEFORE either limiter, so the counter never saw it
+ *   429  a limiter refused it
+ *   0    never reached the deployment
+ *   any other status  it passed both limiters and reached the handler, so it WAS
+ *        counted, whatever the handler then did with it
  */
-export function ceilingVerdict(statuses: readonly number[]): CeilingVerdict {
+export function ceilingVerdict(statuses: readonly number[], ceiling: number): CeilingVerdict {
+  const sent = statuses.length;
   const at = statuses.findIndex((s) => s === 429);
-  return {
+  const refused = statuses.filter((s) => s === 429).length;
+  const unreachable = statuses.filter((s) => s === 0).length;
+  const unauthorized = statuses.filter((s) => s === 401).length;
+  const counted = statuses.filter((s) => s !== 0 && s !== 401 && s !== 429);
+  const allowed = counted.filter((s) => s >= 200 && s < 300).length;
+  const appRefused = counted.length - allowed;
+  const base = {
+    sent,
+    allowed,
+    refused,
+    appRefused,
+    unauthorized,
+    unreachable,
     firstRefusedAt: at === -1 ? null : at + 1,
-    unreachable: statuses.filter((s) => s === 0).length,
+  };
+
+  if (sent === 0) {
+    return {
+      ...base,
+      conclusion: CEILING_CONCLUSION.nothingSent,
+      detail: "the control sent no writes at all, so the ceiling was never exercised",
+    };
+  }
+  if (unreachable === sent) {
+    return {
+      ...base,
+      conclusion: CEILING_CONCLUSION.neverReached,
+      detail:
+        `none of the ${sent} control writes reached the deployment, so nothing is known about ` +
+        "the ceiling either way",
+    };
+  }
+  if (unauthorized > 0 && refused === 0 && allowed === 0) {
+    return {
+      ...base,
+      conclusion: CEILING_CONCLUSION.notAuthorized,
+      detail:
+        `the deployment rejected the control's key on ${unauthorized} of ${sent} writes, which ` +
+        "happens before either limiter, so the ceiling was never reached",
+    };
+  }
+  if (refused === 0 && allowed === 0 && appRefused > 0) {
+    // The 2026-09-11 run. Every request passed the limiter and was then refused by
+    // the handler, so the ceiling was exercised and cannot be judged from this.
+    return {
+      ...base,
+      conclusion: CEILING_CONCLUSION.appRefusedEverything,
+      detail:
+        `all ${appRefused} of the ${sent} control writes were refused by the application rather ` +
+        "than by a ceiling, so they were counted against it but none could show it refusing. " +
+        "Fix the control's request shape; this says nothing about the ceiling",
+    };
+  }
+  if (refused === 0) {
+    return {
+      ...base,
+      conclusion: CEILING_CONCLUSION.neverRefused,
+      detail:
+        `${allowed} of ${sent} control writes from one address were allowed against a ceiling of ` +
+        `${ceiling} and none was refused, so the ceiling is not applying. Every 429 the run ` +
+        "attributed means something else",
+    };
+  }
+  if (base.firstRefusedAt !== null && base.firstRefusedAt < ceiling * CEILING_TIGHTNESS_FLOOR) {
+    return {
+      ...base,
+      conclusion: CEILING_CONCLUSION.tighter,
+      detail:
+        `the ceiling refused at write ${base.firstRefusedAt} of ${sent}, far below the configured ` +
+        `${ceiling}, so the run is pacing against a number that is not the real one`,
+    };
+  }
+  return {
+    ...base,
+    conclusion: CEILING_CONCLUSION.applies,
+    detail:
+      `${allowed} of ${sent} writes from one address were allowed and ${refused} refused against ` +
+      `a ceiling of ${ceiling}, so the ceiling is applying`,
   };
 }
 

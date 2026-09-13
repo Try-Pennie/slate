@@ -13,6 +13,7 @@
  */
 import type { BookingAttempt, DriverResult } from "./book-plan.ts";
 import { HEALTHY_INVOCATION_STATUS } from "./platform-reading.ts";
+import { CEILING_CONCLUSION, type CeilingVerdict } from "./preflight-checks.ts";
 import type { SoakSample } from "./invariants.ts";
 
 /** A booking row the run created, as the judge needs it. */
@@ -115,9 +116,17 @@ export interface JudgeInput {
    * other produces a clean looking run that proves nothing about the half it lost.
    */
   overlapConstraintPresent: boolean;
-  /** The separate 61-in-one-window step: how many were sent, and the 1-based
-   *  position of the first refusal, or null when none was refused. */
-  ipCeilingControl: { sent: number; firstRefusedAt: number | null };
+  /**
+   * The separate per address ceiling step, as its own verdict (#2275).
+   *
+   * The judge reads the CONCLUSION rather than re-deriving one from the counts, so
+   * the control and the judge cannot disagree about what its numbers mean (L70,
+   * L107). It used to take `{ sent, firstRefusedAt }` and decide for itself, and
+   * the decision it reached was wrong in the one way that mattered: a control whose
+   * every request was refused by the application read exactly like one that was
+   * simply never throttled, and the run accused a ceiling that was working.
+   */
+  ipCeilingControl: CeilingVerdict;
   platform: PlatformReading;
   /** The fault pass, when one ran. */
   faultPass?: { attempts: number; fiveXx: number; faultPct: number };
@@ -532,31 +541,14 @@ export function judgeBookingRun(input: JudgeInput): JudgeResult {
   }
 
   // --- the per address ceiling, proved by its own step ------------------------
+  //
+  // One branch, because the control already classified itself. Every non passing
+  // conclusion carries its OWN sentence, so a ceiling that is off, a control whose
+  // requests the app refused, a rejected key and a step that never ran each send a
+  // reader somewhere different (L11).
   const c = input.ipCeilingControl;
-  if (c.sent === 0) {
-    // The control did not RUN. Said in its own words rather than folded into
-    // "nothing was refused": one sends somebody to look at why the ceiling is off,
-    // the other to look at why a job did not produce its file, and a message may
-    // claim only what its check measured (L11).
-    fail(
-      "the per address write ceiling",
-      "the control sent no writes at all, so the ceiling was never exercised and every 429 the " +
-        "run attributed is unattributed",
-    );
-  } else if (c.firstRefusedAt === null) {
-    fail(
-      "the per address write ceiling",
-      `${c.sent} writes were sent from one address in one window and none was refused, so the ` +
-        "ceiling is not applying. Every 429 the run attributed below means something else.",
-    );
-  } else if (c.firstRefusedAt <= c.sent - 1) {
-    // Refusing EARLY is a finding too: the ceiling is tighter than the app says,
-    // and the run's own pacing sits on that number.
-    fail(
-      "the per address write ceiling",
-      `the ceiling refused at request ${c.firstRefusedAt} of ${c.sent}, earlier than the ` +
-        "configured limit, so the run was pacing against a number that is not the real one",
-    );
+  if (c.conclusion !== CEILING_CONCLUSION.applies) {
+    fail("the per address write ceiling", c.detail);
   }
 
   // --- the fault pass ---------------------------------------------------------
