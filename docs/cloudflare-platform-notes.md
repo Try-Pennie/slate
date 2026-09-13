@@ -142,9 +142,40 @@ Every `fetch()` counts (each PostgREST query, Google call, Slack post).
 Code derived budget at 200 agents: steady state is about **760 per tick**, and even
 the combined worst case across all four lanes (about 4,300) sits far below 10,000.
 
-**Observability exposes no subrequest counter**, so you cannot measure this
-directly. Derive it from the code and watch `$workers.outcome` for a
-"Too many subrequests" breach (never yet seen).
+**Subrequests ARE counted, and this note used to say they were not** (#2279,
+re-measured 2026-09-13). The GraphQL analytics dataset
+`workersInvocationsAdaptive` exposes `sum { subrequests }`: production returned
+**24,087 subrequests over 317 invocations** in one hour, a mean of 76 per
+invocation. What is genuinely NOT exposed is a **per invocation maximum**, which is
+what a ceiling is actually about, so a sum and a mean are what can be had and
+neither can prove a single invocation stayed under a limit. Derive the worst case
+from the code as before, and watch the invocation **`status`** dimension for a
+breach (never yet seen).
+
+**The dimension is `status`, not `outcome`.** There is no `outcome` field on that
+dataset, and asking for one answers HTTP 200 with an `errors` array and a null
+`data`, which reads exactly like an empty window. That is what kept the load run's
+platform bar blind on every run it ever made. The healthy value is **`success`**.
+The full dimension list, read from the live schema: `cacheStatus, coloCode, date,
+datetime, datetimeFifteenMinutes, datetimeFiveMinutes, datetimeHour,
+datetimeMinute, datetimeSixHours, dispatchNamespaceName, environmentName,
+isDispatcher, isPreview, previewSlug, scriptName, scriptTag, scriptVersion,
+status, usageModel`.
+
+**That dataset MIXES cron and request invocations**, and nothing in it tells them
+apart. Measured 2026-09-13, the production Worker's CPU p50 was 198ms and its p99
+was **48.9 seconds**, because 79 of 317 invocations that hour were cron lanes
+running under the raised `limits.cpu_ms`. Any per request CPU percentile taken
+from it is therefore the cron lanes unless the window contains no cron at all. Use
+the separate raw dataset **`workersInvocationsScheduled`** (fields `cpuTimeUs`,
+`cron`, `datetime`, `environmentName`, `scheduledDatetime`, `scriptName`,
+`status`) to read cron CPU per invocation, attributed to the cron expression that
+fired it.
+
+**The GraphQL analytics lag is MINUTES, not hours.** Measured 2026-09-13 at **1.9
+minutes** behind. The three hour figure recorded elsewhere in this document belongs
+to the Workers **Logs** query pipeline (#1533), which is a different system; do not
+carry that number over to this one.
 
 **Watch item (#762):** the two selfheal reconcile sweeps loop `bucketsForAgent`
 (about 3 subrequests plus CPU) per freed or missing agent with no per tick cap, up
