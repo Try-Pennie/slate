@@ -498,11 +498,6 @@ export const ALERT_CATALOG: AlertEntry[] = [
     why: "Same, for a deep fallback: it describes one completed routing decision.",
   },
   {
-    key: "tier_fallback_overflow:*",
-    kind: "incident",
-    why: "One Beyond booking was taken by an Achieve agent in the same debt tier (#1909); it describes one completed routing decision, like its two siblings above.",
-  },
-  {
     key: "booker_unstaffed:*",
     kind: "incident",
     why: "One customer opened an unstaffed bucket and was shown nothing; that visit is over and they have gone. The ONGOING version is empty_buckets:*, which the monitor watches and does clear, exactly as no_eligible_agents:* pairs with it on the booking side.",
@@ -590,6 +585,19 @@ export const ALERT_CATALOG: AlertEntry[] = [
   },
 
   // --- Info: never needed action, so never announces recovery ---------------
+  {
+    key: "beyond_overflow_rate",
+    kind: "info",
+    why:
+      "The daily count of Beyond leads taken by an Achieve agent (#2228), which " +
+      "replaced the per booking tier_fallback_overflow page. Beyond is being retired " +
+      "as a backend service (Dan, 2026-09-13), so a two person pool is what winding a " +
+      "service down looks like and the overflow is the ladder working: nothing is " +
+      "being asked of the reader, which is what makes it info rather than a page. " +
+      "There is no condition to end either. Ask what the all-clear would SAY and the " +
+      "answer is 'the expected thing stopped happening for a day', which is not news; " +
+      "a day with no overflow simply sends nothing.",
+  },
   {
     key: "ooo_coverage_gap_later",
     kind: "info",

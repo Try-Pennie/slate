@@ -17,17 +17,19 @@ const XBC = /^[1-5][0-3][0-2]$/;
  * in hand, so the two facts are derived here rather than passed in (L107): how
  * many DEBT TIERS were dropped, and whether the backend changed.
  *
- * Three outcomes, each its own key, because they send somebody to do three
- * different things (L11):
+ * Two outcomes reach Slack from here, each its own key, because they send
+ * somebody to do two different things (L11):
  *
- *   * a sideways overflow is the rule working: no Beyond agent was free, an
- *     Achieve agent in the same tier took it. Worth saying, not worth paging.
  *   * one debt tier down is the ordinary fallback.
  *   * two or more is near impossible under normal load and signals a capacity or
  *     systems problem, so it escalates.
  *
- * Returns null when nothing moved, when either code cannot be read, and when the
- * pair is one the LADDER cannot produce. That last guard is not defensive: the
+ * A third movement, the sideways overflow, deliberately sends NOTHING from here
+ * any more (#2228): it is expected behaviour on a two person Beyond pool and is
+ * reported as a daily count instead. The reasoning is on the branch below.
+ *
+ * Returns null for that overflow, when nothing moved, when either code cannot be
+ * read, and when the pair is one the LADDER cannot produce. That last guard is not defensive: the
  * preview fixtures this shipped with were `411 -> 410` and `411 -> 400`, which
  * change the legal digit, and no rung of any ladder does that. Fed to a version
  * that derives its facts from the codes, they would have read as a same tier
@@ -58,13 +60,33 @@ export function tierFallbackAlert(input: {
     };
   }
 
-  if (tiersDropped === 0) {
-    return {
-      key: `tier_fallback_overflow:${requestedCode}`,
-      cooldownMs: 60 * 60 * 1000,
-      text: `Routing notice: a booking for bucket ${requestedCode} went to ${took} in the same debt tier (${effectiveCode}); no agent on the requested backend service had availability across the booking window.`,
-    };
-  }
+  // A SIDEWAYS OVERFLOW SENDS NOTHING PER BOOKING (#2228).
+  //
+  // It used to return `tier_fallback_overflow:<code>`, throttled an hour per
+  // requested code across fifteen Beyond codes. Measured against production on
+  // 2026-09-10 and again on 2026-09-13: 88 bookable agents are Achieve only, 1 is
+  // Beyond only, 1 is both, so a Beyond bucket's pool is at most two people
+  // against 88. Once traffic starts, an overflow is not the exception, it is what
+  // happens to a Beyond lead whenever neither of those two is free.
+  //
+  // Dan settled what that means on 2026-09-13: "we're moving off beyond entirely.
+  // So we really shouldn't be getting many beyond bookngs". Beyond is being
+  // retired, so a two person pool is what winding a service down looks like and
+  // STAFFING IS NOT THE FIX. A stream of pages reporting the ladder working as
+  // designed is the alert nobody reads by the second week (L36).
+  //
+  // So it is counted instead, once a day, on the info channel:
+  // `beyond_overflow_rate` in `src/lib/monitor/beyond-overflow.ts`, read from
+  // `routing_decisions` by the monitor lane. Null here is the WHOLE of the change
+  // at this site; the count is somewhere that can see a rate rather than one
+  // placement. The Colorado and West Virginia consequence recorded on `tiers.ts`
+  // is named in that notice's copy, deliberately, rather than being lost in an
+  // aggregate.
+  //
+  // Note what is NOT silenced: a Beyond code that ALSO dropped a debt tier (522 to
+  // 432) still alerts below. That means the whole Achieve pool in the requested
+  // tier was busy too, which on 88 agents is genuinely unusual.
+  if (tiersDropped === 0) return null;
 
   const text = backendChanged
     ? `Routing notice: a booking for bucket ${requestedCode} dropped one debt tier and went to ${took}, landing on ${effectiveCode}; nothing in the requested tier had availability across the booking window.`

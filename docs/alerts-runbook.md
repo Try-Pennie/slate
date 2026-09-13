@@ -356,7 +356,18 @@ deploy to revert.
 ## Something was measured and is only worth knowing
 
 Keys: `rate_limit_blocked:*`, `ooo_agent_dm`, `ooo_approvals_digest`,
-`ooo-digest-unreachable:*`, `ooo-digest-unrouted-unreachable`, `ooo_undo`.
+`ooo-digest-unreachable:*`, `ooo-digest-unrouted-unreachable`, `ooo_undo`,
+`beyond_overflow_rate`.
+
+**`beyond_overflow_rate` is the one here that names a consequence** (#2228). It is
+the daily count of Beyond leads taken by an Achieve agent because no Beyond agent
+was free, and it is info rather than a page because Beyond is being retired as a
+backend service (Dan, 2026-09-13), so a small Beyond pool is deliberate and
+staffing is not the fix. The part worth reading is the sentence about Colorado and
+West Virginia: Achieve does not lend in either, so an overflowed lead in one of
+them has been booked with somebody who cannot place them. Slate holds no state for
+the lead and says so rather than guessing, so quantifying it means looking those
+bookings up in Salesforce.
 
 **What fired it.** Nothing that needs action. These are classified `info` in the
 catalog, which means they exist so that a thing which happened is on the record, and
