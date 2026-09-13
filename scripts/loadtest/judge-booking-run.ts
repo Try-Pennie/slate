@@ -12,6 +12,7 @@
  * happened, never as a run with a verdict (L288).
  */
 import type { BookingAttempt, DriverResult } from "./book-plan.ts";
+import { HEALTHY_INVOCATION_STATUS } from "./platform-reading.ts";
 import type { SoakSample } from "./invariants.ts";
 
 /** A booking row the run created, as the judge needs it. */
@@ -36,21 +37,55 @@ export interface PlatformReading {
   invocations: number | null;
   cpuMsP99: number | null;
   /**
-   * The `$workers.outcome` histogram over the window.
+   * Subrequests summed over the window, or null when the window was not read.
    *
-   * SUBREQUESTS ARE NOT HERE, and their absence is deliberate rather than an
-   * omission. Cloudflare's observability exposes NO subrequest counter
-   * (docs/cloudflare-platform-notes.md), so a "subrequests in one invocation" bar
-   * could never be measured and would leave this judge permanently unable to
-   * conclude: a check that can only ever report `unmeasured` is the shape #2240's
-   * first cal.com probe shipped in. What IS measurable is the breach, which
-   * arrives here as an outcome other than `ok`, so that is what is judged.
+   * This field exists because what stood here before was wrong (#2279). The
+   * comment said "Cloudflare's observability exposes NO subrequest counter, so a
+   * subrequest bar could never be measured", and the report printed the same
+   * claim. Measured against the live schema on 2026-09-13, `sum { subrequests }`
+   * is a field, and the query was ALREADY asking for it before dropping it in the
+   * response type (L425). Production returned 24,087 subrequests over 317
+   * invocations.
    *
-   * The same reading covers a CPU kill (`exceededCpu`), which is the other way the
-   * platform stops an invocation mid flight and the reason the lanes that had not
-   * finished simply did not run.
+   * What is genuinely not exposed is a PER INVOCATION maximum, which is what the
+   * 1000 subrequest ceiling is about, so this is reported as a mean and never made
+   * a bar. The BREACH is still judged, because it arrives as a `status` other than
+   * success.
    */
-  outcomes: Record<string, number> | null;
+  subrequests: number | null;
+  /**
+   * The `status` histogram over the window.
+   *
+   * Named `statuses`, not `outcomes`, because `status` is what the dimension is
+   * actually called. The old name went with a query asking for `dimensions {
+   * outcome }`, which is not a field: the API answered 200 with an `errors` array
+   * and null data on every single run, so this bar never once reached a reading
+   * (#2279). The healthy value is `success`; the judge used to compare against
+   * `ok`, which appears nowhere in the API's vocabulary.
+   *
+   * A CPU kill (`exceededCpu`) arrives here, which is the other way the platform
+   * stops an invocation mid flight, and it is caught whether the invocation was a
+   * request or a cron.
+   */
+  statuses: Record<string, number> | null;
+  /**
+   * The cron invocations inside the same window, read from the SEPARATE
+   * `workersInvocationsScheduled` dataset, or null when it could not be read.
+   *
+   * Without this the CPU bar cannot honestly conclude either way.
+   * `workersInvocationsAdaptive` counts cron invocations alongside fetch ones and
+   * exposes no dimension telling them apart, and Slate's every minute lane runs to
+   * a long CPU budget by design: production's adaptive p99 on 2026-09-13 was 48.9
+   * SECONDS, which is the cron lanes, not the booking path. Judging that mixed
+   * percentile against a per request budget would fail every run for a reason
+   * nobody should fix (L36).
+   */
+  cron: { invocations: number; worstCpuMs: number; byCron: Record<string, { invocations: number; worstCpuMs: number }> } | null;
+  /**
+   * Why the window could not be read, in the reader's own words, when it could
+   * not be. Null on a reading that worked.
+   */
+  unreadableWhy?: string | null;
 }
 
 export interface JudgeInput {
@@ -98,8 +133,13 @@ export interface JudgeInput {
    * are skipped exactly as before.
    */
   expectedLegs: { burstDrivers: number; faultPct: number };
-  /** The Worker CPU budget the reading is judged against. */
-  budgets: { cpuMsP99: number };
+  /**
+   * The two CPU ceilings, which are different numbers about different things.
+   * `cpuMsP99` is the per request budget and applies only to a window with no cron
+   * in it; `cronCpuMs` is the platform ceiling a scheduled invocation is killed at
+   * (`limits.cpu_ms` in wrangler.jsonc).
+   */
+  budgets: { cpuMsP99: number; cronCpuMs: number };
 }
 
 export interface Finding {
@@ -546,10 +586,14 @@ export function judgeBookingRun(input: JudgeInput): JudgeResult {
   // --- the platform's own numbers ---------------------------------------------
   const p = input.platform;
   const expectedInvocations = m.attempts;
-  if (p.invocations === null || p.cpuMsP99 === null || p.outcomes === null) {
+  if (p.invocations === null || p.cpuMsP99 === null || p.statuses === null) {
     return unmeasured(
       m,
-      "the analytics API did not report CPU, outcomes or invocations for the window",
+      // The CALLER's own sentence when it has one. This bar spent its whole life
+      // printing a generic line about a window it had never successfully queried,
+      // and the one fact that would have identified the fault in a single reading
+      // was the API's own refusal text (L11).
+      p.unreadableWhy ?? "the analytics API did not report CPU, statuses or invocations for the window",
       findings,
     );
   }
@@ -566,19 +610,63 @@ export function judgeBookingRun(input: JudgeInput): JudgeResult {
       findings,
     );
   }
-  if (p.cpuMsP99 > input.budgets.cpuMsP99) {
-    fail("Worker CPU", `p99 ${p.cpuMsP99}ms over the ${input.budgets.cpuMsP99}ms budget`);
+  // --- CPU, judged only where the reading is attributable ----------------------
+  //
+  // The per request budget may be applied to the adaptive percentile ONLY when no
+  // cron fired inside the window, because that is the one case where the
+  // percentile is request only. `workersInvocationsAdaptive` counts scheduled
+  // invocations alongside fetch ones and carries no dimension separating them, and
+  // Slate's every minute lane runs to a long CPU budget deliberately: production's
+  // adaptive p99 on 2026-09-13 was 48.9 seconds against a 200ms per request
+  // budget, entirely because of the crons in the window. Applying the budget
+  // regardless would make this bar fail every run for a reason nobody should fix,
+  // which is how a bar stops being read (L36), and it would have done exactly that
+  // the moment the query was repaired.
+  if (p.cron === null) {
+    // Not a pass. The request half cannot be attributed without knowing whether
+    // crons ran, and a reading nobody can attribute is not a measurement (L98).
+    return unmeasured(
+      m,
+      "the scheduled invocations could not be read, so the CPU reading cannot be told " +
+        "apart from the cron lanes and nothing is claimed about it",
+      findings,
+    );
   }
-  // Every outcome other than `ok` is a finding, and they are named rather than
+  if (p.cron.invocations === 0) {
+    if (p.cpuMsP99 > input.budgets.cpuMsP99) {
+      fail(
+        "Worker CPU",
+        `p99 ${p.cpuMsP99}ms over the ${input.budgets.cpuMsP99}ms budget, with no cron in the ` +
+          "window, so this is the request path",
+      );
+    }
+  } else if (p.cron.worstCpuMs > input.budgets.cronCpuMs) {
+    // The cron half IS judgeable exactly, because the scheduled dataset reports one
+    // row per invocation with its own CPU and the cron expression that fired it, so
+    // the finding can NAME the lane rather than pointing at a percentile.
+    const worst = Object.entries(p.cron.byCron).sort((a, b) => b[1].worstCpuMs - a[1].worstCpuMs)[0];
+    fail(
+      "cron CPU",
+      `the "${worst?.[0] ?? "(unnamed)"}" lane reached ${Math.round(p.cron.worstCpuMs)}ms of CPU ` +
+        `against the ${input.budgets.cronCpuMs}ms ceiling`,
+    );
+  }
+  // Every status other than `success` is a finding, and they are named rather than
   // summed: `exceededCpu` (Cloudflare killed the invocation mid flight),
   // `exceededMemory` and a subrequest breach each mean a different thing to fix,
   // and a single "N invocations exceeded a limit" would send one person to look at
-  // three different problems (L11).
-  const bad = Object.entries(p.outcomes).filter(([outcome]) => outcome !== "ok");
-  for (const [outcome, n] of bad) {
-    if (n > 0) fail("platform outcome", `${n} invocations ended as ${outcome} rather than ok`);
+  // three different problems (L11). This is also what catches a CPU breach on
+  // EITHER kind of invocation, without needing to tell them apart.
+  const bad = Object.entries(p.statuses).filter(([s]) => s !== HEALTHY_INVOCATION_STATUS);
+  for (const [status, n] of bad) {
+    if (n > 0) {
+      fail(
+        "platform outcome",
+        `${n} invocations ended as ${status} rather than ${HEALTHY_INVOCATION_STATUS}`,
+      );
+    }
   }
-  if (Object.keys(p.outcomes).length === 0) {
+  if (Object.keys(p.statuses).length === 0) {
     // An empty histogram is not "every invocation was fine": it is a reading that
     // found nothing, and the control above cannot catch it because invocations are
     // counted separately.

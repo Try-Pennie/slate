@@ -117,10 +117,18 @@ function passing(): JudgeInput {
     slotUniqueIndexPresent: true,
     overlapConstraintPresent: true,
     ipCeilingControl: { sent: 61, firstRefusedAt: 61 },
-    platform: { invocations: 610, cpuMsP99: 40, outcomes: { ok: 610 } },
+    platform: {
+      invocations: 610,
+      cpuMsP99: 40,
+      subrequests: 52_000,
+      statuses: { success: 610 },
+      // No cron fired inside the window, which is what makes the adaptive
+      // percentile request only and so judgeable against the per request budget.
+      cron: { invocations: 0, worstCpuMs: 0, byCron: {} },
+    },
     faultPass: { attempts: 100, fiveXx: 0, faultPct: 10 },
     expectedLegs: { burstDrivers: burstResults.length, faultPct: 10 },
-    budgets: { cpuMsP99: 200 },
+    budgets: { cpuMsP99: 200, cronCpuMs: 120_000 },
   };
 }
 
@@ -464,7 +472,7 @@ const bars = (r: ReturnType<typeof judgeBookingRun>) => r.findings.map((f) => f.
   // shape #2240's first cal.com probe shipped in. The BREACH is measurable and is
   // what is judged, through the outcome histogram.
   const killed = broken((i) => {
-    i.platform.outcomes = { ok: 600, exceededCpu: 10 };
+    i.platform.statuses = { success: 600, exceededCpu: 10 };
   });
   assert(bars(killed).includes("platform outcome"), "an invocation the platform cut off is a finding");
   assert(
@@ -473,12 +481,12 @@ const bars = (r: ReturnType<typeof judgeBookingRun>) => r.findings.map((f) => f.
   );
 
   const breached = broken((i) => {
-    i.platform.outcomes = { ok: 609, scriptThrewException: 1 };
+    i.platform.statuses = { success: 609, scriptThrewException: 1 };
   });
   assert(bars(breached).includes("platform outcome"), "and so is any other non-ok outcome");
 
   const noOutcomes = broken((i) => {
-    i.platform.outcomes = {};
+    i.platform.statuses = {};
   });
   eq(
     noOutcomes.verdict,
@@ -487,7 +495,7 @@ const bars = (r: ReturnType<typeof judgeBookingRun>) => r.findings.map((f) => f.
   );
 
   const nullOutcomes = broken((i) => {
-    i.platform.outcomes = null;
+    i.platform.statuses = null;
   });
   eq(nullOutcomes.verdict, "unmeasured", "and an absent one is unmeasured too");
 }
@@ -666,7 +674,7 @@ const bars = (r: ReturnType<typeof judgeBookingRun>) => r.findings.map((f) => f.
   // with two winners and a fault pass answering three 500s, both measured, both
   // real, and the report said nothing but "the analytics API did not report".
   const r = broken((i) => {
-    i.platform = { invocations: null, cpuMsP99: null, outcomes: null };
+    i.platform = { invocations: null, cpuMsP99: null, subrequests: null, statuses: null, cron: null };
     i.faultPass = { attempts: 30, fiveXx: 3, faultPct: 10 };
   });
   assert(
@@ -688,7 +696,7 @@ const bars = (r: ReturnType<typeof judgeBookingRun>) => r.findings.map((f) => f.
   // The other direction (L159): when the platform half really is the ONLY thing
   // with anything to say, `unmeasured` is still the verdict.
   const r = broken((i) => {
-    i.platform = { invocations: null, cpuMsP99: null, outcomes: null };
+    i.platform = { invocations: null, cpuMsP99: null, subrequests: null, statuses: null, cron: null };
   });
   eq(r.verdict, "unmeasured", "a clean run with an unreadable platform half is unmeasured");
   eq(r.findings.length, 1, "carrying the one finding it has");
@@ -699,7 +707,7 @@ const bars = (r: ReturnType<typeof judgeBookingRun>) => r.findings.map((f) => f.
   // The same, for the invocation CONTROL: a lagging pipeline must not erase a
   // measured failure either.
   const r = broken((i) => {
-    i.platform = { invocations: 1, cpuMsP99: 10, outcomes: { ok: 1 } };
+    i.platform = { invocations: 1, cpuMsP99: 10, subrequests: 8, statuses: { success: 1 }, cron: { invocations: 0, worstCpuMs: 0, byCron: {} } };
     i.faultPass = { attempts: 30, fiveXx: 3, faultPct: 10 };
   });
   assert(
@@ -822,6 +830,90 @@ const bars = (r: ReturnType<typeof judgeBookingRun>) => r.findings.map((f) => f.
   assert(
     !r.findings.some((f) => f.bar.startsWith("bookings_active")),
     "a run that saw both guards refuse reports neither",
+  );
+}
+
+// --- CPU is judged only where the reading can be attributed (#2279) -----------
+// This is the regression the whole change exists to prevent. The platform query
+// had never once returned a reading, so the CPU bar had never once run. Repairing
+// the query alone would have flipped it straight from "never concludes" to
+// "always fails": `workersInvocationsAdaptive` counts CRON invocations alongside
+// fetch ones, and Slate's cron lanes run under a raised ceiling deliberately, so
+// production's adaptive p99 on 2026-09-13 was 48.9 SECONDS against the 200ms per
+// request budget. A bar that fails every run for a reason nobody should fix is one
+// nobody reads by the second week (L36).
+{
+  const withCrons = broken((i) => {
+    // The shape production actually produces: a huge p99 that is entirely the
+    // cron lanes, and crons present in the window to prove it.
+    i.platform.cpuMsP99 = 48_900;
+    i.platform.cron = {
+      invocations: 10,
+      worstCpuMs: 74_365,
+      byCron: { "* * * * *": { invocations: 10, worstCpuMs: 74_365 } },
+    };
+  });
+  assert(
+    !bars(withCrons).includes("Worker CPU"),
+    "a p99 dominated by cron invocations is NOT reported as a request path CPU breach",
+  );
+  assert(
+    !bars(withCrons).includes("cron CPU"),
+    "and a cron under the platform ceiling is not a finding either",
+  );
+  eq(withCrons.verdict, "pass", "so a healthy run with busy cron lanes still passes");
+}
+{
+  const cronOverCeiling = broken((i) => {
+    i.platform.cpuMsP99 = 130_000;
+    i.platform.cron = {
+      invocations: 10,
+      worstCpuMs: 130_000,
+      byCron: { "* * * * *": { invocations: 10, worstCpuMs: 130_000 } },
+    };
+  });
+  assert(
+    bars(cronOverCeiling).includes("cron CPU"),
+    "a cron lane over the platform ceiling IS a finding",
+  );
+  assert(
+    cronOverCeiling.findings.find((f) => f.bar === "cron CPU")!.detail.includes("* * * * *"),
+    "and it NAMES the lane, because that is what a reader acts on",
+  );
+}
+{
+  // The other direction (L1): with no cron in the window the percentile really is
+  // the request path, so the per request budget must still bite.
+  const requestCpu = broken((i) => {
+    i.platform.cpuMsP99 = 250;
+  });
+  assert(
+    bars(requestCpu).includes("Worker CPU"),
+    "with no cron in the window the per request budget is still applied",
+  );
+}
+{
+  // An unreadable scheduled half cannot be read as "no crons ran", because that is
+  // exactly the reading that would let the mixed percentile through as a pass (L98).
+  const blindCrons = broken((i) => {
+    i.platform.cron = null;
+  });
+  eq(
+    blindCrons.verdict,
+    "unmeasured",
+    "and a scheduled half that could not be read claims nothing about CPU at all",
+  );
+}
+{
+  // The sentinel. A real reading reports `success`; the judge used to call the
+  // healthy value `ok`, so the first reading that ever arrived would have made
+  // every single healthy invocation a finding.
+  const healthy = broken((i) => {
+    i.platform.statuses = { success: 610 };
+  });
+  assert(
+    !bars(healthy).includes("platform outcome"),
+    "`success` is the healthy status and is never a finding",
   );
 }
 

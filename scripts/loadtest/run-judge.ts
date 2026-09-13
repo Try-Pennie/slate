@@ -19,6 +19,14 @@ import {
   type PlatformReading,
 } from "./judge-booking-run.ts";
 import {
+  INVOCATIONS_QUERY,
+  SCHEDULED_QUERY,
+  readInvocationsResponse,
+  readScheduledResponse,
+  shouldPollAgain,
+  WRANGLER_CRON_CPU_MS,
+} from "./platform-reading.ts";
+import {
   DRIVERS,
   PER_DRIVER_PER_MINUTE,
   RUN_MINUTES,
@@ -118,77 +126,109 @@ function loadDrivers(mode: DriverMode): DriverResult[] {
 }
 
 /**
- * Cloudflare's own numbers, or nulls.
+ * Cloudflare's own numbers, or nulls, POLLED until the window settles (#2279).
  *
- * Every failure resolves to NULL rather than to a zero, and the judge maps that to
- * `unmeasured`. A zero CPU reading and a pipeline that has not caught up are the
- * same value otherwise, and the pipeline has been measured three hours behind
- * (#1533).
+ * This bar had never once reached a reading. The recorded reason was a lagging
+ * analytics pipeline; the real reason was that the query asked for
+ * `dimensions { outcome }`, which is not a field, so the API answered HTTP 200
+ * with an `errors` array and null data on every run and the reader reported an
+ * empty window it had never successfully queried. The decision logic and the
+ * queries now live in `platform-reading.ts` and are pinned offline.
+ *
+ * The poll is still worth having. The measured lag on 2026-09-13 was 1.9 minutes,
+ * which a single immediate read routinely misses and a bounded poll rides out. It
+ * is minutes rather than the three hours the issue quoted: that figure belongs to
+ * the Workers LOGS query pipeline (#1533), a different system from this one.
+ *
+ * env-ok: PLATFORM_POLL_DEADLINE_MS (optional; how long to wait for the analytics
+ * window to catch up, default 300000, five minutes, inside the judge job's 15)
+ * env-ok: PLATFORM_POLL_INTERVAL_MS (optional; default 20000)
  */
-async function platformReading(fromIso: string, toIso: string): Promise<PlatformReading> {
+async function platformReading(
+  fromIso: string,
+  toIso: string,
+  expectedInvocations: number,
+): Promise<PlatformReading> {
   const token = process.env.CLOUDFLARE_API_TOKEN ?? "";
   const account = process.env.CLOUDFLARE_ACCOUNT_ID ?? "";
   const script = process.env.LOADTEST_WORKER_NAME ?? "";
+  const blind = (why: string): PlatformReading => ({
+    invocations: null,
+    cpuMsP99: null,
+    subrequests: null,
+    statuses: null,
+    cron: null,
+    unreadableWhy: why,
+  });
   if (!token || !account || !script) {
-    console.error("note: no Cloudflare credentials, so the platform half is unmeasured");
-    return { invocations: null, cpuMsP99: null, outcomes: null };
+    return blind(
+      "no Cloudflare credentials on this runner, so the platform half was never queried",
+    );
   }
-  const query = `query($account:String!,$script:String!,$from:Time!,$to:Time!){
-    viewer { accounts(filter:{accountTag:$account}) {
-      workersInvocationsAdaptive(limit:10000, filter:{scriptName:$script, datetime_geq:$from, datetime_leq:$to}) {
-        sum { requests subrequests }
-        quantiles { cpuTimeP99 }
-        dimensions { outcome }
-      } } }
-  }`;
-  try {
+
+  const variables = { account, script, from: fromIso, to: toIso };
+  async function ask(query: string): Promise<{ status: number; body: unknown }> {
     const res = await fetch("https://api.cloudflare.com/client/v4/graphql", {
       method: "POST",
       headers: { Authorization: `Bearer ${token}`, "content-type": "application/json" },
-      body: JSON.stringify({ query, variables: { account, script, from: fromIso, to: toIso } }),
+      body: JSON.stringify({ query, variables }),
     });
-    if (!res.ok) {
-      console.error(`note: the analytics API answered ${res.status}, so the platform half is unmeasured`);
-      return { invocations: null, cpuMsP99: null, outcomes: null };
-    }
-    const body = (await res.json()) as {
-      data?: {
-        viewer?: {
-          accounts?: {
-            workersInvocationsAdaptive?: {
-              sum?: { requests?: number };
-              quantiles?: { cpuTimeP99?: number };
-              dimensions?: { outcome?: string };
-            }[];
-          }[];
-        };
-      };
-    };
-    const rows = body.data?.viewer?.accounts?.[0]?.workersInvocationsAdaptive;
-    if (!Array.isArray(rows) || rows.length === 0) {
-      console.error("note: the analytics API returned no rows, so the platform half is unmeasured");
-      return { invocations: null, cpuMsP99: null, outcomes: null };
-    }
-    const outcomes: Record<string, number> = {};
-    let invocations = 0;
-    let cpuUs = 0;
-    for (const r of rows) {
-      const n = r.sum?.requests ?? 0;
-      invocations += n;
-      outcomes[r.dimensions?.outcome ?? "(unnamed)"] =
-        (outcomes[r.dimensions?.outcome ?? "(unnamed)"] ?? 0) + n;
-      // The worst p99 across the grouped rows, which is the honest reading: the API
-      // reports a quantile per group and they cannot be averaged into one.
-      cpuUs = Math.max(cpuUs, r.quantiles?.cpuTimeP99 ?? 0);
-    }
-    // MICROSECONDS, not milliseconds. The units are the trap here
-    // (docs/cloudflare-platform-notes.md), and a reading a thousand times too small
-    // sits comfortably under every budget.
-    return { invocations, cpuMsP99: cpuUs / 1000, outcomes };
-  } catch (err) {
-    console.error(`note: the analytics read failed (${(err as Error).message}); platform half unmeasured`);
-    return { invocations: null, cpuMsP99: null, outcomes: null };
+    return { status: res.status, body: await res.json().catch(() => null) };
   }
+
+  const deadlineMs = wholeNumber(process.env.PLATFORM_POLL_DEADLINE_MS, "PLATFORM_POLL_DEADLINE_MS") || 300_000;
+  const intervalMs = wholeNumber(process.env.PLATFORM_POLL_INTERVAL_MS, "PLATFORM_POLL_INTERVAL_MS") || 20_000;
+  const startedAtMs = Date.now();
+  let last: ReturnType<typeof readInvocationsResponse> | null = null;
+
+  for (;;) {
+    try {
+      const { status, body } = await ask(INVOCATIONS_QUERY);
+      last = readInvocationsResponse(status, body);
+    } catch (err) {
+      last = { ok: false, why: `the analytics read failed: ${(err as Error).message}` };
+    }
+    const decision = shouldPollAgain({
+      invocations: last.ok ? last.reading.invocations : null,
+      expected: expectedInvocations,
+      elapsedMs: Date.now() - startedAtMs,
+      deadlineMs,
+    });
+    console.error(
+      `note: platform window ${decision.reason} after ` +
+        `${Math.round((Date.now() - startedAtMs) / 1000)}s ` +
+        `(${last.ok ? last.reading.invocations : "no reading"} of ${expectedInvocations} invocations)`,
+    );
+    if (!decision.again) break;
+    await new Promise((r) => setTimeout(r, intervalMs));
+  }
+
+  if (!last || !last.ok) {
+    return blind(last?.why ?? "the analytics API was never read");
+  }
+
+  // The scheduled half, asked ONCE and only after the window has settled. Without
+  // it the CPU reading cannot be told apart from the cron lanes, so the judge
+  // refuses to claim anything about CPU rather than guessing (L98).
+  let cron: PlatformReading["cron"] = null;
+  let cronWhy: string | null = null;
+  try {
+    const { status, body } = await ask(SCHEDULED_QUERY);
+    const read = readScheduledResponse(status, body);
+    if (read.ok) cron = read.reading;
+    else cronWhy = read.why;
+  } catch (err) {
+    cronWhy = `the scheduled read failed: ${(err as Error).message}`;
+  }
+
+  return {
+    invocations: last.reading.invocations,
+    cpuMsP99: last.reading.cpuMsP99,
+    subrequests: last.reading.subrequests,
+    statuses: last.reading.statuses,
+    cron,
+    unreadableWhy: cronWhy,
+  };
 }
 
 /**
@@ -213,8 +253,34 @@ function cpuBudgetMs(): number {
   return n;
 }
 
+/**
+ * The ceiling a SCHEDULED invocation is killed at, which is a different number
+ * from the per request budget above and about a different thing.
+ *
+ * It mirrors `limits.cpu_ms` in wrangler.jsonc (120000). A cron lane approaching it
+ * is a real finding; measured on production 2026-09-13 the every minute lane peaked
+ * at 74,365ms, about 62 percent of it. `scripts/test-loadtest-platform-reading.ts`
+ * holds this against wrangler.jsonc so the two cannot drift (L41).
+ *
+ * env-ok: CRON_CPU_BUDGET_MS (optional; defaults to the shipped `limits.cpu_ms`)
+ */
+function cronCpuBudgetMs(): number {
+  const raw = (process.env.CRON_CPU_BUDGET_MS ?? "").trim();
+  if (raw === "") return WRANGLER_CRON_CPU_MS;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) {
+    console.error(`FAILED: CRON_CPU_BUDGET_MS is not a positive number: ${JSON.stringify(raw)}`);
+    process.exit(1);
+  }
+  return n;
+}
+
 const steady = loadDrivers("steady");
 const burst = loadDrivers("burst");
+// What the run itself sent on the steady pass. It is the CONTROL the analytics
+// count is polled against: the run knows how many requests it made, so a count far
+// under it means the window has not caught up rather than that the Worker was idle.
+const steadyAttempts = steady.reduce((n, d) => n + d.attempts.length, 0);
 
 let samples: SoakSample[] = [];
 try {
@@ -321,6 +387,7 @@ const input: JudgeInput = {
   platform: await platformReading(
     new Date(startedAt).toISOString(),
     new Date(finishedAt + 60_000).toISOString(),
+    steadyAttempts,
   ),
   faultPass,
   // What this run was CONFIGURED to include, so a leg asked for and never
@@ -335,7 +402,7 @@ const input: JudgeInput = {
     burstDrivers: wholeNumber(process.env.EXPECT_BURST_DRIVERS, "EXPECT_BURST_DRIVERS"),
     faultPct: wholeNumber(process.env.EXPECT_FAULT_PCT, "EXPECT_FAULT_PCT"),
   },
-  budgets: { cpuMsP99: cpuBudgetMs() },
+  budgets: { cpuMsP99: cpuBudgetMs(), cronCpuMs: cronCpuBudgetMs() },
 };
 
 const result = judgeBookingRun(input);
@@ -383,8 +450,11 @@ if (result.findings.length > 0) {
 }
 lines.push("");
 lines.push(
-  "Subrequests are deliberately not a bar: Cloudflare exposes no counter for them, so one could " +
-    "never be measured. A breach arrives as a non-ok invocation outcome, which is what is judged.",
+  "Subrequests ARE counted: `sum { subrequests }` is a field, and this run's mean per invocation " +
+    "is above. What Cloudflare does not expose is a PER INVOCATION maximum, which is what the 1000 " +
+    "subrequest ceiling is about, so the mean is reported and never made a bar. A breach arrives as " +
+    "an invocation status other than success, which IS judged. The previous wording here said no " +
+    "counter existed at all, which was wrong (#2279).",
 );
 
 mkdirSync(dirname(REPORT), { recursive: true });
