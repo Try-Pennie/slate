@@ -484,6 +484,71 @@ environment exist. Nothing can be dispatched into a misconfigured state in the
 meantime: **every script the workflow runs refuses an empty value by name** rather
 than reading it with a `??` fallback that an empty string would slip past (#1498).
 
+## The first run, and the six things it found (#2261)
+
+Dispatched 2026-09-11 against a throwaway Supabase branch and the `loadtest`
+Worker. It took **six attempts to get a run the judge could score**, and every
+failure in between was a real defect in machinery that had shipped green. That is
+the point worth keeping: a workflow nothing has ever run is a workflow nothing has
+ever checked, and none of these was visible to a test.
+
+| # | what stopped it | where |
+|---|---|---|
+| 1 | ten `pnpm/action-setup` steps with no `version:`, so every job died in setup | the workflow |
+| 2 | the seed read `supabase_migrations` over REST, which answers 406 on every project | the seed |
+| 3 | every reader declared `slots` as `{ start }` objects and it is a list of ISO strings, so all three saw an empty list on a healthy response | the driver, the preflight, the burst setup |
+| 4 | every driver sent one phone number, and the dedupe gate is a PERSON gate | the driver |
+| 5 | the fault leg asked whether its own redeploy had landed two seconds after deploying | the fault leg |
+| 6 | the commit comparison was equality against a sha the stamper deliberately shortens | the fault leg |
+
+Two more were found by a run that COMPLETED, which is the harder kind to see: the
+judge skipped the fault bar entirely when the analytics window was unreadable
+(that section returns early and the fault bar sat below it), and all three legs
+minted the same external ids, so the burst's winners and the fault pass were
+answered by RESCHEDULING the steady pass's bookings. Neither showed as an error
+anywhere, because a reschedule is a 200.
+
+### What the run measured, once it could
+
+Run 34658545203, 2026-09-11, 90 seeded agents across five zones:
+
+- **600 attempts, 589 confirmed**, 58.9 a minute against a target of 60
+- **zero 5xx and zero unanswered requests**
+- p50 1,099ms, p95 2,280ms, max 5,594ms
+- 4 refusals from the per address ceiling, from two addresses, which is the
+  ceiling doing its job on a runner behind egress NAT
+- worst oldest-bucket age **255s**, under the 6 minute bar, sampled once a minute
+  UNDER the load
+- the burst: 100 simultaneous requests at one slot, **3 answered 200 and 97
+  SLOT_TAKEN**, the three on three different agents
+- the fault pass: **30 of 30 created with zero 5xx** while Google failed ten
+  percent of its calendar reads, which is the booking path degrading rather than
+  erroring
+
+### And one real defect in the product
+
+Three pairs of **confirmed, overlapping bookings on one agent** (#2274), each
+pair created about 200ms apart by two different leads. The event type is 20
+minutes on a 10 minute grid, so adjacent offered times overlap by ten, and
+`bookings_active_slot_uniq` is unique on `(assigned_user_id, starts_at)`: two
+different starts are two different rows to it. Verify-on-book is blind in the
+same window, since neither confirm has the other's busy row yet.
+
+**This is what the run was built to find.** It needs no unusual traffic, only two
+leads picking adjacent times in the same moment, and no suite had ever confirmed
+two bookings concurrently.
+
+### The bar that cannot pass yet
+
+The per address ceiling control sends its 61 writes as **dry runs**, and the
+booking route returns from the dry run branch above the write limiter, so none of
+them can be refused (#2275). Its finding accuses the ceiling, which the same run
+shows working four times over. Read that bar as unasked until #2275 lands.
+
+The platform half is reported `unmeasured` on every run so far: the analytics API
+returns no rows for a window minutes old, which is the lag this repo already
+documents (#1533). That is the judge's control working as designed, not a pass.
+
 ## Backstop retention decision (#440: retire #401 / #428 only if fully subsumed)
 **Decision: keep both `#401` and `#428` running. Neither is subsumed by the outbox.**
 
