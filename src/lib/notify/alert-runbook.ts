@@ -60,11 +60,6 @@ const FAMILY_BY_KEY: Record<string, AlertFamily> = {
   thin_tier_staffing: "the-booker-is-offering-nothing-or-too-little",
   tier_fallback: "the-booker-is-offering-nothing-or-too-little",
   tier_fallback_deep: "the-booker-is-offering-nothing-or-too-little",
-  // #1909: a Beyond bucket had nobody free and an Achieve agent in the SAME debt
-  // tier took the booking. Same family as its two siblings: the remedy is the
-  // staffing of the requested pool, and a Beyond pool that overflows every day is
-  // the same conversation as a tier that drops every day.
-  tier_fallback_overflow: "the-booker-is-offering-nothing-or-too-little",
   // #2158: this one IS the booker offering nothing, and to a real person, so it
   // sits with the family whose first check is the availability health endpoint.
   booker_unstaffed: "the-booker-is-offering-nothing-or-too-little",
@@ -135,6 +130,12 @@ const FAMILY_BY_KEY: Record<string, AlertFamily> = {
   "ooo-digest-unreachable": "something-was-measured-and-is-only-worth-knowing",
   "ooo-digest-unrouted-unreachable": "something-was-measured-and-is-only-worth-knowing",
   ooo_undo: "something-was-measured-and-is-only-worth-knowing",
+  // #2228. It used to be `tier_fallback_overflow`, and it used to sit with the
+  // booker family on the grounds that the remedy was staffing the requested pool.
+  // Dan retired Beyond as a backend service on 2026-09-13, so there is no staffing
+  // remedy to send anybody to and the count exists to put the number on the record.
+  // The procedure is now "read it and carry on", which is this family's whole text.
+  beyond_overflow_rate: "something-was-measured-and-is-only-worth-knowing",
 
   // The roster or the routing inputs disagree with Salesforce, or with themselves.
   agent_sync_failures: "the-roster-or-routing-data-is-wrong",

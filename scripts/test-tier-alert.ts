@@ -14,13 +14,27 @@ import { assert, finish } from "./lib/harness.ts";
 
 assert(tierFallbackAlert({ requestedCode: "511", effectiveCode: "511" }) === null, "no movement => no alert");
 
-// --- a sideways overflow, same debt tier ---
-const overflow = tierFallbackAlert({ requestedCode: "522", effectiveCode: "532" })!;
-assert(overflow.key === "tier_fallback_overflow:522", `overflow has its own key (got ${overflow.key})`);
-assert(overflow.cooldownMs === 60 * 60 * 1000, "an overflow is a 60-min throttled notice");
-assert(/^Routing notice:/.test(overflow.text), "an overflow reads as a notice, not an alert");
-assert(/same debt tier/.test(overflow.text), `the overflow says the tier did not move (got ${overflow.text})`);
-assert(!/dropped/.test(overflow.text), `an overflow never says a tier was dropped (got ${overflow.text})`);
+// --- a sideways overflow, same debt tier: counted, never paged (#2228) ---
+//
+// This used to return `tier_fallback_overflow:<code>` per booking. Measured on
+// 2026-09-10 and again on 2026-09-13, a Beyond bucket's pool is at most two
+// people against 88 for Achieve, so once traffic starts the overflow is what
+// happens to a Beyond lead most of the time. Dan, 2026-09-13: "we're moving off
+// beyond entirely. So we really shouldn't be getting many beyond bookngs". The
+// overflow is therefore expected behaviour rather than an incident, and a page
+// per booking reporting the system working as designed is the alert nobody reads
+// by the second week (L36). It is now a once a day count on the info channel,
+// `beyond_overflow_rate`, built in src/lib/monitor/beyond-overflow.ts.
+for (const pair of [
+  { requestedCode: "522", effectiveCode: "532", why: "Ultra High Beyond overflows to Achieve" },
+  { requestedCode: "120", effectiveCode: "130", why: "the Low plus Beyond hole at the bottom" },
+  { requestedCode: "321", effectiveCode: "331", why: "a mid tier overflow" },
+]) {
+  assert(
+    tierFallbackAlert(pair) === null,
+    `a sideways overflow sends nothing per booking: ${pair.why}`,
+  );
+}
 
 // --- one debt tier down ---
 const one = tierFallbackAlert({ requestedCode: "511", effectiveCode: "411" })!;
@@ -73,15 +87,34 @@ for (const bad of [
   );
 }
 
-// And every pair the ladder CAN produce does alert, so the guard above cannot
-// quietly silence the real cases (L1).
-for (const code of ["522", "511", "412", "300"]) {
-  for (const rung of tierLadder(code).slice(1)) {
-    assert(
-      tierFallbackAlert({ requestedCode: code, effectiveCode: rung }) !== null,
-      `${code} -> ${rung} is a real rung and alerts`,
-    );
+// And every pair the ladder CAN produce that MOVED A DEBT TIER does alert, so the
+// guard above cannot quietly silence the real cases (L1), and #2228's silencing of
+// the overflow cannot creep outward into the tier drops it was never about.
+{
+  let alerted = 0;
+  let silenced = 0;
+  for (const code of ["522", "511", "412", "300"]) {
+    for (const rung of tierLadder(code).slice(1)) {
+      const sameTier = rung[0] === code[0];
+      if (sameTier) {
+        assert(
+          tierFallbackAlert({ requestedCode: code, effectiveCode: rung }) === null,
+          `${code} to ${rung} is the overflow rung and is counted, not sent`,
+        );
+        silenced += 1;
+        continue;
+      }
+      assert(
+        tierFallbackAlert({ requestedCode: code, effectiveCode: rung }) !== null,
+        `${code} to ${rung} dropped a debt tier and still alerts`,
+      );
+      alerted += 1;
+    }
   }
+  // Anti-vacuity: a loop that classified everything one way would pass both
+  // branches above by never entering the other (L98).
+  assert(alerted > 10, `the tier drops are really being asserted (${alerted})`);
+  assert(silenced > 0, `and so are the overflow rungs (${silenced})`);
 }
 
 // --- a code it cannot read says nothing rather than a wrong number ---

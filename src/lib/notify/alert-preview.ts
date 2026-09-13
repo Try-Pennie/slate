@@ -99,6 +99,11 @@ import {
   formatAvailabilityDriftAggregateAllClear,
 } from "@/lib/monitor/availability-truth";
 import { tierFallbackAlert } from "@/lib/routing/tier-alert";
+import {
+  beyondOverflowVerdict,
+  beyondOverflowNoticeText,
+  BEYOND_OVERFLOW_WINDOW_HOURS,
+} from "@/lib/monitor/beyond-overflow";
 import { bookerUnstaffedAlert } from "@/lib/booking/alert-copy";
 import {
   oooAgentCalendarAlert,
@@ -327,6 +332,28 @@ const AGENT_MANY: FailingAgent[] = [
 // parse-ok: a hard-coded valid ISO literal in a fixture, not a stored stamp; if it
 // ever failed to parse the preview output would be visibly broken, not silently healthy.
 const NOW_MS = Date.parse("2026-07-29T12:00:00.000Z");
+
+/**
+ * One rendered Beyond overflow report (#2228).
+ *
+ * It goes through the real `beyondOverflowVerdict` rather than calling the copy
+ * builder straight, so a preview can only ever show a message the lane could
+ * really send: a pair of counts the verdict would have refused to report on
+ * throws here instead of rendering a sentence nobody will see.
+ */
+function beyondOverflowReportPreview(overflowed: number, beyondBooked: number): string {
+  const verdict = beyondOverflowVerdict({
+    overflowed,
+    beyondBooked,
+    windowHours: BEYOND_OVERFLOW_WINDOW_HOURS,
+  });
+  if (verdict.kind !== "report") {
+    throw new Error(
+      `beyond overflow preview fixture ${overflowed}/${beyondBooked} is not a reportable window (${verdict.kind})`,
+    );
+  }
+  return beyondOverflowNoticeText(verdict, BEYOND_OVERFLOW_WINDOW_HOURS);
+}
 
 export const ALERT_PREVIEWS: AlertPreview[] = [
   // --- calendar sync and push watches ---------------------------------------
@@ -1965,11 +1992,28 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     channel: "alert",
     text: rescheduleLockOutageAlert(),
   },
+  // #2228. Three states, because the number is the message and it reads
+  // differently at each: the realistic steady rate (most of a small day's Beyond
+  // leads), the day it is only one, and the mixed case where the noun and the verb
+  // take different numbers. The old per booking page previewed one example, which
+  // is exactly how a rate nobody had read at its real frequency shipped.
   {
-    key: "tier_fallback_overflow:*",
-    state: "a Beyond booking went to Achieve in the same debt tier",
-    channel: "alert",
-    text: tierFallbackAlert({ requestedCode: "522", effectiveCode: "532" })?.text ?? "",
+    key: "beyond_overflow_rate",
+    state: "the realistic day: most Beyond leads overflow",
+    channel: "info",
+    text: beyondOverflowReportPreview(9, 11),
+  },
+  {
+    key: "beyond_overflow_rate",
+    state: "one Beyond lead, and it overflowed",
+    channel: "info",
+    text: beyondOverflowReportPreview(1, 1),
+  },
+  {
+    key: "beyond_overflow_rate",
+    state: "one of several overflowed",
+    channel: "info",
+    text: beyondOverflowReportPreview(1, 7),
   },
   {
     key: "tier_fallback:*",
