@@ -27,6 +27,8 @@ import {
   shouldPollAgain,
   POLL_REASON,
   WRANGLER_CRON_CPU_MS,
+  pollTimings,
+  POLL_DEFAULTS,
 } from "./loadtest/platform-reading.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 import { readFileSync } from "node:fs";
@@ -222,6 +224,45 @@ assert(
   const shipped = Number(/"limits"\s*:\s*\{[^}]*"cpu_ms"\s*:\s*(\d+)/.exec(wrangler)?.[1]);
   assert(Number.isFinite(shipped), "limits.cpu_ms is readable from wrangler.jsonc");
   eq(WRANGLER_CRON_CPU_MS, shipped, "the cron CPU ceiling matches what wrangler ships");
+}
+
+// --- the poll timings, defaults and refusals both driven --------------------
+// A deliberate ZERO deadline must survive, which is the whole reason this is not
+// `Number(raw) || default`: falsiness would replace it with five minutes and the
+// run would poll when somebody had asked it not to.
+{
+  const unset = pollTimings(undefined, undefined);
+  assert(unset.ok, "both unset takes the defaults");
+  if (unset.ok) {
+    eq(unset.timings.deadlineMs, POLL_DEFAULTS.deadlineMs, "the default deadline");
+    eq(unset.timings.intervalMs, POLL_DEFAULTS.intervalMs, "and the default interval");
+  }
+  const empty = pollTimings("", "   ");
+  assert(empty.ok, "an empty or blank value is the same as unset");
+
+  const zeroDeadline = pollTimings("0", "1000");
+  assert(zeroDeadline.ok, "a deliberate zero deadline is honoured, not replaced by the default");
+  if (zeroDeadline.ok) {
+    eq(zeroDeadline.timings.deadlineMs, 0, "and really is zero");
+  }
+
+  const set = pollTimings("60000", "5000");
+  assert(set.ok, "values that are set take effect as written");
+  if (set.ok) eq(set.timings.intervalMs, 5000, "including the interval");
+
+  const refusals: string[] = [];
+  for (const [label, r] of [
+    ["an unreadable deadline", pollTimings("soon", "1000")],
+    ["an unreadable interval", pollTimings("1000", "often")],
+    ["a zero interval, which would be a busy loop", pollTimings("1000", "0")],
+  ] as const) {
+    assert(!r.ok, `${label} is refused`);
+    if (!r.ok) {
+      refusals.push(r.why);
+      assert(/PLATFORM_POLL_/.test(r.why), `${label} names the variable it is about`);
+    }
+  }
+  eq(new Set(refusals).size, refusals.length, "and no two refusals say the same thing (L11)");
 }
 
 finish();

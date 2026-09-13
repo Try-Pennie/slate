@@ -263,3 +263,43 @@ export function shouldPollAgain(args: {
  * fail one that is fine.
  */
 export const WRANGLER_CRON_CPU_MS = 120_000;
+
+/** How long to keep polling, and how often. */
+export interface PollTimings {
+  deadlineMs: number;
+  intervalMs: number;
+}
+
+export const POLL_DEFAULTS: PollTimings = { deadlineMs: 300_000, intervalMs: 20_000 };
+
+/**
+ * Read the poll timings from their two raw environment values.
+ *
+ * Pure and separate from the run so both the defaults and every refusal are driven
+ * offline. An UNSET value takes the default; a value that is set takes effect
+ * exactly as written, including a deliberate zero, which is why this is not
+ * `Number(raw) || default`: falsiness would silently replace a zero somebody meant.
+ * Anything unreadable is REFUSED by name rather than becoming a NaN that every
+ * comparison reads as false and so lands on the permissive side (L50).
+ */
+export function pollTimings(
+  deadlineRaw: string | undefined,
+  intervalRaw: string | undefined,
+): { ok: true; timings: PollTimings } | { ok: false; why: string } {
+  function read(raw: string | undefined, name: string, fallback: number): number | string {
+    const v = (raw ?? "").trim();
+    if (v === "") return fallback;
+    if (!/^\d+$/.test(v)) return `${name} is not a whole number: ${JSON.stringify(raw)}`;
+    return Number(v);
+  }
+  const d = read(deadlineRaw, "PLATFORM_POLL_DEADLINE_MS", POLL_DEFAULTS.deadlineMs);
+  if (typeof d === "string") return { ok: false, why: d };
+  const i = read(intervalRaw, "PLATFORM_POLL_INTERVAL_MS", POLL_DEFAULTS.intervalMs);
+  if (typeof i === "string") return { ok: false, why: i };
+  if (i <= 0) {
+    // An interval of zero is a busy loop against somebody else's API, never what
+    // anybody means, so it is refused rather than quietly clamped.
+    return { ok: false, why: "PLATFORM_POLL_INTERVAL_MS must be greater than zero" };
+  }
+  return { ok: true, timings: { deadlineMs: d, intervalMs: i } };
+}

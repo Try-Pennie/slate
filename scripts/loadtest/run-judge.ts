@@ -24,6 +24,7 @@ import {
   readInvocationsResponse,
   readScheduledResponse,
   shouldPollAgain,
+  pollTimings,
   WRANGLER_CRON_CPU_MS,
 } from "./platform-reading.ts";
 import {
@@ -176,8 +177,15 @@ async function platformReading(
     return { status: res.status, body: await res.json().catch(() => null) };
   }
 
-  const deadlineMs = wholeNumber(process.env.PLATFORM_POLL_DEADLINE_MS, "PLATFORM_POLL_DEADLINE_MS") || 300_000;
-  const intervalMs = wholeNumber(process.env.PLATFORM_POLL_INTERVAL_MS, "PLATFORM_POLL_INTERVAL_MS") || 20_000;
+  const timings = pollTimings(
+    process.env.PLATFORM_POLL_DEADLINE_MS,
+    process.env.PLATFORM_POLL_INTERVAL_MS,
+  );
+  if (!timings.ok) {
+    console.error(`FAILED: ${timings.why}.`);
+    process.exit(1);
+  }
+  const { deadlineMs, intervalMs } = timings.timings;
   const startedAtMs = Date.now();
   let last: ReturnType<typeof readInvocationsResponse> | null = null;
 
