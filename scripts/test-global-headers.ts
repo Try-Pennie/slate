@@ -15,6 +15,7 @@
 // (The first-visit http->https redirect is a Cloudflare zone setting, out of code.)
 // Run: node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/test-global-headers.ts
 import nextConfig from "../next.config.ts";
+import { readFileSync } from "node:fs";
 import { assert, finish } from "./lib/harness.ts";
 
 const rules = typeof nextConfig.headers === "function" ? await nextConfig.headers() : [];
@@ -54,5 +55,51 @@ const framing = globalHeaders.filter((h) => {
   return k === "x-frame-options" || (k === "content-security-policy" && /frame-ancestors/.test(h.value));
 });
 assert(framing.length === 0, "global headers() does NOT set framing headers (embed stays frameable)");
+
+// #1756: nothing Slate serves belongs in a search index. It is an internal booking
+// tool plus an embeddable widget, and the public booker at /book?xbc=<code> can
+// create a REAL booking against a real agent, so a crawler surfacing it is a
+// discovery path nobody chose. Measured 2026-09-13: production answered 200 on
+// /book?xbc=111 with no X-Robots-Tag and no noindex in the markup, and the
+// robots.txt the domain serves (Cloudflare's injected content-signals file, since
+// this repo ships none) carries no Disallow at all.
+//
+// It is set GLOBALLY rather than on /book alone, deliberately. The manage by token
+// pages, every /api response and the staff surfaces are all equally things that
+// should never appear in a search result, and a per path rule is one somebody has
+// to remember to extend when a route is added (L96).
+const robots = globalHeaders.find((h) => h.key.toLowerCase() === "x-robots-tag");
+assert(robots !== undefined, "X-Robots-Tag is served on all paths (#1756)");
+if (robots) {
+  assert(/\bnoindex\b/.test(robots.value), "and it says noindex, so nothing is indexed");
+  assert(
+    /\bnofollow\b/.test(robots.value),
+    "and nofollow, so a crawler that does reach one page is not led into other bucket codes",
+  );
+}
+
+// THE TRAP, asserted because the two halves work against each other. A `Disallow`
+// in robots.txt stops a crawler FETCHING the page, which means it never sees the
+// noindex header above and the URL can still be indexed from a link elsewhere. So
+// the correct pairing for "keep this out of search" is to ALLOW crawling and send
+// noindex, and a Disallow added later would silently disable the header this guard
+// exists to protect. This repo ships no robots file today; if one is added, it must
+// not disallow the surfaces the header covers.
+{
+  const candidates = ["public/robots.txt", "src/app/robots.ts", "src/app/robots.txt"];
+  for (const rel of candidates) {
+    let body = "";
+    try {
+      body = readFileSync(new URL(`../${rel}`, import.meta.url), "utf8");
+    } catch {
+      continue; // not shipped, nothing to check
+    }
+    const disallowsBooker = /Disallow:\s*\/(\s|$|book)/i.test(body) || /disallow:\s*\[?\s*["']\/(\s|["']|book)/i.test(body);
+    assert(
+      !disallowsBooker,
+      `${rel} must not Disallow the booker, or the X-Robots-Tag noindex above is never fetched and never applied (#1756)`,
+    );
+  }
+}
 
 finish();
