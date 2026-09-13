@@ -6,14 +6,23 @@
 // same observation from inside the run, and the second is the one that would make
 // every other number about a run that was never actually bounded.
 //
-// So this sends ONE more than the ceiling from one address in one window and
-// requires the last to be refused. Both halves matter: refusing nothing means the
-// ceiling is off, and refusing EARLY means it is tighter than the app says and the
-// run's pacing was built on a number that is not the real one.
+// It used to send ONE more than the ceiling, all at once, and require the last to
+// be refused. That could not conclude (#2275). Cloudflare's own documentation says
+// the Rate Limiting API "is permissive, eventually consistent, and intentionally
+// designed to not be used as an accurate accounting system", with "a unique limit
+// per Cloudflare location", so asking it to refuse a single marginal request out of
+// a simultaneous burst is the least likely thing it will do. Measured: run
+// 34658545203 sent 61 and was refused none, and the run blamed a ceiling that the
+// same run's steady pass had refused four times.
+//
+// So it sends a MULTIPLE of the ceiling, in waves rather than in one burst, and
+// requires SOME refusal. The exact crossing point is never asserted, because an
+// eventually consistent counter does not have one. Refusing far EARLY is still its
+// own finding: the run's pacing is built on that number.
 import { writeFileSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { BOOKING_WRITES_PER_MINUTE } from "./book-plan.ts";
-import { ceilingVerdict } from "./preflight-checks.ts";
+import { ceilingVerdict, ceilingControlSize, CEILING_CONCLUSION } from "./preflight-checks.ts";
 import { loadtestPhone } from "./book-plan.ts";
 
 const PROD_HOST = "slate.trypennie.app";
@@ -35,15 +44,32 @@ if (SLATE_BASE.includes(PROD_HOST)) {
   process.exit(1);
 }
 
-const SEND = BOOKING_WRITES_PER_MINUTE + 1;
+const SEND = ceilingControlSize(BOOKING_WRITES_PER_MINUTE);
 
 /**
- * The requests are DRY RUNS, and that is what makes the control safe to repeat.
+ * Sent in waves, not in one simultaneous burst.
  *
- * A dry run takes the same authorization and the same rate limit path (the ceiling
- * is applied before the handler ever looks at `dryRun`) and creates nothing, so
- * sixty one of them prove the ceiling without leaving sixty bookings behind for
- * the judge's overlap check to find and blame on the run.
+ * Cloudflare counts "very quickly, but not immediately", so a single burst races a
+ * counter that has not converged. Waves give it time to catch up while keeping the
+ * whole control inside one window: SEND requests at this size is a handful of
+ * round trips, far short of the 60 second period.
+ */
+const WAVE = 20;
+
+/**
+ * The requests are DRY RUNS, and that is CORRECT, contrary to what #2275 assumed.
+ *
+ * The issue says the route "returns from the dry run branch before the write
+ * limiter is ever consulted". It does not. `authorizeBookingApi` is the FIRST
+ * statement of the POST handler and BOTH ceilings, per key and per address, live
+ * inside it; the `if (v.dryRun)` branch is far below. Verified by reading the
+ * handler, and by the failed run itself, whose 61 dry runs all reached the
+ * application and came back 409, which they could only do having passed the
+ * limiter. So a dry run is metered exactly like a real write, and it creates
+ * nothing, which is what makes the control safe to repeat at this size.
+ *
+ * That also answers the product half of the issue: the preview path is NOT
+ * unmetered, so there is nothing to decide about making it count.
  */
 async function attempt(n: number): Promise<number> {
   try {
@@ -74,19 +100,30 @@ async function attempt(n: number): Promise<number> {
   }
 }
 
-// All at once, inside one window. Paced, they would fall into two windows and the
-// sixty first would be allowed, which reads exactly like a ceiling that is off.
-const statuses = await Promise.all(Array.from({ length: SEND }, (_, i) => attempt(i)));
+// In waves, inside one window. One simultaneous burst races a counter that has not
+// converged; pacing them out over minutes would straddle two windows and the
+// overshoot would be allowed, which reads exactly like a ceiling that is off.
+const statuses: number[] = [];
+for (let i = 0; i < SEND; i += WAVE) {
+  const wave = Array.from({ length: Math.min(WAVE, SEND - i) }, (_, k) => attempt(i + k));
+  statuses.push(...(await Promise.all(wave)));
+}
 // The reading lives in `preflight-checks.ts` and is pinned offline. The judge reads
 // `firstRefusedAt` and fails the run when it is null, because then every 429 the
 // run attributed means something else.
-const verdict = ceilingVerdict(statuses);
-const result = { sent: SEND, ceiling: BOOKING_WRITES_PER_MINUTE, ...verdict, statuses };
+const verdict = ceilingVerdict(statuses, BOOKING_WRITES_PER_MINUTE);
+const result = { ceiling: BOOKING_WRITES_PER_MINUTE, ...verdict, statuses };
 
 mkdirSync(dirname(OUT), { recursive: true });
 writeFileSync(OUT, JSON.stringify(result, null, 2), "utf8");
+console.log(result.detail);
 console.log(
-  `sent ${SEND} writes from one address in one window; first refusal at ` +
-    `${result.firstRefusedAt ?? "(none)"} (ceiling ${BOOKING_WRITES_PER_MINUTE}), ` +
-    `${result.unreachable} never reached the deployment`,
+  `sent ${SEND} (ceiling ${BOOKING_WRITES_PER_MINUTE}): ${result.allowed} allowed, ` +
+    `${result.refused} refused by a ceiling, ${result.appRefused} refused by the app, ` +
+    `${result.unauthorized} rejected at auth, ${result.unreachable} never reached the deployment`,
 );
+// The control's own step does not fail the run: the judge owns that verdict, and a
+// step that failed here would stop the artifact reaching it.
+if (result.conclusion !== CEILING_CONCLUSION.applies) {
+  console.error(`note: the ceiling control did not prove the ceiling (${result.conclusion})`);
+}

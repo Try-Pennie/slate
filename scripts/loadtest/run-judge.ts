@@ -18,6 +18,7 @@ import {
   type JudgedBooking,
   type PlatformReading,
 } from "./judge-booking-run.ts";
+import { ceilingVerdict, type CeilingVerdict } from "./preflight-checks.ts";
 import {
   INVOCATIONS_QUERY,
   SCHEDULED_QUERY,
@@ -28,6 +29,7 @@ import {
   WRANGLER_CRON_CPU_MS,
 } from "./platform-reading.ts";
 import {
+  BOOKING_WRITES_PER_MINUTE,
   DRIVERS,
   PER_DRIVER_PER_MINUTE,
   RUN_MINUTES,
@@ -297,9 +299,12 @@ try {
   console.error("note: no freshness samples were found, which the judge reports as incomplete");
 }
 
-let ipControl = { sent: 0, firstRefusedAt: null as number | null };
+// A MISSING artifact is judged by the same function as a present one, from an
+// empty status list, so "the step never ran" gets its own conclusion rather than
+// being hand assembled here into something that looks like a reading (L98).
+let ipControl: CeilingVerdict = ceilingVerdict([], BOOKING_WRITES_PER_MINUTE);
 try {
-  ipControl = readJson<typeof ipControl>(join(RESULTS, "ip-ceiling.json"));
+  ipControl = readJson<CeilingVerdict>(join(RESULTS, "ip-ceiling.json"));
 } catch {
   console.error("note: no per address ceiling control was found");
 }
