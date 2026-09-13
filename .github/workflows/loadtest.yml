@@ -470,25 +470,29 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: npx wrangler delete --env loadtest --force
       # The teardown is only done when the deployment is GONE, not when the delete
-      # command exited. An empty listing is the assertion; a zero exit is not.
+      # command exited. The Worker's absence from the account's listing is the
+      # assertion; a zero exit is not.
+      #
+      # This used to ask `wrangler deployments list --env loadtest`, checking the
+      # listing's own exit status before its content, because piping straight into
+      # grep reports the PARSER's status and a listing that failed (expired
+      # credentials, a network blip) matches nothing and reads as a clean teardown
+      # (#1433, L183). That care was right and is kept; the command under it was
+      # wrong. Once the Worker is deleted that listing ERRORS, so a successful
+      # teardown took the "could not list" branch and failed the job for having
+      # cleaned up correctly (#2277), and a step that is red for doing its job is one
+      # nobody reads (L36).
+      #
+      # The three outcomes are separated now, each with its own wording and exit code,
+      # in scripts/loadtest/teardown-verdict.ts. The same #1433 care carries over: the
+      # Worker is called gone only on a reply that is POSITIVELY readable (HTTP 200, a
+      # Cloudflare envelope saying success, a result array, every entry named), so a
+      # refused, empty or unparseable read lands on its own refusal rather than on the
+      # pass. A read of the script BY NAME was rejected for exactly this reason: its
+      # 404 means "gone" and "wrong account" alike.
       - name: Confirm nothing is left deployed
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-        run: |
-          set -o pipefail
-          # The listing's own exit status is checked BEFORE its content. Piping
-          # straight into grep reports the PARSER's status, so a listing that failed
-          # (expired credentials, a network blip) matches nothing and the step
-          # prints "no deployment remains": a dead read wearing a clean teardown's
-          # clothes (#1433, L183).
-          if ! out=$(npx wrangler deployments list --env loadtest 2>&1); then
-            echo "could not list deployments, so the teardown is NOT confirmed:"
-            echo "$out"
-            exit 1
-          fi
-          if printf '%s' "$out" | grep -q "Created"; then
-            echo "the loadtest deployment is still listed after the delete"
-            exit 1
-          fi
-          echo "no loadtest deployment remains"
+          LOADTEST_WORKER_NAME: ${{ vars.LOADTEST_WORKER_NAME }}
+        run: node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/loadtest/confirm-teardown.ts
