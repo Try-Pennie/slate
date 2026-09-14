@@ -104,9 +104,15 @@ export function codeSequence(total: number, mix: readonly CodeWeight[] = MEASURE
  * The code every burst request uses: the one whose pool holds exactly ONE agent.
  *
  * Not a synthetic special case. Measured against production on 2026-09-11, every
- * `x2x` bucket resolves to a pool of one, because two agents in the whole roster
- * carry the Beyond backend. So the burst's positive control (exactly one 200, the
- * rest SLOT_TAKEN, which is `bookings_active_slot_uniq` doing its job) rides on
- * the real shape rather than on a fixture built to produce it.
+ * `x2x` bucket resolved to a pool of one, because two agents in the whole roster
+ * carried the Beyond backend. Re-measured 2026-09-14 (`pnpm loadtest:export-shape`):
+ * the Low plus Beyond pool (120, 121, 122) is now EMPTY, because the one Low plus
+ * Beyond agent lost those tiers when Twilio became the attribute source (#2152),
+ * and the single remaining Beyond agent carries Medium. So 222 is the one agent
+ * pool today and 122 offers nothing; a burst at 122 would exit at setup with
+ * "bucket offering nothing" rather than measure anything. The burst's positive
+ * control (exactly one 200, the rest SLOT_TAKEN, which is `bookings_active_slot_uniq`
+ * doing its job) rides on the real shape rather than on a fixture built to produce
+ * it, which is also why this constant has to move when the roster does.
  */
-export const BURST_CODE = "122";
+export const BURST_CODE = "222";
