@@ -35,40 +35,105 @@ export function stubShapedEventId(eventId: string): boolean {
 }
 
 /**
- * How many multiples of the ceiling the control sends (#2275).
+ * How far past the EXACT bound the control goes before it concludes nothing is
+ * refusing it (#2339).
  *
- * It used to send exactly `ceiling + 1`, all at once, and require the last to be
- * refused. Cloudflare's own documentation says the Rate Limiting API "is
- * permissive, eventually consistent, and intentionally designed to not be used as
- * an accurate accounting system", and that there is "a unique limit per Cloudflare
- * location". Asking a deliberately permissive, eventually consistent counter to
- * refuse ONE marginal request out of a simultaneous burst is close to the least
- * likely thing it will do, so the bar could not conclude by construction (L1).
+ * It used to send three times the per minute ceiling and require SOME refusal,
+ * and that could not conclude either. Run 34889873261 sent 180 writes from one
+ * measured address in 20 seconds against a 60 a minute ceiling and every one was
+ * allowed. That is not a broken limiter: Cloudflare's own documentation says the
+ * Rate Limiting API is "permissive, eventually consistent, and intentionally
+ * designed to not be used as an accurate accounting system", with "a unique limit
+ * per Cloudflare location", and each isolate checking "against its locally cached
+ * value". A bar built on a number the platform never promised fails for a reason
+ * nobody should fix, which is how a bar stops being read (L36).
  *
- * An overshoot is what makes a refusal something the counter must produce rather
- * than something it might. The exact crossing point is deliberately never
- * asserted: an eventually consistent counter does not have one.
+ * So the control aims at the bound that IS exact: the per address HOURLY cap, a
+ * Postgres counter that refuses at a number it really holds. A margin rather than
+ * a multiple, because an exact counter needs no overshoot: the whole reason the
+ * old number was a multiple was that its counter was approximate.
  */
-export const CEILING_CONTROL_OVERSHOOT = 3;
+export const CEILING_EXACT_MARGIN = 1.1;
 
-/** How many writes the control sends against a given ceiling. */
-export function ceilingControlSize(ceiling: number): number {
-  return Math.max(1, Math.ceil(ceiling * CEILING_CONTROL_OVERSHOOT));
+/**
+ * The exact per address bound, read from the app's own rules rather than written
+ * here a second time (L41).
+ *
+ * The TIGHTEST rule is what refuses first, so that is the one a budget has to
+ * clear. An empty rule set answers null rather than a number, because a budget
+ * derived from no rule at all would send a fixed count and call whatever happened
+ * a measurement.
+ */
+export function exactAddressBound(rules: readonly { max: number }[]): number | null {
+  const maxima = rules.map((r) => r.max).filter((m) => Number.isFinite(m) && m > 0);
+  return maxima.length === 0 ? null : Math.min(...maxima);
+}
+
+/** How many writes the control will send before it stops asking. */
+export function ceilingControlBudget(exactBound: number): number {
+  return Math.max(1, Math.ceil(exactBound * CEILING_EXACT_MARGIN));
 }
 
 /**
- * How far below the configured ceiling a refusal may start before the ceiling is
- * called tighter than configured.
+ * The share of the per KEY minute ceiling this control will spend.
+ *
+ * The control and the run's drivers hold ONE booking API key, and the per key
+ * ceiling is checked FIRST and returns before the per address one is reached. So a
+ * control sending fast enough to trip the key ceiling never reaches the ceiling it
+ * exists to prove, and on a run where the two overlap it would throttle the
+ * drivers as well. A share rather than the whole, so a little drift either way
+ * still lands under it.
+ */
+export const CEILING_CONTROL_KEY_SHARE = 0.8;
+
+/** How many writes a minute the control holds itself to, from the app's own key ceiling. */
+export function ceilingControlPerMinute(keyPerMinute: number): number {
+  return Math.max(1, Math.floor(keyPerMinute * CEILING_CONTROL_KEY_SHARE));
+}
+
+/**
+ * How long to wait before sending the next wave, to hold that rate.
+ *
+ * Derived from what has been SENT against the time that has really passed, rather
+ * than by adding up its own sleeps: a timer built out of its own sleeps measures
+ * iterations, and every round trip the requests take makes it slower than the rate
+ * it believes it is holding (L226).
+ */
+export function ceilingWaveDelayMs(sent: number, elapsedMs: number, perMinute: number): number {
+  if (perMinute <= 0) return 0;
+  return Math.max(0, Math.round((sent / perMinute) * 60_000 - elapsedMs));
+}
+
+/**
+ * How far below the configured per minute ceiling a refusal may start before the
+ * ceiling is called tighter than configured.
  *
  * The run PACES itself at the ceiling, so a limiter that really refuses at a third
  * of it would make every other number about the run wrong. Permissiveness only
- * ever errs the other way, so there is no matching upper bound.
+ * ever errs the other way, so there is no matching upper bound: being permissive
+ * is now the expected reading rather than a finding.
  */
 export const CEILING_TIGHTNESS_FLOOR = 0.5;
 
+/**
+ * What the deployment echoes on a refusal to say WHICH ceiling said no (#2339).
+ *
+ * Copied as literals rather than imported from `@/lib/booking/api-auth`, because
+ * this file is reached by the node suite with no `@/` alias, and the value is a
+ * string on the wire anyway: it arrives as whatever the deployment stamped on the
+ * header, not as the constant. `scripts/test-loadtest-ceiling-control.ts` pins the
+ * spelling against the app's own list.
+ */
+export const CEILING_REFUSED_BY = {
+  /** The per address backstop, which is the one this control exists to prove. */
+  address: "throttled_ip",
+  /** The per key ceiling, which is checked FIRST and short circuits the other. */
+  key: "throttled_key",
+} as const;
+
 /** Every conclusion one control run can reach. Exactly one of them is a pass. */
 export const CEILING_CONCLUSION = {
-  /** Allowed for roughly the ceiling, then refused. The only pass. */
+  /** A refusal the deployment attributed to the per address ceiling. The only pass. */
   applies: "applies",
   /** Nothing was sent at all. */
   nothingSent: "nothing-sent",
@@ -76,10 +141,6 @@ export const CEILING_CONCLUSION = {
   neverReached: "never-reached",
   /** The key was rejected, which happens BEFORE either limiter. */
   notAuthorized: "not-authorized",
-  /** The application refused every request, so the ceiling never had a chance to. */
-  appRefusedEverything: "app-refused-everything",
-  /** The control found no bookable slot to aim at, so it sent nothing. */
-  noSlot: "no-slot",
   /**
    * The deployment could not read the caller's address, which the per address
    * ceiling DECLINES to judge (#1557), so it can never refuse this control.
@@ -89,9 +150,15 @@ export const CEILING_CONCLUSION = {
   severalAddresses: "several-addresses",
   /** No response said which address it was keyed on, so the premise is unmeasured. */
   addressUnmeasured: "address-unmeasured",
-  /** Everything was allowed, well past the ceiling. */
+  /** Refusals arrived and none said which ceiling made them, so none can be credited. */
+  refusalUnattributed: "refusal-unattributed",
+  /** Every refusal came from the per KEY ceiling, which runs first and short circuits. */
+  keyCeilingOnly: "key-ceiling-only",
+  /** Too few writes reached the deployment to cross the exact bound, so nothing is proved. */
+  underBudget: "under-budget",
+  /** Past the exact bound, counted against one address, and still nothing refused. */
   neverRefused: "never-refused",
-  /** Refusals began far below the configured ceiling. */
+  /** Refusals began far below the configured per minute ceiling. */
   tighter: "tighter-than-configured",
 } as const;
 
@@ -100,10 +167,8 @@ export type CeilingConclusion = (typeof CEILING_CONCLUSION)[keyof typeof CEILING
 /**
  * The address `clientIp` reports for a caller it cannot identify.
  *
- * Copied as a literal rather than imported, because this file is reached by the
- * node suite with no `@/` alias, and the value is a string on the wire anyway: it
- * arrives here as whatever the deployment stamped on the header, not as the
- * constant. `scripts/test-loadtest-ceiling-control.ts` pins the spelling.
+ * Copied as a literal for the same reason `CEILING_REFUSED_BY` is, and pinned by
+ * the same test.
  */
 export const CONTROL_UNIDENTIFIED_IP = "unknown";
 
@@ -120,22 +185,50 @@ export interface CeilingAttempt {
    * the verdict go on assuming the premise it exists to check.
    */
   seenIp: string | null;
+  /**
+   * WHICH ceiling refused, read from the `x-loadtest-refused-by` echo (#2339), or
+   * null when the response carried none (which every allowed request does).
+   *
+   * REQUIRED for the same reason. Both ceilings answer 429 through one refusal, so
+   * a verdict that assumed a 429 was the per ADDRESS one would credit a per key
+   * refusal to a ceiling that was never reached: the key check runs first and
+   * short circuits the address check entirely.
+   */
+  refusedBy: string | null;
 }
 
 /** What one per-address ceiling control run proves. */
 export interface CeilingVerdict {
   sent: number;
-  /** Passed the limiter and reached the handler (any status but 0, 401 and 429). */
+  /** Passed both limiters and reached the handler, and was answered 2xx. */
   allowed: number;
-  /** Refused by a limiter. */
+  /** Refused by a limiter, whichever one. */
   refused: number;
+  /** Refusals the deployment attributed to the per ADDRESS ceiling. */
+  refusedByAddress: number;
+  /** Refusals the deployment attributed to the per KEY ceiling. */
+  refusedByKey: number;
+  /** Refusals that carried no attribution, so no ceiling can be credited with them. */
+  refusedUnattributed: number;
   /** Reached the handler and was refused by the APPLICATION, not by a ceiling. */
   appRefused: number;
   /** Rejected at authentication, before either limiter ran. */
   unauthorized: number;
   /** Never reached the deployment at all. */
   unreachable: number;
-  /** 1-based position of the first refusal, or null when nothing was refused. */
+  /**
+   * Writes that certainly incremented the per address hourly counter: everything
+   * that passed both limiters, whatever the application then did with it.
+   *
+   * An application refusal is INCLUDED on purpose. `authorizeBookingApi` is the
+   * first statement of the handler, so a 409 was metered exactly like a 200, and
+   * excluding it would make the control's budget depend on the roster offering
+   * bookable times.
+   */
+  counted: number;
+  /** The exact bound `counted` has to clear before an absence of refusals means anything. */
+  exactBound: number;
+  /** 1-based position of the first per address refusal, or null when there was none. */
   firstRefusedAt: number | null;
   /** The distinct addresses the deployment reported keying on, sorted. */
   addresses: string[];
@@ -149,34 +242,49 @@ export interface CeilingVerdict {
 }
 
 /**
- * Read the ceiling control's statuses.
- *
- * The classification is the fix. The previous version counted only 429 as a
- * refusal and 0 as unreachable, and everything else as allowed, so 61 consecutive
- * 409s from the application rendered exactly like a healthy unthrottled control
- * and the run reported "the ceiling is not applying" about a ceiling that was
- * working (measured: the same run's steady pass was refused four times by it).
+ * Read the ceiling control's answers.
  *
  * Where each status sits is decided by WHERE the handler makes that decision:
- *   401  `authenticateBearer`, BEFORE either limiter, so the counter never saw it
- *   429  a limiter refused it
+ *   401  `authenticateBearer`, BEFORE either limiter, so no counter saw it
+ *   429  a limiter refused it, and the echo says WHICH
  *   0    never reached the deployment
  *   any other status  it passed both limiters and reached the handler, so it WAS
  *        counted, whatever the handler then did with it
+ *
+ * `exactBound` is what makes an absence of refusals mean something. Below it, a
+ * clean run is a run that never reached a bound anything guarantees; at or above
+ * it, the per address protection really is not applying (L98).
  */
 export function ceilingVerdict(
   attempts: readonly CeilingAttempt[],
   ceiling: number,
+  exactBound: number,
 ): CeilingVerdict {
   const statuses = attempts.map((a) => a.status);
   const sent = statuses.length;
-  const at = statuses.findIndex((s) => s === 429);
-  const refused = statuses.filter((s) => s === 429).length;
+  const refusals = attempts.filter((a) => a.status === 429);
+  const refused = refusals.length;
+  const refusedByAddress = refusals.filter((a) => a.refusedBy === CEILING_REFUSED_BY.address).length;
+  const refusedByKey = refusals.filter((a) => a.refusedBy === CEILING_REFUSED_BY.key).length;
+  const refusedUnattributed = refused - refusedByAddress - refusedByKey;
   const unreachable = statuses.filter((s) => s === 0).length;
   const unauthorized = statuses.filter((s) => s === 401).length;
   const counted = statuses.filter((s) => s !== 0 && s !== 401 && s !== 429);
   const allowed = counted.filter((s) => s >= 200 && s < 300).length;
   const appRefused = counted.length - allowed;
+  // The position of the first ADDRESS refusal, never of the first 429: a per key
+  // refusal says nothing about where this ceiling starts, and crediting it would
+  // put the tightness reading on the wrong counter.
+  const at = attempts.findIndex(
+    (a) => a.status === 429 && a.refusedBy === CEILING_REFUSED_BY.address,
+  );
+  // How many had been counted by the time that refusal happened, which is a
+  // different question from how many were counted overall. The control stops at
+  // the first address refusal, so today the two agree, and a reading that only
+  // holds while the caller behaves is one that breaks silently when it stops.
+  const countedBefore = (at === -1 ? attempts : attempts.slice(0, at)).filter(
+    (a) => a.status !== 0 && a.status !== 401 && a.status !== 429,
+  ).length;
   // Only attempts that REACHED the deployment can say anything about the address:
   // one that never arrived carries no echo for a reason that is already reported.
   const echoes = attempts.filter((a) => a.status !== 0).map((a) => a.seenIp);
@@ -189,9 +297,14 @@ export function ceilingVerdict(
     sent,
     allowed,
     refused,
+    refusedByAddress,
+    refusedByKey,
+    refusedUnattributed,
     appRefused,
     unauthorized,
     unreachable,
+    counted: counted.length,
+    exactBound,
     firstRefusedAt: at === -1 ? null : at + 1,
     addresses,
     unidentified,
@@ -214,7 +327,7 @@ export function ceilingVerdict(
         "the ceiling either way",
     };
   }
-  if (unauthorized > 0 && refused === 0 && allowed === 0) {
+  if (unauthorized > 0 && refused === 0 && counted.length === 0) {
     return {
       ...base,
       conclusion: CEILING_CONCLUSION.notAuthorized,
@@ -223,25 +336,65 @@ export function ceilingVerdict(
         "happens before either limiter, so the ceiling was never reached",
     };
   }
-  if (refused === 0 && allowed === 0 && appRefused > 0) {
-    // The 2026-09-11 run. Every request passed the limiter and was then refused by
-    // the handler, so the ceiling was exercised and cannot be judged from this.
+  // A refusal the deployment CREDITED to the per address ceiling settles it, and
+  // nothing below can override it. Several addresses, an unidentified caller and a
+  // missing echo all explain an ABSENCE of refusals and none of them unmakes one.
+  if (refusedByAddress > 0) {
+    if (base.firstRefusedAt !== null && base.firstRefusedAt < ceiling * CEILING_TIGHTNESS_FLOOR) {
+      return {
+        ...base,
+        conclusion: CEILING_CONCLUSION.tighter,
+        detail:
+          `the per address ceiling refused at write ${base.firstRefusedAt} of ${sent}, far below ` +
+          `the configured ${ceiling} a minute, so the run is pacing against a number that is not ` +
+          "the real one",
+      };
+    }
+    // The per minute ceiling is approximate by design, so WHERE the refusal came
+    // is the reading, not the bar. A refusal before the exact bound could only
+    // have come from a tighter layer than the hourly cap.
+    const layer =
+      countedBefore < exactBound
+        ? `at write ${base.firstRefusedAt} of ${sent} with ${countedBefore} counted, before the ` +
+          `${exactBound} an hour cap could have been reached, so a tighter layer than that cap ` +
+          "refused it"
+        : `only after ${countedBefore} writes had been counted, so the ${exactBound} an hour cap ` +
+          `is what bounds one host here and the approximate ${ceiling} a minute ceiling refused ` +
+          "nothing";
     return {
       ...base,
-      conclusion: CEILING_CONCLUSION.appRefusedEverything,
+      conclusion: CEILING_CONCLUSION.applies,
       detail:
-        `all ${appRefused} of the ${sent} control writes were refused by the application rather ` +
-        "than by a ceiling, so they were counted against it but none could show it refusing. " +
-        "Fix the control's request shape; this says nothing about the ceiling",
+        `the per address ceiling refused ${refusedByAddress} of ${sent} writes from ` +
+        `${addresses.join(", ") || "one address"}, ${layer}`,
+    };
+  }
+  if (refusedUnattributed > 0) {
+    return {
+      ...base,
+      conclusion: CEILING_CONCLUSION.refusalUnattributed,
+      detail:
+        `${refusedUnattributed} of the ${sent} control writes were refused by a limiter that did ` +
+        "not say which one it was, so no ceiling can be credited with them. The echo is gated on " +
+        "SLATE_LOADTEST; check it is set on the deployment",
+    };
+  }
+  if (refusedByKey > 0) {
+    return {
+      ...base,
+      conclusion: CEILING_CONCLUSION.keyCeilingOnly,
+      detail:
+        `every one of the ${refusedByKey} refusals came from the per KEY ceiling, which is checked ` +
+        "first and short circuits the per address one, so this control never reached the ceiling " +
+        "it exists to prove. Run it with the key to itself, or more slowly",
     };
   }
   // The three ways the control's own premise, that every write lands on ONE
   // address, can be false or unmeasured. Each is asked only where it can explain
-  // an ABSENCE of refusals: a refusal that happened anyway is still a refusal,
-  // and several addresses only ever RAISE the headroom. Every one of them used to
-  // render as "the ceiling is not applying", which is the finding that sent
-  // somebody to look at a ceiling that was working (L11, L70).
-  if (refused === 0 && unidentified > 0 && addresses.length === 0) {
+  // an ABSENCE of refusals. Every one of them used to render as "the ceiling is
+  // not applying", which is the finding that sent somebody to look at a ceiling
+  // that was working (L11, L70).
+  if (unidentified > 0 && addresses.length === 0) {
     return {
       ...base,
       conclusion: CEILING_CONCLUSION.callerUnidentified,
@@ -251,17 +404,17 @@ export function ceilingVerdict(
         "was never asked to refuse. Check what is in front of the deployment, not the ceiling",
     };
   }
-  if (refused === 0 && addresses.length > 1) {
+  if (addresses.length > 1) {
     return {
       ...base,
       conclusion: CEILING_CONCLUSION.severalAddresses,
       detail:
         `the ${sent} control writes were counted against ${addresses.length} different addresses ` +
-        `(${addresses.join(", ")}), so no single one of them reached the ceiling of ${ceiling}. ` +
-        "The runner's egress is a pool; this says nothing about the ceiling either way",
+        `(${addresses.join(", ")}), so no single one of them reached the cap of ${exactBound} an ` +
+        "hour. The runner's egress is a pool; this says nothing about the ceiling either way",
     };
   }
-  if (refused === 0 && addresses.length === 0 && unreported > 0) {
+  if (addresses.length === 0 && unreported > 0) {
     return {
       ...base,
       conclusion: CEILING_CONCLUSION.addressUnmeasured,
@@ -271,38 +424,30 @@ export function ceilingVerdict(
         "SLATE_LOADTEST; check it is set on the deployment",
     };
   }
-  if (refused === 0) {
+  if (base.counted < exactBound) {
     return {
       ...base,
-      conclusion: CEILING_CONCLUSION.neverRefused,
+      conclusion: CEILING_CONCLUSION.underBudget,
       detail:
-        `${allowed} of ${sent} control writes, all counted against ${addresses.join(", ")}, were ` +
-        `allowed against a ceiling of ${ceiling} and none was refused, so the ceiling is not ` +
-        "applying. Every 429 the run attributed means something else",
-    };
-  }
-  if (base.firstRefusedAt !== null && base.firstRefusedAt < ceiling * CEILING_TIGHTNESS_FLOOR) {
-    return {
-      ...base,
-      conclusion: CEILING_CONCLUSION.tighter,
-      detail:
-        `the ceiling refused at write ${base.firstRefusedAt} of ${sent}, far below the configured ` +
-        `${ceiling}, so the run is pacing against a number that is not the real one`,
+        `only ${base.counted} of the ${sent} control writes were counted against the address, short ` +
+        `of the ${exactBound} an hour cap that is the one bound guaranteed to refuse, so nothing is ` +
+        "proved either way. Give the step longer, or send more",
     };
   }
   return {
     ...base,
-    conclusion: CEILING_CONCLUSION.applies,
+    conclusion: CEILING_CONCLUSION.neverRefused,
     detail:
-      `${allowed} of ${sent} writes from one address were allowed and ${refused} refused against ` +
-      `a ceiling of ${ceiling}, so the ceiling is applying`,
+      `${base.counted} writes from ${addresses.join(", ")} were counted against a cap of ` +
+      `${exactBound} an hour and not one was refused, so the per address protection is not ` +
+      "applying at all. Every 429 the run attributed means something else",
   };
 }
 
 /** One bucket code and the times the deployment is offering for it. */
 export interface CeilingOffer {
   code: string;
-  slots: readonly string[];
+  slots: string[];
 }
 
 /** The code the control will aim at, with every time it may use. */
@@ -312,54 +457,23 @@ export interface CeilingTarget {
 }
 
 /**
- * What the control aims its writes at (#2275, second pass).
+ * The first code that is offering anything, with EVERY time it offered.
  *
- * It used to aim at a hardcoded code with a start SEVEN days out, against a four
- * day booking horizon, so the application refused every request before the
- * ceiling's answer could be read. Two runs in a row concluded nothing that way.
- * So the target is a slot the deployment is ACTUALLY offering, read from
- * `/api/availability`, and a control with nothing to aim at refuses rather than
- * sending into a guaranteed refusal (L98).
+ * Every time rather than the first, because the steady pass is booking against the
+ * same roster while this runs: a single slot taken mid control would turn every
+ * remaining write into an application refusal.
  *
- * It keeps EVERY offered slot rather than the first, and the control rotates
- * through them. The steady pass is booking against the same roster while this
- * runs, so one slot can be taken mid control and turn every remaining write into
- * an application refusal, which is the exact state this pass exists to stop
- * reaching the report again.
+ * Null when nothing is on offer, and that is no longer a refusal to send (#2339).
+ * The limiter is the first statement of the handler, so a write the application
+ * refuses was metered exactly like one it accepted; aiming at an offered time
+ * keeps the control's requests realistic and costs the deployment less, and it is
+ * not something the control's verdict depends on.
  */
 export function chooseCeilingTarget(offers: readonly CeilingOffer[]): CeilingTarget | null {
   for (const offer of offers) {
     if (offer.slots.length > 0) return { code: offer.code, slots: [...offer.slots] };
   }
   return null;
-}
-
-/**
- * The verdict for a control that never found a slot to aim at.
- *
- * Its own conclusion rather than `nothingSent`, because the two send a reader to
- * different places: this one means the deployment is offering nothing for the
- * codes asked (a seed or a roster problem), and that one means the control step
- * did not run.
- */
-export function ceilingNoSlot(ceiling: number, codesAsked: readonly string[]): CeilingVerdict {
-  return {
-    sent: 0,
-    allowed: 0,
-    refused: 0,
-    appRefused: 0,
-    unauthorized: 0,
-    unreachable: 0,
-    firstRefusedAt: null,
-    addresses: [],
-    unidentified: 0,
-    unreported: 0,
-    conclusion: CEILING_CONCLUSION.noSlot,
-    detail:
-      `the deployment offered no bookable time for any of ${codesAsked.join(", ")}, so the control ` +
-      `had nothing to aim its writes at and the ceiling of ${ceiling} was never exercised. ` +
-      "Fix the roster or the seed; this says nothing about the ceiling",
-  };
 }
 
 /** What `/api/smoke/version` said about the deployment the run is about to drive. */

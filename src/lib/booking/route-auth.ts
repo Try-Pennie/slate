@@ -1,4 +1,4 @@
-import { stampSeenIp } from "@/lib/loadtest-echo";
+import { stampSeenIp, stampRefusedBy } from "@/lib/loadtest-echo";
 import { NextResponse, type NextRequest } from "next/server";
 import { bookingApiKeyPrimary, bookingApiKeySecondary } from "@/lib/env";
 import {
@@ -115,10 +115,19 @@ function refuse(
   // #2243: under SLATE_LOADTEST only, the refusal carries the address the ceiling
   // was keyed on. This is the response a load run most needs it on: a 429 is the
   // one outcome a runner cannot attribute for itself.
+  //
+  // #2339 adds WHICH ceiling said no, from the same `reason` the log line and the
+  // counter above were chosen by, so the three cannot disagree (L70). The per key
+  // and the per address ceilings answer 429 through this one refusal, so without
+  // it a run proving the per address ceiling counts a per key refusal as proof of
+  // it, and passes a bar that ceiling never met.
   return {
     ok: false,
     reason,
-    response: stampSeenIp(NextResponse.json({ error }, { status }), headers),
+    response: stampRefusedBy(
+      stampSeenIp(NextResponse.json({ error }, { status }), headers),
+      reason,
+    ),
   };
 }
 

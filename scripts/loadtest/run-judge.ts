@@ -18,7 +18,8 @@ import {
   type JudgedBooking,
   type PlatformReading,
 } from "./judge-booking-run.ts";
-import { ceilingVerdict, type CeilingVerdict } from "./preflight-checks.ts";
+import { ceilingVerdict, exactAddressBound, type CeilingVerdict } from "./preflight-checks.ts";
+import { DIRECT_BOOKING_API_IP_HOURLY_RATE_RULES } from "../../src/lib/rate-limit-core.ts";
 import { burstControlStrength, type BurstDepthReading } from "./burst-target.ts";
 import { REQUEST_CPU_P99_MS } from "./judge-booking-run.ts";
 import {
@@ -307,7 +308,11 @@ try {
 // A MISSING artifact is judged by the same function as a present one, from an
 // empty status list, so "the step never ran" gets its own conclusion rather than
 // being hand assembled here into something that looks like a reading (L98).
-let ipControl: CeilingVerdict = ceilingVerdict([], BOOKING_WRITES_PER_MINUTE);
+let ipControl: CeilingVerdict = ceilingVerdict(
+  [],
+  BOOKING_WRITES_PER_MINUTE,
+  exactAddressBound(DIRECT_BOOKING_API_IP_HOURLY_RATE_RULES) ?? 0,
+);
 try {
   ipControl = readJson<CeilingVerdict>(join(RESULTS, "ip-ceiling.json"));
 } catch {

@@ -20,7 +20,17 @@ import {
 } from "./loadtest/judge-booking-run.ts";
 import type { BookingAttempt, DriverResult } from "./loadtest/book-plan.ts";
 import { REQUEST_CPU_P99_MS } from "./loadtest/judge-booking-run.ts";
-import { ceilingVerdict, type CeilingAttempt } from "./loadtest/preflight-checks.ts";
+import {
+  ceilingVerdict,
+  exactAddressBound,
+  CEILING_REFUSED_BY,
+  type CeilingAttempt,
+} from "./loadtest/preflight-checks.ts";
+import { DIRECT_BOOKING_API_IP_HOURLY_RATE_RULES } from "../src/lib/rate-limit-core.ts";
+
+/** The app's own exact per address bound, so these fixtures cannot describe a
+ *  state the control can never produce (L48). */
+const CEILING_EXACT_BOUND = exactAddressBound(DIRECT_BOOKING_API_IP_HOURLY_RATE_RULES)!;
 import { assert, eq, finish } from "./lib/harness.ts";
 
 const RUN = "run-1";
@@ -122,10 +132,15 @@ function passing(): JudgeInput {
     // fixture cannot describe a state the control can never produce (L48).
     ipCeilingControl: ceilingVerdict(
       [
-        ...Array(64).fill({ status: 200, seenIp: "203.0.113.9" }),
-        ...Array(116).fill({ status: 429, seenIp: "203.0.113.9" }),
+        ...Array(64).fill({ status: 200, seenIp: "203.0.113.9", refusedBy: null }),
+        ...Array(116).fill({
+          status: 429,
+          seenIp: "203.0.113.9",
+          refusedBy: CEILING_REFUSED_BY.address,
+        }),
       ] as CeilingAttempt[],
       60,
+      CEILING_EXACT_BOUND,
     ),
     platform: {
       invocations: 610,
@@ -422,18 +437,23 @@ const bars = (r: ReturnType<typeof judgeBookingRun>) => r.findings.map((f) => f.
 {
   const never = broken((i) => {
     i.ipCeilingControl = ceilingVerdict(
-      Array(180).fill({ status: 200, seenIp: "203.0.113.9" }) as CeilingAttempt[],
+      Array(CEILING_EXACT_BOUND + 20).fill({
+        status: 200,
+        seenIp: "203.0.113.9",
+        refusedBy: null,
+      }) as CeilingAttempt[],
       60,
+      CEILING_EXACT_BOUND,
     );
   });
   assert(
     bars(never).includes("the per address write ceiling"),
-    "sixty one writes from one address with none refused means the ceiling is not applying, so " +
-      "every 429 the run attributed means something else",
+    "writes from one address PAST the exact hourly cap with none refused means the per address " +
+      "protection is not applying, so every 429 the run attributed means something else",
   );
 
   const notRun = broken((i) => {
-    i.ipCeilingControl = ceilingVerdict([], 60);
+    i.ipCeilingControl = ceilingVerdict([], 60, CEILING_EXACT_BOUND);
   });
   const notRunDetail = notRun.findings.find((f) => f.bar === "the per address write ceiling")!.detail;
   assert(
@@ -447,7 +467,18 @@ const bars = (r: ReturnType<typeof judgeBookingRun>) => r.findings.map((f) => f.
   );
 
   const early = broken((i) => {
-    i.ipCeilingControl = ceilingVerdict([...Array(11).fill(200), ...Array(169).fill(429)] as number[], 60);
+    i.ipCeilingControl = ceilingVerdict(
+      [
+        ...Array(11).fill({ status: 200, seenIp: "203.0.113.9", refusedBy: null }),
+        ...Array(169).fill({
+          status: 429,
+          seenIp: "203.0.113.9",
+          refusedBy: CEILING_REFUSED_BY.address,
+        }),
+      ] as CeilingAttempt[],
+      60,
+      CEILING_EXACT_BOUND,
+    );
   });
   assert(
     bars(early).includes("the per address write ceiling"),

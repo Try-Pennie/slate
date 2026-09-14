@@ -269,10 +269,19 @@ jobs:
           name: freshness
           path: results/
 
+  # AFTER the steady pass, not alongside it (#2339). The control now sends past the
+  # per address HOURLY cap, which is the only per address bound that really
+  # refuses, and the per KEY ceiling is checked FIRST and returns before the per
+  # address one is reached. Run concurrently with the drivers, the two would share
+  # one key's budget: the control could trip the key ceiling and never reach the
+  # ceiling it exists to prove, and the drivers would be throttled by it.
   ceiling:
-    needs: burst
+    needs: drive
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # Long enough for the whole budget at the paced rate. The ordinary case stops at
+    # the first per address refusal and takes a couple of minutes; a deployment
+    # where nothing tighter than the hourly cap refuses pays the whole thing.
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
       - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
@@ -283,10 +292,10 @@ jobs:
           node-version: 24
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      # Its own step, and its own address budget: three times the ceiling inside
-      # one window, aimed at a time the deployment is offering, must see SOME
-      # refusal. Without it, every 429 the run attributes is a number nobody has
-      # shown the ceiling can produce.
+      # Its own step, and its own address budget. It sends until the deployment
+      # CREDITS a refusal to the per address ceiling, up to past the exact hourly
+      # cap, so the run always reaches a verdict. Without it, every 429 the run
+      # attributes is a number nobody has shown that ceiling can produce.
       - name: Prove the per address write ceiling applies
         env:
           SLATE_BASE: ${{ vars.LOADTEST_BASE_URL }}

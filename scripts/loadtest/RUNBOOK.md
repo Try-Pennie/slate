@@ -225,7 +225,10 @@ Four drivers, **fifteen a minute each for ten minutes**. Fifteen times four is
 (`BOOKING_API_IP_LIMITER.perMinute`), and that is deliberate: the run sits on the
 ceiling so the judge can attribute the 429s it produces. The pacing constants are
 imported from the app rather than copied, so a run can never drift into measuring a
-ceiling somebody changed.
+ceiling somebody changed. That ceiling is APPROXIMATE (#2339), so sitting on it is
+a statement about what the drivers are asking for rather than a prediction that
+they will be refused at it; what the run's 429s are attributed against is the
+ceiling control's own step below.
 
 ```
 SLATE_BASE=https://<loadtest>.workers.dev BOOKING_API_KEY=<key> \
@@ -629,7 +632,7 @@ happened to arrive.
 | every 200 left a row | a booking row carrying the request's external id, an idempotency key, and a `busy_blocks` row |
 | the burst | one winner **per agent** (#2273), every other answer `SLOT_TAKEN`, and each winner really exists. A leg that was configured and produced fewer driver files than fired is **incomplete**, never a skipped bar. The report states the measured depth the control ran at, since one deep and three deep prove different amounts (#2278) |
 | freshness | the worst oldest-bucket age across the window under 6 minutes |
-| the per address ceiling | its own step aims at a time the deployment is OFFERING, sends three times the ceiling from one address inside one window, and requires SOME refusal. It also reads back the address the deployment keyed on: unidentified, several, or unechoed each get their own conclusion, because all three used to render as "the ceiling is not applying" |
+| the per address ceiling | its own step, run AFTER the steady pass so it has the API key's budget to itself, sends from one address until the deployment CREDITS a refusal to the per address ceiling, up to past the exact 1,200 an hour cap. It reads back both echoes: the address it was keyed on (unidentified, several, or unechoed each get their own conclusion) and WHICH ceiling refused, so a per key refusal is never counted as proof of the per address one (#2339) |
 | platform | CPU p99 under the REQUEST budget (`REQUEST_CPU_P99_MS`, half the latency bar, and applied only to a window with no cron in it), the cron half under `limits.cpu_ms`, and **no invocation outcome other than `ok`**. It used to borrow the 200ms LANE budget, which is a different question about a scheduled tick (#2321) |
 | the fault pass | at `SLATE_LOADTEST_FAULT_PCT=10`, zero 5xx, and a pass that made no requests fails rather than passing on an empty sample. A pass whose deployment reported a DIFFERENT percentage is incomplete, and zero is the case that matters: it passes the bar having injected nothing |
 
@@ -720,7 +723,7 @@ same window, since neither confirm has the other's busy row yet.
 leads picking adjacent times in the same moment, and no suite had ever confirmed
 two bookings concurrently.
 
-### The bar that took two passes to be able to conclude (#2275)
+### The bar that took three passes to be able to conclude (#2275, #2339)
 
 Read this before reading a ceiling finding, because every wrong turn it names was
 taken once.
@@ -729,17 +732,19 @@ The DRY RUN is not the problem, though both the issue and the 2026-09-14 run
 record say it is. `authorizeBookingApi` is the first statement of the POST
 handler and both ceilings live inside it, well above the `if (v.dryRun)` branch,
 so a dry run is metered exactly like a real write. The 409s prove it: a request
-the limiter had refused would never have reached the application at all.
+the limiter had refused would never have reached the application at all. That
+same fact is why an APPLICATION refusal is now fine here: a 409 was counted
+against the address exactly like a 200, so the control no longer depends on the
+roster offering a bookable time.
 
-Two real defects, fixed in the second pass:
+Three real defects, and the third is the one worth carrying forward:
 
 - **The request shape could never be allowed.** It aimed at a hardcoded code with
   a start SEVEN days out against a four day booking horizon, so the application
-  refused all 180 before the ceiling's answer could be read. It now reads
-  `/api/availability` for the hottest codes in the measured mix, aims at a time
-  the deployment is actually offering, rotates through every offered time (the
-  steady pass is booking against the same roster), and REFUSES by name when no
-  code offers anything, rather than sending into a guaranteed refusal.
+  refused all 180 before the ceiling's answer could be read. It reads
+  `/api/availability` for the hottest codes in the measured mix and aims at a time
+  the deployment is actually offering, rotating through every offered time (the
+  steady pass is booking against the same roster).
 - **It assumed the premise it rests on.** "N writes from ONE address" was never
   measured, and three different things make it false: an address the deployment
   cannot read is served UNJUDGED by the per address ceiling (#1557) so it can
@@ -747,11 +752,35 @@ Two real defects, fixed in the second pass:
   several counters, and a deployment echoing nothing leaves the premise
   unmeasured. Each has its own conclusion now. The `x-loadtest-seen-ip` echo
   (#2243) already carried the answer and nothing read it.
+- **THE BAR ASKED FOR SOMETHING THE PLATFORM NEVER PROMISED.** Run 34889873261
+  sent 180 writes from one measured address in 20 seconds against the 60 a minute
+  ceiling, with the binding present and answering `success` every time, and every
+  one was allowed. That is the documented behaviour of the native binding, which
+  Cloudflare calls "permissive, eventually consistent, and intentionally designed
+  to not be used as an accurate accounting system", with "a unique limit per
+  Cloudflare location". A bar built on it fails for a reason nobody should fix,
+  which is how a bar stops being read (L36).
 
-So a ceiling finding names one of: the ceiling really is not applying, the
-control had nothing to aim at, the app refused everything, the key was rejected,
-the caller could not be identified, several addresses were counted, or the
-address was never echoed. Only the first is about the ceiling.
+So the control aims at the bound that IS exact: the per address HOURLY cap in
+Postgres (1,200), and it reads the deployment's own `x-loadtest-refused-by` echo
+rather than inferring which ceiling a 429 came from. That matters because the per
+KEY ceiling is checked FIRST and returns before the per address one is reached, so
+without the echo a per key refusal would be credited to the ceiling under test.
+For the same reason the step now runs AFTER the steady pass rather than alongside
+it: the two share one API key, and a control sending fast enough to trip the key
+ceiling would both miss its own target and throttle the drivers.
+
+Where the refusal landed is REPORTED, never judged. A refusal before the hourly
+cap says a tighter layer refused; a refusal only at the cap says the approximate
+per minute ceiling refused nothing, which is a real fact about the deployment and
+not a fault.
+
+So a ceiling finding names one of: the per address protection really is not
+applying, too few writes were counted to reach a bound anything guarantees, every
+refusal came from the per key ceiling, a refusal said nothing about which ceiling
+made it, the key was rejected, the caller could not be identified, several
+addresses were counted, or the address was never echoed. Only the first is about
+the ceiling.
 
 The platform half is reported `unmeasured` on every run so far: the analytics API
 returns no rows for a window minutes old, which is the lag this repo already

@@ -17,7 +17,7 @@ vi.hoisted(() => {
   process.env.SLATE_LOADTEST = "true";
 });
 
-import { stampSeenIp, SEEN_IP_HEADER } from "./loadtest-echo";
+import { stampSeenIp, SEEN_IP_HEADER, stampRefusedBy, REFUSED_BY_HEADER } from "./loadtest-echo";
 
 function headers(init: Record<string, string>): Headers {
   return new Headers(init);
@@ -80,6 +80,64 @@ describe("the same helper with the flag OFF", () => {
       const off = await import("./loadtest-echo");
       const res = off.stampSeenIp(new Response("ok"), headers({ "cf-connecting-ip": "203.0.113.9" }));
       expect(res.headers.get(SEEN_IP_HEADER)).toBeNull();
+    } finally {
+      process.env.SLATE_LOADTEST = "true";
+      vi.resetModules();
+    }
+  });
+});
+
+// #2339: WHICH ceiling refused, echoed beside the address.
+//
+// The per key ceiling and the per address one both answer 429 through the same
+// refusal, so a load run measuring the per address ceiling could count a per key
+// refusal as proof of it. The run then passes a bar the ceiling it was measuring
+// never met (L11, L53). The reason is taken from the classification the authorizer
+// already made, never re-derived here, so the header and the response cannot
+// disagree about what happened.
+describe("the refused-by echo under SLATE_LOADTEST", () => {
+  it("names the ceiling that refused", () => {
+    const res = stampRefusedBy(new Response("no", { status: 429 }), "throttled_ip");
+    expect(res.headers.get(REFUSED_BY_HEADER)).toBe("throttled_ip");
+  });
+
+  it("tells the per key ceiling apart from the per address one", () => {
+    // The whole point of the header. Same status, same body shape, different fix.
+    const key = stampRefusedBy(new Response("no", { status: 429 }), "throttled_key");
+    expect(key.headers.get(REFUSED_BY_HEADER)).toBe("throttled_key");
+    expect(key.headers.get(REFUSED_BY_HEADER)).not.toBe("throttled_ip");
+  });
+
+  it("returns the same response, so a call site can wrap a return", () => {
+    const original = new Response("no", { status: 401 });
+    const returned = stampRefusedBy(original, "bad_credential");
+    expect(returned).toBe(original);
+    expect(returned.status).toBe(401);
+  });
+
+  it("does not fail a refusal when the response head cannot be written", () => {
+    const res = new Response("no", { status: 429 });
+    Object.defineProperty(res, "headers", {
+      value: {
+        set() {
+          throw new TypeError("immutable");
+        },
+      },
+    });
+    expect(() => stampRefusedBy(res, "throttled_ip")).not.toThrow();
+  });
+});
+
+describe("the refused-by echo with the flag OFF", () => {
+  it("adds nothing at all", async () => {
+    // The control (L1). Which ceiling refused a caller is our own shaping, and it
+    // has no business on a production response.
+    vi.resetModules();
+    process.env.SLATE_LOADTEST = "false";
+    try {
+      const off = await import("./loadtest-echo");
+      const res = off.stampRefusedBy(new Response("no", { status: 429 }), "throttled_ip");
+      expect(res.headers.get(REFUSED_BY_HEADER)).toBeNull();
     } finally {
       process.env.SLATE_LOADTEST = "true";
       vi.resetModules();
