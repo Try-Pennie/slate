@@ -7,6 +7,7 @@
 import {
   migrationMismatch,
   readAgentCount,
+  resolveAgentCount,
   migrationReadRefusal,
   appliedVersionsFrom,
 } from "./loadtest/seed-guards.ts";
@@ -177,6 +178,115 @@ const SHIPPED = ["0001", "0002", "0003", "0004"];
   const why = (appliedVersionsFrom(null) as { why: string }).why;
   const empty = migrationMismatch([], SHIPPED, "0004")!;
   assert(why !== empty, "and its message is not the one an empty branch gets");
+}
+
+// =============================================================================
+// THE ROSTER SIZE COMES FROM THE SHAPE (#2320)
+//
+// `AGENTS` defaulted to 200 while the SHAPE the seed reproduces carries the
+// measured count: 90 baked in, 94 on the 2026-09-14 export. The seed printed the
+// shape's count in its own log line and then ignored it. On 2026-09-14 the first
+// branch for the #2284 re-run came up with 200 bookable agents against
+// production's 94, pool depths roughly double the real ones, and had to be thrown
+// away and re-created.
+//
+// It fails GREEN, which is why it needs a guard rather than care: a roster of the
+// wrong size seeds perfectly, every count reads as a number, and the run measures a
+// shape nobody chose (L354). The shape's pool depths are also what the seeded
+// output is CHECKED against, so a different total makes that check meaningless.
+// =============================================================================
+
+// --- no AGENTS: the shape decides -------------------------------------------------
+{
+  const r = resolveAgentCount({ rawAgents: undefined, shapeAgents: 94 });
+  eq(r.count, 94, "an unset AGENTS takes the SHAPE's measured count, never a coded 200");
+  eq(r.why, null, "and there is nothing to explain");
+}
+{
+  eq(
+    resolveAgentCount({ rawAgents: "", shapeAgents: 94 }).count,
+    94,
+    "and so does an empty one",
+  );
+}
+
+// --- AGENTS agreeing with the shape ------------------------------------------------
+{
+  const r = resolveAgentCount({ rawAgents: "94", shapeAgents: 94 });
+  eq(r.count, 94, "an explicit count that agrees with the shape is used");
+  eq(r.why, null, "with nothing to explain");
+}
+
+// --- AGENTS disagreeing is REFUSED --------------------------------------------------
+{
+  // The pool depths the seeded output is checked against come from the shape, so a
+  // different total makes that check meaningless. Refused by name rather than
+  // seeded and discovered an hour later.
+  const r = resolveAgentCount({ rawAgents: "200", shapeAgents: 94 });
+  eq(r.count, null, "an explicit count that disagrees with the shape is refused");
+  assert(/200/.test(r.why ?? ""), "naming what was asked for");
+  assert(/94/.test(r.why ?? ""), "and what the shape says");
+  assert(
+    /ALLOW_AGENT_COUNT_MISMATCH/.test(r.why ?? ""),
+    "and the override, so a deliberate experiment is not left guessing (L111)",
+  );
+}
+
+// --- the named override lets a deliberate experiment through ---------------------------
+{
+  const r = resolveAgentCount({ rawAgents: "200", shapeAgents: 94, allowMismatch: true });
+  eq(r.count, 200, "the override honours the explicit count");
+  assert(
+    /200/.test(r.why ?? "") && /94/.test(r.why ?? ""),
+    "and SAYS the run is against a roster the shape does not describe, since a silent override " +
+      "is the same defect wearing a flag",
+  );
+}
+{
+  // The override must not invent a count when none was given: it says a MISMATCH is
+  // intended, which is a statement about two numbers, and there is only one here.
+  const r = resolveAgentCount({ rawAgents: undefined, shapeAgents: 94, allowMismatch: true });
+  eq(r.count, 94, "the override changes nothing when no count was given");
+}
+
+// --- an unreadable AGENTS is still refused by name ----------------------------------------
+{
+  for (const raw of ["many", "0", "1e3", "0x10", "-4"]) {
+    const r = resolveAgentCount({ rawAgents: raw, shapeAgents: 94 });
+    eq(r.count, null, `${JSON.stringify(raw)} is refused`);
+    assert(
+      !/does not match/.test(r.why ?? ""),
+      `and ${JSON.stringify(raw)} is refused for being unreadable, not for disagreeing (L11)`,
+    );
+  }
+}
+
+// --- a shape that carries no usable count is its own refusal --------------------------------
+{
+  // The shape is the thing being reproduced, so a shape with no count is not a
+  // reason to fall back to 200: that is the exact substitution this fixes.
+  for (const shapeAgents of [0, -1, Number.NaN]) {
+    const r = resolveAgentCount({ rawAgents: undefined, shapeAgents });
+    eq(r.count, null, `a shape claiming ${shapeAgents} agents is refused`);
+    assert(/shape/i.test(r.why ?? ""), "and the message says it is the shape that is unusable");
+  }
+}
+
+// --- no two refusals say the same thing (L11) -----------------------------------------------
+{
+  const said = new Set<string>();
+  const cases = [
+    { rawAgents: "200", shapeAgents: 94 },
+    { rawAgents: "many", shapeAgents: 94 },
+    { rawAgents: undefined, shapeAgents: 0 },
+  ];
+  for (const c of cases) {
+    const why = resolveAgentCount(c).why;
+    assert(why !== null, "each of these refuses");
+    assert(!said.has(why!), `each refusal has its own sentence: ${why}`);
+    said.add(why!);
+  }
+  eq(said.size, cases.length, "no two refusals share a sentence");
 }
 
 finish();
