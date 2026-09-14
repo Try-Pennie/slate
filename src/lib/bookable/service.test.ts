@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import type { Reachability } from "@/lib/google/reachability-classify";
+import type { PoolEntryResult } from "@/lib/google/pool-entry";
 
 // #281 + #913: the bookable-toggle service. Making an agent bookable when Slate
 // can't reach their Google calendar must BLOCK the flip (the agent never enters
@@ -12,7 +13,12 @@ import type { Reachability } from "@/lib/google/reachability-classify";
 const updates: Array<{ id: string; bookable: boolean }> = [];
 /** Every patch as written, so the columns BESIDE bookable can be asserted (#2071). */
 const patches: Array<{ id: string; patch: Record<string, unknown> }> = [];
-let currentUser: { id: string; bookable: boolean; email: string } | null = null;
+let currentUser: {
+  id: string;
+  bookable: boolean;
+  email: string;
+  bookable_pending_since?: string | null;
+} | null = null;
 
 vi.mock("@/lib/supabase/admin", () => ({
   supabaseAdmin: () => ({
@@ -22,7 +28,11 @@ vi.mock("@/lib/supabase/admin", () => ({
       }),
       update: (patch: { bookable: boolean } & Record<string, unknown>) => ({
         eq: async (_col: string, id: string) => {
-          updates.push({ id, bookable: patch.bookable });
+          // `updates` is the BOOKABLE writes only. Since #2302 the activation path
+          // also writes `bookable_pending_since` on its own before the gate, and
+          // folding that in here would make every "wrote exactly one flip"
+          // assertion read as two. Every write, of either kind, is in `patches`.
+          if ("bookable" in patch) updates.push({ id, bookable: patch.bookable });
           patches.push({ id, patch });
           return { error: null };
         },
@@ -41,6 +51,12 @@ function deps(...outcomes: Reachability[]) {
     checkReachable: vi.fn(async (_email: string) => seq.shift() ?? outcomes[outcomes.length - 1]),
     notify: vi.fn(async (_key: string, _cooldownMs: number, _text: string) => {}),
     cleanupOnPoolExit: vi.fn(async (_userId: string) => {}),
+    onboardIntoPool: vi.fn(async (_userId: string) => ({
+      calendars: 1,
+      hydrated: 1,
+      failed: 0,
+      watch: "renewed" as PoolEntryResult["watch"],
+    })),
   };
 }
 
@@ -211,4 +227,161 @@ describe("writeBookable settles the sync's pending mark (#2071)", () => {
     await writeBookable("u1", false);
     expect(patches).toEqual([{ id: "u1", patch: { bookable: false, bookable_pending_since: null } }]);
   });
+});
+
+describe("onboarding on the way INTO the pool (#2302)", () => {
+  beforeEach(() => {
+    updates.length = 0;
+    patches.length = 0;
+    currentUser = null;
+  });
+
+  it("reads the calendar BEFORE the write, so bookable means a calendar Slate can see", async () => {
+    currentUser = { id: "u1", bookable: false, email: "new@trypennie.com" };
+    const d = deps("reachable");
+    const res = await applyBookableByUserId("u1", true, d);
+    expect(res.status).toBe("applied");
+    expect(d.onboardIntoPool).toHaveBeenCalledWith("u1");
+    expect(updates).toEqual([{ id: "u1", bookable: true }]);
+    expect(d.cleanupOnPoolExit).not.toHaveBeenCalled();
+  });
+
+  it("refuses the flip when no calendar could be read, and writes nothing", async () => {
+    // Dan, 2026-09-14: "we should probably not allow the change to work if the
+    // calendar read fails. we don't want someone without a read calendar to be
+    // bookable." An agent in the pool with no cached busy time reads as free for
+    // every hour their working hours allow, so this fails CLOSED like every other
+    // arm of the activation gate.
+    currentUser = { id: "u1", bookable: false, email: "unread@trypennie.com" };
+    const d = deps("reachable");
+    d.onboardIntoPool = vi.fn(async () => ({ calendars: 1, hydrated: 0, failed: 1, watch: "renewed" as PoolEntryResult["watch"] }));
+    const res = await applyBookableByUserId("u1", true, d);
+    expect(res.status).toBe("blocked");
+    expect(res).toMatchObject({ reason: "calendar_unhydrated" });
+    expect(updates).toEqual([]);
+    expect(d.notify).toHaveBeenCalled();
+  });
+
+  it("refuses when only SOME of their calendars could be read", async () => {
+    // A calendar Slate cannot read is busy time Slate cannot see, so a partial read
+    // carries the same double booking risk as none at all. The strictness is the
+    // sharp edge of the rule and is deliberate.
+    currentUser = { id: "u1", bookable: false, email: "partial@trypennie.com" };
+    const d = deps("reachable");
+    d.onboardIntoPool = vi.fn(async () => ({ calendars: 2, hydrated: 1, failed: 1, watch: "renewed" as PoolEntryResult["watch"] }));
+    const res = await applyBookableByUserId("u1", true, d);
+    expect(res.status).toBe("blocked");
+    expect(updates).toEqual([]);
+  });
+
+  it("refuses when Google gave them no calendar at all", async () => {
+    // Nothing to read is not a successful read (L98). Zero hydrated calendars and a
+    // clean run look identical from a failure count alone.
+    currentUser = { id: "u1", bookable: false, email: "nocal@trypennie.com" };
+    const d = deps("reachable");
+    d.onboardIntoPool = vi.fn(async () => ({ calendars: 0, hydrated: 0, failed: 0, watch: "skipped" as PoolEntryResult["watch"] }));
+    const res = await applyBookableByUserId("u1", true, d);
+    expect(res.status).toBe("blocked");
+    expect(updates).toEqual([]);
+  });
+
+  it("an onboarding that THROWS refuses the flip rather than escaping", async () => {
+    // Fail closed on the way in. A throw is the least informative failure there is,
+    // so it must not be the one that admits somebody: the caller gets the same
+    // refusal it would get from a measured failure, and nothing is written.
+    currentUser = { id: "u1", bookable: false, email: "boom@trypennie.com" };
+    const d = deps("reachable");
+    d.onboardIntoPool = vi.fn(async () => {
+      throw new Error("google 500");
+    });
+    const res = await applyBookableByUserId("u1", true, d);
+    expect(res.status).toBe("blocked");
+    expect(updates).toEqual([]);
+  });
+
+  it("records that an activation is owed BEFORE it starts building one", async () => {
+    // The gate establishes watches and loads the calendar before the bookable
+    // write, so in between the agent is a non-bookable row holding a live watch and
+    // fresh busy blocks, which is exactly what the pool-exit reconcile reaps every
+    // minute. `bookable_pending_since` is what tells that lane an activation is
+    // being built rather than abandoned, so it has to be written first.
+    currentUser = { id: "u1", bookable: false, email: "new@trypennie.com" };
+    const d = deps("reachable");
+    await applyBookableByUserId("u1", true, d);
+    const marked = patches.filter((p) => typeof p.patch.bookable_pending_since === "string");
+    expect(marked).toHaveLength(1);
+    // And it is written before the calendar work starts, not after it.
+    expect(d.onboardIntoPool).toHaveBeenCalled();
+  });
+
+  it("does not restamp a mark that is already set", async () => {
+    // The stamp is how long somebody has been waiting, which the readiness check
+    // reads. Rewriting it every hourly retry would make an agent stuck for a week
+    // look freshly pending on every run.
+    currentUser = { id: "u1", bookable: false, email: "new@trypennie.com", bookable_pending_since: "2026-09-01T00:00:00.000Z" };
+    const d = deps("reachable");
+    await applyBookableByUserId("u1", true, d);
+    const marked = patches.filter((p) => typeof p.patch.bookable_pending_since === "string");
+    expect(marked).toHaveLength(0);
+  });
+
+  it("leaves the pending mark alone on a refusal, so the hourly sync retries", async () => {
+    // #2071: the mark IS the intent, and only an explicit bookable write settles it.
+    // A refusal here must not write, or the retry that would fix this next hour
+    // stops happening.
+    currentUser = { id: "u1", bookable: false, email: "unread@trypennie.com" };
+    const d = deps("reachable");
+    d.onboardIntoPool = vi.fn(async () => ({ calendars: 1, hydrated: 0, failed: 1, watch: "renewed" as PoolEntryResult["watch"] }));
+    await applyBookableByUserId("u1", true, d);
+    // The mark written on the way in survives, which is what brings them back next
+    // hour. What must NOT be here is a bookable write.
+    expect(patches.every((p) => p.patch.bookable === undefined)).toBe(true);
+    expect(updates).toEqual([]);
+  });
+
+  it("does not onboard on the way OUT", async () => {
+    currentUser = { id: "u1", bookable: true, email: "leaving@trypennie.com" };
+    const d = deps("reachable");
+    await applyBookableByUserId("u1", false, d);
+    expect(d.onboardIntoPool).not.toHaveBeenCalled();
+    expect(d.cleanupOnPoolExit).toHaveBeenCalledWith("u1");
+  });
+
+  it("does not onboard an activation the gate BLOCKED", async () => {
+    // No write happened, so the agent is not in the pool and there is nothing to
+    // make ready. Onboarding here would spend Google calls on an account the gate
+    // has just established we cannot read.
+    currentUser = { id: "u1", bookable: false, email: "gone@trypennie.com" };
+    const d = deps("gone");
+    const res = await applyBookableByUserId("u1", true, d);
+    expect(res.status).toBe("blocked");
+    expect(d.onboardIntoPool).not.toHaveBeenCalled();
+  });
+
+  it("does not onboard an agent who was already bookable", async () => {
+    // A noop writes nothing and changes no state, so there is no transition to
+    // service. The hourly roster sync retries a pending flip every hour, and this
+    // is what stops that becoming an hourly re-bootstrap of a healthy agent.
+    currentUser = { id: "u1", bookable: true, email: "already@trypennie.com" };
+    const d = deps("reachable");
+    const res = await applyBookableByUserId("u1", true, d);
+    expect(res.status).toBe("noop");
+    expect(d.onboardIntoPool).not.toHaveBeenCalled();
+  });
+
+  it("a pool-exit cleanup that fails does not fail the flip either", async () => {
+    // The same guarantee on the other side of the transition, and it is tested here
+    // rather than assumed from the wiring: the write has committed, so throwing
+    // would report a flip that happened as one that did not.
+    currentUser = { id: "u1", bookable: true, email: "leaving@trypennie.com" };
+    const d = deps("reachable");
+    d.cleanupOnPoolExit = vi.fn(async () => {
+      throw new Error("stopChannel exploded");
+    });
+    const res = await applyBookableByUserId("u1", false, d);
+    expect(res.status).toBe("applied");
+    expect(updates).toEqual([{ id: "u1", bookable: false }]);
+  });
+
+
 });

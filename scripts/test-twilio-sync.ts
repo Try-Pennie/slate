@@ -24,6 +24,7 @@
 // Leaving the pool also has to stop the agent's Google calendar watches and prune
 // their cached busy time (#239/#248), and that lives in the service. A raw update
 // would leave Google notifying Slate about somebody it no longer books.
+import { activationAllowance } from "@/lib/bookable/activation-allowance";
 import { syncTwilioRedistribute, type TwilioSyncDeps } from "@/lib/twilio/sync";
 import type { BookableResult } from "@/lib/bookable/service";
 import { TwilioReadError } from "@/lib/twilio/client";
@@ -56,6 +57,9 @@ function deps(
   const audits: Record<string, unknown>[] = [];
   const base: TwilioSyncDeps = {
     orgId: "org1",
+    // #2302: a generous default, so every case written before the allowance existed
+    // keeps the meaning it had. The cases that exercise the bound pass their own.
+    allowance: activationAllowance(50),
     nowIso: () => NOW,
     // What the sweep ANSWERS is a separate knob from the sweep itself, for the same
     // reason the flip's is: the recording has to happen on every path, and an
@@ -405,5 +409,51 @@ const backOn = {
   await syncTwilioRedistribute(d.deps);
   eq(d.calls.length, 0, "an agent whose stored attributes already match their tags is left alone");
 }
+
+// --- #2302: the shared activation allowance -----------------------------------
+// Since the calendar read joined the activation gate, every flip INTO the pool is
+// several Google calls, and this sync runs in the same Worker invocation as the
+// Salesforce one. An unbounded loop here would spend a budget the other half is
+// also drawing on, so both take slots from ONE allowance.
+//
+// Only the way IN. Turning somebody off has to happen the hour Twilio says so: an
+// agent Twilio withholds who is still bookable misroutes a lead today, and no
+// budget argument outranks that.
+{
+  const many = Array.from({ length: 5 }, (_, i) => `n${i}@trypennie.com`);
+  const shared = activationAllowance(2);
+  const d = deps({
+    fetchWorkers: async () => many.map((e) => worker(e, ["Low Debt: 20k - 30k"])),
+    loadRoster: async () =>
+      many.map((e, i) => row({ id: `u${i}`, email: e, bookable: false, attributes: { redistribute: "Y", debt_team: ["low"] } })),
+    allowance: shared,
+  });
+  const r = await syncTwilioRedistribute(d.deps);
+  eq(r.turnedBackOn.length, 2, "only as many are turned back on as the allowance permits");
+  eq(r.reactivationDeferred.length, 3, "and the rest are named as left for next run, not dropped");
+  eq(shared.spent(), 2, "the shared allowance records exactly what was spent");
+  eq(
+    d.calls.filter((c) => c.startsWith("flip:")).length,
+    2,
+    "the deferred ones are never attempted, so they cost no Google calls at all",
+  );
+}
+
+{
+  // The half that must NOT be bounded. A withheld agent left bookable misroutes a
+  // lead the same day, so turning off is never held back by an allowance the other
+  // direction spent.
+  const many = Array.from({ length: 5 }, (_, i) => `o${i}@trypennie.com`);
+  const spent = activationAllowance(0);
+  const d = deps({
+    fetchWorkers: async () => many.map((e) => worker(e, ["Redistribute"])),
+    loadRoster: async () => many.map((e, i) => row({ id: `u${i}`, email: e })),
+    allowance: spent,
+  });
+  const r = await syncTwilioRedistribute(d.deps);
+  eq(r.turnedOff.length, 5, "every withheld agent is taken out of the pool even with no allowance left");
+  eq(r.reactivationDeferred.length, 0, "and nothing is deferred, because nothing was going in");
+}
+
 
 finish();

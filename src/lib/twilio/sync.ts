@@ -49,6 +49,10 @@ import { fetchTwilioWorkers, TwilioReadError } from "@/lib/twilio/client";
 import { mergeWorkers, readWorker, type TwilioSide } from "@/lib/twilio/roster";
 import { planTwilioRoster, type TwilioChanges, type TwilioRosterRow } from "@/lib/twilio/roster-plan";
 import { applyBookableByUserId, type BookableResult } from "@/lib/bookable/service";
+import {
+  activationAllowance,
+  type ActivationAllowance,
+} from "@/lib/bookable/activation-allowance";
 import { startBulkReassign } from "@/lib/booking/service";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { unwrap } from "@/lib/db/result";
@@ -60,6 +64,11 @@ import type { TwilioWorker } from "@/lib/twilio/client";
 
 export interface TwilioSyncDeps {
   orgId: string;
+  /**
+   * How many activations this ROSTER RUN may still attempt (#2302), shared with the
+   * Salesforce half so the two cannot each spend the whole invocation budget.
+   */
+  allowance: ActivationAllowance;
   /** Injected, so the stamp a flip is keyed on is one value a test can assert on. */
   nowIso: () => string;
   /**
@@ -110,6 +119,13 @@ export interface TwilioSyncResult {
    * learning it from Slack an hour later (Dan, 2026-09-08).
    */
   reactivationRefused: string[];
+  /**
+   * Planned for reactivation and NOT attempted this run, because the roster run's
+   * shared activation allowance was spent (#2302). Nobody here was admitted with an
+   * unread calendar: they keep their mark and the next run picks them up. Named
+   * rather than counted, so the next run can be checked against these addresses.
+   */
+  reactivationDeferred: string[];
   /** Marked by Slate, and Twilio holds no worker for them, so nothing was done. */
   markedWithNoWorker: string[];
   /**
@@ -221,6 +237,7 @@ export async function syncTwilioRedistribute(deps: TwilioSyncDeps): Promise<Twil
   const turnedOff: string[] = [];
   const turnedBackOn: string[] = [];
   const reactivationRefused: string[] = [];
+  const reactivationDeferred: string[] = [];
   const tiersChanged: string[] = [];
   const backendChanged: string[] = [];
   const landed: Landed = { tiersChanged, backendChanged };
@@ -238,6 +255,7 @@ export async function syncTwilioRedistribute(deps: TwilioSyncDeps): Promise<Twil
         turnedOff,
         turnedBackOn,
         reactivationRefused,
+        reactivationDeferred,
         landed,
         coverageSweeps,
         counters,
@@ -292,6 +310,7 @@ export async function syncTwilioRedistribute(deps: TwilioSyncDeps): Promise<Twil
     turnedOff,
     turnedBackOn,
     reactivationRefused,
+    reactivationDeferred,
     markedWithNoWorker: plan.markedWithNoWorker,
     coverageSweeps,
     coverageSweepFailures: counters.coverageSweepFailures,
@@ -338,6 +357,7 @@ async function runFlip(
     turnedOff: string[];
     turnedBackOn: string[];
     reactivationRefused: string[];
+    reactivationDeferred: string[];
     landed: Landed;
     coverageSweeps: { email: string; bookings: number }[];
     counters: { coverageSweepFailures: number };
@@ -394,6 +414,23 @@ async function runFlip(
       // will look at.
       log.warn("twilio-sync", { msg: "flip out of the pool did not apply", user_id: flip.userId, status: result.status });
     }
+    return;
+  }
+
+  // #2302: a flip INTO the pool now reads the agent's calendar as part of the gate,
+  // which is several Google calls out of an invocation this sync shares with the
+  // Salesforce roster sync. Slots come from ONE allowance held by the roster run, so
+  // the two halves cannot each spend the whole budget.
+  //
+  // Only this direction. Turning somebody off is never held back: an agent Twilio
+  // withholds who is still bookable misroutes a lead today, and no budget argument
+  // outranks that.
+  if (!deps.allowance.take()) {
+    out.reactivationDeferred.push(flip.email);
+    log.info("twilio-sync", {
+      msg: "reactivation left for the next run, this run's activation allowance is spent",
+      user_id: flip.userId,
+    });
     return;
   }
 
@@ -489,6 +526,7 @@ export async function defaultTwilioSyncDeps(orgId?: string): Promise<TwilioSyncD
       }));
     },
     applyBookable: (userId, bookable) => applyBookableByUserId(userId, bookable),
+    allowance: activationAllowance(),
     writeAttributes: async ({ userId, attributes, bookablePendingSince }) => {
       const { error } = await supabaseAdmin()
         .from("users")

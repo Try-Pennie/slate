@@ -24,6 +24,37 @@ export function bookableNotProvisionedAlert(email: string): string {
   return `Blocked making ${email} bookable because their Google account has never been signed up for Google Calendar (Google refuses the account with notACalendarUser). This is not a credential problem and retrying will not fix it: a Workspace admin has to give them Calendar first. The agent was NOT added to the booking pool.`;
 }
 
+/**
+ * Activation refused: the calendar answered, and Slate could not READ it (#2302).
+ *
+ * Its own message because the reader's next move is different again. The three
+ * above are all "we could not reach the account". This one is an account we did
+ * reach whose events we could not load into the availability cache, so the fix is
+ * to look at what the calendar sync lane said about it rather than at the
+ * credentials or at the Workspace.
+ *
+ * Says the count, because "1 of 1" and "1 of 4" send the reader to different
+ * places: the second means one particular calendar is broken while the account
+ * is plainly fine.
+ */
+export function bookableUnhydratedAlert(email: string, hydrated: number, calendars: number): string {
+  const what =
+    calendars === 0
+      ? "Google returned no calendar for them at all"
+      : hydrated === 0
+        ? calendars === 1
+          ? "their calendar could not be loaded"
+          : `none of their ${calendars} calendars could be loaded`
+        : `only ${hydrated} of their ${calendars} calendars could be loaded`;
+  return (
+    `Blocked making ${email} bookable because ${what}, so Slate cannot see what is ` +
+    `already booked on their time. The agent was NOT added to the booking pool, ` +
+    `deliberately: in it they would be offered as free for every hour their working ` +
+    `hours allow. Check the calendar sync lane's recent errors for this account. ` +
+    `The hourly roster sync retries this on its own.`
+  );
+}
+
 /** Activation refused: the calendar could not be verified (transient). */
 export function bookableUnverifiedAlert(email: string): string {
   return `Could NOT verify ${email}'s Google calendar (a transient error persisted through one retry). The agent was NOT added to the booking pool; this is likely a temporary Google issue, so retry shortly.`;

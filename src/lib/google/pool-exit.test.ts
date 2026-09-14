@@ -378,3 +378,69 @@ describe("reconcileOrphanedPoolExits", () => {
     expect(tables.busy_blocks).toEqual([{ user_id: "u3" }]);
   });
 });
+
+describe("an activation in flight is not torn down (#2302)", () => {
+  beforeEach(() => {
+    stopChannelSpy.mockClear();
+  });
+
+  // The gate now establishes an agent's watches and loads their calendar BEFORE
+  // the bookable write, so for the second or two in between they are a
+  // non-bookable agent holding a live watch and fresh busy blocks: exactly what
+  // this reconcile exists to reap. The selfheal lane runs every minute, so at a
+  // window of a couple of seconds this fires on a few percent of activations, and
+  // the result is invisible: cleanupOnPoolExit leaves sync_window_to alone, so the
+  // coverage monitor still reads as healthy over an emptied cache (#1879).
+  //
+  // `bookable_pending_since` is the mark that says an activation is owed, so it is
+  // the signal for "being built, do not tear down".
+  it("leaves the watch and the blocks of somebody an activation is owed for", async () => {
+    const tables = {
+      users: [{ id: "u1", email: "a@trypennie.com", bookable: false, deactivated_at: null, bookable_pending_since: "2026-09-14T13:00:00.000Z" }],
+      agent_calendars: [
+        { id: "c1", user_id: "u1", calendar_id: "primary", watch_channel_id: "ch1", watch_resource_id: "r1" },
+      ],
+      busy_blocks: [{ id: "b1", user_id: "u1", ends_at: "2026-12-01T00:00:00.000Z" }],
+    };
+    admin.current = fakeDb(tables);
+    const res = await reconcileOrphanedPoolExits(25);
+    expect(res.cleaned).toBe(0);
+    expect(stopChannelSpy).not.toHaveBeenCalled();
+    expect(tables.busy_blocks).toHaveLength(1);
+    expect(tables.agent_calendars[0].watch_channel_id).toBe("ch1");
+  });
+
+  it("still reaps somebody who simply left the pool", async () => {
+    // The positive control. Without it the exclusion above could be doing nothing,
+    // or everything, and both read as a passing test.
+    const tables = {
+      users: [{ id: "u1", email: "a@trypennie.com", bookable: false, deactivated_at: null, bookable_pending_since: null }],
+      agent_calendars: [
+        { id: "c1", user_id: "u1", calendar_id: "primary", watch_channel_id: "ch1", watch_resource_id: "r1" },
+      ],
+      busy_blocks: [{ id: "b1", user_id: "u1", ends_at: "2026-12-01T00:00:00.000Z" }],
+    };
+    admin.current = fakeDb(tables);
+    const res = await reconcileOrphanedPoolExits(25);
+    expect(res.cleaned).toBe(1);
+    expect(stopChannelSpy).toHaveBeenCalled();
+    expect(tables.busy_blocks).toHaveLength(0);
+  });
+
+  it("reaps a DEACTIVATED agent even while a mark is set, because they have left", async () => {
+    // The exclusion is no broader than its reason (L324). It means "an activation
+    // is being built", and somebody who has left the company is not that, whatever
+    // stale mark their row carries.
+    const tables = {
+      users: [{ id: "u1", email: "a@trypennie.com", bookable: false, deactivated_at: "2026-09-01T00:00:00.000Z", bookable_pending_since: "2026-09-14T13:00:00.000Z" }],
+      agent_calendars: [
+        { id: "c1", user_id: "u1", calendar_id: "primary", watch_channel_id: "ch1", watch_resource_id: "r1" },
+      ],
+      busy_blocks: [{ id: "b1", user_id: "u1", ends_at: "2026-12-01T00:00:00.000Z" }],
+    };
+    admin.current = fakeDb(tables);
+    const res = await reconcileOrphanedPoolExits(25);
+    expect(res.cleaned).toBe(1);
+    expect(tables.busy_blocks).toHaveLength(0);
+  });
+});

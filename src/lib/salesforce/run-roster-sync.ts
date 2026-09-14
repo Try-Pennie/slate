@@ -12,6 +12,7 @@
 // (the bearer check and the failure streak that pages on consecutive misses), and
 // the button keeps only its banner.
 import { syncSalesforceAgents, AGENTS_SYNC_STREAK_KEY, type SyncResult } from "@/lib/salesforce/sync";
+import { activationAllowance } from "@/lib/bookable/activation-allowance";
 import { ensureDefaultOrg } from "@/lib/provision";
 import { ensureDefaultSchedules } from "@/lib/schedule";
 import { alertOnEmptyBuckets } from "@/lib/availability/service";
@@ -94,7 +95,13 @@ export async function runRosterSync(): Promise<RosterSyncOutcome> {
   const lock = await acquireLock(AGENTS_LOCK_KEY, AGENTS_LOCK_TTL_MS);
   if (!lock) return { skipped: "overlapping-run" };
   try {
-    const sync = await syncSalesforceAgents();
+    // #2302: ONE allowance for the whole run, spent by both halves. Each attempt to
+    // make somebody bookable now reads their Google calendar as part of the gate,
+    // and these two syncs share a single Worker invocation, so a budget held
+    // separately by each would let the run spend twice the stated maximum. Created
+    // here because this is the only place that knows a run is one run.
+    const allowance = activationAllowance();
+    const sync = await syncSalesforceAgents({ allowance });
     const org = await ensureDefaultOrg();
 
     // The Twilio half, after Salesforce and BEFORE the bucket coverage check
@@ -115,7 +122,10 @@ export async function runRosterSync(): Promise<RosterSyncOutcome> {
     // that quietly does nothing has every symptom of a healthy run.
     let twilio: { ok: true; result: TwilioSyncResult } | { ok: false; reason: string };
     try {
-      const result = await syncTwilioRedistribute(await defaultTwilioSyncDeps(org.id));
+      const result = await syncTwilioRedistribute({
+        ...(await defaultTwilioSyncDeps(org.id)),
+        allowance,
+      });
       twilio = { ok: true, result };
       // alert-key: twilio_sync_failures
       // all-clear-proof: src/app/api/cron/agents/route.test.ts - "sends NO Twilio

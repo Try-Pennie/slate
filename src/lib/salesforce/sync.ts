@@ -44,6 +44,10 @@ import {
   type FlipReason,
 } from "@/lib/salesforce/onboarding";
 import { applyBookableByUserId, type BookableResult } from "@/lib/bookable/service";
+import {
+  activationAllowance,
+  type ActivationAllowance,
+} from "@/lib/bookable/activation-allowance";
 import { recordAudit } from "@/lib/audit";
 import { unwrap } from "@/lib/db/result";
 import { log } from "@/lib/log";
@@ -276,6 +280,14 @@ export interface SyncResult {
   /** Emails whose flip was planned and refused by the activation gate (no Google
    *  calendar yet). They stay marked pending and are retried every run. */
   bookablePending: string[];
+  /**
+   * Planned for activation and NOT attempted this run, because the allowance was
+   * spent (#2302). Nobody here was admitted unread; each keeps the pending mark and
+   * is retried next hour. Named rather than counted, because a count cannot be
+   * checked against anything: with the addresses, the next run or a person can ask
+   * whether these specific agents came through.
+   */
+  bookableDeferredToNextRun: string[];
   managersCreated: number;
   managersLinked: number;
   /**
@@ -367,13 +379,20 @@ export interface SyncDeps {
   applyBookable: (userId: string, bookable: boolean) => Promise<BookableResult>;
   recordAudit: typeof recordAudit;
   nowIso: () => string;
+  /**
+   * How many activations this ROSTER RUN may still attempt (#2302), shared with the
+   * Twilio half so the two cannot each spend the whole budget. A caller that omits
+   * it gets a fresh one, which is right for a standalone run and for a test.
+   */
+  allowance: ActivationAllowance;
 }
 
-const defaultSyncDeps: SyncDeps = {
+const defaultSyncDeps = (): SyncDeps => ({
   applyBookable: (userId, bookable) => applyBookableByUserId(userId, bookable),
   recordAudit,
   nowIso: () => new Date().toISOString(),
-};
+  allowance: activationAllowance(),
+});
 
 /** One planned flip, carried from the roster loop to the attempt after inserts. */
 interface PlannedFlip {
@@ -396,7 +415,12 @@ interface PlannedFlip {
  * debt-team query is kept. Anyone who has logged in (auth_user_id set) and
  * admins/super admins are never deleted.
  */
-export async function syncSalesforceAgents(deps: SyncDeps = defaultSyncDeps): Promise<SyncResult> {
+export async function syncSalesforceAgents(over: Partial<SyncDeps> = {}): Promise<SyncResult> {
+  // A PARTIAL override rather than the whole set, so the one caller that needs to
+  // hand in the run's shared activation allowance (#2302) does not also have to
+  // reconstruct every other collaborator, and so no test has to mock a defaults
+  // factory it does not care about.
+  const deps: SyncDeps = { ...defaultSyncDeps(), ...over };
   const { token, instanceUrl } = await sfToken();
   // The SELECT and the WHERE are derived from the same two field maps, so a field
   // added for a new tier is queried by construction rather than by remembering two
@@ -684,6 +708,8 @@ export async function syncSalesforceAgents(deps: SyncDeps = defaultSyncDeps): Pr
   // inside `writeBookable`, as does any later human decision either way.
   const bookableFlipped: string[] = [];
   const bookablePending: string[] = [];
+  /** Planned, not attempted this run, because the allowance was spent. */
+  const bookableDeferredToNextRun: string[] = [];
   for (const flip of flips) {
     const userId = flip.userId ?? idByEmail.get(flip.email) ?? null;
     if (!userId) {
@@ -692,6 +718,12 @@ export async function syncSalesforceAgents(deps: SyncDeps = defaultSyncDeps): Pr
       // quietly evaporates is the shape this whole change exists to end.
       log.warn("agents", { msg: "planned flip has no row", email: flip.email, reason: flip.reason });
       bookablePending.push(flip.email);
+      continue;
+    }
+    if (!deps.allowance.take()) {
+      // Left for next hour rather than admitted unread. Their pending mark went in
+      // with their attributes above, so nothing has to be remembered here.
+      bookableDeferredToNextRun.push(flip.email);
       continue;
     }
     const result = await deps.applyBookable(userId, true);
@@ -1038,6 +1070,7 @@ export async function syncSalesforceAgents(deps: SyncDeps = defaultSyncDeps): Pr
     tieredNotOnSales,
     bookableFlipped,
     bookablePending,
+    bookableDeferredToNextRun,
     managersCreated: plan.managersToCreate.length,
     managersLinked,
     managersUnlinked,

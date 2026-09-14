@@ -77,6 +77,7 @@ const twilioOk = (over: Partial<TwilioSyncResult> = {}) => ({
     turnedOff: [],
     turnedBackOn: [],
     reactivationRefused: [],
+  reactivationDeferred: [],
     markedWithNoWorker: [],
     coverageSweeps: [],
     coverageSweepFailures: 0,
@@ -103,6 +104,7 @@ const syncOutcome = (over: Record<string, unknown> = {}, twilio: unknown = twili
     createdUntiered: 0,
     bookableFlipped: [],
     bookablePending: [],
+    bookableDeferredToNextRun: [],
     managersCreated: 0,
     managersLinked: 0,
     managersUnlinked: 0,
@@ -990,6 +992,35 @@ describe("setBookable Google guard (#912)", () => {
     expect(redirect).not.toHaveBeenCalledWith("/admin/agents/u2?bookable=blocked-gone");
   });
 
+  it("gives an unprovisioned account its own outcome, not the retry one", async () => {
+    // The two-way branch sent everything that was not `gone` to the transient code,
+    // whose copy says to try again shortly. Nothing changes for an account that has
+    // never been given Calendar until a Workspace admin acts, so that is advice
+    // which can never work (AGENTS.md, "Three ways a Google calendar can fail").
+    bookable.applyBookableByUserId.mockResolvedValueOnce({
+      status: "blocked",
+      userId: "u2",
+      reason: "google_not_provisioned",
+    });
+    await expect(setBookable(form({ user_id: "u2", bookable: "true" }))).rejects.toThrow(
+      /NEXT_REDIRECT:\/admin\/agents\/u2\?bookable=blocked-not-provisioned/,
+    );
+  });
+
+  it("gives a calendar it could not READ its own outcome (#2302)", async () => {
+    // Reachable is not readable. This one sends the reader to the calendar sync
+    // lane rather than to the credentials or to a Workspace admin, so it cannot
+    // share a code with any of the three above.
+    bookable.applyBookableByUserId.mockResolvedValueOnce({
+      status: "blocked",
+      userId: "u2",
+      reason: "calendar_unhydrated",
+    });
+    await expect(setBookable(form({ user_id: "u2", bookable: "true" }))).rejects.toThrow(
+      /NEXT_REDIRECT:\/admin\/agents\/u2\?bookable=blocked-unread/,
+    );
+  });
+
   it("says so rather than silently doing nothing when the agent is not found", async () => {
     bookable.applyBookableByUserId.mockResolvedValueOnce({ status: "not_found" });
     await expect(setBookable(form({ user_id: "ghost", bookable: "true" }))).rejects.toThrow(
@@ -1059,8 +1090,34 @@ describe("syncSalesforceNow (#491, #2071)", () => {
     }
     expect(redirected).toContain("2 new hires added not yet bookable");
     expect(redirected).toContain("3 agents made bookable");
+    // #2302: an activation left for the next run is its own state, and the presser
+    // cannot tell it from a run where everybody came through unless it is said.
+    expect(redirected).not.toContain("still waiting to be made bookable");
     expect(redirected).toContain("1 agent waiting to become bookable until a Google calendar exists");
     // Counts, never addresses: an email in a URL is an identity in browser history.
+    expect(redirected).not.toContain("@x");
+    expect(redirected).not.toContain("undefined");
+  });
+
+  it("says when an activation was left for the next run (#2302)", async () => {
+    // A mass licence upgrade can plan more activations than one run attempts, since
+    // each now reads the agent's calendar before admitting them. The presser has to
+    // be told which of the two states they are looking at, and told the next run
+    // picks them up, or a queue reads as an error.
+    rosterSync.runRosterSync.mockResolvedValueOnce(
+      syncOutcome({
+        bookableFlipped: ["a@x"],
+        bookableDeferredToNextRun: ["b@x"],
+      }),
+    );
+    let redirected = "";
+    try {
+      await syncSalesforceNow();
+    } catch (e) {
+      redirected = decodeURIComponent(String((e as Error).message));
+    }
+    expect(redirected).toContain("1 agent still waiting to be made bookable");
+    expect(redirected).toContain("next hourly sync");
     expect(redirected).not.toContain("@x");
     expect(redirected).not.toContain("undefined");
   });
@@ -1082,6 +1139,29 @@ describe("syncSalesforceNow (#491, #2071)", () => {
     expect(redirected).toMatch(/redistribute/i);
     expect(redirected).toContain("1 agent");
     // Counts, never addresses: an email in a URL is an identity in browser history.
+    expect(redirected).not.toContain("@x");
+    expect(redirected).not.toContain("undefined");
+  });
+
+  it("says when an activation was left for the next run (#2302)", async () => {
+    // A mass licence upgrade can plan more activations than one run attempts, since
+    // each now reads the agent's calendar before admitting them. The presser has to
+    // be told which of the two states they are looking at, and told the next run
+    // picks them up, or a queue reads as an error.
+    rosterSync.runRosterSync.mockResolvedValueOnce(
+      syncOutcome({
+        bookableFlipped: ["a@x"],
+        bookableDeferredToNextRun: ["b@x"],
+      }),
+    );
+    let redirected = "";
+    try {
+      await syncSalesforceNow();
+    } catch (e) {
+      redirected = decodeURIComponent(String((e as Error).message));
+    }
+    expect(redirected).toContain("1 agent still waiting to be made bookable");
+    expect(redirected).toContain("next hourly sync");
     expect(redirected).not.toContain("@x");
     expect(redirected).not.toContain("undefined");
   });

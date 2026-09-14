@@ -69,7 +69,7 @@ import {
 } from "@/lib/webhooks/test-send";
 import { shortErrorReason } from "@/lib/notify/error-text";
 import type { WebhookFormat } from "@/lib/db/types";
-import { applyBookableByUserId } from "@/lib/bookable/service";
+import { applyBookableByUserId, type BlockedReason } from "@/lib/bookable/service";
 import { applyLifecycleByUserId } from "@/lib/offboarding/service";
 import { runRosterSync } from "@/lib/salesforce/run-roster-sync";
 import type { TwilioSyncResult } from "@/lib/twilio/sync";
@@ -367,6 +367,13 @@ export async function syncSalesforceNow(): Promise<void> {
         : null,
       r.bookablePending.length
         ? `${plural(r.bookablePending.length, "agent")} waiting to become bookable until a Google calendar exists for them`
+        : null,
+      // #2302: planned for activation and not attempted this run, because reading a
+      // calendar per agent is bounded per run. Said because the presser can
+      // otherwise not tell it from a run where everybody came through, and saying
+      // that the next run picks them up is what stops a queue reading as an error.
+      r.bookableDeferredToNextRun.length
+        ? `${plural(r.bookableDeferredToNextRun.length, "agent")} still waiting to be made bookable, which the next hourly sync picks up`
         : null,
       r.managersLinked
         ? `${plural(r.managersLinked, "agent")} reassigned to a manager`
@@ -1263,9 +1270,20 @@ export async function setBookable(form: FormData): Promise<void> {
   revalidatePath(back);
   if (result.status === "blocked") {
     // Nothing was written: the gate refused before the update.
-    redirect(
-      `${back}?bookable=${result.reason === "google_unreachable" ? "blocked-gone" : "blocked-transient"}`,
-    );
+    //
+    // One code per reason, keyed off the union so `tsc` names a new one rather than
+    // letting it fall into whichever arm a two-way branch happened to end on. That
+    // is not hypothetical: `google_not_provisioned` shipped inside the transient
+    // arm, so an account that had never been given Calendar was answered with
+    // "try again shortly", which can never work (AGENTS.md, "Three ways a Google
+    // calendar can fail, not two").
+    const outcome: Record<BlockedReason, string> = {
+      google_unreachable: "blocked-gone",
+      google_not_provisioned: "blocked-not-provisioned",
+      google_unverified: "blocked-transient",
+      calendar_unhydrated: "blocked-unread",
+    };
+    redirect(`${back}?bookable=${outcome[result.reason]}`);
     return;
   }
   if (result.status === "not_found") {
