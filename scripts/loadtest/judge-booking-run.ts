@@ -14,6 +14,9 @@
 import type { BookingAttempt, DriverResult } from "./book-plan.ts";
 import { HEALTHY_INVOCATION_STATUS } from "./platform-reading.ts";
 import { CEILING_CONCLUSION, type CeilingVerdict } from "./preflight-checks.ts";
+// Type-only (erased under --experimental-strip-types), so the judge never pulls
+// the reader in at runtime and the two stay one direction apart.
+import type { ConfirmStartupReading } from "./confirm-startup.ts";
 import type { SoakSample } from "./invariants.ts";
 
 /** A booking row the run created, as the judge needs it. */
@@ -127,6 +130,17 @@ export interface JudgeInput {
    * simply never throttled, and the run accused a ceiling that was working.
    */
   ipCeilingControl: CeilingVerdict;
+  /**
+   * The confirm path's own wall time split from the isolate's startup (#2340),
+   * read from the run's archived log, or null when that archive carried no confirm
+   * profile at all.
+   *
+   * Null rather than an empty reading, and a null FAILS its bar rather than
+   * passing it, exactly as a ceiling control that never ran does. A run that could
+   * not read its own archive did not prove anything about what a lead waits for,
+   * and a bar nobody could measure must never render as one that passed (L98).
+   */
+  confirmStartup: ConfirmStartupReading | null;
   platform: PlatformReading;
   /** The fault pass, when one ran. */
   faultPass?: { attempts: number; fiveXx: number; faultPct: number };
@@ -344,6 +358,23 @@ export interface RunMeasurements {
    * uniqueness cannot see them.
    */
   sameSlotPairs: number;
+  /**
+   * The confirm path's two halves, reported apart (#2340).
+   *
+   * Null where nothing was measured, never zero: a run whose archive never arrived
+   * and a confirm that cost nothing would otherwise read the same.
+   *
+   * `confirmHandler` is the confirm's OWN wall time, from the profile it logs.
+   * The startup pair is everything before that profile started, split by whether
+   * the isolate became ready inside that very request. The cold one is what a lead
+   * unlucky enough to be first on an isolate waits through before the booking
+   * begins; the warm one is the framework's per request overhead.
+   */
+  confirmSamples: number | null;
+  confirmCold: number | null;
+  confirmHandler: ReturnType<typeof percentiles>;
+  confirmColdStartup: ReturnType<typeof percentiles>;
+  confirmWarmStartup: ReturnType<typeof percentiles>;
 }
 
 /**
@@ -421,6 +452,11 @@ export function measure(input: JudgeInput): RunMeasurements {
       overlappingPairs,
       sameSlotPairs,
     }))(overlapCounts(input.bookings)),
+    confirmSamples: input.confirmStartup?.samples ?? null,
+    confirmCold: input.confirmStartup?.cold ?? null,
+    confirmHandler: percentiles(input.confirmStartup?.handlerMs ?? []),
+    confirmColdStartup: percentiles(input.confirmStartup?.coldPreProfileMs ?? []),
+    confirmWarmStartup: percentiles(input.confirmStartup?.warmPreProfileMs ?? []),
   };
 }
 
@@ -454,6 +490,21 @@ export const REQUEST_CPU_LATENCY_SHARE = 0.5;
  * anything, and #2321 holds the open question of where those seconds go.
  */
 export const REQUEST_CPU_P99_MS = Math.round(OK_P95_MS * REQUEST_CPU_LATENCY_SHARE);
+/**
+ * What a lead may wait BEFORE the confirm starts (#2340).
+ *
+ * The rest of the latency bar, derived rather than picked: the confirm may spend
+ * up to `REQUEST_CPU_LATENCY_SHARE` of it on its own compute, so everything in
+ * front of it has to fit the remainder for a lead on a cold isolate to stay inside
+ * the same bar as everybody else. The two together are exactly `OK_P95_MS`, which
+ * is the point: they are one budget split in two, not two numbers picked apart.
+ *
+ * Measured against it on 2026-09-14 (run 34889873261): 3,063ms median and 4,598ms
+ * max on the 32 confirms that cost over two seconds of CPU, against about 500ms on
+ * the 409 that cost under half a second. The expensive ones were not doing more
+ * confirm work; their stage profiles are the same shape.
+ */
+export const REQUEST_STARTUP_P95_MS = OK_P95_MS - REQUEST_CPU_P99_MS;
 export const FRESHNESS_MAX_SEC = 6 * 60;
 /** How far the platform's invocation count may sit below the run's own before its
  *  numbers are about a different window. */
@@ -638,6 +689,40 @@ export function judgeBookingRun(input: JudgeInput): JudgeResult {
     fail("the per address write ceiling", c.detail);
   }
 
+  // --- what a lead waits for before the confirm even starts (#2340) -----------
+  //
+  // Read from the run's OWN archived log rather than from the analytics pipeline,
+  // so it sits here with the other bars that depend on nothing but this run, above
+  // the one section that depends on somebody else's pipeline.
+  //
+  // It exists because the platform's CPU percentile cannot separate the two: it is
+  // one number per invocation with nothing in it saying whether that invocation
+  // also paid for the isolate. Run 34889873261 failed the CPU bar with a p99 of
+  // 2,988ms, and the confirms behind that number were not doing more confirm work.
+  const cs = input.confirmStartup;
+  if (cs === null) {
+    // The same reading as a ceiling control that never ran. A bar nobody could
+    // measure must never render as one that passed (L98), and the detail names the
+    // artifact rather than the product, because that is what a reader has to fix.
+    fail(
+      "confirm startup",
+      "the run's archived log carried no confirm profile, so the confirm's own time and the " +
+        "isolate's startup could not be told apart and nothing is claimed about either. The " +
+        "profile is written under SLATE_LOADTEST only, and the judge reads results/tail.jsonl",
+    );
+  } else if (m.confirmColdStartup !== null && m.confirmColdStartup.p95 > REQUEST_STARTUP_P95_MS) {
+    fail(
+      "confirm startup",
+      `a lead landing on a cold isolate waited p95 ${m.confirmColdStartup.p95}ms (max ` +
+        `${m.confirmColdStartup.max}ms) before the confirm began, over the ` +
+        `${REQUEST_STARTUP_P95_MS}ms left of the ${OK_P95_MS}ms latency bar once the confirm's ` +
+        `own share is taken out. That is the server bundle being evaluated, charged in full to ` +
+        `whichever request the isolate served first: ${cs.cold} of ${cs.samples} confirms here, ` +
+        `against ${m.confirmWarmStartup === null ? "no" : `p95 ${m.confirmWarmStartup.p95}ms`} ` +
+        "on a warm one. The confirm itself is judged separately",
+    );
+  }
+
   // --- the fault pass ---------------------------------------------------------
   if (input.faultPass) {
     if (input.faultPass.attempts === 0) {
@@ -713,13 +798,26 @@ export function judgeBookingRun(input: JudgeInput): JudgeResult {
   }
   if (p.cron.invocations === 0) {
     if (p.cpuMsP99 > input.budgets.cpuMsP99) {
+      // The split is NAMED in the finding, because this percentile counts the
+      // isolate's startup as the confirm's own compute and a reader sent to
+      // optimise the confirm would be looking at the wrong half (#2340).
+      const split =
+        cs === null
+          ? " The startup split could not be read from this run's archive, so how much of this " +
+            "is the confirm and how much is the isolate starting up is unknown"
+          : ` Of ${cs.samples} confirms read from this run's log, ${cs.cold} were the first on ` +
+            `their isolate, waiting ${m.confirmColdStartup === null ? "an unmeasured time" : `p95 ${m.confirmColdStartup.p95}ms`} ` +
+            `before the confirm began against ${m.confirmHandler === null ? "an unmeasured" : `p95 ${m.confirmHandler.p95}ms`} ` +
+            "inside it, so read this number beside the confirm startup bar above before " +
+            "optimising the confirm";
       fail(
         "Worker CPU on the request path",
         `p99 ${p.cpuMsP99}ms of CPU per invocation, over the ${input.budgets.cpuMsP99}ms request ` +
           "budget, with no cron in the window, so this IS the request path. That budget is a " +
           `share of the ${OK_P95_MS}ms latency bar, not the lane budget: CPU cannot exceed wall ` +
           "time, so a confirm spending this much of it on compute has no headroom left for the " +
-          "database and Google round trips it also has to make",
+          "database and Google round trips it also has to make." +
+          split,
       );
     }
   } else if (p.cron.worstCpuMs > input.budgets.cronCpuMs) {

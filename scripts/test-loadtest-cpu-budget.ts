@@ -28,6 +28,15 @@ import {
   judgeBookingRun,
 } from "./loadtest/judge-booking-run.ts";
 import { WRANGLER_CRON_CPU_MS } from "./loadtest/platform-reading.ts";
+import {
+  ceilingVerdict,
+  exactAddressBound,
+  CEILING_REFUSED_BY,
+  type CeilingAttempt,
+} from "./loadtest/preflight-checks.ts";
+import { DIRECT_BOOKING_API_IP_HOURLY_RATE_RULES } from "../src/lib/rate-limit-core.ts";
+import { readConfirmStartup } from "./loadtest/confirm-startup.ts";
+import { formatLine } from "../src/lib/log.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
 // --- the request budget is DERIVED from the thing it protects --------------------
@@ -151,20 +160,46 @@ function healthy() {
     bookingIdsWithBusyBlock: all.map((a) => a.externalId),
     slotUniqueIndexPresent: true,
     overlapConstraintPresent: true,
-    ipCeilingControl: {
-      sent: 180,
-      allowed: 64,
-      refused: 116,
-      appRefused: 0,
-      unauthorized: 0,
-      unreachable: 0,
-      firstRefusedAt: 65,
-      addresses: ["203.0.113.9"],
-      unidentified: 0,
-      unreported: 0,
-      conclusion: "applies" as const,
-      detail: "the ceiling is applying",
-    },
+    // Built by the REAL verdict and reader functions rather than typed out, so
+    // neither can describe a state the run can never produce (L48). Hand written,
+    // both of these silently stopped matching the shape their producers make.
+    ipCeilingControl: ceilingVerdict(
+      [
+        ...Array.from({ length: 64 }, () => ({
+          status: 200,
+          seenIp: "203.0.113.9",
+          refusedBy: null,
+        })),
+        ...Array.from({ length: 116 }, () => ({
+          status: 429,
+          seenIp: "203.0.113.9",
+          refusedBy: CEILING_REFUSED_BY.address,
+        })),
+      ] as CeilingAttempt[],
+      60,
+      exactAddressBound(DIRECT_BOOKING_API_IP_HOURLY_RATE_RULES)!,
+    ),
+    confirmStartup: readConfirmStartup(
+      Array.from({ length: 40 }, () =>
+        JSON.stringify({
+          outcome: "ok",
+          eventTimestamp: 0,
+          logs: [
+            {
+              level: "info",
+              timestamp: 1_400,
+              message: [
+                formatLine("confirm-profile", {
+                  msg: "where the confirm spent its wall time",
+                  total_ms: 900,
+                  isolate_age_ms: 90_000,
+                }),
+              ],
+            },
+          ],
+        }),
+      ).join("\n"),
+    ),
     platform: {
       invocations: 600,
       cpuMsP99: 40,
