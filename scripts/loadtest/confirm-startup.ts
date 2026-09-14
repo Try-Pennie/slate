@@ -59,6 +59,17 @@ export interface ConfirmStartupReading {
    * permanent floor under a number somebody is meant to act on.
    */
   unreadable: number;
+  /**
+   * Lines that began as a tail event and are not readable JSON.
+   *
+   * Its own count, not folded into `unreadable`, because nothing can say whether
+   * such a line held a confirm profile and the two send a reader somewhere
+   * different (L11). It is not hypothetical: the archive is written by
+   * `timeout 15m npx wrangler tail ... > results/tail.jsonl`, and a stream killed
+   * on that timeout leaves its last line half written. Silently skipping it would
+   * drop a reading and say nothing (L10).
+   */
+  unparsable: number;
 }
 
 /** One log entry inside a tail line. */
@@ -82,7 +93,11 @@ function num(v: unknown): number | null {
 /** A `key=value` field out of a line Slate's own formatter wrote. */
 function field(line: string, key: string): number | null {
   const m = new RegExp(`(?:^|\\s)${key}=(-?\\d+(?:\\.\\d+)?)(?:\\s|$)`).exec(line);
-  return m ? Number(m[1]) : null;
+  // Through the same guard as every other reading (L50). The pattern admits a
+  // digit string long enough to parse as Infinity, and Infinity compares false
+  // against every bound, which lands the reading on the permissive side with
+  // nothing raised anywhere.
+  return m ? num(Number(m[1])) : null;
 }
 
 /** The message of one log entry, however many arguments it was written with. */
@@ -109,6 +124,7 @@ export function readConfirmStartup(archive: string): ConfirmStartupReading | nul
     warmPreProfileMs: [],
     impossible: 0,
     unreadable: 0,
+    unparsable: 0,
   };
   let sawAny = false;
 
@@ -119,6 +135,11 @@ export function readConfirmStartup(archive: string): ConfirmStartupReading | nul
     try {
       event = JSON.parse(line) as TailEvent;
     } catch {
+      // Counted rather than skipped. A truncated line is a reading this could not
+      // make, and one dropped in silence leaves a reader taking the samples it did
+      // read for the whole run (L10, L11).
+      reading.unparsable += 1;
+      sawAny = true;
       continue;
     }
     const logs = Array.isArray(event.logs) ? (event.logs as TailLog[]) : [];

@@ -508,9 +508,11 @@ const bars = (r: ReturnType<typeof judgeBookingRun>) => r.findings.map((f) => f.
   // The other direction, and the one that matters: a confirm that is itself slow
   // must NOT be reported as a startup problem. Same total wall time, other half.
   const fatConfirm = broken((i) => {
-    i.confirmStartup = startupReading(
-      Array.from({ length: 43 }, () => ({ handlerMs: 4_000, beforeMs: 500, cold: false })),
-    );
+    // Cold starts still present and healthy, so only the confirm's own cost moved.
+    i.confirmStartup = startupReading([
+      ...Array.from({ length: 40 }, () => ({ handlerMs: 4_000, beforeMs: 500, cold: false })),
+      ...Array.from({ length: 3 }, () => ({ handlerMs: 4_000, beforeMs: 1_200, cold: true })),
+    ]);
   });
   assert(
     !bars(fatConfirm).includes("confirm startup"),
@@ -541,6 +543,40 @@ const bars = (r: ReturnType<typeof judgeBookingRun>) => r.findings.map((f) => f.
   );
   eq(unread.measurements!.confirmSamples, null, "the measurement is null, never a zero");
   eq(unread.measurements!.confirmHandler, null, "and so is every percentile over it");
+}
+
+// --- an archive that arrived and said nothing is not a pass either (L98) --------------
+{
+  // Distinct from a missing file, and distinct from a slow start: three states, one
+  // bar, three sentences, because they send a reader to three different places (L11).
+  const empty = broken((i) => {
+    // A truncated stream: the archive is written under a `wrangler tail` timeout, so
+    // its last line is routinely half written.
+    i.confirmStartup = readConfirmStartup('{"eventTimestamp": 0, "logs": [{"mess');
+  });
+  assert(
+    bars(empty).includes("confirm startup"),
+    "an archive holding no readable confirm profile fails its bar",
+  );
+  const emptyDetail = empty.findings.find((f) => f.bar === "confirm startup")!.detail;
+  assert(/not readable JSON/.test(emptyDetail), "and says what it actually met");
+
+  const noCold = broken((i) => {
+    i.confirmStartup = startupReading(
+      Array.from({ length: 40 }, () => ({ handlerMs: 900, beforeMs: 500, cold: false })),
+    );
+  });
+  assert(
+    bars(noCold).includes("confirm startup"),
+    "and so does a reading in which nothing was ever the first on its isolate, since that is " +
+      "the shape of a reading that broke rather than of a lucky run",
+  );
+  const three = new Set(
+    [empty, noCold, broken((i) => { i.confirmStartup = null; })].map(
+      (r) => r.findings.find((f) => f.bar === "confirm startup")!.detail,
+    ),
+  );
+  eq(three.size, 3, "and no two of the three share a sentence");
 }
 
 // --- the CPU finding says which half moved -------------------------------------------

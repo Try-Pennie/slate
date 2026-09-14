@@ -710,6 +710,27 @@ export function judgeBookingRun(input: JudgeInput): JudgeResult {
         "isolate's startup could not be told apart and nothing is claimed about either. The " +
         "profile is written under SLATE_LOADTEST only, and the judge reads results/tail.jsonl",
     );
+  } else if (cs.samples === 0) {
+    // The archive arrived and held no confirm profile this could read. Its own
+    // sentence, because it sends a reader to a different place than a missing file
+    // does: the stream is truncated, or the lines are there and unreadable (L11).
+    fail(
+      "confirm startup",
+      `the archived log held no readable confirm profile (${cs.unreadable} carried one this could ` +
+        `not read, ${cs.unparsable} lines were not readable JSON at all), so the confirm's own ` +
+        "time and the isolate's startup could not be told apart. The archive is written by a " +
+        "`wrangler tail` under a timeout, so its last line is routinely half written",
+    );
+  } else if (cs.cold === 0) {
+    // Nothing to judge, which is never a pass (L98). Measured on 2026-09-14, 32 of
+    // 757 confirms were the first on their isolate, so zero over a full run is the
+    // shape of a broken reading rather than of a run that got lucky.
+    fail(
+      "confirm startup",
+      `none of the ${cs.samples} confirms read was the first on its isolate, so what a lead ` +
+        "landing on a cold one waits for was not measured. A ten minute run spins up dozens of " +
+        "isolates, so zero is the shape of a reading that broke rather than of a lucky run",
+    );
   } else if (m.confirmColdStartup !== null && m.confirmColdStartup.p95 > REQUEST_STARTUP_P95_MS) {
     fail(
       "confirm startup",

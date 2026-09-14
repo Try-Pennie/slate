@@ -521,7 +521,17 @@ if (m) {
           `first on their isolate): inside the confirm p50 ${m.confirmHandler?.p50 ?? "n/a"}ms, ` +
           `p95 ${m.confirmHandler?.p95 ?? "n/a"}ms; before it started, cold p95 ` +
           `${m.confirmColdStartup?.p95 ?? "n/a"}ms (max ${m.confirmColdStartup?.max ?? "n/a"}ms), ` +
-          `warm p95 ${m.confirmWarmStartup?.p95 ?? "n/a"}ms`,
+          `warm p95 ${m.confirmWarmStartup?.p95 ?? "n/a"}ms` +
+          // What the archive itself lost, so a thin sample is never read as a
+          // quiet run. The stream is written under a timeout, so its last line is
+          // routinely half written.
+          (confirmStartup && confirmStartup.unreadable + confirmStartup.unparsable > 0
+            ? ` (${confirmStartup.unreadable} profiles unreadable, ` +
+              `${confirmStartup.unparsable} lines not readable JSON)`
+            : "") +
+          (confirmStartup && confirmStartup.impossible > 0
+            ? `; ${confirmStartup.impossible} readings could not be right and were floored at zero`
+            : ""),
   );
   // The strength of the burst control, stated rather than assumed (#2278). A run
   // with no burst leg says nothing here, because there was no control to describe.

@@ -207,4 +207,55 @@ function otherLine(msg: string): string {
   eq(r.samples, 1, "and the real one is still read");
 }
 
+// --- a half written line is COUNTED, never skipped in silence ---------------------------
+{
+  // Not hypothetical. The archive is written by
+  // `timeout 15m npx wrangler tail ... > results/tail.jsonl`, so a stream killed on
+  // that timeout leaves its last line half written. Skipping it would drop a
+  // reading and say nothing, and a reader would take the samples it did read for
+  // the whole run (L10, L11).
+  const good = tailLine({
+    eventTimestamp: 0,
+    logTimestamp: 1_000,
+    totalMs: 400,
+    isolateAgeMs: 90_000,
+  });
+  const r = readConfirmStartup([good, good.slice(0, good.length - 40)].join("\n"))!;
+  eq(r.samples, 1, "the complete line is still read");
+  eq(r.unparsable, 1, "and the truncated one is counted");
+  eq(
+    r.unreadable,
+    0,
+    "under its OWN name, because nothing can say whether a half written line held a confirm " +
+      "profile, and the two send a reader somewhere different",
+  );
+}
+
+// --- a file holding NOTHING but a half written line still says so --------------------------
+{
+  const r = readConfirmStartup("{\"eventTimestamp\": 0, \"logs\": [{\"mess")!;
+  eq(r.unparsable, 1, "an archive that is only a truncated line is a reading, not an absence");
+  eq(r.samples, 0, "with nothing measured in it");
+}
+
+// --- a number too long to be finite is refused, not compared -------------------------------
+{
+  // The pattern admits a digit string long enough to parse as Infinity, and
+  // Infinity compares false against every bound, which lands the reading on the
+  // permissive side with nothing raised anywhere (L50).
+  const huge = "9".repeat(400);
+  const line = JSON.stringify({
+    eventTimestamp: 0,
+    logs: [
+      {
+        timestamp: 1_000,
+        message: [`slate tag=confirm-profile total_ms=${huge} isolate_age_ms=5`],
+      },
+    ],
+  });
+  const r = readConfirmStartup(line)!;
+  eq(r.samples, 0, "a reading that cannot be finite is not a sample");
+  eq(r.unreadable, 1, "it is a confirm profile this could not read");
+}
+
 finish();
