@@ -82,16 +82,16 @@ import { assert, eq, finish } from "./lib/harness.ts";
 // --- the deployment says it is in load test mode (#2242) ----------------------
 //
 // Asked before the preflight writes anything, so every refusal has to be readable
-// by somebody who has not yet spent a run. Four of them, and no two may say the
-// same thing: they send four different people to four different places (L11).
+// by somebody who has not yet spent a run. Seven of them, and no two may say the
+// same thing: they send seven different people to seven different places (L11).
 
 {
-  const ok = loadtestModeVerdict(200, { commit: "abc1234", loadtest: true });
+  const ok = loadtestModeVerdict(200, { commit: "abc1234", loadtest: true, productionSecrets: [] });
   assert(ok.ok, "a deployment reporting loadtest=true is accepted");
   eq(ok.ok ? ok.commit : null, "abc1234", "and the commit is carried through for the log line");
   // A commit the endpoint did not report is not a refusal: the mode is the
   // question being asked, and the commit is context beside it.
-  const noCommit = loadtestModeVerdict(200, { loadtest: true });
+  const noCommit = loadtestModeVerdict(200, { loadtest: true, productionSecrets: [] });
   assert(noCommit.ok, "a missing commit does not refuse");
   eq(noCommit.ok ? noCommit.commit : "x", null, "it is reported as unknown instead");
 }
@@ -161,7 +161,7 @@ import { assert, eq, finish } from "./lib/harness.ts";
 // the deployment before it drives, and zero is the case that matters most.
 
 {
-  const v = faultModeVerdict(200, { commit: "abc1234", loadtest: true, faultPct: 10 }, { faultPct: 10 });
+  const v = faultModeVerdict(200, { commit: "abc1234", loadtest: true, productionSecrets: [], faultPct: 10 }, { faultPct: 10 });
   assert(v.ok, "a deployment reporting the percentage asked for is accepted");
   eq(v.ok ? v.faultPct : -1, 10, "and the percentage it reported is carried, not the one asked for");
 }
@@ -169,7 +169,7 @@ import { assert, eq, finish } from "./lib/harness.ts";
 {
   // ZERO. The whole reason this check exists: it passes every bar while measuring
   // nothing.
-  const v = faultModeVerdict(200, { commit: "abc1234", loadtest: true, faultPct: 0 }, { faultPct: 10 });
+  const v = faultModeVerdict(200, { commit: "abc1234", loadtest: true, productionSecrets: [], faultPct: 0 }, { faultPct: 10 });
   assert(!v.ok, "a deployment reporting zero percent is refused");
   assert(
     !v.ok && v.why.includes("no faults at all"),
@@ -181,7 +181,7 @@ import { assert, eq, finish } from "./lib/harness.ts";
   // Any other disagreement, in both directions, because a pass at a percentage
   // nobody configured is a measurement of something nobody asked about.
   for (const [reported, wanted] of [[5, 10], [20, 10], [100, 10]] as const) {
-    const v = faultModeVerdict(200, { loadtest: true, faultPct: reported }, { faultPct: wanted });
+    const v = faultModeVerdict(200, { loadtest: true, productionSecrets: [], faultPct: reported }, { faultPct: wanted });
     assert(!v.ok, `a deployment at ${reported} percent is refused when ${wanted} was asked for`);
     assert(
       !v.ok && v.why.includes(String(reported)) && v.why.includes(String(wanted)),
@@ -194,10 +194,10 @@ import { assert, eq, finish } from "./lib/harness.ts";
   // A field that is absent, or present as something other than a number, is "could
   // not establish" rather than zero. Reading either as zero would send somebody to
   // check a setting when the real answer is that the deployment predates the field.
-  const missing = faultModeVerdict(200, { loadtest: true }, { faultPct: 10 });
+  const missing = faultModeVerdict(200, { loadtest: true, productionSecrets: [] }, { faultPct: 10 });
   assert(!missing.ok, "a reply with no faultPct is refused");
   assert(!missing.ok && missing.why.includes("no faultPct"), "and says the field was not reported");
-  const stringy = faultModeVerdict(200, { loadtest: true, faultPct: "10" }, { faultPct: 10 });
+  const stringy = faultModeVerdict(200, { loadtest: true, productionSecrets: [], faultPct: "10" }, { faultPct: 10 });
   assert(!stringy.ok, 'a faultPct reported as the string "10" is refused');
   assert(
     !stringy.ok && stringy.why.includes("no faultPct number"),
@@ -222,7 +222,7 @@ import { assert, eq, finish } from "./lib/harness.ts";
   // the previous version would have the run judge a build nobody drove.
   const stale = faultModeVerdict(
     200,
-    { commit: "aaaaaaaaaaaa", loadtest: true, faultPct: 10 },
+    { commit: "aaaaaaaaaaaa", loadtest: true, productionSecrets: [], faultPct: 10 },
     { faultPct: 10, commit: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" },
   );
   assert(!stale.ok, "a deployment serving a different commit is refused");
@@ -236,14 +236,14 @@ import { assert, eq, finish } from "./lib/harness.ts";
   assert(!stale.ok && stale.retriable, "which is why it is retriable rather than final");
   const fresh = faultModeVerdict(
     200,
-    { commit: "bbbbbbbbbbbb", loadtest: true, faultPct: 10 },
+    { commit: "bbbbbbbbbbbb", loadtest: true, productionSecrets: [], faultPct: 10 },
     { faultPct: 10, commit: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" },
   );
   assert(fresh.ok, "and the matching commit is accepted");
   // Not checked when the caller does not know which commit it deployed, so a hand
   // run is not refused for a fact it never had.
   assert(
-    faultModeVerdict(200, { commit: "anything", loadtest: true, faultPct: 10 }, { faultPct: 10 }).ok,
+    faultModeVerdict(200, { commit: "anything", loadtest: true, productionSecrets: [], faultPct: 10 }, { faultPct: 10 }).ok,
     "a caller that named no commit is not judged on one",
   );
 
@@ -259,7 +259,7 @@ import { assert, eq, finish } from "./lib/harness.ts";
   assert(FULL.startsWith(SHORT), "and the short form really is the head of the full sha");
   const sameCommit = faultModeVerdict(
     200,
-    { commit: SHORT, loadtest: true, faultPct: 10 },
+    { commit: SHORT, loadtest: true, productionSecrets: [], faultPct: 10 },
     { faultPct: 10, commit: FULL },
   );
   assert(
@@ -270,7 +270,7 @@ import { assert, eq, finish } from "./lib/harness.ts";
   // the shortening did not turn the check into a no-op.
   const reallyStale = faultModeVerdict(
     200,
-    { commit: "111111111111", loadtest: true, faultPct: 10 },
+    { commit: "111111111111", loadtest: true, productionSecrets: [], faultPct: 10 },
     { faultPct: 10, commit: FULL },
   );
   assert(!reallyStale.ok, "and a genuinely different commit is still refused");
@@ -284,7 +284,7 @@ import { assert, eq, finish } from "./lib/harness.ts";
   // deadline.
   const nonsense = faultModeVerdict(
     200,
-    { commit: SHORT, loadtest: true, faultPct: 10 },
+    { commit: SHORT, loadtest: true, productionSecrets: [], faultPct: 10 },
     { faultPct: 10, commit: "refs/heads/main" },
   );
   assert(!nonsense.ok && !nonsense.retriable, "a commit that is not a sha fails at once");
@@ -295,7 +295,7 @@ import { assert, eq, finish } from "./lib/harness.ts";
 // injecting faults, and the next run's steady pass would count those against the
 // path's own 5xx bar.
 {
-  const v = faultModeVerdict(200, { loadtest: true, faultPct: 10 }, { faultPct: 0 });
+  const v = faultModeVerdict(200, { loadtest: true, productionSecrets: [], faultPct: 10 }, { faultPct: 0 });
   assert(!v.ok, "a deployment still injecting faults is refused when none were asked for");
   assert(!v.ok && v.why.includes("left over"), "and is told a previous leg left it that way");
   assert(
@@ -304,16 +304,16 @@ import { assert, eq, finish } from "./lib/harness.ts";
   );
   // The three mismatch messages are genuinely three, not one wording reused: the
   // two extremes send people to opposite places.
-  const wantedNoneGotSome = faultModeVerdict(200, { loadtest: true, faultPct: 10 }, { faultPct: 0 })!;
-  const wantedSomeGotNone = faultModeVerdict(200, { loadtest: true, faultPct: 0 }, { faultPct: 10 })!;
-  const plainMismatch = faultModeVerdict(200, { loadtest: true, faultPct: 5 }, { faultPct: 10 })!;
+  const wantedNoneGotSome = faultModeVerdict(200, { loadtest: true, productionSecrets: [], faultPct: 10 }, { faultPct: 0 })!;
+  const wantedSomeGotNone = faultModeVerdict(200, { loadtest: true, productionSecrets: [], faultPct: 0 }, { faultPct: 10 })!;
+  const plainMismatch = faultModeVerdict(200, { loadtest: true, productionSecrets: [], faultPct: 5 }, { faultPct: 10 })!;
   const whys = [wantedNoneGotSome, wantedSomeGotNone, plainMismatch].map((r) =>
     r.ok ? "ok" : r.why,
   );
   eq(new Set(whys).size, 3, "the three fault mismatches say three different things");
   // And the quiet case: a steady pass against a clean deployment passes.
   assert(
-    faultModeVerdict(200, { loadtest: true, faultPct: 0 }, { faultPct: 0 }).ok,
+    faultModeVerdict(200, { loadtest: true, productionSecrets: [], faultPct: 0 }, { faultPct: 0 }).ok,
     "a deployment injecting no faults is accepted when none were asked for",
   );
 }
@@ -330,7 +330,7 @@ import { assert, eq, finish } from "./lib/harness.ts";
 // for real.
 
 {
-  const ok = faultModeVerdict(200, { loadtest: true, faultPct: 10 }, { faultPct: 10 });
+  const ok = faultModeVerdict(200, { loadtest: true, productionSecrets: [], faultPct: 10 }, { faultPct: 10 });
   const step = faultPollStep(ok, 0);
   eq(step.action, "accept", "a deployment already reporting the percentage is accepted at once");
   eq(step.action === "accept" ? step.faultPct : -1, 10, "carrying what it reported");
@@ -338,7 +338,7 @@ import { assert, eq, finish } from "./lib/harness.ts";
 
 {
   // The case this exists for: not yet, so wait.
-  const notYet = faultModeVerdict(200, { loadtest: true, faultPct: 0 }, { faultPct: 10 });
+  const notYet = faultModeVerdict(200, { loadtest: true, productionSecrets: [], faultPct: 0 }, { faultPct: 10 });
   assert(!notYet.ok && notYet.retriable, "a percentage that has not landed is retriable");
   const step = faultPollStep(notYet, 2_000);
   eq(step.action, "wait", "two seconds in, it waits rather than failing");
@@ -348,7 +348,7 @@ import { assert, eq, finish } from "./lib/harness.ts";
 {
   // And it STOPS. A read that retries forever hangs the run rather than failing it
   // (L110), and the deadline is what turns "not yet" into "never".
-  const notYet = faultModeVerdict(200, { loadtest: true, faultPct: 0 }, { faultPct: 10 });
+  const notYet = faultModeVerdict(200, { loadtest: true, productionSecrets: [], faultPct: 0 }, { faultPct: 10 });
   const step = faultPollStep(notYet, FAULT_PROPAGATION_DEADLINE_MS);
   eq(step.action, "give-up", "at the deadline it gives up");
   assert(
@@ -376,7 +376,7 @@ import { assert, eq, finish } from "./lib/harness.ts";
     ["a refused key", 401, {}],
     ["a missing endpoint", 404, {}],
     ["a deployment not in load test mode", 200, { loadtest: false, faultPct: 10 }],
-    ["a deployment reporting no faultPct at all", 200, { loadtest: true }],
+    ["a deployment reporting no faultPct at all", 200, { loadtest: true, productionSecrets: [] }],
   ] as const) {
     const v = faultModeVerdict(status, body, { faultPct: 10 });
     assert(!v.ok && !v.retriable, `${label} is not retriable`);
@@ -397,7 +397,7 @@ import { assert, eq, finish } from "./lib/harness.ts";
   // A commit that has not landed is the same propagation, so it waits too.
   const stale = faultModeVerdict(
     200,
-    { commit: "aaaaaaaaaaaa", loadtest: true, faultPct: 10 },
+    { commit: "aaaaaaaaaaaa", loadtest: true, productionSecrets: [], faultPct: 10 },
     { faultPct: 10, commit: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" },
   );
   assert(!stale.ok && stale.retriable, "a commit that has not landed is retriable");
@@ -407,7 +407,7 @@ import { assert, eq, finish } from "./lib/harness.ts";
 {
   // The give-up on a retriable verdict must not read like the terminal one: it
   // carries the original reading AND says the waiting is what makes it final.
-  const notYet = faultModeVerdict(200, { loadtest: true, faultPct: 0 }, { faultPct: 10 });
+  const notYet = faultModeVerdict(200, { loadtest: true, productionSecrets: [], faultPct: 0 }, { faultPct: 10 });
   const late = faultPollStep(notYet, FAULT_PROPAGATION_DEADLINE_MS);
   const terminal = faultPollStep(faultModeVerdict(401, {}, { faultPct: 10 }), 0);
   assert(
@@ -476,6 +476,68 @@ import { assert, eq, finish } from "./lib/harness.ts";
     null,
     "a window too short to overlap a shifted copy yields nothing",
   );
+}
+
+// --- the deployment's own credentials (#2335) ---------------------------------
+//
+// The refusal that arrives FIRST, and the only one that can. A contaminated
+// deployment is pointed at the right branch, answers on the right address and
+// reports loadtest=true, so every other check here is correctly satisfied while it
+// holds production's Slack token. `/api/smoke/version` is the one endpoint that
+// answers without touching the database, which is exactly why it can still say so.
+
+{
+  const v = loadtestModeVerdict(200, {
+    commit: "abc1234",
+    loadtest: true,
+    productionSecrets: ["SLACK_BOT_TOKEN", "GOOGLE_SA_PRIVATE_KEY"],
+  });
+  assert(!v.ok, "a deployment carrying production's own settings is refused");
+  const why = v.ok ? "" : v.why;
+  assert(why.includes("SLACK_BOT_TOKEN"), "and every name is reported, so the repair is clear");
+  assert(why.includes("GOOGLE_SA_PRIVATE_KEY"), "including the second one");
+  assert(
+    why.includes(".env"),
+    "and the message names the cause, a build tree holding an env file, rather than only the symptom",
+  );
+}
+
+{
+  // Absent is NOT clean, for the same reason an absent `loadtest` field is not
+  // `false`: it is a deployment built before the check existed, and reading it as
+  // "carrying nothing" is how a contaminated build would pass the one gate written
+  // to catch it (L98).
+  const v = loadtestModeVerdict(200, { commit: "abc1234", loadtest: true });
+  assert(!v.ok, "a deployment that reports no productionSecrets field at all is refused");
+  const why = v.ok ? "" : v.why;
+  assert(
+    why.includes("predates") || why.includes("older"),
+    `and says the build is older than the check rather than accusing it, got ${why}`,
+  );
+  assert(
+    !why.includes("SLACK_BOT_TOKEN"),
+    "and names no setting, having measured none",
+  );
+}
+
+{
+  // A field of the wrong shape is its own outcome: something other than this route
+  // answered, and telling somebody their deployment is contaminated would send them
+  // hunting for a credential that was never reported.
+  const v = loadtestModeVerdict(200, { loadtest: true, productionSecrets: "SLACK_BOT_TOKEN" });
+  assert(!v.ok, "a productionSecrets field that is not a list is refused");
+  const why = v.ok ? "" : v.why;
+  assert(
+    !why.includes("predates"),
+    "on a reason of its own rather than borrowing the older-build one (L11)",
+  );
+}
+
+{
+  // And the quiet direction: a clean load test deployment is accepted, or this
+  // refusal would stop every run there is.
+  const v = loadtestModeVerdict(200, { commit: "abc1234", loadtest: true, productionSecrets: [] });
+  assert(v.ok, "a load test deployment carrying none of them is accepted");
 }
 
 finish();

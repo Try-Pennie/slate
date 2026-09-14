@@ -11,9 +11,18 @@
  */
 // @ts-expect-error - generated at build time by opennextjs-cloudflare build
 import handler from "../.open-next/worker.js";
+// Also generated at build time: the adapter bakes every `.env*` value in the build
+// tree into this file and the runtime fills in each name the bindings did not set,
+// which is how a load test deployment came to hold production's Slack token
+// (#2335). Read here rather than through `process.env` because the generated
+// handler populates that on its FIRST invocation, which is exactly the request a
+// guard must not miss.
+// @ts-expect-error - generated at build time by opennextjs-cloudflare build
+import * as bakedEnv from "../.open-next/cloudflare/next-env.mjs";
 import { routesForCron } from "./cron-routes";
 import { laneDecision } from "./lanes-disabled";
 import { loadtestServingProductionHost } from "@/lib/loadtest-guard";
+import { loadtestEntryRefusal } from "@/lib/loadtest-secrets";
 import { httpsRedirect } from "@/lib/http/https-redirect";
 import { log } from "@/lib/log";
 import { laneTimingFields, type LaneRun } from "@/lib/monitor/lane-timing";
@@ -25,6 +34,18 @@ export { BurstLimiter } from "./burst-limiter";
 
 // Durable Object classes the generated worker exports must be re-exported
 // from the entry wrangler actually loads.
+/** The request's path, or undefined when the URL will not parse.
+ *
+ *  Undefined is the REFUSING side: the diagnostic exemption is granted by path, so a
+ *  URL nobody could read must never be able to claim it. */
+function safePathname(url: string): string | undefined {
+  try {
+    return new URL(url).pathname;
+  } catch {
+    return undefined;
+  }
+}
+
 export {
   DOQueueHandler,
   DOShardedTagCache,
@@ -57,10 +78,21 @@ const worker = {
   // happens when somebody deploys a load test build over production by hand.
   // Judged on the request's own host, which is the only thing available here.
   fetch: (request: Request, env: Env, ctx: ExecutionContext) => {
-    const refusal = loadtestServingProductionHost({
-      loadtest: env.SLATE_LOADTEST === "true",
-      url: request.url,
-    });
+    const loadtest = env.SLATE_LOADTEST === "true";
+    const refusal =
+      loadtestServingProductionHost({ loadtest, url: request.url }) ??
+      // The CREDENTIAL refusal (#2335), which the address one cannot see: a
+      // contaminated build answers on exactly the address it should. It is asked
+      // here rather than in the app because this is the only place that sees both
+      // the bindings and the baked file, sees them from the first request, and is
+      // never bundled for the browser (the app-side version published all twenty
+      // three names in a public chunk).
+      loadtestEntryRefusal({
+        loadtest,
+        pathname: safePathname(request.url),
+        bindings: env as unknown as Record<string, unknown>,
+        baked: bakedEnv,
+      });
     if (refusal) {
       log.error("loadtest-guard", { msg: "refusing every request", why: refusal });
       return new Response("This deployment is not serving here.", {
@@ -76,6 +108,20 @@ const worker = {
     env: Env,
     ctx: ExecutionContext,
   ): Promise<void> {
+    // Before any lane runs (#2335). The cron lanes are what actually paged the real
+    // alerts channel about a synthetic roster, so a guard on `fetch` alone would
+    // have missed the incident it exists for. No path here: a tick is not a request,
+    // and nothing about it is diagnostic.
+    const credentials = loadtestEntryRefusal({
+      loadtest: env.SLATE_LOADTEST === "true",
+      pathname: undefined,
+      bindings: env as unknown as Record<string, unknown>,
+      baked: bakedEnv,
+    });
+    if (credentials) {
+      log.error("loadtest-guard", { msg: "refusing every lane", why: credentials });
+      return;
+    }
     const scheduledPaths = routesForCron(controller.cron);
     if (scheduledPaths.length === 0) {
       log.error("cron", { msg: "no route for cron expression", cron: controller.cron });

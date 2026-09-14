@@ -57,6 +57,11 @@ export const appUrl = (): string =>
 // wrong constant here can refuse a load run and can never break a real request.
 export const publicSupabaseUrl = (): string => {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  // The CREDENTIAL refusal (#2335) is deliberately not here, though this is where a
+  // reader looks for it: the list it judges against names every integration Slate
+  // has, and this function is called by the browser Supabase client too, so putting
+  // it here published that inventory in a public chunk. It lives on `supabaseAdmin`,
+  // which is server only and is what every cron lane and API route reads through.
   const refusal = loadtestPointedAtProduction({ loadtest: isLoadtest(), supabaseUrl: url });
   if (refusal) throw new Error(refusal);
   return present(url, "NEXT_PUBLIC_SUPABASE_URL");

@@ -1,4 +1,6 @@
 import { slackBotToken } from "@/lib/env";
+import { log } from "@/lib/log";
+import { isLoadtest, loadtestRefusal } from "@/lib/loadtest-guard";
 import { defaultAlertsChannel } from "@/lib/notify/channels";
 
 // Slack normally answers in well under a second; cap every call so a slow or
@@ -14,6 +16,18 @@ function fetchWithTimeout(
   url: string,
   init: RequestInit,
 ): Promise<Response> {
+  // Every Slack call in this file goes through here, both `slackApi` and
+  // `postSlack`'s own direct post, so this is the whole of Slack's refusal (#2335).
+  // A load run alerts about a synthetic roster (the sync lane alerts on calendar
+  // failures, and the fault pass makes ninety stubbed agents fail on purpose), and
+  // on 2026-09-14 those reached the real channel for six minutes because the only
+  // thing holding them back was an empty token. It THROWS and both callers catch it
+  // into their existing not-posted answer, so the never-throws contract is kept
+  // while the reason is the load test's own rather than "not configured" (L11).
+  if (isLoadtest()) {
+    log.warn("loadtest-guard", { msg: "slack call refused", url });
+    throw new Error(loadtestRefusal("Slack"));
+  }
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), SLACK_TIMEOUT_MS);
   return fetch(url, { ...init, signal: controller.signal }).finally(() =>

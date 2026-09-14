@@ -399,8 +399,10 @@ export function loadtestModeVerdict(
   // error page answered with a 200, and `in` THROWS on a string or a null. An
   // uncaught throw here would abort the preflight with a stack trace instead of a
   // reason, which is the one thing this check exists to produce.
-  const payload: { loadtest?: unknown; commit?: unknown } =
-    typeof body === "object" && body !== null ? (body as { loadtest?: unknown; commit?: unknown }) : {};
+  const payload: { loadtest?: unknown; commit?: unknown; productionSecrets?: unknown } =
+    typeof body === "object" && body !== null
+      ? (body as { loadtest?: unknown; commit?: unknown; productionSecrets?: unknown })
+      : {};
   if (!("loadtest" in payload)) {
     return {
       ok: false,
@@ -417,6 +419,47 @@ export function loadtestModeVerdict(
         `this deployment reports loadtest=${JSON.stringify(payload.loadtest)}. SLATE_LOADTEST is ` +
         `not set on it, so a run would make six hundred REAL calendar events and send six ` +
         `hundred real invitations. Deploy with --env loadtest.`,
+    };
+  }
+  // Which of production's own settings the deployment is holding (#2335). Reported
+  // only under load test, so under the flag the field is always there, even when it
+  // is empty.
+  //
+  // This is the refusal that arrives FIRST and the only one that can: a build that
+  // baked production's `.env.local` into its bundle is pointed at the right branch
+  // and answering on the right address, so every other refusal here is correctly
+  // satisfied while it holds a live Slack token. This endpoint is the one that
+  // answers without touching the database, which is why it can still say so while
+  // the rest of the deployment refuses itself.
+  if (!("productionSecrets" in payload)) {
+    return {
+      ok: false,
+      why:
+        "/api/smoke/version reports no productionSecrets field at all, so whether this deployment " +
+        "is carrying production's own credentials could not be established: the build predates " +
+        "the check rather than having answered none. Deploy the current commit with --env " +
+        "loadtest and re-run.",
+    };
+  }
+  if (!Array.isArray(payload.productionSecrets)) {
+    return {
+      ok: false,
+      why:
+        `/api/smoke/version reported productionSecrets as ` +
+        `${JSON.stringify(payload.productionSecrets)}, which is not a list of names. Something ` +
+        `other than this route answered, so nothing it said can be read.`,
+    };
+  }
+  if (payload.productionSecrets.length > 0) {
+    return {
+      ok: false,
+      why:
+        `this deployment is carrying ${payload.productionSecrets.length} of production's own ` +
+        `settings: ${payload.productionSecrets.join(", ")}. The cause is a build tree holding a ` +
+        `.env file: the Cloudflare adapter writes every .env* value into the bundle and the ` +
+        `runtime applies each one the Worker's bindings did not set, so the run would reach real ` +
+        `Slack, Salesforce, Twilio and cal.com. Rebuild in a tree with no .env files and deploy ` +
+        `again. Nothing was written.`,
     };
   }
   return { ok: true, commit: typeof payload.commit === "string" ? payload.commit : null };

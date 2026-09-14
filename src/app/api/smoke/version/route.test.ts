@@ -70,7 +70,12 @@ describe("GET /api/smoke/version", () => {
     try {
       env.bookingApiKeyPrimary.mockReturnValue("real-key");
       const res = await get("Bearer real-key");
-      expect(await res.json()).toEqual({ commit: "abc1234", loadtest: true, faultPct: 0 });
+      expect(await res.json()).toEqual({
+        commit: "abc1234",
+        loadtest: true,
+        faultPct: 0,
+        productionSecrets: [],
+      });
     } finally {
       if (saved === undefined) delete process.env.SLATE_LOADTEST;
       else process.env.SLATE_LOADTEST = saved;
@@ -94,6 +99,41 @@ describe("GET /api/smoke/version", () => {
     env.bookingApiKeyPrimary.mockReturnValue("real-key");
     const res = await get("Bearer real-key");
     expect((await res.json()).faultPct).toBe(0);
+  });
+
+  it("names the production settings a load test build is carrying, so the preflight can refuse", async () => {
+    // #2335. A contaminated build is pointed at the right branch and answers on the
+    // right address, so every other refusal stays correctly silent. This endpoint is
+    // the one that answers without touching the database, which is why it can still
+    // say so while the rest of the deployment refuses itself.
+    const saved = process.env.SLATE_LOADTEST;
+    process.env.SLATE_LOADTEST = "true";
+    process.env.SLACK_BOT_TOKEN = "xoxb-not-a-real-token";
+    try {
+      env.bookingApiKeyPrimary.mockReturnValue("real-key");
+      const body = await (await get("Bearer real-key")).json();
+      expect(body.productionSecrets).toEqual(["SLACK_BOT_TOKEN"]);
+      // The NAMES, never the values: this is answered over the wire and logged.
+      expect(JSON.stringify(body)).not.toContain("xoxb-not-a-real-token");
+    } finally {
+      delete process.env.SLACK_BOT_TOKEN;
+      if (saved === undefined) delete process.env.SLATE_LOADTEST;
+      else process.env.SLATE_LOADTEST = saved;
+    }
+  });
+
+  it("says nothing about its own settings when it is not a load test", async () => {
+    // The direction that matters (L159): production holds every one of these by
+    // design, and listing which ones it has on a reachable endpoint would be a
+    // config leak dressed as a safety check. The field exists only under the flag.
+    process.env.SLACK_BOT_TOKEN = "xoxb-not-a-real-token";
+    try {
+      env.bookingApiKeyPrimary.mockReturnValue("real-key");
+      const body = await (await get("Bearer real-key")).json();
+      expect(body).not.toHaveProperty("productionSecrets");
+    } finally {
+      delete process.env.SLACK_BOT_TOKEN;
+    }
   });
 
   it("returns ONLY the enumerated fields, so the endpoint cannot grow into a config leak", async () => {
