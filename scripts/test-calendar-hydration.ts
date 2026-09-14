@@ -15,7 +15,9 @@ import {
   hydrationBatchSize,
   hydrationWindow,
   calendarsDueForHydration,
+  HYDRATION_ONBOARDING_MAX,
 } from "@/lib/google/hydration";
+import { MAX_ONBOARDS_PER_TICK } from "@/lib/google/sync-pace";
 import { BOOTSTRAP_LOOKBACK_MS, BUSY_WINDOW_AHEAD_DAYS } from "@/lib/google/sync-coalesce";
 import { HORIZON_MAX } from "@/lib/booking/settings";
 
@@ -102,12 +104,16 @@ const hoursAgo = (h: number) => new Date(NOW - h * 3600_000).toISOString();
   // Never attempted comes FIRST. Null is mapped to due rather than to "recently done",
   // which is the fail-safe side: a calendar nobody has ever bootstrapped is the one with
   // no coverage at all.
+  //
+  // Since #2301 it is also selected IN ADDITION to the maintenance batch rather than out
+  // of it, which is why "recent" is here too: with a batch of 2 the old behaviour spent
+  // one of the two slots on the new calendar and served only "old" beside it.
   const picked = calendarsDueForHydration(
     [cal("recent", hoursAgo(1)), cal("never", null), cal("old", hoursAgo(30))],
     NOW,
     2,
   );
-  eq(picked.map((c) => c.id), ["never", "old"], "never-attempted first, then oldest attempt");
+  eq(picked.map((c) => c.id), ["never", "old", "recent"], "never-attempted first, then the batch oldest-first");
 }
 
 {
@@ -168,5 +174,122 @@ const hoursAgo = (h: number) => new Date(NOW - h * 3600_000).toISOString();
     "a zero batch picks nothing rather than everything",
   );
 }
+
+// --- #2301: a never covered calendar is onboarding, not maintenance ------------
+// hydrationBatchSize is derived so the whole roster is refreshed once a day, which at
+// 121 calendars is 2 per fifteen minute tick. That is the right size for a refresh
+// rotation and the wrong queue to put a brand new calendar in: never attempted already
+// sorts first, so it is at the head, and a wave of four still spans two ticks. Measured
+// 2026-09-14, four new calendars took thirty minutes to be covered while the agents
+// were already bookable and the booker was already offering their week.
+//
+// So a never attempted calendar is selected IN ADDITION to the batch, bounded by its
+// own allowance, which is derived from the rate the watch lane can admit new calendars
+// rather than picked. The lane's own budget check is what bounds the tail beyond that.
+{
+  const many = [
+    cal("m1", hoursAgo(40)),
+    cal("m2", hoursAgo(30)),
+    cal("m3", hoursAgo(20)),
+    cal("m4", hoursAgo(10)),
+  ];
+  const picked = calendarsDueForHydration([...many, cal("new", null)], NOW, 2);
+  assert(picked.some((c) => c.id === "new"), "a new calendar is served on the first tick after its row exists");
+  eq(
+    picked.filter((c) => c.id !== "new").map((c) => c.id),
+    ["m1", "m2"],
+    "and the maintenance batch keeps its full size rather than giving up a slot",
+  );
+  eq(picked[0]?.id, "new", "onboarding is served first");
+}
+
+// The allowance is BOUNDED. A mass onboarding must not turn one tick into a run over
+// the whole wave: the remainder is taken next tick, which still converges in cadences
+// rather than in the fifteen hours a full rotation takes.
+{
+  const wave = Array.from({ length: HYDRATION_ONBOARDING_MAX + 3 }, (_, i) => cal(`n${i}`, null));
+  const picked = calendarsDueForHydration(wave, NOW, 2);
+  // Onboarding is served first, so the allowance is the leading slice. The three past it
+  // are not dropped, they compete for ordinary maintenance slots like anything else, which
+  // is why the total is the allowance plus the batch and not the allowance alone.
+  eq(
+    picked.slice(0, HYDRATION_ONBOARDING_MAX).length,
+    HYDRATION_ONBOARDING_MAX,
+    "the onboarding allowance is spent in full when there are new calendars to spend it on",
+  );
+  eq(
+    picked.length,
+    HYDRATION_ONBOARDING_MAX + 2,
+    "and one tick is bounded at the allowance plus the maintenance batch, never the whole wave",
+  );
+}
+
+// Derived, not chosen: the watch lane admits at most MAX_ONBOARDS_PER_TICK brand new
+// agents per tick, so an allowance below that could never keep up with the lane that
+// creates the rows. Asserted as arithmetic rather than left as a comment, so a change
+// to either constant has to be a decision about both.
+{
+  assert(
+    HYDRATION_ONBOARDING_MAX >= MAX_ONBOARDS_PER_TICK,
+    `the onboarding allowance (${HYDRATION_ONBOARDING_MAX}) clears one watch tick's admissions (${MAX_ONBOARDS_PER_TICK})`,
+  );
+}
+
+// THE control that keeps this from becoming a starvation bug. last_bootstrap_attempt_at
+// is stamped BEFORE the fetch, so a calendar whose bootstrap failed is no longer never
+// attempted and cannot consume the allowance on every tick forever. Without this a
+// permanently failing calendar would take an onboarding slot 96 times a day.
+{
+  const failed = cal("failed-once", hoursAgo(0.1), { consecutive_failures: 1 });
+  const wave = Array.from({ length: HYDRATION_ONBOARDING_MAX }, (_, i) => cal(`n${i}`, null));
+  const picked = calendarsDueForHydration([failed, ...wave], NOW, 2);
+  const allowance = picked.slice(0, HYDRATION_ONBOARDING_MAX);
+  assert(
+    !allowance.some((c) => c.id === "failed-once"),
+    "a calendar attempted once is out of the onboarding allowance, however recently it failed",
+  );
+  eq(
+    allowance.filter((c) => c.id.startsWith("n")).length,
+    HYDRATION_ONBOARDING_MAX,
+    "and the allowance is spent entirely on the genuinely new ones",
+  );
+}
+
+// An UNREADABLE stamp is not the same fact as never attempted: it can be a calendar
+// established for months whose stamp is corrupt. It keeps the head-of-queue maintenance
+// treatment it already had (the test above pins that) and must NOT be able to crowd a
+// real new calendar out of the onboarding allowance.
+{
+  const wave = Array.from({ length: HYDRATION_ONBOARDING_MAX }, (_, i) => cal(`n${i}`, null));
+  const picked = calendarsDueForHydration([cal("garbage", "not-a-date"), ...wave], NOW, 2);
+  eq(
+    picked.filter((c) => c.id.startsWith("n")).length,
+    HYDRATION_ONBOARDING_MAX,
+    "an unreadable stamp does not consume the onboarding allowance",
+  );
+  assert(picked.some((c) => c.id === "garbage"), "and it is still served, out of the maintenance batch");
+}
+
+// The shared eligibility predicate still rules. A never attempted calendar belonging to
+// an account established as gone is held back to its retry slot exactly as before: the
+// new allowance is a queue change, never a way past the predicate that decides whether a
+// calendar is worth attempting at all.
+{
+  const goneNew = cal("gone-new", null, { last_failure_kind: "gone", consecutive_failures: 5 });
+  const picked = calendarsDueForHydration([goneNew, cal("healthy", hoursAgo(20))], NOW, 2);
+  eq(
+    picked.filter((c) => c.id === "gone-new").length,
+    0,
+    "an established-gone calendar does not enter the onboarding allowance",
+  );
+}
+
+// No calendar is hydrated twice in one tick, which the two lists make possible if the
+// second is not filtered against the first.
+{
+  const picked = calendarsDueForHydration([cal("new", null), cal("old", hoursAgo(40))], NOW, 5);
+  eq(new Set(picked.map((c) => c.id)).size, picked.length, "the tick never selects one calendar twice");
+}
+
 
 finish();

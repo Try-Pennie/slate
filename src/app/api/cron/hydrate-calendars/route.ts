@@ -83,6 +83,15 @@ export async function GET(req: NextRequest) {
       Date.now(),
       batchSize,
     );
+    // #2301: a never covered calendar is onboarding, not maintenance, so the allowance can
+    // be spent and still leave some waiting. Counted here rather than left implicit,
+    // because a wave larger than one tick can absorb and a quiet tick are otherwise the
+    // same silence, and the count is what says how many cadences the backlog will take.
+    const neverCovered = calendars.filter((c) => c.last_bootstrap_attempt_at === null).length;
+    const onboardingDeferred = Math.max(
+      0,
+      neverCovered - due.filter((c) => c.last_bootstrap_attempt_at === null).length,
+    );
 
     let refreshed = 0;
     let failed = 0;
@@ -148,6 +157,8 @@ export async function GET(req: NextRequest) {
       calendars: calendars.length,
       batch: batchSize,
       due: due.length,
+      never_covered: neverCovered,
+      onboarding_deferred: onboardingDeferred,
       refreshed,
       failed,
       events,
@@ -157,6 +168,8 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({
       calendars: calendars.length,
       batch: batchSize,
+      neverCovered,
+      onboardingDeferred,
       refreshed,
       failed,
       events,
