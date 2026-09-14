@@ -19,6 +19,7 @@ import {
   type JudgedBooking,
 } from "./loadtest/judge-booking-run.ts";
 import type { BookingAttempt, DriverResult } from "./loadtest/book-plan.ts";
+import { REQUEST_CPU_P99_MS } from "./loadtest/judge-booking-run.ts";
 import { ceilingVerdict, type CeilingAttempt } from "./loadtest/preflight-checks.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
@@ -137,7 +138,7 @@ function passing(): JudgeInput {
     },
     faultPass: { attempts: 100, fiveXx: 0, faultPct: 10 },
     expectedLegs: { burstDrivers: burstResults.length, faultPct: 10 },
-    budgets: { cpuMsP99: 200, cronCpuMs: 120_000 },
+    budgets: { cpuMsP99: REQUEST_CPU_P99_MS, cronCpuMs: 120_000 },
   };
 }
 
@@ -475,9 +476,12 @@ const bars = (r: ReturnType<typeof judgeBookingRun>) => r.findings.map((f) => f.
   eq(absent.verdict, "unmeasured", "a missing CPU reading is unmeasured rather than a pass");
 
   const hot = broken((i) => {
-    i.platform.cpuMsP99 = 250;
+    i.platform.cpuMsP99 = REQUEST_CPU_P99_MS + 1;
   });
-  assert(bars(hot).includes("Worker CPU"), "CPU over the lane budget is a finding");
+  assert(
+    bars(hot).includes("Worker CPU on the request path"),
+    "CPU over the REQUEST budget is a finding, and the bar says which path it is about (#2321)",
+  );
 
   // SUBREQUESTS are deliberately not a bar: Cloudflare exposes no counter for them,
   // so one would leave this judge permanently unable to conclude, which is the
@@ -866,7 +870,7 @@ const bars = (r: ReturnType<typeof judgeBookingRun>) => r.findings.map((f) => f.
     };
   });
   assert(
-    !bars(withCrons).includes("Worker CPU"),
+    !bars(withCrons).includes("Worker CPU on the request path"),
     "a p99 dominated by cron invocations is NOT reported as a request path CPU breach",
   );
   assert(
@@ -897,10 +901,10 @@ const bars = (r: ReturnType<typeof judgeBookingRun>) => r.findings.map((f) => f.
   // The other direction (L1): with no cron in the window the percentile really is
   // the request path, so the per request budget must still bite.
   const requestCpu = broken((i) => {
-    i.platform.cpuMsP99 = 250;
+    i.platform.cpuMsP99 = REQUEST_CPU_P99_MS + 1;
   });
   assert(
-    bars(requestCpu).includes("Worker CPU"),
+    bars(requestCpu).includes("Worker CPU on the request path"),
     "with no cron in the window the per request budget is still applied",
   );
 }

@@ -172,6 +172,26 @@ the separate raw dataset **`workersInvocationsScheduled`** (fields `cpuTimeUs`,
 `status`) to read cron CPU per invocation, attributed to the cron expression that
 fired it.
 
+**The lane budget is NOT the request budget, and the load run used to borrow it
+(#2321).** The 198ms p50 above is a reading about whatever traffic that hour held,
+mixed cron and request, and the load run judged the request path against a 200ms
+budget taken from it. Those are different questions: a scheduled invocation is
+judged against `limits.cpu_ms` (120,000ms), while a request is about a lead waiting
+and about spend on a path Cloudflare scales horizontally. The run derives its own
+now (`REQUEST_CPU_P99_MS` in `scripts/loadtest/judge-booking-run.ts`), as a stated
+share of its latency bar: CPU is the compute floor under wall time, so a confirm
+spending more than half the latency bar on CPU has no headroom left for the
+database and Google round trips it also has to make, and the latency bar is about
+to fail for a cause the CPU bar can name first.
+
+Measured against it on 2026-09-14 (run 34862015419): **CPU p99 4,908ms over 1,364
+invocations with no cron in the window**, against a wall p95 of 4,025ms. CPU
+roughly equals wall, so the confirm path is compute bound rather than waiting on
+anything. Which part of it is the open half of #2321, and the path now times its
+own named stages under `SLATE_LOADTEST` (`src/lib/booking/confirm-profile.ts`), so
+the next run answers it from a measurement rather than from reading the code. That
+is WALL time, apportioned only because this run measured the two as roughly equal.
+
 **The GraphQL analytics lag is MINUTES, not hours.** Measured 2026-09-13 at **1.9
 minutes** behind. The three hour figure recorded elsewhere in this document belongs
 to the Workers **Logs** query pipeline (#1533), which is a different system; do not
