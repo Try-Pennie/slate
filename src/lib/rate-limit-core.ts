@@ -95,6 +95,13 @@ export const DIRECT_BOOKING_API_HOURLY_RATE_RULES: RateLimitRule[] = [
  * The per-minute backstop (60/min) moved to the edge limiter (BOOKINGAPI_IP_RATE_LIMITER,
  * #961), which keeps the alert-on-block signal (a block means the ceiling is too tight
  * or a key leaked); only the hourly backstop stays here.
+ *
+ * **This is the tightest bound on one address that is EXACT** (#2339). The per-minute
+ * edge ceiling in front of it is approximate and per location, so it can allow several
+ * times its own number inside one window, and the Durable Object ceiling behind that is
+ * exact but sits at ten times the sustained limit. So this number, and not the 60, is
+ * what a single flooding host really meets, and it is what the load run's ceiling control
+ * aims at (`scripts/loadtest/ip-ceiling-control.ts`).
  */
 export const DIRECT_BOOKING_API_IP_HOURLY_RATE_RULES: RateLimitRule[] = [
   { prefix: "bookapi:ip:h", windowSeconds: 3600, max: 1200, alertOnBlock: true },
@@ -490,8 +497,18 @@ export const BOOKING_API_WRITE_LIMITER = {
   burstCeilingPerMinute: 1200,
 } as const satisfies EdgeLimiterSpec;
 
-/** The per-address backstop under the per-key ceiling (#597), so one leaked key on one host
- *  cannot spend the whole key budget. A block here is itself a signal. */
+/**
+ * The per-address backstop under the per-key ceiling (#597), so one leaked key on one host
+ * cannot spend the whole key budget. A block here is itself a signal.
+ *
+ * **`perMinute` is APPROXIMATE, per Cloudflare location, and eventually consistent (#2339).**
+ * Measured on 2026-09-14: 180 writes from one address in 20 seconds, with the binding present
+ * and answering, were ALL allowed against this 60. That is the documented behaviour of the
+ * native binding, not a fault, so nothing may treat this number as a bound. The two bounds on
+ * one address that really refuse are `burstCeilingPerMinute` below (a Durable Object, exact
+ * across isolates) and `DIRECT_BOOKING_API_IP_HOURLY_RATE_RULES` (Postgres, exact). Raising or
+ * lowering this shapes a well behaved caller and does not bound abuse.
+ */
 export const BOOKING_API_IP_LIMITER = {
   binding: "BOOKINGAPI_IP_RATE_LIMITER",
   area: "booking-api-ip",

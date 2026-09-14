@@ -101,6 +101,27 @@ through. So the practical guarantee is not 30 a minute, it is 30 a minute **per
 isolate**, which a burst spreads across for free. Read `wrangler.jsonc`'s numbers
 as "the sustained ceiling for a well behaved caller", never as a bound on abuse.
 
+**Measured again on 2026-09-14, and the gap is wider than "parallel" (#2339).**
+The booking path load run (34889873261) sent 180 writes from ONE address, in waves
+of twenty across 20 seconds, at the booking API's 60 a minute per address ceiling
+(`BOOKING_API_IP_LIMITER`). **Every one was allowed.** The binding was present and
+answered `success` every time: the run's `tail` artifact carries no
+`tag=rate-limit` line, and a missing or throwing binding logs `limiter failing
+open`. So three times the ceiling inside a third of its window produced no
+refusal, which means the 2026-08-17 reading above ("sequential is enforced at
+exactly the configured number") holds for one request at a time down one socket
+and for nothing looser than that.
+
+**Treat every `perMinute` in `EDGE_LIMITERS` as approximate, per Cloudflare
+location, and eventually consistent.** The bounds on ONE address that really
+refuse are the two behind it: the Durable Object ceiling
+(`burstCeilingPerMinute`), exact across isolates, and the hourly rules in Postgres
+(`DIRECT_BOOKING_API_IP_HOURLY_RATE_RULES`, 1,200 an hour), exact full stop. The
+load run's ceiling control (`scripts/loadtest/ip-ceiling-control.ts`) is built on
+that: it sends until the deployment credits a refusal to the per address ceiling,
+up to past the hourly cap, and reports where the refusal landed rather than
+demanding one at the per minute number.
+
 **What closes it is a Durable Object**, because it is the only primitive here
 that holds ONE count across isolates (#1536 for availability, #1556 for the other
 five limiters). `BURST_LIMITER` / `BurstLimiter` is the only DO this project

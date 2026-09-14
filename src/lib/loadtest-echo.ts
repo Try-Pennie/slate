@@ -36,3 +36,35 @@ export function stampSeenIp<T extends Response>(res: T, headers: Headers): T {
   }
   return res;
 }
+
+/** The header the refusal's own classification is echoed on. */
+export const REFUSED_BY_HEADER = "x-loadtest-refused-by";
+
+/**
+ * Stamp WHICH ceiling refused (#2339), and return the SAME response.
+ *
+ * The per key ceiling and the per address one answer with the same status through
+ * the same refusal, so from outside the deployment a 429 says only that something
+ * refused. A load run whose whole purpose is to prove the per ADDRESS ceiling
+ * would count a per key refusal as proof of it, and pass a bar the ceiling it was
+ * measuring never met (L11).
+ *
+ * The reason is the one the authorizer already classified, passed in rather than
+ * re-derived here: two readings of one decision are free to disagree, and the
+ * disagreement would be invisible exactly when somebody is using this to explain a
+ * refusal (L70).
+ *
+ * Gated behind `SLATE_LOADTEST` like the address echo. Which of our ceilings a
+ * caller met is our own shaping, and telling an unknown caller that has no place
+ * on a production response.
+ */
+export function stampRefusedBy<T extends Response>(res: T, reason: string): T {
+  if (!LOADTEST) return res;
+  try {
+    res.headers.set(REFUSED_BY_HEADER, reason);
+  } catch {
+    // Same reading as the address echo: the run loses one attribution and the
+    // refusal it is attached to is unaffected.
+  }
+  return res;
+}

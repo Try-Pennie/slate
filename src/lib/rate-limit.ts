@@ -191,7 +191,9 @@ export async function routingWithinLimit(ip: string): Promise<boolean> {
  *   - write path, keyed per API key (120/min): bookingApiWriteWithinLimit
  *   - per-IP write backstop, keyed per IP (60/min): bookingApiIpWithinLimit,
  *     which alerts on block (a block means the ceiling is too tight or a key
- *     leaked, #597/#796)
+ *     leaked, #597/#796). That 60 is APPROXIMATE and per location, and measured
+ *     allowing 180 in 20 seconds; the exact bounds on one address are named on
+ *     BOOKING_API_IP_LIMITER (#2339)
  *   - read path, keyed per API key (600/min): bookingApiReadWithinLimit
  */
 export async function bookingApiWriteWithinLimit(keyId: string): Promise<boolean> {

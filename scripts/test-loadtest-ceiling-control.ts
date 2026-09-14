@@ -1,125 +1,220 @@
-// What the per address write ceiling control can and cannot prove (#2275).
+// What the per address write ceiling control can and cannot prove (#2275, #2339).
 //
-// The issue says the control fails because it sends DRY RUNS and "the booking
-// route returns from the dry run branch before the write limiter is ever
-// consulted". That is not what happens. `authorizeBookingApi` is the FIRST
-// statement of the POST handler (`src/app/api/bookings/route.ts`), well above the
-// `if (v.dryRun)` branch, and BOTH ceilings live inside it. A dry run is metered
-// exactly like a real write, so dropping `dryRun` would have fixed nothing.
+// Three passes of this control could not conclude, and each time the reason was a
+// different one. The history is kept because each fix is only readable next to the
+// mistake it answers.
 //
-// What the failed run actually produced, read from its own artifact
-// (run 34658545203, `ip-ceiling.json`): 61 sent, **all 61 answered 409**, zero
-// refused, zero unreachable. So every request passed the limiter and was then
-// refused by the application. Two real defects:
+//   1. IT SENT `ceiling + 1`, ALL AT ONCE, and required the last to be refused.
+//      Cloudflare's own documentation says the Rate Limiting API "is permissive,
+//      eventually consistent, and intentionally designed to not be used as an
+//      accurate accounting system", with "a unique limit per Cloudflare location".
+//      Asking that counter to refuse ONE marginal request out of a simultaneous
+//      burst is close to the least likely thing it will do (L1, L172).
 //
-//   1. IT SENT EXACTLY `ceiling + 1`, ALL AT ONCE. Cloudflare's own documentation
-//      says the Rate Limiting API "is permissive, eventually consistent, and
-//      intentionally designed to not be used as an accurate accounting system",
-//      and that there is "a unique limit per Cloudflare location". Asking a
-//      deliberately permissive, eventually consistent counter to refuse ONE
-//      marginal request, from a simultaneous burst, is the least likely thing it
-//      will do. The bar could not conclude by construction (L1, L172).
+//   2. THE VERDICT COULD NOT TELL A CEILING REFUSAL FROM AN APPLICATION ONE. Run
+//      34658545203 sent 61 and was answered 409 sixty one times, which rendered
+//      exactly like a healthy unthrottled control, and the run blamed a ceiling
+//      whose own steady pass had refused four times (L11, L98).
 //
-//   2. THE VERDICT COULD NOT TELL A CEILING REFUSAL FROM AN APPLICATION REFUSAL.
-//      It counted only 429 as a refusal and 0 as unreachable; every other status,
-//      including 61 consecutive 409s, read as "allowed". So a control whose every
-//      request was being rejected by the app rendered identically to a healthy
-//      control that simply was not throttled, and the run blamed the ceiling (L11,
-//      L98). A reader sent to find out why the ceiling was off would have found
-//      nothing wrong with it: the same run's steady pass was refused four times by
-//      that very limiter.
+//   3. THE BAR ASKED FOR SOMETHING THE PLATFORM NEVER PROMISED. Run 34889873261
+//      sent 180 writes from ONE measured address in 20 seconds against a 60 a
+//      minute ceiling and every one was allowed, with the binding present and
+//      answering. That is the documented behaviour of an eventually consistent,
+//      per location counter, so a bar built on it fails for a reason nobody should
+//      fix, which is how a bar stops being read (L36).
 //
-// The SECOND pass is below, after the first pass's cases: the fixes above left
-// the control still unable to conclude, and the 2026-09-14 run said why.
+// So the control now aims at the bound that IS exact, the per address HOURLY cap,
+// and reads WHICH ceiling refused from the deployment's own echo rather than
+// inferring it from a 429. Both ceilings answer 429 through one refusal and the
+// per key one is checked FIRST, so a verdict that assumed a 429 was the address
+// one would credit a ceiling that was never reached (L70).
 //
 // Run: node --experimental-strip-types scripts/test-loadtest-ceiling-control.ts
+import { readFileSync } from "node:fs";
 import {
-  CEILING_CONTROL_OVERSHOOT,
+  CEILING_EXACT_MARGIN,
   CEILING_CONCLUSION,
-  ceilingControlSize,
-  ceilingNoSlot,
+  CEILING_REFUSED_BY,
+  CEILING_TIGHTNESS_FLOOR,
+  CONTROL_UNIDENTIFIED_IP,
+  CEILING_CONTROL_KEY_SHARE,
+  ceilingControlBudget,
+  ceilingControlPerMinute,
+  ceilingWaveDelayMs,
   ceilingVerdict,
   chooseCeilingTarget,
+  exactAddressBound,
+  type CeilingAttempt,
 } from "./loadtest/preflight-checks.ts";
+import {
+  clientIp,
+  BOOKING_API_WRITE_LIMITER,
+  DIRECT_BOOKING_API_IP_HOURLY_RATE_RULES,
+} from "../src/lib/rate-limit-core.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
 const CEILING = 60;
+/** Small enough to build fixtures from, and never the real number, which is derived. */
+const EXACT = 200;
 
-// --- the control must overshoot, because the counter is permissive by design ---
-assert(
-  CEILING_CONTROL_OVERSHOOT > 1,
-  "the control sends a MULTIPLE of the ceiling, never ceiling + 1",
-);
-const size = ceilingControlSize(CEILING);
-assert(
-  size >= CEILING * 2,
-  `it sends enough that a permissive counter must refuse (${size} against a ceiling of ${CEILING})`,
-);
+// --- the bound the control aims at is the app's own, not a number written twice --
+{
+  const derived = exactAddressBound(DIRECT_BOOKING_API_IP_HOURLY_RATE_RULES);
+  assert(derived !== null, "the app really states a per address hourly cap");
+  eq(
+    derived,
+    Math.min(...DIRECT_BOOKING_API_IP_HOURLY_RATE_RULES.map((r) => r.max)),
+    "and the TIGHTEST rule is the one a budget has to clear, since it refuses first",
+  );
+  eq(
+    exactAddressBound([]),
+    null,
+    "no rule at all answers null, never a number: a budget derived from nothing would " +
+      "send a fixed count and call whatever happened a measurement",
+  );
+  eq(exactAddressBound([{ max: 0 }]), null, "and a rule that bounds nothing is not a bound");
+  eq(
+    exactAddressBound([{ max: 900 }, { max: 300 }]),
+    300,
+    "the smallest max wins whatever order the rules are in",
+  );
+}
+
+// --- the budget clears that bound, with a margin rather than a multiple ----------
+{
+  assert(CEILING_EXACT_MARGIN > 1, "the control goes PAST the exact bound, never exactly to it");
+  assert(
+    ceilingControlBudget(EXACT) > EXACT,
+    `the budget clears the bound (${ceilingControlBudget(EXACT)} against ${EXACT})`,
+  );
+  assert(
+    CEILING_EXACT_MARGIN < 2,
+    "and it is a margin, not an overshoot: an exact counter needs no multiple, which is " +
+      "the whole difference from the approximate ceiling this replaced",
+  );
+  eq(ceilingControlBudget(0), 1, "a zero bound still sends something rather than nothing");
+}
+
+// --- the pace stays under the per KEY ceiling, which is checked FIRST -------------
+{
+  assert(
+    CEILING_CONTROL_KEY_SHARE < 1,
+    "the control spends less than the whole per key budget, so it leaves room for drift",
+  );
+  const pace = ceilingControlPerMinute(BOOKING_API_WRITE_LIMITER.perMinute);
+  assert(
+    pace < BOOKING_API_WRITE_LIMITER.perMinute,
+    `the pace (${pace}) stays under the per key ceiling (${BOOKING_API_WRITE_LIMITER.perMinute}), ` +
+      "which returns before the per address one is even reached",
+  );
+  assert(
+    pace > DIRECT_BOOKING_API_IP_HOURLY_RATE_RULES[0]!.max / 60,
+    "and it is comfortably above the per address hourly cap's own average rate, or the control " +
+      "could never reach that cap inside one hour",
+  );
+  eq(ceilingControlPerMinute(0), 1, "a zero ceiling still sends something rather than nothing");
+}
+
+// --- the pacing is measured against the clock, never against its own sleeps ---------
+{
+  // A timer built by adding up its own sleeps measures iterations, and every round
+  // trip the requests take makes it slower than the rate it believes it holds
+  // (L226). So the wait is what is OWED at this point, given real elapsed time.
+  eq(ceilingWaveDelayMs(60, 0, 60), 60_000, "sixty writes at sixty a minute owe a minute");
+  eq(ceilingWaveDelayMs(60, 30_000, 60), 30_000, "half of which has already passed");
+  eq(
+    ceilingWaveDelayMs(60, 90_000, 60),
+    0,
+    "a run already behind its own rate waits not at all, rather than falling further behind",
+  );
+  eq(ceilingWaveDelayMs(10, 0, 0), 0, "a rate of nothing paces nothing");
+}
+
+// --- the wire values are the app's own spellings --------------------------------
+{
+  // These are strings on the wire, stamped by the deployment, so they cannot be
+  // imported (the app modules they live in reach the `@/` alias, which the node
+  // suite has none of). Pinning them against the source is what stops a rename
+  // leaving this control silently unable to attribute anything (L41).
+  const authSrc = readFileSync("src/lib/booking/api-auth.ts", "utf8");
+  for (const value of Object.values(CEILING_REFUSED_BY)) {
+    assert(
+      new RegExp(`"${value}",`).test(authSrc),
+      `the app still calls this refusal ${value}`,
+    );
+  }
+  eq(
+    new Set(Object.values<string>(CEILING_REFUSED_BY)).size,
+    Object.keys(CEILING_REFUSED_BY).length,
+    "and the two ceilings are told apart by different values, which is the whole point",
+  );
+  eq(
+    clientIp(new Headers()),
+    CONTROL_UNIDENTIFIED_IP,
+    "and the unidentified caller is spelled the way the limiter itself spells it",
+  );
+}
 
 /**
- * The first pass's cases, restated as ATTEMPTS.
+ * Attempts, stated rather than defaulted.
  *
- * Every one of them was written under the premise the second pass makes
- * explicit: one address, identified, for the whole control. Stating it here
- * rather than defaulting it inside `ceilingVerdict` is the point (L70): a
- * verdict that assumed one address when it was handed none would go on reading
- * exactly as it did before this change.
+ * Both echoes are REQUIRED on `CeilingAttempt` and both are written out here on
+ * purpose (L70): a verdict handed a default would go on assuming the premise it
+ * exists to check, and every fixture would agree with it.
  */
-function statuses(parts: { n: number; status: number }[]) {
+function attempts(
+  parts: { n: number; status: number; seenIp?: string | null; refusedBy?: string | null }[],
+): CeilingAttempt[] {
   return parts.flatMap((p) =>
-    Array.from({ length: p.n }, () => ({ status: p.status, seenIp: "203.0.113.9" })),
+    Array.from({ length: p.n }, () => ({
+      status: p.status,
+      seenIp: p.seenIp === undefined ? "203.0.113.9" : p.seenIp,
+      refusedBy: p.refusedBy === undefined ? null : p.refusedBy,
+    })),
   );
 }
 
-// --- the healthy case ---------------------------------------------------------
-{
-  // Allowed up to about the ceiling, then refused. The exact crossing point is NOT
-  // asserted, and that is the point: an eventually consistent counter does not have
-  // one, and demanding it is what made the old bar unsatisfiable.
-  const v = ceilingVerdict(
-    statuses([{ n: 64, status: 200 }, { n: size - 64, status: 429 }]),
-    CEILING,
-  );
-  eq(v.conclusion, CEILING_CONCLUSION.applies, "refusing after roughly the ceiling is the pass");
-  eq(v.allowed, 64, "the allowed count is reported");
-  eq(v.refused, size - 64, "and so is the refused count");
-  eq(v.firstRefusedAt, 65, "with the position of the first refusal");
+/** A run that was refused by the per address ceiling at write `at`. */
+function refusedAt(at: number, total: number) {
+  return attempts([
+    { n: at - 1, status: 200 },
+    { n: total - at + 1, status: 429, refusedBy: CEILING_REFUSED_BY.address },
+  ]);
 }
 
-// --- THE RUN THAT MISLED SOMEBODY --------------------------------------------
-// 61 requests, every one a 409 from the application. The old verdict read this as
-// "nothing was refused, so the ceiling is not applying".
+// --- the pass, refused by a layer tighter than the hourly cap --------------------
 {
-  const v = ceilingVerdict(statuses([{ n: 61, status: 409 }]), CEILING);
-  eq(
-    v.conclusion,
-    CEILING_CONCLUSION.appRefusedEverything,
-    "every request refused by the APP is its own conclusion, never `the ceiling is off`",
-  );
-  eq(v.appRefused, 61, "the application refusals are counted separately");
-  eq(v.allowed, 0, "and none of them counts as allowed");
+  const v = ceilingVerdict(refusedAt(90, 120), CEILING, EXACT);
+  eq(v.conclusion, CEILING_CONCLUSION.applies, "a refusal the deployment credits to the address ceiling is the pass");
+  eq(v.refusedByAddress, 31, "the address refusals are counted");
+  eq(v.firstRefusedAt, 90, "with the position of the first one");
   assert(
-    !/ceiling is not applying/.test(v.detail),
-    "and the wording does not accuse the ceiling of something this never measured",
+    /tighter layer/.test(v.detail),
+    "and the detail says a layer tighter than the hourly cap refused it, since 89 counted " +
+      `is short of ${EXACT}`,
   );
 }
 
-// --- a genuinely absent ceiling ----------------------------------------------
+// --- the pass, refused only once the exact cap was reached ----------------------
 {
-  // Everything ALLOWED, well past the ceiling. This is the only shape that really
-  // says the ceiling is not applying, and it is now distinguishable from the case
-  // above because the requests succeeded rather than being refused by the app.
-  const v = ceilingVerdict(statuses([{ n: size, status: 200 }]), CEILING);
-  eq(v.conclusion, CEILING_CONCLUSION.neverRefused, "all allowed past the ceiling is the real fault");
-  assert(/ceiling/.test(v.detail), "and it does name the ceiling");
+  // The reading #2339 exists to make possible. The approximate per minute ceiling
+  // refused NOTHING and the hourly cap did all the work, which is a real fact about
+  // the deployment and not a fault. Same conclusion, and it must not render the
+  // same sentence, or the two readings are one (L11).
+  const early = ceilingVerdict(refusedAt(90, 120), CEILING, EXACT);
+  const late = ceilingVerdict(refusedAt(EXACT + 1, EXACT + 20), CEILING, EXACT);
+  eq(late.conclusion, CEILING_CONCLUSION.applies, "reaching the exact cap is still a pass");
+  assert(
+    /a minute ceiling refused nothing/.test(late.detail),
+    "and it SAYS the approximate per minute ceiling refused nothing",
+  );
+  assert(early.detail !== late.detail, "the two readings do not share a sentence");
 }
 
-// --- tighter than configured --------------------------------------------------
+// --- refusals far below the configured per minute ceiling ------------------------
 {
-  const v = ceilingVerdict(
-    statuses([{ n: 12, status: 200 }, { n: size - 12, status: 429 }]),
-    CEILING,
-  );
+  const v = ceilingVerdict(refusedAt(12, 120), CEILING, EXACT);
+  assert(12 < CEILING * CEILING_TIGHTNESS_FLOOR, "the fixture really is far below the ceiling");
   eq(
     v.conclusion,
     CEILING_CONCLUSION.tighter,
@@ -127,181 +222,181 @@ function statuses(parts: { n: number; status: number }[]) {
   );
 }
 
-// --- never reached the deployment ---------------------------------------------
+// --- the per KEY ceiling refused, and it short circuits the address one -----------
 {
-  const v = ceilingVerdict(statuses([{ n: size, status: 0 }]), CEILING);
-  eq(v.conclusion, CEILING_CONCLUSION.neverReached, "a transport fault is never a refusal");
-  eq(v.unreachable, size, "and is counted as unreachable");
-}
-
-// --- refused at AUTH, before either limiter ------------------------------------
-{
-  // A 401 is decided by `authenticateBearer` BEFORE the limiters run, so such a
-  // request never reaches the counter at all and proves nothing either way. It is
-  // not an application refusal: it means the key is wrong, which is a different
-  // person's problem (L11).
-  const v = ceilingVerdict(statuses([{ n: size, status: 401 }]), CEILING);
-  eq(v.conclusion, CEILING_CONCLUSION.notAuthorized, "a rejected key is its own conclusion");
-}
-
-// --- the positions, moved here from test-loadtest-preflight-checks.ts ----------
-{
-  const never = ceilingVerdict(statuses([{ n: size, status: 200 }]), CEILING);
-  eq(never.firstRefusedAt, null, "nothing refused is reported as null, never as a number");
-
-  const early = ceilingVerdict(
-    statuses([{ n: 19, status: 200 }, { n: size - 19, status: 429 }]),
-    CEILING,
-  );
-  eq(early.firstRefusedAt, 20, "an early refusal is reported at the position it happened");
-
-  // A transport fault is UNREACHABLE, never a refusal, and it must not move a
-  // later refusal's position: a control that never reached the deployment would
-  // otherwise report the ceiling working (L98).
-  const mixed = ceilingVerdict(
-    statuses([{ n: 1, status: 200 }, { n: 1, status: 0 }, { n: 1, status: 200 }, { n: 1, status: 429 }]),
-    CEILING,
-  );
-  eq(mixed.firstRefusedAt, 4, "a fault before a refusal does not move the refusal's position");
-  eq(mixed.unreachable, 1, "and is still counted");
-}
-
-// --- nothing sent --------------------------------------------------------------
-{
-  const v = ceilingVerdict([], CEILING);
-  eq(v.conclusion, CEILING_CONCLUSION.nothingSent, "a control that sent nothing says so");
-  eq(v.firstRefusedAt, null, "and refused nothing");
-  eq(v.unreachable, 0, "and none were unreachable");
-}
-
-// =============================================================================
-// SECOND PASS (#2275, reopened by the 2026-09-14 run)
-//
-// The first pass fixed the READING and left the control still unable to
-// conclude. Run 34862015419 sent 180 writes, every one came back 409, and not
-// one 429 was seen anywhere in the whole run. Two separate defects behind that,
-// and neither is the dry run the issue originally named:
-//
-//   1. THE REQUEST SHAPE COULD NEVER BE ALLOWED. The control aimed at a
-//      hardcoded code with a start SEVEN days out, against a four day booking
-//      horizon (`HORIZON_DEFAULT`), so the application refused every one before
-//      the run could learn anything. It now aims at a slot the deployment is
-//      actually OFFERING, and refuses to send at all when no code offers one,
-//      because sending into a guaranteed refusal is the shape that produced two
-//      inconclusive runs in a row (L98).
-//
-//   2. IT ASSUMED THE PREMISE IT RESTS ON. "N writes from ONE address" was never
-//      measured. Three different things make that premise false, and every one
-//      of them renders as "the ceiling is not applying" unless it is named:
-//      an address the deployment cannot read declines to judge and can NEVER
-//      refuse (#1557), a runner behind a NAT pool spreads the writes over
-//      several counters, and a deployment echoing nothing leaves the premise
-//      unmeasured. The `x-loadtest-seen-ip` echo (#2243) already carries the
-//      answer, and nothing read it. Each is its own conclusion now (L11, L70).
-// =============================================================================
-
-function attempts(parts: { n: number; status: number; seenIp?: string | null }[]) {
-  return parts.flatMap((p) =>
-    Array.from({ length: p.n }, () => ({
-      status: p.status,
-      seenIp: p.seenIp === undefined ? "203.0.113.9" : p.seenIp,
-    })),
-  );
-}
-
-// --- the deployment could not read the caller's address ------------------------
-{
-  // `judgeCaller` serves an unidentified caller UNJUDGED (#1557), so the per
-  // address ceiling is structurally unable to refuse this run. Reporting "the
-  // ceiling is not applying" would send somebody to look at a ceiling that was
-  // never asked.
-  const v = ceilingVerdict(attempts([{ n: size, status: 200, seenIp: "unknown" }]), CEILING);
-  eq(
-    v.conclusion,
-    CEILING_CONCLUSION.callerUnidentified,
-    "an unidentified caller is its own conclusion, never `the ceiling is off`",
-  );
-  eq(v.unidentified, size, "and every attempt is counted as unidentified");
-  eq(v.addresses.length, 0, "with no identified address to report");
-  assert(
-    !/not applying|is off/.test(v.detail),
-    "and it does not accuse the ceiling of something this never measured",
-  );
-}
-
-// --- the writes were spread over several addresses -----------------------------
-{
-  // A CI runner behind an egress NAT pool. Each address carries its own counter,
-  // so N writes over three of them is N/3 against the ceiling and an absence of
-  // refusals says nothing at all.
+  // The fault the echo exists to catch. Without it these 429s read as proof of the
+  // per address ceiling, and the run would pass a bar that ceiling never met: the
+  // key check runs FIRST and returns before the address check is reached.
   const v = ceilingVerdict(
     attempts([
-      { n: 60, status: 200, seenIp: "203.0.113.1" },
-      { n: 60, status: 200, seenIp: "203.0.113.2" },
-      { n: size - 120, status: 200, seenIp: "203.0.113.3" },
+      { n: 40, status: 200 },
+      { n: 80, status: 429, refusedBy: CEILING_REFUSED_BY.key },
     ]),
     CEILING,
+    EXACT,
+  );
+  eq(v.conclusion, CEILING_CONCLUSION.keyCeilingOnly, "a per key refusal is never credited to the address ceiling");
+  eq(v.refusedByKey, 80, "and the key refusals are counted under their own name");
+  eq(v.refusedByAddress, 0, "with none credited to the address ceiling");
+  eq(v.firstRefusedAt, null, "and no first ADDRESS refusal to report");
+}
+
+// --- a refusal that said nothing about which ceiling made it ----------------------
+{
+  const v = ceilingVerdict(
+    attempts([{ n: 40, status: 200 }, { n: 80, status: 429, refusedBy: null }]),
+    CEILING,
+    EXACT,
   );
   eq(
     v.conclusion,
-    CEILING_CONCLUSION.severalAddresses,
-    "writes spread over several addresses cannot show one address's ceiling",
+    CEILING_CONCLUSION.refusalUnattributed,
+    "an unattributed refusal is its own conclusion, never a pass",
   );
-  eq(v.addresses.length, 3, "and the distinct addresses are counted");
+  eq(v.refusedUnattributed, 80, "and they are counted apart from either ceiling");
 }
 
-// --- the deployment echoed no address at all -----------------------------------
+// --- an ADDRESS refusal settles it whatever else the run met -----------------------
 {
-  // `SLATE_LOADTEST` unset on the deployment, or the header stripped in front of
-  // it. The premise is then unmeasured rather than false, which is a third thing
-  // to go and check and not the same as the ceiling being off.
-  const v = ceilingVerdict(attempts([{ n: size, status: 200, seenIp: null }]), CEILING);
-  eq(
-    v.conclusion,
-    CEILING_CONCLUSION.addressUnmeasured,
-    "an unmeasured address is its own conclusion",
+  // The address facts and the key refusals all explain an ABSENCE of refusals, so
+  // none of them may override one that happened.
+  const v = ceilingVerdict(
+    attempts([
+      { n: 40, status: 200, seenIp: "203.0.113.1" },
+      { n: 20, status: 429, refusedBy: CEILING_REFUSED_BY.key, seenIp: "203.0.113.2" },
+      { n: 20, status: 429, refusedBy: null, seenIp: "203.0.113.3" },
+      { n: 40, status: 429, refusedBy: CEILING_REFUSED_BY.address, seenIp: "203.0.113.1" },
+    ]),
+    CEILING,
+    EXACT,
   );
-  eq(v.unreported, size, "and the unreported attempts are counted");
+  eq(v.conclusion, CEILING_CONCLUSION.applies, "an address refusal is an address refusal");
+  eq(v.firstRefusedAt, 81, "and the position skips the refusals the other ceilings made");
 }
 
-// --- one identified address, nothing refused: the ceiling really is off ---------
+// --- an application refusal is COUNTED, and is not a reason to stop -----------------
 {
-  const v = ceilingVerdict(attempts([{ n: size, status: 200 }]), CEILING);
+  // The reversal #2339 makes explicit. `authorizeBookingApi` is the first statement
+  // of the handler, so a 409 was metered exactly like a 200. The old verdict had a
+  // whole conclusion for "the app refused everything", because it sent only three
+  // times the ceiling and needed those writes to succeed to mean anything. With a
+  // budget past an exact cap they drive the counter just as well, so the control no
+  // longer depends on the roster offering a bookable time.
+  const v = ceilingVerdict(
+    attempts([{ n: EXACT, status: 409 }, { n: 20, status: 429, refusedBy: CEILING_REFUSED_BY.address }]),
+    CEILING,
+    EXACT,
+  );
+  eq(v.counted, EXACT, "every application refusal counted against the address");
+  eq(v.allowed, 0, "and none of them counts as allowed");
+  eq(v.appRefused, EXACT, "they are reported under their own name");
+  eq(v.conclusion, CEILING_CONCLUSION.applies, "and the ceiling still showed itself");
+}
+
+// --- short of the exact bound, with nothing refused ---------------------------------
+{
+  // NOT the same as the ceiling being off, and this is the distinction the whole
+  // change turns on. Below a bound something guarantees, a clean run is a run that
+  // never reached one (L98).
+  const v = ceilingVerdict(attempts([{ n: EXACT - 1, status: 200 }]), CEILING, EXACT);
+  eq(v.conclusion, CEILING_CONCLUSION.underBudget, "short of the exact cap proves nothing either way");
+  assert(
+    !/not applying/.test(v.detail),
+    "and it does not accuse a ceiling of something this never measured",
+  );
+}
+
+// --- past the exact bound, with nothing refused --------------------------------------
+{
+  const v = ceilingVerdict(attempts([{ n: EXACT + 20, status: 200 }]), CEILING, EXACT);
   eq(
     v.conclusion,
     CEILING_CONCLUSION.neverRefused,
-    "one measured address and no refusal is the only shape that indicts the ceiling",
+    "one measured address past the exact cap with no refusal is the only shape that indicts it",
   );
   eq(v.addresses.length, 1, "and the one address it was keyed on is reported");
+  assert(/not applying/.test(v.detail), "and it does say so");
 }
 
-// --- a refusal settles it whatever the addresses were ---------------------------
+// --- the deployment could not read the caller's address --------------------------------
 {
-  // Several addresses only ever RAISES the effective headroom, so a refusal that
-  // happened anyway is still a refusal. The address facts explain an ABSENCE of
-  // refusals and must not override a present one.
+  // `judgeCaller` serves an unidentified caller UNJUDGED (#1557), so the per
+  // address ceiling is structurally unable to refuse this run.
+  const v = ceilingVerdict(
+    attempts([{ n: EXACT + 20, status: 200, seenIp: CONTROL_UNIDENTIFIED_IP }]),
+    CEILING,
+    EXACT,
+  );
+  eq(v.conclusion, CEILING_CONCLUSION.callerUnidentified, "an unidentified caller is its own conclusion");
+  eq(v.unidentified, EXACT + 20, "and every attempt is counted as unidentified");
+  assert(!/not applying/.test(v.detail), "never `the ceiling is off`");
+}
+
+// --- the writes were spread over several addresses ---------------------------------------
+{
   const v = ceilingVerdict(
     attempts([
-      { n: 64, status: 200, seenIp: "203.0.113.1" },
-      { n: size - 64, status: 429, seenIp: "203.0.113.2" },
+      { n: 100, status: 200, seenIp: "203.0.113.1" },
+      { n: 100, status: 200, seenIp: "203.0.113.2" },
+      { n: 60, status: 200, seenIp: "203.0.113.3" },
     ]),
     CEILING,
+    EXACT,
   );
-  eq(v.conclusion, CEILING_CONCLUSION.applies, "a refusal is a refusal");
+  eq(v.conclusion, CEILING_CONCLUSION.severalAddresses, "one counter each is not one counter");
+  eq(v.addresses.length, 3, "and the distinct addresses are counted");
 }
 
-// --- the control could not find a slot to aim at --------------------------------
+// --- the deployment echoed no address at all ---------------------------------------------
 {
-  // Sending into a guaranteed application refusal is what produced two
-  // inconclusive runs. Finding nothing to aim at is never a pass (L98), and it is
-  // a different thing to fix than a control that sent nothing for another reason.
-  const v = ceilingNoSlot(CEILING, ["112", "212", "111"]);
-  eq(v.conclusion, CEILING_CONCLUSION.noSlot, "no bookable slot is its own conclusion");
-  eq(v.sent, 0, "and nothing was sent");
-  assert(/112/.test(v.detail), "and the detail names the codes it asked");
+  const v = ceilingVerdict(
+    attempts([{ n: EXACT + 20, status: 200, seenIp: null }]),
+    CEILING,
+    EXACT,
+  );
+  eq(v.conclusion, CEILING_CONCLUSION.addressUnmeasured, "an unmeasured address is its own conclusion");
+  eq(v.unreported, EXACT + 20, "and the unreported attempts are counted");
 }
 
-// --- choosing what to aim at ----------------------------------------------------
+// --- never reached the deployment -----------------------------------------------------------
+{
+  const v = ceilingVerdict(attempts([{ n: 120, status: 0, seenIp: null }]), CEILING, EXACT);
+  eq(v.conclusion, CEILING_CONCLUSION.neverReached, "a transport fault is never a refusal");
+  eq(v.unreachable, 120, "and is counted as unreachable");
+  eq(v.counted, 0, "and counted against nothing");
+}
+
+// --- refused at AUTH, before either limiter -------------------------------------------------
+{
+  const v = ceilingVerdict(attempts([{ n: 120, status: 401 }]), CEILING, EXACT);
+  eq(v.conclusion, CEILING_CONCLUSION.notAuthorized, "a rejected key is its own conclusion");
+  eq(v.counted, 0, "and a 401 never reached a counter");
+}
+
+// --- nothing sent -----------------------------------------------------------------------------
+{
+  const v = ceilingVerdict([], CEILING, EXACT);
+  eq(v.conclusion, CEILING_CONCLUSION.nothingSent, "a control that sent nothing says so");
+  eq(v.firstRefusedAt, null, "and refused nothing");
+}
+
+// --- a transport fault does not move a later refusal's position ---------------------------------
+{
+  const v = ceilingVerdict(
+    attempts([
+      { n: 1, status: 200 },
+      { n: 1, status: 0, seenIp: null },
+      { n: 1, status: 200 },
+      { n: 1, status: 429, refusedBy: CEILING_REFUSED_BY.address },
+    ]),
+    CEILING,
+    EXACT,
+  );
+  eq(v.firstRefusedAt, 4, "the position is where it happened");
+  eq(v.unreachable, 1, "and the fault is still counted");
+}
+
+// --- choosing what to aim at ---------------------------------------------------------------------
 {
   const target = chooseCeilingTarget([
     { code: "112", slots: [] },
@@ -310,70 +405,41 @@ function attempts(parts: { n: number; status: number; seenIp?: string | null }[]
   ]);
   assert(target !== null, "a code that is offering times is chosen");
   eq(target!.code, "212", "the first code with any offer wins");
-  eq(target!.slots.length, 2, "and it keeps EVERY offered slot");
-}
-{
-  // Round robin across the offers rather than hammering one. The steady pass is
-  // booking at the same time, so a single slot can be taken mid control and turn
-  // every remaining request into an application refusal, which is the exact state
-  // this whole pass exists to stop happening (L98).
+  eq(target!.slots.length, 2, "and it keeps EVERY offered slot, since the steady pass can take one");
   eq(chooseCeilingTarget([{ code: "112", slots: [] }]), null, "no offers, no target");
   eq(chooseCeilingTarget([]), null, "nothing asked, no target");
 }
 
-// --- still no two conclusions saying the same thing (L11) -----------------------
+// --- no two conclusions saying the same thing (L11) -----------------------------------------------
 {
-  const seen = new Map<string, string>();
-  const cases = [
-    attempts([{ n: 64, status: 200 }, { n: size - 64, status: 429 }]),
-    attempts([{ n: 61, status: 409 }]),
-    attempts([{ n: size, status: 200 }]),
-    attempts([{ n: 12, status: 200 }, { n: size - 12, status: 429 }]),
-    attempts([{ n: size, status: 0, seenIp: null }]),
-    attempts([{ n: size, status: 401 }]),
-    attempts([{ n: size, status: 200, seenIp: "unknown" }]),
+  const cases: CeilingAttempt[][] = [
+    refusedAt(90, 120),
+    refusedAt(12, 120),
+    attempts([{ n: 40, status: 200 }, { n: 80, status: 429, refusedBy: CEILING_REFUSED_BY.key }]),
+    attempts([{ n: 40, status: 200 }, { n: 80, status: 429, refusedBy: null }]),
+    attempts([{ n: EXACT - 1, status: 200 }]),
+    attempts([{ n: EXACT + 20, status: 200 }]),
+    attempts([{ n: EXACT + 20, status: 200, seenIp: CONTROL_UNIDENTIFIED_IP }]),
     attempts([
-      { n: 90, status: 200, seenIp: "203.0.113.1" },
-      { n: size - 90, status: 200, seenIp: "203.0.113.2" },
+      { n: 150, status: 200, seenIp: "203.0.113.1" },
+      { n: 150, status: 200, seenIp: "203.0.113.2" },
     ]),
-    attempts([{ n: size, status: 200, seenIp: null }]),
+    attempts([{ n: EXACT + 20, status: 200, seenIp: null }]),
+    attempts([{ n: 120, status: 0, seenIp: null }]),
+    attempts([{ n: 120, status: 401 }]),
     [],
   ];
-  const verdicts = cases.map((c) => ceilingVerdict(c, CEILING));
-  verdicts.push(ceilingNoSlot(CEILING, ["112"]));
-  for (const v of verdicts) {
-    assert(!seen.has(v.detail), `each conclusion has its own sentence: ${v.conclusion}`);
-    seen.set(v.detail, v.conclusion);
-  }
-  eq(seen.size, verdicts.length, "every case produced a distinct sentence");
+  const verdicts = cases.map((c) => ceilingVerdict(c, CEILING, EXACT));
+  const details = new Set(verdicts.map((v) => v.detail));
+  eq(details.size, verdicts.length, "every case produced a distinct sentence");
   eq(
-    new Set([...seen.values()]).size,
+    new Set(verdicts.map((v) => v.conclusion)).size,
     verdicts.length,
     "and a distinct conclusion, so no two send a reader to the same place",
   );
-}
 
-// --- every declared conclusion is one some case can actually reach (L151) -------
-{
-  const reachable = new Set([
-    ceilingVerdict(attempts([{ n: 64, status: 200 }, { n: size - 64, status: 429 }]), CEILING).conclusion,
-    ceilingVerdict(attempts([{ n: 61, status: 409 }]), CEILING).conclusion,
-    ceilingVerdict(attempts([{ n: size, status: 200 }]), CEILING).conclusion,
-    ceilingVerdict(attempts([{ n: 12, status: 200 }, { n: size - 12, status: 429 }]), CEILING).conclusion,
-    ceilingVerdict(attempts([{ n: size, status: 0, seenIp: null }]), CEILING).conclusion,
-    ceilingVerdict(attempts([{ n: size, status: 401 }]), CEILING).conclusion,
-    ceilingVerdict(attempts([{ n: size, status: 200, seenIp: "unknown" }]), CEILING).conclusion,
-    ceilingVerdict(
-      attempts([
-        { n: 90, status: 200, seenIp: "203.0.113.1" },
-        { n: size - 90, status: 200, seenIp: "203.0.113.2" },
-      ]),
-      CEILING,
-    ).conclusion,
-    ceilingVerdict(attempts([{ n: size, status: 200, seenIp: null }]), CEILING).conclusion,
-    ceilingVerdict([], CEILING).conclusion,
-    ceilingNoSlot(CEILING, ["112"]).conclusion,
-  ]);
+  // --- every declared conclusion is one some case can actually reach (L151) --------
+  const reachable = new Set<string>(verdicts.map((v) => v.conclusion));
   for (const declared of Object.values(CEILING_CONCLUSION)) {
     assert(reachable.has(declared), `a declared conclusion no case can produce: ${declared}`);
   }
