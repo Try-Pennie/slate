@@ -601,6 +601,51 @@ The platform half is reported `unmeasured` on every run so far: the analytics AP
 returns no rows for a window minutes old, which is the lag this repo already
 documents (#1533). That is the judge's control working as designed, not a pass.
 
+## Tearing down (#2322)
+
+`teardown` deletes **two** things now, and for months it said so while deleting one.
+The job removed the Worker and nothing in it touched the Supabase branch; the
+workflow had no token to. On 2026-09-14 the run finished, teardown reported
+success, and `loadtest-2284` was still ACTIVE_HEALTHY and billing until somebody
+deleted it by hand twenty minutes later: a success report about work never
+attempted (L98). **A branch is paid for while it exists.**
+
+Dispatch with **`branch_name`** set to the throwaway (`loadtest-<issue>`) and the
+teardown deletes it. Leave it empty and the branch is LEFT STANDING and the job
+says so, loudly, as a workflow warning: that is still not a clean teardown and it
+must not read as one.
+
+The choosing is pinned offline (`scripts/test-loadtest-branch-teardown.ts`),
+because deleting a branch acts on a real project and the guard has to be testable
+with no token. Two hazards it holds off, both measured rather than imagined:
+
+- **The project carries a branch literally named `main`**, `is_default: true`,
+  whose `project_ref` is the production project itself. The name shape, the default
+  flag and the parent ref are three separate refusals, so no spelling of "delete the
+  branch" reaches that row.
+- **`DELETE /v1/branches/{id}` deletes one branch; `DELETE /v1/projects/{ref}/branches`
+  DISABLES PREVIEW BRANCHING for the whole project.** An empty id is one slash from
+  the second, so an id that is not a uuid is refused before any request is built.
+
+| exit | what it met |
+|---|---|
+| 0 | the branch is gone, confirmed by re-reading the listing, or none was named (and the job says the branch is still there) |
+| 1 | no access token or no project ref here; nothing was attempted |
+| 2 | the name is not one a load run creates, so nothing was even looked up |
+| 3 | the branch listing could not be READ, which is not an empty project |
+| 4 | no branch of that name, so something may still be billing under another |
+| 5 | more than one of that name |
+| 6 | the match is the project default |
+| 7 | the match points at the parent project |
+| 8 | the id is not a branch id, so no request was built |
+| 9 | the delete was refused |
+| 10 | the delete was accepted and the listing could not be re-read, so it is unconfirmed |
+| 11 | the delete was accepted and the branch is still in the listing |
+
+Exits 10 and 11 exist for the same reason the Worker half re-reads the account
+listing (#2277): the teardown is done when the thing is GONE, never when the delete
+command exited.
+
 ## Backstop retention decision (#440: retire #401 / #428 only if fully subsumed)
 **Decision: keep both `#401` and `#428` running. Neither is subsumed by the outbox.**
 
