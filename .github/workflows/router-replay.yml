@@ -1,0 +1,159 @@
+name: Router replay
+
+# The weekly replay of cal.com's routed leads through Slate's ladder (#2263).
+#
+# `pnpm verify:router-replay` is the only measurement of Slate's ROUTING that exists
+# before cutover: cal.com has taken every real lead for months, so Slate has no
+# traffic of its own to be judged by, and every routing form response records both
+# the code a lead carried and the agent cal.com chose. It was hand run, so it found
+# what it found on the day somebody remembered, while routing agreement can drift
+# with any roster or attribute change and nothing would report it.
+#
+# WEEKLY, not daily, and the cadence is doing two jobs. A pass is roughly ten minutes
+# per thousand bookings on a key shared with the OOO dual write, and this whole
+# family retires at cutover (#65), so it stays cheap. It also fixes the SAMPLING: a
+# capped run reaches at most REPLAY_MAX_FETCH bookings against roughly 25,000 routed
+# leads in a 30 day window, and the booking cache accumulates backwards across runs,
+# so repeated runs are what eventually cover the window.
+#
+# WHICH IS WHY THE CACHE IS PERSISTED. A runner's $TMPDIR is gone when the job ends,
+# so without the cache step below every scheduled run would re-read the same newest
+# leads and the window would never fill: the run would look identical every week
+# while covering no more of it. The cache holds host emails, times and status and
+# never the attendee, by the command's own design, so no lead's details leave the
+# deployment.
+#
+# It runs HERE and not on the Worker's monitor lane, for the same reason the parity
+# sweep does: it is hundreds of cal.com reads across ten minutes, and the four cron
+# lanes share one invocation budget the recompute lane already runs at 100 to 120
+# percent of (#2022).
+#
+# It speaks from the runner rather than reporting into Slate's alerting, which is a
+# deliberate difference from schedule-parity (#2031). That one is daily, so a finding
+# that sits needs a cooldown and an all clear, which need a memory a runner has none
+# of. At weekly cadence, on something that retires at cutover, the condition
+# machinery would cost more than it buys: one message a week at most, and only when
+# there is something to say.
+#
+# Needs the CALCOM_API_KEY, SUPABASE_SECRET_KEY, BOOKING_API_KEY and SLACK_BOT_TOKEN
+# repo secrets, and the SLACK_ALERTS_CHANNEL and SLATE_BASE_URL repo variables.
+on:
+  schedule:
+    # Monday 13:20 UTC, mid morning Eastern. An hour after schedule-parity's 12:20 so
+    # the two cal.com consumers are never pacing against each other on one key, and
+    # not on the hour, where GitHub's scheduling queue is busiest and runs are most
+    # often dropped.
+    - cron: "20 13 * * 1"
+  workflow_dispatch:
+
+concurrency:
+  group: router-replay
+  cancel-in-progress: false
+
+jobs:
+  replay:
+    # A full pass is about ten minutes per thousand bookings at the measured pacing,
+    # and REPLAY_MAX_FETCH defaults to 2,000 split across two windows.
+    timeout-minutes: 45
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+        with:
+          version: 10
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24
+          cache: pnpm
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      # Skip quietly until the keys are configured, so merging this does not fail a
+      # run every week before setup. An absent key is "not configured yet"; a present
+      # but wrong one still runs and reports.
+      - name: Preflight (is the replay configured?)
+        id: pre
+        env:
+          CALCOM_API_KEY: ${{ secrets.CALCOM_API_KEY }}
+          SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+        run: |
+          missing=""
+          for name in CALCOM_API_KEY SUPABASE_SECRET_KEY; do
+            eval "value=\${$name}"
+            if [ -z "$value" ]; then missing="$missing $name"; fi
+          done
+          if [ -z "$missing" ]; then
+            echo "configured=1" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=0" >> "$GITHUB_OUTPUT"
+            echo "::notice::Not set as repo secrets, so the router replay is skipping:$missing. Add them in Settings > Secrets and variables > Actions."
+          fi
+
+      # The accumulating booking cache, which is what makes repeated runs cover more
+      # of the window than any one run can. The key carries the run id so every run
+      # writes a NEW entry, and `restore-keys` picks up the newest previous one: a
+      # fixed key would be written once and then never updated, so the cache would
+      # freeze at whatever the first run happened to read.
+      - name: Restore the booking cache
+        if: steps.pre.outputs.configured == '1'
+        uses: actions/cache@640a1c2554105b57832a23eea0b4672fc7a790d5 # v4
+        with:
+          path: .replay-cache
+          key: router-replay-cache-${{ github.run_id }}
+          restore-keys: |
+            router-replay-cache-
+
+      # `continue-on-error`, because this step's exit code is the FINDING: it exits
+      # non-zero on every outcome other than agreement by design. The step below is
+      # what decides whether anybody is told and whether the detector concluded, and
+      # failing the job here would skip it and leave the finding in the Actions tab
+      # with nobody reading it.
+      - name: Replay cal.com's routed leads through Slate's ladder
+        id: replay
+        continue-on-error: true
+        if: steps.pre.outputs.configured == '1'
+        env:
+          CALCOM_API_KEY: ${{ secrets.CALCOM_API_KEY }}
+          # The roster half reads Slate's own users through supabaseAdmin. The URL is
+          # written out rather than referenced as a repo variable, matching ci.yml and
+          # schedule-parity.yml: it is not a secret, and a variable would be one more
+          # setting to create before this can ever run.
+          NEXT_PUBLIC_SUPABASE_URL: https://drukfvgaynzrralbzkzj.supabase.co
+          SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+          # Literal paths, not repo variables: both are internal handoffs inside this
+          # one job, and the steps around them read the same paths.
+          REPLAY_CACHE: .replay-cache/bookings.json
+          REPLAY_SUMMARY_FILE: replay-summary.json
+        run: node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/verify-router-replay-live.ts
+
+      # Runs whatever the replay did, because "it disagreed" and "it never decided"
+      # are two different things to say and the second has no exit code of its own
+      # that this could trust. The summary FILE is the evidence: absent means the run
+      # died before reaching a verdict (L98).
+      #
+      # Bare node, no alias hook: scripts/test-dependency-free-scripts.ts holds it to
+      # importing nothing outside scripts/.
+      - name: Say what the replay found
+        id: report
+        if: always() && steps.pre.outputs.configured == '1'
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_ALERTS_CHANNEL: ${{ vars.SLACK_ALERTS_CHANNEL }}
+          REPLAY_SUMMARY_FILE: replay-summary.json
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: node --experimental-strip-types scripts/notify-router-replay.ts
+
+      # Stamped ONLY when the replay reached a usable verdict, never merely because
+      # the workflow ran. A run cal.com refused, or one whose sample was too thin to
+      # judge, leaves this unstamped, the router-replay heartbeat goes stale and the
+      # lane watchdog pages: a detector that has stopped concluding otherwise looks
+      # exactly like one finding nothing wrong (#1394).
+      - name: Stamp the replay heartbeat (a measured verdict only)
+        if: steps.pre.outputs.configured == '1' && steps.report.outputs.concluded == '1'
+        env:
+          BOOKING_API_KEY: ${{ secrets.BOOKING_API_KEY }}
+          SLATE_BASE_URL: ${{ vars.SLATE_BASE_URL }}
+        run: |
+          base="${SLATE_BASE_URL:-https://slate.trypennie.app}"
+          curl -fsS -X POST "${base%/}/api/smoke/heartbeat?lane=router-replay" \
+            -H "authorization: Bearer $BOOKING_API_KEY"

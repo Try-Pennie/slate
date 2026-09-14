@@ -66,6 +66,13 @@ export function canaryRecoveryText(lane: string): string {
       `the two systems is being watched for once more. No action is needed.`
     );
   }
+  if (lane === "router-replay") {
+    return (
+      `The weekly routing replay is reaching a verdict again, so there is a measurement ` +
+      `once more of whether Slate would route real leads the way cal.com does. No action ` +
+      `is needed.`
+    );
+  }
   return (
     `The booking smoke canary is running again, so the automated end to end ` +
     `booking check is back in place. No action is needed.`
@@ -205,6 +212,9 @@ export function canaryAlertText(lane: StaleLane, boundMin: number): string {
   const quiet = laneQuietClause({ ageMs: lane.ageMs, boundMin, unreadable: lane.unreadable });
   if (lane.lane === "smoke-canary-full") {
     return `The booking smoke canary's full end to end pass (create, reschedule, cancel) ${quiet}, so the automated proof that a booking can actually be made is no longer running (the quick health tick may still be fine). Both the 6h scheduled run and the Worker gap filler have failed to complete it. Re run it from the Actions tab (Run workflow on smoke-canary, mode full).`;
+  }
+  if (lane.lane === "router-replay") {
+    return `The weekly replay that puts real cal.com routed leads through the Slate tier ladder ${quiet}, so nothing is measuring whether Slate would route them the way the incumbent does. It is the ONLY reading of Slate routing that exists before cutover, because cal.com is still taking every real lead and Slate has no traffic of its own to be judged by. It also goes quiet when it runs and cannot judge enough leads to mean anything, which is the same silence, so check what the last run said. Re run it from the Actions tab (Run workflow on router-replay).`;
   }
   if (lane.lane === "schedule-parity") {
     return `The daily check comparing Slate's roster and working hours against cal.com ${quiet}, so nothing is watching for the two systems drifting apart while both are live. Drift ran at about four agents a day the last time this went unwatched, and it is invisible from inside Slate: a schedule saying 08:00 reads the same whether or not the agent starts then. Re run it from the Actions tab (Run workflow on schedule-parity).`;

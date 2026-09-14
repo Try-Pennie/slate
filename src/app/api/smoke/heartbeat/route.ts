@@ -34,6 +34,12 @@ const CANARY_HEARTBEAT_LANES = new Set([
   // sweep reached a verdict, never merely because the workflow ran, so a sweep
   // that cannot read cal.com goes stale rather than reporting itself alive.
   "schedule-parity",
+  // The weekly replay of routed cal.com leads through the Slate tier ladder
+  // (#2263). Stamped only on a run that reached a USABLE verdict: a run cal.com
+  // refused, or one whose sample was too thin to judge, leaves it unstamped,
+  // because a blind detector keeping its heartbeat fresh is the state #1394
+  // exists to find.
+  "router-replay",
 ]);
 
 export async function POST(req: NextRequest) {
