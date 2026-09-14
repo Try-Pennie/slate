@@ -1201,11 +1201,26 @@ export async function reconcileOrphanedPoolExits(
   const leftRows = (unwrap(
     await db
       .from("users")
-      .select("id")
+      .select("id, deactivated_at, bookable_pending_since")
       .or("bookable.eq.false,deactivated_at.not.is.null"),
     "pool-exit-reconcile",
-  ) ?? []) as { id: string }[];
-  const ids = leftRows.map((r) => r.id);
+  ) ?? []) as { id: string; deactivated_at: string | null; bookable_pending_since: string | null }[];
+  // #2302: skip anybody an activation is OWED for. The gate establishes their
+  // watches and loads their calendar before the bookable write, so for the second
+  // or two in between they look exactly like an agent who has left the pool: not
+  // bookable, holding a live watch, holding fresh busy blocks. This lane runs every
+  // minute, so at that window it would reap a few percent of activations, and the
+  // damage is invisible afterwards because `cleanupOnPoolExit` deliberately leaves
+  // `sync_window_to` alone, so the coverage monitor goes on reading as healthy over
+  // an emptied cache (#1879).
+  //
+  // The exclusion is no broader than that reason (L324): somebody DEACTIVATED has
+  // left, whatever stale mark their row carries, so they are reaped as before.
+  const ids = leftRows
+    // `== null` rather than `=== null`: a nullable column comes back as null, and
+    // an absent key means the same thing, so both have to read as 'no mark'.
+    .filter((r) => r.deactivated_at != null || r.bookable_pending_since == null)
+    .map((r) => r.id);
   if (ids.length === 0)
     return { scanned: 0, cleaned: 0, blocksDeleted: 0, blocksPreserved: 0 };
 

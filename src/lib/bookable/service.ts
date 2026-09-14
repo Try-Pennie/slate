@@ -183,7 +183,12 @@ export async function writeBookable(userId: string, bookable: boolean): Promise<
  * pool) and a named alert fires, never a silent admit. Deactivation is never
  * blocked.
  */
-type BookableRow = { id: string; bookable: boolean; email: string };
+type BookableRow = {
+  id: string;
+  bookable: boolean;
+  email: string;
+  bookable_pending_since: string | null;
+};
 
 export async function applyBookableByEmail(
   email: string,
@@ -194,7 +199,11 @@ export async function applyBookableByEmail(
   // Exact match, consistent with the offboarding lookup (NOT ilike: `_`/`%` in
   // the address would act as wildcards and could resolve the WRONG user).
   const user = unwrap(
-    await db.from("users").select("id, bookable, email").eq("email", email.trim()).maybeSingle(),
+    await db
+      .from("users")
+      .select("id, bookable, email, bookable_pending_since")
+      .eq("email", email.trim())
+      .maybeSingle(),
     "bookable.lookup",
   ) as BookableRow | null;
   return applyBookableToRow(user, bookable, deps);
@@ -212,7 +221,11 @@ export async function applyBookableByUserId(
   deps: BookableDeps = defaultBookableDeps,
 ): Promise<BookableResult> {
   const user = unwrap(
-    await supabaseAdmin().from("users").select("id, bookable, email").eq("id", userId).maybeSingle(),
+    await supabaseAdmin()
+      .from("users")
+      .select("id, bookable, email, bookable_pending_since")
+      .eq("id", userId)
+      .maybeSingle(),
     "bookable.lookup",
   ) as BookableRow | null;
   return applyBookableToRow(user, bookable, deps);
@@ -257,6 +270,33 @@ async function applyBookableToRow(
       log.warn("bookable-api", { msg: "activation blocked", user_id: user!.id, reason: block.reason });
       return { status: "blocked", userId: user!.id, reason: block.reason };
     }
+    // Record that an activation is OWED before building one (#2302).
+    //
+    // Between here and the write below, the agent is a non-bookable row holding a
+    // live Google watch and fresh busy blocks, which is precisely what the pool
+    // exit reconcile reaps, every minute. This mark is what tells that lane the
+    // difference between an activation being built and one that was abandoned.
+    //
+    // Only when it is not already set. The stamp is how long somebody has been
+    // waiting, which the readiness check reads, so restamping it on every hourly
+    // retry would make an agent stuck for a week look freshly pending every run.
+    //
+    // It SURVIVES a refusal, deliberately, and that is the same contract #2071
+    // already gives the Salesforce sync: the mark is the intent, an admin asking
+    // for somebody to be bookable is an intent, and only an explicit bookable write
+    // settles it. So a refused admin toggle is retried hourly until the calendar
+    // reads, rather than being forgotten the moment the page redirects.
+    if (user!.bookable_pending_since == null) {
+      const { error } = await supabaseAdmin()
+        .from("users")
+        .update({ bookable_pending_since: new Date().toISOString() })
+        .eq("id", user!.id);
+      // Loud. Without the mark the reconcile can tear down what the next few
+      // seconds build, and the result is invisible afterwards (#1879), so this must
+      // not degrade into an unprotected activation in silence.
+      if (error) throw new Error(`bookable pending mark failed: ${error.message}`);
+    }
+
     // The SECOND half of the gate (#2302). Reachable is not the same as readable:
     // the probe above asks whether Google answers for this account, and this asks
     // whether their events actually reached the availability cache. Before the

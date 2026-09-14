@@ -13,7 +13,12 @@ import type { PoolEntryResult } from "@/lib/google/pool-entry";
 const updates: Array<{ id: string; bookable: boolean }> = [];
 /** Every patch as written, so the columns BESIDE bookable can be asserted (#2071). */
 const patches: Array<{ id: string; patch: Record<string, unknown> }> = [];
-let currentUser: { id: string; bookable: boolean; email: string } | null = null;
+let currentUser: {
+  id: string;
+  bookable: boolean;
+  email: string;
+  bookable_pending_since?: string | null;
+} | null = null;
 
 vi.mock("@/lib/supabase/admin", () => ({
   supabaseAdmin: () => ({
@@ -23,7 +28,11 @@ vi.mock("@/lib/supabase/admin", () => ({
       }),
       update: (patch: { bookable: boolean } & Record<string, unknown>) => ({
         eq: async (_col: string, id: string) => {
-          updates.push({ id, bookable: patch.bookable });
+          // `updates` is the BOOKABLE writes only. Since #2302 the activation path
+          // also writes `bookable_pending_since` on its own before the gate, and
+          // folding that in here would make every "wrote exactly one flip"
+          // assertion read as two. Every write, of either kind, is in `patches`.
+          if ("bookable" in patch) updates.push({ id, bookable: patch.bookable });
           patches.push({ id, patch });
           return { error: null };
         },
@@ -290,6 +299,32 @@ describe("onboarding on the way INTO the pool (#2302)", () => {
     expect(updates).toEqual([]);
   });
 
+  it("records that an activation is owed BEFORE it starts building one", async () => {
+    // The gate establishes watches and loads the calendar before the bookable
+    // write, so in between the agent is a non-bookable row holding a live watch and
+    // fresh busy blocks, which is exactly what the pool-exit reconcile reaps every
+    // minute. `bookable_pending_since` is what tells that lane an activation is
+    // being built rather than abandoned, so it has to be written first.
+    currentUser = { id: "u1", bookable: false, email: "new@trypennie.com" };
+    const d = deps("reachable");
+    await applyBookableByUserId("u1", true, d);
+    const marked = patches.filter((p) => typeof p.patch.bookable_pending_since === "string");
+    expect(marked).toHaveLength(1);
+    // And it is written before the calendar work starts, not after it.
+    expect(d.onboardIntoPool).toHaveBeenCalled();
+  });
+
+  it("does not restamp a mark that is already set", async () => {
+    // The stamp is how long somebody has been waiting, which the readiness check
+    // reads. Rewriting it every hourly retry would make an agent stuck for a week
+    // look freshly pending on every run.
+    currentUser = { id: "u1", bookable: false, email: "new@trypennie.com", bookable_pending_since: "2026-09-01T00:00:00.000Z" };
+    const d = deps("reachable");
+    await applyBookableByUserId("u1", true, d);
+    const marked = patches.filter((p) => typeof p.patch.bookable_pending_since === "string");
+    expect(marked).toHaveLength(0);
+  });
+
   it("leaves the pending mark alone on a refusal, so the hourly sync retries", async () => {
     // #2071: the mark IS the intent, and only an explicit bookable write settles it.
     // A refusal here must not write, or the retry that would fix this next hour
@@ -298,7 +333,10 @@ describe("onboarding on the way INTO the pool (#2302)", () => {
     const d = deps("reachable");
     d.onboardIntoPool = vi.fn(async () => ({ calendars: 1, hydrated: 0, failed: 1, watch: "renewed" as PoolEntryResult["watch"] }));
     await applyBookableByUserId("u1", true, d);
-    expect(patches).toEqual([]);
+    // The mark written on the way in survives, which is what brings them back next
+    // hour. What must NOT be here is a bookable write.
+    expect(patches.every((p) => p.patch.bookable === undefined)).toBe(true);
+    expect(updates).toEqual([]);
   });
 
   it("does not onboard on the way OUT", async () => {
