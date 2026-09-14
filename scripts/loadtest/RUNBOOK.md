@@ -57,11 +57,20 @@ trigger for the Durable-Objects fallback (a paid, escalated decision).
 
 ## Steps
 
-1. **Create a branch DB** (Supabase dashboard → Branches, or CLI). Note its project URL
-   and secret key. (A branch is a paid resource while it exists — delete it after.)
+1. **Create a branch DB** (Supabase dashboard, Branches, or CLI). Note its project URL
+   and its **publishable** key: a branch created through the connector exposes no
+   secret key at all, which is why step 2b exists. A branch is a paid resource for as
+   long as it exists, so name it `loadtest-<issue>` and hand that name to the
+   workflow's `branch_name` input, which is what deletes it at teardown (#2322).
 
-2. **Apply the schema to the branch** — run the repo migrations against it
+2. **Apply the schema to the branch**: run the repo migrations against it
    (`supabase db push` with the branch linked, or apply `supabase/migrations/*` in order).
+
+2b. **Run the two grants** the publishable key makes necessary (row security off,
+   and execute on the functions). They are ONLY ever run against a throwaway, and the
+   reason for each is in "A fresh branch has no secret key" below. Skipping them costs
+   the first hour of a run: every read answers nothing and the seed dies on its own
+   migration check with `42501`.
 
 3. **Seed it** (points at the branch, not prod):
    ```
@@ -387,14 +396,61 @@ predicate the stubs key on, and the preflight reads it before it writes anything
 
 Cloudflare secrets are per environment (`wrangler secret put --env loadtest`), so
 a fresh load test deployment starts with NONE of production's. Do not copy them
-across wholesale. It needs `SUPABASE_SECRET_KEY` (the branch's), `CRON_SECRET` and
-`BOOKING_API_KEY`, and that is the list.
+across wholesale. It needs `SUPABASE_SECRET_KEY`, `CRON_SECRET` and
+`BOOKING_API_KEY`, and that is the list. **What goes in `SUPABASE_SECRET_KEY` is
+not a secret key**, and the next section is why.
 
 `SLACK_BOT_TOKEN` in particular must stay unset. The lanes that page Slack are
 held back below, but the kept ones still alert (`sync` alerts on calendar failures,
 and the fault pass makes ninety stubbed agents fail on purpose), and the notifier
 no-ops only because `slackBotToken()` is empty. Setting it would page the real
 channel about a synthetic roster for ten minutes.
+
+### A fresh branch has no secret key, so two grants have to be run by hand (#2324)
+
+This section exists because the two steps below are needed on EVERY run, are in
+nobody's head after the first one, and were rediscovered from scratch on
+2026-09-14 after the July soak had already met them. **Both are only ever run
+against a throwaway branch.** Disabling row security anywhere else is the exact
+opposite of what the same words mean in production, so if you find yourself
+running either against a database you did not create an hour ago, stop.
+
+**A Supabase branch created through the connector exposes only a PUBLISHABLE key.**
+There is no secret key to hand the Worker without a management token, so the run
+does what the July soak did: it puts the branch's publishable key in
+`SUPABASE_SECRET_KEY`. That key authenticates as the `anon` role rather than
+`service_role`, and everything below follows from that one substitution.
+
+**1. Row security.** `supabaseAdmin` normally bypasses RLS because it holds a
+secret key; on `anon` it does not, and Slate's RLS is default deny (the only
+client readable row is a user reading itself). So every read the run makes
+answers nothing, which is indistinguishable from an empty branch. Disable it on
+the throwaway, generated from the catalogue rather than typed as a list, so a
+table added later is covered without anybody remembering:
+
+```sql
+do $$ declare t record; begin for t in select tablename from pg_tables where schemaname = 'public' loop execute format('alter table public.%I disable row level security', t.tablename); end loop; end $$;
+```
+
+**2. Execute on the functions.** The seed's own migration check calls
+`applied_migration_versions()` over the API, and that call answers
+`42501 permission denied` on a fresh branch. Two migrations put it there and
+both are deliberate: 0072 revokes execute from `public, anon, authenticated`, and
+0121 (the replay grants) re-grants execute on every function to **`service_role`
+only**, because granting it to `anon` as well would undo seventeen deliberate
+revokes. Production is unaffected by any of this, since its server side calls
+arrive as `service_role`. The run arrives as `anon`, so:
+
+```sql
+grant execute on all functions in schema public to anon;
+```
+
+Neither belongs in a migration. They exist only because the run is holding the
+wrong kind of key, and a migration granting `anon` execute on every function
+would ship that hole to production. The durable fix is a real secret key for the
+branch, which needs `SUPABASE_ACCESS_TOKEN` and the management API; until then
+these are the two hand steps, and they are written down here so the next run
+costs minutes rather than the first hour.
 
 ### Which lanes run, and which are held back
 
