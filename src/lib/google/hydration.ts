@@ -18,6 +18,7 @@ import {
   eligibleCalendarsForSync,
 } from "@/lib/google/sync-coalesce";
 import { parseStampMs } from "@/lib/date/stamp";
+import { MAX_ONBOARDS_PER_TICK } from "@/lib/google/sync-pace";
 
 /** Ticks a day at the lane's every-fifteen-minutes trigger. Written in words rather than
  *  as the cron expression because a slash-star inside a block comment closes it. Its own
@@ -28,6 +29,24 @@ export const HYDRATION_TICKS_PER_DAY = 96;
 /** Never fetch fewer than this, so a small or briefly-unreadable roster still makes
  *  progress instead of rounding down to nothing. */
 export const HYDRATION_MIN_BATCH = 2;
+
+/**
+ * How many NEVER ATTEMPTED calendars one tick may take on top of the maintenance batch
+ * (#2301).
+ *
+ * Derived from the lane that creates the rows rather than chosen. The watch lane admits
+ * at most `MAX_ONBOARDS_PER_TICK` brand new agents per tick, so an allowance below that
+ * could never keep up with its own supply, and the arithmetic is asserted in
+ * scripts/test-calendar-hydration.ts so a change to either constant has to be a decision
+ * about both.
+ *
+ * It is a bound on the COUNT, not the only bound: the lane's own `HYDRATE_BUDGET_MS`
+ * deadline still stops the tick. Both exist because they answer different questions. The
+ * deadline stops a slow tick, and this stops a mass onboarding turning one tick into a
+ * run over the whole wave, with the remainder taken on the next cadence rather than
+ * truncated silently mid loop.
+ */
+export const HYDRATION_ONBOARDING_MAX = MAX_ONBOARDS_PER_TICK;
 
 /**
  * How many calendars to refresh this tick, DERIVED from the live count.
@@ -97,7 +116,29 @@ export function calendarsDueForHydration<T extends HydrationCandidate>(
   // without any special case in the comparator.
   const attemptedAt = (c: T): number =>
     parseStampMs(c.last_bootstrap_attempt_at) ?? Number.NEGATIVE_INFINITY;
-  return [...eligible].sort((a, b) => attemptedAt(a) - attemptedAt(b)).slice(0, batchSize);
+
+  // #2301: onboarding, taken IN ADDITION to the batch rather than out of it.
+  //
+  // The test is `last_bootstrap_attempt_at === null` and deliberately NOT "sorts as never
+  // attempted". An UNREADABLE stamp also sorts first, and it is a different fact: it can
+  // belong to a calendar established for months whose stamp is corrupt. Letting it in here
+  // would let corrupt rows crowd genuinely new calendars out of a bounded allowance, so it
+  // keeps the head-of-queue maintenance treatment it already had.
+  //
+  // Because the stamp is written BEFORE the fetch, a calendar whose bootstrap failed is no
+  // longer null and drops back into the ordinary rotation. That is what stops a permanently
+  // failing calendar taking an onboarding slot on all 96 ticks of the day, and it is the
+  // property worth not breaking if this is ever refactored.
+  const onboarding = eligible
+    .filter((c) => c.last_bootstrap_attempt_at === null)
+    .slice(0, HYDRATION_ONBOARDING_MAX);
+  const onboardingIds = new Set(onboarding.map((c) => c.id));
+
+  const maintenance = eligible
+    .filter((c) => !onboardingIds.has(c.id))
+    .sort((a, b) => attemptedAt(a) - attemptedAt(b))
+    .slice(0, batchSize);
+  return [...onboarding, ...maintenance];
 }
 
 /** alert_state key for the rotation's own failure signal (#1544). */
