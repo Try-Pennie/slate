@@ -24,6 +24,7 @@ import {
   formatCalendarWindowRecovery,
   CALENDAR_WINDOW_KEY,
   CALENDAR_WINDOW_GRACE_MS,
+  CALENDAR_WINDOW_FIRST_RUN_MS,
   type CalendarWindowRow,
 } from "./calendar-window-coverage";
 
@@ -38,8 +39,21 @@ const row = (over: Partial<CalendarWindowRow> = {}): CalendarWindowRow => ({
   email: "dana.ruiz@trypennie.com",
   calendarId: "dana.ruiz@trypennie.com",
   syncWindowToIso: new Date(HORIZON_END + 17 * 24 * 60 * 60_000).toISOString(),
+  // An ESTABLISHED calendar: created three days ago, no failure recorded. That is
+  // what every case written before the #2300 first-run window meant, so the grace
+  // never silently answers for one of them.
+  createdAtIso: new Date(Date.parse(NOW_ISO) - 3 * 24 * 60 * 60_000).toISOString(),
+  hasRecordedFailure: false,
   ...over,
 });
+
+/** A calendar row created `minsAgo` minutes ago that hydration has never covered. */
+const brandNew = (minsAgo: number, over: Partial<CalendarWindowRow> = {}): CalendarWindowRow =>
+  row({
+    syncWindowToIso: null,
+    createdAtIso: new Date(Date.parse(NOW_ISO) - minsAgo * 60_000).toISOString(),
+    ...over,
+  });
 
 describe("uncoveredCalendars (#1262)", () => {
   it("a window comfortably past the horizon is covered", () => {
@@ -89,7 +103,8 @@ describe("the copy", () => {
   });
 
   it("the all-clear stands down without repeating the remediation", () => {
-    const text = formatCalendarWindowRecovery();
+    // Zero graced: the ordinary case, where the pass really did judge every calendar.
+    const text = formatCalendarWindowRecovery(0);
     expect(text.length).toBeGreaterThan(20);
     expect(text).not.toContain("undefined");
   });
@@ -148,5 +163,118 @@ describe("runCalendarWindowCheck", () => {
     expect(result.status).toBe("uncovered");
     expect(sendThrottledAlert).not.toHaveBeenCalled();
     expect(resolveAlert).not.toHaveBeenCalled();
+  });
+});
+
+describe("the first run window (#2300)", () => {
+  // A null sync_window_to was scored uncovered with no reference to how long the row
+  // had existed, and for a calendar the hydration rotation has never reached, null is
+  // the only value it can hold. The three tick streak was the only patience there was,
+  // and fifteen minutes is not enough: the lane runs every fifteen minutes and took
+  // thirty to cover four new calendars on 2026-09-14.
+  it("a calendar whose row is minutes old has not yet been given a chance", () => {
+    const out = uncoveredCalendars({ rows: [brandNew(5)], horizonDays: HORIZON_DAYS, nowIso: NOW_ISO });
+    expect(out).toHaveLength(0);
+  });
+
+  it("the window EXPIRES, so a calendar the rotation really has missed still pages", () => {
+    const past = CALENDAR_WINDOW_FIRST_RUN_MS / 60_000 + 1;
+    const out = uncoveredCalendars({ rows: [brandNew(past)], horizonDays: HORIZON_DAYS, nowIso: NOW_ISO });
+    expect(out).toHaveLength(1);
+  });
+
+  it("a recorded failure ends it at once, because that answer has already arrived", () => {
+    // L458. Inside the window a rotation still working through its queue and one that
+    // has already failed on this calendar look identical, since neither has produced a
+    // success, and being patient about the second hides something already actionable.
+    const out = uncoveredCalendars({
+      rows: [brandNew(2, { hasRecordedFailure: true })],
+      horizonDays: HORIZON_DAYS,
+      nowIso: NOW_ISO,
+    });
+    expect(out).toHaveLength(1);
+  });
+
+  it("an unreadable created_at buys no patience", () => {
+    const out = uncoveredCalendars({
+      rows: [brandNew(2, { createdAtIso: "not-a-date" })],
+      horizonDays: HORIZON_DAYS,
+      nowIso: NOW_ISO,
+    });
+    expect(out).toHaveLength(1);
+  });
+
+  it("a missing created_at buys no patience either", () => {
+    const out = uncoveredCalendars({
+      rows: [brandNew(2, { createdAtIso: null })],
+      horizonDays: HORIZON_DAYS,
+      nowIso: NOW_ISO,
+    });
+    expect(out).toHaveLength(1);
+  });
+
+  it("only a calendar with NO coverage is in scope, never one whose coverage has lapsed", () => {
+    // The stand down is no broader than its reason (L324). A window that once reached
+    // past the horizon and has since fallen behind is the incident this alert exists
+    // for, and a fresh row does not excuse it. In practice that is #1879's reactivated
+    // agent, whose row is old anyway, but the rule must not depend on that.
+    const lapsed = row({
+      syncWindowToIso: new Date(HORIZON_END - 60_000).toISOString(),
+      createdAtIso: new Date(Date.parse(NOW_ISO) - 60_000).toISOString(),
+    });
+    const out = uncoveredCalendars({ rows: [lapsed], horizonDays: HORIZON_DAYS, nowIso: NOW_ISO });
+    expect(out).toHaveLength(1);
+  });
+
+  it("the window is derived from the hydration cadence, not chosen", () => {
+    // 96 ticks a day is fifteen minutes. Asserted so the two cannot drift apart: a
+    // patience shorter than one cadence pages before the rotation has had a single
+    // opportunity, which is a page nobody could have pre-empted.
+    expect(CALENDAR_WINDOW_FIRST_RUN_MS).toBe(15 * 60_000);
+  });
+});
+
+describe("what the check says about a graced calendar (#2300)", () => {
+  beforeEach(() => {
+    recordConsecutiveStreak.mockClear();
+    clearFailureStreak.mockClear();
+    sendThrottledAlert.mockClear();
+    resolveAlert.mockClear();
+    recordConsecutiveStreak.mockResolvedValue(false);
+  });
+
+  it("reports how many it withheld, so a quiet tick and a withheld one differ", async () => {
+    const res = await runCalendarWindowCheck({
+      loadRows: async () => [row(), brandNew(3)],
+      horizonDays: HORIZON_DAYS,
+      nowIso: NOW_ISO,
+      cooldownMs: 1000,
+    });
+    expect(res.status).toBe("clear");
+    expect(res.graced).toBe(1);
+  });
+
+  it("the all-clear may not claim what the grace declined to measure", () => {
+    const clean = formatCalendarWindowRecovery(0);
+    expect(clean).toMatch(/every bookable agent/i);
+
+    const graced = formatCalendarWindowRecovery(2);
+    expect(graced).not.toMatch(/every bookable agent/i);
+    expect(graced).toMatch(/2/);
+    expect(graced).not.toMatch(/undefined|NaN|\[object Object\]/);
+    expect(graced).not.toMatch(new RegExp("[\\u2013\\u2014]"));
+  });
+
+  it("a graced calendar never reaches the page copy", async () => {
+    recordConsecutiveStreak.mockResolvedValue(true);
+    await runCalendarWindowCheck({
+      loadRows: async () => [brandNew(3, { email: "new@trypennie.com" }), row({ syncWindowToIso: null, email: "old@trypennie.com" })],
+      horizonDays: HORIZON_DAYS,
+      nowIso: NOW_ISO,
+      cooldownMs: 1000,
+    });
+    const body = sendThrottledAlert.mock.calls[0]?.[2] ?? "";
+    expect(body).toContain("old@trypennie.com");
+    expect(body).not.toContain("new@trypennie.com");
   });
 });

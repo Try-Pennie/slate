@@ -1042,6 +1042,10 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
           email: "dana.ruiz@example.com",
           calendarId: "dana.ruiz@example.com",
           syncWindowToIso: null,
+          // Established for weeks: a calendar inside its first hydration cadence is
+          // withheld by the #2300 grace and never reaches this copy at all.
+          createdAtIso: "2026-07-01T00:00:00.000Z",
+          hasRecordedFailure: false,
         },
       ],
       4,
@@ -1059,6 +1063,8 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
           email: "dana.ruiz@example.com",
           calendarId: "dana.ruiz@example.com",
           syncWindowToIso: "2026-08-23T09:00:00.000Z",
+          createdAtIso: "2026-07-01T00:00:00.000Z",
+          hasRecordedFailure: false,
         },
         {
           userId: "u2",
@@ -1066,6 +1072,8 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
           email: "sam.okafor@example.com",
           calendarId: "sam.okafor@example.com",
           syncWindowToIso: null,
+          createdAtIso: "2026-07-01T00:00:00.000Z",
+          hasRecordedFailure: false,
         },
       ],
       4,
@@ -1082,6 +1090,8 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
         email: `agent${i}@example.com`,
         calendarId: `agent${i}@example.com`,
         syncWindowToIso: null,
+        createdAtIso: "2026-07-01T00:00:00.000Z",
+        hasRecordedFailure: false,
       })),
       4,
     ),
@@ -1090,7 +1100,16 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     key: "calendar_window_uncovered",
     state: "every bookable calendar covered again",
     channel: "recovery",
-    text: formatCalendarWindowRecovery(),
+    text: formatCalendarWindowRecovery(0),
+  },
+  {
+    // #2300: with calendars withheld inside their first hydration cadence this reads
+    // differently, and it is the wording that could overclaim, so it is previewed as
+    // its own state rather than trusted to be a variation of the one above.
+    key: "calendar_window_uncovered",
+    state: "covered again, with new calendars still joining the rotation",
+    channel: "recovery",
+    text: formatCalendarWindowRecovery(2),
   },
 
   // --- an approved absence nobody has covered (#1238) -------------------------
