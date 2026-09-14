@@ -375,6 +375,14 @@ export interface RunMeasurements {
   confirmHandler: ReturnType<typeof percentiles>;
   confirmColdStartup: ReturnType<typeof percentiles>;
   confirmWarmStartup: ReturnType<typeof percentiles>;
+  /**
+   * What the invocation went on doing AFTER the booking was written and the
+   * response sent, which on this path is the webhook send deferred by #884.
+   *
+   * No lead waits for it, and it is still charged to the invocation the CPU bar
+   * reads, which is why it is reported beside that bar rather than folded into it.
+   */
+  confirmAfterResponse: ReturnType<typeof percentiles>;
 }
 
 /**
@@ -457,6 +465,7 @@ export function measure(input: JudgeInput): RunMeasurements {
     confirmHandler: percentiles(input.confirmStartup?.handlerMs ?? []),
     confirmColdStartup: percentiles(input.confirmStartup?.coldPreProfileMs ?? []),
     confirmWarmStartup: percentiles(input.confirmStartup?.warmPreProfileMs ?? []),
+    confirmAfterResponse: percentiles(input.confirmStartup?.afterProfileMs ?? []),
   };
 }
 
@@ -826,11 +835,14 @@ export function judgeBookingRun(input: JudgeInput): JudgeResult {
         cs === null
           ? " The startup split could not be read from this run's archive, so how much of this " +
             "is the confirm and how much is the isolate starting up is unknown"
-          : ` Of ${cs.samples} confirms read from this run's log, ${cs.cold} were the first on ` +
-            `their isolate, waiting ${m.confirmColdStartup === null ? "an unmeasured time" : `p95 ${m.confirmColdStartup.p95}ms`} ` +
-            `before the confirm began against ${m.confirmHandler === null ? "an unmeasured" : `p95 ${m.confirmHandler.p95}ms`} ` +
-            "inside it, so read this number beside the confirm startup bar above before " +
-            "optimising the confirm";
+          : ` Of ${cs.samples} confirms read from this run's log: ` +
+            `${m.confirmColdStartup === null ? "an unmeasured time" : `p95 ${m.confirmColdStartup.p95}ms`} ` +
+            `before the confirm began (${cs.cold} were the first on their isolate), ` +
+            `${m.confirmHandler === null ? "an unmeasured time" : `p95 ${m.confirmHandler.p95}ms`} ` +
+            `inside it, and ${m.confirmAfterResponse === null ? "an unmeasured time" : `p95 ${m.confirmAfterResponse.p95}ms`} ` +
+            "AFTER the response had gone, which is the deferred webhook send. No lead waits for " +
+            "that last span and this percentile still counts it, so read the three apart before " +
+            "optimising anything";
       fail(
         "Worker CPU on the request path",
         `p99 ${p.cpuMsP99}ms of CPU per invocation, over the ${input.budgets.cpuMsP99}ms request ` +

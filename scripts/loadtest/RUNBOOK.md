@@ -724,19 +724,35 @@ same window, since neither confirm has the other's busy row yet.
 leads picking adjacent times in the same moment, and no suite had ever confirmed
 two bookings concurrently.
 
-### The CPU bar was measuring the isolate, not the confirm (#2340)
+### The CPU bar is not measuring the confirm, and it is not the isolate either (#2340)
 
 Run 34889873261 judged the request path at a CPU p99 of 2,988ms against the
-2,500ms request budget. The 32 confirms over two seconds of CPU were doing no more
-confirm work than the 409 under half a second: their stage profiles are the same
-shape, stage for stage. What differs is the **three to four and a half seconds
-before the profile starts**, which is the Next.js server bundle being evaluated on
-a fresh isolate and charged in full to whichever request that isolate serves
-first.
+2,500ms request budget, and the 32 confirms over two seconds of CPU were doing no
+more confirm work than the 409 under half a second: their stage profiles are the
+same shape, stage for stage.
 
-So the bar could not pass whatever the confirm did. A ten minute run at sixty a
-minute spins up a few dozen isolates, and a p99 over six to eight hundred requests
-is exactly the top few percent, which is where those requests sit.
+**#2340 concluded that the difference was isolate startup, and its own artifact
+says otherwise.** That issue computed ONE number, the invocation's wall minus the
+profile's own total, and read it as the time BEFORE the handler started. It is
+both sides at once. Read apart, on the same 613 confirms:
+
+| span | the 32 over 2s CPU | the 409 under 0.5s CPU |
+|---|---|---|
+| before the profile | 297ms | 209ms |
+| inside it | 2,355ms | 1,561ms |
+| **after it was logged** | **2,758ms** | **258ms** |
+
+The expensive confirms are not starting up slowly. Their invocations carry on for
+seconds after the booking is written, which on this path is the webhook send
+deferred by #884. **The response has already gone, so no lead waits for it**, and
+the CPU it spends is still charged to the invocation the CPU bar reads. A budget
+derived as a share of the latency bar does not fit an invocation that continues
+after the response, which is a separate question and is filed as its own issue.
+
+So the bar could not pass whatever the confirm did, and the reason is not the one
+the issue named. The reader measures all three spans now and the judge reports them
+apart, because a single number covering both sides of the handler is what produced
+the wrong diagnosis.
 
 The platform's own percentile cannot separate them: it is one number per
 invocation with nothing in it saying whether that invocation also paid for the
@@ -760,12 +776,32 @@ producing.
 against a 1.3 to 2.6 second handler. The run's latency p95 passed at 3.1s and its
 max was 5.5s, so this is the whole of that tail.
 
+#### The archive is NOT one object per line, despite the name
+
+`wrangler tail --format json` PRETTY PRINTS each event, so run 34889873261's
+`tail.jsonl` is 1,336 invocations over 179,056 lines. The first version of this
+reader split on newlines and required each line to start with a brace, which that
+file satisfies 1,336 times with a bare `{` that parses as nothing: it would have
+read ZERO confirms from every archive the run has ever produced, and every fixture
+agreed with it because they were written by the same hand that assumed the shape
+(L52). The objects are scanned out by brace depth now, string aware because every
+event carries a request URL, and the fixtures are pretty printed the way the real
+file is. Proven against that artifact: 1,336 objects, 613 confirm profiles, none
+unparsable.
+
+The same reading is where `cpuTime` and `wallTime` came from. The archive carries
+the runtime's own per invocation numbers, which is what makes the three way split
+possible at all: the analytics API reports CPU as one percentile over every
+invocation with nothing in it saying which invocations it came from.
+
 #### What the first request evaluates, measured
 
 The deployed script is **one 17.8 MB `index.js`**, and the isolate parses and
 evaluates it before serving anything. Almost all of it is the Next.js server
 runtime, which app code cannot defer: that is the biggest lever here and it is
-deliberately not pulled (L308).
+deliberately not pulled (L308). Note the measurement above: the time before the
+profile starts is 209 to 297ms, so whatever this costs, it is not where the
+run's CPU p99 is going.
 
 One thing in it was Slate's to remove. `src/app/apple-icon.tsx` generated a
 **static** 180 by 180 touch icon at runtime through `next/og`, which put

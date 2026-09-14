@@ -26,6 +26,16 @@
  *
  * It computes no percentiles. The judge owns that, and owns the one implementation
  * of it (L41); this owns the reading.
+ *
+ * **The archive is NOT one object per line, despite the `.jsonl` name.** Measured
+ * against run 34889873261's own artifact: 1,336 invocations over 179,056 lines,
+ * because `wrangler tail --format json` PRETTY PRINTS each event. The first version
+ * of this reader split on newlines and required each line to start with a brace,
+ * which the real file satisfies 1,336 times with a bare `{` that parses as nothing.
+ * It would have read ZERO confirms from every archive the run has ever produced,
+ * and every fixture agreed with it because they were written by the same hand that
+ * assumed the shape (L52). So the objects are scanned out of the text by brace
+ * depth, and the fixtures are pretty printed the way the real file is.
  */
 
 /** What one archived run says about the confirms in it. */
@@ -42,6 +52,41 @@ export interface ConfirmStartupReading {
   coldPreProfileMs: number[];
   /** And for the ones that did not. */
   warmPreProfileMs: number[];
+  /**
+   * The runtime's own CPU reading for each confirm's invocation, split the same
+   * way, and empty where the archive did not carry one.
+   *
+   * This is the number the CPU bar is about. The analytics API reports it as one
+   * percentile over every invocation with nothing in it saying which invocations
+   * it came from, which is exactly why a run could not tell a slow confirm from a
+   * cold isolate. Per invocation, beside the isolate's age, it can.
+   */
+  coldCpuMs: number[];
+  warmCpuMs: number[];
+  /**
+   * What each confirm's invocation went on doing AFTER the profile was logged.
+   *
+   * This is the span #2340 did not know it was measuring, and it is where the time
+   * actually is. That issue computed ONE number, the invocation's wall minus the
+   * profile's own total, and read it as the time BEFORE the handler started. It is
+   * both sides at once. Measured on run 34889873261's own archive, 613 confirms:
+   *
+   *   | span                | 32 over 2s CPU | 409 under 0.5s CPU |
+   *   |---------------------|----------------|--------------------|
+   *   | before the profile  | 297ms          | 209ms              |
+   *   | inside it           | 2,355ms        | 1,561ms            |
+   *   | after it was logged | 2,758ms        | 258ms              |
+   *
+   * The expensive confirms are not starting up slowly. They are the ones whose
+   * invocation carries on for seconds after the booking is written, which on this
+   * path is the webhook send deferred by #884. The response has already gone, so no
+   * lead waits for it, and the CPU it spends is still charged to the invocation the
+   * CPU bar reads.
+   *
+   * Empty where the archive carried no `wallTime`, never zero, for the same reason
+   * the CPU list is (L98).
+   */
+  afterProfileMs: number[];
   /**
    * Samples whose arithmetic cannot be right: a profile claiming more wall time
    * than its whole invocation took.
@@ -72,16 +117,70 @@ export interface ConfirmStartupReading {
   unparsable: number;
 }
 
-/** One log entry inside a tail line. */
+/** One log entry inside a tail event. */
 interface TailLog {
   timestamp?: unknown;
   message?: unknown;
 }
 
-/** One line of `wrangler tail --format json`. */
+/** One event of `wrangler tail --format json`. */
 interface TailEvent {
   eventTimestamp?: unknown;
   logs?: unknown;
+  /**
+   * The runtime's OWN per invocation readings, which the archive carries and which
+   * nothing here knew about until the real artifact was read.
+   *
+   * `cpuTime` is the number the CPU bar is about, per invocation rather than as a
+   * percentile with nothing in it saying which invocations it came from. That is
+   * the whole reason the split could not be made from the analytics API.
+   */
+  cpuTime?: unknown;
+  wallTime?: unknown;
+}
+
+/**
+ * Every top level JSON object in the archive, however it is laid out.
+ *
+ * A brace depth scan rather than a line split, because the file is pretty printed
+ * (see the header). String aware, so a brace inside a URL or a log message does
+ * not open or close an object: the events carry request URLs and Slate's own log
+ * lines, both of which contain braces.
+ */
+export function* tailObjects(archive: string): Generator<string> {
+  let depth = 0;
+  let start = -1;
+  let inString = false;
+  let escaped = false;
+  for (let i = 0; i < archive.length; i++) {
+    const c = archive[i];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (c === "\\") escaped = true;
+      else if (c === '"') inString = false;
+      continue;
+    }
+    if (c === '"') {
+      inString = true;
+      continue;
+    }
+    if (c === "{") {
+      if (depth === 0) start = i;
+      depth += 1;
+    } else if (c === "}") {
+      depth -= 1;
+      if (depth === 0 && start >= 0) {
+        yield archive.slice(start, i + 1);
+        start = -1;
+      } else if (depth < 0) {
+        // A stray closing brace: the stream began mid object. Start again rather
+        // than carrying a negative depth that would swallow every event after it.
+        depth = 0;
+      }
+    }
+  }
+  // A final object left open is a stream killed mid write, which the caller counts.
+  if (depth > 0 && start >= 0) yield archive.slice(start);
 }
 
 const TAG = "tag=confirm-profile";
@@ -122,18 +221,19 @@ export function readConfirmStartup(archive: string): ConfirmStartupReading | nul
     preProfileMs: [],
     coldPreProfileMs: [],
     warmPreProfileMs: [],
+    coldCpuMs: [],
+    warmCpuMs: [],
+    afterProfileMs: [],
     impossible: 0,
     unreadable: 0,
     unparsable: 0,
   };
   let sawAny = false;
 
-  for (const raw of archive.split("\n")) {
-    const line = raw.trim();
-    if (line === "" || !line.startsWith("{")) continue;
+  for (const raw of tailObjects(archive)) {
     let event: TailEvent;
     try {
-      event = JSON.parse(line) as TailEvent;
+      event = JSON.parse(raw) as TailEvent;
     } catch {
       // Counted rather than skipped. A truncated line is a reading this could not
       // make, and one dropped in silence leaves a reader taking the samples it did
@@ -169,11 +269,22 @@ export function readConfirmStartup(archive: string): ConfirmStartupReading | nul
       reading.samples += 1;
       reading.handlerMs.push(totalMs);
       reading.preProfileMs.push(preProfileMs);
+      // The runtime's own reading, kept only when the archive carried one: a
+      // missing cpuTime is a shorter list, never a zero, because a zero would be
+      // the cheapest possible confirm and pull every percentile down (L98).
+      const cpuMs = num(event.cpuTime);
+      // Everything the invocation did after this line was written. Never negative:
+      // a wall shorter than the span to the log line is an archive that disagrees
+      // with itself, and it is already counted as impossible below.
+      const wallMs = num(event.wallTime);
+      if (wallMs !== null) reading.afterProfileMs.push(Math.max(0, wallMs - (loggedAt - startedAt)));
       if (cold) {
         reading.cold += 1;
         reading.coldPreProfileMs.push(preProfileMs);
+        if (cpuMs !== null) reading.coldCpuMs.push(cpuMs);
       } else {
         reading.warmPreProfileMs.push(preProfileMs);
+        if (cpuMs !== null) reading.warmCpuMs.push(cpuMs);
       }
     }
   }
