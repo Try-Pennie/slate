@@ -69,7 +69,20 @@ trigger for the Durable-Objects fallback (a paid, escalated decision).
    SUPABASE_SECRET_KEY=<branch secret key> \
    node --experimental-strip-types scripts/loadtest/seed.ts
    ```
-   Tunables: `AGENTS=200`, `BLOCKS_PER_DAY=12`, `CALS_PER_AGENT=1`.
+   Tunables: `BLOCKS_PER_DAY=12`, `CALS_PER_AGENT=1`, and `ROSTER_SHAPE_FILE` to point
+   at a fresher export from `pnpm loadtest:export-shape`.
+
+   **The roster SIZE comes from the shape, not from you** (#2320). `AGENTS` used to
+   default to 200 while the shape carried the measured count (90 baked in, 94 on the
+   2026-09-14 export), and the seed printed the shape's count in its own log line
+   before ignoring it: the first branch for the #2284 re-run came up 200 deep against
+   production's 94, with pool depths roughly double the real ones, and had to be
+   thrown away and re-created. It fails GREEN, which is why it is now a refusal
+   rather than a matter of care (L354). Setting `AGENTS` to something the shape does
+   not say is REFUSED, because the shape's pool depths are what the seeded output is
+   checked against and a different total makes that check meaningless. A deliberate
+   experiment sets `ALLOW_AGENT_COUNT_MISMATCH=1`, and the seed then says out loud
+   that it is building a roster the shape does not describe.
 
 3b. **Seed the crash backlog for the outbox drain (#440).** After the base seed, add a
    batch of `cancel` outbox rows left in every mid-sequence crash state (Google-delete

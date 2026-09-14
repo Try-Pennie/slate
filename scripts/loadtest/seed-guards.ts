@@ -63,6 +63,96 @@ export function readAgentCount(raw: string | undefined, fallback: number): numbe
   return Number.isSafeInteger(n) && n > 0 ? n : null;
 }
 
+/** What the seed will build, or why it will not. */
+export interface AgentCountDecision {
+  /** The roster size to seed, or null when this refuses. */
+  count: number | null;
+  /**
+   * What a reader needs told: why it refused, or that a deliberate mismatch is
+   * being honoured. Null when there is nothing to explain.
+   */
+  why: string | null;
+}
+
+/**
+ * How many agents to seed: the SHAPE decides, not a coded default (#2320).
+ *
+ * `AGENTS` defaulted to 200 while the shape the seed reproduces carries the
+ * measured count (90 baked in, 94 on the 2026-09-14 export). The seed printed the
+ * shape's count in its own log line and then ignored it, so on 2026-09-14 the first
+ * branch for the #2284 re-run came up with 200 bookable agents against
+ * production's 94, pool depths roughly double the real ones, and had to be thrown
+ * away and re-created.
+ *
+ * It fails GREEN, which is why it is a refusal rather than a matter of care: a
+ * roster of the wrong size seeds perfectly, every count reads as a number, and the
+ * run measures a shape nobody chose (L354). The shape's pool depths are also what
+ * the seeded output is CHECKED against, so a different total makes that check
+ * meaningless, which is why an explicit count that DISAGREES is refused rather
+ * than quietly winning.
+ *
+ * A deliberate experiment says so with `ALLOW_AGENT_COUNT_MISMATCH`, and the run
+ * still SAYS the roster is not the one the shape describes: a silent override is
+ * the same defect wearing a flag.
+ */
+export function resolveAgentCount(input: {
+  /** The raw `AGENTS` value, or undefined when none was given. */
+  rawAgents: string | undefined;
+  /** The agent count the shape being reproduced carries. */
+  shapeAgents: number;
+  /** `ALLOW_AGENT_COUNT_MISMATCH`, for a deliberate experiment. */
+  allowMismatch?: boolean;
+}): AgentCountDecision {
+  const fromShape =
+    Number.isSafeInteger(input.shapeAgents) && input.shapeAgents > 0 ? input.shapeAgents : null;
+  const raw = (input.rawAgents ?? "").trim();
+
+  if (raw === "") {
+    // No count given, so the shape is the only answer. A shape with no usable count
+    // is its own refusal rather than a reason to fall back to a coded default: that
+    // substitution is the whole defect.
+    if (fromShape === null) {
+      return {
+        count: null,
+        why:
+          `the roster shape claims ${JSON.stringify(input.shapeAgents)} agents, which is not a ` +
+          "roster this can seed, and no AGENTS was given to use instead",
+      };
+    }
+    return { count: fromShape, why: null };
+  }
+
+  // Unreadable is refused on its own wording, never folded into the mismatch
+  // message: they send a reader to two different things (L11).
+  const asked = readAgentCount(raw, 0);
+  if (asked === null || asked === 0) {
+    return {
+      count: null,
+      why:
+        `AGENTS is not a positive whole number: ${JSON.stringify(input.rawAgents)}. Refused by ` +
+        "name rather than left to become a roster of NaN agents",
+    };
+  }
+  if (fromShape === null || asked === fromShape) return { count: asked, why: null };
+  if (input.allowMismatch) {
+    return {
+      count: asked,
+      why:
+        `seeding ${asked} agents against a shape measured at ${fromShape}, because ` +
+        "ALLOW_AGENT_COUNT_MISMATCH is set. The shape's pool depths describe a different roster, " +
+        "so the seed's own depth check is about a roster this run is not building",
+    };
+  }
+  return {
+    count: null,
+    why:
+      `AGENTS is ${asked} and the roster shape was measured at ${fromShape} agents, which does ` +
+      "not match. The shape's pool depths are what the seeded output is checked against, so a " +
+      "different total makes that check meaningless. Drop AGENTS to seed the shape, or set " +
+      "ALLOW_AGENT_COUNT_MISMATCH=1 if the difference is the experiment",
+  };
+}
+
 /**
  * Why the branch's applied migrations could not be read, or null (#2261).
  *

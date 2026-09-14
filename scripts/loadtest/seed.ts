@@ -33,7 +33,7 @@ import { generateSeed } from "./generate.ts";
 import { PRODUCTION_SHAPE, type RosterShape } from "./roster-shape.ts";
 import {
   migrationMismatch,
-  readAgentCount,
+  resolveAgentCount,
   migrationReadRefusal,
   appliedVersionsFrom,
 } from "./seed-guards.ts";
@@ -45,16 +45,7 @@ import { PRODUCTION_SUPABASE_REF } from "../../src/lib/loadtest-guard.ts";
 const PROD_REF = PRODUCTION_SUPABASE_REF;
 const ORG_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const EVENT_TYPE_ID = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
-const AGENT_COUNT = (() => {
-  const n = readAgentCount(process.env.AGENTS, 200);
-  if (n === null) {
-    throw new Error(
-      `AGENTS is not a positive whole number: ${JSON.stringify(process.env.AGENTS)}. Refused by ` +
-        `name rather than left to become a roster of NaN agents.`,
-    );
-  }
-  return n;
-})();
+
 
 function loadEnv(): Record<string, string> {
   const fromFile: Record<string, string> = {};
@@ -168,6 +159,27 @@ async function assertMigrationsMatch(): Promise<void> {
 }
 
 async function main() {
+  // The SHAPE first, then the count, because the count comes FROM the shape
+  // (#2320). It used to default to 200 while the shape carried the measured number
+  // and the seed printed that number in its own log line before ignoring it; on
+  // 2026-09-14 the first branch for the #2284 re-run came up 200 deep against
+  // production's 94 and had to be thrown away.
+  const shape = loadShape();
+  // env-ok: AGENTS (optional; defaults to the shape's own measured count, and a
+  // value that disagrees with the shape is refused rather than seeded)
+  // env-ok: ALLOW_AGENT_COUNT_MISMATCH (optional; a deliberate experiment against a
+  // roster the shape does not describe, which the run then says out loud)
+  const decided = resolveAgentCount({
+    rawAgents: process.env.AGENTS,
+    shapeAgents: shape.agents,
+    allowMismatch: (process.env.ALLOW_AGENT_COUNT_MISMATCH ?? "") !== "",
+  });
+  if (decided.count === null) throw new Error(decided.why ?? "the roster size could not be decided");
+  const AGENT_COUNT = decided.count;
+  // Said out loud, because a deliberate mismatch that is silent is the same defect
+  // wearing a flag.
+  if (decided.why) console.log(`  NOTE: ${decided.why}`);
+
   console.log(`Seeding ${AGENT_COUNT} agents into ${BASE} ...`);
   await assertMigrationsMatch();
 
@@ -207,7 +219,7 @@ async function main() {
     windowDays: 4,
     blocksPerAgentPerDay: Number(process.env.BLOCKS_PER_DAY ?? 12),
     calendarsPerAgent: Number(process.env.CALS_PER_AGENT ?? 1),
-    shape: loadShape(),
+    shape,
   });
   await insert("users", seed.users);
   await insert("availability_schedules", seed.schedules);
