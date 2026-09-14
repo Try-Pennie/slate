@@ -18,7 +18,7 @@
 //
 // Run: node --experimental-strip-types scripts/test-bundle-env-guard.ts
 import { readFileSync } from "node:fs";
-import { judgeBundleEnv } from "./lib/scan-bundle-env.ts";
+import { judgeBundleEnv, judgeClientAssets, secretNamesInAssets } from "./lib/scan-bundle-env.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
 const SECRET = "xoxb-a-value-that-must-never-be-printed";
@@ -153,6 +153,82 @@ const EMPTY = file({ production: {}, development: {}, test: {} });
   assert(
     before.includes("opennextjs-cloudflare build") && after.includes("check-bundle-env"),
     "and it must run AFTER the build, whose output is the file it reads",
+  );
+}
+
+// --- the second question: does the CLIENT bundle NAME any of them? -------------
+//
+// Not the same fault, and it needs saying: a VALUE in the bundle is a credential,
+// a NAME in a browser chunk is the inventory of what Slate integrates with. Only a
+// real build can answer it, because the names are in the source either way and
+// nothing but the build says which bundle a module landed in (L3).
+//
+// It exists because the first version of the #2335 runtime refusal put the whole
+// list into `publicSupabaseUrl()`, which the browser Supabase client also calls,
+// and all twenty three names shipped in a public `_next/static` chunk.
+
+const NAMES = ["SLACK_BOT_TOKEN", "TWILIO_API_KEY_SECRET"];
+
+{
+  // The quiet direction, and it is every build: ordinary client chunks name none of
+  // them. A guard that fired here would block every push.
+  const v = judgeClientAssets({
+    files: [
+      { path: "chunks/a.js", text: 'const x="NEXT_PUBLIC_APP_URL";' },
+      { path: "chunks/b.js", text: "export function Booker(){}" },
+    ],
+    names: NAMES,
+  });
+  assert(v.ok, `clean client chunks pass, got ${v.message}`);
+  assert(v.message.includes("2 client asset"), "and the count scanned is reported");
+}
+
+{
+  const v = judgeClientAssets({
+    files: [
+      { path: "chunks/ok.js", text: "nothing to see" },
+      { path: "chunks/leaky.js", text: '["SLACK_BOT_TOKEN","TWILIO_API_KEY_SECRET"]' },
+    ],
+    names: NAMES,
+  });
+  assert(!v.ok, "a chunk naming a deployment setting is refused");
+  eq(v.offenders.sort().join(","), "SLACK_BOT_TOKEN,TWILIO_API_KEY_SECRET", "every name is reported");
+  assert(v.message.includes("chunks/leaky.js"), "and the file, which is what somebody opens");
+  assert(!v.message.includes("chunks/ok.js"), "and not the file that was clean");
+}
+
+{
+  // The same name in two chunks is two places to look, so both are named rather
+  // than deduplicated into one line about a name.
+  const hits = secretNamesInAssets(
+    [
+      { path: "a.js", text: "SLACK_BOT_TOKEN" },
+      { path: "b.js", text: "SLACK_BOT_TOKEN" },
+    ],
+    NAMES,
+  );
+  eq(hits.length, 2, "a name in two chunks is two hits");
+  eq(hits.map((h) => h.file).join(","), "a.js,b.js", "each naming its own file");
+}
+
+{
+  // Learning nothing is never a pass (L98). Every build writes client chunks, so an
+  // empty scan is a build that did not finish or one that wrote somewhere else, and
+  // passing would make "scanned nothing" and "found nothing" the same outcome.
+  const v = judgeClientAssets({ files: [], names: NAMES });
+  assert(!v.ok, "scanning no assets at all is refused");
+  eq(v.reason, "missing", "on the reason that says so");
+}
+
+{
+  // An empty NAME list would match everything or nothing depending on the matcher,
+  // and here it means there is nothing to look for: that must not read as a clean
+  // bundle either, but it is the caller's constant rather than the tree's state, so
+  // it is asserted here rather than left to a reader of the message.
+  eq(
+    secretNamesInAssets([{ path: "a.js", text: "SLACK_BOT_TOKEN" }], []).length,
+    0,
+    "no names to look for finds nothing",
   );
 }
 
