@@ -477,6 +477,13 @@ if (m) {
   lines.push(`- successful only: p50 ${m.ok?.p50 ?? "n/a"}ms, p95 ${m.ok?.p95 ?? "n/a"}ms, max ${m.ok?.max ?? "n/a"}ms`);
   lines.push(`- 5xx: ${m.fiveXx}, no reply at all: ${m.noReply}, write refusals: ${m.writeRefusals}`);
   lines.push(`- refusals by the address Slate saw: ${JSON.stringify(m.refusalsByIp)}`);
+  // The number the run exists to produce after #2274, on EVERY run rather than
+  // only when it is not zero (#2323). A measured zero and a check that never ran
+  // read the same when neither prints, so the count carries its denominator.
+  lines.push(
+    `- overlapping pairs: ${m.overlappingPairs} over ${m.activeBookings} active bookings ` +
+      `(same slot pairs: ${m.sameSlotPairs})`,
+  );
   lines.push(`- worst recompute age: ${m.freshnessMaxSec}s`);
   // The strength of the burst control, stated rather than assumed (#2278). A run
   // with no burst leg says nothing here, because there was no control to describe.

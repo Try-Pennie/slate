@@ -933,4 +933,19 @@ const bars = (r: ReturnType<typeof judgeBookingRun>) => r.findings.map((f) => f.
   );
 }
 
+// --- the overlap count is a measurement, present on a PASSING run (#2323) --------
+{
+  // The report is built from `measurements`, so a passing run whose measurements
+  // carry no overlap count can print nothing about the one number the run exists
+  // to produce. On 2026-09-14 the record had to state "0 pairs" from the judge's
+  // silence (L98).
+  const clean = judgeBookingRun(passing());
+  eq(clean.verdict, "pass", "the fixture passes");
+  eq(clean.measurements?.overlappingPairs, 0, "and its measurements carry a measured ZERO");
+  assert(
+    (clean.measurements?.activeBookings ?? 0) > 0,
+    "over a denominator, so the zero cannot be read as a run that looked at nothing",
+  );
+}
+
 finish();

@@ -482,7 +482,7 @@ happened to arrive.
 | confirmed a minute | at or above 80 percent of target, with the full outcome mix printed so a short run says WHY |
 | latency | p50, p95 and max over ALL responses, and the p95 of the **200s** under 5,000ms |
 | 5xx and no reply | counted **separately** and both fail: a request answered badly and one never answered send two different people to two different places |
-| double bookings | no two run-scoped ACTIVE bookings overlap on one agent in `[starts_at, ends_at)`, read through a **paginating** list, and the preflight must have seen `bookings_active_slot_uniq` actually REFUSE a planted duplicate (without that, an absence of overlaps proves nothing) |
+| double bookings | no two run-scoped ACTIVE bookings overlap on one agent in `[starts_at, ends_at)`, read through a **paginating** list, and the preflight must have seen `bookings_active_slot_uniq` actually REFUSE a planted duplicate (without that, an absence of overlaps proves nothing). The count is printed in the measured section on EVERY run, with its denominator and the same-slot count beside it, because a measured zero and a check that never ran read the same when neither prints (#2323) |
 | every 200 left a row | a booking row carrying the request's external id, an idempotency key, and a `busy_blocks` row |
 | the burst | one winner **per agent** (#2273), every other answer `SLOT_TAKEN`, and each winner really exists. A leg that was configured and produced fewer driver files than fired is **incomplete**, never a skipped bar. The report states the measured depth the control ran at, since one deep and three deep prove different amounts (#2278) |
 | freshness | the worst oldest-bucket age across the window under 6 minutes |
