@@ -55,9 +55,21 @@ on:
         type: string
         default: "10"
       teardown:
-        description: Delete the branch and the deployment when the judge is done
+        description: >-
+          Delete the Worker deployment, and the Supabase branch named in
+          branch_name, when the judge is done. With no branch_name the run says so
+          rather than reporting a clean teardown over a branch that is still
+          billing (#2322).
         type: boolean
         default: true
+      branch_name:
+        description: >-
+          The throwaway Supabase branch this run drives (loadtest-<issue>). The
+          teardown deletes it by name, refusing anything that is not a throwaway,
+          is the project default, or points at the parent project. Leave empty and
+          the branch is left standing, and the job says so.
+        type: string
+        default: ""
       burst_lead_seconds:
         description: >-
           How long the burst drivers have to be queued, checked out and installed
@@ -519,3 +531,29 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           LOADTEST_WORKER_NAME: ${{ vars.LOADTEST_WORKER_NAME }}
         run: node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/loadtest/confirm-teardown.ts
+      # THE BRANCH, which this job claimed to delete for months and never touched
+      # (#2322). A Supabase branch is billed while it exists, and the 2026-09-14 run
+      # left `loadtest-2284` ACTIVE_HEALTHY for twenty minutes past a teardown that
+      # reported success: a success report about work never attempted (L98).
+      #
+      # `if: always()`, so a Worker that would not delete does not leave the branch
+      # standing as well. They are two separate resources and one failing says
+      # nothing about the other.
+      #
+      # Every refusal is its own exit code and every decision is pinned offline in
+      # scripts/test-loadtest-branch-teardown.ts, because the dangerous part is
+      # choosing which branch may be deleted and that must be testable with no
+      # token. The live project carries a branch named `main` flagged as the
+      # default, and the same API path one slash shorter DISABLES preview branching
+      # for the whole project.
+      - name: Delete the branch
+        if: always()
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          # The parent project, written out rather than referenced as a repo
+          # variable, matching ci.yml: it is not a secret, and a variable would be
+          # one more setting to create before this can ever run. It is ALSO what the
+          # refusals compare against, so a branch row pointing at it is refused.
+          SUPABASE_PROJECT_REF: drukfvgaynzrralbzkzj
+          LOADTEST_BRANCH: ${{ inputs.branch_name }}
+        run: node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/loadtest/delete-branch.ts

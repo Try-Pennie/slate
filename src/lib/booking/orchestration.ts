@@ -61,6 +61,8 @@ import { validateAttendee } from "../attendee.ts";
 import { formatPhoneAsTyped } from "../phone-format.ts";
 import { shortErrorReason } from "../notify/error-text.ts";
 import { log } from "@/lib/log";
+import { makeConfirmProfile, confirmProfileLine } from "@/lib/booking/confirm-profile";
+import { isLoadtest } from "@/lib/loadtest-guard";
 import { sendThrottledAlert } from "../notify/dispatch.ts";
 import type { BookingEventPayload, BookingReasonMeta } from "@/lib/webhooks/types";
 import { routingMetaFromTrace } from "@/lib/webhooks/types";
@@ -1913,6 +1915,20 @@ export async function createBooking(
   input: CreateBookingInput,
   deps: BookingDeps,
 ): Promise<BookingResult> {
+  /**
+   * Where this confirm's time went (#2321), under SLATE_LOADTEST only.
+   *
+   * The 2026-09-14 load run measured the request path at a CPU p99 of 4,908ms
+   * against a wall p95 of 4,025ms with no cron in the window, so the path is
+   * compute bound and nothing in the run could say which part of it. Reading the
+   * code names candidates and cannot rank them (L355). This is WALL time and is
+   * apportioned only because that run measured the two as roughly equal.
+   *
+   * With the flag unset it never reads the clock at all, so a production confirm
+   * pays nothing rather than paying a little and discarding it.
+   */
+  const profile = makeConfirmProfile({ enabled: isLoadtest(), now: () => Date.now() });
+
   // A STABLE key (caller-supplied, or derived from the lead's contact identity)
   // is what lets a re-submit collapse onto the same booking. Anonymous bookings
   // have none (idempotencyKeyFor returns null).
@@ -1931,7 +1947,9 @@ export async function createBooking(
   // Only a stable key can match a prior booking; a synthetic key (below) is fresh
   // per request, so there's nothing to look up.
   if (stableKey) {
-    const existing = await deps.findBookingByIdempotencyKey(stableKey);
+    const existing = await profile.time("idempotency-lookup", () =>
+      deps.findBookingByIdempotencyKey(stableKey),
+    );
     if (existing) {
       return { booking: existing, manageUrl: manageUrl(deps, existing.manage_token) };
     }
@@ -1942,11 +1960,13 @@ export async function createBooking(
   // request would otherwise find the booking its own first request just made and
   // decline it, turning a successful confirm into "you already have a call".
   if (input.refuseIfPersonHasCall) {
-    const existingCall = await findExistingCall(input, deps);
+    const existingCall = await profile.time("person-gate", () => findExistingCall(input, deps));
     if (existingCall) throw new ExistingCallError(existingCall);
   }
 
-  const resolved = await deps.resolveBucketByCode(input.bucketCode);
+  const resolved = await profile.time("resolve-bucket", () =>
+    deps.resolveBucketByCode(input.bucketCode),
+  );
   if (!resolved) throw new UnknownBucketError();
   const { bucket, eventType } = resolved;
 
@@ -1976,13 +1996,17 @@ export async function createBooking(
   // read before assign (and before the confirm's write-through mutates the
   // cache) so we can measure runtime divergence once the booking lands (#827).
   // Best-effort: a null (read failed, or a hidden test bucket) skips the measure.
-  const displayedTier = await deps.displayedTier(input.bucketCode).catch(() => null);
+  const displayedTier = await profile
+    .time("displayed-tier", () => deps.displayedTier(input.bucketCode))
+    .catch(() => null);
 
   // Fresh create: cascade down the tier ladder if the requested bucket has no
   // agent free for the slot. A crash before the reservation strands nothing.
   let tier: TierAssignResult;
   try {
-    tier = await assignAgentWithTierFallback(deps, { bucket, eventType }, input.startIso, input.allowTestBuckets ?? false);
+    tier = await profile.time("assign-and-verify", () =>
+      assignAgentWithTierFallback(deps, { bucket, eventType }, input.startIso, input.allowTestBuckets ?? false),
+    );
   } catch (err) {
     // Best-effort: record no-booking attempts so "why did this lead get no slots"
     // is answerable. Awaited so the write is not dropped by the CF runtime; the
@@ -2093,20 +2117,40 @@ export async function createBooking(
 
   // The UNIQUE(idempotency_key) on the reservation is the concurrency arbiter:
   // a same-key racer that already won is returned here, so we adopt ITS pin.
-  const reservation = await deps.insertReservation({
-    idempotency_key: idempotencyKey,
-    pinned_user_id: userId,
-    pinned_agent_email: email,
-    gcal_client_id: gcalClientId,
-    payload: {
-      booking: bookingInsert,
-      event,
-      bucketCode: input.bucketCode,
-      requestedCode: input.requestedCode,
-    },
-  });
+  const reservation = await profile.time("reserve", () =>
+    deps.insertReservation({
+      idempotency_key: idempotencyKey,
+      pinned_user_id: userId,
+      pinned_agent_email: email,
+      gcal_client_id: gcalClientId,
+      payload: {
+        booking: bookingInsert,
+        event,
+        bucketCode: input.bucketCode,
+        requestedCode: input.requestedCode,
+      },
+    }),
+  );
 
-  const result = await completeReservation(deps, reservation);
+  // The insert, the exclusion index write and the cache write through, which is
+  // where the overlap constraint (#2280) and the in request pool recompute both
+  // land: two of the three candidates #2321 names.
+  const result = await profile.time("complete-reservation", () =>
+    completeReservation(deps, reservation),
+  );
+
+  // The apportionment, once, at the end. It carries no contact data: the stage
+  // names and their durations, plus what they do NOT account for. Under
+  // SLATE_LOADTEST only, so nothing is written on a production confirm.
+  const reading = profile.read();
+  if (reading) {
+    log.info("confirm-profile", {
+      msg: "where the confirm spent its wall time",
+      booking_id: result.booking.id,
+      bucket: input.bucketCode,
+      detail: confirmProfileLine(reading),
+    });
+  }
 
   // Runtime half of AUD-061 (#827): the booker showed a slot from `displayedTier`
   // but live verify-on-book may have dropped a further rung to `bookedTier`. Log
