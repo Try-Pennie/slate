@@ -474,7 +474,7 @@ happened to arrive.
 | the burst | one winner **per agent** (#2273), every other answer `SLOT_TAKEN`, and each winner really exists. A leg that was configured and produced fewer driver files than fired is **incomplete**, never a skipped bar. The report states the measured depth the control ran at, since one deep and three deep prove different amounts (#2278) |
 | freshness | the worst oldest-bucket age across the window under 6 minutes |
 | the per address ceiling | its own step aims at a time the deployment is OFFERING, sends three times the ceiling from one address inside one window, and requires SOME refusal. It also reads back the address the deployment keyed on: unidentified, several, or unechoed each get their own conclusion, because all three used to render as "the ceiling is not applying" |
-| platform | CPU p99 under the lane budget, and **no invocation outcome other than `ok`** |
+| platform | CPU p99 under the REQUEST budget (`REQUEST_CPU_P99_MS`, half the latency bar, and applied only to a window with no cron in it), the cron half under `limits.cpu_ms`, and **no invocation outcome other than `ok`**. It used to borrow the 200ms LANE budget, which is a different question about a scheduled tick (#2321) |
 | the fault pass | at `SLATE_LOADTEST_FAULT_PCT=10`, zero 5xx, and a pass that made no requests fails rather than passing on an empty sample. A pass whose deployment reported a DIFFERENT percentage is incomplete, and zero is the case that matters: it passes the bar having injected nothing |
 
 **Subrequests are deliberately not a bar**, and that is a decision rather than an

@@ -20,6 +20,7 @@ import {
 } from "./judge-booking-run.ts";
 import { ceilingVerdict, type CeilingVerdict } from "./preflight-checks.ts";
 import { burstControlStrength, type BurstDepthReading } from "./burst-target.ts";
+import { REQUEST_CPU_P99_MS } from "./judge-booking-run.ts";
 import {
   INVOCATIONS_QUERY,
   SCHEDULED_QUERY,
@@ -243,19 +244,22 @@ async function platformReading(
 }
 
 /**
- * The CPU budget, refused by NAME when it cannot be read.
+ * The REQUEST path's CPU budget, refused by NAME when it cannot be read.
  *
  * `Number("two hundred")` is NaN, and `cpuMsP99 > NaN` is false, so an unreadable
  * budget would make the CPU bar silently pass on every run while reading as
  * configured (L50).
  *
- * env-ok: CPU_BUDGET_MS (optional; defaults to 200ms, the per invocation budget
- * docs/cloudflare-platform-notes.md derives for the lanes, and only a deliberate
- * re-measurement would move it)
+ * The default is `REQUEST_CPU_P99_MS`, derived from the run's own latency bar. It
+ * used to be 200ms, which is the LANE budget for a scheduled invocation and a
+ * different question entirely: a borrowed number is a bar nobody derived (#2321).
+ *
+ * env-ok: CPU_BUDGET_MS (optional; defaults to the request path budget derived in
+ * judge-booking-run.ts, and only a deliberate re-derivation would move it)
  */
 function cpuBudgetMs(): number {
   const raw = (process.env.CPU_BUDGET_MS ?? "").trim();
-  if (raw === "") return 200;
+  if (raw === "") return REQUEST_CPU_P99_MS;
   const n = Number(raw);
   if (!Number.isFinite(n) || n <= 0) {
     console.error(`FAILED: CPU_BUDGET_MS is not a positive number: ${JSON.stringify(raw)}`);

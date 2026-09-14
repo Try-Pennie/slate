@@ -144,9 +144,11 @@ export interface JudgeInput {
   expectedLegs: { burstDrivers: number; faultPct: number };
   /**
    * The two CPU ceilings, which are different numbers about different things.
-   * `cpuMsP99` is the per request budget and applies only to a window with no cron
-   * in it; `cronCpuMs` is the platform ceiling a scheduled invocation is killed at
-   * (`limits.cpu_ms` in wrangler.jsonc).
+   * `cpuMsP99` is the REQUEST path budget (`REQUEST_CPU_P99_MS`, a share of the
+   * latency bar) and applies only to a window with no cron in it; `cronCpuMs` is
+   * the platform ceiling a scheduled invocation is killed at (`limits.cpu_ms` in
+   * wrangler.jsonc). Neither is the LANE budget, which is about a scheduled tick
+   * and belongs to the monitor lane rather than to this run (#2321).
    */
   budgets: { cpuMsP99: number; cronCpuMs: number };
 }
@@ -354,6 +356,33 @@ export function measure(input: JudgeInput): RunMeasurements {
 /** The bars, in the order a reader should meet them. */
 export const CONFIRMED_RATE_FLOOR = 0.8;
 export const OK_P95_MS = 5000;
+/**
+ * The share of the latency bar the REQUEST path may spend on CPU alone (#2321).
+ *
+ * CPU is the compute floor under wall time, so a confirm burning more than half
+ * the latency bar on CPU has no headroom left for the database and Google round
+ * trips it also has to make: the latency bar is about to fail for a cause this one
+ * can NAME first, which is the whole reason to judge CPU separately at all.
+ */
+export const REQUEST_CPU_LATENCY_SHARE = 0.5;
+/**
+ * The REQUEST path's own CPU budget, derived rather than written twice (L41).
+ *
+ * It used to borrow `CPU_BUDGET_MS`, defaulting to 200ms, which is the LANE budget
+ * for a scheduled invocation on the shared every minute tick. The two are
+ * different questions: the lane budget is about a cron tick and its real ceiling
+ * is `limits.cpu_ms` (120,000ms), which the cron half of this bar already judges
+ * against, while this one is about a lead waiting and about spend on a path
+ * Cloudflare scales horizontally. The 200 itself was never derived for either: it
+ * is production's MIXED p50 of 198ms measured on 2026-09-13, a reading about
+ * whatever traffic that hour held (L107).
+ *
+ * Measured against it on 2026-09-14 (run 34862015419): CPU p99 4,908ms over 1,364
+ * invocations with no cron in the window, against a wall p95 of 4,025ms. CPU
+ * roughly equals wall, so the confirm path is compute bound rather than waiting on
+ * anything, and #2321 holds the open question of where those seconds go.
+ */
+export const REQUEST_CPU_P99_MS = Math.round(OK_P95_MS * REQUEST_CPU_LATENCY_SHARE);
 export const FRESHNESS_MAX_SEC = 6 * 60;
 /** How far the platform's invocation count may sit below the run's own before its
  *  numbers are about a different window. */
@@ -627,9 +656,12 @@ export function judgeBookingRun(input: JudgeInput): JudgeResult {
   if (p.cron.invocations === 0) {
     if (p.cpuMsP99 > input.budgets.cpuMsP99) {
       fail(
-        "Worker CPU",
-        `p99 ${p.cpuMsP99}ms over the ${input.budgets.cpuMsP99}ms budget, with no cron in the ` +
-          "window, so this is the request path",
+        "Worker CPU on the request path",
+        `p99 ${p.cpuMsP99}ms of CPU per invocation, over the ${input.budgets.cpuMsP99}ms request ` +
+          "budget, with no cron in the window, so this IS the request path. That budget is a " +
+          `share of the ${OK_P95_MS}ms latency bar, not the lane budget: CPU cannot exceed wall ` +
+          "time, so a confirm spending this much of it on compute has no headroom left for the " +
+          "database and Google round trips it also has to make",
       );
     }
   } else if (p.cron.worstCpuMs > input.budgets.cronCpuMs) {
