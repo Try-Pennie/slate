@@ -8,7 +8,7 @@
 // second booking a conflict.
 //
 // Run: node --experimental-strip-types scripts/test-loadtest-code-mix.ts
-import { MEASURED_CODE_MIX, codeSequence, BURST_CODE } from "./loadtest/code-mix.ts";
+import { MEASURED_CODE_MIX, codeSequence } from "./loadtest/code-mix.ts";
 import { bucketSpecForXbc } from "../src/lib/xbc.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
@@ -80,21 +80,22 @@ import { assert, eq, finish } from "./lib/harness.ts";
   eq(codeSequence(10, [{ code: "111", leads: 0 }]).length, 0, "a mix carrying no leads yields nothing");
 }
 
-// --- the burst code is the one agent pool ------------------------------------
-
-{
-  const spec = bucketSpecForXbc(BURST_CODE);
-  assert(spec !== null, "the burst code is one Slate routes");
-  eq(
-    spec?.criteria.backend_service,
-    "beyond",
-    "the burst code demands the Beyond backend, which two agents in the whole roster carry, " +
-      "so its pool is exactly one deep and 'exactly one 200' is a real control",
-  );
-  assert(
-    MEASURED_CODE_MIX.some((m) => m.code === BURST_CODE),
-    "and it is a code real leads actually arrive on, not a fixture nobody uses",
-  );
-}
+// --- the burst code is no longer a constant to assert about (#2278) ------------
+//
+// This block asserted two things about `BURST_CODE`. Both are answered elsewhere
+// now, and one is deliberately reversed:
+//
+//   - "its pool is exactly one deep" is MEASURED at run time by
+//     `scripts/loadtest/burst-setup.ts`, which reads every pool through the
+//     booker's own predicate and fires at the shallowest that is offering times.
+//     An assertion about a constant could only ever say what somebody believed on
+//     the day they wrote it, and it was wrong twice in three days.
+//   - "it is a code real leads actually arrive on" is REVERSED on purpose. The
+//     burst measures contention on one slot; the steady pass is what carries the
+//     measured traffic mix. Demanding the shallowest pool also be a hot one would
+//     refuse the strongest available control for a property that does not matter
+//     to what the burst asks.
+//
+// `scripts/test-loadtest-burst-target.ts` covers the choosing.
 
 finish();

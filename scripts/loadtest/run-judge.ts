@@ -19,6 +19,7 @@ import {
   type PlatformReading,
 } from "./judge-booking-run.ts";
 import { ceilingVerdict, type CeilingVerdict } from "./preflight-checks.ts";
+import { burstControlStrength, type BurstDepthReading } from "./burst-target.ts";
 import {
   INVOCATIONS_QUERY,
   SCHEDULED_QUERY,
@@ -420,6 +421,31 @@ const input: JudgeInput = {
 
 const result = judgeBookingRun(input);
 
+/**
+ * What the burst's pool depth was, for the report (#2278).
+ *
+ * `BURST_POOL_DEPTH` is empty when the setup could not measure it (a hand run that
+ * named the code instead), and empty must stay UNMEASURED rather than becoming a
+ * number: "nobody measured the depth" and "it was one deep" are the two states
+ * this exists to tell apart (L98, L11).
+ *
+ * env-ok: BURST_POOL_DEPTH (optional; the depth setup-burst measured, and empty
+ * for a hand run or a named code)
+ * env-ok: BURST_CODE (optional; the code the burst actually fired at)
+ */
+function burstDepthReading(): BurstDepthReading | null {
+  const code = (process.env.BURST_CODE ?? "").trim();
+  if (code === "") return null;
+  const raw = (process.env.BURST_POOL_DEPTH ?? "").trim();
+  if (raw === "") {
+    return { measured: false, code, why: "the setup did not report a measured depth" };
+  }
+  const depth = Number(raw);
+  return Number.isFinite(depth)
+    ? { measured: true, code, depth }
+    : { measured: false, code, why: `the reported depth (${raw}) could not be read as a number` };
+}
+
 const lines: string[] = [];
 lines.push(`# Booking path load run ${RUN_ID}`);
 lines.push("");
@@ -448,6 +474,10 @@ if (m) {
   lines.push(`- 5xx: ${m.fiveXx}, no reply at all: ${m.noReply}, write refusals: ${m.writeRefusals}`);
   lines.push(`- refusals by the address Slate saw: ${JSON.stringify(m.refusalsByIp)}`);
   lines.push(`- worst recompute age: ${m.freshnessMaxSec}s`);
+  // The strength of the burst control, stated rather than assumed (#2278). A run
+  // with no burst leg says nothing here, because there was no control to describe.
+  const burstDepth = burstDepthReading();
+  if (burstDepth) lines.push(`- the burst's pool: ${burstControlStrength(burstDepth)}`);
   lines.push("");
   lines.push("### Outcome mix");
   lines.push("");

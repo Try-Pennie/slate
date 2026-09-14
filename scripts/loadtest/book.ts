@@ -33,7 +33,6 @@ import {
   type BookingAttempt,
   type DriverResult,
 } from "./book-plan.ts";
-import { BURST_CODE } from "./code-mix.ts";
 import { faultModeVerdict, faultPollStep, FAULT_PROPAGATION_DEADLINE_MS } from "./preflight-checks.ts";
 
 const PROD_HOSTS = ["slate.trypennie.app", "drukfvgaynzrralbzkzj.supabase.co"];
@@ -62,8 +61,8 @@ const BURST_REQUESTS = Number(process.env.BURST_REQUESTS ?? "25");
 // env-ok: BURST_GRACE_MS (optional; defaults to 2000, how late a driver may be and
 // still be part of the same burst)
 const BURST_GRACE_MS = Number(process.env.BURST_GRACE_MS ?? "2000");
-// env-ok: BURST_CODE_OVERRIDE (optional; defaults to the measured one agent pool,
-// and only a deliberate experiment would point the burst at a different code)
+// env-ok: BURST_CODE_OVERRIDE (required in burst mode; the code `burst-setup.ts`
+// measured and chose, handed through so the drivers and the setup cannot disagree)
 // env-ok: FAULT_PCT (required in fault mode only; the percentage the deployment
 // was redeployed with, which the driver then CONFIRMS with the deployment itself)
 // env-ok: FAULT_MINUTES (optional; defaults to 2, long enough for the bar to have
@@ -330,7 +329,10 @@ async function burst(): Promise<void> {
   }
   const startAtMs = Number(rawStart.trim());
   const startIso = need("BURST_SLOT");
-  const code = process.env.BURST_CODE_OVERRIDE ?? BURST_CODE;
+  // Named by the setup step, never re-derived here. A constant to fall back on is
+  // how the drivers and the setup end up firing at two different codes while each
+  // reads as correct (L70), and it was the unmeasured constant #2278 removed.
+  const code = need("BURST_CODE_OVERRIDE");
   const startedAtMs = Date.now();
 
   // Wait for the shared moment, then check we actually made it. A driver that woke

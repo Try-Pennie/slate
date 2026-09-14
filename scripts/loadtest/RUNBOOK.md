@@ -239,17 +239,39 @@ node --experimental-strip-types scripts/loadtest/book.ts
 
 ### The burst
 
-`MODE=burst` with `START_AT` (epoch ms) and `BURST_SLOT`, both chosen **once** by
-the setup step (`scripts/loadtest/burst-setup.ts`) and handed to every driver,
-because a burst whose drivers each chose their own time is not a burst: nothing
-contends and everything succeeds.
+`MODE=burst` with `START_AT` (epoch ms), `BURST_SLOT` and `BURST_CODE_OVERRIDE`,
+all chosen **once** by the setup step (`scripts/loadtest/burst-setup.ts`) and
+handed to every driver, because a burst whose drivers each chose their own time is
+not a burst: nothing contends and everything succeeds. The code is passed through
+rather than re-derived in the driver, so the two cannot fire at different pools
+while each reads as correct (L70).
+
+**The pool is MEASURED, not a constant** (#2278). The whole control rests on the
+burst's pool being one agent deep, and for months that was a hand written code
+nothing checked: the seeded roster gave it three, so a live run answered three
+200s on three different agents, which is correct behaviour and a materially weaker
+control. It rotted too, and did, when production's Low plus Beyond pool emptied
+(#2152) and the constant had to be moved by hand the morning of the next run
+(#2319). The setup now reads every pool's depth through the booker's own predicate
+(`poolDepthsFrom`, shared with `pnpm loadtest:export-shape` so the two cannot
+disagree about one roster), asks the shallowest six what they are offering, and
+fires at the first that offers anything. Depth alone cannot choose: a pool one
+agent deep whose agent has no free time offers nothing.
+
+**It never fails on depth**, and that is deliberate. The judge asks for one winner
+per AGENT (#2273), which holds at any depth, so a run red because the roster has
+no one deep pool would be red for a property of the roster, which is how a check
+stops being read (L36). What it DOES do is report the depth it ran at, so a reader
+knows what the control was worth. A depth it could not measure exits on its own
+code rather than guessing, and a hand run that names the code with
+`BURST_CODE_OVERRIDE` is reported as **unmeasured** rather than as one deep.
 
 **It runs BEFORE the steady pass, and alone** (#2262). That is a decision rather
-than an ordering accident: the steady mix includes `122` (it is real traffic), so a
-steady driver that happened to take the burst's slot first would make every burst
-request `SLOT_TAKEN`, and "exactly one 200" would fail for a reason that has
-nothing to do with the unique index it exists to test. Twenty five simultaneous
-requests on one slot is the contention being measured either way.
+than an ordering accident: the steady mix can include whichever code the burst
+picked, so a steady driver that happened to take the burst's slot first would make
+every burst request `SLOT_TAKEN`, and the winner bar would fail for a reason that
+has nothing to do with the unique index it exists to test. Twenty five
+simultaneous requests on one slot is the contention being measured either way.
 
 The setup step picks the **last** offered time rather than the first, for the same
 class of reason: the preflight books the first time ITS bucket offers, minutes
@@ -257,6 +279,10 @@ earlier, and the two buckets can share an agent. It sorts before taking the last
 because a list read out of a response carries no order unless something declares
 one (L343). A bucket offering nothing exits on its own code and says so, since an
 empty burst file and a run with no burst leg are otherwise the same thing (L98).
+Four refusals, each its own code: `2` availability answered for none of the
+candidates (the deployment), `3` they answered and none offered a usable time (the
+seed), `4` the pools could not be measured at all, `5` not one pool has an agent
+in it.
 
 It also emits the DRIVER COUNT, from the app's own `DRIVERS` constant, and both the
 matrix size and the judge's expectation read it from there. Two places holding one
@@ -445,7 +471,7 @@ happened to arrive.
 | 5xx and no reply | counted **separately** and both fail: a request answered badly and one never answered send two different people to two different places |
 | double bookings | no two run-scoped ACTIVE bookings overlap on one agent in `[starts_at, ends_at)`, read through a **paginating** list, and the preflight must have seen `bookings_active_slot_uniq` actually REFUSE a planted duplicate (without that, an absence of overlaps proves nothing) |
 | every 200 left a row | a booking row carrying the request's external id, an idempotency key, and a `busy_blocks` row |
-| the burst | exactly **one** 200 against the one agent pool, every other answer `SLOT_TAKEN`, and the winner really exists. A leg that was configured and produced fewer driver files than fired is **incomplete**, never a skipped bar |
+| the burst | one winner **per agent** (#2273), every other answer `SLOT_TAKEN`, and each winner really exists. A leg that was configured and produced fewer driver files than fired is **incomplete**, never a skipped bar. The report states the measured depth the control ran at, since one deep and three deep prove different amounts (#2278) |
 | freshness | the worst oldest-bucket age across the window under 6 minutes |
 | the per address ceiling | its own step aims at a time the deployment is OFFERING, sends three times the ceiling from one address inside one window, and requires SOME refusal. It also reads back the address the deployment keyed on: unidentified, several, or unechoed each get their own conclusion, because all three used to render as "the ceiling is not applying" |
 | platform | CPU p99 under the lane budget, and **no invocation outcome other than `ok`** |

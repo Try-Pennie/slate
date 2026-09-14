@@ -13,15 +13,18 @@ name: Booking path load run
 #               anything if this does not pass.
 #   setup-burst picks the ONE bucket, the ONE slot and the ONE moment the burst
 #               fires at, because a burst whose drivers each chose their own is not
-#               a burst: nothing contends and everything succeeds.
-#   burst       four drivers firing twenty five requests each at that moment
-#               against a pool one agent deep. Exactly one 200 and the rest
-#               SLOT_TAKEN is `bookings_active_slot_uniq` doing its job under real
-#               contention rather than against a planted duplicate. It runs BEFORE
-#               the steady pass, on purpose: the steady mix includes the burst's
-#               code, so a steady driver taking that slot first would make every
-#               burst request SLOT_TAKEN and fail the control for a reason that has
-#               nothing to do with the index.
+#               a burst: nothing contends and everything succeeds. The bucket is
+#               MEASURED (#2278): every pool's depth is read through the booker's
+#               own predicate and the shallowest one actually offering times wins,
+#               since the control is worth more the fewer agents share the slot.
+#   burst       four drivers firing twenty five requests each at that moment.
+#               One winner PER AGENT and the rest SLOT_TAKEN is
+#               `bookings_active_slot_uniq` doing its job under real contention
+#               rather than against a planted duplicate, and the report states the
+#               depth it ran at. It runs BEFORE the steady pass, on purpose: the
+#               steady mix can include the burst's code, so a steady driver taking
+#               that slot first would make every burst request SLOT_TAKEN and fail
+#               the control for a reason that has nothing to do with the index.
 #   drivers     four of them, fifteen a minute for ten minutes, which is exactly
 #               the per address write ceiling.
 #   freshness   the existing soak sampler, one sample a minute, so recompute is
@@ -122,6 +125,9 @@ jobs:
       # judge's expectation are ONE number rather than two that drift (L41).
       drivers: ${{ steps.pick.outputs.drivers }}
       driver_count: ${{ steps.pick.outputs.driver_count }}
+      # Empty when the depth was not measured, which the judge reports as
+      # unmeasured rather than as a number (#2278).
+      burst_pool_depth: ${{ steps.pick.outputs.burst_pool_depth }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
       - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
@@ -140,6 +146,11 @@ jobs:
         env:
           SLATE_BASE: ${{ vars.LOADTEST_BASE_URL }}
           BURST_LEAD_SECONDS: ${{ inputs.burst_lead_seconds }}
+          # The roster, so the pool the burst fires at is MEASURED rather than a
+          # hand maintained constant (#2278). Without these the step refuses on its
+          # own exit code rather than guessing a depth.
+          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.LOADTEST_SUPABASE_URL }}
+          SUPABASE_SECRET_KEY: ${{ secrets.LOADTEST_SUPABASE_SECRET_KEY }}
         run: node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/loadtest/burst-setup.ts
 
   burst:
@@ -438,6 +449,12 @@ jobs:
           # constant, so it can never disagree with the matrix that fired.
           EXPECT_BURST_DRIVERS: ${{ needs.setup-burst.outputs.driver_count }}
           EXPECT_FAULT_PCT: ${{ inputs.fault_pct }}
+          # What the burst control was actually worth (#2278): the code it fired at
+          # and how deep that pool measured. The depth is EMPTY when the setup could
+          # not measure it, and the report says unmeasured rather than printing a
+          # number nobody read.
+          BURST_CODE: ${{ needs.setup-burst.outputs.burst_code }}
+          BURST_POOL_DEPTH: ${{ needs.setup-burst.outputs.burst_pool_depth }}
           REPORT: reports/loadtest-${{ github.run_id }}.md
         run: node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/loadtest/run-judge.ts
       # ALWAYS uploaded, and this is the step teardown waits on. A report that

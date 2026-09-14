@@ -25,7 +25,9 @@ loadEnvFiles([".env.local", ".dev.vars"]);
 
 const { supabaseAdmin } = await import("@/lib/supabase/admin");
 const { unwrap } = await import("@/lib/db/result");
-const { agentIdsFromPool } = await import("@/lib/availability/pool");
+// Dynamic like its neighbours: this module reaches `@/lib/availability/pool`, and
+// every `@/` import in this file has to come AFTER `loadEnvFiles` above.
+const { poolDepthsFrom } = await import("./pool-depth.ts");
 type Attributes = import("@/lib/db/types").Attributes;
 type Criteria = import("@/lib/db/types").Criteria;
 
@@ -62,18 +64,10 @@ const schedules = (unwrap(
 
 // Depth through the booker's OWN predicate over each bucket's own members, so the
 // exported number is the one the booker would produce rather than a second
-// implementation of the same question.
-const membersByBucket = new Map<string, Set<string>>();
-for (const m of members) {
-  const set = membersByBucket.get(m.bucket_id) ?? new Set<string>();
-  set.add(m.user_id);
-  membersByBucket.set(m.bucket_id, set);
-}
-const orgAgents = users.map((u) => ({ id: u.id, attributes: u.attributes ?? {} }));
-const poolDepths = buckets.map((b) => ({
-  code: b.code,
-  depth: agentIdsFromPool(orgAgents, membersByBucket.get(b.id) ?? new Set(), b.criteria ?? {}).length,
-}));
+// implementation of the same question. Shared with the burst's choice of code
+// (#2278): two copies of "how deep is this pool" drift silently, and the two would
+// then disagree about one roster while each read as correct (L41).
+const poolDepths = poolDepthsFrom({ agents: users, buckets, members });
 
 const zoneOf = new Map(schedules.map((s) => [s.user_id, s.timezone]));
 // The SHAPE, and every refusal it can make, is decided in `roster-shape.ts` and
