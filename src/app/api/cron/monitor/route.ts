@@ -1270,12 +1270,24 @@ export async function GET(req: NextRequest) {
               .eq("is_test", false)
               .range(from, to),
         ),
-        selectAllPages<{ user_id: string }>(
+        // #2299: created_at and the sync failure columns come back with the row,
+        // because the first-run grace is judged on when the calendar joined the
+        // rotation and cancelled by a failure the rotation has already recorded.
+        selectAllPages<{
+          user_id: string;
+          created_at: string | null;
+          consecutive_failures: number | null;
+          last_sync_error: string | null;
+        }>(
           "monitor sync-staleness calendars",
-          (from, to) => db.from("agent_calendars").select("user_id").range(from, to),
+          (from, to) =>
+            db
+              .from("agent_calendars")
+              .select("user_id, created_at, consecutive_failures, last_sync_error")
+              .range(from, to),
         ),
       ]);
-      return syncRotationCandidates(agents, new Set(cals.map((c) => c.user_id)));
+      return syncRotationCandidates(agents, cals);
     };
     const syncStaleness = await steps.run("sync_staleness", null, () =>
       runSyncStalenessCheck({

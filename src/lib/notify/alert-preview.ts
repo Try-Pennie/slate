@@ -1308,15 +1308,29 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
         worstAgeMs: 47 * 60_000,
         worstNeverSynced: true,
         stale: [
-          { id: "u1", name: "Jordan Reyes", email: "jordan@trypennie.com", lastSyncedMs: null, ageMs: null },
+          {
+            id: "u1",
+            name: "Jordan Reyes",
+            email: "jordan@trypennie.com",
+            lastSyncedMs: null,
+            ageMs: null,
+            // An ESTABLISHED agent who has never been synced, which is the case
+            // worth previewing: a brand new calendar row is withheld by the
+            // first-run grace (#2299) and never reaches this copy at all.
+            rotationSinceMs: NOW_MS - 3 * 24 * 60 * 60_000,
+            hasRecordedFailure: false,
+          },
           {
             id: "u2",
             name: "Sam Okafor",
             email: "sam@trypennie.com",
             lastSyncedMs: NOW_MS - 47 * 60_000,
             ageMs: 47 * 60_000,
+            rotationSinceMs: NOW_MS - 3 * 24 * 60 * 60_000,
+            hasRecordedFailure: false,
           },
         ],
+        gracedCount: 0,
       },
       SYNC_STALENESS_THRESHOLD_MS,
     ),
@@ -1325,7 +1339,16 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     key: "sync_staleness",
     state: "the rotation has caught up",
     channel: "recovery",
-    text: formatSyncStalenessRecovery(97),
+    text: formatSyncStalenessRecovery(97, 0),
+  },
+  {
+    // #2299: the same all-clear with agents withheld by the first-run grace reads
+    // differently, and it is the wording that could overclaim, so it is previewed
+    // as its own state rather than trusted to be a variation of the one above.
+    key: "sync_staleness",
+    state: "the rotation has caught up while new agents are still joining it",
+    channel: "recovery",
+    text: formatSyncStalenessRecovery(97, 4),
   },
   {
     // The fixture carries `healed`, because the auto-recompute case is the one the
