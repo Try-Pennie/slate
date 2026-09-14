@@ -5,11 +5,13 @@ import { classifyCalendarReachability } from "@/lib/google/reachability";
 import type { Reachability } from "@/lib/google/reachability-classify";
 import { sendThrottledAlert } from "@/lib/notify/dispatch";
 import { cleanupOnPoolExit } from "@/lib/google/sync";
+import { onboardIntoPool, type PoolEntryResult } from "@/lib/google/pool-entry";
 import { log } from "@/lib/log";
 import {
   bookableBlockedAlert,
   bookableNotProvisionedAlert,
   bookableUnverifiedAlert,
+  bookableUnhydratedAlert,
 } from "@/lib/notify/misc-alert-copy";
 import { isDefinitiveFailure } from "@/lib/google/sync-health";
 
@@ -29,7 +31,19 @@ export type BlockedReason =
    *  google_unreachable, and refused for the same reason, but its own value so the
    *  admin screen and the alert can name the fix (a Workspace admin, not a re-auth). */
   | "google_not_provisioned"
-  | "google_unverified";
+  | "google_unverified"
+  /**
+   * #2302: the account was reachable and Slate still could not load its events
+   * into the availability cache. Refused for the same reason as the three above,
+   * and named separately because it sends the reader to the calendar sync lane
+   * rather than to the credentials or to a Workspace admin.
+   *
+   * Dan's rule, 2026-09-14: "we don't want someone without a read calendar to be
+   * bookable." An agent in the pool with no cached busy time is offered as free
+   * for every hour their working hours allow, and verify on book only catches
+   * that at the last moment, after the lead has been shown the slot.
+   */
+  | "calendar_unhydrated";
 
 export type BookableResult =
   | { status: "not_found" }
@@ -44,9 +58,23 @@ export interface BookableDeps {
   notify: (key: string, cooldownMs: number, text: string) => Promise<void>;
   /** Pool-exit cleanup on deactivation: stop watches + prune busy_blocks (#239/#248). */
   cleanupOnPoolExit: (userId: string) => Promise<void>;
+  /**
+   * Pool-ENTRY onboarding on activation (#2302): discover the agent's calendars,
+   * bootstrap each one out to the booking horizon, and stamp the agent as synced,
+   * so being bookable and having a calendar Slate can read are one event rather
+   * than half an hour apart.
+   */
+  onboardIntoPool: (userId: string) => Promise<PoolEntryResult>;
 }
 
-const defaultDeps: BookableDeps = {
+/**
+ * Exported so a batch caller can flip somebody WITHOUT the inline onboarding
+ * (#2302), by spreading these and replacing `onboardIntoPool`. The Salesforce
+ * sync is the one such caller: it can flip a whole licence upgrade at once, and
+ * each onboarding is a handful of Google calls out of one shared invocation
+ * budget.
+ */
+export const defaultBookableDeps: BookableDeps = {
   checkReachable: classifyCalendarReachability,
   // Best-effort: a flaky Slack must never fail the flip (the write already
   // didn't happen on a block; the alert is the only side effect left).
@@ -55,13 +83,40 @@ const defaultDeps: BookableDeps = {
   notify: (key, cooldownMs, text) => sendThrottledAlert(key, cooldownMs, text).catch(() => {}),
   // Best-effort: the flip already succeeded, so a cleanup failure must not fail
   // it. The self-heal reconcile backstop retries any leftover watch/blocks.
-  cleanupOnPoolExit: (userId) =>
-    cleanupOnPoolExit(userId)
-      .then(() => {})
-      .catch((err) =>
-        log.error("bookable-api", { msg: "pool-exit cleanup failed", user_id: userId }, err),
-      ),
+  cleanupOnPoolExit: (userId) => cleanupOnPoolExit(userId).then(() => {}),
+  onboardIntoPool,
 };
+
+/**
+ * Run the EXIT transition's side effect without letting it fail the flip that has
+ * already been written.
+ *
+ * Only the exit. Entering the pool is a GATE since #2302 (see below), so its
+ * failure is the whole point rather than something to swallow.
+ *
+ * At the CALL SITE rather than in the default wiring, because that is the difference
+ * between a guarantee and a habit: containment in the default wiring is lost by any
+ * caller that injects its own collaborator, and the property here is not optional.
+ * The write has committed either way, so throwing would report a flip that happened
+ * as one that did not, and the caller would have no correct response to it.
+ *
+ * The self-heal reconcile backstop retries a leftover watch or block on the way out,
+ * and the sync and hydration rotations converge on the way in. On the entry side the
+ * failure also records itself on the calendar row, which is what cancels the
+ * monitors' first-run patience (#2299, #2300), so a bootstrap that really is broken
+ * pages at once rather than after fifteen quiet minutes.
+ */
+async function settleTransition(
+  what: "pool-exit cleanup",
+  userId: string,
+  run: () => Promise<void>,
+): Promise<void> {
+  try {
+    await run();
+  } catch (err) {
+    log.error("bookable-api", { msg: `${what} failed`, user_id: userId }, err);
+  }
+}
 
 /**
  * The activation reachability gate (#281, #913). Probes the calendar; a
@@ -133,7 +188,7 @@ type BookableRow = { id: string; bookable: boolean; email: string };
 export async function applyBookableByEmail(
   email: string,
   bookable: boolean,
-  deps: BookableDeps = defaultDeps,
+  deps: BookableDeps = defaultBookableDeps,
 ): Promise<BookableResult> {
   const db = supabaseAdmin();
   // Exact match, consistent with the offboarding lookup (NOT ilike: `_`/`%` in
@@ -154,13 +209,34 @@ export async function applyBookableByEmail(
 export async function applyBookableByUserId(
   userId: string,
   bookable: boolean,
-  deps: BookableDeps = defaultDeps,
+  deps: BookableDeps = defaultBookableDeps,
 ): Promise<BookableResult> {
   const user = unwrap(
     await supabaseAdmin().from("users").select("id, bookable, email").eq("id", userId).maybeSingle(),
     "bookable.lookup",
   ) as BookableRow | null;
   return applyBookableToRow(user, bookable, deps);
+}
+
+/**
+ * Establish the agent's calendars and load them into the availability cache, and
+ * answer what that achieved. `null` means it threw.
+ *
+ * A throw is the LEAST informative failure there is, so it must not be the one
+ * that admits somebody: it is mapped to the same refusal a measured failure gets
+ * (L93, choose which defect ships and say so). What it costs is precision in the
+ * message, which is why the log line carries the counts separately.
+ */
+async function readCalendarForPool(
+  userId: string,
+  deps: BookableDeps,
+): Promise<PoolEntryResult | null> {
+  try {
+    return await deps.onboardIntoPool(userId);
+  } catch (err) {
+    log.error("bookable-api", { msg: "pool-entry read threw", user_id: userId }, err);
+    return null;
+  }
 }
 
 /** Shared: plan (idempotent) from the row, run the activation gate on the way
@@ -181,14 +257,40 @@ async function applyBookableToRow(
       log.warn("bookable-api", { msg: "activation blocked", user_id: user!.id, reason: block.reason });
       return { status: "blocked", userId: user!.id, reason: block.reason };
     }
+    // The SECOND half of the gate (#2302). Reachable is not the same as readable:
+    // the probe above asks whether Google answers for this account, and this asks
+    // whether their events actually reached the availability cache. Before the
+    // write, because the answer decides whether there is a write at all.
+    const entry = await readCalendarForPool(user!.id, deps);
+    if (entry === null || entry.hydrated === 0 || entry.failed > 0) {
+      const message = bookableUnhydratedAlert(
+        user!.email,
+        entry?.hydrated ?? 0,
+        entry?.calendars ?? 0,
+      );
+      await deps.notify(`bookable_blocked:${user!.id}`, BOOKABLE_BLOCKED_COOLDOWN_MS, message);
+      log.warn("bookable-api", {
+        msg: "activation blocked",
+        user_id: user!.id,
+        reason: "calendar_unhydrated",
+        calendars: entry?.calendars ?? 0,
+        hydrated: entry?.hydrated ?? 0,
+        failed: entry?.failed ?? 0,
+      });
+      // Nothing written, so `bookable_pending_since` survives and the hourly roster
+      // sync retries this next hour, which is the same recovery path every other
+      // arm of the gate already uses.
+      return { status: "blocked", userId: user!.id, reason: "calendar_unhydrated" };
+    }
   }
 
   await writeBookable(user!.id, plan.bookable);
   // Left the pool: stop the agent's Google watches and prune their cached busy
   // time so we're no longer POSTed for someone we don't book (#239/#248).
   if (plan.bookable === false) {
-    await deps.cleanupOnPoolExit(user!.id);
+    await settleTransition("pool-exit cleanup", user!.id, () => deps.cleanupOnPoolExit(user!.id));
   }
+
   log.info("bookable-api", { msg: "bookable set", user_id: user!.id, bookable: plan.bookable });
   return { status: "applied", userId: user!.id, bookable: plan.bookable };
 }

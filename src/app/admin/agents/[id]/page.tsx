@@ -767,11 +767,15 @@ function BookableOutcome({ code }: { code?: string }) {
         ? "This agent is no longer bookable. New bookings will not be routed to them."
         : code === "blocked-gone"
           ? "Not made bookable: their Google calendar is unreachable, so the account may be gone from the Workspace or the delegation may be broken. Fix the calendar, then try again."
-          : code === "blocked-transient"
-            ? "Not made bookable: their Google calendar could not be checked just now, which is usually a temporary Google issue. Try again shortly."
-            : code === "missing"
-              ? "That agent could not be found, so nothing was changed."
-              : null;
+          : code === "blocked-not-provisioned"
+            ? "Not made bookable: their Google account has never been given Google Calendar. Retrying will not help. A Workspace admin has to give them Calendar first."
+            : code === "blocked-transient"
+              ? "Not made bookable: their Google calendar could not be checked just now, which is usually a temporary Google issue. Try again shortly."
+              : code === "blocked-unread"
+                ? "Not made bookable: their Google account answered, and Slate could not load what is on their calendar. In the pool they would be offered as free for every hour of their working week, so they are being kept out until it can be read. Check the calendar sync lane for this account; the hourly roster sync retries on its own."
+                : code === "missing"
+                  ? "That agent could not be found, so nothing was changed."
+                  : null;
   if (!said) return null;
 
   return (

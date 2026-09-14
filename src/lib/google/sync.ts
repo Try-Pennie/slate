@@ -99,7 +99,10 @@ async function loadAgentTimezone(userId: string): Promise<string> {
   );
 }
 
-async function loadAgentCalendars(userId: string): Promise<AgentCalendar[]> {
+// Exported so the pool ENTRY path (#2302) reads an agent's calendars through the
+// same query the sync lane uses, rather than growing a second copy of it here that
+// can drift from this one.
+export async function loadAgentCalendars(userId: string): Promise<AgentCalendar[]> {
   // error-ok: a read error yields no calendars for this pass; Google push and the
   // 1-min cron backstop reconverge the agent next tick.
   const { data } = await supabaseAdmin()

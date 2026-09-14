@@ -128,6 +128,11 @@ vi.mock("@/lib/bookable/service", () => bookable);
 vi.mock("@/lib/audit", () => audit);
 
 import { syncSalesforceAgents } from "@/lib/salesforce/sync";
+import {
+  MAX_ACTIVATIONS_PER_RUN,
+  activationAllowance,
+  type ActivationAllowance,
+} from "@/lib/bookable/activation-allowance";
 
 function sfResponse(records: unknown[]) {
   return { ok: true, json: async () => ({ records, done: true }) };
@@ -836,7 +841,7 @@ describe("a hire becomes bookable on the first tier or the Sales profile (#2071)
     expect(row.attributes).toEqual({ role: "Sales" });
     expect(typeof row.bookable_pending_since).toBe("string");
 
-    expect(bookable.applyBookableByUserId).toHaveBeenCalledWith("u1", true);
+expect(bookable.applyBookableByUserId).toHaveBeenCalledWith("u1", true);
     expect(audit.recordAudit).toHaveBeenCalledTimes(1);
     const entry = audit.recordAudit.mock.calls[0][0] as Record<string, unknown>;
     expect(entry).toMatchObject({ actorId: null, action: "agent.bookable", targetUserId: "u1" });
@@ -913,7 +918,7 @@ describe("a hire becomes bookable on the first tier or the Sales profile (#2071)
 
     const result = await syncSalesforceAgents();
 
-    expect(bookable.applyBookableByUserId).toHaveBeenCalledWith("u1", true);
+expect(bookable.applyBookableByUserId).toHaveBeenCalledWith("u1", true);
     expect(result.bookableFlipped).toEqual(["hire@x.com"]);
     const entry = audit.recordAudit.mock.calls[0][0] as Record<string, unknown>;
     // The tiers in the trail are the ones the ROW holds, which since #2152 came
@@ -1109,5 +1114,118 @@ describe("roster rows Salesforce no longer confirms (#1833)", () => {
       (c) => c.op === "update" && (c.payload as { deactivated_at?: string }).deactivated_at,
     );
     expect(deactivation?.filters.find((f) => f[0] === "in" && f[1] === "id")?.[2]).toEqual(["u-left"]);
+  });
+});
+
+describe("how many activations one run attempts (#2302)", () => {
+  const sfRoster = (records: unknown[]) => {
+    sf.fetchSfWithRetry.mockImplementation(async (url: string) => {
+      if (url.includes("oauth2/token")) {
+        return { ok: true, json: async () => ({ access_token: "tok", instance_url: "https://sf.example" }) };
+      }
+      const q = decodeURIComponent((url.split("q=")[1] ?? "").replace(/\+/g, " "));
+      if (q.includes("IsActive = true AND Email != null AND (")) return sfResponse(records);
+      return sfResponse([]);
+    });
+  };
+
+  beforeEach(() => {
+    store.calls.length = 0;
+    store.config.errorOn = undefined;
+    store.config.existing = [];
+    store.config.afterInsert = [];
+    store.config.reapable = [];
+    bookable.applyBookableByUserId.mockClear();
+    bookable.applyBookableByUserId.mockImplementation(async (userId: string) => ({
+      status: "applied",
+      userId,
+      bookable: true,
+    }));
+    audit.recordAudit.mockClear();
+  });
+
+  /** n hires all moved to the Sales profile in the same run, which is what a bulk
+   *  licence upgrade looks like to this lane. */
+  const flipWave = async (n: number, allowance?: ActivationAllowance) => {
+    const ids = Array.from({ length: n }, (_, i) => `u${i}`);
+    store.config.existing = ids.map((id) => ({
+      id,
+      email: `${id}@x.com`,
+      attributes: { role: "Chatter Free User" },
+      bookable: false,
+      deactivated_at: null,
+      bookable_pending_since: null,
+    }));
+    store.config.afterInsert = ids.map((id) => ({ id, email: `${id}@x.com`, manager_id: null, role: "agent" }));
+    sfRoster(ids.map((id) => ({ Email: `${id}@x.com`, Name: id, Profile: { Name: "Sales" } })));
+    return allowance
+      ? syncSalesforceAgents({ allowance })
+      : syncSalesforceAgents();
+  };
+
+  it("attempts every activation while the allowance lasts", async () => {
+    const result = await flipWave(3);
+    expect(bookable.applyBookableByUserId).toHaveBeenCalledTimes(3);
+    expect(result.bookableFlipped).toHaveLength(3);
+    expect(result.bookableDeferredToNextRun).toEqual([]);
+  });
+
+  it("leaves the rest of a mass upgrade for the next run rather than running the lane out of budget", async () => {
+    // Since the calendar read is part of the gate, each attempt is a handful of
+    // Google calls out of one shared invocation budget. The remainder is not
+    // admitted unread: it is simply not attempted, and the pending mark written
+    // earlier in this same run is what brings it back next hour.
+    const n = MAX_ACTIVATIONS_PER_RUN + 4;
+    const result = await flipWave(n);
+    expect(bookable.applyBookableByUserId).toHaveBeenCalledTimes(MAX_ACTIVATIONS_PER_RUN);
+    expect(result.bookableFlipped).toHaveLength(MAX_ACTIVATIONS_PER_RUN);
+    expect(result.bookableDeferredToNextRun).toHaveLength(4);
+  });
+
+  it("says WHO it left, not just how many", async () => {
+    // A count alone cannot be checked against anything. With the addresses, the
+    // next run or a person can ask whether these specific agents came through.
+    const result = await flipWave(MAX_ACTIVATIONS_PER_RUN + 1);
+    expect(result.bookableDeferredToNextRun).toEqual([`u${MAX_ACTIVATIONS_PER_RUN}@x.com`]);
+  });
+
+  it("everyone it deferred keeps a pending mark, so nothing is dropped", async () => {
+    // The mark IS the intent (#2071), and it is written with the attributes earlier
+    // in this run rather than at the attempt, which is exactly what makes skipping
+    // the attempt safe. Without it a deferral would be a silent drop.
+    await flipWave(MAX_ACTIVATIONS_PER_RUN + 2);
+    const upserts = store.calls.filter((c) => c.op === "upsert");
+    const marked = upserts
+      .flatMap((c) => c.payload as Record<string, unknown>[])
+      .filter((r) => typeof r.bookable_pending_since === "string");
+    expect(marked).toHaveLength(MAX_ACTIVATIONS_PER_RUN + 2);
+  });
+
+  it("a refused activation still spends its slot, because it cost the same Google calls", async () => {
+    // The allowance bounds the WORK, not the successes. A refusal has already run
+    // the reachability probe and the calendar read by the time it is refused, so
+    // treating it as free would let a run of refusals blow the budget it exists to
+    // protect.
+    bookable.applyBookableByUserId.mockImplementation(async (userId: string) => ({
+      status: "blocked",
+      userId,
+      reason: "calendar_unhydrated",
+    }));
+    const result = await flipWave(MAX_ACTIVATIONS_PER_RUN + 2);
+    expect(bookable.applyBookableByUserId).toHaveBeenCalledTimes(MAX_ACTIVATIONS_PER_RUN);
+    expect(result.bookableFlipped).toEqual([]);
+    expect(result.bookablePending).toHaveLength(MAX_ACTIVATIONS_PER_RUN);
+    expect(result.bookableDeferredToNextRun).toHaveLength(2);
+  });
+
+  it("the allowance is SHARED with the Twilio half of the same run", async () => {
+    // Two independent budgets is not a budget: the real worst case would be double
+    // the number anybody wrote down. The derivation of the number itself is pinned
+    // in scripts/test-activation-allowance.ts, which is where the object lives.
+    const shared = activationAllowance(2);
+    await flipWave(3, shared);
+    expect(shared.spent()).toBe(2);
+    // And a second caller handed the SAME object gets nothing left.
+    expect(shared.take()).toBe(false);
   });
 });
