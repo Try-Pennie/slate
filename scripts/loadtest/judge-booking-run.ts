@@ -318,6 +318,72 @@ export interface RunMeasurements {
   /** Write refusals grouped by the address Slate said it saw. */
   refusalsByIp: Record<string, number>;
   freshnessMaxSec: number;
+  /**
+   * Active bookings the overlap counts below are OVER (#2323).
+   *
+   * The denominator, so a zero cannot be read as a run that looked at nothing. A
+   * measured zero and a check that never ran render the same when neither prints a
+   * count (L98).
+   */
+  activeBookings: number;
+  /**
+   * Pairs of active bookings that overlap on one agent: the number this whole run
+   * exists to produce after #2274, reported on EVERY run rather than only when it
+   * is not zero.
+   *
+   * Every pair, not only adjacent ones after a sort: three mutually overlapping
+   * bookings are three pairs, and a number printed as a measurement has to be the
+   * number (L63).
+   */
+  overlappingPairs: number;
+  /**
+   * Pairs sharing an exact start on one agent, which is the narrower thing
+   * `bookings_active_slot_uniq` protects. Reported beside the overlap count
+   * because the gap between them is the whole of #2274: appointments are longer
+   * than the grid they are offered on, so adjacent offered times overlap and
+   * uniqueness cannot see them.
+   */
+  sameSlotPairs: number;
+}
+
+/**
+ * Every overlapping pair, and every same slot pair, per agent (#2323).
+ *
+ * Exported so the judge's finding and the report's measured line are ONE
+ * computation: a count printed beside a finding that was computed differently is
+ * two answers to one question (L41).
+ */
+export function overlapCounts(bookings: readonly JudgedBooking[]): {
+  activeBookings: number;
+  overlappingPairs: number;
+  sameSlotPairs: number;
+  /** The clashing pairs, for the finding to name. */
+  clashes: string[];
+} {
+  const byAgent = new Map<string, JudgedBooking[]>();
+  let activeBookings = 0;
+  for (const b of bookings) {
+    if (!ACTIVE.has(b.status) || !b.assigned_user_id) continue;
+    activeBookings += 1;
+    const list = byAgent.get(b.assigned_user_id) ?? [];
+    list.push(b);
+    byAgent.set(b.assigned_user_id, list);
+  }
+  const clashes: string[] = [];
+  let sameSlotPairs = 0;
+  for (const [agent, list] of byAgent) {
+    // Every pair, compared directly. Sorting and checking neighbours detects an
+    // overlap correctly and UNDERCOUNTS it, and the sort would also be ordered by
+    // a raw `Date.parse` that is NaN for an unreadable bound.
+    for (let i = 0; i < list.length; i++) {
+      for (let j = i + 1; j < list.length; j++) {
+        if (!overlaps(list[i]!, list[j]!)) continue;
+        clashes.push(`${agent}: ${list[i]!.id} and ${list[j]!.id}`);
+        if (list[i]!.starts_at === list[j]!.starts_at) sameSlotPairs += 1;
+      }
+    }
+  }
+  return { activeBookings, overlappingPairs: clashes.length, sameSlotPairs, clashes };
 }
 
 export function measure(input: JudgeInput): RunMeasurements {
@@ -350,6 +416,11 @@ export function measure(input: JudgeInput): RunMeasurements {
     writeRefusals: attempts.filter((a) => a.status === 429).length,
     refusalsByIp,
     freshnessMaxSec: Math.max(0, ...input.freshnessSamples.map((s) => s.maxAgeSec)),
+    ...(({ activeBookings, overlappingPairs, sameSlotPairs }) => ({
+      activeBookings,
+      overlappingPairs,
+      sameSlotPairs,
+    }))(overlapCounts(input.bookings)),
   };
 }
 
@@ -457,22 +528,9 @@ export function judgeBookingRun(input: JudgeInput): JudgeResult {
         "proves nothing about the case this run exists to find",
     );
   }
-  const byAgent = new Map<string, JudgedBooking[]>();
-  for (const b of input.bookings) {
-    if (!ACTIVE.has(b.status) || !b.assigned_user_id) continue;
-    const list = byAgent.get(b.assigned_user_id) ?? [];
-    list.push(b);
-    byAgent.set(b.assigned_user_id, list);
-  }
-  const clashes: string[] = [];
-  for (const [agent, list] of byAgent) {
-    const sorted = [...list].sort((a, b) => Date.parse(a.starts_at) - Date.parse(b.starts_at));
-    for (let i = 1; i < sorted.length; i++) {
-      if (overlaps(sorted[i - 1]!, sorted[i]!)) {
-        clashes.push(`${agent}: ${sorted[i - 1]!.id} and ${sorted[i]!.id}`);
-      }
-    }
-  }
+  // The SAME computation the measured section prints, so the finding and the
+  // reported count can never be two answers to one question (L41).
+  const { clashes } = overlapCounts(input.bookings);
   if (clashes.length > 0) {
     fail(
       "double bookings",
