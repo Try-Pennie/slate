@@ -23,6 +23,16 @@
  * production confirm pays nothing rather than paying a little and discarding it.
  */
 
+/**
+ * When THIS isolate evaluated this module (#2340).
+ *
+ * Read once, at module scope, which is the only place the value exists: nothing
+ * inside a request can ask how long the isolate spent starting up, and the whole
+ * of that cost is charged to the first request the isolate serves. One clock read
+ * per isolate, so a production confirm pays nothing for it.
+ */
+export const ISOLATE_READY_AT_MS = Date.now();
+
 /** One named stage of a confirm, and what it cost. */
 export interface ConfirmStage {
   stage: string;
@@ -39,6 +49,22 @@ export interface ConfirmStage {
 export interface ConfirmProfileReading {
   /** Wall time from the profile being created to it being read. */
   totalMs: number;
+  /**
+   * How long before this confirm started that THIS isolate evaluated the confirm
+   * module (#2340).
+   *
+   * Small means the module was evaluated moments earlier, inside this very
+   * request, which is an isolate serving its first one and paying for the server
+   * bundle's evaluation. Large means a warm isolate. Measured at CONSTRUCTION, not
+   * at read: by read time the confirm's own seconds have passed, and a warm
+   * isolate's age would then be indistinguishable from a cold one plus a slow
+   * confirm.
+   *
+   * It exists because the evidence that the expensive confirms were cold starts
+   * was the BIMODALITY of the time before the profile, which is an inference from
+   * a distribution rather than a reading of the thing itself (L203).
+   */
+  isolateAgeMs: number;
   /** The named stages, dearest first, so a reader meets the expensive one first. */
   stages: ConfirmStage[];
   /**
@@ -65,6 +91,12 @@ export interface ConfirmProfile {
 export function makeConfirmProfile(opts: {
   enabled: boolean;
   now: () => number;
+  /**
+   * When this isolate evaluated this module. `ISOLATE_READY_AT_MS` in production;
+   * passed in rather than read from module scope here so a test can drive it, and
+   * so the disabled path can be proved never to read a clock at all.
+   */
+  isolateReadyAtMs?: number;
 }): ConfirmProfile {
   if (!opts.enabled) {
     return {
@@ -79,6 +111,9 @@ export function makeConfirmProfile(opts: {
   }
 
   const startedAt = opts.now();
+  // Never negative. Nothing should make the module look younger than the request,
+  // and nonsense printed beside real numbers is what a reader has to decode.
+  const isolateAgeMs = Math.max(0, startedAt - (opts.isolateReadyAtMs ?? startedAt));
   const byStage = new Map<string, ConfirmStage>();
 
   return {
@@ -104,6 +139,7 @@ export function makeConfirmProfile(opts: {
       const named = stages.reduce((n, s) => n + s.ms, 0);
       return {
         totalMs,
+        isolateAgeMs,
         stages,
         // Never negative. Workers clocks do not advance inside a synchronous span,
         // so stages can legitimately read as instant, and a negative number printed

@@ -19,6 +19,7 @@ import {
   type PlatformReading,
 } from "./judge-booking-run.ts";
 import { ceilingVerdict, exactAddressBound, type CeilingVerdict } from "./preflight-checks.ts";
+import { readConfirmStartup, type ConfirmStartupReading } from "./confirm-startup.ts";
 import { DIRECT_BOOKING_API_IP_HOURLY_RATE_RULES } from "../../src/lib/rate-limit-core.ts";
 import { burstControlStrength, type BurstDepthReading } from "./burst-target.ts";
 import { REQUEST_CPU_P99_MS } from "./judge-booking-run.ts";
@@ -305,6 +306,24 @@ try {
   console.error("note: no freshness samples were found, which the judge reports as incomplete");
 }
 
+/**
+ * The confirm path's own time, split from the isolate's startup (#2340).
+ *
+ * Read from the archived `wrangler tail` stream, which is the only place both
+ * halves exist: the invocation's own start and the confirm profile's total. The
+ * platform's CPU percentile counts them as one number.
+ *
+ * A file that is not there is NULL, not an empty reading, and the judge fails the
+ * bar on a null rather than passing it: a run that could not read its own archive
+ * proved nothing about what a lead waits for (L98).
+ */
+let confirmStartup: ConfirmStartupReading | null = null;
+try {
+  confirmStartup = readConfirmStartup(readFileSync(join(RESULTS, "tail.jsonl"), "utf8"));
+} catch {
+  console.error("note: no archived Worker log was found, so the confirm startup split is unread");
+}
+
 // A MISSING artifact is judged by the same function as a present one, from an
 // empty status list, so "the step never ran" gets its own conclusion rather than
 // being hand assembled here into something that looks like a reading (L98).
@@ -407,6 +426,7 @@ const input: JudgeInput = {
   slotUniqueIndexPresent,
   overlapConstraintPresent,
   ipCeilingControl: ipControl,
+  confirmStartup,
   platform: await platformReading(
     new Date(startedAt).toISOString(),
     new Date(finishedAt + 60_000).toISOString(),
@@ -490,6 +510,29 @@ if (m) {
       `(same slot pairs: ${m.sameSlotPairs})`,
   );
   lines.push(`- worst recompute age: ${m.freshnessMaxSec}s`);
+  // The two halves of a confirm's wall time, reported APART (#2340). The platform
+  // CPU percentile below counts them as one number, and the run that failed on it
+  // was failing on the half the confirm does not control.
+  lines.push(
+    m.confirmSamples === null
+      ? "- confirm wall time: the archived log carried no confirm profile, so the confirm's own " +
+          "time and the isolate's startup were not told apart"
+      : `- confirm wall time over ${m.confirmSamples} confirms (${m.confirmCold} of them the ` +
+          `first on their isolate): inside the confirm p50 ${m.confirmHandler?.p50 ?? "n/a"}ms, ` +
+          `p95 ${m.confirmHandler?.p95 ?? "n/a"}ms; before it started, cold p95 ` +
+          `${m.confirmColdStartup?.p95 ?? "n/a"}ms (max ${m.confirmColdStartup?.max ?? "n/a"}ms), ` +
+          `warm p95 ${m.confirmWarmStartup?.p95 ?? "n/a"}ms` +
+          // What the archive itself lost, so a thin sample is never read as a
+          // quiet run. The stream is written under a timeout, so its last line is
+          // routinely half written.
+          (confirmStartup && confirmStartup.unreadable + confirmStartup.unparsable > 0
+            ? ` (${confirmStartup.unreadable} profiles unreadable, ` +
+              `${confirmStartup.unparsable} lines not readable JSON)`
+            : "") +
+          (confirmStartup && confirmStartup.impossible > 0
+            ? `; ${confirmStartup.impossible} readings could not be right and were floored at zero`
+            : ""),
+  );
   // The strength of the burst control, stated rather than assumed (#2278). A run
   // with no burst leg says nothing here, because there was no control to describe.
   const burstDepth = burstDepthReading();

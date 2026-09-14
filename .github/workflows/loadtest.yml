@@ -447,10 +447,14 @@ jobs:
       # the judge with it, so the run that most needed a verdict got none and said
       # only "No such file or directory" (L98). The judge's own job is to say the
       # run was incomplete; it cannot do that if a shell step kills it first.
+      # `.jsonl` as well as `.json` (#2340): the archived Worker log is
+      # `tail.jsonl`, and the judge reads it to tell a confirm's own time apart
+      # from the isolate starting up. It was excluded by the glob, so the judge had
+      # never once seen the artifact the run was already archiving.
       - name: Gather every driver's file into one directory
         run: |
           mkdir -p results downloaded
-          find downloaded -name '*.json' -exec cp {} results/ \;
+          find downloaded \( -name '*.json' -o -name '*.jsonl' \) -exec cp {} results/ \;
           echo "the evidence this run produced:"
           ls -la results/
       - name: Judge

@@ -633,7 +633,8 @@ happened to arrive.
 | the burst | one winner **per agent** (#2273), every other answer `SLOT_TAKEN`, and each winner really exists. A leg that was configured and produced fewer driver files than fired is **incomplete**, never a skipped bar. The report states the measured depth the control ran at, since one deep and three deep prove different amounts (#2278) |
 | freshness | the worst oldest-bucket age across the window under 6 minutes |
 | the per address ceiling | its own step, run AFTER the steady pass so it has the API key's budget to itself, sends from one address until the deployment CREDITS a refusal to the per address ceiling, up to past the exact 1,200 an hour cap. It reads back both echoes: the address it was keyed on (unidentified, several, or unechoed each get their own conclusion) and WHICH ceiling refused, so a per key refusal is never counted as proof of the per address one (#2339) |
-| platform | CPU p99 under the REQUEST budget (`REQUEST_CPU_P99_MS`, half the latency bar, and applied only to a window with no cron in it), the cron half under `limits.cpu_ms`, and **no invocation outcome other than `ok`**. It used to borrow the 200ms LANE budget, which is a different question about a scheduled tick (#2321) |
+| confirm startup | what a lead waits BEFORE the confirm begins, read from the run's own archived log and judged only on the confirms that were the FIRST on their isolate, under `REQUEST_STARTUP_P95_MS` (what is left of the latency bar once the confirm's own CPU share is taken out). Three ways it FAILS without a slow start: no archive at all, an archive holding nothing readable (the stream is written under a `wrangler tail` timeout, so its last line is routinely half written), and a reading in which nothing was ever the first on its isolate. Each has its own sentence, because nothing to check is never a pass (#2340, L98) |
+| platform | CPU p99 under the REQUEST budget (`REQUEST_CPU_P99_MS`, half the latency bar, and applied only to a window with no cron in it), the cron half under `limits.cpu_ms`, and **no invocation outcome other than `ok`**. It used to borrow the 200ms LANE budget, which is a different question about a scheduled tick (#2321). The finding NAMES the startup split beside it, because this percentile counts the isolate's own startup as the confirm's compute (#2340) |
 | the fault pass | at `SLATE_LOADTEST_FAULT_PCT=10`, zero 5xx, and a pass that made no requests fails rather than passing on an empty sample. A pass whose deployment reported a DIFFERENT percentage is incomplete, and zero is the case that matters: it passes the bar having injected nothing |
 
 **Subrequests are deliberately not a bar**, and that is a decision rather than an
@@ -722,6 +723,65 @@ same window, since neither confirm has the other's busy row yet.
 **This is what the run was built to find.** It needs no unusual traffic, only two
 leads picking adjacent times in the same moment, and no suite had ever confirmed
 two bookings concurrently.
+
+### The CPU bar was measuring the isolate, not the confirm (#2340)
+
+Run 34889873261 judged the request path at a CPU p99 of 2,988ms against the
+2,500ms request budget. The 32 confirms over two seconds of CPU were doing no more
+confirm work than the 409 under half a second: their stage profiles are the same
+shape, stage for stage. What differs is the **three to four and a half seconds
+before the profile starts**, which is the Next.js server bundle being evaluated on
+a fresh isolate and charged in full to whichever request that isolate serves
+first.
+
+So the bar could not pass whatever the confirm did. A ten minute run at sixty a
+minute spins up a few dozen isolates, and a p99 over six to eight hundred requests
+is exactly the top few percent, which is where those requests sit.
+
+The platform's own percentile cannot separate them: it is one number per
+invocation with nothing in it saying whether that invocation also paid for the
+isolate. So the split is read from the run's OWN archived log
+(`scripts/loadtest/confirm-startup.ts`), which carries both halves: the
+invocation's start, and the confirm profile's total logged when the confirm
+finished. What is left over is everything before the profile began.
+
+**Cold and warm are told apart by a measurement, not by a threshold.** The confirm
+profile carries how long before it started that the isolate evaluated Slate's
+confirm module, so the isolate became ready inside this request exactly when that
+age is no greater than the time since the invocation began. Reading it off the
+bimodality of a histogram would be an inference from a distribution rather than a
+reading of the thing itself (L203).
+
+The judge's gather step used to copy only `*.json`, and the archive is
+`tail.jsonl`, so the judge had never once seen an artifact the run was already
+producing.
+
+**What a lead actually met**: invocation wall 4.9 to 7.1 seconds on those 32,
+against a 1.3 to 2.6 second handler. The run's latency p95 passed at 3.1s and its
+max was 5.5s, so this is the whole of that tail.
+
+#### What the first request evaluates, measured
+
+The deployed script is **one 17.8 MB `index.js`**, and the isolate parses and
+evaluates it before serving anything. Almost all of it is the Next.js server
+runtime, which app code cannot defer: that is the biggest lever here and it is
+deliberately not pulled (L308).
+
+One thing in it was Slate's to remove. `src/app/apple-icon.tsx` generated a
+**static** 180 by 180 touch icon at runtime through `next/og`, which put
+`resvg.wasm` (1.38 MB), `yoga.wasm` (72 KB) and a 126 KB font into the bundle as
+**top level imports**, so every isolate compiled them at startup for an image that
+never changes. It is a committed PNG now. Measured on the same build inputs, before
+and after:
+
+| | index.js | wasm and font | total the isolate loads |
+|---|---|---|---|
+| before | 17,847,818 | 1,576,049 | 19,423,867 |
+| after | 16,966,408 | none | 16,966,408 |
+
+That is **2.46 MB, about 12.6 percent**, off what every isolate loads, and the
+WebAssembly compilation gone entirely. It is a measurement of the BUNDLE and not of
+the startup: whether it moves the bar is for the next run's own reading to say.
 
 ### The bar that took three passes to be able to conclude (#2275, #2339)
 

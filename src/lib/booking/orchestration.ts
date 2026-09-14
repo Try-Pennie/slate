@@ -61,7 +61,11 @@ import { validateAttendee } from "../attendee.ts";
 import { formatPhoneAsTyped } from "../phone-format.ts";
 import { shortErrorReason } from "../notify/error-text.ts";
 import { log } from "@/lib/log";
-import { makeConfirmProfile, confirmProfileLine } from "@/lib/booking/confirm-profile";
+import {
+  makeConfirmProfile,
+  confirmProfileLine,
+  ISOLATE_READY_AT_MS,
+} from "@/lib/booking/confirm-profile";
 import { isLoadtest } from "@/lib/loadtest-guard";
 import { sendThrottledAlert } from "../notify/dispatch.ts";
 import type { BookingEventPayload, BookingReasonMeta } from "@/lib/webhooks/types";
@@ -1927,7 +1931,11 @@ export async function createBooking(
    * With the flag unset it never reads the clock at all, so a production confirm
    * pays nothing rather than paying a little and discarding it.
    */
-  const profile = makeConfirmProfile({ enabled: isLoadtest(), now: () => Date.now() });
+  const profile = makeConfirmProfile({
+    enabled: isLoadtest(),
+    now: () => Date.now(),
+    isolateReadyAtMs: ISOLATE_READY_AT_MS,
+  });
 
   // A STABLE key (caller-supplied, or derived from the lead's contact identity)
   // is what lets a re-submit collapse onto the same booking. Anonymous bookings
@@ -2148,6 +2156,12 @@ export async function createBooking(
       msg: "where the confirm spent its wall time",
       booking_id: result.booking.id,
       bucket: input.bucketCode,
+      // The two numbers the judge reads, as FIELDS rather than only inside the
+      // sentence (#2340). The sentence is for a person; a judge parsing prose
+      // breaks on the first wording change, and the wording is the half most
+      // likely to be edited.
+      total_ms: reading.totalMs,
+      isolate_age_ms: reading.isolateAgeMs,
       detail: confirmProfileLine(reading),
     });
   }

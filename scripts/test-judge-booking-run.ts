@@ -19,7 +19,7 @@ import {
   type JudgedBooking,
 } from "./loadtest/judge-booking-run.ts";
 import type { BookingAttempt, DriverResult } from "./loadtest/book-plan.ts";
-import { REQUEST_CPU_P99_MS } from "./loadtest/judge-booking-run.ts";
+import { REQUEST_CPU_P99_MS, REQUEST_STARTUP_P95_MS } from "./loadtest/judge-booking-run.ts";
 import {
   ceilingVerdict,
   exactAddressBound,
@@ -27,6 +27,39 @@ import {
   type CeilingAttempt,
 } from "./loadtest/preflight-checks.ts";
 import { DIRECT_BOOKING_API_IP_HOURLY_RATE_RULES } from "../src/lib/rate-limit-core.ts";
+import { readConfirmStartup } from "./loadtest/confirm-startup.ts";
+import { formatLine } from "../src/lib/log.ts";
+
+/**
+ * A confirm startup reading built by the REAL reader from REAL shaped tail lines,
+ * so no fixture here can describe a state the reader cannot produce (L48).
+ *
+ * `cold` is the wall time before the confirm began on an isolate that became ready
+ * inside that request, and `warm` the same on one that did not. The reader decides
+ * which is which from the isolate's age; these just supply ages that make it so.
+ */
+function startupReading(rows: { handlerMs: number; beforeMs: number; cold: boolean }[]) {
+  const lines = rows.map((r) =>
+    JSON.stringify({
+      outcome: "ok",
+      eventTimestamp: 0,
+      logs: [
+        {
+          level: "info",
+          timestamp: r.beforeMs + r.handlerMs,
+          message: [
+            formatLine("confirm-profile", {
+              msg: "where the confirm spent its wall time",
+              total_ms: r.handlerMs,
+              isolate_age_ms: r.cold ? Math.max(0, r.beforeMs - 1) : r.beforeMs + 1,
+            }),
+          ],
+        },
+      ],
+    }),
+  );
+  return readConfirmStartup(lines.join("\n"));
+}
 
 /** The app's own exact per address bound, so these fixtures cannot describe a
  *  state the control can never produce (L48). */
@@ -142,6 +175,12 @@ function passing(): JudgeInput {
       60,
       CEILING_EXACT_BOUND,
     ),
+    // A healthy split: warm confirms carrying the framework's own overhead, and
+    // cold ones inside what is left of the latency bar.
+    confirmStartup: startupReading([
+      ...Array.from({ length: 40 }, () => ({ handlerMs: 900, beforeMs: 500, cold: false })),
+      ...Array.from({ length: 3 }, () => ({ handlerMs: 900, beforeMs: 1_200, cold: true })),
+    ]),
     platform: {
       invocations: 610,
       cpuMsP99: 40,
@@ -429,6 +468,139 @@ const bars = (r: ReturnType<typeof judgeBookingRun>) => r.findings.map((f) => f.
   assert(
     bars(stale).includes("recompute freshness under load"),
     "ONE sample over the bar is enough: the run reports the worst age it measured, not the average",
+  );
+}
+
+// --- a lead on a cold isolate, judged apart from the confirm itself (#2340) ----------
+//
+// The bar the platform's CPU percentile could not express. That percentile is one
+// number per invocation with nothing in it saying whether the invocation also paid
+// for the isolate, so run 34889873261 failed it at 2,988ms over 1,364 invocations
+// while the expensive confirms were doing no more confirm work than the cheap ones.
+{
+  const healthy = judgeBookingRun(passing());
+  assert(
+    !bars(healthy).includes("confirm startup"),
+    "warm overhead and a cold start inside what is left of the latency bar is a pass",
+  );
+  eq(healthy.measurements!.confirmSamples, 43, "and the two halves are reported, over a denominator");
+  eq(healthy.measurements!.confirmCold, 3, "with how many of them were the isolate's first");
+  eq(healthy.measurements!.confirmHandler!.p95, 900, "the confirm's own time");
+  eq(healthy.measurements!.confirmColdStartup!.p95, 1_200, "and the startup, kept apart from it");
+
+  const slow = broken((i) => {
+    i.confirmStartup = startupReading([
+      ...Array.from({ length: 40 }, () => ({ handlerMs: 900, beforeMs: 500, cold: false })),
+      ...Array.from({ length: 3 }, () => ({ handlerMs: 900, beforeMs: 4_000, cold: true })),
+    ]);
+  });
+  assert(
+    bars(slow).includes("confirm startup"),
+    `a cold start over the ${REQUEST_STARTUP_P95_MS}ms left of the latency bar is a finding`,
+  );
+  const slowDetail = slow.findings.find((f) => f.bar === "confirm startup")!.detail;
+  assert(/cold isolate/.test(slowDetail), "and the detail says what a lead actually met");
+  assert(
+    /warm/.test(slowDetail),
+    "beside the warm number, because the gap between the two is the whole reading",
+  );
+
+  // The other direction, and the one that matters: a confirm that is itself slow
+  // must NOT be reported as a startup problem. Same total wall time, other half.
+  const fatConfirm = broken((i) => {
+    // Cold starts still present and healthy, so only the confirm's own cost moved.
+    i.confirmStartup = startupReading([
+      ...Array.from({ length: 40 }, () => ({ handlerMs: 4_000, beforeMs: 500, cold: false })),
+      ...Array.from({ length: 3 }, () => ({ handlerMs: 4_000, beforeMs: 1_200, cold: true })),
+    ]);
+  });
+  assert(
+    !bars(fatConfirm).includes("confirm startup"),
+    "an expensive confirm on a warm isolate is not a startup finding, which is the whole " +
+      "point of splitting them",
+  );
+  eq(fatConfirm.measurements!.confirmHandler!.p95, 4_000, "and its own cost is still reported");
+}
+
+// --- a split nobody could read is never a pass (L98) ---------------------------------
+{
+  const unread = broken((i) => {
+    i.confirmStartup = null;
+  });
+  assert(
+    bars(unread).includes("confirm startup"),
+    "an archive carrying no confirm profile fails its bar rather than passing it, exactly as a " +
+      "ceiling control that never ran does",
+  );
+  const detail = unread.findings.find((f) => f.bar === "confirm startup")!.detail;
+  assert(
+    /archive|tail\.jsonl/.test(detail),
+    "and the detail names the artifact, because that is what a reader has to fix",
+  );
+  assert(
+    !/cold isolate waited/.test(detail),
+    "and it does not borrow the other message's words for a number it never measured (L11)",
+  );
+  eq(unread.measurements!.confirmSamples, null, "the measurement is null, never a zero");
+  eq(unread.measurements!.confirmHandler, null, "and so is every percentile over it");
+}
+
+// --- an archive that arrived and said nothing is not a pass either (L98) --------------
+{
+  // Distinct from a missing file, and distinct from a slow start: three states, one
+  // bar, three sentences, because they send a reader to three different places (L11).
+  const empty = broken((i) => {
+    // A truncated stream: the archive is written under a `wrangler tail` timeout, so
+    // its last line is routinely half written.
+    i.confirmStartup = readConfirmStartup('{"eventTimestamp": 0, "logs": [{"mess');
+  });
+  assert(
+    bars(empty).includes("confirm startup"),
+    "an archive holding no readable confirm profile fails its bar",
+  );
+  const emptyDetail = empty.findings.find((f) => f.bar === "confirm startup")!.detail;
+  assert(/not readable JSON/.test(emptyDetail), "and says what it actually met");
+
+  const noCold = broken((i) => {
+    i.confirmStartup = startupReading(
+      Array.from({ length: 40 }, () => ({ handlerMs: 900, beforeMs: 500, cold: false })),
+    );
+  });
+  assert(
+    bars(noCold).includes("confirm startup"),
+    "and so does a reading in which nothing was ever the first on its isolate, since that is " +
+      "the shape of a reading that broke rather than of a lucky run",
+  );
+  const three = new Set(
+    [empty, noCold, broken((i) => { i.confirmStartup = null; })].map(
+      (r) => r.findings.find((f) => f.bar === "confirm startup")!.detail,
+    ),
+  );
+  eq(three.size, 3, "and no two of the three share a sentence");
+}
+
+// --- the CPU finding says which half moved -------------------------------------------
+{
+  // The reading that would otherwise send somebody to optimise the confirm while
+  // the seconds are being spent before it starts.
+  const cpu = broken((i) => {
+    i.platform = { ...i.platform, cpuMsP99: 2_988 };
+  });
+  const cpuDetail = cpu.findings.find((f) => f.bar === "Worker CPU on the request path")!.detail;
+  assert(/first on their isolate/.test(cpuDetail), "the CPU finding names how many were cold starts");
+  assert(/inside it/.test(cpuDetail), "and the confirm's own share beside it");
+
+  const blind = broken((i) => {
+    i.platform = { ...i.platform, cpuMsP99: 2_988 };
+    i.confirmStartup = null;
+  });
+  const blindDetail = blind.findings.find(
+    (f) => f.bar === "Worker CPU on the request path",
+  )!.detail;
+  assert(
+    /could not be read/.test(blindDetail),
+    "and where the split is unavailable it SAYS so rather than quietly claiming the whole " +
+      "number is the confirm's",
   );
 }
 

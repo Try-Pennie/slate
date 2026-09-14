@@ -149,3 +149,67 @@ describe("makeConfirmProfile", () => {
     expect(reading.totalMs).toBe(0);
   });
 });
+
+// #2340: which of these confirms paid for the isolate starting up.
+//
+// The 2026-09-14 run's expensive confirms did no more confirm work than the cheap
+// ones: the stage profile is the same shape either way, and what differs is the
+// three to four and a half seconds BEFORE the profile starts. The evidence that
+// this is the Next.js server bundle being evaluated on a fresh isolate was the
+// bimodality of that number, which is an inference from a distribution rather than
+// a measurement of the thing itself (L203).
+//
+// So the profile carries how long ago THIS isolate evaluated the confirm module.
+// On an isolate serving its first request that is small, because the module was
+// evaluated moments earlier inside this very request; on a warm one it is however
+// long the isolate has been alive. Cold and warm are then told apart by a reading
+// rather than by the shape of a histogram.
+describe("the isolate's age, carried on the profile", () => {
+  it("reports how long before this confirm the module was evaluated", () => {
+    const clock = fakeClock();
+    const p = makeConfirmProfile({
+      enabled: true,
+      now: clock.now,
+      isolateReadyAtMs: clock.now() - 45_000,
+    });
+    expect(p.read()!.isolateAgeMs).toBe(45_000);
+  });
+
+  it("reads small on an isolate that became ready inside this request", () => {
+    const clock = fakeClock();
+    const p = makeConfirmProfile({
+      enabled: true,
+      now: clock.now,
+      isolateReadyAtMs: clock.now() - 12,
+    });
+    // Measured at CONSTRUCTION, not at read: by the time the profile is read the
+    // confirm's own seconds have passed, and a warm isolate's age would then be
+    // indistinguishable from a cold one plus a slow confirm.
+    clock.advance(4_000);
+    expect(p.read()!.isolateAgeMs).toBe(12);
+  });
+
+  it("never reports a negative age", () => {
+    // Nothing should make the module look younger than the request, but a clock
+    // that disagrees with itself must not print nonsense beside real numbers.
+    const p = makeConfirmProfile({
+      enabled: true,
+      now: () => 1_000,
+      isolateReadyAtMs: 5_000,
+    });
+    expect(p.read()!.isolateAgeMs).toBe(0);
+  });
+
+  it("does not read the clock at all when profiling is off", () => {
+    // The control (L1). Every confirm in production takes this branch, and a
+    // disabled profile reporting an age would be a reading nothing produced.
+    let reads = 0;
+    const p = makeConfirmProfile({
+      enabled: false,
+      now: () => { reads += 1; return 1_000; },
+      isolateReadyAtMs: 0,
+    });
+    expect(p.read()).toBeNull();
+    expect(reads).toBe(0);
+  });
+});
