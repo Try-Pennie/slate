@@ -78,6 +78,17 @@ export const CEILING_CONCLUSION = {
   notAuthorized: "not-authorized",
   /** The application refused every request, so the ceiling never had a chance to. */
   appRefusedEverything: "app-refused-everything",
+  /** The control found no bookable slot to aim at, so it sent nothing. */
+  noSlot: "no-slot",
+  /**
+   * The deployment could not read the caller's address, which the per address
+   * ceiling DECLINES to judge (#1557), so it can never refuse this control.
+   */
+  callerUnidentified: "caller-unidentified",
+  /** The writes were counted against several addresses, so none of them saw the ceiling. */
+  severalAddresses: "several-addresses",
+  /** No response said which address it was keyed on, so the premise is unmeasured. */
+  addressUnmeasured: "address-unmeasured",
   /** Everything was allowed, well past the ceiling. */
   neverRefused: "never-refused",
   /** Refusals began far below the configured ceiling. */
@@ -85,6 +96,31 @@ export const CEILING_CONCLUSION = {
 } as const;
 
 export type CeilingConclusion = (typeof CEILING_CONCLUSION)[keyof typeof CEILING_CONCLUSION];
+
+/**
+ * The address `clientIp` reports for a caller it cannot identify.
+ *
+ * Copied as a literal rather than imported, because this file is reached by the
+ * node suite with no `@/` alias, and the value is a string on the wire anyway: it
+ * arrives here as whatever the deployment stamped on the header, not as the
+ * constant. `scripts/test-loadtest-ceiling-control.ts` pins the spelling.
+ */
+export const CONTROL_UNIDENTIFIED_IP = "unknown";
+
+/** One request the ceiling control made, and what the deployment said about it. */
+export interface CeilingAttempt {
+  /** The HTTP status, or 0 for a request that never reached the deployment. */
+  status: number;
+  /**
+   * The address the deployment says it keyed the ceiling on, read from the
+   * `x-loadtest-seen-ip` echo (#2243), or null when the response carried none.
+   *
+   * REQUIRED, with no default, because the whole control rests on every write
+   * landing on ONE address and nothing measured that (L70). A default would let
+   * the verdict go on assuming the premise it exists to check.
+   */
+  seenIp: string | null;
+}
 
 /** What one per-address ceiling control run proves. */
 export interface CeilingVerdict {
@@ -101,6 +137,12 @@ export interface CeilingVerdict {
   unreachable: number;
   /** 1-based position of the first refusal, or null when nothing was refused. */
   firstRefusedAt: number | null;
+  /** The distinct addresses the deployment reported keying on, sorted. */
+  addresses: string[];
+  /** Attempts the deployment answered without being able to identify the caller. */
+  unidentified: number;
+  /** Attempts whose response carried no address echo at all. */
+  unreported: number;
   conclusion: CeilingConclusion;
   /** The sentence a reader acts on. One per conclusion, never shared (L11). */
   detail: string;
@@ -122,7 +164,11 @@ export interface CeilingVerdict {
  *   any other status  it passed both limiters and reached the handler, so it WAS
  *        counted, whatever the handler then did with it
  */
-export function ceilingVerdict(statuses: readonly number[], ceiling: number): CeilingVerdict {
+export function ceilingVerdict(
+  attempts: readonly CeilingAttempt[],
+  ceiling: number,
+): CeilingVerdict {
+  const statuses = attempts.map((a) => a.status);
   const sent = statuses.length;
   const at = statuses.findIndex((s) => s === 429);
   const refused = statuses.filter((s) => s === 429).length;
@@ -131,6 +177,14 @@ export function ceilingVerdict(statuses: readonly number[], ceiling: number): Ce
   const counted = statuses.filter((s) => s !== 0 && s !== 401 && s !== 429);
   const allowed = counted.filter((s) => s >= 200 && s < 300).length;
   const appRefused = counted.length - allowed;
+  // Only attempts that REACHED the deployment can say anything about the address:
+  // one that never arrived carries no echo for a reason that is already reported.
+  const echoes = attempts.filter((a) => a.status !== 0).map((a) => a.seenIp);
+  const unidentified = echoes.filter((ip) => ip === CONTROL_UNIDENTIFIED_IP).length;
+  const unreported = echoes.filter((ip) => ip === null).length;
+  const addresses = [
+    ...new Set(echoes.filter((ip): ip is string => ip !== null && ip !== CONTROL_UNIDENTIFIED_IP)),
+  ].sort();
   const base = {
     sent,
     allowed,
@@ -139,6 +193,9 @@ export function ceilingVerdict(statuses: readonly number[], ceiling: number): Ce
     unauthorized,
     unreachable,
     firstRefusedAt: at === -1 ? null : at + 1,
+    addresses,
+    unidentified,
+    unreported,
   };
 
   if (sent === 0) {
@@ -178,14 +235,50 @@ export function ceilingVerdict(statuses: readonly number[], ceiling: number): Ce
         "Fix the control's request shape; this says nothing about the ceiling",
     };
   }
+  // The three ways the control's own premise, that every write lands on ONE
+  // address, can be false or unmeasured. Each is asked only where it can explain
+  // an ABSENCE of refusals: a refusal that happened anyway is still a refusal,
+  // and several addresses only ever RAISE the headroom. Every one of them used to
+  // render as "the ceiling is not applying", which is the finding that sent
+  // somebody to look at a ceiling that was working (L11, L70).
+  if (refused === 0 && unidentified > 0 && addresses.length === 0) {
+    return {
+      ...base,
+      conclusion: CEILING_CONCLUSION.callerUnidentified,
+      detail:
+        `the deployment could not read the caller's address on ${unidentified} of ${sent} control ` +
+        "writes, and the per address ceiling declines to judge a caller it cannot identify, so it " +
+        "was never asked to refuse. Check what is in front of the deployment, not the ceiling",
+    };
+  }
+  if (refused === 0 && addresses.length > 1) {
+    return {
+      ...base,
+      conclusion: CEILING_CONCLUSION.severalAddresses,
+      detail:
+        `the ${sent} control writes were counted against ${addresses.length} different addresses ` +
+        `(${addresses.join(", ")}), so no single one of them reached the ceiling of ${ceiling}. ` +
+        "The runner's egress is a pool; this says nothing about the ceiling either way",
+    };
+  }
+  if (refused === 0 && addresses.length === 0 && unreported > 0) {
+    return {
+      ...base,
+      conclusion: CEILING_CONCLUSION.addressUnmeasured,
+      detail:
+        `none of the ${sent} control writes came back with the address it was keyed on, so whether ` +
+        "they were counted against one address or many is unmeasured. The echo is gated on " +
+        "SLATE_LOADTEST; check it is set on the deployment",
+    };
+  }
   if (refused === 0) {
     return {
       ...base,
       conclusion: CEILING_CONCLUSION.neverRefused,
       detail:
-        `${allowed} of ${sent} control writes from one address were allowed against a ceiling of ` +
-        `${ceiling} and none was refused, so the ceiling is not applying. Every 429 the run ` +
-        "attributed means something else",
+        `${allowed} of ${sent} control writes, all counted against ${addresses.join(", ")}, were ` +
+        `allowed against a ceiling of ${ceiling} and none was refused, so the ceiling is not ` +
+        "applying. Every 429 the run attributed means something else",
     };
   }
   if (base.firstRefusedAt !== null && base.firstRefusedAt < ceiling * CEILING_TIGHTNESS_FLOOR) {
@@ -203,6 +296,69 @@ export function ceilingVerdict(statuses: readonly number[], ceiling: number): Ce
     detail:
       `${allowed} of ${sent} writes from one address were allowed and ${refused} refused against ` +
       `a ceiling of ${ceiling}, so the ceiling is applying`,
+  };
+}
+
+/** One bucket code and the times the deployment is offering for it. */
+export interface CeilingOffer {
+  code: string;
+  slots: readonly string[];
+}
+
+/** The code the control will aim at, with every time it may use. */
+export interface CeilingTarget {
+  code: string;
+  slots: string[];
+}
+
+/**
+ * What the control aims its writes at (#2275, second pass).
+ *
+ * It used to aim at a hardcoded code with a start SEVEN days out, against a four
+ * day booking horizon, so the application refused every request before the
+ * ceiling's answer could be read. Two runs in a row concluded nothing that way.
+ * So the target is a slot the deployment is ACTUALLY offering, read from
+ * `/api/availability`, and a control with nothing to aim at refuses rather than
+ * sending into a guaranteed refusal (L98).
+ *
+ * It keeps EVERY offered slot rather than the first, and the control rotates
+ * through them. The steady pass is booking against the same roster while this
+ * runs, so one slot can be taken mid control and turn every remaining write into
+ * an application refusal, which is the exact state this pass exists to stop
+ * reaching the report again.
+ */
+export function chooseCeilingTarget(offers: readonly CeilingOffer[]): CeilingTarget | null {
+  for (const offer of offers) {
+    if (offer.slots.length > 0) return { code: offer.code, slots: [...offer.slots] };
+  }
+  return null;
+}
+
+/**
+ * The verdict for a control that never found a slot to aim at.
+ *
+ * Its own conclusion rather than `nothingSent`, because the two send a reader to
+ * different places: this one means the deployment is offering nothing for the
+ * codes asked (a seed or a roster problem), and that one means the control step
+ * did not run.
+ */
+export function ceilingNoSlot(ceiling: number, codesAsked: readonly string[]): CeilingVerdict {
+  return {
+    sent: 0,
+    allowed: 0,
+    refused: 0,
+    appRefused: 0,
+    unauthorized: 0,
+    unreachable: 0,
+    firstRefusedAt: null,
+    addresses: [],
+    unidentified: 0,
+    unreported: 0,
+    conclusion: CEILING_CONCLUSION.noSlot,
+    detail:
+      `the deployment offered no bookable time for any of ${codesAsked.join(", ")}, so the control ` +
+      `had nothing to aim its writes at and the ceiling of ${ceiling} was never exercised. ` +
+      "Fix the roster or the seed; this says nothing about the ceiling",
   };
 }
 

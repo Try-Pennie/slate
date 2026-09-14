@@ -260,9 +260,10 @@ jobs:
           node-version: 24
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      # Its own step, and its own address budget: sixty one writes in one window
-      # must see the sixty first refused. Without it, every 429 the run attributes
-      # is a number nobody has shown the ceiling can produce.
+      # Its own step, and its own address budget: three times the ceiling inside
+      # one window, aimed at a time the deployment is offering, must see SOME
+      # refusal. Without it, every 429 the run attributes is a number nobody has
+      # shown the ceiling can produce.
       - name: Prove the per address write ceiling applies
         env:
           SLATE_BASE: ${{ vars.LOADTEST_BASE_URL }}

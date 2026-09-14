@@ -19,7 +19,7 @@ import {
   type JudgedBooking,
 } from "./loadtest/judge-booking-run.ts";
 import type { BookingAttempt, DriverResult } from "./loadtest/book-plan.ts";
-import { ceilingVerdict } from "./loadtest/preflight-checks.ts";
+import { ceilingVerdict, type CeilingAttempt } from "./loadtest/preflight-checks.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
 const RUN = "run-1";
@@ -120,7 +120,10 @@ function passing(): JudgeInput {
     // Built by the REAL verdict function from a plausible status list, so the
     // fixture cannot describe a state the control can never produce (L48).
     ipCeilingControl: ceilingVerdict(
-      [...Array(64).fill(200), ...Array(116).fill(429)] as number[],
+      [
+        ...Array(64).fill({ status: 200, seenIp: "203.0.113.9" }),
+        ...Array(116).fill({ status: 429, seenIp: "203.0.113.9" }),
+      ] as CeilingAttempt[],
       60,
     ),
     platform: {
@@ -417,7 +420,10 @@ const bars = (r: ReturnType<typeof judgeBookingRun>) => r.findings.map((f) => f.
 
 {
   const never = broken((i) => {
-    i.ipCeilingControl = ceilingVerdict(Array(180).fill(200) as number[], 60);
+    i.ipCeilingControl = ceilingVerdict(
+      Array(180).fill({ status: 200, seenIp: "203.0.113.9" }) as CeilingAttempt[],
+      60,
+    );
   });
   assert(
     bars(never).includes("the per address write ceiling"),

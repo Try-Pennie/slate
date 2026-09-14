@@ -21,8 +21,17 @@
 // own finding: the run's pacing is built on that number.
 import { writeFileSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
-import { BOOKING_WRITES_PER_MINUTE } from "./book-plan.ts";
-import { ceilingVerdict, ceilingControlSize, CEILING_CONCLUSION } from "./preflight-checks.ts";
+import { BOOKING_WRITES_PER_MINUTE, offeredSlots } from "./book-plan.ts";
+import {
+  ceilingVerdict,
+  ceilingControlSize,
+  ceilingNoSlot,
+  chooseCeilingTarget,
+  CEILING_CONCLUSION,
+  type CeilingAttempt,
+  type CeilingOffer,
+} from "./preflight-checks.ts";
+import { MEASURED_CODE_MIX } from "./code-mix.ts";
 import { loadtestPhone } from "./book-plan.ts";
 
 const PROD_HOST = "slate.trypennie.app";
@@ -70,15 +79,22 @@ const WAVE = 20;
  *
  * That also answers the product half of the issue: the preview path is NOT
  * unmetered, so there is nothing to decide about making it count.
+ *
+ * What WAS wrong, and what the 2026-09-14 run proved (#2275 reopened): the start
+ * was seven days out against a four day booking horizon and the code was a guess,
+ * so every request was refused by the application before the ceiling's answer
+ * could be read. It aims at a time the deployment is actually offering now, and
+ * rotates through every one of them, because the steady pass is booking against
+ * the same roster while this runs.
  */
-async function attempt(n: number): Promise<number> {
+async function attempt(n: number, code: string, startIso: string): Promise<CeilingAttempt> {
   try {
     const res = await fetch(`${SLATE_BASE}/api/bookings`, {
       method: "POST",
       headers: { Authorization: `Bearer ${API_KEY}`, "content-type": "application/json" },
       body: JSON.stringify({
-        bucketCode: "112",
-        start: new Date(Date.now() + 7 * 86_400_000).toISOString(),
+        bucketCode: code,
+        start: startIso,
         timezone: "America/New_York",
         externalId: `ceiling-control-${n}`,
         dryRun: true,
@@ -92,35 +108,101 @@ async function attempt(n: number): Promise<number> {
         },
       }),
     });
-    return res.status;
+    // The address the DEPLOYMENT says it keyed the ceiling on (#2243), which is
+    // the premise the whole control rests on and which nothing measured until
+    // now. Three things it can say, and each is its own conclusion: one address,
+    // several, or `unknown`, which the ceiling declines to judge at all (#1557).
+    return { status: res.status, seenIp: res.headers.get(SEEN_IP_HEADER) };
   } catch {
     // A transport fault is not a refusal, and counting it as one would report the
     // ceiling working when the run never reached the deployment.
-    return 0;
+    return { status: 0, seenIp: null };
   }
 }
 
-// In waves, inside one window. One simultaneous burst races a counter that has not
-// converged; pacing them out over minutes would straddle two windows and the
-// overshoot would be allowed, which reads exactly like a ceiling that is off.
-const statuses: number[] = [];
-for (let i = 0; i < SEND; i += WAVE) {
-  const wave = Array.from({ length: Math.min(WAVE, SEND - i) }, (_, k) => attempt(i + k));
-  statuses.push(...(await Promise.all(wave)));
+/** The header the deployment echoes the keyed address on, under SLATE_LOADTEST only. */
+const SEEN_IP_HEADER = "x-loadtest-seen-ip";
+
+/**
+ * How many codes the control will ask about before giving up.
+ *
+ * Bounded because `/api/availability` has its own per address ceiling (30 a
+ * minute) and spending it here would refuse the reads this control depends on.
+ * The mix is ordered by measured traffic, so the first few are the largest pools
+ * and the likeliest to be offering something.
+ */
+const CODES_TO_ASK = 5;
+
+/** Read what the deployment is offering for a code, or nothing when it cannot be read. */
+async function offersFor(code: string): Promise<CeilingOffer> {
+  try {
+    const res = await fetch(`${SLATE_BASE}/api/availability?bucket=${encodeURIComponent(code)}`);
+    if (!res.ok) return { code, slots: [] };
+    return { code, slots: offeredSlots(await res.json()) };
+  } catch {
+    // An unreadable availability answer is not a statement about the ceiling. It
+    // leaves this code with nothing to aim at, and the control refuses by name
+    // when every code it asked comes back like this.
+    return { code, slots: [] };
+  }
 }
-// The reading lives in `preflight-checks.ts` and is pinned offline. The judge reads
-// `firstRefusedAt` and fails the run when it is null, because then every 429 the
-// run attributed means something else.
-const verdict = ceilingVerdict(statuses, BOOKING_WRITES_PER_MINUTE);
-const result = { ceiling: BOOKING_WRITES_PER_MINUTE, ...verdict, statuses };
+
+// What to aim at, read from the deployment rather than assumed. Asked one code at
+// a time and stopped at the first that is offering, so a healthy roster costs one
+// availability read out of a budget this control also has to live inside.
+const codesAsked: string[] = [];
+const offers: CeilingOffer[] = [];
+for (const { code } of MEASURED_CODE_MIX.slice(0, CODES_TO_ASK)) {
+  codesAsked.push(code);
+  const offer = await offersFor(code);
+  offers.push(offer);
+  if (offer.slots.length > 0) break;
+}
+const target = chooseCeilingTarget(offers);
+
+let result: ReturnType<typeof ceilingVerdict>;
+if (target === null) {
+  // Sending into a guaranteed application refusal is what made two runs in a row
+  // conclude nothing. Finding nothing to aim at is never a pass (L98).
+  result = ceilingNoSlot(BOOKING_WRITES_PER_MINUTE, codesAsked);
+} else {
+  // In waves, inside one window. One simultaneous burst races a counter that has not
+  // converged; pacing them out over minutes would straddle two windows and the
+  // overshoot would be allowed, which reads exactly like a ceiling that is off.
+  const attempts: CeilingAttempt[] = [];
+  for (let i = 0; i < SEND; i += WAVE) {
+    const wave = Array.from({ length: Math.min(WAVE, SEND - i) }, (_, k) =>
+      // Rotating through the offered times rather than hammering one. A slot the
+      // steady pass books mid control would otherwise turn every remaining write
+      // into an application refusal.
+      attempt(i + k, target.code, target.slots[(i + k) % target.slots.length]!),
+    );
+    attempts.push(...(await Promise.all(wave)));
+  }
+  // The reading lives in `preflight-checks.ts` and is pinned offline. The judge reads
+  // `firstRefusedAt` and fails the run when it is null, because then every 429 the
+  // run attributed means something else.
+  result = ceilingVerdict(attempts, BOOKING_WRITES_PER_MINUTE);
+}
+const out = {
+  ceiling: BOOKING_WRITES_PER_MINUTE,
+  code: target?.code ?? null,
+  codesAsked,
+  ...result,
+};
 
 mkdirSync(dirname(OUT), { recursive: true });
-writeFileSync(OUT, JSON.stringify(result, null, 2), "utf8");
+writeFileSync(OUT, JSON.stringify(out, null, 2), "utf8");
 console.log(result.detail);
 console.log(
-  `sent ${SEND} (ceiling ${BOOKING_WRITES_PER_MINUTE}): ${result.allowed} allowed, ` +
-    `${result.refused} refused by a ceiling, ${result.appRefused} refused by the app, ` +
-    `${result.unauthorized} rejected at auth, ${result.unreachable} never reached the deployment`,
+  `sent ${result.sent} at ${out.code ?? "no code"} (ceiling ${BOOKING_WRITES_PER_MINUTE}): ` +
+    `${result.allowed} allowed, ${result.refused} refused by a ceiling, ` +
+    `${result.appRefused} refused by the app, ${result.unauthorized} rejected at auth, ` +
+    `${result.unreachable} never reached the deployment`,
+);
+console.log(
+  `addresses the deployment keyed on: ${result.addresses.join(", ") || "none identified"} ` +
+    `(${result.unidentified} unidentified, ${result.unreported} not echoed)`,
 );
 // The control's own step does not fail the run: the judge owns that verdict, and a
 // step that failed here would stop the artifact reaching it.

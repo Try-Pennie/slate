@@ -447,7 +447,7 @@ happened to arrive.
 | every 200 left a row | a booking row carrying the request's external id, an idempotency key, and a `busy_blocks` row |
 | the burst | exactly **one** 200 against the one agent pool, every other answer `SLOT_TAKEN`, and the winner really exists. A leg that was configured and produced fewer driver files than fired is **incomplete**, never a skipped bar |
 | freshness | the worst oldest-bucket age across the window under 6 minutes |
-| the per address ceiling | its own step sends 61 writes from one address in one window and requires the 61st refused |
+| the per address ceiling | its own step aims at a time the deployment is OFFERING, sends three times the ceiling from one address inside one window, and requires SOME refusal. It also reads back the address the deployment keyed on: unidentified, several, or unechoed each get their own conclusion, because all three used to render as "the ceiling is not applying" |
 | platform | CPU p99 under the lane budget, and **no invocation outcome other than `ok`** |
 | the fault pass | at `SLATE_LOADTEST_FAULT_PCT=10`, zero 5xx, and a pass that made no requests fails rather than passing on an empty sample. A pass whose deployment reported a DIFFERENT percentage is incomplete, and zero is the case that matters: it passes the bar having injected nothing |
 
@@ -538,12 +538,38 @@ same window, since neither confirm has the other's busy row yet.
 leads picking adjacent times in the same moment, and no suite had ever confirmed
 two bookings concurrently.
 
-### The bar that cannot pass yet
+### The bar that took two passes to be able to conclude (#2275)
 
-The per address ceiling control sends its 61 writes as **dry runs**, and the
-booking route returns from the dry run branch above the write limiter, so none of
-them can be refused (#2275). Its finding accuses the ceiling, which the same run
-shows working four times over. Read that bar as unasked until #2275 lands.
+Read this before reading a ceiling finding, because every wrong turn it names was
+taken once.
+
+The DRY RUN is not the problem, though both the issue and the 2026-09-14 run
+record say it is. `authorizeBookingApi` is the first statement of the POST
+handler and both ceilings live inside it, well above the `if (v.dryRun)` branch,
+so a dry run is metered exactly like a real write. The 409s prove it: a request
+the limiter had refused would never have reached the application at all.
+
+Two real defects, fixed in the second pass:
+
+- **The request shape could never be allowed.** It aimed at a hardcoded code with
+  a start SEVEN days out against a four day booking horizon, so the application
+  refused all 180 before the ceiling's answer could be read. It now reads
+  `/api/availability` for the hottest codes in the measured mix, aims at a time
+  the deployment is actually offering, rotates through every offered time (the
+  steady pass is booking against the same roster), and REFUSES by name when no
+  code offers anything, rather than sending into a guaranteed refusal.
+- **It assumed the premise it rests on.** "N writes from ONE address" was never
+  measured, and three different things make it false: an address the deployment
+  cannot read is served UNJUDGED by the per address ceiling (#1557) so it can
+  never refuse, a runner behind an egress NAT pool spreads the writes over
+  several counters, and a deployment echoing nothing leaves the premise
+  unmeasured. Each has its own conclusion now. The `x-loadtest-seen-ip` echo
+  (#2243) already carried the answer and nothing read it.
+
+So a ceiling finding names one of: the ceiling really is not applying, the
+control had nothing to aim at, the app refused everything, the key was rejected,
+the caller could not be identified, several addresses were counted, or the
+address was never echoed. Only the first is about the ceiling.
 
 The platform half is reported `unmeasured` on every run so far: the analytics API
 returns no rows for a window minutes old, which is the lag this repo already

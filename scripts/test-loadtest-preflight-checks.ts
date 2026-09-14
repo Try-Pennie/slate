@@ -9,7 +9,6 @@
 // Run: node --experimental-strip-types scripts/test-loadtest-preflight-checks.ts
 import {
   stubShapedEventId,
-  ceilingVerdict,
   loadtestModeVerdict,
   faultModeVerdict,
   faultPollStep,
@@ -71,32 +70,14 @@ import { assert, eq, finish } from "./lib/harness.ts";
 }
 
 // --- the per address ceiling control ----------------------------------------------
-
-{
-  const ok = ceilingVerdict([...Array(60).fill(200), 429]);
-  eq(ok.firstRefusedAt, 61, "the 61st request refused is the ceiling doing its job");
-  eq(ok.unreachable, 0, "and nothing failed to reach the deployment");
-
-  const never = ceilingVerdict(Array(61).fill(200));
-  eq(never.firstRefusedAt, null, "nothing refused is reported as null, never as a number");
-
-  const early = ceilingVerdict([...Array(19).fill(200), 429, ...Array(41).fill(429)]);
-  eq(early.firstRefusedAt, 20, "an early refusal is reported at the position it happened");
-
-  // A transport fault is UNREACHABLE, never a refusal. Counting it as one would
-  // report the ceiling working when the control never reached the deployment,
-  // which is the whole failure this control exists to rule out (L98).
-  const dead = ceilingVerdict(Array(61).fill(0));
-  eq(dead.firstRefusedAt, null, "a control that never reached the deployment refused nothing");
-  eq(dead.unreachable, 61, "and says how many never arrived");
-
-  const mixed = ceilingVerdict([200, 0, 200, 429]);
-  eq(mixed.firstRefusedAt, 4, "a fault before a refusal does not move the refusal's position");
-  eq(mixed.unreachable, 1, "and is still counted");
-
-  eq(ceilingVerdict([]).firstRefusedAt, null, "no requests refused nothing");
-  eq(ceilingVerdict([]).unreachable, 0, "and none were unreachable");
-}
+//
+// MOVED to `scripts/test-loadtest-ceiling-control.ts`, which is that function's
+// own suite. It lived here as well, in a form predating the ceiling argument and
+// the address echo, so #2275's second pass had two copies of one rule to keep in
+// step (L41). Every assertion that was here survives there: the position of a
+// first refusal, a null position when nothing was refused, an early refusal's
+// position, the unreachable count, a transport fault not moving a later
+// refusal's position, and the empty control.
 
 // --- the deployment says it is in load test mode (#2242) ----------------------
 //
