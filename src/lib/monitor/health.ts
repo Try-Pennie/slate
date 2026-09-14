@@ -186,6 +186,16 @@ export const CANARY_STALE_BOUNDS_MS: Record<string, number> = {
   // within six hours of a run that did not happen. There is no gap filler for this
   // one, so the page IS the recovery path.
   "schedule-parity": 30 * 60 * MIN,
+  // The weekly router replay (#2263), the only measurement of Slate's ROUTING
+  // that exists before cutover. Same family and the same reason: a stopped replay
+  // means a comparison went quiet, never that Slate is down.
+  //
+  // 9 days, not a multiple of the weekly cadence. A week plus two days pages
+  // within a couple of days of a run that did not happen, while leaving room for
+  // one deliberately re-run week; a 3x bound would take three weeks to notice a
+  // schedule that had stopped, by which point the thing it watches has drifted
+  // through every roster change in between.
+  "router-replay": 9 * 24 * 60 * MIN,
 };
 
 /**

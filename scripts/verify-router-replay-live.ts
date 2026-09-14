@@ -50,6 +50,8 @@
 //                     Twilio became Slate's attribute source and so the first day
 //                     both systems were reading one set of facts.
 //   REPLAY_CACHE      the cache file, default under $TMPDIR.
+//   REPLAY_SUMMARY_FILE  where to write the verdict, for the scheduled lane (#2263).
+//                     Unset for a hand run, which reads the terminal instead.
 // env-ok: CALCOM_ORG_ID (optional; defaults to 19474, the live org)
 // env-ok: REPLAY_MAX_FETCH (optional; defaults to 2000 uids a run)
 // env-ok: REPLAY_PACE_MS (optional; defaults to 550ms, derived from cal.com's own
@@ -57,7 +59,10 @@
 // env-ok: REPLAY_SINCE (optional; defaults to 2026-09-10, when the attribute source
 // became shared, and only a deliberate re-measurement would move it)
 // env-ok: REPLAY_CACHE (optional; defaults to a file under $TMPDIR)
+// env-ok: REPLAY_SUMMARY_FILE (optional; the scheduled lane's internal handoff to
+// its alerter, and unset for a hand run)
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { writeReplaySummary } from "./lib/router-replay-report.ts";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { loadEnvFiles, envOr } from "./smoke-env.ts";
@@ -87,6 +92,32 @@ type ReplaySummary = import("./lib/router-replay.ts").ReplaySummary;
 function stop(code: number, why: string): never {
   console.error(`\nFAILED (${code}): ${why}`);
   process.exit(code);
+}
+
+/**
+ * Write the verdict where the scheduled lane's alerter can read it (#2263).
+ *
+ * Only ever called once a verdict EXISTS. An absent file is what tells the lane
+ * this run died before deciding, which is a different thing from any verdict it
+ * could have reached and must not be inferred from an exit code alone (L98, L11).
+ * A hand run sets nothing and this does nothing.
+ *
+ * The writing lives beside the READING in `lib/router-replay-report.ts`, so the
+ * two halves of one cross process contract cannot drift, and so both are testable
+ * with no cal.com and no network.
+ */
+function writeSummary(outcome: string, exit: number, detail: string): void {
+  const res = writeReplaySummary(process.env.REPLAY_SUMMARY_FILE ?? "", {
+    outcome,
+    exit,
+    detail,
+  });
+  // Loud, and NOT fatal: the run has already measured what it measured, and
+  // failing here would turn a reported verdict into a run that looks as though it
+  // never happened.
+  if (!res.written && res.why !== "no summary path was set") {
+    console.error(`note: the summary file could not be written (${res.why})`);
+  }
 }
 
 const key = process.env.CALCOM_API_KEY ?? "";
@@ -497,13 +528,14 @@ report("SECONDARY, the 30 days before that", secondary, secondaryFromMs);
 // disagreement there is expected rather than a defect (L36).
 const verdict = replayOutcome(primary);
 if (verdict.outcome === "agree") {
-  console.log(
-    `\nAGREE: Slate's ladder places ${pct(primary.agreement)} of the ${primary.judged} leads it got to ` +
-      `decide about, against a chance baseline of ${share(primary.baseline)}` +
-      (primary.roster > 0
-        ? `, with ${primary.roster} further leads routed to somebody Slate's roster rules out.`
-        : "."),
-  );
+  const agreed =
+    `AGREE: Slate's ladder places ${pct(primary.agreement)} of the ${primary.judged} leads it got to ` +
+    `decide about, against a chance baseline of ${share(primary.baseline)}` +
+    (primary.roster > 0
+      ? `, with ${primary.roster} further leads routed to somebody Slate's roster rules out.`
+      : ".");
+  console.log(`\n${agreed}`);
+  writeSummary("agree", 0, agreed);
   process.exit(0);
 }
 type ReplayOutcome = import("./lib/router-replay.ts").ReplayOutcome;
@@ -526,4 +558,5 @@ const why: Record<Exclude<ReplayOutcome, "agree">, string> = {
     "The per code rows above say where. Roster differences are excluded from this rate and reported " +
     "separately, so this is Slate routing a lead differently rather than the two rosters disagreeing.",
 };
+writeSummary(verdict.outcome, verdict.exit, why[verdict.outcome]);
 stop(verdict.exit, why[verdict.outcome]);

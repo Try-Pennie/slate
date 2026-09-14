@@ -1147,6 +1147,44 @@ Decision logic is pinned offline by `scripts/test-router-replay.ts`, which drive
 every class, both rates and the whole exit table through hand written fixtures with
 no network and no clock.
 
+## It runs WEEKLY, and the cache is what makes that worth more than one run (#2263)
+
+`.github/workflows/router-replay.yml` runs it every Monday at 13:20 UTC, an hour
+after the parity sweep so the two cal.com consumers never pace against each other
+on one key. Weekly rather than daily because a pass is roughly ten minutes per
+thousand bookings on a key shared with the OOO dual write, and this retires at
+cutover.
+
+**The booking cache is persisted through `actions/cache`, and that is the half
+that makes a schedule mean something.** A capped run reaches at most
+`REPLAY_MAX_FETCH` bookings against roughly 25,000 routed leads, and the cache
+accumulates backwards across runs, so repeated runs are what eventually cover the
+window. A runner's `$TMPDIR` is gone when the job ends, so without it every
+scheduled run would re-read the same newest leads and look identical every week
+while covering no more of the window. The key carries the run id and
+`restore-keys` picks up the newest previous entry; a fixed key would be written
+once and then frozen at whatever the first run happened to read. The cache holds
+host emails, times and status and never the attendee, by the command own design.
+
+**It speaks from the runner**, which is a deliberate difference from
+`schedule-parity`. That one is daily, so a finding that sits needs a cooldown and
+an all clear, and both need a memory a runner has none of. At weekly cadence on
+something that retires at cutover the condition machinery costs more than it buys:
+one message a week at most, and only when there is something to say. Agreement
+says nothing at all, because a weekly all-is-well is how the messages that matter
+stop being read (L36).
+
+**The heartbeat is stamped only on a USABLE verdict.** `agree` and `disagreement`
+stamp `router-replay`; `nothing-judged`, `resolution-too-low` and
+`catchall-too-high` are each a run that LOOKED and could not conclude, so they
+report and leave the heartbeat to go stale against its 9 day bound. A blind
+detector keeping its heartbeat fresh is exactly the state #1394 exists to notice.
+The three states are told apart by the SUMMARY FILE the command writes when it
+decides, so an absent file is evidence that the run died before deciding rather
+than an inference from an exit code (L98). The decision lives in
+`scripts/lib/router-replay-report.ts` and is pinned offline by
+`scripts/test-router-replay-report.ts`.
+
 **This retires at cutover (#65)** with the rest of the family: once Slate routes
 the leads there is no second system to replay them through.
 
