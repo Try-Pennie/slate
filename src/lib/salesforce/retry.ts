@@ -11,6 +11,8 @@
  * loop can be exercised without real network or timers.
  */
 
+import { refuseUnderLoadtest } from "@/lib/loadtest-guard";
+
 /** Total attempts (initial try + retries) for a Salesforce request. */
 export const SF_MAX_ATTEMPTS = 3;
 /** Per-attempt request timeout. */
@@ -57,6 +59,11 @@ export async function fetchSfWithRetry(
   init: RequestInit,
   opts: SfFetchOptions = {},
 ): Promise<Response> {
+  // Every Salesforce request in the app comes through here (#2335). It throws
+  // rather than answering empty: a roster read that returned nothing is
+  // indistinguishable from an empty Salesforce, and the sync would write that
+  // emptiness over the roster the load run just seeded.
+  refuseUnderLoadtest("Salesforce");
   const maxAttempts = opts.maxAttempts ?? SF_MAX_ATTEMPTS;
   const timeoutMs = opts.timeoutMs ?? SF_TIMEOUT_MS;
   const doFetch = opts.fetchImpl ?? fetch;

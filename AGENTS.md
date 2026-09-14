@@ -58,6 +58,38 @@ running cancels it and says so. `scripts/test-prepush-overlap.ts` pins all of
 that, including the `wait` on the build: an `&` with no `wait` would make the gate
 pass while checking nothing.
 
+# `pnpm cf:build` refuses a bundle carrying your `.env` files (#2335)
+
+The Cloudflare adapter reads every `.env*` file in the build tree and writes their
+VALUES into `.open-next/cloudflare/next-env.mjs`, which ships inside the Worker
+bundle; at runtime the wrapper fills in every name the Worker's own bindings did
+not set. So a build run in a checkout holding `.env.local` deploys those
+credentials, to whatever environment it is deployed to. On 2026-09-14 that put
+production's Slack token on the load test Worker and paged the real alerts channel
+for six minutes about a roster that did not exist.
+
+`cf:build` now runs `scripts/check-bundle-env.ts` after the build and fails on any
+name in that file that is not `NEXT_PUBLIC_*`, naming the offenders and the `.env`
+file they came from, never their values. It is wired to the BUILD because wrangler
+has no predeploy hook, so this is the last place one check stands in front of every
+deploy. CI and the pre-push gate build from the committed tree, which holds no
+`.env*` at all, so both are unaffected; **a build in your own checkout is the case
+this fails**, and that is the case it exists for. `ALLOW_ENV_IN_BUNDLE=1` gets one
+local build through and says loudly that the result must not be deployed.
+
+It asks a SECOND question in the same step: whether the CLIENT chunks NAME any
+deployment setting. That is not the same fault (a name is not a credential; what
+leaks is the inventory of what Slate integrates with) and only a real build can
+answer it, since the names are in the source either way and nothing but the build
+says which bundle a module landed in. It exists because the first version of the
+#2335 runtime refusal put the whole list into `publicSupabaseUrl()`, and all
+twenty three names shipped in a public chunk.
+
+The decisions are in `scripts/lib/scan-bundle-env.ts`, driven by fixtures in
+`scripts/test-bundle-env-guard.ts` (which deliberately does not read the real
+`.open-next`: the gate runs the suite alongside the build that writes it, L461).
+The load run's own three layers are in `scripts/loadtest/RUNBOOK.md`.
+
 # Main is guarded by detection, not prevention (free-plan constraint)
 
 Native GitHub branch protection (require a PR, require passing checks before a

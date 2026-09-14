@@ -3,6 +3,7 @@ import { bookingApiKeyPrimary, bookingApiKeySecondary } from "@/lib/env";
 import { parseApiKeys, authenticateBearer } from "@/lib/booking/api-auth";
 import { BUILD_COMMIT } from "@/lib/build-info";
 import { isLoadtest } from "@/lib/loadtest-guard";
+import { productionSecretsPresent } from "@/lib/loadtest-secrets";
 import { LOADTEST_FAULT_PCT } from "@/lib/google/loadtest-stub";
 
 export const dynamic = "force-dynamic";
@@ -45,9 +46,22 @@ export async function GET(req: NextRequest) {
   // the deployment really is faulting: a deployment running zero answers every
   // request perfectly and would satisfy the "no 5xx under fault" bar with no fault
   // ever injected (L98).
+  // `productionSecrets` names which of production's own settings this deployment is
+  // holding (#2335), and it is reported ONLY under load test. That is the whole of
+  // its safety: production holds every one of them by design, so listing them here
+  // would be a configuration leak wearing a safety check's clothes, and the load run
+  // cannot learn it any other way. Names only, never values.
+  //
+  // It is the refusal that arrives first. A build that baked production's .env.local
+  // into its bundle is pointed at the right branch and answering on the right
+  // address, so every other guard is correctly silent; this route is the one that
+  // answers without reading the database, which is why it can still say so once the
+  // rest of the deployment has started refusing itself.
+  const loadtest = isLoadtest();
   return NextResponse.json({
     commit: BUILD_COMMIT,
-    loadtest: isLoadtest(),
+    loadtest,
     faultPct: LOADTEST_FAULT_PCT,
+    ...(loadtest ? { productionSecrets: productionSecretsPresent(process.env) } : {}),
   });
 }

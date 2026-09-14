@@ -22,6 +22,7 @@
 // as the empty string, which `??` does not catch, and that exact defect took the
 // production canary down for eleven minutes (#1495, guarded since by #1498).
 import { twilioApiKeySecret, twilioApiKeySid, twilioWorkspaceSid } from "@/lib/env";
+import { refuseUnderLoadtest } from "@/lib/loadtest-guard";
 
 /** How many pages to walk before giving up. The roster is one page at 200. */
 const MAX_PAGES = 50;
@@ -87,6 +88,10 @@ export async function fetchTwilioWorkers(
   creds: TwilioCredentials = twilioCredentials(),
   fetchImpl: typeof fetch = fetch,
 ): Promise<TwilioWorker[]> {
+  // Before the credentials are even looked at (#2335): under a load test there is no
+  // reading of the real workspace that could be correct, whatever this deployment is
+  // holding.
+  refuseUnderLoadtest("Twilio");
   // Emptiness, not nullishness. See the header.
   if (!creds.sid || !creds.secret || !creds.workspace) {
     throw new TwilioReadError(

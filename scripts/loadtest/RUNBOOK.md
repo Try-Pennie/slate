@@ -365,6 +365,10 @@ guard fails one. `NEXT_PUBLIC_APP_URL` also namespaces the L1 caches
 (`slot-cache.ts` and `eligible-cache.ts` key on `appUrl()`), so the load run's
 cached slots can never be served from the same key space as production's.
 
+**Build in a tree with no `.env` files**, which the next section is about. The
+worktree you build in must not hold a copy of `.env.local`, whatever it was put
+there for; `pnpm cf:build` refuses one now, and the refusal names what it found.
+
 ```
 NEXT_PUBLIC_SUPABASE_URL=https://<branch-ref>.supabase.co \
 NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=<branch publishable key> \
@@ -372,7 +376,7 @@ NEXT_PUBLIC_APP_URL=https://slate-loadtest.<subdomain>.workers.dev \
 pnpm cf:build && npx wrangler deploy --env loadtest
 ```
 
-### Two refusals, and neither answers for the other
+### Three refusals, and no one of them answers for the others
 
 - **the database**, in `publicSupabaseUrl()` (`src/lib/env.ts`): under
   `SLATE_LOADTEST`, a build pointed at the production project ref throws, and so
@@ -387,12 +391,45 @@ pnpm cf:build && npx wrangler deploy --env loadtest
   is what should make that unreachable; this is what happens when somebody deploys
   a load test build over production by hand.
 
+- **the credentials**, in `worker/index.ts` (#2335): under `SLATE_LOADTEST`, a
+  deployment holding any of production's own settings refuses every request with a
+  503 and every cron tick before a lane runs, naming them. This is the one the
+  other two cannot see. A build that baked production's `.env.local` into its
+  bundle is pointed at the right branch and answering on the right address, so
+  both of the refusals above stay correctly silent while it holds a live Slack
+  token. It is in the ENTRY, and each of the three reasons is load bearing: only
+  the entry sees BOTH sources (a value baked into the bundle and one set on the
+  environment by hand, and neither answers for the other), it sees them on the
+  FIRST request (anything reading `process.env` in front of the generated handler
+  is empty until that handler has populated it once), and it is never bundled for
+  the browser. That last one is not a nicety. The first version of this refusal
+  lived in `publicSupabaseUrl()`, and measured against a real build all twenty
+  three names shipped in a public `_next/static` chunk, because `supabaseAdmin`'s
+  module graph is pulled into client chunks; a guard against leaking credentials
+  must not publish the inventory of them. `scripts/check-bundle-env.ts` re-measures
+  that after every build rather than trusting the comment.
+
+  The list is `PRODUCTION_ONLY_SECRETS` in `src/lib/loadtest-secrets.ts`, which is
+  `DEPLOY.md`'s own `wrangler secret put` inventory minus the three this
+  environment holds; `scripts/test-loadtest-secret-inventory.ts` fails the build
+  when a secret is added to the runbook and left unclassified, so a name can never
+  be quietly exempt from the guard written to catch it. `/api/smoke/version` is the
+  ONE path a contaminated deployment still answers, because it is how the run
+  learns what is wrong: it is key authed, reads no data and calls nothing out, and
+  refusing it would leave the preflight reporting a 503 about the one request that
+  could have named the settings instead.
+
 The production project ref is ONE constant (`PRODUCTION_SUPABASE_REF` in
 `src/lib/loadtest-guard.ts`), shared with the seed, the change path seed, the
 preflight and the judge. `/api/smoke/version` reports `loadtest` from the same
 predicate the stubs key on, and the preflight reads it before it writes anything.
+It reports `productionSecrets` from the same place, which is how the preflight
+refuses a contaminated deployment by name rather than through whatever the first
+broken read happens to be. That field exists ONLY under the flag: production holds
+every one of those settings by design, and listing which ones it has on a
+reachable endpoint would be a configuration leak wearing a safety check's clothes.
 
-### Its secrets are its own, and most of them should stay unset
+### Its secrets are its own, and the BUILD can hand it production's (#2335)
 
 Cloudflare secrets are per environment (`wrangler secret put --env loadtest`), so
 a fresh load test deployment starts with NONE of production's. Do not copy them
@@ -400,11 +437,61 @@ across wholesale. It needs `SUPABASE_SECRET_KEY`, `CRON_SECRET` and
 `BOOKING_API_KEY`, and that is the list. **What goes in `SUPABASE_SECRET_KEY` is
 not a secret key**, and the next section is why.
 
-`SLACK_BOT_TOKEN` in particular must stay unset. The lanes that page Slack are
-held back below, but the kept ones still alert (`sync` alerts on calendar failures,
-and the fault pass makes ninety stubbed agents fail on purpose), and the notifier
-no-ops only because `slackBotToken()` is empty. Setting it would page the real
-channel about a synthetic roster for ten minutes.
+**The secrets are not the only way a credential arrives, and the other way has no
+prompt and no record.** `@opennextjs/cloudflare`'s build step reads `.env`,
+`.env.<mode>`, `.env.local` and `.env.<mode>.local` out of the build tree and
+writes their values into `.open-next/cloudflare/next-env.mjs`, which ships INSIDE
+the bundle. At runtime `populateProcessEnv` applies the Worker's own bindings
+first and then fills in every name they did not set (`process.env[key] ??= ...`).
+So a build run in a tree holding a copy of `.env.local` deploys production's
+credentials to whatever environment it is deployed to, and `env.loadtest` sets
+only three bindings, so every other name applies.
+
+That is not hypothetical. On 2026-09-14 the second re-run of #2284 was built in a
+worktree holding such a copy; the Worker came up with production's
+`SLACK_BOT_TOKEN`, `SLACK_ALERTS_CHANNEL`, `GOOGLE_SA_PRIVATE_KEY`,
+`SF_CLIENT_SECRET` and twenty others, and the `sync` lane paged the real alerts
+channel for six minutes about `loadtest-agent-0@loadtest.local`. The run was
+killed and produced no verdict. Until then the rule was a sentence in this file
+saying `SLACK_BOT_TOKEN` must stay unset, which nothing enforced (L27, L407), and
+the notifier no-opped only because the token happened to be empty.
+
+Three guards now, and each is blind where the others look:
+
+- **the build refuses to ship them.** `pnpm cf:build` runs
+  `scripts/check-bundle-env.ts` after the build, which reads
+  `.open-next/cloudflare/next-env.mjs` and fails on any name that is not
+  `NEXT_PUBLIC_*`, naming the offenders and the `.env` file they came from, and
+  never their values. It is on `cf:build` rather than on a deploy step because
+  wrangler has no predeploy hook, so the build is the last place ONE check can
+  stand in front of every deploy: this one, the fault leg's redeploy, CI's and the
+  pre-push gate's. A tree with no `.env` files produces three empty objects and
+  passes, which is what CI and the gate's isolated checkout both do.
+  `ALLOW_ENV_IN_BUNDLE=1` gets a local build through a contaminated tree and says
+  loudly that the result must not be deployed. Never use it for a build you are
+  about to deploy. The same step also scans the CLIENT assets for any of those
+  names, which is a different question: a value baked into the bundle is a
+  credential, a name in a browser chunk is the inventory of what Slate integrates
+  with, and only a real build can say which bundle a module landed in.
+- **the deployment refuses to serve.** The credentials refusal two sections up,
+  in the Worker entry. It catches what the build check cannot: a credential that
+  arrived some other way, a `wrangler secret put` somebody ran by hand, or a
+  bundle built somewhere the check never ran.
+- **the clients refuse to call.** Under `SLATE_LOADTEST` the Slack notifier
+  (`src/lib/notify/slack.ts`), Salesforce (`fetchSfWithRetry`), Twilio
+  (`fetchTwilioWorkers`) and cal.com (`calcomFetch`) refuse by the FLAG rather
+  than by an absent credential, through `refuseUnderLoadtest`
+  (`src/lib/loadtest-guard.ts`). Slack no-ops, because every caller is fire and
+  forget; the other three throw, because a roster read that quietly returned
+  nothing is indistinguishable from an empty Salesforce and the sync would write
+  that emptiness back over the roster the seed just built. Both directions are
+  driven offline by `scripts/test-loadtest-external-refusals.ts`: a client that
+  could not reach anything at all would satisfy a one sided test.
+
+The lanes that page Slack are held back below, but the kept ones still alert
+(`sync` alerts on calendar failures, and the fault pass makes ninety stubbed
+agents fail on purpose), which is why the refusal is in the notifier itself rather
+than in the lane list.
 
 ### A fresh branch has no secret key, so two grants have to be run by hand (#2324)
 

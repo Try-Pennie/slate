@@ -132,3 +132,33 @@ export function loadtestServingProductionHost(args: {
     `deployed a load test build over production. Refused.`
   );
 }
+
+/**
+ * What a client says when it will not call an outside system because this is a
+ * load test. ONE wording, built here, so the four call sites cannot drift (L41).
+ */
+export function loadtestRefusal(system: string): string {
+  return (
+    `This deployment is running as a load test (SLATE_LOADTEST), so the call to ${system} was ` +
+    `refused. The run's roster is synthetic and ${system} is not: whatever it was about to send ` +
+    `or read would be the real thing, about people this run invented.`
+  );
+}
+
+/**
+ * Refuse to call an outside system under load test (#2335).
+ *
+ * Keyed on the FLAG, never on whether a credential happens to be absent, which is
+ * what the load run relied on until 2026-09-14. "No token" and "production's token"
+ * reach an unguarded client from opposite directions and it cannot tell them apart,
+ * so the only thing standing between a load run and the real Slack workspace was a
+ * sentence in the runbook (L27, L407).
+ *
+ * Throws, and the callers that must never throw (the Slack notifier) catch it into
+ * their own no-op. Silence is the wrong default for the rest: a Salesforce read that
+ * quietly returned nothing is indistinguishable from an empty Salesforce, and the
+ * roster sync would write that emptiness back.
+ */
+export function refuseUnderLoadtest(system: string): void {
+  if (isLoadtest()) throw new Error(loadtestRefusal(system));
+}
