@@ -21,6 +21,16 @@ export interface SyncAgentStaleness {
   email: string | null;
   /** users.last_synced_at as epoch ms, or null if the cron never synced them. */
   lastSyncedMs: number | null;
+  /**
+   * When this agent ENTERED the rotation: the earliest `agent_calendars.created_at`
+   * they hold, as epoch ms. null = unreadable, which buys no grace (#2299).
+   *
+   * Required, not optional, so `tsc` enumerates every construction site rather than
+   * letting one quietly default into permanent silence.
+   */
+  rotationSinceMs: number | null;
+  /** Any of their calendars carries a recorded sync failure (#2299). */
+  hasRecordedFailure: boolean;
 }
 
 export interface StaleAgent extends SyncAgentStaleness {
@@ -36,6 +46,14 @@ export interface StalenessResult {
   worstNeverSynced: boolean;
   /** The stale agents, worst-first (never-synced first, then oldest age). */
   stale: StaleAgent[];
+  /**
+   * How many agents this tick DECLINED to judge because the rotation has not yet
+   * had its first opportunity at them (#2299). Reported rather than left implicit:
+   * a check that withheld somebody and a check that found a clean rotation are
+   * otherwise the same zero, and the all-clear copy has to know the difference
+   * before it can claim what it measured.
+   */
+  gracedCount: number;
 }
 
 /**
@@ -45,12 +63,40 @@ export interface StalenessResult {
  * `> thresholdMs` (strictly greater) so an agent synced exactly at the threshold
  * is not yet stale.
  */
+/**
+ * Whether the rotation has not yet had its FIRST opportunity at this agent (#2299).
+ *
+ * Only the never-synced case can be in it: an agent with a `last_synced_at` has an
+ * age of their own and is judged on it, however new their calendar row is. That is
+ * the stand-down written as its own reason rather than as "this agent is new"
+ * (L324), and it is why a reactivated agent (#1879), whose calendar row is old, is
+ * untouched by any of this.
+ *
+ * A recorded failure ENDS it, per L458. Inside the window a rotation still working
+ * through the roster and a rotation that has already failed on this calendar are
+ * indistinguishable, because neither has produced a success; being patient about
+ * the second hides a condition that is already known and already actionable.
+ *
+ * An unreadable entry stamp gets no grace, the fail-safe side: an unreadable value
+ * must never buy silence.
+ */
+function withinFirstRun(a: SyncAgentStaleness, nowMs: number, thresholdMs: number): boolean {
+  if (a.lastSyncedMs !== null) return false;
+  if (a.hasRecordedFailure) return false;
+  if (a.rotationSinceMs === null) return false;
+  // Strictly greater, the same rule the finite-age branch below uses, so there is
+  // one threshold in this file rather than two that can drift apart.
+  return nowMs - a.rotationSinceMs <= thresholdMs;
+}
+
 export function classifySyncStaleness(
   agents: SyncAgentStaleness[],
   nowMs: number,
   thresholdMs: number,
 ): StalenessResult {
-  const stale: StaleAgent[] = agents
+  const judged = agents.filter((a) => !withinFirstRun(a, nowMs, thresholdMs));
+  const gracedCount = agents.length - judged.length;
+  const stale: StaleAgent[] = judged
     .map((a) => ({ ...a, ageMs: a.lastSyncedMs === null ? null : nowMs - a.lastSyncedMs }))
     .filter((a) => a.ageMs === null || a.ageMs > thresholdMs)
     .sort((x, y) => {
@@ -68,6 +114,7 @@ export function classifySyncStaleness(
     worstAgeMs: finiteAges.length ? Math.max(...finiteAges) : null,
     worstNeverSynced: stale.some((s) => s.ageMs === null),
     stale,
+    gracedCount,
   };
 }
 
@@ -79,13 +126,39 @@ export function classifySyncStaleness(
  * also degrades to null rather than NaN, because a NaN age compares false against
  * the threshold and would silently read a corrupt stamp as a healthy agent.
  */
+export interface RotationCalendarRow {
+  user_id: string;
+  /** `agent_calendars.created_at`: when this calendar joined the rotation. */
+  created_at: string | null;
+  consecutive_failures: number | null;
+  last_sync_error: string | null;
+}
+
 export function syncRotationCandidates(
   agents: { id: string; name: string | null; email: string | null; last_synced_at: string | null }[],
-  calendarUserIds: Set<string>,
+  calendars: RotationCalendarRow[],
 ): SyncAgentStaleness[] {
+  // Folded per agent rather than per calendar, because the rotation processes the
+  // AGENT: `users.last_synced_at` is one stamp covering all their calendars, so the
+  // grace has to be answered at the same grain.
+  const byUser = new Map<string, { since: number | null; anyUnreadable: boolean; failed: boolean }>();
+  for (const c of calendars) {
+    const prev = byUser.get(c.user_id) ?? { since: null, anyUnreadable: false, failed: false };
+    const created = parseStampMs(c.created_at);
+    byUser.set(c.user_id, {
+      // The EARLIEST row: an agent enters the rotation when their first calendar
+      // appears, so a second calendar added later must not restart the grace.
+      since: created === null ? prev.since : prev.since === null ? created : Math.min(prev.since, created),
+      anyUnreadable: prev.anyUnreadable || created === null,
+      // ANY failing calendar answers for the agent, since one broken calendar is
+      // enough for the rotation to have concluded something about them.
+      failed: prev.failed || (c.consecutive_failures ?? 0) > 0 || c.last_sync_error !== null,
+    });
+  }
   return agents
-    .filter((a) => calendarUserIds.has(a.id))
+    .filter((a) => byUser.has(a.id))
     .map((a) => {
+      const cal = byUser.get(a.id)!;
       return {
         id: a.id,
         name: a.name,
@@ -93,6 +166,12 @@ export function syncRotationCandidates(
         // Missing OR unparseable both degrade to never-synced (flagged), via the
         // shared #1169 stamp parser.
         lastSyncedMs: parseStampMs(a.last_synced_at),
+        // An agent with ANY unreadable calendar stamp gets no grace, even if another
+        // of their rows is readable: the unreadable one could be the older, and
+        // guessing in the permissive direction is how an unreadable value buys
+        // silence.
+        rotationSinceMs: cal.anyUnreadable ? null : cal.since,
+        hasRecordedFailure: cal.failed,
       };
     });
 }
@@ -132,12 +211,28 @@ export function formatSyncStalenessAlert(res: StalenessResult, thresholdMs: numb
  * window again. It carries no remediation, because the page already sent the
  * reader to look at the rotation and that fault is over.
  */
-export function formatSyncStalenessRecovery(agentCount: number): string {
-  const who = agentCount === 1 ? "the one bookable agent" : `all ${agentCount} bookable agents`;
+export function formatSyncStalenessRecovery(agentCount: number, gracedCount: number): string {
+  const measured = agentCount - gracedCount;
+  // The unqualified sentence may only be said when the check really did judge
+  // everybody. With an agent withheld by the first-run grace (#2299) it would claim
+  // a reading the check declined to take, so the softened form states what WAS
+  // measured rather than merely dropping the claim (L440).
+  const who =
+    measured === 1 && gracedCount === 0
+      ? "the one bookable agent"
+      : gracedCount === 0
+        ? `all ${agentCount} bookable agents`
+        : `${measured} of the ${agentCount} bookable agents`;
+  const withheld =
+    gracedCount === 0
+      ? ""
+      : ` The other ${gracedCount === 1 ? "one joined" : `${gracedCount} joined`} the rotation ` +
+        `too recently to have been reached yet, so ${gracedCount === 1 ? "it was" : "they were"} ` +
+        `not judged either way.`;
   return (
     `The calendar sync rotation has caught up: ${who} in it were synced inside the ` +
     `expected window on this check, so their cached availability is current again ` +
-    `and the earlier page is cleared. No action is needed.`
+    `and the earlier page is cleared.${withheld} No action is needed.`
   );
 }
 
@@ -180,11 +275,12 @@ export async function runSyncStalenessCheck(deps: {
     // A read that FAILED never reaches here at all: loadAgents throws, the step
     // runner records the tick as degraded, and nothing is claimed either way.
     await deps
-      .resolve(SYNC_STALENESS_KEY, formatSyncStalenessRecovery(agents.length))
+      .resolve(SYNC_STALENESS_KEY, formatSyncStalenessRecovery(agents.length, res.gracedCount))
       .catch(() => {});
   }
   deps.log?.(
     `monitor sync-staleness: ${res.staleCount} stale of the rotation` +
+      (res.gracedCount ? `, ${res.gracedCount} within their first run` : "") +
       (res.staleCount
         ? ` (worst ${res.worstNeverSynced ? "never synced" : Math.round((res.worstAgeMs ?? 0) / 60_000) + " min"})`
         : ""),
