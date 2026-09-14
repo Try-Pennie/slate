@@ -1671,12 +1671,22 @@ export async function GET(req: NextRequest) {
       // The whole table rather than an `in` filter: agent_calendars is roster
       // bounded (SAFE_TABLES), and a roster-sized id list rides in the URL, which
       // PostgREST refuses outright past a few hundred ids (#1267's lesson).
+      // #2300: created_at and the failure columns ride along, because a calendar
+      // inside its first hydration cadence has not yet been given a chance, and a
+      // recorded failure is what ends that patience.
       const { data: cals, error: calErr } = await db
         .from("agent_calendars")
-        .select("user_id, calendar_id, sync_window_to");
+        .select("user_id, calendar_id, sync_window_to, created_at, consecutive_failures, last_sync_error");
       if (calErr) throw new Error(`calendar window read failed: ${calErr.message}`);
       const byId = new Map(users.map((u) => [u.id, u]));
-      return ((cals ?? []) as { user_id: string; calendar_id: string; sync_window_to: string | null }[])
+      return ((cals ?? []) as {
+        user_id: string;
+        calendar_id: string;
+        sync_window_to: string | null;
+        created_at: string | null;
+        consecutive_failures: number | null;
+        last_sync_error: string | null;
+      }[])
         .filter((c) => byId.has(c.user_id))
         .map((c) => ({
           userId: c.user_id,
@@ -1684,6 +1694,8 @@ export async function GET(req: NextRequest) {
           email: byId.get(c.user_id)?.email ?? null,
           calendarId: c.calendar_id,
           syncWindowToIso: c.sync_window_to,
+          createdAtIso: c.created_at,
+          hasRecordedFailure: (c.consecutive_failures ?? 0) > 0 || c.last_sync_error !== null,
         }));
     };
     const calendarWindow = await steps.run<CalendarWindowResult | null>(

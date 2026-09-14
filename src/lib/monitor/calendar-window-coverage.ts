@@ -1,4 +1,5 @@
 import { parseStampMs } from "@/lib/date/stamp";
+import { HYDRATION_TICKS_PER_DAY } from "@/lib/google/hydration";
 import { recordConsecutiveStreak, clearFailureStreak } from "@/lib/notify/streak";
 import { sendThrottledAlert, resolveAlert } from "@/lib/notify/dispatch";
 import { log } from "@/lib/log";
@@ -44,6 +45,25 @@ export const CALENDAR_WINDOW_KEY = "calendar_window_uncovered";
  */
 export const CALENDAR_WINDOW_GRACE_MS = 15 * 60_000;
 
+/**
+ * How long after its row appears a calendar has NOT yet been given a chance (#2300).
+ *
+ * One hydration cadence, derived from the lane's own tick rate rather than written as
+ * a number, so a change to the schedule cannot leave this pointing at the old one.
+ *
+ * Why it is needed at all, given the streak below. A null `sync_window_to` is the only
+ * value a calendar the rotation has never reached can hold, so the streak was the only
+ * patience there was, and three ticks of five minutes is exactly one cadence: a wave
+ * larger than one batch pages before the lane has had a second opportunity. Measured
+ * 2026-09-14, four new calendars took thirty minutes to cover and the page landed at
+ * fifteen.
+ *
+ * It is deliberately NOT a tolerance on the distribution. It applies only to a calendar
+ * with no coverage recorded at all, never to one whose window used to reach past the
+ * horizon and has since fallen behind, which is the incident this alert exists for.
+ */
+export const CALENDAR_WINDOW_FIRST_RUN_MS = (24 * 60 * 60_000) / HYDRATION_TICKS_PER_DAY;
+
 /** Consecutive monitor ticks uncovered before paging. The lane runs every 5
  *  minutes; 3 ticks rides out a calendar caught mid-bootstrap. */
 export const CALENDAR_WINDOW_ALERT_AFTER_TICKS = 3;
@@ -59,26 +79,70 @@ export interface CalendarWindowRow {
   calendarId: string;
   /** `agent_calendars.sync_window_to`; null = hydration has never covered it. */
   syncWindowToIso: string | null;
+  /**
+   * `agent_calendars.created_at`: when this calendar joined the rotation, which is what
+   * the first-run window is measured from (#2300). null = unreadable, which buys nothing.
+   *
+   * Required, not optional, so `tsc` enumerates every construction site rather than
+   * letting one default quietly into permanent patience.
+   */
+  createdAtIso: string | null;
+  /** The rotation has already recorded a failure against this calendar (#2300). */
+  hasRecordedFailure: boolean;
 }
 
 /**
  * Which calendars fail the coverage bound. Pure, so the boundary (and both
  * fail-safe directions) are pinned by tests rather than living in a query.
  */
-export function uncoveredCalendars(input: {
+/**
+ * Whether the hydration rotation has not yet had its FIRST opportunity at this calendar
+ * (#2300).
+ *
+ * Narrow on purpose, and each condition is the reason rather than a proxy for it (L324):
+ *
+ *  - only a calendar with NO coverage recorded, so a window that once reached past the
+ *    horizon and has since lapsed is never softened, however new the row is;
+ *  - not one the rotation has already failed on, because that answer has arrived and
+ *    being patient about it hides something actionable (L458);
+ *  - measured from a STORED stamp, so it expires rather than sliding with the clock (L74);
+ *  - and an unreadable or missing stamp buys nothing, the fail-safe side.
+ */
+function withinFirstRun(r: CalendarWindowRow, nowMs: number): boolean {
+  if (r.syncWindowToIso !== null) return false;
+  if (r.hasRecordedFailure) return false;
+  const createdMs = parseStampMs(r.createdAtIso ?? "");
+  if (createdMs === null) return false;
+  return nowMs - createdMs <= CALENDAR_WINDOW_FIRST_RUN_MS;
+}
+
+/** What one pass judged, separating the uncovered from the not-yet-judged. */
+export function judgeCalendarCoverage(input: {
   rows: CalendarWindowRow[];
   horizonDays: number;
   nowIso: string;
-}): CalendarWindowRow[] {
+}): { uncovered: CalendarWindowRow[]; graced: number } {
   const nowMs = parseStampMs(input.nowIso);
-  if (nowMs === null) return input.rows;
+  // An unreadable clock scores every calendar uncovered, unchanged: nothing can be
+  // graced against a now nobody can read.
+  if (nowMs === null) return { uncovered: input.rows, graced: 0 };
+  const judged = input.rows.filter((r) => !withinFirstRun(r, nowMs));
   const requiredMs = nowMs + input.horizonDays * 24 * 60 * 60_000 + CALENDAR_WINDOW_GRACE_MS;
-  return input.rows.filter((r) => {
+  const uncovered = judged.filter((r) => {
     const windowMs = parseStampMs(r.syncWindowToIso ?? "");
     // null and unreadable both land here: no coverage established.
     if (windowMs === null) return true;
     return windowMs < requiredMs;
   });
+  return { uncovered, graced: input.rows.length - judged.length };
+}
+
+export function uncoveredCalendars(input: {
+  rows: CalendarWindowRow[];
+  horizonDays: number;
+  nowIso: string;
+}): CalendarWindowRow[] {
+  return judgeCalendarCoverage(input).uncovered;
 }
 
 const NAME_CAP = 8;
@@ -115,11 +179,28 @@ export function formatCalendarWindowAlert(rows: CalendarWindowRow[], horizonDays
   );
 }
 
-/** The all-clear: stand down, no remediation carried along. */
-export function formatCalendarWindowRecovery(): string {
+/**
+ * The all-clear: stand down, no remediation carried along.
+ *
+ * The unqualified sentence may only be said when the pass really did judge every
+ * calendar. Withholding one inside its first run (#2300) makes the uncovered count
+ * zero and reaches this branch, so the softened form states what WAS measured rather
+ * than merely dropping the claim (L440).
+ */
+export function formatCalendarWindowRecovery(graced: number): string {
+  if (graced === 0) {
+    return (
+      `Every bookable agent's calendar is covered past the booking window again, so the ` +
+      `times the booker offers are backed by a fresh view of their calendars. No action is needed.`
+    );
+  }
+  const who = graced === 1 ? "One calendar was" : `${graced} calendars were`;
   return (
-    `Every bookable agent's calendar is covered past the booking window again, so the ` +
-    `times the booker offers are backed by a fresh view of their calendars. No action is needed.`
+    `Every calendar this check judged is covered past the booking window again, so the ` +
+    `times the booker offers are backed by a fresh view of those calendars. ${who} left ` +
+    `out: ${graced === 1 ? "it joined" : "they joined"} the rotation too recently to have ` +
+    `been reached yet, so ${graced === 1 ? "it was" : "they were"} not judged either way. ` +
+    `No action is needed.`
   );
 }
 
@@ -127,6 +208,14 @@ export function formatCalendarWindowRecovery(): string {
 export interface CalendarWindowResult {
   status: "clear" | "uncovered" | "unreadable";
   uncovered: number;
+  /**
+   * How many calendars this pass DECLINED to judge because the rotation has not yet had
+   * its first opportunity at them (#2300). Reported rather than left implicit: a pass
+   * that withheld somebody and a pass that found everything covered are otherwise the
+   * same zero, and the all-clear copy has to know the difference before it can claim
+   * what it measured.
+   */
+  graced: number;
 }
 
 /**
@@ -155,10 +244,10 @@ export async function runCalendarWindowCheck(deps: {
   } catch (err) {
     log.error("calendar-window", { msg: "coverage read failed" }, err);
     deps.logTick?.({ status: "unreadable" });
-    return { status: "unreadable", uncovered: 0 };
+    return { status: "unreadable", uncovered: 0, graced: 0 };
   }
 
-  const uncovered = uncoveredCalendars({
+  const { uncovered, graced } = judgeCalendarCoverage({
     rows,
     horizonDays: deps.horizonDays,
     nowIso: deps.nowIso,
@@ -167,9 +256,9 @@ export async function runCalendarWindowCheck(deps: {
   if (uncovered.length === 0) {
     await clearFailureStreak(CALENDAR_WINDOW_KEY);
     // alert-key: calendar_window_uncovered
-    await resolveAlert(CALENDAR_WINDOW_KEY, formatCalendarWindowRecovery()).catch(() => {});
-    deps.logTick?.({ status: "clear", calendars: rows.length });
-    return { status: "clear", uncovered: 0 };
+    await resolveAlert(CALENDAR_WINDOW_KEY, formatCalendarWindowRecovery(graced)).catch(() => {});
+    deps.logTick?.({ status: "clear", calendars: rows.length, graced });
+    return { status: "clear", uncovered: 0, graced };
   }
 
   const sustained = await recordConsecutiveStreak(
@@ -185,6 +274,6 @@ export async function runCalendarWindowCheck(deps: {
       formatCalendarWindowAlert(uncovered, deps.horizonDays),
     ).catch(() => {});
   }
-  deps.logTick?.({ status: "uncovered", uncovered: uncovered.length, sustained });
-  return { status: "uncovered", uncovered: uncovered.length };
+  deps.logTick?.({ status: "uncovered", uncovered: uncovered.length, sustained, graced });
+  return { status: "uncovered", uncovered: uncovered.length, graced };
 }
