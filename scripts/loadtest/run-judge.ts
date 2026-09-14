@@ -521,7 +521,9 @@ if (m) {
           `first on their isolate): inside the confirm p50 ${m.confirmHandler?.p50 ?? "n/a"}ms, ` +
           `p95 ${m.confirmHandler?.p95 ?? "n/a"}ms; before it started, cold p95 ` +
           `${m.confirmColdStartup?.p95 ?? "n/a"}ms (max ${m.confirmColdStartup?.max ?? "n/a"}ms), ` +
-          `warm p95 ${m.confirmWarmStartup?.p95 ?? "n/a"}ms` +
+          `warm p95 ${m.confirmWarmStartup?.p95 ?? "n/a"}ms; after the response had gone, ` +
+          `p95 ${m.confirmAfterResponse?.p95 ?? "n/a"}ms ` +
+          `(max ${m.confirmAfterResponse?.max ?? "n/a"}ms), which no lead waits for` +
           // What the archive itself lost, so a thin sample is never read as a
           // quiet run. The stream is written under a timeout, so its last line is
           // routinely half written.

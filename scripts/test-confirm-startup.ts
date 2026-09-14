@@ -27,7 +27,7 @@
 // Run: node --experimental-strip-types scripts/test-confirm-startup.ts
 import { readConfirmStartup } from "./loadtest/confirm-startup.ts";
 import { formatLine } from "../src/lib/log.ts";
-import { eq, finish } from "./lib/harness.ts";
+import { assert, eq, finish } from "./lib/harness.ts";
 
 /**
  * One tail line, built with the app's OWN formatter.
@@ -42,8 +42,11 @@ function tailLine(opts: {
   logTimestamp: number;
   totalMs: number;
   isolateAgeMs: number;
+  cpuTime?: number;
 }): string {
   return JSON.stringify({
+    cpuTime: opts.cpuTime ?? 400,
+    wallTime: opts.logTimestamp - opts.eventTimestamp,
     outcome: "ok",
     eventTimestamp: opts.eventTimestamp,
     event: { request: { url: "https://x/api/bookings", method: "POST" } },
@@ -63,16 +66,26 @@ function tailLine(opts: {
         ],
       },
     ],
-  });
+    // PRETTY PRINTED, four spaces, exactly as `wrangler tail --format json`
+    // writes it. Measured on run 34889873261's own artifact: 1,336 invocations
+    // over 179,056 lines. A compact fixture is the one that agreed with the
+    // reader's first, wrong, assumption about the shape (L52).
+  }, null, 4);
 }
 
 /** An invocation carrying something that is not a confirm profile. */
 function otherLine(msg: string): string {
-  return JSON.stringify({
-    outcome: "ok",
-    eventTimestamp: 1_000,
-    logs: [{ level: "info", timestamp: 1_010, message: [formatLine("recompute", { msg })] }],
-  });
+  return JSON.stringify(
+    {
+      outcome: "ok",
+      eventTimestamp: 1_000,
+      cpuTime: 12,
+      wallTime: 10,
+      logs: [{ level: "info", timestamp: 1_010, message: [formatLine("recompute", { msg })] }],
+    },
+    null,
+    4,
+  );
 }
 
 // --- nothing to read is UNMEASURED, never a reading of zero ----------------------
@@ -256,6 +269,175 @@ function otherLine(msg: string): string {
   const r = readConfirmStartup(line)!;
   eq(r.samples, 0, "a reading that cannot be finite is not a sample");
   eq(r.unreadable, 1, "it is a confirm profile this could not read");
+}
+
+// --- the shape the real archive actually has (#2340, second pass) ----------------------
+{
+  // The defect this whole pass exists for. `wrangler tail --format json` PRETTY
+  // PRINTS, so the archive is 1,336 invocations over 179,056 lines, and a reader
+  // that split on newlines found 1,336 bare opening braces and zero confirms.
+  // Every fixture agreed with it, because they were written by the same hand that
+  // assumed the shape (L52).
+  const pretty = tailLine({
+    eventTimestamp: 0,
+    logTimestamp: 1_000,
+    totalMs: 400,
+    isolateAgeMs: 90_000,
+  });
+  assert(pretty.split("\n").length > 5, "the fixture really is laid out over many lines");
+  eq(readConfirmStartup(pretty)!.samples, 1, "and it is read as one confirm");
+}
+
+// --- a brace inside a string does not open an object ------------------------------------
+{
+  // Not hypothetical: every event carries the request URL, and Slate's own log
+  // lines carry JSON shaped detail. A scanner blind to strings would split an
+  // event in half and read neither.
+  const withBraces = JSON.stringify(
+    {
+      cpuTime: 500,
+      wallTime: 1_000,
+      eventTimestamp: 0,
+      event: { request: { url: "https://x/api/bookings?q={not:json}" } },
+      logs: [
+        {
+          timestamp: 1_000,
+          message: [
+            formatLine("confirm-profile", {
+              msg: "where the confirm spent its wall time",
+              detail: 'outcomes {"ok":3}',
+              total_ms: 400,
+              isolate_age_ms: 90_000,
+            }),
+          ],
+        },
+      ],
+    },
+    null,
+    4,
+  );
+  const r = readConfirmStartup(withBraces)!;
+  eq(r.samples, 1, "an event whose strings hold braces is still one event");
+  eq(r.unparsable, 0, "and nothing is reported as damaged");
+}
+
+// --- a stream killed mid object is counted, not swallowed ---------------------------------
+{
+  const good = tailLine({
+    eventTimestamp: 0,
+    logTimestamp: 1_000,
+    totalMs: 400,
+    isolateAgeMs: 90_000,
+  });
+  const r = readConfirmStartup(good + "\n" + good.slice(0, good.length - 60))!;
+  eq(r.samples, 1, "the complete event is read");
+  eq(r.unparsable, 1, "and the half written one is counted rather than swallowed");
+}
+
+// --- the runtime's own CPU reading, split the same way -------------------------------------
+{
+  // The number the CPU bar is about. The analytics API reports it as ONE percentile
+  // over every invocation with nothing in it saying which invocations it came from,
+  // which is exactly why a run could not tell a slow confirm from a cold isolate.
+  const r = readConfirmStartup(
+    [
+      tailLine({ eventTimestamp: 0, logTimestamp: 5_000, totalMs: 1_000, isolateAgeMs: 100, cpuTime: 2_900 }),
+      tailLine({ eventTimestamp: 0, logTimestamp: 900, totalMs: 400, isolateAgeMs: 60_000, cpuTime: 380 }),
+    ].join("\n"),
+  )!;
+  eq(r.coldCpuMs, [2_900], "the cold confirm's own CPU");
+  eq(r.warmCpuMs, [380], "and the warm one's, kept apart from it");
+}
+
+// --- an archive with no CPU reading gives a SHORTER list, never a zero ----------------------
+{
+  // A zero would be the cheapest possible confirm and would pull every percentile
+  // down, which is a measurement rather than an absent one (L98).
+  const noCpu = JSON.stringify(
+    {
+      eventTimestamp: 0,
+      logs: [
+        {
+          timestamp: 1_000,
+          message: [
+            formatLine("confirm-profile", {
+              msg: "x",
+              total_ms: 400,
+              isolate_age_ms: 90_000,
+            }),
+          ],
+        },
+      ],
+    },
+    null,
+    4,
+  );
+  const r = readConfirmStartup(noCpu)!;
+  eq(r.samples, 1, "the confirm is still a sample");
+  eq(r.warmCpuMs, [], "and its missing CPU reading is absent rather than zero");
+}
+
+// --- the span #2340 did not know it was measuring -------------------------------------
+{
+  // That issue computed ONE number, the invocation's wall minus the profile's own
+  // total, and read it as the time BEFORE the handler started. It is both sides at
+  // once. On run 34889873261's own archive the 32 confirms over two seconds of CPU
+  // differ from the 409 under half a second almost entirely on the AFTER side
+  // (2,758ms against 258ms), while the BEFORE side is 297ms against 209ms. They
+  // are not starting up slowly; their invocations carry on after the booking is
+  // written, which on this path is the webhook send deferred by #884.
+  const one = JSON.stringify(
+    {
+      eventTimestamp: 1_000,
+      cpuTime: 2_900,
+      // Logged at 3,500 and the invocation ran to 8,000: 2,500 of the 4,500 after
+      // the line was written.
+      wallTime: 7_000,
+      logs: [
+        {
+          timestamp: 3_500,
+          message: [
+            formatLine("confirm-profile", {
+              msg: "x",
+              total_ms: 2_000,
+              isolate_age_ms: 90_000,
+            }),
+          ],
+        },
+      ],
+    },
+    null,
+    4,
+  );
+  const r = readConfirmStartup(one)!;
+  eq(r.preProfileMs, [500], "before the confirm began");
+  eq(r.handlerMs, [2_000], "inside it");
+  eq(r.afterProfileMs, [4_500], "and everything the invocation did after the line was written");
+}
+
+// --- no wall reading gives a SHORTER list, never a zero ----------------------------------
+{
+  const noWall = JSON.stringify(
+    {
+      eventTimestamp: 0,
+      logs: [
+        {
+          timestamp: 1_000,
+          message: [formatLine("confirm-profile", { msg: "x", total_ms: 400, isolate_age_ms: 9 })],
+        },
+      ],
+    },
+    null,
+    4,
+  );
+  const r = readConfirmStartup(noWall)!;
+  eq(r.samples, 1, "the confirm is still a sample");
+  eq(
+    r.afterProfileMs,
+    [],
+    "and the absent span is absent rather than a zero, which would read as an invocation that " +
+      "ended the moment the booking was written",
+  );
 }
 
 finish();

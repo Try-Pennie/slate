@@ -38,11 +38,17 @@ import { formatLine } from "../src/lib/log.ts";
  * inside that request, and `warm` the same on one that did not. The reader decides
  * which is which from the isolate's age; these just supply ages that make it so.
  */
-function startupReading(rows: { handlerMs: number; beforeMs: number; cold: boolean }[]) {
+function startupReading(
+  rows: { handlerMs: number; beforeMs: number; cold: boolean; afterMs?: number }[],
+) {
   const lines = rows.map((r) =>
     JSON.stringify({
       outcome: "ok",
       eventTimestamp: 0,
+      cpuTime: r.handlerMs,
+      // The invocation carries on after the profile is logged, which is where the
+      // 2026-09-14 run's expensive confirms actually spent their time.
+      wallTime: r.beforeMs + r.handlerMs + (r.afterMs ?? 200),
       logs: [
         {
           level: "info",
@@ -56,7 +62,7 @@ function startupReading(rows: { handlerMs: number; beforeMs: number; cold: boole
           ],
         },
       ],
-    }),
+    }, null, 4),
   );
   return readConfirmStartup(lines.join("\n"));
 }
@@ -487,6 +493,12 @@ const bars = (r: ReturnType<typeof judgeBookingRun>) => r.findings.map((f) => f.
   eq(healthy.measurements!.confirmCold, 3, "with how many of them were the isolate's first");
   eq(healthy.measurements!.confirmHandler!.p95, 900, "the confirm's own time");
   eq(healthy.measurements!.confirmColdStartup!.p95, 1_200, "and the startup, kept apart from it");
+  eq(
+    healthy.measurements!.confirmAfterResponse!.p95,
+    200,
+    "and what the invocation did AFTER the response had gone, which is a third span and " +
+      "not part of either: no lead waits for it and the CPU bar still counts it",
+  );
 
   const slow = broken((i) => {
     i.confirmStartup = startupReading([
@@ -589,6 +601,11 @@ const bars = (r: ReturnType<typeof judgeBookingRun>) => r.findings.map((f) => f.
   const cpuDetail = cpu.findings.find((f) => f.bar === "Worker CPU on the request path")!.detail;
   assert(/first on their isolate/.test(cpuDetail), "the CPU finding names how many were cold starts");
   assert(/inside it/.test(cpuDetail), "and the confirm's own share beside it");
+  assert(
+    /AFTER the response had gone/.test(cpuDetail),
+    "and the span the 2026-09-14 archive says the time is actually in, which this percentile " +
+      "counts and no lead waits for",
+  );
 
   const blind = broken((i) => {
     i.platform = { ...i.platform, cpuMsP99: 2_988 };
