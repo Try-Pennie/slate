@@ -123,6 +123,30 @@ describe("setMonitorSettings channel check", () => {
     expect(upsert).toHaveBeenCalled();
   });
 
+  // #2367: the handoff channel is checked like the other two, and a refusal names it,
+  // because a typo there sends every handoff nowhere while the page reads as set.
+  it("refuses an unknown handoff channel, names it, and writes nothing", async () => {
+    slack.reply = { ok: false, error: "channel_not_found" };
+    await expect(setMonitorSettings(form({ handoff_channel: "C-TYPO" }))).rejects.toThrow(
+      /NEXT_REDIRECT:.*error=/,
+    );
+    expect(slack.asked).toEqual(["C-TYPO"]);
+    expect(upsert).not.toHaveBeenCalled();
+    expect(decodeURIComponent(String(redirect.mock.calls[0][0]))).toMatch(
+      /^\/admin\/alerts\?error=Handoff channel:/,
+    );
+  });
+
+  it("stores a handoff channel Slack confirms", async () => {
+    await expect(setMonitorSettings(form({ handoff_channel: "C-SALES" }))).rejects.toThrow(
+      /NEXT_REDIRECT:.*ok=alerts/,
+    );
+    const configWrite = upsert.mock.calls
+      .map((c) => (c as unknown[])[0])
+      .find((p) => !Array.isArray(p)) as Record<string, unknown> | undefined;
+    expect(configWrite?.handoff_channel).toBe("C-SALES");
+  });
+
   // A BLANK FIELD IS NOT A CHANNEL. It means fall back, and asking Slack about
   // an empty string would refuse every save that clears one.
   it("asks Slack nothing when both fields are blank", async () => {

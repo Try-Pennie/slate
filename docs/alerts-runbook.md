@@ -159,7 +159,8 @@ Keys: `outbox_drain_stuck`, `outbox_all_handed_off`, `reservation_drain_stuck`,
 `booking_event_insert`, `busy_block_write_through`, `reconcile_busy_blocks`,
 `reconcile_missing_busy_blocks`, `creation_orphan_events`, `external_double_book:*`,
 `reassign_intent_dropped`, `reschedule_pin_dropped`, `reschedule_lock_outage`,
-`stale_phone_invite:*`, `webhook_dead:*`, `webhook_event_no_subscriber`.
+`stale_phone_invite:*`, `webhook_dead:*`, `webhook_event_no_subscriber`,
+`handoff_channel_unset`, `handoff_undelivered`.
 
 **What fired it.** A booking exists and something that should have followed it did not:
 a calendar invite, a busy block, a webhook to Regal. **A real customer is affected**,
@@ -173,6 +174,13 @@ which is what makes this family different from the ones above.
 - For `webhook_event_no_subscriber`: this is a configuration gap, not a fault. A new
   event type ships inert until the live endpoint's `events` array names it (#1459), and
   that is a database update, not a deploy.
+- For `handoff_channel_unset` and `handoff_undelivered`: a booking is waiting on a
+  person in sales (a duplicate Slate would not cancel, an owner move it refused) and
+  the notice has not reached them (#2367). The rows are in `booking_handoffs`;
+  `last_notify_error` says why the last post failed. Unset means the handoff channel
+  on `/admin/alerts` is blank; undelivered with a channel set is usually the Slate app
+  not being in that channel. Nothing is lost while it waits: the lane retries every
+  tick and the page clears once each open handoff has been posted.
 
 **Fix or escalate.** The outbox retries with backoff and gives up at a cap, so a row
 past the cap needs the underlying cause fixed and then a re-drain. An orphaned calendar

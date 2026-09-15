@@ -250,6 +250,10 @@ export interface MonitorAlertConfig {
    *  through to the disarmed default, which here is about the roster being dark
    *  before cutover rather than about calibration: see migration 0102). */
   roster_coverage_armed: boolean | null;
+  /** #2367: the Slack channel booking handoffs are posted to for the sales side.
+   *  Null = unset, with NO fallback to the alerts or info channel; unset while a
+   *  handoff is open pages the alerts channel (migration 0123). */
+  handoff_channel: string | null;
   updated_at: string;
   updated_by: string | null;
 }
@@ -341,6 +345,32 @@ export interface ReassignIntent {
   swapped_at: string | null;
   lease_until: string;
   created_at: string;
+}
+
+/** What a booking handoff is waiting on a person for (#2367, migration 0123). The
+ *  migration's CHECK holds the same list; `src/lib/handoffs/kinds.ts` enumerates it
+ *  as values, and `scripts/test-booking-handoffs.ts` holds the two together. */
+export type BookingHandoffKind = "duplicate-unresolved" | "owner-reassign-refused";
+
+export type BookingHandoffStatus = "open" | "resolved";
+
+/** A booking waiting on a person (#2367). One row per (booking_id, kind). `detail`
+ *  is jsonb, read back through the per kind readers in `src/lib/handoffs/kinds.ts`
+ *  rather than trusted as typed. It carries no lead contact data. */
+export interface BookingHandoff {
+  id: string;
+  booking_id: string;
+  kind: BookingHandoffKind;
+  detail: Record<string, unknown>;
+  status: BookingHandoffStatus;
+  resolved_reason: string | null;
+  resolved_at: string | null;
+  created_at: string;
+  /** Set only once a post to the handoff channel SUCCEEDED. */
+  notified_at: string | null;
+  notify_attempts: number;
+  /** A short human reason for the last failed post, never a raw body. */
+  last_notify_error: string | null;
 }
 
 /** Fixed-window rate-limit counter (#31); one row per key, reset in place. */

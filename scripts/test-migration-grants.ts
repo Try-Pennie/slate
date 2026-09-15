@@ -36,6 +36,7 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { assert, eq, finish } from "./lib/harness.ts";
+import { parseCreatedTables } from "./lib/parse-migration-constraints.ts";
 import {
   parseGrants,
   REQUIRED_ROLES,
@@ -126,13 +127,21 @@ const withoutGrantsMigration = real.filter((f) => f.version !== GRANTS_VERSION);
     { version: "0122", sql: "create table later_arrival (id uuid primary key);" },
   ];
   const scan = scanMigrationGrants(withLaterTable);
+  // Every REAL table created after the grants migration is in the same position as
+  // the synthetic one (it relies on the default privileges alone), so it is reported
+  // too. The expectation is derived from the corpus rather than fixed at the day this
+  // was written, when no real table came later; #2367's booking_handoffs is the first
+  // that did, and a fixed list would have read its correct report as a failure.
+  const realLater = [
+    ...parseCreatedTables(real.filter((f) => f.version > GRANTS_VERSION).map((f) => f.sql).join("\n")),
+  ];
   eq(
-    scan.ungranted.map((u) => u.table),
-    ["later_arrival"],
-    "with the default privileges gone, a table created by a later migration is reported (and only it)",
+    scan.ungranted.map((u) => u.table).sort(),
+    [...realLater, "later_arrival"].sort(),
+    "with the default privileges gone, every table created after them is reported (and only those)",
   );
   eq(
-    scan.ungranted[0]?.missing,
+    scan.ungranted.find((u) => u.table === "later_arrival")?.missing,
     [...REQUIRED_ROLES],
     "naming all three roles it would be short of",
   );

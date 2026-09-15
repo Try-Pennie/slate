@@ -35,7 +35,9 @@ export type MonitorAlertKey =
   | "hydration_all_failing"
   | "calendar_window_uncovered"
   | "schedule_parity_drift"
-  | "agents_on_unset_hours";
+  | "agents_on_unset_hours"
+  | "handoff_channel_unset"
+  | "handoff_undelivered";
 
 export const ALERT_KEYS: MonitorAlertKey[] = [
   "availability_data_anomaly",
@@ -63,6 +65,8 @@ export const ALERT_KEYS: MonitorAlertKey[] = [
   "calendar_window_uncovered",
   "schedule_parity_drift",
   "agents_on_unset_hours",
+  "handoff_channel_unset",
+  "handoff_undelivered",
 ];
 
 /**
@@ -261,6 +265,18 @@ export const ALERT_FIELDS: {
     help: "The daily calendar refresh has failed on every calendar it tried, several runs in a row. Bookings are unaffected while this lasts; what stops is the cached cover being renewed.",
   },
   {
+    key: "handoff_channel_unset",
+    urgency: "page",
+    label: "Booking handoffs with nowhere to go",
+    help: "A booking is waiting on somebody in sales, such as a double booking Slate would not cancel, and no handoff channel is set, so nobody has been told. Ends when the channel is set or nothing is waiting.",
+  },
+  {
+    key: "handoff_undelivered",
+    urgency: "page",
+    label: "Booking handoffs not reaching sales",
+    help: "A booking handoff has waited more than 30 minutes without being posted to the handoff channel, so the sales team has not been told. Ends once every open handoff has been posted.",
+  },
+  {
     key: "empty_buckets",
     urgency: "alert",
     label: "Bucket with nobody to route to",
@@ -377,6 +393,14 @@ export const MONITOR_DEFAULTS = {
     // cached cover has weeks of margin before it stops reaching the booking horizon, so this
     // is a maintenance problem to pick up in the working day, not an outage to page on.
     hydration_all_failing: 6 * 60 * 60_000,
+    // Booking handoffs with no channel to go to (#2367). Somebody in sales is waiting
+    // to be told about a booking and nothing will tell them until the setting is
+    // saved, which is a minute's work for whoever reads this. Hourly, like the other
+    // pages that stay true until a person acts.
+    handoff_channel_unset: 60 * 60_000,
+    // Handoffs not reaching the channel (#2367): the lane retries every tick, so a
+    // repeat only says something when the retries are still failing. Hourly.
+    handoff_undelivered: 60 * 60_000,
   },
   floor30: 5,
   floor120: 20,
@@ -559,6 +583,8 @@ export interface MonitorSettingsFormInput {
   floor120: string;
   alertsChannel: string;
   infoChannel: string;
+  /** #2367: where booking handoffs are posted. Blank is unset, with no fallback. */
+  handoffChannel: string;
   /** Raw value of the arm-low-volume checkbox ("on"/"true" when checked, else blank). */
   lowVolumeArmed: string;
   /** Raw value of the arm-failure-rate checkbox (#1313), same encoding. */
@@ -575,6 +601,7 @@ export interface MonitorSettingsPayload {
     floor_120: number | null;
     alerts_channel: string | null;
     info_channel: string | null;
+    handoff_channel: string | null;
     low_volume_armed: boolean;
     failure_rate_armed: boolean;
     availability_drift_armed: boolean;
@@ -631,6 +658,7 @@ export function parseMonitorSettingsForm(input: MonitorSettingsFormInput): Monit
       floor_120: parseBounded(input.floor120, "120-min floor", FLOOR_MIN, FLOOR_MAX),
       alerts_channel: channel(input.alertsChannel),
       info_channel: channel(input.infoChannel),
+      handoff_channel: channel(input.handoffChannel),
       low_volume_armed: checked(input.lowVolumeArmed),
       failure_rate_armed: checked(input.failureRateArmed),
       availability_drift_armed: checked(input.availabilityDriftArmed),
