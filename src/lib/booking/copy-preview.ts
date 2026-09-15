@@ -227,6 +227,14 @@ export function bookerCopyScreens(): CopyScreen[] {
         { state: "somebody took the time while they typed", text: BOOKING_ERROR_COPY.slotTaken },
         { state: "anything else", text: BOOKING_ERROR_COPY.generic },
         { state: "moving an existing call failed", text: BOOKING_ERROR_COPY.moveFailed },
+        // #2297: the two refusals the kill switch produces. They share a status code
+        // and must not share a sentence: one is somebody holding bookings on purpose
+        // and cannot be waited out, the other clears itself.
+        { state: "booking has been stopped by hand", text: BOOKING_ERROR_COPY.bookingsPaused },
+        {
+          state: "we could not read whether booking is stopped",
+          text: BOOKING_ERROR_COPY.bookingPauseUnreadable,
+        },
       ],
     },
     {

@@ -31,6 +31,9 @@ import {
 // module rather than through the limiter so a route test that mocks the limiter still sees
 // the REAL decision (#1557).
 import { BOOKING_LIMITER, type CallerKey } from "@/lib/rate-limit-core";
+import { judgePublicBooking } from "@/lib/booking/kill-switch";
+import { readPublicBookingPaused } from "@/lib/booking/settings";
+import { BOOKING_ERROR_COPY } from "@/lib/booking/booker-copy";
 import { internalErrorResponse } from "@/lib/api/errors";
 import { recordApiOutcome } from "@/lib/monitor/record-api-outcome";
 import { log } from "@/lib/log";
@@ -102,6 +105,37 @@ export async function POST(req: NextRequest) {
   // so it doesn't add latency to the Confirm tap. Checked first so a flood is
   // shed before we touch Postgres.
   if (!(await bookingWithinLimit(ip))) return tooMany("edge-minute");
+
+  // The kill switch (#2297). Placed HERE on purpose: after the edge burst window, so
+  // a flood is still shed in-datacenter without a database read, and BEFORE the
+  // hourly and per-contact caps, so a refusal the lead did not cause never spends
+  // their budget. A pause that lasted an hour would otherwise leave real leads
+  // throttled after it was lifted.
+  //
+  // It runs before the body is read, so neither refusal can name a bucket. That is
+  // recorded as `unidentifiable` rather than as an empty code, because both states
+  // this gate refuses in are org-wide: no bucket would explain either one.
+  const publicBooking = judgePublicBooking(await readPublicBookingPaused());
+  if (!publicBooking.allow) {
+    if (publicBooking.refusal === "booking_paused") {
+      log.info("booking-paused", { msg: "refused, bookings are paused", ip });
+      // refusal: booking_paused
+      // Deliberately UNCOUNTED. Somebody turned this on a moment ago and is watching;
+      // recording it as an error would page them about their own action, and recording
+      // it as an attempt would put a window in which everything is refused by design
+      // into the denominator the real failure share is measured against. The count that
+      // IS worth having, how many leads met a paused booker, is a total over a known
+      // window rather than a rate, and the log line above answers it.
+      return NextResponse.json({ error: BOOKING_ERROR_COPY.bookingsPaused }, { status: 503 });
+    }
+    log.error("booking-paused", { msg: "pause flag unreadable, refusing the booking", ip });
+    recordApiOutcome("error", "", "booking_pause_unreadable", {
+      by: "unidentifiable",
+      why: "the kill switch is judged before the body is read, so no bucket is known",
+    });
+    // refusal: booking_pause_unreadable
+    return NextResponse.json({ error: BOOKING_ERROR_COPY.bookingPauseUnreadable }, { status: 503 });
+  }
   // Strict hourly anti-spam cap stays in the DB (a 1-hour window the native
   // binding can't express).
   if (!(await allowRequest(bookingCaller, BOOKING_HOURLY_RATE_RULES))) return tooMany("hourly");

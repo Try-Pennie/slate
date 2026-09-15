@@ -30,7 +30,12 @@ import { minutesToTime } from "@/lib/schedule-core";
 import { humanizeZone } from "@/lib/booking/timezones";
 import { BusinessHoursForm, type BusinessHoursDay } from "@/components/ui/BusinessHoursForm";
 import { BusinessHoursExceptions } from "@/components/ui/BusinessHoursExceptions";
-import { HORIZON_DEFAULT, HORIZON_MIN, HORIZON_MAX } from "@/lib/booking/settings";
+import {
+  HORIZON_DEFAULT,
+  HORIZON_MIN,
+  HORIZON_MAX,
+  readPublicBookingPaused,
+} from "@/lib/booking/settings";
 import { SubmitButton } from "@/components/ui/SubmitButton";
 import { DayToggles } from "@/components/ui/DayToggles";
 import { TimeField } from "@/components/ui/TimeField";
@@ -39,6 +44,7 @@ import { log } from "@/lib/log";
 import { SettingsSaveNotice } from "@/app/admin/settings/SettingsSaveNotice";
 import { savedOutcome, savedSentence } from "@/lib/admin/save-outcomes";
 import { AdminPageHeader, AdminDenied } from "@/components/admin/AdminPageHeader";
+import { PublicBookingSwitch } from "@/components/admin/PublicBookingSwitch";
 import { btnCls, cardCls, inputCls, labelCls, proseCls } from "@/components/ui/styles";
 
 export const dynamic = "force-dynamic";
@@ -90,6 +96,11 @@ export default async function BusinessHoursPage({
   } catch {
     // Fall through to the built-in default shown as a placeholder.
   }
+
+  // #2297: the kill switch's current state. Its OWN read, resolving to null when it
+  // fails, because "we could not read whether bookings are running" is a different
+  // screen from either answer and the page must not draw one of them instead (L530).
+  const publicBookingPaused = await readPublicBookingPaused();
 
   const db = supabaseAdmin();
   // #1892: the org's DEFAULT hours for a new agent ARE read here now, because
@@ -198,9 +209,10 @@ export default async function BusinessHoursPage({
           the org's own hours reading as a "default" is exactly the confusion
           #1297 was written about. Dan chose Hours on 2026-09-04. */}
       <AdminPageHeader title="Hours">
-        When Pennie is open, the holidays and closures on top of that, how far ahead
-        a lead can book, and what a new agent starts on. Every offered time is judged
-        against the first of those, so a change there moves the whole roster.
+        Whether Slate is taking bookings at all, when Pennie is open, the holidays and
+        closures on top of that, how far ahead a lead can book, and what a new agent
+        starts on. Every offered time is judged against the business hours, so a change
+        there moves the whole roster.
       </AdminPageHeader>
       {/* #1990: the sentence comes from the OUTCOME, so it names the form
           that saved rather than whatever this page had written down. An
@@ -208,6 +220,19 @@ export default async function BusinessHoursPage({
           named) shows nothing, rather than confirming a save nobody made. */}
       {saved && <SettingsSaveNotice ok saved={saved} error={sp.error} />}
       {sp.error && !saved && <SettingsSaveNotice ok={false} error={sp.error} saved="" />}
+      {/* #2297: first, because it is the one thing on this page somebody needs in
+          an emergency, and the only one that is read rather than edited on an
+          ordinary day. Quiet while bookings are running; the stopped state is the
+          loud one. */}
+      <section className={cardCls}>
+        <h2 className="mb-1 text-sm font-semibold">Online booking</h2>
+        <p className={`mb-4 ${proseCls} text-xs text-fg-muted`}>
+          Whether leads can book a call at all. Stopping it takes effect on the next
+          booking anyone tries, with no deploy, and leaves availability, calendar
+          syncing and existing bookings alone.
+        </p>
+        <PublicBookingSwitch paused={publicBookingPaused} />
+      </section>
       <section className={cardCls}>
         <h2 className="mb-1 text-sm font-semibold">Business hours</h2>
         <p className={`mb-4 ${proseCls} text-xs text-fg-muted`}>

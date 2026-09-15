@@ -25,6 +25,7 @@ import {
   resolveHorizonDays,
   loadBookingHorizonDays,
   readBookingHorizonDays,
+  readPublicBookingPaused,
   parseHorizonForm,
   HORIZON_DEFAULT,
   HORIZON_MIN,
@@ -222,5 +223,49 @@ describe("readBookingHorizonDays", () => {
     maybeSingle.mockResolvedValue({ data: { horizon_days: 5 }, error: null });
     expect(await readBookingHorizonDays()).toBe(5);
     expect(await loadBookingHorizonDays()).toBe(5);
+  });
+});
+
+// #2297: the kill switch's reader. The whole question this answers is whether a
+// read FAILURE can be told apart from the flag reading false, because those two
+// take opposite actions: one keeps taking bookings, the other refuses them.
+describe("readPublicBookingPaused", () => {
+  beforeEach(() => {
+    maybeSingle.mockReset();
+  });
+
+  it("reads a stored pause as paused", async () => {
+    maybeSingle.mockResolvedValue({ data: { public_booking_paused: true }, error: null });
+    await expect(readPublicBookingPaused()).resolves.toBe(true);
+  });
+
+  it("reads a stored false as open", async () => {
+    maybeSingle.mockResolvedValue({ data: { public_booking_paused: false }, error: null });
+    await expect(readPublicBookingPaused()).resolves.toBe(false);
+  });
+
+  // An unconfigured org has no settings row at all. That is a real answer, not a
+  // failure: nobody has ever paused bookings, so bookings are open (L214).
+  it("reads a missing settings row as open, not as unreadable", async () => {
+    maybeSingle.mockResolvedValue({ data: null, error: null });
+    await expect(readPublicBookingPaused()).resolves.toBe(false);
+  });
+
+  // The one that matters. A read error must NOT arrive as false, which is the
+  // #277 shape: an error resolving to the benign-looking value, silently.
+  it("returns null, never false, when the read ERRORS", async () => {
+    maybeSingle.mockResolvedValue({ data: null, error: { message: "column does not exist" } });
+    const read = await readPublicBookingPaused();
+    expect(read).toBeNull();
+    expect(read).not.toBe(false);
+  });
+
+  // The pair read together, so neither assertion above can be satisfied by a
+  // reader hard wired to one answer (L1).
+  it("tells a failing read apart from a stored false on consecutive calls", async () => {
+    maybeSingle.mockResolvedValue({ data: { public_booking_paused: false }, error: null });
+    expect(await readPublicBookingPaused()).toBe(false);
+    maybeSingle.mockResolvedValue({ data: null, error: { message: "read failed" } });
+    expect(await readPublicBookingPaused()).toBeNull();
   });
 });

@@ -2245,3 +2245,56 @@ export async function sendTestWebhook(
     },
   };
 }
+
+/**
+ * Stop or start public booking (#2297). Admin-only.
+ *
+ * The one control behind the kill switch. It writes a single column on
+ * `booking_settings` id=1 and nothing else: the booking route reads that column on
+ * every request, so the change is live on the next one, with no deploy and no cache
+ * to wait out.
+ *
+ * The form posts the STATE it wants rather than toggling whatever is stored. Two
+ * admins reacting to the same incident within a minute of each other would
+ * otherwise leave bookings open while both believed they had stopped them, and this
+ * is a control whose entire value is being certain about what it did (L60).
+ *
+ * Anything that is not an explicit "true" means open, so a stray or malformed
+ * submit fails toward taking bookings rather than toward silently taking none. That
+ * is the opposite direction from the gate itself, which refuses when it cannot read
+ * the flag, and both point the same way: a booker that is down must never be down
+ * because of something nobody chose.
+ */
+export async function setPublicBookingPaused(form: FormData): Promise<void> {
+  const admin = await requireAdmin();
+  const db = supabaseAdmin();
+
+  const paused = String(form.get("paused") ?? "") === "true";
+
+  // Column-scoped upsert, so pausing bookings cannot also clear the default bucket
+  // or the horizon sharing this row. Idempotent: pressing it twice is the same as
+  // pressing it once (assume-it-runs-twice).
+  await db.from("booking_settings").upsert(
+    {
+      id: 1,
+      public_booking_paused: paused,
+      updated_at: new Date().toISOString(),
+      updated_by: admin.id,
+    },
+    { onConflict: "id" },
+  );
+
+  // The audit entry carries the VALUE, not just the fact that somebody touched the
+  // switch. "Were we taking bookings at 3am" is the only question anybody asks of
+  // this record afterwards, and a bare "changed" cannot answer it (L529).
+  await recordAudit({
+    orgId: admin.org_id,
+    actorId: admin.id,
+    action: "booking.settings",
+    details: { public_booking_paused: paused },
+  });
+
+  revalidatePath("/admin/business-hours");
+  revalidatePath("/admin");
+  redirect(`/admin/business-hours${savedQuery(paused ? "booking-paused" : "booking-resumed")}`);
+}

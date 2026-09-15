@@ -151,6 +151,39 @@ export const REFUSAL_CATALOG: RefusalPath[] = [
       "reach it. Same dilution cost as the two above.",
   },
   {
+    id: "booking_paused",
+    surface: "embed booker",
+    outcome: "503, told we are not taking bookings online and to call instead",
+    counting: { kind: "none" },
+    rateSignal: { kind: "none" },
+    why:
+      "Somebody turned the kill switch on a moment ago and is watching the thing that made " +
+      "them do it (#2297). Recording it as an error would page them about their own action, " +
+      "which is how an alert stops being read (L36). Recording it as an attempt would be worse " +
+      "in a subtler way: it would put a window in which EVERY public booking is refused by " +
+      "design into the denominator the real failure share is measured against, so the share " +
+      "would read healthy for as long as the pause lasted. The count that is actually worth " +
+      "having, how many leads met a paused booker, is a total over a window somebody already " +
+      "knows the bounds of rather than a rate, and the `tag=booking-paused` log line answers " +
+      "it. What would change this decision is the switch being left on for days rather than " +
+      "minutes, which is a different feature with a different signal.",
+  },
+  {
+    id: "booking_pause_unreadable",
+    surface: "embed booker",
+    outcome: "503, told something went wrong on our side and to try again in a moment",
+    counting: { kind: "error", code: "booking_pause_unreadable" },
+    rateSignal: { kind: "covered" },
+    why:
+      "The kill switch's flag could not be READ, so the gate refuses rather than booking on " +
+      "(#2297). Nobody chose this and it turns every lead away at once, which is exactly the " +
+      "shape the failure-rate window exists to page on, and it names the code so the reader is " +
+      "not left guessing which refusal is running. It is a separate entry from the pause above " +
+      "rather than sharing one, because a shared id would let a deliberate pause explain away a " +
+      "half-applied migration (L11). The most likely cause is code deployed ahead of its " +
+      "schema, which the migration-lag monitor also pages on, from the other side.",
+  },
+  {
     id: "honeypot",
     surface: "embed booker",
     outcome: "400, the same generic refusal a malformed request gets",
