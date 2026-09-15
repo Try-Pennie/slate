@@ -263,6 +263,11 @@ export interface BookingSettings {
   /** #216: org-wide booking horizon in days (how far ahead leads can book).
    *  Null = unset; the resolver falls back to env then the coded default. */
   horizon_days: number | null;
+  /** #2297: the public booking kill switch. True stops the embed's booking WRITE
+   *  (availability, sync, the key-authed API, reschedule and cancel all keep
+   *  running). Stored NOT NULL DEFAULT false, so a row that predates the column
+   *  reads as open rather than silently holding every booking. */
+  public_booking_paused: boolean;
   updated_at: string;
   updated_by: string | null;
 }

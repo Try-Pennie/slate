@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { redirect } from "next/navigation";
 import type { ReactNode } from "react";
 import { currentUser } from "@/lib/auth";
@@ -5,6 +6,7 @@ import { canManageAgents } from "@/lib/auth/roles";
 import { consoleHiddenFor } from "@/lib/env";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { isActive } from "@/lib/active-user";
+import { readPublicBookingPaused } from "@/lib/booking/settings";
 import { loadLaneHealth } from "@/lib/monitor/lane-health-view";
 import { readAllHeartbeatMs } from "@/lib/monitor/heartbeat";
 import { cronLanesNote, type LaneHealthRow } from "@/lib/monitor/health";
@@ -332,7 +334,34 @@ export default async function AdminHealthPage() {
   };
   const syncHealthRows: SyncHealthRow[] = [...laneRows("sync"), ...laneRows("watch")];
 
+  // #2297: whether the kill switch is on. A hand-set suppression nobody can see is
+  // the one that gets forgotten (L523), and a forgotten pause is a booker silently
+  // taking nothing while every other row on this page reads healthy. The switch
+  // deliberately does NOT lift itself, so this statement is the whole remedy.
+  const publicBookingPaused = await readPublicBookingPaused();
+
   const rows: StatusRow[] = [
+    {
+      key: "public-booking",
+      label: "Online booking",
+      note:
+        "Whether a lead can book a call at all. It is stopped by hand, on the Hours " +
+        "screen, and nothing starts it again on its own.",
+      verdict:
+        publicBookingPaused === null ? "unmeasured" : publicBookingPaused ? "attention" : "ok",
+      detail:
+        publicBookingPaused === null ? (
+          "Could not read the setting. While it cannot be read, the booker refuses rather than guessing, so leads cannot book."
+        ) : publicBookingPaused ? (
+          <>
+            Stopped by hand. Leads cannot book a call.{" "}
+            <Link href="/admin/business-hours">Start it again on Hours</Link>
+          </>
+        ) : (
+          "Running. Leads can book a call."
+        ),
+      inputAgeMs: publicBookingPaused === null ? null : 0,
+    },
     {
       key: "fleet",
       label: "Fleet",

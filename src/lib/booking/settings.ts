@@ -249,3 +249,32 @@ export async function getDefaultBucketCode(): Promise<string | null> {
   const code = row?.default_bucket_code?.trim();
   return code ? code : null;
 }
+
+/**
+ * Is Slate still taking public bookings? (#2297, migration 0122.)
+ *
+ * Read PER REQUEST and deliberately not cached: the switch's whole value is that it
+ * takes effect in seconds without a deploy, and any TTL is the delay somebody would
+ * be staring at while a bad booking went through. The cost is one single-row primary
+ * key read on a path that already makes several, and only on the write.
+ *
+ * **Null means the read FAILED**, never "no pause is stored". A settings row that is
+ * absent entirely is a real answer, not a failure: nobody has ever paused bookings,
+ * so bookings are open. Collapsing the two would hand the gate the benign value on
+ * exactly the fault it exists to survive, which is the #277 shape this repo has
+ * shipped before. `judgePublicBooking` is what decides what null then does, and it
+ * refuses; the reasoning for failing closed lives there and in its test.
+ */
+export async function readPublicBookingPaused(): Promise<boolean | null> {
+  try {
+    const db = supabaseAdmin();
+    const row = unwrap(
+      await db.from("booking_settings").select("public_booking_paused").eq("id", 1).maybeSingle(),
+      "booking_settings.public_booking_paused",
+    ) as Pick<BookingSettings, "public_booking_paused"> | null;
+    return row?.public_booking_paused === true;
+  } catch (err) {
+    log.error("booking-settings", { msg: "public booking pause read failed" }, err);
+    return null;
+  }
+}

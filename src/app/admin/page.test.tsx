@@ -246,6 +246,9 @@ describe("the health page's status rows (#1767)", () => {
     // in. It is empty by construction, since every row it can show has already
     // fired an alert, so on a healthy day it is one more Checked.
     for (const label of [
+      // #2297: the kill switch's state. A pause set by hand and visible nowhere is
+      // a booker taking nothing while every other row here reads healthy (L523).
+      "Online booking",
       "Fleet",
       "Calendar push",
       "Calendar sync",
@@ -257,7 +260,45 @@ describe("the health page's status rows (#1767)", () => {
     // The all-clear is a positive statement, not the absence of a warning.
     expect(pageText()).toMatch(/no agent is in a failure streak/i);
     expect(pageText()).toMatch(/no delivery is stuck/i);
-    expect(screen.getAllByText("Checked")).toHaveLength(5);
+    expect(pageText()).toMatch(/running\. leads can book a call/i);
+    expect(screen.getAllByText("Checked")).toHaveLength(6);
+  });
+
+  // #2297: the kill switch's row, and the two states that are not the ordinary
+  // day. A pause set by hand is visible NOWHERE else on this page, so if this row
+  // reads healthy while bookings are stopped, every other row reads healthy too and
+  // the only symptom is a funnel that went quiet (L523).
+  describe("the online booking row (#2297)", () => {
+    it("says bookings are stopped, and marks the row as needing attention", async () => {
+      mockDb({ booking_settings: { data: { public_booking_paused: true }, error: null } });
+      render(await AdminPage());
+      expect(pageText()).toMatch(/stopped by hand\. leads cannot book a call/i);
+      expect(pageText()).not.toMatch(/running\. leads can book a call/i);
+      expect(screen.getAllByText("Needs attention").length).toBeGreaterThan(0);
+    });
+
+    // The row must also carry the way OUT, because it names a state somebody has to
+    // go and change and this page is where they are standing (L80).
+    it("links to the screen that starts bookings again", async () => {
+      mockDb({ booking_settings: { data: { public_booking_paused: true }, error: null } });
+      render(await AdminPage());
+      const link = screen.getByRole("link", { name: /start it again on hours/i });
+      expect(link.getAttribute("href")).toBe("/admin/business-hours");
+    });
+
+    // The third state. An unreadable setting must not draw either answer: the booker
+    // REFUSES while it cannot be read, so drawing "running" here would tell an admin
+    // the opposite of what leads are meeting (L530, L11).
+    it("says it could not read the setting, and that leads cannot book meanwhile", async () => {
+      mockDb({
+        booking_settings: { data: null, error: { message: "column does not exist" } },
+      });
+      render(await AdminPage());
+      expect(pageText()).toMatch(/could not read the setting/i);
+      expect(pageText()).toMatch(/leads cannot book/i);
+      expect(pageText()).not.toMatch(/running\. leads can book a call/i);
+      expect(screen.getByText("Not measured")).toBeTruthy();
+    });
   });
 
   // #1960: the three states this panel has to keep telling apart, now that it
@@ -306,7 +347,7 @@ describe("the health page's status rows (#1767)", () => {
       // beside a message saying it could not be checked, which is the page
       // contradicting itself in the one place somebody trusts it.
       expect(screen.getByText("Not measured")).toBeTruthy();
-      expect(screen.getAllByText("Checked")).toHaveLength(4);
+      expect(screen.getAllByText("Checked")).toHaveLength(5);
     });
 
     // The OTHER drain. Both feed one panel, and a version that read only the

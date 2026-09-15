@@ -49,7 +49,9 @@ export const SAVE_OUTCOMES = [
   "alerts",
   "booker-copy",
   "booking-horizon",
+  "booking-paused",
   "booking-reasons",
+  "booking-resumed",
   "bucket-created",
   "bucket-routing",
   "bucket-updated",
@@ -72,7 +74,12 @@ export const SAVE_OUTCOME_COPY: Record<Exclude<SaveOutcome, DynamicOutcome>, str
   alerts: "Alert settings saved.",
   "booker-copy": "Booker copy saved.",
   "booking-horizon": "Booking horizon saved.",
+  // #2297: the two directions of the kill switch get two sentences, because the
+  // one thing a reader needs confirmed is WHICH WAY it went, and a shared
+  // "Booking switch saved." would be the word that appears whatever you pressed.
+  "booking-paused": "Online booking is stopped. Leads cannot book a call until you start it again.",
   "booking-reasons": "Booking reasons saved.",
+  "booking-resumed": "Online booking is running again. Leads can book a call.",
   "bucket-created": "Bucket created.",
   "bucket-routing": "Bucket routing saved.",
   "bucket-updated": "Bucket saved.",

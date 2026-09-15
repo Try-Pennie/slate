@@ -63,9 +63,19 @@ const rateLimit = vi.hoisted(() => ({
 }));
 
 const recordApiOutcome = vi.hoisted(() => vi.fn());
+const bookingSettings = vi.hoisted(() => ({
+  // Open by default, so every pre-existing test in this file still exercises the
+  // ordinary path rather than silently testing a paused booker.
+  readPublicBookingPaused: vi.fn(async (): Promise<boolean | null> => false),
+}));
 vi.mock("@/lib/booking/service", () => service);
 vi.mock("@/lib/rate-limit", () => rateLimit);
 vi.mock("@/lib/monitor/record-api-outcome", () => ({ recordApiOutcome }));
+
+// #2297: the kill switch's DB reader is the seam. The pure judge
+// (`judgePublicBooking`) is deliberately NOT mocked, so these drive the real
+// decision, including the direction it fails in.
+vi.mock("@/lib/booking/settings", () => bookingSettings);
 
 import { POST } from "./route";
 
@@ -476,5 +486,80 @@ describe("POST /booking outcome tally (#1313)", () => {
     const res = await post(VALID_BODY);
     expect(res.status).toBe(500);
     expect(outcomes()).toEqual([["error", "internal"]]);
+  });
+});
+
+// The public booking kill switch (#2297). What is asserted here is not that a flag
+// works, it is the three things that make the switch worth having: nothing is
+// created while it is on, a lead's booking budget is not spent on a refusal they
+// did not cause, and a flag that CANNOT be read refuses rather than booking on.
+describe("POST /booking kill switch", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    rateLimit.bookingWithinLimit.mockResolvedValue(true);
+    rateLimit.allowRequest.mockResolvedValue(true);
+    bookingSettings.readPublicBookingPaused.mockResolvedValue(false);
+    service.createBooking.mockResolvedValue({
+      booking: { id: "b1", starts_at: "2026-07-01T15:00:00.000Z", ends_at: "2026-07-01T15:20:00.000Z" },
+      manageUrl: "https://example.test/manage/t",
+    });
+  });
+
+  it("creates nothing and refuses with 503 while bookings are paused", async () => {
+    bookingSettings.readPublicBookingPaused.mockResolvedValue(true);
+    const res = await post(VALID_BODY);
+    expect(res.status).toBe(503);
+    expect(service.createBooking).not.toHaveBeenCalled();
+    const body = await res.json();
+    expect(typeof body.error).toBe("string");
+    expect(body.error.length).toBeGreaterThan(0);
+  });
+
+  // The switch is an operator action, so the lead did nothing wrong. Spending one
+  // of their ten an hour on it would mean a pause that lasted an hour left real
+  // leads throttled after it was lifted.
+  it("does not spend the lead's hourly or contact budget on a paused refusal", async () => {
+    bookingSettings.readPublicBookingPaused.mockResolvedValue(true);
+    await post(VALID_BODY);
+    expect(rateLimit.allowRequest).not.toHaveBeenCalled();
+  });
+
+  // Both halves, so neither assertion can be satisfied by a route hard wired to
+  // one answer (L1): the SAME request books when the flag reads false.
+  it("books exactly as before when the flag reads false", async () => {
+    bookingSettings.readPublicBookingPaused.mockResolvedValue(false);
+    const res = await post(VALID_BODY);
+    expect(res.status).toBe(200);
+    expect(service.createBooking).toHaveBeenCalledTimes(1);
+  });
+
+  // The direction that makes the switch trustworthy. A read failure must not
+  // resolve to "not paused", which is the #277 shape.
+  it("refuses, and creates nothing, when the pause flag cannot be read", async () => {
+    bookingSettings.readPublicBookingPaused.mockResolvedValue(null);
+    const res = await post(VALID_BODY);
+    expect(res.status).toBe(503);
+    expect(service.createBooking).not.toHaveBeenCalled();
+  });
+
+  // An unreadable flag is a fault somebody has to repair; a pause is somebody
+  // holding bookings on purpose. They must not arrive as the same thing, or the
+  // pause explains away the fault (L11).
+  it("says something different to the lead, and records differently, for a fault than for a pause", async () => {
+    bookingSettings.readPublicBookingPaused.mockResolvedValue(true);
+    const pausedBody = await (await post(VALID_BODY)).json();
+    const pausedOutcomes = recordApiOutcome.mock.calls.slice();
+
+    recordApiOutcome.mockClear();
+    bookingSettings.readPublicBookingPaused.mockResolvedValue(null);
+    const faultBody = await (await post(VALID_BODY)).json();
+    const faultOutcomes = recordApiOutcome.mock.calls.slice();
+
+    expect(faultBody.error).not.toBe(pausedBody.error);
+    // The fault is counted as an error under its own code, so the booking
+    // failure-rate window pages on the share and names it. The deliberate pause
+    // is not, because it would page somebody about a thing they just did.
+    expect(faultOutcomes.some((c) => c[0] === "error" && c[2] === "booking_pause_unreadable")).toBe(true);
+    expect(pausedOutcomes.some((c) => c[0] === "error")).toBe(false);
   });
 });

@@ -251,6 +251,19 @@ export const BOOKING_ERROR_COPY = {
   slotTaken: "That time was just taken.",
   generic: "Something went wrong. Please try again.",
   moveFailed: "Could not move your call. Please try again.",
+  /** #2297: bookings are deliberately held.
+   *
+   *  It does NOT say "in a moment", because a pause is lifted by a person deciding to
+   *  lift it and nobody can promise when. It also does not say to call us, which the
+   *  first draft did: the booker carries no phone number anywhere, so that named an
+   *  action the lead has no way to take (L111). "A little later" is the most this can
+   *  honestly offer until there is a number on this screen to give them. */
+  bookingsPaused:
+    "We are not taking bookings online right now. Please try again a little later.",
+  /** #2297: the same refusal for a reason nobody chose. A different sentence, because
+   *  the instruction really is different: this one clears itself and a retry works,
+   *  where the pause above does not (L11). */
+  bookingPauseUnreadable: "Something went wrong on our side. Please try again in a moment.",
 } as const;
 
 /**
