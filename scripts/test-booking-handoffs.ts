@@ -54,8 +54,12 @@ const MIN = 60_000;
   const inSql = [...(check?.[1] ?? "").matchAll(/'([^']+)'/g)].map((m) => m[1]).sort();
   eq(inSql, [...HANDOFF_KINDS].sort(), "the CHECK lists exactly the kinds the code writes");
   assert(
-    /unique\s*\(\s*booking_id\s*,\s*kind\s*\)/i.test(sql),
-    "one row per booking and kind is a database constraint, not application care",
+    /create unique index\s+\w+\s+on booking_handoffs\s*\(\s*booking_id\s*,\s*kind\s*\)\s*where\s+status\s*=\s*'open'/i.test(sql),
+    "one OPEN row per booking and kind is a database constraint, not application care",
+  );
+  assert(
+    !/unique\s*\(\s*booking_id\s*,\s*kind\s*\)/i.test(sql),
+    "and there is no full unique key, which would stop a recurrence after a resolve from being recorded",
   );
   assert(
     /alter table booking_handoffs\s+enable row level security/i.test(sql),
@@ -69,21 +73,25 @@ const MIN = 60_000;
 
 // --- recordHandoff: twice is one row, and a real error is loud ------------------
 
-/** A writer with the constraint the database has: one row per (booking, kind). */
+/** A writer with the constraint the database has: one OPEN row per (booking, kind),
+ *  the partial unique index. `resolve` stands in for the monitor lane settling a row. */
 function fakeWriter() {
-  const rows: NewHandoffRow[] = [];
+  const rows: (NewHandoffRow & { status: "open" | "resolved" })[] = [];
   let failWith: Error | null = null;
   const writer: HandoffWriter = {
     async insertOnce(row) {
       if (failWith) throw failWith;
-      if (rows.some((r) => r.booking_id === row.booking_id && r.kind === row.kind)) {
+      if (rows.some((r) => r.status === "open" && r.booking_id === row.booking_id && r.kind === row.kind)) {
         return { inserted: false };
       }
-      rows.push(row);
+      rows.push({ ...row, status: "open" });
       return { inserted: true };
     },
   };
-  return { writer, rows, fail: (e: Error) => (failWith = e) };
+  const resolve = (bookingId: string, kind: string) => {
+    for (const r of rows) if (r.booking_id === bookingId && r.kind === kind) r.status = "resolved";
+  };
+  return { writer, rows, resolve, fail: (e: Error) => (failWith = e) };
 }
 
 const DUP: HandoffInput = {
@@ -114,6 +122,22 @@ const OWNER: HandoffInput = {
   );
   eq(rows.length, 3, "three distinct (booking, kind) pairs, three rows");
   eq(rows[0].detail, DUP.detail, "the detail is written as given");
+}
+{
+  // A situation that ends and then genuinely recurs on the same booking is a NEW
+  // handoff: the resolved row is history, and the recurrence needs a person again.
+  const { writer, rows, resolve } = fakeWriter();
+  eq(await recordHandoff(writer, OWNER), "recorded", "recurrence: the first refusal is recorded");
+  resolve(OWNER.bookingId, OWNER.kind);
+  eq(await recordHandoff(writer, OWNER), "recorded", "recurrence: a refusal after the first resolved is recorded again");
+  eq(rows.length, 2, "recurrence: two rows for the booking and kind");
+  eq(rows.filter((r) => r.status === "open").length, 1, "recurrence: exactly one of them open");
+  eq(
+    await recordHandoff(writer, OWNER),
+    "already-recorded",
+    "recurrence: a retry of the recurrence is still one open row, not a third",
+  );
+  eq(rows.length, 2, "recurrence: still two rows after the retry");
 }
 {
   const { writer, fail } = fakeWriter();
@@ -164,7 +188,7 @@ const OWNER: HandoffInput = {
   eq(
     await handoffWriter(dup.db).insertOnce({ booking_id: "b", kind: "duplicate-unresolved", detail: {} }),
     { inserted: false },
-    "the unique key refusing the second row reads as already recorded",
+    "the partial unique index refusing a second OPEN row reads as already recorded",
   );
 
   const broken = fakeDb({ error: { code: "42501", message: "permission denied for table booking_handoffs" } });

@@ -5,15 +5,14 @@ import { isHandoffKind, type HandoffInput, type HandoffKind } from "@/lib/handof
  *
  * Safe to call twice, and meant to be: the writers (#2369, #2370) sit behind HTTP
  * endpoints a journey retries, so the same refusal arrives more than once. The
- * guarantee lives in the database, as `unique (booking_id, kind)`, not in a read
- * before the write, because two concurrent callers can both pass a read. A second
- * call is `already-recorded`: never a second row, never an error.
+ * guarantee lives in the database, as a partial unique index on (booking_id, kind)
+ * over OPEN rows, not in a read before the write, because two concurrent callers can
+ * both pass a read. A second call while a row is open is `already-recorded`: never a
+ * second open row, never an error.
  *
- * A second call is a no-op even when the first row has since been RESOLVED. The
- * table holds one row per booking and kind, so a situation that ends and then
- * genuinely recurs on the same booking is not recorded again. That is the stated
- * cost of the constraint: in practice both kinds resolve on a booking starting or
- * leaving the active set, neither of which can be undone.
+ * Once that row has been RESOLVED, the same booking and kind can be recorded again,
+ * and is: a situation that ends and then genuinely recurs needs a person again, and
+ * the resolved row stays as history beside the new open one.
  *
  * A real write error THROWS with its own message. Swallowing it would leave a
  * situation that needs a person recorded nowhere while the caller answered as if it
@@ -30,8 +29,8 @@ export interface NewHandoffRow {
 /** The one write this needs, so the rule is testable without a database. */
 export interface HandoffWriter {
   /**
-   * Insert the row unless one already exists for its (booking_id, kind).
-   * `inserted: false` means one was already there. Throws on any other failure.
+   * Insert the row unless an OPEN one already exists for its (booking_id, kind).
+   * `inserted: false` means one was already open. Throws on any other failure.
    */
   insertOnce: (row: NewHandoffRow) => Promise<{ inserted: boolean }>;
 }

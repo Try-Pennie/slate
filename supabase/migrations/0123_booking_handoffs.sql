@@ -34,11 +34,20 @@ create table booking_handoffs (
   created_at        timestamptz not null default now(),
   notified_at       timestamptz,
   notify_attempts   integer not null default 0,
-  last_notify_error text,
-  -- A retried caller records once. This is the constraint that makes a second write
-  -- impossible, rather than a read that two concurrent callers can both pass.
-  unique (booking_id, kind)
+  last_notify_error text
 );
+
+-- A retried caller records once: at most one OPEN row per booking and kind. This index
+-- is what makes a second open write impossible, rather than a read before the write
+-- that two concurrent callers can both pass. It is PARTIAL on purpose. A situation that
+-- is resolved and then genuinely recurs on the same booking (an owner move refused,
+-- later satisfied, then refused again after another move) needs a person again, so it
+-- gets a fresh row, and the resolved one stays as history. A full unique key would turn
+-- that recurrence into a silent no-op. The writer inserts and reads 23505 as "already
+-- open"; it never upserts, which a partial index could not back (42P10).
+create unique index booking_handoffs_one_open_per_kind
+  on booking_handoffs (booking_id, kind)
+  where status = 'open';
 
 -- The monitor lane reads OPEN rows oldest first, bounded, every tick. A partial index
 -- on the open rows serves that read and the "open and unnotified, oldest first"

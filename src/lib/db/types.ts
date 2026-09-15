@@ -354,7 +354,7 @@ export type BookingHandoffKind = "duplicate-unresolved" | "owner-reassign-refuse
 
 export type BookingHandoffStatus = "open" | "resolved";
 
-/** A booking waiting on a person (#2367). One row per (booking_id, kind). `detail`
+/** A booking waiting on a person (#2367). At most one OPEN row per (booking_id, kind); a recurrence after a resolve is a new row. `detail`
  *  is jsonb, read back through the per kind readers in `src/lib/handoffs/kinds.ts`
  *  rather than trusted as typed. It carries no lead contact data. */
 export interface BookingHandoff {

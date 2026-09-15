@@ -18,7 +18,7 @@ import type { BookingHandoffKind } from "@/lib/db/types";
 
 type Db = ReturnType<typeof supabaseAdmin>;
 
-/** The writer `recordHandoff` needs. The unique (booking_id, kind) key is the dedupe. */
+/** The writer `recordHandoff` needs. The partial unique index on open (booking_id, kind) is the dedupe. */
 export function handoffWriter(db: Db): HandoffWriter {
   return {
     async insertOnce(row) {
@@ -26,8 +26,9 @@ export function handoffWriter(db: Db): HandoffWriter {
         .from("booking_handoffs")
         .insert({ booking_id: row.booking_id, kind: row.kind, detail: row.detail });
       if (!error) return { inserted: true };
-      // A retried caller losing to its own first attempt, which it is always allowed
-      // to lose. Matched on the SQLSTATE, never the message.
+      // An OPEN row for this booking and kind already exists: a retried caller losing
+      // to its own first attempt, which it is always allowed to lose. Matched on the
+      // SQLSTATE, never the message.
       if (isUniqueViolation(error)) return { inserted: false };
       throw new Error(`booking handoff write failed: ${error.message}`);
     },
