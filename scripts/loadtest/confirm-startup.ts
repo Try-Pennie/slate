@@ -290,3 +290,82 @@ export function readConfirmStartup(archive: string): ConfirmStartupReading | nul
   }
   return sawAny ? reading : null;
 }
+
+/**
+ * What each DEFERRED job cost the invocation, by name (#2353).
+ *
+ * Run 34980777198 measured warm confirms at 2.8 to 3.4s of CPU on a 6.5s
+ * invocation, of which about 3.5s was spent AFTER the response had gone. No lead
+ * waits for that span and both Cloudflare's bill and the request CPU bar still
+ * count it, so it is the span most worth apportioning. Until this it was ONE
+ * number, inferred by subtracting the confirm's own log line from the
+ * invocation's wall (`afterProfileMs` above), which cannot separate the webhook
+ * send from the tally beside it.
+ *
+ * **WALL, not CPU, and no amount of instrumenting changes that.** `Date.now()` in
+ * a Worker returns the time of the LAST I/O and does not advance during
+ * execution, and Cloudflare provides no other timer, deliberately: it is the
+ * Spectre mitigation the platform was designed around (the security model page),
+ * and Workers tracing documents the same limitation as a non I/O span reporting
+ * 0ms. So per stage CPU cannot be measured from inside a Worker at all, here or
+ * anywhere else in this repo, and the only true CPU figure available is the
+ * runtime's own ONE number per invocation (`cpuTime`, read above).
+ *
+ * NULL when the archive carries no deferred line at all, never an empty table: a
+ * run whose archive never arrived and a run whose deferred work cost nothing
+ * would otherwise render the same (L98).
+ */
+export interface DeferredSpanReading {
+  /** How many times this job ran. */
+  calls: number;
+  /** Each run's own wall time, and SHORTER than `calls` where a line was unreadable. */
+  ms: number[];
+  /** Runs whose line carried no readable time, counted rather than scored zero (L50). */
+  unreadable: number;
+  /** Runs that ended in a failure, which cost the invocation their time all the same. */
+  failed: number;
+}
+
+const DEFERRED_TAG = "tag=after-response-profile";
+
+/** The `key=value` text of a field written by Slate's own formatter. */
+function textField(line: string, key: string): string | null {
+  const m = new RegExp(`(?:^|\\s)${key}=("[^"]*"|\\S+)`).exec(line);
+  if (!m) return null;
+  const raw = m[1]!;
+  return raw.startsWith('"') ? raw.slice(1, -1) : raw;
+}
+
+export function readDeferredSpans(archive: string): Record<string, DeferredSpanReading> | null {
+  const byContext: Record<string, DeferredSpanReading> = {};
+  let sawAny = false;
+  for (const raw of tailObjects(archive)) {
+    let event: TailEvent;
+    try {
+      event = JSON.parse(raw) as TailEvent;
+    } catch {
+      // Counted by `readConfirmStartup`'s own `unparsable`, which reads the same
+      // archive: counting it twice would report one truncated line as two faults.
+      continue;
+    }
+    const logs = Array.isArray(event.logs) ? (event.logs as TailLog[]) : [];
+    for (const entry of logs) {
+      const text = messageText(entry.message);
+      if (!text.includes(DEFERRED_TAG)) continue;
+      sawAny = true;
+      // An unnamed job is still a job. Dropping it would understate the span this
+      // reading exists to apportion, and the name says which one to look at.
+      const context = textField(text, "context") ?? "(unnamed)";
+      const row = (byContext[context] ??= { calls: 0, ms: [], unreadable: 0, failed: 0 });
+      row.calls += 1;
+      if (textField(text, "failed") === "true") row.failed += 1;
+      const ms = field(text, "ms");
+      // A missing reading is a SHORTER list, never a zero: a zero is the cheapest
+      // possible span and would pull every percentile down while looking like a
+      // measurement (L50, and the same rule the CPU list above follows).
+      if (ms === null) row.unreadable += 1;
+      else row.ms.push(ms);
+    }
+  }
+  return sawAny ? byContext : null;
+}

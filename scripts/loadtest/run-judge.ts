@@ -13,13 +13,19 @@ import { readFileSync, readdirSync, writeFileSync, mkdirSync } from "node:fs";
 import { join, dirname } from "node:path";
 import {
   judgeBookingRun,
+  percentiles,
   JUDGE_EXIT,
   type JudgeInput,
   type JudgedBooking,
   type PlatformReading,
 } from "./judge-booking-run.ts";
 import { ceilingVerdict, exactAddressBound, type CeilingVerdict } from "./preflight-checks.ts";
-import { readConfirmStartup, type ConfirmStartupReading } from "./confirm-startup.ts";
+import {
+  readConfirmStartup,
+  readDeferredSpans,
+  type ConfirmStartupReading,
+  type DeferredSpanReading,
+} from "./confirm-startup.ts";
 import { DIRECT_BOOKING_API_IP_HOURLY_RATE_RULES } from "../../src/lib/rate-limit-core.ts";
 import { burstControlStrength, type BurstDepthReading } from "./burst-target.ts";
 import { REQUEST_CPU_P99_MS } from "./judge-booking-run.ts";
@@ -342,10 +348,20 @@ let confirmStartup: ConfirmStartupReading | null = null;
  * that difference.
  */
 let archiveScheduled: ScheduledReading | null = null;
+/**
+ * What each DEFERRED job cost, by name (#2353).
+ *
+ * The span after the response is where the expensive confirms actually spend
+ * their time, and it was one opaque number. Read from the same archive, so a run
+ * whose archive never arrived reports null for all three rather than three
+ * separate silences.
+ */
+let deferred: Record<string, DeferredSpanReading> | null = null;
 try {
   const archive = readFileSync(join(RESULTS, "tail.jsonl"), "utf8");
   confirmStartup = readConfirmStartup(archive);
   archiveScheduled = readScheduledFromArchive(archive);
+  deferred = readDeferredSpans(archive);
 } catch {
   console.error("note: no archived Worker log was found, so the confirm startup split is unread");
 }
@@ -566,6 +582,30 @@ if (m) {
           (confirmStartup && confirmStartup.impossible > 0
             ? `; ${confirmStartup.impossible} readings could not be right and were floored at zero`
             : ""),
+  );
+  // The deferred span, APPORTIONED by job (#2353). The line above reports the
+  // whole span; this says which job it was, which is the question somebody
+  // optimising it actually has. WALL, like every number a Worker can produce
+  // about itself: no in process timer can apportion CPU (see confirm-startup.ts).
+  lines.push(
+    deferred === null
+      ? "- after the response, by job: the archive carried no deferred span, so the webhook " +
+          "send and the tally beside it were not told apart"
+      : "- after the response, by job: " +
+          Object.entries(deferred)
+            // Dearest first, so a reader meets the expensive job first.
+            .sort((a, b) => (percentiles(b[1].ms)?.p95 ?? 0) - (percentiles(a[1].ms)?.p95 ?? 0))
+            .map(([context, d]) => {
+              // Through the judge's own percentile helper, so the report and the
+              // bars compute a p95 exactly one way (L41).
+              const p = percentiles(d.ms);
+              return (
+                `${context} x${d.calls} p95 ${p?.p95 ?? "n/a"}ms (max ${p?.max ?? "n/a"}ms` +
+                `${d.failed > 0 ? `, ${d.failed} failed` : ""}` +
+                `${d.unreadable > 0 ? `, ${d.unreadable} unread` : ""})`
+              );
+            })
+            .join(", "),
   );
   // WHERE the cron half was read from, on every run (#2352). Without it, a report
   // saying "no cron in the window" cannot be told from one whose dataset was blind,

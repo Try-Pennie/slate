@@ -1,5 +1,6 @@
 import { after } from "next/server";
 import { log } from "@/lib/log";
+import { isLoadtest } from "@/lib/loadtest-guard";
 
 /**
  * Schedule best-effort background work that must OUTLIVE the response.
@@ -31,16 +32,54 @@ export function afterResponse(
   context: string,
   work: () => Promise<unknown>,
 ): void {
-  const run = () =>
-    Promise.resolve()
+  const run = () => {
+    // Under the load test flag ONLY, exactly like the confirm profile and the
+    // Google stub, each deferred job reports its own span (#2353). Run
+    // 34980777198 measured warm confirms spending about 3.5 seconds AFTER the
+    // response had gone, on a path whose CPU the request bar still counts; that
+    // was ONE number, inferred by subtracting the confirm's log line from the
+    // invocation's wall, so nothing could say whether it was the webhook send or
+    // the tally beside it.
+    //
+    // WALL, not CPU, and the distinction is not ours to remove: `Date.now()` in a
+    // Worker returns the time of the LAST I/O and does not advance during
+    // execution, and no other timer is provided (Cloudflare's security model
+    // page, and the Workers tracing limitation that a non I/O span reports 0ms).
+    // So no in process measurement can apportion CPU by stage, here or anywhere,
+    // and anything drawn from this has to say which it is.
+    const profiling = isLoadtest();
+    // Read once and only when profiling: with the flag unset no clock is read at
+    // all, so a production confirm pays nothing rather than paying a little.
+    const startedAt = profiling ? Date.now() : 0;
+    const report = (failed: boolean) => {
+      if (!profiling) return;
+      log.info("after-response-profile", {
+        msg: "deferred work finished",
+        context,
+        // Never negative: the clock can only fail to advance, never go back, and
+        // a negative beside real numbers is something a reader has to decode.
+        ms: Math.max(0, Date.now() - startedAt),
+        // Kept apart from the warning below, which says a job FAILED and is read
+        // by somebody deciding whether to act. This says what it cost, and a
+        // failed job is exactly the one worth profiling, so it is recorded too
+        // rather than being reported as free (L515).
+        failed,
+      });
+    };
+    return Promise.resolve()
       .then(work)
-      .catch((err) =>
-        log.warn("after-response", {
-          msg: "background work failed",
-          context,
-          error: String(err),
-        }),
+      .then(
+        () => report(false),
+        (err) => {
+          report(true);
+          log.warn("after-response", {
+            msg: "background work failed",
+            context,
+            error: String(err),
+          });
+        },
       );
+  };
   try {
     after(run);
   } catch {

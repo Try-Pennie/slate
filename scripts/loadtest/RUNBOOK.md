@@ -665,6 +665,39 @@ catalogue lookup reported the index missing on EVERY run, which is how a check
 stops being read; and behaviour is the stronger proof anyway, because an index
 present but not enforcing reads as fine to a name lookup.
 
+### CPU cannot be apportioned by stage, and the report says what it can (#2353)
+
+Run 34980777198 failed one bar: request CPU p99 **2,777ms** against 2,500ms. It
+was not cold start (3 of 588 confirms were the first on their isolate). The six
+most expensive confirms were WARM, at 2.8 to 3.4s of CPU on a 6.5s invocation,
+with a handler of 2.7 to 3.2s and about **3.5s spent after the response had
+gone**, which is the deferred webhook send and the tally beside it.
+
+**A per stage CPU reading is not obtainable from inside a Worker**, and that is a
+platform design decision rather than a gap. `Date.now()` returns the time of the
+LAST I/O and does not advance during execution, no other timer is provided, and
+concurrency is withheld so none can be constructed: it is the Spectre mitigation
+Workers were built around in 2017 (Cloudflare's own security model page). Workers
+tracing states the same limit from the other side, that a span containing no I/O
+reports 0ms. So `performance.now()` around a stage measures I/O wall, never
+compute, and the only true CPU figure is the runtime's own ONE number per
+invocation. Apportioning that by stage needs a controlled comparison between
+runs, not an in process clock.
+
+What CAN be measured, and now is: **each deferred job's own span, by name.** Every
+`afterResponse` job logs its own line under `SLATE_LOADTEST` (and reads no clock
+at all without it, exactly like the confirm profile), a failed job included,
+because a failing send is exactly the one worth profiling and one recorded only
+on success reads as free. `readDeferredSpans` collects them and the report carries
+a per job line, so "3.5s after the response" stops being one opaque number and
+says whether it is the webhook send or the tally. A line carrying no readable time
+is counted rather than scored zero, because a zero is the cheapest possible span
+and would pull the percentile down while looking like a measurement.
+
+The request CPU finding now SAYS the percentile includes that span and cannot be
+split, with the reason, so the next reader does not re-open the question. Which
+of the two dominates is a question for the next run's report.
+
 ### Where the judge learns that a cron fired (#2352)
 
 **`workersInvocationsScheduled` does not carry a load test Worker's ticks.**
