@@ -25,6 +25,8 @@
 // a different system from the GraphQL analytics read here. Minutes is a lag a
 // bounded poll rides out, which is why `shouldPollAgain` exists.
 
+import { tailObjects } from "./confirm-startup.ts";
+
 /**
  * The `status` value that means the invocation finished normally.
  *
@@ -302,4 +304,171 @@ export function pollTimings(
     return { ok: false, why: "PLATFORM_POLL_INTERVAL_MS must be greater than zero" };
   }
   return { ok: true, timings: { deadlineMs: d, intervalMs: i } };
+}
+
+// --- a second source for the cron half, and the two reconciled (#2352) --------
+//
+// `workersInvocationsScheduled` filtered on the load test script name has never
+// once reported a scheduled invocation. Measured live over 2026-09-15 13:20 to
+// 14:05 UTC: 61 rows for `slate` (production) and ZERO for `slate-loadtest`, while
+// that Worker's ticks were plainly running (`lane_heartbeats` on the branch
+// advanced every minute from 13:58, and run 34889873261's own archived log held 19
+// scheduled invocations at about 27 seconds of CPU each). The same ticks DO appear
+// in `workersInvocationsAdaptive` when it is filtered on the script name, each
+// carrying `scriptName: "__unknown__"` in its own dimensions.
+//
+// So the cron half of the CPU bar had never measured anything, and the judge wrote
+// "with no cron in the window" into a report as a fact about the deployment when it
+// was a fact about the read (L98).
+//
+// The second source is the run's OWN archived `wrangler tail` stream, not the
+// adaptive dataset, and that is a choice. The archive is better evidence: one row
+// per invocation carrying the runtime's own `cpuTime` and the cron expression that
+// fired it, which is exactly what the cron bar judges, where adaptive offers a
+// percentile over a group that mixes requests and crons. And the `__unknown__`
+// script name is an undocumented platform behaviour seen on two Workers on one
+// afternoon; building the bar on it would rest it on something nobody can re-read
+// once the Worker is gone.
+//
+// What the reconciliation exists to prevent is narrower than either source: a
+// platform ZERO that the archive contradicts must never read as an empty window,
+// because that is the one reading which lets the per request CPU budget be applied
+// to a window full of cron lanes.
+
+/**
+ * The scheduled invocations inside one archived `wrangler tail --format json`
+ * stream.
+ *
+ * NULL when the archive holds no tail event at all, and a reading of ZERO when it
+ * held events and none of them was scheduled. A missing archive and a window with
+ * no cron in it are different facts and must not render the same (L98).
+ *
+ * The objects are scanned out by brace depth through `tailObjects`, shared with the
+ * confirm startup reader rather than written twice (L41): the file is PRETTY
+ * PRINTED despite its `.jsonl` name, so a line split reads nothing.
+ */
+export function readScheduledFromArchive(archive: string): ScheduledReading | null {
+  const byCron: Record<string, { invocations: number; worstCpuMs: number }> = {};
+  let worstCpuMs = 0;
+  let invocations = 0;
+  let sawAny = false;
+  for (const raw of tailObjects(archive)) {
+    sawAny = true;
+    let event: { event?: { cron?: unknown }; cpuTime?: unknown };
+    try {
+      event = JSON.parse(raw) as typeof event;
+    } catch {
+      // A half written final event (the stream is killed on a timeout) is not a
+      // tick. Counting one would put a phantom under a number the judge decides
+      // from, and the ticks before it are still read.
+      continue;
+    }
+    const cron = event.event?.cron;
+    // A STRING, because that is what a cron expression is. Anything else is a
+    // payload this cannot read, and inventing a tick from it would be worse than
+    // missing one: the count is what says whether the window may be called empty.
+    if (typeof cron !== "string" || cron.trim() === "") continue;
+    // MILLISECONDS already: the tail reports `cpuTime` in ms, unlike the analytics
+    // API's `cpuTimeUs`. The two units met in one judge once and a reading a
+    // thousand times too small sits comfortably under every budget.
+    const ms = num(event.cpuTime);
+    const seen = (byCron[cron] ??= { invocations: 0, worstCpuMs: 0 });
+    seen.invocations += 1;
+    seen.worstCpuMs = Math.max(seen.worstCpuMs, ms);
+    worstCpuMs = Math.max(worstCpuMs, ms);
+    invocations += 1;
+  }
+  return sawAny ? { invocations, worstCpuMs, byCron } : null;
+}
+
+/** Which source the cron half was actually read from. */
+export const SCHEDULED_SOURCE = {
+  /** Cloudflare's `workersInvocationsScheduled` dataset. */
+  platform: "platform",
+  /** The run's own archived `wrangler tail` stream. */
+  archive: "archive",
+  /** Both said zero, which is the only way a window may be called empty. */
+  agreedEmpty: "agreed-empty",
+} as const;
+
+export type ScheduledSource = (typeof SCHEDULED_SOURCE)[keyof typeof SCHEDULED_SOURCE];
+
+export type ScheduledReconciliation =
+  | {
+      ok: true;
+      source: ScheduledSource;
+      reading: ScheduledReading;
+      /** What the reader should know about how this was arrived at, or null when nothing. */
+      why: string | null;
+    }
+  | { ok: false; why: string };
+
+/**
+ * The cron half, from whichever source can actually answer, and refused when
+ * neither can.
+ *
+ * The rule that matters: **an archive reporting zero is never on its own evidence
+ * of an empty window.** The stream is attached by hand under a timeout, so it can
+ * start after the tick it would have seen. Only the two sources AGREEING on zero
+ * may conclude that, and that conclusion is what unlocks the per request CPU
+ * budget, so it is the one worth being strict about.
+ */
+export function reconcileScheduled(args: {
+  platform: ReadResult<ScheduledReading>;
+  archive: ScheduledReading | null;
+}): ScheduledReconciliation {
+  const { platform, archive } = args;
+
+  if (platform.ok && platform.reading.invocations > 0) {
+    return { ok: true, source: SCHEDULED_SOURCE.platform, reading: platform.reading, why: null };
+  }
+
+  if (platform.ok) {
+    // The dataset answered ZERO. Whether that is a measurement or a blind spot is
+    // decided entirely by the archive.
+    if (archive === null) {
+      return {
+        ok: false,
+        why:
+          "the scheduled invocations dataset reported none for this Worker and no archived log " +
+          "was read, so nothing can say whether a cron fired. That dataset has never once " +
+          "reported a tick for a load test Worker (#2352), so its zero is not a reading.",
+      };
+    }
+    if (archive.invocations > 0) {
+      return {
+        ok: true,
+        source: SCHEDULED_SOURCE.archive,
+        reading: archive,
+        why:
+          `the scheduled invocations dataset reported none for this Worker while this run's own ` +
+          `archived log holds ${archive.invocations}, so the cron half was read from the log. ` +
+          "That dataset does not carry a load test Worker's ticks (#2352); the log carries one " +
+          "row per invocation with its own CPU, which is what this bar judges.",
+      };
+    }
+    return { ok: true, source: SCHEDULED_SOURCE.agreedEmpty, reading: archive, why: null };
+  }
+
+  // The dataset REFUSED, so it says nothing either way.
+  if (archive !== null && archive.invocations > 0) {
+    return {
+      ok: true,
+      source: SCHEDULED_SOURCE.archive,
+      reading: archive,
+      why:
+        `${platform.why}, so the cron half was read from this run's own archived log, which holds ` +
+        `${archive.invocations} scheduled invocations.`,
+    };
+  }
+  if (archive !== null) {
+    return {
+      ok: false,
+      why:
+        `${platform.why}, and this run's archived log holds no scheduled invocation either. An ` +
+        "archive alone cannot call a window empty: the stream is attached by hand under a " +
+        "timeout, so it can begin after the tick it would have seen.",
+    };
+  }
+  return { ok: false, why: platform.why };
 }

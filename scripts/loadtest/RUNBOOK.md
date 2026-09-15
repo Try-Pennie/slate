@@ -610,6 +610,38 @@ catalogue lookup reported the index missing on EVERY run, which is how a check
 stops being read; and behaviour is the stronger proof anyway, because an index
 present but not enforcing reads as fine to a name lookup.
 
+### Where the judge learns that a cron fired (#2352)
+
+**`workersInvocationsScheduled` does not carry a load test Worker's ticks.**
+Measured live over 2026-09-15 13:20 to 14:05 UTC: 61 rows for `slate`
+(production) and ZERO for `slate-loadtest`, while the branch's `lane_heartbeats`
+advanced every minute from 13:58 and the run's own archived log held 19 scheduled
+invocations at about 27 seconds of CPU each. The same ticks DO appear in
+`workersInvocationsAdaptive` filtered on the script name, each carrying
+`scriptName: "__unknown__"` in its own dimensions.
+
+So on every load run the cron half of the CPU bar measured nothing, and the judge
+wrote "with no cron in the window" into a report as a fact about the deployment
+when it was a fact about the read. That zero is also what unlocks the per request
+CPU budget, so the false reading was on the load bearing branch.
+
+The second source is the run's own archived `wrangler tail` stream, and it is the
+better evidence: one row per invocation carrying the runtime's own `cpuTime` and
+the cron expression that fired it, where the adaptive dataset offers a percentile
+over a group that mixes requests and crons. The `__unknown__` script name was
+deliberately not built on: it is an undocumented behaviour seen on two Workers on
+one afternoon, and nothing can re-read it once the Worker is gone.
+
+`reconcileScheduled` (`platform-reading.ts`) settles the two, and the rule that
+matters is that **an archive reporting zero is never on its own evidence of an
+empty window**: the stream is attached by hand under a timeout, so it can begin
+after the tick it would have seen. A window may be called empty only when both
+sources say zero, which the judge asks for by name (`cronSource` must be
+`agreed-empty`) rather than trusting its caller. Every report now carries a line
+saying how many ticks were counted and WHICH source counted them.
+
+Pinned offline by `scripts/test-loadtest-scheduled-source.ts`.
+
 ### What the judge refuses to do
 
 **It will not judge an incomplete run.** Three driver files out of four, or a
@@ -634,7 +666,7 @@ happened to arrive.
 | freshness | the worst oldest-bucket age across the window under 6 minutes |
 | the per address ceiling | its own step, run AFTER the steady pass so it has the API key's budget to itself, sends from one address until the deployment CREDITS a refusal to the per address ceiling, up to past the exact 1,200 an hour cap. It reads back both echoes: the address it was keyed on (unidentified, several, or unechoed each get their own conclusion) and WHICH ceiling refused, so a per key refusal is never counted as proof of the per address one (#2339) |
 | confirm startup | what a lead waits BEFORE the confirm begins, read from the run's own archived log and judged only on the confirms that were the FIRST on their isolate, under `REQUEST_STARTUP_P95_MS` (what is left of the latency bar once the confirm's own CPU share is taken out). Three ways it FAILS without a slow start: no archive at all, an archive holding nothing readable (the stream is written under a `wrangler tail` timeout, so its last line is routinely half written), and a reading in which nothing was ever the first on its isolate. Each has its own sentence, because nothing to check is never a pass (#2340, L98) |
-| platform | CPU p99 under the REQUEST budget (`REQUEST_CPU_P99_MS`, half the latency bar, and applied only to a window with no cron in it), the cron half under `limits.cpu_ms`, and **no invocation outcome other than `ok`**. It used to borrow the 200ms LANE budget, which is a different question about a scheduled tick (#2321). The finding NAMES the startup split beside it, because this percentile counts the isolate's own startup as the confirm's compute (#2340) |
+| platform | CPU p99 under the REQUEST budget (`REQUEST_CPU_P99_MS`, half the latency bar, and applied only to a window with no cron in it), the cron half under `limits.cpu_ms`, and **no invocation outcome other than `ok`**. The cron half is reconciled against the run's own archived log (#2352): `workersInvocationsScheduled` has never once reported a tick for a load test Worker, so a zero from it alone is the reader being blind and the window may only be called empty when BOTH sources say so. It used to borrow the 200ms LANE budget, which is a different question about a scheduled tick (#2321). The finding NAMES the startup split beside it, because this percentile counts the isolate's own startup as the confirm's compute (#2340) |
 | the fault pass | at `SLATE_LOADTEST_FAULT_PCT=10`, zero 5xx, and a pass that made no requests fails rather than passing on an empty sample. A pass whose deployment reported a DIFFERENT percentage is incomplete, and zero is the case that matters: it passes the bar having injected nothing |
 
 **Subrequests are deliberately not a bar**, and that is a decision rather than an

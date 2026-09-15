@@ -194,7 +194,11 @@ function passing(): JudgeInput {
       statuses: { success: 610 },
       // No cron fired inside the window, which is what makes the adaptive
       // percentile request only and so judgeable against the per request budget.
+      // `agreed-empty` because a zero is only a reading when BOTH the analytics
+      // dataset and the run's own archived log say so (#2352): that dataset alone
+      // has never once reported a tick for a load test Worker.
       cron: { invocations: 0, worstCpuMs: 0, byCron: {} },
+      cronSource: "agreed-empty" as const,
     },
     faultPass: { attempts: 100, fiveXx: 0, faultPct: 10 },
     expectedLegs: { burstDrivers: burstResults.length, faultPct: 10 },
@@ -943,7 +947,7 @@ const bars = (r: ReturnType<typeof judgeBookingRun>) => r.findings.map((f) => f.
   // The same, for the invocation CONTROL: a lagging pipeline must not erase a
   // measured failure either.
   const r = broken((i) => {
-    i.platform = { invocations: 1, cpuMsP99: 10, subrequests: 8, statuses: { success: 1 }, cron: { invocations: 0, worstCpuMs: 0, byCron: {} } };
+    i.platform = { invocations: 1, cpuMsP99: 10, subrequests: 8, statuses: { success: 1 }, cron: { invocations: 0, worstCpuMs: 0, byCron: {} }, cronSource: "agreed-empty" };
     i.faultPass = { attempts: 30, fiveXx: 3, faultPct: 10 };
   });
   assert(
