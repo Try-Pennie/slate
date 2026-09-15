@@ -94,7 +94,11 @@ env:
 jobs:
   preflight:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # Twenty five rather than ten (#2347): the preflight now WAITS for the scheduled
+    # invocation to start reaching a freshly created Worker (measured at about six
+    # minutes on 2026-09-15, and its own deadline is twelve), then drives the
+    # hydration lane by hand until every seeded calendar is covered.
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
       - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
@@ -105,10 +109,14 @@ jobs:
           node-version: 24
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - name: One booking, and the judge's own overlap check
+      - name: Warm the deployment, then one booking and the judge's own overlap check
         env:
           SLATE_BASE: ${{ vars.LOADTEST_BASE_URL }}
           BOOKING_API_KEY: ${{ secrets.LOADTEST_BOOKING_API_KEY }}
+          # The warm up drives /api/cron/hydrate-calendars and /api/cron/recompute
+          # by hand (#2347), because hydration's own cadence is fifteen minutes at
+          # twelve calendars a tick and a 93 agent roster is two hours away on it.
+          CRON_SECRET: ${{ secrets.LOADTEST_CRON_SECRET }}
           SUPABASE_URL: ${{ secrets.LOADTEST_SUPABASE_URL }}
           SUPABASE_SECRET_KEY: ${{ secrets.LOADTEST_SUPABASE_SECRET_KEY }}
         run: node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/loadtest/preflight.ts
@@ -422,7 +430,10 @@ jobs:
           path: results/
 
   judge:
-    needs: [setup-burst, drive, burst, freshness, ceiling, archive, fault]
+    # `preflight` is here only so this job can SAY the environment is still
+    # standing when the preflight refused (#2347); every other leg already depends
+    # on it, so it adds no ordering.
+    needs: [preflight, setup-burst, drive, burst, freshness, ceiling, archive, fault]
     # Judged even when a driver failed: the judge's own job is to say the run was
     # incomplete, and skipping it would leave that unsaid.
     if: always()
@@ -489,12 +500,37 @@ jobs:
         with:
           name: loadtest-report
           path: reports/
+      # A skipped teardown is only visible as a grey box in the run graph, which
+      # reads the same as a step that was never configured. Say it in words, where
+      # the reader already is (#2347).
+      - if: always() && needs.preflight.result == 'failure'
+        name: Say the deployment is still standing
+        run: |
+          {
+            echo "## The preflight refused, so nothing was torn down"
+            echo
+            echo "The load test Worker and the Supabase branch are still there. Nothing was"
+            echo "measured, so there is nothing to keep: read the preflight job's own message,"
+            echo "fix what it names, and dispatch this workflow again against the same"
+            echo "deployment. Rebuilding the environment is about fifteen minutes and is not"
+            echo "needed."
+          } >> "$GITHUB_STEP_SUMMARY"
 
   teardown:
-    needs: judge
+    needs: [judge, preflight]
     # Only after the judge has run AND uploaded, whatever it concluded. A teardown
     # that raced the judge would delete the branch the judge reads from.
-    if: always() && inputs.teardown
+    #
+    # And NOT when the preflight refused (#2347). A preflight refusal means nothing
+    # was measured: the run never booked anything, so there is no evidence for the
+    # teardown to outlive, and destroying the Worker and the branch costs about
+    # fifteen minutes to rebuild before the same dispatch can be tried again. That
+    # is exactly what happened on 2026-09-15, when a preflight that failed on a
+    # cold cache forty seconds after the deploy tore down the environment it was
+    # about to test. The deployment is left standing to be re-dispatched, and the
+    # judge's summary says so; it still tears down after a run the preflight
+    # PASSED, whatever the judge concluded.
+    if: always() && inputs.teardown && needs.preflight.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:

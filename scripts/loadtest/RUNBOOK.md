@@ -587,6 +587,61 @@ cancel-in-progress: false }`: a half run leaves a seeded branch, a deployment an
 six hundred bookings behind, and the next run seeded on top of them would report
 clashes this one created. Every job carries a timeout.
 
+### A freshly created deployment is not warm, and the preflight waits for it (#2347)
+
+**A Worker that was created a minute ago will offer no times, and nothing is
+wrong.** Run 34974744173 failed preflight forty seconds after the deploy on
+`bucket 112 is offering no times`, and two minutes later the same deployment
+offered 42. Teardown runs on `if: always()`, so that refusal destroyed the Worker
+and the branch it had not tested, costing about fifteen minutes to rebuild.
+
+Two things about a brand new Worker, both measured on 2026-09-15:
+
+- **Cron delivery is not immediate and is not a fixed delay.** One Worker received
+  its first scheduled invocation about six minutes after it was created; the one
+  before it never received one in the seventeen minutes it lived. Until then
+  `lane_heartbeats` is empty and every bucket answers `emptyBecause: busy`, which
+  reads like a roster problem and is not one.
+- **Hydration is far slower than one recompute cycle.** `hydrate-calendars` runs
+  every fifteen minutes and covers twelve calendars a tick, so a 93 agent roster is
+  about two hours away on its own cadence. Buckets start offering times as soon as
+  the first dozen are hydrated (bucket 112 offered 156 times with 24 of 93
+  hydrated), so **"offering at least one time" is much the weaker condition**: a run
+  dispatched there loads a fraction of the roster the shape claims to test.
+
+So the preflight climbs a three step ladder before it books anything, and it
+**drives** the lanes rather than waiting on their cadence, which is why the job
+holds `LOADTEST_CRON_SECRET`:
+
+1. **wait** for any of the every minute lanes (`sync`, `outbox`, `selfheal`) to
+   stamp a heartbeat inside `WARMUP_CRON_FRESH_MS`. Waited for and never driven, or
+   a stamp the preflight wrote itself would answer the question with its own work
+   (L58). Deliberately not `recompute`, which step three drives. The deadline is
+   `WARMUP_CRON_DELIVERY_DEADLINE_MS` (twelve minutes, twice the longest delivery
+   measured);
+2. **drive** `/api/cron/hydrate-calendars` until `agent_calendars.sync_window_to`
+   is set on EVERY calendar of every bookable agent. About eight passes at the
+   seeded roster, a few seconds each. Drives that cover nothing more three times
+   running are a fault rather than a wait, and say so;
+3. **drive** `/api/cron/recompute` until the bucket offers times.
+
+Two states are refused immediately rather than waited on, because nothing the
+preflight can drive would change them: a branch with no bookable agents (the seed
+did not run) and a bookable agent with no `agent_calendars` row (the seed is
+incomplete). Each carries its own wording; one message answering for another is how
+somebody spends an afternoon on a cache that was never the problem (L11).
+
+The ladder is pure (`warmupStep` in `preflight-checks.ts`) and pinned offline by
+`scripts/test-loadtest-warmup.ts`, so every rung and every refusal is driven with
+no deployment, no database and no real waiting.
+
+**A preflight refusal no longer tears anything down.** `teardown` requires
+`needs.preflight.result == 'success'`, so a run that measured nothing leaves the
+Worker and the branch standing to be re-dispatched, and the judge writes that into
+the run summary in words (a skipped job is a grey box that reads the same as one
+nobody configured). Teardown still runs after a preflight that PASSED, whatever the
+judge concluded.
+
 ### Before anything is believed: the preflight
 
 `scripts/loadtest/preflight.ts` runs first and everything downstream rests on it.

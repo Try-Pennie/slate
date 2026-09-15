@@ -16,7 +16,16 @@
 import { writeFileSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { overlaps, type JudgedBooking } from "./judge-booking-run.ts";
-import { stubShapedEventId, faultModeVerdict, overlappingProbeWindow } from "./preflight-checks.ts";
+import {
+  stubShapedEventId,
+  faultModeVerdict,
+  overlappingProbeWindow,
+  warmupStep,
+  WARMUP_HYDRATE_PAUSE_MS,
+  WARMUP_RECOMPUTE_PAUSE_MS,
+  type WarmupReading,
+  type WarmupProgress,
+} from "./preflight-checks.ts";
 import { offeredSlots, loadtestPhone } from "./book-plan.ts";
 import { PRODUCTION_SUPABASE_REF, PRODUCTION_HOST } from "../../src/lib/loadtest-guard.ts";
 
@@ -40,6 +49,10 @@ const API_KEY = need("BOOKING_API_KEY");
 const SUPA_URL = need("SUPABASE_URL");
 const SUPA_KEY = need("SUPABASE_SECRET_KEY");
 const RUN_ID = need("RUN_ID");
+// The preflight DRIVES the hydration and recompute lanes by hand rather than
+// waiting for their cadence (#2347): hydration is every fifteen minutes at twelve
+// calendars a tick, so a 93 agent roster is two hours away on its own schedule.
+const CRON_SECRET = need("CRON_SECRET");
 // env-ok: PREFLIGHT_CODE (optional; defaults to 112, the busiest real code, and a
 // hand run would only change it to reach a different pool)
 // env-ok: PREFLIGHT_OUT (optional; defaults to results/preflight.json, which is
@@ -93,23 +106,172 @@ function fail(why: string): never {
   console.log("ok: the deployment reports load test mode and is injecting no faults");
 }
 
+// --- half half: the deployment is WARM before anything is measured (#2347) -----
+//
+// A Worker created ninety seconds ago is not the deployment the run wants to test:
+// its crons have not been delivered yet, and the calendars the seed wrote have
+// never been hydrated, so every bucket answers `emptyBecause: busy`. Failing there
+// destroyed a whole environment on 2026-09-15, because teardown runs on
+// `if: always()`.
+//
+// The LADDER is pure and lives in `preflight-checks.ts`; here there are only the
+// reads and the two lanes it asks to be driven. Waiting is on the CONDITION rather
+// than on a fixed delay (L290), and every way of giving up names what it measured.
+
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+/**
+ * The every minute lanes whose stamp says the scheduled invocation is reaching
+ * this Worker.
+ *
+ * Deliberately NOT `recompute`, which this preflight drives by hand a few lines
+ * down: a stamp written by our own drive would answer the delivery question with
+ * our own work (L58). Any of the three counts, so one lane erroring does not read
+ * as a Worker receiving no crons.
+ */
+const DELIVERY_LANES = ["sync", "outbox", "selfheal"] as const;
+
+function stampAgeMs(iso: unknown, nowMs: number): number | null {
+  const ms = Date.parse(String(iso ?? ""));
+  // A stamp that cannot be read answers null rather than NaN: every comparison
+  // against NaN is false, so an unreadable stamp left alone would land on the
+  // healthy side of the freshness bound and read as a Worker receiving its crons.
+  return Number.isFinite(ms) ? nowMs - ms : null;
+}
+
+interface WarmupObservation {
+  reading: WarmupReading;
+  slots: string[];
+}
+
+async function observe(cronConfirmed: boolean): Promise<WarmupObservation> {
+  // cap-safe: the branch roster is bounded by the seeded agent count (200 at the
+  // design target), so this can never fill a PostgREST page
+  const agents = await rows("users?select=id&bookable=is.true&deactivated_at=is.null");
+  // cap-safe: one row per (agent, calendar) over that same bounded roster
+  const cals = await rows("agent_calendars?select=user_id,sync_window_to");
+
+  const byUser = new Map<string, { rows: number; hydrated: number }>();
+  for (const c of cals) {
+    const id = String(c.user_id);
+    const e = byUser.get(id) ?? { rows: 0, hydrated: 0 };
+    e.rows++;
+    if (c.sync_window_to !== null && c.sync_window_to !== undefined) e.hydrated++;
+    byUser.set(id, e);
+  }
+  let missing = 0;
+  let fullyHydrated = 0;
+  for (const a of agents) {
+    const e = byUser.get(String(a.id));
+    if (!e || e.rows === 0) missing++;
+    // EVERY calendar, not any: an agent half read is an agent whose free time we
+    // cannot state, and the run would offer them anyway.
+    else if (e.hydrated === e.rows) fullyHydrated++;
+  }
+
+  let laneStampAgeMs: number | null = null;
+  if (!cronConfirmed) {
+    // cap-safe: three named lanes
+    const stamps = await rows(
+      `lane_heartbeats?select=lane,last_ran_at&lane=in.(${DELIVERY_LANES.join(",")})`,
+    );
+    const now = Date.now();
+    for (const s of stamps) {
+      const age = stampAgeMs(s.last_ran_at, now);
+      if (age === null) continue;
+      if (laneStampAgeMs === null || age < laneStampAgeMs) laneStampAgeMs = age;
+    }
+  }
+
+  const res = await fetch(`${SLATE_BASE}/api/availability?bucket=${CODE}`);
+  if (!res.ok) {
+    fail(`availability for bucket ${CODE} answered ${res.status}, so no control booking could be made`);
+  }
+  const payload = (await res.json()) as { emptyBecause?: { kind?: unknown } | null };
+  // Through the shared reader (#2261): all three readers of this payload declared it
+  // as `{ start }` objects and it is a list of ISO strings, so every one of them saw
+  // an empty list on a healthy response and this preflight could never have passed.
+  const slots = offeredSlots(payload);
+  const kind = payload.emptyBecause?.kind;
+  return {
+    slots,
+    reading: {
+      laneStampAgeMs,
+      bookableAgents: agents.length,
+      agentsMissingCalendarRow: missing,
+      agentsFullyHydrated: fullyHydrated,
+      offeredSlots: slots.length,
+      emptyBecause: typeof kind === "string" ? kind : null,
+    },
+  };
+}
+
+async function driveLane(lane: string): Promise<string> {
+  const res = await fetch(`${SLATE_BASE}/api/cron/${lane}`, {
+    headers: { Authorization: `Bearer ${CRON_SECRET}` },
+  });
+  if (!res.ok) {
+    // Its own refusal, because "the cron secret is wrong" and "the cache is still
+    // cold" send two different people to two different places (L11).
+    fail(
+      `driving /api/cron/${lane} answered ${res.status}, so the preflight cannot warm this ` +
+        `deployment: ${(await res.text()).slice(0, 200)}`,
+    );
+  }
+  return JSON.stringify(await res.json().catch(() => ({}))).slice(0, 240);
+}
+
+const warmStartMs = Date.now();
+const progress: WarmupProgress = {
+  elapsedMs: 0,
+  cronConfirmed: false,
+  hydrationDrives: 0,
+  drivesSinceHydrationProgress: 0,
+  recomputeDrives: 0,
+};
+let bestHydrated = -1;
+let slots: string[] = [];
+
+for (;;) {
+  const { reading, slots: offered } = await observe(progress.cronConfirmed);
+  slots = offered;
+  progress.elapsedMs = Date.now() - warmStartMs;
+  if (reading.agentsFullyHydrated > bestHydrated) {
+    bestHydrated = reading.agentsFullyHydrated;
+    progress.drivesSinceHydrationProgress = 0;
+  }
+
+  const step = warmupStep(reading, progress);
+  if (step.action === "ready") {
+    console.log(`ok: ${step.why}`);
+    break;
+  }
+  if (step.action === "give-up") fail(step.why);
+  if (step.action === "wait-for-cron") {
+    console.log(`waiting for the crons: ${step.why}`);
+    await sleep(step.waitMs);
+    continue;
+  }
+  // Reaching a driving step means the delivery gate was satisfied on this reading,
+  // and it is not asked again: from here the preflight stamps lanes itself.
+  progress.cronConfirmed = true;
+  if (step.action === "hydrate") {
+    const answered = await driveLane("hydrate-calendars");
+    progress.hydrationDrives++;
+    progress.drivesSinceHydrationProgress++;
+    console.log(`hydrate drive ${progress.hydrationDrives} (${step.why}): ${answered}`);
+    await sleep(WARMUP_HYDRATE_PAUSE_MS);
+  } else {
+    const answered = await driveLane("recompute");
+    progress.recomputeDrives++;
+    console.log(`recompute ${progress.recomputeDrives} (${step.why}): ${answered}`);
+    await sleep(WARMUP_RECOMPUTE_PAUSE_MS);
+  }
+}
+
 // --- half one: one real booking leaves the rows the judge looks for ------------
 
 const externalId = `${RUN_ID}-preflight`;
-const avail = await fetch(`${SLATE_BASE}/api/availability?bucket=${CODE}`);
-if (!avail.ok) {
-  fail(`availability for bucket ${CODE} answered ${avail.status}, so no control booking could be made`);
-}
-// Through the shared reader (#2261): all three readers of this payload declared it
-// as `{ start }` objects and it is a list of ISO strings, so every one of them saw
-// an empty list on a healthy response and this preflight could never have passed.
-const slots = offeredSlots(await avail.json());
-if (slots.length === 0) {
-  // Nothing to book is not a pass: the run that follows would have nothing to book
-  // either, and its empty result would look like a booking path that refused
-  // everything rather than a branch offering no times (L98).
-  fail(`bucket ${CODE} is offering no times, so the control could not make a booking`);
-}
 
 const res = await fetch(`${SLATE_BASE}/api/bookings`, {
   method: "POST",
