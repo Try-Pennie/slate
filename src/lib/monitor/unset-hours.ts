@@ -16,9 +16,36 @@
 // It deliberately does not report an agent with no schedule row, or a row with no
 // rules. That is `agents_without_schedule`'s finding (#838, #1670), and two checks
 // naming the same person for the same fact is one alert too many.
+//
+// THE GRACE. Every new hire is seeded with the default week, so the check as first
+// shipped named each of them the day they went bookable and repeated every 24 hours
+// until somebody edited their hours. That is a daily message about a state normal
+// onboarding clears on its own, which is how an alert stops being read at all (L36).
+// So the ALERT waits two days; the predicate below does not, because
+// `verify:parallel-run-readiness` asks a different question (is the shadow run
+// trustworthy at this instant, before real leads are sent) and wants everybody who
+// is unset, however new.
+//
+// The age is measured from a STORED stamp, `hours_set_at` when the writer recorded
+// one and the row's `created_at` for the rows written before the stamp existed, so
+// it really ages (L74). A stamp nothing can read is reported rather than spared: a
+// NaN comparison lands on the quiet branch by default, which would disable the
+// alert silently.
+import { parseStampMs } from "@/lib/date/stamp";
 import type { OrgDefaults } from "@/lib/schedule-core";
 
 export const AGENTS_ON_UNSET_HOURS_KEY = "agents_on_unset_hours";
+
+const DAY_MS = 24 * 60 * 60_000;
+
+/**
+ * How long an agent may sit on the seeded week before the alert names them. Two
+ * days covers the ordinary case (a hire goes bookable, an admin or the cal.com
+ * import sets their hours within a day) without covering a week of real leads.
+ * The copy renders this number rather than spelling it out, so a change here
+ * cannot leave the message claiming a window nobody enforces.
+ */
+export const UNSET_HOURS_GRACE_MS = 2 * DAY_MS;
 
 /** Who or what last wrote an agent's week. null = written before the stamp existed. */
 export type HoursSource = "seed" | "agent" | "admin" | "calcom-import";
@@ -34,7 +61,16 @@ export interface UnsetHoursSchedule {
   user_id: string;
   timezone: string;
   hours_source: HoursSource | null;
+  /** When the recorded writer wrote this week; null = written before the stamp existed. */
+  hours_set_at: string | null;
+  /** The row's own age, the only anchor a pre stamp row has. */
+  created_at: string;
   rules: { weekday: number; start_minute: number; end_minute: number }[];
+}
+
+/** An unset agent plus when their week was last written. null = the stamp is unreadable. */
+export interface UnsetHoursFinding extends UnsetHoursAgent {
+  unsetSinceMs: number | null;
 }
 
 export interface UnsetHoursInput {
@@ -75,37 +111,74 @@ export function isUnsetHours(schedule: UnsetHoursSchedule, org: OrgDefaults): bo
   return weekKey(schedule.timezone, schedule.rules) === seedWeekKey(org);
 }
 
-export function agentsOnUnsetHours(input: UnsetHoursInput): UnsetHoursAgent[] {
+/**
+ * When this week was written, by the stamp if the writer left one and by the row's
+ * age otherwise. null means the date is there and unreadable, which is a finding
+ * of its own rather than a reason to stay quiet.
+ */
+export function unsetSinceMs(schedule: UnsetHoursSchedule): number | null {
+  return parseStampMs(schedule.hours_set_at ?? schedule.created_at);
+}
+
+export function agentsOnUnsetHours(input: UnsetHoursInput): UnsetHoursFinding[] {
   const byUser = new Map(input.schedules.map((s) => [s.user_id, s]));
-  return input.agents.filter((a) => {
+  const out: UnsetHoursFinding[] = [];
+  for (const a of input.agents) {
     const s = byUser.get(a.id);
-    return s !== undefined && isUnsetHours(s, input.org);
-  });
+    if (s === undefined || !isUnsetHours(s, input.org)) continue;
+    out.push({ ...a, unsetSinceMs: unsetSinceMs(s) });
+  }
+  return out;
+}
+
+/**
+ * Those the alert speaks about: unset for longer than the grace, or unset for a
+ * length nothing can measure. The clock is passed in, never read here, so the
+ * boundary is testable and the alert preview renders the same text every run.
+ */
+export function agentsPastUnsetHoursGrace(findings: UnsetHoursFinding[], nowMs: number): UnsetHoursFinding[] {
+  return findings.filter((f) => f.unsetSinceMs === null || nowMs - f.unsetSinceMs > UNSET_HOURS_GRACE_MS);
 }
 
 const NAME_CAP = 8;
-function who(a: UnsetHoursAgent): string {
+const GRACE_DAYS = Math.round(UNSET_HOURS_GRACE_MS / DAY_MS);
+
+/** Who, and how long they have sat there, which is the fact that earns the message. */
+function who(a: UnsetHoursFinding, nowMs: number): string {
   const name = a.name?.trim() || a.email || a.id;
-  return a.email && a.email !== name ? `${name} (${a.email})` : name;
+  const label = a.email && a.email !== name ? `${name} (${a.email})` : name;
+  const days = a.unsetSinceMs === null ? null : Math.floor((nowMs - a.unsetSinceMs) / DAY_MS);
+  const how = days === null ? "since an unreadable date" : `${days} ${days === 1 ? "day" : "days"}`;
+  return `${label}, ${how}`;
 }
 
-/** The page: what a lead would meet, who, and where the fix lives. */
-export function formatUnsetHoursAlert(agents: UnsetHoursAgent[]): string {
+/** The page: what a lead would meet, who, how long, and where the fix lives. */
+export function formatUnsetHoursAlert(agents: UnsetHoursFinding[], nowMs: number): string {
   const n = agents.length;
-  const lines = agents.slice(0, NAME_CAP).map(who);
+  // Longest first, so the one nobody has got to in a month leads. An unreadable
+  // stamp sorts to the front for the same reason: it is the least understood.
+  const longestFirst = [...agents].sort((a, b) => (a.unsetSinceMs ?? 0) - (b.unsetSinceMs ?? 0));
+  const lines = longestFirst.slice(0, NAME_CAP).map((a) => who(a, nowMs));
   const more = n > NAME_CAP ? `\n(and ${n - NAME_CAP} more)` : "";
   return (
-    `${n} bookable ${n === 1 ? "agent is" : "agents are"} being offered on working hours nobody set: the seeded ` +
-    `default, which is right only by coincidence. Import their real hours with ` +
+    `${n} bookable ${n === 1 ? "agent has" : "agents have"} spent more than ${GRACE_DAYS} days on working hours ` +
+    `nobody set: the seeded default, which is right only by coincidence. Import their real hours with ` +
     `APPLY=1 pnpm import:calcom-schedules, or set them under admin > agent hours.\n` +
     lines.join("\n") +
     more
   );
 }
 
-/** The all clear, hung off a measured sweep that found nobody. */
+/**
+ * The all clear, hung off a measured sweep that found nobody past the grace. It
+ * names the window, because "nobody is past two days" and "everybody's hours are
+ * set" are different facts and only the first one was measured (L440).
+ */
 export function formatUnsetHoursRecovery(): string {
-  return "Every bookable agent's working hours were set by somebody: an agent, an admin, or the cal.com import. No action is needed.";
+  return (
+    `No bookable agent has spent more than ${GRACE_DAYS} days on the seeded default working hours. ` +
+    `Anyone seeded inside that window is not counted yet.`
+  );
 }
 
 /**
@@ -122,11 +195,13 @@ export interface UnsetHoursDeps {
   notify: (key: string, cooldownMs: number, text: string) => Promise<void>;
   resolve: (key: string, text: string) => Promise<boolean>;
   cooldownMs: number;
+  /** Passed in so the grace boundary is drivable and the copy is deterministic. */
+  nowMs: number;
 }
 
 export type UnsetHoursResult =
   | { status: "unreadable"; error: string }
-  | { status: "paged"; agents: UnsetHoursAgent[] }
+  | { status: "paged"; agents: UnsetHoursFinding[] }
   | { status: "clear"; measured: number };
 
 export async function runUnsetHoursCheck(deps: UnsetHoursDeps): Promise<UnsetHoursResult> {
@@ -136,9 +211,9 @@ export async function runUnsetHoursCheck(deps: UnsetHoursDeps): Promise<UnsetHou
   } catch (err) {
     return { status: "unreadable", error: err instanceof Error ? err.message : String(err) };
   }
-  const agents = agentsOnUnsetHours(input);
+  const agents = agentsPastUnsetHoursGrace(agentsOnUnsetHours(input), deps.nowMs);
   if (agents.length) {
-    await deps.notify(AGENTS_ON_UNSET_HOURS_KEY, deps.cooldownMs, formatUnsetHoursAlert(agents));
+    await deps.notify(AGENTS_ON_UNSET_HOURS_KEY, deps.cooldownMs, formatUnsetHoursAlert(agents, deps.nowMs));
     return { status: "paged", agents };
   }
   await deps.resolve(AGENTS_ON_UNSET_HOURS_KEY, formatUnsetHoursRecovery());
