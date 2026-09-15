@@ -1,4 +1,5 @@
 import { normalizeCommit } from "../stamp-build-info.ts";
+import { hydrationBatchSize, HYDRATION_ONBOARDING_MAX } from "../../src/lib/google/hydration.ts";
 
 /**
  * The decisions the load run's preflight and its ceiling control make (#2244),
@@ -788,5 +789,240 @@ export function overlappingProbeWindow(
   return {
     startIso: new Date(start + shiftMs).toISOString(),
     endIso: new Date(end + shiftMs).toISOString(),
+  };
+}
+
+// --- the warm up ladder a freshly created deployment has to climb (#2347) ------
+//
+// Run 34974744173 failed preflight forty seconds after the load test Worker was
+// created, on "bucket 112 is offering no times". Nothing was wrong with the branch
+// or the roster. A Worker that has just been created is not yet being delivered
+// its crons (measured 2026-09-15: about six minutes for one, and never in the
+// seventeen minutes the Worker before it lived), and the calendars the seed wrote
+// have never been hydrated, so every bucket answers `emptyBecause: busy`. Two
+// minutes later the same deployment offered 42 times.
+//
+// The ladder is THREE conditions rather than one, because they fail at different
+// speeds and they send the reader to different places:
+//
+//   0. the scheduled invocation is reaching this Worker at all. Waited for, never
+//      driven: the preflight drives lanes by hand further down, so a stamp it
+//      wrote itself would answer this question with its own work. Once it has
+//      been seen it is not asked again.
+//   1. every bookable agent's calendars are hydrated. DRIVEN rather than waited
+//      for: the lane's own cadence is every fifteen minutes at twelve calendars a
+//      tick, so a 93 agent roster is two hours away and no preflight can wait for
+//      that. Driving the real lane by hand costs a few seconds a drive.
+//   2. the bucket is offering times. Driven the same way, for the same reason.
+//
+// The order matters. "Offering at least one time" is much the weaker condition and
+// it is reached far too early: bucket 112 offered 156 times with 24 of 93
+// calendars hydrated, so a run dispatched there would load a fraction of the
+// roster the shape claims to test (L98 in its second form: a measurement over a
+// sample nobody chose).
+
+/**
+ * How many calendars ONE hand driven hydration pass covers.
+ *
+ * Derived from the lane's own pacing rather than written here a second time (L41):
+ * the maintenance batch sized from the live count, plus the never covered
+ * allowance a wave of new calendars is entitled to. Twelve at the 93 calendar
+ * roster the run seeds, and it moves when either constant moves.
+ */
+export function hydrationPerDrive(calendarCount: number): number {
+  return hydrationBatchSize(calendarCount) + HYDRATION_ONBOARDING_MAX;
+}
+
+/**
+ * How long to wait for the first scheduled invocation before calling it a fault.
+ *
+ * Twice the longest delivery actually measured (about six minutes on 2026-09-15),
+ * because the one reading there is came from two Workers and one of them never
+ * received a tick at all. Bounded, because a wait with no deadline cannot fail,
+ * only hang (L110).
+ */
+export const WARMUP_CRON_DELIVERY_DEADLINE_MS = 12 * 60_000;
+
+/**
+ * How fresh a lane stamp has to be to count as "the crons are being delivered".
+ *
+ * Two and a half minutes: the lanes this is read from are on the every minute
+ * trigger, and Cloudflare batches one a minute late often enough that a one minute
+ * bound would flap. A stamp older than this is a lane that ticked once and
+ * stopped, which is the same state for a run as one that never ticked.
+ */
+export const WARMUP_CRON_FRESH_MS = 150_000;
+
+/** How long to wait between readings while the crons have not arrived. */
+export const WARMUP_POLL_MS = 15_000;
+
+/**
+ * How long to leave between hand driven hydration passes.
+ *
+ * Long enough for the lane to release its own lock and for the rows it wrote to be
+ * readable, short enough that eight passes is a minute rather than ten. A drive
+ * that lands on the scheduled tick's lock is answered `skipped: overlapping-run`
+ * and costs one pass out of the stall allowance, which is why the allowance is
+ * three rather than one.
+ */
+export const WARMUP_HYDRATE_PAUSE_MS = 3_000;
+
+/** The same, between recomputes: one pass writes every bucket, so it is shorter. */
+export const WARMUP_RECOMPUTE_PAUSE_MS = 2_000;
+
+/**
+ * How many hydration drives may cover NOTHING MORE before this is a fault.
+ *
+ * A lane that runs and covers nothing is not a cold cache: it is a stubbed Google
+ * refusing, or a lock nothing releases. Three rather than one, because a drive can
+ * legitimately be answered `skipped: overlapping-run` when the scheduled tick holds
+ * the lock, and two of those in a row is ordinary.
+ */
+export const WARMUP_HYDRATION_STALL_DRIVES = 3;
+
+/**
+ * How many recomputes to drive before a bucket offering nothing is a finding.
+ *
+ * Five, because a recompute writes every bucket in one pass, so if the second and
+ * third change nothing the fourth will not either. It is the roster that takes
+ * many passes, and that is stage one's problem, not this one's.
+ */
+export const WARMUP_RECOMPUTE_DRIVES = 5;
+
+/** One reading of the branch and the deployment, taken together. */
+export interface WarmupReading {
+  /** Age of the freshest every minute lane stamp, or null when none has ever been written. */
+  laneStampAgeMs: number | null;
+  /** Bookable, not deactivated users on the branch. */
+  bookableAgents: number;
+  /** Of those, how many have no `agent_calendars` row at all. */
+  agentsMissingCalendarRow: number;
+  /** Of those, how many have EVERY calendar row hydrated (`sync_window_to` set). */
+  agentsFullyHydrated: number;
+  /** How many times the bucket under test is offering right now. */
+  offeredSlots: number;
+  /** What the deployment said when it offered none, or null when it said nothing. */
+  emptyBecause: string | null;
+}
+
+/** What the ladder has done so far. Passed in, so the whole thing is pure. */
+export interface WarmupProgress {
+  elapsedMs: number;
+  /** Set once the delivery gate has been passed, and never unset. */
+  cronConfirmed: boolean;
+  hydrationDrives: number;
+  drivesSinceHydrationProgress: number;
+  recomputeDrives: number;
+}
+
+export type WarmupStep =
+  | { action: "ready"; why: string }
+  | { action: "wait-for-cron"; waitMs: number; why: string }
+  | { action: "hydrate"; why: string }
+  | { action: "recompute"; why: string }
+  | { action: "give-up"; why: string };
+
+/**
+ * What to do with one reading.
+ *
+ * Every give up carries its own wording, because five ways of learning nothing
+ * send five different people to five different places and one answering for
+ * another is how somebody spends an afternoon on a cache that was never the
+ * problem (L11).
+ */
+export function warmupStep(r: WarmupReading, p: WarmupProgress): WarmupStep {
+  // The two states no amount of waiting or driving can change. Asked first, so the
+  // ladder does not spend its whole deadline on a branch the seed never reached.
+  if (r.bookableAgents === 0) {
+    return {
+      action: "give-up",
+      why:
+        "the branch holds no bookable agents at all, so the seed did not run or ran against " +
+        "another project. Nothing the preflight can drive will produce one.",
+    };
+  }
+  if (r.agentsMissingCalendarRow > 0) {
+    return {
+      action: "give-up",
+      why:
+        `${r.agentsMissingCalendarRow} of ${r.bookableAgents} bookable agents have no ` +
+        "agent_calendars row, and hydration can only ever cover a calendar that exists. The " +
+        "seed is incomplete; re-seed rather than waiting.",
+    };
+  }
+
+  // Stage zero. Only asked while unconfirmed: from stage one onward the preflight
+  // drives lanes itself, and a stamp it wrote would answer this with its own work.
+  if (!p.cronConfirmed) {
+    const fresh = r.laneStampAgeMs !== null && r.laneStampAgeMs <= WARMUP_CRON_FRESH_MS;
+    if (!fresh) {
+      if (p.elapsedMs >= WARMUP_CRON_DELIVERY_DEADLINE_MS) {
+        const seen =
+          r.laneStampAgeMs === null
+            ? "no every minute lane has ever stamped"
+            : `the freshest every minute lane stamp is ${Math.round(r.laneStampAgeMs / 1000)}s old`;
+        return {
+          action: "give-up",
+          why:
+            `${seen} after ${Math.round(WARMUP_CRON_DELIVERY_DEADLINE_MS / 60_000)} minutes of ` +
+            "waiting, so this deployment is not being delivered its crons. Nothing this run " +
+            "measures about recompute freshness or the outbox drain would mean anything. The " +
+            "deployment still exists: re-dispatch once it starts ticking.",
+        };
+      }
+      return {
+        action: "wait-for-cron",
+        waitMs: WARMUP_POLL_MS,
+        why:
+          r.laneStampAgeMs === null
+            ? "no every minute lane has stamped yet, so the crons have not reached this Worker"
+            : `the freshest every minute lane stamp is ${Math.round(r.laneStampAgeMs / 1000)}s old`,
+      };
+    }
+  }
+
+  // Stage one, and it outranks the offered times deliberately: see the note above.
+  if (r.agentsFullyHydrated < r.bookableAgents) {
+    if (p.drivesSinceHydrationProgress >= WARMUP_HYDRATION_STALL_DRIVES) {
+      return {
+        action: "give-up",
+        why:
+          `hydration has covered ${r.agentsFullyHydrated} of ${r.bookableAgents} bookable agents ` +
+          `and the last ${p.drivesSinceHydrationProgress} drives covered none of the rest. That ` +
+          "is the lane failing rather than the cache being cold: read what " +
+          "/api/cron/hydrate-calendars answered.",
+      };
+    }
+    return {
+      action: "hydrate",
+      why: `${r.agentsFullyHydrated} of ${r.bookableAgents} bookable agents are hydrated`,
+    };
+  }
+
+  // Stage two.
+  if (r.offeredSlots === 0) {
+    if (p.recomputeDrives >= WARMUP_RECOMPUTE_DRIVES) {
+      const said = r.emptyBecause === null ? "and gave no reason" : `and said ${r.emptyBecause}`;
+      return {
+        action: "give-up",
+        why:
+          `every one of the ${r.bookableAgents} bookable agents is hydrated, but the bucket is ` +
+          `still offering nothing ${said} after ${p.recomputeDrives} recomputes. This is a real ` +
+          "finding about the branch rather than a cold cache.",
+      };
+    }
+    return {
+      action: "recompute",
+      why: `the bucket is offering nothing${r.emptyBecause === null ? "" : ` (${r.emptyBecause})`}`,
+    };
+  }
+
+  return {
+    action: "ready",
+    why:
+      `warmed after ${Math.round(p.elapsedMs / 1000)}s: ${r.bookableAgents} bookable agents all ` +
+      `hydrated, ${r.offeredSlots} times on offer` +
+      `${p.hydrationDrives > 0 ? `, ${p.hydrationDrives} hydration drives` : ""}` +
+      `${p.recomputeDrives > 0 ? `, ${p.recomputeDrives} recomputes` : ""}`,
   };
 }
