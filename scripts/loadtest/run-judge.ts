@@ -575,6 +575,9 @@ if (m) {
       ? `- cron ticks in the window: not measured (${platform.unreadableWhy ?? "no reason given"})`
       : `- cron ticks in the window: ${platform.cron.invocations} from the ` +
           `${platform.cronSource === "archive" ? "run's own archived log" : platform.cronSource === "platform" ? "analytics dataset" : "analytics dataset and the archived log, which agree"}` +
+          (platform.cron.unreadableCpu
+            ? `, ${platform.cron.unreadableCpu} of them carrying no readable CPU figure`
+            : "") +
           (platform.cronNote ? `; ${platform.cronNote}` : ""),
   );
   // The strength of the burst control, stated rather than assumed (#2278). A run

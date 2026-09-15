@@ -93,6 +93,21 @@ function request(at = 1_757_000_000_000): string {
 }
 
 {
+  // A tick whose CPU field cannot be read still COUNTS as a tick, because the count
+  // is what decides whether the window may be called empty. It contributes nothing
+  // to the maximum, and it is counted out loud: folding it in as a zero would be
+  // the permissive side of the CPU bar with nothing saying so (L50).
+  const archive = [
+    scheduled("* * * * *", 27_000),
+    tailEvent({ eventTimestamp: 1, event: { cron: "* * * * *" }, cpuTime: "lots" }),
+  ].join("");
+  const r = readScheduledFromArchive(archive);
+  eq(r?.invocations, 2, "a tick with no readable CPU is still a tick");
+  eq(r?.worstCpuMs, 27_000, "and does not pull the worst CPU down to a zero it never measured");
+  eq(r?.unreadableCpu, 1, "and is counted, so a maximum over unread ticks is not read as a low one");
+}
+
+{
   // A cron expression is a string. A tick carrying something else in that field is
   // not counted as a tick, because inventing one would put a floor under a count
   // the judge decides from.

@@ -94,6 +94,16 @@ export interface ScheduledReading {
   invocations: number;
   worstCpuMs: number;
   byCron: Record<string, { invocations: number; worstCpuMs: number }>;
+  /**
+   * Ticks that were COUNTED and carried no readable CPU figure (#2352).
+   *
+   * `worstCpuMs` is a maximum, so a tick with no reading contributes nothing to it
+   * and a reader cannot tell that from a cheap tick. That is the permissive side of
+   * the cron CPU bar (L50), so the omission is counted rather than left silent: a
+   * worst of 4s over nineteen ticks means something different when six of them were
+   * never read. Absent on the analytics reading, whose rows always carry the field.
+   */
+  unreadableCpu?: number;
 }
 
 export type ReadResult<T> = { ok: true; reading: T } | { ok: false; why: string };
@@ -351,6 +361,7 @@ export function readScheduledFromArchive(archive: string): ScheduledReading | nu
   const byCron: Record<string, { invocations: number; worstCpuMs: number }> = {};
   let worstCpuMs = 0;
   let invocations = 0;
+  let unreadableCpu = 0;
   let sawAny = false;
   for (const raw of tailObjects(archive)) {
     sawAny = true;
@@ -371,14 +382,22 @@ export function readScheduledFromArchive(archive: string): ScheduledReading | nu
     // MILLISECONDS already: the tail reports `cpuTime` in ms, unlike the analytics
     // API's `cpuTimeUs`. The two units met in one judge once and a reading a
     // thousand times too small sits comfortably under every budget.
-    const ms = num(event.cpuTime);
+    //
+    // A tick with NO readable figure still counts as a tick, because the count is
+    // what decides whether the window may be called empty, but it contributes
+    // nothing to the maximum and is counted separately: folding it in as a zero
+    // would be the permissive side of the CPU bar with nothing saying so (L50).
+    const ms = typeof event.cpuTime === "number" && Number.isFinite(event.cpuTime) ? event.cpuTime : null;
     const seen = (byCron[cron] ??= { invocations: 0, worstCpuMs: 0 });
     seen.invocations += 1;
-    seen.worstCpuMs = Math.max(seen.worstCpuMs, ms);
-    worstCpuMs = Math.max(worstCpuMs, ms);
+    if (ms === null) unreadableCpu += 1;
+    else {
+      seen.worstCpuMs = Math.max(seen.worstCpuMs, ms);
+      worstCpuMs = Math.max(worstCpuMs, ms);
+    }
     invocations += 1;
   }
-  return sawAny ? { invocations, worstCpuMs, byCron } : null;
+  return sawAny ? { invocations, worstCpuMs, byCron, unreadableCpu } : null;
 }
 
 /** Which source the cron half was actually read from. */
