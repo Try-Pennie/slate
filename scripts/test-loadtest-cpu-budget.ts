@@ -205,11 +205,61 @@ function healthy() {
       cpuMsP99: 40,
       subrequests: 8,
       statuses: { success: 600 },
+      // `agreed-empty` because that is what a window with no cron in it now
+      // requires (#2352): both the analytics dataset and the run's own archived
+      // log reporting none. A bare zero is the reader being blind.
       cron: { invocations: 0, worstCpuMs: 0, byCron: {} },
+      cronSource: "agreed-empty" as const,
     },
     expectedLegs: { burstDrivers: 0, faultPct: 0 },
     budgets: { cpuMsP99: REQUEST_CPU_P99_MS, cronCpuMs: WRANGLER_CRON_CPU_MS },
   };
+}
+
+// --- a zero only ONE source reported is not an empty window (#2352) -------------
+
+{
+  // The analytics dataset reported zero scheduled invocations for the load test
+  // Worker on every run it has ever judged, while the Worker ticked every minute.
+  // Taking that for an empty window is what let the request CPU budget be applied
+  // to a window full of cron lanes, and put "with no cron in the window" into a
+  // report as a fact about the deployment.
+  const base = healthy();
+  const r = judgeBookingRun({
+    ...base,
+    platform: {
+      ...base.platform,
+      cpuMsP99: REQUEST_CPU_P99_MS + 5_000,
+      cron: { invocations: 0, worstCpuMs: 0, byCron: {} },
+      cronSource: "platform",
+      cronNote: "the scheduled invocations dataset reported none while the log holds ticks",
+    },
+  });
+  // Judged on the FINDING rather than the verdict: `unmeasured` collapses to
+  // `fail` whenever any other bar already found something, so the verdict alone
+  // could not tell this refusal from an unrelated failure (L11).
+  assert(
+    r.findings.some((f) => f.bar === "platform limits" && f.detail.includes("dataset")),
+    "a zero from one source alone measures nothing, and says which source said it",
+  );
+  assert(
+    !r.findings.some((f) => f.bar === "Worker CPU on the request path"),
+    "and the request CPU budget is NOT applied to it, which is the false conclusion this replaces",
+  );
+}
+
+{
+  // The other direction, or the guard could simply be refusing every zero and the
+  // request half would never be judged again (L1).
+  const base = healthy();
+  const r = judgeBookingRun({
+    ...base,
+    platform: { ...base.platform, cpuMsP99: REQUEST_CPU_P99_MS + 5_000 },
+  });
+  assert(
+    r.findings.some((f) => f.bar === "Worker CPU on the request path"),
+    "while two sources agreeing on zero still judges the request path exactly as before",
+  );
 }
 
 finish();

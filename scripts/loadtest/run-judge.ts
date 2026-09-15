@@ -31,6 +31,10 @@ import {
   shouldPollAgain,
   pollTimings,
   WRANGLER_CRON_CPU_MS,
+  readScheduledFromArchive,
+  reconcileScheduled,
+  type ReadResult,
+  type ScheduledReading,
 } from "./platform-reading.ts";
 import {
   BOOKING_WRITES_PER_MINUTE,
@@ -155,6 +159,7 @@ async function platformReading(
   fromIso: string,
   toIso: string,
   expectedInvocations: number,
+  archiveScheduled: ScheduledReading | null,
 ): Promise<PlatformReading> {
   const token = process.env.CLOUDFLARE_API_TOKEN ?? "";
   const account = process.env.CLOUDFLARE_ACCOUNT_ID ?? "";
@@ -165,6 +170,8 @@ async function platformReading(
     subrequests: null,
     statuses: null,
     cron: null,
+    cronSource: null,
+    cronNote: null,
     unreadableWhy: why,
   });
   if (!token || !account || !script) {
@@ -224,24 +231,32 @@ async function platformReading(
   // The scheduled half, asked ONCE and only after the window has settled. Without
   // it the CPU reading cannot be told apart from the cron lanes, so the judge
   // refuses to claim anything about CPU rather than guessing (L98).
-  let cron: PlatformReading["cron"] = null;
-  let cronWhy: string | null = null;
+  //
+  // And it is RECONCILED against the run's own archived log (#2352), because that
+  // dataset has never once reported a tick for a load test Worker: measured live on
+  // 2026-09-15 it held 61 rows for production and ZERO for `slate-loadtest` while
+  // that Worker was plainly ticking every minute. A zero from it used to become
+  // "with no cron in the window", written into a report as a fact about the
+  // deployment when it was a fact about the read.
+  let platformScheduled: ReadResult<ScheduledReading>;
   try {
     const { status, body } = await ask(SCHEDULED_QUERY);
-    const read = readScheduledResponse(status, body);
-    if (read.ok) cron = read.reading;
-    else cronWhy = read.why;
+    platformScheduled = readScheduledResponse(status, body);
   } catch (err) {
-    cronWhy = `the scheduled read failed: ${(err as Error).message}`;
+    platformScheduled = { ok: false, why: `the scheduled read failed: ${(err as Error).message}` };
   }
+  const settled = reconcileScheduled({ platform: platformScheduled, archive: archiveScheduled });
+  if (settled.why) console.error(`note: ${settled.why}`);
 
   return {
     invocations: last.reading.invocations,
     cpuMsP99: last.reading.cpuMsP99,
     subrequests: last.reading.subrequests,
     statuses: last.reading.statuses,
-    cron,
-    unreadableWhy: cronWhy,
+    cron: settled.ok ? settled.reading : null,
+    cronSource: settled.ok ? settled.source : null,
+    cronNote: settled.ok ? settled.why : null,
+    unreadableWhy: settled.ok ? null : settled.why,
   };
 }
 
@@ -318,8 +333,19 @@ try {
  * proved nothing about what a lead waits for (L98).
  */
 let confirmStartup: ConfirmStartupReading | null = null;
+/**
+ * The SAME archive, read for the cron ticks it holds (#2352).
+ *
+ * Null when there is no archive at all, which is why the text is kept rather than
+ * the two readers each opening the file: a missing archive and a window with no
+ * cron in it are different facts, and the reconciliation below turns on exactly
+ * that difference.
+ */
+let archiveScheduled: ScheduledReading | null = null;
 try {
-  confirmStartup = readConfirmStartup(readFileSync(join(RESULTS, "tail.jsonl"), "utf8"));
+  const archive = readFileSync(join(RESULTS, "tail.jsonl"), "utf8");
+  confirmStartup = readConfirmStartup(archive);
+  archiveScheduled = readScheduledFromArchive(archive);
 } catch {
   console.error("note: no archived Worker log was found, so the confirm startup split is unread");
 }
@@ -415,6 +441,16 @@ try {
 const startedAt = Math.min(...steady.map((d) => d.startedAtMs), Date.now());
 const finishedAt = Math.max(...steady.map((d) => d.finishedAtMs), startedAt);
 
+// Hoisted so the report can NAME which source the cron half came from (#2352):
+// a zero from the analytics dataset alone is the reader being blind, not an empty
+// window, and a reader has to be able to see which one answered.
+const platform = await platformReading(
+  new Date(startedAt).toISOString(),
+  new Date(finishedAt + 60_000).toISOString(),
+  steadyAttempts,
+  archiveScheduled,
+);
+
 const input: JudgeInput = {
   runId: RUN_ID,
   target: { drivers: DRIVERS, perDriverPerMinute: PER_DRIVER_PER_MINUTE, minutes: RUN_MINUTES },
@@ -427,11 +463,7 @@ const input: JudgeInput = {
   overlapConstraintPresent,
   ipCeilingControl: ipControl,
   confirmStartup,
-  platform: await platformReading(
-    new Date(startedAt).toISOString(),
-    new Date(finishedAt + 60_000).toISOString(),
-    steadyAttempts,
-  ),
+  platform,
   faultPass,
   // What this run was CONFIGURED to include, so a leg asked for and never
   // delivered is incomplete rather than quietly skipped. Both default to zero, so
@@ -534,6 +566,19 @@ if (m) {
           (confirmStartup && confirmStartup.impossible > 0
             ? `; ${confirmStartup.impossible} readings could not be right and were floored at zero`
             : ""),
+  );
+  // WHERE the cron half was read from, on every run (#2352). Without it, a report
+  // saying "no cron in the window" cannot be told from one whose dataset was blind,
+  // which is what happened on every load run this bar has ever judged.
+  lines.push(
+    platform.cron === null
+      ? `- cron ticks in the window: not measured (${platform.unreadableWhy ?? "no reason given"})`
+      : `- cron ticks in the window: ${platform.cron.invocations} from the ` +
+          `${platform.cronSource === "archive" ? "run's own archived log" : platform.cronSource === "platform" ? "analytics dataset" : "analytics dataset and the archived log, which agree"}` +
+          (platform.cron.unreadableCpu
+            ? `, ${platform.cron.unreadableCpu} of them carrying no readable CPU figure`
+            : "") +
+          (platform.cronNote ? `; ${platform.cronNote}` : ""),
   );
   // The strength of the burst control, stated rather than assumed (#2278). A run
   // with no burst leg says nothing here, because there was no control to describe.

@@ -86,6 +86,23 @@ export interface PlatformReading {
    */
   cron: { invocations: number; worstCpuMs: number; byCron: Record<string, { invocations: number; worstCpuMs: number }> } | null;
   /**
+   * WHICH source the cron half above was actually read from (#2352).
+   *
+   * `workersInvocationsScheduled` filtered on a load test script name has never
+   * once reported a tick: measured live on 2026-09-15 it held 61 rows for
+   * production and ZERO for `slate-loadtest` while that Worker's lanes were
+   * stamping every minute, and the run's own archived log held 19 scheduled
+   * invocations. So a zero from that dataset is not a reading, and the judge may
+   * only call a window empty when `agreed-empty` says two sources said so.
+   */
+  cronSource?: "platform" | "archive" | "agreed-empty" | null;
+  /**
+   * What a reader should know about how the cron half was arrived at, when there
+   * is something: the dataset was blind and the log answered, or the dataset
+   * refused. Null when the platform simply answered.
+   */
+  cronNote?: string | null;
+  /**
    * Why the window could not be read, in the reader's own words, when it could
    * not be. Null on a reading that worked.
    */
@@ -827,6 +844,22 @@ export function judgeBookingRun(input: JudgeInput): JudgeResult {
     );
   }
   if (p.cron.invocations === 0) {
+    // A zero is only a reading when TWO sources said so (#2352). The analytics
+    // dataset alone has never once reported a tick for a load test Worker, so its
+    // zero is the reader being blind, and taking it for an empty window is what
+    // let the per request budget be applied to a window full of cron lanes and
+    // the conclusion written into a report. The judge asks rather than trusting
+    // its caller, so a construction site that forgets to say cannot quietly
+    // restore the old behaviour (L96).
+    if (p.cronSource !== "agreed-empty") {
+      return unmeasured(
+        m,
+        p.cronNote ??
+          "the cron half reported zero scheduled invocations without a second source agreeing, " +
+            "so nothing can say whether a cron fired and the CPU reading cannot be attributed",
+        findings,
+      );
+    }
     if (p.cpuMsP99 > input.budgets.cpuMsP99) {
       // The split is NAMED in the finding, because this percentile counts the
       // isolate's startup as the confirm's own compute and a reader sent to
@@ -846,7 +879,8 @@ export function judgeBookingRun(input: JudgeInput): JudgeResult {
       fail(
         "Worker CPU on the request path",
         `p99 ${p.cpuMsP99}ms of CPU per invocation, over the ${input.budgets.cpuMsP99}ms request ` +
-          "budget, with no cron in the window, so this IS the request path. That budget is a " +
+          "budget, with no cron in the window on BOTH the analytics dataset and this run's own " +
+          "archived log, so this IS the request path. That budget is a " +
           `share of the ${OK_P95_MS}ms latency bar, not the lane budget: CPU cannot exceed wall ` +
           "time, so a confirm spending this much of it on compute has no headroom left for the " +
           "database and Google round trips it also has to make." +
