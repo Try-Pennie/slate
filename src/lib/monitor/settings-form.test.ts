@@ -17,6 +17,7 @@ const blank = {
   floor120: "",
   alertsChannel: "",
   infoChannel: "",
+  handoffChannel: "",
   lowVolumeArmed: "",
   failureRateArmed: "",
   availabilityDriftArmed: "",
@@ -33,6 +34,7 @@ describe("parseMonitorSettingsForm", () => {
       floor_120: null,
       alerts_channel: null,
       info_channel: null,
+      handoff_channel: null,
       // A blank/absent toggle is an explicit disarm (the checkbox is on/off, not tri-state).
       low_volume_armed: false,
       failure_rate_armed: false,
@@ -59,6 +61,15 @@ describe("parseMonitorSettingsForm", () => {
     expect(anomaly?.cooldown_min).toBe(45);
     expect(out.config.floor_30).toBe(3);
     expect(out.config.floor_120).toBe(0);
+  });
+
+  // #2367: the handoff channel is its own field with no fallback, so a blank one is
+  // stored as null (unset) and never borrows the alerts channel.
+  it("trims the handoff channel and stores null for blank", () => {
+    const set = parseMonitorSettingsForm({ ...blank, alertsChannel: "#alerts", handoffChannel: "  C-SALES " });
+    expect(set.config.handoff_channel).toBe("C-SALES");
+    const unset = parseMonitorSettingsForm({ ...blank, alertsChannel: "#alerts", handoffChannel: "   " });
+    expect(unset.config.handoff_channel).toBeNull();
   });
 
   it("trims channels and stores null for blank", () => {

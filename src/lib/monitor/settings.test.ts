@@ -239,6 +239,7 @@ describe("parseMonitorSettingsForm low_volume_armed", () => {
     floor120: "",
     alertsChannel: "",
     infoChannel: "",
+    handoffChannel: "",
     lowVolumeArmed: "",
     failureRateArmed: "",
   availabilityDriftArmed: "",

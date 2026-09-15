@@ -11,6 +11,7 @@ import type {
   AvailabilitySchedule,
   Booking,
   BookingEvent,
+  BookingHandoff,
   BookingOutbox,
   BookingReservation,
   BookingApiOutcomeDaily,
@@ -126,6 +127,7 @@ export interface Database {
       rate_limits: Table<RateLimit>;
       reschedule_locks: Table<RescheduleLock>;
       reassign_intents: Table<ReassignIntent>;
+      booking_handoffs: Table<BookingHandoff>;
       bucket_slots: Table<BucketSlotsRow>;
       pending_event_deletions: Table<PendingEventDeletion>;
       booking_outbox: Table<BookingOutbox>;

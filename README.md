@@ -155,6 +155,7 @@ src/lib/busy           retention for the cached busy_blocks index (past-row prun
 src/lib/routing        bucket resolution + equal-share ranking + tier fallback + routing-decision log
 src/lib/google         OAuth, calendar ops, push/incremental sync, freeBusy
 src/lib/monitor        availability-health probe + booking-volume alert + tunable settings
+src/lib/handoffs       bookings waiting on a person in sales: the record, its Slack notice, its delivery
 src/lib/webhooks       HMAC-signed delivery + retry
 src/lib/salesforce     hourly roster sync (agents, teams, attributes)
 src/lib/ooo            out-of-office requests, approvals, digests

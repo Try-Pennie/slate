@@ -275,6 +275,16 @@ import {
   formatHydrationRecovery,
 } from "@/lib/google/hydration";
 import { EDGE_LIMITER_BINDINGS } from "@/lib/rate-limit-core";
+import {
+  formatHandoffChannelUnsetAlert,
+  formatHandoffChannelUnsetRecovery,
+  formatHandoffNotice,
+  formatHandoffUndeliveredAlert,
+  formatHandoffUndeliveredRecovery,
+  type HandoffNoticeBooking,
+} from "@/lib/handoffs/copy";
+import { HANDOFF_UNDELIVERED_AFTER_MS } from "@/lib/handoffs/check";
+import type { HandoffKind } from "@/lib/handoffs/kinds";
 
 /** One rendered state of one alert. */
 export interface AlertPreview {
@@ -1543,6 +1553,65 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     channel: "recovery",
     text: formatUnsubscribedEventsRecovery(),
   },
+  // #2367: the two ways booking handoffs fail to reach the sales side.
+  {
+    key: "handoff_channel_unset",
+    state: "several handoffs waiting and no handoff channel set",
+    channel: "alert",
+    text: formatHandoffChannelUnsetAlert({
+      waiting: 3,
+      oldestWaitMs: 50 * 60_000,
+      settingsUrl: "https://slate.trypennie.app/admin/alerts",
+    }),
+  },
+  {
+    key: "handoff_channel_unset",
+    state: "one handoff waiting and no handoff channel set",
+    channel: "alert",
+    text: formatHandoffChannelUnsetAlert({
+      waiting: 1,
+      oldestWaitMs: 4 * 60_000,
+      settingsUrl: "https://slate.trypennie.app/admin/alerts",
+    }),
+  },
+  {
+    key: "handoff_channel_unset",
+    state: "a channel is set, or nothing is waiting",
+    channel: "recovery",
+    text: formatHandoffChannelUnsetRecovery(),
+  },
+  {
+    key: "handoff_undelivered",
+    state: "one handoff stuck behind a Slack refusal",
+    channel: "alert",
+    text: formatHandoffUndeliveredAlert({
+      count: 1,
+      oldestWaitMs: 95 * 60_000,
+      thresholdMs: HANDOFF_UNDELIVERED_AFTER_MS,
+      lastError: "not_in_channel",
+      settingsUrl: "https://slate.trypennie.app/admin/alerts",
+    }),
+  },
+  {
+    // No post attempted yet (the booking read keeps failing), so there is no error to
+    // quote and the sentence about one must not appear.
+    key: "handoff_undelivered",
+    state: "several handoffs waiting with no attempt to quote",
+    channel: "alert",
+    text: formatHandoffUndeliveredAlert({
+      count: 4,
+      oldestWaitMs: 3 * 60 * 60_000,
+      thresholdMs: HANDOFF_UNDELIVERED_AFTER_MS,
+      lastError: null,
+      settingsUrl: "https://slate.trypennie.app/admin/alerts",
+    }),
+  },
+  {
+    key: "handoff_undelivered",
+    state: "every open handoff has been posted",
+    channel: "recovery",
+    text: formatHandoffUndeliveredRecovery(),
+  },
   {
     key: "hydration_all_failing",
     state: "every calendar in the batch failed, four runs running",
@@ -2385,6 +2454,114 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     text: oooUndoAgentAlert("req_9f2", "404 notFound") },
   { key: "ooo_coverage_stop", state: "the sweep could not be stopped after the request was closed",
     channel: "alert", text: oooCoverageStopAlert("req_9f2", "count failed [cancel-pending-coverage-items]") },
+];
+
+/**
+ * The booking handoff NOTICES (#2367), rendered by the same builder the monitor lane
+ * posts with. They are not alerts: each is posted once to the handoff channel for the
+ * sales side and has no cooldown or all-clear, so they are not catalog keys. They are
+ * here so the words a salesperson acts on can be read before they ship, exactly like
+ * the pages above, and the coverage guard holds every kind to having one.
+ */
+export interface HandoffNoticePreview {
+  kind: HandoffKind;
+  state: string;
+  text: string;
+}
+
+const PREVIEW_BOOKING: HandoffNoticeBooking = {
+  startsAt: "2026-09-17T15:30:00.000Z",
+  agentName: "Dana Whitfield",
+  agentEmail: "dana.whitfield@trypennie.com",
+  attendeeName: "Jordan Lee",
+};
+const PREVIEW_BOOKING_URL = "https://slate.trypennie.app/admin/bookings/5b0c7a8e-2f41-4d7e-9a61-0c3f1e2d4b5a";
+
+export const HANDOFF_NOTICE_PREVIEWS: HandoffNoticePreview[] = [
+  {
+    kind: "duplicate-unresolved",
+    state: "no other call found for the lead",
+    text: formatHandoffNotice(
+      { kind: "duplicate-unresolved", detail: { finding: "no-other-call", weakerMatch: null, laterBookingStartsAt: null } },
+      PREVIEW_BOOKING,
+      PREVIEW_BOOKING_URL,
+    ),
+  },
+  {
+    kind: "duplicate-unresolved",
+    state: "no strong match, a phone only match, and the later start the caller sent",
+    text: formatHandoffNotice(
+      {
+        kind: "duplicate-unresolved",
+        detail: { finding: "no-other-call", weakerMatch: "phone-only", laterBookingStartsAt: "2026-09-18T18:00:00.000Z" },
+      },
+      PREVIEW_BOOKING,
+      PREVIEW_BOOKING_URL,
+    ),
+  },
+  {
+    kind: "duplicate-unresolved",
+    state: "the named call is the newest one",
+    text: formatHandoffNotice(
+      { kind: "duplicate-unresolved", detail: { finding: "named-is-newest", weakerMatch: null, laterBookingStartsAt: null } },
+      PREVIEW_BOOKING,
+      PREVIEW_BOOKING_URL,
+    ),
+  },
+  {
+    kind: "duplicate-unresolved",
+    state: "two calls share email and phone under different Salesforce ids",
+    text: formatHandoffNotice(
+      { kind: "duplicate-unresolved", detail: { finding: "identity-conflict", weakerMatch: null, laterBookingStartsAt: null } },
+      PREVIEW_BOOKING,
+      PREVIEW_BOOKING_URL,
+    ),
+  },
+  {
+    kind: "duplicate-unresolved",
+    state: "a redacted lead and a detail this code cannot read",
+    text: formatHandoffNotice(
+      { kind: "duplicate-unresolved", detail: {} },
+      { ...PREVIEW_BOOKING, attendeeName: null },
+      PREVIEW_BOOKING_URL,
+    ),
+  },
+  {
+    kind: "owner-reassign-refused",
+    state: "the owner is not taking bookings",
+    text: formatHandoffNotice(
+      {
+        kind: "owner-reassign-refused",
+        detail: { refusal: "owner-not-bookable", requestedOwnerUserId: "u-1", requestedOwnerEmail: "sam.ortiz@trypennie.com" },
+      },
+      PREVIEW_BOOKING,
+      PREVIEW_BOOKING_URL,
+    ),
+  },
+  {
+    kind: "owner-reassign-refused",
+    state: "the owner has approved time off during the call",
+    text: formatHandoffNotice(
+      {
+        kind: "owner-reassign-refused",
+        detail: { refusal: "owner-on-time-off", requestedOwnerUserId: "u-1", requestedOwnerEmail: "sam.ortiz@trypennie.com" },
+      },
+      PREVIEW_BOOKING,
+      PREVIEW_BOOKING_URL,
+    ),
+  },
+  {
+    kind: "owner-reassign-refused",
+    state: "Slate has no account for the owner",
+    text: formatHandoffNotice(
+      {
+        kind: "owner-reassign-refused",
+        detail: { refusal: "owner-not-found", requestedOwnerUserId: null, requestedOwnerEmail: "former.owner@trypennie.com" },
+      },
+      PREVIEW_BOOKING,
+      PREVIEW_BOOKING_URL,
+    ),
+  },
 ];
 
 /** Previews grouped by key, in catalog order, for a renderer. */

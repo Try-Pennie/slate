@@ -847,6 +847,7 @@ export async function setMonitorSettings(form: FormData): Promise<void> {
     floor120: String(form.get("floor_120") ?? ""),
     alertsChannel: String(form.get("alerts_channel") ?? ""),
     infoChannel: String(form.get("info_channel") ?? ""),
+    handoffChannel: String(form.get("handoff_channel") ?? ""),
     lowVolumeArmed: String(form.get("low_volume_armed") ?? ""),
     failureRateArmed: String(form.get("failure_rate_armed") ?? ""),
     availabilityDriftArmed: String(form.get("availability_drift_armed") ?? ""),
@@ -878,6 +879,9 @@ export async function setMonitorSettings(form: FormData): Promise<void> {
   for (const [label, channel] of [
     ["Alerts channel", parsed.config.alerts_channel],
     ["Info channel", parsed.config.info_channel],
+    // #2367: checked the same way. A handoff channel that does not exist sends every
+    // handoff nowhere, and the lane's own page about it only fires half an hour later.
+    ["Handoff channel", parsed.config.handoff_channel],
   ] as [string, string | null][]) {
     // A blank field is not a channel to check: it MEANS fall back to the env or
     // to the alerts channel, and `parseMonitorSettingsForm` already turned it

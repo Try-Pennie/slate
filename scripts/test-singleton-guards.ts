@@ -121,6 +121,7 @@ const NON_SINGLETON_TABLES: { table: string; category: string; why: string }[] =
   { table: "booking_api_outcome_daily", category: "growth/append-only", why: "#418: daily outcome tally, one row per (day, outcome, bucket, error code); grows with time" },
   { table: "bulk_reassign_jobs", category: "queue", why: "#973: one coverage sweep per admin start; grows with sweeps, not a singleton" },
   { table: "bulk_reassign_items", category: "queue", why: "#973: one row per booking to move (UNIQUE(job_id, booking_id)); a job has many" },
+  { table: "booking_handoffs", category: "queue", why: "#2367: a worklist of bookings waiting on a person, one OPEN row per (booking_id, kind) by a partial unique index; resolved rows stay as history, so a booking can hold many rows per kind" },
 ];
 
 {

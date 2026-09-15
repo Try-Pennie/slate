@@ -6,7 +6,7 @@
 // any alert wording, and read the diff in review.
 //
 // Run: pnpm preview:alerts
-import { previewsByKey } from "../src/lib/notify/alert-preview.ts";
+import { HANDOFF_NOTICE_PREVIEWS, previewsByKey } from "../src/lib/notify/alert-preview.ts";
 
 const KIND_LABEL: Record<string, string> = {
   condition: "CONDITION (pages, and must say when it clears)",
@@ -28,4 +28,11 @@ for (const group of previewsByKey()) {
   }
 }
 console.log(`\n${"=".repeat(78)}`);
-console.log(`${states} rendered states across ${alerts} alerts.`);
+console.log("BOOKING HANDOFF NOTICES   [posted once to the handoff channel, for the sales side]");
+for (const n of HANDOFF_NOTICE_PREVIEWS) {
+  states++;
+  console.log(`\n  -- ${n.kind}: ${n.state}`);
+  for (const line of n.text.split("\n")) console.log(`     ${line}`);
+}
+console.log(`\n${"=".repeat(78)}`);
+console.log(`${states} rendered states across ${alerts} alerts and the handoff notices.`);

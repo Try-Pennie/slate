@@ -26,7 +26,8 @@
 //
 // Run: node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/test-alert-preview-coverage.ts
 import { ALERT_CATALOG } from "../src/lib/notify/alert-catalog.ts";
-import { ALERT_PREVIEWS, previewsByKey } from "../src/lib/notify/alert-preview.ts";
+import { ALERT_PREVIEWS, HANDOFF_NOTICE_PREVIEWS, previewsByKey } from "../src/lib/notify/alert-preview.ts";
+import { HANDOFF_KINDS } from "../src/lib/handoffs/kinds.ts";
 import { assert, finish } from "./lib/harness.ts";
 
 // --- anti-vacuity -------------------------------------------------------------
@@ -70,6 +71,26 @@ const BROKEN: { pattern: RegExp; why: string }[] = [
   { pattern: /\bInfinity\b/, why: "an unbounded age rendered literally" },
 ];
 
+// #2367: the booking handoff notices are read by the sales side and are not catalog
+// keys, so they are held here in their own right: every kind has a rendered state,
+// and each one is put through the same breakage checks as an alert.
+for (const kind of HANDOFF_KINDS) {
+  assert(
+    HANDOFF_NOTICE_PREVIEWS.some((n) => n.kind === kind),
+    `handoff kind "${kind}" has no rendered notice in src/lib/notify/alert-preview.ts, so the ` +
+      `words the sales side acts on cannot be read before they ship`,
+  );
+}
+for (const n of HANDOFF_NOTICE_PREVIEWS) {
+  for (const { pattern, why } of BROKEN) {
+    assert(
+      !pattern.test(n.text),
+      `handoff notice "${n.kind}" (${n.state}) renders ${why}: ${JSON.stringify(n.text.slice(0, 160))}`,
+    );
+  }
+  assert(!/^\s*Slate\b/i.test(n.text), `handoff notice "${n.kind}" (${n.state}) opens with the word "Slate"`);
+}
+
 for (const p of ALERT_PREVIEWS) {
   for (const { pattern, why } of BROKEN) {
     assert(
@@ -103,9 +124,18 @@ for (const p of ALERT_PREVIEWS) {
   // typecheck-ok: the ?bust=1 query is what defeats the module cache, which is the
   // whole point of this check; no resolver can follow it, and there is nothing to
   // resolve differently from the plain import at the top of this file.
-  const again = (await import("../src/lib/notify/alert-preview.ts?bust=1")).ALERT_PREVIEWS;
-  const first = ALERT_PREVIEWS.map((p) => `${p.key}|${p.state}|${p.text}`).join("\n");
-  const second = again.map((p) => `${p.key}|${p.state}|${p.text}`).join("\n");
+  const bust = await import("../src/lib/notify/alert-preview.ts?bust=1");
+  const again = bust.ALERT_PREVIEWS;
+  const first = [
+    ...ALERT_PREVIEWS.map((p) => `${p.key}|${p.state}|${p.text}`),
+    ...HANDOFF_NOTICE_PREVIEWS.map((n) => `${n.kind}|${n.state}|${n.text}`),
+  ].join("\n");
+  const second = [
+    ...again.map((p: { key: string; state: string; text: string }) => `${p.key}|${p.state}|${p.text}`),
+    ...(bust.HANDOFF_NOTICE_PREVIEWS as { kind: string; state: string; text: string }[]).map(
+      (n) => `${n.kind}|${n.state}|${n.text}`,
+    ),
+  ].join("\n");
   assert(first === second, "rendering twice produces identical copy (no wall-clock in the fixtures)");
 }
 

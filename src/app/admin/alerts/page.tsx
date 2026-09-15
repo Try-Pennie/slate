@@ -461,6 +461,24 @@ export default async function AlertSettingsPage({
                 className={`${inputCls} w-72`}
               />
             </div>
+            <div>
+              {/* heading-gloss-ok: who reads it, as with the two above. This one is for
+                  the sales side rather than for whoever keeps Slate running. */}
+              <label className={labelCls} htmlFor="handoff_channel">
+                Handoff channel (sales)
+              </label>
+              <input
+                id="handoff_channel"
+                name="handoff_channel"
+                type="text"
+                list={SLACK_CHANNEL_LIST_ID}
+                defaultValue={config?.handoff_channel ?? ""}
+                // #2367: no fallback to either channel above, deliberately. A booking
+                // handoff posted where sales does not read reaches nobody who can act.
+                placeholder="pick the channel sales reads"
+                className={`${inputCls} w-72`}
+              />
+            </div>
           </div>
         </section>
 

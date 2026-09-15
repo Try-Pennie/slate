@@ -132,6 +132,17 @@ import {
 } from "@/lib/rate-limit-core";
 import { SHIPPED_MIGRATION_VERSION } from "@/lib/db/migration-version";
 import { runWebhookSubscriberCheck } from "@/lib/monitor/webhook-subscriber-coverage";
+import { runHandoffCheck } from "@/lib/handoffs/check";
+import {
+  loadHandoffBookings,
+  loadHandoffChannel,
+  loadOpenHandoffs,
+  markHandoffNotified,
+  recordHandoffNotifyFailure,
+  resolveHandoffs,
+} from "@/lib/handoffs/store";
+import { postSlack } from "@/lib/notify/slack";
+import { bookingDetailHref } from "@/lib/booking/detail";
 import { runEdgeLimiterCheck } from "@/lib/monitor/edge-limiter-health";
 import { EDGE_LIMITER_BINDINGS } from "@/lib/rate-limit-core";
 import { BURST_LIMITER_BINDING } from "@/lib/rate-limit-burst";
@@ -1878,6 +1889,49 @@ export async function GET(req: NextRequest) {
       }),
     );
 
+    // Booking handoffs: a booking waiting on a person in sales (#2367). Delivers each
+    // open handoff to the handoff channel, resolves the ones whose booking has since
+    // settled, and pages the alerts channel when handoffs are not getting through.
+    //
+    // Its cost on the invocation this lane shares: one bounded read of the open rows,
+    // one primary key read of their bookings, one config read, at most one resolve
+    // write per reason, and at most HANDOFF_POSTS_PER_TICK Slack posts each with its
+    // stamp write. The counts are in the step's own tick line (tag=booking-handoffs),
+    // beside this step's time in the cycle line.
+    const handoffs = await steps.run("booking_handoffs", null, () =>
+      runHandoffCheck({
+        nowMs: now,
+        loadOpen: (limit) => loadOpenHandoffs(db, limit),
+        loadBookings: (ids) => loadHandoffBookings(db, ids),
+        loadChannel: () => loadHandoffChannel(db),
+        resolve: (ids, reason, atIso) => resolveHandoffs(db, ids, reason, atIso),
+        // postSlack never throws and answers not-ok for an unconfigured bot, a refused
+        // channel or a timeout, each of which the check records on the row.
+        post: (channel, text) => postSlack({ channel, text }),
+        markNotified: (id, atIso) => markHandoffNotified(db, id, atIso),
+        recordNotifyFailure: (id, attempts, reason) => recordHandoffNotifyFailure(db, id, attempts, reason),
+        bookingUrl: (bookingId) => `${appUrl()}${bookingDetailHref(bookingId)}`,
+        settingsUrl: `${appUrl()}/admin/alerts`,
+        // alert-key: handoff_channel_unset
+        // alert-key: handoff_undelivered
+        // alert-text-ok: our own copy from src/lib/handoffs/copy.ts, which shortens any stored error.
+        notify: sendThrottledAlert,
+        // Both are conditions: each stays true until a channel is set or the posts land.
+        // alert-key: handoff_channel_unset
+        // alert-key: handoff_undelivered
+        // all-clear-proof: scripts/test-booking-handoffs.ts - an unreadable open handoff
+        // read clears nothing, an unreadable channel setting neither pages nor clears the
+        // unset page, and a truncated read never clears the undelivered page.
+        clearAlert: resolveAlert,
+        cooldownMs: {
+          channelUnset: settings.cooldownMs.handoff_channel_unset,
+          undelivered: settings.cooldownMs.handoff_undelivered,
+        },
+        log: (fields) => log.info("booking-handoffs", fields),
+        warn: (fields) => log.warn("booking-handoffs", fields),
+      }),
+    );
+
     // Are the request rate limits actually usable in the running deployment? (#1529)
     //
     // The hot path already reports a fail-open per request, but it can only ever speak
@@ -2129,6 +2183,9 @@ export async function GET(req: NextRequest) {
       // failed: "no event is unsubscribed" and "could not tell" must not render the
       // same, since the second is the state this check exists to notice (#1459).
       webhookSubscribers,
+      // null when the step failed, and measured:false inside when the open handoffs
+      // could not be read: "nothing waiting" and "could not look" must not read alike.
+      handoffs,
       // null when the step failed; status "unmeasured" inside when the tick could not
       // look. Carries the runtime marker it observed on the HEALTHY path too, which is
       // the only place the assumption behind the hot path's runtime gate can be read

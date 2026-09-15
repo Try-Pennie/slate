@@ -240,6 +240,22 @@ export const ALERT_CATALOG: AlertEntry[] = [
       "nobody; a person updates the subscription and the same lane re-measures it.",
   },
   {
+    key: "handoff_channel_unset",
+    kind: "condition",
+    why:
+      "A booking is waiting on somebody in sales and no handoff channel is set, so " +
+      "nobody is told; it ends when the channel is set or nothing is waiting, and the " +
+      "monitor lane re-measures both every tick (#2367).",
+  },
+  {
+    key: "handoff_undelivered",
+    kind: "condition",
+    why:
+      "A booking handoff has waited past its bound without a post landing in the " +
+      "handoff channel; it ends once every open handoff has been posted or resolved, " +
+      "which the monitor lane re-measures every tick (#2367).",
+  },
+  {
     key: "low_booking_volume",
     kind: "condition",
     why:
