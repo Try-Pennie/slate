@@ -12,11 +12,27 @@
  * So the path times its own named stages, and the next run's archived log carries
  * the apportionment instead of somebody reasoning about it afterwards.
  *
- * **This is WALL time, not CPU**, because the runtime exposes no per request CPU
- * reading. It apportions the confirm only because that run measured the two as
- * roughly equal; on a path that waits on something the two would diverge and the
- * shares here would describe the waiting rather than the compute. Anything drawn
- * from this has to say which it is.
+ * **This is WALL time, not CPU, and no amount of instrumenting will change that**
+ * (#2353). It is not that the runtime has simply not exposed a per request CPU
+ * reading: Workers are DESIGNED so that code cannot measure its own execution
+ * time. `Date.now()` returns the time of the LAST I/O and does not advance during
+ * execution, no other timer is provided, and concurrency is withheld so none can
+ * be built; that is the Spectre mitigation the platform was built around in 2017
+ * (Cloudflare's security model page). Workers tracing documents the same thing
+ * from the other end: a span containing no I/O reports 0ms.
+ *
+ * So a proposal to measure CPU per stage from inside the Worker cannot work, and
+ * it is worth knowing before somebody spends an afternoon on it. The ONLY true
+ * CPU figure available is the runtime's own, one number per invocation, which the
+ * archived `wrangler tail` stream carries as `cpuTime` and the load run's judge
+ * reads. Apportioning THAT by stage would need a controlled comparison between
+ * runs, not an in process clock.
+ *
+ * What this measures is therefore the confirm's wall at I/O granularity. It
+ * apportions the confirm only because the 2026-09-14 run measured wall and CPU as
+ * roughly equal; on a path that waits on something the two diverge and the shares
+ * here describe the waiting rather than the compute. Anything drawn from this has
+ * to say which it is.
  *
  * **Gated entirely behind `SLATE_LOADTEST`**, exactly as the Google stub and the
  * seen address echo are. With the flag unset the clock is never read at all, so a

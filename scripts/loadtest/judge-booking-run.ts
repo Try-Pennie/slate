@@ -12,7 +12,7 @@
  * happened, never as a run with a verdict (L288).
  */
 import type { BookingAttempt, DriverResult } from "./book-plan.ts";
-import { HEALTHY_INVOCATION_STATUS } from "./platform-reading.ts";
+import { HEALTHY_INVOCATION_STATUS, type ScheduledReading } from "./platform-reading.ts";
 import { CEILING_CONCLUSION, type CeilingVerdict } from "./preflight-checks.ts";
 // Type-only (erased under --experimental-strip-types), so the judge never pulls
 // the reader in at runtime and the two stay one direction apart.
@@ -84,7 +84,10 @@ export interface PlatformReading {
    * percentile against a per request budget would fail every run for a reason
    * nobody should fix (L36).
    */
-  cron: { invocations: number; worstCpuMs: number; byCron: Record<string, { invocations: number; worstCpuMs: number }> } | null;
+  // `ScheduledReading` itself rather than a second copy of its shape: the inline
+  // one shipped in #2352 and was already a field behind within the day, so the
+  // judge could not see what its own reader had measured (L41).
+  cron: ScheduledReading | null;
   /**
    * WHICH source the cron half above was actually read from (#2352).
    *
@@ -875,7 +878,11 @@ export function judgeBookingRun(input: JudgeInput): JudgeResult {
             `inside it, and ${m.confirmAfterResponse === null ? "an unmeasured time" : `p95 ${m.confirmAfterResponse.p95}ms`} ` +
             "AFTER the response had gone, which is the deferred webhook send. No lead waits for " +
             "that last span and this percentile still counts it, so read the three apart before " +
-            "optimising anything";
+            "optimising anything. The percentile CANNOT be split: the runtime reports one CPU " +
+            "figure per invocation, and no in process timer can apportion it, because a Worker's " +
+            "clock returns the time of the last I/O and does not advance during execution. The " +
+            "report's per job line beside it is WALL, measured the same way and subject to the " +
+            "same limit";
       fail(
         "Worker CPU on the request path",
         `p99 ${p.cpuMsP99}ms of CPU per invocation, over the ${input.budgets.cpuMsP99}ms request ` +

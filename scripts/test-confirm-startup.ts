@@ -25,7 +25,7 @@
 //     numbers as a zero (L98).
 //
 // Run: node --experimental-strip-types scripts/test-confirm-startup.ts
-import { readConfirmStartup } from "./loadtest/confirm-startup.ts";
+import { readConfirmStartup, readDeferredSpans } from "./loadtest/confirm-startup.ts";
 import { formatLine } from "../src/lib/log.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
@@ -439,5 +439,81 @@ function otherLine(msg: string): string {
       "ended the moment the booking was written",
   );
 }
+
+// --- what each DEFERRED job cost, by name (#2353) ------------------------------
+//
+// Run 34980777198 measured warm confirms at 2.8 to 3.4s of CPU on a 6.5s
+// invocation, of which about 3.5s was spent AFTER the response had gone. That span
+// was ONE number, inferred by subtracting the confirm's own log line from the
+// invocation's wall, so nothing could say whether it was the webhook send or the
+// tally beside it. Each deferred job reports its own line now, and this reads them.
+//
+// WALL, like everything else a Worker can time: `Date.now()` returns the time of
+// the LAST I/O and does not advance during execution, and no other timer exists
+// (Cloudflare's security model page). Per stage CPU is not obtainable from inside
+// a Worker at all, which is why nothing here claims to be it.
+{
+  const line = (context: string, ms: number, failed = false) =>
+    JSON.stringify(
+      {
+        outcome: "ok",
+        eventTimestamp: 0,
+        logs: [
+          {
+            timestamp: 1,
+            message: [
+              formatLine("after-response-profile", {
+                msg: "deferred work finished",
+                context,
+                ms,
+                failed,
+              }),
+            ],
+          },
+        ],
+      },
+      null,
+      2,
+    );
+
+  const r = readDeferredSpans(
+    [line("booking-webhook", 2_400), line("booking-api-tally", 90), line("booking-webhook", 3_100, true)].join("\n"),
+  );
+  assert(r !== null, "an archive carrying deferred spans is read");
+  eq(r!["booking-webhook"]?.calls, 2, "each job is counted under its own name");
+  eq(r!["booking-webhook"]?.ms.sort((a, b) => a - b).join(","), "2400,3100", "keeping every reading");
+  eq(r!["booking-api-tally"]?.calls, 1, "and a second job is not folded into the first");
+  // A job that FAILED still cost the invocation its time, and it is the one
+  // somebody profiles, so it counts. It is named separately so a reader is not
+  // told a healthy span was expensive when it was a failing one (L11).
+  eq(r!["booking-webhook"]?.failed, 1, "a failed job is timed and counted as failed");
+}
+
+{
+  // An archive with no deferred line at all is NULL, never an empty table: a run
+  // whose archive never arrived and a run whose deferred work cost nothing would
+  // otherwise render the same (L98).
+  eq(readDeferredSpans(""), null, "an empty archive is no reading");
+  eq(
+    readDeferredSpans(JSON.stringify({ eventTimestamp: 0, logs: [{ timestamp: 1, message: ["slate tag=recompute msg=\"cycle\""] }] })),
+    null,
+    "and so is one carrying no deferred line",
+  );
+}
+
+{
+  // A line whose `ms` cannot be read is COUNTED and contributes no reading, never
+  // a zero: a zero is the cheapest possible span and would pull every percentile
+  // down while looking like a measurement (L50).
+  const bad = JSON.stringify({
+    eventTimestamp: 0,
+    logs: [{ timestamp: 1, message: [`slate tag=after-response-profile context=booking-webhook ms=lots`] }],
+  });
+  const r = readDeferredSpans(bad);
+  eq(r?.["booking-webhook"]?.calls, 1, "a deferred line with no readable time is still a job");
+  eq(r?.["booking-webhook"]?.ms.length, 0, "contributing no reading rather than a zero");
+  eq(r?.["booking-webhook"]?.unreadable, 1, "and counted, so a thin sample is not read as a cheap one");
+}
+
 
 finish();
