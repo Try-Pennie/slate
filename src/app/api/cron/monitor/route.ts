@@ -1154,8 +1154,11 @@ export async function GET(req: NextRequest) {
     // valid week whether or not the agent keeps it. The stamp (`hours_source`,
     // migration 0117) decides for rows written since it existed; for the rows
     // before it, a week still shaped exactly like the org default was never
-    // touched. Its own reads, in its own boundary, like schedule_coverage above:
-    // it does not consume the shared setup state, so it is not gated on it. ---
+    // touched. It waits two days before naming anybody (UNSET_HOURS_GRACE_MS),
+    // because every new hire is seeded with the default week and ordinary
+    // onboarding clears it; `verify:parallel-run-readiness` deliberately keeps no
+    // such patience. Its own reads, in its own boundary, like schedule_coverage
+    // above: it does not consume the shared setup state, so it is not gated on it. ---
     await steps.run("unset_hours", null, () =>
       runUnsetHoursCheck({
         load: async () => {
@@ -1169,10 +1172,18 @@ export async function GET(req: NextRequest) {
                 .eq("is_test", false)
                 .range(from, to),
             ),
-            selectAllPages<{ id: string; user_id: string; timezone: string; hours_source: HoursSource | null }>(
-              "monitor unset-hours schedules",
-              (from, to) =>
-                db.from("availability_schedules").select("id, user_id, timezone, hours_source").range(from, to),
+            selectAllPages<{
+              id: string;
+              user_id: string;
+              timezone: string;
+              hours_source: HoursSource | null;
+              hours_set_at: string | null;
+              created_at: string;
+            }>("monitor unset-hours schedules", (from, to) =>
+              db
+                .from("availability_schedules")
+                .select("id, user_id, timezone, hours_source, hours_set_at, created_at")
+                .range(from, to),
             ),
             selectAllPages<{ schedule_id: string; weekday: number; start_minute: number; end_minute: number }>(
               "monitor unset-hours rules",
@@ -1196,6 +1207,8 @@ export async function GET(req: NextRequest) {
               user_id: sc.user_id,
               timezone: sc.timezone,
               hours_source: sc.hours_source,
+              hours_set_at: sc.hours_set_at,
+              created_at: sc.created_at,
               rules: rulesBySchedule.get(sc.id) ?? [],
             })),
           };
@@ -1205,6 +1218,7 @@ export async function GET(req: NextRequest) {
         // alert-key: agents_on_unset_hours
         resolve: (key, text) => resolveAlert(key, text),
         cooldownMs: settings.cooldownMs.agents_on_unset_hours,
+        nowMs: Date.now(),
       }),
     );
 

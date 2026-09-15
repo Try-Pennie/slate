@@ -220,8 +220,9 @@ export const ALERT_CATALOG: AlertEntry[] = [
     key: "agents_on_unset_hours",
     kind: "condition",
     why:
-      "A bookable agent is offered on the seeded week nobody chose; it ends when " +
-      "their hours are set or imported, and the same daily sweep sees it (#1753).",
+      "A bookable agent has been offered on the seeded week nobody chose for longer " +
+      "than the two day grace; it ends when their hours are set or imported, and the " +
+      "same daily sweep sees it (#1753).",
   },
   {
     key: "schedule_parity_drift",

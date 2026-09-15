@@ -204,7 +204,7 @@ export const ALERT_FIELDS: {
     key: "agents_on_unset_hours",
     urgency: "alert",
     label: "Agents offered on hours nobody set",
-    help: "A bookable agent's working week is still the seeded default, so leads are offered times that are right only by coincidence. It ends when their hours are set by them, an admin, or the cal.com import.",
+    help: "A bookable agent has spent more than two days on the seeded default working week, so leads are offered times that are right only by coincidence. The first two days are silent, because every new hire starts on the seeded week and ordinary onboarding sets their real hours. It ends when their hours are set by them, an admin, or the cal.com import.",
   },
   {
     key: "ooo_calcom_unprotected",

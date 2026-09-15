@@ -1388,17 +1388,31 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     text: formatAvailabilityRecovery(),
   },
   {
+    // Past the two day grace, which is the only state that reaches Slack: a hire
+    // seeded this morning is silent, so a fixture inside the window would render a
+    // message the lane never sends.
     key: "agents_on_unset_hours",
-    state: "bookable agents still on the seeded week",
+    state: "bookable agents left on the seeded week past the grace",
     channel: "alert",
-    text: formatUnsetHoursAlert([
-      { id: "u1", email: "cfrank@trypennie.com", name: "C Frank" },
-      { id: "u2", email: "jsaminu@trypennie.com", name: null },
-    ]),
+    text: formatUnsetHoursAlert(
+      [
+        { id: "u1", email: "cfrank@trypennie.com", name: "C Frank", unsetSinceMs: NOW_MS - 6 * 24 * 60 * 60_000 },
+        { id: "u2", email: "jsaminu@trypennie.com", name: null, unsetSinceMs: NOW_MS - 41 * 24 * 60 * 60_000 },
+      ],
+      NOW_MS,
+    ),
+  },
+  {
+    // The stamp nothing can read, which is reported rather than spared. It renders
+    // its own words, so a broken date can never arrive as "NaN days".
+    key: "agents_on_unset_hours",
+    state: "one whose stamp cannot be read",
+    channel: "alert",
+    text: formatUnsetHoursAlert([{ id: "u3", email: "dpatel@trypennie.com", name: "D Patel", unsetSinceMs: null }], NOW_MS),
   },
   {
     key: "agents_on_unset_hours",
-    state: "every week set by somebody",
+    state: "nobody past the grace",
     channel: "recovery",
     text: formatUnsetHoursRecovery(),
   },

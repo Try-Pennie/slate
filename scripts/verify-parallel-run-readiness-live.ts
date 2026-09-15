@@ -117,9 +117,16 @@ const unsetHours = await section("hours sources", async () => {
   if (!org) throw new Error("no organization row");
   // cap-safe: one schedule per agent, roster bounded at ~200
   const scheds = (unwrap(
-    await db.from("availability_schedules").select("id, user_id, timezone, hours_source").in("user_id", agents.map((a) => a.id)),
+    await db.from("availability_schedules").select("id, user_id, timezone, hours_source, hours_set_at, created_at").in("user_id", agents.map((a) => a.id)),
     "schedules",
-  ) ?? []) as { id: string; user_id: string; timezone: string; hours_source: "seed" | "agent" | "admin" | "calcom-import" | null }[];
+  ) ?? []) as {
+    id: string;
+    user_id: string;
+    timezone: string;
+    hours_source: "seed" | "agent" | "admin" | "calcom-import" | null;
+    hours_set_at: string | null;
+    created_at: string;
+  }[];
   // cap-safe: at most seven rules per schedule for a roster bounded at ~200
   const rules = (unwrap(
     await db.from("availability_rules").select("schedule_id, weekday, start_minute, end_minute").in("schedule_id", scheds.map((s) => s.id)),
@@ -130,7 +137,18 @@ const unsetHours = await section("hours sources", async () => {
   return agentsOnUnsetHours({
     org,
     agents,
-    schedules: scheds.map((s) => ({ user_id: s.user_id, timezone: s.timezone, hours_source: s.hours_source, rules: rulesBySchedule.get(s.id) ?? [] })),
+    schedules: scheds.map((s) => ({
+      user_id: s.user_id,
+      timezone: s.timezone,
+      hours_source: s.hours_source,
+      hours_set_at: s.hours_set_at,
+      created_at: s.created_at,
+      rules: rulesBySchedule.get(s.id) ?? [],
+    })),
+    // No grace here, deliberately: the Slack alert waits two days because it
+    // arrives daily and unbidden, while this is run at a chosen moment before real
+    // leads are sent, and an agent seeded yesterday is offered on coincidence hours
+    // just the same.
   }).map((a) => a.email ?? a.id);
 });
 
