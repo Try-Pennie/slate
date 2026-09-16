@@ -222,47 +222,16 @@ jobs:
           done
           echo "All CI legs succeeded."
 
-  # Report-only merged coverage across both harnesses (#603). Its own job so it
-  # never gates merge: a hard threshold on this mixed harness would be noisy. The
-  # summary prints in the log and the lcov is uploaded as an artifact.
+  # Coverage USED TO BE A JOB HERE and now lives in .github/workflows/coverage.yml
+  # (#2395, #2402). It is report-only (#603), gated nothing, and its placement in
+  # this run cost two separate things: about 4,700 billed minutes a month on a
+  # budget that refused a job on 10 September, and about four minutes of delay on
+  # the deploy failure alert, which cannot fire until this run completes and so
+  # waited for a report every time production shipped a broken commit.
   #
-  # MERGES TO MAIN ONLY (#1593). It re-runs both harnesses under instrumentation
-  # for about 4m05s, and while it never gated anything, the merge flow waits for
-  # every check to go green, so a report-only job still delayed every merge it
-  # outlived. Once #1592 split the gate down to about 2m35s, this job WAS the
-  # critical path and quietly took most of that win back.
-  #
-  # What is deliberately given up: a pull request no longer carries its own
-  # coverage number, so a change's effect on coverage is visible on the merge
-  # rather than before it. The coverage MERGE LOGIC is not what is being skipped;
-  # scripts/test-coverage-orchestration.ts still runs in `pnpm test` on every
-  # pull request. A weekly schedule would have saved more (about 1,900 billed
-  # minutes a month against about 1,000) and was considered and declined, because
-  # a per-merge record is worth the difference.
-  coverage:
-    timeout-minutes: 20  # measured max 321s
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
-      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
-        with:
-          version: 10
-      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
-        with:
-          node-version: 24
-          cache: pnpm
-      - name: Install
-        run: pnpm install --frozen-lockfile
-      - name: Merged coverage report
-        run: pnpm test:coverage
-      - name: Upload lcov
-        if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: coverage-lcov
-          path: coverage/lcov.info
-          if-no-files-found: warn
+  # Nothing to re-add here. A coverage number for one commit is
+  # `gh workflow run coverage.yml --ref <branch>`; the merge logic it exercises
+  # still runs in `pnpm test` on every pull request.
 
   # Fails if a committed migration hasn't been applied to the linked project, so
   # code can't merge expecting schema that isn't pushed. REQUIRES the
@@ -290,14 +259,18 @@ jobs:
   # cannot block a correctness failure from being reported, and so its runtime is
   # visible separately.
   #
-  # Deliberately NOT in `deploy`'s `needs`, matching `coverage`. The semgrep rule
-  # packs are fetched at run time (see below), so a newly published rule could
-  # otherwise block an emergency deploy over code nobody touched, which is a worse
-  # outcome than a late finding. Like every other control in this repo on the free
-  # plan (see the main-push guard, #1027), it is DETECTIVE: a red run means look
-  # now and rotate if needed, not "the change was prevented".
+  # Deliberately NOT in `deploy`'s `needs`. The semgrep rule packs are fetched at
+  # run time (see below), so a newly published rule could otherwise block an
+  # emergency deploy over code nobody touched, which is a worse outcome than a
+  # late finding. Like every other control in this repo on the free plan (see the
+  # main-push guard, #1027), it is DETECTIVE: a red run means look now and rotate
+  # if needed, not "the change was prevented".
   security-scan:
-    timeout-minutes: 15  # measured max 87s
+    # alert-latency-ok: it finishes about three minutes BEFORE the deploy does, so
+    # it never holds the run open and never delays the deploy failure alert
+    # (#2402). Measured 86s and 97s against deploys ending at 302s and 300s, runs
+    # 35112495998 and 35115428061. Pinned by scripts/test-deploy-alert-latency.ts.
+    timeout-minutes: 15  # measured max 97s
     runs-on: ubuntu-latest
     steps:
       # Full history: the secret scan reads the commits a push ADDS, and needs the

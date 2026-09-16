@@ -6,8 +6,9 @@
 // package script, and the CI step must all be present. It does NOT run coverage
 // (too slow); the CI job is the behavioral check that it still produces numbers.
 // Run: node --experimental-strip-types scripts/test-coverage-wiring.ts
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
+import { parseWorkflowJobs } from "./lib/scan-workflow-jobs.ts";
 import { assert, finish } from "./lib/harness.ts";
 
 const ROOT = new URL("..", import.meta.url).pathname;
@@ -34,11 +35,27 @@ const read = (p: string) => readFileSync(join(ROOT, p), "utf8");
   assert(pkg.scripts?.["test:coverage"] === "node scripts/coverage.mjs", "package.json wires the test:coverage script");
 }
 
-// 3. CI runs it, so the summary is actually published (report-only, not a gate).
+// 3. A workflow runs it, so the summary is actually published (report-only, not
+//    a gate). WHICH workflow is derived rather than named: it moved out of ci.yml
+//    in #2395, and a guard naming one file would have reported the machinery as
+//    unwired on the day it moved, or as wired from a file that no longer ran it.
 {
-  const ci = read(".github/workflows/ci.yml");
-  assert(/test:coverage/.test(ci), "CI invokes the coverage report");
-  assert(/upload-artifact/.test(ci) && /lcov/.test(ci), "CI uploads the lcov artifact");
+  const DIR = join(ROOT, ".github", "workflows");
+  const running = readdirSync(DIR)
+    .filter((f) => /\.ya?ml$/.test(f))
+    .map((f) => ({ file: f, source: readFileSync(join(DIR, f), "utf8") }))
+    .filter(({ source }) =>
+      parseWorkflowJobs(source).some((j) => j.runs.some((cmd) => /\bpnpm\s+test:coverage\b/.test(cmd))),
+    );
+  assert(
+    running.length === 1,
+    `exactly one workflow invokes the coverage report (found ${running.length}: ${JSON.stringify(running.map((r) => r.file))})`,
+  );
+  const workflow = running[0]?.source ?? "";
+  assert(
+    /upload-artifact/.test(workflow) && /lcov/.test(workflow),
+    "that workflow uploads the lcov artifact, so the report leaves the runner",
+  );
 }
 
 finish();

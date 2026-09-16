@@ -1,0 +1,113 @@
+name: Coverage
+
+# Report-only merged coverage across both harnesses (#603). It lived as a job in
+# ci.yml until #2395 and #2402, which are two symptoms of the same placement:
+#
+#   COST. #1593 kept it on every merge to main and recorded the choice as a
+#   sentence: about 4m05s a run, about 1,000 billed minutes a month, a weekly
+#   schedule declined because "a per-merge record is worth the difference".
+#   Nothing re-measured any of it. Measured 2026-09-16 the job takes 8m33s to
+#   9m04s, which bills 9 or 10 minutes, and main took 258 pushes in the 15 days
+#   from 2 September, so the real figure was roughly 4,700 billed minutes a month
+#   against the 1,000 the decision rests on. On 10 September the account's
+#   spending limit refused the `ci` fan-in on run 34532636820 after all nine legs
+#   had passed, so a green merge was never deployed and its deploy failure alert
+#   was refused too (run 34533260624).
+#
+#   LATENCY. deploy-alert.yml fires on the CI run's own completion, so nothing
+#   could post until coverage finished. Measured on six merges, the deploy ended
+#   217s to 281s before the run did, which is four minutes of nobody knowing that
+#   production is serving a broken commit, spent waiting on a report that gates
+#   nothing.
+#
+# Moving it to its own scheduled workflow answers both: the CI run now completes
+# when the deploy does, and the report costs a thirtieth of what it did while
+# still being taken often enough to see a change land. What is given up is a
+# coverage number attached to one merge; the run is stamped with the commit it
+# read, and `workflow_dispatch` re-runs it on demand when one change's effect
+# matters. The coverage MERGE LOGIC is not what moved:
+# scripts/test-coverage-orchestration.ts still runs in `pnpm test`, so it is
+# checked on every pull request exactly as before.
+#
+# COST PREMISE (#2395), recorded as numbers with the command that re-measures
+# them rather than as a dated sentence, so the next drift is a diff (L316).
+# Re-measure with:
+#   gh api "repos/Try-Pennie/slate/actions/workflows/coverage.yml/runs?per_page=20" --jq '.workflow_runs[].id'
+#   gh api "repos/Try-Pennie/slate/actions/runs/<id>/jobs" --jq '.jobs[] | [.name, .started_at, .completed_at] | @tsv'
+# Measured 2026-09-16 on six merges to main (runs 35115428061, 35112495998,
+# 35111352989, 35105764041, 35102610040, 35018357994): the coverage job ran for
+# 513s, 539s, 526s, 532s, 544s and 538s, which GitHub bills as 9, 9, 9, 9, 10 and
+# 9 minutes. The per run figure below is the WORST of those, not the mean, since
+# billing rounds each job up on its own.
+# cost-premise: runs-per-month=31 billed-minutes-per-run=10 ceiling-billed-minutes-per-month=400
+#
+# scripts/test-coverage-cadence.ts derives the cadence from the cron below and
+# fails when it stops agreeing with that line, so the premise cannot go stale
+# while the schedule moves underneath it.
+#
+# NO ALERT AND NO HEARTBEAT, deliberately (L13, L71). Every other scheduled lane
+# here carries one because something acts on its verdict: the canary probes live
+# production, the parity lane corrects a roster, the lane watchdog pages when a
+# schedule stops firing. This produces a number a person reads when they care
+# about it, nothing downstream consumes the artifact, and a dropped night costs
+# one reading that the next night supplies. A page nobody should act on is how
+# the pages that matter stop being read (L36, L112). Note this REMOVES a false
+# alert rather than removing a real one: while coverage sat in ci.yml a failed
+# upload painted the whole CI run red, and on 2026-09-08 that posted "deploy
+# failed" for a deploy that had succeeded (deploy-alert run 34250093987 on CI run
+# 34249335474, the 403 recorded in #2084).
+on:
+  schedule:
+    # 05:40 UTC, about 01:40 Eastern: nobody is merging, so the report is not
+    # competing for a runner slot with a real merge's CI, which on this account is
+    # the budget that actually binds (L307). Not on the hour, where GitHub's
+    # scheduling queue is busiest and runs are most often dropped, matching the
+    # other scheduled lanes here.
+    - cron: "40 5 * * *"
+  workflow_dispatch:
+
+# A superseded run is safe to cancel here and only here: this workflow WRITES
+# nothing durable (no deploy, no database row, no heartbeat), it produces one
+# artifact whose only reader is a person (L671). ci.yml's own concurrency is
+# deliberately the opposite on main, because a run there IS the deploy.
+concurrency:
+  group: coverage
+  cancel-in-progress: true
+
+jobs:
+  # The job key stays `coverage`, so the check reads `Coverage / coverage` rather
+  # than `CI / coverage`: the job half of the name is unchanged for anything that
+  # looks for it. Nothing requires it as a status check (main is unprotected and
+  # rulesets are a paid feature this org does not have, confirmed 2026-09-16), and
+  # it never ran on a pull request, so it could never have been a required one.
+  coverage:
+    timeout-minutes: 20  # measured max 544s
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+        with:
+          version: 10
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24
+          cache: pnpm
+      - name: Install
+        run: pnpm install --frozen-lockfile
+      # Which commit this report is about. On a schedule the run is no longer
+      # attached to one merge, so a number with no commit beside it cannot be
+      # compared with the last one.
+      - name: Say which commit is being measured
+        run: |
+          set -euo pipefail
+          echo "Coverage for $GITHUB_SHA on $GITHUB_REF_NAME"
+          git --no-pager log -1 --format='%H %ci %s'
+      - name: Merged coverage report
+        run: pnpm test:coverage
+      - name: Upload lcov
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: coverage-lcov
+          path: coverage/lcov.info
+          if-no-files-found: warn
