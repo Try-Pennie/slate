@@ -17,6 +17,7 @@ import {
   LOW_VOLUME_VERDICT_LANE,
   OOO_PROTECTION_VERDICT_LANE,
   TWILIO_ROSTER_VERDICT_LANE,
+  LANE_WATCHDOG_VERDICT_LANE,
   parkedDetector,
 } from "@/lib/monitor/verdict-freshness";
 
@@ -149,6 +150,11 @@ const VERDICT_SUBJECT: Record<string, { what: string; cost: string; look: string
     what: "the check asking whether approved time off is still blocking the hours it covers",
     cost: "an agent's time off could stop blocking anything and nobody would hear, which is how a lead gets booked into a day someone is away",
     look: 'the Worker logs for msg="tick" under tag=ooo-protection and whether the approved requests can be read at all',
+  },
+  [LANE_WATCHDOG_VERDICT_LANE]: {
+    what: "the dead man's switch that watches every cron lane for going quiet",
+    cost: "nothing is watching the lanes, so sync, recompute or the outbox could stop and the first sign of it would be a customer noticing",
+    look: 'the Worker logs for tag=lane-watchdog, and the monitor lane\'s cycle line for lane_watchdog under failed=',
   },
   [TWILIO_ROSTER_VERDICT_LANE]: {
     what: "the hourly roster sync's Twilio half, which takes an agent out of the bookable pool when Twilio marks them redistribute",

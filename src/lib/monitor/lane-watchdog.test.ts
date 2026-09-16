@@ -97,6 +97,9 @@ const healthy = () => ({
   // #2114: the Twilio half of the hourly roster sync. It concludes on every run
   // that can read Twilio, so a healthy fleet has a stamp inside the hour.
   "verdict:twilio-roster": ago(20 * MIN),
+  // #2382: the dead man's switch's own verdict. It concludes on every monitor tick
+  // the heartbeat table is readable, so a healthy fleet has a stamp minutes old.
+  "verdict:lane-watchdog": ago(5 * MIN),
   // The one remaining PARKED detector (#1561) is deliberately absent, because
   // that is what production looks like: the failure rate check has reached one
   // verdict in its life, off a smoke canary coincidence, and while it is parked
@@ -121,14 +124,14 @@ beforeEach(() => {
 
 describe("alertOnStaleLanes (#803)", () => {
   it("stays silent when every lane is stamping", async () => {
-    const stale = await alertOnStaleLanes();
+    const { stale } = await alertOnStaleLanes();
     expect(stale).toEqual([]);
     expect(dispatch.sendThrottledAlert).not.toHaveBeenCalled();
   });
 
   it("alerts (Slack only) when the Snowflake mirror export lane goes stale (#1101)", async () => {
     heartbeat.readAllHeartbeatMs.mockResolvedValue({ ...healthy(), "snowflake-export": ago(40 * MIN) });
-    const stale = await alertOnStaleLanes();
+    const { stale } = await alertOnStaleLanes();
     expect(stale.map((l) => l.lane)).toContain("snowflake-export");
     const call = dispatch.sendThrottledAlert.mock.calls.find((c) => c[0] === "cron_lane_stale:snowflake-export");
     expect(call).toBeTruthy();
@@ -137,7 +140,7 @@ describe("alertOnStaleLanes (#803)", () => {
 
   it("does not alert when the mirror export lane is fresh", async () => {
     heartbeat.readAllHeartbeatMs.mockResolvedValue({ ...healthy(), "snowflake-export": ago(5 * MIN) });
-    const stale = await alertOnStaleLanes();
+    const { stale } = await alertOnStaleLanes();
     expect(stale.map((l) => l.lane)).not.toContain("snowflake-export");
   });
 
@@ -294,7 +297,7 @@ describe("alertOnStaleLanes (#803)", () => {
         "snowflake-export": ago(2 * MIN),
         "snowflake-reconcile": ago(9 * 60 * MIN),
       });
-      const stale = await alertOnStaleLanes();
+      const { stale } = await alertOnStaleLanes();
       expect(stale.map((l) => l.lane)).toContain("snowflake-reconcile");
       const call = dispatch.sendThrottledAlert.mock.calls.find(
         (c) => c[0] === "cron_lane_stale:snowflake-reconcile",
@@ -310,7 +313,7 @@ describe("alertOnStaleLanes (#803)", () => {
         ...healthy(),
         "erasure-audit": ago(9 * 60 * MIN),
       });
-      const stale = await alertOnStaleLanes();
+      const { stale } = await alertOnStaleLanes();
       expect(stale.map((l) => l.lane)).toContain("erasure-audit");
       const call = dispatch.sendThrottledAlert.mock.calls.find(
         (c) => c[0] === "cron_lane_stale:erasure-audit",
@@ -329,7 +332,7 @@ describe("alertOnStaleLanes (#803)", () => {
         "snowflake-reconcile": ago(10 * MIN),
         "erasure-audit": ago(9 * 60 * MIN),
       });
-      const stale = await alertOnStaleLanes();
+      const { stale } = await alertOnStaleLanes();
       expect(stale.map((l) => l.lane)).toEqual(["erasure-audit"]);
     });
 
@@ -339,7 +342,7 @@ describe("alertOnStaleLanes (#803)", () => {
         "snowflake-reconcile": ago(6 * 60 * MIN + 20 * MIN),
         "erasure-audit": ago(6 * 60 * MIN + 20 * MIN),
       });
-      const stale = await alertOnStaleLanes();
+      const { stale } = await alertOnStaleLanes();
       expect(stale).toEqual([]);
       expect(dispatch.sendThrottledAlert).not.toHaveBeenCalled();
     });
@@ -347,7 +350,7 @@ describe("alertOnStaleLanes (#803)", () => {
 
   it("alerts when the bulk-reassign drain goes quiet (#1123)", async () => {
     heartbeat.readAllHeartbeatMs.mockResolvedValue({ ...healthy(), "bulk-reassign": ago(25 * MIN) });
-    const stale = await alertOnStaleLanes();
+    const { stale } = await alertOnStaleLanes();
     expect(stale.map((l) => l.lane)).toContain("bulk-reassign");
     const call = dispatch.sendThrottledAlert.mock.calls.find(
       (c) => c[0] === "cron_lane_stale:bulk-reassign",
@@ -363,7 +366,7 @@ describe("alertOnStaleLanes (#803)", () => {
       outbox: ago(25 * MIN),
     });
 
-    const stale = await alertOnStaleLanes();
+    const { stale } = await alertOnStaleLanes();
 
     expect(stale.map((l) => l.lane).sort()).toEqual(["outbox", "recompute"]);
     expect(dispatch.sendThrottledAlert).toHaveBeenCalledTimes(2);
@@ -382,7 +385,7 @@ describe("alertOnStaleLanes (#803)", () => {
 
   it("does not alert on a lane that has never stamped (fresh deploy, not a death)", async () => {
     heartbeat.readAllHeartbeatMs.mockResolvedValue({ ...healthy(), outbox: null });
-    const stale = await alertOnStaleLanes();
+    const { stale } = await alertOnStaleLanes();
     expect(stale).toEqual([]);
     expect(dispatch.sendThrottledAlert).not.toHaveBeenCalled();
   });
@@ -392,10 +395,21 @@ describe("alertOnStaleLanes (#803)", () => {
   it("swallows a heartbeat-read failure instead of breaking the calling lane", async () => {
     heartbeat.readAllHeartbeatMs.mockRejectedValueOnce(new Error("db unreachable"));
 
-    const stale = await alertOnStaleLanes();
+    const { stale } = await alertOnStaleLanes();
 
     expect(stale).toEqual([]);
     expect(dispatch.sendThrottledAlert).not.toHaveBeenCalled();
+  });
+
+  // #2382: swallowing it is right, and saying nothing about having swallowed it was
+  // not. An empty stale list is exactly what a healthy fleet returns, so the caller
+  // could not tell "every lane is stamping" from "nothing was looked at" (L215), and
+  // the monitor lane stamped `verdict:lane-watchdog` either way.
+  it("reports judged:false when the heartbeat read fails, and judged:true when it did not", async () => {
+    heartbeat.readAllHeartbeatMs.mockRejectedValueOnce(new Error("db unreachable"));
+    await expect(alertOnStaleLanes()).resolves.toEqual({ judged: false, stale: [] });
+
+    await expect(alertOnStaleLanes()).resolves.toEqual({ judged: true, stale: [] });
   });
 
   it("swallows an alert failure, and still reports the other stale lanes", async () => {
@@ -406,7 +420,7 @@ describe("alertOnStaleLanes (#803)", () => {
     });
     dispatch.sendThrottledAlert.mockRejectedValueOnce(new Error("slack is down"));
 
-    const stale = await alertOnStaleLanes();
+    const { stale } = await alertOnStaleLanes();
 
     // A failed Slack post must not hide the detection or skip the second lane.
     expect(stale.map((l) => l.lane).sort()).toEqual(["outbox", "recompute"]);
@@ -427,7 +441,7 @@ describe("alertOnStaleLanes (#803)", () => {
         "smoke-canary": ago(120 * MIN), // bound is 90m
       });
 
-      const stale = await alertOnStaleLanes();
+      const { stale } = await alertOnStaleLanes();
 
       expect(stale.map((l) => l.lane)).toContain("smoke-canary");
       expect(dispatch.sendThrottledAlert).toHaveBeenCalledTimes(1);
@@ -448,7 +462,7 @@ describe("alertOnStaleLanes (#803)", () => {
         ...healthy(),
         "smoke-canary": ago(20 * MIN),
       });
-      const stale = await alertOnStaleLanes();
+      const { stale } = await alertOnStaleLanes();
       expect(stale.map((l) => l.lane)).not.toContain("smoke-canary");
       expect(dispatch.sendThrottledAlert).not.toHaveBeenCalled();
     });
@@ -458,7 +472,7 @@ describe("alertOnStaleLanes (#803)", () => {
         ...healthy(),
         "smoke-canary": null,
       });
-      const stale = await alertOnStaleLanes();
+      const { stale } = await alertOnStaleLanes();
       expect(stale.map((l) => l.lane)).not.toContain("smoke-canary");
       expect(dispatch.sendThrottledAlert).not.toHaveBeenCalled();
     });
@@ -474,7 +488,7 @@ describe("alertOnStaleLanes (#803)", () => {
         "smoke-canary-full": ago(9 * 60 * MIN), // bound is 8h
       });
 
-      const stale = await alertOnStaleLanes();
+      const { stale } = await alertOnStaleLanes();
 
       expect(stale.map((l) => l.lane)).toContain("smoke-canary-full");
       expect(dispatch.sendThrottledAlert).toHaveBeenCalledTimes(1);
@@ -498,7 +512,7 @@ describe("alertOnStaleLanes (#803)", () => {
         "smoke-canary-full": ago(9 * 60 * MIN),
       });
 
-      const stale = await alertOnStaleLanes();
+      const { stale } = await alertOnStaleLanes();
 
       expect(stale.map((l) => l.lane).sort()).toEqual(["smoke-canary", "smoke-canary-full"]);
       expect(dispatch.sendThrottledAlert).toHaveBeenCalledTimes(2);
@@ -515,7 +529,7 @@ describe("alertOnStaleLanes (#803)", () => {
         "smoke-canary": ago(120 * MIN),
       });
 
-      const stale = await alertOnStaleLanes();
+      const { stale } = await alertOnStaleLanes();
 
       expect(stale.map((l) => l.lane).sort()).toEqual(["outbox", "smoke-canary"]);
       expect(dispatch.sendThrottledAlert).toHaveBeenCalledTimes(2);
@@ -548,7 +562,7 @@ describe("alertOnStaleLanes (#803)", () => {
       const { "prune-bookings-pii": _omitted, ...rest } = healthy();
       heartbeat.readAllHeartbeatMs.mockResolvedValue(rest);
       marker.firstSeenAt = new Date(Date.now() - 40 * 60 * MIN).toISOString();
-      const stale = await alertOnStaleLanes();
+      const { stale } = await alertOnStaleLanes();
       expect(stale.map((l) => l.lane)).toContain("prune-bookings-pii");
       const call = dispatch.sendThrottledAlert.mock.calls.find(
         (c) => c[0] === "cron_lane_stale:prune-bookings-pii",
@@ -566,7 +580,7 @@ describe("alertOnStaleLanes (#803)", () => {
       const { "prune-bookings-pii": _omitted, ...rest } = healthy();
       heartbeat.readAllHeartbeatMs.mockResolvedValue(rest);
       marker.firstSeenAt = "not-a-timestamp";
-      const stale = await alertOnStaleLanes();
+      const { stale } = await alertOnStaleLanes();
       expect(stale.map((l) => l.lane)).toContain("prune-bookings-pii");
       const call = dispatch.sendThrottledAlert.mock.calls.find(
         (c) => c[0] === "cron_lane_stale:prune-bookings-pii",
@@ -599,7 +613,7 @@ describe("alertOnStaleLanes (#803)", () => {
         "prune-routing": ago(40 * 60 * MIN),
       });
       marker.throwOn = "clear";
-      const stale = await alertOnStaleLanes();
+      const { stale } = await alertOnStaleLanes();
       expect(stale.map((l) => l.lane)).toContain("prune-routing");
     });
 
@@ -617,7 +631,7 @@ describe("alertOnStaleLanes (#803)", () => {
         ...healthy(),
         "prune-routing": ago(40 * 60 * MIN),
       });
-      const stale = await alertOnStaleLanes();
+      const { stale } = await alertOnStaleLanes();
       expect(stale.map((l) => l.lane)).toContain("prune-routing");
       const call = dispatch.sendThrottledAlert.mock.calls.find(
         (c) => c[0] === "cron_lane_stale:prune-routing",
@@ -627,7 +641,7 @@ describe("alertOnStaleLanes (#803)", () => {
 
     it("stays quiet for retention lanes that completed inside their 28h bound", async () => {
       heartbeat.readAllHeartbeatMs.mockResolvedValue(healthy());
-      expect(await alertOnStaleLanes()).toEqual([]);
+      expect(await alertOnStaleLanes()).toEqual({ judged: true, stale: [] });
       expect(dispatch.sendThrottledAlert).not.toHaveBeenCalled();
     });
   });
@@ -645,7 +659,7 @@ describe("alertOnStaleLanes (#803)", () => {
 
     it("still pages (fails closed) rather than passing as healthy", async () => {
       heartbeat.readAllHeartbeatMs.mockResolvedValue({ ...healthy(), outbox: UNREADABLE });
-      const stale = await alertOnStaleLanes();
+      const { stale } = await alertOnStaleLanes();
 
       expect(stale.map((l) => l.lane)).toContain("outbox");
       expect(dispatch.sendThrottledAlert).toHaveBeenCalledTimes(1);
@@ -704,7 +718,7 @@ describe("alertOnStaleLanes (#803)", () => {
       heartbeat.readAllHeartbeatMs.mockResolvedValue({ ...healthy(), [ARMED]: ago(30 * 60 * MIN) });
       marker.firstSeenAt = null;
 
-      const stale = await alertOnStaleLanes();
+      const { stale } = await alertOnStaleLanes();
 
       expect(stale.map((l) => l.lane)).toContain(ARMED);
       const call = dispatch.sendThrottledAlert.mock.calls.find((c) => c[0] === laneKey(ARMED));
@@ -729,7 +743,7 @@ describe("alertOnStaleLanes (#803)", () => {
       heartbeat.readAllHeartbeatMs.mockResolvedValue(rest);
       marker.firstSeenAt = new Date(ago(30 * 60 * MIN)).toISOString();
 
-      const stale = await alertOnStaleLanes();
+      const { stale } = await alertOnStaleLanes();
 
       expect(stale.map((l) => l.lane)).toContain(ARMED);
       const call = dispatch.sendThrottledAlert.mock.calls.find((c) => c[0] === laneKey(ARMED));
@@ -832,7 +846,7 @@ describe("alertOnStaleLanes (#803)", () => {
       heartbeat.readAllHeartbeatMs.mockRejectedValue(new Error("supabase unreachable"));
       dispatch.existingAlertStateKeys.mockResolvedValue(firingFor("outbox"));
 
-      const stale = await alertOnStaleLanes();
+      const { stale } = await alertOnStaleLanes();
 
       expect(stale).toEqual([]);
       expect(dispatch.resolveAlert).not.toHaveBeenCalled();
@@ -908,12 +922,12 @@ describe("alertOnStaleLanes (#803)", () => {
     it("does not throw when a recovery notice fails to send", async () => {
       dispatch.existingAlertStateKeys.mockResolvedValue(firingFor("outbox"));
       dispatch.resolveAlert.mockRejectedValue(new Error("slack down"));
-      await expect(alertOnStaleLanes()).resolves.toEqual([]);
+      await expect(alertOnStaleLanes()).resolves.toEqual({ judged: true, stale: [] });
     });
 
     it("does not throw when the firing-marker read fails", async () => {
       dispatch.existingAlertStateKeys.mockRejectedValue(new Error("supabase unreachable"));
-      await expect(alertOnStaleLanes()).resolves.toEqual([]);
+      await expect(alertOnStaleLanes()).resolves.toEqual({ judged: true, stale: [] });
       expect(dispatch.resolveAlert).not.toHaveBeenCalled();
     });
   });

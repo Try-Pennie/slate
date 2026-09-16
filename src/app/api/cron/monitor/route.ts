@@ -97,12 +97,27 @@ import {
   FAILURE_RATE_VERDICT_LANE,
   LOW_VOLUME_VERDICT_LANE,
   OOO_PROTECTION_VERDICT_LANE,
+  LANE_WATCHDOG_VERDICT_LANE,
   truthReachedVerdict,
   failureRateReachedVerdict,
   lowVolumeReachedVerdict,
   oooProtectionReachedVerdict,
+  laneWatchdogReachedVerdict,
 } from "@/lib/monitor/verdict-freshness";
+import { LANE_WATCHDOG_UNJUDGED } from "@/lib/monitor/health";
 import { createStepRunner } from "@/lib/monitor/step-runner";
+import {
+  judgeMonitorSteps,
+  checksGatedByStep,
+  monitorStepFailingAlert,
+  monitorStepRecoveryText,
+  stepFailingAlertKey,
+  MONITOR_STEP_ALERT_COOLDOWN_MS,
+  MONITOR_STEP_FAILING_TICKS,
+  MONITOR_STEP_REARM_TICKS,
+} from "@/lib/monitor/step-failure";
+import { recordConsecutiveStreak } from "@/lib/notify/streak";
+import { shortErrorReason } from "@/lib/notify/error-text";
 import { alertOnStaleLanes } from "@/lib/monitor/lane-watchdog";
 import {
   runCanaryGapFills,
@@ -509,9 +524,20 @@ export async function GET(req: NextRequest) {
     // the one spending it (#1245 took three days to notice for that reason).
     // Knowing which step failed and knowing what each cost want the same
     // structure, so there is one runner.
+    //
+    // #2382: the runner CONTAINS a throw, and until now that was the end of it.
+    // The name went into a seven day log nobody is paged from, the heartbeat was
+    // stamped anyway, and a check that threw on every tick for a month reported
+    // nothing while the lane looked healthy. So the reason is kept here as well,
+    // already shortened for a phone (#1135), and the streak below decides when a
+    // step that keeps failing gets to speak.
+    const stepFailureReasons = new Map<string, string>();
     const steps = createStepRunner({
       now: () => performance.now(),
-      onError: (name, err) => log.error("monitor", { msg: "step failed", step: name }, err),
+      onError: (name, err) => {
+        stepFailureReasons.set(name, shortErrorReason(err));
+        log.error("monitor", { msg: "step failed", step: name }, err);
+      },
     });
     const db = supabaseAdmin();
     // UI-tunable cooldowns + low-volume floors (#571); never throws (falls back
@@ -2018,7 +2044,17 @@ export async function GET(req: NextRequest) {
     // BOTH means the every-minute lanes and the 5-minute lanes watch each other,
     // so whichever survives a killed invocation reports the one that didn't. The
     // per-lane alert cooldown dedupes the overlap. Never throws.
-    await steps.run("lane_watchdog", undefined, () => alertOnStaleLanes());
+    //
+    // #2382: the fallback is LANE_WATCHDOG_UNJUDGED, not undefined, and the
+    // difference is the point. This step is the dead man's switch for every
+    // other lane, so a throw here used to leave that switch dead behind a live
+    // heartbeat. The verdict stamp at the foot of this handler is written only
+    // when the watchdog really judged the lanes, so a watchdog that threw, or
+    // that ran and could not read the heartbeats, goes stale like any other
+    // detector that has stopped concluding (#1394).
+    const laneWatchdog = await steps.run("lane_watchdog", LANE_WATCHDOG_UNJUDGED, () =>
+      alertOnStaleLanes(),
+    );
 
     // Reliable trigger for the booking smoke canary (#525 follow-up). GitHub
     // scheduled runs are best-effort and get dropped under load (2-3h gaps against
@@ -2090,6 +2126,65 @@ export async function GET(req: NextRequest) {
     // failed" tells them which customer-visible checks were skipped this tick.
     log.info("monitor", { msg: "cycle", ...steps.fields() });
 
+    // --- a step that keeps failing gets to speak (#2382) ---------------------
+    //
+    // Everything above this line is CONTAINED. The line above is the whole report
+    // a broken check used to get: a field in a Cloudflare log with seven day
+    // retention and no alerting on top of it. Before #1281 the same throw killed
+    // the tick, the heartbeat lapsed, and the watchdog paged one `monitor` bound
+    // later, so containment removed the only signal without adding a replacement.
+    //
+    // Deliberately NOT inside `steps.run`. This is the thing that reports the
+    // runner's failures, so containing it would put the reporter behind the fault
+    // it reports, which is the defect one level up. Its own sends are caught (one
+    // failed Slack post must not skip the rest) and the streak store is quiet by
+    // contract when it cannot track, so the only way out of here is a fault
+    // nobody predicted, and that one belongs OUTSIDE the heartbeat stamp below:
+    // the tick then dies loudly, exactly as it did before containment.
+    //
+    // It also sits ahead of the heartbeat for a second reason: judging steps is
+    // part of this tick's work, and a tick that stamped and then failed would
+    // claim more than it did.
+    const stepVerdict = await judgeMonitorSteps(steps.outcomes(), {
+      bump: recordConsecutiveStreak,
+      clear: clearFailureStreak,
+    });
+    for (const { step } of stepVerdict.page) {
+      // alert-key: monitor_step_failing:*
+      // alert-text-ok: shortErrorReason already collapsed the error to one clause.
+      await sendThrottledAlert(
+        stepFailingAlertKey(step),
+        MONITOR_STEP_ALERT_COOLDOWN_MS,
+        monitorStepFailingAlert({
+          step,
+          ticks: MONITOR_STEP_FAILING_TICKS,
+          reason: stepFailureReasons.get(step) ?? null,
+          gated: checksGatedByStep(step),
+        }),
+      ).catch((err) => {
+        log.error("monitor", { msg: "step-failure alert failed", step }, err);
+      });
+    }
+    if (stepVerdict.recovered.length > 0) {
+      // A condition, so it ends, and it ends on a MEASURED healthy result: only a
+      // step this tick actually RAN and completed is in this list, and only after
+      // it has done so for a whole re-arm window. A step the tick never reached
+      // measured nothing and appears in neither list.
+      const stepAllClears = stepVerdict.recovered.map((step) => ({
+        key: stepFailingAlertKey(step),
+        text: monitorStepRecoveryText(step, MONITOR_STEP_REARM_TICKS),
+      }));
+      // alert-key: monitor_step_failing:*
+      // all-clear-proof: scripts/test-monitor-step-failure.ts - a step absent from
+      // the tick, and a tick whose streak store could not be read, each clear
+      // nothing, because neither measured the step working.
+      const cleared = await resolveRecovered(stepAllClears).catch((err) => {
+        log.error("monitor", { msg: "step-failure all-clear failed" }, err);
+        return [] as string[];
+      });
+      if (cleared.length) log.info("monitor", { msg: "step alerts cleared", keys: cleared.join(",") });
+    }
+
     // Stamp the dead-man's switch (#420): proves this lane ran this tick.
     // Best-effort, and must never affect the monitor's own response.
     await recordHeartbeat("monitor").catch(() => {});
@@ -2110,6 +2205,16 @@ export async function GET(req: NextRequest) {
       recordDetectorVerdict(
         OOO_PROTECTION_VERDICT_LANE,
         oooProtectionReachedVerdict(oooProtection),
+      ),
+      // #2382: the dead man's switch's own verdict. The four above watch a
+      // detector that runs and concludes nothing; this one watches the thing that
+      // would otherwise have to notice that about itself. A watchdog that threw
+      // gets LANE_WATCHDOG_UNJUDGED from the runner, and one that ran and could
+      // not read the heartbeats returns judged:false from inside itself, which
+      // used to be indistinguishable from a fleet where every lane was healthy.
+      recordDetectorVerdict(
+        LANE_WATCHDOG_VERDICT_LANE,
+        laneWatchdogReachedVerdict(laneWatchdog),
       ),
     ]).catch((err) =>
       // recordHeartbeat already swallows its own DB errors, so reaching here means

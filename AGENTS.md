@@ -227,6 +227,38 @@ both in `scripts/test-monitor-step-coverage.ts`: a handler-level `const x = awai
 outside `steps.run` fails the build (so a sixth read is covered by construction),
 and each gated check must consult its gate rather than a hand-rolled condition.
 
+## Containment REPORTS now, it does not only log (#2382)
+
+Containment removed a signal and did not replace one. A step that threw was caught,
+named in the cycle log line, and the lane stamped its heartbeat anyway, so a check
+that failed on every tick for a month went unreported: Cloudflare logs have no
+alerting on top of them and nothing in `src/lib` read `steps_failed`. Before #1281
+the same throw killed the tick, the heartbeat lapsed, and the watchdog paged one
+`monitor` bound later.
+
+`judgeMonitorSteps` (`src/lib/monitor/step-failure.ts`) keeps a per step
+consecutive-failure streak off `steps.outcomes()` and pages on
+`monitor_step_failing:<step>` after `MONITOR_STEP_FAILING_TICKS`. That number is
+DERIVED from `LANE_STALE_BOUNDS_MS.monitor`, four ticks at today's values, so the
+replacement is never slower than the lapsed heartbeat it replaces. The all clear
+takes the same streak the other way (L160), and a step the tick never RAN moves
+neither: "we did not see it fail" is not a measured healthy result. A failing
+`setup_*` read also names the checks it took down, asked of `monitorSetupGates`
+rather than listed again.
+
+**The judgement is deliberately NOT a `steps.run` step**, which is why it carries a
+named exemption in `scripts/test-monitor-step-coverage.ts`: containing the reporter
+behind the fault it reports is the same defect one level up. It runs BEFORE
+`recordHeartbeat("monitor")`, so a fault nobody predicted inside it lapses the stamp
+and pages, exactly as an uncontained throw did.
+
+**`lane_watchdog` is the widest case**, since the dead man's switch for every other
+lane is itself one of these steps. `alertOnStaleLanes` returns
+`{ judged, stale }` rather than a bare list (an empty list is what a healthy fleet
+returns AND what a failed heartbeat read returned, L215), and the monitor lane
+stamps `verdict:lane-watchdog` only on `judged: true`, so a watchdog that threw or
+could not read goes stale like any other detector that has stopped concluding.
+
 # A workflow reference to a repo setting that does not exist
 
 GitHub does NOT fail when a workflow references `${{ vars.X }}` or

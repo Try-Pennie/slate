@@ -24,6 +24,8 @@ import {
   LOW_VOLUME_VERDICT_LANE,
   OOO_PROTECTION_VERDICT_LANE,
   TWILIO_ROSTER_VERDICT_LANE,
+  LANE_WATCHDOG_VERDICT_LANE,
+  laneWatchdogReachedVerdict,
   twilioRosterReachedVerdict,
   truthReachedVerdict,
   failureRateReachedVerdict,
@@ -143,6 +145,19 @@ const HOUR = 60 * 60_000;
     !twilioRosterReachedVerdict({ ok: false }),
     "twilio roster: a refused read is NOT a verdict, or the detector would report itself as concluding while blind",
   );
+  // #2382: the sixth, and the one that watches the watchman. Its two non-verdicts
+  // arrive by different routes and both have to be silent: the runner's fallback
+  // when the step threw, and the watchdog's own answer when it ran and could not
+  // read the heartbeats. The second is the dangerous one, because it used to be a
+  // bare empty stale list, which is exactly what a healthy fleet returns.
+  assert(
+    laneWatchdogReachedVerdict({ judged: true, stale: [] }),
+    "lane watchdog: a tick that read the heartbeats and found every lane healthy IS a verdict",
+  );
+  assert(
+    !laneWatchdogReachedVerdict({ judged: false, stale: [] }),
+    "lane watchdog: a tick that judged nothing is NOT a verdict, however healthy its empty list looks",
+  );
 }
 
 // --- the bounds ---------------------------------------------------------------
@@ -156,6 +171,7 @@ const HOUR = 60 * 60_000;
         LOW_VOLUME_VERDICT_LANE,
         OOO_PROTECTION_VERDICT_LANE,
         TWILIO_ROSTER_VERDICT_LANE,
+        LANE_WATCHDOG_VERDICT_LANE,
       ]
         .sort()
         .join(","),

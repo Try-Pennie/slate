@@ -22,6 +22,7 @@
  * PURE (type only imports, erased at runtime), so
  * scripts/test-verdict-freshness.ts drives every branch node natively.
  */
+import type { LaneWatchdogOutcome } from "@/lib/monitor/health";
 import type { TruthResult } from "@/lib/monitor/availability-truth";
 import type { FailureRateResult } from "@/lib/monitor/booking-failure-rate";
 import type { LowVolumeResult } from "@/lib/monitor/booking-volume";
@@ -43,13 +44,15 @@ export const FAILURE_RATE_VERDICT_LANE = "verdict:booking-failure-rate";
 export const LOW_VOLUME_VERDICT_LANE = "verdict:low-booking-volume";
 export const OOO_PROTECTION_VERDICT_LANE = "verdict:ooo-protection";
 export const TWILIO_ROSTER_VERDICT_LANE = "verdict:twilio-roster";
+export const LANE_WATCHDOG_VERDICT_LANE = "verdict:lane-watchdog";
 
 export type DetectorVerdictLane =
   | typeof AVAILABILITY_TRUTH_VERDICT_LANE
   | typeof FAILURE_RATE_VERDICT_LANE
   | typeof LOW_VOLUME_VERDICT_LANE
   | typeof OOO_PROTECTION_VERDICT_LANE
-  | typeof TWILIO_ROSTER_VERDICT_LANE;
+  | typeof TWILIO_ROSTER_VERDICT_LANE
+  | typeof LANE_WATCHDOG_VERDICT_LANE;
 
 /**
  * Did this availability truth tick compare real calendars and decide?
@@ -116,6 +119,25 @@ export function oooProtectionReachedVerdict(result: OooProtectionResult): boolea
  */
 export function twilioRosterReachedVerdict(twilio: { ok: boolean }): boolean {
   return twilio.ok;
+}
+
+/**
+ * Did this tick's lane watchdog actually judge the lanes? (#2382)
+ *
+ * The sixth member of the family and the one that watches the watchman. The
+ * dead man's switch is itself a contained step on the monitor lane, so a
+ * watchdog throwing every five minutes was caught, logged into a seven day log
+ * nobody is paged from, and left the monitor heartbeat stamped fresh. From that
+ * moment no stale lane anywhere could page.
+ *
+ * Two states stamp nothing, and they arrive by different routes. A step that
+ * THREW hands back `LANE_WATCHDOG_UNJUDGED` from the runner. A step that RAN and
+ * could not read the heartbeats returns `judged: false` from inside itself, and
+ * that one matters more than it looks: it used to return an empty stale list,
+ * which is exactly what a healthy fleet returns.
+ */
+export function laneWatchdogReachedVerdict(outcome: LaneWatchdogOutcome): boolean {
+  return outcome.judged;
 }
 
 /**

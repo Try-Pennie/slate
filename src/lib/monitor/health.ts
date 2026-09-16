@@ -311,6 +311,27 @@ export const VERDICT_STALE_BOUNDS_MS: Record<string, number> = {
   // can be delayed by hours under platform load (L386), and a bound that pages on
   // ordinary jitter is one nobody reads by the second week.
   "verdict:twilio-roster": 6 * 60 * MIN,
+  // The dead man's switch itself (#2382). It is one of the monitor lane's own
+  // contained steps, so from #1281 until now a watchdog that threw on every tick
+  // was caught, logged, and left the lane heartbeat stamped fresh: the switch
+  // watching every other lane was dead behind a live heartbeat, and sync,
+  // recompute and outbox could all have stopped with nothing saying so (L71).
+  //
+  // This stamp is the second half of that fix, and it answers a question the
+  // step failure page cannot: a watchdog that RAN, did not throw, and could not
+  // read the heartbeats judged nothing, which used to render as an empty stale
+  // list and therefore as a healthy fleet.
+  //
+  // Six hours, and it is a maintenance window rather than a measure of the
+  // cadence, exactly as for `verdict:ooo-protection` above: the watchdog
+  // concludes on every five minute tick the heartbeat table is readable,
+  // including ticks where every lane is fine, so the only thing this bound can
+  // catch is that read failing over and over.
+  //
+  // What it cannot catch, stated rather than implied: a total database outage
+  // takes the stamp AND the reader out together, so nothing in-Worker sees it.
+  // That case belongs to the external uptime check on /api/health (#749).
+  "verdict:lane-watchdog": 6 * 60 * MIN,
 };
 
 /**
@@ -343,6 +364,34 @@ export interface StaleLane {
    */
   unreadable: boolean;
 }
+
+/**
+ * What one run of the lane watchdog concluded (#2382).
+ *
+ * It used to return the stale list alone, so an empty array meant two opposite
+ * things: every lane is healthy, and the heartbeat read failed so nothing was
+ * looked at (L215). The caller could not tell them apart, which is precisely the
+ * state the dead man's switch exists to notice about OTHER lanes and could not
+ * notice about itself.
+ */
+export interface LaneWatchdogOutcome {
+  /**
+   * The heartbeats were read, so `stale` is a measurement rather than a silence.
+   * False means nothing was judged this run and nothing downstream may treat the
+   * empty list as an all clear.
+   */
+  judged: boolean;
+  stale: StaleLane[];
+}
+
+/**
+ * The value the step runner hands back when the watchdog step THREW (#2382).
+ *
+ * Named rather than written inline at the call site, so the fallback and the
+ * predicate that reads it cannot drift: a fallback of `{ judged: true }` would
+ * stamp a verdict for a run that never happened, which is the whole fault.
+ */
+export const LANE_WATCHDOG_UNJUDGED: LaneWatchdogOutcome = { judged: false, stale: [] };
 
 /**
  * Every covered lane that has gone quiet, worst offender first (#803).
