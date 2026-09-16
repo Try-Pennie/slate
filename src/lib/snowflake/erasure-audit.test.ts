@@ -1,20 +1,50 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("./config", () => ({ readSnowflakeConfig: vi.fn() }));
-// The audit reads `bookings.is_test` to split the trail (#1196). This fake lets a
-// test choose what that read answers, including FAILING, which is the case the
-// fallback direction exists for. Default: no rows, so every id is unclassified and
-// therefore treated as real, which is what the pre-#1196 assertions below expect.
+// The audit splits the trail by whether each booking is the smoke canary's (#1196).
+// This fake lets a test choose what that answers, including FAILING, which is the
+// case the fallback direction exists for. Default: no rows, so every id is
+// unclassified and therefore treated as real, which is what the pre-#1196 assertions
+// below expect.
+//
+// TWO reads since #2369, because `bookings` has no `is_test` column: the flag lives
+// on the BUCKET (migration 0051), and the audit read a column that does not exist
+// until then, so PostgREST answered 42703 and this classification never once ran.
+// The fake is authored in the same terms as before (a booking and whether it is a
+// test one) and DERIVES the two table answers from it, so the tests below say what
+// they always said while the fake models the reads the code now makes.
 const bookingClassRead: { rows: { id: string; is_test: boolean }[] | null } = { rows: [] };
+/** Set to fail the BUCKETS read alone, which is what makes every flag unknowable. */
+const bucketReadFails = { value: false };
+const TEST_BUCKET = "bucket-test";
+const REAL_BUCKET = "bucket-real";
 vi.mock("@/lib/supabase/admin", () => ({
   supabaseAdmin: vi.fn(() => ({
-    from: vi.fn(() => ({
+    from: vi.fn((table: string) => ({
       select: vi.fn(() => ({
-        in: vi.fn(async () =>
-          bookingClassRead.rows === null
-            ? { data: null, error: { message: "read failed" } }
-            : { data: bookingClassRead.rows, error: null },
-        ),
+        in: vi.fn(async () => {
+          if (table === "buckets") {
+            return bucketReadFails.value
+              ? { data: null, error: { message: "bucket read failed" } }
+              : {
+                  data: [
+                    { id: REAL_BUCKET, is_test: false },
+                    { id: TEST_BUCKET, is_test: true },
+                  ],
+                  error: null,
+                };
+          }
+          if (bookingClassRead.rows === null) {
+            return { data: null, error: { message: "read failed" } };
+          }
+          return {
+            data: bookingClassRead.rows.map((r) => ({
+              id: r.id,
+              bucket_id: r.is_test ? TEST_BUCKET : REAL_BUCKET,
+            })),
+            error: null,
+          };
+        }),
       })),
     })),
   })),
@@ -42,6 +72,7 @@ const cfg = {
 };
 
 afterEach(() => {
+  bucketReadFails.value = false;
   vi.clearAllMocks();
   bookingClassRead.rows = [];
 });
@@ -282,6 +313,25 @@ describe("auditSnowflakeErasures test/real split", () => {
     vi.mocked(readSnowflakeConfig).mockReturnValue(cfg);
     trail(["bk-smoke"]);
     bookingClassRead.rows = null;
+    residualFor(["bk-smoke"]);
+
+    const r = await auditSnowflakeErasures();
+    expect(r.ok).toBe(false);
+    expect(r.realBookingIds).toEqual(["bk-smoke"]);
+    expect(r.testReasons).toEqual([]);
+    expect(r.classificationUnreadable).toBeTruthy();
+  });
+
+  /**
+   * The same fallback when it is the BUCKET read that fails (#2369). The flag lives
+   * there, so a failure there is exactly as unclassifiable as a failed bookings read,
+   * and it must land on the same loud side rather than on a quiet "not a test one".
+   */
+  it("pages for a TEST booking's residual when the BUCKET read fails", async () => {
+    vi.mocked(readSnowflakeConfig).mockReturnValue(cfg);
+    trail(["bk-smoke"]);
+    bookingClassRead.rows = [{ id: "bk-smoke", is_test: true }];
+    bucketReadFails.value = true;
     residualFor(["bk-smoke"]);
 
     const r = await auditSnowflakeErasures();

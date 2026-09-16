@@ -12,6 +12,7 @@
 
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { selectAllPages } from "@/lib/supabase/paginate";
+import { bookingTestFlags } from "@/lib/booking/test-flag";
 
 export interface ErasureAuditRow {
   /** The `audit_log` row id: the stable identity of one erasure (#1124). */
@@ -66,6 +67,14 @@ export function erasedIdsFrom(rows: ErasureAuditRow[]): string[] {
  * both land on real, so this deliberately does NOT paginate: the id set is the
  * erasure trail, which is a handful of rows, and `.in("id", ...)` is a primary-key
  * lookup, so it is cap-safe by the bounded-set rule.
+ *
+ * **It used to select `is_test` FROM `bookings`, which has no such column** (#2369).
+ * The flag is on the BUCKET (#396), so PostgREST answered 42703 on every call and
+ * this returned null every time: the residual audit has never once been able to
+ * downgrade a test booking to a whisper, and because null is the loud direction
+ * nothing ever said so. The flag now comes from `bookingTestFlags`, the one place
+ * that derives it, and a booking whose bucket did not come back is simply LEFT OUT,
+ * which `classifyErasedBookings` already counts as real and names in `unreadable`.
  */
 export async function readBookingClasses(
   ids: string[],
@@ -77,7 +86,23 @@ export async function readBookingClasses(
   // pages, it simply cannot be downgraded to a whisper. An empty array is never
   // substituted for a failure here, which is what would silently mark everything
   // real-but-unremarked.
-  const { data, error } = await db.from("bookings").select("id,is_test").in("id", ids);
+  const { data, error } = await db.from("bookings").select("id,bucket_id").in("id", ids);
   if (error) return null;
-  return (data ?? []) as { id: string; is_test: boolean }[];
+  const rows = (data ?? []) as { id: string; bucket_id: string }[];
+  // Same fallback for the same reason: a failed BUCKET read leaves every id
+  // unclassified, which lands on real.
+  let flags;
+  try {
+    flags = await bookingTestFlags(db, rows);
+  } catch {
+    return null;
+  }
+  const out: { id: string; is_test: boolean }[] = [];
+  for (const r of rows) {
+    const flag = flags.get(r.id);
+    // An unknown flag is omitted rather than guessed: the classifier already treats a
+    // missing id as real and says so in its `unreadable` note.
+    if (flag === true || flag === false) out.push({ id: r.id, is_test: flag });
+  }
+  return out;
 }

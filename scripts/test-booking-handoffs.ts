@@ -864,4 +864,61 @@ const DASHES = /[\u2012\u2013\u2014\u2015]| - /;
   eq(calls.paged.length, 0, "no channel-unset page for a handoff nobody would post");
 }
 
+// --- a test flag that could NOT be established (#2369) -------------------------
+// `bookings` has no is_test column: the flag is derived from the booking's BUCKET,
+// so "could not tell" is a real state and the store reports it as null. The two
+// guesses are the two ways to be wrong invisibly, so neither is taken: the notice
+// GOES OUT (withholding a real lead's handoff for ever is the unrecoverable
+// direction) and the tick counts it, so a decision made on a read that did not
+// answer is never silent.
+{
+  const { deps, calls } = harness({
+    open: [handoff({ id: "h-unknown", bookingId: "b-unknown" })],
+    bookings: [booking({ id: "b-unknown", isTest: null })],
+    channel: "C-SALES",
+  });
+  const out = await runHandoffCheck(deps);
+  eq(calls.posts.length, 1, "a handoff whose booking's test flag is unknown is still posted");
+  eq(out.suppressedTest, 0, "it is NOT counted as a suppression: nothing was established");
+  eq(out.testFlagUnknown, 1, "it is counted as unknown, so the uncertainty is loud");
+  eq(out.posted, 1, "and the post is counted");
+}
+{
+  // Beside a real one and a test one, so the three states are told apart in one tick
+  // rather than one answer standing for all of them.
+  const { deps, calls } = harness({
+    open: [
+      handoff({ id: "h-unknown", bookingId: "b-unknown" }),
+      handoff({ id: "h-test", bookingId: "b-test" }),
+      handoff({ id: "h-real", bookingId: "b1" }),
+    ],
+    bookings: [
+      booking({ id: "b-unknown", isTest: null }),
+      booking({ id: "b-test", isTest: true }),
+      booking({ id: "b1", isTest: false }),
+    ],
+    channel: "C-SALES",
+  });
+  const out = await runHandoffCheck(deps);
+  eq(out.suppressedTest, 1, "only the one measured as a test booking is held back");
+  eq(out.testFlagUnknown, 1, "only the one nobody could establish is unknown");
+  eq(calls.posts.length, 2, "and both the real one and the unknown one are posted");
+  assert(
+    !calls.stamped.includes("h-test"),
+    "the test one is the only row not delivered",
+  );
+}
+{
+  // An unknown flag must not be read as a suppression by the pages either: this row
+  // IS waiting to post, so the undelivered condition is about it like any other.
+  const { deps, calls } = harness({
+    open: [handoff({ id: "h-unknown", bookingId: "b-unknown", createdAt: iso(NOW - 95 * MIN) })],
+    bookings: [booking({ id: "b-unknown", isTest: null })],
+    channel: null,
+  });
+  const out = await runHandoffCheck(deps);
+  eq(out.waitingToPost, 1, "an unknown flag leaves the row waiting, not held back");
+  assert(calls.paged.length > 0, "so a stranded one still pages, which a suppressed one never does");
+}
+
 finish();

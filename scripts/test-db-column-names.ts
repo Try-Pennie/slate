@@ -15,12 +15,22 @@
 //
 // The mapping to check against was already in the repo: `schema.ts` maps each
 // table to its row interface, `types.ts` declares that interface's fields.
+//
+// SCOPE WIDENED TO `src/` (#2369). It covered `scripts/` only, on the argument that
+// `src/`'s query shapes would fight it, and the widening was named there as a
+// deliberate act. #2369 is what made it one: the same defect had shipped in `src/`
+// five times, `bookings.is_test` every time, and every one was found by hand. The
+// prediction about the shapes was right and measuring it is what fixed it rather
+// than justifying staying out: the embedded resource select produced exactly two
+// false findings, and `withoutEmbeddedGroups` is the answer to them.
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import {
   tableTypeMap,
   interfaceFields,
   scanDbColumns,
+  withoutEmbeddedGroups,
+  withoutWholeLineComments,
 } from "./lib/scan-db-columns.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
@@ -76,6 +86,43 @@ assert(
   eq(scanDbColumns("f.ts", s, tables, fields).length, 0, "an embedded resource is not judged");
 }
 {
+  // The shape that produced the only two false findings when the scan was widened to
+  // `src/`: the group's INNER columns are bare words once the list is split on
+  // commas, so they were judged against the OUTER table and reported as missing.
+  const s =
+    `const p = db.from("availability_schedules")` +
+    `.select("id, user_id, timezone, availability_rules(schedule_id, weekday, start_minute, end_minute)")` +
+    `.in("user_id", ids);`;
+  eq(
+    scanDbColumns("f.ts", s, tables, fields).length,
+    0,
+    "a column INSIDE an embedded group is not judged against the outer table",
+  );
+}
+{
+  // And the other direction, or the strip could be swallowing real findings: a bad
+  // column OUTSIDE the group must still be caught with a group present.
+  const s =
+    `const p = db.from("availability_schedules")` +
+    `.select("id, nonsense_column, availability_rules(weekday, start_minute)");`;
+  const found = scanDbColumns("f.ts", s, tables, fields);
+  eq(found.length, 1, "a bad column beside an embedded group is still caught");
+  eq(found[0].column, "nonsense_column", "and it is the one outside the group");
+}
+{
+  eq(
+    withoutEmbeddedGroups("id, availability_rules(weekday, start_minute), timezone"),
+    "id,, timezone",
+    "the group and its identifier are both removed, leaving the outer columns",
+  );
+  eq(
+    withoutEmbeddedGroups("id, a(b(c)), x"),
+    "id,, x",
+    "a nested group goes entirely",
+  );
+  eq(withoutEmbeddedGroups("id, code"), "id, code", "a list with no group is untouched");
+}
+{
   const s = `const r = await db.from("some_view_not_in_types").select("whatever");`;
   eq(scanDbColumns("f.ts", s, tables, fields).length, 0, "a table the repo does not declare is skipped, not accused");
 }
@@ -109,8 +156,14 @@ function scriptFiles(dir: string): string[] {
   return out;
 }
 
-const files = scriptFiles(join(root, "scripts"));
-assert(files.length > 100, `the scan reached the scripts tree (${files.length} files)`);
+// BOTH trees (#2369). `src/` is where the defect kept shipping, and the count is
+// asserted per tree: one empty walk would otherwise be hidden by the other's total,
+// which is the same false negative as an empty table map above (L98).
+const scriptTree = scriptFiles(join(root, "scripts"));
+const srcTree = scriptFiles(join(root, "src"));
+assert(scriptTree.length > 100, `the scan reached the scripts tree (${scriptTree.length} files)`);
+assert(srcTree.length > 100, `the scan reached the src tree (${srcTree.length} files)`);
+const files = [...scriptTree, ...srcTree];
 
 const real: ReturnType<typeof scanDbColumns> = [];
 let sawAnyChain = false;
@@ -131,8 +184,14 @@ assert(sawAnyChain, "at least one query chain was actually found in scripts/");
 // tree, not only in a synthetic string. A scan that quietly stopped reading files
 // would pass every assertion above and this one is what refuses it.
 {
-  const victim = files.find((f) => /\.from\(\s*["'`]buckets["'`]/.test(readFileSync(f, "utf8")));
-  assert(victim !== undefined, "a real file queries buckets, so the control has something to damage");
+  // The victim must query buckets in CODE, not in a comment. The scanner blanks whole
+  // line comments (#2369), so a plant landing in one is correctly not found, and the
+  // control would then report the scan broken when it was working. Searching the same
+  // text the scanner reads is what keeps the two in step.
+  const victim = files.find((f) =>
+    /\.from\(\s*["'`]buckets["'`]/.test(withoutWholeLineComments(readFileSync(f, "utf8"))),
+  );
+  assert(victim !== undefined, "a real file queries buckets in code, so the control has something to damage");
   if (victim) {
     const damaged = readFileSync(victim, "utf8").replace(
       /\.from\(\s*["'`]buckets["'`]\s*\)/,
@@ -154,7 +213,7 @@ if (real.length > 0) {
 }
 assert(
   real.length === 0,
-  `no scripts/ query names a column its table does not declare (found ${real.length})`,
+  `no scripts/ or src/ query names a column its table does not declare (found ${real.length})`,
 );
 
 finish();

@@ -1594,10 +1594,15 @@ export async function GET(req: NextRequest) {
       }>("monitor ooo coverage bookings", (from, to) =>
         db
           .from("bookings")
-          .select("id, assigned_user_id, starts_at, ends_at")
+          // The canary's own bookings are excluded through their BUCKET, which is
+          // what marks them (#396), in the inner join `countCustomerBookingsSince`
+          // established. `bookings` has no test column of its own, and this read
+          // filtered on one as if it did until #2369, so PostgREST answered 42703,
+          // `selectAllPages` threw, and this check never once ran.
+          .select("id, assigned_user_id, starts_at, ends_at, buckets!inner(is_test)")
+          .eq("buckets.is_test", false)
           .in("assigned_user_id", userIds)
           .in("status", ACTIVE_BOOKING_STATUSES)
-          .eq("is_test", false)
           // `ends_at`, NOT `starts_at`. The straddler begins before the absence and
           // runs into it, so flooring on the start is the exact miss this check exists
           // to catch, and a prefilter that repeats it would hide it again (#1237).

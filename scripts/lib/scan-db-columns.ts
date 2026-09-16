@@ -13,12 +13,30 @@
 // the repo: `schema.ts` maps each table to its row interface, and `types.ts`
 // declares that interface's fields.
 //
-// SCOPE. `scripts/` only. That is where the bug shipped, where `tsc` looks least
-// (the tree is excluded from the app's program, see the typecheck guard), and
-// where a wrong column takes down a command nobody runs until the day it matters.
-// `src/` is deliberately out of scope for now: it carries far more query shapes
-// (embedded selects, foreign-table hints, aliases) and a guard that fights those
-// would be turned off rather than fixed. Widening it is a deliberate act.
+// SCOPE. `scripts/` AND `src/`. It began as `scripts/` only, because that is where
+// the bug shipped and where `tsc` looks least, and `src/` was left out on the
+// argument that its query shapes (embedded selects, foreign-table hints, aliases)
+// would fight the guard. Widening it was named there as a deliberate act, and #2369
+// is what made it one: the SAME defect had shipped in `src/` FIVE times and every
+// one of them was found by hand.
+//
+//   src/lib/handoffs/store.ts        select("id, is_test, ...")  on bookings (#2367)
+//   src/lib/snowflake/erasure-trail  select("id,is_test")        on bookings (#1196)
+//   src/app/api/cron/monitor/route   eq("is_test", false)        on bookings
+//
+// plus a stale declaration (`webhook_deliveries.payload_erased` existed in the
+// database from migration 0088 and was missing from the hand written type), which is
+// the same fault read from the other end. `bookings` has no `is_test` column at all:
+// migration 0051 put it on `users` and `buckets`.
+//
+// The prediction about `src/`'s shapes was RIGHT, and measuring it is what turned it
+// into a fix rather than a reason to stay out: the embedded resource shape
+// (`select("id, availability_rules(weekday, start_minute)")`) produced two false
+// findings, because splitting on commas leaves the group's INNER columns looking like
+// bare columns of the outer table. So an embedded group is now stripped, with its
+// identifier, before the list is split (L361: strip the excluded element from inside
+// the container rather than judging the container by how it starts). With that, the
+// whole of `src/` is clean.
 
 export interface ColumnFinding {
   file: string;
@@ -68,6 +86,69 @@ export function interfaceFields(typesSource: string): Map<string, Set<string>> {
  * or a JSON path. A guard that judged those would produce findings nobody can act
  * on, and the response to that is to switch the guard off (L36).
  */
+/**
+ * The source with every WHOLE LINE comment blanked, character for character, so
+ * offsets and line numbers are unchanged.
+ *
+ * A comment that has to NAME a column in order to explain it is not a query, and the
+ * scanner cannot tell the two apart: the line documenting why
+ * `bookings` is no longer filtered on a column it does not have was itself reported
+ * as that very defect. The same shape as the repo's style hook, which flags the line
+ * banning a character as if it used it.
+ *
+ * Only whole line comments. A trailing comment on a line that also carries code is
+ * left alone, because telling a `//` inside a string literal from one that starts a
+ * comment needs a tokenizer, and blanking the wrong half of such a line would hide
+ * real code from the scan. That limit is stated rather than assumed away.
+ */
+export function withoutWholeLineComments(source: string): string {
+  return source
+    .split("\n")
+    .map((line) => {
+      const t = line.trim();
+      if (!t.startsWith("//") && !t.startsWith("*") && !t.startsWith("/*")) return line;
+      return " ".repeat(line.length);
+    })
+    .join("\n");
+}
+
+/**
+ * A select list with every embedded resource group removed, identifier and all.
+ *
+ * `"id, availability_rules(weekday, start_minute)"` becomes `"id, "`. Splitting the
+ * raw string on commas instead leaves `weekday` and ` start_minute` looking like bare
+ * columns of the OUTER table, which is exactly how widening this guard to `src/`
+ * first produced two findings nobody could act on. Nested groups are handled by
+ * dropping balanced parentheses, so `a(b(c))` goes entirely.
+ */
+export function withoutEmbeddedGroups(selectList: string): string {
+  let out = "";
+  let i = 0;
+  while (i < selectList.length) {
+    const ch = selectList[i];
+    if (ch !== "(") {
+      out += ch;
+      i++;
+      continue;
+    }
+    // Drop the group, and the identifier (with any alias or hint) it belongs to.
+    let depth = 0;
+    while (i < selectList.length) {
+      if (selectList[i] === "(") depth++;
+      else if (selectList[i] === ")") {
+        depth--;
+        if (depth === 0) {
+          i++;
+          break;
+        }
+      }
+      i++;
+    }
+    out = out.replace(/[A-Za-z0-9_:!.\-> ]*$/, "");
+  }
+  return out;
+}
+
 function judgeableSelectEntry(entry: string): string | null {
   const t = entry.trim();
   if (!t) return null;
@@ -86,11 +167,12 @@ function judgeableSelectEntry(entry: string): string | null {
  */
 export function scanDbColumns(
   file: string,
-  source: string,
+  file_source: string,
   tables: Map<string, string>,
   fields: Map<string, Set<string>>,
 ): ColumnFinding[] {
   const findings: ColumnFinding[] = [];
+  const source = withoutWholeLineComments(file_source);
   const lineOf = (index: number) => source.slice(0, index).split("\n").length;
 
   for (const m of source.matchAll(/\.from\(\s*["'`]([a-z_][a-z0-9_]*)["'`]\s*\)/g)) {
@@ -119,7 +201,7 @@ export function scanDbColumns(
     const chain = source.slice(start, Math.min(...ends));
 
     for (const sm of chain.matchAll(/\.select\(\s*["'`]([^"'`]*)["'`]/g)) {
-      for (const entry of sm[1].split(",")) {
+      for (const entry of withoutEmbeddedGroups(sm[1]).split(",")) {
         const col = judgeableSelectEntry(entry);
         if (col && !known.has(col)) {
           findings.push({
