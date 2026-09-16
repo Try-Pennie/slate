@@ -306,6 +306,26 @@ const HOUR = 60 * 60_000;
   );
   for (const t of texts) assert(t.length > 80, "each page says what stopped being measured");
 
+  // #2382: the watchdog's own page has TWO causes, and the first is not about the
+  // watchdog. Only the monitor lane writes this stamp, so a monitor lane that is
+  // not running at all lands here too, and that case already pages under its own
+  // name. A page that named only tag=lane-watchdog would be advice about the wrong
+  // fault most of the times it can fire (L11).
+  const watchdogPage = verdictBlindAlertText({
+    lane: LANE_WATCHDOG_VERDICT_LANE,
+    ageMs: 9 * HOUR,
+    maxStaleMs: VERDICT_STALE_BOUNDS_MS[LANE_WATCHDOG_VERDICT_LANE],
+    unreadable: false,
+  });
+  assert(
+    /monitor lane is stale/i.test(watchdogPage),
+    "the blind watchdog page sends the reader at the monitor lane's own staleness first, since that is the commoner cause of this stamp going cold",
+  );
+  assert(
+    watchdogPage.includes("tag=lane-watchdog"),
+    "and still names the watchdog's own logs, which is the other cause",
+  );
+
   const recovery = verdictRecoveryText(AVAILABILITY_TRUTH_VERDICT_LANE);
   assert(/no action is needed/i.test(recovery), "the all-clear closes the loop");
   assert(!DASHES.test(recovery), "recovery copy has no dashes");

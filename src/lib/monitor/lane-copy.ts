@@ -154,7 +154,12 @@ const VERDICT_SUBJECT: Record<string, { what: string; cost: string; look: string
   [LANE_WATCHDOG_VERDICT_LANE]: {
     what: "the dead man's switch that watches every cron lane for going quiet",
     cost: "nothing is watching the lanes, so sync, recompute or the outbox could stop and the first sign of it would be a customer noticing",
-    look: 'the Worker logs for tag=lane-watchdog, and the monitor lane\'s cycle line for lane_watchdog under failed=',
+    // Two causes, and the FIRST one is not about the watchdog at all: only the
+    // monitor lane writes this stamp, so a monitor lane that is not running at all
+    // lands here as well, and that case is already paging under its own name. A
+    // message that sent every reader to tag=lane-watchdog would be advice about the
+    // wrong fault most of the time it fires (L11).
+    look: 'whether the monitor lane is stale under its own page first, then the Worker logs for tag=lane-watchdog and the monitor cycle line for lane_watchdog under failed=',
   },
   [TWILIO_ROSTER_VERDICT_LANE]: {
     what: "the hourly roster sync's Twilio half, which takes an agent out of the bookable pool when Twilio marks them redistribute",
