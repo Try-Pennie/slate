@@ -2,6 +2,7 @@ import { supabaseAdmin } from "@/lib/supabase/admin";
 import { isUniqueViolation, unwrap } from "@/lib/db/result";
 import { log } from "@/lib/log";
 import { normalizeEmail } from "@/lib/auth/email";
+import { DeactivatedAccountError, isDeactivated } from "@/lib/auth/active-session";
 import type { Organization, User } from "@/lib/db/types";
 
 const DEFAULT_ORG_NAME = "Pennie";
@@ -90,7 +91,8 @@ async function readUserBy(
  */
 type Resolution =
   | { kind: "user"; user: User }
-  | { kind: "conflict"; reason: string };
+  | { kind: "conflict"; reason: string }
+  | { kind: "deactivated" };
 
 async function resolveOrCreateUser(
   input: ProvisionInput,
@@ -105,6 +107,10 @@ async function resolveOrCreateUser(
     input.authUserId,
     `user by auth_user_id (${pass})`,
   );
+  // #2378: somebody who has LEFT does not get a session, however good their
+  // Google account still is. The refusal comes BEFORE the avatar refresh, so a
+  // departed row is not written to on the way out.
+  if (isDeactivated(linked)) return { kind: "deactivated" };
   if (linked) {
     if (input.avatarUrl && linked.avatar_url !== input.avatarUrl) {
       const { data: refreshed, error } = await db
@@ -137,6 +143,10 @@ async function resolveOrCreateUser(
   // person with two identities, and nothing reports it.
   const email = normalizeEmail(input.email);
   const byEmail = await readUserBy("email", email, `user by email (${pass})`);
+  // The same refusal, and this is the branch that mattered more: linking would
+  // WRITE `auth_user_id` onto a departed row, handing a leaver a live identity
+  // the roster believes is gone.
+  if (isDeactivated(byEmail)) return { kind: "deactivated" };
   if (byEmail) {
     const updated = unwrap(
       await db
@@ -213,6 +223,10 @@ export async function provisionUser(input: ProvisionInput): Promise<User> {
 
   const first = await resolveOrCreateUser(input, org.id, "first pass");
   if (first.kind === "user") return first.user;
+  // A deactivated account is a settled answer, not a race: retrying would read
+  // the same row and refuse again, and the second pass exists only to resolve a
+  // lost insert.
+  if (first.kind === "deactivated") throw new DeactivatedAccountError();
 
   // A unique key refused our insert, so a concurrent login created this person's
   // row between our reads and it. Resolve once more rather than retrying the
@@ -228,6 +242,9 @@ export async function provisionUser(input: ProvisionInput): Promise<User> {
   log.warn("provision", { msg: "lost a provisioning race, resolving the winner" });
   const second = await resolveOrCreateUser(input, org.id, "second pass");
   if (second.kind === "user") return second.user;
+  // The race was lost to a row belonging to somebody who has left: the same
+  // refusal, reached the other way round.
+  if (second.kind === "deactivated") throw new DeactivatedAccountError();
 
   throw new Error(`could not provision a users row for this sign in: ${second.reason}`);
 }

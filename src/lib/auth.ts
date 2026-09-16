@@ -7,17 +7,35 @@ import {
   impersonationCookieOutcome,
 } from "@/lib/auth/impersonation";
 import { devPreviewUser } from "@/lib/auth/dev-preview";
+import { gateSessionRow } from "@/lib/auth/active-session";
 import { NotAuthorizedError } from "@/lib/auth/http";
+import { log } from "@/lib/log";
 import type { Role, User } from "@/lib/db/types";
 
 /**
  * The signed-in Slate user from the Supabase session, IGNORING impersonation.
  * Use this for the security gate (only a real admin may impersonate) and for
  * stopping impersonation — never for "who am I acting as" (that's currentUser).
+ *
+ * #2378: the row is now put through `gateSessionRow`, the same judge the Slack
+ * actor and the sign in use, so somebody who has been DEACTIVATED stops being an
+ * actor on their very next request. Before this, the impersonation target a few
+ * lines below was filtered on `deactivated_at` and the actor was not: offboarding
+ * a manager took nothing away from the manager, whose laptop kept a session
+ * cookie that middleware refreshed on every request, and the roster, every lead's
+ * contact details, cancel, reassign, reschedule and time off approval all went on
+ * working until their refresh token died, which by default never does (L137).
+ *
+ * All three refusals resolve to `null`, which is what every caller already
+ * handles, but they are TOLD APART first so the one worth knowing about (a live
+ * session refused because the person left) leaves a log line, and an unreadable
+ * row is not filed as a stale cookie.
  */
 export async function realCurrentUser(): Promise<User | null> {
   // Dev-only localhost preview (inert in production). Lets you act as any user
-  // without OAuth so the internal surfaces can be iterated on quickly.
+  // without OAuth so the internal surfaces can be iterated on quickly. Deliberately
+  // NOT put through the gate below: previewing what a departed agent's own screens
+  // look like is a reason this exists, and it cannot grant anything in production.
   const preview = await devPreviewUser();
   if (preview) return preview;
 
@@ -27,13 +45,23 @@ export async function realCurrentUser(): Promise<User | null> {
   } = await supabase.auth.getUser();
   if (!user) return null;
 
-  const { data } = await supabaseAdmin()
+  const { data, error } = await supabaseAdmin()
     .from("users")
     .select("*")
     .eq("auth_user_id", user.id)
     .maybeSingle();
 
-  return (data as User | null) ?? null;
+  const gate = gateSessionRow(data as User | null, error);
+  if (gate.admit) return gate.user;
+  if (gate.reason === "deactivated") {
+    log.warn("auth", { msg: "refused a deactivated session", auth_user_id: user.id });
+  } else if (gate.reason === "unreadable") {
+    // Fails CLOSED (L42): "I could not tell whether they still work here" refuses.
+    // It is a warning rather than silence because a sustained one signs everybody
+    // out and would otherwise look like people simply not being logged in.
+    log.warn("auth", { msg: "session row unreadable, refusing", auth_user_id: user.id }, error);
+  }
+  return null;
 }
 
 /**

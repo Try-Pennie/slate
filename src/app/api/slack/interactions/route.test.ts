@@ -295,3 +295,76 @@ describe("POST /api/slack/interactions deferred-work failures are recorded", () 
     expect(logError).not.toHaveBeenCalled();
   });
 });
+
+// #2378: resolveActor matched the clicking Slack user to a `users` row by email
+// and never looked at `deactivated_at`, so a manager who had left still held
+// whatever role their row carried and their Approve press still approved the time
+// off. The web queue and this route judge `canModerate` on the SAME row, so the
+// row has to stop being an actor in one place for both to refuse.
+//
+// Asserted on the SERVICE, not on an early return: the thing that matters is that
+// the time off was not approved, and a route that returned early for some other
+// reason would satisfy a weaker assertion.
+describe("a deactivated actor cannot moderate from Slack (#2378)", () => {
+  const LEFT = "2026-09-01T00:00:00.000Z";
+
+  function approveClick() {
+    return POST(
+      slackReq(
+        payloadBody({
+          type: "block_actions",
+          user: { id: "slack-1" },
+          response_url: "https://hooks.slack/resp",
+          actions: [{ action_id: OOO_APPROVE_ACTION, value: "req-1" }],
+        }),
+      ),
+    );
+  }
+
+  it("does not approve when the clicking manager has been deactivated", async () => {
+    sb.cfg.userRow = { ...MGR, deactivated_at: LEFT };
+
+    const res = await approveClick();
+
+    expect(res.status).toBe(200);
+    await flushDeferred();
+    expect(ooo.approveOoo).not.toHaveBeenCalled();
+    // They are told, rather than the click silently looking like it worked.
+    expect(fetch).toHaveBeenCalledWith("https://hooks.slack/resp", expect.anything());
+  });
+
+  it("does not decline when the clicking manager has been deactivated", async () => {
+    sb.cfg.userRow = { ...MGR, deactivated_at: LEFT };
+
+    const res = await POST(
+      slackReq(
+        payloadBody({
+          type: "view_submission",
+          user: { id: "slack-1" },
+          view: {
+            callback_id: OOO_REJECT_MODAL,
+            private_metadata: "req-1",
+            state: { values: {} },
+          },
+        }),
+      ),
+    );
+
+    expect(res.status).toBe(200);
+    await flushDeferred();
+    expect(ooo.rejectOoo).not.toHaveBeenCalled();
+  });
+
+  // The positive control, in the same fixture (L159): the identical click by the
+  // identical manager, still active, DOES approve. Without it a route broken in
+  // any other way would satisfy the refusals above.
+  it("still approves for the same manager while they are active", async () => {
+    sb.cfg.userRow = { ...MGR, deactivated_at: null };
+
+    const res = await approveClick();
+
+    expect(res.status).toBe(200);
+    await flushDeferred();
+    expect(ooo.approveOoo).toHaveBeenCalledWith("req-1", expect.objectContaining({ id: "u-mgr" }));
+  });
+});

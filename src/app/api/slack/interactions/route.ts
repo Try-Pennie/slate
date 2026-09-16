@@ -2,6 +2,7 @@ import { NextResponse, after, type NextRequest } from "next/server";
 import { log } from "@/lib/log";
 import { appUrl, slackSigningSecret } from "@/lib/env";
 import { verifySlackSignature } from "@/lib/slack/verify";
+import { gateSessionRow } from "@/lib/auth/active-session";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import {
   dmSlackUserByEmail,
@@ -36,18 +37,34 @@ export const dynamic = "force-dynamic";
  * Resolve the clicking Slack user to a Slate user via their workspace email.
  * Returns the email too (when Slack gave us one) so callers can DM feedback
  * even when no Slate user matches.
+ *
+ * #2378: the row goes through `gateSessionRow`, the same judge the signed in
+ * session uses, so somebody who has LEFT stops being an actor here too. Their
+ * Slack account outlives their Slate row by however long offboarding takes, and
+ * the button sits in a message already delivered to their phone: before this, a
+ * departed manager's Approve press ran `approveOoo` with whatever role their row
+ * still carried, and `canModerate` said yes.
+ *
+ * All three refusals resolve to `user: null`, which the two callers already
+ * handle by telling the clicker the press did not land, so a departed manager
+ * gets the same honest reply an unmatched account gets rather than silence.
  */
 async function resolveActor(
   slackUserId: string,
 ): Promise<{ user: User | null; email: string | null }> {
   const email = await getSlackUserEmail(slackUserId);
   if (!email) return { user: null, email: null };
-  const { data } = await supabaseAdmin()
+  const { data, error } = await supabaseAdmin()
     .from("users")
     .select("*")
     .eq("email", email.toLowerCase())
     .maybeSingle();
-  return { user: (data as User | null) ?? null, email };
+  const gate = gateSessionRow(data as User | null, error);
+  if (gate.admit) return { user: gate.user, email };
+  if (gate.reason !== "no-row") {
+    log.warn("slack", { msg: `refused an actor: ${gate.reason}` }, error);
+  }
+  return { user: null, email };
 }
 
 /** Slack mrkdwn hyperlink to the request in the admin queue. */

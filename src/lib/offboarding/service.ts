@@ -4,6 +4,11 @@ import { log } from "@/lib/log";
 import { startBulkReassign } from "@/lib/booking/service";
 import { planLifecycleChange, type LifecycleAction } from "@/lib/offboarding/plan";
 import { planOffboardingCoverageSweep } from "@/lib/offboarding/coverage-trigger";
+import {
+  revokeSupabaseSessions,
+  restoreSupabaseSessions,
+  type SessionRevokeOutcome,
+} from "@/lib/auth/session-revoke";
 
 /**
  * What the automatic coverage sweep did on this call (#1241).
@@ -13,14 +18,31 @@ import { planOffboardingCoverageSweep } from "@/lib/offboarding/coverage-trigger
  */
 export type CoverageSweepOutcome = "queued" | "none" | "failed";
 
+/**
+ * What happened to the person's ability to hold a Supabase session (#2378).
+ *
+ * `failed` is reported rather than thrown, for the same reason `coverageSweep`
+ * is, and the argument is below at `withSessionAccess`. What must never happen is
+ * a call reporting nothing at all, because then a caller recording "deactivated"
+ * is recording that access was removed on the strength of a write that only
+ * stamped a row (L397).
+ */
+export type SessionRevokeResult = SessionRevokeOutcome | "failed";
+
 export type LifecycleResult =
   | { status: "not_found" }
-  | { status: "noop"; userId: string; coverageSweep?: CoverageSweepOutcome }
+  | {
+      status: "noop";
+      userId: string;
+      coverageSweep?: CoverageSweepOutcome;
+      sessionRevoke?: SessionRevokeResult;
+    }
   | {
       status: "applied";
       userId: string;
       deactivate: boolean;
       coverageSweep?: CoverageSweepOutcome;
+      sessionRevoke?: SessionRevokeResult;
     };
 
 /** The lifecycle change plus the facts only the writer knows: the row's
@@ -66,7 +88,7 @@ export async function applyLifecycleByEmail(
     await db
       // cap-safe: an exact-email lookup returns at most one row.
       .from("users")
-      .select("id, deactivated_at")
+      .select("id, deactivated_at, auth_user_id")
       .eq("email", email.trim())
       .maybeSingle(),
     "offboarding-lookup-by-email",
@@ -121,7 +143,7 @@ export async function applyLifecycleByUserId(
     await supabaseAdmin()
       // cap-safe: single-row primary-key lookup.
       .from("users")
-      .select("id, deactivated_at")
+      .select("id, deactivated_at, auth_user_id")
       .eq("id", userId)
       .maybeSingle(),
     "offboarding-lookup-by-id",
@@ -134,7 +156,67 @@ export async function applyLifecycleByUserId(
   return options.sweepCoverage ? withAutomaticCoverage(outcome, action) : outcome.result;
 }
 
-type LifecycleRow = { id: string; deactivated_at: string | null };
+type LifecycleRow = {
+  id: string;
+  deactivated_at: string | null;
+  /** #2378: the Supabase auth user whose sessions are revoked or restored. Null
+   *  for somebody who has never signed in, which is not a failure. */
+  auth_user_id: string | null;
+};
+
+/**
+ * The lifecycle change, then the person's Supabase session access (#2378).
+ *
+ * WHY IT RUNS ON A NO-OP TOO, which is the part worth understanding. The row
+ * write and the auth call are two steps with no transaction between them, so a
+ * crash or a transient failure in the gap leaves the row stamped and the session
+ * alive. A retry then sees a no-op flip: if the revoke only ran on the
+ * TRANSITION, that session would stay alive for ever while every retry reported
+ * success. Running it whenever the END STATE holds is the same convergence
+ * `withAutomaticCoverage` chose below, and the call is idempotent, so the repeat
+ * costs one write.
+ *
+ * The end state is decided by the ACTION, not by which branch got here: past
+ * `not_found`, both `applied` and `noop` mean the state the action asked for now
+ * holds, whoever wrote it.
+ *
+ * WHY A FAILURE DOES NOT ROLL THE DEACTIVATION BACK. Rolling it back would put
+ * the agent back in the routing pool taking NEW bookings to report a session
+ * problem, which is strictly worse, and it is the ordering #1237 and #1241 chose
+ * for the same shape. It also would not help: the app layer gate refuses a
+ * deactivated person's session on their very next request whether or not this
+ * call succeeded, so the row write is the control that closes the hole and this
+ * is the one that stops them minting new tokens.
+ *
+ * WHAT IT IS NOT ALLOWED TO DO is report success. A failure is:
+ *
+ *   - returned to the caller as `sessionRevoke: "failed"`, so the offboarding
+ *     automation's own run holds the fact and the API response carries it;
+ *   - logged at error level with the user and the Error, so it is in the Worker
+ *     logs under `tag=offboarding`;
+ *   - converged by a retry of the same call, per the no-op rule above.
+ */
+async function withSessionAccess(
+  outcome: LifecycleOutcome,
+  authUserId: string | null,
+  action: LifecycleAction,
+): Promise<LifecycleOutcome> {
+  if (outcome.result.status === "not_found") return outcome;
+  try {
+    const sessionRevoke =
+      action === "deactivate"
+        ? await revokeSupabaseSessions(authUserId)
+        : await restoreSupabaseSessions(authUserId);
+    return { ...outcome, result: { ...outcome.result, sessionRevoke } };
+  } catch (e) {
+    log.error(
+      "offboarding",
+      { msg: "session access change failed", user_id: outcome.userId, action },
+      e,
+    );
+    return { ...outcome, result: { ...outcome.result, sessionRevoke: "failed" } };
+  }
+}
 
 /**
  * The shared decision + write: plan from the current row (idempotent), then
@@ -148,6 +230,14 @@ type LifecycleRow = { id: string; deactivated_at: string | null };
  * message, the API route returns a 500).
  */
 async function flipLifecycle(
+  user: LifecycleRow | null,
+  action: LifecycleAction,
+): Promise<LifecycleOutcome> {
+  const outcome = await writeLifecycle(user, action);
+  return withSessionAccess(outcome, user?.auth_user_id ?? null, action);
+}
+
+async function writeLifecycle(
   user: LifecycleRow | null,
   action: LifecycleAction,
 ): Promise<LifecycleOutcome> {

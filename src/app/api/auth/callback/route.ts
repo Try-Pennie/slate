@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { supabaseServer } from "@/lib/supabase/server";
 import { provisionUser } from "@/lib/provision";
+import { DeactivatedAccountError } from "@/lib/auth/active-session";
 import { ensureWatches } from "@/lib/google/sync";
 import { canManageAgents } from "@/lib/auth/roles";
 import { isAllowedEmail } from "@/lib/auth/domain";
@@ -70,6 +71,15 @@ export async function GET(req: NextRequest) {
       avatarUrl: (meta.avatar_url as string) ?? (meta.picture as string) ?? null,
     });
   } catch (err) {
+    // #2378: a DEACTIVATED account is refused too, and it is told apart here
+    // because the two need opposite advice. The #1648 refusals above are
+    // retryable ("a read failed, try again"); this one is settled, and telling
+    // somebody who has left to try again is advice that can never work (L111).
+    if (err instanceof DeactivatedAccountError) {
+      log.warn("auth-callback", { msg: "refused a deactivated account", auth_user_id: user.id });
+      await supabase.auth.signOut();
+      return NextResponse.redirect(`${origin}/login?error=account_deactivated`);
+    }
     log.error("auth-callback", { msg: "provisioning refused", auth_user_id: user.id }, err);
     await supabase.auth.signOut();
     return NextResponse.redirect(`${origin}/login?error=provision_failed`);

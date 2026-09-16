@@ -17,6 +17,12 @@ const ERROR_MESSAGES: Record<string, string> = {
   // with their account, a read failed or a simultaneous sign-in won the race.
   provision_failed:
     "We couldn't finish setting up your account just now. Please try signing in again.",
+  // #2378: the account has been deactivated. Deliberately NOT worded as a retry,
+  // unlike every other line here: signing in again can never work, and somebody
+  // who has genuinely left should not be sent round the loop. It names the one
+  // action that can change the answer, and says nothing about why.
+  account_deactivated:
+    "This Slate account is no longer active. Ask an admin to reactivate it if you still need access.",
 };
 
 // Shown when the sign-in call itself never reaches Google (a transient network

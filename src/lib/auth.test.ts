@@ -255,3 +255,80 @@ describe("getImpersonationView drop states (#652)", () => {
     expect((await currentUser())?.id).toBe("admin-1");
   });
 });
+
+// #2378: a deactivated staff member kept their session AND their role. Every gate
+// flows through realCurrentUser, which resolved the row by auth_user_id and never
+// looked at `deactivated_at`, while the impersonation TARGET beside it was already
+// filtered on exactly that column. So offboarding somebody took nothing away from
+// them until their Supabase refresh token died, which by default has no absolute
+// expiry (L137: a grant checked only where it is GRANTED is never re-checked for
+// anyone holding a session).
+//
+// Every refusal here is paired with a live user of the SAME role in the SAME
+// fixture (L159): a test asserting somebody was refused is satisfied by a fixture
+// where nobody could ever get in.
+describe("a deactivated session is refused (#2378)", () => {
+  const LEFT = "2026-09-01T00:00:00.000Z";
+
+  it("refuses a deactivated admin at the agent, manager and admin gates", async () => {
+    for (const gate of ["agent", "manager", "admin"] as const) {
+      signedInAs(user("admin-1", "admin", { deactivated_at: LEFT }));
+      await expect(requireRole(gate)).rejects.toThrow("Not authorized");
+    }
+    for (const gate of ["agent", "manager", "admin"] as const) {
+      signedInAs(user("admin-1", "admin"));
+      expect((await requireRole(gate)).id).toBe("admin-1");
+    }
+  });
+
+  it("refuses a deactivated manager and a deactivated agent at their own gate", async () => {
+    signedInAs(user("mgr-1", "manager", { deactivated_at: LEFT }));
+    await expect(requireManager()).rejects.toThrow("Not authorized");
+    signedInAs(user("agent-9", "agent", { deactivated_at: LEFT }));
+    await expect(requireRole("agent")).rejects.toThrow("Not authorized");
+
+    signedInAs(user("mgr-1", "manager"));
+    expect((await requireManager()).id).toBe("mgr-1");
+    signedInAs(user("agent-9", "agent"));
+    expect((await requireRole("agent")).id).toBe("agent-9");
+  });
+
+  it("resolves currentUser to null for a deactivated session", async () => {
+    signedInAs(user("mgr-1", "manager", { deactivated_at: LEFT }));
+    expect(await currentUser()).toBeNull();
+
+    signedInAs(user("mgr-1", "manager"));
+    expect((await currentUser())?.id).toBe("mgr-1");
+  });
+
+  // A deactivated admin must not get back in by acting as somebody else: the
+  // ACTOR is judged before the target is ever fetched.
+  it("does not let a deactivated admin act through an impersonation cookie", async () => {
+    arrange(user("admin-1", "admin", { deactivated_at: LEFT }), user("agent-9", "agent"));
+    expect(await currentUser()).toBeNull();
+    await expect(requireManager()).rejects.toThrow("Not authorized");
+
+    arrange(user("admin-1", "admin"), user("agent-9", "agent"));
+    expect((await currentUser())?.id).toBe("agent-9");
+  });
+
+  // L42: a control that exists to protect somebody fails CLOSED. An unreadable
+  // users row is "I could not tell whether they still work here", and the safe
+  // answer to that is to refuse, not to admit. The cost is that a database blip
+  // signs everybody out for the length of the blip, which is the correct side to
+  // be wrong on for an authorization gate.
+  it("fails closed when the session row read itself errors", async () => {
+    authUser.id = "auth-1";
+    cookieValue.v = undefined;
+    dbRows.queue = [DB_ERROR];
+    expect(await currentUser()).toBeNull();
+
+    authUser.id = "auth-1";
+    cookieValue.v = undefined;
+    dbRows.queue = [DB_ERROR];
+    await expect(requireManager()).rejects.toThrow("Not authorized");
+
+    signedInAs(user("mgr-1", "manager"));
+    expect((await requireManager()).id).toBe("mgr-1");
+  });
+});
