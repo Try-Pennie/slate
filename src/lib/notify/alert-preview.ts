@@ -1961,6 +1961,20 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
       unreadable: false,
     }),
   },
+  // #2392: the burst counter proof, the one detector in this family whose verdict
+  // is stamped by a GitHub workflow rather than by the monitor lane, so its page has
+  // to send the reader somewhere none of the others do.
+  {
+    key: "cron_lane_stale:*",
+    state: "the burst counter proof has stopped concluding",
+    channel: "alert",
+    text: verdictBlindAlertText({
+      lane: "verdict:burst-counter",
+      ageMs: 3 * 24 * 60 * 60_000,
+      maxStaleMs: VERDICT_STALE_BOUNDS_MS["verdict:burst-counter"],
+      unreadable: false,
+    }),
+  },
   // --- a contained monitor step that keeps failing (#2382) -------------------
   //
   // Two states, because the wider half of the fault is what a failed SETUP read

@@ -1,0 +1,153 @@
+name: Burst counter
+
+# The daily proof that the burst counter answers (#2392).
+#
+# `pnpm verify:burst-counter` (#1564) is the only thing that can see a counter which is
+# BOUND and does not ANSWER. The monitor lane resolves the BURST_LIMITER namespace as a
+# property read and stops there deliberately: calling the object would create it, spend a
+# subrequest out of the invocation four cron lanes share, and give it an alarm to clean up
+# on every tick forever. So a counter that is bound and unreachable reads as healthy
+# there, and nowhere else would say so.
+#
+# It was hand run, and AGENTS.md asked in words for it to be re-run after any change to
+# `src/lib/rate-limit-burst.ts`, `src/lib/rate-limit.ts`, `worker/burst-limiter.ts` or the
+# BURST_LIMITER binding in wrangler.jsonc. Nothing enforced that. Between the command
+# shipping on 2026-08-31 and this workflow the burst path moved five times with no run
+# recorded, because a rule that lives only in a prompt is a hope (L27) and a check that
+# has never once concluded is measuring nothing (L557).
+#
+# It runs HERE and not on the Worker's monitor lane for the reason above: the whole point
+# is to CALL the object, which is the one thing the lane must not do.
+#
+# WHAT IT WRITES, in production, once a day: one count against a fixed monitor key that no
+# real caller's `burstKey` can produce, on an object whose own alarm deletes it two windows
+# after the last report. The argument for why that key space is unreachable from real
+# traffic is in src/lib/monitor/burst-counter-probe.ts, and
+# scripts/test-burst-counter-live-control.ts walks the shipped EDGE_LIMITERS table so a
+# limiter that ever adopted it fails the build.
+#
+# Needs the BOOKING_API_KEY and SLACK_BOT_TOKEN repo secrets, and the SLATE_BASE_URL and
+# SLACK_ALERTS_CHANNEL repo variables. All four already exist for the canary and the
+# parity sweep; `pnpm check:workflow-settings` is what says so.
+#
+# There is deliberately NO gap filler for a run GitHub drops, unlike the canary and the
+# parity sweep (src/lib/monitor/canary-trigger.ts): the staleness bound below is set to
+# survive one dropped run instead, which is the router-replay choice. Adding a fourth
+# entry to that dispatch table is #2466's question rather than this change's.
+on:
+  schedule:
+    # 10:50 UTC daily, which is early morning Eastern: a bad deploy from yesterday is
+    # reported before the working day rather than after it. Not on the hour, where
+    # GitHub's scheduling queue is busiest and runs are most often dropped, and clear of
+    # the parity sweep at 12:20 and the weekly replay at 13:20 so three jobs never queue
+    # together.
+    - cron: "50 10 * * *"
+  # No inputs, so a hand dispatch is the same run the schedule makes. Anyone who has just
+  # changed the burst path can run it here without waiting for tomorrow.
+  workflow_dispatch:
+
+concurrency:
+  group: burst-counter
+  cancel-in-progress: false
+
+jobs:
+  burst:
+    # The work is two HTTP requests. What takes any time at all is the command waiting out
+    # the end of the current one minute window so both reports land inside one, which is at
+    # most a minute. Ten covers the install and that wait with room, and an explicit
+    # timeout is required of every job here (L313).
+    timeout-minutes: 10
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+        with:
+          version: 10
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24
+          cache: pnpm
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      # Skip quietly until the key is configured, so merging this does not fail a run every
+      # morning before setup. An absent key is "not configured yet"; a present but wrong one
+      # still runs and reports (the command answers exit 4 for that, on its own code).
+      #
+      # A skip stamps nothing, so a workflow left unconfigured goes stale against the
+      # 52 hour bound and pages as a detector that has never once concluded, which is
+      # exactly what it would be.
+      - name: Preflight (is the proof configured?)
+        id: pre
+        env:
+          BOOKING_API_KEY: ${{ secrets.BOOKING_API_KEY }}
+        run: |
+          if [ -n "$BOOKING_API_KEY" ]; then
+            echo "configured=1" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=0" >> "$GITHUB_OUTPUT"
+            echo "::notice::BOOKING_API_KEY is not set as a repo secret, so the burst counter proof is skipping. Add it in Settings > Secrets and variables > Actions."
+          fi
+
+      # `continue-on-error`, because this step's exit code is the FINDING: it exits non-zero
+      # on every ending other than a count that rose, and several of those are exactly what
+      # the run is for. The step below is what decides whether anybody is told and whether
+      # the detector concluded, and failing the job here would skip it and leave the finding
+      # in the Actions tab with nobody reading it.
+      - name: Prove the burst counter answers
+        id: verify
+        continue-on-error: true
+        if: steps.pre.outputs.configured == '1'
+        env:
+          BOOKING_API_KEY: ${{ secrets.BOOKING_API_KEY }}
+          SLATE_BASE_URL: ${{ vars.SLATE_BASE_URL }}
+          # A literal path, not a repo variable: it is an internal handoff between two steps
+          # of the same job, and the step below reads the same path.
+          BURST_SUMMARY_FILE: burst-summary.json
+        run: node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/verify-burst-counter-live.ts
+
+      # Runs whatever the step above did, because "the counter is not counting" and "the run
+      # never decided" are two different things to say and the second has no exit code of its
+      # own that this could trust: node exits 1 on an uncaught throw and 1 is also a real
+      # ending of the command. The summary FILE is the evidence, and an absent one means the
+      # run died before reaching a verdict (L98).
+      #
+      # Bare node, no alias hook: scripts/test-dependency-free-scripts.ts holds it to
+      # importing nothing outside scripts/.
+      - name: Say what the proof found
+        id: report
+        if: always() && steps.pre.outputs.configured == '1'
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_ALERTS_CHANNEL: ${{ vars.SLACK_ALERTS_CHANNEL }}
+          BURST_SUMMARY_FILE: burst-summary.json
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: node --experimental-strip-types scripts/notify-burst-counter.ts
+
+      # Stamped ONLY when the run MEASURED whether the counter answers and counts, never
+      # merely because the workflow ran. A refused key, a deployment that predates the
+      # endpoint, a Worker that could not read its own context: each of those leaves this
+      # unstamped, the verdict goes stale and the lane watchdog pages, because a detector
+      # that has stopped concluding otherwise looks exactly like one finding nothing wrong
+      # (#1394).
+      #
+      # Both of the BAD verdicts stamp too, and that is deliberate: they are definite
+      # readings of the thing under test, and the reporter above has already said what was
+      # found. The stamp answers "is this detector concluding", never "is the counter well".
+      #
+      # `always()` is load bearing rather than tidiness. Without a status function
+      # GitHub implicitly ANDs `success()` into a custom `if`, so a Slack post that
+      # failed in the step above would skip this one and leave the verdict unstamped
+      # for a reason that has nothing to do with the counter. That is two checks
+      # sharing one status field (L53): whether the run CONCLUDED is a fact about the
+      # counter, and whether anybody was told is a fact about Slack. The reporter
+      # writes its output before it exits non-zero, precisely so this can still read it.
+      - name: Stamp the verdict (a measured verdict only)
+        if: always() && steps.pre.outputs.configured == '1' && steps.report.outputs.concluded == '1'
+        env:
+          BOOKING_API_KEY: ${{ secrets.BOOKING_API_KEY }}
+          SLATE_BASE_URL: ${{ vars.SLATE_BASE_URL }}
+        run: |
+          base="${SLATE_BASE_URL:-https://slate.trypennie.app}"
+          curl -fsS -X POST "${base%/}/api/smoke/heartbeat?lane=verdict:burst-counter" \
+            -H "authorization: Bearer $BOOKING_API_KEY"

@@ -351,9 +351,22 @@ const body = (value: unknown) => JSON.stringify(value);
     section.includes("pnpm verify:burst-counter"),
     "and says how to run it, by the name package.json actually wires",
   );
+  // This used to assert the section told a READER to re-run the command after a burst path
+  // change. That instruction is exactly what #2392 was about: it was here, in bold, and the
+  // path moved five times with nobody running it, because a rule that lives only in a prompt
+  // is a hope (L27). A scheduled lane does it now, so the guard asks for what actually holds.
   assert(
-    /re-run it after any change to the burst path/i.test(section),
-    "and says to re-run it after a change to the burst path or the binding",
+    /burst-counter\.yml/.test(section),
+    "and names the scheduled workflow that runs it, since asking a person to remember did not work",
+  );
+  assert(
+    /verdict:burst-counter/.test(section),
+    "and names the verdict lane it stamps, which is what pages when the proof stops happening",
+  );
+  assert(
+    /only a run that measured/i.test(section),
+    "and says that only a MEASURED verdict may stamp, which is the difference between this and a " +
+      "heartbeat recording that the workflow ran",
   );
 
   const documented = new Set<number>();

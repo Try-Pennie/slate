@@ -169,7 +169,7 @@ for (const [mapName, bounds] of Object.entries(BOUNDS)) {
 // --- the scheduled workflows really stamp the lanes they are bounded for (#2263) --
 //
 // The scan above proves a stamp exists SOMEWHERE in src/ for every bound. These
-// four lanes are stamped by a GitHub workflow with a curl, which is outside src/
+// five lanes are stamped by a GitHub workflow with a curl, which is outside src/
 // entirely, so the scanner sees only the route allowlist that permits the lane and
 // never the caller that uses it. A bound whose workflow never calls it can never go
 // stale, which silently disables that alert forever (L96: a guard that checks only
@@ -184,13 +184,25 @@ for (const [mapName, bounds] of Object.entries(BOUNDS)) {
     { lane: "smoke-canary-full", file: "smoke-canary.yml", call: /lane=smoke-canary-full(?![\w-])/ },
     { lane: "schedule-parity", file: "schedule-parity.yml", call: /lane=schedule-parity(?![\w-])/ },
     { lane: "router-replay", file: "router-replay.yml", call: /lane=router-replay(?![\w-])/ },
+    // The one DETECTOR VERDICT lane stamped from outside the Worker (#2392), so it
+    // is watched by VERDICT_STALE_BOUNDS_MS rather than by the canary map its four
+    // neighbours here use, and the assertion below picks the map per row instead of
+    // assuming one.
+    {
+      lane: "verdict:burst-counter",
+      file: "burst-counter.yml",
+      call: /lane=verdict:burst-counter(?![\w:-])/,
+    },
   ];
   // Anchored on a word boundary, never a bare substring. `includes("lane=router-replay")`
   // is satisfied by `lane=router-replay-typo`, and the first version of this guard
   // passed on exactly that planted typo (L1: a guard is only real once it has been
   // seen to fail).
   for (const { lane, file, call } of WORKFLOW_STAMPED) {
-    assert(CANARY_STALE_BOUNDS_MS[lane] !== undefined, `${lane} is watched by a staleness bound`);
+    assert(
+      CANARY_STALE_BOUNDS_MS[lane] !== undefined || VERDICT_STALE_BOUNDS_MS[lane] !== undefined,
+      `${lane} is watched by a staleness bound`,
+    );
     const yml = readFileSync(join(HERE, "..", ".github", "workflows", file), "utf8");
     assert(
       call.test(yml),

@@ -22,10 +22,30 @@ import {
   OOO_PROTECTION_VERDICT_LANE,
   TWILIO_ROSTER_VERDICT_LANE,
   LANE_WATCHDOG_VERDICT_LANE,
+  BURST_COUNTER_VERDICT_LANE,
   type DetectorVerdictLane,
 } from "@/lib/monitor/verdict-freshness";
 
-const STAMP: Record<DetectorVerdictLane, () => Promise<void>> = {
+/**
+ * The verdict lanes this Worker stamps for itself.
+ *
+ * `verdict:burst-counter` (#2392) is deliberately NOT one of them: the check it
+ * records has to CALL the burst counter Durable Object, which is the one thing the
+ * monitor lane must not do (calling it creates the object and gives it an alarm to
+ * clean up on every tick forever), so it runs as a daily GitHub workflow and stamps
+ * through the key authed heartbeat endpoint instead.
+ *
+ * Excluding it in the TYPE rather than by leaving it out of the table below is what
+ * keeps that a decision rather than an omission: a seventh lane added to the family
+ * and forgotten here still fails `tsc`, which is the whole reason this map is a
+ * `Record` (L129).
+ */
+export type WorkerStampedVerdictLane = Exclude<
+  DetectorVerdictLane,
+  typeof BURST_COUNTER_VERDICT_LANE
+>;
+
+const STAMP: Record<WorkerStampedVerdictLane, () => Promise<void>> = {
   [AVAILABILITY_TRUTH_VERDICT_LANE]: () => recordHeartbeat("verdict:availability-truth"),
   [FAILURE_RATE_VERDICT_LANE]: () => recordHeartbeat("verdict:booking-failure-rate"),
   [LOW_VOLUME_VERDICT_LANE]: () => recordHeartbeat("verdict:low-booking-volume"),
@@ -43,7 +63,7 @@ const STAMP: Record<DetectorVerdictLane, () => Promise<void>> = {
  * signal this feature watches.
  */
 export async function recordDetectorVerdict(
-  lane: DetectorVerdictLane,
+  lane: WorkerStampedVerdictLane,
   reached: boolean,
 ): Promise<void> {
   if (!reached) return;

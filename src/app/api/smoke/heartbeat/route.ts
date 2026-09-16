@@ -40,6 +40,12 @@ const CANARY_HEARTBEAT_LANES = new Set([
   // because a blind detector keeping its heartbeat fresh is the state #1394
   // exists to find.
   "router-replay",
+  // The daily proof that the burst counter answers (#2392). A detector verdict
+  // lane rather than a plain one, and the only member of that family stamped from
+  // outside the Worker: it records that the check CONCLUDED, never that the
+  // workflow ran, so a run that could not reach the deployment leaves it
+  // unstamped and it goes stale against VERDICT_STALE_BOUNDS_MS.
+  "verdict:burst-counter",
 ]);
 
 export async function POST(req: NextRequest) {

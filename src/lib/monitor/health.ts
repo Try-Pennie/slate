@@ -343,6 +343,29 @@ export const VERDICT_STALE_BOUNDS_MS: Record<string, number> = {
   // takes the stamp AND the reader out together, so nothing in-Worker sees it.
   // That case belongs to the external uptime check on /api/health (#749).
   "verdict:lane-watchdog": 6 * 60 * MIN,
+  // The daily proof that the burst counter answers (#2392), and the only member of
+  // this family stamped by a GitHub workflow rather than by the monitor lane, which
+  // is what makes its bound a different arithmetic from every entry above.
+  //
+  // 52 hours, and every part of it is derived rather than chosen (L614):
+  //
+  //   24h    the workflow's own cadence, read off its cron.
+  //   x2     so ONE dropped run does not page. GitHub's scheduler drops runs under
+  //          load, and on a daily cadence a drop costs the whole day. The canary and
+  //          the parity sweep answer that with a gap filler on the monitor lane; this
+  //          lane has none (a fourth entry in the #2414 dispatch table is #2466's
+  //          question, not this change's), so the bound has to survive a drop or it
+  //          pages for a cause nobody can fix, which is how a channel stops being read.
+  //   +3h    the worst GitHub scheduling LATENESS this repo has measured, so the run
+  //          after a dropped one being merely late is not a second page.
+  //   +10m   the job's own `timeout-minutes`, because the stamp lands at the END of a
+  //          run rather than at its start.
+  //
+  // That is 51h10m, and 52 clears it by under an hour. `scripts/test-burst-counter-schedule.ts`
+  // re-derives all of it FROM the workflow file, so editing the cron or the timeout
+  // without revisiting this fails the build, and it also refuses a bound with days of
+  // slack in it: a bound that cannot be wrong is one that notices nothing.
+  "verdict:burst-counter": 52 * 60 * MIN,
 };
 
 /**
