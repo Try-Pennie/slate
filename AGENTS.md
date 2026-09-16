@@ -176,6 +176,21 @@ or schema-qualify (`extensions.digest`), or widen the pin.
 `-- search-path-ok: <reason>` escape hatch; the reasoning is in the runbook's
 "Writing a function with a pinned search_path" section (#1126).
 
+A **SECURITY DEFINER** function has a second rule, and the naive form of it does
+not work. Such a function bypasses RLS, and TWO grants hand it to a client side
+role: Postgres's own EXECUTE to PUBLIC on every new function, and 0121's default
+privileges, which grant EXECUTE **directly** to `anon` and `authenticated` at
+creation time. `revoke ... from public` does not remove a direct grant (L541), so
+the PUBLIC only revoke that reads like the fix leaves the function callable
+through `/rest/v1/rpc/<function>` with the publishable key that ships in the
+client bundle. Write the form all seventeen existing sites use,
+`revoke execute on function f(args) from public, anon, authenticated;`, in the
+SAME migration. `scripts/test-migration-grants.ts` enforces it (the scan is
+`scanDefinerExecuteGrants` in `scripts/lib/scan-migration-grants.ts`), with an
+`-- anon-execute-ok: <reason>` escape hatch that is refused when it carries no
+reason; the runbook's "Writing a SECURITY DEFINER function" section has the why
+(#2391).
+
 # Three ways a Google calendar can fail, not two
 
 A failed calendar read is classified `gone`, `not-provisioned`, or `transient`

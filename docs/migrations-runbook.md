@@ -144,6 +144,44 @@ query is in that file's header), and drop any name that also exists in
 list, which exists so a header-parse regression fails loudly instead of quietly
 scanning nothing.
 
+## Writing a SECURITY DEFINER function: take EXECUTE back (#2391)
+
+A SECURITY DEFINER function runs with its owner's rights, so it bypasses the RLS
+every other client read is held to, and **two** separate grants hand it to a
+client side role. Postgres gives EXECUTE to PUBLIC on every function it creates,
+and `anon` inherits whatever PUBLIC holds; migration 0121 then sets
+`alter default privileges ... grant execute on functions to anon, authenticated,
+service_role`, which is a **direct** grant to each of those roles at creation
+time. A revoke from PUBLIC does not remove a direct grant, so the PUBLIC only
+revoke that reads like the fix leaves `anon` and `authenticated` still able to
+call it through `/rest/v1/rpc/<function>` with the publishable key that ships in
+the client bundle.
+
+**So every SECURITY DEFINER function revokes EXECUTE from all three, in its own
+migration**, which is the form all seventeen existing sites already use:
+
+<!-- runbook-reference: the shape a new migration writes, quoted from 0073. It is
+     not a command to run here: the revoke belongs in the migration file that
+     creates the function, and running it by hand would leave the file wrong. -->
+
+```sql
+revoke execute on function count_bookings_per_local_day(uuid[], jsonb, timestamptz, timestamptz)
+  from public, anon, authenticated;
+```
+
+`service_role` is deliberately never named: it is what the server side client
+calls through. `revoke all on function ...` is the other accepted form (0092
+writes it that way) because ALL carries EXECUTE with it, and the three roles may
+be named across several statements as long as their union covers them.
+
+`scripts/test-migration-grants.ts` enforces this on pre-push and in CI, over
+every migration. Its escape hatch is `-- anon-execute-ok: <reason>` on or above
+the `create function` line, and it must carry a reason: the bare marker is
+refused, so the syntax alone cannot read as a decision somebody made. It matches
+a revoke to a definition by function NAME rather than by resolving argument
+types, and covers the one thing that misses (two overloads of one name in one
+file) by requiring one revoke statement per definition.
+
 ## Backfilling a mirrored table: rewind the export cursor (#1231)
 
 A write that supplies its own timestamp into a **mirrored** table
