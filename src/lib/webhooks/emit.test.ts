@@ -146,9 +146,27 @@ beforeEach(() => {
   state.endpointsError = null;
   state.updates = [];
   from.mockImplementation((table: string) => makeBuilder(table));
-  fetchMock.mockResolvedValue({ ok: true, status: 200, text: async () => "ok" });
+  fetchMock.mockResolvedValue(reply({ ok: true, status: 200, body: "ok" }));
   vi.stubGlobal("fetch", fetchMock);
 });
+
+/**
+ * A fetch reply shaped like the real `Response` the sender reads.
+ *
+ * `headers` is not decoration: since #2418 `send()` reads `content-type` and
+ * `cf-ray` to tell a subscriber's own error from a block page served by something
+ * in front of them, and a fake missing them makes every reply throw. A double that
+ * omits what the real interface always carries only ever confirms our assumption
+ * about it (L52).
+ */
+function reply(opts: { ok: boolean; status: number; body: string; headers?: Record<string, string> }) {
+  return {
+    ok: opts.ok,
+    status: opts.status,
+    headers: new Headers(opts.headers ?? {}),
+    text: async () => opts.body,
+  };
+}
 
 describe("retryFailedDeliveries", () => {
   it("loads endpoints in a single query for many deliveries sharing one endpoint (no N+1)", async () => {
@@ -280,7 +298,7 @@ describe("emitWebhook", () => {
   // subscriber being down must never throw back into the booking flow. It must be
   // recorded as failed instead, which is what makes the retry sweep pick it up.
   it("marks the delivery failed (and does not throw) when the receiver rejects", async () => {
-    fetchMock.mockResolvedValue({ ok: false, status: 500, text: async () => "boom" });
+    fetchMock.mockResolvedValue(reply({ ok: false, status: 500, body: "boom" }));
 
     await expect(emitWebhook("o1", "booking.created", payload, "bk1")).resolves.toBeUndefined();
 
@@ -324,7 +342,7 @@ describe("dead-letter recovery notice", () => {
   // The silent path (#1152): a delivery that FAILED is not evidence the endpoint
   // is healthy, so it must not clear the page saying it is dead.
   it("sends NO all-clear when the delivery fails", async () => {
-    fetchMock.mockResolvedValue({ ok: false, status: 500, text: async () => "boom" });
+    fetchMock.mockResolvedValue(reply({ ok: false, status: 500, body: "boom" }));
 
     await emitWebhook("o1", "booking.created", payload, "bk1");
 
@@ -335,8 +353,8 @@ describe("dead-letter recovery notice", () => {
     state.endpoints = [endpoint, { ...endpoint, id: "ep2", url: "https://other.example/hook" }];
     fetchMock.mockImplementation(async (url: string) =>
       String(url).includes("other.example")
-        ? { ok: false, status: 500, text: async () => "boom" }
-        : { ok: true, status: 200, text: async () => "ok" },
+        ? reply({ ok: false, status: 500, body: "boom" })
+        : reply({ ok: true, status: 200, body: "ok" }),
     );
 
     await emitWebhook("o1", "booking.created", payload, "bk1");
@@ -539,5 +557,96 @@ describe("payload_erased guard (#1073)", () => {
         (f) => f.table === "webhook_deliveries" && f.col === "payload_erased" && f.val === false,
       ),
     ).toBe(true);
+  });
+});
+
+// #2418: what the dead letter page is allowed to SAY about a subscriber's reply.
+//
+// The classification and the wording are pure and are pinned offline in
+// scripts/test-webhook-dead-letter-copy.ts. What only a mocked send can prove is
+// the WIRING: that the reply's HEADERS are read, that the summary is what lands on
+// the delivery row, and that the text handed to sendThrottledAlert is the built
+// copy rather than a kilobyte of the reply. Before this, a WAF answering 403 with
+// an HTML block page put `<!DOCTYPE html>...` cut mid tag on somebody's phone, with
+// nothing saying the subscriber's API had never seen the request.
+describe("dead-letter page never carries the reply body (#2418)", () => {
+  const BLOCK_PAGE =
+    '<!DOCTYPE html><html><head><title>Attention Required! | Cloudflare</title></head>' +
+    "<body><h1>Sorry, you have been blocked</h1>" +
+    "<p>Ray ID: 8f2c1a9b4d5e6f70</p>".repeat(20) +
+    "</body></html>";
+
+  /** Drive one send at the attempt that dead-letters, and return the alert text. */
+  async function deadLetter(): Promise<string> {
+    state.deliveries = [delivery("d1", 4)];
+    await retryFailedDeliveries();
+    expect(notify.sendThrottledAlert).toHaveBeenCalledTimes(1);
+    return String((notify.sendThrottledAlert.mock.calls[0] as unknown as unknown[])[2]);
+  }
+
+  it("names the intermediary, keeps its markup out, and hands over the cf-ray", async () => {
+    fetchMock.mockResolvedValue(
+      reply({
+        ok: false,
+        status: 403,
+        body: BLOCK_PAGE,
+        headers: { "content-type": "text/html; charset=UTF-8", "cf-ray": "8f2c1a9b4d5e6f70-EWR" },
+      }),
+    );
+
+    const text = await deadLetter();
+
+    expect(text).not.toContain("<");
+    expect(text).not.toContain("Cloudflare");
+    expect(text).toContain("never saw the request");
+    expect(text).toContain("8f2c1a9b4d5e6f70-EWR");
+    // The delivery row carries the classification too, so the admin webhooks page
+    // is not showing a kilobyte of somebody else's HTML either.
+    const row = state.updates[state.updates.length - 1];
+    expect(String(row.last_response)).toBe("403 intermediary HTML page, cf-ray 8f2c1a9b4d5e6f70-EWR");
+  });
+
+  it("does NOT call a genuine API error an intermediary, and keeps its reason", async () => {
+    fetchMock.mockResolvedValue(
+      reply({
+        ok: false,
+        status: 401,
+        body: '{"error":"invalid api key"}',
+        headers: { "content-type": "application/json" },
+      }),
+    );
+
+    const text = await deadLetter();
+
+    expect(text).not.toContain("never saw the request");
+    expect(text).toContain("401");
+    expect(text).toContain("invalid api key");
+  });
+
+  it("says a reply carried no body rather than trailing off after the status", async () => {
+    fetchMock.mockResolvedValue(reply({ ok: false, status: 503, body: "" }));
+
+    const text = await deadLetter();
+
+    expect(text).toContain("503 no reply body");
+    expect(String(state.updates[state.updates.length - 1].last_response)).toBe("503 no reply body");
+  });
+
+  it("gives a reply it could not read its own sentence, not another's", async () => {
+    fetchMock.mockResolvedValue({
+      ok: false,
+      status: 502,
+      headers: new Headers({ "cf-ray": "8f2c1a9b4d5e6f70-EWR" }),
+      text: async () => {
+        throw new Error("network error reading body");
+      },
+    });
+
+    const text = await deadLetter();
+
+    expect(text).toContain("502 reply body could not be read");
+    expect(text).toContain("8f2c1a9b4d5e6f70-EWR");
+    expect(text).not.toContain("no reply body");
+    expect(text).not.toContain("never saw the request");
   });
 });

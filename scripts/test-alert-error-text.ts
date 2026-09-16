@@ -76,7 +76,64 @@ const FIXTURES: Fixture[] = [
       'await sendThrottledAlert("k", MS, `Slate: server error on ${context} (${detail}).`);',
     ].join("\n"),
   },
+  {
+    // #2418: the copy lives in a builder, so the send site has no template to
+    // read and the builder interpolates a PARAMETER whose name says nothing. Both
+    // halves look clean while a kilobyte of a blocked request's HTML goes to Slack.
+    name: "a raw error handed to a copy builder as an argument",
+    flagged: true,
+    src: 'await sendThrottledAlert("k", MS, webhookDeadAlert(url, event, 5, err.message));',
+  },
+  {
+    // The #2418 site itself: filled on four branches of a `let`, one of which is
+    // the stringify-then-slice idiom, so nothing about the declaration says error.
+    name: "a builder argument bound by a later assignment, not a const",
+    flagged: true,
+    src: [
+      'let lastResponse = "";',
+      "try {",
+      "  lastResponse = `${res.status} ${text}`;",
+      "} catch (err) {",
+      "  lastResponse = String(err).slice(0, 1000);",
+      "}",
+      'await sendThrottledAlert("k", MS, webhookDeadAlert(url, event, 5, lastResponse));',
+    ].join("\n"),
+  },
+  {
+    name: "a raw error passed straight to the sender with no template at all",
+    flagged: true,
+    src: 'await sendThrottledAlert("k", MS, error.message);',
+  },
   // NOT flagged ---------------------------------------------------------------
+  {
+    name: "a builder argument routed through the formatter",
+    flagged: false,
+    src: [
+      'let lastResponse = "";',
+      "lastResponse = String(err).slice(0, 1000);",
+      'await sendThrottledAlert("k", MS, webhookDeadAlert(url, event, 5, shortFailureReason(lastResponse) ?? "no detail"));',
+    ].join("\n"),
+  },
+  {
+    name: "a builder given nothing but plain copy arguments",
+    flagged: false,
+    src: 'await sendThrottledAlert("k", MS, webhookDeadAlert(url, event, 5, "502 Bad Gateway"));',
+  },
+  {
+    // A multi-line call leaves no comment block above the argument line, so the
+    // reason belongs above the call, which is where the existing ones sit.
+    name: "the escape hatch above a multi-line send whose argument holds the value",
+    flagged: false,
+    src: [
+      "// alert-text-ok: `reason` is our own short sentence, not a raw error.",
+      "await sendThrottledAlert(",
+      '  "k",',
+      "  MS,",
+      "  twilioSyncFailureAlert(reason),",
+      ");",
+      "const reason = err.message;",
+    ].join("\n"),
+  },
   {
     name: "a local bound through the formatter",
     flagged: false,
@@ -175,6 +232,23 @@ const reintroduced =
 assert(
   scanAlertErrorText(reintroduced, REAL).length > 0,
   "mutation control: a raw error interpolated in a copy builder is caught",
+);
+
+// #2418's own control, on the file the widened scan was written for. The webhook
+// sender hands a copy builder the value it recorded about the subscriber's reply;
+// take the formatter back out and the guard must catch it, or the builder hop is
+// a fixture-only capability that never reaches production code (L98).
+const EMIT = join(SRC, "lib", "webhooks", "emit.ts");
+const emitSrc = readFileSync(EMIT, "utf8");
+assert(scanAlertErrorText(emitSrc, EMIT).length === 0, "the real webhooks/emit.ts is clean");
+const unrouted = emitSrc.replace(
+  /shortFailureReason\(lastResponse\) \?\? "no detail"/,
+  "lastResponse",
+);
+assert(unrouted !== emitSrc, "the emit.ts mutation control found the line it rewrites");
+assert(
+  scanAlertErrorText(unrouted, EMIT).length > 0,
+  "mutation control: a raw reply handed to a copy builder is caught",
 );
 
 // And the send sites themselves stay clean.

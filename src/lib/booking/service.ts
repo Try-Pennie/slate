@@ -1861,6 +1861,10 @@ async function alertOnBookingFailure<T>(op: () => Promise<T>): Promise<T> {
   } catch (err) {
     const spec = bookingFailureAlert(err);
     if (spec) {
+      // alert-text-ok: `spec.message` is the alert's own copy, built by
+      // bookingFailureAlert from the pure builders in booking/alert-copy.ts. The
+      // name ends in `.message` and is not an error; the widened #2418 scan reads
+      // arguments as well as templates, so it reaches this shape now.
       // alert-key: verify_on_book_outage
       // alert-key: reschedule_lock_outage
       // alert-key: no_eligible_agents:*

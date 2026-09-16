@@ -367,9 +367,39 @@ export function digestUnroutedUnreachableRecovery(): string {
   );
 }
 
-/** An endpoint has exhausted its delivery retries. */
-export function webhookDeadAlert(url: string, event: string, attempt: number, lastResponse: string): string {
-  return `Webhook delivery to ${url} keeps failing (event ${event}, ${attempt} attempts). Last response: ${lastResponse}`;
+/**
+ * An endpoint has burned every retry and is dead-lettering.
+ *
+ * `reason` is already SHORT: the sender classifies the reply
+ * (`summarizeWebhookReply`) and runs it through `shortFailureReason`, so no body
+ * reaches this sentence. The full reply is in the logs under `tag=webhooks`, which
+ * is the division of labour AGENTS.md sets out: the alert carries a short human
+ * reason, the log carries the text.
+ *
+ * `reply.intermediary` is a MEASURED fact, not a guess made from the wording, and
+ * it changes who the reader has to go and talk to (#2418). A block page from a WAF
+ * in front of the subscriber means their firewall is refusing Slate's egress
+ * address and their API never saw a thing, which is a network repair on their
+ * side. Every other failure is between Slate and their API, and the commonest of
+ * those is a key. Saying the same sentence for both is what left an on call reader
+ * with a kilobyte of markup and no idea which it was.
+ */
+export function webhookDeadAlert(
+  url: string,
+  event: string,
+  attempt: number,
+  reason: string,
+  reply: { intermediary: boolean },
+): string {
+  const head = `Webhook delivery to ${url} keeps failing (event ${event}, ${attempt} attempts).`;
+  if (reply.intermediary) {
+    return (
+      `${head} Something in front of the subscriber answered with a block page, so their API never saw the request: ` +
+      `${reason}. That is a firewall repair on their side, not a payload or key problem. ` +
+      `Full reply in the logs (tag=webhooks).`
+    );
+  }
+  return `${head} Last response: ${reason}. Full reply in the logs (tag=webhooks).`;
 }
 
 /** Deliveries are landing again. */
