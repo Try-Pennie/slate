@@ -1344,9 +1344,15 @@ describe("hydrateCalendar write ordering (#1261)", () => {
    * ordering is the design here: which write happens before the fetch, which happens only
    * on success, and which is conditional.
    */
-  function recordingDb() {
+  function recordingDb(storedToken: string | null = null) {
     const updates: { table: string; values: Record<string, unknown>; filters: string[] }[] = [];
     const from = (table: string) => {
+      // #2411: whether THIS builder is a write. The claim is an
+      // `update(...).select("id")`, whose rows say whether it was won, while every read
+      // through this fake resolves to no rows. One `then` answering both would either
+      // refuse every claim (so nothing below would run) or hand `selectAllPages` a row
+      // it never asked for.
+      let isWrite = false;
       const b: Record<string, unknown> = {
         select: () => b,
         eq: (col: string, val: unknown) => {
@@ -1368,19 +1374,33 @@ describe("hydrateCalendar write ordering (#1261)", () => {
         // The agent's mailbox, so hydrateCalendar gets past its no-mailbox guard. A fake
         // that answered null would make every success-path assertion below pass for the
         // wrong reason, by never reaching the code under test at all (L143).
+        // #2411: the claim predicate. Accepted so the fake answers the chain the code
+        // really builds; the claim's outcome is decided by the rows `then` returns.
+        or: () => b,
         maybeSingle: () =>
           Promise.resolve({
-            data: table === "users" ? { email: "agent@trypennie.com" } : null,
+            data:
+              table === "users"
+                ? { email: "agent@trypennie.com" }
+                : // #2411: the post-fetch token re-read. It must report the token this
+                  // pass started with, or every case below would abandon itself as a
+                  // race and pass for the wrong reason (L143).
+                  table === "agent_calendars"
+                  ? { sync_token: storedToken }
+                  : null,
             error: null,
           }),
         upsert: () => Promise.resolve({ error: null }),
         delete: () => b,
         update: (values: Record<string, unknown>) => {
+          isWrite = true;
           updates.push({ table, values, filters: [] });
           return b;
         },
         then: (resolve: (v: { data: unknown[]; error: unknown }) => unknown) =>
-          Promise.resolve({ data: [], error: null }).then(resolve),
+          Promise.resolve({ data: isWrite ? [{ id: "cal-1" }] : [], error: null }).then(
+            resolve,
+          ),
       };
       return b;
     };
@@ -1436,7 +1456,7 @@ describe("hydrateCalendar write ordering (#1261)", () => {
     // Coupling them means every token write fails while code is deployed ahead of its
     // migration, and then every calendar re-bootstraps every minute against Google. The
     // token write is deliberately isolated for that reason and this must not undo it.
-    const { db, updates } = recordingDb();
+    const { db, updates } = recordingDb("old-tok");
     admin.current = db;
 
     await hydrateCalendar(cal("old-tok"));
@@ -1456,7 +1476,7 @@ describe("hydrateCalendar write ordering (#1261)", () => {
     // it would leave the stored coverage claiming a window the token does not correspond
     // to. Losing the race is harmless: the conditional write simply does nothing and the
     // next rotation re-establishes the window.
-    const { db, updates } = recordingDb();
+    const { db, updates } = recordingDb("old-tok");
     admin.current = db;
 
     await hydrateCalendar(cal("old-tok"));
@@ -1478,7 +1498,7 @@ describe("hydrateCalendar write ordering (#1261)", () => {
   it("claims NO coverage for a page-capped pass", async () => {
     // A truncated pass read only part of the window, so recording the full window would
     // authorize the prune over a range that was never actually read.
-    const { db, updates } = recordingDb();
+    const { db, updates } = recordingDb("old-tok");
     admin.current = db;
     calMock.syncEvents.mockResolvedValue({
       events: [],

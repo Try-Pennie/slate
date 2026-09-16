@@ -160,6 +160,7 @@ export async function GET(req: NextRequest) {
             synced?: number;
             truncated?: boolean;
             goneSkipped?: number;
+            claimSkipped?: number;
             error?: string;
           } = { userId: agent.userId };
           try {
@@ -169,6 +170,11 @@ export async function GET(req: NextRequest) {
             // Only when there IS a backed-off calendar, so the overwhelmingly
             // common healthy row stays as small as it was.
             if (sync.goneSkipped > 0) row.goneSkipped = sync.goneSkipped;
+            // #2411: and how many another pass was holding, which since #2411
+            // includes the daily hydration re-bootstrap. Its own field, not folded
+            // into goneSkipped: one is a delegation to repair and the other is a
+            // pass that finishes by itself, and the next minute retries it.
+            if (sync.claimSkipped > 0) row.claimSkipped = sync.claimSkipped;
           } catch (err) {
             row.error = err instanceof Error ? err.message : String(err);
           }
@@ -227,6 +233,8 @@ export async function GET(req: NextRequest) {
     const truncated = deferred > 0 || budgetTruncated || results.some((r) => r.truncated);
     // #1187: how many calendars the #1049 gone-backoff held back this tick.
     const goneSkipped = results.reduce((n, r) => n + (r.goneSkipped ?? 0), 0);
+    // #2411: how many were held by another pass (hydration, or a push sync).
+    const claimSkipped = results.reduce((n, r) => n + (r.claimSkipped ?? 0), 0);
     // One line per cycle, always, mirroring the recompute lane. Two reasons it
     // is unconditional: a zero has to be STATED, because an absent field reads
     // the same as a lane that never ran, and this is the sync lane's positive
@@ -238,6 +246,7 @@ export async function GET(req: NextRequest) {
       deferred,
       processed,
       gone_skipped: goneSkipped,
+      claim_skipped: claimSkipped,
       truncated,
     });
     // Dead-man's switch (#420/#685): prove this lane ran this tick. Best-effort.
@@ -248,6 +257,7 @@ export async function GET(req: NextRequest) {
       processed,
       truncated,
       goneSkipped,
+      claimSkipped,
       results,
     });
   } finally {

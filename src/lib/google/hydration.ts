@@ -84,6 +84,9 @@ export interface HydrationCandidate {
   last_failure_kind: "gone" | "not-provisioned" | "transient" | null;
   consecutive_failures: number;
   last_bootstrap_attempt_at: string | null;
+  /** #2411: who holds the calendar right now. Required, so `tsc` names every
+   *  construction site rather than letting a row that omitted it read as free. */
+  sync_claimed_at: string | null;
 }
 
 /**
@@ -166,6 +169,34 @@ export const HYDRATION_FAILING_KEY = "hydration_all_failing";
  * signal's job; per-calendar visibility needs its own health columns and is #1545.
  */
 export type HydrationTickVerdict = "healthy" | "all-failed" | "unmeasured";
+
+/**
+ * The part of a tick the verdict may be computed over (#2411).
+ *
+ * A calendar this tick SKIPPED, because another pass held its claim or advanced its
+ * token mid-fetch, was never attempted against Google, so it is neither a refresh
+ * nor a failure. Leaving it in the denominator is what makes this necessary rather
+ * than tidy: a tick whose whole batch was skipped would otherwise arrive as
+ * `refreshed = 0` out of a non-zero `due`, which reads as `all-failed`, and four of
+ * those in a row would page about a rotation with nothing wrong with it (L11, #1544).
+ *
+ * Taking them out instead collapses an all-skipped tick to `due = 0`, which is
+ * already the lane's own word for a tick that measured nothing, and which neither
+ * pages nor all-clears (#1134, #1152). Skips are reported as their own count, so a
+ * lane held back every tick is visible rather than silent.
+ */
+export function hydrationMeasuredTick(tick: {
+  due: number;
+  refreshed: number;
+  failed: number;
+  skipped: number;
+}): { due: number; refreshed: number; failed: number } {
+  return {
+    due: Math.max(0, tick.due - Math.max(0, tick.skipped)),
+    refreshed: tick.refreshed,
+    failed: tick.failed,
+  };
+}
 
 export function hydrationTickVerdict(tick: {
   due: number;

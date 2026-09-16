@@ -10,6 +10,7 @@ import {
   calendarsDueForHydration,
   hydrationBatchSize,
   runHydrationTickCheck,
+  hydrationMeasuredTick,
   HYDRATION_FAILING_KEY,
   type HydrationCandidate,
 } from "@/lib/google/hydration";
@@ -69,7 +70,10 @@ export async function GET(req: NextRequest) {
       await db
         .from("agent_calendars")
         .select(
-          "id, user_id, calendar_id, sync_token, last_failure_kind, consecutive_failures, last_bootstrap_attempt_at, last_success_at, last_sync_error",
+          // #2411: sync_claimed_at is read so a calendar another pass is holding is
+          // not taken into this batch at all. Without it the pass would claim, lose,
+          // and spend one of the batch's places on a calendar it never refreshed.
+          "id, user_id, calendar_id, sync_token, sync_claimed_at, last_failure_kind, consecutive_failures, last_bootstrap_attempt_at, last_success_at, last_sync_error",
         ),
       "hydrate-calendars calendar list",
     ) ?? []) as AgentCalendar[];
@@ -95,6 +99,7 @@ export async function GET(req: NextRequest) {
 
     let refreshed = 0;
     let failed = 0;
+    let skipped = 0;
     let events = 0;
     let budgetHit = false;
     for (const candidate of due) {
@@ -105,7 +110,12 @@ export async function GET(req: NextRequest) {
       const cal = calendars.find((c) => c.id === candidate.id);
       if (!cal) continue;
       const res = await hydrateCalendar(cal);
-      if (res.ok) refreshed++;
+      // #2411: three outcomes, not two. A pass that DECLINED to run (another writer
+      // holds the calendar, or advanced its token mid-fetch) attempted nothing against
+      // Google, so calling it a failure would page about a healthy rotation and calling
+      // it a refresh would claim coverage nobody established.
+      if (res.skipped) skipped++;
+      else if (res.ok) refreshed++;
       else failed++;
       events += res.events;
     }
@@ -121,7 +131,7 @@ export async function GET(req: NextRequest) {
     // revoked calendars landing in one batch is an ordinary event and paging on it would be
     // the alert nobody reads (L36).
     const verdict = await runHydrationTickCheck({
-      tick: { due: due.length, refreshed, failed },
+      tick: hydrationMeasuredTick({ due: due.length, refreshed, failed, skipped }),
       // The window comfortably spans the ticks it counts (4 ticks at 15 minutes is an hour),
       // or genuinely consecutive runs would each look like the first.
       recordStreak: () =>
@@ -161,6 +171,7 @@ export async function GET(req: NextRequest) {
       onboarding_deferred: onboardingDeferred,
       refreshed,
       failed,
+      skipped,
       events,
       budget_hit: budgetHit,
       verdict,
@@ -172,6 +183,7 @@ export async function GET(req: NextRequest) {
       onboardingDeferred,
       refreshed,
       failed,
+      skipped,
       events,
       budgetHit,
       verdict,
