@@ -22,6 +22,7 @@ import { unfairOrderingAlert } from "@/lib/booking/alert-copy";
 import {
   emptyBucketMessage,
   recoveredBucketMessage,
+  tierCoveredBucketMessage,
   emptyBuckets,
   emptyPools,
   planEmptyBucketAlerts,
@@ -330,7 +331,10 @@ export async function alertOnEmptyBuckets(
   // is cleared only because its pool was counted and is non-empty. A run that
   // could not load any bucket returned earlier and clears nothing.
   for (const c of plan.clear) {
-    await d.clearAlert(c.code, recoveredBucketMessage(c.pool, c.eligibleCount)).catch(() => {});
+    const message = c.tierCovered
+      ? tierCoveredBucketMessage(c.pool)
+      : recoveredBucketMessage(c.pool, c.eligibleCount);
+    await d.clearAlert(c.code, message).catch(() => {});
   }
 
   // Any page a SUPERSEDING page has already covered is settled WITHOUT a notice of

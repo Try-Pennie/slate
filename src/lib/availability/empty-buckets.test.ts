@@ -78,9 +78,14 @@ function spies(
 describe("alertOnEmptyBuckets", () => {
   it("alerts ONCE PER bucket that resolves to zero eligible agents", async () => {
     const s = spies();
+    // The healthy bucket is `410`, not `411`, since #2483. A code is a dead end
+    // only when its whole tier ladder is, and `511` drops through `411`, so a
+    // staffed `411` would rescue it and this case would be testing one page
+    // rather than two. `410` carries a different legal digit, which rides
+    // unchanged onto every rung, so it is on nobody else's ladder here.
     const res = await alertOnEmptyBuckets({
-      loadBuckets: async () => [bucket("411"), bucket("412"), bucket("511")],
-      countEligible: async (b) => (b.code === "411" ? 3 : 0),
+      loadBuckets: async () => [bucket("410"), bucket("412"), bucket("511")],
+      countEligible: async (b) => (b.code === "410" ? 3 : 0),
       ...s,
     });
     expect(res.empty.sort()).toEqual(["412", "511"]);
@@ -93,7 +98,7 @@ describe("alertOnEmptyBuckets", () => {
     // The healthy bucket in the same run gets the all-clear; the dead ones must not.
     expect(
       s.clearAlert.mock.calls.map(([code]) => code).filter((c) => c !== AGGREGATE_BUCKET_CODE),
-    ).toEqual(["411"]);
+    ).toEqual(["410"]);
   });
 
   // #2237: sixty codes route through fifteen pools, so a tier with nobody in it

@@ -19,6 +19,8 @@ if (!process.env.SUPABASE_SECRET_KEY?.trim() || !process.env.NEXT_PUBLIC_SUPABAS
 const { supabaseAdmin } = await import("@/lib/supabase/admin");
 const { unwrap } = await import("@/lib/db/result");
 const { eligibleAgentIds } = await import("@/lib/availability/service");
+const { emptyBuckets: emptyBucketCodes } = await import("@/lib/availability/bucket-coverage");
+type BucketCoverage = import("@/lib/availability/bucket-coverage").BucketCoverage;
 const { uncoveredCalendars } = await import("@/lib/monitor/calendar-window-coverage");
 const { MONITOR_DEFAULTS } = await import("@/lib/monitor/settings");
 const { CANARY_STALE_BOUNDS_MS } = await import("@/lib/monitor/health");
@@ -96,12 +98,27 @@ const emptyBuckets = await section("buckets", async () => {
   const buckets = (unwrap(await db.from("buckets").select("*").eq("is_test", false), "buckets") ?? []) as {
     code: string;
   }[];
-  const empty: string[] = [];
+  // Counted per bucket, then judged by the SAME predicate the hourly page uses
+  // (#2483), rather than by a `ids.length === 0` written beside it (L107). It
+  // used to ask per code, so the Low plus Beyond codes 120, 121 and 122 made this
+  // gate exit 4 on the flip morning about three buckets that are correct: no Low
+  // agent carries the Beyond backend, and a Beyond lead overflows to Achieve
+  // (#1909). Sharing the predicate is also what stops the two drifting, which
+  // here would mean the gate and the alarm disagreeing about whether the roster
+  // can take a lead.
+  const coverage: BucketCoverage[] = [];
   for (const b of buckets) {
     const { ids } = await eligibleAgentIds(b as never);
-    if (ids.length === 0) empty.push(b.code);
+    coverage.push({
+      code: b.code,
+      eligibleCount: ids.length,
+      // The pool grouping is what the PAGE uses to fold six codes into one
+      // finding. This gate names codes, so each stands alone here.
+      poolKey: b.code,
+      poolLabel: null,
+    });
   }
-  return { realBuckets: buckets.length, empty: empty.sort() };
+  return { realBuckets: buckets.length, empty: emptyBucketCodes(coverage).sort() };
 });
 
 const unsetHours = await section("hours sources", async () => {

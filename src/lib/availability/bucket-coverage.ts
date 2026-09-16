@@ -1,3 +1,5 @@
+import { tierLadder } from "@/lib/routing/tiers";
+
 /**
  * No-eligible-agents monitor (#327) — pure decision + alert copy. A bucket whose
  * eligible pool resolves to ZERO agents (matched pool empty AND no usable
@@ -42,9 +44,49 @@ export interface CoveragePool {
   representative: string;
 }
 
-/** Bucket codes that route to NO eligible agent — a dead zone. */
+/**
+ * Bucket codes that route to NO eligible agent: a dead zone.
+ *
+ * Judged across the code's TIER LADDER, not the code alone (#2483), and the
+ * ladder is asked rather than re-derived here (L107) so this can never claim a
+ * rescue the router does not perform.
+ *
+ * Per code, the Low plus Beyond codes 120, 121 and 122 are empty by
+ * construction: no Low agent carries the Beyond backend. Since #1909 a Beyond
+ * lead overflows sideways to Achieve, so `tierLadder("120")` is `120, 130` and a
+ * lead on 120 is served by the whole Low Achieve pool. Judging per code made the
+ * hourly page and the flip morning readiness gate both red about three buckets
+ * that are correct, on the healthy day, which is how a gate stops being read
+ * (L36). `empty_buckets:120` was firing in production when this shipped.
+ *
+ * THE LADDER, NOT THE DEBT TIER, and the difference is a fail open. Codes 111 and
+ * 112 share a tier, a backend and a pool, so "its tier has somebody" reads as
+ * coverage; `tierLadder("111")` is `["111"]`, because the ladder drops tiers and
+ * does not walk sideways except for the Beyond overflow. A lead on 111 whose pool
+ * is empty is not booked by 112's hand named member, which is exactly the silence
+ * #2253 was opened about. Asking the ladder makes the claim true by construction,
+ * and means a future ladder (#2485 widens it to cross a tier before dropping one)
+ * moves this with it rather than leaving two rules to keep in step.
+ *
+ * What this does NOT report, deliberately: a whole debt tier with nobody in it
+ * while a lower tier is staffed. That is a real thing to know and it is not a
+ * dead end, because the lead IS booked, one or more rungs down. It belongs to the
+ * surfaces that can say how far the lead fell and how thin the tier is,
+ * `tierFallbackAlert` and the staffing depth page, rather than to an alarm whose
+ * sentence is "cannot route a lead".
+ *
+ * A count is read as staffing only when it is `> 0`: a nonsense negative is not
+ * evidence of health, the same reading `planEmptyBucketAlerts` takes.
+ */
 export function emptyBuckets(coverage: BucketCoverage[]): string[] {
-  return coverage.filter((b) => b.eligibleCount === 0).map((b) => b.code);
+  const staffed = new Set(coverage.filter((b) => b.eligibleCount > 0).map((b) => b.code));
+  return coverage
+    .filter((b) => b.eligibleCount === 0)
+    // A rung absent from the coverage is no rescue: it is a code this sweep never
+    // measured, and an unmeasured rung reading as a staffed one is the same fail
+    // open in a second costume.
+    .filter((b) => !tierLadder(b.code).some((rung) => staffed.has(rung)))
+    .map((b) => b.code);
 }
 
 /** Every pool in the coverage, ascending by code, whether empty or not. */
@@ -154,7 +196,19 @@ export interface EmptyBucketPlan {
    * Still per CODE rather than per pool: a page sent before #2237 rides on its
    * own code's key, and nothing else would ever clear it.
    */
-  clear: { code: string; pool: CoveragePool; eligibleCount: number }[];
+  clear: {
+    code: string;
+    pool: CoveragePool;
+    eligibleCount: number;
+    /**
+     * True when this code has nobody of its own and is covered by its debt tier
+     * (#2483). It clears a page rather than sending one, and it owes a DIFFERENT
+     * sentence: `recoveredBucketMessage` names the eligible agents it has, which
+     * for these is still zero, and saying otherwise is the false recovery defect
+     * (#1134).
+     */
+    tierCovered: boolean;
+  }[];
 }
 
 /**
@@ -167,9 +221,20 @@ export function planEmptyBucketAlerts(coverage: BucketCoverage[]): EmptyBucketPl
   const byKey = new Map(pools.map((p) => [p.key, p]));
 
   // `> 0`, not `!== 0`: a nonsense negative count is not evidence of health.
+  //
+  // A code with nobody of its own that its DEBT TIER covers is cleared too
+  // (#2483), because the sweep has stopped paging about it and a page nobody is
+  // told has ended is one somebody is still carrying (#1151). It is marked so the
+  // all-clear can say which of the two endings this is.
+  const deadCodes = new Set(emptyBuckets(coverage));
   const clear = coverage
-    .filter((b) => b.eligibleCount > 0)
-    .map((b) => ({ code: b.code, pool: byKey.get(b.poolKey)!, eligibleCount: b.eligibleCount }));
+    .filter((b) => b.eligibleCount > 0 || !deadCodes.has(b.code))
+    .map((b) => ({
+      code: b.code,
+      pool: byKey.get(b.poolKey)!,
+      eligibleCount: b.eligibleCount,
+      tierCovered: b.eligibleCount <= 0,
+    }));
 
   // Every pool dead is systemic at any roster size, so it aggregates below the
   // threshold too. A one-pool org is excluded: one page is already one page.
@@ -271,6 +336,26 @@ export function recoveredBucketMessage(pool: CoveragePool, eligibleCount: number
   return (
     `${what} can route leads again (${who}). The earlier page about it ` +
     `having nobody to route to is cleared. No action is needed.`
+  );
+}
+
+/**
+ * The all-clear for a bucket whose DEBT TIER covers it (#2483).
+ *
+ * The other ending, and it must not read like `recoveredBucketMessage`: nobody
+ * was staffed onto this bucket and nobody is going to be. What changed is the
+ * question being asked, from "does this code have agents" to "does its tier", so
+ * the sentence says that rather than announcing a recovery that did not happen.
+ */
+export function tierCoveredBucketMessage(pool: CoveragePool): string {
+  const what = pool.label ? `The ${pool.label} pool` : "A booking pool";
+  const codes =
+    pool.codes.length === 1 ? `bucket ${pool.codes[0]}` : `buckets ${pool.codes.join(", ")}`;
+  return (
+    `${what} has nobody of its own, and its debt tier does, so a lead on ${codes} ` +
+    `is served there. This is expected rather than fixed: no agent was added. ` +
+    `The earlier page about it having nobody to route to is cleared and will not ` +
+    `return while the tier is staffed. No action is needed.`
   );
 }
 
