@@ -42,6 +42,44 @@ export const CANARY_FULL_TRIGGER_STALE_MS = 390 * 60_000;
  *  cooldown before re-firing. Realised as a NOT-released DB lock in the wiring. */
 export const CANARY_FULL_DISPATCH_COOLDOWN_MS = 30 * 60_000;
 
+/**
+ * The DAILY cal.com parity sweep (#2414), the third workflow in this family and
+ * the one whose cadence makes it least like the other two.
+ *
+ * `schedule-parity.yml` had one scheduled attempt a day and no re-attempt at all,
+ * so a run GitHub dropped cost the whole day: the only thing watching Slate and
+ * cal.com for drifting apart went blind until the 30h heartbeat bound paged and a
+ * person dispatched it by hand. Drift ran at about four agents a day the last time
+ * that happened, and a manual re-run is not a remedy (L533).
+ *
+ * 27h30m, and every part of it is derived rather than chosen:
+ *
+ *   24h    the sweep's own cadence, read off the workflow's cron. A threshold at
+ *          or below this would dispatch a second sweep every single morning
+ *          against one that had already succeeded.
+ *   +3h    the worst GitHub scheduling LATENESS this repo has measured (the 2 to
+ *          3 hour gaps in the header above). A run that is merely late must not be
+ *          double fired: the parity lane WRITES, correcting drifted hours in
+ *          cal.com's image before it sweeps.
+ *   +25m   the job's own `timeout-minutes`, because the heartbeat is stamped at
+ *          the END of the run rather than at its start.
+ *
+ * `scripts/test-canary-trigger.ts` re-derives all three FROM the workflow file, so
+ * editing the cron or the timeout without revisiting this fails the build.
+ */
+export const PARITY_TRIGGER_STALE_MS = (27 * 60 + 30) * 60_000;
+
+/**
+ * One hour, which is the RETRY interval as much as the cooldown: the lock is not
+ * released, so a dispatch GitHub refuses is re-attempted one of these later.
+ *
+ * It is bounded from above by the 30h `schedule-parity` staleness bound, which has
+ * to stay the BACKSTOP rather than the remedy: a dispatch at 27h30m, one refused
+ * attempt, one cooldown and one full 25 minute run all fit inside it with an hour
+ * to spare. The test asserts that relation rather than the number.
+ */
+export const PARITY_DISPATCH_COOLDOWN_MS = 60 * 60_000;
+
 export interface CanaryTriggerDeps {
   /** Current time (ms). */
   now: number;
@@ -51,6 +89,11 @@ export interface CanaryTriggerDeps {
   staleMs?: number;
   /** GITHUB_CANARY_TOKEN; "" means not configured yet (quiet no-op). */
   token: string;
+  /** What the log lines call this pass. Defaults to the dry canary's workflow,
+   *  which is the only correct answer when nothing says otherwise; the wiring
+   *  below names each pass so a parity dispatch is never reported as a canary
+   *  one (L11: a message may claim only what its check measured). */
+  label?: string;
   /** Last `smoke-canary` heartbeat (ms), or null if it has never stamped. */
   readHeartbeatMs: () => Promise<number | null>;
   /** Reserve the once-per-cooldown dispatch slot. true = we may fire now;
@@ -76,22 +119,94 @@ export interface CanaryTriggerResult {
     | "dispatch-error";
 }
 
-/** The repo and workflow the gap-filler triggers. */
+/** The repo the gap-filler triggers workflows in. */
 const CANARY_REPO = "Try-Pennie/slate";
-const CANARY_WORKFLOW_FILE = "smoke-canary.yml";
+
+/** Which scheduled pass a gap-fill re-fires. */
+export type GapFillPass = "dry" | "full" | "parity";
 
 /**
- * POST a `workflow_dispatch` (dry pass) to GitHub's REST API. Thin `fetch` glue
- * used as the `dispatch` dep in production; the orchestration above is tested
- * with a fake in its place. GitHub returns 204 on success. `fetch` works on the
- * Cloudflare Worker runtime (no node-only deps).
+ * EVERYTHING that differs between one gap-fill and the next, in ONE table.
+ *
+ * The three passes are near-identical wiring that is easy to get subtly wrong: a
+ * swapped lane, lock or threshold silently leaves one pass ungap-filled while
+ * every surface still looks correct. Keeping the differences here, rather than as
+ * three hand written call blocks, means a FOURTH scheduled workflow (the weekly
+ * router replay, #2466) is one entry in this table rather than another copy of the
+ * wiring, and `Record<GapFillPass, ...>` makes `tsc` name the omission if somebody
+ * widens the union and forgets the entry (L113).
+ *
+ * The `inputs` field is load bearing rather than tidiness. GitHub answers **422**
+ * to a `workflow_dispatch` carrying an input the workflow does not declare, and
+ * `schedule-parity.yml` declares none at all, so sending the canary's `mode` to it
+ * would make every parity gap-fill fail. That failure is invisible from inside the
+ * Worker: nothing runs, and the only symptom is the same stale heartbeat the
+ * gap-fill exists to prevent. `scripts/test-canary-trigger.ts` reads the workflow
+ * files and asserts each pass sends exactly the inputs its own file declares.
+ *
+ * Insertion order is the order the passes run in, and the tests assert it, so there
+ * is no second list of pass names to drift out of step with this one (L41).
  */
-export async function postCanaryWorkflowDispatch(
+export const GAP_FILL_PASSES: Record<
+  GapFillPass,
+  {
+    /** The workflow file to dispatch, and the inputs it declares (null = none). */
+    workflow: string;
+    inputs: Record<string, string> | null;
+    /** The heartbeat lane this pass stamps, and that judges whether it is due. */
+    lane: string;
+    /** The NOT-released cooldown lock, which is also the concurrency guard. */
+    lock: string;
+    cooldownMs: number;
+    /** How stale that lane's heartbeat must be before stepping in. */
+    staleMs: number;
+  }
+> = {
+  dry: {
+    workflow: "smoke-canary.yml",
+    inputs: { mode: "dry" },
+    lane: "smoke-canary",
+    lock: "canary_dispatch",
+    cooldownMs: CANARY_DISPATCH_COOLDOWN_MS,
+    staleMs: CANARY_TRIGGER_STALE_MS,
+  },
+  full: {
+    workflow: "smoke-canary.yml",
+    inputs: { mode: "full" },
+    lane: "smoke-canary-full",
+    lock: "canary_dispatch_full",
+    cooldownMs: CANARY_FULL_DISPATCH_COOLDOWN_MS,
+    staleMs: CANARY_FULL_TRIGGER_STALE_MS,
+  },
+  // The parity sweep WRITES (it corrects drifted hours from cal.com before it
+  // compares), so a re-attempt repeats that write. It is the same side effect the
+  // dropped scheduled run would have had, the import is idempotent, and the
+  // workflow's `concurrency: schedule-parity` group with `cancel-in-progress:
+  // false` queues a dispatch behind a run already in flight rather than doubling
+  // it. The 27h30m threshold is what keeps a merely late run from being re-fired.
+  parity: {
+    workflow: "schedule-parity.yml",
+    inputs: null,
+    lane: "schedule-parity",
+    lock: "parity_dispatch",
+    cooldownMs: PARITY_DISPATCH_COOLDOWN_MS,
+    staleMs: PARITY_TRIGGER_STALE_MS,
+  },
+};
+
+/**
+ * POST a `workflow_dispatch` to GitHub's REST API. Thin `fetch` glue used as the
+ * `dispatch` dep in production; the orchestration above is tested with a fake in
+ * its place. GitHub returns 204 on success. `fetch` works on the Cloudflare Worker
+ * runtime (no node-only deps).
+ */
+export async function postWorkflowDispatch(
   token: string,
-  mode: "dry" | "full" = "dry",
+  pass: GapFillPass = "dry",
 ): Promise<{ ok: boolean; status: number }> {
+  const target = GAP_FILL_PASSES[pass];
   const res = await fetch(
-    `https://api.github.com/repos/${CANARY_REPO}/actions/workflows/${CANARY_WORKFLOW_FILE}/dispatches`,
+    `https://api.github.com/repos/${CANARY_REPO}/actions/workflows/${target.workflow}/dispatches`,
     {
       method: "POST",
       headers: {
@@ -101,14 +216,16 @@ export async function postCanaryWorkflowDispatch(
         // GitHub rejects API calls with no User-Agent.
         "user-agent": "slate-canary-gapfill",
       },
-      body: JSON.stringify({ ref: "main", inputs: { mode } }),
+      body: JSON.stringify(
+        target.inputs === null ? { ref: "main" } : { ref: "main", inputs: target.inputs },
+      ),
     },
   );
   return { ok: res.ok, status: res.status };
 }
 
-/** Everything the two gap-fills (dry + full) share, injected once. `dispatch` and
- *  `acquireLock` take the pass/lock so the wiring below picks the right one. */
+/** Everything every gap-fill shares, injected once. `dispatch` and `acquireLock`
+ *  take the pass and the lock name, so the table below picks the right one. */
 export interface CanaryGapFillWiring {
   now: number;
   token: string;
@@ -117,55 +234,53 @@ export interface CanaryGapFillWiring {
   /** Reserve a NOT-released cooldown lock by name+ttl; true = won it. */
   acquireLock: (name: string, ttlMs: number) => Promise<boolean>;
   /** POST a workflow_dispatch for the given pass. */
-  dispatch: (mode: "dry" | "full") => Promise<{ ok: boolean; status: number }>;
+  dispatch: (pass: GapFillPass) => Promise<{ ok: boolean; status: number }>;
   onInfo?: (msg: string) => void;
   onError?: (msg: string, err?: unknown) => void;
 }
 
 /**
- * Run BOTH canary gap-fills with their correct lane, lock, threshold, and pass
- * (#982). The dry tick (`smoke-canary`, 40m threshold, `canary_dispatch` lock,
- * mode=dry) and the full pass (`smoke-canary-full`, 6h30m threshold,
- * `canary_dispatch_full` lock, mode=full) are near-identical wiring that is easy
- * to get subtly wrong: a swapped lane or lock would silently leave one pass
- * ungap-filled while looking correct. Keeping it here (one tested place) rather
- * than inline in the cron lane makes that wiring assertable.
+ * Run EVERY gap-fill in `GAP_FILL_PASSES` with its own lane, lock, cooldown and
+ * threshold (#982, #2414): the 30 minute dry canary tick, the 6 hourly full
+ * booking pass, and the daily cal.com parity sweep.
  *
- * Each call is isolated: a throw in one (a heartbeat/lock read error) is reported
- * and returns null for that pass, so it can never skip the other. Never throws.
+ * It is a loop over the table rather than one block per pass, so adding a fourth
+ * scheduled workflow (#2466) is a table entry. Keeping it here (one tested place)
+ * rather than inline in the cron lane is what makes the wiring assertable at all.
+ *
+ * Each pass is isolated: a throw in one (a heartbeat or lock read error) is
+ * reported and leaves that pass null, so it can never skip the others. Never
+ * throws.
  */
 export async function runCanaryGapFills(
   w: CanaryGapFillWiring,
-): Promise<{ dry: CanaryTriggerResult | null; full: CanaryTriggerResult | null }> {
-  const one = async (
-    extra: Pick<CanaryTriggerDeps, "staleMs" | "readHeartbeatMs" | "acquireDispatchLock" | "dispatch">,
-  ): Promise<CanaryTriggerResult | null> => {
+): Promise<Record<GapFillPass, CanaryTriggerResult | null>> {
+  const results = {} as Record<GapFillPass, CanaryTriggerResult | null>;
+
+  // Sequential, never `Promise.all`: these run on the invocation budget four cron
+  // lanes share, and the tests assert the order the lanes are read in.
+  for (const pass of Object.keys(GAP_FILL_PASSES) as GapFillPass[]) {
+    const cfg = GAP_FILL_PASSES[pass];
     try {
-      return await triggerCanaryGapFill({
+      results[pass] = await triggerCanaryGapFill({
         now: w.now,
         token: w.token,
         onInfo: w.onInfo,
         onError: w.onError,
-        ...extra,
+        staleMs: cfg.staleMs,
+        label: cfg.lane,
+        readHeartbeatMs: () => w.readHeartbeatMs(cfg.lane),
+        acquireDispatchLock: () => w.acquireLock(cfg.lock, cfg.cooldownMs),
+        dispatch: () => w.dispatch(pass),
       });
     } catch (err) {
-      (w.onError ?? (() => {}))("canary gap-fill: wiring threw", err);
-      return null;
+      // Isolated per pass: a heartbeat or lock read that throws is reported and
+      // leaves THIS pass null, so it can never skip the ones after it.
+      (w.onError ?? (() => {}))(`canary gap-fill: wiring for ${cfg.lane} threw`, err);
+      results[pass] = null;
     }
-  };
-
-  const dry = await one({
-    readHeartbeatMs: () => w.readHeartbeatMs("smoke-canary"),
-    acquireDispatchLock: () => w.acquireLock("canary_dispatch", CANARY_DISPATCH_COOLDOWN_MS),
-    dispatch: () => w.dispatch("dry"),
-  });
-  const full = await one({
-    staleMs: CANARY_FULL_TRIGGER_STALE_MS,
-    readHeartbeatMs: () => w.readHeartbeatMs("smoke-canary-full"),
-    acquireDispatchLock: () => w.acquireLock("canary_dispatch_full", CANARY_FULL_DISPATCH_COOLDOWN_MS),
-    dispatch: () => w.dispatch("full"),
-  });
-  return { dry, full };
+  }
+  return results;
 }
 
 export async function triggerCanaryGapFill(
@@ -173,6 +288,7 @@ export async function triggerCanaryGapFill(
 ): Promise<CanaryTriggerResult> {
   const { now, token, readHeartbeatMs, acquireDispatchLock, dispatch } = deps;
   const staleMs = deps.staleMs ?? CANARY_TRIGGER_STALE_MS;
+  const label = deps.label ?? "smoke-canary";
   const info = deps.onInfo ?? (() => {});
   const error = deps.onError ?? (() => {});
 
@@ -185,7 +301,9 @@ export async function triggerCanaryGapFill(
 
   // Stale: GitHub dropped a run. Fill the gap if we can.
   if (!token) {
-    info("canary gap-fill: heartbeat is stale but GITHUB_CANARY_TOKEN is not set, so cannot trigger");
+    info(
+      `canary gap-fill: the ${label} heartbeat is stale but GITHUB_CANARY_TOKEN is not set, so cannot trigger`,
+    );
     return { dispatched: false, reason: "no-token" };
   }
   // The lock is both the cooldown and the concurrency guard: only the invocation
@@ -196,13 +314,13 @@ export async function triggerCanaryGapFill(
   try {
     const res = await dispatch();
     if (!res.ok) {
-      error(`canary gap-fill: GitHub dispatch failed with status ${res.status}`);
+      error(`canary gap-fill: GitHub dispatch for ${label} failed with status ${res.status}`);
       return { dispatched: false, reason: "dispatch-failed" };
     }
-    info("canary gap-fill: triggered smoke-canary because its heartbeat was stale");
+    info(`canary gap-fill: triggered ${label} because its heartbeat was stale`);
     return { dispatched: true, reason: "dispatched" };
   } catch (err) {
-    error("canary gap-fill: GitHub dispatch threw", err);
+    error(`canary gap-fill: GitHub dispatch for ${label} threw`, err);
     return { dispatched: false, reason: "dispatch-error" };
   }
 }

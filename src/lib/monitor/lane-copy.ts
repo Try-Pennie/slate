@@ -228,7 +228,12 @@ export function canaryAlertText(lane: StaleLane, boundMin: number): string {
     return `The weekly replay that puts real cal.com routed leads through the Slate tier ladder ${quiet}, so nothing is measuring whether Slate would route them the way the incumbent does. It is the ONLY reading of Slate routing that exists before cutover, because cal.com is still taking every real lead and Slate has no traffic of its own to be judged by. It also goes quiet when it runs and cannot judge enough leads to mean anything, which is the same silence, so check what the last run said. Re run it from the Actions tab (Run workflow on router-replay).`;
   }
   if (lane.lane === "schedule-parity") {
-    return `The daily check comparing Slate's roster and working hours against cal.com ${quiet}, so nothing is watching for the two systems drifting apart while both are live. Drift ran at about four agents a day the last time this went unwatched, and it is invisible from inside Slate: a schedule saying 08:00 reads the same whether or not the agent starts then. Re run it from the Actions tab (Run workflow on schedule-parity).`;
+    // No "re run it from the Actions tab" here, unlike its two siblings above: the
+    // monitor lane re fires this one by itself (#2414), so by the time the bound is
+    // reached the hand re run has already been tried and failed. Naming it would be
+    // a remedy that no longer matches what the system does (L111), which is worse
+    // than none. What is left for a person is to read why the attempts died.
+    return `The daily check comparing Slate's roster and working hours against cal.com ${quiet}, so nothing is watching for the two systems drifting apart while both are live. Drift ran at about four agents a day the last time this went unwatched, and it is invisible from inside Slate: a schedule saying 08:00 reads the same whether or not the agent starts then. The monitor lane already re fires this once the daily run is late enough to count as dropped, so GitHub's schedule and that re attempt have both failed to finish one. Read what the last schedule-parity run in the Actions tab actually said: a run that starts and then cannot reach cal.com, Twilio or Slate never stamps.`;
   }
   return `The booking smoke canary ${quiet}, so the automated end to end booking check is no longer running. The scheduled GitHub Actions workflow (smoke-canary) has likely stopped firing or is failing before it can report. Check the Actions tab and re run it.`;
 }
