@@ -197,6 +197,7 @@ import {
 import { ACTIONABLE_ITEM_STATUSES } from "@/lib/booking/bulk-reassign";
 import { unwrap } from "@/lib/db/result";
 import { ACTIVE_BOOKING_STATUSES } from "@/lib/booking/bulk-reassign-store";
+import { loadOooCoverageBookings } from "@/lib/monitor/ooo-coverage-bookings";
 import { selectAllPages } from "@/lib/supabase/paginate";
 import type { Attributes, Bucket } from "@/lib/db/types";
 import { log } from "@/lib/log";
@@ -1584,31 +1585,10 @@ export async function GET(req: NextRequest) {
       );
       if (absences.length === 0) return [];
       const userIds = [...new Set(absences.map((r) => r.user_id))];
-      // Every page: an agent with a long absence can hold more than one page of
-      // upcoming bookings, and a truncated page would under-report the gap.
-      const bookings = await selectAllPages<{
-        id: string;
-        assigned_user_id: string;
-        starts_at: string;
-        ends_at: string;
-      }>("monitor ooo coverage bookings", (from, to) =>
-        db
-          .from("bookings")
-          // The canary's own bookings are excluded through their BUCKET, which is
-          // what marks them (#396), in the inner join `countCustomerBookingsSince`
-          // established. `bookings` has no test column of its own, and this read
-          // filtered on one as if it did until #2369, so PostgREST answered 42703,
-          // `selectAllPages` threw, and this check never once ran.
-          .select("id, assigned_user_id, starts_at, ends_at, buckets!inner(is_test)")
-          .eq("buckets.is_test", false)
-          .in("assigned_user_id", userIds)
-          .in("status", ACTIVE_BOOKING_STATUSES)
-          // `ends_at`, NOT `starts_at`. The straddler begins before the absence and
-          // runs into it, so flooring on the start is the exact miss this check exists
-          // to catch, and a prefilter that repeats it would hide it again (#1237).
-          .gte("ends_at", nowIso)
-          .range(from, to),
-      );
+      // Lifted into its own module by #2369, because it filtered `bookings` on an
+      // `is_test` column that table does not have, so this check had never run and
+      // nothing inline in a handler this size could be tested.
+      const bookings = await loadOooCoverageBookings(db, userIds, nowIso);
       if (bookings.length === 0) return [];
       // Which of those already have a sweep row, in one batched lookup. Any status
       // counts: a row means #1242 owns the outcome, so this check says nothing.
