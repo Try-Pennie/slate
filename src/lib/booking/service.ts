@@ -52,6 +52,7 @@ import {
   calendarIdsFromResult,
   freeAgentsFromBusy,
   busyIntervalsFromFreeBusy,
+  chunkCalendarIds,
   type CalendarBusy,
   type ValidatedReason,
   type BookingActor,
@@ -211,10 +212,12 @@ const NO_ELIGIBLE_AGENTS_COOLDOWN_MS = 60 * 60 * 1000;
 const RESCHEDULE_LOCK_OUTAGE_ALERT_KEY = "reschedule_lock_outage";
 const RESCHEDULE_LOCK_OUTAGE_ALERT_COOLDOWN_MS = 15 * 60 * 1000;
 
-// Google caps a freeBusy query at 20 calendar `items` (verified live against the
-// production domain — 20 → 0 errors, 21 → tooManyCalendarsRequested), so the
-// bulk verifier chunks calendar ids at 20 per call.
-export const FREEBUSY_MAX_ITEMS = 20;
+// Google caps a freeBusy query at 20 calendar `items`. The constant moved into
+// `core.ts` with #2412, when the single agent reader started chunking too: two
+// copies of one platform limit drift, and the reader that never chunked answered
+// `tooManyCalendarsRequested` as free time. Re-exported here because callers
+// (the availability truth probe) already import it from this module.
+export { FREEBUSY_MAX_ITEMS } from "@/lib/booking/core";
 // Max simultaneous freeBusy calls (Cloudflare's simultaneous-connection ceiling,
 // same bound the completion-sweep webhook fan-out uses).
 const VERIFY_CONCURRENCY = 6;
@@ -335,9 +338,42 @@ async function checkAgentFree(
     ).catch(() => {});
     return "unverified";
   }
-  return (await isFree(email, startIso, endIso, ids.length ? ids : ["primary"], ignore))
-    ? "free"
-    : "busy";
+  // #2412: `null` is Google's per calendar failure inside a 200 response (an
+  // `errors[]` entry, or a requested calendar the reply never mentions). It is
+  // NOT a yes. This is the fallback the bulk wave hands an agent to precisely
+  // because it could not read one of their calendars, so answering "free" here
+  // would book the lead over whatever that calendar held.
+  const free = await isFree(email, startIso, endIso, ids.length ? ids : ["primary"], ignore);
+  if (free === null) return "unverified";
+  return free ? "free" : "busy";
+}
+
+/**
+ * Verifies a set of agents ONE AT A TIME against their own calendars, and folds
+ * the verdicts into the free / unverified sets `verifyFree` answers with.
+ *
+ * This is the fallback half of verify on book, split out so there is one place
+ * that turns an `AgentVerdict` into those sets (#2412). `unverified` must never
+ * land in `free`: it is the answer for an agent whose calendars could not be
+ * read, and the booker surfaces it as a retriable outage rather than assigning
+ * the slot.
+ */
+export async function verifyAgentsDirectly(
+  emails: string[],
+  startIso: string,
+  endIso: string,
+): Promise<{ free: Set<string>; unverified: Set<string> }> {
+  const free = new Set<string>();
+  const unverified = new Set<string>();
+  if (emails.length === 0) return { free, unverified };
+  const verdicts = await mapWithConcurrency(emails, VERIFY_CONCURRENCY, (email) =>
+    checkAgentFree(email, startIso, endIso),
+  );
+  emails.forEach((email, i) => {
+    if (verdicts[i] === "free") free.add(email);
+    else if (verdicts[i] === "unverified") unverified.add(email);
+  });
+  return { free, unverified };
 }
 
 /**
@@ -346,8 +382,13 @@ async function checkAgentFree(
  * calendars the same way the per-agent verify does; on a calendar-read failure it
  * alerts and returns `null` so the guard re-routes rather than risk keeping an
  * agent on an unverifiable slot (the same SAFE default the old `isFree` path had).
+ *
+ * Exported so it can be driven beside `verifyAgentsDirectly` (#2412): the two are
+ * the reschedule and the booking halves of ONE question, they read the same
+ * Google reply, and a per calendar error inside a 200 has to mean the same thing
+ * to both. It reaches the orchestration as `busyIntervalsForAgent`.
  */
-async function agentBusyIntervals(
+export async function agentBusyIntervals(
   email: string,
   fromIso: string,
   toIso: string,
@@ -362,6 +403,11 @@ async function agentBusyIntervals(
     return null;
   }
   const busy = await freeBusy(email, fromIso, toIso, ids.length ? ids : ["primary"]);
+  // #2412: null here is a calendar Google would not report on (an `errors[]`
+  // entry inside its 200, or a calendar missing from the reply). The guard
+  // re-routes on it, which is the whole point: an unread calendar must not keep
+  // an agent on a slot nothing verified.
+  if (busy === null) return null;
   // #1171: an unreadable interval yields null ("could not tell"), which the
   // caller already re-routes on, rather than a NaN interval that can never
   // overlap and so presents as free time.
@@ -764,12 +810,8 @@ function realDeps(deferSend?: WebhookSendScheduler): BookingDeps {
           const allCalIds = [
             ...new Set(bulkAgents.flatMap((a) => a.calendarIds)),
           ];
-          const chunks: string[][] = [];
-          for (let i = 0; i < allCalIds.length; i += FREEBUSY_MAX_ITEMS) {
-            chunks.push(allCalIds.slice(i, i + FREEBUSY_MAX_ITEMS));
-          }
           const maps = await mapWithConcurrency(
-            chunks,
+            chunkCalendarIds(allCalIds),
             VERIFY_CONCURRENCY,
             (chunk) => freeBusyMany(subject, startIso, endIso, chunk),
           );
@@ -793,16 +835,9 @@ function realDeps(deferSend?: WebhookSendScheduler): BookingDeps {
       }
 
       if (fallback.size > 0) {
-        const list = [...fallback];
-        const verdicts = await mapWithConcurrency(
-          list,
-          VERIFY_CONCURRENCY,
-          (email) => checkAgentFree(email, startIso, endIso),
-        );
-        list.forEach((email, i) => {
-          if (verdicts[i] === "free") free.add(email);
-          else if (verdicts[i] === "unverified") unverified.add(email);
-        });
+        const direct = await verifyAgentsDirectly([...fallback], startIso, endIso);
+        for (const e of direct.free) free.add(e);
+        for (const e of direct.unverified) unverified.add(e);
       }
 
       return { free, unverified };

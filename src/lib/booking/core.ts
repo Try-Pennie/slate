@@ -476,6 +476,28 @@ export function isReadableInterval(start: string, end: string): boolean {
 }
 
 /**
+ * Google caps a freeBusy query at 20 calendar `items` (verified live against the
+ * production domain: 20 gives 0 errors, 21 gives `tooManyCalendarsRequested`), so
+ * every caller chunks its calendar ids at this width.
+ *
+ * It lives in this pure module rather than beside one of its callers because BOTH
+ * freeBusy readers now chunk: the bulk cross identity verifier in `service.ts` and
+ * the single agent reader in `calendar.ts` (#2412). Two copies of one platform
+ * limit drift, and the drift is silent in the worst direction: a reader that never
+ * chunked answered `tooManyCalendarsRequested` as free time.
+ */
+export const FREEBUSY_MAX_ITEMS = 20;
+
+/** Splits calendar ids into calls Google will accept whole. */
+export function chunkCalendarIds(calendarIds: string[]): string[][] {
+  const chunks: string[][] = [];
+  for (let i = 0; i < calendarIds.length; i += FREEBUSY_MAX_ITEMS) {
+    chunks.push(calendarIds.slice(i, i + FREEBUSY_MAX_ITEMS));
+  }
+  return chunks;
+}
+
+/**
  * Map one agent's freeBusy rows to epoch-ms intervals, or NULL when ANY of them
  * is unreadable (#1171).
  *

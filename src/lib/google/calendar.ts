@@ -3,10 +3,12 @@ import { GoogleHttpError } from "@/lib/google/http-error";
 import { parseGoogleErrorReason } from "@/lib/google/reachability-classify";
 import {
   busyByCalendarFromResponse,
+  chunkCalendarIds,
   hasBlockingBusy,
   EventGone,
   type CalendarBusy,
 } from "@/lib/booking/core";
+import { log } from "@/lib/log";
 import { googlePushUrl, googleChannelToken } from "@/lib/env";
 import {
   LOADTEST,
@@ -177,48 +179,89 @@ export async function listCalendars(
 }
 
 /**
- * Live free/busy across one or more of an agent's calendars — verify-on-book.
- * Busy on ANY calendar makes the agent unavailable.
+ * Live free/busy across one or more of an agent's calendars, impersonating that
+ * agent. This is the accurate fallback the bulk cross identity verifier hands an
+ * agent to when it could not read one of their calendars, so it is the LAST read
+ * before `createEvent`, and the in place reschedule guard's read as well.
+ *
+ * **Returns `null` for "could not tell", never an empty list** (#2412). Google
+ * reports a per calendar failure INSIDE a 200 response, as
+ * `calendars.<id>.errors[]` with reasons like `internalError`, `notFound` and
+ * `tooManyCalendarsRequested`. This reader used to look only at `busy`, so an
+ * errored calendar arrived as no busy time at all and `isFree` answered FREE:
+ * the bulk wave refused to trust the calendar, routed the agent here for an
+ * accurate answer, and this asked the same calendar, met the same error, and
+ * booked the lead over whatever it held. Withholding a slot is recoverable and
+ * booking over a real meeting is not, so an unreadable calendar is unreadable.
+ *
+ * Parsing goes through `busyByCalendarFromResponse`, the same pure, tested
+ * parser `freeBusyMany` uses, so the two readers of one payload cannot hold two
+ * rules again. A calendar ABSENT from the response counts as unreadable too: it
+ * was not measured, and that is the shape a `tooManyCalendarsRequested` reply
+ * takes for the calendars Google dropped.
+ *
+ * Chunked at `FREEBUSY_MAX_ITEMS`, which is why that cap now lives in the pure
+ * module both readers import. Chunks run in order and the first unreadable one
+ * ends the read, since the answer cannot improve.
  */
 export async function freeBusy(
   email: string,
   timeMin: string,
   timeMax: string,
   calendarIds: string[],
-): Promise<Interval[]> {
+): Promise<Interval[] | null> {
   if (LOADTEST) return stubFreeBusy(email);
   if (calendarIds.length === 0) return [];
-  const res = await ok(
-    await gfetch(email, `${BASE}/freeBusy`, {
-      method: "POST",
-      body: JSON.stringify({
-        timeMin,
-        timeMax,
-        items: calendarIds.map((id) => ({ id })),
-      }),
-    }),
-    "freeBusy",
-  );
-  const data = (await res.json()) as {
-    calendars?: Record<string, { busy?: { start?: string; end?: string }[] }>;
-  };
   const out: Interval[] = [];
-  for (const cal of Object.values(data.calendars ?? {})) {
-    for (const b of cal.busy ?? []) {
-      if (b.start && b.end) out.push({ start: b.start, end: b.end });
+  for (const chunk of chunkCalendarIds(calendarIds)) {
+    const res = await ok(
+      await gfetch(email, `${BASE}/freeBusy`, {
+        method: "POST",
+        body: JSON.stringify({
+          timeMin,
+          timeMax,
+          items: chunk.map((id) => ({ id })),
+        }),
+      }),
+      "freeBusy",
+    );
+    const data = (await res.json()) as {
+      calendars?: Record<
+        string,
+        { busy?: { start?: string; end?: string }[]; errors?: unknown[] }
+      >;
+    };
+    const byCalendar = busyByCalendarFromResponse(chunk, data.calendars);
+    for (const [calendarId, entry] of byCalendar) {
+      if (entry.error) {
+        log.warn("google-freebusy", {
+          msg: "calendar unreadable, reporting unverified rather than free",
+          email,
+          calendar_id: calendarId,
+        });
+        return null;
+      }
+      for (const b of entry.busy) out.push({ start: b.start, end: b.end });
     }
   }
   return out;
 }
 
+/**
+ * Whether the agent is free over the window, or `null` when a calendar could not
+ * be read (#2412). Null is never a yes: `checkAgentFree` maps it to `unverified`,
+ * which the booker surfaces as a retriable "try again in a moment" rather than
+ * assigning the slot.
+ */
 export async function isFree(
   email: string,
   start: string,
   end: string,
   calendarIds: string[],
   ignore?: Interval,
-): Promise<boolean> {
+): Promise<boolean | null> {
   const busy = await freeBusy(email, start, end, calendarIds);
+  if (busy === null) return null;
   // parse-ok: an unreadable slot boundary FAILS CLOSED here. NaN slot bounds make
   // hasBlockingBusy's overlap width NaN, its `os >= oe` early-out false, and so it
   // reports blocking: the agent reads busy, never free. Verified in core.ts.
