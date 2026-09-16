@@ -13,7 +13,7 @@
 // the answer onto.
 //
 // Run: node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/test-duplicate-cancel.ts
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { assert, eq, finish } from "./lib/harness.ts";
 import {
@@ -40,8 +40,46 @@ import { readDuplicateDetail } from "@/lib/handoffs/kinds";
 import { cancelOutboxSteps } from "@/lib/booking/orchestration";
 
 const ROOT = join(import.meta.dirname, "..");
-const MIGRATION = join(ROOT, "supabase", "migrations", "0124_cancel_duplicate_booking.sql");
-const SQL = readFileSync(MIGRATION, "utf8");
+
+/**
+ * The migration that defines the function TODAY, derived rather than named (#2433).
+ *
+ * 0124 wrote `cancel_duplicate_booking` and 0127 replaced it, and a later change can
+ * replace it again. A hardcoded path would go on judging a superseded definition and
+ * keep passing while the live function drifted, which is the failure this suite is
+ * here to catch in the first place (L41, L454).
+ */
+const MIGRATIONS_DIR = join(ROOT, "supabase", "migrations");
+const DEFINES = /create\s+or\s+replace\s+function\s+cancel_duplicate_booking\s*\(/i;
+const definingMigrations = readdirSync(MIGRATIONS_DIR)
+  .filter((f) => f.endsWith(".sql"))
+  .sort()
+  .filter((f) => DEFINES.test(readFileSync(join(MIGRATIONS_DIR, f), "utf8")));
+assert(
+  definingMigrations.length > 0,
+  "a migration defines cancel_duplicate_booking (an empty list would make every rule below vacuous)",
+);
+const MIGRATION_NAME = definingMigrations[definingMigrations.length - 1];
+const MIGRATION = join(MIGRATIONS_DIR, MIGRATION_NAME);
+
+/**
+ * TWO readings, because two different questions are being asked.
+ *
+ * `SQL` is every migration that defines any part of this function, concatenated in
+ * order: the rules below ask whether the shipped behaviour carries each guarantee, and
+ * some of those live in pieces written once and never restated (the phone match key,
+ * the `double_booking` reason row). Reading only the newest file would report those as
+ * missing the moment a later migration replaces the outer function alone.
+ *
+ * `SQL_LATEST` is the newest defining file alone, and the outbox step list is compared
+ * against THAT, because a step array is a thing the newest definition REPLACES. Read
+ * from the concatenation it would see both copies at once and agree with whichever
+ * order they happened to appear in (L336).
+ */
+const SQL_LATEST = readFileSync(MIGRATION, "utf8");
+const SQL = definingMigrations
+  .map((f) => readFileSync(join(MIGRATIONS_DIR, f), "utf8"))
+  .join("\n");
 
 const NOW = Date.parse("2026-09-16T12:00:00.000Z");
 const SOON = "2026-09-16T15:00:00.000Z";
@@ -496,7 +534,7 @@ const SQL_RULES: SqlRule[] = [
 ];
 
 for (const rule of SQL_RULES) {
-  assert(rule.holds(SQL), `migration 0124: ${rule.name}`);
+  assert(rule.holds(SQL), `${MIGRATION_NAME}: ${rule.name}`);
 }
 
 // The outbox step names are written out in SQL and must be the ones the executor
@@ -507,14 +545,11 @@ for (const rule of SQL_RULES) {
 // achieved by loosening the comparison (L129): an unnamed omission reads as drift, and
 // a comparison relaxed to tolerate it would stop catching the drift it exists for.
 const NOT_ENQUEUED_BY_SQL: { step: string; why: string }[] = [
-  {
-    step: "cancel:owner_alert_delete",
-    why:
-      "#2371 ships the handler. A step with no handler FAILS its outbox row, and a " +
-      "migration is applied BEFORE the code that needs it deploys (L640), so a " +
-      "migration enqueueing this would break every Regal duplicate cancel in that " +
-      "window. #2433 adds it to the function in a migration after the deploy.",
-  },
+  // Deliberately EMPTY since #2433. The list existed for one deploy window: #2371
+  // shipped the `cancel:owner_alert_delete` handler, and a migration enqueueing a step
+  // whose handler is not deployed yet FAILS its outbox row (L640), so the SQL copy was
+  // updated in 0127 only after that code was live. An empty list is the proof the two
+  // copies agree; an entry here is a debt with a name and a reason on it (L129).
 ];
 
 {
@@ -527,7 +562,7 @@ const NOT_ENQUEUED_BY_SQL: { step: string; why: string }[] = [
     );
   }
   const expected = registered.filter((n) => !exempt.has(n));
-  const inSql = [...SQL.matchAll(/'name'\s*,\s*'([^']+)'/g)].map((m) => m[1]);
+  const inSql = [...SQL_LATEST.matchAll(/'name'\s*,\s*'([^']+)'/g)].map((m) => m[1]);
   eq(
     inSql.join(","),
     expected.join(","),
