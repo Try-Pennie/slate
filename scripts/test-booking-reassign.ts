@@ -262,6 +262,26 @@ async function run() {
         "reassign(non-bookable, allowNonBookable): succeeds for coverage/escalation",
       );
     }
+    // #2370 added an owner guard that REFUSES a non-bookable or away target, and it
+    // is deliberately on the machine contact-owner wrapper only. This is the same
+    // target through the coverage shape (initiator 'system', the offboarding sweep
+    // and the bulk redistribute's own move): still a move, unchanged. The proof that
+    // the guard cannot reach here at all is the scan in
+    // scripts/test-owner-reassign-guard.ts; this is the behaviour beside it.
+    {
+      const { deps, calls } = makeDeps({
+        bookingById: { booking: makeBooking({}), bucket, eventType },
+        agentByEmail: offPool,
+      });
+      const res = await reassignBooking("bk1", "z@x.com", SYS, deps, {
+        allowNonBookable: true,
+        initiator: "system",
+      });
+      assert(
+        res.booking.assigned_user_id === "z" && calls.createEvent.length === 1,
+        "reassign(non-bookable, system coverage): still moves, unchanged by the #2370 owner guard",
+      );
+    }
   }
 
   // --- reassign: new event uses a deterministic, target-keyed client id (#439 P4) ---

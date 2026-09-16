@@ -5,7 +5,13 @@ import {
   AgentNotAvailableError,
   BookingNotChangeableError,
 } from "@/lib/booking/service";
-import { internalErrorResponse } from "@/lib/api/errors";
+import { internalErrorResponse, reportInternalError } from "@/lib/api/errors";
+import {
+  OWNER_REFUSAL_CODE,
+  OWNER_REFUSAL_STATUS,
+  OwnerReassignRefusedError,
+  OwnerReassignUnavailableError,
+} from "@/lib/booking/owner-reassign-guard";
 
 /**
  * Shared typed-error contract for BOTH reassign routes: the machine caller
@@ -33,6 +39,43 @@ export async function mapReassignError(
     return NextResponse.json(
       { error: err.message, code: "DAILY_CAP_EXCEEDED", agentEmail: err.agentEmail, day: err.day },
       { status: 409 },
+    );
+  }
+  // The MACHINE contact-owner path refused the move (#2370): the booking is exactly
+  // where it was and a person has been handed the decision. Only that path can raise
+  // these two (the admin and bulk routes never run the owner guard), but they are
+  // mapped here so both reassign routes keep ONE error contract.
+  //
+  // The status follows this file's own classification: `owner-not-found` is bad
+  // input (404, as today), the other two are a genuine conflict (409) since the
+  // request was valid and retrying it changes nothing until somebody acts. `handoff`
+  // tells the caller whether this call opened the record or found it already open,
+  // so a retry reads as the same refusal rather than a new one.
+  if (err instanceof OwnerReassignRefusedError) {
+    return NextResponse.json(
+      {
+        error: err.message,
+        code: OWNER_REFUSAL_CODE[err.refusal],
+        refusal: err.refusal,
+        handoff: err.handoff,
+      },
+      { status: OWNER_REFUSAL_STATUS[err.refusal] },
+    );
+  }
+  // A step of that check could not be completed, so NOTHING was decided: a read that
+  // failed must never be reported as a refusal, and a refusal that could not be
+  // recorded must never be reported as handed over. 503 so the caller retries, and
+  // loud (log plus alert) because a failing read here is a real fault, not a
+  // business outcome. `stage` is a fixed word of ours, never the underlying error.
+  if (err instanceof OwnerReassignUnavailableError) {
+    await reportInternalError(err, `${context}:owner-check`);
+    return NextResponse.json(
+      {
+        error: "Slate could not check the requested owner. Please try again.",
+        code: "OWNER_CHECK_UNAVAILABLE",
+        stage: err.stage,
+      },
+      { status: 503 },
     );
   }
   // Genuine not-found (bad/stale booking id or target agent): do not retry.

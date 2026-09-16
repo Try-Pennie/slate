@@ -60,6 +60,13 @@ vi.mock("@/lib/booking/service", () => service);
 vi.mock("@/lib/booking/reason-options", () => reasonOpts);
 vi.mock("@/lib/notify/dispatch", () => dispatch);
 
+// NOT mocked: the owner-guard error classes the machine path raises (#2370). The
+// route maps by class, so the test throws the REAL ones rather than a second set of
+// look-alikes, which is the only way an `instanceof` here proves anything.
+import {
+  OwnerReassignRefusedError,
+  OwnerReassignUnavailableError,
+} from "@/lib/booking/owner-reassign-guard";
 import { POST } from "./route";
 
 function req(opts: { auth?: string; body?: unknown }) {
@@ -219,6 +226,57 @@ describe("POST /api/bookings/reassign", () => {
     expect(body.code).toBe("DAILY_CAP_EXCEEDED");
     expect(body.agentEmail).toBe("a@x.com");
   });
+
+  // #2370: the machine path now REFUSES an owner who cannot take the call, and says
+  // so with a stable code plus whether the handoff was opened by this call. Each of
+  // the three is asserted separately: one message answering for another is how
+  // somebody spends an afternoon on the wrong thing (L11).
+  it.each([
+    ["owner-not-found", "OWNER_NOT_FOUND", 404],
+    ["owner-not-bookable", "OWNER_NOT_BOOKABLE", 409],
+    ["owner-on-time-off", "OWNER_ON_TIME_OFF", 409],
+  ] as const)("maps %s to %s with its own status and the handoff outcome", async (refusal, code, status) => {
+    service.reassignBooking.mockRejectedValueOnce(new OwnerReassignRefusedError(refusal, "recorded"));
+    const res = await POST(req(ok));
+    expect(res.status).toBe(status);
+    const body = await res.json();
+    expect(body.code).toBe(code);
+    expect(body.refusal).toBe(refusal);
+    expect(body.handoff).toBe("recorded");
+    // The refusal never pretends a move happened.
+    expect(body.booking).toBeUndefined();
+  });
+
+  it("reports a retried refusal as already-recorded, so it does not read as a second one", async () => {
+    service.reassignBooking.mockRejectedValueOnce(
+      new OwnerReassignRefusedError("owner-on-time-off", "already-recorded"),
+    );
+    const res = await POST(req(ok));
+    expect(res.status).toBe(409);
+    expect((await res.json()).handoff).toBe("already-recorded");
+  });
+
+  // A read that FAILED is not a refusal. Before #2370 an unreadable owner answered
+  // the same 404 a missing one did, so the caller stopped retrying an outage.
+  it.each(["booking", "owner", "time-off", "handoff"] as const)(
+    "answers a retryable 503 when the %s step could not be completed",
+    async (stage) => {
+      vi.spyOn(console, "error").mockImplementation(() => {});
+      service.reassignBooking.mockRejectedValueOnce(
+        new OwnerReassignUnavailableError(stage, new Error('read failed [users]: connection terminated')),
+      );
+      const res = await POST(req(ok));
+      expect(res.status).toBe(503);
+      const body = await res.json();
+      expect(body.code).toBe("OWNER_CHECK_UNAVAILABLE");
+      expect(body.stage).toBe(stage);
+      expect(body.refusal).toBeUndefined();
+      // Never the underlying failure text (#598).
+      expect(JSON.stringify(body)).not.toMatch(/connection terminated|users/);
+      // Loud: a failing read here is a fault, not a business outcome (#1153).
+      expect(dispatch.sendThrottledAlert).toHaveBeenCalled();
+    },
+  );
 
   it("maps a transient Google/DB outage to a retryable 5xx that does not leak internals", async () => {
     vi.spyOn(console, "error").mockImplementation(() => {});
