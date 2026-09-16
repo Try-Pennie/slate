@@ -423,6 +423,11 @@ export const ALERT_CATALOG: AlertEntry[] = [
   // happening" is not information, and a notice that says it trains people to
   // skim the channel.
   {
+    key: "booking_reminder_failed",
+    kind: "incident",
+    why: "That lead's 24 hour reminder did not go out and will not: the send is deliberately not retried, because a retry after a timeout can deliver a second copy. There is no healthy state to announce, only a call somebody was not reminded about (#2359).",
+  },
+  {
     key: "busy_block_write_through",
     kind: "incident",
     why: "One cache write failed and the moment has passed; the next sync pass reconverges without a state to announce.",

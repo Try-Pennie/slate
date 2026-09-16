@@ -408,15 +408,21 @@ describe("the cron lane summary (#1767, always visible since #1872)", () => {
   //
   // WHAT SURVIVES INTACT is the part of #1767 that was never about the collapse:
   // the summary sentence names every lane that is not ok, in the lane's own third
-  // state, so a `never` lane cannot be folded into "all 9 lanes ran on time"
+  // state, so a `never` lane cannot be folded into "all N lanes ran on time"
   // (L98). That is asserted below in all three cases, and it is the reason the
   // sentence stays above the list rather than being dropped as a repeat of it.
-  it("states nine agreeing lanes once, and lists every one of them", async () => {
+  // The COUNT is derived, like the loop below it. It was written as a literal 9 and
+  // went stale the moment a tenth lane shipped (#2359), which is the failure mode
+  // this repo already names elsewhere: a hand kept number beside a derived list.
+  const laneCount = Object.keys(LANE_STALE_BOUNDS_MS).length;
+  const allRanOnTime = new RegExp(`all ${laneCount} lanes ran on time`, "i");
+
+  it("states every agreeing lane once, and lists every one of them", async () => {
     render(await AdminPage());
     expect(document.querySelector("details")).toBeNull();
 
     const text = pageText();
-    expect(text).toMatch(/all 9 lanes ran on time/i);
+    expect(text).toMatch(allRanOnTime);
     for (const lane of Object.keys(LANE_STALE_BOUNDS_MS)) {
       expect(text).toContain(lane);
       // #1872: and says what it is. A bare identifier is what the page drew.
@@ -432,13 +438,13 @@ describe("the cron lane summary (#1767, always visible since #1872)", () => {
     const text = pageText();
     expect(text).toMatch(/monitor/);
     expect(text).toMatch(/past its bound/i);
-    expect(text).not.toMatch(/all 9 lanes ran on time/i);
+    expect(text).not.toMatch(allRanOnTime);
   });
 
   it("names a lane with no successful tick yet, never as stale", async () => {
     // `never` is a THIRD state, distinct from stale (health.ts classifyLaneHealth):
     // the heartbeat read succeeded and reported no stamp at all. A summary that
-    // only counted stale lanes would swallow it into "all 9 lanes ran on time".
+    // only counted stale lanes would swallow it into "all N lanes ran on time".
     heartbeat.readAllHeartbeatMs.mockResolvedValue(
       lanesStampedAgo(0, { "bulk-reassign": null }),
     );
@@ -446,7 +452,7 @@ describe("the cron lane summary (#1767, always visible since #1872)", () => {
     const text = pageText();
     expect(text).toMatch(/bulk-reassign/);
     expect(text).toMatch(/no successful tick recorded yet/i);
-    expect(text).not.toMatch(/all 9 lanes ran on time/i);
+    expect(text).not.toMatch(allRanOnTime);
   });
 });
 

@@ -292,6 +292,7 @@ import {
 } from "@/lib/handoffs/copy";
 import { HANDOFF_UNDELIVERED_AFTER_MS } from "@/lib/handoffs/check";
 import { formatOwnerReassignNotice } from "@/lib/booking/owner-notice-copy";
+import { reminderFailedAlert } from "@/lib/booking/reminder-send";
 import type { HandoffKind } from "@/lib/handoffs/kinds";
 
 /** One rendered state of one alert. */
@@ -2058,6 +2059,14 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
   },
 
   // --- the booking layer's incidents ----------------------------------------
+  {
+    key: "booking_reminder_failed",
+    state: "a lead's 24 hour reminder that did not go out",
+    channel: "alert",
+    // The REAL builder, never a copy of its wording (L41): a preview showing text
+    // that is not what ships would be worse than no preview.
+    text: reminderFailedAlert("bk_8f21c4", "Gmail send failed: 503"),
+  },
   {
     key: "busy_block_write_through",
     state: "an insert that did not land",

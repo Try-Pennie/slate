@@ -100,6 +100,10 @@ const FAMILY_BY_KEY: Record<string, AlertFamily> = {
   verify_on_book_calendars_read: "google-cannot-be-reached-for-an-agent",
 
   // A booking exists and one of its side effects did not land.
+  // #2359. The reminder is a side effect of a booking like the invite and the
+  // webhook, and it is the one with no retry behind it, so the remedy is this
+  // family's: look at what did not land for that specific booking.
+  booking_reminder_failed: "a-booking-side-effect-did-not-complete",
   outbox_drain_stuck: "a-booking-side-effect-did-not-complete",
   outbox_all_handed_off: "a-booking-side-effect-did-not-complete",
   reservation_drain_stuck: "a-booking-side-effect-did-not-complete",

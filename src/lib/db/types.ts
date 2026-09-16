@@ -517,6 +517,15 @@ export interface Booking {
    *  embed/human bookings, which are matched by identity instead. */
   external_id: string | null;
   routing_trace: RoutingTrace | null;
+  /**
+   * The appointment START a 24 hour reminder email has been sent about (#2359).
+   *
+   * A TIMESTAMP rather than a flag, so a booking that moves earns a fresh reminder
+   * for its new time with nobody clearing anything: the stored value simply stops
+   * matching `starts_at`. Null means none sent. Written BEFORE the send, so a crash
+   * between the two costs a reminder rather than delivering a second copy.
+   */
+  reminder_sent_for: string | null;
   /** Set ONLY by the reassign API to stack a consult onto a busy owning agent. */
   allow_double_book: boolean;
   /** Monotonic count of COMMITTED reschedules (#439, migration 0053). Mixed into
