@@ -65,7 +65,7 @@ export interface CoveragePool {
  * does not walk sideways except for the Beyond overflow. A lead on 111 whose pool
  * is empty is not booked by 112's hand named member, which is exactly the silence
  * #2253 was opened about. Asking the ladder makes the claim true by construction,
- * and means a future ladder (#2485 widens it to cross a tier before dropping one)
+ * and means a future ladder (#2486 widens it to cross a tier before dropping one)
  * moves this with it rather than leaving two rules to keep in step.
  *
  * What this does NOT report, deliberately: a whole debt tier with nobody in it
