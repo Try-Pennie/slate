@@ -5,6 +5,7 @@
 // Run: node --experimental-strip-types scripts/test-booking-reassign.ts
 import {
   reassignBooking,
+  rescheduleBooking,
 } from "../src/lib/booking/orchestration.ts";
 import type {
   EventType,
@@ -16,6 +17,8 @@ import {
   makeBooking,
   bucket,
   eventType,
+  NOW,
+  RR,
   SYS,
 } from "./lib/booking-fakes.ts";
 
@@ -57,7 +60,29 @@ async function run() {
         calls.insertBusyBlock.length === 0,
       "reassign: busy block moved atomically to the owner (#429 P3)",
     );
-    assert(calls.webhooks.some((w) => w.event === "booking.rescheduled"), "reassign: fires booking.rescheduled");
+    // #2368: a reassign is its own event. It fires booking.reassigned, and it
+    // fires NO booking.rescheduled: the time never moved, and a reschedule event
+    // is what made Regal tell a lead their call had been rebooked when only the
+    // advisor changed. Both halves are asserted, because "the new event fires"
+    // would still pass if the old one fired alongside it.
+    assert(
+      calls.webhooks.length === 1 && calls.webhooks[0].event === "booking.reassigned",
+      "reassign: fires booking.reassigned, and only that",
+    );
+    assert(
+      !calls.webhooks.some((w) => w.event === "booking.rescheduled"),
+      "reassign: fires NO booking.rescheduled (the time did not move)",
+    );
+    assert(
+      calls.webhooks[0].previousAgentEmail === "a@x.com",
+      "reassign: the payload names the advisor the call moved away from",
+    );
+    assert(
+      (calls.webhooks[0].reason as { code?: string; initiator?: string } | null)?.code ===
+        "owner_reassignment" &&
+        (calls.webhooks[0].reason as { initiator?: string } | null)?.initiator === "system",
+      "reassign: the payload carries the reason and the initiator, so Regal can tell an owner move from a coverage move",
+    );
     assert(
       calls.invalidateSlots.length === 1 && calls.invalidateSlots[0] === "411",
       "reassign: invalidates cached slots for the bucket exactly once",
@@ -96,7 +121,7 @@ async function run() {
     };
     // The default mock's swap reads/mutates opts.bookingById.booking (= sharedRow),
     // deriving the record from ITS current agent and appending onto ITS trace.
-    const { deps } = makeDeps({
+    const { deps, calls } = makeDeps({
       bookingById: { booking: sharedRow, bucket, eventType },
       agentByEmail: owner("b", "b@x.com"),
     });
@@ -124,6 +149,17 @@ async function run() {
     assert(
       recorded[0]?.from === "a" && recorded[1]?.from === "b",
       "reassign (#519): the swap derives 'from' from the genuinely-current agent under the lock",
+    );
+    // #2368: the same rule for the address on the webhook. Both callers loaded a
+    // base saying "a@x.com", so a payload built from the caller's own snapshot
+    // would tell Regal the second move came off a@x.com, which it did not: the
+    // first move had already put it on b@x.com. The advisor named to whoever
+    // reads the timeline has to be the one the swap itself replaced.
+    assert(
+      calls.webhooks.length === 2 &&
+        calls.webhooks[0].previousAgentEmail === "a@x.com" &&
+        calls.webhooks[1].previousAgentEmail === "b@x.com",
+      "reassign (#519/#2368): the webhook names the advisor the SWAP replaced, not the caller's stale snapshot",
     );
   }
 
@@ -222,9 +258,24 @@ async function run() {
       calls.bookingEvents[0].actor_user_id === "mgr1",
       "reassign(admin): history records the acting manager (#549)",
     );
+    // #2368: an ADMIN reassign is a reassign too. It is the same move made by a
+    // person rather than the machine, so it takes the same event, and the
+    // initiator on the payload is what tells the two apart downstream.
     assert(
-      calls.webhooks.some((w) => w.event === "booking.rescheduled"),
-      "reassign(admin): still fires booking.rescheduled (Regal contract)",
+      calls.webhooks.length === 1 && calls.webhooks[0].event === "booking.reassigned",
+      "reassign(admin): fires booking.reassigned",
+    );
+    assert(
+      !calls.webhooks.some((w) => w.event === "booking.rescheduled"),
+      "reassign(admin): fires NO booking.rescheduled",
+    );
+    assert(
+      (calls.webhooks[0].reason as { initiator?: string } | null)?.initiator === "admin",
+      "reassign(admin): the payload says a person made the move, not the machine",
+    );
+    assert(
+      calls.webhooks[0].previousAgentEmail === "a@x.com",
+      "reassign(admin): the payload names the advisor the call moved away from",
     );
   }
 
@@ -407,6 +458,43 @@ async function run() {
     assert(
       calls.createEvent.length === 0 && calls.commitReschedule.length === 0 && calls.webhooks.length === 0,
       "reassign: no-op when already the owning agent",
+    );
+  }
+
+  // --- #2368 control: a REAL reschedule still fires booking.rescheduled -------
+  // The change above moves one event and must move only that one. Without this,
+  // routing every move to booking.reassigned would pass every assertion in this
+  // file while silently taking the reschedule event away from Regal, which is
+  // where a genuine time change belongs. A one sided proof is no proof (L1).
+  {
+    const ctx = { booking: makeBooking({}), bucket, eventType };
+    const moved = {
+      booking: {
+        ...ctx.booking,
+        starts_at: "2026-06-09T14:00:00.000Z",
+        ends_at: "2026-06-09T14:30:00.000Z",
+        status: "rescheduled" as const,
+      },
+      bucket,
+      eventType,
+    };
+    const { deps, calls } = makeDeps({
+      existing: ctx,
+      bookingById: moved,
+      freeEmails: new Set(["a@x.com"]),
+    });
+    await rescheduleBooking("tok1", "2026-06-09T14:00:00.000Z", RR, "customer", deps, NOW);
+    assert(
+      calls.webhooks.length === 1 && calls.webhooks[0].event === "booking.rescheduled",
+      "reschedule: a real time change still fires booking.rescheduled",
+    );
+    assert(
+      !calls.webhooks.some((w) => w.event === "booking.reassigned"),
+      "reschedule: a time change fires NO booking.reassigned",
+    );
+    assert(
+      calls.webhooks[0].previousAgentEmail === null,
+      "reschedule: no previous advisor on an event that did not change advisor",
     );
   }
 

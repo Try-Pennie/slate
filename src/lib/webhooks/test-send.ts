@@ -73,6 +73,10 @@ export const TEST_SEND_PAYLOAD: BookingEventPayload = {
   prefill: { xbc: "411", utm_source: "sample" },
   manage_url: "https://slate.trypennie.app/booking/manage/sample-token",
   reason: null,
+  // Null on every event but booking.reassigned (#2368), which is what a sample
+  // booking.created carries; the key is present so its absence is never read as
+  // the field being optional.
+  previous_agent_email: null,
   routing: {
     empty_pool_fallback: false,
     tier_fallback: false,

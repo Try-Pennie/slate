@@ -42,6 +42,7 @@ function payload(routing: RoutingMeta = NO_ROUTING): BookingEventPayload {
     prefill: {},
     manage_url: "https://slate.trypennie.app/manage/abc",
     reason: null,
+    previous_agent_email: null,
     routing,
   };
 }
@@ -94,12 +95,14 @@ describe("buildRegalEvent routing properties (#492)", () => {
     expect(e.properties.slateTierFallback).toBe(false);
   });
 
-  // A reassign emits booking.rescheduled and can land the booking on a different tier, so
-  // the signal has to ride every event, not just the create.
+  // A reassign (booking.reassigned since #2368) can land the booking on a different
+  // tier, and so can a reschedule, so the signal has to ride every event, not just
+  // the create.
   const EVENTS: WebhookEvent[] = [
     "booking.created",
     "booking.rescheduled",
     "booking.cancelled",
+    "booking.reassigned",
     "booking.completed",
   ];
   it.each(EVENTS)("carries the routing summary on %s", (event) => {

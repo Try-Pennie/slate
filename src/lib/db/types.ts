@@ -16,6 +16,13 @@ export type WebhookEvent =
   | "booking.created"
   | "booking.rescheduled"
   | "booking.cancelled"
+  /**
+   * A booking moved to another advisor at the SAME time (#2368). Its own event
+   * rather than a reschedule, because a reassign never changes the time and
+   * every Regal journey listening for a time change was firing on one that had
+   * not happened.
+   */
+  | "booking.reassigned"
   | "booking.completed";
 export type DeliveryStatus = "pending" | "success" | "failed";
 
@@ -671,6 +678,14 @@ export interface OutboxPayload {
   initiator?: BookingEventInitiator;
   fromStartsIso?: string;
   fromAgentUserId?: string | null;
+  /**
+   * The email of the agent the booking was assigned to BEFORE a reassign
+   * (#2368), captured at enqueue time because by the time the NOTIFY step runs
+   * the booking row already holds the new agent. Absent on a row enqueued before
+   * this field existed, which the payload carries through as null rather than
+   * guessing at somebody.
+   */
+  fromAgentEmail?: string | null;
   /** Staff user accountable for an admin action (#549); carried so the drained
    *  history-write step records it even on a crash-resume. */
   actorUserId?: string | null;

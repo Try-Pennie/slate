@@ -1414,12 +1414,26 @@ async function assignAgentWithTierFallback(
   throw lastErr ?? new SlotUnavailableError();
 }
 
+/**
+ * What a webhook says beyond the booking itself. An object rather than more
+ * positional arguments: `bookingEventId` and `previousAgentEmail` are both
+ * `string | null`, so as positions they would be silently transposable at every
+ * call site (L455).
+ */
+interface WebhookExtras {
+  /** History row id (or, for a reassign, the outbox row id) for the dedupe key. */
+  bookingEventId?: string | null;
+  /** The advisor a reassign moved the booking away from (#2368). */
+  previousAgentEmail?: string | null;
+}
+
 function webhookPayload(
   deps: BookingDeps,
   booking: Booking,
   bucket: Bucket,
   eventType: EventType,
   reason: BookingReasonMeta | null,
+  previousAgentEmail: string | null,
 ): BookingEventPayload {
   return {
     booking_id: booking.id,
@@ -1447,14 +1461,16 @@ function webhookPayload(
     prefill: booking.prefill,
     manage_url: `${deps.appBaseUrl()}/booking/manage/${booking.manage_token}`,
     reason,
+    previous_agent_email: previousAgentEmail,
     routing: routingMetaFromTrace(booking.routing_trace),
   };
 }
 
 /**
- * Emit a booking webhook. `reason` carries the why+who for rescheduled/cancelled
- * and is null for created/completed — passed only at those call sites so the
- * shared builder never pollutes create/complete with empty reason fields.
+ * Emit a booking webhook. `reason` carries the why+who for
+ * rescheduled/cancelled/reassigned and is null for created/completed, passed
+ * only at those call sites so the shared builder never pollutes create/complete
+ * with empty reason fields.
  */
 async function fire(
   deps: BookingDeps,
@@ -1463,8 +1479,9 @@ async function fire(
   bucket: Bucket,
   eventType: EventType,
   reason: BookingReasonMeta | null = null,
-  bookingEventId: string | null = null,
+  extras: WebhookExtras = {},
 ): Promise<void> {
+  const bookingEventId = extras.bookingEventId ?? null;
   // #459: the smoke test books real bookings on a hidden is_test bucket via the
   // key-authed API, so without this every smoke run would inject a synthetic lead
   // into Regal/Cadence and then cancel it. Every booking webhook passes through
@@ -1477,7 +1494,7 @@ async function fire(
   await deps.emitWebhook(
     booking.org_id,
     event,
-    webhookPayload(deps, booking, bucket, eventType, reason),
+    webhookPayload(deps, booking, bucket, eventType, reason, extras.previousAgentEmail ?? null),
     webhookDedupeKey(event, { bookingId: booking.id, bookingEventId }),
     bucket.is_test,
     // #884: set only on user-facing requests, so the confirm/cancel/reschedule
@@ -1543,7 +1560,8 @@ const REASSIGN_STEPS = {
 
 /** Post-commit steps for a contact-owner reassign (#9). Like reschedule, the
  *  gcal delete-old + create-new stays inline (create-idempotency is P4); the
- *  outbox covers the slot move, recompute, and the booking.rescheduled webhook. */
+ *  outbox covers the slot move, recompute, and the booking.reassigned webhook
+ *  (#2368: a reassign never moves the time, so it is not a reschedule). */
 export function reassignOutboxSteps(): OutboxStep[] {
   return [
     { name: REASSIGN_STEPS.BUSYBLOCK_MOVE, state: "pending" },
@@ -1609,7 +1627,7 @@ export const OUTBOX_HANDLERS: OutboxHandlers = {
       bucket,
       eventType,
       reasonMeta(reason, initiator),
-      eventId,
+      { bookingEventId: eventId },
     );
   },
 
@@ -1675,16 +1693,22 @@ export const OUTBOX_HANDLERS: OutboxHandlers = {
       bucket,
       eventType,
       reasonMeta(reason, initiator),
-      eventId,
+      { bookingEventId: eventId },
     );
   },
 
   // Reassign post-commit steps. Move/recompute mirror reschedule (re-read the
   // booking, now at the new agent). Notify differs: the history action is
-  // 'reassigned' (so it doesn't inflate reschedule-rate) but the webhook stays
-  // booking.rescheduled (Regal contract), and the time is UNCHANGED — so there's
-  // no time to version the dedupe key by; we key the webhook on the outbox row
-  // id (stable per reassign, so a resume re-fire is deduped — exactly-once).
+  // 'reassigned' (so it doesn't inflate reschedule-rate) and since #2368 so is
+  // the webhook, booking.reassigned. It used to be booking.rescheduled, which
+  // meant every Regal journey listening for a time change fired on a booking
+  // whose time had not moved, and a lead could be told their call had been
+  // rebooked when only the advisor had changed. Every reassign fires it: the
+  // machine owner move, an admin reassign, the bulk redistribute and the
+  // offboarding coverage sweep all land here, and none of them touches the time.
+  // The time being UNCHANGED is also why there is no time to version the dedupe
+  // key by; we key the webhook on the outbox row id (stable per reassign, so a
+  // resume re-fire is deduped, exactly once).
   [REASSIGN_STEPS.BUSYBLOCK_MOVE]: async (deps, row) => {
     if (!row.booking_id) return;
     const ctx = await deps.loadBookingById(row.booking_id);
@@ -1735,15 +1759,22 @@ export const OUTBOX_HANDLERS: OutboxHandlers = {
       }),
     );
     // Dedupe key = the outbox row id: stable across inline run + drain resume,
-    // so the booking.rescheduled webhook fires exactly once.
+    // so the booking.reassigned webhook fires exactly once.
+    //
+    // The advisor it moved AWAY from can only come off the outbox payload: this
+    // step re-reads the booking, which by now holds the new advisor. A row
+    // enqueued before that field existed carries nothing, and null is what that
+    // has to mean. The alternative, resolving `fromAgentUserId` to an address
+    // here, would spend a read on the drain to report whatever that account
+    // looks like today rather than who held the booking (L192, L443).
     await fire(
       deps,
-      "booking.rescheduled",
+      "booking.reassigned",
       booking,
       bucket,
       eventType,
       reasonMeta(reason, initiator),
-      row.id,
+      { bookingEventId: row.id, previousAgentEmail: p.fromAgentEmail ?? null },
     );
   },
 };
@@ -3728,11 +3759,15 @@ export async function reassignBooking(
   };
 
   // Deliver the post-commit side effects (slot move, recompute, the
-  // booking.rescheduled webhook + 'reassigned' history) through the idempotent
+  // booking.reassigned webhook + 'reassigned' history) through the idempotent
   // outbox executor (#429 P3), so a crash here resumes via the drain. The gcal
   // delete-old + create-new above stay inline (create-idempotency is P4). Leased
   // around the inline run so a drain tick can't double-run it. The payload's
-  // fromAgentUserId captures the PRE-reassign agent for the history row.
+  // fromAgentUserId captures the PRE-reassign agent for the history row, and
+  // fromAgentEmail the same agent for the webhook (#2368): `booking` here is the
+  // row as it was BEFORE the swap, and the NOTIFY step re-reads a booking that
+  // already holds the new advisor, so this is the only moment the outgoing
+  // address can be captured.
   const steps = reassignOutboxSteps();
   const payload = {
     reasonCode: reason.code,
@@ -3740,6 +3775,12 @@ export async function reassignBooking(
     initiator,
     fromStartsIso: booking.starts_at,
     fromAgentUserId: booking.assigned_user_id,
+    // The swap's OWN answer for who held the booking, read under its row lock,
+    // not this caller's snapshot from before it (#519 made the same distinction
+    // for the history record's `from`). Two reassigns racing both loaded the same
+    // base, so the second one's snapshot names the agent the first already moved
+    // it off, and the address is what a person reads in the Regal timeline.
+    fromAgentEmail: swap.prevAgentEmail,
     actorUserId: actor?.userId,
     actingAsUserId: actor?.actingAsUserId,
   };

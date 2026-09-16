@@ -163,16 +163,20 @@ async function run() {
   }
 
   // --- reassign: the smoke test's reassign scenario (#450) stays internal too ---
-  // Reassign deliberately emits booking.rescheduled (the Regal contract), so it is a
-  // fifth way a smoke booking could reach downstream.
+  // A reassign emits booking.reassigned (#2368; it was booking.rescheduled until
+  // then, which told Regal a time change had happened when none had), so it is a
+  // fifth way a smoke booking could reach downstream, and the gate has to cover the
+  // new event as surely as it covered the old one.
   {
     const ctx = { booking: makeBooking({}), bucket: testBucket, eventType };
     const owner = { id: "b", name: "Owner B", email: "b@x.com", bookable: true } as unknown as User;
     const { deps, calls } = makeDeps({ bookingById: ctx, agentByEmail: owner });
     await reassignBooking("bk1", "b@x.com", SYS, deps);
     assert(
-      calls.webhooks.length === 1 && calls.webhooks[0].suppressed === true,
-      "reassign(test bucket): records booking.rescheduled as suppressed",
+      calls.webhooks.length === 1 &&
+        calls.webhooks[0].event === "booking.reassigned" &&
+        calls.webhooks[0].suppressed === true,
+      "reassign(test bucket): records booking.reassigned as suppressed",
     );
     assert(calls.createEvent.length === 1, "reassign(test bucket): the swap still happens");
   }
@@ -185,9 +189,15 @@ async function run() {
     await reassignBooking("bk1", "b@x.com", SYS, deps);
     assert(
       calls.webhooks.length === 1 &&
-        calls.webhooks[0].event === "booking.rescheduled" &&
+        calls.webhooks[0].event === "booking.reassigned" &&
         calls.webhooks[0].suppressed === false,
-      "reassign(real bucket): fires booking.rescheduled unsuppressed",
+      "reassign(real bucket): fires booking.reassigned unsuppressed",
+    );
+    // #2368: and it is the ONLY event. A reassign that also emitted a reschedule
+    // would reach Regal twice, once about a time change that never happened.
+    assert(
+      !calls.webhooks.some((w) => w.event === "booking.rescheduled"),
+      "reassign(real bucket): fires no booking.rescheduled alongside it",
     );
   }
 

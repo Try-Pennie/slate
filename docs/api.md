@@ -422,8 +422,8 @@ Missing `bookingId` or `agentEmail`: `400`.
 
 Because the reassign is forced, it does not decline on a busy or at-cap target;
 it books through and reports `overCap`. It moves the calendar event and emits a
-`booking.rescheduled` webhook (the Regal contract), recorded as a `reassigned`
-history event (#326). Error mapping (`src/lib/booking/reassign-http.ts`): a
+`booking.reassigned` webhook (#2368; the time never moves, so it is not a
+reschedule), recorded as a `reassigned` history event (#326). Error mapping (`src/lib/booking/reassign-http.ts`): a
 bad booking id is `404`, a terminal (cancelled or completed) booking that can no
 longer change is `409`, anything unexpected is a generic `500` that never leaks
 internals.
@@ -682,9 +682,15 @@ format per endpoint is built by `src/lib/webhooks/wire.ts`.
 | Slate event | Fires when |
 |---|---|
 | `booking.created` | A new booking is confirmed |
-| `booking.rescheduled` | A booking moves in place, or is reassigned to another agent, or is moved across buckets |
+| `booking.rescheduled` | A booking's TIME moves: in place, or across buckets |
 | `booking.cancelled` | A booking is cancelled |
+| `booking.reassigned` | A booking moves to another advisor at the same time (#2368): the machine contact-owner move, an admin reassign, the bulk redistribute, the offboarding coverage sweep |
 | `booking.completed` | A past booking is marked completed by the complete lane |
+
+A reassign used to arrive as `booking.rescheduled`, so every consumer listening
+for a time change fired on a booking whose time had not moved. It is its own
+event now, and it carries the reason, so a consumer can tell an owner move from a
+coverage move without reading the booking.
 
 **Canonical payload** (`BookingEventPayload`, `src/lib/webhooks/types.ts`), the
 `generic` wire format sends this verbatim as `{ "event", "data": <payload> }`:
@@ -704,6 +710,8 @@ format per endpoint is built by `src/lib/webhooks/wire.ts`.
   "prefill": { "…": "…" },
   "manage_url": "https://…/booking/manage/<token>",
   "reason": { "code": "…", "detail": "…", "initiator": "customer" }, // null on created/completed
+  "previous_agent_email": null,                 // the advisor a reassign moved the booking away from (#2368);
+                                                // null on every other event, and null when it is not known
   "routing": {                                  // tier-fallback signal (#492)
     "empty_pool_fallback": false,
     "tier_fallback": false,
@@ -718,7 +726,11 @@ format per endpoint is built by `src/lib/webhooks/wire.ts`.
 
 - `regal`: transformed into the Regal event shape (`name`, `properties`,
   `eventSource: "slate"`, `traits`) by `src/lib/webhooks/regal.ts`. Event names
-  are `Slate Booking Created` / `Rescheduled` / `Cancelled` / `Completed`. The
+  are `Slate Booking Created` / `Rescheduled` / `Cancelled` / `Reassigned` /
+  `Completed`. A `Slate Booking Reassigned` carries `assignedAgentEmail`,
+  `assignedAgentName`, `previousAgentEmail`, `reassignReason`,
+  `reassignReasonDetail` and `reassignedBy`, and none of the reschedule
+  properties, because the time did not move. The
   API key is sent as the `Authorization` header; if the endpoint has no key,
   Slate refuses to send and records the delivery as failed rather than posting an
   unauthenticated event (#600). The `routing.tier_fallback` flag rides through as

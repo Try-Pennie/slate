@@ -11,6 +11,12 @@ import type { WebhookEvent } from "@/lib/db/types";
  * - `booking.rescheduled` / `booking.cancelled`: key on the
  *   `booking_events` row id, which is fresh per action — so a legitimate SECOND
  *   reschedule is NOT deduped away.
+ * - `booking.reassigned` (#2368): the same branch, but the caller passes the
+ *   reassign's OUTBOX ROW id rather than a history row id. A reassign has no
+ *   natural per-operation key in `booking_events` (the time does not move, so
+ *   there is nothing to version by), and the outbox row id is stable across the
+ *   inline run and a drain resume of the same reassign, which is exactly the
+ *   exactly-once property this key exists for.
  * - A mutation whose history insert failed (no id available, a best-effort path
  *   that already logs + alerts) returns `null`: with a null key the partial
  *   unique index does not apply, so the webhook still fires (at-least-once). We
