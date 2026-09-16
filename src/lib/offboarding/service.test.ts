@@ -17,10 +17,11 @@ const updates: Array<{
   patch: { deactivated_at: string | null; bookable?: boolean };
   filters: Array<[string, string]>;
 }> = [];
-let row: { id: string; deactivated_at: string | null } | null = null;
+type FakeRow = { id: string; deactivated_at: string | null; auth_user_id?: string | null };
+let row: FakeRow | null = null;
 /** Successive answers for successive reads, when a test needs the row to change
  *  underneath it (the lost-race case). Falls back to `row` once drained. */
-const rowQueue: Array<{ id: string; deactivated_at: string | null } | null> = [];
+const rowQueue: Array<FakeRow | null> = [];
 let lastLookup: { col: string; val: string } | null = null;
 let selectError: { message: string } | null = null;
 let updateError: { message: string } | null = null;
@@ -81,6 +82,20 @@ vi.mock("@/lib/supabase/admin", () => ({
 const booking = vi.hoisted(() => ({ startBulkReassign: vi.fn() }));
 vi.mock("@/lib/booking/service", () => booking);
 
+// #2378. The real module talks to the Supabase auth admin API, which no test may
+// reach; these stand in for it and mimic its two answers, so a test can drive the
+// failure path as well as the success one.
+const sessions = vi.hoisted(() => ({
+  revokeSupabaseSessions: vi.fn(),
+  restoreSupabaseSessions: vi.fn(),
+}));
+vi.mock("@/lib/auth/session-revoke", () => sessions);
+
+const logError = vi.hoisted(() => vi.fn());
+vi.mock("@/lib/log", () => ({
+  log: { error: logError, warn: vi.fn(), info: vi.fn() },
+}));
+
 import { applyLifecycleByEmail, applyLifecycleByUserId } from "./service";
 
 beforeEach(() => {
@@ -93,6 +108,15 @@ beforeEach(() => {
   updateMatchesNothing = false;
   booking.startBulkReassign.mockReset();
   booking.startBulkReassign.mockResolvedValue({ jobId: "job1", itemCount: 0 });
+  logError.mockReset();
+  sessions.revokeSupabaseSessions.mockReset();
+  sessions.restoreSupabaseSessions.mockReset();
+  sessions.revokeSupabaseSessions.mockImplementation(async (id: string | null) =>
+    id ? "revoked" : "no-auth-account",
+  );
+  sessions.restoreSupabaseSessions.mockImplementation(async (id: string | null) =>
+    id ? "restored" : "no-auth-account",
+  );
 });
 
 describe("applyLifecycleByUserId", () => {
@@ -439,5 +463,132 @@ describe("the admin UI path sweeps only when asked (#2124)", () => {
     const second = booking.startBulkReassign.mock.calls[1][0].offboardingDeactivatedAtIso;
 
     expect(second).toBe(first);
+  });
+});
+
+// #2378: deactivation wrote `{ deactivated_at, bookable: false }` and nothing
+// else, so the person kept a live Supabase session that middleware refreshed on
+// every request. The row write and the revoke are TWO controls and both are
+// checked here (L397): a failed revoke must never leave this code reporting that
+// access was removed.
+describe("deactivation revokes the person's Supabase sessions (#2378)", () => {
+  const AUTH = "auth-abc";
+
+  it("revokes, keyed on auth_user_id, on the deactivate transition", async () => {
+    row = { id: "u1", deactivated_at: null, auth_user_id: AUTH };
+
+    const res = await applyLifecycleByUserId("u1", "deactivate");
+
+    expect(sessions.revokeSupabaseSessions).toHaveBeenCalledWith(AUTH);
+    expect(sessions.restoreSupabaseSessions).not.toHaveBeenCalled();
+    expect(res).toMatchObject({ status: "applied", sessionRevoke: "revoked" });
+  });
+
+  it("revokes on the automation path too, which is the one with nobody watching", async () => {
+    row = { id: "u9", deactivated_at: null, auth_user_id: AUTH };
+
+    const res = await applyLifecycleByEmail("leaver@trypennie.com", "deactivate");
+
+    expect(sessions.revokeSupabaseSessions).toHaveBeenCalledWith(AUTH);
+    expect(res).toMatchObject({ status: "applied", sessionRevoke: "revoked" });
+  });
+
+  // The row write and the revoke are two steps with no transaction between them.
+  // A crash in the gap leaves the row stamped and the session alive, and the
+  // retry sees a no-op flip: if the revoke only ran on the TRANSITION the session
+  // would stay alive for ever, with the retry reporting success.
+  it("a repeat call on an already deactivated row still revokes, so a crash in the gap converges", async () => {
+    row = { id: "u1", deactivated_at: "2026-09-01T00:00:00.000Z", auth_user_id: AUTH };
+
+    const res = await applyLifecycleByUserId("u1", "deactivate");
+
+    expect(res).toMatchObject({ status: "noop" });
+    expect(updates).toHaveLength(0);
+    expect(sessions.revokeSupabaseSessions).toHaveBeenCalledWith(AUTH);
+  });
+
+  // Reactivating must lift it, or a rehire is locked out of a row that reads as
+  // perfectly active and nothing on any screen says why.
+  it("restores session access on reactivate, and revokes nothing", async () => {
+    row = { id: "u1", deactivated_at: "2026-06-01T00:00:00.000Z", auth_user_id: AUTH };
+
+    const res = await applyLifecycleByUserId("u1", "reactivate");
+
+    expect(sessions.restoreSupabaseSessions).toHaveBeenCalledWith(AUTH);
+    expect(sessions.revokeSupabaseSessions).not.toHaveBeenCalled();
+    expect(res).toMatchObject({ status: "applied", sessionRevoke: "restored" });
+  });
+
+  it("says so separately when the person never signed in, rather than claiming a revoke", async () => {
+    row = { id: "u1", deactivated_at: null, auth_user_id: null };
+
+    const res = await applyLifecycleByUserId("u1", "deactivate");
+
+    expect(res).toMatchObject({ status: "applied", sessionRevoke: "no-auth-account" });
+  });
+
+  it("revokes nothing for an id that matched nobody", async () => {
+    row = null;
+
+    const res = await applyLifecycleByUserId("ghost", "deactivate");
+
+    expect(res).toEqual({ status: "not_found" });
+    expect(sessions.revokeSupabaseSessions).not.toHaveBeenCalled();
+  });
+
+  // THE FAILURE PATH. Supabase auth is an external API on an offboarding path, so
+  // it can refuse, time out, or be misconfigured on the deployment. Three things
+  // have to hold at once, and the first is the one this issue is about:
+  //
+  //  - the result does NOT say access was removed, because the caller records
+  //    that word and never looks again;
+  //  - the deactivation itself STANDS, because rolling it back to report a
+  //    session problem would put the agent back in the routing pool taking new
+  //    bookings, and the app layer gate already refuses their session on the very
+  //    next request whether or not this call succeeded;
+  //  - it is logged at error level with the user, so the failure exists somewhere
+  //    a person can find it.
+  it("reports a FAILED revoke rather than swallowing it, and keeps the deactivation", async () => {
+    row = { id: "u1", deactivated_at: null, auth_user_id: AUTH };
+    sessions.revokeSupabaseSessions.mockRejectedValue(new Error("auth admin refused the key"));
+
+    const res = await applyLifecycleByUserId("u1", "deactivate");
+
+    expect(res).toMatchObject({ status: "applied", deactivate: true, sessionRevoke: "failed" });
+    expect(updates).toHaveLength(1);
+    expect(updates[0].patch.deactivated_at).toEqual(expect.any(String));
+
+    expect(logError).toHaveBeenCalledTimes(1);
+    const [tag, fields, err] = logError.mock.calls[0] as [
+      string,
+      Record<string, unknown>,
+      unknown,
+    ];
+    expect(tag).toBe("offboarding");
+    expect(String(fields.msg)).toMatch(/session/i);
+    expect(fields.user_id).toBe("u1");
+    expect(err).toBeInstanceOf(Error);
+  });
+
+  it("reports a failed RESTORE too, rather than reactivating silently into a lockout", async () => {
+    row = { id: "u1", deactivated_at: "2026-06-01T00:00:00.000Z", auth_user_id: AUTH };
+    sessions.restoreSupabaseSessions.mockRejectedValue(new Error("auth admin unreachable"));
+
+    const res = await applyLifecycleByUserId("u1", "reactivate");
+
+    expect(res).toMatchObject({ status: "applied", deactivate: false, sessionRevoke: "failed" });
+    expect(logError).toHaveBeenCalledTimes(1);
+  });
+
+  // The positive control beside the two failures (L159): the same call with the
+  // same row and a working auth API logs nothing and reports the revoke, so the
+  // assertions above cannot be passing because every path now reports "failed".
+  it("logs nothing and reports the revoke on the healthy path", async () => {
+    row = { id: "u1", deactivated_at: null, auth_user_id: AUTH };
+
+    const res = await applyLifecycleByUserId("u1", "deactivate");
+
+    expect(res).toMatchObject({ sessionRevoke: "revoked" });
+    expect(logError).not.toHaveBeenCalled();
   });
 });

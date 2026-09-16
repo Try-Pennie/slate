@@ -57,6 +57,13 @@ Zero rows is a genuine lockout. Rows whose `deactivated_at` is set, or whose
 cannot get in. If a row comes back that should be able to sign in, the problem is
 authentication, not roles, and promoting somebody else will not fix it.
 
+Those two states are refused in different places, which matters for how you fix
+them (#2378). A row whose `deactivated_at` is set is refused by the app on every
+request, and the person is ALSO banned in Supabase Auth by the deactivation, so
+clearing the column by hand is not enough on its own: see step 2a below. A row
+whose `auth_user_id` is null has simply never been linked to a Google account, and
+nothing is blocking them; they sign in once and the link is made.
+
 ### 2. Find the person to promote, by the account that actually signs in
 
 ```sql
@@ -70,6 +77,33 @@ at least once, so the row is linked to a real Google account), `deactivated_at` 
 null, and `org_id` is the organization you mean to give them admin over. If
 `auth_user_id` is null, have them sign in to Slate once first: that creates the link,
 and the sign-in itself grants nothing.
+
+### 2a. If `deactivated_at` is set, reactivate through the product, not by hand
+
+Deactivating somebody does two things (#2378): it stamps `deactivated_at`, and it
+bans their Supabase auth user so they can neither refresh a session nor sign in
+again. Only the first is a column you can see. Clearing it with SQL leaves the ban
+in place, so the row reads as perfectly active while every sign in attempt still
+fails, with nothing on any screen saying why, and you will spend the next hour
+looking at roles.
+
+Reactivate through the product, which lifts both: the Reactivate control on the
+agent page, or the lifecycle endpoint an admin can still reach.
+
+```
+POST /api/users/lifecycle   { "email": "person@trypennie.com", "action": "activate" }
+```
+
+Read the response. It reports `sessionRevoke`, and only `"restored"` means the ban
+was lifted; `"failed"` means the auth call did not land and re-running it is the
+fix. `"no-auth-account"` means they have never signed in, so there was no ban to
+lift and nothing is wrong.
+
+If nobody can reach either (that is the lockout you are in), lift the ban in the
+Supabase dashboard under Authentication, Users, by clearing the `banned_until` on
+that auth user, and then clear `deactivated_at` with the statement in step 3's
+shape. Doing only one of the two leaves the account broken in a way neither screen
+explains.
 
 ### 3. Promote them
 

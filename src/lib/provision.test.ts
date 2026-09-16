@@ -130,6 +130,7 @@ vi.mock("@/lib/supabase/admin", () => ({
 }));
 
 import { provisionUser } from "./provision";
+import { DeactivatedAccountError } from "@/lib/auth/active-session";
 
 const input = {
   authUserId: "auth-1",
@@ -275,5 +276,70 @@ describe("provisionUser matches an address case insensitively (#1663)", () => {
     const user = await provisionUser(input);
     expect(user.id).toBe("existing-user");
     expect(db.current.getInsertedPayload()).toBeNull();
+  });
+});
+
+// #2378: a fresh sign in by somebody who has LEFT used to succeed. The already
+// linked branch returned the row unconditionally, and the by-email branch linked
+// a departed row to whatever Google account arrived, so a Workspace account that
+// had not yet been suspended minted a live Slate session for a person the roster
+// no longer carries.
+//
+// Provisioning REFUSES rather than degrading, which is the same choice #1648 made
+// for an unreadable read: the callback turns the refusal into a sign in error and
+// clears the half made session, rather than landing them on an internal page.
+describe("provisionUser refuses a deactivated account (#2378)", () => {
+  const LEFT = "2026-09-01T00:00:00.000Z";
+
+  beforeEach(() => {
+    db.current = null;
+  });
+
+  it("refuses a sign in for a row already linked by auth_user_id", async () => {
+    db.current = makeDb({
+      org: { id: "org-1" },
+      adminExists: true,
+      linked: { id: "linked-1", email: input.email, deactivated_at: LEFT },
+    });
+
+    await expect(provisionUser(input)).rejects.toBeInstanceOf(DeactivatedAccountError);
+    // And it refuses without writing: a refused sign in must not relink or touch
+    // the departed row on its way out.
+    expect(db.current.getUpdates()).toHaveLength(0);
+    expect(db.current.getInsertedPayload()).toBeNull();
+  });
+
+  it("refuses a sign in for a departed row matched by email, and never links it", async () => {
+    db.current = makeDb({
+      org: { id: "org-1" },
+      adminExists: true,
+      existingByEmail: { id: "synced-1", email: input.email, deactivated_at: LEFT },
+    });
+
+    await expect(provisionUser(input)).rejects.toBeInstanceOf(DeactivatedAccountError);
+    // The dangerous write is the one that sets auth_user_id on a departed row.
+    for (const payload of db.current.getUpdates()) {
+      expect("auth_user_id" in payload).toBe(false);
+    }
+    expect(db.current.getInsertedPayload()).toBeNull();
+  });
+
+  // The positive control in the same fixture (L159): the identical rows with
+  // `deactivated_at` null sign in exactly as before, so the two refusals above
+  // cannot be provisioning having stopped working altogether.
+  it("still signs in the same rows while they are active", async () => {
+    db.current = makeDb({
+      org: { id: "org-1" },
+      adminExists: true,
+      linked: { id: "linked-1", email: input.email, deactivated_at: null },
+    });
+    expect((await provisionUser(input)).id).toBe("linked-1");
+
+    db.current = makeDb({
+      org: { id: "org-1" },
+      adminExists: true,
+      existingByEmail: { id: "synced-1", email: input.email, deactivated_at: null },
+    });
+    expect((await provisionUser(input)).id).toBe("existing-user");
   });
 });
