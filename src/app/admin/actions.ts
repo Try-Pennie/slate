@@ -123,6 +123,31 @@ import {
 } from "@/lib/offboarding/coverage-choice";
 
 /**
+ * What a refused WRITE says, and the one place it is said (#2379).
+ *
+ * supabase-js does NOT throw on a statement Postgres refuses: it resolves
+ * `{ error }`. Eleven saves in this file awaited a write, read nothing off it,
+ * and carried on to record an audit entry naming the value, revalidate, and land
+ * on a saved notice. A refused kill switch left the embed taking bookings while
+ * the trail said `public_booking_paused: true`, which is the one question that
+ * record exists to answer (L529, L12).
+ *
+ * ONE builder rather than eleven sentences, so the saves cannot drift into
+ * eleven different ways of telling somebody the same thing (L41), and so the
+ * detail reaches the LOG in every case: Cloudflare stores the serialized error,
+ * and the reader on screen gets the short reason without having to be handed a
+ * stack (see "Alert copy never carries a raw error" in AGENTS.md, the same
+ * division applied to a screen).
+ *
+ * `what` names the thing that did not change, in the vocabulary of the form the
+ * person is looking at, never the table (L399).
+ */
+function writeRefused(what: string, error: { message: string; code?: string }): string {
+  log.error("admin-actions", { msg: "write refused", what, code: error.code ?? null }, error);
+  return `${what} could not be saved: ${error.message}`;
+}
+
+/**
  * Asserts the signed-in user is a manager+ who may edit `userId` (escalation
  * guard: a manager can edit agents but not peers/admins). Returns the actor.
  */
@@ -897,7 +922,13 @@ export async function setMonitorSettings(form: FormData): Promise<void> {
 
   const db = supabaseAdmin();
   const now = new Date().toISOString();
-  await db.from("monitor_settings").upsert(
+  // #2379: both writes are checked, and each refuses BEFORE the audit entry, the
+  // channel cache clear and the saved notice. The cooldowns land first, so a
+  // refusal on the config leaves them written: that is stated rather than hidden,
+  // because the alternative (one transaction) is a migration this save does not
+  // need, and a half applied save that SAYS so is recoverable by pressing save
+  // again, while a silent one is not.
+  const { error: cooldownError } = await db.from("monitor_settings").upsert(
     parsed.cooldowns.map((c) => ({
       key: c.key,
       cooldown_min: c.cooldown_min,
@@ -906,9 +937,21 @@ export async function setMonitorSettings(form: FormData): Promise<void> {
     })),
     { onConflict: "key" },
   );
-  await db
+  if (cooldownError) {
+    redirect(
+      `/admin/alerts?error=${encodeURIComponent(writeRefused("The alert cooldowns", cooldownError))}`,
+    );
+  }
+  const { error: configError } = await db
     .from("monitor_alert_config")
     .upsert({ id: 1, ...parsed.config, updated_at: now, updated_by: admin.id }, { onConflict: "id" });
+  if (configError) {
+    redirect(
+      `/admin/alerts?error=${encodeURIComponent(
+        writeRefused("The alert settings", configError),
+      )}`,
+    );
+  }
 
   await recordAudit({
     orgId: admin.org_id,
@@ -949,7 +992,10 @@ export async function setDefaultBucket(form: FormData): Promise<void> {
     redirect(`/admin/buckets?error=${encodeURIComponent(parsed.errors.join(" "))}`);
   }
 
-  await db.from("booking_settings").upsert(
+  // #2379: refused before the audit entry and the saved notice. A default bucket
+  // the write never landed is the one that routes every direct booking, so a
+  // confirmation nobody can act on sends leads to the previous pool.
+  const { error } = await db.from("booking_settings").upsert(
     {
       id: 1,
       default_bucket_code: parsed.default_bucket_code,
@@ -958,6 +1004,11 @@ export async function setDefaultBucket(form: FormData): Promise<void> {
     },
     { onConflict: "id" },
   );
+  if (error) {
+    redirect(
+      `/admin/buckets?error=${encodeURIComponent(writeRefused("The default bucket", error))}`,
+    );
+  }
 
   await recordAudit({
     orgId: admin.org_id,
@@ -988,7 +1039,11 @@ export async function setBookingHorizon(form: FormData): Promise<void> {
     redirect(`/admin/business-hours?error=${encodeURIComponent(parsed.errors.join(" "))}`);
   }
 
-  await db.from("booking_settings").upsert(
+  // #2379: refused before anything downstream acts on a horizon that was never
+  // stored. The invalidation below is the sharpest of those: it marks every cached
+  // slot row stale, so a refused save would spend a whole recompute cycle
+  // rebuilding 60 rows over the window that did not change.
+  const { error } = await db.from("booking_settings").upsert(
     {
       id: 1,
       horizon_days: parsed.horizon_days,
@@ -997,6 +1052,13 @@ export async function setBookingHorizon(form: FormData): Promise<void> {
     },
     { onConflict: "id" },
   );
+  if (error) {
+    redirect(
+      `/admin/business-hours?error=${encodeURIComponent(
+        writeRefused("The booking horizon", error),
+      )}`,
+    );
+  }
 
   // Refresh-on-save: converge rows onto the new window now, not only as they age.
   try {
@@ -1109,12 +1171,22 @@ export async function setReasonOptions(form: FormData): Promise<void> {
   }
 
   const now = new Date().toISOString();
-  await supabaseAdmin()
+  // #2379: refused before the audit entry and the saved notice. The editor posts
+  // the COMPLETE set, so a refused save means the page is about to redraw the
+  // stored options, which are the ones the admin just edited away from.
+  const { error } = await supabaseAdmin()
     .from("reason_options")
     .upsert(
       rows.map((r) => ({ ...r, updated_at: now, updated_by: admin.id })),
       { onConflict: "action,code" },
     );
+  if (error) {
+    redirect(
+      `/admin/booking-reasons?error=${encodeURIComponent(
+        writeRefused("The booking reasons", error),
+      )}`,
+    );
+  }
 
   await recordAudit({
     orgId: admin.org_id,
@@ -1143,7 +1215,12 @@ export async function setOrgDefaultHours(form: FormData): Promise<void> {
   );
   if (!defaults.ok) throw new Error(defaults.error);
 
-  await supabaseAdmin()
+  // #2379: this action already refuses an unstorable week by throwing, so a
+  // refused WRITE says no the same way. A second mechanism on one action would be
+  // a third pattern for one thing, and the value here is what a new agent ADOPTS:
+  // a save that only appeared to land leaves every agent created afterwards on
+  // the previous default, which nothing else on the page would reveal.
+  const { error } = await supabaseAdmin()
     .from("organizations")
     .update({
       default_timezone: defaultTimezone,
@@ -1163,6 +1240,7 @@ export async function setOrgDefaultHours(form: FormData): Promise<void> {
       default_weekdays: weekdays.length ? weekdays : [1, 2, 3, 4, 5],
     })
     .eq("id", admin.org_id);
+  if (error) throw new Error(writeRefused("The default hours for a new agent", error));
   // #1990: `/admin` was the only route refreshed, and this form is not on it.
   // That is #1769 exactly: the page the person is looking at redrew with what it
   // showed before they pressed the button, which is indistinguishable from the
@@ -1472,10 +1550,16 @@ export async function setOooCalendarId(form: FormData): Promise<void> {
   const userId = String(form.get("user_id") ?? "");
   if (!userId) return;
   const calendarId = String(form.get("ooo_calendar_id") ?? "").trim();
-  await supabaseAdmin()
+  // #2379: refused before the audit entry and the saved notice. The field redraws
+  // holding the same text whether the write landed or not, so the notice is the
+  // ONLY thing on screen that says anything about it, and a refused write made it
+  // say the wrong thing. It throws, like the role form beside it on this page:
+  // the page's `?error=` notice belongs to the working hours card above.
+  const { error } = await supabaseAdmin()
     .from("users")
     .update({ ooo_calendar_id: calendarId || null })
     .eq("id", userId);
+  if (error) throw new Error(writeRefused("The time off calendar", error));
   await recordAudit({
     orgId: admin.org_id,
     actorId: admin.id,
@@ -1546,7 +1630,17 @@ export async function setUserRole(form: FormData): Promise<void> {
     throw new Error("Cannot remove the last admin");
   }
 
-  await db.from("users").update({ role: next }).eq("id", userId);
+  // #2379: the revocation twin of the kill switch. The result was discarded, so a
+  // refused write recorded `role.set { from: "admin", to: "agent" }` for a role
+  // that never changed: an admin removing a departing admin's access is told it is
+  // done, the trail says it is done, and the person keeps admin (L529). It throws,
+  // like every other refusal in this action, rather than adding a fourth way of
+  // saying no to one form.
+  const { error: roleWriteError } = await db
+    .from("users")
+    .update({ role: next })
+    .eq("id", userId);
+  if (roleWriteError) throw new Error(writeRefused("The role", roleWriteError));
   await recordAudit({
     orgId: admin.org_id,
     actorId: admin.id,
@@ -1814,19 +1908,34 @@ export async function setWebhookEndpoint(form: FormData): Promise<void> {
     "webhook endpoint upsert lookup",
   );
 
+  // #2379: both branches are checked, and each refuses through the same
+  // `?webhook_error=` the URL guard above already uses, so this form has ONE way
+  // of saying no. A refused write here is the quietest failure in the file: the
+  // page redraws from the stored row and there is no saved notice at all, so an
+  // endpoint that was never written looks exactly like one that was.
   if (existing) {
-    await db
+    const { error } = await db
       .from("webhook_endpoints")
       .update(authHeader ? { url, format, auth_header: authHeader } : { url, format })
       .eq("id", (existing as { id: string }).id);
+    if (error) {
+      redirect(
+        `/admin?webhook_error=${encodeURIComponent(writeRefused("The webhook endpoint", error))}`,
+      );
+    }
   } else {
-    await db.from("webhook_endpoints").insert({
+    const { error } = await db.from("webhook_endpoints").insert({
       org_id: admin.org_id,
       url,
       format,
       auth_header: authHeader,
       secret: nanoid(32),
     });
+    if (error) {
+      redirect(
+        `/admin?webhook_error=${encodeURIComponent(writeRefused("The webhook endpoint", error))}`,
+      );
+    }
   }
   revalidatePath("/admin");
 }
@@ -2278,7 +2387,7 @@ export async function setPublicBookingPaused(form: FormData): Promise<void> {
   // Column-scoped upsert, so pausing bookings cannot also clear the default bucket
   // or the horizon sharing this row. Idempotent: pressing it twice is the same as
   // pressing it once (assume-it-runs-twice).
-  await db.from("booking_settings").upsert(
+  const { error } = await db.from("booking_settings").upsert(
     {
       id: 1,
       public_booking_paused: paused,
@@ -2287,6 +2396,30 @@ export async function setPublicBookingPaused(form: FormData): Promise<void> {
     },
     { onConflict: "id" },
   );
+  // #2379: the write is CONSULTED, and the refusal comes before everything that
+  // would otherwise report a success. supabase-js does not throw on a statement
+  // Postgres refuses, so this awaited and read nothing: the audit entry below
+  // recorded the value, the page drew "Online booking is stopped", and the embed
+  // kept taking bookings. Both halves of a control matter and only the enforcing
+  // one was hardened (L397); this is the arming half.
+  //
+  // It refuses rather than retrying, and says so on the page the control is on, so
+  // whoever pressed it can press it again or reach for the second lever. A control
+  // whose whole value is being certain about what it did must never report a
+  // certainty it does not have.
+  if (error) {
+    redirect(
+      `/admin/business-hours?error=${encodeURIComponent(
+        // The direction is kept in the sentence, because which way it went is the
+        // one thing a reader of this control needs (L60), and "the booking switch"
+        // would be the word that appears whatever you pressed.
+        writeRefused(
+          paused ? "The change to stop online booking" : "The change to start online booking",
+          error,
+        ),
+      )}`,
+    );
+  }
 
   // The audit entry carries the VALUE, not just the fact that somebody touched the
   // switch. "Were we taking bookings at 3am" is the only question anybody asks of

@@ -1610,6 +1610,74 @@ Two guards cover the alerting end of this, both in `pnpm test`:
 recovery notice must carry a test proving it stays silent when its health signal
 cannot be read, or point at the suite that does with `// all-clear-proof:`).
 
+# Unchecked writes in a server action (the `// write-ok:` convention)
+
+The same defect wearing its third shape, and the one the two guards above were
+blind to by construction. A server action that awaits a WRITE and throws the
+result away:
+
+```ts
+await db.from("booking_settings").upsert({ id: 1, public_booking_paused: paused }, { onConflict: "id" });
+await recordAudit({ action: "booking.settings", details: { public_booking_paused: paused } });
+redirect(`/admin/business-hours${savedQuery("booking-paused")}`);
+```
+
+supabase-js does not throw on a statement Postgres refuses; it resolves
+`{ error }`. So on a refusal (a half applied migration, an RLS or grant change, a
+statement timeout) that runs to completion: the admin is shown "Online booking is
+stopped", the audit trail records `public_booking_paused: true`, and the embed
+keeps taking bookings. The record written to answer "were we taking bookings at
+3am" answers it with a confident wrong value, which is the one question it exists
+for (#2379, L529, L12). **The kill switch is the headline and the role change is
+its twin**: `setUserRole` recorded `admin` to `agent` for a role that never
+changed, so a revoked admin kept admin. Eleven writes in
+`src/app/admin/actions.ts` were written this way.
+
+**The class was invisible, and that is the part worth remembering.**
+`scripts/test-swallowed-error-reads.ts` skips a chain whose mutator is reached
+before its `.select(`, and said in its own header that a write is "a different
+concern". True, and with nothing on the far side of that boundary it read as a
+class somebody had handled (L400).
+
+`scripts/test-unchecked-writes.ts` is the guard, and it is the sibling of the
+read one: that one asks whether an `error` was BOUND, this one asks whether the
+result of the write went anywhere at all. It scans every `src/app/**/actions.ts`
+(walked, never a hand written list, so a new action file is covered by
+construction) and flags an awaited Supabase chain carrying `.insert(` /
+`.update(` / `.upsert(` / `.delete(` that appears as a bare EXPRESSION
+STATEMENT. The result of one has nowhere to go, so nothing anywhere can consult
+its `error`. Scan logic in `scripts/lib/scan-unchecked-writes.ts`.
+
+Compliant shapes: bind `{ error }` and refuse, bind the whole result to a name,
+or return it to the caller.
+
+**Refuse BEFORE the audit entry, before `revalidatePath`, and before the success
+redirect**, and say so on the page the form is on. The wording is built in one
+place, `writeRefused` in `src/app/admin/actions.ts`, which also logs the full
+error: eleven saves must not drift into eleven ways of saying the same thing
+(L41). Which mechanism to use is decided by the ACTION, not by this rule: an
+action that already refuses with `redirect(...?error=)` does that, and one that
+already throws throws. A third pattern on one form is worse than either.
+
+**The escape hatch is `// write-ok: <why>`**, on or in the `//` block directly
+above the statement, for a write nothing downstream reads as having happened: no
+audit entry claiming the value, no success notice, no cache invalidation standing
+in for the change.
+
+It is deliberately NOT the siblings' `// error-ok:`. Putting a second rule behind
+an existing suppression token silently widens every existing use of it (L448),
+and an `// error-ok:` is written about a READ: it would then exempt a write
+sitting under the same comment block, which is exactly the pairing an action that
+reads a row and then writes it produces. A fixture pins that.
+
+**Scope, so a green run is never read as more than it is.** This sees the
+DISCARDED result and nothing else. A result bound to a name and then never
+consulted (`const res = await db.from(...).update(...)` with `res.error` read
+nowhere) is the same defect and is NOT flagged: it is the result-object shape the
+read scanner already covers for reads, and it has not appeared once on this
+surface. If one turns up, widen the shape there rather than assuming it is
+covered here.
+
 # Raw `Date.parse` on a timestamp (the `// parse-ok:` convention)
 
 `Date.parse` returns **NaN** for anything it cannot read, and every comparison
