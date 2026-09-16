@@ -55,4 +55,15 @@ if [ "$status" -ne 0 ]; then
   echo "" >&2
   exit 1
 fi
+
+# A PASS that judged less than every reference says so (#2293). The checker lets a
+# setting a workflow declares is provisioned per run be absent, and on a pass this
+# hook captures its output and throws it away, so the narrowing would be invisible
+# in the one place it matters: the push it let through. A clean pass stays quiet, so
+# the note means something when it appears (L98).
+if printf '%s\n' "$output" | grep -q '^note:'; then
+  echo "" >&2
+  printf '%s\n' "$output" >&2
+  echo "" >&2
+fi
 exit 0

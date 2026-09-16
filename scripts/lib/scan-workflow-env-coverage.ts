@@ -386,3 +386,229 @@ export function missingRepoSettings(
     r.kind === "vars" ? !existing.vars.has(r.name) : !existing.secrets.has(r.name),
   );
 }
+
+/* --------------------------------------------------------------------------
+ * Settings that are PROVISIONED PER RUN (#2293)
+ *
+ * The guard above is right about the fault it was built for: a reference to a
+ * setting nobody ever created runs the step on an empty string and reads as
+ * configured. It is wrong about a workflow whose settings are created for one run
+ * and destroyed with it. `loadtest.yml` (#2244) points at a throwaway Supabase
+ * branch and a Worker its own teardown job deletes, so between runs its seven
+ * settings genuinely do not exist, and the guard refused every push that touched
+ * ANY workflow. The documented way through was the override, which is how a guard
+ * stops being read (L36), and it waves a REAL missing setting on another workflow
+ * through in the same breath.
+ *
+ * So a workflow may DECLARE, in its own file, which of its settings are of that
+ * kind. Three rules, and each is what keeps this from being the guard turned off:
+ *
+ * - The names are EXACT and listed one by one (L129: an exemption is named, never
+ *   achieved by leaving something out of a table). A `LOADTEST_*` wildcard would
+ *   have exempted a typo in a reference, which is exactly the fault being guarded.
+ * - The declaration carries a REASON, introduced by `because`, and the reason is
+ *   what is checked rather than the presence of the marker (L675). The reason is
+ *   written as the reason for exempting, so it keeps covering the next workflow
+ *   that provisions its settings per run (L362), rather than naming this one.
+ * - It covers only references in the DECLARING file. "Provisioned per run" is a
+ *   fact about one workflow's dispatcher, and a second workflow reading the same
+ *   setting on a schedule is a real finding.
+ *
+ * An absent per-run setting is REPORTED, never silently passed, because a run that
+ * judged less than everything and a run that found nothing wrong must not read the
+ * same (L98). One that EXISTS is judged exactly like any other reference, so this
+ * is permission for absence and not an exclusion from the check.
+ * -------------------------------------------------------------------------- */
+
+const PER_RUN_MARKER = "settings-provisioned-per-run:";
+
+export interface PerRunDeclaration {
+  /** Setting names this file declares are created and destroyed per run. */
+  names: string[];
+  /** The stated reason, or null when the declaration carries none. */
+  reason: string | null;
+}
+
+/**
+ * Parse a workflow's per-run declarations out of its leading comments.
+ *
+ * The form, over one or more `#` comment lines:
+ *
+ *   # settings-provisioned-per-run: NAME_ONE, NAME_TWO,
+ *   #   NAME_THREE
+ *   #   because they are created by the dispatcher for one run and deleted by the
+ *   #   teardown job, so between runs their absence is the normal state.
+ *
+ * `because` separates the names from the prose, so neither half can be mistaken
+ * for the other and an empty reason cannot hide behind the keyword.
+ */
+export function perRunDeclarations(yaml: string): PerRunDeclaration[] {
+  const lines = yaml.split("\n");
+  const out: PerRunDeclaration[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    const at = lines[i]!.indexOf(PER_RUN_MARKER);
+    if (at < 0 || !/^\s*#/.test(lines[i]!)) continue;
+    let text = lines[i]!.slice(at + PER_RUN_MARKER.length);
+    // Continue while the following lines are still comments and the declaration
+    // has not obviously ended (a blank comment line closes it).
+    for (let j = i + 1; j < lines.length; j++) {
+      const next = lines[j]!;
+      if (!/^\s*#/.test(next)) break;
+      const body = next.replace(/^\s*#\s?/, "");
+      if (!body.trim()) break;
+      if (body.includes(PER_RUN_MARKER)) break;
+      text += ` ${body}`;
+      i = j;
+    }
+    const split = text.split(/\bbecause\b/);
+    const nameText = split[0]!;
+    // Whitespace is collapsed because the reason is read across several comment
+    // lines, each carrying its own indent, and it is printed back as one sentence.
+    const reasonText =
+      split.length > 1 ? split.slice(1).join("because").replace(/\s+/g, " ").trim() : "";
+    const names: string[] = [];
+    for (const m of nameText.matchAll(/[A-Z][A-Z0-9_]*/g)) {
+      if (!names.includes(m[0])) names.push(m[0]);
+    }
+    out.push({ names, reason: isStatedReason(reasonText) ? reasonText : null });
+  }
+  return out;
+}
+
+/**
+ * Whether a declaration's reason says anything.
+ *
+ * It must begin with a WORD, so the surrounding syntax cannot satisfy it (L675),
+ * and run to at least three words, because a one word reason ("loadtest") names
+ * the case rather than the reason for exempting it (L362, L233).
+ */
+export function isStatedReason(reason: string): boolean {
+  if (!/^[A-Za-z]/.test(reason.trim())) return false;
+  return reason.trim().split(/\s+/).length >= 3;
+}
+
+/**
+ * The events a workflow runs on, read from its top level `on:`.
+ *
+ * All three forms GitHub allows: `on: push`, `on: [push, pull_request]`, and the
+ * mapping. A file this cannot read returns an EMPTY list, which the caller must
+ * treat as a refusal rather than as "no triggers", because a per-run declaration
+ * is only safe on a workflow a person dispatches (L98).
+ */
+export function workflowTriggers(yaml: string): string[] {
+  const lines = yaml.split("\n");
+  const out: string[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    const m = lines[i]!.match(/^on:\s*(.*)$/);
+    if (!m) continue;
+    const inline = m[1]!.trim().replace(/#.*$/, "").trim();
+    if (inline.startsWith("[")) {
+      for (const name of inline.replace(/[[\]]/g, "").split(",")) {
+        if (name.trim()) out.push(name.trim());
+      }
+      return out;
+    }
+    if (inline) return [inline];
+    // Only keys at the FIRST indent level under `on:` are triggers. Anything deeper
+    // belongs to one of them (`workflow_dispatch:` carries `inputs:`, `push:`
+    // carries `branches:`), and counting those as triggers would refuse the very
+    // workflow this exists to permit.
+    let keyIndent: number | null = null;
+    for (let j = i + 1; j < lines.length; j++) {
+      const line = lines[j]!;
+      if (!line.trim() || /^\s*#/.test(line)) continue;
+      if (!/^\s/.test(line)) break;
+      const key = line.match(/^(\s+)([a-z_]+)\s*:/);
+      if (!key) continue;
+      const indent = key[1]!.length;
+      if (keyIndent === null) keyIndent = indent;
+      if (indent === keyIndent) out.push(key[2]!);
+    }
+    return out;
+  }
+  return out;
+}
+
+/**
+ * Whether a workflow may declare settings provisioned per run.
+ *
+ * Only a workflow somebody DISPATCHES can: the settings are created by hand before
+ * the run and deleted after it, so a schedule, a push or any other automatic
+ * trigger would fire on empty strings with nothing to say about it, which is the
+ * #1495 failure this whole check exists for. Writing the rule this way keeps the
+ * exemption tied to the REASON for it rather than to the one workflow that has it
+ * today (L362).
+ *
+ * An unreadable `on:` refuses, because a file whose triggers could not be read and
+ * one that runs only on dispatch must not read the same.
+ */
+export function mayDeclarePerRun(triggers: string[]): boolean {
+  return triggers.length > 0 && triggers.every((t) => t === "workflow_dispatch");
+}
+
+export interface PerRunUnjudged extends RepoSettingRef {
+  /** Files that reference it, all of which declared it provisioned per run. */
+  files: string[];
+  reason: string;
+}
+
+export interface PerRunSplit {
+  /** Missing, and at least one file referencing it made no such declaration. */
+  failing: RepoSettingRef[];
+  /** Missing everywhere it is referenced, and declared per run by every one. */
+  unjudged: PerRunUnjudged[];
+}
+
+/**
+ * Split the missing references into the ones that are a real finding and the ones
+ * every referencing file declared are provisioned per run.
+ *
+ * `declaredByFile` maps a workflow file to the names it declared and the reason it
+ * gave. A missing reference is only unjudged when EVERY file that references it
+ * declares it: one scheduled workflow reading a setting that only a dispatched run
+ * creates is the fault this guard exists for, wherever else it is declared.
+ */
+export function splitPerRunMissing(
+  missing: RepoSettingRef[],
+  referencedIn: Map<string, string[]>,
+  declaredByFile: Map<string, Map<string, string>>,
+): PerRunSplit {
+  const failing: RepoSettingRef[] = [];
+  const unjudged: PerRunUnjudged[] = [];
+  for (const ref of missing) {
+    const files = referencedIn.get(`${ref.kind}.${ref.name}`) ?? [];
+    const reasons = files.map((f) => declaredByFile.get(f)?.get(ref.name));
+    if (files.length > 0 && reasons.every((r) => r !== undefined)) {
+      unjudged.push({ ...ref, files, reason: reasons[0]! });
+    } else {
+      failing.push(ref);
+    }
+  }
+  return { failing, unjudged };
+}
+
+export interface StaleDeclaration {
+  file: string;
+  name: string;
+}
+
+/**
+ * Declared names the declaring file does not reference at all.
+ *
+ * A stale entry is the shape of an exemption nobody re-read: it goes on reading as
+ * a considered decision while covering nothing, and the next reference that name
+ * ever gains is exempt by accident (L129, L346).
+ */
+export function stalePerRunDeclarations(
+  declaredByFile: Map<string, Map<string, string>>,
+  referencedByFile: Map<string, Set<string>>,
+): StaleDeclaration[] {
+  const out: StaleDeclaration[] = [];
+  for (const [file, declared] of declaredByFile) {
+    const referenced = referencedByFile.get(file) ?? new Set<string>();
+    for (const name of declared.keys()) {
+      if (!referenced.has(name)) out.push({ file, name });
+    }
+  }
+  return out;
+}

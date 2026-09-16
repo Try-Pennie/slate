@@ -30,6 +30,12 @@ import {
   varsWiredEnvNames,
   missingRepoSettings,
   referencedRepoSettings,
+  isStatedReason,
+  mayDeclarePerRun,
+  perRunDeclarations,
+  splitPerRunMissing,
+  stalePerRunDeclarations,
+  workflowTriggers,
 } from "./lib/scan-workflow-env-coverage.ts";
 
 const ROOT = join(import.meta.dirname, "..");
@@ -452,6 +458,141 @@ jobs:
     offenders.length,
     0,
     `no script declares a REQUIRED variable exempt from wiring (${offenders.map((o) => `${o.file}:${o.variable}`).join(", ")})`,
+  );
+}
+
+// --- the per-run declaration's grammar (#2293) ---------------------------------
+//
+// The end to end behaviour is pinned by `test-workflow-settings-checker.ts`, which
+// runs the real script. These are the parse's own edges, where a wrong answer is
+// silent: a reason that is not one, and a name read out of the prose.
+{
+  const decls = perRunDeclarations(
+    [
+      "# settings-provisioned-per-run: FIRST_NAME, SECOND_NAME,",
+      "#   THIRD_NAME",
+      "#   because the dispatcher creates them for one run and the teardown job",
+      "#   deletes them, so their absence between runs is the normal state.",
+      "name: X",
+    ].join("\n"),
+  );
+  eq(decls.length, 1, "one declaration is read from one marker");
+  eq(
+    decls[0]!.names.join(","),
+    "FIRST_NAME,SECOND_NAME,THIRD_NAME",
+    "every name is read, across the continuation lines",
+  );
+  assert(
+    decls[0]!.reason !== null && /teardown job deletes them/.test(decls[0]!.reason),
+    "and the reason is collapsed to one sentence, so it prints back readably",
+  );
+}
+{
+  // The prose is full of ordinary words and, on this roster, of setting names being
+  // talked ABOUT. Nothing after `because` may become a declared name, or the reason
+  // would quietly widen the exemption it exists to justify.
+  const decls = perRunDeclarations(
+    [
+      "# settings-provisioned-per-run: ONLY_THIS",
+      "#   because it is created per run, unlike CLOUDFLARE_API_TOKEN, which is a",
+      "#   permanent credential this run borrows.",
+    ].join("\n"),
+  );
+  eq(decls[0]!.names.join(","), "ONLY_THIS", "a name mentioned in the reason is not declared");
+}
+{
+  const none = perRunDeclarations("# settings-provisioned-per-run: A_NAME\nname: X");
+  eq(none[0]!.reason, null, "a declaration with no reason reports none, rather than an empty one");
+  assert(!isStatedReason(""), "an empty reason is not a reason");
+  assert(!isStatedReason("  "), "and neither is whitespace");
+  assert(!isStatedReason("loadtest"), "nor one word, which names the case rather than the reason");
+  assert(
+    !isStatedReason("(created per run)"),
+    "nor one opening with punctuation, so the surrounding syntax cannot satisfy it (L675)",
+  );
+  assert(isStatedReason("they are created per run"), "a sentence is");
+}
+{
+  // Scope: declared in one file, referenced by two. The undeclared reference decides.
+  const missing = [
+    { kind: "vars" as const, name: "PER_RUN_ONE" },
+    { kind: "vars" as const, name: "PER_RUN_TWO" },
+  ];
+  const referencedIn = new Map([
+    ["vars.PER_RUN_ONE", ["a.yml"]],
+    ["vars.PER_RUN_TWO", ["a.yml", "b.yml"]],
+  ]);
+  const declared = new Map([["a.yml", new Map([["PER_RUN_ONE", "r"], ["PER_RUN_TWO", "r"]])]]);
+  const split = splitPerRunMissing(missing, referencedIn, declared);
+  eq(split.unjudged.map((u) => u.name).join(","), "PER_RUN_ONE", "declared everywhere: unjudged");
+  eq(
+    split.failing.map((f) => f.name).join(","),
+    "PER_RUN_TWO",
+    "declared in only one of the two files that reference it: still a finding",
+  );
+}
+{
+  // Only a workflow somebody DISPATCHES may declare per-run settings, because the
+  // settings are created by hand before the run. All three `on:` spellings, and the
+  // unreadable case, which must refuse rather than read as dispatch only.
+  eq(
+    workflowTriggers("on: push\njobs:\n").join(","),
+    "push",
+    "the inline scalar form is read",
+  );
+  eq(
+    workflowTriggers("on: [push, workflow_dispatch]\njobs:\n").join(","),
+    "push,workflow_dispatch",
+    "the inline list form is read",
+  );
+  eq(
+    workflowTriggers("on:\n  schedule:\n    - cron: '0 * * * *'\n  workflow_dispatch:\njobs:\n").join(","),
+    "schedule,workflow_dispatch",
+    "the mapping form is read, including a trigger carrying its own nested keys",
+  );
+  assert(mayDeclarePerRun(["workflow_dispatch"]), "dispatch only may declare");
+  assert(!mayDeclarePerRun(["schedule", "workflow_dispatch"]), "a schedule beside it may not");
+  assert(!mayDeclarePerRun(["push"]), "nor a push");
+  assert(
+    !mayDeclarePerRun([]),
+    "and an `on:` block this could not read refuses, rather than reading as dispatch only (L98)",
+  );
+  // The real tree: the workflow that declares today really is dispatch only, so the
+  // rule is satisfied by the file rather than only by the fixtures.
+  const loadtest = readFileSync(join(WORKFLOW_DIR, "loadtest.yml"), "utf8");
+  assert(
+    perRunDeclarations(loadtest).length > 0 && mayDeclarePerRun(workflowTriggers(loadtest)),
+    "loadtest.yml declares per-run settings and runs only on workflow_dispatch",
+  );
+}
+{
+  const stale = stalePerRunDeclarations(
+    new Map([["a.yml", new Map([["USED", "r"], ["GONE", "r"]])]]),
+    new Map([["a.yml", new Set(["USED"])]]),
+  );
+  eq(stale.length, 1, "a declared name the file never references is reported");
+  eq(stale[0]!.name, "GONE", "and named");
+}
+{
+  // The real tree: every declaration that exists today parses, carries a reason and
+  // covers something. A grammar nobody satisfies would leave the guard blocking the
+  // push it was written to let through, and the fixtures above cannot see that.
+  const files = readdirSync(WORKFLOW_DIR).filter((f) => f.endsWith(".yml"));
+  let declaredNames = 0;
+  for (const file of files) {
+    const yaml = readFileSync(join(WORKFLOW_DIR, file), "utf8");
+    const referenced = new Set(referencedRepoSettings(yaml).map((r) => r.name));
+    for (const decl of perRunDeclarations(yaml)) {
+      assert(decl.reason !== null, `${file}'s per-run declaration carries a reason`);
+      for (const name of decl.names) {
+        declaredNames++;
+        assert(referenced.has(name), `${file} really references ${name}, which it declares`);
+      }
+    }
+  }
+  assert(
+    declaredNames > 0,
+    `the real tree holds at least one per-run declaration (found ${declaredNames}), so this read something`,
   );
 }
 

@@ -59,7 +59,7 @@ const REAL_PATHS: Record<(typeof ISOLATED_PATH_TOOLS)[number] | "bash", string> 
 function runGuard(
   changed: string,
   checkerExit: number,
-  opts: { withGh?: boolean; env?: Record<string, string> } = {},
+  opts: { withGh?: boolean; env?: Record<string, string>; checkerOutput?: string } = {},
 ): Run {
   const dir = mkdtempSync(join(tmpdir(), "wf-guard-"));
   const marker = join(dir, "ran");
@@ -72,7 +72,10 @@ function runGuard(
     // found and the stub would silently fail to record that it ran.
     writeFileSync(
       join(dir, "pnpm"),
-      `#!/bin/sh\n: > '${marker}'\necho 'stub checker output'\nexit ${checkerExit}\n`,
+      // `printf` rather than `cat <<EOF`: PATH is isolated to this directory, so
+      // an external command inside the stub is not found and the stub emits
+      // nothing, which reads as the guard swallowing the checker's output.
+      `#!/bin/sh\n: > '${marker}'\nprintf '%s\\n' '${opts.checkerOutput ?? "stub checker output"}'\nexit ${checkerExit}\n`,
     );
     chmodSync(join(dir, "pnpm"), 0o755);
     if (opts.withGh !== false) {
@@ -196,5 +199,24 @@ const NO_WORKFLOW_CHANGE = "src/lib/booking/core.ts\ndocs/api.md";
   assert(r.ran && r.code === 0, "and a passing checker still lets it through");
 }
 
+// --- a PASS that judged less than everything says so to the pusher (#2293) -----
+//
+// The load run's seven settings are created per run and absent between runs, so
+// the checker passes without judging them. On a pass the hook captures the
+// checker's output and throws it away, which would make that narrowing invisible
+// in the one place it matters: a push that was let through on a smaller check than
+// the reader thinks it got (L98). A `note:` line is echoed; a clean pass stays
+// quiet, so the note means something when it appears.
+{
+  const r = runGuard(WORKFLOW_CHANGE, 0, {
+    checkerOutput:
+      "note: 7 referenced setting(s) are declared provisioned per run and were NOT judged:\n  vars.LOADTEST_BASE_URL  (loadtest.yml: because the dispatcher creates them)\nok: all 16 referenced repo settings exist",
+  });
+  assert(r.code === 0, "a pass with unjudged settings still lets the push through");
+  assert(
+    r.err.includes("NOT judged") && r.err.includes("LOADTEST_BASE_URL"),
+    `and the pusher is told what was not judged (got ${JSON.stringify(r.err)})`,
+  );
+}
 
 finish();

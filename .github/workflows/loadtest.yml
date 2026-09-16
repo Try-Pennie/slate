@@ -47,6 +47,20 @@ name: Booking path load run
 # LOADTEST_BASE_URL, CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID,
 # LOADTEST_WORKER_NAME. `pnpm check:workflow-settings` names any that do not exist
 # with the command to create each.
+#
+# The seven LOADTEST_ ones are the exception, and this is what tells the checker so
+# (#2293). CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID are deliberately NOT in
+# the list: they are permanent account credentials this run borrows, so a missing
+# one is a real finding.
+#
+# settings-provisioned-per-run: LOADTEST_BASE_URL, LOADTEST_WORKER_NAME,
+#   LOADTEST_BOOKING_API_KEY, LOADTEST_CRON_SECRET, LOADTEST_SUPABASE_URL,
+#   LOADTEST_SUPABASE_SECRET_KEY, LOADTEST_SUPABASE_PUBLISHABLE_KEY
+#   because each one is created by whoever dispatches a run, against a throwaway
+#   Supabase branch and a Worker deployment the teardown job deletes, so between
+#   runs their absence is the normal state rather than a misconfiguration. Every
+#   script this workflow runs refuses an empty value BY NAME, so a run dispatched
+#   before they are created stops rather than booking against production.
 on:
   workflow_dispatch:
     inputs:
