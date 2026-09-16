@@ -3,6 +3,8 @@ import { buildRequest } from "@/lib/webhooks/wire";
 import { WEBHOOK_MAX_ATTEMPTS, isDeadLettered, isDueForRetry } from "@/lib/webhooks/retry";
 import { parseStampMs } from "@/lib/date/stamp";
 import { sendThrottledAlert, resolveAlert } from "@/lib/notify/dispatch";
+import { shortFailureReason } from "@/lib/notify/error-text";
+import { summarizeWebhookReply } from "@/lib/webhooks/response-summary";
 import { log } from "@/lib/log";
 import { webhookDeadAlert, webhookDeadRecovery } from "@/lib/monitor/cron-alert-copy";
 import type { BookingEventPayload } from "@/lib/webhooks/types";
@@ -55,6 +57,11 @@ async function send(
 
   let ok = false;
   let lastResponse = "";
+  // #2418: whether the reply came from something in FRONT of the subscriber's API,
+  // and the reply in full. The first decides what the dead letter page tells the
+  // reader to do; the second goes to the log and never to Slack.
+  let intermediary = false;
+  let fullReply: string | null = null;
   const stub = loadtestDeliveryResult();
   if (configError) {
     lastResponse = configError;
@@ -71,9 +78,25 @@ async function send(
         body,
         signal: controller.signal,
       });
-      const text = (await res.text().catch(() => "")).slice(0, 1000);
+      // A body that could not be read is kept as null rather than collapsed to "",
+      // because a 204 and a HEAD legitimately carry none and the two are different
+      // faults with different remedies (#2418).
+      let replyBody: string | null;
+      try {
+        replyBody = await res.text();
+      } catch {
+        replyBody = null;
+      }
+      const summary = summarizeWebhookReply({
+        status: res.status,
+        contentType: res.headers.get("content-type"),
+        cfRay: res.headers.get("cf-ray"),
+        body: replyBody,
+      });
       ok = res.ok;
-      lastResponse = `${res.status} ${text}`;
+      lastResponse = summary.lastResponse;
+      intermediary = summary.intermediary;
+      fullReply = replyBody;
     } catch (err) {
       // AbortError (timeout) or network error, both count as a failed attempt.
       lastResponse = String(err).slice(0, 1000);
@@ -93,10 +116,24 @@ async function send(
 
   // Retries exhausted and still failing: alert (throttled per endpoint).
   if (!ok && attempt >= WEBHOOK_MAX_ATTEMPTS) {
+    // The log carries the reply in full and the alert carries a short reason
+    // (AGENTS.md, "Alert copy never carries a raw error"). Cloudflare keeps every
+    // console line for 7 days, so a block page's markup and the Ray ID buried in
+    // it are recoverable from `tag=webhooks` without ever reaching a phone.
+    log.error("webhooks", {
+      msg: "delivery dead-lettered",
+      endpoint_id: endpoint.id,
+      event,
+      attempt,
+      intermediary,
+      reply: fullReply === null ? "(body could not be read)" : fullReply.slice(0, 2000),
+    });
     await sendThrottledAlert(
       `webhook_dead:${endpoint.id}`,
       DEAD_LETTER_COOLDOWN_MS,
-      webhookDeadAlert(endpoint.url, event, attempt, lastResponse),
+      webhookDeadAlert(endpoint.url, event, attempt, shortFailureReason(lastResponse) ?? "no detail", {
+        intermediary,
+      }),
     );
   }
 
