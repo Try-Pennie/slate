@@ -68,7 +68,6 @@ import {
   MANAGE_PHONE_NOT_FOUND,
 } from "./manage-copy.ts";
 import { validateAttendee } from "../attendee.ts";
-import { formatPhoneAsTyped } from "../phone-format.ts";
 import { shortErrorReason } from "../notify/error-text.ts";
 import { log } from "@/lib/log";
 import {
@@ -4416,7 +4415,7 @@ export async function completePastBookings(
  */
 export interface UpdatePhoneResult {
   ok: boolean;
-  /** The stored, formatted number on success. */
+  /** The stored number on success, normalised the way every write normalises it. */
   phone?: string;
   /** The lead-facing refusal on failure. Never a raw error. */
   error?: string;
@@ -4454,7 +4453,7 @@ export interface ContactChange {
 export type UpdateContactResult =
   | {
       ok: true;
-      /** The stored, formatted number, whether or not this write moved it. */
+      /** The stored number, whether or not this write moved it. */
       phone: string;
       changed: ContactChange;
       staleInvite?: { agentEmail: string; bookingId: string };
@@ -4530,9 +4529,22 @@ export async function updateBookingContact(
     return { ok: false, error: MANAGE_PHONE_NOT_CHANGEABLE };
   }
 
-  // Formatted as the booker formats it, so the page reads back what it shows
-  // everywhere else rather than the raw keystrokes.
-  const nextPhone = asked.phone === undefined ? booking.attendee_phone : formatPhoneAsTyped(asked.phone);
+  // ONE shape for one number, and it is the shape the LOOKUP consumes (#2390).
+  //
+  // `findActiveBookingsForPerson` asks the database for `attendee_phone` equal to
+  // `toE164(the number the caller gave)`, an exact equality on the column, and the rows it
+  // fetches are the entire input to the one call per person rule. A row written in
+  // any other spelling is a row that query can never fetch, so the gate cannot see
+  // it and the same lead is booked twice: a second invite, a second slot consumed,
+  // `booking.created` fired again. This used to write `formatPhoneAsTyped`, which
+  // returns "(215) 555-9999" and never E.164, so the rule failed precisely for the
+  // leads who had told us their number was wrong.
+  //
+  // `toE164` is the create path's own normalization, called here rather than copied,
+  // so the two writers cannot drift into two spellings of one column (L150, L370).
+  // It hands an unparseable number back verbatim rather than dropping it, which is
+  // the same answer the create path gets for the same input.
+  const nextPhone = asked.phone === undefined ? booking.attendee_phone : toE164(asked.phone);
   const nextName = asked.name === undefined ? booking.attendee_name : asked.name;
   const nextEmail = asked.email === undefined ? booking.attendee_email : asked.email;
 

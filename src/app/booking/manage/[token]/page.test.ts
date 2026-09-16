@@ -34,7 +34,7 @@ const found = {
     assigned_user_id: "user-current",
     // The stamped copy, deliberately different from the live one below.
     agent_name: "Stale Stamped Agent",
-    attendee_phone: "(215) 555-0100",
+    attendee_phone: "+12155550100",
     attendee_email: "dana@example.com",
   },
   bucket: { code: "411" },
@@ -104,7 +104,7 @@ describe("manage page advisor wiring (#1338)", () => {
   it("carries the duration and the lead's own contact details through", async () => {
     const props = await renderPage();
     expect(props?.durationMin).toBe(20);
-    expect(props?.attendeePhone).toBe("(215) 555-0100");
+    expect(props?.attendeePhone).toBe("+12155550100");
     expect(props?.attendeeEmail).toBe("dana@example.com");
   });
 
