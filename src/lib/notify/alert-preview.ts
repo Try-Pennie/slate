@@ -2349,13 +2349,19 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
   // Each shape alone, then all three together, because the sentence is assembled
   // from parts and a reader has to be able to see each one read on its own.
   { key: "salesforce_user_id_conflicts", state: "one stored id disagrees", channel: "alert",
-    text: salesforceUserIdConflictAlert(1, 0, 0) },
+    text: salesforceUserIdConflictAlert(1, 0, 0, 0) },
   { key: "salesforce_user_id_conflicts", state: "one email is shared in Salesforce", channel: "alert",
-    text: salesforceUserIdConflictAlert(0, 1, 0) },
+    text: salesforceUserIdConflictAlert(0, 1, 0, 0) },
   { key: "salesforce_user_id_conflicts", state: "one id is already held by another row", channel: "alert",
-    text: salesforceUserIdConflictAlert(0, 0, 1) },
+    text: salesforceUserIdConflictAlert(0, 0, 1, 0) },
+  // #2387, the state this key gains: nobody was deactivated, and saying nothing
+  // would make that read as a quiet hour.
+  { key: "salesforce_user_id_conflicts", state: "one deactivation was refused on a shared address", channel: "alert",
+    text: salesforceUserIdConflictAlert(0, 0, 0, 1) },
+  { key: "salesforce_user_id_conflicts", state: "several deactivations were refused", channel: "alert",
+    text: salesforceUserIdConflictAlert(0, 0, 0, 3) },
   { key: "salesforce_user_id_conflicts", state: "several of each at once", channel: "alert",
-    text: salesforceUserIdConflictAlert(3, 2, 4) },
+    text: salesforceUserIdConflictAlert(3, 2, 4, 2) },
   { key: "salesforce_user_id_conflicts", state: "the roster agrees again", channel: "recovery",
     text: salesforceUserIdConflictRecovery() },
   // #1653. One duplicated name over a whole team is the shape this really takes

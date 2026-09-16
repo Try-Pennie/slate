@@ -1200,7 +1200,7 @@ describe("roster rows Salesforce no longer confirms (#1833)", () => {
    */
   const sfWorld = (opts: {
     roster: unknown[];
-    present?: { Email: string; IsActive: boolean }[];
+    present?: { Id?: string; Email: string; IsActive: boolean }[];
     presenceFails?: boolean;
   }) => {
     sf.fetchSfWithRetry.mockImplementation(async (url: string) => {
@@ -1209,7 +1209,11 @@ describe("roster rows Salesforce no longer confirms (#1833)", () => {
       }
       const q = decodeURIComponent((url.split("q=")[1] ?? "").replace(/\+/g, " "));
       if (q.includes("IsActive = true AND Email != null AND (")) return sfResponse(opts.roster);
-      if (q.includes("SELECT Email, IsActive FROM User WHERE Email IN")) {
+      // Matched on the part of the presence query that does not change with its
+      // column list: a fixture keyed on the full SELECT stops matching the moment
+      // a column is added, and then answers nothing while every test still runs
+      // (L143). #2387 added `Id` and this is where that cost showed up.
+      if (q.includes("IsActive FROM User WHERE Email IN")) {
         if (opts.presenceFails) {
           return { ok: false, status: 500, text: async () => "Salesforce is having a bad minute" };
         }
@@ -1456,5 +1460,175 @@ describe("how many activations one run attempts (#2302)", () => {
     expect(shared.spent()).toBe(2);
     // And a second caller handed the SAME object gets nothing left.
     expect(shared.take()).toBe(false);
+  });
+});
+
+// #2387: an email address that answers to MORE THAN ONE Salesforce record.
+//
+// Measured against the live org on 2026-08-31, two addresses are shared by more
+// than one ACTIVE Salesforce user, so this is a real state and not a hypothetical
+// one. The shape that misroutes a person is a rehire: a fresh Salesforce user is
+// created for them and the old record is left inactive on the same address, or a
+// new hire is given an address a colleague once had. The reap used to deactivate
+// on ANY inactive record for the address, so the same run that read the address as
+// active also took the person out of the roster, and `deactivated: 1` read as an
+// ordinary departure.
+describe("an address shared by two Salesforce records (#2387)", () => {
+  /**
+   * The Salesforce side, with a record id on every row.
+   *
+   * The presence query asks for the id now, because the id is the only thing that
+   * can say WHICH of two records for one address a Slate row is about.
+   */
+  const sfWorld = (opts: {
+    roster?: unknown[];
+    present?: { Id?: string; Email: string; IsActive: boolean }[];
+    presenceFails?: boolean;
+  }) => {
+    sf.fetchSfWithRetry.mockImplementation(async (url: string) => {
+      if (url.includes("oauth2/token")) {
+        return { ok: true, json: async () => ({ access_token: "tok", instance_url: "https://sf.example" }) };
+      }
+      const q = decodeURIComponent((url.split("q=")[1] ?? "").replace(/\+/g, " "));
+      if (q.includes("IsActive = true AND Email != null AND (")) return sfResponse(opts.roster ?? []);
+      // Matched on the part of the presence query that reads the same before and
+      // after this change, so the fixture cannot silently answer nothing.
+      if (q.includes("IsActive FROM User WHERE Email IN")) {
+        if (opts.presenceFails) {
+          return { ok: false, status: 500, text: async () => "Salesforce is having a bad minute" };
+        }
+        const asked = q.slice(q.indexOf("IN ("));
+        return sfResponse((opts.present ?? []).filter((r) => asked.includes(`'${r.Email}'`)));
+      }
+      return sfResponse([]);
+    });
+  };
+
+  /** The ids this run actually set `deactivated_at` on. */
+  const deactivatedIds = () =>
+    store.calls
+      .filter((c) => c.op === "update" && (c.payload as { deactivated_at?: string }).deactivated_at)
+      .flatMap((c) => (c.filters.find((f) => f[0] === "in" && f[1] === "id")?.[2] as string[]) ?? []);
+
+  beforeEach(() => {
+    store.calls.length = 0;
+    store.config.errorOn = undefined;
+    store.config.existing = [];
+    store.config.afterInsert = [];
+    store.config.reapable = [];
+    bookable.applyBookableByUserId.mockClear();
+  });
+
+  it("does not deactivate a rehire whose stored id is the ACTIVE record", async () => {
+    store.config.reapable = [
+      { id: "u-rehire", email: "rehire@x.com", salesforce_user_id: "005NEW" },
+    ];
+    sfWorld({
+      present: [
+        { Id: "005NEW", Email: "rehire@x.com", IsActive: true },
+        { Id: "005OLD", Email: "rehire@x.com", IsActive: false },
+      ],
+    });
+
+    const result = await syncSalesforceAgents();
+
+    expect(deactivatedIds()).not.toContain("u-rehire");
+    expect(result.deactivated).toBe(0);
+    // Nothing was refused either: the stored id SETTLED the question, so this is
+    // an ordinary quiet run and not a state anybody has to look at.
+    expect(result.deactivationsRefusedAmbiguous).toBe(0);
+  });
+
+  it("deactivates when the stored id is the INACTIVE record", async () => {
+    store.config.reapable = [
+      { id: "u-left", email: "shared@x.com", salesforce_user_id: "005OLD" },
+    ];
+    sfWorld({
+      present: [
+        { Id: "005NEW", Email: "shared@x.com", IsActive: true },
+        { Id: "005OLD", Email: "shared@x.com", IsActive: false },
+      ],
+    });
+
+    const result = await syncSalesforceAgents();
+
+    expect(deactivatedIds()).toEqual(["u-left"]);
+    expect(result.deactivated).toBe(1);
+    expect(result.deactivationsRefusedAmbiguous).toBe(0);
+  });
+
+  it("REFUSES and reports when no stored id settles a shared address", async () => {
+    store.config.reapable = [
+      { id: "u-unknown", email: "shared@x.com", salesforce_user_id: null },
+    ];
+    sfWorld({
+      present: [
+        { Id: "005NEW", Email: "shared@x.com", IsActive: true },
+        { Id: "005OLD", Email: "shared@x.com", IsActive: false },
+      ],
+    });
+
+    const result = await syncSalesforceAgents();
+
+    // Not deactivated, AND said out loud. Deactivating nobody in silence is a
+    // different failure from deactivating the wrong person, and both are silent
+    // unless the refusal is counted where the run's result is read (L98).
+    expect(deactivatedIds()).not.toContain("u-unknown");
+    expect(result.deactivated).toBe(0);
+    expect(result.deactivationsRefusedAmbiguous).toBe(1);
+  });
+
+  it("still deactivates somebody whose only Salesforce record is inactive", async () => {
+    // The control that stops an over broad fix passing: a genuine departure must
+    // still be reaped, or this change trades one silent failure for another.
+    store.config.reapable = [
+      { id: "u-gone", email: "gone@x.com", salesforce_user_id: null },
+      { id: "u-here", email: "here@x.com", salesforce_user_id: "005H" },
+    ];
+    sfWorld({
+      present: [
+        { Id: "005G", Email: "gone@x.com", IsActive: false },
+        { Id: "005H", Email: "here@x.com", IsActive: true },
+      ],
+    });
+
+    const result = await syncSalesforceAgents();
+
+    expect(deactivatedIds()).toEqual(["u-gone"]);
+    expect(result.deactivated).toBe(1);
+    expect(result.deactivationsRefusedAmbiguous).toBe(0);
+  });
+
+  it("the divergence report reads the same shared address the same way", async () => {
+    // One address, two records that disagree, and a Slate row with no id. The reap
+    // refuses it, and the reconcile must not call it a departure or an active
+    // person either: two readings of one address is what produced this defect.
+    store.config.afterInsert = [
+      { id: "u-shared", email: "shared@x.com", manager_id: null, role: "agent", salesforce_user_id: null, bookable: false, deactivated_at: null, is_test: false },
+    ];
+    store.config.reapable = [{ id: "u-shared", email: "shared@x.com", salesforce_user_id: null }];
+    sfWorld({
+      roster: [],
+      present: [
+        { Id: "005NEW", Email: "shared@x.com", IsActive: true },
+        { Id: "005OLD", Email: "shared@x.com", IsActive: false },
+      ],
+    });
+
+    const result = await syncSalesforceAgents();
+
+    expect(result.deactivationsRefusedAmbiguous).toBe(1);
+    expect(result.rosterUnconfirmedAmbiguous).toBe(1);
+    expect(result.rosterUnconfirmedInactive).toBe(0);
+    expect(result.rosterUnconfirmedUnmatched).toBe(0);
+    expect(result.rosterUnconfirmedAbsent).toBe(0);
+  });
+
+  it("deactivates nobody when the presence read fails", async () => {
+    store.config.reapable = [{ id: "u-left", email: "left@x.com", salesforce_user_id: null }];
+    sfWorld({ presenceFails: true });
+
+    await expect(syncSalesforceAgents()).rejects.toThrow(/SF query failed: 500/);
+    expect(deactivatedIds()).toEqual([]);
   });
 });

@@ -17,13 +17,14 @@
  * the rows Twilio holds no worker for (`withoutWorker`), and there is one
  * convention here rather than two (L263, L370).
  *
- * The three causes are separate because they send a reader to three different
+ * The four causes are separate because they send a reader to four different
  * places (L11): somebody who left Salesforce, somebody Salesforce still holds and
  * whose flags were cleared (the case this issue was opened about, which is how a
- * person is taken off rotation for leave), and an address Salesforce has never
- * heard of.
+ * person is taken off rotation for leave), an address Salesforce has never heard
+ * of, and an address answering to records that disagree (#2387).
  */
 import { normalizeEmail } from "@/lib/auth/email";
+import type { SalesforceStanding } from "@/lib/salesforce/presence";
 
 /** Why a Slate row was not written by this run's roster pass. */
 export type UnconfirmedCause =
@@ -37,7 +38,13 @@ export type UnconfirmedCause =
    */
   | "unmatched"
   /** Salesforce returned no record at all for their address. */
-  | "absent";
+  | "absent"
+  /**
+   * The address answers to more than one Salesforce record and they disagree,
+   * with nothing stored to say which one is this row's (#2387). A refusal rather
+   * than a verdict, and the same one the reap reaches for the same address.
+   */
+  | "ambiguous";
 
 /** One Slate roster row, as this reconcile needs to see it. */
 export interface RosterRowForDivergence {
@@ -70,22 +77,6 @@ export interface RosterQueryResult {
   emails: Set<string>;
 }
 
-/**
- * What Salesforce holds for one address, kept as BOTH facts rather than one
- * verdict.
- *
- * A shared address answering to two Salesforce users is a real state (it is the
- * `salesforceIdAmbiguous` case the id link already reports), and the reap and
- * this reconcile want opposite readings of it: the reap deactivates on ANY
- * inactive record, which is the rule it has always applied, and this reads an
- * active record as somebody Salesforce still holds. Folding the two into one
- * boolean here would silently change one of them.
- */
-export interface SalesforcePresence {
-  anyActive: boolean;
-  anyInactive: boolean;
-}
-
 /** The in scope rows the roster query did not return, and how many were looked at. */
 export interface DivergenceScan {
   /**
@@ -97,6 +88,28 @@ export interface DivergenceScan {
    */
   examined: number;
   candidates: RosterRowForDivergence[];
+}
+
+/**
+ * One candidate with where it stands in Salesforce already read.
+ *
+ * The STANDING is handed in rather than worked out here, and that is the whole of
+ * #2387. This reconcile used to read the presence map itself, with "an active
+ * record wins" written in one branch, while the reap read the same map with "any
+ * inactive record acts" written in another, so one address got two answers in one
+ * run. There is one reading now (`readSalesforceStanding`) and both callers take
+ * it, which also keeps the rule the stored key has: this file never touches that
+ * column, and nothing here holds a second idea of what a missing one means
+ * (#1587, L263).
+ */
+export interface DivergenceCandidate extends RosterRowForDivergence {
+  standing: SalesforceStanding;
+}
+
+/** A `DivergenceScan` with every candidate's standing attached. */
+export interface StandingsScan {
+  examined: number;
+  candidates: DivergenceCandidate[];
 }
 
 export interface UnconfirmedRow {
@@ -113,6 +126,13 @@ export interface RosterDivergencePlan {
   unmatched: number;
   absent: number;
   /**
+   * Unconfirmed, and the address could not be settled at all (#2387). Counted
+   * apart from the three verdicts because it is not one: nothing was decided
+   * about these people, and a refusal folded into a verdict is a refusal nobody
+   * ever hears about (L11).
+   */
+  ambiguous: number;
+  /**
    * The unconfirmed rows that are STILL BOOKABLE, by email.
    *
    * The only part of this that misroutes a lead. Everybody else is a stale row on
@@ -120,29 +140,6 @@ export interface RosterDivergencePlan {
    * (L36): measured on 2026-09-13 all 39 unconfirmed rows were non bookable.
    */
   bookable: string[];
-}
-
-/**
- * Fold Salesforce's answer about a set of addresses into a presence map.
- *
- * An address MISSING from the result is missing from the map, which is what lets
- * "Salesforce has no record for them" stay a distinct finding rather than
- * collapsing into "not active".
- */
-export function presenceFromRecords(
-  records: { email: string; isActive: boolean }[],
-): Map<string, SalesforcePresence> {
-  const out = new Map<string, SalesforcePresence>();
-  for (const record of records) {
-    const email = normalizeEmail(record.email ?? "");
-    if (!email) continue;
-    const current = out.get(email) ?? { anyActive: false, anyInactive: false };
-    out.set(email, {
-      anyActive: current.anyActive || record.isActive === true,
-      anyInactive: current.anyInactive || record.isActive !== true,
-    });
-  }
-  return out;
 }
 
 /**
@@ -172,37 +169,41 @@ export function scanForDivergence(
   return { examined, candidates };
 }
 
+/** How one standing reads as a reason this row was not written. */
+const CAUSE_BY_STANDING: Record<SalesforceStanding, UnconfirmedCause> = {
+  // Salesforce returned no record at all, which is a finding of its own and never
+  // collapsed into "not active".
+  absent: "absent",
+  // Salesforce still holds them, active, and the roster query stopped matching
+  // them. #1833's own case.
+  held: "unmatched",
+  departed: "inactive",
+  ambiguous: "ambiguous",
+};
+
 /**
  * Give every candidate its cause.
  *
- * An address the presence map does not hold is `absent` rather than dropped, so a
- * Salesforce read that returned nothing reports every candidate instead of
- * reporting an all clear. The read itself throws on a real failure, which is what
- * stops a failed read reaching here at all.
+ * Every branch of the reading itself lives in `readSalesforceStanding`, so this is
+ * a translation into this reconcile's vocabulary and nothing more: the point of
+ * #2387 is that there is exactly one place where a shared address is interpreted.
+ * A candidate whose standing is `absent` is still reported rather than dropped, so
+ * a Salesforce answer that held nothing reports every candidate instead of an all
+ * clear. The read itself throws on a real failure, which is what stops a failed
+ * read reaching here at all.
  */
-export function planRosterDivergence(
-  scan: DivergenceScan,
-  presence: Map<string, SalesforcePresence>,
-): RosterDivergencePlan {
+export function planRosterDivergence(scan: StandingsScan): RosterDivergencePlan {
   const rows: UnconfirmedRow[] = [];
   let inactive = 0;
   let unmatched = 0;
   let absent = 0;
+  let ambiguous = 0;
   for (const candidate of scan.candidates) {
-    const held = presence.get(candidate.email);
-    let cause: UnconfirmedCause;
-    if (!held) {
-      cause = "absent";
-      absent += 1;
-    } else if (held.anyActive) {
-      // Active wins over a second inactive record for the same address: somebody
-      // Salesforce still holds as active is not somebody who left.
-      cause = "unmatched";
-      unmatched += 1;
-    } else {
-      cause = "inactive";
-      inactive += 1;
-    }
+    const cause = CAUSE_BY_STANDING[candidate.standing];
+    if (cause === "absent") absent += 1;
+    else if (cause === "unmatched") unmatched += 1;
+    else if (cause === "inactive") inactive += 1;
+    else ambiguous += 1;
     rows.push({
       userId: candidate.id,
       email: candidate.email,
@@ -216,6 +217,7 @@ export function planRosterDivergence(
     inactive,
     unmatched,
     absent,
+    ambiguous,
     bookable: rows.filter((r) => r.bookable).map((r) => r.email),
   };
 }

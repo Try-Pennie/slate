@@ -137,21 +137,29 @@ export function agentSyncRecovery(): string {
 /**
  * The shared cross system rep key cannot be settled for some people (#1587).
  *
- * Three shapes, one page, because the reader's first action is the same for all
- * of them (open Salesforce and look at those users) and three separate keys would
- * be three pages about one morning's data problem. Each count is named separately
+ * Four shapes, one page, because the reader's first action is the same for all
+ * of them (open Salesforce and look at those users) and four separate keys would
+ * be four pages about one morning's data problem. Each count is named separately
  * inside it, because what they then DO differs: a disagreement is a decision about
- * which record is the person, a duplicate is a Salesforce cleanup, and a claimed
- * id means two Slate rows are pointing at one human.
+ * which record is the person, a duplicate is a Salesforce cleanup, a claimed
+ * id means two Slate rows are pointing at one human, and a refused deactivation
+ * is somebody the hourly reap will not act on either way until it is settled.
  *
  * Deliberately NOT sent for rows with no id at all. That is reported in the run's
  * counts and its log line: a person with no key is one every consumer refuses,
  * which is safe, while a key that may name the WRONG person is not.
+ *
+ * @param deactivationsRefused reapable rows the reap left alone because their
+ *   address answers to several Salesforce records that disagree (#2387). It
+ *   belongs here rather than on a key of its own: it is the SAME shared address
+ *   that produces `ambiguous`, reaching a different decision, and it is settled by
+ *   the same edit in Salesforce.
  */
 export function salesforceUserIdConflictAlert(
   disagreements: number,
   ambiguous: number,
   claimed: number,
+  deactivationsRefused: number,
 ): string {
   const parts: string[] = [];
   if (disagreements > 0) {
@@ -170,6 +178,13 @@ export function salesforceUserIdConflictAlert(
     parts.push(
       `${claimed} Slate ${claimed === 1 ? "row wants" : "rows want"} a Salesforce id ` +
         `another Slate row already holds`,
+    );
+  }
+  if (deactivationsRefused > 0) {
+    parts.push(
+      `${deactivationsRefused} ${deactivationsRefused === 1 ? "person was" : "people were"} ` +
+        `left in the roster rather than deactivated, because their address answers to ` +
+        `several Salesforce records and only some of them are inactive`,
     );
   }
   return (

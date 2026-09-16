@@ -5,15 +5,20 @@
 // attributes freeze at whatever the last matching run wrote while the hourly lane
 // reports success every hour. These are the pure decisions behind reporting them.
 //
+// Since #2387 the CAUSE comes from a standing read once by
+// `readSalesforceStanding` and shared with the reap, so this file drives standings
+// rather than a presence map. The reading itself, and the proof that the two
+// halves agree about one address, live in scripts/test-salesforce-presence.ts.
+//
 // Run: node --experimental-strip-types scripts/test-roster-divergence.ts
+import type { SalesforceStanding } from "../src/lib/salesforce/presence.ts";
 import {
   planRosterDivergence,
-  presenceFromRecords,
   scanForDivergence,
+  type DivergenceScan,
   type RosterRowForDivergence,
-  type SalesforcePresence,
 } from "../src/lib/salesforce/roster-divergence.ts";
-import { assert, eq, finish } from "./lib/harness.ts";
+import { eq, finish } from "./lib/harness.ts";
 
 function row(over: Partial<RosterRowForDivergence> = {}): RosterRowForDivergence {
   return {
@@ -27,6 +32,21 @@ function row(over: Partial<RosterRowForDivergence> = {}): RosterRowForDivergence
 }
 
 const noRoster = { emails: new Set<string>() };
+
+/** Attach a standing to every candidate, the way the sync does. */
+function withStandings(
+  scan: DivergenceScan,
+  by: Record<string, SalesforceStanding>,
+  fallback: SalesforceStanding = "absent",
+) {
+  return {
+    examined: scan.examined,
+    candidates: scan.candidates.map((c) => ({
+      ...c,
+      standing: by[c.email] ?? fallback,
+    })),
+  };
+}
 
 // --- who is even a candidate -------------------------------------------------
 
@@ -73,65 +93,77 @@ const noRoster = { emails: new Set<string>() };
   eq(scan.candidates.length, 0, "a row with no usable address cannot be asked about, so it is not a candidate");
 }
 
-// --- the three causes, each its own -----------------------------------------
+// --- the four causes, each its own ------------------------------------------
 
-const threeRows = [
+const fourRows = [
   row({ id: "u-inactive", email: "left@trypennie.com" }),
   row({ id: "u-unmatched", email: "onleave@trypennie.com" }),
   row({ id: "u-absent", email: "never@trypennie.com" }),
+  row({ id: "u-ambiguous", email: "shared@trypennie.com" }),
 ];
-const threeScan = scanForDivergence(threeRows, noRoster);
-eq(threeScan.candidates.length, 3, "every unmatched in scope row is a candidate");
+const fourScan = scanForDivergence(fourRows, noRoster);
+eq(fourScan.candidates.length, 4, "every unmatched in scope row is a candidate");
 
-const presence = new Map<string, SalesforcePresence>([
-  ["left@trypennie.com", { anyActive: false, anyInactive: true }],
-  ["onleave@trypennie.com", { anyActive: true, anyInactive: false }],
-  // never@ is deliberately absent from the map: Salesforce returned no record.
-]);
-const plan = planRosterDivergence(threeScan, presence);
+const plan = planRosterDivergence(
+  withStandings(fourScan, {
+    "left@trypennie.com": "departed",
+    "onleave@trypennie.com": "held",
+    "never@trypennie.com": "absent",
+    "shared@trypennie.com": "ambiguous",
+  }),
+);
 
-eq(plan.examined, 3, "the plan carries how many rows were reconciled, so zero is visible");
+eq(plan.examined, 4, "the plan carries how many rows were reconciled, so zero is visible");
 eq(plan.inactive, 1, "a row Salesforce holds as inactive is counted as inactive");
 eq(plan.unmatched, 1, "a row active in Salesforce and outside the roster criteria is counted as unmatched");
 eq(plan.absent, 1, "a row Salesforce returned no record for at all is counted as absent");
+eq(plan.ambiguous, 1, "an address nothing can settle is counted apart from all three verdicts");
 eq(
   plan.rows.map((r) => `${r.userId}:${r.cause}`).sort(),
-  ["u-absent:absent", "u-inactive:inactive", "u-unmatched:unmatched"],
+  [
+    "u-absent:absent",
+    "u-ambiguous:ambiguous",
+    "u-inactive:inactive",
+    "u-unmatched:unmatched",
+  ],
   "each row carries its own cause, so one message never answers for another",
 );
 eq(
-  plan.inactive + plan.unmatched + plan.absent,
+  plan.inactive + plan.unmatched + plan.absent + plan.ambiguous,
   plan.rows.length,
   "every row lands in exactly one cause bucket",
 );
 
 {
-  // A shared address with an active AND an inactive Salesforce record. Active
-  // wins for the divergence reading: somebody Salesforce still holds as active is
-  // not somebody who left.
+  // A shared address with an active AND an inactive Salesforce record, and no
+  // stored key to say which is this row's. It used to read as `unmatched` here
+  // (active wins) while the reap read the same address as a departure and
+  // deactivated the person. Now both refuse, and the refusal is its own count.
   const both = planRosterDivergence(
-    scanForDivergence([row({ id: "u-both", email: "shared@trypennie.com" })], noRoster),
-    new Map([["shared@trypennie.com", { anyActive: true, anyInactive: true }]]),
+    withStandings(
+      scanForDivergence([row({ id: "u-both", email: "shared@trypennie.com" })], noRoster),
+      { "shared@trypennie.com": "ambiguous" },
+    ),
   );
-  eq(both.unmatched, 1, "an address with an active record is unmatched, not inactive");
-  eq(both.inactive, 0, "and it is not counted as inactive as well, which would double count one person");
+  eq(both.ambiguous, 1, "an unsettleable address is reported as such");
+  eq(both.unmatched, 0, "never as somebody Salesforce still holds");
+  eq(both.inactive, 0, "and never as a departure, which is what deactivated a rehire");
 }
 
 // --- the bookable subset, which is the part that misroutes a lead ------------
 
 {
   const p = planRosterDivergence(
-    scanForDivergence(
-      [
-        row({ id: "u-live", email: "live@trypennie.com", bookable: true }),
-        row({ id: "u-quiet", email: "quiet@trypennie.com", bookable: false }),
-      ],
-      noRoster,
+    withStandings(
+      scanForDivergence(
+        [
+          row({ id: "u-live", email: "live@trypennie.com", bookable: true }),
+          row({ id: "u-quiet", email: "quiet@trypennie.com", bookable: false }),
+        ],
+        noRoster,
+      ),
+      { "live@trypennie.com": "held", "quiet@trypennie.com": "held" },
     ),
-    new Map([
-      ["live@trypennie.com", { anyActive: true, anyInactive: false }],
-      ["quiet@trypennie.com", { anyActive: true, anyInactive: false }],
-    ]),
   );
   eq(p.unmatched, 2, "both rows are unconfirmed");
   eq(p.bookable, ["live@trypennie.com"], "only the bookable one is named as still routable");
@@ -143,33 +175,15 @@ eq(
   // The shape of a Salesforce read that came back empty. Every candidate is
   // ABSENT, which is a finding; it can never be mistaken for nobody diverging,
   // because the candidate list was built before the read and does not shrink.
-  const p = planRosterDivergence(threeScan, new Map<string, SalesforcePresence>());
-  eq(p.absent, 3, "an empty presence map reports every candidate, never an all clear");
-  eq(p.rows.length, 3, "and no row is dropped for want of an answer");
+  const p = planRosterDivergence(withStandings(fourScan, {}));
+  eq(p.absent, 4, "an empty presence answer reports every candidate, never an all clear");
+  eq(p.rows.length, 4, "and no row is dropped for want of an answer");
 }
 
 {
-  const p = planRosterDivergence({ examined: 0, candidates: [] }, new Map());
+  const p = planRosterDivergence({ examined: 0, candidates: [] });
   eq(p.examined, 0, "nothing reconciled is reported as nothing reconciled");
   eq(p.rows.length, 0, "and it produces no findings, which is why the examined count has to be read beside it");
-}
-
-// --- folding the Salesforce records into a presence map ---------------------
-
-{
-  const map = presenceFromRecords([
-    { email: "A@Trypennie.com ", isActive: true },
-    { email: "b@trypennie.com", isActive: false },
-    { email: "b@trypennie.com", isActive: true },
-    { email: "", isActive: true },
-  ]);
-  eq(map.get("a@trypennie.com"), { anyActive: true, anyInactive: false }, "addresses are normalised");
-  eq(
-    map.get("b@trypennie.com"),
-    { anyActive: true, anyInactive: true },
-    "two records for one address keep BOTH facts, so the reap's any-inactive rule survives unchanged",
-  );
-  assert(!map.has(""), "a record with no address contributes nothing");
 }
 
 finish();

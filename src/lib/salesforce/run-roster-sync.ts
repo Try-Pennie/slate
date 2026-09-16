@@ -204,7 +204,15 @@ export async function runRosterSync(): Promise<RosterSyncOutcome> {
       claimed: sync.salesforceIdClaimed,
       unresolved: sync.salesforceIdsUnresolved,
     };
-    if (hasUserIdConflicts(idConflicts)) {
+    // #2387 rides on this key rather than taking one of its own. A reap the sync
+    // refused is the SAME shared address that produces `salesforceIdAmbiguous`,
+    // reaching a different decision, and one edit in Salesforce settles both, so a
+    // second page would be a second message about one morning's data problem. One
+    // condition, read ONCE into a name, so the send and the all clear can never
+    // disagree about whether it is true (L53).
+    const keyUnsettled =
+      hasUserIdConflicts(idConflicts) || sync.deactivationsRefusedAmbiguous > 0;
+    if (keyUnsettled) {
       // alert-key: salesforce_user_id_conflicts
       await sendThrottledAlert(
         "salesforce_user_id_conflicts",
@@ -213,6 +221,7 @@ export async function runRosterSync(): Promise<RosterSyncOutcome> {
           idConflicts.disagreements,
           idConflicts.ambiguous,
           idConflicts.claimed,
+          sync.deactivationsRefusedAmbiguous,
         ),
       ).catch(() => {});
     } else {
