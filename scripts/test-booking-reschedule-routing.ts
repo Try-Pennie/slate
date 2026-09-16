@@ -136,7 +136,10 @@ async function run() {
   // the webhook). We drive the NOTIFY step directly across three moves whose
   // targets oscillate (T2 -> T1 -> T2), then re-run the last (drain resume). ---
   {
-    const notify = OUTBOX_HANDLERS[rescheduleOutboxSteps()[2].name];
+    // Found by NAME, not by position: the reschedule step list grows (#2371 added
+    // the owner alert's move), and an index silently starts driving another step.
+    const notifyName = rescheduleOutboxSteps().find((s) => s.name.endsWith(":notify"))!.name;
+    const notify = OUTBOX_HANDLERS[notifyName];
     const T2 = "2026-06-09T14:00:00.000Z";
     const T1 = "2026-06-10T15:00:00.000Z";
     // One mutable context: loadBookingById returns it, and we advance the

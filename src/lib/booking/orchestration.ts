@@ -42,6 +42,13 @@ import {
   type MatchStrength,
 } from "./person-dedupe.ts";
 import { phoneLastFour } from "./phone-mask.ts";
+import {
+  isOwnerAlertReassign,
+  ownerAlertBody,
+  ownerAlertWindow,
+  type OwnerAlertEventBody,
+} from "./owner-alert.ts";
+import { isDefinitiveFailure, reachabilityFromError } from "../google/reachability-classify.ts";
 import { encodeCursor, type ListQuery } from "./api-request.ts";
 import { webhookDedupeKey } from "../webhooks/dedupe.ts";
 import { runOutboxSteps, type OutboxHandlers } from "./outbox.ts";
@@ -88,6 +95,7 @@ import type {
   BusyBlock,
   EventType,
   OutboxStep,
+  OwnerAlertEvent,
   PendingEventDeletion,
   ReservationPayload,
   RoutingTrace,
@@ -677,6 +685,44 @@ export interface BookingDeps {
   /** #830: whether an event still exists on Google (true), is gone (false), or
    *  cannot be verified (throws), used to avoid alerting on a false orphan. */
   eventExists(email: string, eventId: string): Promise<boolean>;
+  // --- The advisor only "previously pitched" alert (#2371) -----------------
+  // Its own calendar primitives rather than the booking ones above: the alert has
+  // no attendees, no `sendUpdates` (there is nobody to tell), and is written to a
+  // named calendar as that advisor's own identity.
+  /** Create the alert event. Returns Google's id, reusing the existing event on a
+   *  409 of our deterministic client id. */
+  createOwnerAlertEvent(
+    actorEmail: string,
+    calendarId: string,
+    body: OwnerAlertEventBody,
+    clientId: string,
+  ): Promise<string>;
+  /** Take the alert event off the calendar. Tolerant of an already-gone event. */
+  deleteOwnerAlertEvent(actorEmail: string, calendarId: string, eventId: string): Promise<void>;
+  /** Move the alert event to a new window. Throws `EventGone` when it is not there. */
+  moveOwnerAlertEvent(
+    actorEmail: string,
+    calendarId: string,
+    eventId: string,
+    startIso: string,
+    endIso: string,
+    timezone: string,
+  ): Promise<void>;
+  /** This booking's live alert row, or null. Throws on an unreadable row: an empty
+   *  answer reads as "no alert", which writes a second one and skips every removal. */
+  loadLiveOwnerAlert(bookingId: string): Promise<OwnerAlertEvent | null>;
+  /** The durable record, written BEFORE the calendar event exists (L421). */
+  insertOwnerAlert(row: {
+    booking_id: string;
+    user_id: string;
+    calendar_id: string;
+  }): Promise<OwnerAlertEvent>;
+  /** Stamp the event Google created (or already held) onto the row. */
+  setOwnerAlertEventId(id: string, gcalEventId: string): Promise<void>;
+  /** Record a definitively refused calendar, so nothing retries and nothing pages. */
+  recordOwnerAlertSkip(id: string, reason: string): Promise<void>;
+  /** Close the row once its event is off the calendar. */
+  markOwnerAlertRemoved(id: string, skipReason?: string | null): Promise<void>;
   /** #401: record a Google event deletion that failed, for the retry drain. */
   enqueueEventDeletion(calendarEmail: string, gcalEventId: string, bookingId: string | null): Promise<void>;
   /** #401: load pending event deletions for the retry drain. */
@@ -1522,15 +1568,28 @@ const CANCEL_STEPS = {
   GCAL_DELETE: "cancel:gcal_delete",
   BUSYBLOCK_DELETE: "cancel:busyblock_delete",
   RECOMPUTE: "cancel:recompute",
+  OWNER_ALERT_DELETE: "cancel:owner_alert_delete",
   NOTIFY: "cancel:notify",
 } as const;
 
-/** The ordered steps a cancel must deliver. */
+/**
+ * The ordered steps a cancel must deliver.
+ *
+ * NOTE for `cancel_duplicate_booking` (migration 0124): that function enqueues its own
+ * cancel row in SQL and therefore holds a SECOND copy of this list, which
+ * `scripts/test-duplicate-cancel.ts` holds against this one. `cancel:owner_alert_delete`
+ * is deliberately NOT in the SQL copy yet, and the reason is deploy ORDER, not an
+ * oversight: a step with no handler FAILS its row (outbox.ts), so a migration that
+ * enqueued it would break every Regal duplicate cancel in the window between the
+ * migration being applied and this code being deployed (L640). #2433 adds it to the
+ * function in the migration after that deploy.
+ */
 export function cancelOutboxSteps(): OutboxStep[] {
   return [
     { name: CANCEL_STEPS.GCAL_DELETE, state: "pending" },
     { name: CANCEL_STEPS.BUSYBLOCK_DELETE, state: "pending" },
     { name: CANCEL_STEPS.RECOMPUTE, state: "pending" },
+    { name: CANCEL_STEPS.OWNER_ALERT_DELETE, state: "pending" },
     { name: CANCEL_STEPS.NOTIFY, state: "pending" },
   ];
 }
@@ -1538,16 +1597,19 @@ export function cancelOutboxSteps(): OutboxStep[] {
 const RESCHEDULE_STEPS = {
   BUSYBLOCK_MOVE: "reschedule:busyblock_move",
   RECOMPUTE: "reschedule:recompute",
+  OWNER_ALERT_MOVE: "reschedule:owner_alert_move",
   NOTIFY: "reschedule:notify",
 } as const;
 
 /** The ordered POST-commit steps a reschedule must deliver. The agent decision
  *  + gcal create/update stay inline (the create-idempotency is P4, #439); the
- *  outbox covers the slot move, recompute, and the rescheduled webhook. */
+ *  outbox covers the slot move, recompute, the owner alert's own move, and the
+ *  rescheduled webhook. */
 export function rescheduleOutboxSteps(): OutboxStep[] {
   return [
     { name: RESCHEDULE_STEPS.BUSYBLOCK_MOVE, state: "pending" },
     { name: RESCHEDULE_STEPS.RECOMPUTE, state: "pending" },
+    { name: RESCHEDULE_STEPS.OWNER_ALERT_MOVE, state: "pending" },
     { name: RESCHEDULE_STEPS.NOTIFY, state: "pending" },
   ];
 }
@@ -1556,18 +1618,62 @@ const REASSIGN_STEPS = {
   BUSYBLOCK_MOVE: "reassign:busyblock_move",
   RECOMPUTE: "reassign:recompute",
   NOTIFY: "reassign:notify",
+  OWNER_ALERT_REMOVE: "reassign:owner_alert_remove",
+  OWNER_ALERT: "reassign:owner_alert",
 } as const;
 
 /** Post-commit steps for a contact-owner reassign (#9). Like reschedule, the
  *  gcal delete-old + create-new stays inline (create-idempotency is P4); the
  *  outbox covers the slot move, recompute, and the booking.reassigned webhook
- *  (#2368: a reassign never moves the time, so it is not a reschedule). */
+ *  (#2368: a reassign never moves the time, so it is not a reschedule).
+ *
+ *  The two owner-alert steps run LAST and in this order, which is load bearing
+ *  (#2371): the remove step closes an alert belonging to whoever no longer holds
+ *  the call, and only then can the create step write one for whoever now does.
+ *  Reversed, an owner-to-owner move would meet the partial unique index on the
+ *  booking's live alert and fail a step that has nothing wrong with it. */
 export function reassignOutboxSteps(): OutboxStep[] {
   return [
     { name: REASSIGN_STEPS.BUSYBLOCK_MOVE, state: "pending" },
     { name: REASSIGN_STEPS.RECOMPUTE, state: "pending" },
     { name: REASSIGN_STEPS.NOTIFY, state: "pending" },
+    { name: REASSIGN_STEPS.OWNER_ALERT_REMOVE, state: "pending" },
+    { name: REASSIGN_STEPS.OWNER_ALERT, state: "pending" },
   ];
+}
+
+/**
+ * Take an alert off the calendar and close its row, in that order (#2371).
+ *
+ * The order is the invariant: the event goes first, so a crash between the two
+ * leaves a row still pointing at a real event (the next pass finds it and finishes
+ * the job) rather than an event nothing points at, which nobody could ever find
+ * again. A transient Google failure throws, so the outbox retries it.
+ *
+ * A DEFINITIVE failure (the account is gone, or was never given Calendar) closes the
+ * row anyway and records the kind: no amount of retrying reaches that calendar, and
+ * a row left open would make every later pass try again forever. The event, if it is
+ * still there at all, belongs to an account nobody can reach.
+ */
+async function removeOwnerAlert(deps: BookingDeps, alert: OwnerAlertEvent): Promise<void> {
+  if (!alert.gcal_event_id) {
+    // Nothing was ever written (the create failed, or was refused). Closing the row
+    // is the whole removal.
+    await deps.markOwnerAlertRemoved(alert.id);
+    return;
+  }
+  try {
+    // The same value twice, and deliberately: `calendar_id` holds the advisor's own
+    // calendar ADDRESS, which is both the calendar to delete from and the identity to
+    // delete as. One column answering both is one fewer thing to keep in step.
+    await deps.deleteOwnerAlertEvent(alert.calendar_id, alert.calendar_id, alert.gcal_event_id);
+  } catch (err) {
+    const kind = reachabilityFromError(err);
+    if (!isDefinitiveFailure(kind)) throw err;
+    await deps.markOwnerAlertRemoved(alert.id, kind);
+    return;
+  }
+  await deps.markOwnerAlertRemoved(alert.id);
 }
 
 export const OUTBOX_HANDLERS: OutboxHandlers = {
@@ -1588,6 +1694,15 @@ export const OUTBOX_HANDLERS: OutboxHandlers = {
     if (!row.booking_id) return;
     const ctx = await deps.loadBookingById(row.booking_id);
     if (ctx) await deps.invalidateSlots(ctx.bucket.code);
+  },
+  // #2371: the call is off, so the advisor's warning about it must be too. No gate on
+  // the reason or the initiator: whatever cancelled it, an alert for a call that is
+  // not happening is a standing wrong claim on somebody's calendar.
+  [CANCEL_STEPS.OWNER_ALERT_DELETE]: async (deps, row) => {
+    if (!row.booking_id) return;
+    const alert = await deps.loadLiveOwnerAlert(row.booking_id);
+    if (!alert) return;
+    await removeOwnerAlert(deps, alert);
   },
   [CANCEL_STEPS.NOTIFY]: async (deps, row) => {
     if (!row.booking_id) return;
@@ -1649,6 +1764,54 @@ export const OUTBOX_HANDLERS: OutboxHandlers = {
     if (!row.booking_id) return;
     const ctx = await deps.loadBookingById(row.booking_id);
     if (ctx) await deps.invalidateSlots(ctx.bucket.code);
+  },
+  /**
+   * #2371: the call moved, so the warning moves with it. The advisor keeps it, which
+   * is the point: the same person is still the one who has spoken to this lead.
+   *
+   * A reschedule can also RE-ROUTE to a different agent (the in-place guard declines
+   * and the booking lands elsewhere). Then the alert belongs to somebody who no longer
+   * holds the call, so it is removed rather than moved: moving it would put a warning
+   * about a call on the calendar of somebody who is not taking it.
+   */
+  [RESCHEDULE_STEPS.OWNER_ALERT_MOVE]: async (deps, row) => {
+    if (!row.booking_id) return;
+    const alert = await deps.loadLiveOwnerAlert(row.booking_id);
+    if (!alert) return;
+    const ctx = await deps.loadBookingById(row.booking_id);
+    if (!ctx) return;
+    if (alert.user_id !== ctx.booking.assigned_user_id) {
+      await removeOwnerAlert(deps, alert);
+      return;
+    }
+    // No event to move: either the create has not landed yet (its own step retries
+    // and will use the booking's CURRENT time, which is already the new one), or the
+    // calendar was definitively refused and nothing will ever be written. A recorded
+    // skip means that calendar is unreachable, so asking again on every later
+    // reschedule spends a call to learn what the row already says.
+    if (!alert.gcal_event_id || alert.skip_reason) return;
+    const window = ownerAlertWindow(ctx.booking.starts_at);
+    try {
+      await deps.moveOwnerAlertEvent(
+        // Address and identity, as in removeOwnerAlert above.
+        alert.calendar_id,
+        alert.calendar_id,
+        alert.gcal_event_id,
+        window.start,
+        window.end,
+        ctx.booking.timezone,
+      );
+    } catch (err) {
+      // The advisor deleted the alert themselves: there is nothing to move and
+      // nothing wrong. Close the row so no later step hunts for it.
+      if (err instanceof EventGone) {
+        await deps.markOwnerAlertRemoved(alert.id, "event-gone");
+        return;
+      }
+      const kind = reachabilityFromError(err);
+      if (!isDefinitiveFailure(kind)) throw err;
+      await deps.recordOwnerAlertSkip(alert.id, kind);
+    }
   },
   [RESCHEDULE_STEPS.NOTIFY]: async (deps, row) => {
     if (!row.booking_id) return;
@@ -1776,6 +1939,101 @@ export const OUTBOX_HANDLERS: OutboxHandlers = {
       reasonMeta(reason, initiator),
       { bookingEventId: row.id, previousAgentEmail: p.fromAgentEmail ?? null },
     );
+  },
+
+  /**
+   * #2371: an alert belonging to an advisor who no longer holds this call comes off
+   * their calendar. Deliberately NOT gated on the reason or the initiator, because
+   * EVERY reassign reaches here: the machine owner move, an admin coverage move, the
+   * bulk redistribute and the offboarding sweep. Whichever one it was, the warning is
+   * now on the wrong person's calendar.
+   *
+   * The predicate is "the alert's advisor is not the booking's advisor", which is also
+   * what makes a reassign back onto the SAME owner leave the one alert alone.
+   */
+  [REASSIGN_STEPS.OWNER_ALERT_REMOVE]: async (deps, row) => {
+    if (!row.booking_id) return;
+    const alert = await deps.loadLiveOwnerAlert(row.booking_id);
+    if (!alert) return;
+    const ctx = await deps.loadBookingById(row.booking_id);
+    if (!ctx) return;
+    if (alert.user_id === ctx.booking.assigned_user_id) return;
+    await removeOwnerAlert(deps, alert);
+  },
+
+  /**
+   * #2371: the machine routed this lead back to the advisor who has already pitched
+   * them, so that advisor gets a warning on their own calendar before the call.
+   *
+   * Only the MACHINE owner move (`isOwnerAlertReassign`): an admin picking the same
+   * reason for a coverage move is moving the call to somebody with no history here,
+   * and an alert on their calendar would be a claim nothing measured.
+   *
+   * The ROW comes first and the Google event second (L421). A crash in between leaves
+   * a row with a null event id, which this step's own retry finishes; the reverse
+   * would leave an event on a real advisor's calendar that nothing in Slate could
+   * ever find again. The client id is deterministic on the OUTBOX ROW, so that retry
+   * meets Google's 409 and adopts the event already there rather than making a second.
+   */
+  [REASSIGN_STEPS.OWNER_ALERT]: async (deps, row) => {
+    if (!row.booking_id) return;
+    if (!isOwnerAlertReassign(row.payload)) return;
+    const ctx = await deps.loadBookingById(row.booking_id);
+    if (!ctx) return;
+    const { booking } = ctx;
+    const userId = booking.assigned_user_id;
+    const email = booking.agent_email;
+    if (!userId || !email) {
+      // reassignBooking refuses a target with no email, so this is unreachable on the
+      // live path; said rather than assumed, because a silent return here would be a
+      // missing alert nobody could explain.
+      log.warn("owner-alert", {
+        msg: "reassigned booking has no advisor to alert",
+        booking_id: booking.id,
+      });
+      return;
+    }
+
+    let alert = await deps.loadLiveOwnerAlert(booking.id);
+    if (alert && alert.user_id !== userId) {
+      // The remove step ahead of this one owns that row and did not close it, so it
+      // failed; let it retry rather than writing a second live alert into the unique
+      // index behind its back.
+      return;
+    }
+    if (!alert) {
+      alert = await deps.insertOwnerAlert({
+        booking_id: booking.id,
+        user_id: userId,
+        calendar_id: email,
+      });
+    }
+    // Already on the calendar, or definitively refused: either way there is nothing
+    // left for this step to do, on this pass or any later one.
+    if (alert.gcal_event_id || alert.skip_reason) return;
+
+    const clientId = await deterministicEventId(`owner-alert:${row.id}`, userId);
+    let eventId: string;
+    try {
+      eventId = await deps.createOwnerAlertEvent(
+        email,
+        alert.calendar_id,
+        ownerAlertBody({ startsAt: booking.starts_at, timezone: booking.timezone }),
+        clientId,
+      );
+    } catch (err) {
+      const kind = reachabilityFromError(err);
+      // `gone` or `not-provisioned`: retrying can never reach this calendar, and this
+      // is an informational nicety, not a booking. Record which one it was and stop,
+      // so the row explains its own silence and nothing pages about an advisor whose
+      // Google account a Workspace admin has to fix.
+      if (isDefinitiveFailure(kind)) {
+        await deps.recordOwnerAlertSkip(alert.id, kind);
+        return;
+      }
+      throw err; // transient: the drain comes back
+    }
+    await deps.setOwnerAlertEventId(alert.id, eventId);
   },
 };
 

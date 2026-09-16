@@ -10,7 +10,14 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 const dwd = vi.hoisted(() => ({ getDelegatedToken: vi.fn() }));
 vi.mock("@/lib/google/dwd", () => dwd);
 
-import { listCalendars, createEventOnCalendar, updateEventDescription, syncEvents } from "./calendar";
+import {
+  listCalendars,
+  createEventOnCalendar,
+  deleteEventOnCalendar,
+  updateEventDescription,
+  syncEvents,
+} from "./calendar";
+import { isDefinitiveFailure, reachabilityFromError } from "@/lib/google/reachability-classify";
 import { EventGone } from "@/lib/booking/core";
 
 const event = {
@@ -100,6 +107,85 @@ describe("createEventOnCalendar idempotency (#1469)", () => {
     await expect(
       createEventOnCalendar("a@b.com", "primary", event, "slateabc"),
     ).rejects.toThrow(/503/);
+  });
+});
+
+// #2371: the owner alert's removal decides whether to retry by classifying the error,
+// and `reachabilityFromError` can only classify what it can read: a plain Error carries
+// no status, so it is scored TRANSIENT and retried. That made a refusal no retry can
+// ever fix look like a blip.
+describe("deleteEventOnCalendar throws a classifiable error (#2371)", () => {
+  beforeEach(() => dwd.getDelegatedToken.mockResolvedValue("tok"));
+  afterEach(() => vi.unstubAllGlobals());
+
+  const caught = async (status: number, body: string) => {
+    vi.stubGlobal("fetch", async () => new Response(body, { status }));
+    try {
+      await deleteEventOnCalendar("a@b.com", "b@b.com", "evt-1");
+      throw new Error("expected deleteEventOnCalendar to throw");
+    } catch (err) {
+      return err;
+    }
+  };
+
+  it("carries the status and reason, so a never provisioned calendar reads as definitive", async () => {
+    const err = await caught(
+      403,
+      JSON.stringify({ error: { errors: [{ reason: "notACalendarUser" }] } }),
+    );
+    expect(reachabilityFromError(err)).toBe("not-provisioned");
+    expect(isDefinitiveFailure(reachabilityFromError(err))).toBe(true);
+  });
+
+  it("and a 503 still reads as transient, so the two are told apart", async () => {
+    // The control: without this, a change that classified everything as definitive
+    // would pass the assertion above while stopping every legitimate retry.
+    const err = await caught(503, "backendError");
+    expect(reachabilityFromError(err)).toBe("transient");
+    expect(isDefinitiveFailure(reachabilityFromError(err))).toBe(false);
+  });
+
+  it("still treats an already gone event as success", async () => {
+    vi.stubGlobal("fetch", async () => new Response("", { status: 404 }));
+    await expect(deleteEventOnCalendar("a@b.com", "b@b.com", "evt-1")).resolves.toBeUndefined();
+  });
+});
+
+// #2371: the advisor only "previously pitched" alert needs two fields no existing
+// caller sends. Both halves matter and each is invisible from the call site: the alert
+// must reach Google marked FREE (or it occupies the advisor's slot and Slate stops
+// offering a time it is not actually busy at), and every caller that predates this
+// must keep sending the body it always sent, with no null where a field used to be
+// absent.
+describe("createEventOnCalendar transparency and colour (#2371)", () => {
+  beforeEach(() => dwd.getDelegatedToken.mockResolvedValue("tok"));
+  afterEach(() => vi.unstubAllGlobals());
+
+  const bodyOf = async (input: Parameters<typeof createEventOnCalendar>[2]) => {
+    const bodies: string[] = [];
+    vi.stubGlobal("fetch", async (_url: string, init: RequestInit) => {
+      bodies.push(String(init.body));
+      return new Response(JSON.stringify({ id: "evt-1" }), { status: 200 });
+    });
+    await createEventOnCalendar("a@b.com", "b@b.com", input, "slatealert");
+    return JSON.parse(bodies[0]);
+  };
+
+  it("sends transparency and colorId when they are given", async () => {
+    const sent = await bodyOf({ ...event, transparency: "transparent", colorId: "4" });
+    expect(sent.transparency).toBe("transparent");
+    expect(sent.colorId).toBe("4");
+    // Still no attendees: this event is never an invitation.
+    expect(sent.attendees).toBeUndefined();
+  });
+
+  it("OMITS both when they are not, rather than sending null", async () => {
+    const sent = await bodyOf(event);
+    // `in`, not a truthiness check: Google reads an explicit null as a value, so
+    // "absent" and "null" are different requests and only one of them is what the
+    // OOO writes have always sent.
+    expect("transparency" in sent).toBe(false);
+    expect("colorId" in sent).toBe(false);
   });
 });
 

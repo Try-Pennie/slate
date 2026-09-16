@@ -384,6 +384,34 @@ export interface BookingHandoff {
   last_notify_error: string | null;
 }
 
+/**
+ * The advisor only "previously pitched" calendar alert (#2371).
+ *
+ * Written BEFORE the Google event and updated with its id afterwards, so a crash
+ * between the two leaves a row pointing at nothing rather than an event nothing
+ * points at. At most one LIVE row (removed_at is null) per booking, enforced by a
+ * partial unique index; removed rows stay as the history of who held the call.
+ *
+ * Carries no lead data by design, which is what keeps it outside the erasure
+ * function and the Snowflake mirror (migration 0126).
+ */
+export interface OwnerAlertEvent {
+  id: string;
+  booking_id: string;
+  /** The advisor whose calendar the alert is on. */
+  user_id: string;
+  /** Null until Google answers, and forever on a definitively refused calendar. */
+  gcal_event_id: string | null;
+  /** The advisor's own calendar address: the calendar written to, and the identity
+   *  the write and the later removal are made as. */
+  calendar_id: string;
+  created_at: string;
+  /** Set when the alert has been taken back off the calendar. */
+  removed_at: string | null;
+  /** Why Google was never touched: a `gone` or `not-provisioned` calendar. */
+  skip_reason: string | null;
+}
+
 /** Fixed-window rate-limit counter (#31); one row per key, reset in place. */
 export interface RateLimit {
   key: string;

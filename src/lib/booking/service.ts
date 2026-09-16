@@ -23,15 +23,25 @@ import { recordRoutingDecision } from "@/lib/routing/record";
 import { touchedBucketCodes } from "@/lib/availability/precompute";
 import {
   createEvent,
+  createEventOnCalendar,
   deleteEvent,
+  deleteEventOnCalendar,
   eventExists,
   freeBusy,
   freeBusyMany,
   isFree,
   updateEventTime,
+  updateEventTimeOnCalendar,
   updateEventDescription,
   updateEventContact,
 } from "@/lib/google/calendar";
+import {
+  insertOwnerAlert,
+  loadLiveOwnerAlert,
+  markOwnerAlertRemoved,
+  recordOwnerAlertSkip,
+  setOwnerAlertEventId,
+} from "@/lib/booking/owner-alert-store";
 import {
   insertFailureLogFields,
   joinBookingContexts,
@@ -797,6 +807,19 @@ function realDeps(deferSend?: WebhookSendScheduler): BookingDeps {
     createEvent,
     deleteEvent,
     eventExists,
+    // #2371: the advisor only alert's own calendar primitives. They go through the
+    // arbitrary-calendar helpers, not the booking ones, because this event has no
+    // attendees and must never send anybody an invitation or a cancellation.
+    createOwnerAlertEvent: createEventOnCalendar,
+    deleteOwnerAlertEvent: deleteEventOnCalendar,
+    moveOwnerAlertEvent: updateEventTimeOnCalendar,
+    loadLiveOwnerAlert: (bookingId) => loadLiveOwnerAlert(supabaseAdmin(), bookingId),
+    insertOwnerAlert: (row) => insertOwnerAlert(supabaseAdmin(), row),
+    setOwnerAlertEventId: (id, gcalEventId) =>
+      setOwnerAlertEventId(supabaseAdmin(), id, gcalEventId),
+    recordOwnerAlertSkip: (id, reason) => recordOwnerAlertSkip(supabaseAdmin(), id, reason),
+    markOwnerAlertRemoved: (id, skipReason) =>
+      markOwnerAlertRemoved(supabaseAdmin(), id, new Date().toISOString(), skipReason),
     enqueueEventDeletion: async (calendarEmail, gcalEventId, bookingId) => {
       await supabaseAdmin()
         .from("pending_event_deletions")

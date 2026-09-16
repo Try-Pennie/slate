@@ -63,6 +63,20 @@ calendar, for as long as that calendar exists.
 **Consequence for an erasure request.** Honouring one leaves this copy in place.
 Anyone answering a request should say so rather than implying the data is gone.
 
+**The one other event Slate writes, and why it is not in that position** (#2371).
+When the machine routes a lead back to the advisor who has already pitched them,
+Slate writes a SECOND, advisor only event on that advisor's calendar: 20 minutes at
+the head of the call, titled "ALERT: Previously pitched lead", with no attendees and
+marked free. It carries **no lead name, email address or phone number**, and no link
+either: the advisor reads who it is from the booking's own invitation, which is on the
+same calendar at the same time and which this section has already accounted for. So it
+is not a copy of anybody's data, it is outside the erasure scope, and Slate's record of it
+(`owner_alert_events`, migration 0126) holds only a booking id, a user id, a calendar
+address and a Google event id. A label on the booking's own event was rejected for
+exactly the reason this section describes: Google copies an event's title and
+description to every guest, and the lead is a guest on that one. Unlike the booking
+event above, this one IS removed on a cancel and moved on a reschedule.
+
 ---
 
 ## 3. Regal and Cadence (webhooks)
