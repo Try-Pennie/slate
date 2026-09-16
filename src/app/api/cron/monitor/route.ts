@@ -172,7 +172,7 @@ import {
   toCandidates,
   type OverrideCandidate,
 } from "@/lib/monitor/calcom-override-sweep";
-import { addOooOverrides } from "@/lib/calcom/client";
+import { syncCalcomOverrides } from "@/lib/ooo/calcom-sync";
 import { EFFECTS } from "@/lib/ooo/orchestration";
 import {
   missingScheduleAgents,
@@ -478,7 +478,18 @@ async function retryOverrideForRequest(
   const email = (user as { email?: string } | null)?.email;
   if (!email) return "failed: agent has no email";
 
-  const outcome = await addOooOverrides(email, row.starts_at, row.ends_at);
+  // #2417: the same derivation the approval path uses. A retry that rebuilt the
+  // override from this one request alone would reopen the day for an agent whose
+  // date carries a second approved absence, which is exactly the population a
+  // retry sweep reaches.
+  const outcome = await syncCalcomOverrides({
+    mode: "add",
+    requestId,
+    agentUserId: row.user_id,
+    agentEmail: email,
+    startIso: row.starts_at,
+    endIso: row.ends_at,
+  });
   const { error: writeErr } = await db
     .from("ooo_requests")
     .update({
