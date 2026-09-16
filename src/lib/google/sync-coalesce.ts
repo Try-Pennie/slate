@@ -1,4 +1,5 @@
 import { isDefinitiveFailure, type FailureKind } from "@/lib/google/sync-health";
+import { parseStampMs } from "@/lib/date/stamp";
 /**
  * Pure helpers for the DB-backed sync coordination (#30). Cloudflare Workers
  * isolates share no memory, so claims/locks live in Postgres; these compute
@@ -173,6 +174,87 @@ export function syncEligible(
   return minuteOfEpoch % intervalMin === slotHash(cal.id) % intervalMin;
 }
 
+/**
+ * Is another pass holding this calendar's sync claim right now (#2411)?
+ *
+ * The claim is a TIMESTAMP with a TTL rather than a lock, which is what makes a
+ * holder that died recoverable: nothing releases a claim for a Worker that was
+ * killed mid-pass, so a claim older than `CALENDAR_CLAIM_TTL_MS` is abandoned and
+ * the next pass takes it over. Swapping in a primitive that outlives its holder
+ * would ship a regression wearing the same visible exclusion (L409).
+ *
+ * An UNREADABLE stamp reads as NOT held, deliberately, and the direction matters.
+ * `sync_claimed_at` is a timestamptz, so Postgres cannot render one this cannot
+ * parse; if one ever appeared, reading it as held would hold the every-minute lane
+ * off that calendar for ever, because a value that cannot be parsed can never age
+ * out either, and the agent's availability would silently stop updating. Reading it
+ * as free re-opens the narrow race this closes, which is recoverable. The claim
+ * UPDATE is the authority regardless: it compares the column in Postgres, so a
+ * writer is never admitted on the strength of this answer alone.
+ */
+export function claimIsHeld(
+  claimedAt: string | null | undefined,
+  nowMs: number,
+  ttlMs: number = CALENDAR_CLAIM_TTL_MS,
+): boolean {
+  const claimedMs = parseStampMs(claimedAt);
+  if (claimedMs === null) return false;
+  return nowMs - claimedMs < ttlMs;
+}
+
+/** What the rotation lane's filter held back, and for which of the two reasons. */
+export interface SyncEligibilityPartition<T> {
+  /** The calendars to sync this pass, in sync order. */
+  due: T[];
+  /** Held back by the established-gone backoff (#1049). */
+  goneSkipped: number;
+  /** Held back because another pass holds the claim (#2411). */
+  claimSkipped: number;
+}
+
+/**
+ * The rotation lane's calendar list: sync order, minus anything backed off, minus
+ * anything another pass is currently holding.
+ *
+ * The two reasons are counted SEPARATELY rather than subtracted from a total,
+ * because they send a reader to two different places: a gone calendar is a
+ * delegation to repair, and a claimed one is a pass that will finish on its own. A
+ * single "skipped" count would have one answering for the other (L11).
+ *
+ * The claim is only CONSULTED here, never taken. The every-minute lane reaches up
+ * to 100 agents a tick and a claim plus release per calendar would put its
+ * subrequest count past the Worker ceiling it already shares with three other
+ * lanes, so the exclusion is paid for by the once-a-day hydration pass, which takes
+ * the claim, and hydration additionally refuses to write over a token that moved
+ * under it, which is what covers a pass that listed before the claim landed.
+ */
+export function partitionCalendarsForSync<
+  T extends {
+    id: string;
+    sync_token: string | null;
+    last_failure_kind: FailureKind | null;
+    consecutive_failures: number;
+    sync_claimed_at: string | null;
+  },
+>(cals: T[], nowMs: number): SyncEligibilityPartition<T> {
+  const ordered = orderCalendarsForSync(cals);
+  const due: T[] = [];
+  let goneSkipped = 0;
+  let claimSkipped = 0;
+  for (const c of ordered) {
+    if (!syncEligible(c, nowMs)) {
+      goneSkipped++;
+      continue;
+    }
+    if (claimIsHeld(c.sync_claimed_at, nowMs)) {
+      claimSkipped++;
+      continue;
+    }
+    due.push(c);
+  }
+  return { due, goneSkipped, claimSkipped };
+}
+
 /** The rotation lane's calendar list: sync order, minus anything backed off. */
 export function eligibleCalendarsForSync<
   T extends {
@@ -180,7 +262,8 @@ export function eligibleCalendarsForSync<
     sync_token: string | null;
     last_failure_kind: FailureKind | null;
     consecutive_failures: number;
+    sync_claimed_at: string | null;
   },
 >(cals: T[], nowMs: number): T[] {
-  return orderCalendarsForSync(cals).filter((c) => syncEligible(c, nowMs));
+  return partitionCalendarsForSync(cals, nowMs).due;
 }

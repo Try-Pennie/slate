@@ -18,7 +18,7 @@ import {
 } from "@/lib/google/sync-core";
 import {
   claimWindow,
-  eligibleCalendarsForSync,
+  partitionCalendarsForSync,
   pastDeadline,
   shouldRerun,
   CALENDAR_CLAIM_TTL_MS,
@@ -712,90 +712,216 @@ async function syncCalendar(
  *    stored coverage claiming a window the token does not correspond to. Losing the race is
  *    harmless (the other pass's token is newer and the next rotation re-establishes the
  *    window), so the conditional write simply does nothing.
+ *
+ * THE BLOCK CONTENTS ARE NOT COVERED BY ANY OF THAT, which is #2411.
+ *
+ * Points 1 to 3 reason entirely about the token, and a conditional write that does nothing
+ * is only harmless for the token. The upsert and the reconcile below are unconditional, so a
+ * sync that landed while this fetch was in flight has its work overwritten: an event moved
+ * mid-fetch is written back at the time this pass FETCHED, and an event created mid-fetch is
+ * missing from `seen`, so its fresh block is judged vanished and deleted. Google delivers an
+ * unchanged event exactly ONCE and the other pass already consumed that delta, so nothing
+ * re-sends it: the booker offers a time the agent is in a meeting, or withholds a real free
+ * one, until the rotation next reaches this calendar, up to a day later.
+ *
+ * TWO THINGS CLOSE IT, and they close different halves.
+ *
+ * 4. This pass takes the same `sync_claimed_at` claim `syncByChannel` takes, so a push sync
+ *    arriving mid-pass COALESCES instead of writing, and a push that got there first makes
+ *    this pass skip. Nothing is stranded by that: this pass writes the token belonging to its
+ *    OWN snapshot, so a change made after the snapshot is still pending for that token and
+ *    the next incremental tick (within a minute) delivers it. The claim is a timestamp with a
+ *    TTL, so a pass that dies holding it is taken over after CALENDAR_CLAIM_TTL_MS rather
+ *    than holding the calendar for ever (L366, L409).
+ *
+ * 5. The stored token is RE-READ after the fetch, and every write below is abandoned if it
+ *    moved. The every-minute lane takes no per-calendar claim (100 agents a tick puts a claim
+ *    plus release per calendar past the Worker subrequest ceiling four lanes share), so a
+ *    pass that listed before this claim landed can still be running, and a claim stolen after
+ *    its TTL has the same shape. A token that moved is the exact signature of a writer this
+ *    pass cannot see, and the only safe answer is to write nothing: an abandoned pass leaves
+ *    the cache as the other writer left it, which is the fresher of the two.
  */
-export async function hydrateCalendar(
-  cal: AgentCalendar,
-): Promise<{ ok: boolean; events: number }> {
+export type HydrateSkip =
+  | "claimed"
+  | "claim-unreadable"
+  | "token-moved"
+  | "token-unreadable"
+  | "calendar-gone"
+  | "no-mailbox";
+
+export interface HydrateResult {
+  ok: boolean;
+  events: number;
+  /**
+   * Set when this pass declined to run or abandoned itself, never when it ran and
+   * FAILED. The two are counted differently by the lane: a skip measured nothing, so
+   * scoring it as a failure would page about a rotation that is working (#1544), and
+   * scoring it as a refresh would report coverage nobody established.
+   */
+  skipped?: HydrateSkip;
+}
+
+export async function hydrateCalendar(cal: AgentCalendar): Promise<HydrateResult> {
   const db = supabaseAdmin();
   const window = hydrationWindow(Date.now());
   const startingToken = cal.sync_token;
   const prev = healthOf(cal, "sync");
 
-  // Before the fetch, deliberately (see 1 above). Best effort: a failed stamp costs
-  // fairness on one tick, and must not stop the hydration it precedes.
-  await db
+  // BEFORE the rotation stamp and before the fetch (see 4 above). Ordering the claim
+  // first is what makes a skipped calendar cheap AND retried: no Google call is spent,
+  // and `last_bootstrap_attempt_at` does not move, so the calendar stays at the head of
+  // the rotation and is picked up by the NEXT tick (15 minutes) rather than going to the
+  // back of a day-long queue. Nothing starves behind it either: it is skipped without
+  // any IO, so the rest of the batch still runs.
+  const { claimIso, staleBeforeIso } = claimWindow(Date.now(), CALENDAR_CLAIM_TTL_MS);
+  const { data: claimed, error: claimError } = await db
     .from("agent_calendars")
-    .update({ last_bootstrap_attempt_at: new Date().toISOString() })
-    .eq("id", cal.id);
-
-  const email = await loadAgentEmail(cal.user_id);
-  if (!email) {
-    // Not a Google failure, so it must not touch the sync failure streak: doing so would
-    // let a missing mailbox back off a calendar that is perfectly reachable.
+    .update({ sync_claimed_at: claimIso })
+    .eq("id", cal.id)
+    .or(`sync_claimed_at.is.null,sync_claimed_at.lt.${staleBeforeIso}`)
+    .select("id");
+  if (claimError) {
+    // Its own outcome, not folded into "claimed" (L11): one says another pass is working
+    // on this calendar and the other says the database refused a write, and they send a
+    // reader to two different places. Either way nothing has been read or deleted.
     log.warn("hydrate-calendars", {
-      msg: "no mailbox for agent, skipping",
-      user_id: cal.user_id,
+      msg: "could not take the sync claim, skipping",
+      calendar_id: cal.calendar_id,
     });
-    return { ok: false, events: 0 };
+    return { ok: false, events: 0, skipped: "claim-unreadable" };
+  }
+  if (!(claimed as { id: string }[] | null)?.length) {
+    return { ok: false, events: 0, skipped: "claimed" };
   }
 
   try {
-    const timeZone = await loadAgentTimezone(cal.user_id);
-    // null token, always: this is a re-bootstrap, not a delta.
-    const result = await syncEvents(
-      email,
-      cal.calendar_id,
-      null,
-      window.timeMinIso,
-      window.timeMaxIso,
-    );
-    const slateEventIds =
-      result.events.length > 0
-        ? await loadSlateBookingEventIds(cal.user_id)
-        : new Set<string>();
-    await applyEvents(cal.user_id, cal.calendar_id, result.events, slateEventIds, timeZone);
-    // Never reconcile against a PARTIAL set (#1259): a page-capped pass read only the first
-    // pages, so everything beyond them looks vanished and its cached busy time would be
-    // deleted, leaving the agent looking free during real meetings.
-    if (!result.truncated) {
-      await purgeVanished(cal.user_id, cal.calendar_id, result.events, slateEventIds, window);
+    // Before the fetch, deliberately (see 1 above). Best effort: a failed stamp costs
+    // fairness on one tick, and must not stop the hydration it precedes.
+    await db
+      .from("agent_calendars")
+      .update({ last_bootstrap_attempt_at: new Date().toISOString() })
+      .eq("id", cal.id);
+
+    const email = await loadAgentEmail(cal.user_id);
+    if (!email) {
+      // Not a Google failure, so it must not touch the sync failure streak: doing so would
+      // let a missing mailbox back off a calendar that is perfectly reachable.
+      log.warn("hydrate-calendars", {
+        msg: "no mailbox for agent, skipping",
+        user_id: cal.user_id,
+      });
+      return { ok: false, events: 0, skipped: "no-mailbox" };
     }
 
-    // Coverage is only claimed for a pass that actually completed. A truncated pass fetched
-    // part of the window, so recording the full window would authorize the prune over a
-    // range that was never read.
-    if (!result.truncated) {
-      await db
+    try {
+      const timeZone = await loadAgentTimezone(cal.user_id);
+      // null token, always: this is a re-bootstrap, not a delta.
+      const result = await syncEvents(
+        email,
+        cal.calendar_id,
+        null,
+        window.timeMinIso,
+        window.timeMaxIso,
+      );
+
+      // See 5 above. Read BEFORE the first write, so nothing below can act on a snapshot
+      // another writer has already superseded.
+      // error-ok is NOT available here: an unreadable token must abandon the pass, because
+      // the alternative is deleting cached busy time on the strength of a question nobody
+      // answered. Bound with its error rather than unwrapped so the two ways of not
+      // knowing keep their own outcomes.
+      const { data: currentRow, error: tokenError } = await db
         .from("agent_calendars")
-        .update({ sync_window_to: window.timeMaxIso })
-        .eq("id", cal.id);
-    }
+        .select("sync_token")
+        .eq("id", cal.id)
+        .maybeSingle();
+      if (tokenError) {
+        log.warn("hydrate-calendars", {
+          msg: "could not re-read the sync token, writing nothing",
+          calendar_id: cal.calendar_id,
+        });
+        return { ok: false, events: 0, skipped: "token-unreadable" };
+      }
+      const current = currentRow as { sync_token: string | null } | null;
+      if (current === null) {
+        // The watch lane drops a calendar Google no longer lists, row and all (#2380).
+        // Re-creating its blocks here would restore cached busy time for a calendar that
+        // does not exist.
+        return { ok: false, events: 0, skipped: "calendar-gone" };
+      }
+      if (current.sync_token !== startingToken) {
+        log.info("hydrate-calendars", {
+          msg: "sync token advanced during the fetch, abandoning this pass",
+          calendar_id: cal.calendar_id,
+        });
+        // Health is deliberately NOT recorded either way. The fetch succeeded, so a failure
+        // would back off a perfectly reachable calendar, and a success would report a
+        // refresh that never landed.
+        return { ok: false, events: 0, skipped: "token-moved" };
+      }
 
-    if (result.nextSyncToken) {
-      // Conditional on the value this pass started with (see 3 above). `.is` for null,
-      // because `.eq` against null matches nothing in PostgREST.
-      const q = db
-        .from("agent_calendars")
-        .update({ sync_token: result.nextSyncToken })
-        .eq("id", cal.id);
-      await (startingToken === null
-        ? q.is("sync_token", null)
-        : q.eq("sync_token", startingToken));
-    }
+      const slateEventIds =
+        result.events.length > 0
+          ? await loadSlateBookingEventIds(cal.user_id)
+          : new Set<string>();
+      await applyEvents(cal.user_id, cal.calendar_id, result.events, slateEventIds, timeZone);
+      // Never reconcile against a PARTIAL set (#1259): a page-capped pass read only the first
+      // pages, so everything beyond them looks vanished and its cached busy time would be
+      // deleted, leaving the agent looking free during real meetings.
+      if (!result.truncated) {
+        await purgeVanished(cal.user_id, cal.calendar_id, result.events, slateEventIds, window);
+      }
 
-    await recordCalHealth(cal.id, "sync", prev, { ok: true });
-    return { ok: true, events: result.events.length };
-  } catch (err) {
-    await recordCalHealth(cal.id, "sync", prev, {
-      ok: false,
-      error: err instanceof Error ? err.message : String(err),
-      kind: reachabilityFromError(err),
-    });
-    log.warn("hydrate-calendars", {
-      msg: "calendar hydration failed",
-      calendar_id: cal.calendar_id,
-    }, err);
-    return { ok: false, events: 0 };
+      // Coverage is only claimed for a pass that actually completed. A truncated pass fetched
+      // part of the window, so recording the full window would authorize the prune over a
+      // range that was never read.
+      if (!result.truncated) {
+        await db
+          .from("agent_calendars")
+          .update({ sync_window_to: window.timeMaxIso })
+          .eq("id", cal.id);
+      }
+
+      if (result.nextSyncToken) {
+        // Conditional on the value this pass started with (see 3 above). `.is` for null,
+        // because `.eq` against null matches nothing in PostgREST. The re-read above makes
+        // this the expected path rather than the race it was written for, and it stays
+        // conditional: the two checks bracket the writes, so a writer that slipped between
+        // them still cannot leave a token that disagrees with the blocks just written.
+        const q = db
+          .from("agent_calendars")
+          .update({ sync_token: result.nextSyncToken })
+          .eq("id", cal.id);
+        await (startingToken === null
+          ? q.is("sync_token", null)
+          : q.eq("sync_token", startingToken));
+      }
+
+      await recordCalHealth(cal.id, "sync", prev, { ok: true });
+      return { ok: true, events: result.events.length };
+    } catch (err) {
+      await recordCalHealth(cal.id, "sync", prev, {
+        ok: false,
+        error: err instanceof Error ? err.message : String(err),
+        kind: reachabilityFromError(err),
+      });
+      log.warn("hydrate-calendars", {
+        msg: "calendar hydration failed",
+        calendar_id: cal.calendar_id,
+      }, err);
+      return { ok: false, events: 0 };
+    }
+  } finally {
+    // Release only OUR claim, in a `finally` so a throw anywhere above still frees the
+    // calendar immediately rather than leaving the next lane to wait out the TTL. After
+    // the TTL another pass may legitimately hold a newer one, and the equality on the
+    // claim value is what stops this release freeing theirs.
+    await db
+      .from("agent_calendars")
+      .update({ sync_claimed_at: null })
+      .eq("id", cal.id)
+      .eq("sync_claimed_at", claimIso);
   }
 }
 
@@ -810,31 +936,48 @@ export async function hydrateCalendar(
  * removes were also the incidental signal that something was wrong: a Workspace
  * change revoking delegation across the fleet now makes this lane QUIETER, not
  * noisier. Reporting the count keeps the SCALE of a revocation observable.
+ *
+ * `claimSkipped` (#2411) is how many were held back because another pass holds
+ * the calendar's claim, which since #2411 includes the once-a-day hydration
+ * re-bootstrap. Counted separately from `goneSkipped` for the same reason that
+ * one is reported at all: the two say different things (a delegation to repair
+ * against a pass that will finish by itself), and one silently answering for the
+ * other is how somebody spends a morning on the wrong cause (L11). A calendar
+ * skipped here is retried on the NEXT minute, which is inside the claim's own TTL.
  */
 export async function runIncrementalSync(
   userId: string,
   deadlineMs: number | null = null,
-): Promise<{ events: number; truncated: boolean; goneSkipped: number }> {
+): Promise<{
+  events: number;
+  truncated: boolean;
+  goneSkipped: number;
+  claimSkipped: number;
+}> {
   const email = await loadAgentEmail(userId);
-  if (!email) return { events: 0, truncated: false, goneSkipped: 0 };
+  if (!email) return { events: 0, truncated: false, goneSkipped: 0, claimSkipped: 0 };
   const timeZone = await loadAgentTimezone(userId);
   // #1049: sync order, minus calendars established as gone whose turn this is
   // not. A revoked delegation cannot recover without a human, so re-attempting it
   // on all 1440 rotations a day only burns Google calls that can only fail; each
   // one now gets one attempt per GONE_RETRY_INTERVAL_MIN so it still recovers.
+  // #2411: minus anything another pass currently holds, so this lane cannot write
+  // over a hydration snapshot mid-pass.
   const all = await loadAgentCalendars(userId);
-  const cals = eligibleCalendarsForSync(all, Date.now());
-  // Derived from the one predicate that made the decision, never re-deciding it
-  // here: a second copy of the rule would drift from the filter it describes.
-  const goneSkipped = all.length - cals.length;
+  // Both counts come from the one predicate that made the decision, never re-decided
+  // here: a second copy of either rule would drift from the filter it describes.
+  const { due: cals, goneSkipped, claimSkipped } = partitionCalendarsForSync(
+    all,
+    Date.now(),
+  );
   let events = 0;
   for (let i = 0; i < cals.length; i++) {
     if (pastDeadline(Date.now(), deadlineMs)) {
-      return { events, truncated: true, goneSkipped };
+      return { events, truncated: true, goneSkipped, claimSkipped };
     }
     events += await syncCalendar(email, cals[i], timeZone);
   }
-  return { events, truncated: false, goneSkipped };
+  return { events, truncated: false, goneSkipped, claimSkipped };
 }
 
 /**
