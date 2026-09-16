@@ -67,11 +67,65 @@ export function isAllDayBlock(startsAt: string, endsAt: string, timeZone: string
   return start.equals(start.startOf("day")) && end.equals(end.startOf("day"));
 }
 
-/** Whether an event should occupy a busy block (not cancelled/free/timeless). */
+/**
+ * The agent's OWN answer to an invitation, or undefined when the event carries
+ * no entry for them (#2389).
+ *
+ * Whose entry it is decides, which is why this looks for `self` and nothing
+ * else. Google sets `self: true` on the entry belonging to the calendar being
+ * read, so under domain-wide delegation it is the impersonated agent's own
+ * answer; another guest declining says nothing about whether this agent will be
+ * in the room. There is deliberately no fallback to matching the agent's email:
+ * a wrong match would read somebody else's answer as theirs, and `self` is the
+ * only field that carries the fact without us having to recompute it.
+ */
+function selfResponseStatus(ev: GoogleEvent): string | undefined {
+  return ev.attendees?.find((a) => a.self)?.responseStatus;
+}
+
+/**
+ * Whether an event should occupy a busy block (not cancelled/free/timeless, and
+ * not one the agent has declined).
+ *
+ * #2389: a declined invitation stays on the calendar with `status: "confirmed"`
+ * and the default `transparency: "opaque"`, so every other gate here says
+ * "busy". A company wide invite an agent declined in order to keep taking calls
+ * blocked their whole hour and the round robin routed past them.
+ *
+ * The three answers that are NOT a decline are decided here deliberately, rather
+ * than left to fall out of the code, because an unstated decision is one nobody
+ * can find later:
+ *
+ * - `tentative` ("maybe") stays BUSY. The agent may well attend, so offering the
+ *   slot risks putting a lead against a call the agent then takes.
+ * - `needsAction` (invited, not answered) stays BUSY, for the same reason: not
+ *   having answered is not saying they will not be there.
+ * - a MISSING `self` entry stays BUSY. Google omits it in some payloads, and
+ *   treating "we could not find the agent's answer" as a decline would free a
+ *   slot on a meeting they are actually in. Withholding a slot is recoverable;
+ *   double booking an agent is not (L93: name which way the fallback is wrong).
+ *
+ * An event with no attendees at all is the agent's own blocked time and is
+ * unaffected: it has no `self` entry, so it takes the same busy direction.
+ *
+ * The other reader AGREES, and that was MEASURED rather than assumed. #2389 was
+ * filed with the caveat that no Google page states in words whether free/busy,
+ * which verify-on-book uses at confirm time (`hasBlockingBusy` via
+ * `freeBusyMany`), also omits a declined event; if it did not, the booker would
+ * offer a time the final check then refused. Read live on 2026-09-16 against 11
+ * real agent calendars: 6 declined opaque timed events with NOTHING overlapping
+ * them (busy periods MERGE, so a neighbouring meeting would have answered for
+ * the window) came back FREE from free/busy, 6 of 6. The positive control ran on
+ * the same calendars through the same call: an accepted opaque event with
+ * nothing overlapping it came back BUSY, 6 of 6, so "free" is a reading and not
+ * a read that answers free for everything (L1). So free/busy has been ignoring
+ * declines all along and the cache was the only reader that did not.
+ */
 export function isBusyEvent(ev: GoogleEvent): boolean {
   return (
     ev.status !== "cancelled" &&
     ev.transparency !== "transparent" &&
+    selfResponseStatus(ev) !== "declined" &&
     eventWindow(ev) !== null
   );
 }

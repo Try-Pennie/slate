@@ -7,6 +7,9 @@ import {
   partitionBusyWrites,
   staleBlockIds,
 } from "../src/lib/google/sync-core.ts";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import type { GoogleEvent } from "../src/lib/google/calendar.ts";
 import { assert, finish } from "./lib/harness.ts";
 
 // eventWindow
@@ -304,6 +307,173 @@ assert(
   assert(
     isAllDayBlock("2026-07-09T00:00:00.000Z", "2026-07-10T00:00:00.000Z", "Not/AZone"),
     "an unusable zone falls back to UTC n (matches allDayToUtc)",
+  );
+}
+
+// --- Declined invitations (#2389) ---
+//
+// A declined invitation stays on the calendar with status "confirmed" and the
+// default transparency "opaque", so every field isBusyEvent used to read says
+// "busy". The only record of the agent's own decision is THEIR OWN attendee
+// entry, the one Google marks `self: true`. Until #2389 those fields were not
+// even declared on GoogleEvent, so a company wide invite an agent declined in
+// order to keep taking calls blocked their whole hour and the round robin
+// routed past them.
+{
+  const win = {
+    start: { dateTime: "2026-06-08T13:00:00Z" },
+    end: { dateTime: "2026-06-08T13:30:00Z" },
+  };
+  assert(
+    !isBusyEvent({ ...win, attendees: [{ self: true, responseStatus: "declined" }] }),
+    "an invitation the agent DECLINED is not busy",
+  );
+  assert(
+    isBusyEvent({ ...win, attendees: [{ self: true, responseStatus: "accepted" }] }),
+    "an invitation the agent accepted is busy",
+  );
+  // Whose answer it is decides. Another attendee's decline says nothing about
+  // whether this agent will be in the room.
+  assert(
+    isBusyEvent({
+      ...win,
+      attendees: [
+        { email: "someone.else@example.com", responseStatus: "declined" },
+        { self: true, responseStatus: "accepted" },
+      ],
+    }),
+    "a DIFFERENT attendee declining leaves the agent busy",
+  );
+  assert(
+    isBusyEvent({
+      ...win,
+      attendees: [{ email: "someone.else@example.com", responseStatus: "declined" }],
+    }),
+    "an event with attendees but NO self entry stays busy (the fail safe direction)",
+  );
+  assert(
+    isBusyEvent({ ...win }),
+    "an event with no attendees at all is busy (the agent's own blocked time)",
+  );
+  assert(isBusyEvent({ ...win, attendees: [] }), "an empty attendee list is busy");
+  // The two answers that are not a decline, decided deliberately rather than
+  // left to fall out of the code: "maybe" and "not answered yet" both keep the
+  // agent busy. Neither is the agent saying they will not be there, and
+  // withholding a slot is recoverable while double booking an agent is not.
+  assert(
+    isBusyEvent({ ...win, attendees: [{ self: true, responseStatus: "tentative" }] }),
+    "a TENTATIVE answer keeps the agent busy",
+  );
+  assert(
+    isBusyEvent({ ...win, attendees: [{ self: true, responseStatus: "needsAction" }] }),
+    "an unanswered invitation (needsAction) keeps the agent busy",
+  );
+  assert(
+    isBusyEvent({ ...win, attendees: [{ self: true }] }),
+    "a self attendee with no responseStatus at all keeps the agent busy",
+  );
+  // A decline still cannot resurrect an event that is already not busy for
+  // another reason, and the earlier gates still win on their own.
+  assert(
+    !isBusyEvent({
+      ...win,
+      status: "cancelled",
+      attendees: [{ self: true, responseStatus: "accepted" }],
+    }),
+    "an accepted answer does not make a cancelled event busy",
+  );
+  assert(
+    !isBusyEvent({
+      ...win,
+      transparency: "transparent",
+      attendees: [{ self: true, responseStatus: "accepted" }],
+    }),
+    "an accepted answer does not make a transparent event busy",
+  );
+}
+
+// The half that made the defect invisible: the fields have to SURVIVE the read.
+// These events are built by parsing a payload shaped like the one events.list
+// really returns, not by hand writing a typed object literal, so a GoogleEvent
+// that does not carry `attendees` (or a decoder that strips them) fails here.
+{
+  const payload = JSON.parse(`{
+    "kind": "calendar#events",
+    "nextSyncToken": "fixture-sync-token-not-a-real-one",
+    "items": [
+      {
+        "kind": "calendar#event",
+        "id": "declined-all-hands",
+        "status": "confirmed",
+        "created": "2026-06-01T09:00:00.000Z",
+        "updated": "2026-06-02T09:00:00.000Z",
+        "summary": "All hands",
+        "creator": { "email": "organizer@example.com" },
+        "organizer": { "email": "organizer@example.com" },
+        "start": { "dateTime": "2026-06-08T13:00:00-04:00", "timeZone": "America/New_York" },
+        "end": { "dateTime": "2026-06-08T14:00:00-04:00", "timeZone": "America/New_York" },
+        "iCalUID": "declined-all-hands@google.com",
+        "sequence": 0,
+        "attendees": [
+          { "email": "organizer@example.com", "organizer": true, "responseStatus": "accepted" },
+          { "email": "agent@example.com", "self": true, "responseStatus": "declined" }
+        ],
+        "reminders": { "useDefault": true },
+        "eventType": "default"
+      },
+      {
+        "kind": "calendar#event",
+        "id": "accepted-training",
+        "status": "confirmed",
+        "summary": "Training",
+        "start": { "dateTime": "2026-06-08T15:00:00-04:00", "timeZone": "America/New_York" },
+        "end": { "dateTime": "2026-06-08T16:00:00-04:00", "timeZone": "America/New_York" },
+        "attendees": [
+          { "email": "organizer@example.com", "organizer": true, "responseStatus": "accepted" },
+          { "email": "agent@example.com", "self": true, "responseStatus": "accepted" }
+        ],
+        "reminders": { "useDefault": true },
+        "eventType": "default"
+      }
+    ]
+  }`) as { items: GoogleEvent[] };
+  const [declined, accepted] = payload.items;
+  assert(
+    declined.attendees?.some((a) => a.self && a.responseStatus === "declined") === true,
+    "a real shaped events.list payload still carries the self attendee's responseStatus",
+  );
+  assert(!isBusyEvent(declined), "the declined event from a real shaped payload is not busy");
+  assert(isBusyEvent(accepted), "the accepted event from the same payload is busy");
+
+  // And it reaches the live path: a declined event is QUEUED FOR DELETE, so a
+  // block cached before the decline is cleared rather than left over blocking.
+  const { upserts, deletes } = partitionBusyWrites("u1", "primary", payload.items);
+  assert(
+    deletes.length === 1 && deletes[0] === "declined-all-hands",
+    "partitionBusyWrites deletes the declined event's cached block",
+  );
+  assert(
+    upserts.length === 1 && upserts[0].gcal_event_id === "accepted-training",
+    "and still writes the accepted event's block",
+  );
+}
+
+// events.list is asked for whole events today, so `attendees` arrives with no
+// field mask. If one is ever added as an optimisation it must name attendees,
+// or the decline would silently stop being visible and this rule would revert
+// with nothing failing.
+{
+  const calendarSrc = readFileSync(
+    fileURLToPath(new URL("../src/lib/google/calendar.ts", import.meta.url)),
+    "utf8",
+  );
+  const masks = [
+    ...calendarSrc.matchAll(/\.set\(\s*"fields"\s*,\s*"([^"]*)"/g),
+    ...calendarSrc.matchAll(/[?&]fields=([^"&`$]*)/g),
+  ].map((m) => m[1]);
+  assert(
+    masks.every((m) => m.includes("attendees")),
+    `every Google field mask in calendar.ts names attendees (found ${masks.length})`,
   );
 }
 
