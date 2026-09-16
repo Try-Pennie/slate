@@ -58,11 +58,34 @@ export interface AbsenceWindow {
  * Cal.com's representation of "not available at all on this date": an override
  * whose start and end are the same instant, so it offers no bookable time.
  *
- * This is what the Apps Script wrote and what Slate has written throughout the
- * parallel run, so it is the shipped meaning rather than a new guess. It matters
- * that a fully covered day produces THIS and not an empty list: an empty list is
- * "no override on this date", which falls back to the normal working week and
- * leaves the agent bookable through an absence that covers all of it.
+ * It matters that a fully covered day produces THIS and not an empty list: an
+ * empty list is "no override on this date", which falls back to the normal
+ * working week and leaves the agent bookable straight through an absence that
+ * covers all of it. That is the fail open direction, so the value was MEASURED
+ * against live cal.com rather than inherited from the Apps Script it was ported
+ * from (#2417).
+ *
+ * Measured 2026-09-16, read only, against four agents who already carried this
+ * override for an approved all day absence. Read per agent through
+ * `GET /v2/slots?eventTypeSlug=<personal slug>&username=<user>&organizationSlug=<org>`
+ * (`cal-api-version: 2024-09-04`), which answers for ONE person, unlike the team
+ * event type whose slots are the union across every host.
+ *
+ * The reading that settles it is the CROSSOVER, because a date offering no times
+ * can offer none for reasons that have nothing to do with the override: a
+ * weekend, a fully booked agent, the booking horizon, or an endpoint refusing in
+ * a way that reads as empty (L1, L98).
+ *
+ *   2026-09-18  three agents carrying the override offered 0, 0, 0
+ *               the fourth agent, with no override that date, offered 10
+ *   2026-09-25  that fourth agent carried the override and offered 0
+ *               the other three, with none, offered 17, 17, 17
+ *
+ * So the zero tracks the OVERRIDE and not the date, the weekday or the caller.
+ * Across the window every one of the seven override dates offered nothing and
+ * every ordinary weekday offered times. A 404 from that endpoint renders as a
+ * column of zeros and is indistinguishable from a blocked calendar, so a probe
+ * repeating this has to refuse on a non-200 rather than counting it.
  */
 export const FULL_DAY_BLOCK = { startTime: "00:00", endTime: "00:00" } as const;
 
