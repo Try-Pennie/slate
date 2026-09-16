@@ -36,7 +36,13 @@ const BACKLOG = Number(process.env.OUTBOX_BACKLOG ?? 500);
 // The cancel steps, verbatim from orchestration.ts CANCEL_STEPS. A drain re-runs
 // only the not-`done` steps, so pre-marking a prefix `done` models a crash after
 // that point. Three partial shapes span every mid-sequence crash window.
-const STEP_NAMES = ["cancel:gcal_delete", "cancel:busyblock_delete", "cancel:recompute", "cancel:notify"];
+const STEP_NAMES = [
+  "cancel:gcal_delete",
+  "cancel:busyblock_delete",
+  "cancel:recompute",
+  "cancel:owner_alert_delete",
+  "cancel:notify",
+];
 function stepsCrashedAfter(doneCount: number) {
   return STEP_NAMES.map((name, i) => ({
     name,

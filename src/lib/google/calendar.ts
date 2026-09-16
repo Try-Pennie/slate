@@ -309,16 +309,40 @@ export async function createEvent(
 }
 
 /**
+ * The body `createEventOnCalendar` accepts. Attendees are absent by construction
+ * (these are blocking or informational events, never invitations).
+ *
+ * `transparency` and `colorId` are optional and OMITTED from the request when unset
+ * (#2371), so every caller that predates them sends the byte-identical body it always
+ * did. `transparency: "transparent"` is what keeps an event out of Google's free/busy
+ * answer and out of `isBusyEvent`, i.e. what stops a purely informational event ever
+ * moving availability.
+ */
+export type CreateCalendarEventInput = Omit<
+  CreateEventInput,
+  "attendeeEmail" | "attendeeName"
+> & {
+  transparency?: "transparent" | "opaque";
+  colorId?: string;
+};
+
+/**
  * Event create on an arbitrary calendar (the OOO flow writes to manager OOO
- * calendars and agent primaries). No attendees and no sendUpdates — these are
- * blocking events, not invitations; the booking paths above stay untouched.
+ * calendars and agent primaries; #2371 writes the owner alert to an advisor's own).
+ * No attendees and no sendUpdates: these are blocking or informational events, not
+ * invitations, so the booking paths above stay untouched.
  */
 export async function createEventOnCalendar(
   actorEmail: string,
   calendarId: string,
-  input: Omit<CreateEventInput, "attendeeEmail" | "attendeeName">,
+  input: CreateCalendarEventInput,
   clientId?: string,
 ): Promise<string> {
+  // #2371: the owner alert reaches this on the reassign path, so a booking path load
+  // run would write a real event onto a real advisor's calendar. Stubbed like the
+  // booking create above, which also makes the deterministic id the answer, so the
+  // 409 reuse a resume depends on still behaves as it does against Google.
+  if (LOADTEST) return stubCreateEvent(input, clientId);
   const res = await gfetch(
     actorEmail,
     `${BASE}/calendars/${encodeURIComponent(calendarId)}/events`,
@@ -335,6 +359,11 @@ export async function createEventOnCalendar(
         description: input.description,
         start: { dateTime: input.start, timeZone: input.timezone },
         end: { dateTime: input.end, timeZone: input.timezone },
+        // Conditional so an unset field is absent rather than null: Google reads an
+        // explicit null as a value, and every pre-#2371 caller must keep sending
+        // exactly the body it sent before.
+        ...(input.transparency ? { transparency: input.transparency } : {}),
+        ...(input.colorId ? { colorId: input.colorId } : {}),
       }),
     },
     CALENDAR_WRITE_TIMEOUT_MS,
@@ -365,12 +394,49 @@ export async function createEventOnCalendar(
   return data.id;
 }
 
+/**
+ * Move an event on an arbitrary calendar (#2371: a reschedule takes the owner alert
+ * with it). No `sendUpdates`, because these events have no guests to tell.
+ *
+ * A 404/410 throws the typed `EventGone` rather than passing silently, so the caller
+ * can tell "moved" from "there was nothing there": treating a missing event as a
+ * successful move is exactly the silence this codebase keeps paying for (#617).
+ */
+export async function updateEventTimeOnCalendar(
+  actorEmail: string,
+  calendarId: string,
+  eventId: string,
+  start: string,
+  end: string,
+  timezone: string,
+): Promise<void> {
+  // #2371: nothing was written under the flag, so there is nothing to move, and the
+  // typed EventGone below is unreachable (the same note as updateEventTime).
+  if (LOADTEST) return;
+  const res = await gfetch(
+    actorEmail,
+    `${BASE}/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(eventId)}`,
+    {
+      method: "PATCH",
+      body: JSON.stringify({
+        start: { dateTime: start, timeZone: timezone },
+        end: { dateTime: end, timeZone: timezone },
+      }),
+    },
+    CALENDAR_WRITE_TIMEOUT_MS,
+  );
+  if (res.status === 404 || res.status === 410) throw new EventGone("events.patch");
+  await ok(res, "events.patch");
+}
+
 /** Tolerant delete on an arbitrary calendar (404/410 mean already gone). */
 export async function deleteEventOnCalendar(
   actorEmail: string,
   calendarId: string,
   eventId: string,
 ): Promise<void> {
+  // #2371: nothing was written under the flag, so there is nothing to delete.
+  if (LOADTEST) return;
   const res = await gfetch(
     actorEmail,
     `${BASE}/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(eventId)}`,
@@ -378,7 +444,18 @@ export async function deleteEventOnCalendar(
     CALENDAR_WRITE_TIMEOUT_MS,
   );
   if (!res.ok && res.status !== 404 && res.status !== 410) {
-    throw new Error(`events.delete failed: ${res.status} ${await res.text()}`);
+    // A typed error, not a plain one (#2371). `reachabilityFromError` reads the status
+    // and the reason off a GoogleHttpError and calls everything else TRANSIENT, so a
+    // plain Error here made a `403 notACalendarUser` (an advisor who was never given
+    // Calendar) indistinguishable from a blip, and the owner alert's removal would
+    // have retried forever against a calendar nothing can ever reach. Same message
+    // shape as before, so nothing matching on the text changes.
+    const text = await res.text();
+    throw new GoogleHttpError(
+      `events.delete failed: ${res.status} ${text}`,
+      res.status,
+      parseGoogleErrorReason(text),
+    );
   }
 }
 

@@ -22,9 +22,12 @@ import type {
   EventType,
   User,
   BookingReservation,
+  OwnerAlertEvent,
   RoutingTrace,
 } from "../../src/lib/db/types.ts";
-import { EventGone } from "../../src/lib/booking/core.ts";
+import { deterministicEventId, EventGone } from "../../src/lib/booking/core.ts";
+import { GoogleHttpError } from "../../src/lib/google/http-error.ts";
+import type { OwnerAlertEventBody } from "../../src/lib/booking/owner-alert.ts";
 
 /**
  * Per-file assertion counter. Each suite is its own process (the runner spawns
@@ -186,6 +189,39 @@ export interface FakeOpts {
   // micro-race: an unconditional delete clobbers this fresh lease; the atomic
   // target-conditional delete leaves it untouched.
   repinAtCleanup?: { toTarget: string; pin: ReschedulePin };
+  // --- #2371 owner alert ---------------------------------------------------
+  /** Rows already in owner_alert_events when the run starts. */
+  ownerAlerts?: OwnerAlertEvent[];
+  /**
+   * How the calendar write fails. `gone` and `not-provisioned` are the two
+   * DEFINITIVE kinds (`isDefinitiveFailure`), modelled as the real Google statuses
+   * and reasons so the classifier under test does the classifying, not the fake.
+   */
+  ownerAlertCreateFails?: OwnerAlertFailure | null;
+  /** The same, for the delete on a removal path. */
+  ownerAlertDeleteFails?: OwnerAlertFailure | null;
+  /** The move raises EventGone: the advisor deleted the alert themselves. */
+  ownerAlertMoveGone?: boolean;
+  /**
+   * Events Google ALREADY holds, keyed by the deterministic client id's SEED
+   * (`owner-alert:<outbox row id>:<user id>`, the string deterministicEventId
+   * hashes). That is how a resume meets a 409 and adopts the existing event: the
+   * fake cannot know the hash, and hard coding one would pin the hash rather than
+   * the behaviour.
+   */
+  existingCalendarEvents?: Record<string, string>;
+}
+
+/** The three ways a calendar write fails, as the fakes model them. */
+export type OwnerAlertFailure = "gone" | "not-provisioned" | "transient";
+
+/** A Google error of the shape the real classifier reads (status plus reason). */
+function googleFailure(kind: OwnerAlertFailure): Error {
+  if (kind === "not-provisioned") {
+    return new GoogleHttpError("events.insert failed: 403", 403, "notACalendarUser");
+  }
+  if (kind === "gone") return new GoogleHttpError("events.insert failed: 404", 404, "notFound");
+  return new GoogleHttpError("events.insert failed: 503", 503, "backendError");
 }
 
 // Default fake working hours: Mon-Fri 09:00-17:00 America/New_York. Covers every
@@ -331,6 +367,53 @@ export function makeDeps(opts: FakeOpts) {
       swappedAt: string;
     }[],
     reassignIntentDeletes: [] as { bookingId: string; gcalClientId: string }[],
+    // #2371: the in-memory owner_alert_events table, exposed so a suite can read the
+    // rows the run left behind rather than inferring them from the calls.
+    ownerAlertRows: [] as OwnerAlertEvent[],
+    ownerAlertCreates: [] as {
+      actorEmail: string;
+      calendarId: string;
+      clientId: string;
+      body: OwnerAlertEventBody;
+      eventId: string;
+    }[],
+    ownerAlertDeletes: [] as { actorEmail: string; calendarId: string; eventId: string }[],
+    ownerAlertMoves: [] as {
+      calendarId: string;
+      eventId: string;
+      start: string;
+      end: string;
+      timezone: string;
+    }[],
+  };
+  // #2371 owner_alert_events, as a table the fake mutates in place: the partial
+  // unique index is modelled by refusing a second LIVE row for one booking, so a
+  // step that tried to write one fails here exactly as Postgres would.
+  const ownerAlerts: OwnerAlertEvent[] = (opts.ownerAlerts ?? []).map((r) => ({ ...r }));
+  calls.ownerAlertRows = ownerAlerts;
+  let ownerAlertSeq = 0;
+  let ownerAlertCreateFails: OwnerAlertFailure | null = opts.ownerAlertCreateFails ?? null;
+  /** Flip the calendar's behaviour mid-run, so one deps object can model a transient
+   *  failure and the drain pass that follows it. */
+  const setOwnerAlertCreateFails = (kind: OwnerAlertFailure | null): void => {
+    ownerAlertCreateFails = kind;
+  };
+  // Google's own idempotency: the same deterministic client id resolves to the event
+  // it already holds (the 409-as-success reuse), never a second one.
+  const ownerAlertEventsByClientId = new Map<string, string>();
+  const ownerAlertRow = (id: string): OwnerAlertEvent => {
+    const found = ownerAlerts.find((r) => r.id === id);
+    if (!found) throw new Error(`owner alert row ${id} does not exist`);
+    return found;
+  };
+  /** Which pre-existing Google event, if any, this hashed client id collides with. */
+  const seededEventFor = async (clientId: string): Promise<string | null> => {
+    for (const [seed, eventId] of Object.entries(opts.existingCalendarEvents ?? {})) {
+      const sep = seed.lastIndexOf(":");
+      const hashed = await deterministicEventId(seed.slice(0, sep), seed.slice(sep + 1));
+      if (hashed === clientId) return eventId;
+    }
+    return null;
   };
   let seq = 0;
   let insertAttempted = false;
@@ -447,6 +530,57 @@ export function makeDeps(opts: FakeOpts) {
     deleteEvent: async (_email, id) => {
       if (opts.deleteEventThrows) throw new Error("google 503");
       calls.deleteEvent.push({ id });
+    },
+    // --- #2371 owner alert ------------------------------------------------
+    createOwnerAlertEvent: async (actorEmail, calendarId, body, clientId) => {
+      if (ownerAlertCreateFails) throw googleFailure(ownerAlertCreateFails);
+      const eventId =
+        ownerAlertEventsByClientId.get(clientId) ??
+        (await seededEventFor(clientId)) ??
+        `alert-${++ownerAlertSeq}`;
+      ownerAlertEventsByClientId.set(clientId, eventId);
+      calls.ownerAlertCreates.push({ actorEmail, calendarId, clientId, body, eventId });
+      return eventId;
+    },
+    deleteOwnerAlertEvent: async (actorEmail, calendarId, eventId) => {
+      if (opts.ownerAlertDeleteFails) throw googleFailure(opts.ownerAlertDeleteFails);
+      calls.ownerAlertDeletes.push({ actorEmail, calendarId, eventId });
+    },
+    moveOwnerAlertEvent: async (_actorEmail, calendarId, eventId, start, end, timezone) => {
+      if (opts.ownerAlertMoveGone) throw new EventGone("events.patch");
+      calls.ownerAlertMoves.push({ calendarId, eventId, start, end, timezone });
+    },
+    loadLiveOwnerAlert: async (bookingId) =>
+      ownerAlerts.find((r) => r.booking_id === bookingId && r.removed_at === null) ?? null,
+    insertOwnerAlert: async (row) => {
+      if (ownerAlerts.some((r) => r.booking_id === row.booking_id && r.removed_at === null)) {
+        // What owner_alert_events_one_live_per_booking does in Postgres.
+        throw new Error("duplicate key value violates unique constraint");
+      }
+      const inserted: OwnerAlertEvent = {
+        id: `oae-${ownerAlerts.length + 1}`,
+        booking_id: row.booking_id,
+        user_id: row.user_id,
+        calendar_id: row.calendar_id,
+        gcal_event_id: null,
+        created_at: "2026-06-01T00:00:00.000Z",
+        removed_at: null,
+        skip_reason: null,
+      };
+      ownerAlerts.push(inserted);
+      return inserted;
+    },
+    setOwnerAlertEventId: async (id, gcalEventId) => {
+      ownerAlertRow(id).gcal_event_id = gcalEventId;
+    },
+    recordOwnerAlertSkip: async (id, reason) => {
+      ownerAlertRow(id).skip_reason = reason;
+    },
+    markOwnerAlertRemoved: async (id, skipReason) => {
+      const r = ownerAlertRow(id);
+      if (r.removed_at !== null) return; // the `is("removed_at", null)` guard
+      r.removed_at = "2026-06-02T00:00:00.000Z";
+      if (skipReason) r.skip_reason = skipReason;
     },
     enqueueEventDeletion: async (email, eventId, bookingId) => {
       calls.enqueueEventDeletion.push({ email, eventId, bookingId });
@@ -826,7 +960,7 @@ export function makeDeps(opts: FakeOpts) {
   // released), so a test can assert whether a cleanup delete clobbered it (#480).
   const getLease = (bookingId: string): { target: string; leaseUntilMs: number; pin: ReschedulePin | null } | undefined =>
     locks.get(bookingId);
-  return { deps, calls, expireLease, getLease };
+  return { deps, calls, expireLease, getLease, setOwnerAlertCreateFails };
 }
 
 // Validated reasons for the changed reschedule/cancel/reassign signatures.

@@ -502,13 +502,37 @@ for (const rule of SQL_RULES) {
 // The outbox step names are written out in SQL and must be the ones the executor
 // registers, in the order the code path enqueues them. Two copies of one list is what
 // this holds together (L41): the SQL cannot import the constant.
+//
+// One step is deliberately absent from the SQL copy, and it is NAMED here rather than
+// achieved by loosening the comparison (L129): an unnamed omission reads as drift, and
+// a comparison relaxed to tolerate it would stop catching the drift it exists for.
+const NOT_ENQUEUED_BY_SQL: { step: string; why: string }[] = [
+  {
+    step: "cancel:owner_alert_delete",
+    why:
+      "#2371 ships the handler. A step with no handler FAILS its outbox row, and a " +
+      "migration is applied BEFORE the code that needs it deploys (L640), so a " +
+      "migration enqueueing this would break every Regal duplicate cancel in that " +
+      "window. #2433 adds it to the function in a migration after the deploy.",
+  },
+];
+
 {
-  const expected = cancelOutboxSteps().map((s) => s.name);
+  const registered = cancelOutboxSteps().map((s) => s.name);
+  const exempt = new Set(NOT_ENQUEUED_BY_SQL.map((e) => e.step));
+  for (const e of NOT_ENQUEUED_BY_SQL) {
+    assert(
+      registered.includes(e.step) && e.why.trim().length > 0,
+      `the exemption names a step the executor really registers, with a reason: ${e.step}`,
+    );
+  }
+  const expected = registered.filter((n) => !exempt.has(n));
   const inSql = [...SQL.matchAll(/'name'\s*,\s*'([^']+)'/g)].map((m) => m[1]);
   eq(
     inSql.join(","),
     expected.join(","),
-    "the SQL enqueues exactly the cancel steps the executor registers, in order",
+    "the SQL enqueues exactly the cancel steps the executor registers, in order, " +
+      "apart from the named exemptions",
   );
 }
 
@@ -526,11 +550,21 @@ for (const rule of SQL_RULES) {
     const broke = SQL_RULES.some((r) => r.holds(SQL) && !r.holds(m.sql));
     assert(broke, `control: ${m.name} is caught by at least one rule assertion`);
   }
+  const exempt = new Set(NOT_ENQUEUED_BY_SQL.map((e) => e.step));
+  const registered = cancelOutboxSteps().map((s) => s.name).filter((n) => !exempt.has(n));
   const stepMutant = SQL.replace(/'cancel:notify'/g, "'cancel:notify_v2'");
   const mutantSteps = [...stepMutant.matchAll(/'name'\s*,\s*'([^']+)'/g)].map((m) => m[1]);
   assert(
-    mutantSteps.join(",") !== cancelOutboxSteps().map((s) => s.name).join(","),
+    mutantSteps.join(",") !== registered.join(","),
     "control: renaming a step in the SQL alone is caught",
+  );
+  // And the exemption list cannot quietly swallow a real drift: a step the SQL
+  // DROPPED while still being registered and unexempted must still fail.
+  const dropMutant = SQL.replace(/jsonb_build_object\('name', 'cancel:recompute'[^)]*\),\s*/g, "");
+  const droppedSteps = [...dropMutant.matchAll(/'name'\s*,\s*'([^']+)'/g)].map((m) => m[1]);
+  assert(
+    droppedSteps.join(",") !== registered.join(","),
+    "control: a step the SQL stops enqueueing is still caught while it is not exempted",
   );
 }
 

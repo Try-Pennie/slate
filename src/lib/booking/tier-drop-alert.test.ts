@@ -205,6 +205,22 @@ function makeTierDropDeps(): BookingDeps {
     invalidateSlots: noop,
     recordRoutingDecision: noop,
     displayedTier: async () => null,
+    // #2371: these suites are about the tier ladder, not the owner alert. They are
+    // present so `tsc` enumerates every construction site of BookingDeps, and each
+    // throws rather than no-oping, so a path that unexpectedly reaches one fails
+    // loudly here instead of quietly proving nothing.
+    createOwnerAlertEvent: async () => {
+      throw new Error("owner alert not exercised by this suite");
+    },
+    deleteOwnerAlertEvent: noop,
+    moveOwnerAlertEvent: noop,
+    loadLiveOwnerAlert: async () => null,
+    insertOwnerAlert: async () => {
+      throw new Error("owner alert not exercised by this suite");
+    },
+    setOwnerAlertEventId: noop,
+    recordOwnerAlertSkip: noop,
+    markOwnerAlertRemoved: noop,
   };
 }
 
