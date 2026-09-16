@@ -10,6 +10,7 @@ import {
   planEmptyBucketAlerts,
   emptyBucketsAggregateMessage,
   emptyBucketsAggregateRecoveredMessage,
+  tierCoveredBucketMessage,
   AGGREGATE_EMPTY_THRESHOLD,
   AGGREGATE_BUCKET_CODE,
 } from "../src/lib/availability/bucket-coverage.ts";
@@ -25,7 +26,12 @@ const alone = (code: string, eligibleCount: number) => ({
   poolLabel: null,
 });
 
-// --- emptyBuckets: zero eligible agents = a routing dead zone ---
+// --- emptyBuckets: a dead zone is a code whose whole LADDER is empty ---
+//
+// REVERSED by #2483. This used to assert that any code resolving to zero agents
+// was a dead zone, which made the Low plus Beyond codes permanently red about a
+// state that is correct. It is judged down the tier ladder now, so `511` is
+// covered by `411` beneath it, which is where the router really sends that lead.
 {
   const cov = [
     alone("411", 3),
@@ -34,8 +40,9 @@ const alone = (code: string, eligibleCount: number) => ({
     alone("611", 1),
   ];
   const empty = emptyBuckets(cov);
-  assert(empty.length === 2, "two buckets with zero eligible agents are flagged");
-  assert(empty.includes("412") && empty.includes("511"), "the right codes are flagged");
+  assert(empty.length === 1, "only the code with no staffed rung beneath it is flagged");
+  assert(empty.includes("412"), "412 drops to 312, 212, 112, none of which is staffed here");
+  assert(!empty.includes("511"), "511 drops to 411, which is staffed, so a lead IS booked");
   assert(!empty.includes("411") && !empty.includes("611"), "covered buckets are NOT flagged");
   assert(emptyBuckets([]).length === 0, "no buckets -> nothing flagged");
   assert(
@@ -321,6 +328,95 @@ const alone = (code: string, eligibleCount: number) => ({
     /empty_buckets/.test(msg),
     "while still pointing at the family of pages that does cover it",
   );
+}
+
+// --- A bucket is a dead end only when its whole LADDER is empty (#2483) ---
+//
+// The Low plus Beyond codes 120, 121 and 122 have no eligible agent by
+// construction: no Low agent carries the Beyond backend. Since #1909 a Beyond
+// lead overflows sideways to Achieve, so the ladder for 120 is `120, 130` and the
+// whole Low Achieve pool serves it. Judged per code, those three were
+// permanently "nobody to route to", so both the hourly page and the flip morning
+// readiness gate were red about three buckets that are correct, on the healthy
+// day (L36).
+//
+// It asks `tierLadder` rather than re-deriving a rule here, so it can never claim
+// a rescue the router does not perform, and a widened ladder moves both together.
+{
+  const rung = (code: string, eligibleCount: number) => ({
+    code,
+    eligibleCount,
+    poolKey: `pool-${code}`,
+    poolLabel: null,
+  });
+
+  // The Beyond hole: empty codes, and the Achieve rung beside them is staffed.
+  // The legal digit rides unchanged onto every rung, so 121 is rescued by 131
+  // and 122 by 132, never by 130. In production all sixty codes exist.
+  const lowBeyondHole = [
+    rung("100", 84),
+    rung("120", 0),
+    rung("121", 0),
+    rung("122", 0),
+    rung("130", 84),
+    rung("131", 84),
+    rung("132", 84),
+  ];
+  eq(
+    emptyBuckets(lowBeyondHole).length,
+    0,
+    "an empty Beyond code is not a dead end while its Achieve overflow rung is staffed",
+  );
+
+  // THE FAIL OPEN THIS MUST NOT HAVE (#2253). 111 and 112 share a tier, a backend
+  // and a pool, and the ladder does NOT walk sideways between them: a lead on 111
+  // is not booked by the person named on 112 by hand. Judging by the debt tier
+  // instead of the ladder would silence exactly the page that issue restored.
+  const handStaffedSibling = [rung("111", 0), rung("112", 1)];
+  const siblings = emptyBuckets(handStaffedSibling);
+  eq(siblings.length, 1, "a staffed SIBLING in the same tier is no rescue");
+  assert(siblings.includes("111"), "and the unroutable code is still named");
+
+  // A whole ladder dark is still a dead end, on every code in it.
+  const dark = emptyBuckets([rung("500", 0), rung("400", 0), rung("300", 0), rung("200", 0), rung("100", 0)]);
+  eq(dark.length, 5, "every code of a dark ladder is flagged");
+
+  // A code that is not an XBC has no ladder to be rescued by, so it answers for
+  // itself. Hand created buckets (#2006) live outside the matrix.
+  eq(emptyBuckets([rung("house", 0), rung("100", 84)]).length, 1, "a non XBC code is judged alone");
+
+  // A rung nobody measured is not a staffed rung.
+  eq(emptyBuckets([rung("522", 0)]).length, 1, "a ladder whose rungs are absent from the sweep is a dead end");
+}
+
+// --- The page a tier rescued owes an honest ending, not silence (#2483) ---
+//
+// `empty_buckets:120` was firing in production on 2026-09-16, hourly, about the
+// Low plus Beyond pool. Making the judgement tier wide stops the page without
+// ending it, and a condition nobody is told has ended is one somebody is still
+// carrying (#1151). It cannot ride on `recoveredBucketMessage`, which says how
+// many eligible agents the bucket has: that count is still zero and saying
+// otherwise is the false recovery defect (#1134).
+{
+  const row = (code: string, eligibleCount: number) => ({
+    code,
+    eligibleCount,
+    poolKey: `pool-${code[1]}`,
+    poolLabel: code[1] === "2" ? "Low Beyond" : "Low",
+  });
+  const plan = planEmptyBucketAlerts([row("100", 84), row("120", 0), row("130", 84)]);
+
+  const rescued = plan.clear.find((c) => c.code === "120");
+  assert(rescued, "a ladder covered code is cleared rather than left paging");
+  assert(rescued!.tierCovered, "and is marked as covered by its ladder, not as staffed");
+  const staffed = plan.clear.find((c) => c.code === "100");
+  assert(staffed && !staffed.tierCovered, "a genuinely staffed code is not marked ladder covered");
+
+  const msg = tierCoveredBucketMessage(rescued!.pool);
+  assert(/debt tier/i.test(msg), "the all clear says the debt tier is what covers it");
+  assert(!/eligible bookable agent/.test(msg), "and never claims agents this bucket does not have");
+  assert(msg.includes("120"), "and names the bucket the page named");
+  assert(!/^\s*Slate\b/i.test(msg), "and does not open with a Slate label");
 }
 
 finish();
