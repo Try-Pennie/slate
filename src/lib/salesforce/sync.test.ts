@@ -36,6 +36,81 @@ const store = vi.hoisted(() => {
     errorOn?: string;
   } = { existing: [], afterInsert: [], reapable: [] };
 
+  /**
+   * The stored `users` rows, so a write can be read back as STATE rather than as
+   * a recorded payload (#2381).
+   *
+   * Seeded by `seedUsers`, which is deliberate rather than automatic: a suite that
+   * only asks what was SENT keeps working untouched, and one asking what the table
+   * now HOLDS says so.
+   */
+  const users = new Map<string, Record<string, unknown>>();
+
+  /**
+   * What PostgREST actually does with a bulk payload, which is NOT what the
+   * per-row reading of it suggests (#2381).
+   *
+   * The column list of a bulk insert or upsert is the UNION of the keys across
+   * every object in the array, and a row missing one of those keys has NULL
+   * written into it (supabase-js calls this `defaultToNull`, and it is the
+   * default). `ON CONFLICT DO UPDATE` then sets every column in that list from
+   * the excluded tuple. So one row carrying a key the others omit does not write
+   * that column for itself alone: it writes NULL over it on all the rest.
+   *
+   * Modelling it is the whole point. A fake that scopes columns per row accepts a
+   * payload the database would damage, so a test written against it cannot fail
+   * (L52), which is exactly how this shipped.
+   */
+  function payloadColumns(rows: Record<string, unknown>[]): string[] {
+    const cols: string[] = [];
+    for (const row of rows) {
+      for (const key of Object.keys(row)) {
+        // `undefined` is dropped on the way to JSON, so it is an absent key here
+        // too, which is what makes a conditionally assigned property damaging.
+        if (row[key] === undefined) continue;
+        if (!cols.includes(key)) cols.push(key);
+      }
+    }
+    return cols;
+  }
+
+  function applyBulkWrite(op: "upsert" | "insert", payload: unknown) {
+    const rows = (Array.isArray(payload) ? payload : [payload]) as Record<string, unknown>[];
+    const cols = payloadColumns(rows);
+    for (const row of rows) {
+      const id = String(row.id ?? `generated-${users.size + 1}`);
+      const tuple: Record<string, unknown> = {};
+      for (const col of cols) tuple[col] = row[col] === undefined ? null : row[col];
+      const stored = users.get(id);
+      // ON CONFLICT DO UPDATE SET col = EXCLUDED.col for every payload column,
+      // which is why an omitted key is a write of NULL and not a no-op.
+      users.set(id, stored ? { ...stored, ...tuple, id } : { ...tuple, id });
+    }
+  }
+
+  function applyUpdate(payload: unknown, filters: [string, string, unknown][]) {
+    const patch = payload as Record<string, unknown>;
+    for (const [id, row] of users) {
+      const matches = filters.every(([kind, col, val]) => {
+        const current = col === "id" ? id : row[col];
+        if (kind === "eq") return current === val;
+        if (kind === "in") return Array.isArray(val) && val.includes(current);
+        if (kind === "is") return current === val;
+        return true;
+      });
+      // An UPDATE sets only the columns it names, on the rows it matched. That is
+      // the difference from the bulk write above, and the reason the belief this
+      // code rested on was true of one row and false of a batch.
+      if (matches) users.set(id, { ...row, ...patch });
+    }
+  }
+
+  function seedUsers(rows: Record<string, unknown>[]) {
+    users.clear();
+    for (const row of rows) users.set(String(row.id), { ...row });
+    config.existing = rows;
+  }
+
   function makeDb() {
     return {
       from(table: string) {
@@ -98,6 +173,13 @@ const store = vi.hoisted(() => {
               else if (state.select?.includes("manager_id")) result = { data: config.afterInsert, error: null };
               else result = { data: config.reapable, error: null };
             }
+            // A refused statement writes NOTHING, so the stored rows must not move
+            // when the fake is returning an error: a test asserting what survived a
+            // refusal would otherwise be reading a write the database never made.
+            if (result.error === null && state.table === "users") {
+              if (state.op === "upsert" || state.op === "insert") applyBulkWrite(state.op, state.payload);
+              else if (state.op === "update") applyUpdate(state.payload, state.filters);
+            }
             return Promise.resolve(result).then(resolve, reject);
           },
         };
@@ -105,7 +187,7 @@ const store = vi.hoisted(() => {
       },
     };
   }
-  return { calls, config, makeDb, sfUsers: [] as unknown[], mgr: [] as unknown[] };
+  return { calls, config, makeDb, users, seedUsers, payloadColumns, sfUsers: [] as unknown[], mgr: [] as unknown[] };
 });
 vi.mock("@/lib/supabase/admin", () => ({ supabaseAdmin: () => store.makeDb() }));
 
@@ -133,6 +215,8 @@ import {
   activationAllowance,
   type ActivationAllowance,
 } from "@/lib/bookable/activation-allowance";
+import { planOnboardingFlip } from "@/lib/salesforce/onboarding";
+import type { Attributes } from "@/lib/db/types";
 
 function sfResponse(records: unknown[]) {
   return { ok: true, json: async () => ({ records, done: true }) };
@@ -818,7 +902,10 @@ describe("a hire becomes bookable on the first tier or the Sales profile (#2071)
     const insert = store.calls.find((c) => c.op === "insert" && c.table === "users");
     const row = (insert?.payload as Record<string, unknown>[])[0];
     expect(row).toMatchObject({ email: "new@x.com", role: "agent", bookable: false });
-    expect(row.bookable_pending_since).toBeUndefined();
+    // Explicitly null rather than absent since #2381: every row in a bulk payload
+    // names the same columns, because PostgREST NULL-fills the ones a row omits and
+    // writes them over the whole batch. Null is the assertion that says "no mark".
+    expect(row.bookable_pending_since).toBeNull();
     expect(bookable.applyBookableByUserId).not.toHaveBeenCalled();
     expect(result.createdUntiered).toBe(1);
     expect(result.bookableFlipped).toEqual([]);
@@ -941,7 +1028,9 @@ expect(bookable.applyBookableByUserId).toHaveBeenCalledWith("u1", true);
     expect(bookable.applyBookableByUserId).not.toHaveBeenCalled();
     expect(result.bookableFlipped).toEqual([]);
     const upsert = store.calls.find((c) => c.op === "upsert");
-    expect((upsert?.payload as Record<string, unknown>[])[0].bookable_pending_since).toBeUndefined();
+    // Null, not absent, for the #2381 reason on the insert case above: the column is
+    // named on every row, and what says the hold stands is that the value is null.
+    expect((upsert?.payload as Record<string, unknown>[])[0].bookable_pending_since).toBeNull();
   });
 
   it("never puts somebody who has left back in the pool because of a Salesforce edit", async () => {
@@ -952,6 +1041,146 @@ expect(bookable.applyBookableByUserId).toHaveBeenCalledWith("u1", true);
     sfRoster([{ Email: "gone@x.com", Name: "Gone", Profile: { Name: "Sales" }, LowDebt__c: true }]);
 
     await syncSalesforceAgents();
+    expect(bookable.applyBookableByUserId).not.toHaveBeenCalled();
+  });
+});
+
+// #2381: one fresh transition in the batch must not erase everybody else's mark.
+//
+// The refresh rows go out as ONE bulk upsert, and PostgREST takes the column list
+// of a bulk payload as the UNION of the keys across every row, NULL-filling a row
+// that omits one, then writing every column of that list in ON CONFLICT DO UPDATE.
+// So a conditionally assigned `bookable_pending_since` is not a column written for
+// the one row carrying it: it is a NULL written over every row that does not.
+//
+// That mark is the ONLY record of a refused or deferred activation, and
+// `planOnboardingFlip` returns `none` for Sales against Sales without it. A hire
+// whose mark was erased is never made bookable by anything again, and reads exactly
+// like somebody an admin deliberately held back.
+//
+// These tests are what the recorded payload could never show, because the fake used
+// to record the write instead of applying it, and a fake that scopes columns per row
+// models a database behaviour PostgREST does not have (L52). `store.users` is the
+// applied state; every assertion below reads that rather than the payload.
+describe("a fresh pending mark in the batch leaves the other marks alone (#2381)", () => {
+  const NOW = "2026-09-16T12:00:00.000Z";
+  const MARK_A = "2026-09-16T10:00:00.000Z";
+  const MARK_B = "2026-09-16T11:00:00.000Z";
+
+  const sfRoster = (records: unknown[]) => {
+    sf.fetchSfWithRetry.mockImplementation(async (url: string) => {
+      if (url.includes("oauth2/token")) {
+        return { ok: true, json: async () => ({ access_token: "tok", instance_url: "https://sf.example" }) };
+      }
+      const q = decodeURIComponent((url.split("q=")[1] ?? "").replace(/\+/g, " "));
+      if (q.includes("IsActive = true AND Email != null AND (")) return sfResponse(records);
+      return sfResponse([]);
+    });
+  };
+
+  /**
+   * Two hires whose flip was refused last hour (so each carries its own mark, and
+   * the two marks differ so neither can stand in for the other), plus one moved to
+   * Sales this hour, which is the fresh transition that used to null the other two.
+   */
+  const seedThreeHires = () => {
+    store.seedUsers([
+      { id: "u1", email: "retry-a@x.com", attributes: { role: "Sales", debt_team: ["low"] }, bookable: false, deactivated_at: null, bookable_pending_since: MARK_A },
+      { id: "u2", email: "retry-b@x.com", attributes: { role: "Sales", debt_team: ["low"] }, bookable: false, deactivated_at: null, bookable_pending_since: MARK_B },
+      { id: "u3", email: "fresh@x.com", attributes: { role: "Chatter Free User" }, bookable: false, deactivated_at: null, bookable_pending_since: null },
+    ]);
+    store.config.afterInsert = [
+      { id: "u1", email: "retry-a@x.com", manager_id: null, role: "agent", salesforce_user_id: null, bookable: false, deactivated_at: null, is_test: false },
+      { id: "u2", email: "retry-b@x.com", manager_id: null, role: "agent", salesforce_user_id: null, bookable: false, deactivated_at: null, is_test: false },
+      { id: "u3", email: "fresh@x.com", manager_id: null, role: "agent", salesforce_user_id: null, bookable: false, deactivated_at: null, is_test: false },
+    ];
+    sfRoster([
+      { Email: "retry-a@x.com", Name: "Retry A", Profile: { Name: "Sales" }, LowDebt__c: true },
+      { Email: "retry-b@x.com", Name: "Retry B", Profile: { Name: "Sales" }, LowDebt__c: true },
+      { Email: "fresh@x.com", Name: "Fresh Hire", Profile: { Name: "Sales" } },
+    ]);
+  };
+
+  /** The stored value, read back as the database would hold it after the writes. */
+  const markOf = (id: string) => store.users.get(id)?.bookable_pending_since;
+
+  beforeEach(() => {
+    store.calls.length = 0;
+    store.config.errorOn = undefined;
+    store.config.reapable = [];
+    bookable.applyBookableByUserId.mockClear();
+    // Every flip refused, which is the case the mark exists for: Google has not
+    // provisioned the hires yet, so nothing clears a mark and nothing else writes.
+    bookable.applyBookableByUserId.mockImplementation(async (userId: string) => ({
+      status: "blocked",
+      userId,
+      reason: "google_not_provisioned",
+    }));
+    audit.recordAudit.mockClear();
+    seedThreeHires();
+  });
+
+  it("keeps each retried hire's own mark while marking the fresh transition", async () => {
+    const result = await syncSalesforceAgents({ nowIso: () => NOW });
+
+    expect(markOf("u1")).toBe(MARK_A);
+    expect(markOf("u2")).toBe(MARK_B);
+    expect(markOf("u3")).toBe(NOW);
+    // All three were still attempted this run, so the marks are what carries them
+    // into the next one rather than anything held in memory.
+    expect(result.bookablePending.sort()).toEqual(["fresh@x.com", "retry-a@x.com", "retry-b@x.com"]);
+  });
+
+  it("leaves the retried hires still owed a flip on the next run", async () => {
+    // The column value is not the harm; this is. A test asserting only the stamp
+    // would pass on a fix that stored something `planOnboardingFlip` cannot use.
+    await syncSalesforceAgents({ nowIso: () => NOW });
+
+    for (const id of ["u1", "u2"]) {
+      const row = store.users.get(id) as { attributes: Attributes; bookable_pending_since: string | null };
+      const plan = planOnboardingFlip({
+        // Nothing about them changed, which is precisely why only the mark can
+        // carry the intent: Sales against Sales is not a transition.
+        prev: row.attributes,
+        next: row.attributes,
+        bookable: false,
+        deactivated: false,
+        pending: row.bookable_pending_since != null,
+      });
+      expect(plan).toEqual({ action: "flip", reason: "retry" });
+    }
+  });
+
+  it("sends every row in the batch the same columns, so no row NULL-fills another", async () => {
+    // The property the database actually enforces, asserted on the payload rather
+    // than on the stored rows: a second conditionally assigned column added later
+    // would pass the two tests above for whichever row happened to carry it.
+    await syncSalesforceAgents({ nowIso: () => NOW });
+
+    const batch = store.calls.find((c) => c.op === "upsert" && c.table === "users")
+      ?.payload as Record<string, unknown>[];
+    expect(batch).toHaveLength(3);
+    const union = store.payloadColumns(batch);
+    for (const row of batch) {
+      expect(Object.keys(row).filter((k) => row[k] !== undefined).sort()).toEqual([...union].sort());
+    }
+    expect(union).toContain("bookable_pending_since");
+  });
+
+  it("writes no mark at all when the batch is refused, so the run retries whole", async () => {
+    store.config.errorOn = "upsert";
+
+    await expect(syncSalesforceAgents({ nowIso: () => NOW })).rejects.toThrow(
+      /agent update batch failed/,
+    );
+
+    // A refused statement writes nothing, so the two existing marks are untouched
+    // and the fresh hire gains none. Next hour re-reads Chatter Free against Sales
+    // and plans the same fresh transition, and the two retries are still pending.
+    expect(markOf("u1")).toBe(MARK_A);
+    expect(markOf("u2")).toBe(MARK_B);
+    expect(markOf("u3")).toBeNull();
+    // And nothing downstream ran on a roster the write never landed.
     expect(bookable.applyBookableByUserId).not.toHaveBeenCalled();
   });
 });
