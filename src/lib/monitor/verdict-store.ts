@@ -21,6 +21,7 @@ import {
   LOW_VOLUME_VERDICT_LANE,
   OOO_PROTECTION_VERDICT_LANE,
   TWILIO_ROSTER_VERDICT_LANE,
+  LANE_WATCHDOG_VERDICT_LANE,
   type DetectorVerdictLane,
 } from "@/lib/monitor/verdict-freshness";
 
@@ -30,6 +31,7 @@ const STAMP: Record<DetectorVerdictLane, () => Promise<void>> = {
   [LOW_VOLUME_VERDICT_LANE]: () => recordHeartbeat("verdict:low-booking-volume"),
   [OOO_PROTECTION_VERDICT_LANE]: () => recordHeartbeat("verdict:ooo-protection"),
   [TWILIO_ROSTER_VERDICT_LANE]: () => recordHeartbeat("verdict:twilio-roster"),
+  [LANE_WATCHDOG_VERDICT_LANE]: () => recordHeartbeat("verdict:lane-watchdog"),
 };
 
 /**

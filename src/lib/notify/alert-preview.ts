@@ -32,6 +32,13 @@ import {
 } from "@/lib/notify/alerts";
 import { retentionAlertText, LANE_STALE_BOUNDS_MS, VERDICT_STALE_BOUNDS_MS } from "@/lib/monitor/health";
 import { PARKED_VERDICT_DETECTORS } from "@/lib/monitor/verdict-freshness";
+import {
+  checksGatedByStep,
+  monitorStepFailingAlert,
+  monitorStepRecoveryText,
+  MONITOR_STEP_FAILING_TICKS,
+  MONITOR_STEP_REARM_TICKS,
+} from "@/lib/monitor/step-failure";
 import { formatUnsetHoursAlert, formatUnsetHoursRecovery } from "@/lib/monitor/unset-hours";
 import {
   classifyParitySweep,
@@ -1940,6 +1947,62 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     state: "a detector is measuring again",
     channel: "recovery",
     text: verdictRecoveryText("verdict:low-booking-volume"),
+  },
+  // #2382: the dead man's switch's own blindness. It is a contained step on the
+  // monitor lane, so a watchdog that threw used to leave a fresh heartbeat behind it.
+  {
+    key: "cron_lane_stale:*",
+    state: "the lane watchdog has stopped judging the lanes",
+    channel: "alert",
+    text: verdictBlindAlertText({
+      lane: "verdict:lane-watchdog",
+      ageMs: 9 * 60 * 60_000,
+      maxStaleMs: VERDICT_STALE_BOUNDS_MS["verdict:lane-watchdog"],
+      unreadable: false,
+    }),
+  },
+  // --- a contained monitor step that keeps failing (#2382) -------------------
+  //
+  // Two states, because the wider half of the fault is what a failed SETUP read
+  // takes down with it, and that sentence only appears on those five steps.
+  {
+    key: "monitor_step_failing:*",
+    state: "an ordinary check has thrown on every tick",
+    channel: "alert",
+    text: monitorStepFailingAlert({
+      step: "inactive_bookings",
+      ticks: MONITOR_STEP_FAILING_TICKS,
+      reason: "column bookings.agent_id does not exist",
+      gated: [],
+    }),
+  },
+  {
+    key: "monitor_step_failing:*",
+    state: "a shared setup read has thrown on every tick, standing other checks down",
+    channel: "alert",
+    text: monitorStepFailingAlert({
+      step: "setup_business_hours",
+      ticks: MONITOR_STEP_FAILING_TICKS,
+      reason: "503 upstream connect error",
+      gated: checksGatedByStep("setup_business_hours"),
+    }),
+  },
+  {
+    key: "monitor_step_failing:*",
+    state: "the tick recorded no reason for the failure",
+    channel: "alert",
+    text: monitorStepFailingAlert({
+      step: "lane_watchdog",
+      ticks: MONITOR_STEP_FAILING_TICKS,
+      reason: null,
+      gated: [],
+    }),
+  },
+  {
+    key: "monitor_step_failing:*",
+    state: "the step is completing again",
+    channel: "recovery",
+    text: monitorStepRecoveryText("inactive_bookings", MONITOR_STEP_REARM_TICKS),
   },
   // #1561: the third thing that can be true of a detector. Not blind by fault and
   // not measuring, but deliberately switched off, which needs its own voice: the

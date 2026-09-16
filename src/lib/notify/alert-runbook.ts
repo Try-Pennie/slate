@@ -43,6 +43,10 @@ export type AlertFamily = (typeof ALERT_FAMILIES)[number];
 const FAMILY_BY_KEY: Record<string, AlertFamily> = {
   // A lane, a schedule, or a detector has stopped producing.
   cron_lane_stale: "a-lane-or-schedule-has-gone-quiet",
+  // #2382. The same family one level in: the lane is running, and one CHECK on it
+  // has stopped producing. The remedy is the family's, since what the reader has to
+  // establish is the same thing, which of the scheduled work is not happening.
+  monitor_step_failing: "a-lane-or-schedule-has-gone-quiet",
   sync_staleness: "a-lane-or-schedule-has-gone-quiet",
   detector_parked: "a-lane-or-schedule-has-gone-quiet",
   detector_unpark: "a-lane-or-schedule-has-gone-quiet",

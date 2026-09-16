@@ -90,7 +90,12 @@ const code = src
   // internally and cannot throw out, and its fallback is those same defaults, so
   // wrapping it here would only duplicate them. Named, with the reason, rather
   // than left as an unexplained gap.
-  const EXEMPT = ["loadMonitorSettings("];
+  // #2382: the step-failure judgement is the one thing here that must NOT be
+  // contained, because it is what reports the runner's failures. Putting the
+  // reporter behind the fault it reports is the defect one level up, and the
+  // assertions below pin that it stays outside the runner and ahead of the
+  // heartbeat.
+  const EXEMPT = ["loadMonitorSettings(", "judgeMonitorSteps("];
   const offenders: string[] = [];
   code.split("\n").forEach((line, i) => {
     if (!HANDLER_AWAIT.test(line)) return;
@@ -116,9 +121,44 @@ const code = src
       (line) =>
         /^ {4}const\s+[A-Za-z_$][\w$]*\s*=\s*await\s/.test(line) &&
         !/steps\.run\s*[<(]/.test(line) &&
-        !line.includes("loadMonitorSettings("),
+        !line.includes("loadMonitorSettings(") &&
+        !line.includes("judgeMonitorSteps("),
     );
   eq(offenders.length, 1, "a shared read added straight into the handler IS caught");
+}
+
+// --- the contained failures are REPORTED, not only logged (#2382) -------------
+//
+// Containment without a replacement signal is what #1281 shipped: a step that
+// threw on every tick was caught, named in a seven day log nobody is paged from,
+// and the lane heartbeat was stamped fresh anyway. The exemption above is only
+// safe while all three of these hold, so they are asserted here rather than left
+// as an unexplained gap (L129).
+{
+  assert(
+    /judgeMonitorSteps\s*\(\s*steps\.outcomes\(\)/.test(code),
+    "the tick judges the runner's OWN outcomes, so a step nobody thought about is covered by construction",
+  );
+  const judgeAt = code.indexOf("judgeMonitorSteps(");
+  const heartbeatAt = code.indexOf('recordHeartbeat("monitor")');
+  assert(judgeAt >= 0 && heartbeatAt >= 0, "both the judgement and the heartbeat stamp are present");
+  assert(
+    judgeAt < heartbeatAt,
+    "the judgement runs BEFORE the lane stamps its heartbeat, so a fault nobody predicted inside " +
+      "the reporter lapses the stamp and pages, exactly as an uncontained throw did before #1281",
+  );
+  // Inside no step. A `steps.run(` between the judgement and the end of its own
+  // statement would mean the reporter is contained by the runner it reports on.
+  const judgeStatement = code.slice(judgeAt, heartbeatAt);
+  assert(
+    !/steps\.run\s*[<(]/.test(judgeStatement),
+    "the step-failure judgement is not itself a contained step, or its own failure would be " +
+      "swallowed by the very containment it exists to report",
+  );
+  assert(
+    /stepFailingAlertKey\s*\(/.test(code) && /resolveRecovered\s*\(/.test(code),
+    "a failing step pages on its own key and the condition has a way to end",
+  );
 }
 
 // --- and a contained read's failure must GATE its dependents ------------------

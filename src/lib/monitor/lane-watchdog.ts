@@ -23,6 +23,8 @@ import {
   VERDICT_STALE_BOUNDS_MS,
   retentionAlertText,
   neverStampedVerdict,
+  LANE_WATCHDOG_UNJUDGED,
+  type LaneWatchdogOutcome,
   type StaleLane,
 } from "@/lib/monitor/health";
 import { detectorParkState, parkedDetector } from "@/lib/monitor/verdict-freshness";
@@ -101,19 +103,26 @@ const minutes = (ms: number) => Math.round(ms / 60_000);
  * Never throws. It runs inside a cron lane, and a watchdog that takes down the
  * sync tick would be worse than the silence it replaces.
  */
-export async function alertOnStaleLanes(): Promise<StaleLane[]> {
+export async function alertOnStaleLanes(): Promise<LaneWatchdogOutcome> {
   let heartbeats: Record<string, number | null>;
   try {
     heartbeats = await readAllHeartbeatMs();
   } catch (err) {
     // A failed read is NOT evidence that every lane is fine, and it is not
     // evidence they are all dead either. Say so, and alarm on nothing.
+    //
+    // #2382: it also says JUDGED: FALSE, which used to be missing. This returned
+    // a bare empty list, and an empty list is exactly what a healthy fleet
+    // returns, so the caller could not tell "every lane is stamping" from
+    // "nothing was looked at" (L215). The monitor lane now hangs the
+    // `verdict:lane-watchdog` stamp off this flag, so a watchdog that keeps
+    // failing to read goes stale rather than reading as a run of clean ticks.
     log.error(
       "lane-watchdog",
       { msg: "heartbeat read failed, lane staleness unknown this tick" },
       err,
     );
-    return [];
+    return LANE_WATCHDOG_UNJUDGED;
   }
   const now = Date.now();
   const stale = findStaleLanes(heartbeats, now);
@@ -277,7 +286,10 @@ export async function alertOnStaleLanes(): Promise<StaleLane[]> {
     }),
   );
 
-  return [...stale, ...canaryStale, ...mirrorStale, ...retentionStale, ...armedVerdictStale];
+  return {
+    judged: true,
+    stale: [...stale, ...canaryStale, ...mirrorStale, ...retentionStale, ...armedVerdictStale],
+  };
 }
 
 
