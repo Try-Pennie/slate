@@ -70,6 +70,7 @@ export async function loadOpenHandoffs(db: Db, limit: number): Promise<OpenHando
 
 interface BookingRow {
   id: string;
+  is_test: boolean;
   status: string;
   starts_at: string;
   timezone: string;
@@ -89,7 +90,9 @@ export async function loadHandoffBookings(db: Db, ids: string[]): Promise<Handof
         .from("bookings")
         // cap-safe: primary-key lookup of the bookings the open handoffs name, which the
         // open read already bounds.
-        .select("id, status, starts_at, timezone, assigned_user_id, agent_name, agent_email, attendee_name")
+        .select(
+          "id, is_test, status, starts_at, timezone, assigned_user_id, agent_name, agent_email, attendee_name",
+        )
         .in("id", chunk),
       "booking handoff bookings",
     ) as BookingRow[] | null;
@@ -97,6 +100,9 @@ export async function loadHandoffBookings(db: Db, ids: string[]): Promise<Handof
   }
   return rows.map((r) => ({
     id: r.id,
+    // #2370: the smoke canary's own bookings are never spoken about in the sales
+    // channel. Read here so the delivery step can tell them apart.
+    isTest: r.is_test,
     status: r.status,
     startsAt: r.starts_at,
     timezone: r.timezone,

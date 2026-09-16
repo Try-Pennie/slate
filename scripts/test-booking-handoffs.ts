@@ -246,6 +246,7 @@ const handoff = (over: Partial<OpenHandoff> = {}): OpenHandoff => ({
 });
 const booking = (over: Partial<HandoffBooking> = {}): HandoffBooking => ({
   id: "b1",
+  isTest: false,
   status: "confirmed",
   startsAt: iso(NOW + 24 * 60 * MIN),
   timezone: "America/New_York",
@@ -789,6 +790,78 @@ const DASHES = /[\u2012\u2013\u2014\u2015]| - /;
   assert(texts[4].includes("owner@trypennie.com"), "an owner refusal names the requested owner");
   assert(texts[5] !== texts[4], "each refusal reason reads differently");
   assert(texts[6] !== texts[4], "including an owner Slate has no account for");
+}
+
+// --- a TEST booking's handoff is never posted (#2370) --------------------------
+// The smoke canary books, reassigns and cancels on the isolated SMOKE agents every
+// six hours (#396), and the owner guard can refuse one of those moves. Nothing here
+// distinguished a test booking from a real one, so that refusal would have arrived
+// in the sales channel as a lead waiting on a person. Every other outward path
+// suppresses `is_test` at its choke point (webhooks at `fire`, #459); this is the
+// same suppression at this path's.
+{
+  const { deps, calls } = harness({
+    open: [handoff({ id: "h-test", bookingId: "b-test" }), handoff({ id: "h-real", bookingId: "b1" })],
+    bookings: [booking({ id: "b-test", isTest: true }), booking({ id: "b1" })],
+    channel: "C-SALES",
+  });
+  const out = await runHandoffCheck(deps);
+  eq(calls.posts.length, 1, "the test booking's handoff is not posted");
+  assert(
+    calls.posts[0]?.text.includes("/admin/bookings/b1"),
+    "and the real booking beside it still is, so the suppression is not a switch that stops everything",
+  );
+  eq(calls.stamped, ["h-real"], "only the row that was really delivered is stamped");
+  eq(out.suppressedTest, 1, "the tick SAYS how many it held back, so a suppression is never silent");
+  eq(out.posted, 1, "and counts only the real post");
+  eq(
+    out.waitingToPost,
+    0,
+    "a suppressed row is not waiting to post either: nothing is going to send it",
+  );
+}
+
+// The half that matters more than the missing post: it must not page instead.
+{
+  const { deps, calls } = harness({
+    open: [handoff({ id: "h-test", bookingId: "b-test", createdAt: iso(NOW - 95 * MIN) })],
+    bookings: [booking({ id: "b-test", isTest: true })],
+    channel: "C-SALES",
+  });
+  const out = await runHandoffCheck(deps);
+  eq(calls.posts.length, 0, "an old test handoff is still not posted");
+  eq(out.undelivered, 0, "and it is not undelivered, because nothing was ever going to deliver it");
+  eq(calls.paged.length, 0, "so it never pages the alerts channel either");
+  assert(
+    calls.cleared.includes(HANDOFF_UNDELIVERED_KEY),
+    "and the undelivered condition clears, because no real handoff is waiting",
+  );
+}
+
+// It still SETTLES on the same measured rules, so a suppressed row does not sit open
+// for ever: the canary cancels its bookings, and that is what ends it.
+{
+  const { deps, calls } = harness({
+    open: [handoff({ id: "h-test", bookingId: "b-test" })],
+    bookings: [booking({ id: "b-test", isTest: true, status: "cancelled" })],
+    channel: "C-SALES",
+  });
+  const out = await runHandoffCheck(deps);
+  eq(calls.resolved.length, 1, "a test booking's handoff resolves like any other");
+  eq(calls.resolved[0]?.reason, "booking-not-active", "on the measured state of its booking");
+  eq(out.suppressedTest, 0, "and a row that is over is not counted as suppressed: it was never a candidate");
+}
+
+// The channel-unset page must not fire for a test booking either: it exists to say
+// real handoffs are stranded, and one that would never be posted strands nothing.
+{
+  const { deps, calls } = harness({
+    open: [handoff({ id: "h-test", bookingId: "b-test" })],
+    bookings: [booking({ id: "b-test", isTest: true })],
+    channel: null,
+  });
+  await runHandoffCheck(deps);
+  eq(calls.paged.length, 0, "no channel-unset page for a handoff nobody would post");
 }
 
 finish();

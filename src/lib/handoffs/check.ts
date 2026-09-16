@@ -75,6 +75,12 @@ export interface OpenHandoff {
 
 export interface HandoffBooking {
   id: string;
+  /**
+   * The smoke canary's isolated bookings (#396). REQUIRED, not optional, so `tsc`
+   * names every construction site: a field that defaulted to false would make a
+   * forgotten read look like a real lead.
+   */
+  isTest: boolean;
   status: string;
   startsAt: string;
   timezone: string;
@@ -153,6 +159,8 @@ export interface HandoffCheckResult {
   postFailed: number;
   /** Posted, and the stamp could not be written, so the next tick may post it again. */
   stampFailed: number;
+  /** Open rows held back because their booking is a test one (#2370). */
+  suppressedTest: number;
   /** Open rows still unposted at the end of the tick. */
   waitingToPost: number;
   /** Of those, how many have waited past `HANDOFF_UNDELIVERED_AFTER_MS`. */
@@ -170,6 +178,7 @@ const UNMEASURED: HandoffCheckResult = {
   posted: 0,
   postFailed: 0,
   stampFailed: 0,
+  suppressedTest: 0,
   waitingToPost: 0,
   undelivered: 0,
 };
@@ -234,6 +243,26 @@ export async function runHandoffCheck(deps: HandoffCheckDeps): Promise<HandoffCh
   // tell. The failed write is counted and logged, and the next tick measures it again.
   const resolveFailed = over.size - resolved;
 
+  // --- 1b. handoffs about a TEST booking are never said out loud (#2370) ---------
+  // The smoke canary books, reassigns and cancels on the isolated SMOKE agents every
+  // six hours (#396), and the owner guard can refuse one of those moves. Without this
+  // that refusal arrives in the sales channel as a lead waiting on a person. Every
+  // other outward path suppresses `is_test` at its own choke point (webhooks at
+  // `fire`, #459); this is that choke point for handoff delivery, and it is here
+  // rather than at the WRITE because the row is still the truthful record of what
+  // happened, and rather than in the booking READ because a handoff whose booking
+  // never came back would then sit open and page as undelivered instead.
+  //
+  // A suppressed row is held out of delivery AND out of the waiting count, since
+  // nothing is ever going to send it, and it settles on the same measured rules as
+  // any other, which is what stops it sitting open for ever: the canary cancels its
+  // bookings. It is COUNTED, so the suppression is never silent.
+  const suppressed = new Set<string>();
+  for (const h of open) {
+    if (over.has(h.id) || h.notifiedAt !== null) continue;
+    if (bookingById.get(h.bookingId)?.isTest) suppressed.add(h.id);
+  }
+
   // --- 2. the channel ------------------------------------------------------------
   const channelRead = await attempt(() => deps.loadChannel());
   const channel: string | null | undefined = channelRead.ok
@@ -252,7 +281,13 @@ export async function runHandoffCheck(deps: HandoffCheckDeps): Promise<HandoffCh
   let stampFailed = 0;
   if (typeof channel === "string" && bookingsReadable) {
     const candidates = open
-      .filter((h) => !over.has(h.id) && h.notifiedAt === null && bookingById.has(h.bookingId))
+      .filter(
+        (h) =>
+          !over.has(h.id) &&
+          !suppressed.has(h.id) &&
+          h.notifiedAt === null &&
+          bookingById.has(h.bookingId),
+      )
       // Fewest failed attempts first, then oldest: a row that keeps failing must not
       // stand in front of every row behind it for ever.
       .sort(
@@ -291,7 +326,9 @@ export async function runHandoffCheck(deps: HandoffCheckDeps): Promise<HandoffCh
   }
 
   // --- 4. the two conditions ------------------------------------------------------
-  const waiting = open.filter((h) => !over.has(h.id) && h.notifiedAt === null && !delivered.has(h.id));
+  const waiting = open.filter(
+    (h) => !over.has(h.id) && !suppressed.has(h.id) && h.notifiedAt === null && !delivered.has(h.id),
+  );
   const ageMs = (h: OpenHandoff) => {
     const created = parseStampMs(h.createdAt);
     // An unreadable age is the fail safe side: treated as having waited too long.
@@ -353,6 +390,7 @@ export async function runHandoffCheck(deps: HandoffCheckDeps): Promise<HandoffCh
     posted,
     postFailed,
     stampFailed,
+    suppressedTest: suppressed.size,
     waitingToPost: waiting.length,
     undelivered: undelivered.length,
   };
