@@ -45,6 +45,25 @@ export const LOW_VOLUME_VERDICT_LANE = "verdict:low-booking-volume";
 export const OOO_PROTECTION_VERDICT_LANE = "verdict:ooo-protection";
 export const TWILIO_ROSTER_VERDICT_LANE = "verdict:twilio-roster";
 export const LANE_WATCHDOG_VERDICT_LANE = "verdict:lane-watchdog";
+/**
+ * The proof that the burst counter answers (#2392), and the first member of this
+ * family stamped from OUTSIDE the Worker.
+ *
+ * `pnpm verify:burst-counter` (#1564) is the only thing that can see a counter which
+ * is bound and does not answer: the monitor lane resolves the namespace as a property
+ * read and stops, deliberately, because calling the object would create it and hand
+ * the cron lane an alarm to clean up on every tick forever. The command was hand run,
+ * and AGENTS.md asked in words for it to be re-run after any change to the burst path
+ * or the binding. Nothing enforced that, the path moved five times with no run
+ * recorded, and a check that has never once concluded is measuring nothing (L27, L557).
+ *
+ * So `.github/workflows/burst-counter.yml` runs it daily and stamps this lane through
+ * the same key authed heartbeat endpoint the canary and the parity sweep use, only on
+ * a run that MEASURED whether the counter answers and counts. Which endings those are
+ * is decided in `scripts/lib/burst-counter-run-outcome.ts`, beside the command's own
+ * exit table, rather than being re-derived here from a code number.
+ */
+export const BURST_COUNTER_VERDICT_LANE = "verdict:burst-counter";
 
 export type DetectorVerdictLane =
   | typeof AVAILABILITY_TRUTH_VERDICT_LANE
@@ -52,7 +71,8 @@ export type DetectorVerdictLane =
   | typeof LOW_VOLUME_VERDICT_LANE
   | typeof OOO_PROTECTION_VERDICT_LANE
   | typeof TWILIO_ROSTER_VERDICT_LANE
-  | typeof LANE_WATCHDOG_VERDICT_LANE;
+  | typeof LANE_WATCHDOG_VERDICT_LANE
+  | typeof BURST_COUNTER_VERDICT_LANE;
 
 /**
  * Did this availability truth tick compare real calendars and decide?

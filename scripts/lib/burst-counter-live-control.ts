@@ -8,42 +8,13 @@
 // either (L98), so every way of learning nothing exits non-zero on its own code.
 import { BURST_PROBE_REASON } from "@/lib/monitor/burst-counter-probe";
 
-/**
- * Every way the command can end, and the exit code it ends on.
- *
- * One code per cause, never a shared "it failed" (L11). These are what a caller in a shell
- * script branches on, and each one names a different thing to go and do: a key to fix, a
- * deployment to ship, a binding to restore, Cloudflare to ask about, or a counter that is
- * genuinely not counting.
- */
-export const VERIFY_EXIT = {
-  /** The count rose. The only zero. */
-  passed: 0,
-  /** This machine is missing the base URL or the API key, so nothing was attempted. */
-  misconfigured: 1,
-  /** The request never got a reply at all: DNS, TLS, a timeout, no network. */
-  noAnswer: 2,
-  /** Something replied with a shape this endpoint never produces (a platform error page). */
-  unreadableReply: 3,
-  /** The deployment rejected the key. */
-  unauthorized: 4,
-  /** The deployment has no booking API key configured, so the endpoint is disabled. */
-  notConfigured: 5,
-  /** The deployment does not carry the endpoint: it is older than this change. */
-  endpointMissing: 6,
-  /** The running Worker could not read its own request context. */
-  contextUnreadable: 7,
-  /** `BURST_LIMITER` is absent from the running deployment. */
-  bindingMissing: 8,
-  /** The namespace resolved and the object did not answer. The gap this command exists for. */
-  objectUnreachable: 9,
-  /** The object answered without a count, so there was nothing to compare. */
-  noCount: 10,
-  /** The fixed window rolled between the readings, so the two numbers are different counts. */
-  windowRolled: 11,
-  /** Two readings inside one window, and the second was not greater than the first. */
-  didNotRise: 12,
-} as const;
+// The exit table LIVES in `burst-counter-run-outcome.ts` and is re-exported here, so
+// every existing caller keeps importing it from where it always was while there is
+// still only one of it (L41). It moved because the scheduled lane's reporter runs on
+// bare node with no dependency install (#1598), and this module reaches into `src/`
+// for the probe vocabulary above, which that reporter may not follow.
+export { VERIFY_EXIT } from "./burst-counter-run-outcome.ts";
+import { VERIFY_EXIT } from "./burst-counter-run-outcome.ts";
 
 /** What one call to the endpoint produced. */
 export type ProbeOutcome =

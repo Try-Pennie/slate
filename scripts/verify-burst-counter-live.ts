@@ -30,11 +30,22 @@
 //
 // Needs BOOKING_API_KEY (from .env.local / .dev.vars, or the environment).
 //
+// It runs DAILY on `.github/workflows/burst-counter.yml` (#2392) as well as by hand. The rule to
+// re-run it after any change to the burst path lived only in AGENTS.md, and the path moved five
+// times with nobody running it (L27). On that lane it writes BURST_SUMMARY_FILE when it decides,
+// which is how the lane tells a verdict apart from a run that died before reaching one: node exits
+// 1 on an uncaught throw and 1 is also a real ending here, so an exit code alone makes those one
+// message (L11, L98). A hand run sets no path and writes nothing.
+//
 // Env overrides:
-//   SLATE_BASE_URL   the deployment to ask (default https://slate.trypennie.app)
-//   BOOKING_API_KEY  the Bearer key the deployment accepts
+//   SLATE_BASE_URL     the deployment to ask (default https://slate.trypennie.app)
+//   BOOKING_API_KEY    the Bearer key the deployment accepts
+//   BURST_SUMMARY_FILE where to record the verdict for the scheduled lane (unset: nowhere)
 import { loadEnvFiles, envOr } from "./smoke-env.ts";
 import type { ProbeOutcome } from "./lib/burst-counter-live-control.ts";
+// Statically imported, unlike the two below: it reads no environment as it loads (only node:fs),
+// and the very first refusal below happens before those dynamic imports are reached.
+import { writeBurstSummary } from "./lib/burst-counter-run-outcome.ts";
 
 loadEnvFiles([".env.local", ".dev.vars"]);
 
@@ -57,7 +68,19 @@ const KEY = process.env.BOOKING_API_KEY ?? "";
  *  other 55 seconds of every minute. */
 const START_MARGIN_MS = 5_000;
 
+/** Where the scheduled lane reads this run's verdict. Empty on a hand run. */
+const SUMMARY_FILE = process.env.BURST_SUMMARY_FILE ?? "";
+
+/** Record what was decided, for a lane that cannot read the terminal. Never throws: a failed
+ *  write leaves the lane reporting a run that did not complete, which is louder than the truth
+ *  rather than quieter (L95). */
+function record(exit: number, detail: string): void {
+  const res = writeBurstSummary(SUMMARY_FILE, { exit, detail });
+  if (SUMMARY_FILE && !res.written) console.error(`  (the verdict could not be recorded: ${res.why})`);
+}
+
 function fail(exitCode: number, why: string): never {
+  record(exitCode, why);
   console.error(`\nFAILED: ${why}`);
   process.exit(exitCode);
 }
@@ -113,4 +136,5 @@ console.log(`  second report: ${second.kind}${second.kind === "counted" ? ` coun
 const verdict = judgeBurstCounterProbe(first, second);
 if (!verdict.ok) fail(verdict.exitCode, verdict.message);
 
+record(VERIFY_EXIT.passed, verdict.message);
 console.log(`\nPASSED: ${verdict.message}`);

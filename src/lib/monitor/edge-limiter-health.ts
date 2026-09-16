@@ -76,8 +76,15 @@ export interface EdgeLimiterReading {
    *
    * The answering half is proved out of band instead, by `pnpm verify:burst-counter`
    * (#1564), which reports a fixed monitor key to the real object and requires the count to
-   * rise. Run that after any change to the burst path or the binding; a counter that is
-   * bound and unreachable reads as healthy here and nowhere else would say so.
+   * rise: a counter that is bound and unreachable reads as healthy here and nowhere else
+   * would say so.
+   *
+   * That used to be a sentence asking whoever changed the burst path to run the command,
+   * which nobody did on any of the five changes that followed (#2392, L27). It runs DAILY
+   * now on `.github/workflows/burst-counter.yml` and stamps `verdict:burst-counter` on a
+   * run that measured anything, so a proof that stops happening pages instead of being
+   * remembered. Running it by hand after a burst path change is still the quickest answer;
+   * it is no longer the only one.
    */
   burstNamespacePresent: boolean | null;
 }

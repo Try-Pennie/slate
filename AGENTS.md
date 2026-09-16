@@ -674,14 +674,66 @@ code**, so a shell caller can branch on which one it met.
 | 11 | the two readings fell in different windows | nothing is wrong; run it again |
 | 12 | two readings in one window and it did not rise | it answers and does not count |
 
-**Re-run it after any change to the burst path (`src/lib/rate-limit-burst.ts`,
-`src/lib/rate-limit.ts`, `worker/burst-limiter.ts`) or to the `BURST_LIMITER`
-binding in `wrangler.jsonc`, and after a deploy that touched either.** Like the
-truth probe, it talks to a live deployment, so it is deliberately NOT named
-`test-*.ts`: that glob is the offline unit suite. Its decision logic is pinned
-offline by `scripts/test-burst-counter-live-control.ts`, which drives every
+Like the truth probe, it talks to a live deployment, so it is deliberately NOT
+named `test-*.ts`: that glob is the offline unit suite. Its decision logic is
+pinned offline by `scripts/test-burst-counter-live-control.ts`, which drives every
 refusal through hand written replies and asserts no two of them share a code or a
 message.
+
+## It runs DAILY, because asking people to re-run it did not work (#2392)
+
+This section used to say, in bold, to re-run the command after any change to the
+burst path (`src/lib/rate-limit-burst.ts`, `src/lib/rate-limit.ts`,
+`worker/burst-limiter.ts`) or to the `BURST_LIMITER` binding in `wrangler.jsonc`.
+Nothing enforced it. Between the command shipping on 2026-08-31 and this change
+the path moved five times (`182d4b7d`, `81d3385c` and three `wrangler.jsonc`
+edits) and not one of the five PR bodies mentions the command, because a rule that
+lives only in a prompt is a hope (L27). The command had never run outside the
+session that wrote it, which is a check that has never once concluded (L557).
+
+**`.github/workflows/burst-counter.yml` runs it every day at 10:50 UTC**, and a
+hand dispatch is the same run, so somebody who has just changed the burst path can
+still get an answer now rather than tomorrow.
+
+**It stamps `verdict:burst-counter`**, in the `VERDICT_STALE_BOUNDS_MS` family
+(#1394), judged with `neverIsStale` ON: a proof that has never once concluded is
+the exact state this issue was about, and the default leniency would make the
+watch structurally unable to see it.
+
+Two things about that stamp are the whole design:
+
+- **Only a run that MEASURED whether the counter answers and counts may write it.**
+  The command has thirteen endings and most of them mean it never got to ask: a
+  refused key, a deployment older than the endpoint, a Worker that could not read
+  its own context. Three endings conclude, and two of those are bad news: exit 9
+  (bound and not answering) and exit 12 (answering and not counting) are definite
+  readings of the thing under test, so they stamp AND are posted to Slack. Exit 8
+  (nothing bound) deliberately does NOT stamp, although it feels like the most
+  definite answer of all: the half this command exists to prove is the ANSWERING
+  half, and a deployment with nothing bound never exercised it, so a stamp there
+  would keep the verdict fresh for as long as the binding stayed missing. That case
+  is already paged by the monitor lane's own presence read (#1558). The mapping is
+  in `scripts/lib/burst-counter-run-outcome.ts`, one entry per exit code.
+- **The bound is 52 hours and every part of it is derived** (L614): 24h of cadence,
+  doubled so one dropped run does not page (GitHub drops scheduled runs, and on a
+  daily cadence a drop costs the whole day), plus the 3h worst lateness this repo
+  has measured, plus the job's own 10 minute timeout, because the stamp lands at
+  the END of a run. `scripts/test-burst-counter-schedule.ts` re-derives all of it
+  FROM the workflow file, so editing the cron or the timeout without revisiting the
+  bound fails the build, and it also refuses a bound with days of slack in it.
+
+There is deliberately **no gap filler** for a run GitHub drops, unlike the canary
+and the parity sweep: the bound above survives a dropped run instead. A fourth
+entry in `GAP_FILL_PASSES` (`src/lib/monitor/canary-trigger.ts`) is #2466's
+question rather than this one's.
+
+**The run speaks from the runner** (`scripts/notify-burst-counter.ts`, bare node
+like the other alerters), which is the opposite of the choice `schedule-parity`
+made. That one reports back into Slate because drift sits for days and so needs a
+cooldown and an all clear, both of which need a memory a runner has none of. This
+one is a rare fault somebody fixes the day they read it, so the message says what
+silence means instead: it repeats once a day until a run passes, and a run that
+passes says nothing.
 
 # Proving an approved time off blocks (`pnpm verify:ooo-protection`)
 

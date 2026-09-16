@@ -18,6 +18,7 @@ import {
   OOO_PROTECTION_VERDICT_LANE,
   TWILIO_ROSTER_VERDICT_LANE,
   LANE_WATCHDOG_VERDICT_LANE,
+  BURST_COUNTER_VERDICT_LANE,
   parkedDetector,
 } from "@/lib/monitor/verdict-freshness";
 
@@ -160,6 +161,28 @@ const VERDICT_SUBJECT: Record<string, { what: string; cost: string; look: string
     // message that sent every reader to tag=lane-watchdog would be advice about the
     // wrong fault most of the time it fires (L11).
     look: 'whether the monitor lane is stale under its own page first, then the Worker logs for tag=lane-watchdog and the monitor cycle line for lane_watchdog under failed=',
+  },
+  [BURST_COUNTER_VERDICT_LANE]: {
+    what: "the daily proof that the burst counter behind the request ceiling really answers and really counts",
+    cost:
+      "nothing is confirming that the ceiling which stops one caller spreading a burst across the " +
+      "edge is switched on, and a counter that is bound and silent reads as healthy everywhere else, " +
+      "so the first sign would be a burst nobody refused",
+    // WHETHER IT RAN comes first, and that ordering is the finding rather than a
+    // preference. Both of this check's bad verdicts stamp, because each is a definite
+    // reading of the counter, so the only ways this page can fire are a run that could
+    // not reach the deployment and a run that never happened. It shares the opening
+    // clause with every other detector here, which says the check "is running": that is
+    // the commonest thing to be wrong, so the first place to look has to correct it,
+    // the way the lane watchdog's own entry does above (L11).
+    //
+    // After that the run is the whole diagnosis: the command ends on a different exit
+    // code for each cause and the reporter posts its own sentence, so the next step is
+    // to read the last run rather than to go hunting in the Worker logs, which is where
+    // every other detector in this table sends people.
+    look:
+      "whether the daily burst-counter workflow ran at all in the Actions tab, then what its last " +
+      "run said, since it ends on a different exit code for each way the check can fail",
   },
   [TWILIO_ROSTER_VERDICT_LANE]: {
     what: "the hourly roster sync's Twilio half, which takes an agent out of the bookable pool when Twilio marks them redistribute",

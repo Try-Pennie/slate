@@ -25,6 +25,7 @@ import {
   OOO_PROTECTION_VERDICT_LANE,
   TWILIO_ROSTER_VERDICT_LANE,
   LANE_WATCHDOG_VERDICT_LANE,
+  BURST_COUNTER_VERDICT_LANE,
   laneWatchdogReachedVerdict,
   twilioRosterReachedVerdict,
   truthReachedVerdict,
@@ -172,6 +173,7 @@ const HOUR = 60 * 60_000;
         OOO_PROTECTION_VERDICT_LANE,
         TWILIO_ROSTER_VERDICT_LANE,
         LANE_WATCHDOG_VERDICT_LANE,
+        BURST_COUNTER_VERDICT_LANE,
       ]
         .sort()
         .join(","),
@@ -352,6 +354,13 @@ const HOUR = 60 * 60_000;
     code.includes("recordDetectorVerdict("),
     "the monitor lane actually stamps detector verdicts",
   );
+  // NOT every verdict lane, and the exception is stated rather than left to be
+  // inferred from the list (L400). `verdict:burst-counter` (#2392) is stamped by a
+  // GitHub workflow through the key authed heartbeat endpoint, because the whole
+  // point of that check is to CALL the Durable Object, which is the one thing the
+  // monitor lane must not do. Its own wiring is proved by
+  // scripts/test-burst-counter-schedule.ts and by the workflow stamp list in
+  // scripts/test-heartbeat-lane-coverage.ts.
   for (const [name, predicate] of [
     ["AVAILABILITY_TRUTH_VERDICT_LANE", "truthReachedVerdict"],
     ["FAILURE_RATE_VERDICT_LANE", "failureRateReachedVerdict"],
