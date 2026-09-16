@@ -19,6 +19,7 @@ import {
   type RateThresholds,
   type RateWindowState,
 } from "../src/lib/monitor/booking-failure-rate.ts";
+import { SHIPPED_FAILURE_RATE_THRESHOLDS } from "../src/lib/monitor/failure-rate-thresholds.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
 /** Em/en dash detector built from escapes: writing the characters themselves
@@ -522,6 +523,56 @@ function harness(overrides: {
   eq(out.status, "checked", "a failed state write does not fail the tick");
   eq(h.errors.length, 1, "a failed state write is reported");
   eq(h.errors[0].context, "saveState", "the report names the failed write");
+}
+
+// --- The SHIPPED thresholds must be clearable by the traffic they will judge ---
+//
+// #2484. The floor shipped at 20 attempts in a rolling hour, chosen with no real
+// traffic to fit it to: every booking Slate had taken was the canary's. Measured
+// against cal.com's routing form responses on 2026-09-16, over 27,122 real leads
+// in 14 days:
+//
+//   the whole Low tier   median 29 an hour, p25 17
+//   the biggest ONE page median 18 an hour, p25 10, and only 44 percent of its
+//                        active hours reach 20
+//
+// The pilot flips ONE page, so the tier's own volume overstates what reaches Slate
+// that morning. Armed at 20 in an hour the check would report `insufficient` on
+// most ticks of flip day, which renders identically to healthy and is the state
+// #1394 exists to notice.
+//
+// This asserts the SHIPPED constant rather than a copy of it, so a later edit that
+// walks the floor back up has to come past this (L63, L107).
+{
+  assert(
+    SHIPPED_FAILURE_RATE_THRESHOLDS.windowMs === 4 * 60 * 60_000,
+    "the window is four hours, so the denominator is about 72 Low attempts on the pilot page",
+  );
+  assert(
+    SHIPPED_FAILURE_RATE_THRESHOLDS.minAttempts === 10,
+    "and the floor is 10, which the rolling window reaches about 35 minutes after the flip",
+  );
+
+  // The measured pilot rate, and the two quieter pages, must all reach the floor
+  // inside the window. Written as the measurement rather than as the numbers it
+  // produced, so re-running `pnpm measure:lead-hours` can be compared against it.
+  const MEASURED_LOW_PER_HOUR = { biggestPage: 18, middlePage: 7, smallestPage: 5 };
+  const windowHours = SHIPPED_FAILURE_RATE_THRESHOLDS.windowMs / 3_600_000;
+  for (const [page, perHour] of Object.entries(MEASURED_LOW_PER_HOUR)) {
+    assert(
+      perHour * windowHours >= SHIPPED_FAILURE_RATE_THRESHOLDS.minAttempts,
+      `${page} reaches the attempt floor inside one window at its measured median (${perHour} an hour)`,
+    );
+  }
+
+  // And the floor is not so low that a single failure carries the share over the
+  // line: at 10 attempts and 20 percent, it takes three. A floor where one failure
+  // pages is a check that reports ordinary contention as an outage (L139).
+  const onePct = (1 / SHIPPED_FAILURE_RATE_THRESHOLDS.minAttempts) * 100;
+  assert(
+    onePct <= SHIPPED_FAILURE_RATE_THRESHOLDS.failPct,
+    "one failed booking at the floor does not by itself exceed the share",
+  );
 }
 
 finish();

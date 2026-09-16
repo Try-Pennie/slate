@@ -60,6 +60,7 @@ vi.mock("@/lib/supabase/admin", () => ({
 }));
 
 import { alertOnStaleLanes } from "./lane-watchdog";
+import { PARKED_VERDICT_DETECTORS } from "./verdict-freshness";
 
 const MIN = 60_000;
 const now = () => Date.now();
@@ -104,12 +105,14 @@ const healthy = () => ({
   // workflow rather than by this Worker. A healthy fleet has yesterday's run in it,
   // which is well inside the 52h bound that carries it over one dropped run.
   "verdict:burst-counter": ago(24 * 60 * MIN),
-  // The one remaining PARKED detector (#1561) is deliberately absent, because
-  // that is what production looks like: the failure rate check has reached one
-  // verdict in its life, off a smoke canary coincidence, and while it is parked
-  // that is a known, accepted gap rather than a page. Stamping it here would
-  // describe a fleet where the park is over, which is its own alert and has its
-  // own tests below.
+  // #2484: the failure rate check is ARMED now, so a healthy fleet stamps it like
+  // any other detector. It used to be absent here, describing the park that was
+  // production at the time. Its floor was refitted to real traffic (10 attempts in
+  // a rolling four hours, against a measured median of 18 Low leads an hour on the
+  // pilot page), so it reaches a verdict without waiting for a canary coincidence,
+  // and leaving it out now would describe a detector that has never concluded,
+  // which is exactly what this family pages about.
+  "verdict:booking-failure-rate": ago(30 * MIN),
 });
 
 beforeEach(() => {
@@ -154,27 +157,60 @@ describe("alertOnStaleLanes (#803)", () => {
   // action nobody could take. Parking is quiet about the blindness, loud about
   // the park, and loud again the moment a parked detector concludes anyway.
   //
-  // The subject here is the FAILURE RATE check since #1831, because it is the one
-  // still parked: every booking attempt is still the smoke canary's, and one pass
-  // records 16 against a floor of 20 in a rolling hour. The truth probe was the
-  // other one, and it is armed above.
+  // NOTHING IS PARKED in the shipped registry since #2484, so the cases below that
+  // need a park INSTALL one for the duration of the test and remove it after.
+  //
+  // That is deliberate rather than convenient. The wiring these prove (the
+  // watchdog is quiet about a parked detector's blindness, loud about the park,
+  // and loud again the moment it concludes) is exactly what breaks silently the
+  // next time somebody parks a detector, and deleting the cases along with the
+  // last entry would leave the mechanism shipping untested (L535). The registry
+  // is a plain object, so installing an entry is the smallest seam that keeps
+  // them real; the pure decision is driven separately in
+  // scripts/test-detector-park.ts.
   describe("detectors parked because they cannot conclude yet (#1561)", () => {
     const PARKED = "verdict:booking-failure-rate";
     const laneKey = (lane: string) => `cron_lane_stale:${lane}`;
+    const FIXTURE_PARK = {
+      reason:
+        "a fixture park, installed for this test because the shipped registry is empty since #2484",
+      issue: 1562,
+      unparkWithinMs: 60 * 60_000,
+    };
+    /** Install the park, run the body, and always take it out again. */
+    async function withPark(body: () => Promise<void>): Promise<void> {
+      (PARKED_VERDICT_DETECTORS as Record<string, unknown>)[PARKED] = FIXTURE_PARK;
+      try {
+        await body();
+      } finally {
+        delete (PARKED_VERDICT_DETECTORS as Record<string, unknown>)[PARKED];
+      }
+    }
 
     it("does not page a parked detector that has never reached a verdict", async () => {
-      // The exact production state: no stamp at all, and a first sighting old
-      // enough that an armed detector would have paged out of its grace window.
-      marker.firstSeenAt = new Date(ago(30 * 60 * MIN)).toISOString();
+      await withPark(async () => {
+        // No stamp at all, and a first sighting old enough that an armed detector
+        // would have paged out of its grace window.
+        marker.firstSeenAt = new Date(ago(30 * 60 * MIN)).toISOString();
+        heartbeat.readAllHeartbeatMs.mockResolvedValue(
+          Object.fromEntries(Object.entries(healthy()).filter(([k]) => k !== PARKED)),
+        );
 
-      await alertOnStaleLanes();
+        await alertOnStaleLanes();
 
-      expect(
-        dispatch.sendThrottledAlert.mock.calls.find((c) => c[0] === laneKey(PARKED)),
-      ).toBeUndefined();
+        expect(
+          dispatch.sendThrottledAlert.mock.calls.find((c) => c[0] === laneKey(PARKED)),
+        ).toBeUndefined();
+      });
     });
 
     it("says which detectors are parked instead of going silent about them", async () => {
+      await withPark(async () => {
+      // No stamp for the parked lane: a FRESH verdict would be the un-park state
+      // rather than the parked one, and this case is about the park being visible.
+      heartbeat.readAllHeartbeatMs.mockResolvedValue(
+        Object.fromEntries(Object.entries(healthy()).filter(([k]) => k !== PARKED)),
+      );
       await alertOnStaleLanes();
 
       const call = dispatch.sendThrottledInfo.mock.calls.find((c) => c[0] === "detector_parked");
@@ -185,21 +221,24 @@ describe("alertOnStaleLanes (#803)", () => {
       expect(String(call?.[2])).toMatch(/#1562/);
       // Slow enough that it is never the thing anyone scrolls past.
       expect(call?.[1]).toBeGreaterThanOrEqual(7 * 24 * 60 * MIN);
+      });
     });
 
     // The half that stops the park outliving its reason. Cutover looks exactly
     // like this, and nobody has to remember anything for it to be noticed.
     it("pages to arm a parked detector that has started concluding", async () => {
-      heartbeat.readAllHeartbeatMs.mockResolvedValue({ ...healthy(), [PARKED]: ago(30 * MIN) });
+      await withPark(async () => {
+        heartbeat.readAllHeartbeatMs.mockResolvedValue({ ...healthy(), [PARKED]: ago(30 * MIN) });
 
-      await alertOnStaleLanes();
+        await alertOnStaleLanes();
 
-      const call = dispatch.sendThrottledAlert.mock.calls.find(
-        (c) => c[0] === `detector_unpark:${PARKED}`,
-      );
-      expect(call).toBeDefined();
-      expect(String(call?.[2])).toMatch(/reached a verdict/i);
-      expect(String(call?.[2])).toMatch(/#1562/);
+        const call = dispatch.sendThrottledAlert.mock.calls.find(
+          (c) => c[0] === `detector_unpark:${PARKED}`,
+        );
+        expect(call).toBeDefined();
+        expect(String(call?.[2])).toMatch(/reached a verdict/i);
+        expect(String(call?.[2])).toMatch(/#1562/);
+      });
     });
 
     it("treats an unreadable verdict record as still parked, not as concluding", async () => {

@@ -295,13 +295,24 @@ export function mirrorAlertText(lane: StaleLane, boundMin: number): string {
  * It carries each detector's REASON and the issue that arms it, because the only
  * useful response to this whisper is to decide whether the reason still holds.
  */
-export function verdictParkedInfoText(lanes: string[]): string {
+export function verdictParkedInfoText(
+  lanes: string[],
+  registry?: Parameters<typeof parkedDetector>[1],
+): string {
   const items = lanes.map((lane) => {
     const subject = VERDICT_SUBJECT[lane];
-    const parked = parkedDetector(lane);
+    const parked = parkedDetector(lane, registry);
+    // A lane with no entry cannot describe a park, so it says what it knows rather
+    // than rendering the word undefined twice into a sentence (#2484, L11).
+    if (!parked) {
+      return (
+        `${subject.what[0].toUpperCase()}${subject.what.slice(1)} is listed as parked with no entry ` +
+        `in PARKED_VERDICT_DETECTORS, which is a code fault rather than a decision.`
+      );
+    }
     return (
       `${subject.what[0].toUpperCase()}${subject.what.slice(1)} is parked because ` +
-      `${parked?.reason}. While it is parked, ${subject.cost}. Arm it in #${parked?.issue}.`
+      `${parked.reason}. While it is parked, ${subject.cost}. Arm it in #${parked.issue}.`
     );
   });
   return (
@@ -320,14 +331,31 @@ export function verdictParkedInfoText(lanes: string[]): string {
  * rather than a whisper because the detector is now capable of watching and is
  * still switched off, which is the state the reader has to end.
  */
-export function verdictUnparkAlertText(lane: string): string {
+/**
+ * Where to go to arm a parked detector, named so it is never a bare `#undefined`.
+ *
+ * The registry is the destination either way; the issue number is a convenience
+ * when there is one. A lane with no entry is the rare path (both callers are sent
+ * only while a lane IS parked), which is exactly the kind that ships unexercised
+ * and then renders the word undefined into a sentence somebody reads on a phone
+ * (#2484, L535, L11).
+ */
+function unparkDestination(lane: string, registry?: Parameters<typeof parkedDetector>[1]): string {
+  const parked = parkedDetector(lane, registry);
+  const where = "PARKED_VERDICT_DETECTORS in src/lib/monitor/verdict-freshness.ts";
+  return parked ? `${where} and close #${parked.issue}` : where;
+}
+
+export function verdictUnparkAlertText(
+  lane: string,
+  registry?: Parameters<typeof parkedDetector>[1],
+): string {
   const subject = VERDICT_SUBJECT[lane];
-  const parked = parkedDetector(lane);
   return (
     `${subject.what[0].toUpperCase()}${subject.what.slice(1)} has reached a verdict, ` +
     `so the reason it was parked has stopped being true and it is now switched off ` +
     `while able to watch. Until it is armed, ${subject.cost}. Take it out of ` +
-    `PARKED_VERDICT_DETECTORS in src/lib/monitor/verdict-freshness.ts and close #${parked?.issue}.`
+    `${unparkDestination(lane, registry)}.`
   );
 }
 
@@ -361,9 +389,11 @@ export function verdictUnparkRecoveryText(lane: string): string {
  * the earlier page was not worth acting on: the burst was too brief to be the
  * traffic the park is waiting for.
  */
-export function verdictUnparkLapsedText(lane: string): string {
+export function verdictUnparkLapsedText(
+  lane: string,
+  registry?: Parameters<typeof parkedDetector>[1],
+): string {
   const subject = VERDICT_SUBJECT[lane];
-  const parked = parkedDetector(lane);
   // Deliberately does NOT recite the park's reason. The weekly whisper carries that,
   // at length, and this is a message whose whole content is that there is nothing to
   // do: repeating four lines of arithmetic here buries the one fact worth reading.
@@ -371,7 +401,7 @@ export function verdictUnparkLapsedText(lane: string): string {
     `${subject.what[0].toUpperCase()}${subject.what.slice(1)} has stopped reaching a verdict ` +
     `again, so the earlier page asking for it to be switched on is cleared and it stays parked. ` +
     `Nothing was armed, and nothing needs to be: the verdict was too short lived to be the ` +
-    `traffic the park is waiting for. #${parked?.issue} is still where it goes back on. ` +
+    `traffic the park is waiting for. ${unparkDestination(lane, registry)} is still where it goes back on. ` +
     `No action is needed.`
   );
 }

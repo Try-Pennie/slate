@@ -220,20 +220,30 @@ export const PARKED_VERDICT_DETECTORS: Partial<Record<DetectorVerdictLane, Parke
   // consecutive monitor ticks. The daily un-park page is what said so, unprompted,
   // for four days. Note this arms the WATCH on the probe concluding, not the drift
   // page itself, which is a separate switch and still off (#1371).
-  [FAILURE_RATE_VERDICT_LANE]: {
-    reason:
-      "every booking attempt is still the smoke canary's, and one full canary pass records exactly 16 of them inside about two minutes against a floor of 20 in a rolling hour, so a pass lands four short and only two passes inside one hour ever clear it",
-    issue: 1562,
-    // The rolling hour the check judges. A verdict older than that was quoted from
-    // a window which has since emptied, so it says nothing about whether the check
-    // can judge the hour it is in now.
-    unparkWithinMs: 60 * 60_000,
-  },
+  // The failure rate park was REMOVED here on 2026-09-16 (#2484), and the reason
+  // it gave is why. It said one full canary pass records 16 attempts against a
+  // floor of 20 in a rolling hour, so a pass lands four short. Both halves of that
+  // moved: the floor is 10 now and the window is four hours, fitted to 27,122 real
+  // leads (`failure-rate-thresholds.ts`), so a single canary pass clears it and the
+  // detector can reach a verdict without real traffic at all. A park whose stated
+  // reason has stopped being true is a recorded decision defending a state nobody
+  // chose (L346), and this family exists to notice a detector that never concludes.
 };
 
-/** The park entry for a lane, or null when it is armed. */
-export function parkedDetector(lane: string): ParkedDetector | null {
-  return PARKED_VERDICT_DETECTORS[lane as DetectorVerdictLane] ?? null;
+/**
+ * The park entry for a lane, or null when it is armed.
+ *
+ * `registry` is injectable for ONE reason and it is not convenience: the shipped
+ * registry is currently EMPTY (#2484 armed the last entry), so without a seam the
+ * park mechanism has nothing to drive it and its whole suite would have to be
+ * deleted rather than kept. A mechanism that ships with no exercised test is one
+ * that breaks silently the next time somebody parks a detector (L535).
+ */
+export function parkedDetector(
+  lane: string,
+  registry: Partial<Record<string, ParkedDetector>> = PARKED_VERDICT_DETECTORS,
+): ParkedDetector | null {
+  return registry[lane] ?? null;
 }
 
 /**
@@ -260,8 +270,9 @@ export function detectorParkState(
   lane: string,
   lastVerdictMs: number | null | undefined,
   nowMs: number,
+  registry: Partial<Record<string, ParkedDetector>> = PARKED_VERDICT_DETECTORS,
 ): DetectorParkState {
-  const parked = parkedDetector(lane);
+  const parked = parkedDetector(lane, registry);
   if (!parked) return "armed";
   if (lastVerdictMs === null || lastVerdictMs === undefined) return "parked";
   if (!Number.isFinite(lastVerdictMs) || lastVerdictMs <= 0) return "parked";
