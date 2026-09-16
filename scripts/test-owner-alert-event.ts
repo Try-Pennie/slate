@@ -129,6 +129,28 @@ async function main() {
     const write = calls.ownerAlertCreates[0];
     eq(write.actorEmail, "b@x.com", "create: written as the owner, on their own calendar");
     eq(stored.gcal_event_id, write.eventId, "create: the event id is stored back on the row");
+
+    // The body AS SHIPPED, not as a builder returns it in isolation: the step is what
+    // fills in every value, so a placeholder that only the step supplies (a base URL,
+    // an id) is only visible here.
+    //
+    // The first version linked `/admin/bookings/<id>`, and that link was a dead end
+    // for exactly the person the alert is written for: `loadBookingDetail`
+    // (src/lib/booking/detail.ts) answers `forbidden` unless `canManageAgents(role)`,
+    // which is manager and up, and an advisor is `agent`. Nothing an advisor CAN open
+    // names a specific call either, so the body links NOTHING (L651).
+    assert(
+      !/https?:\/\//.test(write.body.description),
+      "create: the shipped body carries no link, because no page an advisor can open names this call",
+    );
+    assert(
+      !write.body.description.includes("/admin"),
+      "create: and no console address they would simply be refused at",
+    );
+    assert(
+      !write.body.description.includes("undefined"),
+      "create: and nothing half-built, which is how a dropped value reads on a calendar",
+    );
   }
 
   // --- the event body: free, coloured, 20 minutes, and no lead anywhere -----
@@ -136,7 +158,6 @@ async function main() {
     const body = ownerAlertBody({
       startsAt: "2026-06-08T13:00:00.000Z",
       timezone: "America/New_York",
-      adminUrl: "https://slate.example/admin/bookings/bk1",
     });
     eq(body.summary, OWNER_ALERT_TITLE, "body: the title names no lead");
     eq(body.transparency, "transparent", "body: marked free, so it cannot occupy a slot");
@@ -147,9 +168,29 @@ async function main() {
       new Date(Date.parse(body.start) + OWNER_ALERT_MINUTES * 60_000).toISOString(),
       `body: runs ${OWNER_ALERT_MINUTES} minutes`,
     );
+    // The first version of this linked `/admin/bookings/<id>`, and that link was a
+    // dead end for exactly the person the alert is written for: `loadBookingDetail`
+    // (src/lib/booking/detail.ts) answers `forbidden` unless `canManageAgents(role)`,
+    // which is manager and up, and an advisor is `agent`. Nothing an advisor CAN open
+    // names a specific call either (the /me area is their availability and their time
+    // off), so the body links NOTHING and says what the warning means on its own
+    // (L651). These assertions replace the one that defended the link, rather than
+    // being adjusted around it (L252).
     assert(
-      body.description.includes("https://slate.example/admin/bookings/bk1"),
-      "body: links the booking in Slate so the advisor can read the detail there",
+      !/https?:\/\//.test(body.description),
+      "body: carries no link at all, because no page an advisor can open names this call",
+    );
+    assert(
+      !body.description.includes("/admin"),
+      "body: and no console address they would simply be refused at",
+    );
+    assert(
+      body.description.toLowerCase().includes("calendar"),
+      "body: it points at the call on their own calendar, which is where the lead's details already are",
+    );
+    assert(
+      body.description.split("\n\n").length >= 2,
+      "body: and it reads as more than a label, since there is nowhere else for the advisor to go",
     );
 
     // The whole point of the issue: the invite Pipedream wrote carried the lead's

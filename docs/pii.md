@@ -67,9 +67,10 @@ Anyone answering a request should say so rather than implying the data is gone.
 When the machine routes a lead back to the advisor who has already pitched them,
 Slate writes a SECOND, advisor only event on that advisor's calendar: 20 minutes at
 the head of the call, titled "ALERT: Previously pitched lead", with no attendees and
-marked free. It carries **no lead name, email address or phone number**, by design:
-the advisor follows a link to the booking in Slate to read who it is. So it is not a
-copy of anybody's data, it is outside the erasure scope, and Slate's record of it
+marked free. It carries **no lead name, email address or phone number**, and no link
+either: the advisor reads who it is from the booking's own invitation, which is on the
+same calendar at the same time and which this section has already accounted for. So it
+is not a copy of anybody's data, it is outside the erasure scope, and Slate's record of it
 (`owner_alert_events`, migration 0126) holds only a booking id, a user id, a calendar
 address and a Google event id. A label on the booking's own event was rejected for
 exactly the reason this section describes: Google copies an event's title and

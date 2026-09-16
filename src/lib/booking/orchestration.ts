@@ -44,7 +44,6 @@ import {
 import { phoneLastFour } from "./phone-mask.ts";
 import {
   isOwnerAlertReassign,
-  ownerAlertAdminUrl,
   ownerAlertBody,
   ownerAlertWindow,
   type OwnerAlertEventBody,
@@ -1677,18 +1676,6 @@ async function removeOwnerAlert(deps: BookingDeps, alert: OwnerAlertEvent): Prom
   await deps.markOwnerAlertRemoved(alert.id);
 }
 
-/**
- * The event body for a booking's alert. Built here rather than in the handler so the
- * create and the move cannot disagree about the window (L41).
- */
-function ownerAlertBodyFor(deps: BookingDeps, booking: Booking): OwnerAlertEventBody {
-  return ownerAlertBody({
-    startsAt: booking.starts_at,
-    timezone: booking.timezone,
-    adminUrl: ownerAlertAdminUrl(deps.appBaseUrl(), booking.id),
-  });
-}
-
 export const OUTBOX_HANDLERS: OutboxHandlers = {
   [CANCEL_STEPS.GCAL_DELETE]: async (deps, row) => {
     if (!row.booking_id) return;
@@ -2031,7 +2018,7 @@ export const OUTBOX_HANDLERS: OutboxHandlers = {
       eventId = await deps.createOwnerAlertEvent(
         email,
         alert.calendar_id,
-        ownerAlertBodyFor(deps, booking),
+        ownerAlertBody({ startsAt: booking.starts_at, timezone: booking.timezone }),
         clientId,
       );
     } catch (err) {

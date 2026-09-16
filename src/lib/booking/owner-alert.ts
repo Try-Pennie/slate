@@ -58,15 +58,25 @@ export function ownerAlertWindow(startsAt: string): { start: string; end: string
 }
 
 /**
- * What the advisor reads. It says why the call is theirs and where the detail lives,
- * and it names nobody: the lead is identified only by the booking Slate holds, behind
- * a link that already requires a signed in staff session.
+ * What the advisor reads. It names nobody, and it LINKS NOWHERE.
+ *
+ * The first version sent them to `/admin/bookings/<id>`. An advisor cannot open it:
+ * `loadBookingDetail` (`src/lib/booking/detail.ts`) answers `forbidden` unless
+ * `canManageAgents(role)`, which is manager and up, and an advisor is `agent`. So the
+ * one link on an alert written for advisors was a dead end for every one of them
+ * (L651). Nothing they CAN open names a specific call either: the `/me` area is their
+ * own working hours and their own time off, and that is all of it.
+ *
+ * So the text stands on its own, and the place it sends them is the one place they are
+ * already looking: the call is on this same calendar at this same time, with the lead
+ * on it. Putting the lead's details here instead would have been the easy substitute
+ * and is exactly what this whole alert exists to avoid.
  */
-export function ownerAlertDescription(adminUrl: string): string {
+export function ownerAlertDescription(): string {
   return [
-    "This lead has spoken with you before, so this call was routed to you.",
-    "Only you can see this entry; it is marked free, so it does not block your calendar.",
-    `Open the booking in Slate for the lead's details: ${adminUrl}`,
+    "You have spoken with this lead before, so their call was routed to you rather than to whoever was next in the rotation.",
+    "The call is on your calendar at this same time, and the lead's details are on that invitation.",
+    "Only you can see this reminder, and it is marked free, so it does not block your time.",
   ].join("\n\n");
 }
 
@@ -88,21 +98,15 @@ export interface OwnerAlertEventBody {
 export function ownerAlertBody(input: {
   startsAt: string;
   timezone: string;
-  adminUrl: string;
 }): OwnerAlertEventBody {
   const window = ownerAlertWindow(input.startsAt);
   return {
     summary: OWNER_ALERT_TITLE,
-    description: ownerAlertDescription(input.adminUrl),
+    description: ownerAlertDescription(),
     start: window.start,
     end: window.end,
     timezone: input.timezone,
     transparency: "transparent",
     colorId: OWNER_ALERT_COLOR_ID,
   };
-}
-
-/** Where an advisor reads the booking this alert is about. */
-export function ownerAlertAdminUrl(appBaseUrl: string, bookingId: string): string {
-  return `${appBaseUrl}/admin/bookings/${bookingId}`;
 }
