@@ -152,6 +152,15 @@ export interface CoverageStopReport {
   alreadyMoved: number;
 }
 
+/** Which absence a cal.com override write is about (#2417). */
+export interface CalcomOverrideTarget {
+  requestId: string;
+  agentUserId: string;
+  agentEmail: string;
+  startIso: string;
+  endIso: string;
+}
+
 export interface OooDeps {
   loadRequest(id: string): Promise<OooRequest | null>;
   /**
@@ -270,17 +279,15 @@ export interface OooDeps {
     gcalEventId: string | null;
   }): Promise<void>;
 
-  /** Cal.com dual-write; returns "ok" | "skipped" | "failed: <why>". */
-  calcomAddOverrides(
-    agentEmail: string,
-    startIso: string,
-    endIso: string,
-  ): Promise<string>;
-  calcomRemoveOverrides(
-    agentEmail: string,
-    startIso: string,
-    endIso: string,
-  ): Promise<string>;
+  /**
+   * Cal.com dual-write; returns "ok" | "skipped" | "failed: <why>".
+   *
+   * Takes the REQUEST and the agent's id, not just a window, because a date's
+   * overrides are derived from every approved absence touching it (#2417): the
+   * binding reads that set and refuses the write when it cannot.
+   */
+  calcomAddOverrides(args: CalcomOverrideTarget): Promise<string>;
+  calcomRemoveOverrides(args: CalcomOverrideTarget): Promise<string>;
 
   /**
    * Slack DM by email; the message ref when delivered, null when undeliverable.
@@ -880,11 +887,13 @@ async function runPostApproval(
   // treating this flag as "settled", or it will re-attempt writes that can never
   // succeed.
   if (!request.calcom_synced) {
-    const outcome = await deps.calcomAddOverrides(
-      agent.email,
-      request.starts_at,
-      request.ends_at,
-    );
+    const outcome = await deps.calcomAddOverrides({
+      requestId: request.id,
+      agentUserId: agent.id,
+      agentEmail: agent.email,
+      startIso: request.starts_at,
+      endIso: request.ends_at,
+    });
     effects[EFFECTS.calcom] = outcome;
     if (outcome === "ok") patch.calcom_synced = true;
     else if (outcome.startsWith("failed")) {
@@ -1034,11 +1043,20 @@ async function undoPostApproval(
     gcalEventId: request.agent_event_id,
   });
   if (request.calcom_synced) {
-    await deps.calcomRemoveOverrides(
-      agent.email,
-      request.starts_at,
-      request.ends_at,
-    );
+    // #2417 / L100: the removal recomputes the dates from the agent's REMAINING
+    // approved absences, so it can find that the override it was meant to undo
+    // was never there. That is not success and it is not silent: cal.com is left
+    // correct and somebody is told the two systems had disagreed.
+    const outcome = await deps.calcomRemoveOverrides({
+      requestId: request.id,
+      agentUserId: agent.id,
+      agentEmail: agent.email,
+      startIso: request.starts_at,
+      endIso: request.ends_at,
+    });
+    if (outcome.startsWith("failed")) {
+      await deps.alertOps("ooo_calcom", oooCalcomAlert(request.id, outcome));
+    }
   }
   return {
     manager_event_id: null,

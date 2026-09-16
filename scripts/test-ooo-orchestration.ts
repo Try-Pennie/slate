@@ -142,6 +142,12 @@ interface World {
   /** What the cal.com dual-write returns, so a test can drive the skip and the
    *  failure paths apart (#1249/#1250). */
   calcomOutcome: string;
+  /** What the cal.com REMOVAL returns (#2417). A removal recomputes the date from
+   *  the agent's remaining approved absences, so it can find that the override it
+   *  was undoing was never there, which must not report as success (L100). */
+  calcomRemoveOutcome: string;
+  /** Every removal asked for, so the request it names can be asserted (#2417). */
+  calcomRemovals: { requestId: string; agentUserId: string; agentEmail: string }[];
   /** Coverage sweeps enqueued, with the exact bounds each was given (#1237). */
   sweeps: { requestId: string; startIso: string; endIso: string; queued: number }[];
   /** How the sweep answers: a count, or a throw, so the failure path is reachable. */
@@ -185,6 +191,8 @@ function makeWorld(): World {
     /** Every client id the orchestration sent, in order (#1469 idempotency). */
     clientIds: [] as (string | undefined)[],
     calcomOutcome: "skipped",
+    calcomRemoveOutcome: "skipped",
+    calcomRemovals: [],
     sweeps: [],
     sweepResult: 0,
     sweepMoves: [],
@@ -330,7 +338,10 @@ function makeWorld(): World {
       world.countReads.push({ outUserId, startIso, endIso });
       return world.countAnswers.length > 0 ? world.countAnswers.shift()! : 0;
     },
-    calcomRemoveOverrides: async () => "skipped",
+    calcomRemoveOverrides: async ({ requestId, agentUserId, agentEmail }) => {
+      world.calcomRemovals.push({ requestId, agentUserId, agentEmail });
+      return world.calcomRemoveOutcome;
+    },
     dmUserByEmail: async (email, text) => {
       world.dms.push({ email, text });
       return { channel: `D-${email}`, ts: `ts-dm-${world.dms.length}` };
@@ -823,6 +834,48 @@ const input = {
     "a broken integration DOES page, so the skip assertion above means something",
   );
   assert(r.calcom_synced === false, "a failure does not claim an override exists");
+}
+
+// --- cancel: a removal that found nothing to remove is said out loud (#2417) ---
+//
+// The removal recomputes the date from the agent's REMAINING approved absences,
+// so it can discover that the override this cancellation was meant to undo was
+// never in cal.com. Before #2417 the removal's answer went nowhere at all, so
+// "the write was undone" and "there was nothing there" were the same silence
+// (L100). Both directions are driven, because a page nothing can turn off is
+// indistinguishable from a page that always fires (L1).
+{
+  const w = makeWorld();
+  w.calcomOutcome = "ok";
+  w.calcomRemoveOutcome = "failed: no cal.com override was on 2026-07-01 to remove";
+  const sub = await submitOoo(agent, input, w.deps);
+  const id = sub.ok ? sub.request.id : "";
+  await approveOoo(id, manager, w.deps);
+  const before = w.alerts.filter((a) => a.key === "ooo_calcom").length;
+  await cancelOoo(id, agent, w.deps);
+  assert(
+    w.alerts.filter((a) => a.key === "ooo_calcom").length > before,
+    "a removal that matched nothing pages rather than passing silently",
+  );
+  assert(
+    w.calcomRemovals.some((r) => r.requestId === id && r.agentUserId === agent.id),
+    "the removal names the request and the agent, so the date can be recomputed",
+  );
+}
+
+{
+  const w = makeWorld();
+  w.calcomOutcome = "ok";
+  w.calcomRemoveOutcome = "ok";
+  const sub = await submitOoo(agent, input, w.deps);
+  const id = sub.ok ? sub.request.id : "";
+  await approveOoo(id, manager, w.deps);
+  const before = w.alerts.filter((a) => a.key === "ooo_calcom").length;
+  await cancelOoo(id, agent, w.deps);
+  assert(
+    w.alerts.filter((a) => a.key === "ooo_calcom").length === before,
+    "a removal that did undo the override stays quiet, so the page above means something",
+  );
 }
 
 // --- reject ---

@@ -25,7 +25,7 @@ vi.mock("@/lib/env", () => ({
   calcomBaseUrl: () => env.baseUrl,
 }));
 
-import { addOooOverrides } from "./client";
+import { addOooOverrides, removeOooOverrides } from "./client";
 import {
   isFailure,
   isProvisionalSkip,
@@ -36,6 +36,8 @@ import {
 type Reply = { status: number; data?: unknown };
 let replies: Reply[] = [];
 let urls: string[] = [];
+/** Every request body sent, so a PATCH's override list can be read back (#2417). */
+let bodies: unknown[] = [];
 
 const SCHEDULE = {
   id: 55,
@@ -51,10 +53,12 @@ beforeEach(() => {
   env.apiKey = "key-1";
   replies = [];
   urls = [];
+  bodies = [];
   vi.stubGlobal(
     "fetch",
-    vi.fn(async (url: string) => {
+    vi.fn(async (url: string, init?: { body?: string }) => {
       urls.push(String(url));
+      if (init?.body) bodies.push(JSON.parse(init.body));
       const next = replies.shift() ?? { status: 500 };
       return {
         status: next.status,
@@ -68,7 +72,8 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-const run = () => addOooOverrides("agent@trypennie.com", "2026-08-07T13:00:00Z", "2026-08-07T21:00:00Z");
+const run = () =>
+  addOooOverrides("agent@trypennie.com", "2026-08-07T13:00:00Z", "2026-08-07T21:00:00Z", []);
 
 describe("cal.com override outcome: absent versus failed (#1250, #1249)", () => {
   it("reports a genuinely absent user as a skip, not a failure", async () => {
@@ -229,5 +234,136 @@ describe("the outcome vocabulary the override sweep classifies on (#1276)", () =
     expect(isFailure(outcome)).toBe(true);
     expect(isSettled(outcome)).toBe(false);
     expect(isProvisionalSkip(outcome)).toBe(false);
+  });
+});
+
+// #2417: what this client PATCHes is the date's whole override list, derived
+// from every approved absence touching that date. Asserted on the availability
+// the patched list adds up to, because cal.com reads a date's overrides
+// additively: two individually correct rows union into a day neither describes.
+describe("a date's overrides are derived from every approved absence on it (#2417)", () => {
+  // 2026-08-07 is a Friday; the fixture schedule is Mon-Fri 09:00-17:00 ET.
+  // 09:00 ET = 13:00Z, 12:00 ET = 16:00Z, 13:00 ET = 17:00Z, 17:00 ET = 21:00Z.
+  const MORNING = { startIso: "2026-08-07T13:00:00Z", endIso: "2026-08-07T16:00:00Z" };
+  const AFTERNOON = { startIso: "2026-08-07T17:00:00Z", endIso: "2026-08-07T21:00:00Z" };
+
+  const minutes = (hhmm: string) => {
+    const [h, m] = hhmm.split(":").map(Number);
+    return h * 60 + m;
+  };
+
+  type Span = { date: string; startTime: string; endTime: string };
+  const lastPatched = (): Span[] =>
+    ((bodies.at(-1) as { overrides?: Span[] } | undefined)?.overrides ?? []);
+
+  /** The union of the patched list's spans on a date, as "HH:mm-HH:mm" pieces. */
+  const offered = (date: string): string => {
+    const onDate = lastPatched().filter((o) => o.date === date);
+    if (onDate.length === 0) return "the normal week";
+    const spans = onDate
+      .map((o) => [minutes(o.startTime), minutes(o.endTime)] as [number, number])
+      .filter(([s, e]) => e > s)
+      .sort((a, b) => a[0] - b[0]);
+    if (spans.length === 0) return "nothing";
+    const merged: [number, number][] = [];
+    for (const [s, e] of spans) {
+      const last = merged[merged.length - 1];
+      if (last && s <= last[1]) last[1] = Math.max(last[1], e);
+      else merged.push([s, e]);
+    }
+    const pad = (m: number) =>
+      `${String(Math.floor(m / 60)).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`;
+    return merged.map(([s, e]) => `${pad(s)}-${pad(e)}`).join(" + ");
+  };
+
+  /** Queue a user lookup, a schedule carrying `held`, and a successful patch. */
+  const withStored = (held: Span[]) => {
+    replies = [
+      { status: 200, data: [{ id: 7 }] },
+      { status: 200, data: [{ ...SCHEDULE, overrides: held }] },
+      { status: 200, data: {} },
+    ];
+  };
+
+  it("leaves only the hour between two partial absences, not the whole day", async () => {
+    // The morning absence is already approved and its override is what cal.com
+    // holds. Approving the afternoon one must NOT add a second span beside it.
+    withStored([{ date: "2026-08-07", startTime: "12:00", endTime: "17:00" }]);
+    const outcome = await addOooOverrides(
+      "agent@trypennie.com",
+      AFTERNOON.startIso,
+      AFTERNOON.endIso,
+      [MORNING],
+    );
+    expect(outcome).toBe("ok");
+    expect(offered("2026-08-07")).toBe("12:00-13:00");
+  });
+
+  it("gives back everything except the remaining absence when one is cancelled", async () => {
+    withStored([{ date: "2026-08-07", startTime: "12:00", endTime: "13:00" }]);
+    const outcome = await removeOooOverrides(
+      "agent@trypennie.com",
+      MORNING.startIso,
+      MORNING.endIso,
+      [AFTERNOON],
+    );
+    expect(outcome).toBe("ok");
+    expect(offered("2026-08-07")).toBe("09:00-13:00");
+  });
+
+  it("writes cal.com's whole-day block when the absences cover the working day", async () => {
+    // Abutting windows: 09:00-12:00 and 12:00-17:00. An EMPTY override list here
+    // would mean "no override", which falls back to the normal week.
+    const abutting = { startIso: "2026-08-07T16:00:00Z", endIso: "2026-08-07T21:00:00Z" };
+    withStored([{ date: "2026-08-07", startTime: "12:00", endTime: "17:00" }]);
+    const outcome = await addOooOverrides(
+      "agent@trypennie.com",
+      abutting.startIso,
+      abutting.endIso,
+      [MORNING],
+    );
+    expect(outcome).toBe("ok");
+    expect(offered("2026-08-07")).toBe("nothing");
+    expect(lastPatched()).toContainEqual({
+      date: "2026-08-07",
+      startTime: "00:00",
+      endTime: "00:00",
+    });
+  });
+
+  it("carries overrides on other dates across untouched", async () => {
+    const foreign = { date: "2026-09-01", startTime: "00:00", endTime: "00:00" };
+    withStored([foreign]);
+    await addOooOverrides("agent@trypennie.com", MORNING.startIso, MORNING.endIso, []);
+    expect(lastPatched()).toContainEqual(foreign);
+  });
+
+  it("does NOT report success for a removal that found no override to remove", async () => {
+    // L100: cal.com holding nothing on the date means the approval's write never
+    // landed, or something else took it away. The schedule is still rewritten to
+    // what Slate says, and the outcome says what was actually measured.
+    withStored([]);
+    const outcome = await removeOooOverrides(
+      "agent@trypennie.com",
+      MORNING.startIso,
+      MORNING.endIso,
+      [],
+    );
+    expect(outcome).toMatch(/^failed/);
+    expect(outcome).toContain("2026-08-07");
+    // The patch still went out, so cal.com is left correct either way.
+    expect(urls.at(-1)).toContain("/schedules/55");
+  });
+
+  it("reports ok for a removal that did find the override it was undoing", async () => {
+    withStored([{ date: "2026-08-07", startTime: "12:00", endTime: "17:00" }]);
+    const outcome = await removeOooOverrides(
+      "agent@trypennie.com",
+      MORNING.startIso,
+      MORNING.endIso,
+      [],
+    );
+    expect(outcome).toBe("ok");
+    expect(offered("2026-08-07")).toBe("the normal week");
   });
 });

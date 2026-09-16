@@ -2,9 +2,9 @@ import { calcomApiKey, calcomBaseUrl, calcomOrgId } from "@/lib/env";
 import { isLoadtest, loadtestRefusal, refuseUnderLoadtest } from "@/lib/loadtest-guard";
 import { OUTCOME_NOT_CONFIGURED, notInCalcomOutcome } from "./outcomes.ts";
 import {
-  buildDateOverrides,
-  filterOutOverrides,
-  mergeOverrides,
+  datesCoveredBy,
+  recomputeOverrides,
+  type AbsenceWindow,
   type CalcomAvailabilityRule,
   type DateOverride,
 } from "@/lib/calcom/overrides";
@@ -172,11 +172,12 @@ async function applyOoo(
   agentEmail: string,
   startIso: string,
   endIso: string,
+  otherApproved: AbsenceWindow[],
 ): Promise<string> {
   let last: Attempt = { outcome: "failed: cal.com never attempted", retryable: false };
   for (let attempt = 0; attempt <= RETRY_WAITS_MS.length; attempt++) {
     if (attempt > 0) await sleep(RETRY_WAITS_MS[attempt - 1]);
-    last = await attemptOoo(mode, agentEmail, startIso, endIso);
+    last = await attemptOoo(mode, agentEmail, startIso, endIso, otherApproved);
     if (!last.retryable) return last.outcome;
   }
   // Out of attempts: report the LAST cause seen, so the message says what is
@@ -189,6 +190,7 @@ async function attemptOoo(
   agentEmail: string,
   startIso: string,
   endIso: string,
+  otherApproved: AbsenceWindow[],
 ): Promise<Attempt> {
   try {
     // Not a failure: cal.com is being wound down, so an unconfigured integration
@@ -221,20 +223,58 @@ async function attemptOoo(
     if (!schedule.timeZone) {
       return done(`failed: no timezone on cal.com schedule ${schedule.id}`);
     }
-    const built = buildDateOverrides(
-      startIso,
-      endIso,
-      schedule.timeZone,
-      schedule.availability,
-    );
+    // The dates this absence touches are what gets rewritten; every other date
+    // in cal.com is carried across untouched (#2417).
+    const dates = datesCoveredBy(startIso, endIso, schedule.timeZone);
+    if (dates === null) {
+      return done(`failed: unreadable time off window ${startIso} to ${endIso}`);
+    }
+    // A zero-length window covers no date, so there is nothing to rewrite.
+    if (dates.length === 0) return done("ok");
+
+    const own: AbsenceWindow = { startIso, endIso };
+    // Adding counts this absence; removing is the same computation without it.
+    // Both are built from `otherApproved`, which never contains this request, so
+    // running either twice converges rather than compounding.
+    const windows = mode === "add" ? [...otherApproved, own] : [...otherApproved];
     const existing = Array.isArray(schedule.overrides)
       ? schedule.overrides
       : [];
-    const next =
-      mode === "add"
-        ? mergeOverrides(existing, built)
-        : filterOutOverrides(existing, built);
-    return await patchOverrides(userId, schedule, next);
+    const next = recomputeOverrides({
+      existing,
+      dates,
+      windows,
+      scheduleTz: schedule.timeZone,
+      availability: schedule.availability,
+    });
+    if (!next.ok) return done(`failed: ${next.reason}`);
+
+    // What SHOULD be sitting in cal.com right now, with this absence still
+    // counted. Only used to tell a real removal from one that matched nothing.
+    const expected =
+      mode === "remove"
+        ? recomputeOverrides({
+            existing: [],
+            dates,
+            windows: [...otherApproved, own],
+            scheduleTz: schedule.timeZone,
+            availability: schedule.availability,
+          })
+        : null;
+
+    const patched = await patchOverrides(userId, schedule, next.overrides);
+    if (patched.outcome !== "ok") return patched;
+    // #2417 / L100: a removal that matched nothing must not report success. The
+    // schedule has been rewritten to what Slate says the dates should offer, so
+    // cal.com is right either way; what is being reported is that the override
+    // this cancellation was supposed to undo was not there to undo.
+    if (expected?.ok && expected.overrides.length > 0 && next.replaced === 0) {
+      return done(
+        `failed: no cal.com override was on ${dates.join(", ")} to remove; ` +
+          `the schedule has been rewritten to match Slate`,
+      );
+    }
+    return patched;
   } catch (e) {
     // A thrown fetch is a transport problem (DNS, a dropped connection), which is
     // the same class as a 5xx: worth one more try.
@@ -242,14 +282,27 @@ async function attemptOoo(
   }
 }
 
+/**
+ * Write this absence into cal.com's date overrides.
+ *
+ * `otherApproved` is every OTHER approved absence of the same agent that could
+ * touch the same dates, and it is required rather than optional on purpose
+ * (#2417): a caller that forgot it would silently reopen the day, which is the
+ * defect this argument exists to close. `src/lib/ooo/calcom-sync.ts` is the one
+ * place that reads it, and it refuses the write rather than passing a set it
+ * could not measure.
+ */
 export const addOooOverrides = (
   agentEmail: string,
   startIso: string,
   endIso: string,
-): Promise<string> => applyOoo("add", agentEmail, startIso, endIso);
+  otherApproved: AbsenceWindow[],
+): Promise<string> => applyOoo("add", agentEmail, startIso, endIso, otherApproved);
 
+/** Take this absence out of cal.com's date overrides; see `addOooOverrides`. */
 export const removeOooOverrides = (
   agentEmail: string,
   startIso: string,
   endIso: string,
-): Promise<string> => applyOoo("remove", agentEmail, startIso, endIso);
+  otherApproved: AbsenceWindow[],
+): Promise<string> => applyOoo("remove", agentEmail, startIso, endIso, otherApproved);

@@ -9,7 +9,7 @@ import {
   createEventOnCalendar,
   deleteEventOnCalendar,
 } from "@/lib/google/calendar";
-import { addOooOverrides, removeOooOverrides } from "@/lib/calcom/client";
+import { syncCalcomOverrides } from "@/lib/ooo/calcom-sync";
 import {
   previewBulkReassign,
   startBulkReassign,
@@ -263,13 +263,16 @@ export function realDeps(): OooDeps {
       }
     },
 
-    calcomAddOverrides: async (email, startIso, endIso) =>
+    // #2417: both go through `syncCalcomOverrides`, which reads the agent's
+    // OTHER approved absences on the same dates and refuses the write when that
+    // read fails. Nothing here builds a window set of its own.
+    calcomAddOverrides: async (target) =>
       oooCalcomDualWrite()
-        ? addOooOverrides(email, startIso, endIso)
+        ? syncCalcomOverrides({ mode: "add", ...target })
         : "skipped",
-    calcomRemoveOverrides: async (email, startIso, endIso) =>
+    calcomRemoveOverrides: async (target) =>
       oooCalcomDualWrite()
-        ? removeOooOverrides(email, startIso, endIso)
+        ? syncCalcomOverrides({ mode: "remove", ...target })
         : "skipped",
 
     dmUserByEmail: (email, text, oooRequestId) =>
