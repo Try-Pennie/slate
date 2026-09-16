@@ -104,7 +104,16 @@ const CALENDAR_GRID_STEP_MS = 18 * 60 * 60_000;
 const CALENDAR_GRID_PAST_MS = 30 * 86_400_000;
 const CALENDAR_GRID_SLOTS = Math.floor((30 + 60) * 86_400_000 / CALENDAR_GRID_STEP_MS);
 
-/** One owned primary calendar (what listCalendars would surface). */
+/**
+ * One owned primary calendar (what listCalendars would surface).
+ *
+ * The id is the EMAIL, because that is what Google returns (#2380): calendarList
+ * reports the primary calendar's id as the account's address, and
+ * `selectableCalendarIds` stores exactly that. This used to return the literal
+ * "primary", which made the whole load run self-consistent about a value
+ * production never holds, so the soak could not see a reconcile comparing a
+ * stored email against the alias and deleting the agent's real calendar.
+ */
 export function stubCalendarList(email = "unknown"): {
   id: string;
   accessRole: string;
@@ -114,7 +123,7 @@ export function stubCalendarList(email = "unknown"): {
 }[] {
   faultIfDue(`calendarList:${email}`);
   return [
-    { id: "primary", accessRole: "owner", primary: true, selected: true, summary: "primary" },
+    { id: email, accessRole: "owner", primary: true, selected: true, summary: "primary" },
   ];
 }
 

@@ -556,10 +556,14 @@ describe("a truncated BOOTSTRAP must not reconcile (#1259)", () => {
 describe("ensureWatches on a truncated calendar list (#171)", () => {
   it("errors without reconciling, so no calendar is deleted from a partial list", async () => {
     // The agent has a stored calendar due for renewal, and listCalendars throws
-    // CalendarListTruncated (mocked). If ensureWatches swallowed that into the
-    // primary-only fallback it would reconcile the stored set against ["primary"]
-    // and DELETE this calendar plus its watch and cached busy blocks. It must
-    // instead rethrow, report an error, and touch nothing.
+    // CalendarListTruncated (mocked). A partial list is not authoritative, so
+    // reconciling against it would DELETE this calendar plus its watch and cached
+    // busy blocks. It must instead rethrow, report an error, and touch nothing.
+    //
+    // This comment used to describe the primary-only fallback as the thing that
+    // would do the deleting, and it was right: that fallback did exactly this to
+    // every OTHER way the listing could fail, while only truncation was guarded
+    // (#2380). The describe above now covers the rest, and the fallback is gone.
     const { db, deletes } = syncFlowDb({
       email: "agent@x.com",
       calendars: [
@@ -585,6 +589,115 @@ describe("ensureWatches on a truncated calendar list (#171)", () => {
   });
 });
 
+describe("ensureWatches when the calendar list cannot be read at all (#2380)", () => {
+  // The stored id here is an EMAIL, which is what production holds and what every
+  // fixture in this file used to hide. Google reports the primary calendar's id as
+  // the user's address (scripts/test-calendar-select.ts:8 has the realistic shape),
+  // selectableCalendarIds keeps the entry with primary === true and stores ITS id,
+  // and booking/service.ts records that the bulk free/busy must never see the
+  // literal "primary". A fixture storing "primary" agrees with the old fallback by
+  // construction, so the mismatch this whole describe is about could never appear.
+  const storedPrimary = "agent@x.com";
+  const calendarDueForRenewal = {
+    id: "cal-1",
+    user_id: "agent-1",
+    calendar_id: storedPrimary,
+    watch_expiration: null,
+    watch_channel_id: "chan-1",
+    watch_resource_id: "res-1",
+    consecutive_failures: 0,
+    last_success_at: null,
+    last_sync_error: null,
+  };
+
+  // Every shape `ok()` (src/lib/google/calendar.ts) can throw that is NOT a
+  // truncation. The no-scope 403 the primary-only fallback was written for cannot
+  // reach here any more: dwd.ts grants calendar.readonly and
+  // classifyCalendarReachability requires this same listing to SUCCEED before
+  // anyone becomes bookable, so what is left is Google having a bad minute.
+  const unreadable: [string, () => Error][] = [
+    ["a 503 from calendarList", () => new GoogleHttpError("calendarList.list failed: 503", 503, "backendError")],
+    ["a 429 rate limit", () => new GoogleHttpError("calendarList.list failed: 429", 429, "rateLimitExceeded")],
+    ["a dropped socket", () => new TypeError("fetch failed")],
+  ];
+
+  it.each(unreadable)("reconciles nothing on %s", async (_label, makeError) => {
+    // The defect: any non-truncation failure fell back to ["primary"], which the
+    // stored email can never match, so the reconcile judged the agent's real
+    // calendar vanished. That stopped their push channel, deleted every cached
+    // busy block for the calendar, deleted the agent_calendars row with its sync
+    // token and both health streaks, and inserted a row keyed "primary" instead.
+    // The agent then reads as free all day until the sync lane bootstraps them,
+    // and the lane reported the watch as renewed while it happened.
+    const { db, deletes, inserts } = syncFlowDb({
+      email: "agent@x.com",
+      calendars: [calendarDueForRenewal],
+      // Real cached busy time, so the "deleted nothing" assertion has something it
+      // could have destroyed.
+      busyBlocks: [{ id: "b-1", gcal_event_id: "evt-1" }],
+    });
+    admin.current = db;
+    calMock.listCalendars.mockRejectedValue(makeError());
+
+    const result = await ensureWatches("agent-1");
+
+    // All four halves of the teardown, not just one: the watch, the cached busy
+    // time, the calendar row, and the alias row that replaced it. Asserted before
+    // the status, because the damage is the subject and the status is the symptom.
+    expect(calMock.stopChannel).not.toHaveBeenCalled();
+    expect(deletes).not.toContain("busy_blocks");
+    expect(deletes).not.toContain("agent_calendars");
+    expect(inserts).toHaveLength(0);
+    expect(result.status).toBe("error");
+  });
+
+  it("says which way Google failed rather than reconciling quietly", async () => {
+    // The old fallback logged nothing at all, so the only trace of a destroyed
+    // calendar was sync_window_to going null on a row that had not existed a
+    // minute earlier. The kind comes from reachabilityFromError, the shared
+    // classifier, so a not-provisioned account is not reported as transient.
+    const { db } = syncFlowDb({
+      email: "agent@x.com",
+      calendars: [calendarDueForRenewal],
+    });
+    admin.current = db;
+    calMock.listCalendars.mockRejectedValue(
+      new GoogleHttpError("calendarList.list failed: 503", 503, "backendError"),
+    );
+
+    await ensureWatches("agent-1");
+
+    expect(logSpy.warn).toHaveBeenCalledWith(
+      "sync",
+      expect.objectContaining({ user_id: "agent-1", kind: "transient" }),
+      expect.anything(),
+    );
+  });
+
+  it("still reconciles when Google DOES answer, so a removed calendar is cleaned up", async () => {
+    // The positive control. Refusing every failure must not turn the reconcile off:
+    // a calendar Google's own successful listing no longer names is still deleted
+    // with its watch and its cached busy time.
+    const { db, deletes } = syncFlowDb({
+      email: "agent@x.com",
+      calendars: [
+        calendarDueForRenewal,
+        { ...calendarDueForRenewal, id: "cal-2", calendar_id: "team-cal@x.com" },
+      ],
+      busyBlocks: [{ id: "b-1", gcal_event_id: "evt-1" }],
+    });
+    admin.current = db;
+    calMock.listCalendars.mockResolvedValue([{ id: storedPrimary, primary: true }]);
+
+    const result = await ensureWatches("agent-1");
+
+    expect(result.status).toBe("renewed");
+    expect(calMock.stopChannel).toHaveBeenCalled();
+    expect(deletes).toContain("busy_blocks");
+    expect(deletes).toContain("agent_calendars");
+  });
+});
+
 describe("ensureWatches on a corrupt watch_expiration (#1169)", () => {
   it("treats an unparseable expiration as due for renewal, never as current", async () => {
     // A corrupt stamp used to parse to NaN, so "expires soon?" compared false and
@@ -593,13 +706,18 @@ describe("ensureWatches on a corrupt watch_expiration (#1169)", () => {
     // prevent. Unreadable must land on the DUE side. listCalendars returns the
     // same stored primary calendar, so the reconcile is a no-op and the mocked
     // watchCalendar performs the renewal.
+    //
+    // The id is an EMAIL on both sides, which is what Google returns and what
+    // Slate stores (#2380). It said "primary" on both sides until then, a value
+    // production never holds, and a fixture agreeing with itself about the wrong
+    // value is how the reconcile's alias fallback stayed invisible here.
     const { db, deletes } = syncFlowDb({
       email: "agent@x.com",
       calendars: [
         {
           id: "cal-1",
           user_id: "agent-1",
-          calendar_id: "primary",
+          calendar_id: "agent@x.com",
           watch_expiration: "not-a-timestamp",
           watch_channel_id: "chan-1",
           watch_resource_id: "res-1",
@@ -610,7 +728,7 @@ describe("ensureWatches on a corrupt watch_expiration (#1169)", () => {
       ],
     });
     admin.current = db;
-    calMock.listCalendars.mockResolvedValue([{ id: "primary", primary: true }]);
+    calMock.listCalendars.mockResolvedValue([{ id: "agent@x.com", primary: true }]);
 
     const result = await ensureWatches("agent-1");
 

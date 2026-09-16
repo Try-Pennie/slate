@@ -7,7 +7,6 @@ import {
   watchCalendar,
   stopChannel,
   SyncTokenExpired,
-  CalendarListTruncated,
   type GoogleEvent,
 } from "@/lib/google/calendar";
 import { selectableCalendarIds } from "@/lib/google/calendar-select";
@@ -962,21 +961,47 @@ export async function ensureWatches(userId: string): Promise<WatchResult> {
   try {
     const db = supabaseAdmin();
     // Reconcile the stored calendar set with what the agent actually has.
-    // calendarList.list needs the calendar.readonly scope; if the domain-wide
-    // delegation doesn't grant it yet (403), fall back to just the primary
-    // calendar (works with calendar.events) so sync keeps running. Full
-    // multi-calendar activates automatically once the scope is granted.
     let wanted: string[];
     try {
       wanted = selectableCalendarIds(await listCalendars(email));
     } catch (err) {
-      // A truncated calendar list is NOT authoritative (#171): reconciling the
-      // stored set against a partial list would delete every calendar past the
-      // page cap along with its watch and cached busy blocks. Bubble it to the
-      // outer handler (status: error, no reconcile); the next tick retries. The
-      // primary-calendar fallback stays for the ordinary no-scope (403) case.
-      if (err instanceof CalendarListTruncated) throw err;
-      wanted = ["primary"];
+      // A calendar list we could not READ is not authoritative, in any of the
+      // ways it can fail (#2380, generalising the truncation refusal of #171).
+      // The reconcile below deletes every stored calendar the list does not
+      // name, taking its push channel, its cached busy blocks and its row (with
+      // the sync token, sync_window_to and both health streaks) with it, so it
+      // may only ever run against Google's own successful answer.
+      //
+      // This used to fall back to ["primary"] for a domain-wide delegation that
+      // did not yet grant calendar.readonly. That reason no longer holds: dwd.ts
+      // grants the scope, and classifyCalendarReachability requires THIS listing
+      // to succeed before anyone can become bookable, so every agent reaching
+      // here has it. What is left is a 5xx, a 429, a rate-limit 403 or a dropped
+      // socket, all of which `ok()` throws.
+      //
+      // And the fallback could never have matched anyway: the stored primary id
+      // is the agent's EMAIL (selectableCalendarIds keeps the entry with
+      // primary === true and stores its id, which Google reports as the address),
+      // never the literal "primary", so reconciling against the alias judged the
+      // agent's real calendar vanished and deleted it, then inserted an alias row
+      // the verify-on-book free/busy must never see. Until the sync lane
+      // bootstrapped that row the booker offered the agent's whole working day.
+      //
+      // The kind is recorded, not branched on: every failure takes the same
+      // refusal, so there is nothing for `isDefinitiveFailure` to decide here.
+      // It is on the line because a not-provisioned account and a bad minute at
+      // Google send different people to do different things.
+      log.warn(
+        "sync",
+        {
+          msg: "calendar list unreadable, reconciling nothing",
+          user_id: userId,
+          kind: reachabilityFromError(err),
+          stored_calendars: existing.length,
+        },
+        err,
+      );
+      throw err;
     }
     const wantedSet = new Set(wanted);
     const haveSet = new Set(existing.map((c) => c.calendar_id));
@@ -989,6 +1014,21 @@ export async function ensureWatches(userId: string): Promise<WatchResult> {
     }
     for (const c of existing) {
       if (wantedSet.has(c.calendar_id)) continue;
+      // Say what is being torn down (#2380). This is the most destructive thing
+      // the watch lane does and it left no trace at all: a calendar, its push
+      // channel and every cached busy block for it, after which the lane reports
+      // the watch as renewed. It is a LOG rather than an alert on purpose. Every
+      // deletion reaching this line is now one Google's own successful listing
+      // says is gone, which is an ordinary calendar removal, and an alert that
+      // fires on every ordinary removal is one nobody reads by the second week.
+      // What was worth paging about was the fallback that got here on a failed
+      // read, and that is refused above rather than reported.
+      log.warn("sync", {
+        msg: "calendar no longer listed, dropping it with its watch and cached busy time",
+        user_id: userId,
+        calendar_id: c.calendar_id,
+        had_watch: Boolean(c.watch_channel_id && c.watch_resource_id),
+      });
       if (c.watch_channel_id && c.watch_resource_id) {
         await stopChannel(email, c.watch_channel_id, c.watch_resource_id).catch((err) =>
         // An un-stopped channel keeps Google notifying us about a calendar we
