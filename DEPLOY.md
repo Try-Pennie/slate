@@ -401,17 +401,31 @@ alerts that would tell somebody it stopped being cheap live only in provider
 dashboards. Recorded here so the configuration is discoverable and survives a change
 of ownership:
 
-**Cloudflare (Workers usage notification).** Dashboard > Notifications > Add >
-Workers > "Usage Based Billing" (or "Workers Usage"), destination
-`systemsteam@trypennie.com`, at a threshold meaningfully above the current monthly
-figure. Slate is a single Worker with four every-minute cron lanes, so a runaway is
-far likelier to be a loop than growth, and the number to watch is requests plus CPU
-time rather than spend alone.
+**Cloudflare.** What is configured, measured through the API on 2026-09-16 against
+the account Slate actually runs on (`3e7f907a9c19e51417873e2cce4fbc5c`, the Pennie
+account named in `wrangler.jsonc`): exactly ONE alert policy, the auto-created
+"Default budget alert" at 500 dollars of total spend, emailing
+`bnelms@trypennie.com`.
+
+There is no Workers USAGE notification, and Dan decided on 2026-09-16 not to add one
+(#1702): the budget alert going to one person is accepted as the cover. Recorded as a
+decision rather than left as a gap, so the next person does not re-derive it. What it
+costs is stated plainly: the alert is on SPEND, so a runaway loop is noticed once it
+has already cost money rather than when the request or CPU count moves. That is
+tolerable because a Cloudflare request that costs anything is a lead booking and the
+four cron lanes are bounded, which is the same argument the rest of this section
+makes.
+
+If that is ever revisited, the thing to create is a **Billing Usage Alert**
+(`billing_usage_alert`, Dashboard > Notifications > Add > Billing), which takes a
+product and a usage limit, rather than a second budget alert.
 
 **Supabase (spend cap).** Organization > Billing > Cost control: leave the **spend
-cap enabled**, which is the default and means the project throttles rather than
-bills over. Verify it after any plan change, since the cap is per organization and a
-plan change is when it moves.
+cap enabled**, which is the default and means the project throttles rather than bills
+over. Verify it after any plan change, since the cap is per organization and a plan
+change is when it moves. The organization is on the **Pro** plan (read 2026-09-16);
+the cap itself is not exposed by the management API, so this one genuinely cannot be
+checked from here.
 
 Neither is verifiable from this repo, which is the honest limitation of writing them
 down here: nothing fails when somebody deletes the notification. What compensates is
