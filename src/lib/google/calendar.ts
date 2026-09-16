@@ -29,6 +29,18 @@ export interface GoogleEvent {
   transparency?: string;
   start?: { dateTime?: string; date?: string; timeZone?: string };
   end?: { dateTime?: string; date?: string; timeZone?: string };
+  /**
+   * The invitation's guest list (#2389). Only the impersonated agent's OWN
+   * entry, the one Google marks `self: true`, records whether THEY will be
+   * there, and a declined invitation is otherwise indistinguishable from an
+   * accepted one: it keeps `status: "confirmed"` and the default
+   * `transparency: "opaque"`. Read by `isBusyEvent`, which is the only judge of
+   * whether an event becomes cached busy time.
+   *
+   * `email` is declared so a call site cannot quietly read one attendee's answer
+   * as another's; nothing in Slate stores it, and it never leaves this module.
+   */
+  attendees?: { email?: string; self?: boolean; responseStatus?: string }[];
 }
 
 export interface Interval {
