@@ -148,8 +148,18 @@ jobs:
       # judge, leaves this unstamped, the router-replay heartbeat goes stale and the
       # lane watchdog pages: a detector that has stopped concluding otherwise looks
       # exactly like one finding nothing wrong (#1394).
+      #
+      # `always()` is load bearing rather than tidiness. Without a status function
+      # GitHub implicitly ANDs `success()` into a custom `if`, so a Slack post that
+      # failed in the step above would skip this one and leave a replay that DID
+      # conclude unstamped, the heartbeat stale, and the watchdog paging nine days
+      # later about a detector that never stopped concluding. That is two checks
+      # sharing one status field (L53): whether the replay concluded is a fact about
+      # the ladder, and whether anybody was told is a fact about Slack.
+      # `notify-router-replay.ts` writes `concluded` before it exits non-zero
+      # precisely so this step can still read it, which only works with `always()`.
       - name: Stamp the replay heartbeat (a measured verdict only)
-        if: steps.pre.outputs.configured == '1' && steps.report.outputs.concluded == '1'
+        if: always() && steps.pre.outputs.configured == '1' && steps.report.outputs.concluded == '1'
         env:
           BOOKING_API_KEY: ${{ secrets.BOOKING_API_KEY }}
           SLATE_BASE_URL: ${{ vars.SLATE_BASE_URL }}
