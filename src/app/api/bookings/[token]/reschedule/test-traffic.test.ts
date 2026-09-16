@@ -60,7 +60,13 @@ vi.mock("@/lib/after-response", () => ({
 }));
 vi.mock("@/lib/booking/reason-options", () => ({
   loadReasonOptions: async () => ({
-    reschedule: { all: [{ code: "schedule_conflict", label: "Schedule conflict" }] },
+    // `selectable` is what a person may submit (#2369): `all` also carries the codes
+    // only Slate itself writes, and this is a lead's own reschedule.
+    reschedule: {
+      all: [{ code: "schedule_conflict", label: "Schedule conflict" }],
+      active: [{ code: "schedule_conflict", label: "Schedule conflict" }],
+      selectable: [{ code: "schedule_conflict", label: "Schedule conflict" }],
+    },
   }),
 }));
 

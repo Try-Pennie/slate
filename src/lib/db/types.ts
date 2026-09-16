@@ -217,6 +217,10 @@ export interface ReasonOptionRow {
   sort_order: number;
   active: boolean;
   locked: boolean;
+  /** A code only Slate itself writes (#2369, migration 0124). Never offered in a
+   *  customer or admin picker; still valid for the machine paths and still rendered
+   *  as a label in history. */
+  system_only: boolean;
   updated_at: string;
   updated_by: string | null;
 }

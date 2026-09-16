@@ -72,6 +72,7 @@ wrangler secret put TWILIO_API_KEY_SID      # required; TaskRouter-scoped API ke
 wrangler secret put TWILIO_API_KEY_SECRET   # required; the matching API key secret.
 wrangler secret put TWILIO_WORKSPACE_SID    # required; the TaskRouter workspace holding the workers. Not really a secret, but set here so all three live in one place rather than split with wrangler.jsonc.
 wrangler secret put REASSIGN_API_KEY        # optional; bearer for the reassign API. Empty = POST /api/bookings/reassign returns 503.
+wrangler secret put DUPLICATE_CANCEL_API_KEY # optional; bearer for the duplicate-cancel API (#2369). Empty = POST /api/bookings/cancel-duplicate returns 503.
 wrangler secret put OFFBOARDING_API_KEY     # optional; bearer for deactivate/reactivate. Empty = offboarding endpoints return 503.
 wrangler secret put BOOKABLE_API_KEY        # optional; bearer for the bookable-toggle API. Empty = POST /api/users/bookable returns 503.
 wrangler secret put BOOKING_API_KEY         # optional; bearer for the direct booking API. Empty (both) = POST /api/bookings returns 503.

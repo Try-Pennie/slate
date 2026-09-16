@@ -106,6 +106,12 @@ export const googleChannelToken = (): string =>
 // Bearer key for the agent-reassign API (POST /api/bookings/reassign). Empty = disabled.
 export const reassignApiKey = (): string => process.env.REASSIGN_API_KEY ?? "";
 
+// Bearer key for the duplicate-cancel API (POST /api/bookings/cancel-duplicate, #2369),
+// called by Regal's double-booking journeys. Its OWN key rather than the reassign one:
+// one key per machine capability, so the journey that may cancel a call is not also
+// handed the ability to move one. Empty = endpoint disabled (503).
+export const duplicateCancelApiKey = (): string => process.env.DUPLICATE_CANCEL_API_KEY ?? "";
+
 // Bearer key for the offboarding lifecycle API (POST /api/users/deactivate|reactivate),
 // called by the existing offboarding automation. Empty = endpoints disabled (503).
 export const offboardingApiKey = (): string => process.env.OFFBOARDING_API_KEY ?? "";

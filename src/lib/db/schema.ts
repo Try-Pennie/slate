@@ -293,6 +293,33 @@ export interface Database {
         };
         Returns: number;
       };
+      /**
+       * Decide whether a named booking is really a duplicate and, when it is, cancel
+       * it and enqueue its cancel outbox row in ONE transaction (#2369, migration
+       * 0124). Checking and cancelling as two steps could leave a lead with no call
+       * at all, and the loaders the route would otherwise reach swallow a read error
+       * to null, which on this path reads as "this lead has no other call".
+       *
+       * Returns a single jsonb object, never a row set, so it can never meet
+       * PostgREST's 1000 row cap. `outcome` is one of the words
+       * `src/lib/booking/duplicate-cancel.ts` enumerates; `outboxId` is present only
+       * on a cancel. A reply that does not read as that shape is a 503, never an
+       * outcome.
+       */
+      cancel_duplicate_booking: {
+        Args: {
+          p_booking_id: string;
+          /** The instant "upcoming" and "already started" are judged against, passed
+           *  in rather than read from the database clock so a test can pin it. */
+          p_now: string;
+        };
+        Returns: {
+          outcome: string;
+          outboxId?: string | null;
+          candidateIds?: string[];
+          weakerMatch?: string | null;
+        } | null;
+      };
     };
     Enums: Record<string, never>;
     CompositeTypes: Record<string, never>;

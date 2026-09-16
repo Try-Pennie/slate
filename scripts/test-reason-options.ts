@@ -16,11 +16,17 @@ import {
   parseReasonOptionsForm,
   coerceReasonOptionsForm,
   resolveEditorRows,
+  isSystemOnlyCode,
+  SYSTEM_ONLY_CODES,
   REASON_LABEL_MAX,
   type ReasonOptionRow,
   type ReasonOptionsFormInput,
 } from "../src/lib/booking/reason-options.ts";
 import { assert, finish } from "./lib/harness.ts";
+
+/** The cancel reasons a picker may OFFER: every coded default that is not one Slate
+ *  writes for itself (#2369). `double_booking` is the only system only code today. */
+const OFFERABLE_CANCEL_REASONS = CANCEL_REASONS.filter((o) => !o.systemOnly);
 
 // --- slugifyCode: label -> stable analytics code ---
 {
@@ -62,7 +68,8 @@ const row = (
   sort_order: number,
   active = true,
   locked = false,
-): ReasonOptionRow => ({ action, code, label, sort_order, active, locked });
+  system_only = false,
+): ReasonOptionRow => ({ action, code, label, sort_order, active, locked, system_only });
 
 // --- resolveReasonOptions: store rows -> {active, all}, sorted, default fallback ---
 {
@@ -100,7 +107,7 @@ const row = (
     "empty store -> reschedule falls back to coded default (all)",
   );
   assert(
-    res.cancel.active.length === CANCEL_REASONS.length &&
+    res.cancel.active.length === OFFERABLE_CANCEL_REASONS.length &&
       res.reassign.active.length === REASSIGN_REASONS.length,
     "empty store -> cancel + reassign also fall back to their coded defaults",
   );
@@ -135,7 +142,7 @@ const row = (
   }
   assert(!threw, "a read error does not throw");
   assert(
-    res!.cancel.active.length === CANCEL_REASONS.length,
+    res!.cancel.active.length === OFFERABLE_CANCEL_REASONS.length,
     "a read error falls back to the coded default taxonomy",
   );
 }
@@ -305,6 +312,100 @@ const emptyActions = (): ReasonOptionsFormInput => ({
     input.reschedule.length === 0 && input.cancel.length === 0 && input.reassign.length === 0,
     "a non-object payload -> all actions empty",
   );
+}
+
+// --- system only codes (#2369): valid, never offered ---------------------------
+//
+// `double_booking` is written by POST /api/bookings/cancel-duplicate and by nothing
+// else. A lead picking it from the manage page would tell Regal, through the
+// cancellation reason on the webhook, that Slate had resolved a duplicate call. So it
+// must be absent from every picker and from the admin editor while staying a valid
+// code for the machine paths and a renderable label in history.
+{
+  assert(
+    SYSTEM_ONLY_CODES.cancel.includes("double_booking"),
+    "double_booking is declared system only",
+  );
+  assert(
+    LOCKED_CODES.cancel.includes("double_booking"),
+    "and locked, so an admin cannot retire it out from under the machine path",
+  );
+  assert(
+    isSystemOnlyCode("cancel", "double_booking"),
+    "the coded defaults alone are enough to call it system only",
+  );
+  assert(
+    isSystemOnlyCode("cancel", "made_up", true),
+    "and a STORED flag alone is enough too, so a code added in the store is covered",
+  );
+  assert(
+    !isSystemOnlyCode("cancel", "no_longer_interested"),
+    "an ordinary code is not system only",
+  );
+}
+{
+  // From the STORE.
+  const rows: ReasonOptionRow[] = [
+    row("cancel", "no_longer_interested", "No longer interested", 0),
+    row("cancel", "other", "Other", 1, true, true),
+    { action: "cancel", code: "double_booking", label: "Double booking", sort_order: 2, active: true, locked: true, system_only: true },
+  ];
+  const res = resolveReasonOptions(rows);
+  assert(
+    !res.cancel.active.some((o) => o.code === "double_booking"),
+    "a system only code is never in a picker",
+  );
+  assert(
+    !res.cancel.selectable.some((o) => o.code === "double_booking"),
+    "and is never a code a person may submit",
+  );
+  assert(
+    res.cancel.all.some((o) => o.code === "double_booking"),
+    "and IS in the full list, so the machine path validates and history renders its label",
+  );
+  assert(
+    resolveEditorRows(rows).cancel.every((r) => r.code !== "double_booking"),
+    "and is not a row in the admin reason editor, where every control would refuse it",
+  );
+}
+{
+  // From the CODED DEFAULTS, which is what an unreadable store falls back to. The
+  // fallback must choose the same behaviour, or a read error re-opens the code (L93).
+  const res = resolveReasonOptions([]);
+  assert(
+    !res.cancel.active.some((o) => o.code === "double_booking") &&
+      !res.cancel.selectable.some((o) => o.code === "double_booking"),
+    "an empty store falls back to defaults that still hide the system only code",
+  );
+  assert(
+    res.cancel.all.some((o) => o.code === "double_booking"),
+    "while the fallback's full list still carries it",
+  );
+}
+{
+  // A stored row that has LOST the flag (an older row, or a bad write) is still held
+  // back, because the code's own declaration decides too.
+  const res = resolveReasonOptions([
+    { action: "cancel", code: "double_booking", label: "Double booking", sort_order: 0, active: true, locked: true, system_only: false },
+  ]);
+  assert(
+    !res.cancel.active.some((o) => o.code === "double_booking"),
+    "a stored row with the flag cleared is still never offered",
+  );
+}
+{
+  // The editor never shows it, so a submission never carries it; the re-injection is
+  // what keeps it in the store, with the flag set from the code rather than the form.
+  const parsed = parseReasonOptionsForm({
+    reschedule: [],
+    cancel: [{ code: "no_longer_interested", label: "No longer interested", active: true }],
+    reassign: [],
+  });
+  const written = parsed.rows.find((r) => r.code === "double_booking");
+  assert(!!written, "saving the editor re-injects the system only row rather than dropping it");
+  assert(written!.system_only === true, "and writes it back system only");
+  assert(written!.locked === true, "and locked");
+  assert(written!.active === true, "and active, so the machine path can always name it");
 }
 
 finish();

@@ -55,7 +55,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   const reasonOptions = await loadReasonOptions();
   const reason = validateReason(
     { code: parsed.data.reason, detail: parsed.data.reasonDetail },
-    reasonOptions.reassign.all,
+    reasonOptions.reassign.selectable,
   );
   if (!reason.ok) {
     return NextResponse.json({ error: reason.error }, { status: 400 });
