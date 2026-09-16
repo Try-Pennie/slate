@@ -161,8 +161,17 @@ const dbState = vi.hoisted(() => ({
    *  confused with a read of the same table (#1930). */
   insertReturns: null as unknown,
   insertReturnError: null as { message: string; code?: string } | null,
+  /**
+   * What an `update(...).eq(...)` resolves its `error` to (#2379).
+   *
+   * It resolved `{}` before, so every write in every test was a write that could
+   * only succeed, and a guard asserting an action refuses a REFUSED write could
+   * not be written at all. supabase-js does not throw on a refused statement; it
+   * resolves `{ error }`, which is exactly why these were swallowed.
+   */
+  updateError: null as { message: string; code?: string } | null,
 }));
-const updateEq = vi.hoisted(() => vi.fn(async () => ({})));
+const updateEq = vi.hoisted(() => vi.fn(async () => ({ error: dbState.updateError })));
 const update = vi.hoisted(() =>
   vi.fn((_patch: Record<string, unknown> = {}) => ({ eq: updateEq })),
 );
@@ -335,6 +344,7 @@ beforeEach(() => {
   dbState.insertError = null;
   dbState.insertReturns = null;
   dbState.insertReturnError = null;
+  dbState.updateError = null;
   dbState.count = 0;
   dbState.countError = null;
   dbState.rowsByTable = {};
@@ -400,6 +410,32 @@ describe("setUserRole denial branches", () => {
     expect(err!.message).toMatch(/could not (be )?verif/i);
     expect(err!.message).not.toMatch(/last admin/i);
     expect(update).not.toHaveBeenCalled();
+  });
+
+  // #2379: the revocation twin of the kill switch. supabase-js does not throw on
+  // a refused statement, so the action awaited the update, read nothing off it,
+  // and recorded `role.set { from: "admin", to: "agent" }` for a role that never
+  // changed. An admin removing a departing admin's access is told it is done, the
+  // trail says it is done, and the person keeps admin (L12, L529).
+  //
+  // Every guard ABOVE this line already refuses by throwing, so the refused write
+  // does too: a fourth way of saying no on one action would be a third pattern.
+  it("refuses when the database declines the role write, with no audit entry", async () => {
+    auth.requireAdmin.mockResolvedValueOnce(admin);
+    dbState.single = { role: "agent" };
+    dbState.count = 5; // plenty of admins; only the WRITE is refused
+    dbState.updateError = { message: "permission denied for table users", code: "42501" };
+
+    const err = await setUserRole(form({ user_id: "u2", role: "manager" })).then(
+      () => null,
+      (e: unknown) => e as Error,
+    );
+
+    expect(err).toBeInstanceOf(Error);
+    expect(err!.message).toMatch(/role/i);
+    expect(update).toHaveBeenCalledWith({ role: "manager" });
+    expect(recordAudit).not.toHaveBeenCalled();
+    expect(revalidatePath).not.toHaveBeenCalled();
   });
 });
 

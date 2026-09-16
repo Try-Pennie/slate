@@ -30,7 +30,11 @@
 //   - is a write, not a list read: a `.insert`/`.update`/`.delete`/`.upsert`
 //     reached before the `.select(` (an "update ... returning" shape). A failed
 //     write is a different concern than the availability read this guard exists
-//     for;
+//     for, and it has its OWN guard now: scan-unchecked-writes.ts (#2379), for
+//     the server action that awaits a write, discards the result, and then
+//     audits the value and confirms the save. Until that shipped this line was
+//     the whole treatment of the write case, which reads as a decision that the
+//     class was handled rather than as a boundary with nothing on the far side;
 //   - carries a `// error-ok:` opt-out on, or in the `//` block directly above,
 //     the destructure line (the escape hatch, below).
 //
@@ -157,7 +161,7 @@ export interface SwallowedReadFinding {
 const DESTRUCTURE = /(?:const|let|var)\s*\{([^{}]*)\}\s*=\s*await\b/g;
 const MUTATORS = [".insert(", ".update(", ".delete(", ".upsert("];
 
-function lineOf(source: string, index: number): number {
+export function lineOf(source: string, index: number): number {
   let line = 1;
   for (let i = 0; i < index && i < source.length; i++) {
     if (source[i] === "\n") line++;
@@ -182,12 +186,25 @@ function bindingKeys(bindings: string): Set<string> {
  * sibling scan-src-capped-reads.ts.
  */
 function hasOptOut(source: string, destructureIndex: number): boolean {
-  const lines = source.slice(0, destructureIndex).split("\n");
-  if (/\/\/\s*error-ok/i.test(lines[lines.length - 1] ?? "")) return true;
+  return hasCommentOptOut(source, destructureIndex, "error-ok");
+}
+
+/**
+ * The general form of the rule above, shared with the sibling guards so every
+ * scan in this family agrees about WHERE an opt-out may sit (#2379). The TOKEN is
+ * a parameter rather than a widened pattern deliberately: putting a second rule
+ * behind an existing suppression token silently widens every existing use of it
+ * (L448), so `// write-ok:` is its own word and an `// error-ok:` written about a
+ * read can never exempt a write.
+ */
+export function hasCommentOptOut(source: string, index: number, token: string): boolean {
+  const pattern = new RegExp(`//\\s*${token}`, "i");
+  const lines = source.slice(0, index).split("\n");
+  if (pattern.test(lines[lines.length - 1] ?? "")) return true;
   for (let i = lines.length - 2; i >= 0; i--) {
     const trimmed = lines[i].trim();
     if (!trimmed.startsWith("//")) break;
-    if (/\/\/\s*error-ok/i.test(trimmed)) return true;
+    if (pattern.test(trimmed)) return true;
   }
   return false;
 }
@@ -251,7 +268,7 @@ function isSelectRead(text: string): boolean {
  * the array (#1629). A guard that names the wrong read is worse than one that
  * names none, because the reader goes and looks at code that is fine.
  */
-function maskLiterals(source: string): string {
+export function maskLiterals(source: string): string {
   const out = source.split("");
   let i = 0;
   while (i < source.length) {
