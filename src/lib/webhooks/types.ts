@@ -54,5 +54,16 @@ export interface BookingEventPayload {
    * Null on booking.created / booking.completed (no reason applies).
    */
   reason: BookingReasonMeta | null;
+  /**
+   * The advisor the booking was assigned to BEFORE the change (#2368). Set on
+   * `booking.reassigned`, null on every other event.
+   *
+   * Null also means "we do not know", and that is deliberate: it is read from the
+   * reassign's outbox row, so a row enqueued before the field existed carries
+   * nothing, and the booking row itself holds the NEW advisor by the time the
+   * payload is built. Naming the wrong person on a Regal timeline is worse than
+   * naming nobody (L192).
+   */
+  previous_agent_email: string | null;
   routing: RoutingMeta;
 }

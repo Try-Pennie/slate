@@ -282,6 +282,14 @@ export function makeDeps(opts: FakeOpts) {
       deferred: boolean;
       /** Who the payload is about (#2164). */
       attendee: { name: string | null; email: string | null; phone: string | null };
+      /**
+       * The advisor a reassign moved the booking AWAY from (#2368). Recorded
+       * because it can only come off the outbox row: the booking the notify step
+       * reads already holds the new advisor, so a test that only looked at the
+       * event name could not tell a payload naming the right person from one
+       * naming nobody.
+       */
+      previousAgentEmail: string | null | undefined;
     }[],
     bookingEvents: [] as {
       booking_id: string;
@@ -789,6 +797,7 @@ export function makeDeps(opts: FakeOpts) {
         // payload holds them, and a fake that dropped the attendee could not tell
         // a payload built before the correction from one built after it.
         attendee: payload.attendee,
+        previousAgentEmail: payload.previous_agent_email,
       });
     },
     newManageToken: () => "tok-fixed",

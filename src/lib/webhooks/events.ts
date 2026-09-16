@@ -38,6 +38,7 @@ const EVENT_PRESENCE: Record<WebhookEvent, true> = {
   "booking.created": true,
   "booking.rescheduled": true,
   "booking.cancelled": true,
+  "booking.reassigned": true,
   "booking.completed": true,
 };
 

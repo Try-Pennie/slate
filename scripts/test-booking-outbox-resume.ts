@@ -152,13 +152,69 @@ async function run() {
     assert(calls.invalidateSlots.length === 1, "reassign resume: runs the pending recompute");
     assert(
       calls.webhooks.length === 1 &&
-        calls.webhooks[0].event === "booking.rescheduled" &&
+        calls.webhooks[0].event === "booking.reassigned" &&
         calls.webhooks[0].dedupeKey === "ob-reassign-resume",
-      "reassign resume: fires booking.rescheduled once, keyed on the outbox row id",
+      "reassign resume: fires booking.reassigned once, keyed on the outbox row id (#2368)",
+    );
+    // This row's payload carries no fromAgentEmail, which is exactly the row a
+    // drain meets when it resumes a reassign enqueued before #2368 deployed. The
+    // outgoing advisor is unknowable from here (the booking already holds the new
+    // one), so it must come through as null rather than as whoever the booking
+    // names today.
+    assert(
+      calls.webhooks[0].previousAgentEmail === null,
+      "reassign resume: a row enqueued before #2368 reports no previous advisor, rather than the wrong one",
     );
     assert(
       calls.bookingEvents.length === 1 && calls.bookingEvents[0].action === "reassigned",
       "reassign resume: records a 'reassigned' history row",
+    );
+  }
+
+  // --- outbox reassign resume carrying the outgoing advisor (#2368) ---
+  // The other half of the pair above: a row enqueued since #2368 holds the address
+  // the swap replaced, and the resumed webhook has to carry it. Without this, a
+  // handler that ignored the field entirely would pass the null case happily.
+  {
+    const reassigned = {
+      booking: makeBooking({ assigned_user_id: "b", agent_email: "b@x.com", status: "rescheduled" }),
+      bucket,
+      eventType,
+    };
+    const { deps, calls } = makeDeps({ existing: reassigned, bookingById: reassigned });
+    const steps = reassignOutboxSteps();
+    steps[0].state = "done";
+    const row: BookingOutbox = {
+      id: "ob-reassign-prev",
+      booking_id: reassigned.booking.id,
+      action: "reassign",
+      status: "pending",
+      steps,
+      payload: {
+        reasonCode: "coverage",
+        reasonDetail: "out sick",
+        initiator: "admin",
+        fromStartsIso: reassigned.booking.starts_at,
+        fromAgentUserId: "a",
+        fromAgentEmail: "a@x.com",
+      },
+      lease_until: null,
+      attempts: 0,
+      last_error: null,
+      created_at: "",
+      updated_at: "",
+    };
+    const res = await runOutboxSteps(deps, row, OUTBOX_HANDLERS);
+    assert(res.delivered === true, "reassign resume (#2368): row reaches delivered");
+    assert(
+      calls.webhooks.length === 1 &&
+        calls.webhooks[0].event === "booking.reassigned" &&
+        calls.webhooks[0].previousAgentEmail === "a@x.com",
+      "reassign resume (#2368): the resumed webhook still names the advisor the call moved away from",
+    );
+    assert(
+      (calls.webhooks[0].reason as { code?: string } | null)?.code === "coverage",
+      "reassign resume (#2368): the resumed webhook still carries the reason Regal branches on",
     );
   }
 

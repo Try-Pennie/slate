@@ -27,6 +27,7 @@ const payload: BookingEventPayload = {
   prefill: { xbc: "411", loanRequest: "160000" },
   manage_url: "https://slate.app/booking/manage/tok123",
   reason: null,
+  previous_agent_email: null,
   routing: {
     empty_pool_fallback: false,
     tier_fallback: false,
@@ -97,6 +98,84 @@ const reschedWithReason = buildRegalEvent("booking.rescheduled", {
 assert(reschedWithReason.properties.rescheduleReason === "found_better_time", "reschedule reason code maps to rescheduleReason");
 assert(reschedWithReason.properties.rescheduleReasonDetail === "earlier slot opened up", "reschedule detail maps through");
 assert(reschedWithReason.properties.rescheduledBy === "customer", "reschedule initiator maps to rescheduledBy");
+
+// --- #2368: a reassign is its own event, not a reschedule ----------------------
+// A reassign moves a booking to another advisor and NEVER moves the time, so
+// reaching Regal as `Slate Booking Rescheduled` made every journey listening for a
+// time change fire on one that had not happened, and a lead could be told their
+// call had moved when it had not. The reason rides along so a journey can tell an
+// owner move from a coverage move without a person reading the booking.
+{
+  const reassigned = buildRegalEvent("booking.reassigned", {
+    ...payload,
+    status: "rescheduled",
+    previous_agent_email: "outgoing@trypennie.com",
+    reason: { code: "owner_reassignment", detail: null, initiator: "system" },
+  });
+  assert(reassigned.name === "Slate Booking Reassigned", "#2368: reassign event name is Slate Booking Reassigned");
+  assert(reassigned.eventSource === "slate", "#2368: reassign keeps eventSource slate");
+  assert(
+    reassigned.properties.assignedAgentEmail === "jane@trypennie.com",
+    "#2368: assignedAgentEmail is the advisor the call moved TO",
+  );
+  assert(
+    reassigned.properties.assignedAgentName === "Jane Agent",
+    "#2368: assignedAgentName is the advisor the call moved TO",
+  );
+  assert(
+    reassigned.properties.previousAgentEmail === "outgoing@trypennie.com",
+    "#2368: previousAgentEmail is the advisor the call moved FROM",
+  );
+  assert(reassigned.properties.reassignReason === "owner_reassignment", "#2368: reassignReason carries the code");
+  assert(reassigned.properties.reassignReasonDetail === null, "#2368: reassignReasonDetail is null, not absent");
+  assert(reassigned.properties.reassignedBy === "system", "#2368: reassignedBy carries the initiator");
+  // The whole reason the reason is on the payload: an owner move and a coverage
+  // move are the same shape and must not read the same to a Regal journey.
+  const coverage = buildRegalEvent("booking.reassigned", {
+    ...payload,
+    status: "rescheduled",
+    previous_agent_email: "outgoing@trypennie.com",
+    reason: { code: "coverage", detail: "out sick", initiator: "admin" },
+  });
+  assert(
+    coverage.properties.reassignReason === "coverage" &&
+      coverage.properties.reassignReasonDetail === "out sick" &&
+      coverage.properties.reassignedBy === "admin",
+    "#2368: a coverage move is distinguishable from an owner move by the reason alone",
+  );
+  // It must not ALSO look like a reschedule, or a journey keyed on the reschedule
+  // fields would still fire on a booking whose time never moved.
+  assert(
+    !("rescheduleId" in reassigned.properties) &&
+      !("rescheduleReason" in reassigned.properties) &&
+      !("rescheduledBy" in reassigned.properties),
+    "#2368: a reassign carries none of the reschedule properties",
+  );
+  // And the reverse: a real reschedule must not pick up the reassign fields.
+  assert(
+    !("previousAgentEmail" in resched.properties) && !("reassignReason" in resched.properties),
+    "#2368: a reschedule carries none of the reassign properties",
+  );
+}
+
+{
+  // Failure path. The previous advisor is read from the reassign's outbox row, so a
+  // row enqueued before that field existed (a drain resuming across the deploy) has
+  // nothing to read. It must come through as null: a guessed address here names the
+  // wrong person to whoever reads the Regal timeline, and the booking row itself
+  // already holds the NEW advisor by the time this is built.
+  const noPrevious = { ...payload, status: "rescheduled" as const } as Partial<BookingEventPayload>;
+  delete noPrevious.previous_agent_email;
+  const built = buildRegalEvent("booking.reassigned", noPrevious as BookingEventPayload);
+  assert(
+    built.properties.previousAgentEmail === null,
+    "#2368: an unknown previous advisor is null, never guessed and never undefined",
+  );
+  assert(
+    "previousAgentEmail" in built.properties,
+    "#2368: the key is present even when unknown, so a consumer is not taught it is optional",
+  );
+}
 
 // #492: Regal alerts "Non-Ultra High Team Booking Detected" whenever a booking lands
 // outside the top tier. Slate now DELIBERATELY drops a rung when the requested tier
@@ -248,6 +327,16 @@ const CANCEL_KEYS = [
   "cancellationReasonDetail",
   "cancelledBy",
 ];
+// #2368: a reassign says who it moved the call to, who it moved it from, and why.
+const REASSIGN_KEYS = [
+  ...BASE_KEYS,
+  "assignedAgentEmail",
+  "assignedAgentName",
+  "previousAgentEmail",
+  "reassignReason",
+  "reassignReasonDetail",
+  "reassignedBy",
+];
 
 function checkContract(event: WebhookEvent, expected: string[]) {
   const actual = Object.keys(buildRegalEvent(event, payload).properties);
@@ -273,10 +362,17 @@ checkContract("booking.created", BASE_KEYS);
 checkContract("booking.completed", BASE_KEYS);
 checkContract("booking.rescheduled", RESCHEDULE_KEYS);
 checkContract("booking.cancelled", CANCEL_KEYS);
+checkContract("booking.reassigned", REASSIGN_KEYS);
 
 // The top-level envelope matters just as much: Regal routes on `name` and filters on
 // `eventSource`, and identity/opt-in ride in `traits`.
-for (const event of ["booking.created", "booking.rescheduled", "booking.cancelled", "booking.completed"] as WebhookEvent[]) {
+for (const event of [
+  "booking.created",
+  "booking.rescheduled",
+  "booking.cancelled",
+  "booking.completed",
+  "booking.reassigned",
+] as WebhookEvent[]) {
   const built = buildRegalEvent(event, payload);
   assert(
     typeof built.name === "string" && built.name.startsWith("Slate Booking "),

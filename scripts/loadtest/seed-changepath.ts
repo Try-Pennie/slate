@@ -23,6 +23,7 @@ import { randomUUID } from "node:crypto";
 import { readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { PRODUCTION_SUPABASE_REF } from "../../src/lib/loadtest-guard.ts";
+import { WEBHOOK_EVENTS } from "../../src/lib/webhooks/events.ts";
 
 // ONE constant, shared with the app's own load test refusals (#2242). A second
 // spelling beside each script is how one of them ends up naming a project that
@@ -112,7 +113,10 @@ async function main() {
       org_id: ORG_ID,
       url: "https://loadtest.invalid/sink",
       secret: "lt-secret",
-      events: ["booking.created", "booking.rescheduled", "booking.cancelled", "booking.completed"],
+      // Derived, never a hand kept copy of the same list (L41): a seeded endpoint
+      // that missed an event would leave the drain firing into nobody, which is the
+      // exact silence #1459 is about, and the run would still read as healthy.
+      events: WEBHOOK_EVENTS,
       format: "generic",
       active: true,
     },

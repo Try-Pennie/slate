@@ -13,6 +13,7 @@ const EVENT_NAMES: Record<WebhookEvent, string> = {
   "booking.created": "Slate Booking Created",
   "booking.rescheduled": "Slate Booking Rescheduled",
   "booking.cancelled": "Slate Booking Cancelled",
+  "booking.reassigned": "Slate Booking Reassigned",
   "booking.completed": "Slate Booking Completed",
 };
 
@@ -162,8 +163,8 @@ export function buildRegalEvent(
       // misroute and the alert cries wolf from the day of cutover. Gate the Regal
       // journey on slateTierFallback: true means Slate meant to do this.
       //
-      // Sent on every event, not just booking.created: a reassign emits
-      // booking.rescheduled and can land the booking on a different tier too.
+      // Sent on every event, not just booking.created: a reassign (#2368) can
+      // land the booking on a different tier too, and so can a reschedule.
       slateTierFallback: routing.tier_fallback,
       slateEmptyPoolFallback: routing.empty_pool_fallback,
       slateRequestedTier: routing.requested_tier,
@@ -195,6 +196,23 @@ export function buildRegalEvent(
     regal.properties.rescheduleReason = p.reason?.code ?? null;
     regal.properties.rescheduleReasonDetail = p.reason?.detail ?? null;
     regal.properties.rescheduledBy = p.reason?.initiator ?? null;
+  }
+  if (event === "booking.reassigned") {
+    // #2368: the call moved advisor and NOT time. Both ends are named so a Regal
+    // journey can say who is taking the call now without looking the booking up,
+    // and the reason is what lets it tell an owner move from a coverage move: the
+    // two are the same shape and mean opposite things to a lead.
+    regal.properties.assignedAgentEmail = p.agent.email;
+    regal.properties.assignedAgentName = agentName;
+    // `?? null` rather than the raw read: a payload written before this field
+    // existed (an admin resend, the dead letter replay, an outbox row resuming
+    // across the deploy) has no key at all, and undefined is DROPPED from the
+    // serialized body, so the consumer would be taught the field is optional
+    // (L505, L167). Null says we do not know, which is the truth.
+    regal.properties.previousAgentEmail = p.previous_agent_email ?? null;
+    regal.properties.reassignReason = p.reason?.code ?? null;
+    regal.properties.reassignReasonDetail = p.reason?.detail ?? null;
+    regal.properties.reassignedBy = p.reason?.initiator ?? null;
   }
   if (event === "booking.cancelled") {
     // #326: real reason/initiator now flow through (was hardcoded null).

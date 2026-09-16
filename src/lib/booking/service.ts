@@ -2382,12 +2382,13 @@ function realBulkReassignDeps(): BulkReassignDeps {
       if (!code) throw new Error("bulk-reassign job has no reason code");
       const reason: ValidatedReason = { code, detail: job.reason_detail ?? null };
       // Downstream signal (#975): a coverage move reuses adminReassignBooking, so
-      // it emits the SAME booking.rescheduled webhook every reassign already does
-      // (the deliberate Regal contract, see the regal.test.ts lock). That event
-      // carries reasonCode (here "coverage"), fromAgentUserId (the out agent), and
-      // fromStartsIso === the unchanged start (so Regal sees an agent change, not a
-      // time change), plus the tier-fallback props. is_test bookings are suppressed
-      // at the fire() chokepoint. No coverage-specific webhook is warranted.
+      // it emits the SAME booking.reassigned webhook every reassign already does
+      // (#2368; it was booking.rescheduled until then, which told Regal a time
+      // change had happened when none had). That event carries reassignReason
+      // (here "coverage"), the advisor it moved from and the one it moved to, and
+      // the unchanged start, plus the tier-fallback props. is_test bookings are
+      // suppressed at the fire() chokepoint. No coverage-specific webhook is
+      // warranted: the reason is what tells a Regal journey which move this is.
       //
       // Cap is NOT overridden: the covering agent was selected under their daily
       // cap. The manual force-override (#974) is the only path that overrides.
