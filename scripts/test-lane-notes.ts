@@ -21,7 +21,7 @@ import {
 } from "../src/lib/monitor/health.ts";
 import { assert, finish } from "./lib/harness.ts";
 
-assert(LANE_NAMES.length === 9, `nine watched lanes (saw ${LANE_NAMES.length})`);
+assert(LANE_NAMES.length === 10, `ten watched lanes (saw ${LANE_NAMES.length})`);
 
 for (const lane of LANE_NAMES) {
   const note = laneNote(lane);
@@ -67,7 +67,7 @@ assert(
 // The tenth job. "All 9 lanes ran on time" is true and leaves a reader no way to
 // know the cron system is bigger than this page.
 const covers = cronLanesNote();
-assert(covers.includes("9 lanes"), "the count is derived, so it cannot claim nine of ten");
+assert(covers.includes("10 lanes"), "the count is derived, so it cannot claim nine of ten");
 for (const said of [/roster sync/i, /time off/i, /Snowflake/i]) {
   assert(said.test(covers), `names what is NOT covered here: ${said}`);
 }

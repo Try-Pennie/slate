@@ -874,6 +874,7 @@ cost matters; see `docs/cloudflare-platform-notes.md`.
 | `GET /api/cron/watch` | Renews Google calendar push channels before they expire, and names persistently failing agents. |
 | `GET /api/cron/hydrate-calendars` | Fills in calendar metadata for agents whose calendars have not been read yet. |
 | `GET /api/cron/bulk-reassign` | Drains queued bulk coverage reassign jobs (#973, #562). |
+| `GET /api/cron/booking-reminders` | Emails each lead a reminder 24 hours before their call, from their advisor's own mailbox (#2359). |
 | `GET /api/cron/ooo-approvals` | Moves approved and declined time-off requests through their side effects. |
 | `GET /api/cron/ooo-digest` | The daily 7am ET time-off digest, and the record of whether it landed. |
 | `GET /api/cron/prune-routing` | Ages out routing decision rows past their retention window. |

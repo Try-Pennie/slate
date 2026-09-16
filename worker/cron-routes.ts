@@ -37,6 +37,12 @@ export const CRON_ROUTES: Record<string, string | string[]> = {
     "/api/cron/watch",
     "/api/cron/monitor",
     "/api/cron/bulk-reassign",
+    // The 24 hour reminder email (#2359). Five minutes is the precision it needs:
+    // the reminder lands within five minutes of the mark, and a booking made inside
+    // the window is reminded on the next tick rather than by a second schedule.
+    // Deliberately NOT on the every minute trigger, which is the invocation already
+    // short of CPU headroom (#1245, #2021), and it makes a Gmail call per lead.
+    "/api/cron/booking-reminders",
   ],
   // Hourly roster reconcile: Salesforce agent/team sync (deactivate-not-delete
   // reaper) + default hours, through the SINGLE locked path (#267). New agents

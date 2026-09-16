@@ -58,6 +58,7 @@ export const LANE_NAMES = [
   "monitor",
   "bulk-reassign",
   "hydrate-calendars",
+  "booking-reminders",
 ] as const;
 
 export type LaneName = (typeof LANE_NAMES)[number];
@@ -77,6 +78,13 @@ export const LANE_STALE_BOUNDS_MS: Record<LaneName, number> = {
   // cache by window: a stamp no bound watches looks like monitoring while nothing watches
   // (#1123), and a silently stopped rotation means coverage quietly expiring everywhere.
   "hydrate-calendars": 45 * MIN,
+  // #2359: the 24 hour reminder email, every 5 minutes. 20 minutes is four
+  // cadences, matching the other five minute lanes, so ordinary jitter cannot page
+  // while a lane that has genuinely stopped does. It needs a bound because nothing
+  // else would ever say the reminders had stopped: an empty send count is the
+  // NORMAL state on a quiet hour, so silence and a broken read look identical
+  // (L98), and the lead who is not reminded never tells anybody.
+  "booking-reminders": 20 * MIN,
 };
 
 /**
@@ -104,6 +112,7 @@ export const LANE_NOTES: Record<LaneName, { does: string; cadence: string }> = {
   watch: { does: "renews the Google subscriptions that tell Slate a calendar changed", cadence: "every 5 minutes" },
   monitor: { does: "runs the health checks that raise the Slack alerts", cadence: "every 5 minutes" },
   "bulk-reassign": { does: "moves the bookings a coverage sweep queued onto their new advisor", cadence: "every 5 minutes" },
+  "booking-reminders": { does: "emails each lead a reminder 24 hours before their call", cadence: "every 5 minutes" },
   "hydrate-calendars": { does: "fills in cached busy time for agents whose window is running out", cadence: "every 15 minutes" },
 };
 
