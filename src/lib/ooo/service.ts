@@ -338,7 +338,7 @@ export const rejectOoo = (
 export const cancelOoo = (
   requestId: string,
   actor: User,
-): Promise<OooActionResult> =>
+): Promise<orchestration.OooCancelResult> =>
   orchestration.cancelOoo(requestId, actor, realDeps());
 
 export const modifyOoo = (

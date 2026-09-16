@@ -12,6 +12,7 @@ import {
   NO_MANAGER_REVIEWER,
   UNNAMED_MANAGER_REVIEWER,
 } from "@/lib/ooo/core";
+import { oooDayCount } from "@/lib/ooo/cancel-copy";
 import { UnreadableNotice } from "@/components/ui/UnreadableNotice";
 import { proseCls } from "@/components/ui/styles";
 import { Pill, type PillVariant } from "@/components/ui/Pill";
@@ -132,7 +133,12 @@ function RequestList({
                 Editing above
               </MarkedLabel>
             ) : (
-              <RequestActions requestId={r.id} cancelAction={cancelMyOoo} />
+              <RequestActions
+                requestId={r.id}
+                status={r.status}
+                dayCount={oooDayCount(r.starts_at, r.ends_at, r.display_tz_id)}
+                cancelAction={cancelMyOoo}
+              />
             ))}
         </li>
         );
