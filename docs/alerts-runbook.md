@@ -181,6 +181,14 @@ which is what makes this family different from the ones above.
   on `/admin/alerts` is blank; undelivered with a channel set is usually the Slate app
   not being in that channel. Nothing is lost while it waits: the lane retries every
   tick and the page clears once each open handoff has been posted.
+- For an `outbox_drain_stuck` whose `last_error` names `reassign:owner_notice`: that is
+  the Slack notice telling the sales side a lead went to the advisor who owns them
+  (#2372), and it is the one member of this family where **no customer is affected**.
+  The move itself, the calendar invite and the `booking.reassigned` webhook are all
+  separate steps and have already completed; only the announcement is outstanding. The
+  cause is almost always the same as `handoff_undelivered`, since it posts to the same
+  channel: the Slate app is not in it. A BLANK handoff channel does not reach here at
+  all, because the step records that in the log and completes rather than retrying.
 
 **Fix or escalate.** The outbox retries with backoff and gives up at a cap, so a row
 past the cap needs the underlying cause fixed and then a re-drain. An orphaned calendar

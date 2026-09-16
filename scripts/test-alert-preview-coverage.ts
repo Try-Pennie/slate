@@ -26,7 +26,12 @@
 //
 // Run: node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/test-alert-preview-coverage.ts
 import { ALERT_CATALOG } from "../src/lib/notify/alert-catalog.ts";
-import { ALERT_PREVIEWS, HANDOFF_NOTICE_PREVIEWS, previewsByKey } from "../src/lib/notify/alert-preview.ts";
+import {
+  ALERT_PREVIEWS,
+  HANDOFF_NOTICE_PREVIEWS,
+  OWNER_NOTICE_PREVIEWS,
+  previewsByKey,
+} from "../src/lib/notify/alert-preview.ts";
 import { HANDOFF_KINDS } from "../src/lib/handoffs/kinds.ts";
 import { assert, finish } from "./lib/harness.ts";
 
@@ -91,6 +96,35 @@ for (const n of HANDOFF_NOTICE_PREVIEWS) {
   assert(!/^\s*Slate\b/i.test(n.text), `handoff notice "${n.kind}" (${n.state}) opens with the word "Slate"`);
 }
 
+// #2372: the owner reassign notice, the other thing posted to the handoff channel.
+// It is one message rather than a family of kinds, so what is held here is that it
+// renders in every state that reads differently: the reason it needs previewing at
+// all is that whether to give a SECOND clock is a judgement about a sentence.
+assert(
+  OWNER_NOTICE_PREVIEWS.length >= 5,
+  `the owner reassign notice previews every state that reads differently ` +
+    `(expected at least 5, got ${OWNER_NOTICE_PREVIEWS.length}). The advisor in another ` +
+    `zone, the advisor already on Eastern, an advisor Slate holds no zone for, another ` +
+    `calendar day, and a redacted lead are all different sentences`,
+);
+for (const n of OWNER_NOTICE_PREVIEWS) {
+  for (const { pattern, why } of BROKEN) {
+    assert(
+      !pattern.test(n.text),
+      `owner reassign notice (${n.state}) renders ${why}: ${JSON.stringify(n.text.slice(0, 160))}`,
+    );
+  }
+  assert(n.text.trim().length > 0, `owner reassign notice (${n.state}) renders a non-empty message`);
+  assert(!/^\s*Slate\b/i.test(n.text), `owner reassign notice (${n.state}) opens with the word "Slate"`);
+  // The manage token is the lead's own key to their call and it can reschedule or
+  // cancel it (#1340). A channel is not the lead, and this notice is the one thing
+  // in Slate that names a booking to a room full of people.
+  assert(
+    !n.text.includes("/booking/manage"),
+    `owner reassign notice (${n.state}) carries a manage link: ${JSON.stringify(n.text.slice(0, 160))}`,
+  );
+}
+
 for (const p of ALERT_PREVIEWS) {
   for (const { pattern, why } of BROKEN) {
     assert(
@@ -129,11 +163,15 @@ for (const p of ALERT_PREVIEWS) {
   const first = [
     ...ALERT_PREVIEWS.map((p) => `${p.key}|${p.state}|${p.text}`),
     ...HANDOFF_NOTICE_PREVIEWS.map((n) => `${n.kind}|${n.state}|${n.text}`),
+    ...OWNER_NOTICE_PREVIEWS.map((n) => `owner-notice|${n.state}|${n.text}`),
   ].join("\n");
   const second = [
     ...again.map((p: { key: string; state: string; text: string }) => `${p.key}|${p.state}|${p.text}`),
     ...(bust.HANDOFF_NOTICE_PREVIEWS as { kind: string; state: string; text: string }[]).map(
       (n) => `${n.kind}|${n.state}|${n.text}`,
+    ),
+    ...(bust.OWNER_NOTICE_PREVIEWS as { state: string; text: string }[]).map(
+      (n) => `owner-notice|${n.state}|${n.text}`,
     ),
   ].join("\n");
   assert(first === second, "rendering twice produces identical copy (no wall-clock in the fixtures)");

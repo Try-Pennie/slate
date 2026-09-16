@@ -42,6 +42,9 @@ import {
   recordOwnerAlertSkip,
   setOwnerAlertEventId,
 } from "@/lib/booking/owner-alert-store";
+import { loadAdvisorTimezone } from "@/lib/booking/owner-notice-store";
+import { loadHandoffChannel } from "@/lib/handoffs/store";
+import { postSlack } from "@/lib/notify/slack";
 import {
   insertFailureLogFields,
   joinBookingContexts,
@@ -820,6 +823,14 @@ function realDeps(deferSend?: WebhookSendScheduler): BookingDeps {
     recordOwnerAlertSkip: (id, reason) => recordOwnerAlertSkip(supabaseAdmin(), id, reason),
     markOwnerAlertRemoved: (id, skipReason) =>
       markOwnerAlertRemoved(supabaseAdmin(), id, new Date().toISOString(), skipReason),
+    // #2372. The channel read is the SAME one the monitor lane's handoff delivery
+    // uses, deliberately: two readers of `handoff_channel` would drift, and a sales
+    // notice landing somewhere the handoff notices do not is the drift nobody sees.
+    loadHandoffChannel: () => loadHandoffChannel(supabaseAdmin()),
+    // postSlack never throws; an unconfigured bot, a refused channel or a timeout
+    // all come back as not-ok with a reason, which the step classifies.
+    postHandoffNotice: (channel, text) => postSlack({ channel, text }),
+    advisorTimezone: (userId) => loadAdvisorTimezone(supabaseAdmin(), userId),
     enqueueEventDeletion: async (calendarEmail, gcalEventId, bookingId) => {
       await supabaseAdmin()
         .from("pending_event_deletions")

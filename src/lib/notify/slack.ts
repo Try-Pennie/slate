@@ -55,6 +55,17 @@ export interface SlackRef {
   ts: string;
 }
 
+/**
+ * The `error` these calls answer with when this deployment holds no bot token.
+ *
+ * Named because a caller has to be able to tell it apart from a refusal Slack
+ * itself gave (`not_in_channel`, `ratelimited`): those are worth retrying and this
+ * one can never be, since nothing about a later attempt from the same deployment
+ * will be different (L11). Exported so the one caller that branches on it compares
+ * against this rather than against its own copy of the spelling.
+ */
+export const SLACK_NOT_CONFIGURED = "slack-not-configured";
+
 export function slackConfigured(): boolean {
   return slackBotToken().length > 0;
 }
@@ -80,7 +91,7 @@ async function slackApi(
   encoding: SlackEncoding = "json",
 ): Promise<{ ok: boolean; error?: string; data?: Record<string, unknown> }> {
   const token = slackBotToken();
-  if (!token) return { ok: false, error: "slack-not-configured" };
+  if (!token) return { ok: false, error: SLACK_NOT_CONFIGURED };
   try {
     const res = await fetchWithTimeout(`https://slack.com/api/${method}`, {
       method: "POST",
@@ -273,7 +284,7 @@ export async function postSlack(
   msg: SlackMessage,
 ): Promise<{ ok: boolean; error?: string; channel?: string; ts?: string }> {
   const token = slackBotToken();
-  if (!token) return { ok: false, error: "slack-not-configured" };
+  if (!token) return { ok: false, error: SLACK_NOT_CONFIGURED };
   const channel = msg.channel ?? (await defaultAlertsChannel());
   if (!channel) return { ok: false, error: "no-channel" };
 

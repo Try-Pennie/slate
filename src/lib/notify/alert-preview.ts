@@ -284,6 +284,7 @@ import {
   type HandoffNoticeBooking,
 } from "@/lib/handoffs/copy";
 import { HANDOFF_UNDELIVERED_AFTER_MS } from "@/lib/handoffs/check";
+import { formatOwnerReassignNotice } from "@/lib/booking/owner-notice-copy";
 import type { HandoffKind } from "@/lib/handoffs/kinds";
 
 /** One rendered state of one alert. */
@@ -2561,6 +2562,68 @@ export const HANDOFF_NOTICE_PREVIEWS: HandoffNoticePreview[] = [
       PREVIEW_BOOKING,
       PREVIEW_BOOKING_URL,
     ),
+  },
+];
+
+/**
+ * The owner reassign NOTICE (#2372), rendered by the same builder the reassign
+ * outbox step posts with.
+ *
+ * Like the handoff notices above it is not a catalog key: it goes to the handoff
+ * channel once per reassign, with no cooldown and no all-clear. It is here for the
+ * same reason they are, and for one of its own: the whole point of the copy is that
+ * a lead's call time is given in TWO clocks, and whether the second one is worth
+ * saying is a judgement about a rendered sentence, which only a rendered sentence
+ * can settle.
+ */
+export interface OwnerNoticePreview {
+  state: string;
+  text: string;
+}
+
+const PREVIEW_OWNER_NOTICE = {
+  advisorName: "Dana Whitfield",
+  advisorEmail: "dana.whitfield@trypennie.com",
+  advisorTimezone: "America/Denver",
+  startsAt: "2026-09-17T15:30:00.000Z",
+  leadName: "Jordan Lee",
+  bookingUrl: PREVIEW_BOOKING_URL,
+};
+
+export const OWNER_NOTICE_PREVIEWS: OwnerNoticePreview[] = [
+  {
+    state: "the advisor keeps another clock than the sales side",
+    text: formatOwnerReassignNotice(PREVIEW_OWNER_NOTICE),
+  },
+  {
+    // 27 of the roster are in Phoenix, which is an hour behind Denver for eight
+    // months of the year and level with it for the other four (#2117).
+    state: "an advisor in Phoenix, where the gap changes with the season",
+    text: formatOwnerReassignNotice({ ...PREVIEW_OWNER_NOTICE, advisorTimezone: "America/Phoenix" }),
+  },
+  {
+    state: "the advisor is already on the sales side's clock, so it is said once",
+    text: formatOwnerReassignNotice({ ...PREVIEW_OWNER_NOTICE, advisorTimezone: "America/New_York" }),
+  },
+  {
+    state: "Slate holds no working hours for the advisor, so it claims no local time",
+    text: formatOwnerReassignNotice({ ...PREVIEW_OWNER_NOTICE, advisorTimezone: null }),
+  },
+  {
+    state: "the advisor's own day is the next one",
+    text: formatOwnerReassignNotice({ ...PREVIEW_OWNER_NOTICE, advisorTimezone: "Asia/Tokyo" }),
+  },
+  {
+    state: "a redacted lead, and an advisor Slate holds only an address for",
+    text: formatOwnerReassignNotice({
+      ...PREVIEW_OWNER_NOTICE,
+      leadName: null,
+      advisorName: null,
+    }),
+  },
+  {
+    state: "a start time this could not read",
+    text: formatOwnerReassignNotice({ ...PREVIEW_OWNER_NOTICE, startsAt: "" }),
   },
 ];
 
