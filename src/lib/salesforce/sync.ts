@@ -487,10 +487,21 @@ export async function syncSalesforceAgents(over: Partial<SyncDeps> = {}): Promis
   const inserts: Partial<User>[] = [];
   // Existing-agent field refreshes as upsert rows keyed on the id PK. `org_id`
   // and `email` are the only NOT NULL columns on `users` without a default, so
-  // echoing them (unchanged) keeps the phantom insert tuple valid; on conflict
-  // only the listed columns are written, so role/bookable/manager_id/etc. are
-  // left untouched. Batched (#91) so ~101 agents cost a couple of writes, not a
+  // echoing them (unchanged) keeps the phantom insert tuple valid; a column NO
+  // ROW names is left untouched, which is what keeps role/bookable/manager_id out
+  // of this write. Batched (#91) so ~101 agents cost a couple of writes, not a
   // per-row round-trip chain that risks the Workers CPU/time ceiling.
+  //
+  // **EVERY ROW IN THE BATCH CARRIES THE SAME KEYS** (#2381), and that is a rule
+  // about the write rather than a tidiness preference. PostgREST takes the column
+  // list of a bulk payload as the UNION of the keys across every row, NULL-fills a
+  // row that omits one of them (supabase-js `defaultToNull`, its default), and then
+  // writes every column of that list in ON CONFLICT DO UPDATE SET col =
+  // EXCLUDED.col. So a key set on ONE row is not a column written for that row: it
+  // is a NULL written over every row without it. This comment used to say "on
+  // conflict only the listed columns are written", which is true of a single row
+  // and false of a batch, and one conditionally assigned `bookable_pending_since`
+  // erased the pending activation mark of every OTHER hire in the same hour.
   const updates: Partial<User>[] = [];
 
   for (const u of sfUsers) {
@@ -516,11 +527,25 @@ export async function syncSalesforceAgents(over: Partial<SyncDeps> = {}): Promis
         email: normalizeEmail(current.email),
         name: u.Name,
         attributes: merged,
+        // Present on EVERY row, at its CURRENT value, for the reason in the comment
+        // above the loop: a key only some rows carry is a NULL written over all the
+        // rest. A fresh transition is marked now; everybody else is written back
+        // what they already hold, which for most rows is the null they already have.
+        //
+        // Chosen over writing the marks in a SECOND statement after the batch
+        // (#2381 offered both) because this is the form that keeps the crash safety
+        // the block above rests on: the mark and the attributes reach the database
+        // in ONE write, so no crash can land between them. Two statements would open
+        // exactly the window this issue is about, a run that wrote the attributes
+        // and died before the mark, leaving tiers against tiers with nothing to say
+        // anybody wanted a flip. It also costs no extra read: the pre-write roster
+        // read above already selects `bookable_pending_since`.
+        bookable_pending_since:
+          plan.action === "flip" && plan.reason !== "retry"
+            ? nowIso
+            : (current.bookable_pending_since ?? null),
       };
       if (plan.action === "flip") {
-        // A retry already carries its mark; a fresh transition gets one now, in
-        // this write, for the reason in the comment above the loop.
-        if (plan.reason !== "retry") row.bookable_pending_since = nowIso;
         // The MERGED attributes, not the Salesforce ones, because the audit row
         // names the debt teams and since #2152 those come from Twilio. Passing the
         // Salesforce half alone would write an empty tier list into the trail for
@@ -544,7 +569,13 @@ export async function syncSalesforceAgents(over: Partial<SyncDeps> = {}): Promis
         role: "agent",
         attributes,
         bookable: false,
-        ...(plan.action === "flip" ? { bookable_pending_since: nowIso } : {}),
+        // Named on every row here too, under the same rule as the refresh batch
+        // above. An INSERT is the harmless case of it (the NULL that PostgREST
+        // fills in for an omitted key is what the column defaults to anyway), so
+        // this changes nothing that reaches the database; it is written out so the
+        // file holds ONE rule about a bulk payload rather than a rule and an
+        // exception a reader has to re-derive the safety of.
+        bookable_pending_since: plan.action === "flip" ? nowIso : null,
       });
       if (plan.action === "flip") flips.push({ email, reason: plan.reason, attributes, userId: null });
     }
