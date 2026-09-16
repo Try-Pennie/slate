@@ -35,7 +35,7 @@ function world(
   const booking = makeBooking({
     id: "bk-1",
     manage_token: TOKEN,
-    attendee_phone: "(215) 555-0100",
+    attendee_phone: "+12155550100",
     gcal_event_id: "gcal-1",
     ...bookingOverrides,
   });
@@ -57,19 +57,19 @@ async function run() {
       "the booking's own row is what changed",
     );
     assert(
-      calls.updateBookingPhone[0].phone === "(215) 555-9999",
-      `stored the way the booker formats it (got ${calls.updateBookingPhone[0].phone})`,
+      calls.updateBookingPhone[0].phone === "+12155559999",
+      `stored in the shape the person lookup asks the column for (got ${calls.updateBookingPhone[0].phone})`,
     );
     assert(
-      res.phone === "(215) 555-9999",
-      "and the formatted number is what comes back, so the page reads it as stored",
+      res.phone === "+12155559999",
+      "and the STORED number is what comes back, so the page reads what was saved",
     );
     assert(
       calls.updateEventDescription.length === 1,
       "the advisor's invite is rewritten as well as the row",
     );
     assert(
-      calls.updateEventDescription[0].description.includes("(215) 555-9999"),
+      calls.updateEventDescription[0].description.includes("+12155559999"),
       `the invite body carries the NEW number (got ${calls.updateEventDescription[0].description})`,
     );
     assert(

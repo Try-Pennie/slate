@@ -42,7 +42,10 @@ function world(
     manage_token: TOKEN,
     attendee_name: "Dana Old",
     attendee_email: "old@example.com",
-    attendee_phone: "(215) 555-0100",
+    // E.164, which is what every write stores and what the person lookup asks the
+    // column for (#2390). A fixture holding the old formatted shape would let a
+    // correction that reintroduced it read as no change at all.
+    attendee_phone: "+12155550100",
     gcal_event_id: "gcal-1",
     ...bookingOverrides,
   });
@@ -66,8 +69,8 @@ async function run() {
     assert(
       patch.attendee_name === "Dana New" &&
         patch.attendee_email === "new@example.com" &&
-        patch.attendee_phone === "(215) 555-9999",
-      `every field the lead changed is in it, the number formatted as the booker formats it (got ${JSON.stringify(patch)})`,
+        patch.attendee_phone === "+12155559999",
+      `every field the lead changed is in it, the number in the shape the person lookup asks the column for (got ${JSON.stringify(patch)})`,
     );
     assert(
       res.ok && res.changed.name && res.changed.email && res.changed.phone,
@@ -181,7 +184,7 @@ async function run() {
       `and it carries the corrected address (got ${JSON.stringify(moved[0]?.attendee)})`,
     );
     assert(
-      moved[0]?.attendee?.phone === "(215) 555-9999",
+      moved[0]?.attendee?.phone === "+12155559999",
       "and the corrected number, so a dialler working from it rings the right one",
     );
     assert(
@@ -192,7 +195,9 @@ async function run() {
 
   {
     // A move that changed nothing but the time reports NO contact change, so the
-    // screen shows no line rather than a sentence claiming one.
+    // screen shows no line rather than a sentence claiming one. The number is typed
+    // with punctuation and stored as E.164, and they are one number, so it did not
+    // move either (#2390).
     const { deps } = world();
     const res = await rescheduleBooking(
       TOKEN, NEW_START, reason, "customer", deps, Date.parse("2026-09-10T12:00:00.000Z"),

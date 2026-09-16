@@ -12,7 +12,7 @@ const service = vi.hoisted(() => ({
       _phone: string,
     ): Promise<{ ok: boolean; phone?: string; error?: string }> => ({
       ok: true,
-      phone: "(215) 555-9999",
+      phone: "+12155559999",
     }),
   ),
 }));
@@ -47,7 +47,7 @@ function post(body: unknown) {
 describe("POST /api/bookings/[token]/phone", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    service.updateBookingPhone.mockResolvedValue({ ok: true, phone: "(215) 555-9999" });
+    service.updateBookingPhone.mockResolvedValue({ ok: true, phone: "+12155559999" });
   });
 
   it("returns the STORED number, not the one that was typed", async () => {
@@ -55,7 +55,7 @@ describe("POST /api/bookings/[token]/phone", () => {
     const body = await res.json();
 
     expect(res.status).toBe(200);
-    expect(body.phone).toBe("(215) 555-9999");
+    expect(body.phone).toBe("+12155559999");
     expect(service.updateBookingPhone).toHaveBeenCalledWith("tok1", "2155559999");
   });
 
@@ -119,7 +119,7 @@ describe("manage phone edit is throttled per address (#1046)", () => {
   // and re-arms for itself rather than inheriting stale calls from the last test.
   beforeEach(() => {
     vi.clearAllMocks();
-    service.updateBookingPhone.mockResolvedValue({ ok: true, phone: "(215) 555-9999" });
+    service.updateBookingPhone.mockResolvedValue({ ok: true, phone: "+12155559999" });
   });
 
   it("429s a refused address before touching the booking layer", async () => {
