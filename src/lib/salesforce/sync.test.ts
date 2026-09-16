@@ -1348,6 +1348,66 @@ describe("roster rows Salesforce no longer confirms (#1833)", () => {
     );
     expect(deactivation?.filters.find((f) => f[0] === "in" && f[1] === "id")?.[2]).toEqual(["u-left"]);
   });
+
+  // #2386. The reap stamped `deactivated_at` and left `bookable` true, which is
+  // the defect #1324 fixed on the OTHER deactivation path. The consequence is not
+  // routing, which already requires `deactivated_at is null`: it is that every
+  // COUNT of the bookable pool overstates it by one per leaver, and that a rehire
+  // reactivated later re-enters the routing pool with the activation gate never
+  // run, because that gate lives only on the bookable flip.
+  //
+  // ONE write, asserted as one: two statements could fail independently and leave
+  // the row half changed, with the person out of the pool by one column and in it
+  // by the other.
+  it("clears the bookable flag in the SAME write that departs a leaver", async () => {
+    store.seedUsers([
+      {
+        id: "u-left",
+        email: "left@x.com",
+        role: "agent",
+        bookable: true,
+        deactivated_at: null,
+        auth_user_id: null,
+      },
+    ]);
+    store.config.reapable = [{ id: "u-left", email: "left@x.com" }];
+    sfWorld({ roster: [], present: [{ Email: "left@x.com", IsActive: false }] });
+
+    await syncSalesforceAgents();
+
+    const deactivations = store.calls.filter(
+      (c) => c.op === "update" && "deactivated_at" in (c.payload as Record<string, unknown>),
+    );
+    expect(deactivations).toHaveLength(1);
+    expect(deactivations[0].payload).toMatchObject({ bookable: false });
+    expect((deactivations[0].payload as { deactivated_at: string }).deactivated_at).toEqual(
+      expect.any(String),
+    );
+    // Read back as STATE, not only as a recorded payload.
+    expect(store.users.get("u-left")).toMatchObject({ bookable: false });
+  });
+
+  // The failure path. A refused write must never arrive anywhere as a departure
+  // that happened: `deactivated: 1` over a statement the database refused is a
+  // leaver still taking bookings while the lane reports a clean hour (L12).
+  it("throws when the departing write is refused, rather than reporting it done", async () => {
+    store.seedUsers([
+      {
+        id: "u-left",
+        email: "left@x.com",
+        role: "agent",
+        bookable: true,
+        deactivated_at: null,
+        auth_user_id: null,
+      },
+    ]);
+    store.config.reapable = [{ id: "u-left", email: "left@x.com" }];
+    store.config.errorOn = "update";
+    sfWorld({ roster: [], present: [{ Email: "left@x.com", IsActive: false }] });
+
+    await expect(syncSalesforceAgents()).rejects.toThrow(/boom-update/);
+    expect(store.users.get("u-left")).toMatchObject({ bookable: true, deactivated_at: null });
+  });
 });
 
 describe("how many activations one run attempts (#2302)", () => {

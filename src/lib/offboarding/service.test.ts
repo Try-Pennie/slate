@@ -17,7 +17,13 @@ const updates: Array<{
   patch: { deactivated_at: string | null; bookable?: boolean };
   filters: Array<[string, string]>;
 }> = [];
-type FakeRow = { id: string; deactivated_at: string | null; auth_user_id?: string | null };
+type FakeRow = {
+  id: string;
+  deactivated_at: string | null;
+  auth_user_id?: string | null;
+  /** #2386: reactivation clears a flag the Salesforce reap used to leave behind. */
+  bookable?: boolean;
+};
 let row: FakeRow | null = null;
 /** Successive answers for successive reads, when a test needs the row to change
  *  underneath it (the lost-race case). Falls back to `row` once drained. */
@@ -92,8 +98,9 @@ const sessions = vi.hoisted(() => ({
 vi.mock("@/lib/auth/session-revoke", () => sessions);
 
 const logError = vi.hoisted(() => vi.fn());
+const logWarn = vi.hoisted(() => vi.fn());
 vi.mock("@/lib/log", () => ({
-  log: { error: logError, warn: vi.fn(), info: vi.fn() },
+  log: { error: logError, warn: logWarn, info: vi.fn() },
 }));
 
 import { applyLifecycleByEmail, applyLifecycleByUserId } from "./service";
@@ -109,6 +116,7 @@ beforeEach(() => {
   booking.startBulkReassign.mockReset();
   booking.startBulkReassign.mockResolvedValue({ jobId: "job1", itemCount: 0 });
   logError.mockReset();
+  logWarn.mockReset();
   sessions.revokeSupabaseSessions.mockReset();
   sessions.restoreSupabaseSessions.mockReset();
   sessions.revokeSupabaseSessions.mockImplementation(async (id: string | null) =>
@@ -151,13 +159,43 @@ describe("applyLifecycleByUserId", () => {
   // routing pool is the decision users.bookable exists to make deliberately, and
   // the roster sync already brings new agents in as bookable=false and never
   // re-activates anyone.
-  it("leaves the bookable flag alone when reactivating", async () => {
-    row = { id: "u1", deactivated_at: "2026-06-01T00:00:00.000Z" };
+  //
+  // #2386 SHARPENED that from "does not set it true" to "writes it false": the
+  // Salesforce reap left leavers carrying the flag, so a rehire reactivated later
+  // was routable the instant the button was pressed, with the activation gate
+  // (the calendar probe and the pool entry bootstrap, which live only on the
+  // bookable flip) never run. The write below is what makes re-entry go through
+  // that gate whatever state the row was left in.
+  it("writes the bookable flag false when reactivating, never true", async () => {
+    row = { id: "u1", deactivated_at: "2026-06-01T00:00:00.000Z", bookable: false };
     await applyLifecycleByUserId("u1", "reactivate");
 
     expect(updates).toHaveLength(1);
     expect(updates[0].patch.deactivated_at).toBeNull();
-    expect("bookable" in updates[0].patch).toBe(false);
+    expect(updates[0].patch.bookable).toBe(false);
+  });
+
+  // CLEAR rather than REFUSE, and say so. Refusing would leave an admin pressing
+  // the one control the page offers against a row only SQL could repair, which is
+  // a message naming no action that changes the state they are stuck in (L111).
+  // Clearing is the safe direction and puts them back in front of the activation
+  // gate. The objection to clearing is silence, so it is not silent: the result
+  // carries the fact and a warning line names the row.
+  it("reports and logs a stale bookable it had to clear on reactivate (#2386)", async () => {
+    row = { id: "u1", deactivated_at: "2026-06-01T00:00:00.000Z", bookable: true };
+    const res = await applyLifecycleByUserId("u1", "reactivate");
+
+    expect(res).toMatchObject({ status: "applied", deactivate: false, clearedStaleBookable: true });
+    expect(updates[0].patch.bookable).toBe(false);
+    expect(logWarn).toHaveBeenCalledWith("offboarding", expect.objectContaining({ user_id: "u1" }));
+  });
+
+  it("says nothing about a reactivated row that was already out of the pool", async () => {
+    row = { id: "u1", deactivated_at: "2026-06-01T00:00:00.000Z", bookable: false };
+    const res = await applyLifecycleByUserId("u1", "reactivate");
+
+    expect((res as { clearedStaleBookable?: boolean }).clearedStaleBookable).toBeUndefined();
+    expect(logWarn).not.toHaveBeenCalled();
   });
 
   it("reactivates a deactivated user (clears the timestamp)", async () => {

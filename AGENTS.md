@@ -1827,6 +1827,37 @@ TS) on or above the write. Hand-run SQL is out of reach of any repo scan, so the
 6-hourly reconcile lane also counts rows strictly behind the cursor against the
 warehouse count, which pages on a single stranded row with no tolerance.
 
+# Departing and returning an agent (the `// lifecycle-write-ok:` convention)
+
+One module decides which columns a departure and a return move:
+**`src/lib/offboarding/lifecycle-write.ts`**. Leaving the pool stamps
+`deactivated_at` AND clears `bookable`, in one statement; returning writes
+`bookable` false, so re-entry to the routing pool always goes through the
+activation gate.
+
+That last clause is the part that reaches a lead. The calendar reachability probe
+and the pool entry bootstrap live ONLY on the `bookable` flip
+(`applyBookableByUserId`, `onboardIntoPool`), so a row that never stopped being
+bookable is routable the instant somebody clears `deactivated_at`, with no probe,
+no bootstrap, an empty availability cache and a retained sync token that keeps
+every minute lane on an incremental pass. Dan's rule, 2026-09-14: no agent is
+bookable until every one of their calendars READS.
+
+It is a guard rather than only a helper because the rule has already been copied
+badly once. #1324 fixed the offboarding service and wrote the rule down; the
+hourly Salesforce reap kept its own `update({ deactivated_at })` for six weeks
+(#2386), so every leaver it processed stayed marked bookable and every count of
+the bookable pool overstated itself. A shared constant would not have stopped
+that, because the copy never reached for the shared thing (L370).
+`scripts/test-deactivation-write.ts` fails the build on a `.update(` naming
+`deactivated_at` anywhere else in `src/`, following one hop through a local
+`const`. The escape hatch is `// lifecycle-write-ok: <why>` on, or in the `//`
+block above, the write, and it is refused when it carries no reason.
+
+The two callers' QUERIES legitimately differ and stay with them: the lifecycle
+service writes one row as a compare and swap and reads it back, the reap writes a
+batch of ids. What may not differ is which columns move.
+
 # Adding a webhook event (#1459)
 
 `emitWebhook` delivers only to endpoints whose stored `events` array **contains**
