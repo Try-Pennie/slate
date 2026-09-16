@@ -298,6 +298,8 @@ describe("GET /api/cron/agents", () => {
         rosterUnconfirmedInactive: 0,
         rosterUnconfirmedUnmatched: 0,
         rosterUnconfirmedAbsent: 0,
+        rosterUnconfirmedAmbiguous: 0,
+        deactivationsRefusedAmbiguous: 0,
         rosterUnconfirmedBookable: [],
         ...over,
       });
@@ -353,6 +355,25 @@ describe("GET /api/cron/agents", () => {
       expect(
         dispatch.resolveAlert.mock.calls.map((c: unknown[]) => c[0]),
       ).toContain("salesforce_user_id_conflicts");
+    });
+
+    // #2387: a deactivation the reap REFUSED because the address answers to
+    // several Salesforce records. It rides this key rather than one of its own:
+    // it is the same shared address as `salesforceIdAmbiguous`, and one edit in
+    // Salesforce settles both.
+    it("pages when a deactivation was refused on a shared address", async () => {
+      withConflicts({ deactivationsRefusedAmbiguous: 1 });
+      await GET(req());
+      const sent = dispatch.sendThrottledAlert.mock.calls.filter(
+        (c: unknown[]) => c[0] === "salesforce_user_id_conflicts",
+      );
+      expect(sent).toHaveLength(1);
+      // Deactivating NOBODY in silence and deactivating the WRONG person read
+      // alike from outside a run, so the message has to say which happened.
+      expect(sent[0][2]).toContain("left in the roster rather than deactivated");
+      expect(
+        dispatch.resolveAlert.mock.calls.map((c: unknown[]) => c[0]),
+      ).not.toContain("salesforce_user_id_conflicts");
     });
 
     // #1152: the all-clear hangs off a MEASURED healthy result, never off "we did

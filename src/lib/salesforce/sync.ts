@@ -19,13 +19,16 @@ import {
   type ManagerNamePlan,
   type SfManagerCandidate,
 } from "@/lib/salesforce/manager-link";
-import { reapableUserIds } from "@/lib/salesforce/reap";
+import { planReap } from "@/lib/salesforce/reap";
+import {
+  presenceFromRecords,
+  readSalesforceStanding,
+  type SalesforcePresence,
+} from "@/lib/salesforce/presence";
 import {
   planRosterDivergence,
-  presenceFromRecords,
   scanForDivergence,
   type RosterRowForDivergence,
-  type SalesforcePresence,
 } from "@/lib/salesforce/roster-divergence";
 import { chunkRows, groupManagerLinks } from "@/lib/salesforce/sync-batch";
 import { chunkSoqlValues, sfInList } from "@/lib/salesforce/soql";
@@ -169,9 +172,11 @@ async function queryAll(
  * part it needs: a second query would be the same question twice, one Salesforce
  * call more, and two places for the escaping and chunking to drift (L370).
  *
- * The reap's own rule is unchanged by the widening: it acts on a POSITIVE
- * inactive signal, and an address with two Salesforce records keeps both facts,
- * so "any record is inactive" still means what it meant.
+ * It asks for the record `Id` as well (#2387), because an address can answer to
+ * more than one Salesforce user and the id is the only thing that can say which of
+ * them a given Slate row is about. Without it the reap deactivated a rehire on the
+ * strength of the old record left inactive beside their new active one, in the same
+ * run that wrote their row from the active one.
  *
  * Chunked by ENCODED length rather than by a row count (#1587, L81): the limit
  * that refuses an oversized query is Salesforce's byte cap on the REST GET URI,
@@ -183,15 +188,19 @@ async function queryPresenceByEmail(
   token: string,
   emails: string[],
 ): Promise<Map<string, SalesforcePresence>> {
-  const records: { email: string; isActive: boolean }[] = [];
+  const records: { email: string; isActive: boolean; recordId: string | null }[] = [];
   for (const chunk of chunkSoqlValues(emails)) {
     const rows = await queryAll(
       instanceUrl,
       token,
-      `SELECT Email, IsActive FROM User WHERE Email IN (${sfInList(chunk)})`,
+      `SELECT Id, Email, IsActive FROM User WHERE Email IN (${sfInList(chunk)})`,
     );
     for (const r of rows) {
-      records.push({ email: r.Email ?? "", isActive: r.IsActive === true });
+      records.push({
+        email: r.Email ?? "",
+        isActive: r.IsActive === true,
+        recordId: r.Id ?? null,
+      });
     }
   }
   return presenceFromRecords(records);
@@ -252,6 +261,18 @@ export interface SyncResult {
   inserted: number;
   updated: number;
   deactivated: number;
+  /**
+   * Reapable rows the reap REFUSED to act on, because their address answers to
+   * more than one Salesforce record and nothing stored says which is theirs
+   * (#2387).
+   *
+   * Counted because deactivating NOBODY in silence and deactivating the WRONG
+   * person look identical from outside a run (L98). It pages beside
+   * `salesforceIdAmbiguous`, which is the same shared address reaching a different
+   * decision, and the remedy is the same one: open Salesforce and decide which
+   * record is the person.
+   */
+  deactivationsRefusedAmbiguous: number;
   /**
    * Hires created this run who do not yet qualify to book (#2071): on the Chatter
    * Free profile, with no debt team on the row Slate just wrote. Counted because
@@ -361,6 +382,13 @@ export interface SyncResult {
   rosterUnconfirmedUnmatched: number;
   /** Unconfirmed because Salesforce returned no record at all for their address. */
   rosterUnconfirmedAbsent: number;
+  /**
+   * Unconfirmed, and nothing could be concluded about them: the address answers
+   * to Salesforce records that disagree and no stored key says which is theirs
+   * (#2387). Not a fourth verdict but a refusal, and the same one the reap reaches
+   * about the same address, since both read it through `readSalesforceStanding`.
+   */
+  rosterUnconfirmedAmbiguous: number;
   /**
    * The unconfirmed rows that are still BOOKABLE, by email.
    *
@@ -998,19 +1026,26 @@ export async function syncSalesforceAgents(over: Partial<SyncDeps> = {}): Promis
   // staff), so we only act on a positive IsActive=false from Salesforce.
   // Admins/super admins and anyone who has logged in (auth_user_id set) are
   // never touched; already-deactivated users are skipped.
+  // The stored Salesforce id comes with them (#2387): an address can answer to
+  // more than one Salesforce record, and the id is the only thing that says which
+  // of them is this row's.
   // Fail loud (unwrap, #963): a swallowed error here left reapableRows empty and
   // silently skipped deactivation, so a broken read read as "nothing to reap".
   const reapable = unwrap(
     await db
       .from("users")
-      .select("id, email")
+      .select("id, email, salesforce_user_id")
       .eq("org_id", org.id)
       .in("role", ["agent", "manager"])
       .is("auth_user_id", null)
       .is("deactivated_at", null),
     "sf-reapable",
   );
-  const reapableRows = (reapable ?? []) as { id: string; email: string }[];
+  const reapableRows = (reapable ?? []) as {
+    id: string;
+    email: string;
+    salesforce_user_id?: string | null;
+  }[];
 
   // ---------------------------------------------------------------------------
   // The rows Salesforce did NOT confirm this run (#1833).
@@ -1059,23 +1094,63 @@ export async function syncSalesforceAgents(over: Partial<SyncDeps> = {}): Promis
     ? await queryPresenceByEmail(instanceUrl, token, presenceEmails)
     : new Map();
 
-  // Deactivate every SF-inactive reapable user. No "skip OOO-history managers"
-  // carve-out anymore: deactivation preserves the row, so attribution holds. The
-  // rule is unchanged by the widened read: a POSITIVE inactive record is still
-  // what acts, and an address with two Salesforce records still counts as
-  // inactive if either of them is.
-  const inactiveEmails = new Set(
-    [...presence].filter(([, held]) => held.anyInactive).map(([email]) => email),
+  // Where each row stands with Salesforce, read ONCE (#2387) and handed to both
+  // the reap and the reconcile below. Two readings of a shared address either side
+  // of a module boundary is what let one run write a rehire's row from their active
+  // record and deactivate them on their old inactive one (L263).
+  //
+  // This is the only place the stored key and the presence answer meet; the two
+  // pure planners never see the column at all, so neither can grow a second idea of
+  // what a missing one means (#1587).
+  const standingForRow = (email: string, storedId: string | null) =>
+    readSalesforceStanding(presence.get(normalizeEmail(email)), storedId);
+  const storedSalesforceIdByUserId = new Map<string, string | null>(
+    (afterInsert ?? []).map((u) => {
+      const row = u as { id: string; salesforce_user_id?: string | null };
+      return [row.id, row.salesforce_user_id ?? null];
+    }),
   );
-  const toDeactivate = reapableUserIds(reapableRows, inactiveEmails);
+
+  // Deactivate every reapable user Salesforce reports as departed. No "skip
+  // OOO-history managers" carve-out anymore: deactivation preserves the row, so
+  // attribution holds. What counts as departed is the standing above, which is
+  // where the shared address case is decided and refused.
+  const reapPlan = planReap(
+    reapableRows.map((u) => ({
+      id: u.id,
+      email: u.email,
+      standing: standingForRow(u.email, u.salesforce_user_id ?? null),
+    })),
+  );
+  const toDeactivate = reapPlan.deactivate;
   if (toDeactivate.length) {
     await db
       .from("users")
       .update({ deactivated_at: new Date().toISOString() })
       .in("id", toDeactivate);
   }
+  if (reapPlan.refused.length) {
+    // Said out loud, because a reap that acted on nobody and a reap that had
+    // nothing to do are the same run from outside (L98). Slate user ids only, so a
+    // log search does not become a roster export (L222); the COUNT travels in the
+    // result, where the alert can name it.
+    log.warn("sf-sync", {
+      msg: "deactivation refused: a shared Salesforce address with no stored id to settle it",
+      count: reapPlan.refused.length,
+      user_ids: reapPlan.refused.map((r) => r.userId).slice(0, 10).join(", "),
+    });
+  }
 
-  const divergence = planRosterDivergence(scan, presence);
+  const divergence = planRosterDivergence({
+    examined: scan.examined,
+    candidates: scan.candidates.map((c) => ({
+      ...c,
+      standing: standingForRow(
+        c.email,
+        storedSalesforceIdByUserId.get(c.id) ?? null,
+      ),
+    })),
+  });
   if (divergence.rows.length) {
     // The detail goes to the log and the counts go back to the caller, which is
     // the same split the id conflicts above make (#1133). Slate user ids only,
@@ -1088,6 +1163,7 @@ export async function syncSalesforceAgents(over: Partial<SyncDeps> = {}): Promis
       inactive: divergence.inactive,
       unmatched: divergence.unmatched,
       absent: divergence.absent,
+      ambiguous: divergence.ambiguous,
       still_bookable: divergence.bookable.length,
       user_ids: divergence.rows.map((r) => r.userId).slice(0, 10).join(", "),
     });
@@ -1097,6 +1173,7 @@ export async function syncSalesforceAgents(over: Partial<SyncDeps> = {}): Promis
     inserted: inserts.length,
     updated,
     deactivated: toDeactivate.length,
+    deactivationsRefusedAmbiguous: reapPlan.refused.length,
     createdUntiered,
     tieredNotOnSales,
     bookableFlipped,
@@ -1120,6 +1197,7 @@ export async function syncSalesforceAgents(over: Partial<SyncDeps> = {}): Promis
     rosterUnconfirmedInactive: divergence.inactive,
     rosterUnconfirmedUnmatched: divergence.unmatched,
     rosterUnconfirmedAbsent: divergence.absent,
+    rosterUnconfirmedAmbiguous: divergence.ambiguous,
     rosterUnconfirmedBookable: divergence.bookable,
   };
 }
