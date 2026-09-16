@@ -310,6 +310,66 @@ The decision logic (what counts as a reference, what is built in, what counts as
 missing) is pinned offline in `scripts/test-workflow-env-coverage.ts`, so the
 rule is tested even where the listing is not available.
 
+## A setting that is PROVISIONED PER RUN (#2293)
+
+The rule above is right about the fault it was built for and wrong about a
+workflow whose settings are created for one run and destroyed with it.
+`loadtest.yml` (#2244) points at a throwaway Supabase branch and a Worker its own
+teardown job deletes, so between runs its seven `LOADTEST_*` settings genuinely do
+not exist, and the check refused every push that touched ANY workflow. The
+documented way through was `SKIP_WORKFLOW_SETTINGS_CHECK=1`, which is a guard
+whose routine remedy is to override it (L36), and which waves a REAL missing
+setting on another workflow through in the same breath. It blocked work twice in
+one session.
+
+So a workflow DECLARES, in its own file, which of its settings are of that kind:
+
+```yaml
+# settings-provisioned-per-run: LOADTEST_BASE_URL, LOADTEST_WORKER_NAME,
+#   LOADTEST_BOOKING_API_KEY
+#   because each one is created by whoever dispatches a run, against a throwaway
+#   Supabase branch and a Worker deployment the teardown job deletes, so between
+#   runs their absence is the normal state rather than a misconfiguration.
+```
+
+Four things keep that from being the guard switched off, and each was the obvious
+cheaper option:
+
+- **The names are EXACT and listed one by one** (L129). A `LOADTEST_*` wildcard
+  would exempt a TYPO in a reference, which is the fault being guarded.
+- **The reason is what is CHECKED**, not the presence of the marker. It is
+  introduced by `because` and must begin with a word and run to at least three of
+  them, so the surrounding syntax cannot satisfy it (L675). It is written as the
+  reason for exempting rather than as the case, so it keeps covering the next
+  workflow of that kind (L362). A declaration with no reason fails the run.
+- **It covers only the DECLARING file.** "Provisioned per run" is a fact about one
+  workflow's dispatcher, so a second workflow reading the same setting on a
+  schedule is still a finding, named against that file.
+- **Only a workflow that runs ONLY on `workflow_dispatch` may declare.** The
+  settings are created by hand before a run, so a schedule or a push would fire on
+  empty strings with nothing to say about it, which is the #1495 failure itself. An
+  `on:` block the scan cannot read refuses rather than reading as dispatch only.
+- **A declaration naming a setting the file does not reference fails**, so a stale
+  entry cannot sit there reading as a considered decision (L346).
+
+An absent one is **REPORTED**, never silently passed: the checker prints a
+`note:` line naming every setting it did not judge and the reason, and the
+pre-push hook echoes any output carrying one, so the narrowing is visible at the
+push rather than only to whoever runs the command by hand (L98). One that EXISTS
+is judged exactly like any other reference, so this is permission for absence and
+not an exclusion from the check. The summary line says how many of how many were
+judged, so "no differences" can never be read off a run that compared nothing.
+
+`WORKFLOW_SETTINGS_DIR` points the checker at a fixture tree, which is how the
+grammar is driven end to end by `scripts/test-workflow-settings-checker.ts`
+without committing a broken workflow to prove the guard catches it. A directory
+holding no workflow still refuses.
+
+This does NOT change the token limitation above: listing variables and secrets
+still needs a PAT, so the check still runs in the hook rather than in CI. It does
+remove the blocker under #2264, which proposes running it in CI: as things stood
+that job would have failed on every load test change.
+
 # An alerting workflow carries no dependency install (#1524, #1598)
 
 Three workflows run a script on **bare node**, with no `pnpm install` and no
