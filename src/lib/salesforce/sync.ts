@@ -20,6 +20,7 @@ import {
   type SfManagerCandidate,
 } from "@/lib/salesforce/manager-link";
 import { planReap } from "@/lib/salesforce/reap";
+import { deactivateUsersByIds } from "@/lib/offboarding/lifecycle-write";
 import {
   presenceFromRecords,
   readSalesforceStanding,
@@ -1123,12 +1124,18 @@ export async function syncSalesforceAgents(over: Partial<SyncDeps> = {}): Promis
     })),
   );
   const toDeactivate = reapPlan.deactivate;
-  if (toDeactivate.length) {
-    await db
-      .from("users")
-      .update({ deactivated_at: new Date().toISOString() })
-      .in("id", toDeactivate);
-  }
+  // The SHARED write (#2386). It used to be an `update({ deactivated_at })` of its
+  // own, which left every leaver this reap processed still marked `bookable`: the
+  // #1324 defect, on the path #1324 did not touch. Two consequences, and the second
+  // is the one that reaches a lead. Every count of the bookable pool overstated it
+  // by one per leaver; and a rehire reactivated later re-entered the routing pool
+  // the instant the button was pressed, because the calendar probe and the pool
+  // entry bootstrap live only on the `bookable` FLIP, which had never happened.
+  //
+  // It throws on a refused statement rather than reporting `deactivated: N` over a
+  // write the database would not make. The reap re-selects its candidates every
+  // hour, so the cost of throwing is one retry.
+  await deactivateUsersByIds(toDeactivate, new Date().toISOString());
   if (reapPlan.refused.length) {
     // Said out loud, because a reap that acted on nobody and a reap that had
     // nothing to do are the same run from outside (L98). Slate user ids only, so a

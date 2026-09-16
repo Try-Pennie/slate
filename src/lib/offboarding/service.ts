@@ -3,6 +3,7 @@ import { unwrap } from "@/lib/db/result";
 import { log } from "@/lib/log";
 import { startBulkReassign } from "@/lib/booking/service";
 import { planLifecycleChange, type LifecycleAction } from "@/lib/offboarding/plan";
+import { deactivationPatch, reactivationPatch } from "@/lib/offboarding/lifecycle-write";
 import { planOffboardingCoverageSweep } from "@/lib/offboarding/coverage-trigger";
 import {
   revokeSupabaseSessions,
@@ -43,6 +44,12 @@ export type LifecycleResult =
       deactivate: boolean;
       coverageSweep?: CoverageSweepOutcome;
       sessionRevoke?: SessionRevokeResult;
+      /**
+       * #2386: this reactivation met a departed row still marked bookable and
+       * cleared it. Present only when it happened, so the ordinary return reads as
+       * ordinary and this one carries a fact somebody can act on.
+       */
+      clearedStaleBookable?: true;
     };
 
 /** The lifecycle change plus the facts only the writer knows: the row's
@@ -88,7 +95,7 @@ export async function applyLifecycleByEmail(
     await db
       // cap-safe: an exact-email lookup returns at most one row.
       .from("users")
-      .select("id, deactivated_at, auth_user_id")
+      .select("id, deactivated_at, auth_user_id, bookable")
       .eq("email", email.trim())
       .maybeSingle(),
     "offboarding-lookup-by-email",
@@ -143,7 +150,7 @@ export async function applyLifecycleByUserId(
     await supabaseAdmin()
       // cap-safe: single-row primary-key lookup.
       .from("users")
-      .select("id, deactivated_at, auth_user_id")
+      .select("id, deactivated_at, auth_user_id, bookable")
       .eq("id", userId)
       .maybeSingle(),
     "offboarding-lookup-by-id",
@@ -162,6 +169,13 @@ type LifecycleRow = {
   /** #2378: the Supabase auth user whose sessions are revoked or restored. Null
    *  for somebody who has never signed in, which is not a failure. */
   auth_user_id: string | null;
+  /**
+   * #2386: read so a reactivation can SAY it had to clear a flag a departed row
+   * should never have been carrying. The write clears it either way; this is only
+   * how the caller learns it was there, and a row written before the reap shared
+   * the lifecycle write is the only way it can be.
+   */
+  bookable?: boolean | null;
 };
 
 /**
@@ -253,17 +267,11 @@ async function writeLifecycle(
     };
   }
 
-  // #1324: clear `bookable` in the SAME write that deactivates, not a second
-  // statement, so the row can never end up half-changed by one of them failing.
-  // Routing already requires `deactivated_at is null`, so this is not a routing
-  // fix: it is so every COUNT of the bookable pool is right without each reader
-  // remembering to filter on both columns, which is a workaround #1297's coverage
-  // readout already had to carry.
-  //
-  // Reactivation deliberately does NOT restore it. Re-admitting somebody to the
-  // routing pool is the decision `users.bookable` exists to make deliberately, and
-  // the roster sync already brings new agents in as bookable=false and never
-  // re-activates anyone.
+  // WHICH COLUMNS EACH DIRECTION MOVES lives in `lifecycle-write.ts` (#1324,
+  // #2386), with the whole argument for the rule. In short: departing clears
+  // `bookable` in the SAME statement that stamps `deactivated_at`, and returning
+  // writes it false rather than leaving it, so re-entry to the routing pool always
+  // goes through the activation gate.
   //
   // #1241: the write is a COMPARE-AND-SWAP, matched on the state the plan was made
   // from, not a blind update. Two offboarding calls in flight at once both read an
@@ -274,9 +282,7 @@ async function writeLifecycle(
   // and the coverage sweep keyed on that stamp cannot be enqueued twice under two
   // different keys.
   const stampIso = new Date().toISOString();
-  const patch = plan.deactivate
-    ? { deactivated_at: stampIso, bookable: false }
-    : { deactivated_at: null };
+  const patch = plan.deactivate ? deactivationPatch(stampIso) : reactivationPatch();
   const q = supabaseAdmin().from("users").update(patch).eq("id", user!.id);
   const { data, error } = await (plan.deactivate
     ? q.is("deactivated_at", null)
@@ -311,8 +317,28 @@ async function writeLifecycle(
       deactivatedAtIso: fresh?.deactivated_at ?? null,
     };
   }
+  // #2386: a returning row that was STILL marked bookable was left that way by a
+  // write predating the shared rule, and the clear above has just repaired it.
+  // Repairing in silence is the one objection to clearing rather than refusing, so
+  // it is said twice: to the CALLER, which for the lifecycle API is the JSON it
+  // answers with, and to the Worker log under `tag=offboarding`, where a sweep for
+  // how many rows the reap left behind can find them. The admin action returns
+  // nothing and does not carry it; what an admin sees is the agent page repainting
+  // the person as not bookable, beside the control that admits them properly.
+  const clearedStaleBookable = !plan.deactivate && user!.bookable === true;
+  if (clearedStaleBookable) {
+    log.warn("offboarding", {
+      msg: "reactivated a departed row that was still marked bookable; cleared it so re-entry passes the activation gate",
+      user_id: user!.id,
+    });
+  }
   return {
-    result: { status: "applied", userId: user!.id, deactivate: plan.deactivate },
+    result: {
+      status: "applied",
+      userId: user!.id,
+      deactivate: plan.deactivate,
+      ...(clearedStaleBookable ? { clearedStaleBookable: true as const } : {}),
+    },
     userId: user!.id,
     deactivatedAtIso: plan.deactivate ? stampIso : null,
   };
