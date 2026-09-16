@@ -72,6 +72,11 @@ import {
   type CoverageBookingRow,
 } from "@/lib/booking/bulk-reassign-store";
 import { userIdsOnApprovedTimeOff } from "@/lib/ooo/approved-overlap";
+import {
+  reassignForContactOwner,
+  type OwnerReassignGuardDeps,
+} from "@/lib/booking/owner-reassign-guard";
+import { handoffWriter } from "@/lib/handoffs/store";
 import type { ReassignAgent } from "@/lib/booking/reassign-agents";
 import { mapWithConcurrency } from "@/lib/concurrency";
 import * as orchestration from "@/lib/booking/orchestration";
@@ -2134,13 +2139,90 @@ export async function cancelBooking(
   await orchestration.cancelBooking(token, reason, initiator, realDeps(deferWebhookSend));
 }
 
+/**
+ * The live reads and the one write the owner guard needs (#2370).
+ *
+ * Every read here THROWS on a real error, which is the whole difference between
+ * this and the deps beside it: `realDeps().getAgentByEmail` deliberately swallows a
+ * read error to null so the booking paths that use it answer "no such agent", and
+ * on THIS path that null would be reported as "Slate has no advisor with that
+ * address" and recorded as a refusal against a read that never ran. The swallowing
+ * variant is left exactly as it is: its callers (the booking flow and
+ * `orchestration.reassignBooking`) turn a null into the 404 they have always
+ * answered, and changing it would change the admin and coverage paths too.
+ */
+function realOwnerGuardDeps(): OwnerReassignGuardDeps {
+  return {
+    loadBooking: async (bookingId) => {
+      const row = unwrap(
+        await supabaseAdmin()
+          .from("bookings")
+          // cap-safe: one booking by primary key.
+          .select("id, status, starts_at, ends_at, assigned_user_id")
+          .eq("id", bookingId)
+          .maybeSingle(),
+        "owner reassign booking",
+      ) as {
+        id: string;
+        status: string;
+        starts_at: string;
+        ends_at: string;
+        assigned_user_id: string | null;
+      } | null;
+      return row
+        ? {
+            id: row.id,
+            status: row.status,
+            startsAt: row.starts_at,
+            endsAt: row.ends_at,
+            assignedUserId: row.assigned_user_id,
+          }
+        : null;
+    },
+    findOwner: async (email) => {
+      const row = unwrap(
+        await supabaseAdmin()
+          .from("users")
+          // cap-safe: at most one user per address.
+          .select("id, email, bookable, deactivated_at")
+          .eq("email", email)
+          .maybeSingle(),
+        "owner reassign owner",
+      ) as {
+        id: string;
+        email: string | null;
+        bookable: boolean;
+        deactivated_at: string | null;
+      } | null;
+      return row
+        ? { id: row.id, email: row.email, bookable: row.bookable, deactivatedAt: row.deactivated_at }
+        : null;
+    },
+    // The same read coverage selection uses (#1236), not a second one: it already
+    // throws on a read error and already treats overlap as half open, so leave that
+    // merely abutting the call does not count.
+    hasApprovedTimeOff: async (userId, startsAt, endsAt) =>
+      (await userIdsOnApprovedTimeOff([userId], startsAt, endsAt)).has(userId),
+    handoffWriter: handoffWriter(supabaseAdmin()),
+  };
+}
+
+/**
+ * The MACHINE contact-owner reassign (#9), and the only path that runs the owner
+ * guard (#2370): Slate refuses, and records who is waiting on what, when the owner
+ * is not in Slate, cannot take bookings, or has approved time off over the call.
+ * A step of that check it could not complete throws instead, so the route answers
+ * 503 and the caller retries rather than reading an outage as a refusal.
+ */
 export function reassignBooking(
   bookingId: string,
   agentEmail: string,
   reason: ValidatedReason,
   overrideCap = false,
 ) {
-  return orchestration.reassignBooking(bookingId, agentEmail, reason, realDeps(deferWebhookSend), { overrideCap });
+  return reassignForContactOwner({ bookingId, ownerEmail: agentEmail }, realOwnerGuardDeps(), () =>
+    orchestration.reassignBooking(bookingId, agentEmail, reason, realDeps(deferWebhookSend), { overrideCap }),
+  );
 }
 
 /** Resolve a booking's manage token by id, so admin actions can reuse the

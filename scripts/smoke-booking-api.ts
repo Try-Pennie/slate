@@ -61,6 +61,10 @@
 //      (whichever one it did not land on) -> assert the booking moved (response +
 //      an independent re-GET), then cancel. The endpoint runs the reassign outbox
 //      INLINE before returning 200, so a moved agent IS proof of delivery.
+//      Since #2370 that endpoint REFUSES a target who is not bookable or has
+//      approved time off overlapping the call, so a 409 OWNER_NOT_BOOKABLE here
+//      means the seeded target agent has drifted, not that the reassign broke:
+//      re-run scripts/seed-smoke-test.ts, which seeds it bookable.
 //   7. reschedule stickiness (#523): book -> reschedule by less than the event
 //      length (new slot overlaps the booking's own event) -> assert it stayed on
 //      the SAME agent (no silent re-route in the two-agent SMOKE bucket, #464).

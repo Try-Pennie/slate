@@ -423,9 +423,40 @@ Because the reassign is forced, it does not decline on a busy or at-cap target;
 it books through and reports `overCap`. It moves the calendar event and emits a
 `booking.rescheduled` webhook (the Regal contract), recorded as a `reassigned`
 history event (#326). Error mapping (`src/lib/booking/reassign-http.ts`): a
-bad or unbookable target agent is `404`, a terminal (cancelled or completed)
-booking that can no longer change is `409`, anything unexpected is a generic
-`500` that never leaks internals.
+bad booking id is `404`, a terminal (cancelled or completed) booking that can no
+longer change is `409`, anything unexpected is a generic `500` that never leaks
+internals.
+
+**Forced does not mean unconditional: three refusals (#2370).** Slate declines to
+move a call onto an owner who cannot take it, leaves the booking exactly where it
+is, and records a `booking_handoffs` row (`owner-reassign-refused`) so somebody on
+the sales side decides what happens next. `handoff` says whether this call opened
+that record or found one already open, so a retried call reads as the same refusal
+rather than a new one.
+
+| Outcome | Status | `code` | What it means |
+|---|---|---|---|
+| Moved | `200` | n/a | The body above, with `overCap` |
+| Owner not in Slate | `404` | `OWNER_NOT_FOUND` | No user with that address. Bad input: check the address rather than retrying |
+| Owner cannot take bookings | `409` | `OWNER_NOT_BOOKABLE` | They exist and are out of the bookable pool, or have been deactivated. Retrying changes nothing until a person acts |
+| Owner is away | `409` | `OWNER_ON_TIME_OFF` | Approved time off overlapping `[starts_at, ends_at)`. Half open, so leave that merely abuts the call does not refuse it |
+| The check could not be completed | `503` | `OWNER_CHECK_UNAVAILABLE` | A read failed, or the refusal could not be recorded. Nothing was decided and nothing moved: **retry** |
+
+A refusal body carries `{ error, code, refusal, handoff }`, where `refusal` is
+`owner-not-found` / `owner-not-bookable` / `owner-on-time-off` and `handoff` is
+`"recorded"` or `"already-recorded"`. The `503` body carries
+`{ error, code, stage }`, where `stage` is `booking`, `owner`, `time-off` or
+`handoff`: a fixed word of Slate's own, never the underlying failure.
+
+A read that FAILED is never reported as a refusal, which is the point of the `503`:
+a null owner from a broken read is indistinguishable from "no such owner", and an
+empty time off answer from "nobody is away". Moving a call onto the owner who
+already holds it stays a `200` no-op and records nothing.
+
+**Only this machine path refuses.** The admin reassign
+(`POST /api/admin/bookings/[id]/reassign`) and the bulk redistribute are unchanged:
+a manager moving a call onto somebody out of the pool is the deliberate act those
+paths exist for.
 
 ---
 
