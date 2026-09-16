@@ -174,7 +174,6 @@ const FAN_IN_EXEMPT: Record<string, string> = {
   ci: "the fan-in itself",
   deploy: "runs AFTER the gate (needs: [ci, migration-drift]), it is not one of its legs",
   "migration-drift": "gates the deploy directly and is skipped on dependabot PRs, so it cannot be a leg of a check that must conclude on every PR",
-  coverage: "report-only (#603) and merges-to-main only (#1593); it does not run on pull requests, so it can only ever be skipped there",
   "security-scan": "detective by design (#1042): its rule packs are fetched at run time, so a newly published rule must not block a deploy",
 };
 
@@ -262,33 +261,23 @@ for (const name of guardNames) {
 }
 
 
-// --- #1593: coverage runs on merges to main, never on a pull request ---------
-// The job re-runs BOTH harnesses under instrumentation (about 4m05s) to print a
-// report-only summary and upload an lcov nothing in the repo consumes. It never
-// gated a merge, but the merge flow waits for every check to be green, so a
-// report-only job still delayed every merge it outlived. After the #1592 split
-// took the gate down to about 2m35s, coverage at 4m05s WAS the critical path and
-// silently took most of that win back.
+// --- #2395, #2402: coverage is not a job in this workflow at all -------------
+// #1593 kept it here on merges to main, priced at about 1,000 billed minutes a
+// month. It really cost about 4,700, and because the deploy failure alert fires
+// on THIS run's completion, a report that gates nothing also delayed every page
+// about a broken deploy by about four minutes. It now runs on its own schedule
+// in .github/workflows/coverage.yml.
 //
-// Dan's decision (2026-08-29): merges to main only, keeping the per-merge
-// coverage record. A weekly schedule would have saved more and was declined.
-const coverageJob = jobBlock("coverage");
-assert(coverageJob.trim().length > 0, "the coverage job exists in ci.yml");
-const coverageIf = coverageJob.match(/^\s*if:\s*(.+)$/m)?.[1] ?? "";
+// The cadence and the price are pinned by scripts/test-coverage-cadence.ts and
+// the latency by scripts/test-deploy-alert-latency.ts; what belongs HERE is only
+// that nothing put it back on the merge path.
 assert(
-  /github\.event_name == 'push'/.test(coverageIf),
-  "#1593: coverage runs only on a push event (a pull_request run would put a report-only 4m job back on the merge path)",
+  !/test:coverage/.test(jobsBlock),
+  "#2395: no job in ci.yml runs the coverage report (on 258 pushes a fortnight a 9 minute report-only job is roughly 4,700 billed minutes a month, and it delays the deploy failure alert by about four minutes)",
 );
 assert(
-  /github\.ref == 'refs\/heads\/main'/.test(coverageIf),
-  "#1593: coverage runs only on main, so a push to any other branch does not pay for it",
-);
-// It must stay OUT of the gate. A job that does not run on pull requests cannot
-// be a leg of a check that has to conclude on every pull request: it would be
-// skipped there, and the fan-in fails on anything that is not `success`.
-assert(
-  !fanInNeeds.includes("coverage"),
-  "#1593: coverage is not a leg of the `ci` fan-in (it does not run on pull requests, so it could only ever be skipped there, which the fan-in scores as a failure)",
+  !jobNames.includes("coverage"),
+  "#2395: there is no `coverage` job in ci.yml (it lives in coverage.yml, off the merge path)",
 );
 
 
