@@ -13,6 +13,12 @@ import {
   oooCoverageStopAlert,
 } from "./alert-copy.ts";
 import {
+  cancelActPerformed,
+  cancelAgentDm,
+  cancelManagerDm,
+  type CancelAct,
+} from "./cancel-copy.ts";
+import {
   approvedCoverageLine,
   cancelledCoverageLine,
   pendingCoverageLine,
@@ -330,13 +336,34 @@ export interface OooDeps {
   nowIso(): string;
 }
 
-export type OooActionResult =
-  | { ok: true; request: OooRequest }
+/**
+ * A refusal, named on its own so every result shape can share it. `fail` returns
+ * THIS rather than a whole result union: a helper typed as the union carries an
+ * `ok: true` branch the caller must then re-narrow, which is what stopped a
+ * refusal being usable inside a result that asks more of its success branch.
+ */
+export type OooFailure = {
+  ok: false;
+  error: string;
   // `conflictRequestId` is set only on the overlap error, so the form can link
   // straight to the request the agent should edit instead.
-  | { ok: false; error: string; conflictRequestId?: string };
+  conflictRequestId?: string;
+};
 
-const fail = (error: string, conflictRequestId?: string): OooActionResult =>
+export type OooActionResult = { ok: true; request: OooRequest } | OooFailure;
+
+/**
+ * A cancel's result carries WHICH act it performed (#2406), and carries it
+ * REQUIRED rather than optional: the caller writes the agent's outcome message
+ * from it, the row's status by then reads `cancelled` for both acts, and an
+ * optional field defaulted at the call site would silently tell somebody who
+ * cancelled an approved week that they withdrew a request (L168).
+ */
+export type OooCancelResult =
+  | { ok: true; request: OooRequest; act: CancelAct }
+  | OooFailure;
+
+const fail = (error: string, conflictRequestId?: string): OooFailure =>
   conflictRequestId ? { ok: false, error, conflictRequestId } : { ok: false, error };
 
 function whenLineFor(r: OooRequest): string {
@@ -1117,7 +1144,7 @@ export async function cancelOoo(
   requestId: string,
   actor: User,
   deps: OooDeps,
-): Promise<OooActionResult> {
+): Promise<OooCancelResult> {
   const request = await deps.loadRequest(requestId);
   if (!request) return fail("Request not found.");
   if (!canCancel(actor, request)) return fail("Not authorized");
@@ -1161,9 +1188,13 @@ export async function cancelOoo(
   // under their own cap. Both halves are said out loud on both messages, so they are
   // a decision the reader was told rather than one they find out about.
   const coverageNote = cancelledCoverageLine(await stopCoverage(request, deps));
+  // #2406: the same event, named the same way it was named on screen. The act is
+  // taken from what this call DID, never from the row's status, which now reads
+  // `cancelled` whichever of the two produced it (L680).
+  const act = cancelActPerformed(wasApproved);
   await deps.dmUserByEmail(
     agent.email,
-    `Your time off request for ${whenLineFor(request)} was cancelled.` +
+    cancelAgentDm(act, whenLineFor(request)) +
       (coverageNote ? `\n\n${coverageNote}` : ""),
   );
   await updateManagerStatus(request, agent, deps, "cancelled", coverageNote);
@@ -1172,11 +1203,11 @@ export async function cancelOoo(
     if (manager) {
       await deps.dmUserByEmail(
         manager.email,
-        `${agentDisplayName(agent)} withdrew their time off request for ${whenLineFor(request)}.`,
+        cancelManagerDm(act, agentDisplayName(agent), whenLineFor(request)),
       );
     }
   }
-  return { ok: true, request: flipped.request };
+  return { ok: true, request: flipped.request, act };
 }
 
 export interface ModifyOooInput extends SubmitOooInput {

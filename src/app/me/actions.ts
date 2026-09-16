@@ -7,6 +7,10 @@ import { currentUser } from "@/lib/auth";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { formatWhenLine, normalizeTzLabel } from "@/lib/ooo/core";
 import {
+  CANCEL_ACT_WORDS,
+  type CancelOutcomeKind,
+} from "@/lib/ooo/cancel-copy";
+import {
   roundDownToQuarterHour,
   roundUpToQuarterHour,
 } from "@/lib/date/parse";
@@ -20,7 +24,13 @@ import type { OooRequest } from "@/lib/db/types";
  * and the page renders the banner.
  */
 
-type Outcome = "sent" | "changed" | "cancelled";
+/**
+ * `cancelled` and `withdrawn` are not two spellings of one outcome: they are the
+ * two acts the request row's destructive control performs, and they come from
+ * the one vocabulary in `@/lib/ooo/cancel-copy` so the banner cannot name an act
+ * the action did not perform.
+ */
+type Outcome = "sent" | "changed" | CancelOutcomeKind;
 
 function done(message: string, kind: Outcome = "sent"): never {
   revalidatePath("/me/time-off");
@@ -167,5 +177,9 @@ export async function cancelMyOoo(form: FormData): Promise<void> {
   if (!requestId) failed("That request could not be found.");
   const result = await cancelOoo(requestId, me);
   if (!result.ok) failed(result.error);
-  done("Your time off request was cancelled.", "cancelled");
+  // #2406: the banner names the act that just happened, taken from what the call
+  // DID and not from the row it left behind, which reads `cancelled` whether the
+  // agent withdrew a pending request or cancelled an approved one (L680).
+  const words = CANCEL_ACT_WORDS[result.act];
+  done(words.outcomeMessage, words.outcomeKind);
 }

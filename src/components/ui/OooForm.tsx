@@ -8,6 +8,10 @@ import { resolveZone } from "@/lib/booking/timezones";
 import { SelectField } from "@/components/ui/SelectField";
 import type { OooFormState } from "@/app/me/actions";
 import { NO_MANAGER_REVIEWER } from "@/lib/ooo/core";
+import {
+  CANCEL_ACT_WORDS,
+  cancelActForOutcomeKind,
+} from "@/lib/ooo/cancel-copy";
 import { UnsavedGuard } from "@/components/ui/UnsavedGuard";
 
 // Sentinel <option> value that reveals the searchable full-IANA fallback (#1007,
@@ -110,12 +114,18 @@ export function OooForm({
   }, [isEditing]);
 
   const showSuccess = !!successMessage && !submitted && !state.error;
-  const cancelled = successKind === "cancelled";
+  // #2406: withdrawing a pending request and cancelling an approved one are two
+  // acts, so the banner names the one that happened. The heading is read out of
+  // the same table the server action redirected with, rather than a second copy
+  // of the mapping that would have to stay in step with it (L70). A null act is
+  // an outcome that is not one of these two (a fresh request, an edit).
+  const cancelAct = cancelActForOutcomeKind(successKind);
+  const cancelled = cancelAct !== null;
   const successHeading =
     successKind === "changed"
       ? "Changes saved!"
-      : cancelled
-        ? "Time off cancelled"
+      : cancelAct
+        ? CANCEL_ACT_WORDS[cancelAct].outcomeHeading
         : "Request sent!";
 
   return (
