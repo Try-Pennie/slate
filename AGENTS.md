@@ -1379,6 +1379,84 @@ than an inference from an exit code (L98). The decision lives in
 **This retires at cutover (#65)** with the rest of the family: once Slate routes
 the leads there is no second system to replay them through.
 
+# Proving the booking kill switch really refuses (`pnpm verify:kill-switch`)
+
+The eighth command in the family above, and the one whose subject fails CLOSED (#2365).
+
+#2297 shipped the public booking kill switch and nothing had ever thrown it in
+production. Every path was covered by tests and the setting was confirmed present in
+the live database, but the PAUSED state had never once run against the deployed
+Worker. That matters more here than it would for most features: this gate refuses the
+booking when it cannot READ its own flag, so the fault nobody would see coming is the
+one where it refuses EVERYTHING, and the only signal would be the booking failure rate
+window firing under `booking_pause_unreadable` after real leads had been turned away.
+
+**It creates no booking.** The gate sits ahead of body parsing, so a deliberately
+malformed body answers 400 while open and 503 while paused, and the difference between
+those two IS the gate. Nothing reaches the booking path in either half.
+
+**Both directions or it proves nothing** (L1): a route hard wired to 503 satisfies a
+check that only pauses, and one hard wired to 400 satisfies a check that only looks
+while open. The 503 is then separated by the COPY it carried, compared against the
+shipped `BOOKING_ERROR_COPY` builder rather than a pattern written in the command
+(L41), because `booking_paused` and `booking_pause_unreadable` are both lead facing
+sentences on the same status and one answering for the other would report the fault
+this was opened about as a working switch (L11).
+
+**It also asserts what the switch leaves ALONE**, which is half its design:
+availability keeps answering while bookings are paused. Compared open against paused
+rather than demanded to be non zero, because before cutover a real bucket legitimately
+offers no times (#1272) and a check that demanded them would be red from the day it
+shipped (L36).
+
+**What it writes** is one column, twice: `booking_settings.public_booking_paused` on,
+then off. The restore is in a `finally` and is tried twice, and a run that could not
+restore exits non-zero and shouts, because what it leaves behind is PUBLIC BOOKING
+STOPPED (L514, L515). It REFUSES to start at all when bookings are already paused:
+finishing would turn them back on for somebody who stopped them on purpose.
+
+```
+pnpm verify:kill-switch
+```
+
+Needs the Supabase secret key from `.env.local` to flip the flag. `SLATE_BASE_URL`
+picks the deployment (default prod) and `KILL_SWITCH_BUCKET` the bucket whose
+availability is read (default `111`). **Not a test bucket**: SMOKE and SMOKE2 are
+invisible without a bearer token (#396, #601), so an unauthenticated read of one 404s
+in both halves and the run learns nothing about the half it is there to check. The
+first live run did exactly that and reported the switch as having closed availability,
+which was the command accusing its subject of a fault its own read had caused.
+
+| exit | what it met |
+|---|---|
+| 0 | the switch refuses while on, takes the request while off, and leaves availability alone |
+| 1 | no Supabase credentials, no settings row, or bookings already paused; nothing was attempted |
+| 2 | **the flag is STILL ON**: public booking is stopped and a person must clear it |
+| 3 | the switch was on and the booker took the request anyway |
+| 4 | **the booker refused while the flag was OFF**, so it is turning leads away by itself |
+| 5 | it refused with the copy it uses when it cannot READ its flag: the fail closed fault |
+| 6 | availability stopped serving while paused, which the switch must not touch |
+| 7 | no reply at all |
+| 8 | the rate limiter answered first, so the gate was never reached; run it again |
+| 9 | the booking route failed while the switch was off |
+| 10 | this deployment has no public booking route |
+| 11 | something this command cannot read answered |
+| 12 | availability could not be read in EITHER half, so that half is unmeasured |
+
+Exit 2 outranks every other finding, because it is the only one that goes on turning
+real leads away after the command exits: a reader sent to investigate "the switch does
+not refuse" while bookings are silently off has been sent to the wrong problem. Exit 12
+is kept apart from exit 6 for the reason the first live run showed.
+
+**Measured live 2026-09-16 against prod: PASSED.** A request reached the booker while
+the flag was off, the same request was refused with the paused copy while it was on,
+availability offered 319 times throughout, and the flag was confirmed back off by a
+direct database read rather than by the command's own.
+
+Decision logic is pinned offline by `scripts/test-kill-switch-live-control.ts`, which
+drives every verdict, the ordering and the whole exit table through hand written
+replies with no network and no database.
+
 # Is the shadow run trustworthy today? (`pnpm verify:parallel-run-readiness`)
 
 The fifth command in the family above, and the one to run right before the pilot

@@ -25,6 +25,20 @@ export interface SlateBooking {
   gcalEventId: string | null;
   startMs: number;
   endMs: number;
+  /**
+   * The booking was placed on a busy agent ON PURPOSE (#2442).
+   *
+   * `allow_double_book` is written by exactly one path, the contact owner
+   * override (#9), which is the only path allowed to double book: the lead goes
+   * back to the advisor they already spoke with whether or not that advisor is
+   * free, and the flag is what lets the active slot unique index stack it.
+   *
+   * OPTIONAL, and absent means ordinary. The flag is what the reassign path
+   * writes, so a booking carrying nothing is the commonest row on the table and
+   * must fail toward speaking up: an alarm that goes quiet on a missing field
+   * would be silent about every overlap that arrives before the column is read.
+   */
+  allowDoubleBook?: boolean;
 }
 
 export interface ExternalCollision {
@@ -38,6 +52,11 @@ export function findExternalCollisions(
 ): ExternalCollision[] {
   const collisions: ExternalCollision[] = [];
   for (const b of bookings) {
+    // An owner reassign put this call on a busy advisor deliberately (#2442), so
+    // the overlap is not news. Skipping the BOOKING rather than one block is the
+    // point: the reassign does not know which of the advisor's events it landed
+    // on, and naming one would be a guess.
+    if (b.allowDoubleBook) continue;
     for (const g of blocks) {
       // Skip the booking's own mirrored event (same Google id).
       if (g.gcalEventId !== null && g.gcalEventId === b.gcalEventId) continue;

@@ -130,7 +130,10 @@ async function detectExternalCollisions(userId: string, email: string): Promise<
     const { data: bookingRows } = await db
       // cap-safe: one agent's active bookings inside the short collision window.
       .from("bookings")
-      .select("id, gcal_event_id, starts_at, ends_at")
+      // `allow_double_book` is read because an owner reassign (#9) is allowed to
+      // place a call on a busy advisor, and #2442 stops that paging engineering
+      // about an overlap somebody meant to create.
+      .select("id, gcal_event_id, starts_at, ends_at, allow_double_book")
       .eq("assigned_user_id", userId)
       .in("status", ["confirmed", "rescheduled"])
       .gte("starts_at", nowIso)
@@ -140,6 +143,7 @@ async function detectExternalCollisions(userId: string, email: string): Promise<
       gcal_event_id: string | null;
       starts_at: string;
       ends_at: string;
+      allow_double_book: boolean | null;
     }[];
     if (bookings.length === 0) return;
 
@@ -176,6 +180,9 @@ async function detectExternalCollisions(userId: string, email: string): Promise<
         // the busy-block side above, and carry the same caveat if that ever changes.
         startMs: Date.parse(b.starts_at),
         endMs: Date.parse(b.ends_at), // parse-ok: NOT NULL timestamptz, as above
+        // `?? false` rather than passed straight through: a null column reads as
+        // an ordinary booking, so the alarm speaks up rather than going quiet.
+        allowDoubleBook: b.allow_double_book ?? false,
       })),
     );
     if (collisions.length === 0) return;
