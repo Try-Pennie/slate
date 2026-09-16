@@ -48,6 +48,9 @@ import {
   ownerAlertWindow,
   type OwnerAlertEventBody,
 } from "./owner-alert.ts";
+import { formatOwnerReassignNotice } from "./owner-notice-copy.ts";
+import { bookingDetailHref } from "./detail.ts";
+import { SLACK_NOT_CONFIGURED } from "../notify/slack.ts";
 import { isDefinitiveFailure, reachabilityFromError } from "../google/reachability-classify.ts";
 import { encodeCursor, type ListQuery } from "./api-request.ts";
 import { webhookDedupeKey } from "../webhooks/dedupe.ts";
@@ -723,6 +726,21 @@ export interface BookingDeps {
   recordOwnerAlertSkip(id: string, reason: string): Promise<void>;
   /** Close the row once its event is off the calendar. */
   markOwnerAlertRemoved(id: string, skipReason?: string | null): Promise<void>;
+  // --- The owner reassign notice to the sales side (#2372) -----------------
+  /**
+   * The Slack channel the sales side reads (`monitor_alert_config.handoff_channel`,
+   * #2367), or null when nobody has set one. THROWS on an unreadable setting: unset
+   * means the notice is dropped and unreadable means the step retries, so an empty
+   * answer standing in for a failed read would lose the notice silently.
+   */
+  loadHandoffChannel(): Promise<string | null>;
+  /** Post one notice. Never throws; a refusal comes back as `ok: false`. */
+  postHandoffNotice(channel: string, text: string): Promise<{ ok: boolean; error?: string }>;
+  /**
+   * The zone this advisor keeps their week in, or null when Slate holds no
+   * schedule for them. Never a default (see `loadAdvisorTimezone`).
+   */
+  advisorTimezone(userId: string): Promise<string | null>;
   /** #401: record a Google event deletion that failed, for the retry drain. */
   enqueueEventDeletion(calendarEmail: string, gcalEventId: string, bookingId: string | null): Promise<void>;
   /** #401: load pending event deletions for the retry drain. */
@@ -1620,6 +1638,7 @@ const REASSIGN_STEPS = {
   NOTIFY: "reassign:notify",
   OWNER_ALERT_REMOVE: "reassign:owner_alert_remove",
   OWNER_ALERT: "reassign:owner_alert",
+  OWNER_NOTICE: "reassign:owner_notice",
 } as const;
 
 /** Post-commit steps for a contact-owner reassign (#9). Like reschedule, the
@@ -1631,7 +1650,13 @@ const REASSIGN_STEPS = {
  *  (#2371): the remove step closes an alert belonging to whoever no longer holds
  *  the call, and only then can the create step write one for whoever now does.
  *  Reversed, an owner-to-owner move would meet the partial unique index on the
- *  booking's live alert and fail a step that has nothing wrong with it. */
+ *  booking's live alert and fail a step that has nothing wrong with it.
+ *
+ *  OWNER_NOTICE (#2372) is last, and is its OWN step rather than a few lines inside
+ *  NOTIFY. A step that throws is marked failed and the executor carries on, so the
+ *  separation is what stops a Slack outage failing the step that carries the
+ *  `booking.reassigned` webhook, which is what a lead's Regal journey runs on (L73).
+ *  Last because nothing else waits on it: it tells people about work already done. */
 export function reassignOutboxSteps(): OutboxStep[] {
   return [
     { name: REASSIGN_STEPS.BUSYBLOCK_MOVE, state: "pending" },
@@ -1639,6 +1664,7 @@ export function reassignOutboxSteps(): OutboxStep[] {
     { name: REASSIGN_STEPS.NOTIFY, state: "pending" },
     { name: REASSIGN_STEPS.OWNER_ALERT_REMOVE, state: "pending" },
     { name: REASSIGN_STEPS.OWNER_ALERT, state: "pending" },
+    { name: REASSIGN_STEPS.OWNER_NOTICE, state: "pending" },
   ];
 }
 
@@ -2034,6 +2060,87 @@ export const OUTBOX_HANDLERS: OutboxHandlers = {
       throw err; // transient: the drain comes back
     }
     await deps.setOwnerAlertEventId(alert.id, eventId);
+  },
+
+  /**
+   * #2372: the sales side is told that a lead's call went to the advisor who owns
+   * them. The last of the Pipedream owner reassign flow's five steps to move into
+   * Slate, and it posts as Slate's own app rather than through a Slack Workflow.
+   *
+   * Gated exactly as the calendar alert above is (`isOwnerAlertReassign`): an ADMIN
+   * choosing "Owner reassignment" for a coverage move has not routed anybody back to
+   * an advisor they have spoken with, and saying so would be a claim nothing measured.
+   *
+   * It posts ONLY to the handoff channel and never falls back to the alerts or info
+   * channel. This is a sales notice; landing it in the channel somebody is paged in
+   * is how a paging channel stops being read (L36).
+   *
+   * Three outcomes, and they are deliberately not three shades of one:
+   *
+   *  - NO channel set: the notice is dropped, recorded in the log, and the step
+   *    completes. It must not page: the monitor lane already owns "handoffs are
+   *    waiting and no channel is set" (#2367), and a reassign notice is not a
+   *    handoff, so raising one here would invent a row nobody can resolve.
+   *  - Slack REFUSED this post (`not_in_channel`, a rate limit, a timeout): the step
+   *    throws, so it stays pending and the drain comes back for it.
+   *  - this deployment holds NO SLACK TOKEN at all: recorded and done. No later
+   *    attempt from the same deployment can be different, and a row retried to the
+   *    give-up cap would raise a stuck-outbox page which is itself delivered by the
+   *    Slack that is not there.
+   *
+   * Exactly once rests on the outbox step state, which the executor persists under
+   * this holder's lease after every step, so the inline run marks it done and a later
+   * drain skips it. Anything keyed differently, on the BOOKING for instance, would
+   * also swallow the second notice when a lead is legitimately moved to an owner
+   * twice; the row id is what identifies one reassign (the same key the webhook
+   * dedupes on).
+   */
+  [REASSIGN_STEPS.OWNER_NOTICE]: async (deps, row) => {
+    if (!row.booking_id) return;
+    if (!isOwnerAlertReassign(row.payload)) return;
+    const ctx = await deps.loadBookingById(row.booking_id);
+    if (!ctx) return; // booking gone -> nothing to say about it
+    const { booking, bucket } = ctx;
+    // #396: the canary books, reassigns and cancels on the isolated SMOKE bucket
+    // every six hours, so without this each pass puts a synthetic lead in front of
+    // the sales team. Read off the BUCKET, which is where the flag lives; `bookings`
+    // has no `is_test` column (#2369). The same choke point `fire` uses for webhooks.
+    if (bucket.is_test) return;
+
+    const channel = await deps.loadHandoffChannel();
+    if (!channel) {
+      log.warn("owner-notice", {
+        msg: "no handoff channel is set, so the sales side was not told about an owner reassign",
+        booking_id: booking.id,
+        outbox_id: row.id,
+      });
+      return;
+    }
+
+    const text = formatOwnerReassignNotice({
+      advisorName: booking.agent_name,
+      advisorEmail: booking.agent_email,
+      advisorTimezone: booking.assigned_user_id
+        ? await deps.advisorTimezone(booking.assigned_user_id)
+        : null,
+      startsAt: booking.starts_at,
+      leadName: booking.attendee_name,
+      bookingUrl: `${deps.appBaseUrl()}${bookingDetailHref(booking.id)}`,
+    });
+
+    const reply = await deps.postHandoffNotice(channel, text);
+    if (reply.ok) return;
+    if (reply.error === SLACK_NOT_CONFIGURED) {
+      log.warn("owner-notice", {
+        msg: "this deployment has no Slack bot token, so the owner reassign notice was dropped",
+        booking_id: booking.id,
+        outbox_id: row.id,
+      });
+      return;
+    }
+    // Short and ours: this lands in `booking_outbox.last_error`, which the drain's
+    // stuck-row page quotes.
+    throw new Error(`owner reassign notice not posted: ${reply.error ?? "no reason given"}`);
   },
 };
 

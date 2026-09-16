@@ -210,6 +210,22 @@ export interface FakeOpts {
    * the behaviour.
    */
   existingCalendarEvents?: Record<string, string>;
+  // --- #2372 owner reassign notice ------------------------------------------
+  /**
+   * `monitor_alert_config.handoff_channel`. Defaults to a channel being SET,
+   * because that is the live state and the interesting cases are the two ways it
+   * is not: `null` is nobody having set one, `handoffChannelThrows` is the read
+   * failing, and the step treats those differently.
+   */
+  handoffChannel?: string | null;
+  /** The channel setting read fails, which is not the same as it being unset. */
+  handoffChannelThrows?: boolean;
+  /** Slack's own `error` on the post, or null for a post that lands. */
+  handoffNoticePostFails?: string | null;
+  /** Each advisor's own zone, keyed by user id. Absent means Slate holds none. */
+  advisorTimezones?: Record<string, string>;
+  /** The schedule read fails, so the step must retry rather than say less. */
+  advisorTimezoneThrows?: boolean;
 }
 
 /** The three ways a calendar write fails, as the fakes model them. */
@@ -377,6 +393,10 @@ export function makeDeps(opts: FakeOpts) {
       body: OwnerAlertEventBody;
       eventId: string;
     }[],
+    // #2372: every Slack post the owner notice step made, with the channel, so a
+    // suite can assert WHERE it landed and not only that something was sent.
+    handoffNoticePosts: [] as { channel: string; text: string }[],
+    advisorTimezoneReads: [] as string[],
     ownerAlertDeletes: [] as { actorEmail: string; calendarId: string; eventId: string }[],
     ownerAlertMoves: [] as {
       calendarId: string;
@@ -397,6 +417,12 @@ export function makeDeps(opts: FakeOpts) {
    *  failure and the drain pass that follows it. */
   const setOwnerAlertCreateFails = (kind: OwnerAlertFailure | null): void => {
     ownerAlertCreateFails = kind;
+  };
+  // #2372: the same trick for Slack, so one deps object models a refused post and
+  // the drain pass that lands it.
+  let handoffNoticePostFails: string | null = opts.handoffNoticePostFails ?? null;
+  const setHandoffNoticePostFails = (error: string | null): void => {
+    handoffNoticePostFails = error;
   };
   // Google's own idempotency: the same deterministic client id resolves to the event
   // it already holds (the 409-as-success reuse), never a second one.
@@ -575,6 +601,23 @@ export function makeDeps(opts: FakeOpts) {
     },
     recordOwnerAlertSkip: async (id, reason) => {
       ownerAlertRow(id).skip_reason = reason;
+    },
+    // --- #2372 owner reassign notice --------------------------------------
+    loadHandoffChannel: async () => {
+      if (opts.handoffChannelThrows) throw new Error("handoff channel read failed");
+      return opts.handoffChannel === undefined ? "C-SALES" : opts.handoffChannel;
+    },
+    postHandoffNotice: async (channel, text) => {
+      calls.handoffNoticePosts.push({ channel, text });
+      // Modelled as postSlack does it: a refusal is an answer, never a throw.
+      return handoffNoticePostFails
+        ? { ok: false, error: handoffNoticePostFails }
+        : { ok: true };
+    },
+    advisorTimezone: async (userId) => {
+      calls.advisorTimezoneReads.push(userId);
+      if (opts.advisorTimezoneThrows) throw new Error("advisor schedule read failed");
+      return opts.advisorTimezones?.[userId] ?? null;
     },
     markOwnerAlertRemoved: async (id, skipReason) => {
       const r = ownerAlertRow(id);
@@ -960,7 +1003,7 @@ export function makeDeps(opts: FakeOpts) {
   // released), so a test can assert whether a cleanup delete clobbered it (#480).
   const getLease = (bookingId: string): { target: string; leaseUntilMs: number; pin: ReschedulePin | null } | undefined =>
     locks.get(bookingId);
-  return { deps, calls, expireLease, getLease, setOwnerAlertCreateFails };
+  return { deps, calls, expireLease, getLease, setOwnerAlertCreateFails, setHandoffNoticePostFails };
 }
 
 // Validated reasons for the changed reschedule/cancel/reassign signatures.
