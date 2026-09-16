@@ -77,6 +77,13 @@ import {
   type OwnerReassignGuardDeps,
 } from "@/lib/booking/owner-reassign-guard";
 import { handoffWriter } from "@/lib/handoffs/store";
+import { recordHandoff, type RecordHandoffOutcome } from "@/lib/handoffs/record";
+import {
+  DuplicateCancelUnavailableError,
+  duplicateHandoffDetail,
+  parseDuplicateCancelResult,
+  type DuplicateCancelResult,
+} from "@/lib/booking/duplicate-cancel";
 import type { ReassignAgent } from "@/lib/booking/reassign-agents";
 import { mapWithConcurrency } from "@/lib/concurrency";
 import * as orchestration from "@/lib/booking/orchestration";
@@ -134,7 +141,7 @@ import type {
   EventType,
   User,
 } from "@/lib/db/types";
-import { processBookingOutbox, everyLeasedRowStoodDown } from "@/lib/booking/outbox";
+import { processBookingOutbox, everyLeasedRowStoodDown, runOutboxSteps } from "@/lib/booking/outbox";
 import { drainBackoffMs, DRAIN_GIVE_UP_AT, DRAIN_ALERT_AFTER } from "@/lib/booking/drain-backoff";
 
 const CACHE_ALERT_COOLDOWN_MS = 30 * 60 * 1000;
@@ -2850,4 +2857,154 @@ export async function sweepAbandonedReassignIntents() {
     ).catch(() => {});
   }
   return result;
+}
+
+/**
+ * Cancel a lead's earlier call as a duplicate, on Regal's word about which call it is
+ * but never on Regal's word that it IS one (#2369, #2307 phase 3).
+ *
+ * The whole decision, and the cancel itself, are one database call. Nothing about
+ * "does this lead really have another call" is decided here, because deciding in one
+ * place and cancelling in another leaves a window in which the later call is itself
+ * cancelled and the lead ends up with none (L157), and because every loader on this
+ * side swallows a read error to null, which reads as "no other call" and would stop
+ * Regal retrying a real duplicate (L215).
+ *
+ * What IS here is the three things the database cannot do:
+ *
+ *  - record the refusal as a handoff, so somebody on the sales side cancels the right
+ *    call by hand. A failed WRITE throws, because answering "refused, and somebody has
+ *    been told" when nobody has is the silence `booking_handoffs` exists to end;
+ *  - run the cancel's outbox row inline, so the calendar event, the slot recompute and
+ *    the cancelled webhook happen now rather than on the next drain tick;
+ *  - turn a call it could not MAKE, or a reply it could not READ, into
+ *    `DuplicateCancelUnavailableError` rather than into an outcome.
+ *
+ * The inline run is deliberately NOT allowed to fail the request. By the time it runs
+ * the cancel has committed and the durable row exists, so a failure here is a delayed
+ * side effect that the /api/cron/outbox drain completes; answering 503 would invite a
+ * retry that can only ever be told `already-cancelled`.
+ */
+export interface DuplicateCancelOutcome {
+  result: DuplicateCancelResult;
+  /** Whether this call opened the handoff row or found one already open. Null when
+   *  the outcome records none. */
+  handoff: RecordHandoffOutcome | null;
+  /** Whether the inline outbox run delivered every step. Null when there was nothing
+   *  to run, or when the row could not be read back. */
+  delivered: boolean | null;
+}
+
+export async function cancelDuplicateBooking(input: {
+  bookingId: string;
+  /** When the caller says the LATER booking starts, exactly as it sent it. Stored on
+   *  the handoff unchanged: it is the one thing Slate knows only because Regal said
+   *  so, and a value Slate made up would read in the notice as something measured. */
+  laterBookingStartsAt: string | null;
+  nowMs?: number;
+}): Promise<DuplicateCancelOutcome> {
+  const nowIso = new Date(input.nowMs ?? Date.now()).toISOString();
+
+  let raw: unknown;
+  try {
+    const { data, error } = await supabaseAdmin().rpc("cancel_duplicate_booking", {
+      p_booking_id: input.bookingId,
+      p_now: nowIso,
+    });
+    if (error) throw new Error(`cancel_duplicate_booking failed: ${error.message}`);
+    raw = data;
+  } catch (err) {
+    throw new DuplicateCancelUnavailableError("rpc", err);
+  }
+
+  const result = parseDuplicateCancelResult(raw);
+  if (!result) throw new DuplicateCancelUnavailableError("result");
+
+  log.info("duplicate-cancel", {
+    msg: "decided",
+    booking_id: input.bookingId,
+    outcome: result.outcome,
+    candidates: result.candidateIds.length,
+    weaker_match: result.weakerMatch ?? "none",
+  });
+
+  const detail = duplicateHandoffDetail({
+    outcome: result.outcome,
+    weakerMatch: result.weakerMatch,
+    laterBookingStartsAt: input.laterBookingStartsAt,
+  });
+  let handoff: RecordHandoffOutcome | null = null;
+  if (detail) {
+    try {
+      handoff = await recordHandoff(handoffWriter(supabaseAdmin()), {
+        bookingId: input.bookingId,
+        kind: "duplicate-unresolved",
+        detail,
+      });
+    } catch (err) {
+      throw new DuplicateCancelUnavailableError("handoff", err);
+    }
+  }
+
+  let delivered: boolean | null = null;
+  if (result.outcome === "cancelled" && result.outboxId) {
+    delivered = await runDuplicateCancelOutboxInline(result.outboxId, input.bookingId);
+  }
+
+  return { result, handoff, delivered };
+}
+
+/**
+ * Run the cancel outbox row the database function wrote, exactly as `cancelBooking`
+ * runs its own: lease it first so a drain tick firing in the gap cannot run the same
+ * steps alongside us, and release in `finally` so a crash leaves the lease to expire
+ * and the drain to reclaim it.
+ *
+ * The row is READ BACK rather than reconstructed here. The steps and the payload were
+ * written by the function, and building a second copy of them on this side would be
+ * two statements of one shape that drift, with the drain and the inline run then
+ * delivering different things (L41).
+ *
+ * Every failure returns rather than throwing: see the note on the caller.
+ */
+async function runDuplicateCancelOutboxInline(
+  outboxId: string,
+  bookingId: string,
+): Promise<boolean | null> {
+  try {
+    // cap-safe: one outbox row by primary key.
+    const row = unwrap(
+      await supabaseAdmin().from("booking_outbox").select("*").eq("id", outboxId).maybeSingle(),
+      "duplicate cancel outbox row",
+    ) as BookingOutbox | null;
+    if (!row) {
+      log.warn("duplicate-cancel", {
+        msg: "outbox row not readable; the drain will deliver it",
+        booking_id: bookingId,
+        outbox_id: outboxId,
+      });
+      return null;
+    }
+    const lease = await realDeps().leaseOutbox(outboxId);
+    // #1048: a null lease means a drain tick already holds this row and is running
+    // the very steps we would run, so the right thing is to leave it alone.
+    if (!lease) return null;
+    try {
+      const run = await runOutboxSteps(realDeps(deferWebhookSend), row, orchestration.OUTBOX_HANDLERS, lease);
+      return run.delivered;
+    } finally {
+      await realDeps().releaseOutboxLease(outboxId, lease);
+    }
+  } catch (err) {
+    // The cancel has COMMITTED and the row is durable, so this is a delayed side
+    // effect rather than a failed request: the drain finishes it. Loud in the logs,
+    // never a 503, which would invite a retry that can only be told it already
+    // happened.
+    log.error(
+      "duplicate-cancel",
+      { msg: "inline outbox run failed; the drain will deliver it", booking_id: bookingId, outbox_id: outboxId },
+      err instanceof Error ? err : new Error(String(err)),
+    );
+    return null;
+  }
 }

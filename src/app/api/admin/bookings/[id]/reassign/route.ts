@@ -45,7 +45,7 @@ export async function POST(
   const reasonOptions = await loadReasonOptions();
   const reason = validateReason(
     { code: parsed.data.reason, detail: parsed.data.reasonDetail },
-    reasonOptions.reassign.all,
+    reasonOptions.reassign.selectable,
   );
   if (!reason.ok) {
     return NextResponse.json({ error: reason.error }, { status: 400 });

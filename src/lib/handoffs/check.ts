@@ -79,8 +79,17 @@ export interface HandoffBooking {
    * The smoke canary's isolated bookings (#396). REQUIRED, not optional, so `tsc`
    * names every construction site: a field that defaulted to false would make a
    * forgotten read look like a real lead.
+   *
+   * THREE states since #2369. `null` is "Slate could not tell", which is what the
+   * store reports for a booking whose BUCKET did not come back, since the bucket is
+   * where the flag lives and `bookings` has no such column. It is a state of its own
+   * because both defaults are wrong invisibly: `false` announces one of the canary's
+   * bookings to the sales side, and `true` suppresses a real lead's handoff, which is
+   * also held out of the waiting count below, so nothing would ever page about it.
+   * An unknown flag is treated as NOT a test booking (the notice still goes out) and
+   * is counted, so the uncertainty is loud rather than decided silently.
    */
-  isTest: boolean;
+  isTest: boolean | null;
   status: string;
   startsAt: string;
   timezone: string;
@@ -161,6 +170,13 @@ export interface HandoffCheckResult {
   stampFailed: number;
   /** Open rows held back because their booking is a test one (#2370). */
   suppressedTest: number;
+  /**
+   * Open rows whose booking's test flag could not be established (#2369). They are
+   * DELIVERED, because withholding a real lead's handoff is the unrecoverable
+   * direction, and counted here because a suppression decided by a read that did not
+   * answer must not be silent.
+   */
+  testFlagUnknown: number;
   /** Open rows still unposted at the end of the tick. */
   waitingToPost: number;
   /** Of those, how many have waited past `HANDOFF_UNDELIVERED_AFTER_MS`. */
@@ -179,6 +195,7 @@ const UNMEASURED: HandoffCheckResult = {
   postFailed: 0,
   stampFailed: 0,
   suppressedTest: 0,
+  testFlagUnknown: 0,
   waitingToPost: 0,
   undelivered: 0,
 };
@@ -257,10 +274,23 @@ export async function runHandoffCheck(deps: HandoffCheckDeps): Promise<HandoffCh
   // nothing is ever going to send it, and it settles on the same measured rules as
   // any other, which is what stops it sitting open for ever: the canary cancels its
   // bookings. It is COUNTED, so the suppression is never silent.
+  //
+  // A flag that could not be ESTABLISHED (#2369) is not a test booking. Compared
+  // against `true` rather than read for truthiness, so the three states are decided
+  // here rather than by what happens to be falsy, and the unknown ones are counted.
   const suppressed = new Set<string>();
+  let testFlagUnknown = 0;
   for (const h of open) {
     if (over.has(h.id) || h.notifiedAt !== null) continue;
-    if (bookingById.get(h.bookingId)?.isTest) suppressed.add(h.id);
+    const flag = bookingById.get(h.bookingId)?.isTest;
+    if (flag === true) suppressed.add(h.id);
+    else if (flag === null) testFlagUnknown++;
+  }
+  if (testFlagUnknown > 0) {
+    deps.warn?.({
+      msg: "handoff booking test flag unreadable, posting as a real lead",
+      rows: testFlagUnknown,
+    });
   }
 
   // --- 2. the channel ------------------------------------------------------------
@@ -391,6 +421,7 @@ export async function runHandoffCheck(deps: HandoffCheckDeps): Promise<HandoffCh
     postFailed,
     stampFailed,
     suppressedTest: suppressed.size,
+    testFlagUnknown,
     waitingToPost: waiting.length,
     undelivered: undelivered.length,
   };

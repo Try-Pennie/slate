@@ -25,7 +25,7 @@ import {
  *  type so there is a single source of truth for the shape. */
 export type ReasonOptionRow = Pick<
   DbReasonOptionRow,
-  "action" | "code" | "label" | "sort_order" | "active" | "locked"
+  "action" | "code" | "label" | "sort_order" | "active" | "locked" | "system_only"
 >;
 
 /** The coded defaults, by action: the seed values AND the never-throw fallback. */
@@ -38,16 +38,39 @@ export const CODED_DEFAULTS: Record<ReasonAction, ReasonOption[]> = {
 export const REASON_ACTIONS: ReasonAction[] = ["reschedule", "cancel", "reassign"];
 
 /**
+ * The codes only Slate itself writes, per action, DERIVED from the coded defaults so
+ * a new one is declared in exactly one place (#2369). A system only code is never in
+ * a picker, is never shown in the admin reason editor, and is always locked.
+ */
+export const SYSTEM_ONLY_CODES: Record<ReasonAction, string[]> = Object.fromEntries(
+  REASON_ACTIONS.map((action) => [
+    action,
+    CODED_DEFAULTS[action].filter((o) => o.systemOnly).map((o) => o.code),
+  ]),
+) as Record<ReasonAction, string[]>;
+
+/**
  * System codes an admin may not rename, retire, or reorder off the end. `other`
  * (all actions) is the free-text escape hatch wired into validateReason;
  * `owner_reassignment` is the code the automated reassign path emits, so the
- * reassign list must always carry it.
+ * reassign list must always carry it. Every system only code is locked too, taken
+ * from the list above rather than written out again.
  */
 export const LOCKED_CODES: Record<ReasonAction, string[]> = {
-  reschedule: ["other"],
-  cancel: ["other"],
-  reassign: ["owner_reassignment", "other"],
+  reschedule: ["other", ...SYSTEM_ONLY_CODES.reschedule],
+  cancel: ["other", ...SYSTEM_ONLY_CODES.cancel],
+  reassign: ["owner_reassignment", "other", ...SYSTEM_ONLY_CODES.reassign],
 };
+
+/**
+ * Is this code one Slate writes for itself? True when the STORED row says so or when
+ * the coded defaults do. Both, because the store is editable and a row ever written
+ * back without the flag would otherwise re-open the code to the pickers, which is the
+ * one thing this flag exists to prevent (L72: forgetting produces the safe state).
+ */
+export function isSystemOnlyCode(action: ReasonAction, code: string, storedFlag?: boolean): boolean {
+  return storedFlag === true || SYSTEM_ONLY_CODES[action].includes(code);
+}
 
 /** Max length of a reason label (the admin editor enforces the same bound). */
 export const REASON_LABEL_MAX = 80;
@@ -83,17 +106,32 @@ const byOrder = (a: ReasonOptionRow, b: ReasonOptionRow): number =>
 
 const toOption = (r: ReasonOptionRow): ReasonOption => ({ code: r.code, label: r.label });
 
-/** A resolved action: `all` (incl. retired, for labels) + `active` (for pickers). */
+/**
+ * A resolved action, in three lists because three different questions are asked of
+ * it and answering two of them with one list is how a system only code reaches a
+ * picker:
+ *
+ *  - `all`: every row, retired and system only included. For rendering a stored
+ *    code's LABEL in history, and for the machine paths, which are the only callers
+ *    allowed to name a system only code.
+ *  - `active`: what a PICKER offers. Active and not system only.
+ *  - `selectable`: what a person may VALIDLY submit, which is wider than what is
+ *    offered (a form held open across a retirement still posts the retired code) and
+ *    narrower than `all` (never a system only code).
+ */
 export interface ResolvedAction {
   all: ReasonOption[];
   active: ReasonOption[];
+  selectable: ReasonOption[];
 }
 
 /**
- * Resolve store rows into pickable options per action, sorted by sort_order.
- * `all` carries every row (incl. retired) for label rendering; `active` filters
- * to active rows for the pickers. An action with NO stored rows falls back to
- * its coded default (both lists), so an empty/partial store never breaks a flow.
+ * Resolve store rows into pickable options per action, sorted by sort_order. An
+ * action with NO stored rows falls back to its coded default, so an empty or partial
+ * store never breaks a flow; the same three lists are derived from the fallback, so
+ * a system only code is no more pickable when the store is unreadable than when it
+ * is read (L93: a fallback chooses which behaviour ships, so it must choose the
+ * same one).
  */
 export function resolveReasonOptions(
   rows: ReasonOptionRow[],
@@ -103,12 +141,15 @@ export function resolveReasonOptions(
     const forAction = rows.filter((r) => r.action === action).sort(byOrder);
     if (forAction.length === 0) {
       const def = CODED_DEFAULTS[action];
-      out[action] = { all: def, active: def };
+      const offerable = def.filter((o) => !isSystemOnlyCode(action, o.code));
+      out[action] = { all: def, active: offerable, selectable: offerable };
       continue;
     }
+    const offerable = forAction.filter((r) => !isSystemOnlyCode(action, r.code, r.system_only));
     out[action] = {
       all: forAction.map(toOption),
-      active: forAction.filter((r) => r.active).map(toOption),
+      active: offerable.filter((r) => r.active).map(toOption),
+      selectable: offerable.map(toOption),
     };
   }
   return out;
@@ -198,10 +239,16 @@ export function parseReasonOptionsForm(
         sort_order: 0, // assigned after, below
         active: isLocked ? true : r.active,
         locked: isLocked,
+        // Never taken from the form: the editor does not show these rows at all, so a
+        // submission that names one is either stale or tampered with, and either way
+        // the flag is the code's own property rather than the form's (#2369).
+        system_only: isSystemOnlyCode(action, code),
       });
     }
 
-    // Re-inject any locked code the form omitted (stale/tampered form defense).
+    // Re-inject any locked code the form omitted (stale/tampered form defense). Every
+    // system only code is locked, so this is also what keeps `double_booking` in the
+    // store while the editor never renders it.
     for (const code of LOCKED_CODES[action]) {
       if (!seenLocked.has(code)) {
         built.push({
@@ -211,6 +258,7 @@ export function parseReasonOptionsForm(
           sort_order: 0,
           active: true,
           locked: true,
+          system_only: isSystemOnlyCode(action, code),
         });
       }
     }
@@ -259,6 +307,7 @@ export function codedRows(action: ReasonAction): ReasonOptionRow[] {
     sort_order: i,
     active: true,
     locked: locked.has(o.code),
+    system_only: isSystemOnlyCode(action, o.code),
   }));
 }
 
@@ -266,14 +315,26 @@ export function codedRows(action: ReasonAction): ReasonOptionRow[] {
  * Group store rows into full editor rows per action, sorted by sort_order. An
  * action with no stored rows falls back to its coded defaults as seed rows (so the
  * editor always shows a populated, editable list even before the first save).
+ *
+ * System only rows are HELD BACK (#2369). There is nothing an admin can usefully do
+ * with `double_booking`: it cannot be retired, renamed to any effect, or offered, and
+ * a row on the screen that every control refuses is a dead control (L49). Leaving it
+ * out is also what protects it, because `parseReasonOptionsForm` re-injects every
+ * locked code the submission omits, with the flag set from the code rather than the
+ * form.
  */
 export function resolveEditorRows(
   rows: ReasonOptionRow[],
 ): Record<ReasonAction, ReasonOptionRow[]> {
   const out = {} as Record<ReasonAction, ReasonOptionRow[]>;
   for (const action of REASON_ACTIONS) {
-    const forAction = rows.filter((r) => r.action === action).sort(byOrder);
-    out[action] = forAction.length ? forAction : codedRows(action);
+    const forAction = rows
+      .filter((r) => r.action === action)
+      .filter((r) => !isSystemOnlyCode(action, r.code, r.system_only))
+      .sort(byOrder);
+    out[action] = forAction.length
+      ? forAction
+      : codedRows(action).filter((r) => !isSystemOnlyCode(action, r.code, r.system_only));
   }
   return out;
 }
@@ -318,7 +379,7 @@ const defaultReader: ReasonOptionsReader = async () => {
   // actions), so a single unbounded page always holds the whole set. In SAFE_TABLES.
   const { data, error } = await supabaseAdmin()
     .from("reason_options")
-    .select("action,code,label,sort_order,active,locked");
+    .select("action,code,label,sort_order,active,locked,system_only");
   return { data: (data as ReasonOptionRow[] | null) ?? null, error };
 };
 

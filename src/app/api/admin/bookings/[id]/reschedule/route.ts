@@ -49,7 +49,7 @@ export async function POST(
   const reasonOptions = await loadReasonOptions();
   const reason = validateReason(
     { code: parsed.data.reason, detail: parsed.data.reasonDetail },
-    reasonOptions.reschedule.all,
+    reasonOptions.reschedule.selectable,
   );
   if (!reason.ok) {
     return NextResponse.json({ error: reason.error }, { status: 400 });

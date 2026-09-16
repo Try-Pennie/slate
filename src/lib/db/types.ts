@@ -217,6 +217,10 @@ export interface ReasonOptionRow {
   sort_order: number;
   active: boolean;
   locked: boolean;
+  /** A code only Slate itself writes (#2369, migration 0124). Never offered in a
+   *  customer or admin picker; still valid for the machine paths and still rendered
+   *  as a label in history. */
+  system_only: boolean;
   updated_at: string;
   updated_by: string | null;
 }
@@ -614,6 +618,10 @@ export interface WebhookDelivery {
   last_response: string | null;
   /** Recorded but never POSTed (is_test bucket booking, #459). No send path may deliver it. */
   suppressed: boolean;
+  /** The stored payload's contact data has been erased (#1140, migration 0088). The
+   *  column has existed since then; it was missing from this interface until #2369,
+   *  which is invisible while nothing checks a select's column list against it. */
+  payload_erased: boolean;
   created_at: string;
   updated_at: string;
 }

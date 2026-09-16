@@ -53,6 +53,7 @@ So the policy is:
 - [GET /api/availability/next (the next open days)](#get-apiavailabilitynext)
 - [POST /api/routing (public routing resolve)](#post-apirouting)
 - [POST /api/bookings/reassign (key-authed contact-owner reassign)](#post-apibookingsreassign)
+- [POST /api/bookings/cancel-duplicate (key-authed duplicate cancel)](#post-apibookingscancel-duplicate)
 - [Offboarding lifecycle (key-authed)](#offboarding-lifecycle-key-authed)
 - [Bookable toggle (key-authed)](#bookable-toggle-key-authed)
 - [GET /api/bookings/bookable (key-authed validate-only check)](#get-apibookingsbookable)
@@ -460,6 +461,98 @@ paths exist for.
 
 ---
 
+## POST /api/bookings/cancel-duplicate
+
+Source: `src/app/api/bookings/cancel-duplicate/route.ts` (#2369). A key-authed
+machine endpoint that cancels a lead's EARLIER call when it really is a duplicate,
+and refuses when Slate cannot establish that it is. Called by Regal's two double
+booking journeys, which today cancel the named cal.com booking outright with no such
+check.
+
+**Auth:** `Authorization: Bearer <DUPLICATE_CANCEL_API_KEY>`. Its own key, not the
+reassign one: the journey that may cancel a call is not also handed the ability to
+move one. Wrong key: `401`. No key configured: `503`.
+
+**Request body:**
+
+```jsonc
+{
+  "bookingId": "<uuid>",                            // required, the EARLIER call
+  "laterBookingStartsAt": "2026-09-17T15:00:00.000Z" // optional, when the caller says the newer call starts
+}
+```
+
+Missing or blank `bookingId`: `400`. `laterBookingStartsAt` is never acted on: it is
+recorded on the handoff exactly as sent, so a person reading the notice sees what the
+caller claimed rather than something Slate derived.
+
+**What it does.** The decision and the cancel are ONE database call,
+`cancel_duplicate_booking` (migration 0124). It locks the named booking and the
+lead's other upcoming calls, and cancels only when all of these hold:
+
+- the named booking is active and has not started;
+- the lead has at least one OTHER upcoming active call, matched the way the booker
+  matches a person: the same Salesforce id, the same external id, or the same email
+  AND phone together. A single signal (phone only, or email only) never authorises a
+  cancel;
+- at least one of those was BOOKED AFTER the named one, so naming the middle of three
+  calls cancels it and naming the newest refuses;
+- no candidate contradicts the named booking's identity (see `IDENTITY_CONFLICT`).
+
+A candidate on a test bucket can never authorise cancelling a real call, and a real
+one can never authorise cancelling the smoke canary's.
+
+The flip and the `cancel` outbox row are written in the same transaction, so a crash
+can never leave a cancelled booking whose calendar event, slot recompute and
+`booking.cancelled` webhook were never enqueued. The route then runs that row inline;
+the `/api/cron/outbox` drain covers a crash after commit.
+
+**What it does NOT do.** It never looks outside Slate. A lead whose later call is in
+cal.com reads as `NO_OTHER_CALL`, which is a refusal plus a handoff, not a cancel.
+It never cancels the LATER call, whichever one the caller names. It never creates,
+moves or reassigns anything.
+
+**Outcomes:**
+
+| Outcome | Status | `code` | What it means |
+|---|---|---|---|
+| Cancelled | `200` | `CANCELLED` | The earlier call is cancelled with reason `double_booking` |
+| Already done | `200` | `ALREADY_CANCELLED` | It was already cancelled AS a duplicate, so a retried journey has got what it asked for |
+| No such booking | `409` | `BOOKING_NOT_FOUND` | Bad input: check the id rather than retrying |
+| Not active | `409` | `BOOKING_NOT_ACTIVE` | Cancelled for another reason, or completed |
+| Already started | `409` | `BOOKING_STARTED` | A call in progress is never cancelled |
+| Conflicting identity | `409` | `IDENTITY_CONFLICT` | Another upcoming call matches on email and phone while the two carry different strong ids |
+| Nothing newer | `409` | `NAMED_IS_NEWEST` | Every other upcoming call was booked BEFORE this one |
+| No other call | `409` | `NO_OTHER_CALL` | Nothing matched strongly enough to be the same person |
+| Nothing was decided | `503` | `DUPLICATE_CHECK_UNAVAILABLE` | The check could not be run, its reply could not be read, or the finding could not be recorded: **retry** |
+
+Every refusal is a `409`, including a booking Slate cannot find, and that is
+deliberate: a `404` from an endpoint addressed by id is indistinguishable from a
+`404` for the URL itself, and the caller here is a journey rather than a person
+reading a response. The status says the request was understood and declined; the
+`code` says which decline it was.
+
+The last three refusals record a `booking_handoffs` row (`duplicate-unresolved`,
+#2367) so somebody on the sales side cancels the right call by hand, and their body
+carries `{ outcome, code, message, finding, handoff, weakerMatch }`. `handoff` is
+`"recorded"` or `"already-recorded"`, so a retried journey reads as the same refusal
+rather than a new one; `weakerMatch` is `"phone-only"`, `"email-only"` or `null`,
+naming a later call Slate DID find on a single signal, which the notice states as
+what it is. The `503` body carries `{ error, code, stage }`, where `stage` is `rpc`,
+`result` or `handoff`: a fixed word of Slate's own, never the underlying failure.
+
+**Side effects of a cancel**, stated because they are the same ones cal.com has
+today: the lead gets Google's cancellation email for the earlier call, and Regal gets
+`booking.cancelled` with `cancellationReason = double_booking`. #2308 adds the branch
+that makes Regal's cancel journey say nothing on that reason.
+
+`double_booking` is a **system only** cancel reason (`reason_options.system_only`).
+It is a valid code and it renders as a label in booking history, but it is never
+offered in a customer or admin picker and never accepted from one, so a lead can
+never tell Regal that Slate resolved a duplicate.
+
+---
+
 ## Offboarding lifecycle (key-authed)
 
 Source: `src/app/api/users/lifecycle/route.ts` (#282), plus the original
@@ -804,6 +897,7 @@ answer `503` when no booking API key is configured.
 | `BOOKING_API_KEY` | Booking API (primary key) | `503` on `/api/bookings` (endpoint disabled) |
 | `BOOKING_API_KEY_2` | Booking API (secondary, for zero-downtime rotation) | Ignored; primary still works |
 | `REASSIGN_API_KEY` | `POST /api/bookings/reassign` | `503` |
+| `DUPLICATE_CANCEL_API_KEY` | `POST /api/bookings/cancel-duplicate` | `503` |
 | `OFFBOARDING_API_KEY` | `/api/users/lifecycle`, `/api/users/deactivate`, `/api/users/reactivate` | `503` |
 | `BOOKABLE_API_KEY` | `POST /api/users/bookable` | `503` |
 | `CRON_SECRET` | every `/api/cron/*` lane | required env; lane returns `401` without a matching Bearer |

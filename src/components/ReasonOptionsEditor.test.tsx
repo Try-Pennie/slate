@@ -16,7 +16,7 @@ const row = (
   sort_order: number,
   active = true,
   locked = false,
-): ReasonOptionRow => ({ action, code, label, sort_order, active, locked });
+): ReasonOptionRow => ({ action, code, label, sort_order, active, locked, system_only: false });
 
 const initial = {
   reschedule: [row("reschedule", "schedule_conflict", "Schedule conflict", 0), row("reschedule", "other", "Other", 1, true, true)],

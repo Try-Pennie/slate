@@ -35,6 +35,13 @@ export class EventGone extends Error {
 export interface ReasonOption {
   code: string;
   label: string;
+  /**
+   * A code only Slate itself writes (#2369). It is a real, valid reason and it is
+   * rendered as a label in history, but it is never OFFERED: a lead picking "double
+   * booking" from the manage page would tell Regal, through the cancellation reason
+   * on the webhook, that Slate had resolved a duplicate call. Absent means false.
+   */
+  systemOnly?: boolean;
 }
 
 /** The actions that capture a reason: customer-facing reschedule/cancel + the
@@ -62,6 +69,9 @@ export const CANCEL_REASONS: ReasonOption[] = [
   { code: "booked_by_mistake", label: "Booked by mistake" },
   { code: "schedule_conflict", label: "Schedule conflict" },
   { code: "other", label: "Other" },
+  // Written only by POST /api/bookings/cancel-duplicate (#2369). Last, and system
+  // only, so it is never in a picker: see `systemOnly` above.
+  { code: "double_booking", label: "Double booking", systemOnly: true },
 ];
 
 /**

@@ -246,6 +246,12 @@ const EXPECTED_PINNED = [
   "applied_migration_versions",
   "booking_api_outcome_mix",
   "bump_booking_api_outcome",
+  // #2369: decides whether a named booking is really a duplicate and, when it is,
+  // cancels it and enqueues its outbox row in ONE transaction.
+  "cancel_duplicate_booking",
+  // #2369: the half of that decision about the NAMED booking alone, its own function
+  // because it is asked twice, once before any lock and once under it.
+  "cancel_duplicate_named_refusal",
   "count_bookings_per_local_day",
   "erase_booking_pii",
   "move_busy_block",
@@ -259,6 +265,9 @@ const EXPECTED_PINNED = [
   // #1930: replaces a bucket's manual members in one transaction, so a failure
   // cannot leave a routing pool with nobody in it while the save reads as done.
   "replace_bucket_members",
+  // #2369: the digit rule two stored phone numbers are compared by. Deliberately not
+  // libphonenumber, which no SQL expression reproduces; see migration 0124.
+  "slate_phone_match_key",
 ];
 
 const pinned = new Map<string, string[]>();
