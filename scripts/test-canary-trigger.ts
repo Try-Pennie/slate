@@ -21,16 +21,26 @@
 import {
   triggerCanaryGapFill,
   runCanaryGapFills,
-  postCanaryWorkflowDispatch,
+  postWorkflowDispatch,
   CANARY_TRIGGER_STALE_MS,
   CANARY_FULL_TRIGGER_STALE_MS,
   CANARY_DISPATCH_COOLDOWN_MS,
   CANARY_FULL_DISPATCH_COOLDOWN_MS,
+  PARITY_TRIGGER_STALE_MS,
+  PARITY_DISPATCH_COOLDOWN_MS,
+  GAP_FILL_PASSES,
   type CanaryGapFillWiring,
   type CanaryTriggerDeps,
+  type GapFillPass,
 } from "@/lib/monitor/canary-trigger";
+import { CANARY_STALE_BOUNDS_MS } from "@/lib/monitor/health";
 import { readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
+import {
+  parseWorkflowSchedules,
+  parseWorkflowDispatchInputs,
+  cronCadenceMs,
+} from "./lib/scan-workflow-schedules.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
 const ROOT = join(import.meta.dirname, "..");
@@ -228,9 +238,9 @@ async function main() {
       return { ok: true, status: 204 } as Response;
     }) as typeof fetch;
     try {
-      await postCanaryWorkflowDispatch("ghp_tok", "full");
-      await postCanaryWorkflowDispatch("ghp_tok", "dry");
-      await postCanaryWorkflowDispatch("ghp_tok"); // default pass
+      await postWorkflowDispatch("ghp_tok", "full");
+      await postWorkflowDispatch("ghp_tok", "dry");
+      await postWorkflowDispatch("ghp_tok"); // default pass
     } finally {
       globalThis.fetch = realFetch;
     }
@@ -279,19 +289,30 @@ async function main() {
   // wired to its OWN lane, lock, threshold, and pass. ---
 
   /** A wiring harness that records exactly which lane/lock/mode each side used. */
-  function wiring(over: Partial<CanaryGapFillWiring> = {}): {
+  function wiring(
+    over: Partial<CanaryGapFillWiring> = {},
+    // Seams that need to see what has already been recorded (a lock that is held
+    // on the SECOND tick, a dispatch that is refused for one pass only). They are
+    // parameters rather than `over` entries so the recording stays in one place: a
+    // replaced `acquireLock` that forgot to record would make the wiring
+    // assertions pass by never observing anything (L98).
+    seams: {
+      lockAllows?: (name: string, taken: [string, number][]) => boolean;
+      dispatchResult?: (pass: GapFillPass) => { ok: boolean; status: number };
+    } = {},
+  ): {
     w: CanaryGapFillWiring;
     calls: {
       lanesRead: string[];
       locks: [string, number][];
-      modes: ("dry" | "full")[];
+      modes: GapFillPass[];
       errors: string[];
     };
   } {
     const calls = {
       lanesRead: [] as string[],
       locks: [] as [string, number][],
-      modes: [] as ("dry" | "full")[],
+      modes: [] as GapFillPass[],
       errors: [] as string[],
     };
     const w: CanaryGapFillWiring = {
@@ -299,15 +320,16 @@ async function main() {
       token: "ghp_faketoken",
       readHeartbeatMs: async (lane) => {
         calls.lanesRead.push(lane);
-        return NOW - 8 * 60 * 60_000; // 8h: stale for BOTH thresholds
+        return NOW - 8 * 60 * 60_000; // 8h: stale for BOTH canary thresholds
       },
       acquireLock: async (name, ttl) => {
+        const allowed = seams.lockAllows ? seams.lockAllows(name, calls.locks) : true;
         calls.locks.push([name, ttl]);
-        return true;
+        return allowed;
       },
-      dispatch: async (mode) => {
-        calls.modes.push(mode);
-        return { ok: true, status: 204 };
+      dispatch: async (pass) => {
+        calls.modes.push(pass);
+        return seams.dispatchResult ? seams.dispatchResult(pass) : { ok: true, status: 204 };
       },
       onError: (m) => calls.errors.push(m),
       ...over,
@@ -321,7 +343,11 @@ async function main() {
     const r = await runCanaryGapFills(w);
     eq(r.dry?.dispatched, true, "dry pass dispatches when stale");
     eq(r.full?.dispatched, true, "full pass dispatches when stale");
-    eq(calls.lanesRead.join(","), "smoke-canary,smoke-canary-full", "reads the two distinct lanes in order");
+    eq(
+      calls.lanesRead.join(","),
+      "smoke-canary,smoke-canary-full,schedule-parity",
+      "reads the three distinct lanes in order",
+    );
     eq(
       JSON.stringify(calls.locks),
       JSON.stringify([
@@ -331,6 +357,9 @@ async function main() {
       "each pass takes its OWN dispatch lock with its OWN cooldown ttl",
     );
     eq(calls.modes.join(","), "dry,full", "dispatches the dry pass then the full pass");
+    // 8h is far inside the parity threshold (a DAILY sweep), so the third gap-fill
+    // is read and correctly does nothing. That is the point of it being separate.
+    eq(r.parity?.reason, "fresh", "an 8h old parity heartbeat is fresh on a daily cadence");
   }
 
   // 15. Threshold isolation: a heartbeat 60m old is stale for the 40m dry
@@ -365,6 +394,239 @@ async function main() {
     eq(r?.dry, null, "the failed dry pass returns null");
     eq(r?.full?.dispatched, true, "the full pass still runs after the dry pass threw");
     assert(calls.errors.length >= 1, "the thrown pass is reported (fail loud)");
+  }
+
+  // --- the DAILY cal.com parity sweep (#2414) ----------------------------------
+  //
+  // `schedule-parity.yml` had ONE scheduled attempt a day and no re-attempt at
+  // all, so a run GitHub dropped cost the whole day: the sweep that watches Slate
+  // and cal.com for drifting apart went blind until a person read a page thirty
+  // hours later and dispatched it by hand. The manual re-run is not the remedy
+  // (L533), so the gap filler that already re-fires the canary now re-fires this
+  // too, on its own lane, its own lock and its own threshold.
+  //
+  // What makes this one different from its two siblings is the CADENCE. The canary
+  // fires every 30 minutes, so a heartbeat older than 40 minutes is a dropped run.
+  // This one fires once a day, so a heartbeat that is 23 hours old is a perfectly
+  // healthy one, and a threshold borrowed from either sibling would dispatch a
+  // second sweep every single morning against a sweep that had already succeeded.
+
+  const PARITY_WORKFLOW = "schedule-parity.yml";
+  const parityYml = readFileSync(join(ROOT, ".github", "workflows", PARITY_WORKFLOW), "utf8");
+
+  // 17. The scanner's own positive control. Every derivation below is built on it,
+  //     and a parser that read NOTHING hands back the same empty answer a workflow
+  //     with no schedule would (L98), so prove it reads the real files first.
+  {
+    const crons = parseWorkflowSchedules(parityYml);
+    eq(crons.length, 1, "the parity workflow declares exactly one cron line");
+    const canaryYml = readFileSync(join(ROOT, ".github", "workflows", "smoke-canary.yml"), "utf8");
+    eq(
+      parseWorkflowSchedules(canaryYml).length,
+      2,
+      "the canary workflow's two cron lines are both read (a one line parser would pass on the parity file alone)",
+    );
+    eq(cronCadenceMs("*/30 * * * *"), 30 * 60_000, "a minute step reads as its own cadence");
+    eq(cronCadenceMs("0 */6 * * *"), 6 * 60 * 60_000, "an hour step reads as its own cadence");
+    eq(cronCadenceMs("20 12 * * *"), 24 * 60 * 60_000, "a fixed daily time reads as 24h");
+    eq(cronCadenceMs("20 13 * * 1"), 7 * 24 * 60 * 60_000, "a fixed weekday time reads as 7 days");
+    eq(cronCadenceMs("not a cron"), null, "an unreadable expression is refused, never guessed at");
+    eq(cronCadenceMs("0 0 1 * *"), null, "a calendar dependent gap is refused rather than flattened");
+  }
+
+  // 18. THE THRESHOLD IS DERIVED FROM THE FILE, not from a number typed beside it
+  //     (L614). The producing schedule is the workflow's own cron and the run's own
+  //     timeout; the consuming schedule is the monitor lane. A threshold at or below
+  //     the cadence fires a redundant sweep on a heartbeat that is doing exactly
+  //     what it should, which is the waste this is supposed to avoid.
+  const parityCadenceMs = cronCadenceMs(parseWorkflowSchedules(parityYml)[0] as string);
+  const parityTimeoutMin = Number(parityYml.match(/^ {4}timeout-minutes:\s*(\d+)/m)?.[1] ?? NaN);
+  {
+    assert(parityCadenceMs !== null, "the parity cron is one this can read a cadence from");
+    assert(Number.isFinite(parityTimeoutMin), "the parity job declares a timeout the derivation can use");
+    // GitHub's scheduler runs LATE as well as dropping runs, and this repo measured
+    // that lateness at 2 to 3 hours (the canary-trigger header). A threshold inside
+    // that window re-fires a sweep that is merely late, so the grace has to clear it.
+    const OBSERVED_GITHUB_LATENESS_MS = 3 * 60 * 60_000;
+    const earliestHonest = (parityCadenceMs as number) + OBSERVED_GITHUB_LATENESS_MS + parityTimeoutMin * 60_000;
+    assert(
+      PARITY_TRIGGER_STALE_MS > (parityCadenceMs as number),
+      `the threshold is longer than the sweep's own cadence, or it fires every day on a healthy heartbeat ` +
+        `(threshold ${PARITY_TRIGGER_STALE_MS}ms, cadence ${parityCadenceMs}ms)`,
+    );
+    assert(
+      PARITY_TRIGGER_STALE_MS >= earliestHonest,
+      `the threshold clears the cadence plus GitHub's measured lateness plus the job's own timeout ` +
+        `(threshold ${PARITY_TRIGGER_STALE_MS}ms, earliest honest ${earliestHonest}ms)`,
+    );
+    // And it must still leave the 30h page as the BACKSTOP rather than the remedy:
+    // one dispatch, one cooldown, one failed retry and one full run all have to fit
+    // inside the bound, or the page arrives while the re-attempt is still working.
+    const bound = CANARY_STALE_BOUNDS_MS["schedule-parity"] as number;
+    const worstRecovery =
+      PARITY_TRIGGER_STALE_MS + PARITY_DISPATCH_COOLDOWN_MS + parityTimeoutMin * 60_000;
+    assert(
+      worstRecovery < bound,
+      `a dispatch, one cooldown retry and a full run fit inside the staleness bound, so the page is the ` +
+        `backstop (worst recovery ${worstRecovery}ms, bound ${bound}ms)`,
+    );
+  }
+
+  // 19. A FRESH parity heartbeat fires nothing, and never reaches for the lock. A
+  //     re-attempt on a sweep that already succeeded is pure waste, and it has to be
+  //     decided by the REAL heartbeat rather than by anything standing in for it.
+  {
+    const { d, calls } = deps({
+      staleMs: PARITY_TRIGGER_STALE_MS,
+      readHeartbeatMs: async () => NOW - 23 * 60 * 60_000,
+    });
+    const r = await triggerCanaryGapFill(d);
+    eq(r.reason, "fresh", "a 23h old daily heartbeat is fresh and dispatches nothing");
+    eq(calls.dispatched, 0, "parity fresh: dispatch not called");
+    eq(calls.lockTried, 0, "parity fresh: lock not attempted");
+  }
+
+  // 20. A STALE parity heartbeat fires EXACTLY ONE re-attempt, and the second tick
+  //     five minutes later fires none: the lock is taken and not released, so the
+  //     cooldown is also the concurrency guard ("assume it runs twice").
+  {
+    const { w, calls } = wiring(
+      { readHeartbeatMs: async () => NOW - 28 * 60 * 60_000 },
+      {
+        // A NOT-released lock: once the parity key has been taken, a later tick
+        // asking for it is refused until its TTL expires.
+        lockAllows: (name, taken) =>
+          name !== "parity_dispatch" || !taken.some(([n]) => n === "parity_dispatch"),
+      },
+    );
+    const first = await runCanaryGapFills(w);
+    eq(first.parity?.dispatched, true, "a 28h old parity heartbeat dispatches");
+    eq(calls.modes.filter((m) => m === "parity").length, 1, "exactly one parity dispatch");
+    assert(
+      calls.locks.some(([n, t]) => n === "parity_dispatch" && t === PARITY_DISPATCH_COOLDOWN_MS),
+      "the parity pass takes its OWN lock with its OWN cooldown ttl",
+    );
+
+    const second = await runCanaryGapFills(w);
+    eq(second.parity?.dispatched, false, "the next tick does not re-fire while the lock is held");
+    eq(second.parity?.reason, "cooldown", "the held lock is reported as a cooldown, not a success");
+    eq(calls.modes.filter((m) => m === "parity").length, 1, "still exactly one parity dispatch after two ticks");
+  }
+
+  // 21. FAILURE PATH. A dispatch GitHub refuses is reported, is never counted as a
+  //     re-attempt that happened, and does not escape the lane. The lock is
+  //     deliberately NOT released on failure: it is the cooldown, so the next
+  //     attempt is one cooldown away rather than on the very next tick, and it
+  //     expires by its own TTL rather than being held for ever.
+  {
+    let threw = false;
+    const { w, calls } = wiring(
+      { readHeartbeatMs: async (lane) => (lane === "schedule-parity" ? NOW - 28 * 60 * 60_000 : NOW) },
+      { dispatchResult: (pass) => (pass === "parity" ? { ok: false, status: 403 } : { ok: true, status: 204 }) },
+    );
+    let r;
+    try {
+      r = await runCanaryGapFills(w);
+    } catch {
+      threw = true;
+    }
+    assert(!threw, "a refused parity dispatch does not escape the lane");
+    eq(r?.parity?.dispatched, false, "a refused dispatch is never reported as a re-attempt made");
+    eq(r?.parity?.reason, "dispatch-failed", "the refusal has its own reason");
+    assert(
+      calls.errors.some((m) => m.includes("403")),
+      `the refusal is reported and names the status (got ${JSON.stringify(calls.errors)})`,
+    );
+    assert(
+      calls.locks.every(([, ttl]) => Number.isFinite(ttl) && ttl > 0),
+      "every dispatch lock carries a finite TTL, so a failed attempt cannot hold it for ever",
+    );
+  }
+
+  // 22. The parity pass targets the REAL parity workflow and sends NO inputs.
+  //     `schedule-parity.yml` declares a `workflow_dispatch` with no inputs at all,
+  //     and GitHub answers 422 to a dispatch carrying one it does not declare. That
+  //     failure is invisible from inside the Worker (the run simply never happens),
+  //     so the payload is checked against what the FILE declares rather than against
+  //     what this code believes it declares.
+  {
+    const realFetch = globalThis.fetch;
+    const captured: { url: string; body?: string }[] = [];
+    globalThis.fetch = (async (url: string, init: { body?: string }) => {
+      captured.push({ url: String(url), body: init?.body });
+      return { ok: true, status: 204 } as Response;
+    }) as typeof fetch;
+    try {
+      await postWorkflowDispatch("ghp_tok", "parity");
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+
+    assert(
+      existsSync(join(ROOT, ".github", "workflows", PARITY_WORKFLOW)),
+      "the workflow file the parity dispatch URL names actually exists",
+    );
+    eq(
+      captured[0]?.url,
+      `https://api.github.com/repos/Try-Pennie/slate/actions/workflows/${PARITY_WORKFLOW}/dispatches`,
+      "the parity pass POSTs the parity workflow, never the canary's",
+    );
+
+    const declared = parseWorkflowDispatchInputs(parityYml);
+    assert(declared !== null, "the parity workflow can be dispatched at all (it declares workflow_dispatch)");
+    eq((declared ?? []).length, 0, "the parity workflow declares no dispatch inputs");
+    const body = JSON.parse(String(captured[0]?.body));
+    eq(body.ref, "main", "the parity pass dispatches against the main branch");
+    eq(
+      Object.keys(body.inputs ?? {}).join(","),
+      (declared ?? []).join(","),
+      "the dispatch sends exactly the inputs the workflow declares, and GitHub 422s on any other",
+    );
+    // The reverse direction, so this cannot pass by sending nothing to everything:
+    // the canary DOES declare an input, and the dry pass must still carry it.
+    const canaryDeclared = parseWorkflowDispatchInputs(
+      readFileSync(join(ROOT, ".github", "workflows", "smoke-canary.yml"), "utf8"),
+    );
+    eq((canaryDeclared ?? []).join(","), "mode", "the canary workflow still declares its mode input");
+  }
+
+  // 23. The table is the extension point (#2466 adds the weekly router replay as
+  //     one entry). `Record<GapFillPass, ...>` makes tsc demand an entry for a new
+  //     pass, but it cannot see a COPIED one: an entry that reuses a neighbour's
+  //     lane or lock typechecks perfectly and silently gives two passes one
+  //     heartbeat or one cooldown, so one of them stops being gap-filled while
+  //     every surface still reads as correct. Only distinctness catches that.
+  {
+    const entries = Object.entries(GAP_FILL_PASSES);
+    assert(entries.length >= 3, `the table holds every pass (got ${entries.length})`);
+    const distinct = (name: string, values: string[]) =>
+      eq(new Set(values).size, values.length, `every pass has its own ${name} (got ${values.join(",")})`);
+    distinct("heartbeat lane", entries.map(([, c]) => c.lane));
+    distinct("dispatch lock", entries.map(([, c]) => c.lock));
+    for (const [pass, cfg] of entries) {
+      assert(
+        Number.isFinite(cfg.staleMs) && cfg.staleMs > 0,
+        `${pass} carries a real staleness threshold`,
+      );
+      assert(
+        Number.isFinite(cfg.cooldownMs) && cfg.cooldownMs > 0,
+        `${pass} carries a real cooldown, so a failed dispatch cannot hold its lock for ever`,
+      );
+      assert(
+        existsSync(join(ROOT, ".github", "workflows", cfg.workflow)),
+        `${pass} names a workflow file that exists (${cfg.workflow})`,
+      );
+      // Each entry's inputs must match what ITS OWN file declares, so a fourth
+      // entry copied from the canary inherits `mode` and is caught here rather
+      // than by GitHub's 422 three weeks later.
+      const declared =
+        parseWorkflowDispatchInputs(readFileSync(join(ROOT, ".github", "workflows", cfg.workflow), "utf8")) ?? [];
+      eq(
+        Object.keys(cfg.inputs ?? {}).sort().join(","),
+        declared.slice().sort().join(","),
+        `${pass} sends exactly the inputs ${cfg.workflow} declares`,
+      );
+    }
   }
 
   finish();

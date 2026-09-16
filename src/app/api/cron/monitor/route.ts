@@ -121,7 +121,7 @@ import { shortErrorReason } from "@/lib/notify/error-text";
 import { alertOnStaleLanes } from "@/lib/monitor/lane-watchdog";
 import {
   runCanaryGapFills,
-  postCanaryWorkflowDispatch,
+  postWorkflowDispatch,
 } from "@/lib/monitor/canary-trigger";
 import { githubCanaryToken, appUrl } from "@/lib/env";
 import {
@@ -2076,12 +2076,15 @@ export async function GET(req: NextRequest) {
     // double-fire. GitHub's own schedule stays on as a backup (the smoke-canary
     // concurrency group dedupes overlap). Quiet no-op until GITHUB_CANARY_TOKEN is
     // set. Never throws.
-    // Both canary gap-fills (#525 dry + #982 full) in one tested helper: each fires
-    // its workflow pass only when its OWN heartbeat is stale (GitHub dropped that
-    // run), throttled by its own NOT-released dispatch lock so it can't double-fire.
-    // The full pass creates real bookings on the SMOKE test agents (webhooks are
-    // suppressed for is_test), the same side effect as the scheduled 6h run; the
-    // lane-watchdog backstop still pages if both GitHub AND the gap-fill fail it.
+    // All THREE gap-fills (#525 dry, #982 full, #2414 parity) in one tested helper:
+    // each fires its workflow pass only when its OWN heartbeat is stale (GitHub
+    // dropped that run), throttled by its own NOT-released dispatch lock so it
+    // can't double-fire. The full pass creates real bookings on the SMOKE test
+    // agents (webhooks are suppressed for is_test), the same side effect as the
+    // scheduled 6h run; the parity pass corrects drifted hours from cal.com and
+    // sweeps, the same side effect as the scheduled daily run, and its 27h30m
+    // threshold is what keeps a merely late daily run from being re-fired. The
+    // lane-watchdog backstop still pages if both GitHub AND the gap-fill fail one.
     // Quiet no-op until GITHUB_CANARY_TOKEN is set. Never throws.
     const canaryToken = githubCanaryToken();
     await steps.run("canary_gapfill", undefined, () =>
@@ -2090,7 +2093,7 @@ export async function GET(req: NextRequest) {
         token: canaryToken,
         readHeartbeatMs,
         acquireLock: async (name, ttl) => (await acquireLock(name, ttl)) !== null,
-        dispatch: (mode) => postCanaryWorkflowDispatch(canaryToken, mode),
+        dispatch: (pass) => postWorkflowDispatch(canaryToken, pass),
         onInfo: (msg) => log.info("canary-trigger", { msg }),
         onError: (msg, err) => log.error("canary-trigger", { msg }, err),
       }),

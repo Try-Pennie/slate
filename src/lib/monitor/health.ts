@@ -182,9 +182,20 @@ export const CANARY_STALE_BOUNDS_MS: Record<string, number> = {
   //
   // 30 hours, not the 3x cadence the 30 minute canary uses. On a daily schedule
   // GitHub's jitter is minutes and a genuinely missed run is a whole day, so a
-  // multiple of the cadence would take two days to notice one; 30 hours pages
-  // within six hours of a run that did not happen. There is no gap filler for this
-  // one, so the page IS the recovery path.
+  // multiple of the cadence would take two days to notice one.
+  //
+  // It is a BACKSTOP now rather than the recovery path (#2414). The monitor lane
+  // re fires this workflow once the heartbeat passes `PARITY_TRIGGER_STALE_MS`
+  // (27h30m: the cadence, plus the worst GitHub lateness this repo has measured,
+  // plus the job's own timeout). So the bound is derived from the worst case that
+  // re attempt can take rather than from the cadence alone: the threshold, plus one
+  // `PARITY_DISPATCH_COOLDOWN_MS` retry of a refused dispatch, plus one full 25
+  // minute run, is about 29 hours. 30 clears that by an hour, so this pages only
+  // once GitHub AND the gap filler have both failed to complete a sweep.
+  //
+  // `scripts/test-canary-trigger.ts` asserts that relation with the cadence and the
+  // timeout read out of the workflow file, so shortening either number makes the
+  // build fail rather than quietly letting the page beat its own remedy.
   "schedule-parity": 30 * 60 * MIN,
   // The weekly router replay (#2263), the only measurement of Slate's ROUTING
   // that exists before cutover. Same family and the same reason: a stopped replay

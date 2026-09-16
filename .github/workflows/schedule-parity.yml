@@ -24,13 +24,43 @@ name: Schedule parity
 # repo variables. The Twilio three became required when #2153 made the withheld set
 # come from Twilio's worker tags; they were not wired at the time, and this lane died
 # on the first morning after that merged with nothing but a stale heartbeat to say so.
+# GitHub's schedule below is best effort and DROPS runs under load, the same way it
+# drops the canary's (observed 2 to 3 hour gaps against a 30 minute cadence). On a
+# DAILY cadence a dropped run costs the whole day, and until #2414 the only recovery
+# was a person reading the 30 hour staleness page and dispatching this by hand, which
+# is not a remedy: the sweep that watches Slate and cal.com for drifting apart could
+# go two days blind.
+#
+# So the Worker's monitor cron lane re fires this workflow through the GitHub API
+# (workflow_dispatch, no inputs) once the schedule-parity heartbeat passes 27h30m,
+# which is this cadence plus GitHub's measured lateness plus this job's own timeout
+# below. See src/lib/monitor/canary-trigger.ts; it needs the GITHUB_CANARY_TOKEN
+# Worker secret, and it is a quiet no op while that is unset. The concurrency group
+# below dedupes any overlap between the two triggers, and the 30 hour page is now the
+# backstop for both failing rather than the recovery path.
+#
+# A re attempt repeats this job's WRITE (the apply step corrects drifted hours from
+# cal.com), which is the same side effect the dropped scheduled run would have had,
+# and the import is idempotent.
 on:
   schedule:
     # 12:20 UTC, which is mid morning Eastern: late enough that a correction made in
     # the morning is picked up the same day, early enough that a page still leaves a
     # working day to act in. Not on the hour, where GitHub's scheduling queue is
     # busiest and runs are most often dropped.
+    #
+    # ONE line, deliberately. A second cron a few hours later was the other way to
+    # answer a dropped run, and it is dispatched by the same scheduler that drops
+    # them, so it reduces the class without removing it, while paying a checkout, an
+    # install and a job slot every day for a sweep that had usually already
+    # succeeded. The gap fill above fires from the reliable lane and only when the
+    # heartbeat says the run really is missing.
     - cron: "20 12 * * *"
+  # No inputs. The gap fill dispatch sends none, because GitHub answers 422 to a
+  # dispatch carrying an input the workflow does not declare, and that failure is
+  # invisible from the Worker: the run simply never happens. Adding one here means
+  # adding it to DISPATCH_TARGETS in src/lib/monitor/canary-trigger.ts in the same
+  # change; scripts/test-canary-trigger.ts reads this file and asserts the two agree.
   workflow_dispatch:
 
 concurrency:
