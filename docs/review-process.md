@@ -17,7 +17,7 @@ is a report, not a gate.
 | Gate | What it prevents |
 |---|---|
 | `tsc --noEmit` | A type error, including in every construction site a changed interface touches. This is doing more work than it looks: several invariants here are held by making a field required so the compiler enumerates the callers. |
-| `pnpm test` (about 320 node suites) | The pure logic, plus the repo invariants below. |
+| `pnpm test` (the node suites; the run prints how many) | The pure logic, plus the repo invariants below. |
 | `pnpm test:components` (vitest) | Route handlers, components, and anything needing module mocking. |
 | `pnpm cf:build` | The real Cloudflare/OpenNext build, so a build-only break cannot reach main. |
 | The test gate | A push whose changes carry no test. Overridable with `SKIP_TEST_CHECK=1`, once, out loud. |
@@ -29,7 +29,7 @@ is a report, not a gate.
 | `merge-gap` (CI) | A commit pushed to a branch whose PR already merged, which would strand it. |
 | The `main-push-guard` (CI) | A direct push to main, or a merge of a red PR. **Detective**, not preventive: it runs after the push and pages, because native branch protection needs a paid plan. |
 
-On top of those sit about two dozen repo invariant guards, each written after a
+On top of those sit the repo invariant guards, each written after a
 defect got through: capped single-page reads, swallowed error reads, raw
 `Date.parse`, unclassified alert keys, alert copy carrying a raw error, api.md
 route coverage, and so on. They are the accumulated memory of what a reviewer here
