@@ -1,12 +1,16 @@
+import { NOT_FOUND_COPY } from "@/lib/booking/manage-copy";
+
 interface ManageNotFoundProps {
   /** Presentational only; scopes the Pennie tokens via data-theme. */
   theme?: "light" | "dark";
 }
 
 // #634: a stale or mistyped manage link used to dead-end on one muted sentence.
-// This branded terminal state names the likely causes and points the lead back
-// to the manage link in their confirmation email. There is no booking (and so
-// no bucket) in scope here, so the path forward is guidance, not a rebook link.
+// This branded terminal state names the likely causes and points the lead at the
+// reschedule link inside the calendar invitation they already hold (#2364). There
+// is no booking (and so no bucket) in scope here, so the path forward is guidance,
+// not a rebook link. Every sentence comes from `manage-copy`, so all of it can be
+// read before it ships through `pnpm preview:booker`.
 export default function ManageNotFound({ theme = "light" }: ManageNotFoundProps) {
   return (
     <main
@@ -29,16 +33,10 @@ export default function ManageNotFound({ theme = "light" }: ManageNotFoundProps)
           className="mx-auto hidden h-[22px] w-auto dark:block"
         />
         <h1 className="mt-8 text-[length:var(--fs-h4)] font-semibold leading-snug text-fg">
-          We couldn&apos;t find that booking
+          {NOT_FOUND_COPY.heading}
         </h1>
-        <p className="mt-3 text-sm text-fg-muted">
-          The link may have expired, the booking may have already been cancelled,
-          or the address might be slightly off.
-        </p>
-        <p className="mt-2 text-sm text-fg-muted">
-          Open the most recent confirmation email from Pennie and follow the
-          manage link there. It will bring you right back to your booking.
-        </p>
+        <p className="mt-3 text-sm text-fg-muted">{NOT_FOUND_COPY.causes}</p>
+        <p className="mt-2 text-sm text-fg-muted">{NOT_FOUND_COPY.recovery}</p>
       </div>
     </main>
   );

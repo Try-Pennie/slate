@@ -60,7 +60,8 @@ async function book() {
     await screen.findByRole("button", { name: /^(TODAY|MON|TUE|WED|THU|FRI|SAT|SUN)/ }),
   );
   await userEvent.click(await screen.findByRole("button", { name: /:\d{2}/ }));
-  await userEvent.type(screen.getByLabelText("Name"), "Dana Lead");
+  await userEvent.type(screen.getByLabelText("First name"), "Dana");
+  await userEvent.type(screen.getByLabelText("Last name"), "Lead");
   await userEvent.type(screen.getByLabelText("Email"), "dana@example.com");
   await userEvent.type(screen.getByLabelText("Phone"), "(203) 561-5295");
   await userEvent.click(screen.getByRole("button", { name: /confirm booking/i }));

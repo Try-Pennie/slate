@@ -17,6 +17,7 @@ import {
   allTimesTaken,
   closedNoReopenDate,
   BOOKER_PHONE_COPY,
+  DUPLICATE_COPY,
 } from "@/lib/booking/booker-copy";
 import { PHONE_COPY, advisorWillCall } from "@/lib/booking/manage-copy";
 import { DateTime } from "luxon";
@@ -69,7 +70,9 @@ async function fillAndConfirm() {
   await pickFirstDay();
   const slot = await screen.findByRole("button", { name: /:\d{2}/ });
   await userEvent.click(slot);
-  await userEvent.type(screen.getByLabelText("Name"), "Dana Lead");
+  // #2362: two fields, joined on submit, so the payload still carries "Dana Lead".
+  await userEvent.type(screen.getByLabelText("First name"), "Dana");
+  await userEvent.type(screen.getByLabelText("Last name"), "Lead");
   await userEvent.type(screen.getByLabelText("Email"), "dana@example.com");
   await userEvent.type(screen.getByLabelText("Phone"), "(203) 561-5295");
   await userEvent.click(screen.getByRole("button", { name: /confirm booking/i }));
@@ -152,7 +155,8 @@ describe("Booker confirm", () => {
 
     fireEvent.click(screen.getByRole("button", { name: /^(TODAY|MON|TUE|WED|THU|FRI|SAT|SUN)/ }));
     fireEvent.click(screen.getByRole("button", { name: /:\d{2}/ }));
-    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Dana Lead" } });
+    fireEvent.change(screen.getByLabelText("First name"), { target: { value: "Dana" } });
+    fireEvent.change(screen.getByLabelText("Last name"), { target: { value: "Lead" } });
     fireEvent.change(screen.getByLabelText("Email"), { target: { value: "dana@example.com" } });
     fireEvent.change(screen.getByLabelText("Phone"), { target: { value: "(203) 561-5295" } });
     fireEvent.click(screen.getByRole("button", { name: /confirm booking/i }));
@@ -225,8 +229,9 @@ describe("Booker confirm", () => {
     expect(await screen.findByText("You're all set")).toBeTruthy();
     // The heads-up itself still shows.
     expect(screen.getByText(/already have another call booked/i)).toBeTruthy();
-    // But it points at the email they already hold, not at the other booking.
-    expect(screen.getByText(/confirmation email/i)).toBeTruthy();
+    // But it points at the invitation they already hold, not at the other booking
+    // (#2364: it named a confirmation email Pennie never sends).
+    expect(screen.getByText(DUPLICATE_COPY.checkYourEmail)).toBeTruthy();
     expect(screen.queryByRole("link", { name: /view or cancel/i })).toBeNull();
     // No link anywhere on the screen points at another booking's manage token.
     const hrefs = Array.from(document.querySelectorAll("a")).map((a) => a.getAttribute("href"));
@@ -355,7 +360,7 @@ describe("Booker confirm", () => {
     await pickFirstDay();
     await userEvent.click(await screen.findByRole("button", { name: /:\d{2}/ }));
 
-    for (const fieldName of ["Name", "Email", "Phone"]) {
+    for (const fieldName of ["First name", "Last name", "Email", "Phone"]) {
       const input = screen.getByLabelText(fieldName) as HTMLInputElement;
       const label = document.querySelector(`label[for="${input.id}"]`);
       expect(label).not.toBeNull();
@@ -475,7 +480,7 @@ describe("Booker refuses a second booking (#1337)", () => {
     expect(screen.getByText(MOVE_COPY.reasonLegend)).toBeTruthy();
     expect(screen.getByRole("button", { name: /^Move my call to/ })).toBeTruthy();
     // And they were never asked to identify themselves again.
-    expect(screen.queryByLabelText("Name")).toBeNull();
+    expect(screen.queryByLabelText("First name")).toBeNull();
     expect(screen.queryByLabelText("Email")).toBeNull();
     expect(screen.queryByLabelText("Phone")).toBeNull();
   });
@@ -605,7 +610,7 @@ describe("Booker refuses a second booking (#1337)", () => {
     await pickFirstDay();
     await userEvent.click(await screen.findByRole("button", { name: /:\d{2}/ }));
     expect(await screen.findByText(MOVE_COPY.reasonLegend)).toBeTruthy();
-    expect(screen.queryByLabelText("Name")).toBeNull();
+    expect(screen.queryByLabelText("First name")).toBeNull();
   });
 
   // #2207: the gap #2203 left. Taking the details form off this path also took
@@ -825,7 +830,8 @@ describe("Booker refuses a second booking (#1337)", () => {
     await pickFirstDay();
     await userEvent.click(await screen.findByRole("button", { name: /:\d{2}/ }));
 
-    expect(screen.getByLabelText("Name")).toBeTruthy();
+    expect(screen.getByLabelText("First name")).toBeTruthy();
+    expect(screen.getByLabelText("Last name")).toBeTruthy();
     expect(screen.getByLabelText("Email")).toBeTruthy();
     expect(screen.getByLabelText("Phone")).toBeTruthy();
     expect(screen.queryByText("You already have a call booked")).toBeNull();
@@ -1117,7 +1123,7 @@ describe("Booker refuses a second booking (#1337)", () => {
     await fillAndConfirm();
 
     expect(await screen.findByText("You already have a call booked")).toBeTruthy();
-    expect(screen.getByText(/confirmation email/i)).toBeTruthy();
+    expect(screen.getByText(DUPLICATE_COPY.checkYourEmail)).toBeTruthy();
     expect(screen.queryByRole("button", { name: /^move my call/i })).toBeNull();
     expect(screen.queryByRole("radio")).toBeNull();
   });
@@ -2204,7 +2210,8 @@ describe("nearest free times after a refused confirm (#1319)", () => {
     expect(screen.getByRole("button", { name: /confirm booking/i })).toBeTruthy();
     // And their details survived, so the recovery really is a tap and a confirm rather than
     // filling the form again.
-    expect((screen.getByLabelText("Name") as HTMLInputElement).value).toBe("Dana Lead");
+    expect((screen.getByLabelText("First name") as HTMLInputElement).value).toBe("Dana");
+    expect((screen.getByLabelText("Last name") as HTMLInputElement).value).toBe("Lead");
     expect((screen.getByLabelText("Email") as HTMLInputElement).value).toBe("dana@example.com");
   });
 

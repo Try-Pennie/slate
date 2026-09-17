@@ -1,6 +1,6 @@
 // Sanity test for the shared attendee contact validation (#37).
 // Run: node --experimental-strip-types scripts/test-attendee.ts
-import { validateAttendee } from "../src/lib/attendee.ts";
+import { validateAttendee, joinName, splitName, nameFieldErrors } from "../src/lib/attendee.ts";
 import { US_ONLY_PHONE_NOTICE } from "../src/lib/booking/booker-copy.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
@@ -150,5 +150,60 @@ function phoneError(phone: string): string | undefined {
   eq(phoneError("2155550100"), undefined, "a clean US number is still accepted");
 }
 
+// --- the first name is ASKED for, not derived (#2362) --------------------------
+// cal.com asks in two fields, First Name required and Last Name optional. Slate
+// asked in one and split on the first space, which is right for "Mary Smith" and
+// wrong for everything else somebody types into a single name box: "Smith, Mary"
+// gave a first name of "Smith,". That name is not internal, it is what the
+// confirmation SMS greets the lead with, so the guess was visible in the first
+// message they ever got from Pennie.
+{
+  // What a lead typed into two fields becomes the one `name` the payload has
+  // always carried, so nothing downstream changes shape.
+  eq(joinName({ firstName: "Mary", lastName: "Smith" }), "Mary Smith", "two fields make one name");
+  eq(joinName({ firstName: "Mary" }), "Mary", "a last name is optional, as it is on cal.com");
+  eq(joinName({ firstName: " Mary ", lastName: " Smith " }), "Mary Smith", "and both are trimmed");
+  eq(joinName({}), "", "nothing typed joins to nothing, which validateAttendee refuses");
+
+  // The PREFILL is the one place a split still happens, and it happens in front of
+  // the lead: a landing page hands over one string, the two fields show the guess,
+  // and the person can correct it before they commit. An inference somebody can see
+  // and change is not an inference presented as a recorded fact (L192).
+  eq(splitName("Mary Smith").firstName, "Mary", "a prefilled full name fills the first field");
+  eq(splitName("Mary Smith").lastName, "Smith", "and the second");
+  eq(splitName("Mary Jo Smith").lastName, "Jo Smith", "everything after the first word is the last name");
+  eq(splitName("Prince").firstName, "Prince", "one word fills the first field");
+  eq(splitName("Prince").lastName, "", "and leaves the optional one empty");
+  eq(splitName("  Mary   Smith  ").firstName, "Mary", "surrounding and repeated spaces do not survive");
+  eq(splitName("").firstName, "", "nothing in, nothing out");
+  eq(splitName(null).firstName, "", "and a missing prefill is not a name");
+
+  // The round trip a real lead makes: arrive with a prefill, change nothing,
+  // submit. What is stored must be what arrived.
+  for (const full of ["Mary Smith", "Prince", "Mary Jo Smith"]) {
+    eq(joinName(splitName(full)), full, `a prefilled "${full}" survives being shown in two fields`);
+  }
+
+  // The field-level rule. The FIRST name is the required one, so somebody with one
+  // name is never refused, and nothing is stricter than the joined name the server
+  // judges: a non-empty first name always joins to a non-empty name (L99).
+  eq(nameFieldErrors({ firstName: "Mary" }).firstName, undefined, "a first name alone is accepted");
+  assert(!!nameFieldErrors({ firstName: "" }).firstName, "an empty first name is refused");
+  assert(!!nameFieldErrors({ firstName: "   " }).firstName, "and so is a blank one");
+  eq(
+    nameFieldErrors({ firstName: "Mary", lastName: "" }).lastName,
+    undefined,
+    "an empty last name is not an error, because it is not required",
+  );
+  // The two judgements agree about every name the form can produce, which is what
+  // keeps the client from refusing something the server would take.
+  for (const fields of [{ firstName: "Mary" }, { firstName: "Mary", lastName: "Smith" }]) {
+    eq(
+      Object.keys(nameFieldErrors(fields)).length,
+      Object.keys(validateAttendee({ ...valid, name: joinName(fields) })).length,
+      "the field rule and the joined-name rule agree",
+    );
+  }
+}
 
 finish();
