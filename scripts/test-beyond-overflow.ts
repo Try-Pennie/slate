@@ -22,7 +22,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   BEYOND_CODES,
-  ACHIEVE_CODES,
+  OVERFLOW_CODES,
   BEYOND_OVERFLOW_NOTICE_KEY,
   BEYOND_OVERFLOW_WINDOW_HOURS,
   BEYOND_OVERFLOW_COOLDOWN_MS,
@@ -37,18 +37,25 @@ import { assert, eq, finish } from "./lib/harness.ts";
 // Empty lists would make every membership assertion below pass by default, and
 // would ALSO make the live query count nothing while reading as a clean run (L98).
 eq(BEYOND_CODES.length, 15, "five debt tiers times three legal digits of Beyond codes");
-eq(ACHIEVE_CODES.length, 15, "and the same for Achieve");
+eq(OVERFLOW_CODES.length, 45, "and every code whose pool does not require Beyond");
 
 // --- the lists are derived from the vocabulary, not typed out ----------------
 for (const code of BEYOND_CODES) {
   eq(BACKEND[code[1]!]?.key, "beyond", `${code} is a Beyond code`);
 }
-for (const code of ACHIEVE_CODES) {
-  eq(BACKEND[code[1]!]?.key, "achieve", `${code} is an Achieve code`);
+for (const code of OVERFLOW_CODES) {
+  assert(BACKEND[code[1]!]?.key !== "beyond", `${code} does not require Beyond`);
 }
 assert(
-  BEYOND_CODES.every((c) => !ACHIEVE_CODES.includes(c)),
+  BEYOND_CODES.every((c) => !OVERFLOW_CODES.includes(c)),
   "no code is on both sides, or a Beyond lead booked in its own pool would count as an overflow",
+);
+// The two sides PARTITION the code space, so there is no third class a rung could
+// fall into and be counted as neither (L582).
+eq(
+  BEYOND_CODES.length + OVERFLOW_CODES.length,
+  60,
+  "the two sides cover every code exactly once",
 );
 
 // --- the booked-side list covers every Achieve rung a Beyond code can reach ---
@@ -57,26 +64,41 @@ assert(
 // rather than re-derived here, so the two can never disagree about what a rung is
 // (L107). It matters for the case that is easy to forget: 522 to 432 dropped a
 // debt tier AND overflowed, and it carries the same consequence as 522 to 532.
+// EVERY rung is classified, with no `continue` (#2486). The loop used to skip any
+// rung that was not Achieve, so when the ladder gained an unconstrained rung it
+// matched neither branch, the suite stayed green, and the count silently stopped
+// seeing `522 -> 512` as an overflow. A guard that skips what it does not
+// recognise only ever checks what it already knew about (L96, L624).
 for (const code of BEYOND_CODES) {
   for (const rung of tierLadder(code)) {
-    if (BACKEND[rung[1]!]?.key !== "achieve") continue;
-    assert(
-      ACHIEVE_CODES.includes(rung),
-      `${code} can reach ${rung}, so the booked-side list must contain it`,
-    );
+    const isBeyondPool = BACKEND[rung[1]!]?.key === "beyond";
+    if (isBeyondPool) {
+      // A Beyond lead who got a Beyond agent has not overflowed (L104).
+      assert(
+        !OVERFLOW_CODES.includes(rung),
+        `${rung} is a Beyond pool and must never count as an overflow`,
+      );
+    } else {
+      assert(
+        OVERFLOW_CODES.includes(rung),
+        `${code} can reach ${rung}, so the booked-side list must contain it`,
+      );
+    }
   }
 }
 
-// And the control in the other direction: a Beyond rung is never on the booked
-// side, so a Beyond lead who got a Beyond agent is not counted (L104).
+// And the anti-vacuity control for the loop above: a Beyond code really does
+// reach BOTH kinds, so neither branch is passing by never running (L159).
 for (const code of BEYOND_CODES) {
-  for (const rung of tierLadder(code)) {
-    if (BACKEND[rung[1]!]?.key !== "beyond") continue;
-    assert(
-      !ACHIEVE_CODES.includes(rung),
-      `${rung} is a Beyond pool and must never count as an overflow`,
-    );
-  }
+  const rungs = tierLadder(code);
+  assert(
+    rungs.some((r) => BACKEND[r[1]!]?.key === "beyond"),
+    `${code} reaches at least one Beyond pool`,
+  );
+  assert(
+    rungs.some((r) => BACKEND[r[1]!]?.key !== "beyond"),
+    `${code} reaches at least one pool that does not require Beyond`,
+  );
 }
 
 // --- the key, the window and the cooldown ------------------------------------
