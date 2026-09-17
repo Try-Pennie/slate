@@ -13,6 +13,7 @@
 // Run: node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/test-webhook-resend-feedback.ts
 import {
   RESEND_RESULTS,
+  replayFeedback,
   resendFeedback,
   type ResendResult,
 } from "../src/lib/webhooks/resend-feedback.ts";
@@ -77,6 +78,59 @@ for (const result of RESEND_RESULTS) {
   const fb = resendFeedback("something-new" as ResendResult);
   assert(fb !== null, "an unrecognised outcome still says something");
   eq(fb?.tone, "error", "and errs toward reporting a problem rather than a success");
+}
+
+// --- the BATCH replay says what it did too (#2384) -----------------------------
+// It said nothing on either ending. Success revalidated a page the form is not on
+// and returned void; a duplicate press inside the five minute dedupe window
+// returned in silence. So the one control that re-fires a receiver's whole backlog
+// after an outage was indistinguishable from a broken button on exactly the press
+// somebody makes when they are unsure the first one worked, which is the fault
+// #1076 closed for the Resend button beside it.
+{
+  const cases: [string, string][] = [
+    ["0", "none found"],
+    ["1", "one"],
+    ["9", "several"],
+    ["deduped", "a duplicate press"],
+  ];
+  for (const [raw, label] of cases) {
+    const fb = replayFeedback(raw);
+    assert(fb !== null, `${label} says something`);
+    assert((fb?.message.length ?? 0) > 15, `${label} says it in a sentence, not a word`);
+    assert(!DASHES.test(fb?.message ?? ""), `${label} uses no dashes`);
+    assert(
+      !/undefined|NaN|\[object Object\]/.test(fb?.message ?? ""),
+      `${label} renders no placeholder leak`,
+    );
+  }
+
+  // Zero is the ordinary healthy answer and must not read as a failure. The
+  // reader's next move is a longer window, which the sentence names, because a
+  // message leaving somebody with nothing to do is worth about as much as no
+  // message (L111).
+  const none = replayFeedback("0")!;
+  eq(none.tone, "ok", "finding nothing to replay is not a failure");
+  assert(/longer window|older/i.test(none.message), "and it says what to try instead");
+  assert(!/^0 /.test(none.message), "and it does not open with a bare zero");
+
+  // One and many are different sentences, because "1 failed deliveries" is the
+  // kind of line a reader stops trusting the rest of the screen over.
+  assert(/^1 failed delivery /.test(replayFeedback("1")!.message), "one reads as one");
+  assert(/^9 failed deliveries /.test(replayFeedback("9")!.message), "nine reads as nine");
+
+  // The duplicate press is the one #2384 was opened about. It has to say the
+  // receiver is not being sent anything a second time, rather than looking like a
+  // button that did nothing.
+  const deduped = replayFeedback("deduped")!;
+  eq(deduped.tone, "error", "a deduped replay reads as something that did not happen");
+  assert(/replayed|again/i.test(deduped.message), "and says the window already went");
+
+  // A value this page never issues draws NOTHING rather than being rounded into a
+  // count: inventing a number would confirm a replay nobody ran (L11).
+  for (const bad of ["", "lots", "-2", "3.5", null, undefined]) {
+    eq(replayFeedback(bad), null, `${JSON.stringify(bad)} says nothing at all`);
+  }
 }
 
 finish();

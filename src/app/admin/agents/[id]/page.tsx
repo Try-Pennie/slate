@@ -243,6 +243,16 @@ export default async function AgentProfilePage({
 
         <BookableOutcome code={bookableOutcome} />
 
+        {/* #2385: every refusal this page's forms can speak, in one place. The
+            role select, the deactivate button and the working hours week each
+            computed a sentence and THREW it, which production replaces with the
+            generic error boundary, so "Cannot remove the last admin" and "You
+            cannot deactivate your own account" had never been drawn for anybody.
+            #1994 wrote the channel for the hours form; these three now use it. */}
+        {query?.error ? (
+          <SettingsSaveNotice ok={false} error={query.error} saved="" />
+        ) : null}
+
         {/* Identity band */}
         <AdminPageHeader
           title={agent.name ?? agent.email}
@@ -490,13 +500,13 @@ export default async function AgentProfilePage({
                   as a click that did nothing. Built from the week this render
                   just READ rather than from what the action meant to write, so
                   a save that partly landed says what really landed (L78). */}
-              {/* #1994: a week the server refused says WHY, in the sentence the
-                  validator wrote, rather than as the generic error boundary. */}
-              {query?.error ? (
-                <div className="mt-4">
-                  <SettingsSaveNotice ok={false} error={query.error} saved="" />
-                </div>
-              ) : null}
+              {/* #2385: the refusal notice moved OUT of this card and up beside
+                  the page's other outcome, because four cards on this page can
+                  now refuse (the role select, the pool toggle, the two lifecycle
+                  buttons and this week) and they cannot each own a copy of the
+                  one `?error=` channel: whichever card drew it would be speaking
+                  for the other three. A redirect lands the reader at the top of
+                  the page, which is where the notice now is. */}
               {savedOutcome(query?.ok) === "working-hours" ? (
                 <div className="mt-4">
                   <SettingsSaveNotice ok saved={savedSentence("working-hours") ?? ""} />

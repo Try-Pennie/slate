@@ -2,7 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
-import { savedQuery } from "@/lib/admin/save-outcomes";
+import { refusedQuery, savedQuery } from "@/lib/admin/save-outcomes";
 import { fetchSlackChannel } from "@/lib/notify/slack";
 import {
   channelCheckMessage,
@@ -317,7 +317,7 @@ export async function setMyWorkingHours(form: FormData): Promise<void> {
   // the query string (L586), so a saved notice sent to /me would arrive nowhere
   // and the form would look like it had done nothing.
   const availability = ME_TABS[0].href;
-  if (!plan.ok) redirect(`${availability}?error=${encodeURIComponent(plan.error)}`);
+  if (!plan.ok) redirect(`${availability}${refusedQuery(plan.error)}`);
   await replaceUserSchedule(me.id, "agent", plan);
   revalidatePath(availability);
   // #1988: the save said nothing at all, so it looked exactly like a click that
@@ -540,14 +540,21 @@ function num(form: FormData, key: string, fallback: number): number {
  * A FAILED INSERT. The insert's error was neither bound nor read, so a rejected
  * write returned normally and the page redrew as though the event type existed.
  */
-// outcome-ok: the event type it creates appears in the list directly above the form, which is the confirmation; this page mounts no notice
 export async function createEventType(form: FormData): Promise<void> {
   const admin = await requireAdmin();
   const db = supabaseAdmin();
 
+  // #2385: these two are REFUSALS, so they come back to the form as sentences.
+  // They used to throw, and a thrown message is replaced by Next in production,
+  // so an admin who typed a title already in use met the generic error boundary
+  // telling them to reload and check whether it had gone through. It had not,
+  // and reloading changes nothing about the state they are stuck in (L111): they
+  // retype the same title and meet the same screen.
   const name = String(form.get("name") ?? "").trim();
   if (!name) {
-    throw new Error("An event type needs a title, which is the name a lead reads on the invite.");
+    redirect(
+      `/admin/event-types${refusedQuery("An event type needs a title, which is the name a lead reads on the invite.")}`,
+    );
   }
 
   const existing = unwrap(
@@ -558,8 +565,8 @@ export async function createEventType(form: FormData): Promise<void> {
     (e) => e.name.trim().toLowerCase() === name.toLowerCase(),
   );
   if (taken) {
-    throw new Error(
-      `An event type called ${name} already exists. Edit that one, or give this a different title.`,
+    redirect(
+      `/admin/event-types${refusedQuery(`An event type called ${name} already exists. Edit that one, or give this a different title.`)}`,
     );
   }
 
@@ -590,6 +597,10 @@ export async function createEventType(form: FormData): Promise<void> {
   }
   const row = created as { id: string } | null;
   if (!row) {
+    // throw-ok: a fault, not a refusal. An insert that reported no error and
+    // returned no row is the database disagreeing with itself, and nothing the
+    // admin retypes changes it, so the boundary saying the state is unknown is
+    // the truthful screen and the detail belongs in the log.
     throw new Error("The event type could not be created: the database returned no row.");
   }
 
@@ -614,6 +625,11 @@ export async function createEventType(form: FormData): Promise<void> {
   // redraw. The Overview keeps its refresh because it names event types too.
   revalidatePath("/admin/event-types");
   revalidatePath("/admin");
+  // #2385: it says so, now that the page has somewhere to say it. The form sits
+  // inside a disclosure that closes on the redirect, so "the new row is in the
+  // list above" was a confirmation only for somebody already looking at the part
+  // of the screen the press had just moved away from.
+  redirect(`/admin/event-types${savedQuery("event-type-created")}`);
 }
 
 /**
@@ -697,15 +713,26 @@ export async function createBucket(form: FormData): Promise<void> {
   // was indistinguishable from a successful create. It refuses by NAME now, since
   // "that code already has a bucket" and "the database is unreachable" send a
   // person to different places (L11).
+  // #2385: the duplicate code is a REFUSAL and comes back to the form; the rest
+  // is a fault and still throws. #1930 wrote both sentences and delivered
+  // neither, because a thrown message is replaced in production, so an admin
+  // typing an XBC that already had a bucket read "something went wrong, reload
+  // and check whether it went through", found no bucket, and typed the same code
+  // again, indefinitely.
   if (error) {
-    throw new Error(
-      error.code === "23505"
-        ? `A bucket with code ${String(form.get("code") ?? "").trim()} already exists.`
-        : `The bucket could not be created: ${error.message}`,
-    );
+    if (error.code === "23505") {
+      redirect(
+        `/admin/buckets${refusedQuery(`A bucket with code ${String(form.get("code") ?? "").trim()} already exists.`)}`,
+      );
+    }
+    throw new Error(`The bucket could not be created: ${error.message}`);
   }
   const created = bucket as { id: string } | null;
   if (!created) {
+    // throw-ok: a fault, not a refusal. An insert reporting no error and
+    // returning no row is the database disagreeing with itself; no code the
+    // admin types changes it, so the boundary saying the state is unknown is
+    // the honest screen.
     throw new Error("The bucket could not be created: the database returned no row.");
   }
   if (memberIds.length) {
@@ -794,12 +821,15 @@ export async function updateBucket(form: FormData): Promise<void> {
   // replace and redrew as saved. It throws now, and it throws BEFORE the members
   // are touched, so a refused bucket edit cannot half apply.
   const { error } = await db.from("buckets").update(after).eq("id", id);
+  // #2385: as in `createBucket` directly above. The duplicate code is the
+  // reader's to fix and comes back to the form; a refused write is not and
+  // throws. Both still happen BEFORE the members are touched, so a refused
+  // bucket edit cannot half apply.
   if (error) {
-    throw new Error(
-      error.code === "23505"
-        ? `A bucket with code ${after.code} already exists.`
-        : `The bucket could not be saved: ${error.message}`,
-    );
+    if (error.code === "23505") {
+      redirect(`/admin/buckets${refusedQuery(`A bucket with code ${after.code} already exists.`)}`);
+    }
+    throw new Error(`The bucket could not be saved: ${error.message}`);
   }
 
   const memberIds = form.getAll("members").map(String).filter(Boolean);
@@ -841,7 +871,7 @@ export async function setWorkingHours(form: FormData): Promise<void> {
   // the person can act on rather than as the generic error boundary.
   const plan = planScheduleReplacement(perDayFrom(form), timezone);
   if (!plan.ok) {
-    redirect(`/admin/agents/${userId}?error=${encodeURIComponent(plan.error)}`);
+    redirect(`/admin/agents/${userId}${refusedQuery(plan.error)}`);
   }
   await replaceUserSchedule(userId, "admin", plan);
   // #1769: the form that calls this lives on the agent's own page, so that is the
@@ -880,7 +910,7 @@ export async function setMonitorSettings(form: FormData): Promise<void> {
   });
 
   if (parsed.errors.length) {
-    redirect(`/admin/alerts?error=${encodeURIComponent(parsed.errors.join(" "))}`);
+    redirect(`/admin/alerts${refusedQuery(parsed.errors.join(" "))}`);
   }
 
   // #1957: CHECK A CHANNEL BEFORE STORING IT.
@@ -915,7 +945,7 @@ export async function setMonitorSettings(form: FormData): Promise<void> {
     const check = readChannelReply(await fetchSlackChannel(channel));
     if (refusesSave(check)) {
       redirect(
-        `/admin/alerts?error=${encodeURIComponent(`${label}: ${channelCheckMessage(check, channel)}`)}`,
+        `/admin/alerts${refusedQuery(`${label}: ${channelCheckMessage(check, channel)}`)}`,
       );
     }
   }
@@ -939,7 +969,7 @@ export async function setMonitorSettings(form: FormData): Promise<void> {
   );
   if (cooldownError) {
     redirect(
-      `/admin/alerts?error=${encodeURIComponent(writeRefused("The alert cooldowns", cooldownError))}`,
+      `/admin/alerts${refusedQuery(writeRefused("The alert cooldowns", cooldownError))}`,
     );
   }
   const { error: configError } = await db
@@ -947,7 +977,7 @@ export async function setMonitorSettings(form: FormData): Promise<void> {
     .upsert({ id: 1, ...parsed.config, updated_at: now, updated_by: admin.id }, { onConflict: "id" });
   if (configError) {
     redirect(
-      `/admin/alerts?error=${encodeURIComponent(
+      `/admin/alerts${refusedQuery(
         writeRefused("The alert settings", configError),
       )}`,
     );
@@ -989,7 +1019,7 @@ export async function setDefaultBucket(form: FormData): Promise<void> {
 
   const parsed = parseDefaultBucketForm(String(form.get("default_bucket_code") ?? ""), validCodes);
   if (parsed.errors.length) {
-    redirect(`/admin/buckets?error=${encodeURIComponent(parsed.errors.join(" "))}`);
+    redirect(`/admin/buckets${refusedQuery(parsed.errors.join(" "))}`);
   }
 
   // #2379: refused before the audit entry and the saved notice. A default bucket
@@ -1006,7 +1036,7 @@ export async function setDefaultBucket(form: FormData): Promise<void> {
   );
   if (error) {
     redirect(
-      `/admin/buckets?error=${encodeURIComponent(writeRefused("The default bucket", error))}`,
+      `/admin/buckets${refusedQuery(writeRefused("The default bucket", error))}`,
     );
   }
 
@@ -1036,7 +1066,7 @@ export async function setBookingHorizon(form: FormData): Promise<void> {
 
   const parsed = parseHorizonForm(String(form.get("horizon_days") ?? ""));
   if (parsed.errors.length) {
-    redirect(`/admin/business-hours?error=${encodeURIComponent(parsed.errors.join(" "))}`);
+    redirect(`/admin/business-hours${refusedQuery(parsed.errors.join(" "))}`);
   }
 
   // #2379: refused before anything downstream acts on a horizon that was never
@@ -1054,7 +1084,7 @@ export async function setBookingHorizon(form: FormData): Promise<void> {
   );
   if (error) {
     redirect(
-      `/admin/business-hours?error=${encodeURIComponent(
+      `/admin/business-hours${refusedQuery(
         writeRefused("The booking horizon", error),
       )}`,
     );
@@ -1100,12 +1130,12 @@ export async function setEventDescription(form: FormData): Promise<void> {
 
   const eventTypeId = String(form.get("event_type_id") ?? "").trim();
   if (!eventTypeId) {
-    redirect(`/admin/booker-copy?error=${encodeURIComponent("No event type was named.")}`);
+    redirect(`/admin/booker-copy${refusedQuery("No event type was named.")}`);
   }
 
   const parsed = parseEventDescriptionForm(String(form.get("description") ?? ""));
   if (parsed.errors.length) {
-    redirect(`/admin/booker-copy?error=${encodeURIComponent(parsed.errors.join(" "))}`);
+    redirect(`/admin/booker-copy${refusedQuery(parsed.errors.join(" "))}`);
   }
 
   // #1435: one helper owns the write AND the refresh of what the booker serves,
@@ -1125,7 +1155,7 @@ export async function setEventDescription(form: FormData): Promise<void> {
       saved.error,
     );
     redirect(
-      `/admin/booker-copy?error=${encodeURIComponent("Could not save the description. Please try again.")}`,
+      `/admin/booker-copy${refusedQuery("Could not save the description. Please try again.")}`,
     );
   }
   // Zero rows is not a success either: the id did not match anything this admin's
@@ -1133,7 +1163,7 @@ export async function setEventDescription(form: FormData): Promise<void> {
   // else's data as much as about theirs.
   if (saved.count === 0) {
     redirect(
-      `/admin/booker-copy?error=${encodeURIComponent("That event type was not found.")}`,
+      `/admin/booker-copy${refusedQuery("That event type was not found.")}`,
     );
   }
 
@@ -1162,12 +1192,12 @@ export async function setReasonOptions(form: FormData): Promise<void> {
   try {
     raw = JSON.parse(String(form.get("payload") ?? "{}"));
   } catch {
-    redirect(`/admin/booking-reasons?error=${encodeURIComponent("Could not read the submitted form.")}`);
+    redirect(`/admin/booking-reasons${refusedQuery("Could not read the submitted form.")}`);
   }
 
   const { rows, errors } = parseReasonOptionsForm(coerceReasonOptionsForm(raw));
   if (errors.length) {
-    redirect(`/admin/booking-reasons?error=${encodeURIComponent([...new Set(errors)].join(" "))}`);
+    redirect(`/admin/booking-reasons${refusedQuery([...new Set(errors)].join(" "))}`);
   }
 
   const now = new Date().toISOString();
@@ -1182,7 +1212,7 @@ export async function setReasonOptions(form: FormData): Promise<void> {
     );
   if (error) {
     redirect(
-      `/admin/booking-reasons?error=${encodeURIComponent(
+      `/admin/booking-reasons${refusedQuery(
         writeRefused("The booking reasons", error),
       )}`,
     );
@@ -1213,13 +1243,26 @@ export async function setOrgDefaultHours(form: FormData): Promise<void> {
     readableMinutes(roundUpToQuarterHour(String(form.get("default_end") ?? "")), SEED_END_TIME),
     defaultTimezone,
   );
-  if (!defaults.ok) throw new Error(defaults.error);
+  // #2385: an unstorable week is the reader's to fix (an end time before its
+  // start, a day with no hours at all), so the sentence `planUniformSchedule`
+  // wrote comes back to the form that produced it. It used to throw, and this
+  // form is the one whose value every agent created afterwards ADOPTS, so a
+  // refusal nobody could read left the previous default in place with nothing on
+  // screen saying so.
+  if (!defaults.ok) {
+    redirect(`/admin/business-hours${refusedQuery(defaults.error)}`);
+  }
 
-  // #2379: this action already refuses an unstorable week by throwing, so a
-  // refused WRITE says no the same way. A second mechanism on one action would be
-  // a third pattern for one thing, and the value here is what a new agent ADOPTS:
-  // a save that only appeared to land leaves every agent created afterwards on
-  // the previous default, which nothing else on the page would reveal.
+  // #2379: a refused WRITE must not run on to the audit entry and the saved
+  // notice. The value here is what a new agent ADOPTS, so a save that only
+  // appeared to land leaves every agent created afterwards on the previous
+  // default, which nothing else on the page would reveal.
+  //
+  // #2385: it still THROWS while the week check above redirects, and the two are
+  // not one rule applied twice. An unstorable week is a sentence about what was
+  // typed, which the reader can fix; a write Postgres refused is a sentence about
+  // the system, which no retyping fixes, so the boundary saying the state is
+  // unknown is the honest screen and the detail goes to the log.
   const { error } = await supabaseAdmin()
     .from("organizations")
     .update({
@@ -1402,8 +1445,14 @@ export async function setUserLifecycle(form: FormData): Promise<void> {
   const action = String(form.get("action") ?? "");
   if (!userId || (action !== "deactivate" && action !== "reactivate")) return;
   const actor = await requireManager();
+  // #2385: the one refusal this action can speak, said on the page the button is
+  // on. It used to throw, so an admin who pressed Deactivate on their own row met
+  // the generic error boundary and could not tell a refusal from the page
+  // breaking, on a control whose whole point is that it locks you out.
   if (action === "deactivate" && actor.id === userId) {
-    throw new Error("You cannot deactivate your own account.");
+    redirect(
+      `/admin/agents/${userId}${refusedQuery("You cannot deactivate your own account. Ask another admin to do it.")}`,
+    );
   }
   await requireManageAgent(userId, action === "deactivate" ? "agent.deactivate" : "agent.reactivate");
   // The field and its values come from the component that writes them, so the
@@ -1435,6 +1484,10 @@ export async function setUserLifecycle(form: FormData): Promise<void> {
 // outcome-ok: the whole session becomes somebody else and a banner says so on every page, which is a larger confirmation than a sentence
 export async function startImpersonation(form: FormData): Promise<void> {
   const admin = await realCurrentUser();
+  // throw-ok: not a refusal anybody is standing in front of. The control that
+  // submits here renders only for an admin who may use it, so the only caller
+  // that reaches this line is one invoking the action directly, and there is no
+  // form to send a sentence back to.
   if (!admin || !atLeast(admin.role, "admin")) throw new Error("Not authorized");
 
   const email = String(form.get("email") ?? "").trim().toLowerCase();
@@ -1598,16 +1651,28 @@ export async function setUserRole(form: FormData): Promise<void> {
   const current = (target as { role: Role } | null)?.role;
   if (!current) return;
 
+  // #2385: all four refusals below come back to this agent's own page as
+  // sentences. Every one of them used to throw, so the reader met the generic
+  // error boundary: "Cannot remove the last admin" was never drawn for anybody,
+  // and a manager who tried it was told to reload and check whether it had gone
+  // through, which is advice that cannot resolve a rule they have not been told
+  // about (L111).
+  const back = `/admin/agents/${userId}`;
+
   // Only a super admin can grant or revoke super_admin; regular admins can't
   // mint a peer above themselves nor demote one.
   if (!canSetRole(admin.role, current, next)) {
-    throw new Error("Not authorized to set this role");
+    redirect(
+      `${back}${refusedQuery(`Your own role cannot set somebody to ${roleLabel(next)}, so the role was left as ${roleLabel(current)}.`)}`,
+    );
   }
 
   // Block self-lockout: an admin can't strip their own org power and orphan
   // their /admin access (recovery would need a direct DB write).
   if (isSelfDemotion(admin.id === userId, current, next)) {
-    throw new Error("You can't remove your own admin access");
+    redirect(
+      `${back}${refusedQuery("You cannot remove your own admin access. Ask another admin to change your role.")}`,
+    );
   }
 
   // #1165: consult `error`. A failed count came back null, `?? 0` scored it as
@@ -1624,10 +1689,14 @@ export async function setUserRole(form: FormData): Promise<void> {
       { msg: "admin count read failed", user_id: userId },
       countError,
     );
-    throw new Error("The number of admins could not be verified, so the role was left unchanged");
+    redirect(
+      `${back}${refusedQuery("The number of admins could not be verified, so the role was left unchanged. Try again in a moment.")}`,
+    );
   }
   if (!canChangeRole(current, next, count ?? 0)) {
-    throw new Error("Cannot remove the last admin");
+    redirect(
+      `${back}${refusedQuery("This is the last admin account, so its role was left unchanged. Give somebody else admin first.")}`,
+    );
   }
 
   // #2379: the revocation twin of the kill switch. The result was discarded, so a
@@ -1696,11 +1765,19 @@ export async function grantStaffAccess(form: FormData): Promise<void> {
   // Annotated rather than inferred: TypeScript only treats a call as ending
   // control flow when the callee carries an explicit `never` TYPE, and without
   // that every `done()` below reads as a fall through.
+  // #2384, found by the guard rather than by eye: this named `/admin` while the
+  // form and the only reader of `?staff=` are on `/admin/team-access`. The
+  // Overview declares no search params, so every ending this action has, the
+  // grant, the refusal and the address that could never sign in, was encoded,
+  // attached to a URL and thrown away, and the `#team-access` fragment pointed at
+  // a section that moved out of that page with #1763. The Overview keeps its
+  // refresh because it counts admins.
   const done: (outcome: StaffAccessOutcome) => never = (outcome) => {
     revalidatePath("/admin");
+    revalidatePath("/admin/team-access");
     redirect(
-      `/admin?staff=${outcome}&staff_email=${encodeURIComponent(email)}` +
-        `&staff_role=${encodeURIComponent(requestedRole)}#team-access`,
+      `/admin/team-access?staff=${outcome}&staff_email=${encodeURIComponent(email)}` +
+        `&staff_role=${encodeURIComponent(requestedRole)}`,
     );
   };
 
@@ -1808,6 +1885,17 @@ export async function grantStaffAccess(form: FormData): Promise<void> {
 // new action after the window still steals the stale claim and proceeds. `send()`
 // records failure internally (never throws), so there is no error path that needs
 // the claim released early.
+/**
+ * The page all three webhook forms are on (#2384).
+ *
+ * Named once rather than written out at each of the eight sites, because the
+ * defect this closes was three of them naming a DIFFERENT page: #1763 moved this
+ * surface off `/admin` and the actions kept the old address, so every outcome
+ * they wrote went to a page that reads none of them. One constant is what makes
+ * the next route move one edit instead of eight (L41).
+ */
+const WEBHOOKS_PAGE = "/admin/webhooks";
+
 const WEBHOOK_RESEND_DEDUPE_TTL_MS = 60_000;
 const WEBHOOK_REPLAY_DEDUPE_TTL_MS = 5 * 60_000;
 
@@ -1824,8 +1912,15 @@ export async function resendWebhookDelivery(form: FormData): Promise<void> {
   // deduped outcome rather than returning silently (#1076): from the admin's side a
   // second press that says nothing is indistinguishable from a broken button, and
   // the truthful thing to say is that the receiver already has it.
+  //
+  // #2384: on `/admin/webhooks`, which is where the button is. It named `/admin`,
+  // the Overview, which takes no search params at all, so every outcome #1076
+  // wrote was encoded, attached to a URL and thrown away, and the admin was moved
+  // off the log they pressed the button in. The three sentences that page can
+  // show, "the receiver has it", "there is nothing left to send" and "test traffic
+  // is never delivered", had never once been drawn.
   if (!claim) {
-    redirect(`/admin?resend=${encodeURIComponent("deduped")}`);
+    redirect(`${WEBHOOKS_PAGE}?resend=${encodeURIComponent("deduped")}`);
   }
   const result = await resendDelivery(deliveryId, admin.org_id);
   // #1073: a refused resend (payload erased for PII retention, suppressed, etc.)
@@ -1835,8 +1930,8 @@ export async function resendWebhookDelivery(form: FormData): Promise<void> {
   if (result !== "sent") {
     log.warn("webhook-resend", { msg: "resend not sent", delivery_id: deliveryId, result });
   }
-  revalidatePath("/admin");
-  redirect(`/admin?resend=${encodeURIComponent(result)}`);
+  revalidatePath(WEBHOOKS_PAGE);
+  redirect(`${WEBHOOKS_PAGE}?resend=${encodeURIComponent(result)}`);
 }
 
 /**
@@ -1852,10 +1947,21 @@ export async function replayFailedWebhooks(form: FormData): Promise<void> {
     `webhook_replay:${admin.org_id}:${hours}`,
     WEBHOOK_REPLAY_DEDUPE_TTL_MS,
   );
-  if (!claim) return; // a duplicate/racing request already replayed this window
+  // #2384: it says what it did, and both endings are said out loud. A duplicate
+  // press inside the five minute window used to `return` in silence, so the one
+  // control that re-fires a receiver's whole backlog was indistinguishable from a
+  // broken button on the second press, which is the exact fault #1076 closed for
+  // the per delivery Resend beside it and left open here.
+  if (!claim) {
+    redirect(`${WEBHOOKS_PAGE}?replay=${encodeURIComponent("deduped")}`);
+  }
   const sinceIso = new Date(Date.now() - hours * 3_600_000).toISOString();
-  await replayDeadLetteredDeliveries(admin.org_id, sinceIso);
-  revalidatePath("/admin");
+  const queued = await replayDeadLetteredDeliveries(admin.org_id, sinceIso);
+  revalidatePath(WEBHOOKS_PAGE);
+  // The COUNT, because zero and nine send a reader to two different places: zero
+  // says the window held nothing dead lettered, and nine says nine are on their
+  // way and the log below is about to change.
+  redirect(`${WEBHOOKS_PAGE}?replay=${encodeURIComponent(String(queued))}`);
 }
 
 /**
@@ -1882,7 +1988,7 @@ export async function setWebhookEndpoint(form: FormData): Promise<void> {
   // plaintext on the first delivery. redirect() throws, so no write happens.
   const urlError = webhookUrlError(url);
   if (urlError) {
-    redirect(`/admin?webhook_error=${encodeURIComponent(urlError)}`);
+    redirect(`${WEBHOOKS_PAGE}${refusedQuery(urlError)}`);
   }
 
   const format = form.get("format") === "regal" ? "regal" : "generic";
@@ -1908,11 +2014,16 @@ export async function setWebhookEndpoint(form: FormData): Promise<void> {
     "webhook endpoint upsert lookup",
   );
 
-  // #2379: both branches are checked, and each refuses through the same
-  // `?webhook_error=` the URL guard above already uses, so this form has ONE way
-  // of saying no. A refused write here is the quietest failure in the file: the
-  // page redraws from the stored row and there is no saved notice at all, so an
-  // endpoint that was never written looks exactly like one that was.
+  // #2379: both branches are checked, and each refuses through the same `?error=`
+  // the URL guard above already uses, so this form has ONE way of saying no. A
+  // refused write here is the quietest failure in the file: the page redraws from
+  // the stored row, so an endpoint that was never written looks exactly like one
+  // that was.
+  //
+  // #2384: that channel used to be `?webhook_error=` pointed at `/admin`, which
+  // reads neither the name nor the value, so the refusal of an `http://` endpoint
+  // (which saves nothing) moved the admin to the Overview and said nothing there.
+  // They would reasonably believe the new URL was live.
   if (existing) {
     const { error } = await db
       .from("webhook_endpoints")
@@ -1920,7 +2031,7 @@ export async function setWebhookEndpoint(form: FormData): Promise<void> {
       .eq("id", (existing as { id: string }).id);
     if (error) {
       redirect(
-        `/admin?webhook_error=${encodeURIComponent(writeRefused("The webhook endpoint", error))}`,
+        `${WEBHOOKS_PAGE}${refusedQuery(writeRefused("The webhook endpoint", error))}`,
       );
     }
   } else {
@@ -1933,11 +2044,17 @@ export async function setWebhookEndpoint(form: FormData): Promise<void> {
     });
     if (error) {
       redirect(
-        `/admin?webhook_error=${encodeURIComponent(writeRefused("The webhook endpoint", error))}`,
+        `${WEBHOOKS_PAGE}${refusedQuery(writeRefused("The webhook endpoint", error))}`,
       );
     }
   }
-  revalidatePath("/admin");
+  // #2384: the form is on `/admin/webhooks`, so that is the route to refresh and
+  // the route the confirmation lands on. Revalidating `/admin` and returning void
+  // left the page the person was looking at redrawing exactly what it showed
+  // before they pressed Save, including the old URL and the old key marker, which
+  // is #1769 on a different page.
+  revalidatePath(WEBHOOKS_PAGE);
+  redirect(`${WEBHOOKS_PAGE}${savedQuery("webhook-endpoint")}`);
 }
 
 /**
@@ -2409,7 +2526,7 @@ export async function setPublicBookingPaused(form: FormData): Promise<void> {
   // certainty it does not have.
   if (error) {
     redirect(
-      `/admin/business-hours?error=${encodeURIComponent(
+      `/admin/business-hours${refusedQuery(
         // The direction is kept in the sentence, because which way it went is the
         // one thing a reader of this control needs (L60), and "the booking switch"
         // would be the word that appears whatever you pressed.

@@ -362,31 +362,47 @@ describe("setUserRole denial branches", () => {
     expect(update).not.toHaveBeenCalled();
   });
 
-  it("rejects when a regular admin tries to grant super_admin, and does not write", async () => {
+  // #2385: each of these REFUSALS now travels back to the agent's own page as a
+  // sentence, where the page draws it. They used to throw, and Next replaces a
+  // thrown message in production, so every one of them arrived as the generic
+  // error boundary saying it could not tell whether the change had gone through.
+  // "Cannot remove the last admin" had never been read by anybody.
+  //
+  // Asserted on the redirect TARGET and on the SENTENCE, never on the fact of a
+  // redirect: a test that only checks a redirect happened passes on every wrong
+  // target and on a refusal that says nothing (L63).
+  /** Where the action sent the caller, decoded, from the thrown NEXT_REDIRECT. */
+  const refusalOf = async (run: () => Promise<unknown>): Promise<string> => {
+    await run().catch(() => {});
+    const call = redirect.mock.calls.at(-1);
+    return call ? decodeURIComponent(String(call[0])) : "(no redirect)";
+  };
+
+  it("refuses on the page when a regular admin tries to grant super_admin, and does not write", async () => {
     auth.requireAdmin.mockResolvedValueOnce(admin);
     dbState.single = { role: "agent" };
-    await expect(
-      setUserRole(form({ user_id: "u2", role: "super_admin" })),
-    ).rejects.toThrow(/not authorized to set this role/i);
+    const to = await refusalOf(() => setUserRole(form({ user_id: "u2", role: "super_admin" })));
+    expect(to).toMatch(/^\/admin\/agents\/u2\?error=/);
+    expect(to).toMatch(/cannot set somebody to/i);
     expect(update).not.toHaveBeenCalled();
   });
 
-  it("blocks an admin from demoting themselves, and does not write", async () => {
+  it("refuses on the page when an admin demotes themselves, and does not write", async () => {
     auth.requireAdmin.mockResolvedValueOnce(admin);
     dbState.single = { role: "admin" };
-    await expect(
-      setUserRole(form({ user_id: admin.id, role: "agent" })),
-    ).rejects.toThrow(/your own admin access/i);
+    const to = await refusalOf(() => setUserRole(form({ user_id: admin.id, role: "agent" })));
+    expect(to).toMatch(new RegExp(`^/admin/agents/${admin.id}\\?error=`));
+    expect(to).toMatch(/your own admin access/i);
     expect(update).not.toHaveBeenCalled();
   });
 
-  it("blocks removing the last admin, and does not write", async () => {
+  it("refuses on the page when it would remove the last admin, and does not write", async () => {
     auth.requireAdmin.mockResolvedValueOnce(admin);
     dbState.single = { role: "admin" };
     dbState.count = 1;
-    await expect(
-      setUserRole(form({ user_id: "u2", role: "agent" })),
-    ).rejects.toThrow(/last admin/i);
+    const to = await refusalOf(() => setUserRole(form({ user_id: "u2", role: "agent" })));
+    expect(to).toMatch(/^\/admin\/agents\/u2\?error=/);
+    expect(to).toMatch(/last admin/i);
     expect(update).not.toHaveBeenCalled();
   });
 
@@ -401,14 +417,11 @@ describe("setUserRole denial branches", () => {
     dbState.count = 5; // plenty of admins; only the READ is broken
     dbState.countError = { message: "permission denied for table users" };
 
-    const err = await setUserRole(form({ user_id: "u2", role: "agent" })).then(
-      () => null,
-      (e: unknown) => e as Error,
-    );
+    const to = await refusalOf(() => setUserRole(form({ user_id: "u2", role: "agent" })));
 
-    expect(err).toBeInstanceOf(Error);
-    expect(err!.message).toMatch(/could not (be )?verif/i);
-    expect(err!.message).not.toMatch(/last admin/i);
+    expect(to).toMatch(/^\/admin\/agents\/u2\?error=/);
+    expect(to).toMatch(/could not (be )?verif/i);
+    expect(to).not.toMatch(/last admin/i);
     expect(update).not.toHaveBeenCalled();
   });
 
@@ -418,8 +431,12 @@ describe("setUserRole denial branches", () => {
   // changed. An admin removing a departing admin's access is told it is done, the
   // trail says it is done, and the person keeps admin (L12, L529).
   //
-  // Every guard ABOVE this line already refuses by throwing, so the refused write
-  // does too: a fourth way of saying no on one action would be a third pattern.
+  // #2385: this one still THROWS while the four guards above it redirect, and
+  // the split is the rule rather than an oversight. Those four are sentences
+  // about the REQUEST, which the reader can act on. A write Postgres refused is a
+  // sentence about the system: no role the admin picks changes it, so the
+  // boundary saying the state is unknown is the honest screen and the detail goes
+  // to the log.
   it("refuses when the database declines the role write, with no audit entry", async () => {
     auth.requireAdmin.mockResolvedValueOnce(admin);
     dbState.single = { role: "agent" };
@@ -578,12 +595,20 @@ describe("webhook re-delivery duplicate guard", () => {
   // #1076: the outcome reaches the admin, not just the server logs. Every one of
   // these used to re-render the log unchanged, so a refusal looked exactly like a
   // success and the button looked broken.
+  //
+  // #2384: and it reaches the WEBHOOKS page, which is the page the button is on
+  // and the only page that reads `?resend=`. It named `/admin`, the Overview,
+  // which declares no search params, so every sentence #1076 wrote was encoded,
+  // attached to a URL and thrown away while the admin was moved off the delivery
+  // log they pressed it in. The target is asserted here, not just the parameter:
+  // a redirect carrying the right value to a page that cannot read it is the
+  // defect, and it looks identical to a working one from inside the action (L63).
   it.each(["sent", "payload-erased", "suppressed", "not-found"] as const)(
-    "resendWebhookDelivery reports %s back to the admin",
+    "resendWebhookDelivery reports %s back on the webhooks page",
     async (result) => {
       emit.resendDelivery.mockResolvedValueOnce(result);
       await expect(resendWebhookDelivery(form({ delivery_id: "d1" }))).rejects.toThrow(
-        `NEXT_REDIRECT:/admin?resend=${encodeURIComponent(result)}`,
+        `NEXT_REDIRECT:/admin/webhooks?resend=${encodeURIComponent(result)}`,
       );
     },
   );
@@ -594,7 +619,7 @@ describe("webhook re-delivery duplicate guard", () => {
     // the receiver already has it.
     locks.acquireLock.mockResolvedValueOnce(null);
     await expect(resendWebhookDelivery(form({ delivery_id: "d1" }))).rejects.toThrow(
-      "NEXT_REDIRECT:/admin?resend=deduped",
+      "NEXT_REDIRECT:/admin/webhooks?resend=deduped",
     );
     expect(emit.resendDelivery).not.toHaveBeenCalled();
     expect(revalidatePath).not.toHaveBeenCalled();
@@ -608,7 +633,10 @@ describe("webhook re-delivery duplicate guard", () => {
   });
 
   it("replayFailedWebhooks replays when it wins the claim, keyed by org and window", async () => {
-    await replayFailedWebhooks(form({ hours: "24" }));
+    emit.replayDeadLetteredDeliveries.mockResolvedValueOnce(3);
+    await expect(replayFailedWebhooks(form({ hours: "24" }))).rejects.toThrow(
+      "NEXT_REDIRECT:/admin/webhooks?replay=3",
+    );
     expect(locks.acquireLock).toHaveBeenCalledWith(
       "webhook_replay:o1:24",
       expect.any(Number),
@@ -616,9 +644,24 @@ describe("webhook re-delivery duplicate guard", () => {
     expect(emit.replayDeadLetteredDeliveries).toHaveBeenCalledTimes(1);
   });
 
-  it("replayFailedWebhooks is a no-op for a duplicate that loses the claim", async () => {
+  // #2384: the batch control said NOTHING on either ending. Success revalidated
+  // the Overview and returned void; a duplicate press inside the five minute
+  // window returned in silence. So the one thing that re-fires a receiver's whole
+  // backlog after an outage was indistinguishable from a broken button on exactly
+  // the press somebody makes when they are unsure the first one worked.
+  it("replayFailedWebhooks says how many it queued, on the page the button is on", async () => {
+    emit.replayDeadLetteredDeliveries.mockResolvedValueOnce(0);
+    await expect(replayFailedWebhooks(form({ hours: "24" }))).rejects.toThrow(
+      "NEXT_REDIRECT:/admin/webhooks?replay=0",
+    );
+    expect(revalidatePath).toHaveBeenCalledWith("/admin/webhooks");
+  });
+
+  it("replayFailedWebhooks tells the admin when a duplicate lost the claim", async () => {
     locks.acquireLock.mockResolvedValueOnce(null);
-    await replayFailedWebhooks(form({ hours: "24" }));
+    await expect(replayFailedWebhooks(form({ hours: "24" }))).rejects.toThrow(
+      "NEXT_REDIRECT:/admin/webhooks?replay=deduped",
+    );
     expect(emit.replayDeadLetteredDeliveries).not.toHaveBeenCalled();
     expect(revalidatePath).not.toHaveBeenCalled();
   });
@@ -634,9 +677,15 @@ describe("setWebhookEndpoint key handling (#600)", () => {
     auth.requireAdmin.mockResolvedValueOnce(admin);
     dbState.single = { id: "ep1" };
 
-    await setWebhookEndpoint(
-      form({ url: "https://events.regalvoice.com/events", format: "regal", auth_header: "" }),
-    );
+    // #2384: a successful save redirects now, so the call rejects with the
+    // NEXT_REDIRECT the mocked `redirect` throws. It used to return void and
+    // revalidate the Overview, so the page the admin was looking at redrew with
+    // the URL and key marker it showed before they pressed Save.
+    await expect(
+      setWebhookEndpoint(
+        form({ url: "https://events.regalvoice.com/events", format: "regal", auth_header: "" }),
+      ),
+    ).rejects.toThrow("NEXT_REDIRECT:/admin/webhooks?ok=webhook-endpoint");
 
     expect(update).toHaveBeenCalledTimes(1);
     const patch = update.mock.calls[0][0] as Record<string, unknown>;
@@ -650,9 +699,11 @@ describe("setWebhookEndpoint key handling (#600)", () => {
     auth.requireAdmin.mockResolvedValueOnce(admin);
     dbState.single = { id: "ep1" };
 
-    await setWebhookEndpoint(
-      form({ url: "https://events.regalvoice.com/events", format: "regal", auth_header: "   " }),
-    );
+    await expect(
+      setWebhookEndpoint(
+        form({ url: "https://events.regalvoice.com/events", format: "regal", auth_header: "   " }),
+      ),
+    ).rejects.toThrow(/NEXT_REDIRECT/);
 
     const patch = update.mock.calls[0][0] as Record<string, unknown>;
     expect(patch).not.toHaveProperty("auth_header");
@@ -662,13 +713,15 @@ describe("setWebhookEndpoint key handling (#600)", () => {
     auth.requireAdmin.mockResolvedValueOnce(admin);
     dbState.single = { id: "ep1" };
 
-    await setWebhookEndpoint(
-      form({
-        url: "https://events.regalvoice.com/events",
-        format: "regal",
-        auth_header: "new-key",
-      }),
-    );
+    await expect(
+      setWebhookEndpoint(
+        form({
+          url: "https://events.regalvoice.com/events",
+          format: "regal",
+          auth_header: "new-key",
+        }),
+      ),
+    ).rejects.toThrow(/NEXT_REDIRECT/);
 
     const patch = update.mock.calls[0][0] as Record<string, unknown>;
     expect(patch.auth_header).toBe("new-key");
@@ -687,20 +740,26 @@ describe("setWebhookEndpoint URL scheme guard (#1032)", () => {
       setWebhookEndpoint(form({ url: "http://events.regalvoice.com/events", format: "regal" })),
     ).rejects.toThrow(/NEXT_REDIRECT/);
 
-    const call = redirect.mock.calls.find(([u]) => String(u).includes("webhook_error"));
-    expect(call).toBeTruthy();
+    // #2384: on the page that hosts the form, carrying the reason. It used to go
+    // to `/admin?webhook_error=`, and the Overview reads neither the name nor the
+    // value, so the refusal was destroyed and the admin was left believing the
+    // `http://` URL they had typed was live. Nothing had been written.
+    const to = decodeURIComponent(String(redirect.mock.calls.at(-1)?.[0]));
+    expect(to).toMatch(/^\/admin\/webhooks\?error=/);
+    expect(to).toMatch(/https/i);
     expect(insert).not.toHaveBeenCalled();
     expect(update).not.toHaveBeenCalled();
   });
 
-  it("accepts an https:// URL and inserts the endpoint", async () => {
+  it("accepts an https:// URL, inserts the endpoint, and confirms it on the page", async () => {
     auth.requireAdmin.mockResolvedValueOnce(admin);
     dbState.single = null;
 
-    await setWebhookEndpoint(form({ url: "https://events.regalvoice.com/events", format: "regal" }));
+    await expect(
+      setWebhookEndpoint(form({ url: "https://events.regalvoice.com/events", format: "regal" })),
+    ).rejects.toThrow("NEXT_REDIRECT:/admin/webhooks?ok=webhook-endpoint");
 
     expect(insert).toHaveBeenCalledTimes(1);
-    expect(redirect).not.toHaveBeenCalled();
   });
 });
 
@@ -886,10 +945,15 @@ describe("setUserLifecycle (#278)", () => {
     expect(offboarding.applyLifecycleByUserId).not.toHaveBeenCalled();
   });
 
-  it("refuses to deactivate your own account, and never calls the service", async () => {
-    await expect(
-      setUserLifecycle(form({ user_id: admin.id, action: "deactivate" })),
-    ).rejects.toThrow(/your own account/i);
+  // #2385: the refusal reaches the person, on the page the button is on. It used
+  // to throw, so an admin who pressed Deactivate on their own row met the generic
+  // error boundary and could not tell a refusal from the page breaking, on the
+  // one control whose whole point is that it would lock them out.
+  it("refuses to deactivate your own account on the page, and never calls the service", async () => {
+    await setUserLifecycle(form({ user_id: admin.id, action: "deactivate" })).catch(() => {});
+    const to = decodeURIComponent(String(redirect.mock.calls.at(-1)?.[0]));
+    expect(to).toMatch(new RegExp(`^/admin/agents/${admin.id}\\?error=`));
+    expect(to).toMatch(/your own account/i);
     expect(offboarding.applyLifecycleByUserId).not.toHaveBeenCalled();
   });
 
@@ -1866,14 +1930,14 @@ describe("the reads that decide authorization or a write must refuse, not guess 
 
     it("updates the endpoint that already exists", async () => {
       dbState.rowsByTable.webhook_endpoints = { id: "ep1" };
-      await setWebhookEndpoint(endpointForm());
+      await setWebhookEndpoint(endpointForm()).catch(() => {});
       expect(update).toHaveBeenCalled();
       expect(insert).not.toHaveBeenCalled();
     });
 
     it("inserts only when the read really found nothing", async () => {
       dbState.rowsByTable.webhook_endpoints = null;
-      await setWebhookEndpoint(endpointForm());
+      await setWebhookEndpoint(endpointForm()).catch(() => {});
       expect(insert).toHaveBeenCalled();
       expect(update).not.toHaveBeenCalled();
     });
@@ -2134,11 +2198,18 @@ describe("saving a bucket is atomic, refuses loudly, and is recorded (#1930)", (
     const create = (over: Record<string, string | string[]> = {}) =>
       form({ code: "412", name: "New pool", event_type_id: "et1", members: ["u1"], ...over });
 
-    it("names a duplicate code apart from any other refusal", async () => {
+    // #2385: the duplicate is the one refusal here an admin can act on, so it
+    // comes back to the buckets page as a sentence rather than throwing. #1930
+    // wrote this wording and delivered it to nobody: a thrown message is replaced
+    // in production, so an admin typing an XBC that already had a bucket was told
+    // to reload and check whether it had gone through, found no bucket, and typed
+    // the same code again.
+    it("names a duplicate code on the page, apart from any other refusal", async () => {
       dbState.insertReturnError = { message: "duplicate key value", code: "23505" };
-      await expect(createBucket(create())).rejects.toThrow(
-        /bucket with code 412 already exists/i,
-      );
+      await createBucket(create()).catch(() => {});
+      const to = decodeURIComponent(String(redirect.mock.calls.at(-1)?.[0]));
+      expect(to).toMatch(/^\/admin\/buckets\?error=/);
+      expect(to).toMatch(/bucket with code 412 already exists/i);
       expect(recordAudit).not.toHaveBeenCalled();
     });
 
@@ -2211,14 +2282,14 @@ describe("creating an event type refuses rather than inventing (#1950)", () => {
     form({ name: "Quick check in", duration_min: "20", ...over });
 
   it("writes the event type when the title is new", async () => {
-    await createEventType(add());
+    await createEventType(add()).catch(() => {});
     const row = insert.mock.calls.at(-1)?.[0] as Record<string, unknown>;
     expect(row.name).toBe("Quick check in");
     expect(row.duration_min).toBe(20);
   });
 
   it("applies the shared default to a field left blank, not a number of its own", async () => {
-    await createEventType(add({ duration_min: "", slot_interval_min: "" }));
+    await createEventType(add({ duration_min: "", slot_interval_min: "" })).catch(() => {});
     const row = insert.mock.calls.at(-1)?.[0] as Record<string, unknown>;
     expect(row.duration_min).toBe(EVENT_TYPE_DEFAULTS.duration_min);
     expect(row.slot_interval_min).toBe(EVENT_TYPE_DEFAULTS.slot_interval_min);
@@ -2226,15 +2297,27 @@ describe("creating an event type refuses rather than inventing (#1950)", () => {
     expect(row.regal_type).toBe(EVENT_TYPE_DEFAULTS.regal_type);
   });
 
-  it("refuses a blank title instead of naming the record itself", async () => {
-    await expect(createEventType(add({ name: "" }))).rejects.toThrow(/needs a title/i);
+  // #2385: both of these are refusals the admin can fix by retyping, so both
+  // come back to the page the add form is on. They used to throw, which in
+  // production is the generic error boundary, so the sentence telling somebody
+  // their title was already taken was read by nobody.
+  const refusalOf = async (run: () => Promise<unknown>): Promise<string> => {
+    await run().catch(() => {});
+    const call = redirect.mock.calls.at(-1);
+    return call ? decodeURIComponent(String(call[0])) : "(no redirect)";
+  };
+
+  it("refuses a blank title on the page instead of naming the record itself", async () => {
+    const to = await refusalOf(() => createEventType(add({ name: "" })));
+    expect(to).toMatch(/^\/admin\/event-types\?error=/);
+    expect(to).toMatch(/needs a title/i);
     expect(insert).not.toHaveBeenCalled();
   });
 
-  it("refuses a title an event type already has", async () => {
-    await expect(
-      createEventType(add({ name: "Senior Loan Advisor Call" })),
-    ).rejects.toThrow(/already exists/i);
+  it("refuses a title an event type already has, on the page", async () => {
+    const to = await refusalOf(() => createEventType(add({ name: "Senior Loan Advisor Call" })));
+    expect(to).toMatch(/^\/admin\/event-types\?error=/);
+    expect(to).toMatch(/already exists/i);
     expect(insert).not.toHaveBeenCalled();
   });
 
@@ -2242,9 +2325,8 @@ describe("creating an event type refuses rather than inventing (#1950)", () => {
   // "senior loan advisor call " and the record differ by nothing a reader of the
   // list could see.
   it("refuses a title that differs only in case or spacing", async () => {
-    await expect(
-      createEventType(add({ name: "  senior loan advisor CALL  " })),
-    ).rejects.toThrow(/already exists/i);
+    const to = await refusalOf(() => createEventType(add({ name: "  senior loan advisor CALL  " })));
+    expect(to).toMatch(/already exists/i);
     expect(insert).not.toHaveBeenCalled();
   });
 
@@ -2274,7 +2356,7 @@ describe("creating an event type refuses rather than inventing (#1950)", () => {
   });
 
   it("records what was created, with the timings that decide every booking", async () => {
-    await createEventType(add({ slot_interval_min: "10" }));
+    await createEventType(add({ slot_interval_min: "10" })).catch(() => {});
     const entry = recordAudit.mock.calls.at(-1)?.[0] as Record<string, unknown>;
     expect(entry.action).toBe("event_type.created");
     const details = entry.details as Record<string, unknown>;
@@ -2283,8 +2365,10 @@ describe("creating an event type refuses rather than inventing (#1950)", () => {
     expect(details.slot_interval_min).toBe(10);
   });
 
-  it("refreshes the page its own form is on", async () => {
-    await createEventType(add());
+  it("refreshes the page its own form is on, and confirms there", async () => {
+    await expect(createEventType(add())).rejects.toThrow(
+      "NEXT_REDIRECT:/admin/event-types?ok=event-type-created",
+    );
     expect(revalidatePath).toHaveBeenCalledWith("/admin/event-types");
   });
 });
