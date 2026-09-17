@@ -29,6 +29,7 @@ export const ALERT_FAMILIES = [
   "a-limit-or-a-guard-is-not-working",
   "the-booking-api-is-refusing-its-caller",
   "an-unexpected-fault-was-reported",
+  "a-merge-has-not-shipped-or-ci-cannot-run",
   "something-was-measured-and-is-only-worth-knowing",
 ] as const;
 
@@ -51,6 +52,15 @@ const FAMILY_BY_KEY: Record<string, AlertFamily> = {
   detector_parked: "a-lane-or-schedule-has-gone-quiet",
   detector_unpark: "a-lane-or-schedule-has-gone-quiet",
   migration_version_lag: "a-lane-or-schedule-has-gone-quiet",
+
+  // #2476, #2229. Its own family rather than folded into the quiet lane one above,
+  // because the reader's first move is different in a way that matters: those are
+  // answered inside Slate (a heartbeat, a log, a lane), and these two are answered on
+  // GitHub, by somebody who may need billing access rather than a deploy. They are
+  // together because they are the same pipeline seen from two ends, and because the
+  // refusal is what makes the deploy page's own remedy unavailable.
+  main_not_deployed: "a-merge-has-not-shipped-or-ci-cannot-run",
+  ci_runs_refused: "a-merge-has-not-shipped-or-ci-cannot-run",
   volume_count_unreadable: "a-lane-or-schedule-has-gone-quiet",
   audit_write_failed: "a-lane-or-schedule-has-gone-quiet",
 

@@ -229,6 +229,16 @@ export const ALERT_CATALOG: AlertEntry[] = [
     why: "The running deployment cannot use its request rate limits, which stays true until a deploy puts them back, so the reader needs to be told when it is over (#1529).",
   },
   {
+    key: "main_not_deployed",
+    kind: "condition",
+    why: "Main is merged and not live, which stays true until a deploy carries it; the monitor lane compares the served commit against main's tip every tick, so it ends when they agree again (#2476).",
+  },
+  {
+    key: "ci_runs_refused",
+    kind: "condition",
+    why: "GitHub is failing jobs without starting them, which stays true until the account can run them again; the next run whose jobs execute steps is the measured healthy reading that ends it (#2229).",
+  },
+  {
     key: "definer_grants_to_web_roles",
     kind: "condition",
     why: "A database function running with its owner's privileges is executable by a web role, which stays true until somebody revokes the grant, so the reader needs to be told when it is over (#2447).",

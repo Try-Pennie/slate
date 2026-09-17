@@ -34,6 +34,7 @@ import {
   mayDeclarePerRun,
   perRunDeclarations,
   splitPerRunMissing,
+  splitByOrgScope,
   stalePerRunDeclarations,
   workflowTriggers,
 } from "./lib/scan-workflow-env-coverage.ts";
@@ -593,6 +594,90 @@ jobs:
   assert(
     declaredNames > 0,
     `the real tree holds at least one per-run declaration (found ${declaredNames}), so this read something`,
+  );
+}
+
+// --- org level settings (#2342) ------------------------------------------------
+//
+// `gh variable list` and `gh secret list` see repo scope only, so a setting defined
+// on the organisation reads as missing. The split has to tell three states apart,
+// and the one that matters is `unchecked`: a reference nothing could answer for
+// must never render as one that was checked and found absent (L11, L98).
+{
+  const refs = [
+    { kind: "vars" as const, name: "ORG_ONLY" },
+    { kind: "secrets" as const, name: "ORG_SECRET" },
+    { kind: "vars" as const, name: "NOWHERE" },
+  ];
+  const org = {
+    available: true as const,
+    vars: new Map<string, number | null>([["ORG_ONLY", 0]]),
+    secrets: new Map<string, number | null>([["ORG_SECRET", 0]]),
+  };
+  const split = splitByOrgScope(refs, org);
+  eq(split.present.length, 2, "a setting the org defines is present, not missing");
+  eq(split.missing.length, 1, "and one defined nowhere is still a finding");
+  eq(split.missing[0]!.name, "NOWHERE", "named");
+  eq(split.unchecked.length, 0, "with nothing unchecked when the org listing was read");
+}
+{
+  // The state measured on 2026-09-14: the local token answers 403 for the org, so
+  // seven correctly configured settings read as missing and blocked the push.
+  const split = splitByOrgScope(
+    [{ kind: "vars", name: "LOADTEST_BASE_URL" }],
+    { available: false, reason: "HTTP 403" },
+  );
+  eq(split.missing.length, 0, "a refused org listing produces NO missing finding");
+  eq(split.unchecked.length, 1, "it produces an unchecked reference instead");
+  assert(
+    /could not be read/.test(split.unchecked[0]!.reason) && /403/.test(split.unchecked[0]!.reason),
+    `and the reason says the listing could not be read, and what it said (got ${split.unchecked[0]!.reason})`,
+  );
+}
+{
+  // The other direction, which is the one an eager union would get wrong: an org
+  // setting shared with a SELECTED list of repositories may not reach this repo at
+  // all, so counting it as present would report a reference that interpolates the
+  // empty string as configured, which is the whole fault being guarded.
+  const split = splitByOrgScope([{ kind: "secrets", name: "PARTIAL" }], {
+    available: true,
+    vars: new Map(),
+    secrets: new Map([["PARTIAL", 3]]),
+  });
+  eq(split.present.length, 0, "an org setting shared with selected repos is not called present");
+  eq(split.missing.length, 0, "nor called missing, since the org does define it");
+  eq(split.unchecked.length, 1, "it is unchecked");
+  assert(
+    /selected/.test(split.unchecked[0]!.reason),
+    `and says why (got ${split.unchecked[0]!.reason})`,
+  );
+}
+{
+  // A kind confusion would be invisible in a union keyed on the name alone: an org
+  // VARIABLE named X must not answer for a reference to the SECRET X.
+  const split = splitByOrgScope([{ kind: "secrets", name: "X" }], {
+    available: true,
+    vars: new Map([["X", 0]]),
+    secrets: new Map(),
+  });
+  eq(split.missing.length, 1, "an org variable does not satisfy a secret reference of the same name");
+}
+{
+  // A count the listing did not give, which is neither zero nor a number: fed into
+  // `> 0` a defaulted zero would read as "shared with every repo" and report the
+  // setting as PRESENT, which is the one direction that waves through a reference
+  // interpolating an empty string (L50).
+  const split = splitByOrgScope([{ kind: "vars", name: "NO_COUNT" }], {
+    available: true,
+    vars: new Map<string, number | null>([["NO_COUNT", null]]),
+    secrets: new Map<string, number | null>(),
+  });
+  eq(split.present.length, 0, "an unreadable share count is not called present");
+  eq(split.missing.length, 0, "nor called missing");
+  eq(split.unchecked.length, 1, "it is unchecked");
+  assert(
+    /no readable count/.test(split.unchecked[0]!.reason),
+    `and says the count is what could not be read (got ${split.unchecked[0]!.reason})`,
   );
 }
 

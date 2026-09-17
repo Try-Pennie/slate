@@ -104,6 +104,46 @@ deploy), it is a safety net, not prevention: that is the accepted residual risk
 until the org upgrades. A **deliberate** direct push (an admin hotfix) must carry
 `[allow-direct-push]` in its commit message to stay silent; otherwise it pages.
 
+## The two things a workflow cannot report about itself (#2476, #2229)
+
+Both live on the Worker's monitor lane
+(`src/lib/monitor/github-ci-health.ts`, the `ci_health` step), for the reason the
+canary gap filler lives there: an Actions workflow cannot report on Actions being
+unavailable, because the run that would carry the report is the run that did not
+happen. One listing of recent runs answers both, so the cost on the invocation four
+cron lanes share is ONE subrequest per five minute tick, plus a second only when the
+newest completed run failed.
+
+- **`main_not_deployed`**: the live Worker's stamped commit (`BUILD_COMMIT`, #1037)
+  is not main's tip, `DEPLOY_GRACE_MS` after that commit landed. A cancelled run
+  never reaches `deploy`, and main only self corrects when another merge follows, so
+  **the gap is the last merge of a burst**: merged, closed, `/api/health` green
+  because the previous version serves perfectly well, and the fix somebody believes
+  shipped is not running (L4). Measured 2026-09-16 during nineteen merges: three runs
+  on main were cancelled with `deploy` absent, each covered by a later merge.
+  A run that FAILED on main is recorded and does not page here, because
+  `deploy-alert.yml` already pages on exactly that and two pagers about one fact is
+  how both stop being read (L36).
+- **`ci_runs_refused`**: the newest completed run's failed jobs executed **zero
+  steps**, so nothing ran and there is no log. On 2026-09-10 that was ten red checks
+  on a pull request under an annotation shown in neither `gh pr checks` nor the checks
+  list, reading as the change having broken something. The discriminator is the steps
+  rather than the annotation, which needs a `checks: read` scope this token is not
+  guaranteed and which the message names as the thing to go and read. The verdict is
+  "the jobs never started" and not "the account is out of credit", because an
+  unallocatable runner looks identical and a message may claim only what its check
+  measured (L11). While it lasts **nothing server side is watching main**: the push
+  guard and the merge gap backstop are workflows too.
+
+Neither clears on anything but a measured healthy reading: an unreadable or throwing
+listing pages nothing and resolves nothing (#1134, #1152). Every verdict is drivable
+with no network and no clock by `scripts/test-github-ci-health.ts`.
+
+**The Actions BALANCE is deliberately not here.** #2229 also asks for a floor alert
+before the allowance is zero, and the org billing endpoint needs a token carrying
+`admin:org`, which neither `GITHUB_TOKEN` nor the canary token has. It waits on the
+same fine grained token decision as #2264.
+
 # Parallel-agent dispatch playbook (worktree fan-out)
 
 This repo is often worked in fan-out mode: dispatch several subagents at once,
@@ -309,6 +349,51 @@ push touches a workflow. Skip a false positive with
 The decision logic (what counts as a reference, what is built in, what counts as
 missing) is pinned offline in `scripts/test-workflow-env-coverage.ts`, so the
 rule is tested even where the listing is not available.
+
+## A setting defined on the ORGANISATION (#2342)
+
+`gh variable list` and `gh secret list` are **repo scope only**. A setting defined
+on the org is perfectly usable by a workflow here and invisible to that listing, so
+every reference to one read as missing. On 2026-09-14 that refused a push naming
+seven settings that all existed, and the documented way through was the override,
+which is how a guard stops being read (L36).
+
+The check now asks the ORG as well, and a reference absent from repo scope is split
+three ways rather than two:
+
+- **present**: the org listing holds it. Not a finding.
+- **missing**: the org listing was READ and does not hold it. Still a finding, still
+  fails the push, still names the workflow and the `gh` command that creates it.
+- **unchecked**: nothing available could answer. Reported as its own `note:` line
+  (which the hook echoes) and never as a missing setting, because a reference nobody
+  could check and one checked and found absent send two different people to do two
+  different things (L11, L98). The summary line says how many of how many were
+  judged, so a pass can never be read as more than it measured.
+
+Two things reach `unchecked`, and the second is the one an eager union would get
+wrong. The org listing being REFUSED is the obvious one: `gh api
+orgs/Try-Pennie/actions/variables` answers 403 for the local token, measured
+2026-09-14 and still true. The other is an org setting shared with a **selected**
+list of repositories: the listing says how many repos it is shared with and not
+WHICH, so counting it as present would wave through exactly the reference that
+interpolates an empty string.
+
+A repository owned by a PERSON has no org at all, so the endpoint answers 404. That
+is an EMPTY org listing, not an unreadable one: treating it as unreadable would turn
+every real finding into an unchecked one while printing reassuring output.
+
+The org is asked only about what is left after the repo listing and the per-run
+declarations, so a fully configured repo, and one whose only absences are declared,
+both pay no extra round trips. `splitByOrgScope` and `classifyOrgListingError` are
+pure and pinned offline by `scripts/test-workflow-env-coverage.ts`; the whole
+checker is driven end to end through a stub `gh` by
+`scripts/test-workflow-settings-checker.ts`, including a stub that FAILS every org
+call, which is how "a configured repo never asks the org" is proved rather than
+assumed.
+
+**This is also what #2264's CI job would need.** A token that can read repo scope
+and not org scope would report the org-defined settings as unchecked on every run,
+so the job would pass while judging less than it looks like it judged.
 
 ## A setting that is PROVISIONED PER RUN (#2293)
 

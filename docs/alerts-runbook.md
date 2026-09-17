@@ -378,6 +378,38 @@ deploy to revert.
 
 ---
 
+## A merge has not shipped, or CI cannot run
+
+Keys: `main_not_deployed`, `ci_runs_refused`.
+
+**What fired it.** Something between merging and running is not working, and both of
+these are invisible from every other surface: the pull request is merged, the issue is
+closed, and `/api/health` is green because the previous version is serving perfectly
+well. The monitor lane compares the commit the live Worker was stamped with against
+main's tip, and reads whether the newest completed run's jobs executed anything.
+
+**First checks.**
+- `main_not_deployed` names both commits and links the run. A run that was CANCELLED
+  never reaches the deploy job, and main only self corrects when another merge follows,
+  so the last merge of a burst can sit undeployed indefinitely. A run that reported
+  SUCCESS and is still not being served is a different fault: look at the deploy job
+  inside that run before re-running anything.
+- `ci_runs_refused` means the jobs concluded failed having executed zero steps, so
+  there is no log to open. Read the annotation on any job in the linked run, which is
+  shown on neither `gh pr checks` nor the checks list on the pull request. A failed
+  payment, an exhausted spending limit, or a runner that could not be allocated all
+  look like this.
+
+**Fix or escalate.** For a cancelled deploy, re-run the deploy job on the named run or
+push to main again; either carries the tip live and the page clears on the next tick.
+For a refusal, the remedy is on the GitHub account rather than in this repo, and it
+needs somebody with billing access. While a refusal lasts, nothing server side is
+watching main at all: `main-push-guard.yml` and `merge-gap.yml` are themselves
+workflows, so treat a direct push or a red merge during that window as unguarded and
+check it by hand afterwards.
+
+---
+
 ## Something was measured and is only worth knowing
 
 Keys: `rate_limit_blocked:*`, `ooo_agent_dm`, `ooo_approvals_digest`,
