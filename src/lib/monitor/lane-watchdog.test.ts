@@ -107,6 +107,10 @@ const healthy = () => ({
   // workflow rather than by this Worker. A healthy fleet has yesterday's run in it,
   // which is well inside the 52h bound that carries it over one dropped run.
   "verdict:burst-counter": ago(24 * 60 * MIN),
+  // #2493: the nightly proof that public booking can still be stopped, stamped by a
+  // GitHub workflow like the line above and carrying the same 52h bound. A healthy
+  // fleet has last night's run in it.
+  "verdict:kill-switch": ago(24 * 60 * MIN),
   // `verdict:booking-failure-rate` is deliberately ABSENT, and that is the healthy
   // state rather than a gap in the fixture (#2499). The check cannot reach a
   // verdict before real Low leads book: the outcome mix read excludes test

@@ -38,6 +38,13 @@ import {
 import { readAgentBusyRange } from "@/lib/monitor/availability-truth-store";
 import { runRosterCoverageCheck } from "@/lib/monitor/roster-coverage";
 import {
+  runBookingPauseCheck,
+  BOOKING_PAUSE_UNREADABLE,
+  PAUSE_NOTICE_AFTER_MS,
+  type BookingPauseVerdict,
+} from "@/lib/monitor/booking-pause";
+import { readPublicBookingPauseState } from "@/lib/booking/settings";
+import {
   planTierAlerts,
   tierStaffingKey,
   tierUnstaffedMessage,
@@ -58,6 +65,7 @@ import { type WorkingRule } from "@/lib/monitor/availability-health";
 import { runAvailabilityScan } from "@/lib/monitor/availability-scan";
 import {
   runLowVolumeCheck,
+  isBusinessHours,
   type LowVolumeResult,
 } from "@/lib/monitor/booking-volume";
 import { countCustomerBookingsSince } from "@/lib/monitor/customer-bookings";
@@ -754,6 +762,62 @@ export async function GET(req: NextRequest) {
     if (!gates.rosterCoverage.run) {
       log.warn("monitor", { msg: "roster coverage skipped", why: gates.rosterCoverage.why });
     }
+
+    // --- Has somebody stopped public booking and left it that way (#2366)? ---
+    //
+    // #2297 made the kill switch visible on the admin Overview, which helps whoever
+    // looks. This is the half that raises a hand at whoever does not: bookings
+    // stopped at 2am to contain a problem, the problem fixed, the switch forgotten.
+    // Every other signal reads healthy meanwhile, because everything else IS healthy,
+    // and the thing that eventually notices is the low booking volume alarm, which
+    // reports a drought and sends the reader after a funnel problem that is not there.
+    //
+    // The elapsed time comes from `public_booking_paused_at`, stamped by the database
+    // at the transition (migration 0132), never from when this lane first noticed: a
+    // deploy or a lane restart would otherwise reset the count and the notice would
+    // never fire.
+    //
+    // The read THROWS rather than answering null, so the step boundary reports it
+    // under `monitor_step_failing` and the fallback below renders `unreadable`: a run
+    // that could not measure must not look like one that measured and found the
+    // switch off. Its own boundary like every other check, so an unreadable settings
+    // row cannot cancel the checks after it (L73). ---
+    const bookingPause = await steps.run<BookingPauseVerdict>(
+      "booking_pause",
+      BOOKING_PAUSE_UNREADABLE,
+      async () =>
+        runBookingPauseCheck({
+          reading: await readPublicBookingPauseState(),
+          nowMs: now,
+          // Null when the week could not be read, and the check errs toward speaking
+          // on it: the hours decide WHEN to say a stopped switch has stood too long,
+          // never whether there is anything to say. Judged through the same predicate
+          // the volume alarm uses, so the two cannot disagree about whether the org
+          // is open (L41).
+          open: businessHours
+            ? isBusinessHours(now, {
+                zone: businessHours.zone,
+                rules: businessHours.rules,
+                exceptions: businessHours.exceptions,
+              })
+            : null,
+          thresholdMs: PAUSE_NOTICE_AFTER_MS,
+          // alert-key: public_booking_stopped
+          // The key is passed by the pure check rather than written here, so it is
+          // declared instead of being read off this call.
+          // alert-text-ok: our own copy from booking-pause.ts, built from a measured
+          // span; no error text can reach it.
+          notify: (key, cooldownMs, text) => sendThrottledAlert(key, cooldownMs, text),
+          // alert-key: public_booking_stopped
+          // all-clear-proof: scripts/test-monitor-booking-pause.ts - a tick that is
+          // itself reporting the stopped switch, and a tick holding under the
+          // threshold, each clear NOTHING; only a tick that READ the flag as false
+          // does, and a tick whose read threw never reaches the check at all.
+          resolve: (key, text) => resolveAlert(key, text),
+          cooldownMs: settings.cooldownMs.public_booking_stopped,
+          log: (m) => log.warn("booking-pause", { msg: m }),
+        }),
+    );
 
     // --- Can a lead in each DEBT TIER actually get a time? (#2505) ---
     //
@@ -2515,6 +2579,10 @@ export async function GET(req: NextRequest) {
       // shape: "could not check" and "everyone's hours cover the week" are the two
       // this check exists to keep apart (#1454).
       rosterCoverage,
+      // status "unreadable" when the settings read threw, never a running-looking
+      // shape: "could not read the switch" and "bookings are being taken" are the two
+      // this check exists to keep apart (#2366).
+      bookingPause,
       overrideSweep,
       // null when the step failed, and "not-measured" inside when GitHub could not
       // be read: "main's tip is live" and "nothing could say" must not render the

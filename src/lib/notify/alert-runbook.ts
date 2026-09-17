@@ -79,6 +79,12 @@ const FAMILY_BY_KEY: Record<string, AlertFamily> = {
   booker_unstaffed: "the-booker-is-offering-nothing-or-too-little",
   no_eligible_agents: "the-booker-is-offering-nothing-or-too-little",
   low_booking_volume: "the-booker-is-offering-nothing-or-too-little",
+  // #2366. The same family, and deliberately so: this is the one cause of an empty
+  // booker that the family's own first check cannot see, because availability is
+  // healthy and the refusal happens on the write. A reader who arrives here from the
+  // volume alarm is already in this section, and the procedure's first line is now
+  // the kill switch.
+  public_booking_stopped: "the-booker-is-offering-nothing-or-too-little",
   booking_failure_rate: "the-booker-is-offering-nothing-or-too-little",
 
   // Slate is turning its own integration away (#1442, #1450, #1709). Its own

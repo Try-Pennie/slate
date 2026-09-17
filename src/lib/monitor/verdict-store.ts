@@ -24,26 +24,30 @@ import {
   LANE_WATCHDOG_VERDICT_LANE,
   TIER_STAFFING_VERDICT_LANE,
   BURST_COUNTER_VERDICT_LANE,
+  KILL_SWITCH_VERDICT_LANE,
   type DetectorVerdictLane,
 } from "@/lib/monitor/verdict-freshness";
 
 /**
  * The verdict lanes this Worker stamps for itself.
  *
- * `verdict:burst-counter` (#2392) is deliberately NOT one of them: the check it
- * records has to CALL the burst counter Durable Object, which is the one thing the
- * monitor lane must not do (calling it creates the object and gives it an alarm to
- * clean up on every tick forever), so it runs as a daily GitHub workflow and stamps
- * through the key authed heartbeat endpoint instead.
+ * TWO are deliberately NOT, and both for the same reason: the check each records
+ * does something the monitor lane must not.
  *
- * Excluding it in the TYPE rather than by leaving it out of the table below is what
- * keeps that a decision rather than an omission: a seventh lane added to the family
- * and forgotten here still fails `tsc`, which is the whole reason this map is a
- * `Record` (L129).
+ * `verdict:burst-counter` (#2392) has to CALL the burst counter Durable Object, and
+ * calling it creates the object and gives it an alarm to clean up on every tick
+ * forever. `verdict:kill-switch` (#2493) has to STOP PUBLIC BOOKING for about two
+ * seconds, which is not something a lane running every five minutes may do. Both run
+ * as GitHub workflows and stamp through the key authed heartbeat endpoint instead.
+ *
+ * Excluding them in the TYPE rather than by leaving them out of the table below is
+ * what keeps that a decision rather than an omission: a further lane added to the
+ * family and forgotten here still fails `tsc`, which is the whole reason this map is
+ * a `Record` (L129).
  */
 export type WorkerStampedVerdictLane = Exclude<
   DetectorVerdictLane,
-  typeof BURST_COUNTER_VERDICT_LANE
+  typeof BURST_COUNTER_VERDICT_LANE | typeof KILL_SWITCH_VERDICT_LANE
 >;
 
 const STAMP: Record<WorkerStampedVerdictLane, () => Promise<void>> = {

@@ -184,14 +184,19 @@ for (const [mapName, bounds] of Object.entries(BOUNDS)) {
     { lane: "smoke-canary-full", file: "smoke-canary.yml", call: /lane=smoke-canary-full(?![\w-])/ },
     { lane: "schedule-parity", file: "schedule-parity.yml", call: /lane=schedule-parity(?![\w-])/ },
     { lane: "router-replay", file: "router-replay.yml", call: /lane=router-replay(?![\w-])/ },
-    // The one DETECTOR VERDICT lane stamped from outside the Worker (#2392), so it
-    // is watched by VERDICT_STALE_BOUNDS_MS rather than by the canary map its four
-    // neighbours here use, and the assertion below picks the map per row instead of
-    // assuming one.
+    // The two DETECTOR VERDICT lanes stamped from outside the Worker (#2392, #2493),
+    // so they are watched by VERDICT_STALE_BOUNDS_MS rather than by the canary map
+    // their four neighbours here use, and the assertion below picks the map per row
+    // instead of assuming one.
     {
       lane: "verdict:burst-counter",
       file: "burst-counter.yml",
       call: /lane=verdict:burst-counter(?![\w:-])/,
+    },
+    {
+      lane: "verdict:kill-switch",
+      file: "kill-switch.yml",
+      call: /lane=verdict:kill-switch(?![\w:-])/,
     },
   ];
   // Anchored on a word boundary, never a bare substring. `includes("lane=router-replay")`

@@ -46,6 +46,11 @@ const CANARY_HEARTBEAT_LANES = new Set([
   // workflow ran, so a run that could not reach the deployment leaves it
   // unstamped and it goes stale against VERDICT_STALE_BOUNDS_MS.
   "verdict:burst-counter",
+  // The nightly proof that public booking can still be stopped (#2493). Same family
+  // and same rule as the line above: it records that the check CONCLUDED, never that
+  // the workflow ran, so a run the deployment never answered, or one that stood down
+  // because somebody had already stopped bookings, leaves it unstamped.
+  "verdict:kill-switch",
 ]);
 
 export async function POST(req: NextRequest) {

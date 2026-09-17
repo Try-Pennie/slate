@@ -26,6 +26,7 @@ import {
   loadBookingHorizonDays,
   readBookingHorizonDays,
   readPublicBookingPaused,
+  readPublicBookingPauseState,
   parseHorizonForm,
   HORIZON_DEFAULT,
   HORIZON_MIN,
@@ -267,5 +268,93 @@ describe("readPublicBookingPaused", () => {
     expect(await readPublicBookingPaused()).toBe(false);
     maybeSingle.mockResolvedValue({ data: null, error: { message: "read failed" } });
     expect(await readPublicBookingPaused()).toBeNull();
+  });
+});
+
+// #2366: the MONITOR's reader for the same flag, plus when the switch was thrown.
+// It is a deliberate second reader rather than a widening of the one above, and the
+// difference is the error handling: this one THROWS, so the monitor lane's step
+// boundary reports it and the check renders "unreadable" rather than a silence
+// nobody can tell from a healthy switch.
+describe("readPublicBookingPauseState", () => {
+  beforeEach(() => {
+    maybeSingle.mockReset();
+    maybeSingle.mockResolvedValue({ data: null, error: null });
+  });
+
+  it("reads a stored pause with the instant it was thrown", async () => {
+    maybeSingle.mockResolvedValue({
+      data: { public_booking_paused: true, public_booking_paused_at: "2026-09-17T06:00:00.000Z" },
+      error: null,
+    });
+    await expect(readPublicBookingPauseState()).resolves.toEqual({
+      paused: true,
+      sinceMs: Date.UTC(2026, 8, 17, 6, 0, 0),
+    });
+  });
+
+  // Running is running whatever the stamp says, and the stamp is reported as absent
+  // rather than as a time, because a moment carried past the thing it dates is how a
+  // correct history reads as corrupt (L589).
+  it("reads a stored false as running, with no instant at all", async () => {
+    maybeSingle.mockResolvedValue({
+      data: { public_booking_paused: false, public_booking_paused_at: null },
+      error: null,
+    });
+    await expect(readPublicBookingPauseState()).resolves.toEqual({ paused: false, sinceMs: null });
+  });
+
+  // A row paused before migration 0132, or by hand SQL against a database with the
+  // trigger dropped. Stopped, and nothing recorded when, which the check speaks about
+  // rather than waiting out a clock that does not exist.
+  it("reads a pause with no stamp as stopped with no recorded start", async () => {
+    maybeSingle.mockResolvedValue({
+      data: { public_booking_paused: true, public_booking_paused_at: null },
+      error: null,
+    });
+    await expect(readPublicBookingPauseState()).resolves.toEqual({ paused: true, sinceMs: null });
+  });
+
+  // An unreadable stamp must arrive as "nothing recorded", never as a NaN: every
+  // comparison with NaN is false, so the elapsed time would read as under the
+  // threshold for ever and the notice would never fire (#1169).
+  it("reads an unparseable stamp as no recorded start, never as a NaN", async () => {
+    maybeSingle.mockResolvedValue({
+      data: { public_booking_paused: true, public_booking_paused_at: "not a timestamp" },
+      error: null,
+    });
+    const read = await readPublicBookingPauseState();
+    expect(read).toEqual({ paused: true, sinceMs: null });
+    expect(Number.isNaN(read.sinceMs as number)).toBe(false);
+  });
+
+  // An unconfigured org has no settings row. A real answer: nobody ever paused
+  // bookings, so bookings are running.
+  it("reads a missing settings row as running", async () => {
+    maybeSingle.mockResolvedValue({ data: null, error: null });
+    await expect(readPublicBookingPauseState()).resolves.toEqual({ paused: false, sinceMs: null });
+  });
+
+  // THE FAILURE PATH, and the whole reason this reader exists beside the other one.
+  // A read error may not arrive as "bookings are running": that clears the notice off
+  // a query that never ran, which is the #1134 shape.
+  it("THROWS when the read errors, rather than reporting bookings as running", async () => {
+    maybeSingle.mockResolvedValue({ data: null, error: { message: "column does not exist" } });
+    await expect(readPublicBookingPauseState()).rejects.toThrow();
+  });
+
+  // The pair read together, so neither assertion above can be satisfied by a reader
+  // hard wired to one answer (L1).
+  it("differs from readPublicBookingPaused on exactly the failing read", async () => {
+    maybeSingle.mockResolvedValue({ data: null, error: { message: "read failed" } });
+    expect(await readPublicBookingPaused()).toBeNull();
+    await expect(readPublicBookingPauseState()).rejects.toThrow();
+
+    maybeSingle.mockResolvedValue({
+      data: { public_booking_paused: true, public_booking_paused_at: "2026-09-17T06:00:00.000Z" },
+      error: null,
+    });
+    expect(await readPublicBookingPaused()).toBe(true);
+    expect((await readPublicBookingPauseState()).paused).toBe(true);
   });
 });

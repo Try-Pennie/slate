@@ -2,6 +2,7 @@ import { supabaseAdmin } from "@/lib/supabase/admin";
 import { unwrap } from "@/lib/db/result";
 import { log } from "@/lib/log";
 import type { BookingSettings } from "@/lib/db/types";
+import { parseStampMs } from "@/lib/date/stamp";
 
 /**
  * Org-wide booking horizon (#216, folds in audit AUD-076). Precedence store > env >
@@ -277,4 +278,40 @@ export async function readPublicBookingPaused(): Promise<boolean | null> {
     log.error("booking-settings", { msg: "public booking pause read failed" }, err);
     return null;
   }
+}
+
+/**
+ * The kill switch AND when it was last thrown, for the monitor lane (#2366).
+ *
+ * A deliberate second read rather than a widening of `readPublicBookingPaused`
+ * above, and the difference is the error handling rather than the columns. That one
+ * is on the booking hot path, must never throw, and answers null so the gate can
+ * fail closed. This one is a monitor read: it THROWS on a read error, so the lane's
+ * own step boundary reports it under `monitor_step_failing` and the check reports
+ * `unreadable` rather than a silence indistinguishable from a healthy switch (L98).
+ *
+ * An ABSENT row is a real answer, not a failure: nobody has ever paused bookings, so
+ * bookings are running.
+ */
+export async function readPublicBookingPauseState(): Promise<{
+  paused: boolean;
+  /** Epoch ms the switch was last set to stopped, or null while it is running (and
+   *  for a paused row whose stamp predates migration 0132). */
+  sinceMs: number | null;
+}> {
+  const db = supabaseAdmin();
+  const row = unwrap(
+    await db
+      .from("booking_settings")
+      .select("public_booking_paused,public_booking_paused_at")
+      .eq("id", 1)
+      .maybeSingle(),
+    "booking_settings.public_booking_paused_at",
+  ) as Pick<BookingSettings, "public_booking_paused" | "public_booking_paused_at"> | null;
+  const paused = row?.public_booking_paused === true;
+  // parseStampMs, never Date.parse: an unreadable stamp must arrive as "nothing
+  // recorded when" rather than as a NaN every comparison reads as under the
+  // threshold, which would silence the notice forever (#1169).
+  const sinceMs = paused ? parseStampMs(row?.public_booking_paused_at) : null;
+  return { paused, sinceMs };
 }

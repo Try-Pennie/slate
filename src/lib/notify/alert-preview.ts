@@ -124,6 +124,11 @@ import {
 } from "@/lib/monitor/beyond-overflow";
 import { bookerUnstaffedAlert } from "@/lib/booking/alert-copy";
 import {
+  formatPublicBookingStoppedAlert,
+  formatPublicBookingRunningRecovery,
+  PAUSE_NOTICE_AFTER_MS,
+} from "@/lib/monitor/booking-pause";
+import {
   formatCiRefusedAlert,
   formatCiStartedRecovery,
   formatDeployLiveRecovery,
@@ -1307,6 +1312,38 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     channel: "recovery",
     text: formatRosterCoverageRecovery(),
   },
+  // #2366: the kill switch left on. Three states, because the reader gets a
+  // different amount of help in each and the difference is worth seeing side by side.
+  {
+    // The threshold exactly, which is the earliest this can ever be read. It has to
+    // read as a reasonable first thing to say rather than as an alarm.
+    key: "public_booking_stopped",
+    state: "just past the threshold, on a morning somebody forgot overnight",
+    channel: "alert",
+    text: formatPublicBookingStoppedAlert(PAUSE_NOTICE_AFTER_MS),
+  },
+  {
+    // The case the issue was filed about, read at the far end: stopped at 2am and
+    // first spoken about when the org opens.
+    key: "public_booking_stopped",
+    state: "stopped overnight and still stopped when the day starts",
+    channel: "alert",
+    text: formatPublicBookingStoppedAlert(6 * 60 * 60_000),
+  },
+  {
+    // No stamp at all, which is a row paused by hand SQL or one that predates
+    // migration 0132. It must not quote a span it never measured.
+    key: "public_booking_stopped",
+    state: "stopped with nothing recording when",
+    channel: "alert",
+    text: formatPublicBookingStoppedAlert(null),
+  },
+  {
+    key: "public_booking_stopped",
+    state: "somebody started booking again",
+    channel: "recovery",
+    text: formatPublicBookingRunningRecovery(),
+  },
   {
     key: "sync_staleness",
     state: "agents have dropped out of the sync rotation",
@@ -2069,6 +2106,20 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
       lane: "verdict:burst-counter",
       ageMs: 3 * 24 * 60 * 60_000,
       maxStaleMs: VERDICT_STALE_BOUNDS_MS["verdict:burst-counter"],
+      unreadable: false,
+    }),
+  },
+  // #2493: the kill switch proof, the second detector stamped by a GitHub workflow.
+  // Previewed in the NEVER concluded state rather than the merely stale one, because
+  // that is the state the issue describes: the command had run exactly once, by hand.
+  {
+    key: "cron_lane_stale:*",
+    state: "the kill switch proof has never once concluded",
+    channel: "alert",
+    text: verdictBlindAlertText({
+      lane: "verdict:kill-switch",
+      ageMs: Infinity,
+      maxStaleMs: VERDICT_STALE_BOUNDS_MS["verdict:kill-switch"],
       unreadable: false,
     }),
   },

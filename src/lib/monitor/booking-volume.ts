@@ -57,6 +57,16 @@ export function isBusinessHours(nowMs: number, cfg: BusinessHoursConfig): boolea
   return window.start_minute <= minute && minute < window.end_minute;
 }
 
+/**
+ * The windows the low volume alarm judges, in minutes.
+ *
+ * Exported because #2366 derives how long public booking may sit STOPPED before
+ * anybody is told from the long one: the two alarms report the same silence from
+ * opposite ends, and a threshold restated beside one of them would drift the first
+ * time the other moved (L41, L401).
+ */
+export const LOW_VOLUME_WINDOW_MINUTES = { short: 30, long: 120 } as const;
+
 export interface VolumeWindow {
   /** Human label for the window, e.g. "30 min". */
   label: string;
@@ -136,7 +146,10 @@ export async function runLowVolumeCheck(deps: {
 
   const read = (minutes: number) =>
     deps.countSince(new Date(deps.nowMs - minutes * 60_000).toISOString()).catch(() => null);
-  let [count30, count120] = await Promise.all([read(30), read(120)]);
+  let [count30, count120] = await Promise.all([
+    read(LOW_VOLUME_WINDOW_MINUTES.short),
+    read(LOW_VOLUME_WINDOW_MINUTES.long),
+  ]);
 
   // ONE retry, and only for the window that actually failed (#1288). Dan's
   // expectation was to "retry at once and page if the retry fails", so a
@@ -144,8 +157,8 @@ export async function runLowVolumeCheck(deps: {
   // next one. Scoped to the error path and to the failed window because the extra
   // query lands on a subrequest budget four cron lanes share: a healthy tick must
   // cost exactly what it did before.
-  if (count30 === null) count30 = await read(30);
-  if (count120 === null) count120 = await read(120);
+  if (count30 === null) count30 = await read(LOW_VOLUME_WINDOW_MINUTES.short);
+  if (count120 === null) count120 = await read(LOW_VOLUME_WINDOW_MINUTES.long);
 
   if (count30 === null || count120 === null) {
     deps.log?.({
@@ -169,8 +182,8 @@ export async function runLowVolumeCheck(deps: {
   }
 
   const windows: VolumeWindow[] = [
-    { label: "30 min", count: count30, floor: deps.floors.floor30 },
-    { label: "120 min", count: count120, floor: deps.floors.floor120 },
+    { label: `${LOW_VOLUME_WINDOW_MINUTES.short} min`, count: count30, floor: deps.floors.floor30 },
+    { label: `${LOW_VOLUME_WINDOW_MINUTES.long} min`, count: count120, floor: deps.floors.floor120 },
   ];
   const breaches = lowVolumeBreaches(windows);
   if (breaches.length && deps.armed) {

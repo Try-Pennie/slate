@@ -51,6 +51,26 @@ export const KILL_SWITCH_EXIT = {
   serverError: 9,
   endpointMissing: 10,
   unreadableReply: 11,
+  /**
+   * Somebody had ALREADY stopped public booking, so the run stood down without
+   * testing anything (#2493).
+   *
+   * Its own code rather than the credentials exit, because on a schedule the two
+   * mean opposite things: one is a machine that was never set up, and this one is a
+   * deployment where the switch is deliberately on and finishing the run would turn
+   * it back on for whoever stopped it. It is never a pass, because nothing was
+   * measured (L98), and never a fault either.
+   */
+  alreadyPaused: 13,
+  /**
+   * The pause flag could not be written, or did not read back as set, so the paused
+   * half never ran (#2493).
+   *
+   * It used to share `noAnswer`, which reads as the deployment being unreachable and
+   * sends somebody to check the base URL when the real problem is the database write
+   * (L11). Nothing is left stopped either way.
+   */
+  flagNotSet: 14,
 } as const;
 
 /** What one POST to the public booking route produced. */

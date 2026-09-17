@@ -285,6 +285,13 @@ export interface BookingSettings {
    *  running). Stored NOT NULL DEFAULT false, so a row that predates the column
    *  reads as open rather than silently holding every booking. */
   public_booking_paused: boolean;
+  /** #2366, migration 0132: when `public_booking_paused` last went from false to
+   *  true, or null while booking is running. Maintained by a database trigger, not
+   *  by application code, because three writers reach the flag and a stamp each has
+   *  to opt into is one the next writer forgets. It is NOT `updated_at`, which is
+   *  shared with the other columns on this row, so editing the horizon would push
+   *  the pause clock forward. */
+  public_booking_paused_at: string | null;
   updated_at: string;
   updated_by: string | null;
 }

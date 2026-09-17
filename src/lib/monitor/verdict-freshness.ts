@@ -78,6 +78,26 @@ export const TIER_STAFFING_VERDICT_LANE = "verdict:tier-staffing";
  * exit table, rather than being re-derived here from a code number.
  */
 export const BURST_COUNTER_VERDICT_LANE = "verdict:burst-counter";
+/**
+ * The nightly proof that public booking can still be stopped (#2493), and the
+ * second member of this family stamped from OUTSIDE the Worker.
+ *
+ * `pnpm verify:kill-switch` (#2365) is the only thing that can see the fault that
+ * matters most about the kill switch: the gate fails CLOSED on purpose, so a booker
+ * that cannot read its own flag refuses EVERY lead, and nothing else would say so
+ * until the booking failure rate window fired after real people had been turned
+ * away. The command had run exactly once, in the session that wrote it.
+ *
+ * It could not simply copy the burst counter's daily morning slot, because running
+ * it STOPS public booking for about two seconds, so
+ * `.github/workflows/kill-switch.yml` runs it outside the hours the org advertises
+ * and stamps this lane through the same key authed heartbeat endpoint the canary and
+ * the parity sweep use, only on a run that MEASURED whether the gate refuses and
+ * releases. Which endings those are is decided in
+ * `scripts/lib/kill-switch-run-outcome.ts`, beside the command's own exit table,
+ * rather than being re-derived here from a code number.
+ */
+export const KILL_SWITCH_VERDICT_LANE = "verdict:kill-switch";
 
 export type DetectorVerdictLane =
   | typeof TIER_STAFFING_VERDICT_LANE
@@ -87,7 +107,8 @@ export type DetectorVerdictLane =
   | typeof OOO_PROTECTION_VERDICT_LANE
   | typeof TWILIO_ROSTER_VERDICT_LANE
   | typeof LANE_WATCHDOG_VERDICT_LANE
-  | typeof BURST_COUNTER_VERDICT_LANE;
+  | typeof BURST_COUNTER_VERDICT_LANE
+  | typeof KILL_SWITCH_VERDICT_LANE;
 
 /**
  * Did this availability truth tick compare real calendars and decide?

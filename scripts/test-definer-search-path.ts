@@ -245,6 +245,8 @@ const EXPECTED_PINNED = [
   "applied_migration_version",
   "applied_migration_versions",
   "booking_api_outcome_mix",
+  // #2366: keeps booking_settings.public_booking_paused_at in step with the flag.
+  "booking_settings_stamp_pause",
   "bump_booking_api_outcome",
   // #2369: decides whether a named booking is really a duplicate and, when it is,
   // cancels it and enqueues its outbox row in ONE transaction.
