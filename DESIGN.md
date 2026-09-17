@@ -184,7 +184,7 @@ Warm neutrals doing almost all the work, with a single cool accent that means "t
 - **Headline** (600, 40px, 1.1, tracking `-0.02em`): a page title.
 - **Title** (600, 32px / 26px / 22px, 1.1): section headings, stepping down through `.pn-h2`, `.pn-h3`, `.pn-h4`.
 - **Lead** (400, 20px, 1.3): the sentence under a heading that explains the screen.
-- **Body** (400, 16px, 1.5): everything else. Prose is held to 65ch, which is about 75 characters.
+- **Body** (400, 16px, 1.5): everything else. Prose is held to 110ch, measured against the card the text sits in rather than against the page.
 - **Label** (600, 14px, 1.2): field labels, table headers, and the eyebrow above a section. Deliberately NOT uppercase and NOT letter spaced, which is where the system parts company with most admin UI.
 - **Fine** (400, 12px, 1.2): timestamps, counts, and supporting detail.
 
@@ -208,7 +208,7 @@ Every interactive control is at least 44px tall. Inputs are exactly 44px, and th
 
 ### Named Rules
 
-**The Prose Width Rule.** The 65ch limit goes on the paragraph, never on the container that holds a table or a grid of controls. Putting it on the container is how a wide data surface gets accidentally squeezed into a column.
+**The Prose Width Rule.** The 110ch limit goes on the paragraph, never on the container that holds a table or a grid of controls. Putting it on the container is how a wide data surface gets accidentally squeezed into a column. It is ONE number, written once as `proseCls` in `src/components/ui/styles.ts`: a second spelling renders identically today and diverges the moment somebody raises one of them, which is what happened when the cap moved from 65. Held by `scripts/test-prose-width.ts`, which also holds the number in this file to the number in the code.
 
 ## Elevation & Depth
 
@@ -275,7 +275,7 @@ Two deliberate cues rather than one. Lead facing surfaces use three bobbing dots
 - **Do** add a border under `dark:` to anything whose edge is carried by a shadow in light.
 - **Do** measure a new colour pairing in `scripts/test-contrast.ts` before shipping it, including against the sky wash and the sky fill, not just against the page.
 - **Do** give every control at least 44px of height, and mark state with shape or weight as well as colour.
-- **Do** keep the 65ch reading limit on the paragraph and off the container.
+- **Do** keep the 110ch reading limit on the paragraph and off the container, and reach it through `proseCls` rather than writing the number.
 
 ### Don't:
 - **Don't** use yellow, mint or peach for a call to action. They are illustration accents.

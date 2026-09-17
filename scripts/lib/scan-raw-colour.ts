@@ -54,10 +54,12 @@ export type RawColourHit = {
 export const TOKEN_HOME = "src/app/globals.css";
 
 /** The opt-out, which must carry a reason on its own line (L675). */
-// `*` is here because a docstring's continuation lines start with it, and a
-// reason worth writing usually belongs in the docstring that already explains
-// the value rather than in a second comment beside it.
-const OPT_OUT_RE = /(?:\/\/|\/\*|^[^\S\r\n]*\*)[^\S\r\n]*colour-ok:[^\S\r\n]*\S+/m;
+// The marker must sit directly behind a comment opener, and `*` counts because a
+// docstring's continuation lines start with one: a reason worth writing usually
+// belongs in the docstring that already explains the value rather than in a
+// second comment beside it. Requiring an opener is what stops the same words
+// inside a string literal from opting anything out.
+const OPT_OUT_RE = /(?:\/\/|\/\*|\*)[^\S\r\n]*colour-ok:[^\S\r\n]*\S+/;
 
 /**
  * The whole file is a declaration site, and says why.
@@ -115,7 +117,16 @@ const HEX_IN_COLOUR_SLOT_RE =
 export function codeOnly(text: string): string {
   return text
     .replace(/\/\*[\s\S]*?\*\//g, (m) =>
-      OPT_OUT_RE.test(m) ? m : m.replace(/[^\n]/g, " "),
+      // A preserved block keeps its lines, each marked as a comment, so the
+      // lookback below can walk up to the marker: a block comment's
+      // CONTINUATION lines start with an ordinary word and would otherwise read
+      // as code and stop it short.
+      OPT_OUT_RE.test(m)
+        ? m
+            .split("\n")
+            .map((l) => `//${l}`)
+            .join("\n")
+        : m.replace(/[^\n]/g, " "),
     )
     .split("\n")
     .map((line) => {
@@ -132,7 +143,7 @@ function optedOut(lines: string[], i: number): boolean {
     if (OPT_OUT_RE.test(prev)) return true;
     // Stop at the first line that is neither a comment nor blank, so a marker
     // belonging to an earlier statement cannot cover this one.
-    if (prev.trim() !== "" && !/^\s*(?:\/\/|\*|\/\*)/.test(prev)) return false;
+    if (prev.trim() !== "" && !/^\s*(?:\{?\/\*|\/\/|\*)/.test(prev)) return false;
   }
   return false;
 }

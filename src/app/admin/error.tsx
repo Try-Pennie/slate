@@ -4,7 +4,7 @@ import { useEffect } from "react";
 import Link from "next/link";
 import { log } from "@/lib/log";
 import { reportBoundaryCatch } from "@/lib/errors/report-boundary";
-import { btnCls, btnSecondaryCls, cardCls } from "@/components/ui/styles";
+import { btnCls, btnSecondaryCls, cardCls, proseCls } from "@/components/ui/styles";
 import {
   BOUNDARY_BODY,
   BOUNDARY_HOME,
@@ -55,7 +55,7 @@ export default function AdminError({
   return (
     <section className={cardCls} role="alert">
       <h1 className="text-lg font-semibold text-fg">{BOUNDARY_TITLE}</h1>
-      <p className="mt-2 max-w-[70ch] text-sm text-fg-muted">{BOUNDARY_BODY}</p>
+      <p className={`mt-2 text-sm text-fg-muted ${proseCls}`}>{BOUNDARY_BODY}</p>
       <div className="mt-4 flex flex-wrap items-center gap-2">
         <button type="button" className={btnCls} onClick={() => retry()}>
           {BOUNDARY_RETRY}
