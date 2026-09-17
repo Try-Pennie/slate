@@ -7,6 +7,8 @@ import {
   mirrorAlertText,
   mirrorRecoveryText,
   retentionRecoveryText,
+  timeOffLaneAlertText,
+  timeOffRecoveryText,
   verdictBlindAlertText,
   verdictParkedInfoText,
   verdictRecoveryText,
@@ -20,6 +22,7 @@ import {
   CANARY_STALE_BOUNDS_MS,
   MIRROR_STALE_BOUNDS_MS,
   RETENTION_STALE_BOUNDS_MS,
+  TIME_OFF_STALE_BOUNDS_MS,
   VERDICT_STALE_BOUNDS_MS,
   retentionAlertText,
   neverStampedVerdict,
@@ -55,6 +58,17 @@ const STALE_LANE_COOLDOWN_MS = 60 * 60_000;
  * nobody can clear today is how an alert trains people to ignore it (L36).
  */
 const BLIND_DETECTOR_COOLDOWN_MS = 24 * 60 * 60_000;
+
+/**
+ * A quiet time off lane re-pages every 12 hours, not hourly (#2543).
+ *
+ * These lanes run once a day, so the proof that a fix worked is tomorrow morning's
+ * run: there is nothing a reader can do that would clear this inside an hour, and
+ * repeating the same page twenty four times before anything could change is how an
+ * alert trains people to ignore it (L36). Twelve hours still puts it in front of
+ * both a morning and an evening reader while a report is not going out.
+ */
+const TIME_OFF_LANE_COOLDOWN_MS = 12 * 60 * 60_000;
 
 /**
  * How often the parked detectors say they are parked (#1561).
@@ -142,6 +156,13 @@ export async function alertOnStaleLanes(): Promise<LaneWatchdogOutcome> {
   // failure. Slack only, like the mirror: stalled retention is a compliance and
   // storage problem, not an app outage, so it must not touch /api/health.
   const retentionStale = findStaleLanes(heartbeats, now, RETENTION_STALE_BOUNDS_MS, true);
+  // The two daily time off lanes (#2543), judged against bounds derived from their
+  // own schedules (the pending digest is weekday only, so its legitimate silence is
+  // the weekend). `neverIsStale` is ON for the retention lanes' reason: these run
+  // once a day, so a lane that throws on its first run would otherwise stay
+  // invisible for ever. Slack only: a morning report that did not go out is a
+  // missing safety net, not an outage, so it must not touch /api/health.
+  const timeOffStale = findStaleLanes(heartbeats, now, TIME_OFF_STALE_BOUNDS_MS, true);
   // The detector verdict stamps (#1394): not "did this lane run" but "did this
   // detector CONCLUDE anything". `neverIsStale` is ON for a sharper reason than
   // the retention lanes': a detector that has never once reached a verdict is the
@@ -227,6 +248,14 @@ export async function alertOnStaleLanes(): Promise<LaneWatchdogOutcome> {
     ),
   );
 
+  await pageWithGraceWindow(timeOffStale, now, "time off lane", (lane) =>
+    sendThrottledAlert(
+      staleLaneAlertKey(lane.lane),
+      TIME_OFF_LANE_COOLDOWN_MS,
+      timeOffLaneAlertText(lane),
+    ),
+  );
+
   await pageWithGraceWindow(armedVerdictStale, now, "detector", (lane) =>
     sendThrottledAlert(
       staleLaneAlertKey(lane.lane),
@@ -266,9 +295,14 @@ export async function alertOnStaleLanes(): Promise<LaneWatchdogOutcome> {
     heartbeats,
     now,
     new Set(
-      [...stale, ...canaryStale, ...mirrorStale, ...retentionStale, ...armedVerdictStale].map(
-        (l) => l.lane,
-      ),
+      [
+        ...stale,
+        ...canaryStale,
+        ...mirrorStale,
+        ...retentionStale,
+        ...timeOffStale,
+        ...armedVerdictStale,
+      ].map((l) => l.lane),
     ),
     // The un-park page's two endings, both folded into the recovery pass's single
     // alert_state read rather than adding one. A detector that is now ARMED had its
@@ -288,7 +322,14 @@ export async function alertOnStaleLanes(): Promise<LaneWatchdogOutcome> {
 
   return {
     judged: true,
-    stale: [...stale, ...canaryStale, ...mirrorStale, ...retentionStale, ...armedVerdictStale],
+    stale: [
+      ...stale,
+      ...canaryStale,
+      ...mirrorStale,
+      ...retentionStale,
+      ...timeOffStale,
+      ...armedVerdictStale,
+    ],
   };
 }
 
@@ -342,9 +383,9 @@ async function pageWithGraceWindow(
 }
 
 /**
- * The five lane families and the all-clear each one speaks (#1134, #1394).
+ * The six lane families and the all-clear each one speaks (#1134, #1394, #2543).
  *
- * Kept alongside the four alert-text functions rather than collapsed into one
+ * Kept alongside the per family alert-text functions rather than collapsed into one
  * generic "recovered": these lanes fail for different reasons, are recovered by
  * different people doing different things, and #1123 already had to unpick one
  * shared message that pointed responders at the wrong lane and lock. An all-clear
@@ -361,6 +402,7 @@ const LANE_FAMILIES: {
   { bounds: CANARY_STALE_BOUNDS_MS, recovery: canaryRecoveryText },
   { bounds: MIRROR_STALE_BOUNDS_MS, recovery: mirrorRecoveryText },
   { bounds: RETENTION_STALE_BOUNDS_MS, recovery: retentionRecoveryText, graceWindow: true },
+  { bounds: TIME_OFF_STALE_BOUNDS_MS, recovery: timeOffRecoveryText, graceWindow: true },
   { bounds: VERDICT_STALE_BOUNDS_MS, recovery: verdictRecoveryText, graceWindow: true },
 ];
 

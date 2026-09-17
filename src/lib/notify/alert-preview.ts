@@ -36,7 +36,12 @@ import {
   formatSyncRecoveryNotice,
   type FailingAgent,
 } from "@/lib/notify/alerts";
-import { retentionAlertText, LANE_STALE_BOUNDS_MS, VERDICT_STALE_BOUNDS_MS } from "@/lib/monitor/health";
+import {
+  retentionAlertText,
+  LANE_STALE_BOUNDS_MS,
+  TIME_OFF_STALE_BOUNDS_MS,
+  VERDICT_STALE_BOUNDS_MS,
+} from "@/lib/monitor/health";
 import { PARKED_VERDICT_DETECTORS } from "@/lib/monitor/verdict-freshness";
 import {
   checksGatedByStep,
@@ -221,6 +226,8 @@ import {
   mirrorAlertText,
   mirrorRecoveryText,
   retentionRecoveryText,
+  timeOffLaneAlertText,
+  timeOffRecoveryText,
   verdictBlindAlertText,
   verdictParkedInfoText,
   verdictRecoveryText,
@@ -263,6 +270,13 @@ import {
   formatDeletionSaturationAlert,
   formatDeletionSaturationRecovery,
 } from "@/lib/monitor/sweep-saturation";
+import {
+  formatSweepFailureAlert,
+  formatSweepFailureRecovery,
+  COMPLETION_SWEEP_FAILING_KEY,
+  WEBHOOK_RETRY_SWEEP_FAILING_KEY,
+  SWEEP_FAILURE_ALERT_AFTER_RUNS,
+} from "@/lib/monitor/sweep-failure";
 import {
   bookingEventInsertAlert,
   busyBlockWriteThroughAlert,
@@ -1228,6 +1242,31 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     channel: "recovery",
     text: formatCompletionSaturationRecovery(),
   },
+  // --- a sweep that is not running at all, rather than falling behind (#2544) ---
+  {
+    key: COMPLETION_SWEEP_FAILING_KEY,
+    state: "throwing on consecutive runs",
+    channel: "alert",
+    text: formatSweepFailureAlert(COMPLETION_SWEEP_FAILING_KEY, SWEEP_FAILURE_ALERT_AFTER_RUNS),
+  },
+  {
+    key: COMPLETION_SWEEP_FAILING_KEY,
+    state: "running again",
+    channel: "recovery",
+    text: formatSweepFailureRecovery(COMPLETION_SWEEP_FAILING_KEY),
+  },
+  {
+    key: WEBHOOK_RETRY_SWEEP_FAILING_KEY,
+    state: "throwing on consecutive runs",
+    channel: "alert",
+    text: formatSweepFailureAlert(WEBHOOK_RETRY_SWEEP_FAILING_KEY, SWEEP_FAILURE_ALERT_AFTER_RUNS),
+  },
+  {
+    key: WEBHOOK_RETRY_SWEEP_FAILING_KEY,
+    state: "running again",
+    channel: "recovery",
+    text: formatSweepFailureRecovery(WEBHOOK_RETRY_SWEEP_FAILING_KEY),
+  },
   {
     key: "deletion_drain_saturated",
     state: "running at the cap",
@@ -2050,6 +2089,71 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     state: "a retention lane recovered",
     channel: "recovery",
     text: retentionRecoveryText("prune-bookings-pii"),
+  },
+  // #2543: the same key again, for the two daily time off lanes. Four stamps, and
+  // the pair per lane is the point: a reader has to be able to tell the cron not
+  // firing from the route firing and throwing, because those send them to two
+  // different places.
+  {
+    key: "cron_lane_stale:*",
+    state: "the time off approvals cron has stopped firing",
+    channel: "alert",
+    text: timeOffLaneAlertText({
+      lane: "ooo-approvals",
+      ageMs: 40 * 60 * 60_000,
+      maxStaleMs: TIME_OFF_STALE_BOUNDS_MS["ooo-approvals"]!,
+      unreadable: false,
+    }),
+  },
+  {
+    key: "cron_lane_stale:*",
+    state: "the approvals report itself has not gone out",
+    channel: "alert",
+    text: timeOffLaneAlertText({
+      lane: "ooo-approvals-report",
+      ageMs: 55 * 60 * 60_000,
+      maxStaleMs: TIME_OFF_STALE_BOUNDS_MS["ooo-approvals-report"]!,
+      unreadable: false,
+    }),
+  },
+  {
+    key: "cron_lane_stale:*",
+    state: "no manager has been nudged since the weekend",
+    channel: "alert",
+    text: timeOffLaneAlertText({
+      lane: "ooo-digest-nudge",
+      ageMs: 5 * 24 * 60 * 60_000,
+      maxStaleMs: TIME_OFF_STALE_BOUNDS_MS["ooo-digest-nudge"]!,
+      unreadable: false,
+    }),
+  },
+  {
+    key: "cron_lane_stale:*",
+    state: "a time off lane has never once run",
+    channel: "alert",
+    text: timeOffLaneAlertText({
+      lane: "ooo-digest",
+      ageMs: Infinity,
+      maxStaleMs: TIME_OFF_STALE_BOUNDS_MS["ooo-digest"]!,
+      unreadable: false,
+    }),
+  },
+  {
+    key: "cron_lane_stale:*",
+    state: "a time off lane's last-run record cannot be read",
+    channel: "alert",
+    text: timeOffLaneAlertText({
+      lane: "ooo-approvals-report",
+      ageMs: NOW_MS,
+      maxStaleMs: TIME_OFF_STALE_BOUNDS_MS["ooo-approvals-report"]!,
+      unreadable: true,
+    }),
+  },
+  {
+    key: "cron_lane_stale:*",
+    state: "a time off lane recovered",
+    channel: "recovery",
+    text: timeOffRecoveryText("ooo-approvals-report"),
   },
   // #1394: the same key, a different fault. These lanes are NOT quiet; they run
   // faithfully and conclude nothing, which every other message here would

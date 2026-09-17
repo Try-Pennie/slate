@@ -83,6 +83,15 @@ const healthy = () => ({
   "prune-bookings-pii": ago(4 * 60 * MIN),
   "prune-busy-blocks": ago(4 * 60 * MIN),
   "prune-warehouse-pii": ago(4 * 60 * MIN),
+  // The two daily time off lanes (#2543), four stamps and also judged with
+  // neverIsStale ON. A healthy fleet has this morning's 7am ET approvals run and
+  // this morning's 9am ET nudge in it, both well inside their own bounds, and
+  // omitting one would read as a lane that has never run rather than as a gap in
+  // the fixture.
+  "ooo-approvals": ago(4 * 60 * MIN),
+  "ooo-approvals-report": ago(4 * 60 * MIN),
+  "ooo-digest": ago(2 * 60 * MIN),
+  "ooo-digest-nudge": ago(2 * 60 * MIN),
   // The detector verdict stamps (#1394), also judged with neverIsStale ON: a
   // detector that has NEVER concluded is the exact state they exist to notice, so
   // omitting one from a fixture reads as blind and pages.
@@ -595,6 +604,85 @@ describe("alertOnStaleLanes (#803)", () => {
 
       expect(stale.map((l) => l.lane).sort()).toEqual(["outbox", "smoke-canary"]);
       expect(dispatch.sendThrottledAlert).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  // #2543: before this, neither daily time off lane appeared in any bounds map, so
+  // a lane that stopped firing was watched by nothing at all and the only record of
+  // a morning that produced nothing was a 200 nobody reads.
+  describe("the two daily time off lanes (#2543)", () => {
+    const quiet = (lane: string, ageMs: number) => {
+      heartbeat.readAllHeartbeatMs.mockResolvedValue({ ...healthy(), [lane]: ago(ageMs) });
+      // Past its grace window, so a never-stamped lane is not what is under test.
+      marker.firstSeenAt = new Date(Date.now() - 200 * 60 * MIN).toISOString();
+    };
+    const pageFor = (lane: string) =>
+      dispatch.sendThrottledAlert.mock.calls.find((c) => c[0] === `cron_lane_stale:${lane}`);
+
+    it("pages when the approvals report has not gone out, and says what that costs", async () => {
+      quiet("ooo-approvals-report", 40 * 60 * MIN);
+      const { stale } = await alertOnStaleLanes();
+      expect(stale.map((l) => l.lane)).toContain("ooo-approvals-report");
+      const call = pageFor("ooo-approvals-report");
+      expect(call).toBeDefined();
+      // The consequence, not the mechanism: this is read on a phone by somebody who
+      // does not know the lane exists.
+      expect(String(call?.[2])).toMatch(/sales managers/i);
+      expect(String(call?.[2])).not.toMatch(/Infinity|NaN|undefined/);
+    });
+
+    it("says something different when the cron itself stopped, because the remedy differs", async () => {
+      quiet("ooo-approvals", 40 * 60 * MIN);
+      await alertOnStaleLanes();
+      const cron = String(pageFor("ooo-approvals")?.[2]);
+      quiet("ooo-approvals-report", 40 * 60 * MIN);
+      dispatch.sendThrottledAlert.mockClear();
+      await alertOnStaleLanes();
+      const report = String(pageFor("ooo-approvals-report")?.[2]);
+      expect(cron).not.toEqual(report);
+      // One sends the reader at the schedule, the other at the route's own failure.
+      expect(cron).toMatch(/cron-routes|wrangler/);
+      expect(report).toMatch(/500|Gmail/);
+    });
+
+    it("does not page the weekday nudge over a weekend, which is its longest legitimate silence", async () => {
+      // Friday afternoon to Monday morning is about three days. A bound reasoned
+      // from "daily plus slack" would page every Sunday for ever (L36).
+      quiet("ooo-digest-nudge", 70 * 60 * MIN);
+      const { stale } = await alertOnStaleLanes();
+      expect(stale.map((l) => l.lane)).not.toContain("ooo-digest-nudge");
+      expect(pageFor("ooo-digest-nudge")).toBeUndefined();
+    });
+
+    it("does page the nudge once it has been quiet longer than a weekend", async () => {
+      quiet("ooo-digest-nudge", 5 * 24 * 60 * MIN);
+      const { stale } = await alertOnStaleLanes();
+      expect(stale.map((l) => l.lane)).toContain("ooo-digest-nudge");
+      expect(String(pageFor("ooo-digest-nudge")?.[2])).toMatch(/manager/i);
+    });
+
+    it("gives a never-stamped time off lane its grace window rather than paging on the deploy", async () => {
+      // These stamps do not exist until this change ships, so without the grace
+      // window every one of them would page the moment it deployed, which is the
+      // #1136 regression one family along.
+      const { "ooo-digest-nudge": _omitted, ...rest } = healthy();
+      heartbeat.readAllHeartbeatMs.mockResolvedValue(rest);
+      marker.firstSeenAt = null;
+      await alertOnStaleLanes();
+      expect(pageFor("ooo-digest-nudge")).toBeUndefined();
+      expect(marker.written).toContain("lane_never_seen:ooo-digest-nudge");
+    });
+
+    it("all-clears a time off lane that is running again", async () => {
+      dispatch.existingAlertStateKeys.mockResolvedValue(
+        new Set(["alert_firing:cron_lane_stale:ooo-approvals-report"]),
+      );
+      await alertOnStaleLanes();
+      const call = dispatch.resolveAlert.mock.calls.find(
+        (c) => c[0] === "cron_lane_stale:ooo-approvals-report",
+      );
+      expect(call).toBeDefined();
+      expect(String(call?.[1])).toMatch(/No action is needed/);
     });
   });
 

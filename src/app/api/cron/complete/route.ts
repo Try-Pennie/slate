@@ -6,6 +6,11 @@ import { acquireLock, releaseLock } from "@/lib/locks";
 import { CRON_LOCK_TTL_MS } from "@/lib/google/sync-coalesce";
 import { recordHeartbeat } from "@/lib/monitor/heartbeat";
 import { reportCompletionSaturation } from "@/lib/monitor/sweep-saturation";
+import {
+  reportSweepFailures,
+  COMPLETION_SWEEP_FAILING_KEY,
+  WEBHOOK_RETRY_SWEEP_FAILING_KEY,
+} from "@/lib/monitor/sweep-failure";
 import { log } from "@/lib/log";
 
 export const dynamic = "force-dynamic";
@@ -54,6 +59,18 @@ export async function GET(req: NextRequest) {
       COMPLETION_SATURATED_KEY,
       completion?.backlogRemains ?? null,
     ).catch(() => {});
+    // #2544: and page when a sweep is not running AT ALL. The saturation streak
+    // above is deliberately told nothing by a failed run (a sweep that threw knows
+    // nothing about the backlog), and until now nothing else spoke for that
+    // outcome either: the catch above it logged, this handler answered
+    // `completed: "error"` on a 200, and the heartbeat was stamped either way, so
+    // a sweep failing every five minutes paged nobody. A lane that is running and
+    // achieving nothing now reads differently from a healthy one.
+    const sweepOutcomes = [
+      { key: COMPLETION_SWEEP_FAILING_KEY, ok: completion !== null },
+      { key: WEBHOOK_RETRY_SWEEP_FAILING_KEY, ok: retried !== null },
+    ];
+    await reportSweepFailures(sweepOutcomes).catch(() => {});
     return NextResponse.json({
       completed: completion?.completed ?? "error",
       retried: retried ?? "error",

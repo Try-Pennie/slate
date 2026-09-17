@@ -16,11 +16,16 @@ import {
   approvalsBody,
   approvalsFileDate,
   approvalsSubject,
+  approvalsWindow,
   buildApprovalsCsv,
   isApprovalsDigestTime,
-  yesterdayEtRange,
   type ApprovalRow,
 } from "@/lib/ooo/approvals-digest";
+import { recordHeartbeat, readHeartbeatMsStrict } from "@/lib/monitor/heartbeat";
+import {
+  OOO_APPROVALS_ATTEMPT_LANE,
+  OOO_APPROVALS_REPORT_LANE,
+} from "@/lib/ooo/time-off-lanes";
 
 export const dynamic = "force-dynamic";
 
@@ -38,6 +43,12 @@ export async function GET(req: NextRequest) {
   if (!isAuthorizedCron(req)) {
     return new NextResponse("unauthorized", { status: 401 });
   }
+  // #2543: the cron reached the route. Stamped BEFORE the time gate, so it is
+  // written by both daily triggers and says one thing only, that the dispatcher is
+  // firing. Nothing about whether a report went out hangs off it; that is the
+  // second stamp, further down.
+  await recordHeartbeat(OOO_APPROVALS_ATTEMPT_LANE);
+
   const force = req.nextUrl.searchParams.get("force") === "1";
   const now = Date.now();
   if (!force && !isApprovalsDigestTime(now)) {
@@ -46,10 +57,30 @@ export async function GET(req: NextRequest) {
 
   const recipients = oooApprovalsRecipients();
   if (recipients.length === 0) {
+    // Deliberately NOT a covered run. An unset recipient list means the report is
+    // not reaching anybody, so stamping here would make a silently disabled report
+    // look like a healthy one for ever (L543). It is configured on the deployment,
+    // so this is not a permanently red alarm; it is the only thing that would say
+    // so if somebody cleared it.
     return NextResponse.json({ skipped: "no recipients configured" });
   }
 
-  const { startIso, endIso } = yesterdayEtRange(now);
+  // The catch-up window (#2543), measured from the last report that WENT OUT rather
+  // than from the clock. A morning this lane missed is covered by this run instead
+  // of falling out of every later one.
+  // Strict, so a failed read THROWS rather than reading as "never reported", which
+  // would narrow this run to yesterday and then move the mark past the days it
+  // skipped. A throw is a 500 the cron records, the mark does not move, and
+  // tomorrow's run covers the whole gap.
+  const window = approvalsWindow(now, await readHeartbeatMsStrict(OOO_APPROVALS_REPORT_LANE));
+  if (window.days === 0) {
+    // Nothing left to cover: the second daily trigger, or a `?force=1` re-run after
+    // a report has already gone out this morning. Stamped, because this run reached
+    // a measured outcome about its own window.
+    await recordHeartbeat(OOO_APPROVALS_REPORT_LANE);
+    return NextResponse.json({ sent: false, count: 0, alreadyCovered: true });
+  }
+  const { startIso, endIso } = window;
   const db = supabaseAdmin();
   // #2383: unwrap, never a swallowed `data`. An empty result here is read one
   // line down as the specific answer "nobody's time off was approved yesterday",
@@ -87,7 +118,12 @@ export async function GET(req: NextRequest) {
   // means a day with genuinely no approvals and nothing else, because the read
   // above throws rather than arriving here as an empty array (#2383).
   if (approved.length === 0) {
-    return NextResponse.json({ sent: false, count: 0 });
+    // #2543: a MEASURED outcome, so the watermark moves. "Nobody's time off was
+    // approved in this window" is an answer, and leaving the mark where it was
+    // would make every quiet week read as a lane that had stopped, and widen
+    // tomorrow's window over days this run has already looked at.
+    await recordHeartbeat(OOO_APPROVALS_REPORT_LANE);
+    return NextResponse.json({ sent: false, count: 0, days: window.days });
   }
 
   // Resolve agent + manager names in one lookup.
@@ -119,7 +155,7 @@ export async function GET(req: NextRequest) {
   }));
 
   const csv = buildApprovalsCsv(rows);
-  const filename = `${approvalsFileDate(now)} OOO Approvals.csv`;
+  const filename = `${approvalsFileDate(window)} OOO Approvals.csv`;
   const replyTo = oooApprovalsReplyTo();
 
   // Silent non-delivery is the worst failure mode for a report people rely on,
@@ -132,8 +168,8 @@ export async function GET(req: NextRequest) {
       to: recipients,
       bcc: oooApprovalsBcc(),
       ...(replyTo ? { replyTo } : {}),
-      subject: approvalsSubject(now),
-      body: approvalsBody(now),
+      subject: approvalsSubject(window),
+      body: approvalsBody(window),
       attachments: [{ filename, content: csv, mimeType: "text/csv" }],
     });
   } catch (e) {
@@ -145,5 +181,16 @@ export async function GET(req: NextRequest) {
     throw e;
   }
 
-  return NextResponse.json({ sent: true, count: rows.length, recipients: recipients.length });
+  // #2543: the watermark moves only AFTER the send has succeeded. The throw above
+  // skips it deliberately, so a morning whose email failed is reported again
+  // tomorrow rather than being recorded as covered by a report nobody received.
+  await recordHeartbeat(OOO_APPROVALS_REPORT_LANE);
+
+  return NextResponse.json({
+    sent: true,
+    count: rows.length,
+    recipients: recipients.length,
+    days: window.days,
+    capped: window.capped,
+  });
 }

@@ -184,6 +184,34 @@ export type CoveragePreviewState =
   | { kind: "count"; count: number };
 
 /**
+ * Whether the move may be STARTED from this preview state (#2157).
+ *
+ * The panel disabled its start button on a count of zero and while a count was in
+ * flight, and left it live for a count that could not be READ at all, so "we could
+ * not count" was treated as permission on the one control here whose consequence is
+ * customer facing and not undoable in a click. The count is the only thing on the
+ * panel that says how big the thing about to happen is.
+ *
+ * REFUSING is the recoverable direction, and that is the whole argument. A manager
+ * blocked by an unreadable count still has every booking where it was; they can
+ * count again, or come back when the read recovers, and nothing has been done to
+ * anybody. A sweep started on an unreadable count has already moved real people's
+ * appointments onto other advisors, and no single control puts them back.
+ *
+ * Written as the one state that MAY start rather than as a list of states that may
+ * not, so a fifth state added later is refused by default rather than inheriting
+ * permission from nobody having thought about it.
+ *
+ * It lives beside the line the same state renders, because the button's enabled
+ * state and the sentence next to it are one decision: two predicates in two files
+ * is exactly how a live button ended up beside a sentence saying nothing was
+ * counted.
+ */
+export function coverageMoveMayStart(state: CoveragePreviewState): boolean {
+  return state.kind === "count" && state.count > 0;
+}
+
+/**
  * The one line under the range controls. All four states here rather than three
  * inline in the component and a fourth added beside them, because they are one
  * sentence taking one of four values and splitting them is how two of them drift.
@@ -193,7 +221,12 @@ export function coveragePreviewLine(state: CoveragePreviewState): string {
     case "counting":
       return "Counting bookings in range…";
     case "unreadable":
-      return "Couldn't count the bookings in this range. Try again in a moment.";
+      // #2157. It used to end "Try again in a moment", which named an action that
+      // changes nothing: the count is debounced on the range, so a reader who does
+      // not edit the dates gets no second attempt however long they wait (L111).
+      // The panel puts a Count again control beside this line, and the line says
+      // what the refusal is rather than repeating that control's own label (L605).
+      return "Couldn't count the bookings in this range, so the move cannot start.";
     case "count":
       return state.count === 0
         ? "No upcoming bookings in this range."

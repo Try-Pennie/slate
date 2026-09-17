@@ -49,6 +49,13 @@ const FAMILY_BY_KEY: Record<string, AlertFamily> = {
   // establish is the same thing, which of the scheduled work is not happening.
   monitor_step_failing: "a-lane-or-schedule-has-gone-quiet",
   sync_staleness: "a-lane-or-schedule-has-gone-quiet",
+  // #2544. The same family one level in, for the same reason `monitor_step_failing`
+  // is here: the lane is running and one JOB on it has stopped producing, so what
+  // the reader has to establish is which of the scheduled work is not happening.
+  // Not the saturated sweep family: that procedure is about a backlog and a per run
+  // cap, and neither exists when the sweep never ran.
+  completion_sweep_failing: "a-lane-or-schedule-has-gone-quiet",
+  webhook_retry_sweep_failing: "a-lane-or-schedule-has-gone-quiet",
   detector_parked: "a-lane-or-schedule-has-gone-quiet",
   detector_unpark: "a-lane-or-schedule-has-gone-quiet",
   migration_version_lag: "a-lane-or-schedule-has-gone-quiet",

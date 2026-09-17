@@ -110,6 +110,9 @@ describe("BulkReassignCoverage", () => {
     http.postJson.mockResolvedValueOnce({ ok: true, status: 200, data: { jobId: "job1", itemCount: 2 } });
     render(<BulkReassignCoverage agentId="out1" agentName="Adam" reassignReasons={REASSIGN_REASONS} />);
 
+    // #2157: the move starts from a MEASURED count and from nothing else, so wait
+    // for the count rather than pressing into the state before anybody has asked.
+    await screen.findByText(/5 bookings would be reassigned/);
     fireEvent.click(await screen.findByRole("button", { name: /move these bookings/i }));
 
     // The start POST hit the agent's endpoint.
@@ -130,6 +133,7 @@ describe("BulkReassignCoverage", () => {
     http.postJson.mockResolvedValueOnce({ ok: true, status: 200, data: { jobId: "job1", itemCount: 2 } });
     render(<BulkReassignCoverage agentId="out1" agentName="Adam" reassignReasons={reasons} />);
 
+    await screen.findByText(/5 bookings would be reassigned/);
     fireEvent.click(await screen.findByRole("button", { name: /move these bookings/i }));
 
     // The reason sent is the first option in the list, never the retired "coverage".
@@ -145,11 +149,75 @@ describe("BulkReassignCoverage", () => {
     http.postJson.mockResolvedValueOnce({ ok: false, status: 500, data: { error: "Something broke" } });
     render(<BulkReassignCoverage agentId="out1" agentName="Adam" reassignReasons={REASSIGN_REASONS} />);
 
+    await screen.findByText(/5 bookings would be reassigned/);
     fireEvent.click(await screen.findByRole("button", { name: /move these bookings/i }));
 
     expect(await screen.findByText(/Something broke/)).toBeTruthy();
     // No progress view: the panel stayed on the start form.
     expect(screen.queryByText(/Move complete/)).toBeNull();
+  });
+});
+
+// #2157: a count that could not be READ used to leave the start button live, so a
+// manager could move real customers' appointments onto other advisors without
+// knowing how many. It is the one control on this panel whose consequence is not
+// undoable in a click, and refusing is the recoverable direction: nothing has been
+// done to anybody, and the reader can ask for the count again.
+describe("BulkReassignCoverage with a count it could not read (#2157)", () => {
+  const unreadable = async (url: string) =>
+    url.includes("jobId=")
+      ? { ok: true, status: 200, data: progressFixture }
+      : // A 200 whose body is not a number: the shape #2151 already renders as
+        // "couldn't count", and the state that used to enable the button.
+        { ok: true, status: 200, data: { count: "lots" } };
+
+  it("refuses the move, and the line beside the button says so", async () => {
+    http.getJson.mockImplementation(unreadable);
+    render(<BulkReassignCoverage agentId="out1" agentName="Adam" reassignReasons={REASSIGN_REASONS} />);
+
+    expect(await screen.findByText(/Couldn't count the bookings in this range/)).toBeTruthy();
+    const start = await screen.findByRole("button", { name: /move these bookings/i });
+    await waitFor(() => expect((start as HTMLButtonElement).disabled).toBe(true));
+  });
+
+  it("does not start a sweep even if the button is pressed", async () => {
+    http.getJson.mockImplementation(unreadable);
+    render(<BulkReassignCoverage agentId="out1" agentName="Adam" reassignReasons={REASSIGN_REASONS} />);
+
+    const start = await screen.findByRole("button", { name: /move these bookings/i });
+    await waitFor(() => expect((start as HTMLButtonElement).disabled).toBe(true));
+    fireEvent.click(start);
+    expect(http.postJson).not.toHaveBeenCalled();
+  });
+
+  it("offers a Count again that really re-reads, so the refusal is not a dead end", async () => {
+    // The count is debounced on the RANGE, so without this control a reader who
+    // does not edit the dates gets no second attempt at all (L111).
+    http.getJson.mockImplementation(unreadable);
+    render(<BulkReassignCoverage agentId="out1" agentName="Adam" reassignReasons={REASSIGN_REASONS} />);
+
+    const again = await screen.findByRole("button", { name: /count again/i });
+    const before = http.getJson.mock.calls.length;
+
+    http.getJson.mockImplementation(async (url: string) =>
+      url.includes("jobId=")
+        ? { ok: true, status: 200, data: progressFixture }
+        : { ok: true, status: 200, data: { count: 3 } },
+    );
+    fireEvent.click(again);
+
+    expect(await screen.findByText(/3 bookings would be reassigned/)).toBeTruthy();
+    expect(http.getJson.mock.calls.length).toBeGreaterThan(before);
+    const start = await screen.findByRole("button", { name: /move these bookings/i });
+    await waitFor(() => expect((start as HTMLButtonElement).disabled).toBe(false));
+    // And the way out disappears once there is nothing to retry.
+    expect(screen.queryByRole("button", { name: /count again/i })).toBeNull();
+  });
+
+  it("offers no retry control while the count is readable", async () => {
+    render(<BulkReassignCoverage agentId="out1" agentName="Adam" reassignReasons={REASSIGN_REASONS} />);
+    expect(await screen.findByText(/5 bookings would be reassigned/)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /count again/i })).toBeNull();
   });
 });
 
@@ -463,6 +531,7 @@ describe("BulkReassignCoverage: a move that had nothing to move", () => {
     http.postJson.mockResolvedValueOnce({ ok: true, status: 200, data: { jobId: "job1", itemCount: 0 } });
 
     render(<BulkReassignCoverage agentId="out1" agentName="Adam" reassignReasons={REASSIGN_REASONS} />);
+    await screen.findByText(/5 bookings would be reassigned/);
     fireEvent.click(await screen.findByRole("button", { name: /move these bookings/i }));
 
     // Back on the form, with the range controls the reader would reach for next.
@@ -476,11 +545,16 @@ describe("BulkReassignCoverage: a move that had nothing to move", () => {
   });
 
   it("keeps the range the reader chose rather than resetting it", async () => {
-    http.getJson.mockImplementation(async (url: string) =>
-      url.includes("jobId=")
-        ? { ok: true, status: 200, data: emptyFixture }
-        : { ok: true, status: 200, data: { count: 0 } },
-    );
+    // The same race as the sibling above: the preview counted bookings, and the
+    // engine found none by the time it ran. It has to be the race rather than a
+    // standing zero, because a count of zero refuses the move (#2157) and the
+    // reader could never have started this one.
+    let previews = 0;
+    http.getJson.mockImplementation(async (url: string) => {
+      if (url.includes("jobId=")) return { ok: true, status: 200, data: emptyFixture };
+      previews += 1;
+      return { ok: true, status: 200, data: { count: previews === 1 ? 5 : 0 } };
+    });
     http.postJson.mockResolvedValueOnce({ ok: true, status: 200, data: { jobId: "job1", itemCount: 0 } });
 
     render(<BulkReassignCoverage agentId="out1" agentName="Adam" reassignReasons={REASSIGN_REASONS} />);
@@ -489,6 +563,7 @@ describe("BulkReassignCoverage: a move that had nothing to move", () => {
     const from = screen.getByLabelText(/^From$/) as HTMLInputElement;
     const chosenFrom = from.value;
 
+    await screen.findByText(/5 bookings would be reassigned/);
     fireEvent.click(await screen.findByRole("button", { name: /move these bookings/i }));
     await screen.findByText(/nothing moved/i);
 

@@ -32,13 +32,24 @@ run hours behind (#1533). Filter on `tag=` (see `AGENTS.md`).
 
 ## A lane or schedule has gone quiet
 
-Keys: `cron_lane_stale:*`, `sync_staleness`, `detector_parked`, `detector_unpark:*`,
+Keys: `cron_lane_stale:*`, `monitor_step_failing:*`, `completion_sweep_failing`,
+`webhook_retry_sweep_failing`, `sync_staleness`, `detector_parked`, `detector_unpark:*`,
 `migration_version_lag`, `volume_count_unreadable`, `audit_write_failed`.
 
 **What fired it.** A lane stamps a heartbeat on every run and one has not stamped
 inside its bound (about 3x its cadence). Or a detector has not reached a measured
 verdict in far longer than its longest legitimate silence, which is a different thing
-from a lane that has stopped: the lane ran and could not conclude.
+from a lane that has stopped: the lane ran and could not conclude. Or the lane is
+running perfectly and one JOB on it has stopped producing, which is
+`monitor_step_failing:*` and the two sweep failure keys: there the heartbeat is
+fresh, and nothing but these would say so.
+
+The two daily time off lanes carry FOUR stamps between them (#2543), in pairs. A
+page on `ooo-approvals` or `ooo-digest` means the cron is not reaching the route at
+all, so start at `worker/cron-routes.ts` and `wrangler.jsonc`. A page on
+`ooo-approvals-report` or `ooo-digest-nudge` means the route is firing and the work
+is not finishing, so start at the tail. The approvals report catches up its own gap
+from a watermark when it next runs, so the missed mornings are still recoverable.
 
 **First checks.**
 - The Cloudflare dashboard's cron triggers: did the schedule fire at all?

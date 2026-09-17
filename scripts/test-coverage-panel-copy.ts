@@ -15,6 +15,7 @@ import {
   coveragePanelDescription,
   coveragePanelTimeOffNote,
   coveragePanelWhere,
+  coverageMoveMayStart,
   coveragePreviewLine,
   coverageProgressUnreadableNotice,
 } from "../src/lib/booking/coverage-panel-copy.ts";
@@ -171,6 +172,38 @@ assert(
 // Every state distinct, or two causes are one outcome in practice (L11, L260).
 const seen = new Set(Object.values(previewLines));
 assert(seen.size === Object.keys(previewLines).length, "every preview state says something of its own");
+
+/**
+ * Which preview states may START a move (#2157).
+ *
+ * The panel used to disable the button on a count of zero and while a count was in
+ * flight, and leave it LIVE for a count that could not be read at all: "we could
+ * not count" was treated as permission, on the one control here whose consequence
+ * is customer facing and not undoable in a click.
+ *
+ * Refusing is the recoverable direction. A manager blocked by an unreadable count
+ * still has every booking where it was and can press again, or count again; a
+ * sweep started on an unreadable count has already moved real appointments onto
+ * other advisors and there is no single control that puts them back. So the move
+ * may start from a MEASURED count above zero and from nothing else, which also
+ * takes in the state before anybody has asked, where the line beside the button
+ * says to enter a range and the button used to be live anyway.
+ */
+assert(coverageMoveMayStart({ kind: "count", count: 5 }), "a measured count above zero may start");
+assert(coverageMoveMayStart({ kind: "count", count: 1 }), "one booking is still a move");
+assert(!coverageMoveMayStart({ kind: "count", count: 0 }), "a measured zero may not");
+assert(!coverageMoveMayStart({ kind: "counting" }), "a count in flight may not");
+assert(!coverageMoveMayStart({ kind: "unasked" }), "and neither may a range nobody has entered");
+assert(
+  !coverageMoveMayStart({ kind: "unreadable" }),
+  "an unreadable count REFUSES the move: it is not a count of zero, and it is not permission either",
+);
+// The line and the button have to agree, so the refusal has to be on the line:
+// a control that silently does nothing is worse than one that says why (L109).
+assert(
+  /cannot start|can't start/i.test(previewLines.unreadable),
+  "and the line beside the button says the move cannot start, rather than leaving a dead control",
+);
 
 // copy rules
 for (const [name, text] of [

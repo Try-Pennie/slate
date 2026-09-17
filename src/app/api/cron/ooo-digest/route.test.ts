@@ -134,15 +134,35 @@ function refusingBuilderFor(table = "") {
   return b;
 }
 
+/**
+ * The `lane_heartbeats` half of the mock (#2543).
+ *
+ * This lane writes two stamps and reads none: `ooo-digest` as soon as the route is
+ * reached (the cron is firing), and `ooo-digest-nudge` once the morning's nudging
+ * really happened. Recorded rather than swallowed, because a stamp nothing can see
+ * and a stamp that never happened look the same to a test (L98).
+ */
+const stamped: string[] = [];
+function heartbeatBuilder() {
+  return {
+    upsert: async (row: { lane: string }) => {
+      stamped.push(row.lane);
+      return { error: null };
+    },
+  };
+}
+
 function wireDb() {
-  from.mockImplementation((table: string) =>
-    builderFor(table === "ooo_requests" ? pendingRows : userRows, table),
-  );
+  from.mockImplementation((table: string) => {
+    if (table === "lane_heartbeats") return heartbeatBuilder();
+    return builderFor(table === "ooo_requests" ? pendingRows : userRows, table);
+  });
 }
 
 beforeEach(() => {
   vi.clearAllMocks();
   builderCalls.length = 0;
+  stamped.length = 0;
   // clearAllMocks wipes call history but keeps implementations, so re-establish
   // the defaults a prior test may have overridden.
   slack.dmSlackUserByEmail.mockImplementation(async () => true);
@@ -490,5 +510,59 @@ describe("GET /api/cron/ooo-digest", () => {
     await expect(GET(forcedReq())).rejects.toThrow(/ooo digest people/);
     expect(slack.dmSlackUserByEmail).not.toHaveBeenCalled();
     expect(slack.postSlack).not.toHaveBeenCalled();
+  });
+});
+
+// #2543: this lane got one attempt a weekday morning, cron has no retries, and it
+// was in no bounds map, so a lane that stopped firing was watched by nothing. Two
+// stamps, because "the cron reached the route" and "every manager was nudged" are
+// different facts with different remedies (L11).
+describe("GET /api/cron/ooo-digest: the two lane stamps (#2543)", () => {
+  beforeEach(() => cron.isAuthorizedCron.mockReturnValue(true));
+
+  it("stamps the attempt even on the tick the time gate no-ops", async () => {
+    wireDb();
+    await GET({
+      nextUrl: { searchParams: new URLSearchParams() },
+    } as unknown as Parameters<typeof GET>[0]);
+    expect(stamped).toContain("ooo-digest");
+  });
+
+  it("stamps the nudge once the morning's nudging really happened", async () => {
+    wireDb();
+    await GET(forcedReq());
+    expect(stamped).toContain("ooo-digest-nudge");
+  });
+
+  it("still stamps the nudge on a morning with an empty queue, which is an answer", async () => {
+    from.mockImplementation((table: string) =>
+      table === "lane_heartbeats" ? heartbeatBuilder() : builderFor([], table),
+    );
+    const res = await GET(forcedReq());
+    expect((await res.json()).pending).toBe(0);
+    expect(stamped).toContain("ooo-digest-nudge");
+  });
+
+  it("stamps the nudge when one manager's DM failed, because the schedule is fine", async () => {
+    // A broken Slack address has its own streak and its own page inside the route.
+    // Withholding the stamp for it would report the SCHEDULE as stopped while it is
+    // running perfectly and one address is wrong.
+    wireDb();
+    slack.dmSlackUserByEmail.mockImplementation(async () => false);
+    await GET(forcedReq());
+    expect(stamped).toContain("ooo-digest-nudge");
+  });
+
+  // THE FAILURE PATH: an unreadable queue stamps the attempt and NOT the nudge, so
+  // a lane that fires and throws every morning goes stale and pages, rather than
+  // looking exactly like a lane nobody had anything for.
+  it("stamps the attempt and not the nudge when the queue cannot be read", async () => {
+    from.mockImplementation((table: string) => {
+      if (table === "lane_heartbeats") return heartbeatBuilder();
+      return table === "ooo_requests" ? refusingBuilderFor(table) : builderFor(userRows, table);
+    });
+    await expect(GET(forcedReq())).rejects.toThrow(/ooo digest pending queue/);
+    expect(stamped).toContain("ooo-digest");
+    expect(stamped).not.toContain("ooo-digest-nudge");
   });
 });

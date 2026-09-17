@@ -70,6 +70,34 @@ export async function readAllHeartbeatMs(): Promise<Record<string, number | null
 }
 
 /**
+ * The same read, but a FAILURE throws instead of reading as "never stamped" (#2543).
+ *
+ * `readHeartbeatMs` below swallows a read error and returns null, which is right
+ * for a watchdog: a stamp it could not read must not page anybody. It is wrong for
+ * a caller that uses the stamp as a WATERMARK, because there null means "start from
+ * yesterday", so a failed read on the morning after a three day gap would report
+ * one day, move the mark, and drop the other two silently. That is the exact
+ * fail-quiet this heartbeat was added to end.
+ *
+ * So the two callers get two functions rather than one with a flag: a missing row
+ * still returns null (a lane that has genuinely never stamped), and only a real
+ * error throws. An unparseable stamp on an existing row keeps the epoch-0 sentinel,
+ * which a watermark reader sees as ancient and therefore as the widest catch-up its
+ * own cap allows, never as a fresh mark.
+ */
+export async function readHeartbeatMsStrict(lane: string): Promise<number | null> {
+  const db = supabaseAdmin();
+  const { data, error } = await db
+    .from("lane_heartbeats")
+    .select("last_ran_at")
+    .eq("lane", lane)
+    .maybeSingle();
+  if (error) throw new Error(`heartbeat read failed for ${lane}: ${error.message}`);
+  if (!data) return null;
+  return parseStampMs((data as { last_ran_at: string }).last_ran_at) ?? UNREADABLE_STAMP_MS;
+}
+
+/**
  * Read the `last_ran_at` timestamp for `lane` from `lane_heartbeats`.
  * Returns the stamp as epoch ms (0 when the stored value is unparseable, #1169),
  * or null if the row is missing or the read fails. Best-effort: never throws.
