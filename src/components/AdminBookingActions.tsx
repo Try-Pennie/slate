@@ -216,7 +216,7 @@ export default function AdminBookingActions({
         </button>
         <button
           onClick={() => setMode("cancel")}
-          className="min-h-9 rounded-md border border-[var(--error)] px-2 py-1 text-xs font-semibold text-[var(--error)] hover:bg-[rgba(196,61,61,0.06)]"
+          className="min-h-9 rounded-md border border-[var(--error)] px-2 py-1 text-xs font-semibold text-[var(--error)] hover:bg-[color-mix(in_srgb,var(--error)_6%,transparent)]"
         >
           Cancel
         </button>
@@ -301,7 +301,7 @@ export default function AdminBookingActions({
       {mode === "reassign" && (
         <div className="mt-3">
           {capWarn ? (
-            <div className="rounded-md border border-[var(--error)] bg-[rgba(196,61,61,0.06)] p-2">
+            <div className="rounded-md border border-[var(--error)] bg-[color-mix(in_srgb,var(--error)_6%,transparent)] p-2">
               <p className="text-xs text-fg">
                 {capWarn.email} is at their daily cap{capWarn.day ? ` on ${capWarn.day}` : ""}.
                 Reassign anyway?
@@ -320,7 +320,7 @@ export default function AdminBookingActions({
               </div>
             </div>
           ) : rotationWarn ? (
-            <div className="rounded-md border border-[var(--error)] bg-[rgba(196,61,61,0.06)] p-2">
+            <div className="rounded-md border border-[var(--error)] bg-[color-mix(in_srgb,var(--error)_6%,transparent)] p-2">
               <p className="text-xs text-fg">
                 {rotationWarn.name} is not in the bookable rotation (e.g. on leave,
                 ramping, or in training). Reassign anyway?

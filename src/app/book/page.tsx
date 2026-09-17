@@ -6,16 +6,13 @@ import { loadBookingHorizonDays } from "@/lib/booking/settings";
 import { loadReasonOptions } from "@/lib/booking/reason-options";
 import { resolveRequestedCode } from "@/lib/routing/catchall";
 import { existingCallForLanding } from "@/lib/booking/service";
+import { DEFAULT_BRAND_COLOR } from "@/lib/brand-label";
 
 export const dynamic = "force-dynamic";
 // Lead-facing: the brand is Pennie; Slate stays internal.
 export const metadata = { title: "Book a call with Pennie" };
 
 type SP = Record<string, string | string[] | undefined>;
-
-/** Canonical --pennie-sky; the embed explicitly passes it as the default
- *  brandColor (D14). A host can still override via the `brand` param. */
-const PENNIE_SKY = "#82D0FF";
 
 function first(sp: SP, key: string): string {
   const v = sp[key];
@@ -113,7 +110,7 @@ export default async function BookEntry({
         prefill={prefill}
         embedded={embedded}
         theme={theme}
-        brandColor={first(sp, "brand") || (embedded ? PENNIE_SKY : undefined)}
+        brandColor={first(sp, "brand") || (embedded ? DEFAULT_BRAND_COLOR : undefined)}
         parentOrigin={first(sp, "parentOrigin") || undefined}
         horizonDays={horizonDays}
         rescheduleReasons={reasonOptions.reschedule.active}

@@ -448,7 +448,7 @@ export default function ManageBooking({
                   </a>
                 </>
               ) : confirmingCancel ? (
-                <div className="rounded-lg border border-[var(--error)] bg-[rgba(196,61,61,0.04)] p-4">
+                <div className="rounded-lg border border-[var(--error)] bg-[color-mix(in_srgb,var(--error)_4%,transparent)] p-4">
                   <p className="text-sm font-semibold text-fg">{CANCEL_COPY.heading}</p>
                   <p className="mt-1 text-sm text-fg-muted">
                     {CANCEL_COPY.consequence}

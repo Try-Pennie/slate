@@ -6,10 +6,27 @@
  * Exercised by scripts/test-brand-label.ts.
  */
 
+/**
+ * The default brand fill the embed hands a host, as a literal (#1903).
+ *
+ * This is `--pennie-sky` and it is written here ONCE, because the embed passes
+ * it across a boundary a CSS variable cannot travel over: the host consumes it
+ * as a string and resolves it in its own document (D14). It lived in two page
+ * files as `const PENNIE_SKY`, each calling itself canonical when neither was,
+ * so either copy could drift from the token on its own.
+ *
+ * `scripts/test-raw-colour.ts` pins it to the token's own rgb() in globals.css,
+ * which is what keeps the one literal honest rather than merely single.
+ *
+ * colour-ok: the embed hands this to a host as a string, and a CSS variable
+ * cannot cross that boundary; it is pinned to the token by the guard above.
+ */
+export const DEFAULT_BRAND_COLOR = "#82D0FF";
+
 /** Graphite #343434 - the on-sky label color from the design system. */
 const GRAPHITE = { css: "var(--fg-on-sky)", luminance: relLum(52, 52, 52) };
-/** Beige #F9F6F0 - the light label for dark brand fills. */
-const BEIGE = { css: "rgb(249, 246, 240)", luminance: relLum(249, 246, 240) };
+/** Beige - the light label for dark brand fills, from the token like its pair. */
+const BEIGE = { css: "var(--pennie-beige)", luminance: relLum(249, 246, 240) };
 
 function channel(v: number): number {
   const s = v / 255;

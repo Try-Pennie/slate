@@ -22,6 +22,12 @@ import {
  * hex": a variable that cannot be loaded is not a variable. They are quoted from
  * `globals.css` with their names, so the next person can find the source.
  *
+ * colour-ok-file: this file renders its own document and gets no stylesheet, so
+ * every value in it is a declaration rather than a use. It is not unguarded:
+ * `scripts/test-global-error-tokens.ts` reads both files and fails when a value
+ * here is not the one globals.css defines, which is a stronger check than the
+ * raw colour scan could make (#1903).
+ *
  * The theme follows the OPERATING SYSTEM here rather than the app's own toggle,
  * for the same reason: the app's choice lives in an attribute this document does
  * not have. A `prefers-color-scheme` block is the closest honest approximation,

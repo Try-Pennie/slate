@@ -15,7 +15,7 @@ export function CheckBadgeIcon(props: SVGProps<SVGSVGElement>) {
       <path
         d="M5.8 10.2l3 3L14.5 7.5"
         fill="none"
-        stroke="#F9F6F0"
+        stroke="var(--pennie-beige)"
         strokeWidth={2}
         strokeLinecap="round"
         strokeLinejoin="round"
