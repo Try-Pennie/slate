@@ -90,9 +90,21 @@ export function secretFieldsMentioned(src: string): SecretField[] {
   return SECRET_FIELDS.filter((field) => new RegExp(`\\b${field}\\b`).test(src));
 }
 
+/** What the derivation selected, and what it could not read to judge. */
+export interface SurfaceScan {
+  surfaces: string[];
+  /**
+   * Candidates that threw on read. They are kept apart from "not a surface",
+   * because a file the scan could not open is not a file it cleared: skipping one
+   * silently is the same defect this whole guard exists about (L10, L98).
+   */
+  unreadable: string[];
+}
+
 /** The surfaces the repo itself says hold a form bound to the webhook endpoint. */
-export function deriveSurfaces(io: SurfaceIo, roots: string[]): string[] {
+export function scanForSurfaces(io: SurfaceIo, roots: string[]): SurfaceScan {
   const found = new Set<string>();
+  const unreadable = new Set<string>();
   for (const root of roots) {
     for (const path of io.listFiles(root)) {
       if (!isSurfaceCandidate(path)) continue;
@@ -100,8 +112,7 @@ export function deriveSurfaces(io: SurfaceIo, roots: string[]): string[] {
       try {
         src = io.readFile(path);
       } catch {
-        // An unreadable candidate is reported by the declared floor if it matters,
-        // and is never silently counted as a clean surface.
+        unreadable.add(path);
         continue;
       }
       if (!rendersFormControl(src)) continue;
@@ -109,7 +120,12 @@ export function deriveSurfaces(io: SurfaceIo, roots: string[]): string[] {
       found.add(path);
     }
   }
-  return [...found].sort();
+  return { surfaces: [...found].sort(), unreadable: [...unreadable].sort() };
+}
+
+/** The selected surfaces alone, for a caller with nothing to say about a bad read. */
+export function deriveSurfaces(io: SurfaceIo, roots: string[]): string[] {
+  return scanForSurfaces(io, roots).surfaces;
 }
 
 function lineOf(src: string, index: number): number {
@@ -182,7 +198,14 @@ export function describeFindings(findings: RenderedSecretFinding[]): string {
  */
 export function auditRenderedSecrets(io: SurfaceIo, opts: AuditOptions): SurfaceAudit {
   const refusals: string[] = [];
-  const derived = deriveSurfaces(io, opts.roots);
+  const { surfaces: derived, unreadable } = scanForSurfaces(io, opts.roots);
+
+  for (const path of unreadable) {
+    refusals.push(
+      `${path} could not be read, so it was neither cleared nor scanned: ` +
+        "an unopenable candidate must not count as a file with nothing in it",
+    );
+  }
 
   if (derived.length === 0) {
     refusals.push(

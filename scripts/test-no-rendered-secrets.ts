@@ -238,6 +238,27 @@ const GOOD_PAGE = `
 }
 
 {
+  // A candidate the scan cannot OPEN. Skipping it would make an unreadable file
+  // indistinguishable from one holding nothing, which is this guard's own defect.
+  const io: SurfaceIo = {
+    listFiles: () => ["src/app/admin/webhooks/page.tsx", "src/app/admin/locked/page.tsx"],
+    readFile: (p) => {
+      if (p === "src/app/admin/locked/page.tsx") throw new Error("EACCES");
+      return GOOD_PAGE;
+    },
+    exists: () => true,
+  };
+  const a = auditRenderedSecrets(io, {
+    roots: ["src"],
+    declared: ["src/app/admin/webhooks/page.tsx"],
+  });
+  assert(
+    a.refusals.some((r) => r.includes("could not be read")),
+    "fixture: a candidate that cannot be opened is REFUSED, not skipped",
+  );
+}
+
+{
   // Nothing at all renders a webhook form: an empty scan must never read as a clean one.
   const io = fixtureIo({ "src/lib/webhooks/emit.ts": `db.from("webhook_endpoints")` });
   const a = auditRenderedSecrets(io, { roots: ["src"], declared: [] });
