@@ -18,6 +18,15 @@
 // customers, and judging it against the four day blindness bound turned that into
 // a daily page for four days.
 //
+// NOTHING IS PARKED TODAY (#2484), and this suite is the reason that is safe. The
+// failure rate entry was the last one, and it went when its stated reason stopped
+// being true: it said one canary pass records 16 attempts against a floor of 20 in
+// a rolling hour, and the floor is 10 in four hours now, fitted to 27,122 real
+// leads. A mechanism whose every test is deleted along with its last user is one
+// that breaks silently the next time somebody reaches for it (L535, L29), so the
+// behaviour below is driven through a SYNTHETIC registry, and only the assertions
+// that were about the failure rate entry ITSELF were retired (L430).
+//
 // Run: node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/test-detector-park.ts
 import { VERDICT_STALE_BOUNDS_MS } from "../src/lib/monitor/health.ts";
 import {
@@ -50,10 +59,27 @@ const NOW = Date.UTC(2026, 7, 20, 12, 0, 0);
 // arms it again. Without the issue the park is a note to nobody: #1459 already
 // made the same rule for a deliberately unsubscribed webhook event, for the same
 // reason, and the guard there rejects an entry with no issue number.
+/**
+ * A park entry that is not in the shipped registry, so the rules below are driven
+ * even while nothing is really parked. It borrows a REAL lane so the bound lookup
+ * it is checked against is a real one.
+ */
+const FIXTURE_LANE = FAILURE_RATE_VERDICT_LANE;
+const FIXTURE_REGISTRY = {
+  [FIXTURE_LANE]: {
+    reason:
+      "a synthetic entry, so the park mechanism is exercised while the shipped registry is empty",
+    issue: 2484,
+    unparkWithinMs: 60 * 60_000,
+  },
+};
+
 {
   const lanes = Object.keys(PARKED_VERDICT_DETECTORS);
-  assert(lanes.length > 0, "the registry is the surface under test, so it must have entries");
-  for (const lane of lanes) {
+  // Deliberately allowed to be empty: see the header. What every entry must
+  // SATISFY is what is under test, and the fixture below drives those rules when
+  // the shipped registry has nothing in it.
+  for (const lane of [...lanes]) {
     assert(
       lane in VERDICT_STALE_BOUNDS_MS,
       `${lane} is parked but is not a watched verdict lane, so the park does nothing`,
@@ -89,9 +115,25 @@ const NOW = Date.UTC(2026, 7, 20, 12, 0, 0);
     );
   }
 
-  // The one the issue is about, named explicitly. A registry that happened to be
-  // empty would satisfy every shape rule above while parking nothing.
-  assert(!!parkedDetector(FAILURE_RATE_VERDICT_LANE), "the failure rate check is parked (#1561)");
+  // RETIRED by #2484: this used to assert the failure rate check IS parked. Its
+  // park was removed when its stated reason expired, so the assertion now defends
+  // a decision that has been reversed (L252). Every OTHER lane is still asserted
+  // armed below, and the shape rules above are driven by the fixture registry, so
+  // nothing that was protecting the mechanism was dropped with it.
+  assert(
+    Object.keys(PARKED_VERDICT_DETECTORS).length === 0,
+    "nothing is parked today, which is the state #2484 left behind and is worth stating rather than assuming",
+  );
+
+  // The shape rules, driven through the fixture so they are exercised rather than
+  // vacuous: an empty registry satisfies a `for` loop over it perfectly.
+  const fixture = parkedDetector(FIXTURE_LANE, FIXTURE_REGISTRY);
+  assert(!!fixture, "the fixture registry really parks its lane");
+  assert((fixture?.reason.length ?? 0) > 30, "and its reason is a sentence a reader can act on");
+  assert(
+    (fixture?.unparkWithinMs ?? Infinity) < VERDICT_STALE_BOUNDS_MS[FIXTURE_LANE],
+    "and its un-park window is tighter than the blindness bound it sits inside",
+  );
 
   // And the ones that CAN conclude are not, because parking a working detector
   // would take a live safety net off and look identical to this.
@@ -120,8 +162,8 @@ const NOW = Date.UTC(2026, 7, 20, 12, 0, 0);
 
 // --- three states, and the one that ends the park ------------------------------
 {
-  const window = PARKED_VERDICT_DETECTORS[FAILURE_RATE_VERDICT_LANE]!.unparkWithinMs;
-  const bound = VERDICT_STALE_BOUNDS_MS[FAILURE_RATE_VERDICT_LANE];
+  const window = FIXTURE_REGISTRY[FIXTURE_LANE]!.unparkWithinMs;
+  const bound = VERDICT_STALE_BOUNDS_MS[FIXTURE_LANE];
 
   // An unparked lane is never touched by any of this, whatever its stamp says.
   // The truth probe is one of these since #1831, which is the whole change: a
@@ -131,6 +173,9 @@ const NOW = Date.UTC(2026, 7, 20, 12, 0, 0);
     LOW_VOLUME_VERDICT_LANE,
     OOO_PROTECTION_VERDICT_LANE,
     AVAILABILITY_TRUTH_VERDICT_LANE,
+    // The failure rate lane is one of these since #2484, which is the change: a
+    // lane with no entry must read as ARMED whatever its stamp says.
+    FAILURE_RATE_VERDICT_LANE,
   ]) {
     for (const stamp of [null, NOW, NOW - 10 * bound, 0]) {
       assert(
@@ -142,18 +187,18 @@ const NOW = Date.UTC(2026, 7, 20, 12, 0, 0);
 
   // Parked and blind, which is the whole point: no page.
   assert(
-    detectorParkState(FAILURE_RATE_VERDICT_LANE, null, NOW) === "parked",
+    detectorParkState(FIXTURE_LANE, null, NOW, FIXTURE_REGISTRY) === "parked",
     "a parked detector that has never concluded stays parked",
   );
   assert(
-    detectorParkState(FAILURE_RATE_VERDICT_LANE, NOW - 10 * bound, NOW) === "parked",
+    detectorParkState(FIXTURE_LANE, NOW - 10 * bound, NOW, FIXTURE_REGISTRY) === "parked",
     "a parked detector whose last verdict has aged out stays parked",
   );
 
   // An unreadable stamp (the epoch-0 sentinel, #1172) is NOT evidence of a
   // verdict. Reading it as one would un-park a detector off a corrupt record.
   assert(
-    detectorParkState(FAILURE_RATE_VERDICT_LANE, 0, NOW) === "parked",
+    detectorParkState(FIXTURE_LANE, 0, NOW, FIXTURE_REGISTRY) === "parked",
     "an unreadable verdict record does not un-park anything",
   );
 
@@ -163,11 +208,11 @@ const NOW = Date.UTC(2026, 7, 20, 12, 0, 0);
   // not hypothetical any more: it is exactly what happened to the truth probe on
   // 2026-09-03, and it is why that lane is armed above rather than parked here.
   assert(
-    detectorParkState(FAILURE_RATE_VERDICT_LANE, NOW - 1, NOW) === "unpark",
+    detectorParkState(FIXTURE_LANE, NOW - 1, NOW, FIXTURE_REGISTRY) === "unpark",
     "a parked detector that has just concluded asks to be armed again",
   );
   assert(
-    detectorParkState(FAILURE_RATE_VERDICT_LANE, NOW - window + 1, NOW) === "unpark",
+    detectorParkState(FIXTURE_LANE, NOW - window + 1, NOW, FIXTURE_REGISTRY) === "unpark",
     "a verdict inside the un-park window counts, right up to the edge",
   );
 
@@ -178,7 +223,7 @@ const NOW = Date.UTC(2026, 7, 20, 12, 0, 0);
   // passes landing inside one hour, and then concluded nothing for the next two
   // and a half days while a daily page asked for it to be armed.
   assert(
-    detectorParkState(FAILURE_RATE_VERDICT_LANE, NOW - window - 1, NOW) === "parked",
+    detectorParkState(FIXTURE_LANE, NOW - window - 1, NOW, FIXTURE_REGISTRY) === "parked",
     "a verdict older than the un-park window leaves the park standing",
   );
   assert(
@@ -186,7 +231,7 @@ const NOW = Date.UTC(2026, 7, 20, 12, 0, 0);
     "the blindness bound really is wide enough to have covered that stale verdict",
   );
   assert(
-    detectorParkState(FAILURE_RATE_VERDICT_LANE, NOW - 2.5 * 24 * HOUR, NOW) === "parked",
+    detectorParkState(FIXTURE_LANE, NOW - 2.5 * 24 * HOUR, NOW, FIXTURE_REGISTRY) === "parked",
     "the measured production case (a verdict 2.5 days old, bound 4 days) stays parked",
   );
 }
@@ -194,7 +239,10 @@ const NOW = Date.UTC(2026, 7, 20, 12, 0, 0);
 // --- the park is visible, and says how it ends ---------------------------------
 {
   const parked = Object.keys(PARKED_VERDICT_DETECTORS);
-  const info = verdictParkedInfoText(parked);
+  // Driven through the fixture's lane list for the same reason as the page below:
+  // the shipped registry is empty, so the real call renders the "nothing is parked"
+  // form, which says nothing about whether a park is VISIBLE when there is one.
+  const info = verdictParkedInfoText([FIXTURE_LANE], FIXTURE_REGISTRY);
   assert(info.length > 120, "the whisper says what is off, not just that something is");
   for (const lane of parked) {
     const entry = PARKED_VERDICT_DETECTORS[lane as keyof typeof PARKED_VERDICT_DETECTORS];
@@ -217,15 +265,20 @@ const NOW = Date.UTC(2026, 7, 20, 12, 0, 0);
   // sides of the assertion go missing together and it passes while proving nothing
   // (L1, L70). The explicit no-undefined check below is what keeps that from
   // coming back the next time a lane is armed.
-  const alert = verdictUnparkAlertText(FAILURE_RATE_VERDICT_LANE);
+  // Rendered through the FIXTURE registry since #2484: the shipped one is empty, so
+  // asking for a real lane's copy would compare "#undefined" against "#undefined",
+  // both sides going missing together and the assertion passing while proving
+  // nothing (L1, L70). That is the trap the original file warned about for the
+  // truth probe, arriving for the lane it warned about it from.
+  const alert = verdictUnparkAlertText(FIXTURE_LANE, FIXTURE_REGISTRY);
   assert(/reached a verdict/i.test(alert), "the page says what changed");
   assert(
-    alert.includes(`#${PARKED_VERDICT_DETECTORS[FAILURE_RATE_VERDICT_LANE]?.issue}`),
+    alert.includes(`#${FIXTURE_REGISTRY[FIXTURE_LANE]!.issue}`),
     "the page names the issue that arms it",
   );
   assert(!DASHES.test(alert), "the un-park page has no dashes");
   assert(
-    new Set(parked.map(verdictUnparkAlertText)).size === parked.length,
+    new Set(parked.map((l) => verdictUnparkAlertText(l))).size === parked.length,
     "each detector's un-park page describes that detector",
   );
 
@@ -239,7 +292,7 @@ const NOW = Date.UTC(2026, 7, 20, 12, 0, 0);
     assert(!/\bundefined\b/.test(text), `${what} renders no missing value`);
   }
 
-  const recovery = verdictUnparkRecoveryText(FAILURE_RATE_VERDICT_LANE);
+  const recovery = verdictUnparkRecoveryText(FIXTURE_LANE);
   assert(/no action is needed/i.test(recovery), "the all-clear closes the loop");
   assert(!DASHES.test(recovery), "the un-park all-clear has no dashes");
 
@@ -248,7 +301,7 @@ const NOW = Date.UTC(2026, 7, 20, 12, 0, 0);
   // coincidence in the canary looks like an hour later. Before this they shared
   // one all-clear, so a lapsed park would have announced that the detector was
   // armed and being watched when it was neither (L11).
-  const lapsed = verdictUnparkLapsedText(FAILURE_RATE_VERDICT_LANE);
+  const lapsed = verdictUnparkLapsedText(FIXTURE_LANE, FIXTURE_REGISTRY);
   assert(lapsed !== recovery, "the two endings of an un-park page are different messages");
   // The claim, not the word. "Nothing was armed" is the sentence this ending needs;
   // what it must never carry is the armed all-clear's assertion that the detector

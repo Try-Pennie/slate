@@ -57,6 +57,7 @@ import {
   type FailureRateResult,
   type RateThresholds,
 } from "@/lib/monitor/booking-failure-rate";
+import { SHIPPED_FAILURE_RATE_THRESHOLDS } from "@/lib/monitor/failure-rate-thresholds";
 import {
   catchallVerdict,
   catchallPageText,
@@ -254,20 +255,10 @@ const ANOMALY_VERIFY_DELAY_MS = 2_000;
 const ANOMALY_VERIFY_MAX_BUCKETS = 8;
 
 // --- Customers failing to complete a booking (#1313) ---
-// The rolling window the failure share is judged over, and the two gates that
-// keep it honest. `minAttempts` is the one that stops a quiet hour where 1 of 1
-// attempts failed from paging; `failPct` must be EXCEEDED, not merely met.
-//
-// These numbers are a starting point, not a calibration: Slate has taken no real
-// customer traffic yet (every booking to date is the canary), so there is no live
-// distribution to fit them to. That is exactly why the check ships DISARMED and
-// logs its measured share every tick, per L56: the first real cycle produces the
-// numbers, and #1367 arms it once someone has read them.
-const FAILURE_RATE_THRESHOLDS: RateThresholds = {
-  windowMs: 60 * 60_000,
-  minAttempts: 20,
-  failPct: 20,
-};
+// The rolling window and the two gates live in `failure-rate-thresholds.ts`, with
+// the measurement they were fitted to (#2484), so the offline suite asserts the
+// SHIPPED numbers rather than a copy of them (L63).
+const FAILURE_RATE_THRESHOLDS: RateThresholds = SHIPPED_FAILURE_RATE_THRESHOLDS;
 
 // --- The booking API turning its own caller away (#1442, #1450, #1709) ---
 //

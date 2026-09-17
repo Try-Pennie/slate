@@ -26,6 +26,7 @@
     "verify:calcom-parity": "node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/verify-calcom-parity-live.ts",
     "verify:parallel-run-readiness": "node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/verify-parallel-run-readiness-live.ts",
     "verify:pool-slot-parity": "node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/verify-pool-slot-parity.ts",
+    "measure:lead-hours": "node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/measure-lead-hours.ts",
     "verify:kill-switch": "node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/verify-kill-switch-live.ts",
     "verify:burst-counter": "node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/verify-burst-counter-live.ts",
     "verify:ooo-protection": "node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/verify-ooo-protection-live.ts",

@@ -31,8 +31,15 @@ import {
   truthReachedVerdict,
   failureRateReachedVerdict,
   lowVolumeReachedVerdict,
+  parkedDetector,
+  PARKED_VERDICT_DETECTORS,
 } from "../src/lib/monitor/verdict-freshness.ts";
-import { verdictBlindAlertText, verdictRecoveryText } from "../src/lib/monitor/lane-copy.ts";
+import {
+  verdictBlindAlertText,
+  verdictRecoveryText,
+  verdictUnparkAlertText,
+  verdictUnparkLapsedText,
+} from "../src/lib/monitor/lane-copy.ts";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { assert, finish } from "./lib/harness.ts";
@@ -369,6 +376,41 @@ const HOUR = 60 * 60_000;
     assert(
       new RegExp(`recordDetectorVerdict\\(\\s*${name}\\s*,\\s*${predicate}\\(`).test(code),
       `${name} is stamped from ${predicate}, not from a hand-rolled second opinion`,
+    );
+  }
+}
+
+// --- The un-park copy must not render an issue number it does not have ---
+//
+// Exposed by #2484, which emptied `PARKED_VERDICT_DETECTORS`. Both of these
+// builders read the park entry for its issue number, and a lane with no entry
+// rendered the literal word undefined into a sentence somebody reads on a phone:
+// "close #undefined". In production these are sent only while a lane IS parked, so
+// this is the rare path rather than the common one, and that is exactly the kind
+// that ships unexercised (L535). It names the registry instead, which is where the
+// reader has to go either way.
+{
+  const NOT_PARKED = FAILURE_RATE_VERDICT_LANE;
+  assert(parkedDetector(NOT_PARKED) === null, "the fixture lane really has no park entry");
+
+  for (const text of [verdictUnparkAlertText(NOT_PARKED), verdictUnparkLapsedText(NOT_PARKED)]) {
+    assert(!/undefined/.test(text), "no un-park copy renders the word undefined");
+    assert(!/#\s*$|#\D/.test(text.replace(/#\d+/g, "")), "and leaves no bare hash where a number should be");
+    assert(
+      /PARKED_VERDICT_DETECTORS/.test(text),
+      "it names the registry, which is where a reader goes whether or not an issue is recorded",
+    );
+    assert(!DASHES.test(text), "no dashes as punctuation");
+  }
+
+  // And when an entry DOES exist the issue number is still quoted, so this did not
+  // quietly drop the pointer for the case that has one.
+  const parkedLane = Object.keys(PARKED_VERDICT_DETECTORS)[0];
+  if (parkedLane) {
+    const entry = parkedDetector(parkedLane);
+    assert(
+      verdictUnparkAlertText(parkedLane).includes(`#${entry?.issue}`),
+      "a parked lane's copy still names its issue",
     );
   }
 }
