@@ -1332,7 +1332,7 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
   },
   {
     // No stamp at all, which is a row paused by hand SQL or one that predates
-    // migration 0131. It must not quote a span it never measured.
+    // migration 0132. It must not quote a span it never measured.
     key: "public_booking_stopped",
     state: "stopped with nothing recording when",
     channel: "alert",

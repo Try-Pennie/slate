@@ -30,7 +30,7 @@
  * ## Where the clock comes from
  *
  * From `booking_settings.public_booking_paused_at`, stamped by the database trigger
- * in migration 0131 at the moment the flag goes from running to stopped, and NEVER
+ * in migration 0132 at the moment the flag goes from running to stopped, and NEVER
  * from when the monitor first noticed. A deploy or a lane restart would otherwise
  * reset the count and the notice would never fire. It is not `updated_at`, which is
  * shared with the other columns on that single settings row, so editing the booking

@@ -773,7 +773,7 @@ export async function GET(req: NextRequest) {
     // reports a drought and sends the reader after a funnel problem that is not there.
     //
     // The elapsed time comes from `public_booking_paused_at`, stamped by the database
-    // at the transition (migration 0131), never from when this lane first noticed: a
+    // at the transition (migration 0132), never from when this lane first noticed: a
     // deploy or a lane restart would otherwise reset the count and the notice would
     // never fire.
     //

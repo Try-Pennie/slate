@@ -304,7 +304,7 @@ describe("readPublicBookingPauseState", () => {
     await expect(readPublicBookingPauseState()).resolves.toEqual({ paused: false, sinceMs: null });
   });
 
-  // A row paused before migration 0131, or by hand SQL against a database with the
+  // A row paused before migration 0132, or by hand SQL against a database with the
   // trigger dropped. Stopped, and nothing recorded when, which the check speaks about
   // rather than waiting out a clock that does not exist.
   it("reads a pause with no stamp as stopped with no recorded start", async () => {

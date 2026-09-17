@@ -296,7 +296,7 @@ export async function readPublicBookingPaused(): Promise<boolean | null> {
 export async function readPublicBookingPauseState(): Promise<{
   paused: boolean;
   /** Epoch ms the switch was last set to stopped, or null while it is running (and
-   *  for a paused row whose stamp predates migration 0131). */
+   *  for a paused row whose stamp predates migration 0132). */
   sinceMs: number | null;
 }> {
   const db = supabaseAdmin();
