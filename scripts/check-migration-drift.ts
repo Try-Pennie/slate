@@ -19,6 +19,9 @@
  */
 import { execFile } from "node:child_process";
 import { migrationDriftVerdict } from "./lib/migration-drift.ts";
+import { parseLock } from "./lib/migration-content.ts";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import {
   type CliResult,
   cliResultFromExec,
@@ -86,7 +89,27 @@ if (!read.ok) {
 // anyone diagnosing a drift finding looks first.
 console.log(read.output);
 
-const verdict = migrationDriftVerdict(read.output);
+// The content lock, so this gate can also insist an INTENTION has become a fact
+// (#1642). It is the only check that reads the remote, so it is the only one that can
+// see a migration applied while the lock still says pending.
+//
+// A lock this cannot read is passed as undefined, not as an empty list: an empty list
+// says "nothing is pending", which is an answer, and this learned nothing. The rest of
+// the gate still runs, and the unreadable lock is reported rather than swallowed.
+let lock;
+try {
+  lock = parseLock(
+    readFileSync(join(import.meta.dirname, "..", "supabase", "migrations", "applied-content.lock"), "utf8"),
+  );
+} catch (err) {
+  lock = undefined;
+  console.log(
+    `migration-drift: could not read the content lock, so pending entries were not checked: ` +
+      `${err instanceof Error ? err.message : String(err)}`,
+  );
+}
+
+const verdict = migrationDriftVerdict(read.output, lock);
 if (verdict.ok) {
   console.log(
     `migration-drift: ${verdict.reason}` +

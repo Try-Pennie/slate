@@ -6,7 +6,15 @@
 # removed; see scripts/lib/migration-content.ts for why).
 #
 # Regenerate with: node --experimental-strip-types scripts/update-migration-lock.ts
-# ALWAYS after the push succeeds, never before, so it records what really ran.
+# with no flag AFTER supabase db push succeeds, so every entry records what really ran.
+#
+# A line ending in the word "pending" is an INTENTION rather than a fact (#1642): its
+# content is recorded and it has not been applied yet. That is what a branch carrying a
+# new migration is pushed with, written by the same script with --pending, because the
+# push gate demands an entry for every migration on disk and this file must not claim
+# something ran when it has not. The drift gate reads the remote and refuses a merge
+# while an APPLIED migration's entry still says pending, so an intention cannot reach
+# main wearing the clothes of a fact.
 #
 # Known divergences from production, measured 2026-08-13: 0035, 0044, 0062 and 0065
 # no longer match what prod executed. 0035 lost the 'public.' schema qualification
