@@ -5,13 +5,16 @@ import { classifyCalendarReachability } from "@/lib/google/reachability";
 import type { Reachability } from "@/lib/google/reachability-classify";
 import { sendThrottledAlert } from "@/lib/notify/dispatch";
 import { cleanupOnPoolExit } from "@/lib/google/sync";
-import { onboardIntoPool, type PoolEntryResult } from "@/lib/google/pool-entry";
+import { onboardIntoPool, type PoolEntryOptions, type PoolEntryResult } from "@/lib/google/pool-entry";
+import { ACTIVATION_BUDGET_MS } from "@/lib/bookable/activation-allowance";
+import { withinBudget } from "@/lib/google/sync-pace";
 import { log } from "@/lib/log";
 import {
   bookableBlockedAlert,
   bookableNotProvisionedAlert,
   bookableUnverifiedAlert,
   bookableUnhydratedAlert,
+  bookableTimedOutAlert,
 } from "@/lib/notify/misc-alert-copy";
 import { isDefinitiveFailure } from "@/lib/google/sync-health";
 
@@ -43,7 +46,18 @@ export type BlockedReason =
    * for every hour their working hours allow, and verify on book only catches
    * that at the last moment, after the lead has been shown the slot.
    */
-  | "calendar_unhydrated";
+  | "calendar_unhydrated"
+  /**
+   * #2317: the gate ran out of its budget before it could finish.
+   *
+   * Its OWN reason rather than folded into `calendar_unhydrated`, because the
+   * reader's next move is different: wait and retry, not go and look at the
+   * calendar sync lane. Nothing here says a calendar is broken; what it says is
+   * that nobody measured one, and a message sending somebody to read sync errors
+   * that do not exist is advice that can never work (the same distinction #1396
+   * drew between a gone account and one that never had Calendar).
+   */
+  | "activation_timed_out";
 
 export type BookableResult =
   | { status: "not_found" }
@@ -63,8 +77,20 @@ export interface BookableDeps {
    * bootstrap each one out to the booking horizon, and stamp the agent as synced,
    * so being bookable and having a calendar Slate can read are one event rather
    * than half an hour apart.
+   *
+   * The options are `Required<...>` (#2317), so the gate must hand it a budget: an
+   * optional one here would let a caller omit it and silently get back the
+   * unbounded behaviour this exists to end.
    */
-  onboardIntoPool: (userId: string) => Promise<PoolEntryResult>;
+  onboardIntoPool: (userId: string, opts: Required<PoolEntryOptions>) => Promise<PoolEntryResult>;
+  /**
+   * The clock the gate's deadline is measured against (#2317).
+   *
+   * REQUIRED, so `tsc` enumerates every construction site rather than letting one
+   * quietly inherit the real clock and become a test that waits for thirty seconds
+   * or, worse, one that cannot drive the boundary at all (L524).
+   */
+  now: () => number;
 }
 
 /**
@@ -84,7 +110,8 @@ export const defaultBookableDeps: BookableDeps = {
   // Best-effort: the flip already succeeded, so a cleanup failure must not fail
   // it. The self-heal reconcile backstop retries any leftover watch/blocks.
   cleanupOnPoolExit: (userId) => cleanupOnPoolExit(userId).then(() => {}),
-  onboardIntoPool,
+  onboardIntoPool: (userId, opts) => onboardIntoPool(userId, undefined, opts),
+  now: () => Date.now(),
 };
 
 /**
@@ -252,9 +279,10 @@ export async function applyBookableByUserId(
 async function readCalendarForPool(
   userId: string,
   deps: BookableDeps,
+  opts: Required<PoolEntryOptions>,
 ): Promise<PoolEntryResult | null> {
   try {
-    return await deps.onboardIntoPool(userId);
+    return await deps.onboardIntoPool(userId, opts);
   } catch (err) {
     log.error("bookable-api", { msg: "pool-entry read threw", user_id: userId }, err);
     return null;
@@ -273,12 +301,42 @@ async function applyBookableToRow(
   if (plan.status === "noop") return { status: "noop", userId: user!.id, bookable };
 
   if (plan.bookable === true) {
+    // The gate's deadline (#2317), taken BEFORE the first Google call, because the
+    // probe and its retry are part of the wait a person or a lane is sitting
+    // through. It bounds what has not STARTED yet and cannot interrupt a call in
+    // flight, which is the same per-calendar granularity the hydration lane has,
+    // and is said out loud here so nobody reads it as the stronger guarantee.
+    const deadlineMs = deps.now() + ACTIVATION_BUDGET_MS;
+    const inBudget = () => withinBudget(deps.now(), deadlineMs);
+
     const block = await checkActivationGate(user!.email, user!.id, deps);
     if (block) {
       await deps.notify(block.key, BOOKABLE_BLOCKED_COOLDOWN_MS, block.message);
       log.warn("bookable-api", { msg: "activation blocked", user_id: user!.id, reason: block.reason });
       return { status: "blocked", userId: user!.id, reason: block.reason };
     }
+
+    // A probe that answered slowly enough to spend the whole budget refuses HERE,
+    // before the pending mark and before a single calendar call. Marking somebody
+    // as owed an activation is cheap and correct either way, but spending Google
+    // calls on a run that already cannot finish is not, and the reachability probe
+    // is the one step whose own retry can double its cost.
+    if (!inBudget()) {
+      await deps.notify(
+        `bookable_blocked:${user!.id}`,
+        BOOKABLE_BLOCKED_COOLDOWN_MS,
+        bookableTimedOutAlert(user!.email, ACTIVATION_BUDGET_MS),
+      );
+      log.warn("bookable-api", {
+        msg: "activation blocked",
+        user_id: user!.id,
+        reason: "activation_timed_out",
+        stage: "reachability",
+        budget_ms: ACTIVATION_BUDGET_MS,
+      });
+      return { status: "blocked", userId: user!.id, reason: "activation_timed_out" };
+    }
+
     // Record that an activation is OWED before building one (#2302).
     //
     // Between here and the write below, the agent is a non-bookable row holding a
@@ -310,26 +368,34 @@ async function applyBookableToRow(
     // the probe above asks whether Google answers for this account, and this asks
     // whether their events actually reached the availability cache. Before the
     // write, because the answer decides whether there is a write at all.
-    const entry = await readCalendarForPool(user!.id, deps);
-    if (entry === null || entry.hydrated === 0 || entry.failed > 0) {
-      const message = bookableUnhydratedAlert(
-        user!.email,
-        entry?.hydrated ?? 0,
-        entry?.calendars ?? 0,
-      );
+    const entry = await readCalendarForPool(user!.id, deps, { withinBudget: inBudget });
+    if (entry === null || entry.hydrated === 0 || entry.failed > 0 || entry.outOfBudget) {
+      // WHICH refusal, when more than one is true at once (#2317). A MEASURED
+      // calendar failure outranks an exhausted budget: it names something a person
+      // can act on, and answering "try again in a minute" over a calendar Google
+      // has already refused would send them away from the only evidence there is.
+      // A throw ranks with the measured failures for the same reason it always
+      // has, which is that it is the least informative outcome and must not be the
+      // one that produces the most reassuring advice (L93).
+      const timedOut = entry !== null && entry.failed === 0 && entry.outOfBudget;
+      const reason: BlockedReason = timedOut ? "activation_timed_out" : "calendar_unhydrated";
+      const message = timedOut
+        ? bookableTimedOutAlert(user!.email, ACTIVATION_BUDGET_MS)
+        : bookableUnhydratedAlert(user!.email, entry?.hydrated ?? 0, entry?.calendars ?? 0);
       await deps.notify(`bookable_blocked:${user!.id}`, BOOKABLE_BLOCKED_COOLDOWN_MS, message);
       log.warn("bookable-api", {
         msg: "activation blocked",
         user_id: user!.id,
-        reason: "calendar_unhydrated",
+        reason,
         calendars: entry?.calendars ?? 0,
         hydrated: entry?.hydrated ?? 0,
         failed: entry?.failed ?? 0,
+        out_of_budget: entry?.outOfBudget ?? false,
       });
       // Nothing written, so `bookable_pending_since` survives and the hourly roster
       // sync retries this next hour, which is the same recovery path every other
       // arm of the gate already uses.
-      return { status: "blocked", userId: user!.id, reason: "calendar_unhydrated" };
+      return { status: "blocked", userId: user!.id, reason };
     }
   }
 

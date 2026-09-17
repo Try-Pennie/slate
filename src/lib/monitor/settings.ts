@@ -37,6 +37,7 @@ export type MonitorAlertKey =
   | "calendar_window_uncovered"
   | "schedule_parity_drift"
   | "agents_on_unset_hours"
+  | "agents_awaiting_activation"
   | "handoff_channel_unset"
   | "handoff_undelivered"
   | "main_not_deployed"
@@ -69,6 +70,7 @@ export const ALERT_KEYS: MonitorAlertKey[] = [
   "calendar_window_uncovered",
   "schedule_parity_drift",
   "agents_on_unset_hours",
+  "agents_awaiting_activation",
   "handoff_channel_unset",
   "handoff_undelivered",
   "main_not_deployed",
@@ -215,6 +217,12 @@ export const ALERT_FIELDS: {
     urgency: "alert",
     label: "Agents offered on hours nobody set",
     help: "A bookable agent has spent more than two days on the seeded default working week, so leads are offered times that are right only by coincidence. The first two days are silent, because every new hire starts on the seeded week and ordinary onboarding sets their real hours. It ends when their hours are set by them, an admin, or the cal.com import.",
+  },
+  {
+    key: "agents_awaiting_activation",
+    urgency: "alert",
+    label: "Agents waiting to become bookable",
+    help: "Somebody the roster counts as working has sat outside the booking pool for more than four hours, so no lead is ever offered their diary. The first four hours are silent, because the hourly roster sync retries on its own and an ordinary Google blip clears inside them. It ends when the activation succeeds or somebody decides either way.",
   },
   {
     key: "ooo_calcom_unprotected",
@@ -370,6 +378,12 @@ export const MONITOR_DEFAULTS = {
     // Hours nobody set (#1753): a slow condition that ends when a person or the
     // import writes the week, so once a day, like the other staffing nudges.
     agents_on_unset_hours: 24 * 60 * 60_000,
+    // Waiting to become bookable (#2318). Six hours, which is longer than the four
+    // hour window it reports on: the repair is somebody granting Calendar in Google
+    // Workspace or looking at a sync error, which takes a working morning rather
+    // than minutes, and a cooldown shorter than the grace would repeat the same
+    // names before anything could have changed.
+    agents_awaiting_activation: 6 * 60 * 60_000,
     // Routing dead zone (#327): unchanged from the constant this replaced. A bucket
     // with nobody stays wrong until someone is staffed onto it, so it repeats while
     // it lasts, six-hourly. Tunable since a deliberately dark roster (#1272) turned
@@ -613,6 +627,22 @@ export function resolveRosterCoverageArmed(
   return resolveArmed(config?.roster_coverage_armed);
 }
 
+/**
+ * Awaiting-activation ARMED switch (#2318): store > disarmed, same shape as its
+ * four siblings above.
+ *
+ * Disarmed for the usual observe-first reason (L56). Nobody can say from a desk
+ * how many people carry `bookable_pending_since` on an ordinary day: since #2302
+ * the population is whoever the hourly roster run refused or deferred, and it has
+ * never been watched over a working week. The check measures and logs throughout,
+ * and #2531 is what arms it once somebody has read a few ordinary days (L65).
+ */
+export function resolveAwaitingActivationArmed(
+  config: Pick<MonitorAlertConfig, "awaiting_activation_armed"> | null,
+): boolean {
+  return resolveArmed(config?.awaiting_activation_armed);
+}
+
 // Sane bounds so a fat-finger can't silently mute an alert for a week.
 const COOLDOWN_MIN_MIN = 1;
 const COOLDOWN_MIN_MAX = 7 * 24 * 60; // one week in minutes
@@ -634,6 +664,8 @@ export interface MonitorSettingsFormInput {
   /** Raw value of the arm-availability-drift checkbox (#1315), same encoding. */
   availabilityDriftArmed: string;
   rosterCoverageArmed: string;
+  /** Raw value of the arm-awaiting-activation checkbox (#2318), same encoding. */
+  awaitingActivationArmed: string;
 }
 
 export interface MonitorSettingsPayload {
@@ -648,6 +680,7 @@ export interface MonitorSettingsPayload {
     failure_rate_armed: boolean;
     availability_drift_armed: boolean;
     roster_coverage_armed: boolean;
+    awaiting_activation_armed: boolean;
   };
   errors: string[];
 }
@@ -705,6 +738,7 @@ export function parseMonitorSettingsForm(input: MonitorSettingsFormInput): Monit
       failure_rate_armed: checked(input.failureRateArmed),
       availability_drift_armed: checked(input.availabilityDriftArmed),
       roster_coverage_armed: checked(input.rosterCoverageArmed),
+      awaiting_activation_armed: checked(input.awaitingActivationArmed),
     },
     errors,
   };
@@ -727,6 +761,8 @@ export interface ResolvedMonitorSettings {
   availabilityDriftArmed: boolean;
   /** #1454: is the roster-coverage page armed (store > disarmed)? */
   rosterCoverageArmed: boolean;
+  /** #2318: is the "waiting to become bookable" page armed (store > disarmed)? */
+  awaitingActivationArmed: boolean;
 }
 
 /**
@@ -745,6 +781,7 @@ export async function loadMonitorSettings(): Promise<ResolvedMonitorSettings> {
         | "failure_rate_armed"
         | "availability_drift_armed"
         | "roster_coverage_armed"
+        | "awaiting_activation_armed"
       >
     | null = null;
   try {
@@ -754,7 +791,7 @@ export async function loadMonitorSettings(): Promise<ResolvedMonitorSettings> {
       db
         .from("monitor_alert_config")
         .select(
-          "floor_30, floor_120, low_volume_armed, failure_rate_armed, availability_drift_armed, roster_coverage_armed",
+          "floor_30, floor_120, low_volume_armed, failure_rate_armed, availability_drift_armed, roster_coverage_armed, awaiting_activation_armed",
         )
         .eq("id", 1)
         .maybeSingle(),
@@ -771,6 +808,7 @@ export async function loadMonitorSettings(): Promise<ResolvedMonitorSettings> {
         | "failure_rate_armed"
         | "availability_drift_armed"
         | "roster_coverage_armed"
+        | "awaiting_activation_armed"
       >;
     }
   } catch {
@@ -786,6 +824,7 @@ export async function loadMonitorSettings(): Promise<ResolvedMonitorSettings> {
     failureRateArmed: resolveFailureRateArmed(config),
     availabilityDriftArmed: resolveAvailabilityDriftArmed(config),
     rosterCoverageArmed: resolveRosterCoverageArmed(config),
+    awaitingActivationArmed: resolveAwaitingActivationArmed(config),
   };
 }
 

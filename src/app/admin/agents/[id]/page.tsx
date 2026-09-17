@@ -783,9 +783,11 @@ function BookableOutcome({ code }: { code?: string }) {
               ? "Not made bookable: their Google calendar could not be checked just now, which is usually a temporary Google issue. Try again shortly."
               : code === "blocked-unread"
                 ? "Not made bookable: their Google account answered, and Slate could not load what is on their calendar. In the pool they would be offered as free for every hour of their working week, so they are being kept out until it can be read. Check the calendar sync lane for this account; the hourly roster sync retries on its own."
-                : code === "missing"
-                  ? "That agent could not be found, so nothing was changed."
-                  : null;
+                : code === "blocked-timeout"
+                  ? "Not made bookable: reading their calendar took longer than one activation is allowed, so it was stopped part way and nothing was measured. This is usually Google being slow rather than a problem with the account. Try again, or leave it: the hourly roster sync retries on its own."
+                  : code === "missing"
+                    ? "That agent could not be found, so nothing was changed."
+                    : null;
   if (!said) return null;
 
   return (

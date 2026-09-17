@@ -22,6 +22,7 @@ const blank = {
   failureRateArmed: "",
   availabilityDriftArmed: "",
   rosterCoverageArmed: "",
+  awaitingActivationArmed: "",
 };
 
 describe("parseMonitorSettingsForm", () => {
@@ -40,6 +41,7 @@ describe("parseMonitorSettingsForm", () => {
       failure_rate_armed: false,
       availability_drift_armed: false,
       roster_coverage_armed: false,
+      awaiting_activation_armed: false,
     });
   });
 

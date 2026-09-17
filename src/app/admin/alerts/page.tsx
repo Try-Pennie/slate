@@ -17,6 +17,7 @@ import {
   resolveFailureRateArmed,
   resolveAvailabilityDriftArmed,
   resolveRosterCoverageArmed,
+  resolveAwaitingActivationArmed,
   envLowVolumeArmed,
 } from "@/lib/monitor/settings";
 import { SubmitButton } from "@/components/ui/SubmitButton";
@@ -65,6 +66,7 @@ export default async function AlertSettingsPage({
   const failureRateArmed = resolveFailureRateArmed(config);
   const availabilityDriftArmed = resolveAvailabilityDriftArmed(config);
   const rosterCoverageArmed = resolveRosterCoverageArmed(config);
+  const awaitingActivationArmed = resolveAwaitingActivationArmed(config);
 
   const storedByKey = new Map(rows.map((r) => [r.key, r.cooldown_min]));
   // #1289: every alarm currently quieter than its coded default. Read through the
@@ -405,6 +407,24 @@ export default async function AlertSettingsPage({
             agent is scheduled for, and a follow up once every advertised hour is
             covered again. Leave this off until agents are live and have set their real
             working hours, or it will report the whole week as uncovered.
+          </p>
+          <label className="mt-4 flex items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              name="awaiting_activation_armed"
+              value="on"
+              defaultChecked={awaitingActivationArmed}
+              className="h-4 w-4"
+            />
+            Send a Slack alert when somebody is stuck outside the booking pool
+          </label>
+          <p className="mt-1 text-xs text-fg-muted">
+            Off: Slate still checks every 5 minutes who the roster counts as working
+            but cannot be booked, and records what it finds in the logs, but nobody is
+            notified. On: Slack gets an alert naming anyone who has been waiting more
+            than four hours, and a follow up once nobody is. Leave this off until
+            somebody has watched a few ordinary days, so the alert is turned on
+            against numbers a person has seen.
           </p>
         </section>
 

@@ -45,7 +45,12 @@ import {
   MONITOR_STEP_FAILING_TICKS,
   MONITOR_STEP_REARM_TICKS,
 } from "@/lib/monitor/step-failure";
+import { ACTIVATION_BUDGET_MS } from "@/lib/bookable/activation-allowance";
 import { formatUnsetHoursAlert, formatUnsetHoursRecovery } from "@/lib/monitor/unset-hours";
+import {
+  formatAwaitingActivationAlert,
+  formatAwaitingActivationRecovery,
+} from "@/lib/monitor/awaiting-activation";
 import {
   classifyParitySweep,
   buildScheduleParityAlert,
@@ -142,6 +147,7 @@ import {
   bookableNotProvisionedAlert,
   bookableUnverifiedAlert,
   bookableUnhydratedAlert,
+  bookableTimedOutAlert,
   externalDoubleBookAlert,
   boundaryCatchAlert,
   internalErrorAlert,
@@ -1400,6 +1406,38 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     text: formatUnsetHoursRecovery(),
   },
   {
+    // #2318. Past the four hour grace, which is the only state that reaches Slack:
+    // somebody marked this morning is silent, so a fixture inside the window would
+    // render a message the lane never sends.
+    key: "agents_awaiting_activation",
+    state: "agents stuck outside the pool past the grace",
+    channel: "alert",
+    text: formatAwaitingActivationAlert(
+      [
+        { id: "u1", email: "cfrank@trypennie.com", name: "C Frank", waitingSinceMs: NOW_MS - 9 * 60 * 60_000 },
+        { id: "u2", email: "jsaminu@trypennie.com", name: null, waitingSinceMs: NOW_MS - 6 * 24 * 60 * 60_000 },
+      ],
+      NOW_MS,
+    ),
+  },
+  {
+    // The stamp nothing can read, which is reported rather than spared. It renders
+    // its own words, so a broken date can never arrive as "NaN hours".
+    key: "agents_awaiting_activation",
+    state: "one whose mark cannot be read",
+    channel: "alert",
+    text: formatAwaitingActivationAlert(
+      [{ id: "u3", email: "dpatel@trypennie.com", name: "D Patel", waitingSinceMs: null }],
+      NOW_MS,
+    ),
+  },
+  {
+    key: "agents_awaiting_activation",
+    state: "nobody past the grace",
+    channel: "recovery",
+    text: formatAwaitingActivationRecovery(),
+  },
+  {
     // The fixture is the real 2026-09-07 sweep: 21 of 102 agents drifted in the five
     // days after 97 schedules were imported and verified idempotent, which is the
     // measurement this alert exists because of.
@@ -2521,6 +2559,11 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     text: bookableUnhydratedAlert("dana.whitfield@trypennie.com", 3, 4) },
   { key: "bookable_blocked:*", state: "Google returned no calendar at all", channel: "alert",
     text: bookableUnhydratedAlert("sam.okafor@trypennie.com", 0, 0) },
+  { key: "bookable_blocked:*", state: "the gate ran out of its own budget", channel: "alert",
+    // #2317. Its own state because it is the one refusal that says nothing about
+    // the account: sending this reader to the sync lane would send them to read
+    // errors nobody recorded.
+    text: bookableTimedOutAlert("sam.okafor@trypennie.com", ACTIVATION_BUDGET_MS) },
   { key: "bookable_unverified:*", state: "transient error persisted", channel: "alert",
     text: bookableUnverifiedAlert("dana.whitfield@trypennie.com") },
   { key: "ooo_approvals_digest", state: "one approval, one recipient", channel: "alert",

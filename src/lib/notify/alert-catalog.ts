@@ -252,6 +252,14 @@ export const ALERT_CATALOG: AlertEntry[] = [
       "same daily sweep sees it (#1753).",
   },
   {
+    key: "agents_awaiting_activation",
+    kind: "condition",
+    why:
+      "Somebody the roster counts as working has sat outside the booking pool for " +
+      "longer than the four hour grace; it ends when the activation succeeds or a " +
+      "person decides either way, and the same lane sees it (#2318).",
+  },
+  {
     key: "schedule_parity_drift",
     kind: "condition",
     why:
