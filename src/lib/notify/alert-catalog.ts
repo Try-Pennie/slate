@@ -351,9 +351,9 @@ export const ALERT_CATALOG: AlertEntry[] = [
     why: "An endpoint is dead-lettering every delivery; a delivery that succeeds ends it.",
   },
   {
-    key: "empty_buckets:*",
+    key: "empty_tier:*",
     kind: "condition",
-    why: "A bucket has no eligible agent until staffing changes; the monitor re-measures every tick.",
+    why: "A debt tier is offering no booking time inside the next open business day, and stays that way until somebody is staffed onto it or its agents free up; the monitor re-measures every tick.",
   },
   {
     key: "outbox_drain_stuck",
@@ -519,7 +519,7 @@ export const ALERT_CATALOG: AlertEntry[] = [
   {
     key: "no_eligible_agents:*",
     kind: "incident",
-    why: "One booking attempt found no agent. The ONGOING version of this is empty_buckets:*, which the monitor watches and does clear.",
+    why: "One booking attempt found no agent. It is kept apart from the ongoing empty_tier:* deliberately: that one asks whether a whole DEBT TIER can serve a lead, and this one is a single bucket refusing a single attempt, which happens while the tier around it is healthy.",
   },
   {
     key: "tier_fallback:*",
@@ -534,7 +534,7 @@ export const ALERT_CATALOG: AlertEntry[] = [
   {
     key: "booker_unstaffed:*",
     kind: "incident",
-    why: "One customer opened an unstaffed bucket and was shown nothing; that visit is over and they have gone. The ONGOING version is empty_buckets:*, which the monitor watches and does clear, exactly as no_eligible_agents:* pairs with it on the booking side.",
+    why: "One customer opened an unstaffed bucket and was shown nothing; that visit is over and they have gone. There is no ongoing twin for this one bucket: empty_tier:* watches the whole DEBT TIER, which can be perfectly healthy while one bucket inside it is empty, and that is the muting #2505 was opened for.",
   },
   {
     key: "bookable_blocked:*",

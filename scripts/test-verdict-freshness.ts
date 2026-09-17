@@ -25,6 +25,8 @@ import {
   OOO_PROTECTION_VERDICT_LANE,
   TWILIO_ROSTER_VERDICT_LANE,
   LANE_WATCHDOG_VERDICT_LANE,
+  TIER_STAFFING_VERDICT_LANE,
+  tierStaffingReachedVerdict,
   BURST_COUNTER_VERDICT_LANE,
   laneWatchdogReachedVerdict,
   twilioRosterReachedVerdict,
@@ -181,6 +183,7 @@ const HOUR = 60 * 60_000;
         TWILIO_ROSTER_VERDICT_LANE,
         LANE_WATCHDOG_VERDICT_LANE,
         BURST_COUNTER_VERDICT_LANE,
+        TIER_STAFFING_VERDICT_LANE,
       ]
         .sort()
         .join(","),
@@ -414,5 +417,23 @@ const HOUR = 60 * 60_000;
     );
   }
 }
+
+// --- the debt tier alarm's verdict (#2505) ------------------------------------
+//
+// Both directions, because this is the detector most likely to sit blind: every
+// debt tier is staffed today, so it ships having never fired, and only the
+// ABSENCE of this stamp can tell a working alarm from a dead one.
+assert(
+  tierStaffingReachedVerdict({ measuredAny: true }),
+  "a tick that judged at least one tier has concluded",
+);
+assert(
+  !tierStaffingReachedVerdict({ measuredAny: false }),
+  "a tick where every tier was unmeasured has NOT concluded, so it stamps nothing",
+);
+assert(
+  !tierStaffingReachedVerdict(null),
+  "a tick that skipped or threw has not concluded either",
+);
 
 finish();

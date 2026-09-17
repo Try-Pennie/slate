@@ -46,6 +46,17 @@ export const OOO_PROTECTION_VERDICT_LANE = "verdict:ooo-protection";
 export const TWILIO_ROSTER_VERDICT_LANE = "verdict:twilio-roster";
 export const LANE_WATCHDOG_VERDICT_LANE = "verdict:lane-watchdog";
 /**
+ * The debt tier staffing alarm (#2505).
+ *
+ * It needs this stamp more than any of its siblings, because it is SILENT ON A
+ * HEALTHY DAY AND SILENT ON A BROKEN ONE. Measured 2026-09-17, every debt tier is
+ * staffed and offering times, so the alarm ships having never fired and will very
+ * likely never fire, which is exactly the state that reads as a working detector
+ * and as a dead one (#1394, L557). The lane heartbeat cannot see it: the tick runs
+ * fine, and what it fails to do is CONCLUDE.
+ */
+export const TIER_STAFFING_VERDICT_LANE = "verdict:tier-staffing";
+/**
  * The proof that the burst counter answers (#2392), and the first member of this
  * family stamped from OUTSIDE the Worker.
  *
@@ -66,6 +77,7 @@ export const LANE_WATCHDOG_VERDICT_LANE = "verdict:lane-watchdog";
 export const BURST_COUNTER_VERDICT_LANE = "verdict:burst-counter";
 
 export type DetectorVerdictLane =
+  | typeof TIER_STAFFING_VERDICT_LANE
   | typeof AVAILABILITY_TRUTH_VERDICT_LANE
   | typeof FAILURE_RATE_VERDICT_LANE
   | typeof LOW_VOLUME_VERDICT_LANE
@@ -120,6 +132,22 @@ export function lowVolumeReachedVerdict(result: LowVolumeResult): boolean {
  */
 export function oooProtectionReachedVerdict(result: OooProtectionResult): boolean {
   return result.status !== "unreadable";
+}
+
+/**
+ * Did the debt tier alarm judge ANY tier this tick? (#2505)
+ *
+ * `measuredAny` and nothing else. A tick where the roster read or the cached slot
+ * rows failed reports every tier `unmeasured`, which is the honest outcome and is
+ * NOT a verdict: stamping it would keep the freshness looking healthy for as long
+ * as the read stayed broken, which is the blindness this family exists to notice.
+ *
+ * A null result is a tick that skipped or threw, which concluded nothing either.
+ */
+export function tierStaffingReachedVerdict(
+  result: { measuredAny: boolean } | null,
+): boolean {
+  return result?.measuredAny === true;
 }
 
 /**

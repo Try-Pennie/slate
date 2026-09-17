@@ -1,6 +1,6 @@
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { selectAllPages } from "@/lib/supabase/paginate";
-import { unwrap, unwrapCount } from "@/lib/db/result";
+import { unwrap } from "@/lib/db/result";
 import {
   computeBucketSlots,
   freeMembersForSlot,
@@ -17,36 +17,12 @@ import {
   orderByBucketShare,
   shadowRankingDivergence,
 } from "@/lib/availability/roundrobin";
-import { sendThrottledAlert, resolveAlert, settleAlertsSilently } from "@/lib/notify/dispatch";
+import { sendThrottledAlert } from "@/lib/notify/dispatch";
 import { unfairOrderingAlert } from "@/lib/booking/alert-copy";
-import {
-  emptyBucketMessage,
-  recoveredBucketMessage,
-  tierCoveredBucketMessage,
-  emptyBuckets,
-  emptyPools,
-  planEmptyBucketAlerts,
-  emptyBucketsAggregateMessage,
-  emptyBucketsAggregateRecoveredMessage,
-  AGGREGATE_BUCKET_CODE,
-  type BucketCoverage,
-} from "@/lib/availability/bucket-coverage";
-import { poolKeyFor } from "@/lib/availability/pool-key";
-import { poolLabel } from "@/lib/availability/pool-label";
-import { loadMonitorSettings } from "@/lib/monitor/settings";
-import { mapWithConcurrency } from "@/lib/concurrency";
 import type { Attributes, Bucket, Criteria, EventType } from "@/lib/db/types";
-// Lazy circular-safe import: eligible-cache.ts imports eligibleAgentIds from
-// this module, but since both modules only export functions (no module-level
-// execution), ESM live bindings ensure the reference is valid by call time.
-import { eligibleAgentIdsCached } from "./eligible-cache.ts";
 import { log } from "@/lib/log";
 
 export { agentIdsFromPool } from "@/lib/availability/pool";
-
-const EMPTY_BUCKETS_ALERT_KEY = "empty_buckets";
-// Bounded fan-out for the per-bucket eligibility resolves (each hits the DB).
-const COVERAGE_CONCURRENCY = 6;
 
 /**
  * Resolves a bucket's raw pool data: active manual members, bookable org agents,
@@ -151,222 +127,6 @@ export async function eligibleAgentIds(
     "fallback agent",
   );
   return applyFallback(matched, bucket.fallback_user_id, !!fallback);
-}
-
-/** IO the empty-bucket sweep needs; defaulted to real impls, injectable in tests. */
-export interface EmptyBucketDeps {
-  loadBuckets(): Promise<Bucket[]>;
-  /**
-   * The active `bucket_members` rows, so this sweep's pool key is the SAME key
-   * the recompute lane, the tiers page and the staffing depth build (#2253).
-   *
-   * It reads them rather than taking the coarser key it used to, because
-   * `emptyPools` reports a pool only when every code in it is empty: an
-   * unstaffed bucket sharing a pool with one staffed by a hand named member was
-   * neither paged nor cleared, and an alarm that goes quiet about the thing it
-   * watches is the worst direction for one to fail.
-   */
-  loadActiveMembers(): Promise<{ bucket_id: string; user_id: string }[]>;
-  countEligible(bucket: Bucket): Promise<number>;
-  /** One throttled alert per dead bucket, keyed by code so each surfaces independently. */
-  sendAlert(code: string, message: string): Promise<void>;
-  /** The all-clear for a bucket that has agents again (#1151), same key. */
-  clearAlert(code: string, message: string): Promise<void>;
-  /** Drop superseded per-bucket pages without posting an all-clear for each. */
-  settleSilently(codes: string[]): Promise<void>;
-  /**
-   * Bookable agents in the roster, for naming the shared cause on the aggregate
-   * page. `null` means the count could NOT be read, which the copy states rather
-   * than presenting as zero.
-   */
-  countBookableAgents(): Promise<number | null>;
-}
-
-/**
- * The real IO, built per sweep so the cooldown comes from the store (#571) rather
- * than a constant nobody can reach. It is a factory, not a const, because the
- * cooldown has to be resolved once per run instead of once per process.
- */
-async function realEmptyBucketDeps(): Promise<EmptyBucketDeps> {
-  // Never throws: a config read failure falls through to the coded default rather
-  // than taking the monitor down with it.
-  const { cooldownMs } = await loadMonitorSettings();
-  const cooldown = cooldownMs.empty_buckets;
-  return {
-    // Real lead routes only. The SMOKE fixtures (#396) are deliberately staffed by
-    // the two test agents so the canary keeps proving the funnel, and the canary is
-    // what watches them: counting them here would put a fixture in a number someone
-    // reconciles against the roster ("60 of 62" when they have 60), and paging about
-    // one would be noise to whoever is deciding whether real leads can be routed.
-    // #1641: unwrapped, because an empty roster is exactly what this monitor is
-    // watching FOR. A failed read used to arrive as zero buckets, which the sweep
-    // reads as a roster with nothing in it to check: no bucket is empty, so no
-    // page, and (worse) nothing is measured as healthy either. The consumer
-    // already treats a throw as "this run measured no pool" and clears nothing,
-    // which is the honest outcome and is pinned in empty-buckets.test.ts.
-    loadBuckets: async () =>
-      (unwrap(
-        await supabaseAdmin().from("buckets").select("*").eq("is_test", false),
-        "empty-bucket sweep roster",
-      ) ?? []) as Bucket[],
-    // Unwrapped for the same reason the roster read is, and it matters more here
-    // (#2253): a swallowed error would arrive as "nobody is named on any bucket",
-    // which is the coarse key this read exists to replace, restored silently and
-    // on exactly the run that could not check.
-    //
-    // No bound needed: `bucket_members` is roster bounded (sixty buckets, a
-    // handful of hand named people each) and is on the capped read guard's
-    // SAFE_TABLES for that reason.
-    loadActiveMembers: async () =>
-      (unwrap(
-        await supabaseAdmin()
-          .from("bucket_members")
-          .select("bucket_id, user_id")
-          .eq("active", true),
-        "empty-bucket sweep members",
-      ) ?? []) as { bucket_id: string; user_id: string }[],
-    // Use the 60s cross-invocation cache (#421) so all cron lanes in a tick share
-    // one eligibility read per bucket rather than each re-querying the DB.
-    countEligible: async (bucket) => (await eligibleAgentIdsCached(bucket)).ids.length,
-    sendAlert: (code, message) =>
-      // alert-key: empty_buckets:*
-      sendThrottledAlert(`${EMPTY_BUCKETS_ALERT_KEY}:${code}`, cooldown, message).then(() => {}),
-    // all-clear-proof: src/lib/availability/empty-buckets.test.ts - drives this module
-    // against the real dispatch boundary with a failing bucket read, and pins that a
-    // sweep that measured no pool announces no recovery.
-    clearAlert: (code, message) =>
-      // alert-key: empty_buckets:*
-      resolveAlert(`${EMPTY_BUCKETS_ALERT_KEY}:${code}`, message).then(() => {}),
-    settleSilently: (codes) =>
-      settleAlertsSilently(codes.map((c) => `${EMPTY_BUCKETS_ALERT_KEY}:${c}`)),
-    // Test agents are excluded on purpose: the two SMOKE fixtures are bookable so
-    // the canary keeps proving the funnel, and counting them would answer "is the
-    // roster switched on" with a yes while no real lead can be routed.
-    countBookableAgents: async () =>
-      unwrapCount(
-        await supabaseAdmin()
-          .from("users")
-          .select("id", { count: "exact", head: true })
-          .eq("bookable", true)
-          .eq("is_test", false)
-          .is("deactivated_at", null),
-        "empty-buckets bookable count",
-      ),
-  };
-}
-
-/**
- * Proactive routing dead-zone monitor (#327): resolve every bucket's eligible
- * pool and throttled-alert if any route to ZERO agents (matched pool empty AND
- * no usable fallback), so a misconfigured bucket is caught before a lead hits
- * it. Best-effort — called from the hourly roster cron after the reconcile.
- * Returns the empty codes for the cron's response/log. Deps are injectable so
- * the decision-and-fan-out is unit-tested without DB/Slack.
- */
-export async function alertOnEmptyBuckets(
-  deps?: EmptyBucketDeps,
-): Promise<{ empty: string[]; aggregated: boolean }> {
-  const d = deps ?? (await realEmptyBucketDeps());
-  const buckets = await d.loadBuckets();
-  if (buckets.length === 0) return { empty: [], aggregated: false };
-
-  // Read once for the run and indexed here, so sixty buckets cost one query
-  // rather than sixty (the same reason the settings read is resolved per run).
-  const membersByBucket = new Map<string, string[]>();
-  for (const m of await d.loadActiveMembers()) {
-    const ids = membersByBucket.get(m.bucket_id);
-    if (ids) ids.push(m.user_id);
-    else membersByBucket.set(m.bucket_id, [m.user_id]);
-  }
-
-  const coverage: BucketCoverage[] = await mapWithConcurrency(
-    buckets,
-    COVERAGE_CONCURRENCY,
-    async (bucket) => ({
-      code: bucket.code,
-      eligibleCount: await d.countEligible(bucket),
-      // #2237: which POOL this bucket routes through, so an unstaffed tier is one
-      // page rather than six. Keyed by the same `poolKeyFor` the recompute lane
-      // groups on, over the same inputs (#2253), so no two surfaces can disagree
-      // about which codes are one pool.
-      poolKey: poolKeyFor({
-        orgId: bucket.org_id,
-        eventTypeId: bucket.event_type_id,
-        criteria: bucket.criteria ?? null,
-        fallbackUserId: bucket.fallback_user_id,
-        memberIds: membersByBucket.get(bucket.id) ?? [],
-      }),
-      poolLabel: poolLabel(bucket.criteria ?? null),
-    }),
-  );
-
-  const plan = planEmptyBucketAlerts(coverage);
-  const empty = emptyBuckets(coverage);
-  // Counted in POOLS (#2237), which is the unit the aggregate now decides on and
-  // the unit a reader acts in: "5 of 15" is a third of the routing matrix, where
-  // "5 of 60" was one unstaffed tier.
-  const dead = emptyPools(coverage);
-  const pools = new Set(coverage.map((c) => c.poolKey)).size;
-
-  if (plan.aggregated) {
-    // One page for the set, naming the count and the cause. The cause lookup is
-    // best-effort: a failed read becomes an explicit "could not be read" in the
-    // copy, and must never swallow the page itself.
-    const agents = await d.countBookableAgents().catch(() => null);
-    await d
-      .sendAlert(
-        AGGREGATE_BUCKET_CODE,
-        emptyBucketsAggregateMessage(dead.length, pools, agents),
-      )
-      .catch(() => {});
-  } else {
-    for (const pool of plan.pagePools) {
-      await d.sendAlert(pool.representative, emptyBucketMessage(pool)).catch(() => {});
-    }
-  }
-
-  // #1151: "this bucket routes to nobody" is a CONDITION that ends when someone
-  // is staffed onto it, and this monitor is the only thing that re-measures it.
-  // Driven by the MEASURED coverage, not by "we did not alert this run": a bucket
-  // is cleared only because its pool was counted and is non-empty. A run that
-  // could not load any bucket returned earlier and clears nothing.
-  for (const c of plan.clear) {
-    const message = c.tierCovered
-      ? tierCoveredBucketMessage(c.pool)
-      : recoveredBucketMessage(c.pool, c.eligibleCount);
-    await d.clearAlert(c.code, message).catch(() => {});
-  }
-
-  // Any page a SUPERSEDING page has already covered is settled WITHOUT a notice of
-  // its own, and that now happens in both modes (#2237). The aggregate supersedes
-  // every empty pool's page; a pool's page supersedes the codes it speaks for.
-  // Posting an all-clear for each would be the same flood wearing a hat.
-  if (plan.settleCodes.length > 0) {
-    // Not swallowed: a marker left behind is this flood again on the next wave,
-    // as sixty all-clears, so the failure has to be visible somewhere.
-    await d
-      .settleSilently(plan.settleCodes)
-      .catch((err) =>
-        log.error(
-          "empty-buckets",
-          { msg: "settling superseded per-bucket pages failed", codes: plan.settleCodes.length },
-          err,
-        ),
-      );
-  }
-
-  // The aggregate is a condition of its own and owes the same two answers. When it
-  // ends, ONE all-clear that says whether anything is still dead, since some pools
-  // may still be paging.
-  if (!plan.aggregated) {
-    await d
-      .clearAlert(
-        AGGREGATE_BUCKET_CODE,
-        emptyBucketsAggregateRecoveredMessage(dead.length, pools),
-      )
-      .catch(() => {});
-  }
-  return { empty, aggregated: plan.aggregated };
 }
 
 export interface ResolvedBucket {

@@ -58,7 +58,7 @@ starve its neighbours (`docs/cloudflare-platform-notes.md`).
 
 ## The booker is offering nothing, or too little
 
-Keys: `empty_buckets:*`, `bucket_slots_stale`, `availability_booked_solid`,
+Keys: `empty_tier:*`, `bucket_slots_stale`, `availability_booked_solid`,
 `availability_data_anomaly`, `availability_drift:*`, `fallback_covered_availability`,
 `thin_tier_staffing`, `tier_fallback:*`, `tier_fallback_deep:*`, `no_eligible_agents:*`,
 `low_booking_volume`, `booking_failure_rate`, `calendar_window_uncovered`,
@@ -69,11 +69,20 @@ times than they should, or none. The alerts are deliberately split by CAUSE, bec
 "booked solid" is a staffing fact and "data anomaly" is a bug, and they call for
 opposite responses (#570).
 
+**`empty_tier:*` is about a whole DEBT TIER, not a bucket** (#2505). It fires when
+Low, Medium, High, Very High or Ultra High is offering no booking time before the
+end of the next working day, and it says which of the two reasons it is: nobody is
+assigned to the tier at all (a hiring or Twilio tag repair), or the tier has agents
+and none of them has an opening (a schedule, a calendar or a capacity repair). A
+bucket or a backend inside a tier that is still offering times is deliberately NOT
+reported: since #2486 the ladder tries every bucket in the tier before dropping
+one, so those leads are served.
+
 **`booker_unstaffed:*` means a real customer arrived and was shown nothing**
-(#2158). It is the same state `empty_buckets:*` reports, said by a different
-witness: that one measures whether anybody is looking, and this one fires because
-somebody was. Before cutover almost nobody is, so treat this as the more urgent of
-the two.
+(#2158). It is a narrower witness than `empty_tier:*`: that one measures the tier
+whether or not anybody is looking, and this one fires because somebody was, on the
+one bucket they opened. Before cutover almost nobody is, so treat this as the more
+urgent of the two.
 
 - Staff the bucket, or take its link out of use. Nothing else clears it, and the
   customer who triggered it has already gone.

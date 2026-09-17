@@ -53,6 +53,16 @@ export interface ReadinessFacts {
   } | null;
   emptyBuckets: { realBuckets: number; empty: string[] } | null;
   /**
+   * Debt tiers with nobody assigned at all (#2505). null = unreadable.
+   *
+   * The gate was BLIND to this before, and not by a small margin: `emptyBuckets`
+   * drops any code whose ladder reaches a staffed rung, and every tier 5 code
+   * reaches tier 4, so a completely unstaffed Ultra High produced exit 0 READY.
+   * The flip morning gate could not answer the question the pilot most needs
+   * answered. Named tiers, never a count, because the reader has to know WHICH.
+   */
+  emptyTiers: { measuredTiers: number; empty: string[] } | null;
+  /**
    * Bookable agents on hours nobody set (#1753): the seeding stamp, or a pre stamp
    * row still shaped exactly like the org default. null = unreadable. Honest since
    * the stamp exists; before it this was a proxy that named every agent whose real
@@ -64,6 +74,7 @@ export interface ReadinessFacts {
 export type ReadinessFinding =
   | "unreadable"
   | "nothing-measured"
+  | "tier-empty"
   | "bucket-empty"
   | "calendar-missing"
   | "calendar-uncovered"
@@ -89,6 +100,10 @@ export type ReadinessFinding =
 export const READINESS_ORDER: readonly ReadinessFinding[] = [
   "unreadable",
   "nothing-measured",
+  // Ranked ABOVE an empty bucket: a bucket with nobody in it is served by the
+  // rest of its debt tier (#2486), and a debt tier with nobody in it is served
+  // only by dropping the lead a tier, which is the thing a pilot is measuring.
+  "tier-empty",
   "bucket-empty",
   "calendar-missing",
   "calendar-uncovered",
@@ -110,7 +125,8 @@ export const READINESS_EXIT = {
   ready: 0,
   unreadable: 2,
   nothingMeasured: 3,
-  bucketEmpty: 4,
+  tierEmpty: 4,
+  bucketEmpty: 12,
   calendarMissing: 5,
   calendarUncovered: 6,
   alarmMuted: 7,
@@ -123,6 +139,7 @@ export const READINESS_EXIT = {
 const EXIT_FOR: Record<ReadinessFinding, number> = {
   unreadable: READINESS_EXIT.unreadable,
   "nothing-measured": READINESS_EXIT.nothingMeasured,
+  "tier-empty": READINESS_EXIT.tierEmpty,
   "bucket-empty": READINESS_EXIT.bucketEmpty,
   "calendar-missing": READINESS_EXIT.calendarMissing,
   "calendar-uncovered": READINESS_EXIT.calendarUncovered,
@@ -209,6 +226,14 @@ export function judgeReadiness(f: ReadinessFacts): ReadinessJudgement {
     });
   }
 
+  if (f.emptyTiers === null) unreadable.push("debt tiers");
+  else if (f.emptyTiers.empty.length) {
+    findings.push({
+      kind: "tier-empty",
+      detail: `${f.emptyTiers.empty.length} debt tier(s) with nobody assigned: ${names(f.emptyTiers.empty)}`,
+    });
+  }
+
   if (f.emptyBuckets === null) unreadable.push("buckets");
   else if (f.emptyBuckets.empty.length) {
     findings.push({
@@ -222,20 +247,24 @@ export function judgeReadiness(f: ReadinessFacts): ReadinessJudgement {
       kind: "unreadable",
       detail: `could not read ${unreadable.join(", ")}, so nothing beneath is vouched for`,
     });
-  } else if ((f.calendars?.bookableAgents ?? 0) === 0 || (f.emptyBuckets?.realBuckets ?? 0) === 0) {
+  } else if (
+    (f.calendars?.bookableAgents ?? 0) === 0 ||
+    (f.emptyBuckets?.realBuckets ?? 0) === 0 ||
+    (f.emptyTiers?.measuredTiers ?? 0) === 0
+  ) {
     findings.unshift({
       kind: "nothing-measured",
-      detail: `measured ${f.calendars?.bookableAgents ?? 0} bookable agents and ${f.emptyBuckets?.realBuckets ?? 0} real buckets, which judges nothing`,
+      detail: `measured ${f.calendars?.bookableAgents ?? 0} bookable agents, ${f.emptyTiers?.measuredTiers ?? 0} debt tiers and ${f.emptyBuckets?.realBuckets ?? 0} real buckets, which judges nothing`,
     });
   }
 
   findings.sort((a, b) => READINESS_ORDER.indexOf(a.kind) - READINESS_ORDER.indexOf(b.kind));
   const measured =
-    f.calendars && f.emptyBuckets
-      ? `measured ${f.calendars.bookableAgents} bookable agents and ${f.emptyBuckets.realBuckets} real buckets`
+    f.calendars && f.emptyBuckets && f.emptyTiers
+      ? `measured ${f.calendars.bookableAgents} bookable agents, ${f.emptyTiers.measuredTiers} debt tiers and ${f.emptyBuckets.realBuckets} real buckets`
       : "measured only part of the picture";
   if (findings.length === 0) {
-    return { exit: READINESS_EXIT.ready, findings, summary: `READY: ${measured}; no alarm muted, comparison fresh, nobody waiting, every calendar hydrated, every week set by somebody, no empty bucket` };
+    return { exit: READINESS_EXIT.ready, findings, summary: `READY: ${measured}; no alarm muted, comparison fresh, nobody waiting, every calendar hydrated, every week set by somebody, every debt tier staffed, no empty bucket` };
   }
   return {
     exit: EXIT_FOR[findings[0].kind],

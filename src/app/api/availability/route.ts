@@ -105,7 +105,7 @@ async function handle(req: NextRequest) {
   // the hot path and one bot can load it as often as it likes.
   //
   // It is deliberately a SECOND signal rather than a replacement for
-  // `empty_buckets:*`: that one measures the state whether or not anybody is
+  // `empty_tier:*`: that one measures the state whether or not anybody is
   // looking, which matters because before cutover almost nobody is (#1394). This
   // one says a person just met it.
   if (emptyBecause?.kind === "unstaffed" && !result.bucket.is_test) {

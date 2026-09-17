@@ -18,6 +18,7 @@ import {
   OOO_PROTECTION_VERDICT_LANE,
   TWILIO_ROSTER_VERDICT_LANE,
   LANE_WATCHDOG_VERDICT_LANE,
+  TIER_STAFFING_VERDICT_LANE,
   BURST_COUNTER_VERDICT_LANE,
   parkedDetector,
 } from "@/lib/monitor/verdict-freshness";
@@ -146,6 +147,11 @@ const VERDICT_SUBJECT: Record<string, { what: string; cost: string; look: string
     what: "the check watching for bookings drying up",
     cost: "a funnel that has stopped delivering leads would look like an ordinary quiet day",
     look: 'the Worker logs for msg="booking volume" and whether the tick is landing inside business hours',
+  },
+  [TIER_STAFFING_VERDICT_LANE]: {
+    what: "the check asking whether each debt tier is offering a lead any booking time before the end of the next working day",
+    cost: "a whole debt tier could have nobody able to take a call and nothing would say so, while every lead asking for it was quietly served by a lower tier",
+    look: 'the Worker logs for msg="tier staffing" under tag=monitor, and whether the roster and the cached slot rows can be read at all',
   },
   [OOO_PROTECTION_VERDICT_LANE]: {
     what: "the check asking whether approved time off is still blocking the hours it covers",

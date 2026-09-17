@@ -97,6 +97,7 @@ export function monitorSetupGates(readiness: SetupReadiness): {
   rosterCoverage: SetupGate;
   calendarWindow: SetupGate;
   busyDrift: SetupGate;
+  tierStaffing: SetupGate;
 } {
   return {
     // The scan compares every bucket's cached slot count against a live recompute,
@@ -140,5 +141,17 @@ export function monitorSetupGates(readiness: SetupReadiness): {
     // guessed horizon has it judging times the cache was never asked to hold and
     // logging the difference as drift (#216's shape, in a log line).
     busyDrift: gate(readiness, ["horizonDays"]),
+    // #2505: does each DEBT TIER offer a bookable time inside the next open
+    // business day? It needs the org's week twice over, so it must skip on it
+    // rather than guess: the week is where the WINDOW comes from (the next open
+    // day, so a closed Sunday is skipped rather than paged about), and it is also
+    // the filter the offered times are counted through, so a guessed week would
+    // have the alarm judging a tier against times no lead is being shown.
+    //
+    // And on the cached slot rows, because they ARE the reading. An unreadable
+    // slot map would leave every tier unmeasured, which the judge reports honestly
+    // but which is not worth a run: skipping says the same thing once, in the
+    // lane's own words, instead of five times.
+    tierStaffing: gate(readiness, ["businessHours", "slotHealth"]),
   };
 }

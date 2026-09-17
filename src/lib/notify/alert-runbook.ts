@@ -55,7 +55,7 @@ const FAMILY_BY_KEY: Record<string, AlertFamily> = {
   audit_write_failed: "a-lane-or-schedule-has-gone-quiet",
 
   // A lead would find nothing to book, or too little.
-  empty_buckets: "the-booker-is-offering-nothing-or-too-little",
+  empty_tier: "the-booker-is-offering-nothing-or-too-little",
   bucket_slots_stale: "the-booker-is-offering-nothing-or-too-little",
   availability_booked_solid: "the-booker-is-offering-nothing-or-too-little",
   availability_data_anomaly: "the-booker-is-offering-nothing-or-too-little",

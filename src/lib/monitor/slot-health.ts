@@ -35,6 +35,40 @@ export interface SlotHealth {
   slotCount: number | null;
   /** Epoch ms of the last recompute; 0 when the stamp could not be read. */
   computedAtMs: number;
+  /**
+   * The EARLIEST time this bucket is offering, epoch ms, after the same org hours
+   * filter `slotCount` is taken through (#2505).
+   *
+   * `null` means no time is being offered, which the debt tier alarm reads as a
+   * finding. It is NOT the same as `slotCount: null`, which means the row could
+   * not be judged at all: the alarm reads that one as unmeasured and concludes
+   * nothing. Both live here rather than in a second reader, so the alarm and the
+   * availability probe can never disagree about what is being offered (L107).
+   *
+   * A slot whose stamp cannot be read is DROPPED rather than counted as the
+   * earliest, because `Date.parse` gives NaN and every comparison with NaN is
+   * false, so a NaN would sort its way to the front and report an offered time
+   * that nobody can book (L50, and the #1171 class this file already guards).
+   */
+  firstSlotMs: number | null;
+}
+
+/**
+ * The earliest readable instant in a served slot list, or null.
+ *
+ * An unreadable stamp is dropped rather than carried: `parseStampMs` returns null
+ * for one, and treating that as 0 would report the epoch as the next available
+ * time, which is an offered time nobody can book (L50).
+ */
+function earliestSlotMs(served: string[] | null): number | null {
+  if (served === null) return null;
+  let earliest: number | null = null;
+  for (const iso of served) {
+    const ms = parseStampMs(iso);
+    if (ms === null) continue;
+    if (earliest === null || ms < earliest) earliest = ms;
+  }
+  return earliest;
 }
 
 /**
@@ -60,15 +94,17 @@ export function slotHealthByCode(
       const slots = r.payload?.slots;
       const durationMin = r.payload?.eventType?.duration_min;
       const measurable = slots !== undefined && typeof durationMin === "number";
+      const served = measurable ? slotsWithinBusinessHours(slots, durationMin, businessHours) : null;
       return [
         r.bucket_code,
         {
           slotCount: measurable
-            ? slotsWithinBusinessHours(slots, durationMin, businessHours).length
+            ? served!.length
             : slots === undefined
               ? 0
               : null,
           computedAtMs: parseStampMs(r.computed_at) ?? 0,
+          firstSlotMs: earliestSlotMs(served),
         },
       ];
     }),

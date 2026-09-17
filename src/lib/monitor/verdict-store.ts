@@ -22,6 +22,7 @@ import {
   OOO_PROTECTION_VERDICT_LANE,
   TWILIO_ROSTER_VERDICT_LANE,
   LANE_WATCHDOG_VERDICT_LANE,
+  TIER_STAFFING_VERDICT_LANE,
   BURST_COUNTER_VERDICT_LANE,
   type DetectorVerdictLane,
 } from "@/lib/monitor/verdict-freshness";
@@ -52,6 +53,7 @@ const STAMP: Record<WorkerStampedVerdictLane, () => Promise<void>> = {
   [OOO_PROTECTION_VERDICT_LANE]: () => recordHeartbeat("verdict:ooo-protection"),
   [TWILIO_ROSTER_VERDICT_LANE]: () => recordHeartbeat("verdict:twilio-roster"),
   [LANE_WATCHDOG_VERDICT_LANE]: () => recordHeartbeat("verdict:lane-watchdog"),
+  [TIER_STAFFING_VERDICT_LANE]: () => recordHeartbeat("verdict:tier-staffing"),
 };
 
 /**

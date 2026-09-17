@@ -5,169 +5,188 @@ import {
   runThinTierStaffingCheck,
   THIN_TIER_STAFFING_KEY,
 } from "./thin-tier";
-import type { TierDepth } from "@/lib/routing/staffing-depth";
+import { debtTierDepths, type TierDepth } from "@/lib/routing/staffing-depth";
 
-// #569: the proactive Slack early-warning for thinly-staffed tiers, riding the
-// monitor cron. These pure tests pin WHICH tiers qualify (spof + thin only) and
-// the notice wording; the depth math itself lives in staffing-depth.ts (#584).
+// #569 shipped this as a whisper about thinly staffed POOLS, and #2505 changed the
+// unit to the DEBT TIER. A Beyond pool sitting at one agent was named every day
+// while its debt tier held eighty four people and every lead asking for it was
+// served, so the whisper reported a problem nobody had. Since #2486 the ladder
+// tries every bucket in a tier before dropping one, so a thin pool inside a
+// staffed tier strands nobody; the per pool depth stays on `/admin/tiers`, which
+// is the screen somebody goes to in order to look.
 
 function flagFor(d: number) {
   return d <= 0 ? "none" : d === 1 ? "spof" : d === 2 ? "thin" : "ok";
 }
 
-function tier(over: Partial<TierDepth> & { code: string; depth: number }): TierDepth {
-  // effectiveDepth defaults to roster depth (nobody out) unless overridden.
-  const effectiveDepth = over.effectiveDepth ?? over.depth;
+/** One POOL row, as the depth loader produces them. */
+function pool(
+  over: Partial<TierDepth> & { code: string; agents: { id: string; name: string; out?: boolean }[] },
+): TierDepth {
+  const agents = over.agents.map((a) => ({ id: a.id, name: a.name, out: a.out ?? false }));
+  const depth = agents.length;
+  const effectiveDepth = agents.filter((a) => !a.out).length;
   return {
     code: over.code,
     name: over.name ?? `Tier ${over.code}`,
-    depth: over.depth,
+    depth,
     effectiveDepth,
-    outCount: over.outCount ?? over.depth - effectiveDepth,
-    soleAgentName: over.soleAgentName ?? (over.depth === 1 ? "Tyler Moffett" : null),
+    outCount: depth - effectiveDepth,
+    soleAgentName: depth === 1 ? (agents[0]?.name ?? null) : null,
     hasWorkingFallback: over.hasWorkingFallback ?? false,
-    flag: over.flag ?? flagFor(over.depth),
-    effectiveFlag: over.effectiveFlag ?? flagFor(effectiveDepth),
-    agents: over.agents ?? [],
-    // A pool of its own unless a case says otherwise, which is what every case
-    // written before #2237 assumed.
+    flag: flagFor(depth),
+    effectiveFlag: flagFor(effectiveDepth),
+    agents,
     poolKey: over.poolKey ?? `pool-${over.code}`,
     poolLabel: over.poolLabel ?? null,
   };
 }
 
-// #2237: sixty codes route through fifteen pools, so one thinly staffed tier
-// arrived as six identical lines. The notice caps its list at eight names, so a
-// SINGLE thin pool filled it and hid every other finding behind "(and N more)",
-// and the headline count read six times the number of real problems.
-describe("the notice counts pools, not codes", () => {
-  const pooled = (codes: string[], label: string, depth: number) =>
-    codes.map((code) =>
-      tier({ code, depth, poolKey: `pool-${label}`, poolLabel: label, name: label }),
-    );
+const agent = (id: string, out = false) => ({ id, name: `Agent ${id}`, out });
 
-  it("folds a pool's codes into one line that names them all", () => {
-    const notice = formatThinTierNotice(pooled(["100", "101", "102", "110", "111", "112"], "Low", 2));
-    expect(notice).toMatch(/^1 pool/);
-    expect(notice).toContain("Low");
-    for (const c of ["100", "101", "102", "110", "111", "112"]) expect(notice).toContain(c);
-    // One line of detail, not six.
-    expect(notice.split("\n").filter((l) => l.includes("Low"))).toHaveLength(1);
+describe("debtTierDepths (#2505)", () => {
+  it("counts DISTINCT agents across a tier's pools, never the sum", () => {
+    // The real shape: the unconstrained pool holds everyone in the tier, and the
+    // Achieve pool holds the same people again. Summing would report six.
+    const rows = [
+      pool({ code: "511", agents: [agent("a"), agent("b"), agent("c")] }),
+      pool({ code: "531", agents: [agent("a"), agent("b"), agent("c")] }),
+    ];
+    const [tier5] = debtTierDepths(rows);
+    expect(tier5.depth).toBe(3);
+    expect(tier5.tier).toBe("5");
   });
 
-  it("does not let one thin pool crowd every other finding out of the list", () => {
-    // Before pooling, six codes of one pool consumed six of the eight name slots.
-    const notice = formatThinTierNotice([
-      ...pooled(["100", "101", "102", "110", "111", "112"], "Low", 2),
-      ...pooled(["300", "301", "302", "310", "311", "312"], "High", 1),
-      ...pooled(["500", "501", "502"], "Ultra High with Beyond", 2),
-    ]);
-    expect(notice).toMatch(/^3 pools/);
-    expect(notice).toContain("Low");
-    expect(notice).toContain("High");
-    expect(notice).toContain("Ultra High with Beyond");
-    expect(notice).not.toContain("and 15 more");
+  it("takes the union when the pools genuinely differ", () => {
+    const rows = [
+      pool({ code: "511", agents: [agent("a"), agent("b")] }),
+      pool({ code: "521", agents: [agent("c")] }),
+    ];
+    expect(debtTierDepths(rows)[0].depth).toBe(3);
   });
 
-  it("names the codes when the pool has no name of its own", () => {
-    const notice = formatThinTierNotice([
-      tier({ code: "CUSTOM", depth: 1, poolKey: "k", poolLabel: null }),
-    ]);
-    expect(notice).toContain("CUSTOM");
+  it("discounts who is out today, distinctly, and keeps both numbers", () => {
+    const rows = [
+      pool({ code: "511", agents: [agent("a"), agent("b", true), agent("c", true)] }),
+      // The same two absences seen again through a second pool must not be
+      // counted twice.
+      pool({ code: "531", agents: [agent("b", true), agent("c", true)] }),
+    ];
+    const [t] = debtTierDepths(rows);
+    expect(t.depth).toBe(3);
+    expect(t.outCount).toBe(2);
+    expect(t.effectiveDepth).toBe(1);
   });
 
-  it("says nothing at all when no tier is thin", () => {
-    expect(formatThinTierNotice([])).toBe("");
+  it("orders thinnest first, so the tier in most trouble leads the notice", () => {
+    const rows = [
+      pool({ code: "111", agents: [agent("a"), agent("b"), agent("c"), agent("d")] }),
+      pool({ code: "511", agents: [agent("e")] }),
+      pool({ code: "311", agents: [agent("f"), agent("g")] }),
+    ];
+    expect(debtTierDepths(rows).map((t) => t.tier)).toEqual(["5", "3", "1"]);
+  });
+
+  it("names the tier from the shared routing vocabulary, not the bucket's own name", () => {
+    const [t] = debtTierDepths([pool({ code: "511", name: "Ultra High | Both", agents: [agent("a")] })]);
+    expect(t.name).toBe("Ultra High");
+    expect(t.soleAgentName).toBe("Agent a");
+  });
+
+  it("leaves out a bucket whose code is not an XBC code rather than filing it under a digit it lacks", () => {
+    expect(debtTierDepths([pool({ code: "SMOKE", agents: [agent("a")] })])).toEqual([]);
   });
 });
 
 describe("selectThinTiers", () => {
-  it("picks tiers whose EFFECTIVE depth is spof (1) or thin (2)", () => {
-    const depths = [
-      tier({ code: "520", depth: 1 }),
-      tier({ code: "420", depth: 2 }),
-      tier({ code: "320", depth: 3 }), // ok
-      tier({ code: "120", depth: 7 }), // ok
-    ];
-    expect(selectThinTiers(depths).map((t) => t.code)).toEqual(["520", "420"]);
+  const tierOf = (n: number) =>
+    debtTierDepths([
+      pool({ code: "511", agents: Array.from({ length: n }, (_, i) => agent(`a${i}`)) }),
+    ])[0];
+
+  it("picks a tier resting on one or two agents", () => {
+    expect(selectThinTiers([tierOf(1)])).toHaveLength(1);
+    expect(selectThinTiers([tierOf(2)])).toHaveLength(1);
   });
 
-  it("#738: fires on a roster-deep tier that is effectively thin today (agents on time off)", () => {
-    // Roster depth 4 (would read OK), but 2 are out today -> effective 2 (thin).
-    const depths = [tier({ code: "311", depth: 4, effectiveDepth: 2 })];
-    const picked = selectThinTiers(depths);
-    expect(picked.map((t) => t.code)).toEqual(["311"]);
-    expect(picked[0].effectiveFlag).toBe("thin");
+  it("leaves a tier of three or more alone, which is today's whole roster", () => {
+    // Measured 2026-09-17: the thinnest live tier is Ultra High at 5. So this
+    // whisper is silent in production, and the cases above are the only proof it
+    // can still fire (L1).
+    expect(selectThinTiers([tierOf(3)])).toHaveLength(0);
+    expect(selectThinTiers([tierOf(5)])).toHaveLength(0);
   });
 
-  it("#738: excludes an effectively-empty tier (a live dead-end is the availability probe's job)", () => {
-    // Roster 3 but everyone's out today -> effective 0 -> not a staffing nudge.
-    const depths = [tier({ code: "311", depth: 3, effectiveDepth: 0 }), tier({ code: "520", depth: 1 })];
-    expect(selectThinTiers(depths).map((t) => t.code)).toEqual(["520"]);
-  });
-
-  it("excludes roster depth-0 tiers (structurally empty, handled by the availability probe)", () => {
-    const depths = [tier({ code: "999", depth: 0 }), tier({ code: "520", depth: 1 })];
-    expect(selectThinTiers(depths).map((t) => t.code)).toEqual(["520"]);
-  });
-
-  it("returns an empty list when every tier is adequately staffed today", () => {
-    const depths = [tier({ code: "120", depth: 5 }), tier({ code: "220", depth: 4 })];
-    expect(selectThinTiers(depths)).toEqual([]);
+  it("leaves an EMPTY tier to the page that owns it, so the two do not double up", () => {
+    // A tier with nobody is `empty_tier:<digit>`, which pages. Whispering about it
+    // here as well would tell the same person the same thing twice, in two voices.
+    expect(selectThinTiers([tierOf(0)])).toHaveLength(0);
   });
 });
 
 describe("formatThinTierNotice", () => {
-  it("names the sole agent for a single point of failure and marks a thin tier as two deep", () => {
-    const msg = formatThinTierNotice([
-      tier({ code: "520", name: "Ultra High | Beyond", depth: 1, soleAgentName: "Tyler Moffett" }),
-      tier({ code: "420", name: "Very High | Beyond", depth: 2 }),
-    ]);
-    expect(msg).not.toMatch(/^\s*Slate\b/i);
-    expect(msg).toContain("520 (Ultra High | Beyond)");
-    expect(msg).toContain("Tyler Moffett");
-    expect(msg).toContain("420 (Very High | Beyond)");
-    expect(msg).toContain("2 agents");
+  const thin = (code: string, n: number, out = 0) =>
+    debtTierDepths([
+      pool({
+        code,
+        // Names carry no digits from the code, so "does not name a bucket code"
+        // cannot pass or fail on the fixture's own spelling.
+        agents: Array.from({ length: n }, (_, i) => agent(`p${i}`, i < out)),
+      }),
+    ])[0];
+
+  it("names the debt tier in words, never a bucket code", () => {
+    const msg = formatThinTierNotice([thin("511", 1)]);
+    expect(msg).toContain("Ultra High");
+    expect(msg).not.toContain("511");
+    expect(msg).toMatch(/^1 debt tier is/);
   });
 
-  it("#738: spells out roster vs available-today when agents are out", () => {
-    const msg = formatThinTierNotice([
-      tier({ code: "311", name: "High | Achieve", depth: 4, effectiveDepth: 1, outCount: 3 }),
-    ]);
-    expect(msg).toContain("4 on the roster");
-    expect(msg).toContain("1 agent available today");
-    // #744: an agent can be out on approved time off OR on an all-day calendar
-    // block, so the notice must not claim they all filed time off.
+  it("says when a tier is deep on the roster but thin today, with both numbers", () => {
+    const msg = formatThinTierNotice([thin("411", 5, 3)]);
+    expect(msg).toContain("5 on the roster");
     expect(msg).toContain("3 out today");
   });
 
-  it("annotates a tier whose only cushion is a fallback as lower urgency", () => {
-    const msg = formatThinTierNotice([
-      tier({ code: "520", depth: 1, soleAgentName: "Tyler Moffett", hasWorkingFallback: true }),
-    ]);
-    expect(msg.toLowerCase()).toContain("fallback");
+  it("names the sole agent when a tier rests on one person", () => {
+    expect(formatThinTierNotice([thin("511", 1)])).toContain("Agent p0");
   });
 
-  it("caps the listed tiers and reports the remainder", () => {
-    const many = Array.from({ length: 10 }, (_, i) =>
-      tier({ code: `5${i}0`, depth: 1, soleAgentName: `Agent ${i}` }),
-    );
-    const msg = formatThinTierNotice(many);
-    expect(msg).toContain("(and 2 more)"); // ALERT_NAME_CAP = 8
+  it("lists every thin tier, because there are only ever five", () => {
+    // The pool version capped at eight names and hid the rest behind "(and N
+    // more)". At this unit the whole list always fits, so nothing can be hidden.
+    const msg = formatThinTierNotice([thin("511", 1), thin("411", 2), thin("311", 2)]);
+    expect(msg).not.toContain("more)");
+    expect(msg).toMatch(/^3 debt tiers are/);
+    expect(msg.split("\n")).toHaveLength(4);
   });
 
   it("returns an empty string for no thin tiers so the cron never posts a spurious notice", () => {
     expect(formatThinTierNotice([])).toBe("");
   });
+
+  it("carries no dashes or emoji, and does not open with the product's name", () => {
+    const msg = formatThinTierNotice([thin("511", 1), thin("411", 2)]);
+    expect(msg).not.toMatch(/[\u2014\u2013]/);
+    expect(msg).not.toMatch(/^Slate\b/);
+    expect(msg).not.toMatch(/undefined|NaN|\[object Object\]/);
+  });
 });
 
 describe("runThinTierStaffingCheck (cron wiring)", () => {
+  const rows = (n: number) => [
+    pool({ code: "511", agents: Array.from({ length: n }, (_, i) => agent(`a${i}`)) }),
+  ];
+
   it("whispers the thin tiers through notify on the given cooldown and returns the count", async () => {
     const notify = vi.fn<(key: string, cooldownMs: number, text: string) => Promise<void>>(
       async () => {},
     );
     const count = await runThinTierStaffingCheck({
-      loadDepths: async () => [tier({ code: "520", depth: 1 }), tier({ code: "120", depth: 6 })],
+      loadDepths: async () => [
+        ...rows(1),
+        pool({ code: "111", agents: [agent("b"), agent("c"), agent("d")] }),
+      ],
       notify,
       cooldownMs: 24 * 60 * 60_000,
     });
@@ -176,13 +195,15 @@ describe("runThinTierStaffingCheck (cron wiring)", () => {
     const [key, cooldownMs, text] = notify.mock.calls[0];
     expect(key).toBe(THIN_TIER_STAFFING_KEY);
     expect(cooldownMs).toBe(24 * 60 * 60_000);
-    expect(text).toContain("520");
+    expect(text).toContain("Ultra High");
+    // And the healthy tier is not named, so the notice is about what is thin.
+    expect(text).not.toContain("Low");
   });
 
   it("does NOT notify when no tier is thin (no spurious post), returns 0", async () => {
     const notify = vi.fn(async () => {});
     const count = await runThinTierStaffingCheck({
-      loadDepths: async () => [tier({ code: "120", depth: 5 })],
+      loadDepths: async () => rows(5),
       notify,
       cooldownMs: 1000,
     });
@@ -216,7 +237,7 @@ describe("runThinTierStaffingCheck (cron wiring)", () => {
     // Must resolve (not reject) despite the throw, and still report the count.
     await expect(
       runThinTierStaffingCheck({
-        loadDepths: async () => [tier({ code: "520", depth: 1 })],
+        loadDepths: async () => rows(1),
         notify,
         cooldownMs: 1000,
       }),

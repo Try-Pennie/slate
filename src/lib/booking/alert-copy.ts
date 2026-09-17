@@ -233,7 +233,7 @@ export function stalePhoneInviteAlert(agentEmail: string, bookingId: string): st
 /**
  * A lead just met a bucket with nobody in it (#2158, Dan's call 2026-09-09).
  *
- * Deliberately a second signal beside `empty_buckets:*` rather than a
+ * Deliberately a second signal beside `empty_tier:*` rather than a
  * replacement. That one measures the state whether or not anybody is looking,
  * which matters because before cutover almost nobody is; this one says a real
  * person reached it and was shown nothing, which is the fact worth interrupting
@@ -243,7 +243,7 @@ export function bookerUnstaffedAlert(code: string): string {
   return (
     `A customer opened the booking page for bucket ${code} and it has nobody to route to, ` +
     `so they were shown no times at all. Staff that bucket, or take the link out of use. ` +
-    `The hourly sweep covers this bucket under its routing pool's empty_buckets page; ` +
+    `The monitor lane watches whether this bucket's whole debt tier is offering times; ` +
     `this one means somebody actually arrived.`
   );
 }

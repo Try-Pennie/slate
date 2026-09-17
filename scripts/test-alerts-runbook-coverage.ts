@@ -50,7 +50,7 @@ assert(markdown.length > 2000, `read ${DOC} (${markdown.length} chars)`);
   // land with no procedure, which is the half that matters.
   const samples = [
     "cron_lane_stale:outbox",
-    "empty_buckets:411",
+    "empty_tier:5",
     "webhook_dead:abc-123",
     "internal_error:admin/bookings/[id]/cancel",
     "bookable_blocked:agent@trypennie.com",
