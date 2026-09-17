@@ -1,0 +1,131 @@
+name: Shifted clock test run
+
+# The daily run of the node suite at dates that have not happened yet (#2503).
+#
+# WHY IT EXISTS. A test whose meaning is the relationship between a fixture and the
+# present pins one end and reads the other, so it passes on the day it merges and
+# goes red on some later day with nobody having touched the code (L130). Nothing ran
+# the suite at any date but today, so the first thing to notice was main. #2497 is
+# the measured cost: scripts/test-booking-reminder.ts pinned its clock to a constant
+# while the copy builder read the real one, the fixture meant "tomorrow" when it
+# merged on 2026-09-16 and "today" from midnight on the 17th, CI went red with no
+# commit behind it, the deploy was skipped, and #2484's failing bookings floor sat
+# merged and not live until #2498.
+#
+# WHY HERE AND NOT IN THE PRE PUSH GATE OR IN CI, which is the decision worth
+# recording rather than re deriving:
+#
+#   - The pre push gate is about 40s and every push pays it. Three more passes of
+#     the node suite would roughly double it, on the one check that stands between a
+#     developer and main, to catch a fault that arrives by CALENDAR rather than by
+#     commit. A gate people start skipping is worse than no gate (L36).
+#   - A CI job would gate merges, and it would gate them on a question the change in
+#     front of it did not ask. A suite that is legitimately date sensitive should be
+#     fixed deliberately, not discovered while somebody is trying to merge something
+#     unrelated, and #2503 says so in as many words.
+#   - A schedule is what the fault's own arrival rate asks for. The defect is already
+#     in the tree when it is written and becomes visible on a date; asking daily
+#     finds it within a day of it being written and always before the day it would
+#     have broken main, at three passes a day rather than three per push.
+#
+# WHAT IT COSTS. Three passes of the node suite, sequential, sharing one checkout and
+# one install: about 106s each at the measured CI duration plus about 25s of setup,
+# so roughly 6 minutes of wall clock and, on ubuntu-latest at the 1x multiplier, about
+# 6 billed minutes a day. That is the price of the whole mechanism; a matrix would pay
+# the 25s setup three times over for no wall clock gain on a job nobody waits for.
+#
+# WHAT IT CANNOT SEE, said here so a green run is never read as more than it is
+# (L400): the vitest suites are NOT shifted. The hook is an `--import` on each node
+# suite's own process, and vitest runs its files in worker threads that do not
+# re-read it, so pretending to cover them would be false assurance. The measured
+# exposure in #2503 was in the node suites (9 of 432 read the real clock), and the
+# vitest half needs a seam of its own rather than this one stretched over it.
+#
+# Needs the SLACK_BOT_TOKEN repo secret and the SLACK_ALERTS_CHANNEL repo variable,
+# the same two the other scheduled lanes use.
+on:
+  schedule:
+    # 04:40 UTC, which is the small hours Eastern. Deliberately the quietest slot of
+    # the four scheduled lanes rather than beside them: nothing waits on this run, so
+    # it should not be queueing behind the parity sweep or the burst probe for a
+    # runner slot. Not on the hour, where GitHub's scheduling queue is busiest and
+    # runs are most often dropped.
+    - cron: "40 4 * * *"
+  # A hand dispatch is the same run, so somebody who has just written a fixture with
+  # a date in it can get an answer now rather than tomorrow. No inputs: the shift list
+  # is a property of the check rather than of one run, and a per run input would let a
+  # dispatch report on a narrower question than the schedule asks.
+  workflow_dispatch:
+
+concurrency:
+  group: clock-shift
+  cancel-in-progress: false
+
+jobs:
+  shifted:
+    # Three passes of a suite whose slowest CI run is about 106s, plus setup. Well
+    # clear, and low enough that a hung suite is reported rather than sitting there.
+    timeout-minutes: 25
+    runs-on: ubuntu-latest
+    env:
+      # ONE list, read by the loop that runs the shifts and by the step that reports
+      # them, so a shift cannot be run and then not judged, or judged and never run
+      # (L41). Each is chosen for what it crosses:
+      #   +1d    the #2497 shape itself, a fixture meaning "tomorrow" becoming "today"
+      #   +3mo   a month roll, and from most dates a clock change
+      #   +13mo  a year roll, and from ANY date both of the year's clock changes
+      CLOCK_SHIFTS: "+1d +3mo +13mo"
+      CLOCK_SHIFT_LOG_DIR: clock-shift-logs
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+        with:
+          version: 10
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24
+          cache: pnpm
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      # Every shift runs, whatever the one before it did. A shift that stopped the
+      # loop would leave the later ones unmeasured and reported as agreement, and two
+      # date dependent suites found by different shifts are two findings.
+      #
+      # The step itself never fails: its exit code cannot tell a finding from an
+      # install that died, and the step below is what decides. Each pass writes its
+      # whole output to a file named for the shift, which is how a verdict is tied to
+      # the shift it belongs to without a slug kept in step by hand.
+      - name: Run the node suite at each shifted date
+        run: |
+          mkdir -p "$CLOCK_SHIFT_LOG_DIR"
+          for shift in $CLOCK_SHIFTS; do
+            log="$CLOCK_SHIFT_LOG_DIR/$shift.log"
+            echo "::group::node suite at $shift"
+            if SLATE_CLOCK_SHIFT="$shift" SLATE_CLOCK_SHIFT_QUIET=1 pnpm test:node > "$log" 2>&1; then
+              tail -n 3 "$log"
+            else
+              cat "$log"
+            fi
+            echo "::endgroup::"
+          done
+
+      # Runs whatever happened above, because "a suite depends on the date" and "the
+      # run never got that far" are two different things to say and only one of them
+      # is about the tests. A missing log is a missing verdict rather than a shorter
+      # list, so a shift that never ran cannot read as agreement (L98).
+      #
+      # Bare node, no alias hook: scripts/test-dependency-free-scripts.ts holds it to
+      # importing nothing outside scripts/.
+      - name: Say what the shifted runs found
+        if: always()
+        env:
+          # Referenced from the job's env rather than written out again, so the list
+          # the loop ran and the list this judges cannot diverge, while still being
+          # declared on the step that reads them.
+          CLOCK_SHIFTS: ${{ env.CLOCK_SHIFTS }}
+          CLOCK_SHIFT_LOG_DIR: ${{ env.CLOCK_SHIFT_LOG_DIR }}
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_ALERTS_CHANNEL: ${{ vars.SLACK_ALERTS_CHANNEL }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: node --experimental-strip-types scripts/notify-clock-shift.ts

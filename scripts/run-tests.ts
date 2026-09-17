@@ -17,16 +17,24 @@
 //   node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/run-tests.ts
 //   node ... scripts/run-tests.ts <file...>   # explicit files (used by tests)
 import { spawn } from "node:child_process";
-import { readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve, relative } from "node:path";
 import { availableParallelism } from "node:os";
+import { discoverSuiteNames } from "./lib/suite-discovery.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, "..");
 
+// The shifted run (#2503). `SLATE_CLOCK_SHIFT=+1d pnpm test:node` asks every suite
+// what it will do on a day that has not happened yet, which is the only way a test
+// whose meaning is a relationship between a fixture and today is found before it
+// goes red on main by itself. The hook goes on the CHILD's argv rather than into
+// NODE_OPTIONS so the shift is visible in the command the runner actually ran.
+const clockShiftSpec = process.env.SLATE_CLOCK_SHIFT?.trim() ?? "";
+
 const NODE_ARGS = [
   "--experimental-strip-types",
+  ...(clockShiftSpec ? ["--import", "./scripts/shift-clock.ts"] : []),
   "--import",
   "./scripts/register-paths.mjs",
 ];
@@ -34,10 +42,7 @@ const NODE_ARGS = [
 function discover(): string[] {
   const args = process.argv.slice(2);
   if (args.length > 0) return args.map((a) => resolve(repoRoot, a));
-  return readdirSync(here)
-    .filter((f) => /^test-.*\.ts$/.test(f))
-    .sort()
-    .map((f) => resolve(here, f));
+  return discoverSuiteNames(here).map((f) => resolve(here, f));
 }
 
 interface Result {
@@ -141,7 +146,12 @@ async function main() {
   }
 
   const passed = results.length - failures.length;
-  const summary = `${passed} passed, ${failures.length} failed in ${(wall / 1000).toFixed(2)}s (concurrency ${concurrency})`;
+  // The shift is named in the SUMMARY line, not only at the top, because that line
+  // is what a workflow step and a person scrolling to the bottom both read. A
+  // shifted run reporting the same sentence as an ordinary one would let a shift
+  // that never applied read as a clean result (L98).
+  const clock = clockShiftSpec ? `, clock ${clockShiftSpec}` : "";
+  const summary = `${passed} passed, ${failures.length} failed in ${(wall / 1000).toFixed(2)}s (concurrency ${concurrency}${clock})`;
   if (failures.length > 0) {
     console.error(`\nFAIL: ${summary}`);
     console.error(
