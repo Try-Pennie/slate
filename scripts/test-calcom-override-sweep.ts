@@ -18,6 +18,11 @@ import {
   CALCOM_UNPROTECTED_KEY,
   formatUnprotectedAlert,
   inProgressUnprotected,
+  agentEmailForRetry,
+  isFailure,
+  isSettled,
+  OUTCOME_EMAIL_UNREADABLE,
+  OUTCOME_NO_EMAIL,
   runCalcomOverrideSweep,
   selectCandidates,
   PROVISIONAL_RETRY_WINDOW_DAYS,
@@ -387,6 +392,53 @@ function runFake(opts: FakeOpts) {
     state.resolved.includes(CALCOM_UNPROTECTED_KEY),
     "and the unprotected page, which was already true",
   );
+}
+
+// --- the agent's address, and the two ways it can be missing (#2383) ----------
+//
+// The retry reads the agent's email before it can ask cal.com anything. That read
+// used to swallow its `error`, so a query that never ran arrived as a null row and
+// was reported as "agent has no email": a claim about the agent nothing measured
+// (L11), written into `ooo_requests.side_effects` and quoted in the Slack line.
+//
+// The failure path is what matters here, so it is driven first, and the two are
+// required to stay DISTINCT: one sends somebody to the roster and the other to the
+// database, and a message answering for the other is how an afternoon goes
+// somewhere pointless.
+{
+  const unreadable = agentEmailForRetry({ data: null, error: { message: "57014 statement timeout" } });
+  assert("outcome" in unreadable, "an unreadable email read never yields an address");
+  eq(
+    "outcome" in unreadable ? unreadable.outcome : "",
+    OUTCOME_EMAIL_UNREADABLE,
+    "and says the READ failed, not that the agent has no address",
+  );
+
+  // The same fake, one field different: a read that worked and found no address.
+  const missing = agentEmailForRetry({ data: { email: undefined }, error: null });
+  assert("outcome" in missing, "a row with no address yields no address");
+  eq(
+    "outcome" in missing ? missing.outcome : "",
+    OUTCOME_NO_EMAIL,
+    "and says so in its own words",
+  );
+  assert(
+    OUTCOME_EMAIL_UNREADABLE !== OUTCOME_NO_EMAIL,
+    "the two reasons are distinct, or one is answering for the other",
+  );
+
+  // Neither may SETTLE the row. A settled outcome leaves the agent bookable in
+  // cal.com through an absence Slate has already approved, with nothing retrying.
+  for (const outcome of [OUTCOME_EMAIL_UNREADABLE, OUTCOME_NO_EMAIL]) {
+    assert(isFailure(outcome), `${outcome} counts as a failure, so the row is retried`);
+    assert(!isSettled(outcome), `${outcome} never settles the row`);
+  }
+
+  // And the happy path, so the refusals above are not satisfied by a function that
+  // refuses everything (L1).
+  const ok = agentEmailForRetry({ data: { email: "agent@trypennie.com" }, error: null });
+  assert("email" in ok, "a readable row with an address yields the address");
+  eq("email" in ok ? ok.email : "", "agent@trypennie.com", "and yields the one it read");
 }
 
 finish();

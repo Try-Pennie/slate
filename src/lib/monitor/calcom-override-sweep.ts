@@ -95,6 +95,34 @@ export function isFailure(outcome: string): boolean {
 }
 
 /**
+ * The retry cannot ask cal.com anything without the agent's address, and there are
+ * TWO ways it can be missing (#2383). They are kept apart here rather than at the
+ * read, so both are driven by a test that never touches a database.
+ *
+ * The read used to swallow its `error`, so a query that never ran arrived as a null
+ * row and was reported as "failed: agent has no email", written into
+ * `ooo_requests.side_effects` and quoted in the Slack line. That is a claim about
+ * the agent nothing measured (L11), and it sends somebody to repair a roster row
+ * that is perfectly fine.
+ *
+ * Both outcomes are FAILURES rather than skips, and deliberately so: the override
+ * that should exist still does not, the row stays in the candidate set, and the
+ * next tick tries again. A skip would settle the row and leave an agent bookable in
+ * cal.com right through an absence Slate has approved.
+ */
+export const OUTCOME_EMAIL_UNREADABLE = "failed: could not read the agent's email";
+export const OUTCOME_NO_EMAIL = "failed: agent has no email";
+
+export function agentEmailForRetry(
+  res: { data: { email?: string } | null; error: { message: string } | null },
+): { email: string } | { outcome: string } {
+  if (res.error) return { outcome: OUTCOME_EMAIL_UNREADABLE };
+  const email = res.data?.email;
+  if (!email) return { outcome: OUTCOME_NO_EMAIL };
+  return { email };
+}
+
+/**
  * Which loaded rows still need an attempt. The caller hands over every approved
  * absence that has not ended; this decides, in code rather than in a query.
  *

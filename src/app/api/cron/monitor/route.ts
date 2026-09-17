@@ -180,6 +180,7 @@ import { loadMonitorSettings } from "@/lib/monitor/settings";
 import { loadTierDepths } from "@/lib/routing/staffing-depth-load";
 import { runThinTierStaffingCheck } from "@/lib/monitor/thin-tier";
 import {
+  agentEmailForRetry,
   runCalcomOverrideSweep,
   toCandidates,
   type OverrideCandidate,
@@ -472,13 +473,23 @@ async function retryOverrideForRequest(
     ends_at: string;
     side_effects: Record<string, string> | null;
   };
-  const { data: user } = await db
+  // #2383: the read error gets its own outcome, matching the request re-read four
+  // lines up. A swallowed `data` here is null, which fell through to "agent has no
+  // email", a claim about the agent that nothing measured (L11): it is written
+  // into `side_effects` and quoted in the Slack line, sending somebody to fix a
+  // roster row that is perfectly fine. The two are told apart by
+  // `agentEmailForRetry`, which is where both are proved to stay failures rather
+  // than skips, so the row stays in the candidate set and the next tick retries.
+  const userRes = await db
     .from("users")
     .select("email")
     .eq("id", row.user_id)
     .maybeSingle();
-  const email = (user as { email?: string } | null)?.email;
-  if (!email) return "failed: agent has no email";
+  const resolved = agentEmailForRetry(
+    userRes as { data: { email?: string } | null; error: { message: string } | null },
+  );
+  if ("outcome" in resolved) return resolved.outcome;
+  const email = resolved.email;
 
   // #2417: the same derivation the approval path uses. A retry that rebuilt the
   // override from this one request alone would reopen the day for an agent whose
