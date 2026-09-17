@@ -174,23 +174,103 @@ assert(
   `the finding names the table (got ${named[0]?.table})`,
 );
 
-// --- the scan surface: every server action file ------------------------------
-// Derived by walking src/app for files named actions.ts, never a hand written
-// list, so a new action file is covered by construction rather than exempt from
-// the guard meant to catch it (L96).
+// --- a local async function is not a query builder (#2482) -------------------
+// The lead resolution exists for `let q = db.from("t").update(...)` then
+// `await q.eq(...)`. Widening the surface met the other thing that shape matches:
+// `const run = async () => { ...writes... }` followed by `await run()`, which
+// would otherwise inherit every write in the body even when each one checks its
+// own error.
+{
+  const localFn = `async function f() {
+  const run = async () => {
+    const { error } = await db.from("busy_blocks").delete().eq("id", id);
+    if (error) throw error;
+  };
+  await run();
+}`;
+  assert(
+    scanUncheckedWrites(localFn, "x.ts").length === 0,
+    "awaiting a local async function is not judged as its body's writes",
+  );
 
-function actionFiles(dir: string): string[] {
+  // The control: the builder case the resolution exists for is still resolved.
+  const builder = `async function f() {
+  let q = db.from("users").update({ role: "agent" });
+  await q.eq("id", userId);
+}`;
+  assert(
+    scanUncheckedWrites(builder, "x.ts").length === 1,
+    "CONTROL: a query builder held in a variable is still resolved and flagged",
+  );
+}
+
+// --- a write inside a wrapper is judged by ITS OWN await (#2482) -------------
+// Widening the surface to all of src turned up the shape immediately: the webhook
+// fan-out awaits a Promise.all whose inner writes each bind and check their own
+// error. The outer statement discards an array of voids; the write was consulted.
+// Demanding a `// write-ok:` there would ask somebody to annotate correct code as
+// merely tolerable, which teaches the opposite of what the guard is for.
+{
+  const boundInside = `async function f() {
+  await Promise.all(
+    rows.map(async (r) => {
+      const { data, error } = await db.from("webhook_deliveries").insert(r).select("id").single();
+      if (error) throw error;
+      return data;
+    }),
+  );
+}`;
+  assert(
+    scanUncheckedWrites(boundInside, "x.ts").length === 0,
+    "a write bound and checked inside a Promise.all is not flagged",
+  );
+
+  // The control, and it is what stops the rule above from exempting the real case:
+  // a chain inside the same wrapper whose result goes nowhere is STILL flagged.
+  const bareInside = `async function f() {
+  await Promise.all([
+    db.from("users").update({ role: "agent" }).eq("id", a),
+    db.from("users").update({ role: "agent" }).eq("id", b),
+  ]);
+}`;
+  assert(
+    scanUncheckedWrites(bareInside, "x.ts").length > 0,
+    "CONTROL: a bare write inside a Promise.all is still flagged",
+  );
+}
+
+// --- the scan surface: ALL of src (#2482) ------------------------------------
+// Derived by walking the tree, never a hand written list, so a new file is
+// covered by construction rather than exempt from the guard meant to catch it
+// (L96).
+//
+// #2379 scanned `src/app/**/actions.ts`, which was the right surface for the
+// defect it was fixing and the wrong one for the class. Running the same scanner
+// over all of src on main found 40 more, three of them the same shape with the
+// same consequence: the bookable flip, every OOO status transition, and the
+// manager promotion each discarded the result and then behaved as though it had
+// landed. A guard whose surface stops where the incident happened to stop reports
+// green over the rest (L96, L456).
+//
+// Widening it means the OTHER 37 each have to be a decision rather than an
+// accident: checked, or carrying a written `// write-ok:` reason saying what the
+// refusal degrades to. That is the same rule the sibling read guard uses, and it
+// is deliberately a per site judgement, because "the retry catches it" is true of
+// some of these and false of others.
+
+function sourceFiles(dir: string): string[] {
   const out: string[] = [];
   for (const e of readdirSync(dir, { withFileTypes: true })) {
+    if (e.name === "node_modules" || e.name.startsWith(".")) continue;
     const full = join(dir, e.name);
-    if (e.isDirectory()) out.push(...actionFiles(full));
-    else if (e.name === "actions.ts") out.push(full);
+    if (e.isDirectory()) out.push(...sourceFiles(full));
+    else if (/\.(ts|tsx)$/.test(e.name) && !/\.test\.tsx?$/.test(e.name)) out.push(full);
   }
   return out;
 }
 
-const surface = actionFiles(join(ROOT, "src", "app"));
-assert(surface.length > 0, `found server action files to scan (got ${surface.length})`);
+const surface = sourceFiles(join(ROOT, "src"));
+assert(surface.length > 50, `found the source files to scan (got ${surface.length})`);
 
 const adminActionsPath = join(ROOT, "src", "app", "admin", "actions.ts");
 assert(
@@ -301,15 +381,15 @@ for (const file of surface) {
       false,
       `${fnd.file}:${fnd.line} awaited \`.${fnd.mutator}(\` on ` +
         `${fnd.table ?? "a table"} with the result discarded, so nothing can consult its ` +
-        `\`error\` and a refused write reaches the audit entry and the saved notice as a ` +
-        `success. Bind \`{ error }\` and refuse before the audit, the revalidate and the ` +
-        `redirect, or annotate // write-ok: <reason> if nothing after it tells anybody it ` +
-        `succeeded. [${fnd.snippet}]`,
+        `\`error\` and a refused write carries on as though it landed. Bind \`{ error }\` ` +
+        `and act on it, or annotate // write-ok: <reason> saying what a refusal degrades ` +
+        `to (which run repairs it, which caller re-routes), never just "best effort". ` +
+        `[${fnd.snippet}]`,
     );
   }
 }
 if (siteCount === 0) {
-  console.log(`ok: no unchecked Supabase writes across ${surface.length} server action files`);
+  console.log(`ok: no unchecked Supabase writes across ${surface.length} source files`);
 }
 
 finish();

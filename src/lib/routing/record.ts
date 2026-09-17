@@ -39,6 +39,7 @@ export interface RecordRoutingDecisionInput {
  *  fails criteria with no intentional fallback. Best-effort; never throws. */
 export async function recordRoutingDecision(input: RecordRoutingDecisionInput): Promise<void> {
   try {
+    // write-ok: the decision log is evidence, not control flow: a refused insert loses one row from the routing report and changes no booking. The report's own count is what would show it.
     await supabaseAdmin().from("routing_decisions").insert({
       org_id: input.orgId,
       booking_id: input.bookingId,

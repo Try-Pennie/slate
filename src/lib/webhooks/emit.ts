@@ -1,3 +1,4 @@
+import { reportWriteFailure } from "@/lib/db/result";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { buildRequest } from "@/lib/webhooks/wire";
 import { WEBHOOK_MAX_ATTEMPTS, isDeadLettered, isDueForRetry } from "@/lib/webhooks/retry";
@@ -106,14 +107,22 @@ async function send(
     }
   }
 
-  await db
+  // write-ok, and REPORTED (#2482): a refused update leaves the delivery row at its
+  // previous status, so a send that happened reads as pending and the retry sweep
+  // sends it again. Repeating a delivery is the safe direction and the endpoint
+  // dedupes on the key, but a refusal here is worth seeing rather than tolerating in
+  // silence, because the row is the only record of what the send did.
+  reportWriteFailure(
+    await db
     .from("webhook_deliveries")
     .update({
       status: ok ? "success" : "failed",
       attempts: attempt,
       last_response: lastResponse,
     })
-    .eq("id", deliveryId);
+    .eq("id", deliveryId),
+    "webhook delivery outcome",
+  );
 
   // Retries exhausted and still failing: alert (throttled per endpoint).
   if (!ok && attempt >= WEBHOOK_MAX_ATTEMPTS) {

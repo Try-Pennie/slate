@@ -1,3 +1,4 @@
+import { reportWriteFailure } from "@/lib/db/result";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { chunkIdsByUrlBudget } from "@/lib/db/id-batch";
 import { postSlack, slackConfigured } from "@/lib/notify/slack";
@@ -105,6 +106,7 @@ export async function sendThrottledAlert(
   if (!result.ok) {
     log.warn("slack-alert", { msg: "send failed", key, error: result.error ?? null });
   }
+  // write-ok: a refused stamp leaves no cooldown, so the alert re-sends next tick. Repeating a page is the safe direction; a stamp that landed wrongly would mute one.
   await db
     .from("alert_state")
     .upsert(
@@ -115,12 +117,20 @@ export async function sendThrottledAlert(
   // clears. Only on a delivered send: a page nobody received must never produce a
   // "recovered" message out of nowhere.
   if (result.ok) {
-    await db
+    // write-ok, and REPORTED (#2482): a refused upsert leaves no firing marker, so
+    // when this condition ends `resolveAlert` has nothing to clear and the all clear
+    // is never sent. The page still repeats on its cooldown, so the reader is not left
+    // believing it is over; they are left without the sentence saying so, which is why
+    // it is logged rather than swallowed.
+    reportWriteFailure(
+      await db
       .from("alert_state")
       .upsert(
         { key: firingKey(key), last_sent_at: new Date(nowMs).toISOString() },
         { onConflict: "key" },
-      );
+      ),
+      "alert firing marker",
+    );
   }
 }
 
@@ -282,8 +292,20 @@ export async function resolveAlert(
     });
     return false;
   }
-  await db.from("alert_state").delete().eq("key", firingKey(key));
-  await db.from("alert_state").delete().eq("key", key);
+  // write-ok, and REPORTED (#2482): a refused delete leaves the firing marker, so
+  // this condition reads as still firing and a later resolve clears it. It cannot
+  // produce a recovery notice for something that never fired.
+  reportWriteFailure(
+    await db.from("alert_state").delete().eq("key", firingKey(key)),
+    "alert firing marker clear",
+  );
+  // write-ok, and REPORTED (#2482): a refused delete leaves the cooldown stamp, so
+  // the NEXT page on this key is muted for the rest of its window. That is a real
+  // cost and it expires on its own, so it is tolerated and logged rather than raised.
+  reportWriteFailure(
+    await db.from("alert_state").delete().eq("key", key),
+    "alert cooldown clear",
+  );
   return true;
 }
 

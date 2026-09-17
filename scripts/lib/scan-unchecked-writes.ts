@@ -57,9 +57,19 @@
 // this surface: every instance found by #2379 was a bare `await`. Widening to it
 // means asking whether `.error` is read anywhere in the file, which is the read
 // scanner's `scanResultObjectReads` and the place to extend if one turns up.
-// Likewise a write inside a `Promise.all([...])` whose combined result is
-// discarded is flagged (the statement is still a discarded await), but one whose
-// array is bound to a name is not.
+// A write inside a `Promise.all([...])` whose combined result is discarded is
+// still flagged, because the chain's own result goes nowhere either. But a write
+// whose result is BOUND INSIDE that wrapper is not (#2482):
+//
+//   await Promise.all(rows.map(async (r) => {
+//     const { data, error } = await db.from("t").insert(r).select("id").single();
+//     if (error) throw error;                     // <- this write is checked
+//   }));
+//
+// The outer statement discards an array of voids; the write itself was consulted.
+// Flagging it would demand a `// write-ok:` on code that already does the right
+// thing, and a guard that asks for an annotation saying a checked write is
+// tolerable is teaching the opposite of what it exists for (L36).
 //
 // THE ESCAPE HATCH is `// write-ok: <why>` on, or in the `//` block directly
 // above, the awaited statement:
@@ -113,6 +123,43 @@ export const WRITE_OPT_OUT = "write-ok";
  * `await` follows a `)`. That is not flagged, and it is not a shape that appears
  * on this surface: every write in the scanned tree is a statement in a block.
  */
+/**
+ * The `await` whose value actually carries the chain at `fromIndex` (#2482).
+ *
+ * The outermost `await` of a statement is not always the one the write's result
+ * flows to: `await Promise.all(rows.map(async () => { const { error } = await
+ * db.from(...)... }))` has two, and only the INNER one is about the write. Asking
+ * the outer one whether it discards its value answers a question about the array
+ * of voids rather than about the write.
+ *
+ * Returns the index of the nearest `await` before the chain, or -1 when there is
+ * none inside the statement.
+ */
+function awaitCarrying(masked: string, statementStart: number, fromIndex: number): number {
+  let best = -1;
+  for (const m of masked.slice(statementStart, fromIndex).matchAll(/\bawait\b/g)) {
+    best = statementStart + (m.index as number);
+  }
+  return best;
+}
+
+/**
+ * True when the value of the `await` at `index` goes nowhere.
+ *
+ * `beginsStatement` answers it for the outermost await. This answers it for an
+ * inner one too: a value assigned (`const { error } = await ...`), returned, or
+ * passed as an argument has somewhere to be consulted, so only a bare statement
+ * position discards it.
+ */
+function discardsValue(masked: string, index: number): boolean {
+  for (let i = index - 1; i >= 0; i--) {
+    const c = masked[i];
+    if (/\s/.test(c)) continue;
+    return c === ";" || c === "{" || c === "}";
+  }
+  return true;
+}
+
 function beginsStatement(masked: string, index: number): boolean {
   for (let i = index - 1; i >= 0; i--) {
     const c = masked[i];
@@ -158,7 +205,17 @@ function resolveLead(masked: string, text: string, beforeIndex: number): string 
   for (const dm of masked.slice(0, beforeIndex).matchAll(defRe)) defIndex = dm.index as number;
   if (defIndex === -1) return text;
   const defEnd = masked.indexOf(";", defIndex);
-  return `${masked.slice(defIndex, defEnd === -1 ? beforeIndex : defEnd)};${text}`;
+  const def = masked.slice(defIndex, defEnd === -1 ? beforeIndex : defEnd);
+
+  // A local FUNCTION is not a query builder (#2482). `const run = async () => { ...
+  // writes ... }` followed by `await run()` would otherwise inherit every write in
+  // the body and be judged as though the statement were the chain, even when each
+  // write inside binds and checks its own error. The builder case this exists for
+  // (`let q = db.from("t").update(...)` then `await q.eq(...)`) never carries a
+  // function head, so the two are told apart by the head rather than by the body.
+  if (/=\s*(?:async\s+)?(?:function\b|\(|[A-Za-z_$][\w$]*\s*=>)/.test(def)) return text;
+
+  return `${def};${text}`;
 }
 
 /** The first mutator called on the chain, or null when it is a read. */
@@ -209,6 +266,15 @@ export function scanUncheckedWrites(source: string, file = "<source>"): Unchecke
     const mutator = mutatorOf(chain);
     if (!mutator) continue; // a read; the sibling guard owns those
     if (hasCommentOptOut(source, awaitIndex, WRITE_OPT_OUT)) continue;
+
+    // The chain may sit INSIDE this statement rather than being it (#2482). Judge
+    // the await nearest the chain: when that one binds its value, the write was
+    // consulted and this statement's discarded array says nothing about it.
+    const fromAt = masked.indexOf(".from(", exprStart);
+    if (fromAt !== -1 && fromAt < end) {
+      const carrying = awaitCarrying(masked, exprStart, fromAt);
+      if (carrying !== -1 && !discardsValue(masked, carrying)) continue;
+    }
 
     findings.push({
       file,

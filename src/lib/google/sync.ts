@@ -583,6 +583,7 @@ async function recordCalHealth(
       ...laneHealthUpdate(lane, nextSyncState(prev, outcome, new Date().toISOString())),
       ...extra,
     } as Partial<AgentCalendar>;
+    // write-ok: health columns the next pass rewrites from scratch; a refused stamp leaves the previous reading rather than a wrong one.
     await supabaseAdmin().from("agent_calendars").update(payload).eq("id", calId);
   } catch (err) {
     log.error("sync", { msg: "recordCalHealth failed", cal_id: calId, lane }, err);
@@ -674,6 +675,7 @@ async function syncCalendar(
     // from the best-effort diagnostics write so the token still saves even if
     // the diagnostics columns aren't present yet (e.g. migration not applied).
     if (result.nextSyncToken) {
+      // write-ok: a refused token save costs the next pass a re-bootstrap, which is expensive and correct. Losing the token can never lose events.
       await supabaseAdmin()
         .from("agent_calendars")
         .update({ sync_token: result.nextSyncToken })
@@ -806,6 +808,7 @@ export async function hydrateCalendar(cal: AgentCalendar): Promise<HydrateResult
   try {
     // Before the fetch, deliberately (see 1 above). Best effort: a failed stamp costs
     // fairness on one tick, and must not stop the hydration it precedes.
+    // write-ok: a refused stamp costs fairness on one tick, which is why it is taken before the fetch rather than after.
     await db
       .from("agent_calendars")
       .update({ last_bootstrap_attempt_at: new Date().toISOString() })
@@ -885,6 +888,7 @@ export async function hydrateCalendar(cal: AgentCalendar): Promise<HydrateResult
       // part of the window, so recording the full window would authorize the prune over a
       // range that was never read.
       if (!result.truncated) {
+        // write-ok: a refused coverage claim leaves the window UNCLAIMED, so the prune is simply not authorised over it. Under-claiming is the safe direction.
         await db
           .from("agent_calendars")
           .update({ sync_window_to: window.timeMaxIso })
@@ -925,6 +929,7 @@ export async function hydrateCalendar(cal: AgentCalendar): Promise<HydrateResult
     // calendar immediately rather than leaving the next lane to wait out the TTL. After
     // the TTL another pass may legitimately hold a newer one, and the equality on the
     // claim value is what stops this release freeing theirs.
+    // write-ok: the claim expires on its TTL regardless, so a refused release costs the next lane a wait and never frees somebody else's claim.
     await db
       .from("agent_calendars")
       .update({ sync_claimed_at: null })
@@ -1012,6 +1017,7 @@ export async function syncByChannel(
 
   // Flag the new changes BEFORE trying to claim, so a holder mid-pass is
   // guaranteed to either see the flag or lose nothing (the cron backstops).
+  // write-ok: a refused flag leaves sync_pending as it was, and the every minute cron reconverges the calendar either way.
   await db.from("agent_calendars").update({ sync_pending: true }).eq("id", cal.id);
 
   const { claimIso, staleBeforeIso } = claimWindow(Date.now(), CALENDAR_CLAIM_TTL_MS);
@@ -1034,6 +1040,7 @@ export async function syncByChannel(
     if (!email) return "synced";
     const timeZone = await loadAgentTimezone(cal.user_id);
     for (let pass = 1; pass <= MAX_SYNC_PASSES; pass++) {
+      // write-ok: a refused clear leaves the pending flag set, so this calendar is picked up again next pass rather than skipped.
       await db.from("agent_calendars").update({ sync_pending: false }).eq("id", cal.id);
       // error-ok: re-read of the calendar we already hold the claim on; a read
       // error breaks this pass and the 1-min cron backstop reconverges it.
@@ -1058,6 +1065,7 @@ export async function syncByChannel(
     }
   } finally {
     // Release only OUR claim - after the TTL another request may hold a newer one.
+    // write-ok: the claim expires on its TTL regardless, so a refused release costs a wait and never frees a newer claim.
     await db
       .from("agent_calendars")
       .update({ sync_claimed_at: null })
@@ -1165,9 +1173,20 @@ export async function ensureWatches(userId: string): Promise<WatchResult> {
 
     const toInsert = wanted.filter((id) => !haveSet.has(id));
     if (toInsert.length) {
-      await db
+      // THROWS (#2482). This row is how a calendar becomes something Slate syncs at
+      // all. A refused insert leaves the agent with a calendar Google knows about
+      // and Slate does not, so its busy time never reaches the cache and the agent
+      // is offered over meetings they really have, while every surface reports the
+      // reconcile as done. That is the same shape as an agent stranded outside the
+      // pool (#2481), reached through the write nobody was reading.
+      const { error } = await db
         .from("agent_calendars")
         .insert(toInsert.map((calendar_id) => ({ user_id: userId, calendar_id })));
+      if (error) {
+        throw new Error(
+          `could not add ${toInsert.length} calendar(s) for ${userId}: ${error.message}`,
+        );
+      }
     }
     for (const c of existing) {
       if (wantedSet.has(c.calendar_id)) continue;
@@ -1195,11 +1214,13 @@ export async function ensureWatches(userId: string): Promise<WatchResult> {
       }
       // Drop cached busy blocks for a calendar the agent no longer has, so a
       // removed calendar can't keep over-blocking their availability.
+      // write-ok: a refused delete leaves cached busy time for a calendar the agent no longer has, so they are OVER blocked until the next reconcile repeats this. Under offering is the safe direction.
       await db
         .from("busy_blocks")
         .delete()
         .eq("user_id", userId)
         .eq("calendar_id", c.calendar_id);
+      // write-ok: a refused delete leaves the calendar row, so it keeps being synced until the next reconcile repeats this. It can never drop a calendar that still exists.
       await db.from("agent_calendars").delete().eq("id", c.id);
     }
 
@@ -1316,6 +1337,7 @@ export async function cleanupOnPoolExit(userId: string): Promise<PoolExitCleanup
       c.watch_last_error !== null,
   );
   if (needsClear) {
+    // write-ok: a refused clear leaves stale watch fields, so the next renewal pass clears them again. It cannot make a live watch look dead.
     await db
       .from("agent_calendars")
       .update({

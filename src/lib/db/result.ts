@@ -16,6 +16,8 @@
  *
  * Pure + dependency-free so it's node-testable (scripts/test-db-result.ts).
  */
+import { log } from "@/lib/log";
+
 export interface DbResult<T> {
   data: T;
   error: { message: string } | null;
@@ -111,4 +113,28 @@ export function isSlotClash(
   error: { code?: string } | null | undefined,
 ): boolean {
   return error?.code === UNIQUE_VIOLATION || error?.code === EXCLUSION_VIOLATION;
+}
+
+/**
+ * Report a write that was allowed to fail, so its failure is at least VISIBLE (#2482).
+ *
+ * For the narrow case where a refusal genuinely degrades to something safe and the
+ * degradation is worth seeing: a counter that did not advance, a lease that will now
+ * expire on its timeout instead of being released, a stamp the next pass rewrites. The
+ * call site still carries the reason in a `// write-ok:` comment; this is what stops the
+ * refusal being invisible as well as tolerated.
+ *
+ * It is deliberately NOT a blanket way to silence the unchecked write guard. It logs, so
+ * every use costs a line somebody can find, and a write whose failure loses something
+ * (an intent nobody re-records, a pin nothing else can reconstruct, a row nothing
+ * re-inserts) must throw instead. Putting a second class of write behind this one would
+ * widen it into exactly the silence it exists to remove (L448).
+ */
+export function reportWriteFailure(
+  res: { error: { message: string } | null } | null | undefined,
+  context: string,
+): void {
+  const error = res?.error;
+  if (!error) return;
+  log.warn("db-write", { msg: "tolerated write failure", context, reason: error.message });
 }

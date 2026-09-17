@@ -912,7 +912,19 @@ export async function syncSalesforceAgents(over: Partial<SyncDeps> = {}): Promis
     .map((u) => u.id);
   let managersPromoted = 0;
   if (toPromote.length) {
-    await db.from("users").update({ role: "manager" }).in("id", toPromote);
+    // The count is claimed on the write's own answer, never on having reached this
+    // line (#2482). A refused update left `managersPromoted` naming people who are
+    // still agents, and the run reported them promoted, so the approver who cannot
+    // open the queue looks like a Slate defect rather than a write that did not
+    // happen. It throws rather than counting zero, because the roster sync's other
+    // failures are surfaced the same way and a partial run reporting success is the
+    // thing this whole issue is about.
+    const { error } = await db.from("users").update({ role: "manager" }).in("id", toPromote);
+    if (error) {
+      throw new Error(
+        `promoting ${toPromote.length} manager(s) failed: ${error.message}`,
+      );
+    }
     managersPromoted = toPromote.length;
   }
 

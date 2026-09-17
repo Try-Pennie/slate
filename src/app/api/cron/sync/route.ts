@@ -67,6 +67,7 @@ async function alertSyncFailures(
 ): Promise<void> {
   const db = supabaseAdmin();
   if (failed.length === 0) {
+    // write-ok: a refused clear leaves the streak standing, so the next tick re-alerts rather than going quiet. Over-reporting is the safe direction for a streak.
     await db.from("rate_limits").delete().eq("key", SYNC_STREAK_KEY);
     // #1134: a clean tick is NOT proof the fleet is healthy. The tick is capped
     // (MAX_AGENTS_PER_SYNC_TICK) and budgeted (SYNC_TICK_BUDGET_MS), so an agent it

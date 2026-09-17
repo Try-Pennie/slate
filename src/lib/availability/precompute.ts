@@ -220,6 +220,7 @@ export async function readMassInvalidationMarker(): Promise<InvalidationMarker> 
  *  once instead of inheriting a grace it did not earn. */
 export async function clearMassInvalidation(): Promise<void> {
   try {
+    // write-ok: a refused clear leaves the marker, so the next staleness inherits a grace it did not earn and pages LATER rather than never. The next drain clears it again.
     await supabaseAdmin().from("alert_state").delete().eq("key", MASS_INVALIDATION_KEY);
   } catch (err) {
     log.warn("precompute", { msg: "invalidation marker clear failed" });

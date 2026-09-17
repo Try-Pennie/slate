@@ -510,6 +510,7 @@ async function recordFirstSeenMissing(lane: string): Promise<void> {
 
 async function clearFirstSeenMissing(lane: string): Promise<void> {
   try {
+    // write-ok: a refused clear leaves the first sighting stamp, so a lane that recovers is judged from an older sighting. The next clean pass clears it again.
     await supabaseAdmin().from("alert_state").delete().eq("key", firstSeenKey(lane));
   } catch (err) {
     log.warn("lane-watchdog", { msg: "first-sighting clear failed", lane });

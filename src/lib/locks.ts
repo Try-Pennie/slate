@@ -31,6 +31,7 @@ export async function acquireLock(
 
 /** Releases only our own claim - a post-TTL thief's newer claim survives. */
 export async function releaseLock(key: string, claimIso: string): Promise<void> {
+  // write-ok: the lock is released by its TTL regardless, so a refused delete costs one lane's wait and never a lost lock.
   await supabaseAdmin()
     .from("sync_locks")
     .delete()

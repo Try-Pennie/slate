@@ -1,3 +1,4 @@
+import { reportWriteFailure } from "@/lib/db/result";
 import { nanoid } from "nanoid";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import {
@@ -868,12 +869,23 @@ function realDeps(deferSend?: WebhookSendScheduler): BookingDeps {
     postHandoffNotice: (channel, text) => postSlack({ channel, text }),
     advisorTimezone: (userId) => loadAdvisorTimezone(supabaseAdmin(), userId),
     enqueueEventDeletion: async (calendarEmail, gcalEventId, bookingId) => {
-      await supabaseAdmin()
+      // THROWS (#2482). This row IS the record that a Google event still has to be
+      // deleted, and nothing else holds that fact: a refused upsert leaves the event
+      // on the advisor's calendar for ever, blocking a slot for a booking that no
+      // longer exists, with the caller having already moved on. An intent must be
+      // durably recorded before the effect is relied on, so a write that did not
+      // land has to be loud (L33).
+      const { error } = await supabaseAdmin()
         .from("pending_event_deletions")
         .upsert(
           { calendar_email: calendarEmail, gcal_event_id: gcalEventId, booking_id: bookingId },
           { onConflict: "calendar_email,gcal_event_id", ignoreDuplicates: true },
         );
+      if (error) {
+        throw new Error(
+          `pending event deletion could not be enqueued for booking ${bookingId}: ${error.message}`,
+        );
+      }
     },
     loadPendingEventDeletions: async (limit) => {
       // Fail loud (#1152): NOT best-effort any more. The drain's deleted+failed
@@ -906,13 +918,20 @@ function realDeps(deferSend?: WebhookSendScheduler): BookingDeps {
       return (data ?? []) as orchestration.PendingEventDeletion[];
     },
     removePendingEventDeletion: async (id) => {
+      // write-ok: a refused delete leaves the row, so the drain retries a deletion Google has already accepted, which is idempotent. It can never drop a deletion that has not happened.
       await supabaseAdmin().from("pending_event_deletions").delete().eq("id", id);
     },
     bumpPendingEventDeletion: async (id, attempts, error) => {
-      await supabaseAdmin()
+      // write-ok, and REPORTED (#2482): a refused update leaves the attempt count and the
+      // recorded error, so the drain retries the deletion and the give up threshold
+      // arrives late. The row that says the event still needs deleting is untouched.
+      reportWriteFailure(
+        await supabaseAdmin()
         .from("pending_event_deletions")
         .update({ attempts, last_error: error })
-        .eq("id", id);
+        .eq("id", id),
+        "pending event deletion attempt counter",
+      );
     },
     updateEventTime,
     updateEventDescription,
@@ -1347,7 +1366,12 @@ function realDeps(deferSend?: WebhookSendScheduler): BookingDeps {
     releaseOutboxLease: (id, lease) => releaseOutboxLeaseRow(supabaseAdmin(), id, lease),
 
     bumpOutboxAttempt: async (id, attempts, lastError) => {
-      await supabaseAdmin()
+      // write-ok, and REPORTED (#2482): a refused update leaves the attempt count and the
+      // next attempt time unchanged, so the row is retried sooner than the backoff asked
+      // for and the dead letter threshold is reached late. The work is not lost, only the
+      // bookkeeping about how hard it has been tried.
+      reportWriteFailure(
+        await supabaseAdmin()
         .from("booking_outbox")
         .update({
           attempts,
@@ -1355,7 +1379,9 @@ function realDeps(deferSend?: WebhookSendScheduler): BookingDeps {
           next_attempt_at: new Date(Date.now() + drainBackoffMs(attempts)).toISOString(),
           updated_at: new Date().toISOString(),
         })
-        .eq("id", id);
+        .eq("id", id),
+        "booking outbox attempt counter",
+      );
     },
 
     // --- Create reservations (#429 P4) ---
@@ -1391,6 +1417,7 @@ function realDeps(deferSend?: WebhookSendScheduler): BookingDeps {
     },
 
     deleteReservation: async (id) => {
+      // write-ok: the reservation expires on its lease regardless, so a refused delete costs one slot until expiry and never releases a live hold.
       await supabaseAdmin().from("booking_reservations").delete().eq("id", id);
     },
 
@@ -1431,6 +1458,7 @@ function realDeps(deferSend?: WebhookSendScheduler): BookingDeps {
     },
 
     releaseReservationLease: async (id) => {
+      // write-ok: the lease expires on its own timeout, so a refused release costs the wait and never frees somebody else's lease.
       await supabaseAdmin()
         .from("booking_reservations")
         .update({ lease_until: null })
@@ -1438,14 +1466,20 @@ function realDeps(deferSend?: WebhookSendScheduler): BookingDeps {
     },
 
     bumpReservationAttempt: async (id, attempts, lastError) => {
-      await supabaseAdmin()
+      // write-ok, and REPORTED (#2482): a refused update leaves the attempt count where
+      // it was, so the drain retries this reservation and the count that decides when to
+      // give up advances late. It never loses the reservation itself.
+      reportWriteFailure(
+        await supabaseAdmin()
         .from("booking_reservations")
         .update({
           attempts,
           last_error: lastError,
           next_attempt_at: new Date(Date.now() + drainBackoffMs(attempts)).toISOString(),
         })
-        .eq("id", id);
+        .eq("id", id),
+        "booking reservation attempt counter",
+      );
     },
 
     deleteExpiredReservations: async (olderThanIso, limit) => {
@@ -1536,7 +1570,12 @@ function realDeps(deferSend?: WebhookSendScheduler): BookingDeps {
       claimRescheduleLock(supabaseAdmin(), bookingId, targetStartIso, Date.now()),
 
     writeReschedulePin: async (bookingId, pin) => {
-      await supabaseAdmin()
+      // THROWS (#2482). The pin is what makes a reschedule deterministic across a
+      // crash: the retry re-reads it and lands on the SAME agent and the same event
+      // id. A refused write leaves no pin, so the retry is free to pick somebody
+      // else, which is the one thing the pin exists to prevent, and the caller
+      // carried on as though it had been recorded.
+      const { error } = await supabaseAdmin()
         .from("reschedule_locks")
         .update({
           pinned_user_id: pin.pinned_user_id,
@@ -1547,6 +1586,11 @@ function realDeps(deferSend?: WebhookSendScheduler): BookingDeps {
           target_starts_at: pin.target_starts_at,
         })
         .eq("booking_id", bookingId);
+      if (error) {
+        throw new Error(
+          `reschedule pin could not be written for booking ${bookingId}: ${error.message}`,
+        );
+      }
     },
 
     readReschedulePin: async (bookingId) => {
@@ -1579,6 +1623,7 @@ function realDeps(deferSend?: WebhookSendScheduler): BookingDeps {
     },
 
     releaseReschedule: async (bookingId) => {
+      // write-ok: the lock expires on its TTL regardless, so a refused delete costs a wait and never frees a newer holder.
       await supabaseAdmin().from("reschedule_locks").delete().eq("booking_id", bookingId);
     },
 
@@ -1587,6 +1632,7 @@ function realDeps(deferSend?: WebhookSendScheduler): BookingDeps {
       // WHERE clause pins BOTH the booking and the target, so a concurrent
       // different-target holder that re-pinned into the old read->delete window has
       // its fresh lease left untouched (its target no longer matches ours).
+      // write-ok: the lock expires on its TTL regardless, and the WHERE pins both the booking and the target so it can only ever free our own.
       await supabaseAdmin()
         .from("reschedule_locks")
         .delete()
@@ -1645,6 +1691,7 @@ function realDeps(deferSend?: WebhookSendScheduler): BookingDeps {
       if (error) throw new Error(`reassign_intents upsert failed: ${error.message}`);
     },
     deleteReassignIntent: async (bookingId, gcalClientId) => {
+      // write-ok: a refused delete leaves the intent, which the next reassign reads and supersedes. The upsert that RECORDS an intent throws; only its cleanup is tolerated.
       await supabaseAdmin()
         .from("reassign_intents")
         .delete()
