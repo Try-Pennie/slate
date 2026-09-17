@@ -112,16 +112,22 @@ function listOrgNames(): SettingListing {
     return { available: false, reason: "gh reported no owner for this repository" };
   }
 
-  const read = (kind: "variable" | "secret"): Map<string, number> => {
+  const read = (kind: "variable" | "secret"): Map<string, number | null> => {
     const out = execFileSync(
       "gh",
       [kind, "list", "--org", owner, "--json", "name,numSelectedRepos"],
       { cwd: repoRoot, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
     );
-    const rows = JSON.parse(out || "[]") as { name?: string; numSelectedRepos?: number }[];
-    const map = new Map<string, number>();
+    const rows = JSON.parse(out || "[]") as { name?: unknown; numSelectedRepos?: unknown }[];
+    const map = new Map<string, number | null>();
     for (const row of rows) {
-      if (typeof row.name === "string" && row.name) map.set(row.name, row.numSelectedRepos ?? 0);
+      if (typeof row.name !== "string" || !row.name) continue;
+      // NULL, never a defaulted 0: an unreadable count fed straight into `> 0` would
+      // land on "shared with every repo" and report the setting as present, which is
+      // the one direction that waves through a reference interpolating an empty
+      // string (L50).
+      const count = row.numSelectedRepos;
+      map.set(row.name, typeof count === "number" && Number.isFinite(count) ? count : null);
     }
     return map;
   };

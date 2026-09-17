@@ -650,10 +650,17 @@ export function stalePerRunDeclarations(
  * Each name carries the number of repositories the setting is shared with
  * explicitly. Zero means it is not restricted to a selected list, so this repo can
  * read it. Anything above zero means the listing cannot say whether this repo is
- * among them.
+ * among them. NULL means the listing did not give a readable count at all, which is
+ * a third thing again: a value that could not be parsed must not feed a comparison,
+ * because it lands on whichever side the comparison happens to fall on with nothing
+ * said (L50).
  */
 export type SettingListing =
-  | { available: true; vars: Map<string, number>; secrets: Map<string, number> }
+  | {
+      available: true;
+      vars: Map<string, number | null>;
+      secrets: Map<string, number | null>;
+    }
   | { available: false; reason: string };
 
 export interface UncheckedRef extends RepoSettingRef {
@@ -698,6 +705,15 @@ export function splitByOrgScope(
     const selectedRepos = scope.get(ref.name);
     if (selectedRepos === undefined) {
       missing.push(ref);
+      continue;
+    }
+    if (selectedRepos === null) {
+      unchecked.push({
+        ...ref,
+        reason:
+          `the organisation defines it and the listing gave no readable count of the ` +
+          `repositories it is shared with, so nothing here can say whether it reaches this one`,
+      });
       continue;
     }
     if (selectedRepos > 0) {

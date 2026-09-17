@@ -611,8 +611,8 @@ jobs:
   ];
   const org = {
     available: true as const,
-    vars: new Map([["ORG_ONLY", 0]]),
-    secrets: new Map([["ORG_SECRET", 0]]),
+    vars: new Map<string, number | null>([["ORG_ONLY", 0]]),
+    secrets: new Map<string, number | null>([["ORG_SECRET", 0]]),
   };
   const split = splitByOrgScope(refs, org);
   eq(split.present.length, 2, "a setting the org defines is present, not missing");
@@ -661,6 +661,24 @@ jobs:
     secrets: new Map(),
   });
   eq(split.missing.length, 1, "an org variable does not satisfy a secret reference of the same name");
+}
+{
+  // A count the listing did not give, which is neither zero nor a number: fed into
+  // `> 0` a defaulted zero would read as "shared with every repo" and report the
+  // setting as PRESENT, which is the one direction that waves through a reference
+  // interpolating an empty string (L50).
+  const split = splitByOrgScope([{ kind: "vars", name: "NO_COUNT" }], {
+    available: true,
+    vars: new Map<string, number | null>([["NO_COUNT", null]]),
+    secrets: new Map<string, number | null>(),
+  });
+  eq(split.present.length, 0, "an unreadable share count is not called present");
+  eq(split.missing.length, 0, "nor called missing");
+  eq(split.unchecked.length, 1, "it is unchecked");
+  assert(
+    /no readable count/.test(split.unchecked[0]!.reason),
+    `and says the count is what could not be read (got ${split.unchecked[0]!.reason})`,
+  );
 }
 
 finish();
