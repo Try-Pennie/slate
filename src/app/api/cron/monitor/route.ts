@@ -238,6 +238,10 @@ import { selectAllPages } from "@/lib/supabase/paginate";
 import type { Attributes, Bucket } from "@/lib/db/types";
 import { log } from "@/lib/log";
 import { runUnsetHoursCheck, type UnsetHoursAgent, type HoursSource } from "@/lib/monitor/unset-hours";
+import {
+  runAwaitingActivationCheck,
+  type AwaitingActivationRow,
+} from "@/lib/monitor/awaiting-activation";
 import type { OrgDefaults } from "@/lib/schedule-core";
 
 export const dynamic = "force-dynamic";
@@ -1362,6 +1366,38 @@ export async function GET(req: NextRequest) {
         // alert-key: agents_on_unset_hours
         resolve: (key, text) => resolveAlert(key, text),
         cooldownMs: settings.cooldownMs.agents_on_unset_hours,
+        nowMs: Date.now(),
+      }),
+    );
+
+    // --- Waiting to become bookable (#2318): somebody the roster counts as
+    // working has carried `bookable_pending_since` for longer than the grace, so
+    // the hourly roster sync has retried their activation and been refused (or
+    // deferred it past its shared allowance, which produces no alert at all). The
+    // per agent refusal alert cannot see the deferred case and nothing else
+    // watches the queue, so from outside a stuck hire is indistinguishable from a
+    // healthy one. One column on a roster bounded table, in its own boundary: it
+    // consumes no shared setup state, so it is not gated on any of it.
+    //
+    // Disarmed until somebody has watched a few ordinary days (migration 0131); it
+    // measures and logs either way, and clears nothing on a read that failed. ---
+    await steps.run("awaiting_activation", null, () =>
+      runAwaitingActivationCheck({
+        load: () =>
+          selectAllPages<AwaitingActivationRow>("monitor awaiting-activation roster", (from, to) =>
+            db
+              .from("users")
+              .select("id, name, email, bookable, deactivated_at, bookable_pending_since")
+              .not("bookable_pending_since", "is", null)
+              .eq("is_test", false)
+              .range(from, to),
+          ),
+        armed: settings.awaitingActivationArmed,
+        // alert-key: agents_awaiting_activation
+        notify: (key, ms, text) => sendThrottledAlert(key, ms, text),
+        // alert-key: agents_awaiting_activation
+        resolve: (key, text) => resolveAlert(key, text),
+        cooldownMs: settings.cooldownMs.agents_awaiting_activation,
         nowMs: Date.now(),
       }),
     );

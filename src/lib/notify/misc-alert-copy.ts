@@ -55,6 +55,27 @@ export function bookableUnhydratedAlert(email: string, hydrated: number, calenda
   );
 }
 
+/**
+ * Activation refused: the gate ran out of its own budget (#2317).
+ *
+ * Its own message for the same reason `bookableUnhydratedAlert` is not
+ * `bookableBlockedAlert`: what the reader should DO is different. Nothing here
+ * says a calendar is broken, so sending them to the sync lane would be sending
+ * them to read errors that were never recorded (L11). The seconds are rendered
+ * from the budget rather than spelled out, so a change to the constant cannot
+ * leave the message claiming a window nobody enforces.
+ */
+export function bookableTimedOutAlert(email: string, budgetMs: number): string {
+  const seconds = Math.round(budgetMs / 1000);
+  return (
+    `Blocked making ${email} bookable because reading their Google calendar took longer than ` +
+    `the ${seconds} seconds one activation is allowed, so it was stopped part way and nobody ` +
+    `has measured whether their calendar is readable. The agent was NOT added to the booking ` +
+    `pool. This is usually Google being slow rather than anything wrong with the account: the ` +
+    `hourly roster sync retries on its own, and nothing needs doing unless it keeps happening.`
+  );
+}
+
 /** Activation refused: the calendar could not be verified (transient). */
 export function bookableUnverifiedAlert(email: string): string {
   return `Could NOT verify ${email}'s Google calendar (a transient error persisted through one retry). The agent was NOT added to the booking pool; this is likely a temporary Google issue, so retry shortly.`;

@@ -137,3 +137,77 @@ describe("onboardIntoPool (#2302)", () => {
     expect(d.synced).toEqual([]);
   });
 });
+
+// #2317: the onboarding is several Google calls in a row and none of them carried
+// a deadline. A wait with no deadline cannot fail, only hang, which is worse than
+// failing because it is indistinguishable from slowness and still holds whatever
+// it acquired (L110). The budget is the caller's, passed in, and it stops the run
+// STARTING new work rather than interrupting a call already in flight: the same
+// per-calendar granularity the hydration lane has had since it shipped.
+describe("onboardIntoPool budget (#2317)", () => {
+  beforeEach(() => {
+    logSpy.info.mockClear();
+    logSpy.warn.mockClear();
+    logSpy.error.mockClear();
+  });
+
+  it("reports outOfBudget false when nothing ran out", async () => {
+    const d = deps();
+    const res = await onboardIntoPool("u1", d, { withinBudget: () => true });
+    expect(res.outOfBudget).toBe(false);
+    expect(res.hydrated).toBe(1);
+  });
+
+  it("defaults to unbounded when no budget is given", async () => {
+    // Every existing caller (and the rest of this file) passes none, so the
+    // default must not quietly refuse them.
+    const res = await onboardIntoPool("u1", deps());
+    expect(res.outOfBudget).toBe(false);
+  });
+
+  it("spends no Google call at all when the budget is already gone", async () => {
+    const d = deps();
+    const res = await onboardIntoPool("u1", d, { withinBudget: () => false });
+    expect(d.order).toEqual([]);
+    expect(res.outOfBudget).toBe(true);
+    expect(res.calendars).toBe(0);
+    expect(res.hydrated).toBe(0);
+    // Nothing was attempted, so nothing may be scored as having failed: a run that
+    // never started and a run whose calendars are broken send a reader to two
+    // different places (L11).
+    expect(res.failed).toBe(0);
+  });
+
+  it("stops between calendars and says the run was incomplete", async () => {
+    const d = deps({
+      calendars: [
+        { id: "c1", user_id: "u1", calendar_id: "primary" },
+        { id: "c2", user_id: "u1", calendar_id: "team@trypennie.com" },
+        { id: "c3", user_id: "u1", calendar_id: "ops@trypennie.com" },
+      ],
+    });
+    let calls = 0;
+    // Budget enough for the watch reconcile and one calendar, then gone.
+    const res = await onboardIntoPool("u1", d, { withinBudget: () => ++calls <= 2 });
+    expect(res.hydrated).toBe(1);
+    expect(res.outOfBudget).toBe(true);
+    expect(d.order).not.toContain("hydrate:c3");
+  });
+
+  it("does NOT stamp the agent as synced on a run the budget cut short", async () => {
+    // `users.last_synced_at` is what the staleness gauge reads. Stamping it after
+    // a truncated run would hand an agent whose cache is half built a fresh age,
+    // which is the silence #2302 exists to end.
+    const d = deps({
+      calendars: [
+        { id: "c1", user_id: "u1", calendar_id: "primary" },
+        { id: "c2", user_id: "u1", calendar_id: "team@trypennie.com" },
+      ],
+    });
+    let calls = 0;
+    const res = await onboardIntoPool("u1", d, { withinBudget: () => ++calls <= 2 });
+    expect(res.hydrated).toBe(1);
+    expect(res.outOfBudget).toBe(true);
+    expect(d.synced).toEqual([]);
+  });
+});

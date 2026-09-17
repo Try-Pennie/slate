@@ -179,6 +179,10 @@ const FAMILY_BY_KEY: Record<string, AlertFamily> = {
   roster_coverage_gap: "the-roster-or-routing-data-is-wrong",
   schedule_parity_drift: "the-roster-or-routing-data-is-wrong",
   agents_on_unset_hours: "the-roster-or-routing-data-is-wrong",
+  // #2318. Same family: the finding is about a roster row, and the first thing
+  // to establish is the same one, whether the person is really meant to be taking
+  // calls and what the roster says about them.
+  agents_awaiting_activation: "the-roster-or-routing-data-is-wrong",
   salesforce_user_id_conflicts: "the-roster-or-routing-data-is-wrong",
   salesforce_manager_ambiguous: "the-roster-or-routing-data-is-wrong",
   salesforce_roster_divergence: "the-roster-or-routing-data-is-wrong",

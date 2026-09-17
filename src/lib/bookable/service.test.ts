@@ -49,6 +49,11 @@ vi.mock("@/lib/supabase/admin", () => ({
 }));
 
 import { applyBookableByEmail, applyBookableByUserId, writeBookable } from "./service";
+import {
+  ACTIVATION_BUDGET_MS,
+  MAX_ACTIVATIONS_PER_RUN,
+  ROSTER_RUN_LOCK_TTL_MS,
+} from "./activation-allowance";
 
 // checkReachable yields the given outcomes in order (last one repeats), so a
 // test can model the retry: e.g. deps("transient", "reachable").
@@ -58,12 +63,16 @@ function deps(...outcomes: Reachability[]) {
     checkReachable: vi.fn(async (_email: string) => seq.shift() ?? outcomes[outcomes.length - 1]),
     notify: vi.fn(async (_key: string, _cooldownMs: number, _text: string) => {}),
     cleanupOnPoolExit: vi.fn(async (_userId: string) => {}),
-    onboardIntoPool: vi.fn(async (_userId: string) => ({
+    onboardIntoPool: vi.fn(async (_userId: string, _opts: { withinBudget: () => boolean }) => ({
       calendars: 1,
       hydrated: 1,
       failed: 0,
       watch: "renewed" as PoolEntryResult["watch"],
+      outOfBudget: false,
     })),
+    // #2317: the gate's deadline is measured against this, never the real clock,
+    // so every test in this file runs inside its budget unless it says otherwise.
+    now: () => 1_000_000,
   };
 }
 
@@ -248,7 +257,7 @@ describe("onboarding on the way INTO the pool (#2302)", () => {
     const d = deps("reachable");
     const res = await applyBookableByUserId("u1", true, d);
     expect(res.status).toBe("applied");
-    expect(d.onboardIntoPool).toHaveBeenCalledWith("u1");
+    expect(d.onboardIntoPool).toHaveBeenCalledWith("u1", expect.objectContaining({ withinBudget: expect.any(Function) }));
     expect(updates).toEqual([{ id: "u1", bookable: true }]);
     expect(d.cleanupOnPoolExit).not.toHaveBeenCalled();
   });
@@ -261,7 +270,7 @@ describe("onboarding on the way INTO the pool (#2302)", () => {
     // arm of the activation gate.
     currentUser = { id: "u1", bookable: false, email: "unread@trypennie.com" };
     const d = deps("reachable");
-    d.onboardIntoPool = vi.fn(async () => ({ calendars: 1, hydrated: 0, failed: 1, watch: "renewed" as PoolEntryResult["watch"] }));
+    d.onboardIntoPool = vi.fn(async () => ({ calendars: 1, hydrated: 0, failed: 1, watch: "renewed" as PoolEntryResult["watch"], outOfBudget: false }));
     const res = await applyBookableByUserId("u1", true, d);
     expect(res.status).toBe("blocked");
     expect(res).toMatchObject({ reason: "calendar_unhydrated" });
@@ -275,7 +284,7 @@ describe("onboarding on the way INTO the pool (#2302)", () => {
     // sharp edge of the rule and is deliberate.
     currentUser = { id: "u1", bookable: false, email: "partial@trypennie.com" };
     const d = deps("reachable");
-    d.onboardIntoPool = vi.fn(async () => ({ calendars: 2, hydrated: 1, failed: 1, watch: "renewed" as PoolEntryResult["watch"] }));
+    d.onboardIntoPool = vi.fn(async () => ({ calendars: 2, hydrated: 1, failed: 1, watch: "renewed" as PoolEntryResult["watch"], outOfBudget: false }));
     const res = await applyBookableByUserId("u1", true, d);
     expect(res.status).toBe("blocked");
     expect(updates).toEqual([]);
@@ -286,7 +295,7 @@ describe("onboarding on the way INTO the pool (#2302)", () => {
     // clean run look identical from a failure count alone.
     currentUser = { id: "u1", bookable: false, email: "nocal@trypennie.com" };
     const d = deps("reachable");
-    d.onboardIntoPool = vi.fn(async () => ({ calendars: 0, hydrated: 0, failed: 0, watch: "skipped" as PoolEntryResult["watch"] }));
+    d.onboardIntoPool = vi.fn(async () => ({ calendars: 0, hydrated: 0, failed: 0, watch: "skipped" as PoolEntryResult["watch"], outOfBudget: false }));
     const res = await applyBookableByUserId("u1", true, d);
     expect(res.status).toBe("blocked");
     expect(updates).toEqual([]);
@@ -338,7 +347,7 @@ describe("onboarding on the way INTO the pool (#2302)", () => {
     // stops happening.
     currentUser = { id: "u1", bookable: false, email: "unread@trypennie.com" };
     const d = deps("reachable");
-    d.onboardIntoPool = vi.fn(async () => ({ calendars: 1, hydrated: 0, failed: 1, watch: "renewed" as PoolEntryResult["watch"] }));
+    d.onboardIntoPool = vi.fn(async () => ({ calendars: 1, hydrated: 0, failed: 1, watch: "renewed" as PoolEntryResult["watch"], outOfBudget: false }));
     await applyBookableByUserId("u1", true, d);
     // The mark written on the way in survives, which is what brings them back next
     // hour. What must NOT be here is a bookable write.
@@ -416,5 +425,133 @@ describe("a refused bookable write is not a completed one (#2482)", () => {
     nextWriteError = null;
     await expect(writeBookable("u2", true)).resolves.toBeUndefined();
     expect(updates.at(-1)).toEqual({ id: "u2", bookable: true });
+  });
+});
+
+// #2317: the activation gate makes several Google calls before it writes, and
+// none of them carried a deadline. A wait with no deadline cannot fail, only
+// hang, which is worse than failing because it is indistinguishable from
+// slowness and still holds whatever it acquired (L110). On the admin toggle a
+// hung Google is a hung click; inside the hourly roster lane one slow agent eats
+// the invocation budget the Salesforce and Twilio halves share.
+//
+// The clock is injected, so the boundary is drivable without waiting for one.
+describe("the activation gate's deadline (#2317)", () => {
+  beforeEach(() => {
+    updates.length = 0;
+    patches.length = 0;
+    currentUser = null;
+  });
+
+  /** deps whose clock jumps forward by `stepMs` on every read. */
+  function timed(stepMs: number) {
+    const d = deps("reachable");
+    let t = 1_000_000;
+    return {
+      ...d,
+      now: () => {
+        const at = t;
+        t += stepMs;
+        return at;
+      },
+    };
+  }
+
+  it("applies normally when the whole gate fits inside the budget", async () => {
+    currentUser = { id: "u1", bookable: false, email: "quick@trypennie.com" };
+    const d = timed(1);
+    const res = await applyBookableByUserId("u1", true, d);
+    expect(res.status).toBe("applied");
+    expect(updates).toEqual([{ id: "u1", bookable: true }]);
+  });
+
+  it("refuses with its OWN reason when the reachability probe ate the budget", async () => {
+    // Its own reason rather than calendar_unhydrated, because the reader's next
+    // move is different: wait and retry, not go and look at the sync lane.
+    currentUser = { id: "u1", bookable: false, email: "slow@trypennie.com" };
+    const d = timed(ACTIVATION_BUDGET_MS);
+    const res = await applyBookableByUserId("u1", true, d);
+    expect(res).toMatchObject({ status: "blocked", userId: "u1", reason: "activation_timed_out" });
+    expect(updates).toEqual([]);
+    // Nothing further was spent on a run that could not finish.
+    expect(d.onboardIntoPool).not.toHaveBeenCalled();
+    expect(d.notify).toHaveBeenCalledTimes(1);
+    expect(d.notify.mock.calls[0][0]).toBe("bookable_blocked:u1");
+  });
+
+  it("refuses with activation_timed_out when the onboarding ran out part way", async () => {
+    currentUser = { id: "u1", bookable: false, email: "partial@trypennie.com" };
+    const d = deps("reachable");
+    d.onboardIntoPool = vi.fn(async () => ({
+      calendars: 3,
+      hydrated: 1,
+      failed: 0,
+      watch: "renewed" as PoolEntryResult["watch"],
+      outOfBudget: true,
+    }));
+    const res = await applyBookableByUserId("u1", true, d);
+    expect(res).toMatchObject({ status: "blocked", reason: "activation_timed_out" });
+    expect(updates).toEqual([]);
+  });
+
+  it("a MEASURED calendar failure outranks the budget", async () => {
+    // Both are true at once when a calendar really failed and the run then ran
+    // out. A measured failure names something a person can act on, so it wins;
+    // answering "try again" over a broken calendar would send them away from it.
+    currentUser = { id: "u1", bookable: false, email: "broken@trypennie.com" };
+    const d = deps("reachable");
+    d.onboardIntoPool = vi.fn(async () => ({
+      calendars: 3,
+      hydrated: 1,
+      failed: 1,
+      watch: "renewed" as PoolEntryResult["watch"],
+      outOfBudget: true,
+    }));
+    const res = await applyBookableByUserId("u1", true, d);
+    expect(res).toMatchObject({ status: "blocked", reason: "calendar_unhydrated" });
+  });
+
+  it("hands the onboarding a budget it can see", async () => {
+    currentUser = { id: "u1", bookable: false, email: "new@trypennie.com" };
+    const d = timed(1);
+    await applyBookableByUserId("u1", true, d);
+    const opts = d.onboardIntoPool.mock.calls[0][1] as { withinBudget: () => boolean };
+    expect(typeof opts.withinBudget).toBe("function");
+    expect(opts.withinBudget()).toBe(true);
+  });
+
+  it("leaves the pending mark alone on a timeout, so the hourly sync retries", async () => {
+    // Same contract as every other refusal: the mark IS the intent and only an
+    // explicit bookable write settles it. A timeout that cleared it would make a
+    // slow Google look like a decision somebody made.
+    currentUser = {
+      id: "u1",
+      bookable: false,
+      email: "slow@trypennie.com",
+      bookable_pending_since: "2026-09-01T00:00:00.000Z",
+    };
+    const d = timed(ACTIVATION_BUDGET_MS);
+    await applyBookableByUserId("u1", true, d);
+    expect(patches).toEqual([]);
+  });
+
+  it("never applies a deadline to LEAVING the pool", async () => {
+    // Deactivation writes first and cleans up afterwards. There is no gate to
+    // time out, and refusing to take somebody OUT of the pool because Google was
+    // slow would be a defect of its own.
+    currentUser = { id: "u1", bookable: true, email: "leaving@trypennie.com" };
+    const d = timed(ACTIVATION_BUDGET_MS * 10);
+    const res = await applyBookableByUserId("u1", false, d);
+    expect(res).toMatchObject({ status: "applied", bookable: false });
+    expect(updates).toEqual([{ id: "u1", bookable: false }]);
+  });
+
+  it("the budget is derived from the roster run's lock and its allowance", async () => {
+    // Not a number somebody picked. The hourly roster run may attempt
+    // MAX_ACTIVATIONS_PER_RUN activations in sequence inside one invocation whose
+    // lock is ROSTER_RUN_LOCK_TTL_MS, and the activations are not the only work in
+    // it, so they get half of that window between them. Asserted as arithmetic so
+    // changing either constant has to be a decision about both.
+    expect(ACTIVATION_BUDGET_MS).toBe(ROSTER_RUN_LOCK_TTL_MS / 2 / MAX_ACTIVATIONS_PER_RUN);
   });
 });

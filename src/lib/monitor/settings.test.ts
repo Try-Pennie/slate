@@ -242,8 +242,9 @@ describe("parseMonitorSettingsForm low_volume_armed", () => {
     handoffChannel: "",
     lowVolumeArmed: "",
     failureRateArmed: "",
-  availabilityDriftArmed: "",
+    availabilityDriftArmed: "",
     rosterCoverageArmed: "",
+    awaitingActivationArmed: "",
   };
 
   it("parses a checked toggle as armed=true", () => {

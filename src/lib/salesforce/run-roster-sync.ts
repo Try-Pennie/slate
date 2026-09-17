@@ -12,7 +12,7 @@
 // (the bearer check and the failure streak that pages on consecutive misses), and
 // the button keeps only its banner.
 import { syncSalesforceAgents, AGENTS_SYNC_STREAK_KEY, type SyncResult } from "@/lib/salesforce/sync";
-import { activationAllowance } from "@/lib/bookable/activation-allowance";
+import { activationAllowance, ROSTER_RUN_LOCK_TTL_MS } from "@/lib/bookable/activation-allowance";
 import { ensureDefaultOrg } from "@/lib/provision";
 import { ensureDefaultSchedules } from "@/lib/schedule";
 import { acquireLock, releaseLock } from "@/lib/locks";
@@ -43,7 +43,9 @@ import {
 } from "@/lib/monitor/verdict-freshness";
 
 export const AGENTS_LOCK_KEY = "cron_agents";
-const AGENTS_LOCK_TTL_MS = 10 * 60 * 1000;
+/** Imported rather than written here (#2317): it is the window every activation
+ *  allowance is derived from, so it lives beside them and not beside the lock. */
+const AGENTS_LOCK_TTL_MS = ROSTER_RUN_LOCK_TTL_MS;
 
 /**
  * The Twilio write failures streak (#2114).

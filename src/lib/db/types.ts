@@ -257,6 +257,8 @@ export interface MonitorAlertConfig {
   /** #1315: UI arm/disarm for the availability-truth page. Null = unset (fall
    *  through to the disarmed default, per L56's observe-first rule). */
   availability_drift_armed: boolean | null;
+  /** #2318: is the "waiting to become bookable" page armed? Null = disarmed. */
+  awaiting_activation_armed: boolean | null;
   /** #1454: UI arm/disarm for the roster-coverage page. Null = unset (fall
    *  through to the disarmed default, which here is about the roster being dark
    *  before cutover rather than about calibration: see migration 0102). */

@@ -1,0 +1,21 @@
+-- #2318: arm/disarm the "somebody has been waiting to become bookable" page.
+--
+-- Same single-row config table, same precedence (store > coded default), same
+-- admin form as low_volume_armed (#575), failure_rate_armed (#1313),
+-- availability_drift_armed (#1315) and roster_coverage_armed (#1454), so there is
+-- one way to arm an alert rather than five.
+--
+-- Nullable, and the coded default is DISARMED, for the usual observe-first reason
+-- (L56) rather than the cutover one. Nobody can say from a desk how many people
+-- carry `bookable_pending_since` on an ordinary day: since #2302 made the calendar
+-- read part of the activation gate, the population is whoever the hourly roster run
+-- refused or deferred, and it has never been watched over a working week. A check
+-- that pages before anybody has seen its ordinary shape is one that gets muted in
+-- its first week, which is how an alert stops being read at all (L36).
+--
+-- It still MEASURES every tick and logs the verdict, so the observation is real and
+-- readable while it waits, and #2531 is the issue that arms it, filed in this same
+-- change (L65), because an unenforced guard is indistinguishable from no guard once
+-- the reason for the silence is forgotten.
+alter table monitor_alert_config
+  add column awaiting_activation_armed boolean;
