@@ -41,7 +41,6 @@ import {
   type PersonMatch,
   type MatchStrength,
 } from "./person-dedupe.ts";
-import { phoneLastFour } from "./phone-mask.ts";
 import {
   isOwnerAlertReassign,
   ownerAlertBody,
@@ -300,16 +299,20 @@ export type ExistingCall =
       /** Lets the lead move THIS call into the slot they just picked. */
       manageToken: string;
       /**
-       * The last four digits of the number the advisor will ring, or null when the
-       * booking carries none (#2207).
+       * The number the advisor will ring, in full, or null when the booking
+       * carries none (#2213).
        *
-       * Never the whole number. This panel is reached by whoever holds the booking
-       * LINK; the manage page that shows it in full is reached by the token inside
-       * the lead's own calendar invite. Null rather than an empty string, because
-       * "no number on this call" and "a number ending in nothing" are different
-       * things and only one of them has a sentence (L11).
+       * The whole number, the way the manage page has always shown it, so the two
+       * surfaces say one sentence rather than two spellings of one. Dan settled
+       * that on 2026-09-10, reversing the four digit version (#2207): anyone
+       * holding the booking link can read this lead's number off the panel, which
+       * is a smaller thing than the cancel the same link already grants.
+       *
+       * Null rather than an empty string, because "no number on this call" and "a
+       * number we will call" are different screens with different controls, and
+       * only one of them may be written (L11).
        */
-      phoneLast4: string | null;
+      phone: string | null;
       /**
        * Whether the panel may offer to CANCEL this call (#2167).
        *
@@ -2300,13 +2303,13 @@ export async function findExistingCallForIdentity(
       .catch(() => null),
     manageToken: match.booking.manage_token,
     mayCancel: match.strength === "strong",
-    // #2207: named, never shown. The panel let a recognised lead move and cancel
-    // and not correct the number the advisor will ring, once #2203 took the
-    // details form off that path. Four digits is enough for the lead to know
-    // whether theirs needs correcting, and nearly nothing to somebody who came by
-    // the link, which is a weaker credential than the manage token that shows the
-    // number in full (#1341). Dan chose that over showing it whole, 2026-09-10.
-    phoneLast4: phoneLastFour(match.booking.attendee_phone),
+    // #2213: the whole number. The panel let a recognised lead move and cancel and
+    // not correct the number the advisor will ring, once #2203 took the details
+    // form off that path, and showing it whole is what lets them read back exactly
+    // what Slate holds. Blank reads as none, because a column holding spaces
+    // arrives through the API and through an import, and " " is not a number
+    // anybody can be told we will call.
+    phone: (match.booking.attendee_phone ?? "").trim() || null,
   };
 }
 

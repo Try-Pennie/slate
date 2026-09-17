@@ -34,11 +34,19 @@ export const LIVE_COPY = {
 } as const;
 
 /**
- * Who is calling and on what number.
+ * Who is calling and on what number, on BOTH surfaces (#2213).
+ *
+ * The booker's existing call panel says this too, and calls this builder rather
+ * than spelling the same sentence its own way. It had its own wording while the
+ * panel named four digits and the manage page showed the number whole; Dan took
+ * the whole number on both, 2026-09-10, and one sentence said twice is exactly
+ * what these files exist to stop (L118).
  *
  * Falls back to a phrase rather than to a gap: "will call you at ." reads as a
  * broken sentence, where "the number you gave us" is true and still tells the
- * lead what will happen.
+ * lead what will happen. The BOOKER never reaches that fallback: a call carrying
+ * no number gets `BOOKER_PHONE_COPY.noNumber` and its own control, because "we
+ * cannot call you" is a different screen from "this might be wrong" (L10).
  */
 export function advisorWillCall(phone: string | null): string {
   return `Your advisor will call you at ${phone ?? "the number you gave us"}.`;

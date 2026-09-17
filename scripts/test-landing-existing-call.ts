@@ -141,12 +141,13 @@ async function run() {
     );
   }
 
-  // --- the number the advisor will ring, named rather than shown (#2207) -------
+  // --- the number the advisor will ring, in full (#2213) -----------------------
   // The panel let a recognised lead move and cancel and not change what we would
-  // call, once #2203 took the details form off that path. It names the number so
-  // they can tell whether it needs correcting, by its last four digits, because
-  // this panel is reached by a LINK and the manage page that shows it in full is
-  // reached by the token inside their invite.
+  // call, once #2203 took the details form off that path. It carries the WHOLE
+  // number, so the lead reads back exactly what Slate holds and can tell whether
+  // it needs correcting. Dan settled that on 2026-09-10, reversing the four digit
+  // version (#2207): the manage page has always shown it in full, and one sentence
+  // now serves both surfaces.
   {
     const { deps } = world();
     const call = await findExistingCallForIdentity(
@@ -154,27 +155,38 @@ async function run() {
       deps,
     );
     assert(
-      call?.disclose === true && call.phoneLast4 === "0100",
-      `the call names its number by its last four digits (got ${JSON.stringify(call)})`,
-    );
-    assert(
-      call?.disclose === true && !JSON.stringify(call).includes("555-0100"),
-      "and the whole number is never in the payload at all",
+      call?.disclose === true && call.phone === PHONE,
+      `the call carries the number in full (got ${JSON.stringify(call)})`,
     );
   }
 
   {
     // A booking with no number on it. Null, never an empty string: the panel has
-    // to tell "no number here" from "a number ending in nothing", because the
-    // first is a sentence it must not write (L11).
+    // to tell "no number here" from "a number we will call", because the first is
+    // its own sentence and its own control (L11).
     const { deps } = world({ attendee_phone: null });
     const call = await findExistingCallForIdentity(
       { salesforceId: SF_ID, externalId: null, email: null, phone: null },
       deps,
     );
     assert(
-      call?.disclose === true && call.phoneLast4 === null,
+      call?.disclose === true && call.phone === null,
       `a call carrying no number names none (got ${JSON.stringify(call)})`,
+    );
+  }
+
+  {
+    // And a stored number that is nothing but space is the same screen as no
+    // number at all. It reaches the column through the API and through an import,
+    // and the panel must not offer to read " " back to the lead as what we hold.
+    const { deps } = world({ attendee_phone: "   " });
+    const call = await findExistingCallForIdentity(
+      { salesforceId: SF_ID, externalId: null, email: null, phone: null },
+      deps,
+    );
+    assert(
+      call?.disclose === true && call.phone === null,
+      `a blank stored number reads as no number (got ${JSON.stringify(call)})`,
     );
   }
 

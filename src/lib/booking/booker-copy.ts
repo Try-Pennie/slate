@@ -404,28 +404,18 @@ export function cancelConsequenceFor(when: string): string {
 }
 
 /**
- * The number the advisor will ring, NAMED rather than shown (#2207).
+ * The booker's half of correcting the number the advisor will ring.
  *
- * The existing call panel is reached by whoever holds the booking link, so it
- * gives four digits: enough for the lead to know whether the number needs
- * correcting, and nearly nothing to somebody who came by the link. The manage
- * page reached by the token inside their own invite still shows it in full
- * (`advisorWillCall` in manage-copy), and that difference is the credential, not
- * an inconsistency.
+ * The sentence NAMING that number is `advisorWillCall` in manage-copy, called
+ * from here rather than written twice (#2213). It used to be its own builder
+ * saying four digits, because the panel is reached by the booking link and the
+ * manage page by the token inside the lead's own invite; Dan took the whole
+ * number on both surfaces, 2026-09-10, so they now say one thing and two
+ * spellings of one sentence is what a shared builder exists to prevent (L118).
  *
- * "on the number ending" rather than "at", because a masked value is not a number
- * anybody can read back as one, and "at 5295" reads as a whole number nobody has.
- */
-export function advisorWillCallEnding(last4: string): string {
-  return `Your advisor will call you on the number ending ${last4}.`;
-}
-
-/**
- * The booker's half of correcting that number. Everything else is
- * `PHONE_COPY` in manage-copy, reused rather than restated: those sentences name
- * neither a call nor a booking, so the noun split that keeps the cancel copy
- * separate does not apply to them, and two spellings of one control is what a
- * shared builder exists to prevent (L41).
+ * Everything else here is `PHONE_COPY` in manage-copy, reused for the same
+ * reason: those sentences name neither a call nor a booking, so the noun split
+ * that keeps the cancel copy separate does not apply to them (L41).
  */
 export const BOOKER_PHONE_COPY = {
   /**

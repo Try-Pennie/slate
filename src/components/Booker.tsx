@@ -13,9 +13,8 @@ import { NearestTimesPanel } from "@/components/NearestTimes";
 import { validateAttendee, type AttendeeErrors } from "@/lib/attendee";
 import { prefillPhone } from "@/lib/phone-format";
 import { usePhoneCaret } from "@/lib/usePhoneCaret";
-import { PHONE_COPY } from "@/lib/booking/manage-copy";
+import { PHONE_COPY, advisorWillCall } from "@/lib/booking/manage-copy";
 import { UnsavedGuard } from "@/components/ui/UnsavedGuard";
-import { phoneLastFour } from "@/lib/booking/phone-mask";
 import { HONEYPOT_FIELD } from "@/lib/booking/honeypot";
 import {
   isNextDaysReply,
@@ -38,7 +37,6 @@ import {
   MOVE_COPY,
   BOOKER_CANCEL_COPY,
   BOOKER_PHONE_COPY,
-  advisorWillCallEnding,
   cancelConsequenceFor,
   movedContactNote,
   CLOSED_BODY,
@@ -358,15 +356,15 @@ export default function Booker({
   const [moveReason, setMoveReason] = useState("");
   const [moveDetail, setMoveDetail] = useState("");
   /**
-   * Correcting the number the advisor will ring, from the panel (#2207).
+   * Correcting the number the advisor will ring, from the panel (#2207, #2213).
    *
-   * `callPhoneLast4` is what the panel NAMES, seeded from the server and rewritten
-   * from what the save stored, so the line always reads back the number Slate
-   * actually holds rather than the keystrokes. Its own state rather than the prop,
-   * because a save changes it and a prop cannot (L14).
+   * `callPhone` is what the panel SHOWS, seeded from the server and rewritten from
+   * what the save stored, so the line always reads back the number Slate actually
+   * holds rather than the keystrokes. Its own state rather than the prop, because
+   * a save changes it and a prop cannot (L14).
    */
-  const [callPhoneLast4, setCallPhoneLast4] = useState<string | null>(
-    landingCall?.disclose ? landingCall.phoneLast4 : null,
+  const [callPhone, setCallPhone] = useState<string | null>(
+    landingCall?.disclose ? landingCall.phone : null,
   );
   const [editingCallPhone, setEditingCallPhone] = useState(false);
   /**
@@ -634,12 +632,10 @@ export default function Booker({
         // nothing was created (#1337). The slot they picked is kept so the offer
         // to move the existing call into it can name it.
         setExistingCall(data.existingCall);
-        // #2207: and the number it names. Set here rather than derived, so a
+        // #2207: and the number it shows. Set here rather than derived, so a
         // number the lead has since corrected on this screen is not overwritten by
         // a later render (L14).
-        setCallPhoneLast4(
-          data.existingCall.disclose ? data.existingCall.phoneLast4 : null,
-        );
+        setCallPhone(data.existingCall.disclose ? data.existingCall.phone : null);
       } else if (status === 409) {
         setError(BOOKING_ERROR_COPY.slotTaken);
         // #1319: remember WHICH time went, so the alternatives below can leave it out. It is
@@ -720,10 +716,10 @@ export default function Booker({
         { timeoutMs: REQUEST_TIMEOUT_MS },
       );
       if (ok && data.phone) {
-        // Named from what was STORED, never from what was typed, and still masked:
-        // a save is not a reason to start showing the whole number on a screen
-        // reached by a link.
-        setCallPhoneLast4(phoneLastFour(data.phone));
+        // Read back from what was STORED, never from what was typed: the server
+        // formats the number it kept, and the panel renders that rather than
+        // rewriting it here, so the line and the record cannot disagree (#2213).
+        setCallPhone(data.phone);
         // #2210: from here the move must not send a number. This one is newer
         // than anything the link carried.
         setPhoneCorrectedHere(true);
@@ -885,15 +881,14 @@ export default function Booker({
                 {existingCall.advisorName ? `, with ${existingCall.advisorName}.` : "."}
               </p>
               {/* #2207: the number the call actually depends on, and the way to
-                  fix it. Named by four digits, never shown, because this panel is
-                  reached by a link (see advisorWillCallEnding). A quiet line plus
-                  a real button at rest, not an always open field: most leads never
-                  need it and should not be invited to fiddle (L49). */}
+                  fix it. Shown in full (#2213), in the manage page's own sentence,
+                  so a lead reads back exactly what Slate holds on either screen. A
+                  quiet line plus a real button at rest, not an always open field:
+                  most leads never need it and should not be invited to fiddle
+                  (L49). */}
               <div className="mt-3">
                 <p className={`text-sm ${c.muted}`}>
-                  {callPhoneLast4
-                    ? advisorWillCallEnding(callPhoneLast4)
-                    : BOOKER_PHONE_COPY.noNumber}
+                  {callPhone ? advisorWillCall(callPhone) : BOOKER_PHONE_COPY.noNumber}
                 </p>
                 {editingCallPhone ? (
                   <form
@@ -980,7 +975,7 @@ export default function Booker({
                     onClick={() => setEditingCallPhone(true)}
                     className={`mt-1 inline-flex min-h-9 items-center text-sm font-semibold underline underline-offset-2 hover:no-underline ${c.muted}`}
                   >
-                    {callPhoneLast4 ? PHONE_COPY.trigger : BOOKER_PHONE_COPY.addTrigger}
+                    {callPhone ? PHONE_COPY.trigger : BOOKER_PHONE_COPY.addTrigger}
                   </button>
                 )}
               </div>
