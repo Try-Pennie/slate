@@ -23,6 +23,7 @@
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { assert, eq, fail, finish } from "./lib/harness.ts";
+import { readTextOptOut } from "./lib/opt-out.ts";
 
 function walk(dir: string, out: string[] = []): string[] {
   for (const e of readdirSync(dir)) {
@@ -119,11 +120,14 @@ for (const f of files) {
   // wrapper yet: there is no restore for it to take part in, so demanding it
   // would be asking for something that cannot happen. It needs a reason, and the
   // reason is expected to name the issue that removes it (L233, L65).
-  const exempt = raw.match(/restore-optin-ok:\s*(.+)/);
-  if (exempt) {
-    if (exempt[1].trim().length < 12) {
+  const exempt = readTextOptOut(raw, "restore-optin-ok:");
+  if (exempt.present) {
+    if (exempt.reason.length < 12) {
       findings.push(`${f}: restore-optin-ok with no real reason`);
-    } else if (!/#\d+/.test(raw.slice(raw.indexOf("restore-optin-ok:"), raw.indexOf("restore-optin-ok:") + 300))) {
+      // The issue may sit on the NEXT comment line, because the reason is a
+      // sentence and a sentence wraps, so the block is read rather than the
+      // marker's own line.
+    } else if (!/#\d+/.test(raw.split("\n").slice(exempt.line, exempt.line + 6).join("\n"))) {
       findings.push(`${f}: restore-optin-ok names no issue that will remove it`);
     }
     continue;

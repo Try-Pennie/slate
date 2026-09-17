@@ -36,28 +36,17 @@
  * cannot be taken by writing the token alone.
  */
 
+import { hasOptOut as sharedHasOptOut } from "./opt-out.ts";
+
 export interface DeactivationWriteFinding {
   file: string;
   line: number;
   text: string;
 }
 
-/**
- * The reason must start with a LETTER, so the surrounding syntax cannot satisfy it
- * and a hatch taken with a bare token or a stray brace reads as unreasoned (L675).
- */
-const OPT_OUT = /\/\/\s*lifecycle-write-ok:\s*[A-Za-z]/;
-
-/** Does the `//` block ending at `index - 1`, or the line itself, carry the hatch? */
+/** Does the comment block above `index`, or the line itself, carry the hatch? */
 function hasOptOut(lines: string[], index: number): boolean {
-  if (OPT_OUT.test(lines[index])) return true;
-  for (let i = index - 1; i >= 0; i--) {
-    const line = lines[i].trim();
-    if (line === "") continue;
-    if (!line.startsWith("//")) return false;
-    if (OPT_OUT.test(lines[i])) return true;
-  }
-  return false;
+  return sharedHasOptOut(lines, index, "lifecycle-write-ok:");
 }
 
 /**

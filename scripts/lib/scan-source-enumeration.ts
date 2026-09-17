@@ -19,14 +19,12 @@
 // held exactly such a walk and was converted rather than exempted.
 
 /** A `git ls-files` call, however it was spawned. */
+import { textHasOptOut } from "./opt-out.ts";
+
 const GIT_ENUMERATION_RE =
   /(?:spawnSync|spawn|execFileSync|execFile|execSync|exec)\s*\(\s*["']git["']\s*,\s*\[[^\]]*["']ls-files["']/;
 
 /** The opt-out, which must carry a reason or it decays into a magic word (L675). */
-// The reason must sit on the marker's OWN line: `\s` matches a newline, so a
-// looser pattern is satisfied by whatever code follows an empty marker.
-const OPT_OUT_RE = /\/\/[^\S\r\n]*enumeration-ok:[^\S\r\n]*\S+/;
-
 export function enumeratesFromGit(source: string): boolean {
   return GIT_ENUMERATION_RE.test(source);
 }
@@ -35,8 +33,9 @@ export function usesSharedEnumeration(source: string): boolean {
   return /\bsourceFiles\s*\(/.test(source) && source.includes("source-files.ts");
 }
 
+/** File scoped: this rule is about the MODULE, so the marker may sit anywhere. */
 export function hasReasonedOptOut(source: string): boolean {
-  return OPT_OUT_RE.test(source);
+  return textHasOptOut(source, "enumeration-ok:");
 }
 
 /** A reason string if `source` enumerates the tree with no floor, else null. */

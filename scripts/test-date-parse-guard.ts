@@ -126,6 +126,9 @@ const coreSrc = readFileSync(corePath, "utf8");
 assert(scanRawDateParse(coreSrc, corePath).length === 0, "the real booking/core.ts is clean");
 const stripped = coreSrc
   .split("\n")
+  // opt-out-matcher-ok: this REMOVES the markers to plant the defect back, so it
+  // is a mutation rather than a reading, and there is no exemption for the
+  // shared reader to decide.
   .filter((l) => !/^\s*\/\/\s*parse-ok:/i.test(l))
   .join("\n");
 assert(

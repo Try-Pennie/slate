@@ -7,6 +7,8 @@
  * clean tree produce the same empty result (L98).
  */
 
+import { readOptOut, readOptOutOnLine } from "./opt-out.ts";
+
 export interface ThemePairFinding {
   file: string;
   line: number;
@@ -121,15 +123,8 @@ function hasThemeOverride(classes: string[], state: string): boolean {
  *  a line. The reason is required: an exemption with none is evidence nobody
  *  reasoned about it (L233). */
 export function exemptionAbove(lines: string[], at: number): string | null {
-  for (let i = at; i >= 0 && i > at - 10; i--) {
-    const m = lines[i].match(/(?:\/\/|\*)\s*theme-pair-ok:\s*(.+?)\s*(?:\*\/)?$/);
-    if (m) return m[1].trim();
-    const t = lines[i].trim();
-    if (i !== at && t && !t.startsWith("//") && !t.startsWith("*") && !t.startsWith("/*")) {
-      return null;
-    }
-  }
-  return null;
+  const found = readOptOut(lines, at, "theme-pair-ok:", { reach: 10 });
+  return found.present && found.reasoned ? found.reason : null;
 }
 
 /**
@@ -171,8 +166,8 @@ export function findReasonlessExemptions(file: string, src: string): ThemePairFi
   const out: ThemePairFinding[] = [];
   const lines = src.split("\n");
   for (let i = 0; i < lines.length; i++) {
-    const m = lines[i].match(/theme-pair-ok:\s*(.*)$/);
-    if (m && m[1].replace(/\*\/\s*$/, "").trim().length < 12) {
+    const m = readOptOutOnLine(lines[i], "theme-pair-ok:");
+    if (m.present && m.reason.length < 12) {
       out.push({ file, line: i + 1, text: lines[i].trim(), why: "exemption with no real reason" });
     }
   }

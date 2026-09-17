@@ -25,6 +25,8 @@
  */
 
 /** A site the scanner objected to. */
+import { hasOptOut } from "./opt-out.ts";
+
 export interface SpinnerSite {
   file: string;
   line: number;
@@ -35,8 +37,6 @@ export interface SpinnerSite {
 
 /** The one file allowed to draw a spinner. */
 export const SPINNER_COMPONENT = "src/components/ui/Spinner.tsx";
-
-const OPT_OUT = /\/\/\s*spinner-ok:\s*\S/;
 
 /**
  * The two signatures of a hand drawn spinner. `animate-spin` is the rotation, and
@@ -68,12 +68,7 @@ export function scanSpinners(file: string, text: string): SpinnerSite[] {
   lines.forEach((line, i) => {
     // The opt-out sits on the line, or in the `//` block directly above it, which
     // is the convention every other guard in this tree uses.
-    if (OPT_OUT.test(line)) return;
-    for (let up = i - 1; up >= 0; up--) {
-      const above = lines[up]!.trim();
-      if (!above.startsWith("//")) break;
-      if (OPT_OUT.test(above)) return;
-    }
+    if (hasOptOut(lines, i, "spinner-ok:")) return;
 
     for (const [re, why] of SIGNATURES) {
       const m = re.exec(line);

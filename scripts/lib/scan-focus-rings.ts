@@ -19,6 +19,8 @@
  * a second recipe rather than an override of this one.
  */
 
+import { hasOptOut } from "./opt-out.ts";
+
 /** A site the scanner objected to. */
 export interface FocusRingSite {
   file: string;
@@ -27,8 +29,6 @@ export interface FocusRingSite {
   utility: string;
   why: string;
 }
-
-const OPT_OUT = /\/\/\s*focus-ring-ok:\s*\S/;
 
 /**
  * Utilities that follow `outline-` and are NOT a colour. Anything else after
@@ -50,14 +50,9 @@ export function scanFocusRings(file: string, text: string): FocusRingSite[] {
   const out: FocusRingSite[] = [];
 
   lines.forEach((line, i) => {
-    // The opt-out sits on the line, or in the `//` block directly above it, which
-    // is the convention every other guard in this tree uses.
-    if (OPT_OUT.test(line)) return;
-    for (let up = i - 1; up >= 0; up--) {
-      const above = lines[up].trim();
-      if (!above.startsWith("//")) break;
-      if (OPT_OUT.test(above)) return;
-    }
+    // The opt-out sits on the line, or in the comment block directly above it,
+    // read through the one shared reader every guard in this tree uses (#2200).
+    if (hasOptOut(lines, i, "focus-ring-ok:")) return;
 
     for (const m of line.matchAll(FOCUS_UTILITY)) {
       const [, utility, family, value] = m;

@@ -46,6 +46,7 @@
 //     as it is to every other migration scan here.
 
 import { parseCreatedTables, parseDroppedTables } from "./parse-migration-constraints.ts";
+import { readOptOut } from "./opt-out.ts";
 
 /** One migration file, in apply order by `version`. */
 export interface MigrationSource {
@@ -304,11 +305,6 @@ export interface DefinerGrantScan {
   definersChecked: number;
 }
 
-/** Opt-out for a definer function that genuinely must stay callable by a client role. */
-const EXECUTE_OPT_OUT = /(?:--|\/\/)\s*anon-execute-ok:\s*[A-Za-z]/;
-/** The hatch WRITTEN, with or without the reason it is required to carry. */
-const EXECUTE_OPT_OUT_BARE = /(?:--|\/\/)\s*anon-execute-ok:/;
-
 /** Blank out `$tag$ ... $tag$` bodies so nothing inside one is read as a statement. */
 function stripDollarBodies(sql: string): string {
   return sql.replace(/\$(\w*)\$[\s\S]*?\$\1\$/g, " ");
@@ -383,17 +379,11 @@ function parseFunctionRevokes(sql: string): Map<string, Set<string>[]> {
 
 /** True when `anon-execute-ok:` with a reason sits on the line or in the block above it. */
 function hasExecuteOptOut(lines: string[], index: number): boolean {
-  const here = lines[index] ?? "";
-  if (EXECUTE_OPT_OUT.test(here)) return true;
-  if (EXECUTE_OPT_OUT_BARE.test(here)) return false; // written, carrying no reason
-  for (let i = index - 1; i >= 0; i--) {
-    const t = (lines[i] ?? "").trim();
-    if (t === "") continue;
-    if (!t.startsWith("--") && !t.startsWith("//")) return false;
-    if (EXECUTE_OPT_OUT.test(t)) return true;
-    if (EXECUTE_OPT_OUT_BARE.test(t)) return false;
-  }
-  return false;
+  // The FIRST hatch found decides, reasoned or not: a hatch written with no
+  // reason is not an exemption, and must not be stepped over to reach one that
+  // carries a reason but belongs to a neighbour.
+  const found = readOptOut(lines, index, "anon-execute-ok:", { syntax: ["sql"] });
+  return found.present && found.reasoned;
 }
 
 /**

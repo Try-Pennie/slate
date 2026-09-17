@@ -23,6 +23,7 @@
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { assert, finish } from "./lib/harness.ts";
+import { readOptOutOnLine, textHasOptOut } from "./lib/opt-out.ts";
 
 function pages(dir: string): string[] {
   const out: string[] = [];
@@ -34,14 +35,18 @@ function pages(dir: string): string[] {
   return out;
 }
 
+function carriesMarker(text: string): boolean {
+  return text.split("\n").some((l) => readOptOutOnLine(l, "title-twice-ok:").present);
+}
+
 /** Source with the prose blanked, keeping any line that carries the opt-out. */
 function code(text: string): string {
   return text
     .replace(/\/\*[\s\S]*?\*\//g, (m) =>
-      m.includes("title-twice-ok:") ? m : m.replace(/[^\n]/g, " "),
+      carriesMarker(m) ? m : m.replace(/[^\n]/g, " "),
     )
     .split("\n")
-    .map((line) => (/^\s*\/\//.test(line) && !line.includes("title-twice-ok:") ? "" : line))
+    .map((line) => (/^\s*\/\//.test(line) && !carriesMarker(line) ? "" : line))
     .join("\n");
 }
 
@@ -52,7 +57,8 @@ for (const file of pages(join("src", "app", "admin"))) {
   const title = text.match(/AdminPageHeader\s+title="([^"]+)"/)?.[1];
   if (!title) continue;
   scanned += 1;
-  if (/title-twice-ok:/.test(text)) continue;
+  // File scoped: the page as a whole is what carries the second heading.
+  if (textHasOptOut(text, "title-twice-ok:")) continue;
 
   for (const m of text.matchAll(/<h2[^>]*>\s*([^<{]+?)\s*<\/h2>/g)) {
     if (m[1].trim().toLowerCase() === title.trim().toLowerCase()) {

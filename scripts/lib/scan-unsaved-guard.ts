@@ -16,6 +16,8 @@
 // well as over the real tree.
 
 /** A control a person types or chooses a value in. */
+import { hasOptOut } from "./opt-out.ts";
+
 const EDITABLE = /<(textarea|select)\b|<input\b(?![^>]*\btype=(?:"|')(?:hidden|submit|button|image|reset)(?:"|'))/;
 
 /**
@@ -26,12 +28,6 @@ const EDITABLE = /<(textarea|select)\b|<input\b(?![^>]*\btype=(?:"|')(?:hidden|s
  * blocks, and a convention that only read `//` would be one nobody could obey where
  * it is needed.
  */
-// The reason must start with a WORD rather than merely with a non-space
-// character: in a JSX comment the terminator itself is a non-space character, so
-// `{/* unsaved-ok: *\/}` satisfied the looser form and read as an exemption
-// somebody had thought about (#2112, found by writing the same rule again).
-const OPT_OUT = /unsaved-ok:[ \t]*[A-Za-z0-9]/;
-
 export interface UnguardedForm {
   file: string;
   line: number;
@@ -74,25 +70,5 @@ export function scanUnsavedGuard(file: string, source: string): UnguardedForm[] 
  * which reads as ordinary prose. A per line test found none of them.
  */
 function optedOut(lines: string[], at: number): boolean {
-  if (OPT_OUT.test(lines[at]!)) return true;
-  let j = at - 1;
-  while (j >= 0 && lines[j]!.trim() === "") j--;
-  if (j < 0) return false;
-  const line = lines[j]!.trim();
-
-  // A `//` run: take every consecutive one.
-  if (line.startsWith("//")) {
-    const run: string[] = [];
-    for (let k = j; k >= 0 && lines[k]!.trim().startsWith("//"); k--) run.push(lines[k]!);
-    return OPT_OUT.test(run.join("\n"));
-  }
-
-  // A block comment, JSX or otherwise: walk up from its close to its open.
-  if (!line.endsWith("*/") && !line.endsWith("*/}")) return false;
-  const block: string[] = [];
-  for (let k = j; k >= 0; k--) {
-    block.push(lines[k]!);
-    if (lines[k]!.includes("/*")) return OPT_OUT.test(block.join("\n"));
-  }
-  return false;
+  return hasOptOut(lines, at, "unsaved-ok:");
 }

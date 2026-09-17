@@ -19,13 +19,13 @@
  * together).
  */
 
+import { hasOptOut } from "./opt-out.ts";
+
 export interface PillAlignmentSite {
   file: string;
   line: number;
   why: string;
 }
-
-const OPT_OUT = /\/\/\s*pill-align-ok:\s*\S/;
 
 /** Every `<td ...>` ... `</td>` span, as [start, end) offsets. */
 function cellRanges(text: string): [number, number][] {
@@ -43,16 +43,7 @@ const lineAt = (text: string, at: number) => text.slice(0, at).split("\n").lengt
 
 /** True when the line holding `at`, or the comment block above it, opts out. */
 function optedOut(text: string, at: number): boolean {
-  const lines = text.slice(0, at).split("\n");
-  const i = lines.length - 1;
-  const all = text.split("\n");
-  if (OPT_OUT.test(all[i] ?? "")) return true;
-  for (let up = i - 1; up >= 0; up--) {
-    const above = (all[up] ?? "").trim();
-    if (!above.startsWith("//") && !above.startsWith("*") && !above.startsWith("/*")) break;
-    if (OPT_OUT.test(above)) return true;
-  }
-  return false;
+  return hasOptOut(text.split("\n"), text.slice(0, at).split("\n").length - 1, "pill-align-ok:");
 }
 
 export function scanPillAlignment(file: string, text: string): PillAlignmentSite[] {

@@ -19,6 +19,8 @@
  * and names the RPC in its message, because the reader of a red run here is
  * somebody who has just written the read that looks obviously correct.
  */
+import { hasOptOut } from "./opt-out.ts";
+
 export interface MigrationSchemaRead {
   file: string;
   line: number;
@@ -27,8 +29,6 @@ export interface MigrationSchemaRead {
 
 /** The RPC every caller should use instead. */
 export const MIGRATIONS_RPC = "applied_migration_versions";
-
-const OPT_OUT = /\/\/\s*migrations-read-ok:/;
 
 /**
  * Lines that reach `supabase_migrations` through the REST API.
@@ -53,8 +53,7 @@ export function migrationSchemaReads(files: { name: string; source: string }[]):
       const restShaped =
         /accept-profile/i.test(code) || /\$\{BASE\}|\/rest\/v1|fetch\(/.test(code) || code.includes("?select=");
       if (!restShaped) continue;
-      const above = i > 0 ? lines[i - 1]! : "";
-      if (OPT_OUT.test(line) || OPT_OUT.test(above)) continue;
+      if (hasOptOut(lines, i, "migrations-read-ok:")) continue;
       out.push({ file: f.name, line: i + 1, text: line.trim() });
     }
   }

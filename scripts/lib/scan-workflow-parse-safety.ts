@@ -29,6 +29,8 @@
  */
 
 /** One `run:` block, with enough context to report it. */
+import { hasOptOut } from "./opt-out.ts";
+
 export interface RunBlock {
   file: string;
   /** 1-based line of the `run:` key itself. */
@@ -42,9 +44,6 @@ const PARSERS = ["grep", "awk", "sed", "jq", "tee", "cut", "sort", "uniq", "head
 
 /** `VAR="$( ... || echo x )"` / `$( ... || true )`: a read whose failure becomes a value. */
 const SWALLOWED_READ = /\$\((?:[^()]|\([^()]*\))*\|\|\s*(?:echo\b[^)]*|true)\)/;
-
-/** The per line opt-out, on the line or in the comment block directly above it. */
-const OPT_OUT = /#\s*parse-ok:/;
 
 /**
  * Pull every `run:` block out of a workflow file.
@@ -131,13 +130,10 @@ export function joinContinuations(lines: string[]): string[] {
 
 /** Is this line, or the comment block directly above it, opted out? */
 function optedOut(lines: string[], i: number): boolean {
-  if (OPT_OUT.test(lines[i] ?? "")) return true;
-  for (let j = i - 1; j >= 0; j--) {
-    const line = (lines[j] ?? "").trim();
-    if (!line.startsWith("#")) return false;
-    if (OPT_OUT.test(line)) return true;
-  }
-  return false;
+  // A blank line ENDS the region here, matching this guard's own fixture: a run
+  // block's statements are folded onto the line they start on, so a gap between
+  // the comment and the statement means the excuse belongs to something else.
+  return hasOptOut(lines, i, "parse-ok:", { syntax: ["hash"], blankLineEndsRegion: true });
 }
 
 export interface Finding {

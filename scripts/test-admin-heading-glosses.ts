@@ -28,6 +28,7 @@
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { assert, finish } from "./lib/harness.ts";
+import { hasOptOut, readOptOutOnLine } from "./lib/opt-out.ts";
 
 const ROOTS = [join("src", "app", "admin"), join("src", "components", "admin")];
 
@@ -54,13 +55,17 @@ function sources(dir: string): string[] {
  * the guard then reports the sites it was told about. It did exactly that on the
  * first run.
  */
+function carriesGloss(text: string): boolean {
+  return text.split("\n").some((l) => readOptOutOnLine(l, "heading-gloss-ok:").present);
+}
+
 function code(text: string): string {
   return text
     .replace(/\/\*[\s\S]*?\*\//g, (m) =>
-      m.includes("heading-gloss-ok:") ? m : m.replace(/[^\n]/g, " "),
+      carriesGloss(m) ? m : m.replace(/[^\n]/g, " "),
     )
     .split("\n")
-    .map((line) => (/^\s*\/\//.test(line) && !line.includes("heading-gloss-ok:") ? "" : line))
+    .map((line) => (/^\s*\/\//.test(line) && !carriesGloss(line) ? "" : line))
     .join("\n");
 }
 
@@ -85,8 +90,7 @@ for (const root of ROOTS) {
     for (const m of text.matchAll(HEADING)) {
       scanned += 1;
       const at = text.slice(0, m.index).split("\n").length;
-      const above = lines.slice(Math.max(0, at - 5), at).join("\n");
-      if (/heading-gloss-ok:/.test(above) || /heading-gloss-ok:/.test(lines[at - 1] ?? "")) continue;
+      if (hasOptOut(lines, at - 1, "heading-gloss-ok:", { reach: 5 })) continue;
       offenders.push(`${file}:${at} ${m[1].trim()}`);
     }
   }

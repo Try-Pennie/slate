@@ -11,6 +11,8 @@
 // it does catch are the two the incident took.
 
 /** A write whose rows may be unreachable to the export. */
+import { hasOptOut as sharedHasOptOut } from "./opt-out.ts";
+
 export interface MirrorBackfillFinding {
   file: string;
   /** 1-indexed line the write starts on. */
@@ -27,8 +29,6 @@ export interface MirrorSpec {
   table: string;
   watermark: string;
 }
-
-const OPT_OUT = /export-cursor-ok:/;
 
 /**
  * Blanks out `--` and `//` line comments plus SQL block comments, so a write
@@ -98,14 +98,7 @@ function stripDollarBodies(sql: string): string {
 
 /** True when the opt-out sits on this line or in the comment block above it. */
 function hasOptOut(rawLines: string[], index: number): boolean {
-  if (OPT_OUT.test(rawLines[index] ?? "")) return true;
-  for (let i = index - 1; i >= 0; i--) {
-    const t = (rawLines[i] ?? "").trim();
-    if (t === "") continue;
-    if (!t.startsWith("--") && !t.startsWith("//") && !t.startsWith("*")) return false;
-    if (OPT_OUT.test(t)) return true;
-  }
-  return false;
+  return sharedHasOptOut(rawLines, index, "export-cursor-ok:", { syntax: ["sql"] });
 }
 
 /** 1-indexed line for a byte offset. */

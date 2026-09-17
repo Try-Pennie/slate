@@ -481,6 +481,9 @@ assert(
 );
 const stripped = serviceSrc
   .split("\n")
+  // opt-out-matcher-ok: this REMOVES the markers to plant the defect back, so it
+  // is a mutation rather than a reading, and there is no exemption for the
+  // shared reader to decide.
   .filter((l) => !/^\s*\/\/\s*error-ok:/i.test(l))
   .join("\n");
 assert(
@@ -500,6 +503,9 @@ assert(
 );
 const syncStripped = syncSrc
   .split("\n")
+  // opt-out-matcher-ok: this REMOVES the markers to plant the defect back, so it
+  // is a mutation rather than a reading, and there is no exemption for the
+  // shared reader to decide.
   .filter((l) => !/^\s*\/\/\s*error-ok:/i.test(l))
   .join("\n");
 assert(

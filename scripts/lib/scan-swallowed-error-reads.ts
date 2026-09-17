@@ -138,6 +138,8 @@
 // full parser: lightweight, dependency free, with an escape hatch that keeps it
 // from false flagging the legitimately null tolerant reads.
 
+import { hasOptOutAtOffset } from "./opt-out.ts";
+
 export interface SwallowedReadFinding {
   file: string;
   line: number;
@@ -208,15 +210,7 @@ function hasOptOut(source: string, destructureIndex: number): boolean {
  * read can never exempt a write.
  */
 export function hasCommentOptOut(source: string, index: number, token: string): boolean {
-  const pattern = new RegExp(`//\\s*${token}`, "i");
-  const lines = source.slice(0, index).split("\n");
-  if (pattern.test(lines[lines.length - 1] ?? "")) return true;
-  for (let i = lines.length - 2; i >= 0; i--) {
-    const trimmed = lines[i].trim();
-    if (!trimmed.startsWith("//")) break;
-    if (pattern.test(trimmed)) return true;
-  }
-  return false;
+  return hasOptOutAtOffset(source, index, `${token}:`);
 }
 
 /**
