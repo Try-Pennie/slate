@@ -102,7 +102,7 @@ export function BusinessHoursExceptions({
         {state.error && (
           <p
             role="alert"
-            className="rounded-[var(--radius-md)] border border-[rgba(196,61,61,0.35)] bg-[rgba(196,61,61,0.12)] px-4 py-3 text-sm text-[#C43D3D]"
+            className="rounded-[var(--radius-md)] border border-[color-mix(in_srgb,var(--error)_35%,transparent)] bg-[color-mix(in_srgb,var(--error)_12%,transparent)] px-4 py-3 text-sm text-error"
           >
             {state.error}
           </p>

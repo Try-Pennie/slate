@@ -1,4 +1,4 @@
-// The reading width is ONE number, in one place (#1888).
+// The reading width is ONE number, in one place (#1888, guarded by #1895).
 //
 // #1745 made two decisions at once: internal pages were unified onto two content
 // widths (80rem wide, 48rem narrow), and every descriptive paragraph was
@@ -12,23 +12,34 @@
 // wrong, and it was chosen against a page rather than against the card the text
 // actually sits in.
 //
-// Two things this holds, because the number moving is not the risk. The risk is
+// Three things this holds, because the number moving is not the risk. The risk is
 // the number moving in ONE of the places that carry it:
 //
 //   the second spelling   Tailwind's own `max-w-prose` is the identical cap
 //                         reached by a different name, so raising the constant
 //                         alone would have left half the app unchanged and the
 //                         two would have disagreed silently from then on.
+//   the written out one   `max-w-[70ch]` on the admin error boundary, which was
+//                         a third spelling nothing reported: this guard's first
+//                         run is what found it (#1895).
 //   the skeletons         the loading boundary draws placeholder bars hand sized
 //                         to mimic the real text. If the prose width moves and
 //                         they do not, the page visibly jumps when the real
 //                         content arrives.
-// Run: node --experimental-strip-types scripts/test-prose-width.ts
-import { readFileSync, readdirSync, statSync } from "node:fs";
+//
+// And the design record, which stated 65ch in three places for a fortnight after
+// the number became 110. A record that disagrees with the code is worse than no
+// record, because it is believed.
+//
+// Run: node --experimental-strip-types --import ./scripts/register-paths.mjs \
+//        scripts/test-prose-width.ts
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { assert, finish } from "./lib/harness.ts";
+import { sourceFiles } from "./lib/source-files.ts";
+import { codeOnly, PROSE_HOME, scanProseWidth } from "./lib/scan-prose-width.ts";
+import { assert, eq, fail, finish } from "./lib/harness.ts";
 
-const STYLES = readFileSync(join("src", "components", "ui", "styles.ts"), "utf8");
+const STYLES = readFileSync(PROSE_HOME, "utf8");
 
 const proseDecl = STYLES.match(/export const proseCls\s*=\s*"([^"]*)"/);
 assert(proseDecl !== null, "proseCls is declared as a literal class string");
@@ -39,55 +50,44 @@ assert(
   `the reading width fills the majority of a card without reaching its edge (saw ${proseCh}ch)`,
 );
 
-// --- the second spelling is gone ---------------------------------------------
+// --- no second spelling anywhere in the tree --------------------------------
 //
-// One use is deliberately exempt and is not prose at all: a text INPUT sized by
-// the same class, where the number is a control's width rather than a line
-// length. It carries a reason, and the exemption is by REASON rather than by a
-// hardcoded path, so a second control sized this way is covered too.
-function sources(dir: string): string[] {
-  const out: string[] = [];
-  for (const name of readdirSync(dir)) {
-    const p = join(dir, name);
-    if (statSync(p).isDirectory()) out.push(...sources(p));
-    else if (/\.tsx?$/.test(name) && !/\.test\.tsx?$/.test(name)) out.push(p);
+// Through the shared enumeration (#2421), which refuses a listing it cannot
+// believe rather than reporting a clean tree over zero files. The exemptions are
+// by REASON on the line, never by a hardcoded path: a registry of allowed files
+// would itself be exempt from the check it exists to enforce.
+{
+  const offenders = sourceFiles({
+    match: /\.tsx?$/,
+    exclude: (f) => /\.test\.tsx?$/.test(f),
+  }).flatMap((f) => scanProseWidth(f, readFileSync(f, "utf8")));
+
+  if (offenders.length === 0) {
+    assert(true, "no paragraph in src reaches the reading width by a second name");
+  } else {
+    for (const o of offenders) fail(`${o.file}:${o.line} ${o.spelling}: ${o.why}`);
   }
-  return out;
 }
 
-/**
- * Source with the prose stripped out of it.
- *
- * These files NAME the class while explaining themselves, so scanning the raw
- * text finds the explanation as well as the code and reports a paragraph that is
- * not there. Block comments go entirely; a line comment survives only if it
- * carries the opt-out marker, which has to stay readable for the lookback below
- * to find it (L361: judging a container by its start fails in both directions,
- * so the excluded text is removed from INSIDE it).
- */
-function code(text: string): string {
-  return text
-    .replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, " "))
-    .split("\n")
-    .map((line) => (/^\s*\/\//.test(line) && !line.includes("prose-width-ok:") ? "" : line))
-    .join("\n");
+// --- the design record carries the number the code carries -------------------
+//
+// DESIGN.md said 65ch in three separate sentences while `proseCls` was 110, so
+// anybody reading the record to find the rule got the superseded answer and
+// anybody writing to it reintroduced the drift this guard exists to prevent.
+{
+  const design = readFileSync("DESIGN.md", "utf8");
+  const quoted = [...design.matchAll(/(\d+)\s*ch\b/g)].map((m) => Number(m[1]));
+  assert(quoted.length >= 2, `the record states the reading width (saw ${quoted.length} mentions)`);
+  const wrong = quoted.filter((n) => n !== proseCh);
+  assert(
+    wrong.length === 0,
+    `every reading width in DESIGN.md is the one the code uses, ${proseCh}ch (saw ${wrong.join(", ")})`,
+  );
+  assert(
+    design.includes("scripts/test-prose-width.ts"),
+    "and the record names the guard holding the rule up, so an enforced rule is not read as an aspiration",
+  );
 }
-
-const offenders: string[] = [];
-for (const file of sources("src")) {
-  const text = code(readFileSync(file, "utf8"));
-  text.split("\n").forEach((line, i) => {
-    if (!line.includes("max-w-prose")) return;
-    // `prose-width-ok:` on the line, or in the comment block just above it.
-    const above = text.split("\n").slice(Math.max(0, i - 4), i).join("\n");
-    if (/prose-width-ok:/.test(line) || /prose-width-ok:/.test(above)) return;
-    offenders.push(`${file}:${i + 1}`);
-  });
-}
-assert(
-  offenders.length === 0,
-  `no paragraph reaches the reading width by Tailwind's own name (saw ${offenders.join(", ")})`,
-);
 
 // --- the skeletons moved with it ---------------------------------------------
 const loading = readFileSync(join("src", "app", "admin", "loading.tsx"), "utf8");
@@ -105,5 +105,99 @@ assert(
   Math.max(...bars) >= proseCh * 0.6,
   `the longest placeholder bar (${Math.max(...bars)}ch) still looks like a line of text at ${proseCh}ch`,
 );
+
+// --- positive controls -------------------------------------------------------
+//
+// Both spellings render correctly and produce a plausible paragraph, so the
+// defect is invisible on screen and a green run above has to be worth something.
+{
+  const caught = (code: string, what: string) => {
+    const hits = scanProseWidth("src/x.tsx", code);
+    assert(hits.length > 0, `caught: ${what}`);
+  };
+  const allowed = (code: string, what: string) => {
+    const hits = scanProseWidth("src/x.tsx", code);
+    assert(
+      hits.length === 0,
+      `allowed: ${what}${hits.length ? ` (wrongly flagged ${hits[0].spelling})` : ""}`,
+    );
+  };
+
+  // The six sites #1888 folded in, and the shape that would bring them back.
+  caught('<p className="mt-2 max-w-prose text-sm">{body}</p>', "Tailwind's own name");
+  caught('<p className="max-w-[65ch]">{body}</p>', "the old number written out");
+  caught('<p className="max-w-[110ch]">{body}</p>', "the CURRENT number written out, which is still a second copy");
+  caught('<p className="max-w-[72.5ch]">{body}</p>', "a fractional width");
+  caught('<p className={`mt-2 max-w-prose ${x}`} />', "inside a template literal");
+
+  allowed('<p className={`mt-2 ${proseCls}`}>{body}</p>', "the constant");
+  allowed('<div className="max-w-2xl" />', "a container width, which is a different constant");
+  allowed('<div className="max-w-[40rem]" />', "a width in another unit");
+  allowed('<div className="w-[60ch]" />', "a fixed width rather than a cap");
+
+  // The two real exceptions, both of which exist in the tree.
+  allowed(
+    '// prose-width-ok: this is a text INPUT, not a line of prose\n<textarea className="max-w-prose" />',
+    "an opt-out in the comment block above",
+  );
+  allowed(
+    '<textarea className="max-w-prose" /> // prose-width-ok: sizing a control',
+    "an opt-out on the line",
+  );
+  allowed(
+    '{/* prose-width-ok: a skeleton bar */}\n<div className="max-w-[88ch]" />',
+    "an opt-out written as a JSX comment, which is the only comment JSX allows there",
+  );
+  caught('// prose-width-ok:\n<p className="max-w-prose" />', "an opt-out carrying no reason");
+  caught(
+    '// prose-width-ok: the reason\n<p className="max-w-prose" />\n<p className="max-w-[65ch]" />',
+    "a second paragraph under one marker, which the marker does not reach",
+  );
+
+  // The home states the number and must never report itself. The same line in
+  // any other file is a second copy of the constant, not a second home.
+  caught('export const proseCls = "max-w-[110ch]";', "the constant redeclared somewhere else");
+  eq(
+    scanProseWidth(PROSE_HOME, 'export const proseCls = "max-w-[110ch]"; // and max-w-prose').length,
+    0,
+    "the home file is where the number lives",
+  );
+
+  // Documentation is not a call site. The natural response to flagging the
+  // sentence that explains the rule is to delete the explanation.
+  allowed(
+    '/** `max-w-prose` is the identical 65ch by another name. */\nexport const x = 1;',
+    "both spellings named inside a docstring",
+  );
+  {
+    const before = "const a = 1;\n/* two\n   lines */\nconst b = 2;\n";
+    eq(
+      codeOnly(before).split("\n").length,
+      before.split("\n").length,
+      "stripping a comment does not move the line under it",
+    );
+  }
+}
+
+// --- a control drawn from the real tree --------------------------------------
+//
+// The synthetic fixtures prove the patterns match. This proves the guard still
+// catches the defect in the file it really shipped in, read from disk and put
+// back in memory, so nothing is written to the repo.
+{
+  const real = readFileSync("src/app/admin/error.tsx", "utf8");
+  eq(scanProseWidth("src/app/admin/error.tsx", real).length, 0, "the fixed boundary is clean");
+
+  const reverted = real.replace(
+    /className=\{`mt-2 text-sm text-fg-muted \$\{proseCls\}`\}/,
+    'className="mt-2 max-w-[70ch] text-sm text-fg-muted"',
+  );
+  assert(reverted !== real, "the overlay really put the third spelling back");
+  eq(
+    scanProseWidth("src/app/admin/error.tsx", reverted).length,
+    1,
+    "and the guard names it",
+  );
+}
 
 finish();

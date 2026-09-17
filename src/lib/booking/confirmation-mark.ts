@@ -49,7 +49,10 @@ export const CONFIRMATION_MARK = {
    *  cannot differ, which would make the panel resize as one replaced the other. */
   size: 144,
   /** The video's own ground AS PAINTED, measured from a screenshot of the running
-   *  page rather than from a decoded frame. See the header: the two disagree. */
+   *  page rather than from a decoded frame. See the header: the two disagree.
+   *  colour-ok: a MEASUREMENT of a video file, not a colour Slate chose. It has
+   *  to match what the asset paints, so pinning it to a token would make the
+   *  still and the video disagree the first time the token moved (#1903). */
   ground: "#F9F7F2",
   /** How long the video takes to give way to the still once it ends. Long enough
    *  to read as a settle rather than a glitch, short enough not to be a second

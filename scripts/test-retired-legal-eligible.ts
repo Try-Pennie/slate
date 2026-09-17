@@ -26,9 +26,8 @@
 //
 // Run: node --experimental-strip-types --import ./scripts/register-paths.mjs \
 //        scripts/test-retired-legal-eligible.ts
-import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
-import { scrubbedGitEnv } from "./lib/git-env.ts";
+import { sourceFiles } from "./lib/source-files.ts";
 import { assert, fail, finish } from "./lib/harness.ts";
 
 /** The retired names, in every spelling the tree used. */
@@ -48,15 +47,18 @@ const RETIRED =
  */
 const ALLOWED = [/^supabase\/migrations\//, /^scripts\/test-retired-legal-eligible\.ts$/];
 
+/**
+ * The whole repo, through the shared enumeration (#2421), which refuses a
+ * listing it cannot believe rather than reporting the retired name gone from a
+ * tree it never read.
+ */
 function trackedFiles(): string[] {
-  // The env is scrubbed because the pre-push hook exports GIT_DIR and friends,
-  // and an inherited GIT_DIR makes this read the real repo rather than its own
-  // cwd (#848/#853).
-  return execFileSync("git", ["ls-files"], { encoding: "utf8", env: scrubbedGitEnv() })
-    .split("\n")
-    .filter(Boolean)
-    .filter((f) => /\.(ts|tsx|sql|md|json|jsonc)$/.test(f))
-    .filter((f) => !ALLOWED.some((re) => re.test(f)));
+  return sourceFiles({
+    paths: ["."],
+    match: /\.(ts|tsx|sql|md|json|jsonc)$/,
+    exclude: (f) => ALLOWED.some((re) => re.test(f)),
+    matchFloor: 200,
+  });
 }
 
 const files = trackedFiles();

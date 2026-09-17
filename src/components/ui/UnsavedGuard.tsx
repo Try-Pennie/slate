@@ -141,7 +141,10 @@ export function UnsavedGuard({ what, formName }: { what: string; formName: strin
           role="alertdialog"
           aria-modal="true"
           aria-labelledby="unsaved-guard-title"
-          className="fixed inset-0 z-50 flex items-center justify-center bg-[rgba(0,0,0,0.45)] p-4"
+          // The scrim is NAVY, not black. Slate has no hard black anywhere, in
+          // text or in a shadow, and 55% navy dims the page to within a few
+          // points of the 45% black it replaces (#1903).
+          className="fixed inset-0 z-50 flex items-center justify-center bg-[color-mix(in_srgb,var(--pennie-navy)_55%,transparent)] p-4"
           onKeyDown={(e) => {
             if (e.key === "Escape") setLeavingTo(null);
           }}

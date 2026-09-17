@@ -8,7 +8,11 @@ import {
 import { assert, finish } from "./lib/harness.ts";
 
 const GRAPHITE = "var(--fg-on-sky)";
-const BEIGE = "rgb(249, 246, 240)";
+// Both labels come from a token now (#1903): the graphite half already did, and
+// the beige half was the last literal in the pair. The only consumer is the
+// Booker's confirm button, which renders inside Slate's own document, so the
+// variable resolves.
+const BEIGE = "var(--pennie-beige)";
 
 // luminance parsing
 assert(hexLuminance("#ffffff") === 1, "white luminance is 1");

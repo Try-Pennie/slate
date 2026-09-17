@@ -294,7 +294,7 @@ const PALETTE = {
     // theme-pair-ok: light half of a two map palette, see the note above
     toggleOn: "bg-pennie-sky-soft text-fg",
     toggleOff: "text-fg-muted",
-    navHover: "hover:bg-[rgba(52,52,52,0.04)]",
+    navHover: "hover:bg-[color-mix(in_srgb,var(--fg)_4%,transparent)]",
     skeleton: "bg-[var(--pennie-wild-sand)]",
     confirm: "bg-accent text-fg-on-sky hover:bg-accent-hover",
     backHover: "hover:text-fg",
@@ -1096,7 +1096,7 @@ export default function Booker({
                   it names the call being given up rather than saying "cannot be
                   undone" about no call in particular. */}
               {existingCall.mayCancel && confirmingCancel ? (
-                <div className="mt-6 rounded-lg border border-[var(--error)] bg-[rgba(196,61,61,0.04)] p-4">
+                <div className="mt-6 rounded-lg border border-[var(--error)] bg-[color-mix(in_srgb,var(--error)_4%,transparent)] p-4">
                   <p className={`text-sm font-semibold ${c.title}`}>
                     {BOOKER_CANCEL_COPY.heading}
                   </p>

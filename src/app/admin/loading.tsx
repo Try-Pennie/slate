@@ -42,7 +42,10 @@ export default function AdminLoading() {
             real content jumps past. `scripts/test-prose-width.ts` holds the
             relationship, since Tailwind needs a literal class here and so the
             number cannot be derived from the constant. */}
+        {/* prose-width-ok: a SKELETON bar, deliberately sized to look like a
+            line of the text it stands in for, not a line of text itself. */}
         <div className="pn-skeleton mt-3 h-4 w-full max-w-[88ch] rounded-sm" />
+        {/* prose-width-ok: the second bar, same reason as the first. */}
         <div className="pn-skeleton mt-2 h-4 w-full max-w-[64ch] rounded-sm" />
       </section>
 

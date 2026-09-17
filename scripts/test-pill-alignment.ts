@@ -11,23 +11,19 @@
 // Run: node --experimental-strip-types --import ./scripts/register-paths.mjs \
 //        scripts/test-pill-alignment.ts
 import { readFileSync } from "node:fs";
-import { execFileSync } from "node:child_process";
-import { scrubbedGitEnv } from "./lib/git-env.ts";
+import { sourceFiles } from "./lib/source-files.ts";
 import { scanPillAlignment } from "./lib/scan-pill-alignment.ts";
 import { assert, eq, fail, finish } from "./lib/harness.ts";
 
-function sourceFiles(): string[] {
-  return execFileSync("git", ["ls-files", "src"], {
-    encoding: "utf8",
-    env: scrubbedGitEnv(),
-  })
-    .split("\n")
-    .filter((f) => /\.tsx$/.test(f) && !/\.test\.tsx$/.test(f));
-}
-
 // --- the tree --------------------------------------------------------------
+//
+// Through the shared enumeration (#2421), which refuses a listing it cannot
+// believe rather than reporting a clean tree over zero files.
 {
-  const offenders = sourceFiles().flatMap((f) => scanPillAlignment(f, readFileSync(f, "utf8")));
+  const offenders = sourceFiles({
+    match: /\.tsx$/,
+    exclude: (f) => /\.test\.tsx$/.test(f),
+  }).flatMap((f) => scanPillAlignment(f, readFileSync(f, "utf8")));
   if (offenders.length === 0) {
     assert(true, "every Pill starting a table cell aligns to its column");
   } else {

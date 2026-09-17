@@ -69,7 +69,10 @@ export function NearestTimesPanel({
         <p className={muted}>{NEAREST_TIMES_COPY.none}</p>
       ) : (
         <>
-          <p className="mb-2 font-medium">{NEAREST_TIMES_COPY.heading}</p>
+          {/* Semibold, not medium (#1813): PP Mori ships 200, 400 and 600, so a
+              500 is matched down to 400 and this heading has been rendering at
+              body weight with nothing to say so. */}
+          <p className="mb-2 font-semibold">{NEAREST_TIMES_COPY.heading}</p>
           <div className="flex flex-wrap gap-2">
             {nearest.map((iso) => (
               <button
