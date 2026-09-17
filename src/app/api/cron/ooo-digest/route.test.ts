@@ -118,6 +118,22 @@ const userRows = [
   { id: "a3", email: "a3@x.com", name: "Agent Three", role: "agent" },
 ];
 
+// The same builder, refusing. `unwrap` throws on a real `error`, and this is what
+// hands it one: a builder that only ever resolves `{ data }` can never reach the
+// path these tests exist for (L1).
+function refusingBuilderFor(table = "") {
+  const b: Record<string, unknown> = {};
+  for (const m of ["select", "eq", "not", "in"]) {
+    b[m] = (...args: unknown[]) => {
+      builderCalls.push({ table, method: m, args });
+      return b;
+    };
+  }
+  (b as { then: unknown }).then = (resolve: (v: unknown) => void) =>
+    resolve({ data: null, error: { message: "57014 canceling statement due to statement timeout" } });
+  return b;
+}
+
 function wireDb() {
   from.mockImplementation((table: string) =>
     builderFor(table === "ooo_requests" ? pendingRows : userRows, table),
@@ -440,5 +456,39 @@ describe("GET /api/cron/ooo-digest", () => {
     // The routed manager was still DMed: a watchdog that dies must not take the
     // work it watches with it.
     expect(slack.dmSlackUserByEmail).toHaveBeenCalledTimes(1);
+  });
+
+  // --- #2383: a failed read is not an empty morning ---
+  //
+  // Both of these used to be `const { data } = await ...`, so a refused query
+  // arrived as null, became an empty array, and the lane answered 200 with
+  // `{ sent: 0, pending: 0 }`. Nobody was nudged, nothing was alerted, and the
+  // run was indistinguishable from a morning with an empty queue. The lane is
+  // wired to two UTC crons an hour apart with an hour gate, so there is no
+  // second attempt either.
+  it("refuses the tick when the pending queue cannot be read, instead of reporting an empty day", async () => {
+    cron.isAuthorizedCron.mockReturnValue(true);
+    from.mockImplementation((table: string) =>
+      table === "ooo_requests" ? refusingBuilderFor(table) : builderFor(userRows, table),
+    );
+
+    await expect(GET(forcedReq())).rejects.toThrow(/ooo digest pending queue/);
+    // And nothing was sent off the unreadable queue: no DM, no fallback post.
+    expect(slack.dmSlackUserByEmail).not.toHaveBeenCalled();
+    expect(slack.postSlack).not.toHaveBeenCalled();
+  });
+
+  it("refuses the tick when the people read fails, rather than posting the whole queue as unrouted", async () => {
+    cron.isAuthorizedCron.mockReturnValue(true);
+    from.mockImplementation((table: string) =>
+      table === "users" ? refusingBuilderFor(table) : builderFor(pendingRows, table),
+    );
+
+    // `role` is what makes a request routed, so an empty map turns every one of
+    // them into "no manager of record" and posts the lot to the fallback channel
+    // with nobody named.
+    await expect(GET(forcedReq())).rejects.toThrow(/ooo digest people/);
+    expect(slack.dmSlackUserByEmail).not.toHaveBeenCalled();
+    expect(slack.postSlack).not.toHaveBeenCalled();
   });
 });

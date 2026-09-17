@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { isAuthorizedCron } from "@/lib/cron";
 import { supabaseAdmin } from "@/lib/supabase/admin";
+import { unwrap } from "@/lib/db/result";
 import { appUrl } from "@/lib/env";
 import { dmSlackUserByEmail, postSlack } from "@/lib/notify/slack";
 import {
@@ -126,11 +127,21 @@ export async function GET(req: NextRequest) {
   }
 
   const db = supabaseAdmin();
-  const { data: pendingRows } = await db
-    // cap-safe: the org's pending time off queue, drained by moderation.
-    .from("ooo_requests")
-    .select("id, user_id, manager_id, starts_at, ends_at, display_tz_id, display_tz_label, reason")
-    .eq("status", "pending");
+  // #2383: unwrap, never a swallowed `data`. An empty result is read twenty lines
+  // down as the specific answer "nobody is waiting on a manager this morning",
+  // and the lane answers `{ sent: 0, pending: 0 }` on a 200 with nobody nudged.
+  // A throw is a 500 the cron records, which is the only thing that tells a
+  // morning with an unreadable queue from a morning with an empty one.
+  const pendingRows = unwrap(
+    await db
+      // cap-safe: the org's pending time off queue, drained by moderation.
+      .from("ooo_requests")
+      .select(
+        "id, user_id, manager_id, starts_at, ends_at, display_tz_id, display_tz_label, reason",
+      )
+      .eq("status", "pending"),
+    "ooo digest pending queue",
+  );
   // #1499: no `manager_id is not null` filter. A request with no manager of
   // record is exactly the one nobody is nudged about, so filtering it out here
   // made the daily reminder quietest about the requests most likely to be
@@ -157,12 +168,20 @@ export async function GET(req: NextRequest) {
       pendingReqs.flatMap((r) => [r.manager_id, r.user_id]).filter((id): id is string => !!id),
     ),
   ];
-  const { data: userRows } = await db
-    .from("users")
-    // `role` decides whether a manager of record may actually approve (#1475),
-    // which is what makes a request routed rather than unrouted.
-    .select("id, email, name, role")
-    .in("id", userIds);
+  // #2383: unwrap too, and this one decides where every request GOES. `role` is
+  // what makes a request routed rather than unrouted, so a swallowed error empties
+  // the map, every manager looks unable to approve, and the whole queue is posted
+  // to the fallback channel with nobody named on any line. That reads exactly like
+  // a morning where nobody had an approver.
+  const userRows = unwrap(
+    await db
+      .from("users")
+      // `role` decides whether a manager of record may actually approve (#1475),
+      // which is what makes a request routed rather than unrouted.
+      .select("id, email, name, role")
+      .in("id", userIds),
+    "ooo digest people",
+  );
   const usersById = new Map<string, DigestPerson>(
     ((userRows ?? []) as DigestPerson[]).map((u) => [u.id, u]),
   );

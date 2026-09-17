@@ -59,6 +59,28 @@
 // them were fail-open authorization or write-branch decisions), and three are
 // genuinely safe degrades carrying an `// error-ok:` that names the safe path.
 //
+// #2511 and #2383 are ONE widening, deliberately made together, because fixing
+// either alone would have left the other reading as covered. The guard had grown
+// one directory per incident (#865, #963, #1036, #1629, #1647, #1648, #1674), so
+// what was not yet on the list was exempt from the check meant to catch it (L96),
+// and the two surfaces left off it are the two where an empty answer is least
+// distinguishable from a healthy one:
+//
+//   - src/lib/monitor (#2511). A detector that scores a failed query as "nothing
+//     found" reports health it never measured. #1134 (a recovery notice posted
+//     off a query that never ran) and #1152 (three worklist reads whose zero read
+//     as "under the cap" and cleared a streak that would have paged) were both
+//     this class, both here, and both found by hand. The tree is clean today, and
+//     a clean tree is what a path list reaching nothing also produces, so the
+//     control below reverts the real tier-staffing roster read.
+//   - src/app/api/cron (#2383). Two daily digests read a failed query as an empty
+//     day. Neither lane gets a second attempt: the approvals window is yesterday
+//     relative to the clock, so a day it drops falls out of every later run.
+//
+// Five reads were flagged, four of them time off lanes, and every one turned out
+// to be the "empty is indistinguishable from an answer" class rather than a safe
+// degrade, so all five were fixed and none annotated.
+//
 // The scan logic lives in scripts/lib/scan-swallowed-error-reads.ts so it is
 // unit-testable. This file exercises it against fixtures (a positive control that
 // proves the detector actually flags the bad pattern, so it can't rot into a
@@ -375,6 +397,22 @@ const surface = [
   // to a calendar the agent may not be booked against. All four sat outside
   // every scanned path, so the guard reported clean over the whole folder.
   ...tsFiles(join(ROOT, "src", "lib", "ooo")),
+  // #2511: the monitoring tree. A swallowed read is hardest to notice here,
+  // because a detector that scores a failed query as "nothing found" reports
+  // health it never measured and the silence is indistinguishable from a healthy
+  // system. Both #1134 (`loadFailingAgents` returning `[]`, which posted a
+  // recovery notice off a query that never ran) and #1152 (three self heal
+  // worklist reads returning `[]`, which read as "under the cap" and cleared a
+  // streak that would have paged) were this exact class, both in monitoring, and
+  // both found by hand rather than by this guard.
+  ...tsFiles(join(ROOT, "src", "lib", "monitor")),
+  // #2383: the cron routes, recursively (each lane is its own directory). Two
+  // daily digests read a failed query as an empty day: the approvals lane
+  // answered `{ sent: false, count: 0 }` under a comment saying "Skip silently on
+  // empty days", and the pending lane answered `{ sent: 0, pending: 0 }`, so a
+  // PostgREST failure at 7am or 9am ET meant no CSV and no manager nudged, on a
+  // 200 that looked like a quiet morning.
+  ...tsFiles(join(ROOT, "src", "app", "api", "cron"), true),
 ];
 assert(surface.length > 0, `found source files to scan (got ${surface.length})`);
 
@@ -698,6 +736,82 @@ assert(
   "positive control: the reverted bucket lookup is caught as inline-await",
 );
 
+// A control on the newly scanned monitoring tree (#2511). The tree is clean
+// today, and a clean tree is exactly what a path list that reaches nothing also
+// produces (L1, L98), so the control drives the real file the issue names.
+// `tier-staffing-load.ts` unwraps the roster read the debt tier alarm judges;
+// put it back as a swallowed destructure and the guard must catch it, and catch
+// exactly one read, or a scanner flagging the whole file would satisfy this just
+// as well. The direction matters too: an empty roster there reads as zero agents
+// in every tier, which pages five tiers at once off a query that never ran.
+const tierLoadPath = join(ROOT, "src", "lib", "monitor", "tier-staffing-load.ts");
+const tierLoadSrc = readFileSync(tierLoadPath, "utf8");
+assert(
+  scanSwallowedErrorReads(tierLoadSrc, tierLoadPath).length === 0,
+  "the real monitor/tier-staffing-load.ts is clean",
+);
+const tierLoadReverted = tierLoadSrc.replace(
+  /const rows = \(unwrap\(\n(\s|\S)*?"tier staffing roster",\n\s*\) \?\? \[\]\)/,
+  'const { data: rows } = await db\n    .from("users")\n    .select("id, attributes")\n    .eq("bookable", true)',
+);
+assert(
+  tierLoadReverted !== tierLoadSrc,
+  "the tier staffing revert control actually changed tier-staffing-load.ts (else it proves nothing)",
+);
+const tierLoadFindings = scanSwallowedErrorReads(tierLoadReverted, tierLoadPath);
+assert(
+  tierLoadFindings.length === 1,
+  `positive control: the reverted tier staffing roster read is caught (got ${JSON.stringify(
+    tierLoadFindings.map((f) => f.snippet),
+  )})`,
+);
+assert(
+  tierLoadFindings[0].shape === "destructure" &&
+    tierLoadFindings[0].snippet.includes('.from("users")'),
+  `the finding names the planted roster read (got: ${tierLoadFindings[0]?.snippet})`,
+);
+assert(
+  surface.some((f) => f === tierLoadPath),
+  "src/lib/monitor is really in the scanned surface, not merely controlled for",
+);
+
+// A control on the newly scanned cron lanes (#2383), driven off the read the
+// issue was filed about. The pending time off queue now unwraps; put it back the
+// way it shipped and the guard must catch it. That read is the one worth
+// controlling on, because an empty array there is the specific answer "nobody is
+// waiting on a manager this morning", which the lane returns as
+// `{ sent: 0, pending: 0 }` on a 200.
+const digestPath = join(ROOT, "src", "app", "api", "cron", "ooo-digest", "route.ts");
+const digestSrc = readFileSync(digestPath, "utf8");
+assert(
+  scanSwallowedErrorReads(digestSrc, digestPath).length === 0,
+  "the real ooo-digest route is clean",
+);
+const digestReverted = digestSrc.replace(
+  /const pendingRows = unwrap\(\n\s*await db\n/,
+  "const { data: pendingRows } = await db\n",
+);
+assert(
+  digestReverted !== digestSrc,
+  "the pending queue revert control actually changed the digest route (else it proves nothing)",
+);
+const digestFindings = scanSwallowedErrorReads(digestReverted, digestPath);
+assert(
+  digestFindings.length === 1,
+  `positive control: the reverted pending time off read is caught (got ${JSON.stringify(
+    digestFindings.map((f) => f.snippet),
+  )})`,
+);
+assert(
+  digestFindings[0].shape === "destructure" &&
+    digestFindings[0].snippet.includes('.from("ooo_requests")'),
+  `the finding names the pending queue read (got: ${digestFindings[0]?.snippet})`,
+);
+assert(
+  surface.some((f) => f === digestPath),
+  "src/app/api/cron is really in the scanned surface, not merely controlled for",
+);
+
 // --- repo invariant: the whole scan surface is clean --------------------------
 
 let siteCount = 0;
@@ -725,7 +839,8 @@ for (const file of surface) {
 if (siteCount === 0) {
   console.log(
     `ok: no swallowed-error reads across ${surface.length} availability, booking, ` +
-      `google, routing, salesforce, webhook, admin, agent-page, provisioning and time off source files`,
+      `google, routing, salesforce, webhook, admin, agent-page, provisioning, time off, ` +
+      `monitoring and cron lane source files`,
   );
 }
 

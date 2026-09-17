@@ -1683,8 +1683,9 @@ day. That was #277; it routed the availability-critical reads through **`unwrap`
 **`scripts/test-swallowed-error-reads.ts`** (#315) keeps that invariant from
 eroding. It scans `src/lib/availability/*`, `src/lib/booking/*`,
 `src/lib/google/*`, `src/lib/routing/*`, `src/lib/salesforce/*`,
-`src/lib/webhooks/*` and the whole `src/app/admin/**` tree, and fails on an
-awaited SELECT whose `error` is never consulted. The scan logic lives in
+`src/lib/webhooks/*`, `src/lib/ooo/*`, `src/lib/monitor/*`, `src/lib/provision.ts`
+and the whole `src/app/admin/**`, `src/app/me/**` and `src/app/api/cron/**` trees,
+and fails on an awaited SELECT whose `error` is never consulted. The scan logic lives in
 `scripts/lib/scan-swallowed-error-reads.ts` (unit-testable), and the guard carries
 positive controls (stripping the opt-outs from the real `booking/service.ts`, and
 reverting `staffing-depth-load.ts`'s four unwraps, must both be caught) so it can
@@ -1820,6 +1821,23 @@ is three files away. Every instance so far:
   action is needed" while clearing the streak that would have paged. The same
   audit found `agentActiveBookingStartsMs` returning `[]`, which counts as "no
   bookings that day" and quietly waived an agent's daily cap.
+- **#2383 and #2511** widened the scanned paths to the monitoring tree and the
+  cron lanes together, because a path list grown one incident at a time leaves
+  everything not yet on it exempt from the check meant to catch it (L96), and
+  fixing either surface alone would have left the other reading as covered. The
+  two daily time off lanes were the live cost: the approvals digest answered
+  `{ sent: false, count: 0 }` under a comment saying "Skip silently on empty
+  days" and the pending digest answered `{ sent: 0, pending: 0 }`, so a failed
+  `ooo_requests` read at 7am or 9am ET meant no CSV and no manager nudged on a
+  200 that looked like a quiet morning, with no second attempt: the approvals
+  window is yesterday relative to the clock, so a dropped day falls out of every
+  later run. Their two `users` reads degraded into a CSV naming nobody and a
+  whole queue posted to the fallback channel as unrouted. All four `unwrap` now.
+  The fifth, the monitor lane's cal.com override retry, returned "failed: agent
+  has no email" for a read that never ran, a claim about the agent nothing
+  measured (L11) that was written into `side_effects` and quoted in Slack; it
+  gets its own outcome, which is still a failure, so the row stays in the
+  candidate set and no all-clear is cleared off it.
 
 Note the asymmetry that keeps catching people out: **`null` and `[]` are not
 interchangeable.** `busyIntervalsForAgent` returns `null` for "could not tell" and

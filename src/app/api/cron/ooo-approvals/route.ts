@@ -2,6 +2,7 @@ import { oooApprovalsDigestAlert } from "@/lib/notify/misc-alert-copy";
 import { NextResponse, type NextRequest } from "next/server";
 import { isAuthorizedCron } from "@/lib/cron";
 import { supabaseAdmin } from "@/lib/supabase/admin";
+import { unwrap } from "@/lib/db/result";
 import {
   oooApprovalsBcc,
   oooApprovalsRecipients,
@@ -50,16 +51,26 @@ export async function GET(req: NextRequest) {
 
   const { startIso, endIso } = yesterdayEtRange(now);
   const db = supabaseAdmin();
-  const { data: approvedRows } = await db
-    // cap-safe: one day's approved time off decisions across the org.
-    .from("ooo_requests")
-    .select(
-      "id, legacy_request_id, user_id, manager_id, starts_at, ends_at, decided_at, display_tz_label",
-    )
-    .eq("status", "approved")
-    .gte("decided_at", startIso)
-    .lt("decided_at", endIso)
-    .order("decided_at", { ascending: true });
+  // #2383: unwrap, never a swallowed `data`. An empty result here is read one
+  // line down as the specific answer "nobody's time off was approved yesterday",
+  // and that answer is a silent 200 with no CSV. There is also no second chance:
+  // the window is yesterday relative to the clock, so a day this lane drops falls
+  // out of every later run's window. A throw is a 500 the cron records, which is
+  // the only way a morning with no report is distinguishable from a morning with
+  // nothing to report.
+  const approvedRows = unwrap(
+    await db
+      // cap-safe: one day's approved time off decisions across the org.
+      .from("ooo_requests")
+      .select(
+        "id, legacy_request_id, user_id, manager_id, starts_at, ends_at, decided_at, display_tz_label",
+      )
+      .eq("status", "approved")
+      .gte("decided_at", startIso)
+      .lt("decided_at", endIso)
+      .order("decided_at", { ascending: true }),
+    "approvals digest requests",
+  );
 
   const approved = (approvedRows ?? []) as {
     id: string;
@@ -72,7 +83,9 @@ export async function GET(req: NextRequest) {
     display_tz_label: string;
   }[];
 
-  // Skip silently on empty days (matches the original flow).
+  // Skip silently on empty days (matches the original flow). This branch now
+  // means a day with genuinely no approvals and nothing else, because the read
+  // above throws rather than arriving here as an empty array (#2383).
   if (approved.length === 0) {
     return NextResponse.json({ sent: false, count: 0 });
   }
@@ -83,7 +96,14 @@ export async function GET(req: NextRequest) {
       approved.flatMap((r) => [r.user_id, r.manager_id]).filter((id): id is string => !!id),
     ),
   ];
-  const { data: userRows } = await db.from("users").select("id, name").in("id", ids);
+  // #2383: unwrap too. A swallowed error here empties the name map, so every row
+  // of the CSV ships with a blank agent and a blank manager, and a report about
+  // who was away naming nobody is worse than no report: it looks complete. There
+  // is nothing downstream that could tell a missing name from an unreadable one.
+  const userRows = unwrap(
+    await db.from("users").select("id, name").in("id", ids),
+    "approvals digest names",
+  );
   const nameById = new Map(
     ((userRows ?? []) as { id: string; name: string | null }[]).map((u) => [u.id, u.name]),
   );
