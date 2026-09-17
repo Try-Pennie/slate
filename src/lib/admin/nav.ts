@@ -216,3 +216,27 @@ export function activeAdminHref(pathname: string): string | null {
   }
   return best;
 }
+
+/**
+ * The ENTRY the current path belongs to, within the groups actually shown (#2506).
+ *
+ * `activeAdminHref` answers with a route, which is all a highlight needs: the
+ * link is already on screen carrying its own label. The small width control has
+ * no list in front of it, so it has to say the section's NAME.
+ *
+ * It searches the groups it is HANDED rather than the whole map, because those
+ * are already filtered for this person. A path they can somehow stand on but
+ * whose entry their map does not list comes back null, so the control never
+ * names a section that is not in the list it opens.
+ */
+export function activeAdminItem(
+  groups: AdminNavGroup[],
+  pathname: string,
+): AdminNavItem | null {
+  const href = activeAdminHref(pathname);
+  if (href === null) return null;
+  for (const group of groups) {
+    for (const item of group.items) if (item.href === href) return item;
+  }
+  return null;
+}

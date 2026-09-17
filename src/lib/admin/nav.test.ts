@@ -3,6 +3,7 @@ import {
   ADMIN_NAV,
   visibleAdminNav,
   activeAdminHref,
+  activeAdminItem,
   adminNavHrefs,
   adminNavFor,
   type AdminGate,
@@ -238,5 +239,39 @@ describe("adminNavFor", () => {
     for (const role of ROLES) {
       expect(adminNavFor(role, false)).toEqual(visibleAdminNav(role));
     }
+  });
+});
+
+// #2506: below the desktop breakpoint the map collapses to ONE control, and that
+// control says where you are. It needs the ENTRY rather than the route, and it
+// has to look inside the groups this person was actually handed: naming a
+// section they cannot open would label a link that is not in their map.
+describe("activeAdminItem", () => {
+  it("finds the entry the path belongs to", () => {
+    expect(activeAdminItem(visibleAdminNav("admin"), "/admin/buckets")?.label).toBe(
+      "Buckets",
+    );
+  });
+
+  it("keeps a record detail page on its own section", () => {
+    expect(activeAdminItem(visibleAdminNav("admin"), "/admin/agents/abc")?.label).toBe(
+      "Roster",
+    );
+  });
+
+  it("is null for a path no entry claims", () => {
+    expect(activeAdminItem(visibleAdminNav("admin"), "/admin/nowhere")).toBeNull();
+  });
+
+  it("is null for a section this person is not shown", () => {
+    // Team access is super admin only. A manager who somehow stands on it must
+    // not be told they are inside a section their own map does not list, which
+    // would be a label for a link that is not there.
+    expect(activeAdminHref("/admin/team-access")).toBe("/admin/team-access");
+    expect(activeAdminItem(visibleAdminNav("manager"), "/admin/team-access")).toBeNull();
+  });
+
+  it("is null when there is no map at all", () => {
+    expect(activeAdminItem([], "/admin")).toBeNull();
   });
 });
