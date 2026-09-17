@@ -171,6 +171,7 @@ import {
 import { postSlack } from "@/lib/notify/slack";
 import { bookingDetailHref } from "@/lib/booking/detail";
 import { runEdgeLimiterCheck } from "@/lib/monitor/edge-limiter-health";
+import { runDefinerGrantsCheck, type DefinerFunctionRow } from "@/lib/monitor/definer-grants";
 import { EDGE_LIMITER_BINDINGS } from "@/lib/rate-limit-core";
 import { BURST_LIMITER_BINDING } from "@/lib/rate-limit-burst";
 import { isWorkersRuntime, workersRuntimeMarker } from "@/lib/platform/runtime";
@@ -2138,6 +2139,49 @@ export async function GET(req: NextRequest) {
       }),
     );
 
+    // Which privileged database functions can the web roles execute? (#2447)
+    //
+    // `scripts/test-migration-grants.ts` answers this from the REPOSITORY, which leaves it
+    // blind to a grant made by hand against the live database and to a definer function
+    // defined in no migration at all. Production holds one of the second kind already. Only
+    // a connection can see either, so the read lives here and the judging lives in a pure
+    // module beside it.
+    //
+    // One RPC per tick, on a lane whose invocation budget is shared with every other lane on
+    // its schedule (#1246). It is a catalogue read with no table scan behind it, and the
+    // alternative (learning about a grant when somebody exploits it) has no budget at all.
+    const definerGrants = await steps.run("definer_grants", null, () =>
+      runDefinerGrantsCheck({
+        read: async () => {
+          // unwrap, not a swallowed read: an empty answer here is indistinguishable from a
+          // healthy database, so the throw is what keeps this from clearing a live page on a
+          // query that never ran (#277, #1134).
+          const rows = unwrap(await supabaseAdmin().rpc("definer_function_web_grants", {}), "definer function web grants");
+          if (!Array.isArray(rows)) return null;
+          return (rows as Record<string, unknown>[]).map(
+            (r): DefinerFunctionRow => ({
+              name: String(r.name ?? ""),
+              args: String(r.args ?? ""),
+              returns: String(r.returns ?? ""),
+              anonExecute: r.anon_execute === true,
+              authenticatedExecute: r.authenticated_execute === true,
+            }),
+          );
+        },
+        // alert-key: definer_grants_to_web_roles
+        // alert-text-ok: our own copy from definer-grants.ts, never a raw error.
+        notify: sendThrottledAlert,
+        // A condition: it stays true until somebody revokes the grant, so it has to be able
+        // to end.
+        // alert-key: definer_grants_to_web_roles
+        // all-clear-proof: scripts/test-definer-grants.ts - a read that failed, and a read
+        // that came back empty, both report unmeasured and clear nothing.
+        resolve: resolveAlert,
+        cooldownMs: settings.cooldownMs.definer_grants_to_web_roles,
+        log: (msg) => log.info("definer-grants", { msg }),
+      }),
+    );
+
     // Watch the other lanes (#803). The sync lane does this too; running it from
     // BOTH means the every-minute lanes and the 5-minute lanes watch each other,
     // so whichever survives a killed invocation reports the one that didn't. The
@@ -2390,6 +2434,11 @@ export async function GET(req: NextRequest) {
       // the only place the assumption behind the hot path's runtime gate can be read
       // back off production rather than off Cloudflare's documentation (L82).
       edgeLimiters,
+      // null when the step failed; status "unmeasured" inside when the read did not work
+      // or came back empty. On the healthy path it carries how many definer functions were
+      // read and which were excused by name, so "nothing is exposed" can be told apart from
+      // "nothing was read" by anybody looking at a tick (#2447).
+      definerGrants,
       truncated,
       volume,
       failureRate,

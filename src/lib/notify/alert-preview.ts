@@ -277,6 +277,10 @@ import {
   formatEdgeLimiterRecovery,
 } from "@/lib/monitor/edge-limiter-health";
 import {
+  formatDefinerGrantsExposedAlert,
+  formatDefinerGrantsClearedAlert,
+} from "@/lib/monitor/definer-grants";
+import {
   formatHydrationFailingAlert,
   formatHydrationRecovery,
 } from "@/lib/google/hydration";
@@ -1594,6 +1598,48 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     state: "the refresh is progressing again",
     channel: "recovery",
     text: formatHydrationRecovery(),
+  },
+  {
+    key: "definer_grants_to_web_roles",
+    state: "one privileged function is open to an unauthenticated caller",
+    channel: "alert",
+    text: formatDefinerGrantsExposedAlert({
+      status: "exposed",
+      scanned: 13,
+      exposed: [
+        { name: "erase_booking_pii", args: "target_email text", returns: "jsonb", roles: ["anon"] },
+      ],
+      exempted: ["rls_auto_enable"],
+      unusedExemptions: [],
+    }),
+  },
+  {
+    key: "definer_grants_to_web_roles",
+    state: "several, and one of them is open to both web roles",
+    channel: "alert",
+    // Read this one for the plural grammar and for whether a list of function signatures
+    // still scans on a phone.
+    text: formatDefinerGrantsExposedAlert({
+      status: "exposed",
+      scanned: 13,
+      exposed: [
+        { name: "erase_booking_pii", args: "target_email text", returns: "jsonb", roles: ["anon", "authenticated"] },
+        { name: "reassign_booking_swap", args: "p_booking_id uuid, p_user_id uuid", returns: "record", roles: ["authenticated"] },
+      ],
+      exempted: ["rls_auto_enable"],
+      unusedExemptions: [],
+    }),
+  },
+  {
+    key: "definer_grants_to_web_roles",
+    state: "cleared",
+    channel: "recovery",
+    text: formatDefinerGrantsClearedAlert({
+      status: "healthy",
+      scanned: 13,
+      exempted: ["rls_auto_enable"],
+      unusedExemptions: [],
+    }),
   },
   {
     key: "edge_limiter_unusable",

@@ -253,6 +253,9 @@ const EXPECTED_PINNED = [
   // because it is asked twice, once before any lock and once under it.
   "cancel_duplicate_named_refusal",
   "count_bookings_per_local_day",
+  // #2447: reports which definer functions the web roles can execute. Security INVOKER
+  // itself, deliberately, so it adds no row to the list it reports on.
+  "definer_function_web_grants",
   "erase_booking_pii",
   "move_busy_block",
   "rate_limit_hit",

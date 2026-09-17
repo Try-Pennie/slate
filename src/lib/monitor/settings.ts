@@ -32,6 +32,7 @@ export type MonitorAlertKey =
   | "ooo_protection_lost"
   | "webhook_event_no_subscriber"
   | "edge_limiter_unusable"
+  | "definer_grants_to_web_roles"
   | "hydration_all_failing"
   | "calendar_window_uncovered"
   | "schedule_parity_drift"
@@ -61,6 +62,7 @@ export const ALERT_KEYS: MonitorAlertKey[] = [
   "ooo_protection_lost",
   "webhook_event_no_subscriber",
   "edge_limiter_unusable",
+  "definer_grants_to_web_roles",
   "hydration_all_failing",
   "calendar_window_uncovered",
   "schedule_parity_drift",
@@ -259,6 +261,12 @@ export const ALERT_FIELDS: {
     help: "The running deployment cannot use its request rate limits, so the public endpoints are open to unlimited traffic from one source. Clears itself once they are enforced again.",
   },
   {
+    key: "definer_grants_to_web_roles",
+    urgency: "page",
+    label: "A privileged database function open to the web",
+    help: "A database function that runs with its owner's privileges can be executed by an unauthenticated caller, so it is reachable from outside without a login. Clears itself once the grant is taken back.",
+  },
+  {
     key: "hydration_all_failing",
     urgency: "page",
     label: "Calendar refresh failing on every calendar",
@@ -392,6 +400,11 @@ export const MONITOR_DEFAULTS = {
     // unsubscribed webhook event, the state leaves a public endpoint unprotected, and
     // unlike the fail-open incident it replaces, this one can say when it is over.
     edge_limiter_unusable: 60 * 60_000,
+    // A privileged function open to the web (#2447) persists until somebody revokes the
+    // grant, and nothing self-heals it, so repeat while it lasts. Hourly, for the same
+    // reason as the ceilings above: it leaves something reachable from outside that should
+    // not be, so it is not a maintenance item to pick up whenever.
+    definer_grants_to_web_roles: 60 * 60_000,
     // The refresh failing everywhere (#1544) persists until somebody fixes the cause, and
     // nothing self-heals it, so repeat while it lasts. Every 6 hours rather than hourly:
     // cached cover has weeks of margin before it stops reaching the booking horizon, so this
