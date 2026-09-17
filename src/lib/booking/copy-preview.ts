@@ -34,7 +34,6 @@ import {
   US_ONLY_PHONE_NOTICE,
   MOVE_COPY,
   BOOKER_PHONE_COPY,
-  advisorWillCallEnding,
   NEXT_DAYS_COPY,
   PICKER_COPY,
   CLOSED_BODY,
@@ -311,12 +310,12 @@ export function bookerCopyScreens(): CopyScreen[] {
         { state: "the move is running", text: MOVE_COPY.moving },
         { state: "the way out", text: keepExistingTime("Mon") },
         // #2207: the number the call depends on, and the way to fix it, on the one
-        // screen a lead who never received their invite email can reach. NAMED by
-        // four digits, because this panel is reached by a link and the manage page
-        // that shows the number in full is reached by the token inside that email.
-        // The control's own words are PHONE_COPY, previewed under "Manage:
-        // correcting the number": one control, one vocabulary (L41).
-        { state: "the number we will ring, named not shown", text: advisorWillCallEnding("5295") },
+        // screen a lead who never received their invite email can reach. Shown in
+        // full (#2213), in the same sentence the manage page says, so this line
+        // reads identically on both screens. The control's own words are
+        // PHONE_COPY, previewed under "Manage: correcting the number": one
+        // control, one vocabulary (L41).
+        { state: "the number we will ring", text: advisorWillCall(PHONE) },
         { state: "the call carries no number at all", text: BOOKER_PHONE_COPY.noNumber },
         { state: "and the way to give us one", text: BOOKER_PHONE_COPY.addTrigger },
         // #2167: the exit. A lead who lost the invite, or never received it, had
