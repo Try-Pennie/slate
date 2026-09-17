@@ -97,6 +97,14 @@
   --fg-muted:           var(--pennie-muted);
   --fg-on-ink:          var(--pennie-beige);
   --fg-on-sky:          var(--pennie-graphite);
+  /* The label on a ROSE fill (#2455). Unlike --fg-on-sky this one really does
+     flip with the theme, because the dark theme lightens the rose itself: white
+     reads 5.14:1 on the light rose and 1.28:1 on the lightened one, so a single
+     value is wrong in one theme whichever is chosen. It is declared here beside
+     --error and overridden beside --error in the dark block, so the pair is
+     maintained in one place rather than two (L213), and both halves are asserted
+     in scripts/test-contrast.ts in both themes. */
+  --fg-on-error:        var(--pennie-white);
 
   --border:             rgba(52, 52, 52, 0.16);
   --border-soft:        var(--pennie-line);
@@ -108,7 +116,6 @@
 
   /* Error semantics (S1) */
   --error:              var(--pennie-rose);
-  --error-bg:           rgba(196, 61, 61, 0.12); /* 12% rose tint — soft error wash */
 
   /* Focus (S3): decorative sky glow + theme-aware contrast-carrying line */
   --focus-ring:         rgba(130, 208, 255, 0.45); /* decorative sky glow */
@@ -293,6 +300,10 @@
   /* Rose lightened 45% toward white: base rose is 2.30:1 on ink-2 / 3.12:1 on navy (AA fail);
      this reads 4.96:1 on ink-2 and 6.72:1 on navy. */
   --error:            rgb(223, 148, 148);
+  /* And the label ON that lightened rose, flipped with it. Graphite reads 5.22:1
+     on it; white, which is correct in light, reads 1.28:1 and would be an
+     invisible label rather than a dim one (#2455). */
+  --fg-on-error:      var(--pennie-graphite);
 }
 
 /* Dark variant for utilities: drive `dark:` off the data attribute, not the OS. */
@@ -397,15 +408,26 @@ h1.pn-display {
    card and 4.91:1 on a dark one, and the border clears the 3:1 an interface
    component needs in both. Asserted in scripts/test-contrast.ts.
 
-   `--error-bg` is defined once, in :root, deliberately: it is a rose tint at 12%
-   over whatever is behind it, so it reads as a wash in both themes without a
-   second value to keep in step. */
+   THE HOVER IS A SOLID FILL, NOT A WASH (#2455), and that replaces the 12% rose
+   tint (`--error-bg`) this used to paint. The tint was translucent, so what the
+   label ended up on was whatever sat behind the button, and nothing measured it:
+   the same button read 4.33:1 on a white card and 4.03:1 on the beige page, both
+   under AA, in the state a pointer is in at the moment of pressing. An opaque
+   fill has one value wherever it lands, so it can be measured once and be true
+   everywhere: 5.14:1 in light and 5.22:1 in dark, with the fill itself 5.14:1 and
+   6.37:1 against the surfaces it sits on. Asserted in scripts/test-contrast.ts.
+
+   The rest state stays the outline, so the fill arriving on hover also reads as
+   the control arming rather than as decoration. */
 .pn-btn--danger {
   background: transparent;
   color: var(--error);
   border: 1px solid var(--error);
 }
-.pn-btn--danger:hover { background: var(--error-bg); }
+.pn-btn--danger:hover {
+  background: var(--error);
+  color: var(--fg-on-error);
+}
 
 .pn-btn--link {
   background: transparent; padding: 0; height: auto;
@@ -687,7 +709,6 @@ html {
   --color-accent-hover: var(--accent-hover);
   --color-accent-press: var(--accent-press);
   --color-error: var(--error);
-  --color-error-bg: var(--error-bg);
   --color-focus-ring: var(--focus-ring);
 
   /* raw brand colors for illustration accents */

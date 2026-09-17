@@ -12,6 +12,7 @@ import {
   managerCannotApproveNotice,
   overlaps,
 } from "@/lib/ooo/core";
+import { oooDayCount } from "@/lib/ooo/cancel-copy";
 import { describeEffects } from "@/lib/ooo/effect-copy";
 import { FailedSteps } from "./FailedSteps";
 import { loadOrgOooHistory } from "@/lib/ooo/history-load";
@@ -690,7 +691,14 @@ export default async function OooQueuePage({
                           placeholder="Add a note (optional)"
                           className={`${fieldBaseCls} min-w-0 flex-1`}
                         />
-                        <DeclineConfirm agentName={nameOf(r.user_id)} />
+                        <DeclineConfirm
+                          agentName={nameOf(r.user_id)}
+                          dayCount={oooDayCount(
+                            r.starts_at,
+                            r.ends_at,
+                            r.display_tz_id,
+                          )}
+                        />
                       </SaveForm>
                     </div>
                   </li>

@@ -35,7 +35,7 @@ function ErrorBanner({ message }: { message: string }) {
   return (
     <p
       role="alert"
-      className="mt-4 rounded-md border border-[var(--error)] bg-error/5 px-4 py-3 text-sm text-error"
+      className="mt-4 rounded-md border border-[var(--error)] px-4 py-3 text-sm text-error"
     >
       {message}
     </p>
