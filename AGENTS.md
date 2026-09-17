@@ -2159,8 +2159,90 @@ to do different things. It is deliberately its OWN token and not `error-ok` or
 `parse-ok`: those are written about a database read or write, and putting a second
 rule behind an existing suppression widens every existing use of it (L448).
 
-**The alert copy preview still has the blind spot** (#2502): it proves determinism
-by the same repeat and scans no builders. Its builders are clean today.
+**The alert preview carries the same scan** (#2502). Its copy cannot be globbed the
+way the booker's can, because it lives across the monitoring tree in `*/alert-copy.ts`,
+`lane-copy.ts` and a few dozen `format*` builders beside the check they describe, and a
+hand written list of those would be exempt the moment somebody added the next one
+(L96). So the list is DERIVED from what `src/lib/notify/alert-preview.ts` IMPORTS
+(`scripts/lib/scan-alert-copy-modules.ts`): the preview is by construction the one
+place naming every builder whose words reach Slack, since a builder it does not call
+renders nothing to preview. The preview itself is scanned alongside them, because it
+seeds every builder's fixtures.
+
+Direct imports only, one hop, and the WHOLE module rather than the imported binding.
+Both are deliberate: transitive coverage reaches most of `src` within three hops and
+would flag unrelated runtime clock reads, which is how a guard gets switched off (L36);
+and #2497's clock read was in `dayWord`, a local helper the exported builder called, so
+a scan narrowed to the binding would have missed the only instance this family has had.
+An import that resolves to no file is REPORTED rather than dropped, or a rename would
+shrink the scanned set while everything left still read as clean (L98).
+
+It found one live instance, in a module the preview imports one builder from:
+`selectCandidates` in `src/lib/monitor/calcom-override-sweep.ts` defaulted `nowMs` to
+`Date.now()`. `nowMs` is required now. The default was a seam nobody had to use, and
+the one caller that skipped it was a test whose fixture start was pinned to a constant
+while its horizon walked with real time, so the pair had drifted out of the window the
+assertion names (L130).
+
+# Running the suite at a date that has not happened yet (#2503)
+
+`SLATE_CLOCK_SHIFT=+1d pnpm test:node` runs every node suite with its clock moved
+forward. `.github/workflows/clock-shift.yml` does it daily at three shifts and says
+what it found.
+
+**Why there is one at all.** A test whose meaning is the relationship between a
+fixture and the present pins one end and reads the other, so it passes on the day it
+merges and goes red on a later day with nobody having touched the code (L130). Nothing
+ran the suite at any date but today, so the first thing to notice was main:
+`scripts/test-booking-reminder.ts` meant "tomorrow" when it merged on 2026-09-16 and
+"today" from midnight on the 17th, CI went red with no commit behind it, the deploy was
+skipped, and #2484's monitoring floor sat merged and not live until #2498.
+
+**How it moves.** `scripts/shift-clock.ts` is an `--import` hook that `run-tests.ts`
+puts on each suite's own argv when the variable is set. It replaces the global `Date`
+with a subclass whose `now()` and no argument constructor add a FIXED offset, which
+also moves Luxon (`Settings.now` resolves the global at call time). A fixed offset
+rather than a frozen instant, so elapsed time still flows and no timeout or duration
+measurement changes meaning. Calendar units are resolved ONCE against the real now, so
+`+13mo` is real calendar arithmetic and the reading stays monotonic. The spec parser
+(`scripts/lib/clock-shift.ts`) REFUSES anything it cannot turn into a real movement,
+including a zero shift, and the hook throws rather than running unshifted: a run whose
+shift quietly did not apply is identical to an ordinary one and would read as a clean
+result over exactly the defect it exists to find (L98).
+
+**Where it runs, and why not somewhere cheaper.** Not the pre push gate: it is about
+40s and every push pays it, and three more passes to catch a fault that arrives by
+CALENDAR rather than by commit is how a gate starts being skipped (L36). Not CI: it
+would gate merges on a question the change in front of it did not ask, and a
+legitimately date sensitive suite should be fixed deliberately rather than discovered
+by somebody trying to merge something else. Daily, at 04:40 UTC, costs three passes of
+the node suite sharing one install: about 9 minutes of wall clock and about 9 billed
+minutes a day on ubuntu-latest's 1x multiplier. Measured off run 35266508062 (3m7s for
+the whole node-tests job), not off the 106s the comment beside that job still claims.
+
+The three shifts are `+1d` (the #2497 shape itself), `+3mo` (a month roll, and from
+most dates a clock change) and `+13mo` (a year roll and, from ANY date, both of the
+year's clock changes). They live in ONE list in the workflow, read by the loop that
+runs them and by the step that judges them, so a shift cannot be run and not judged.
+
+**Finding nothing is not a pass.** `scripts/lib/clock-shift-report.ts` separates three
+outcomes, and the third is the one that would otherwise read as the first: agreement, a
+date dependent suite (named, with the shift that found it), and a run that measured
+nothing. A run measures nothing when it left no summary line, reported no clock or the
+wrong one, covered fewer suites than the checkout holds, or produced no log at all. The
+expected suite count comes from the checkout through `discoverSuiteNames`, the same
+function the runner discovers them with, so it cannot drift from the thing it describes.
+
+**The positive control is in the suite, not in a memory of having tried it once.**
+`scripts/test-clock-shift.ts` plants a date dependent test in a temporary directory,
+runs it through the real runner twice, and requires it to pass on the real clock and
+FAIL a day ahead, plus an unreadable spec to refuse the run outright. Without it a hook
+that silently did nothing would report this mechanism working for ever (L1).
+
+**What it cannot see**, so a green run is never read as more than it is (L400): the
+vitest suites are NOT shifted. The hook is an `--import` on each node suite's own
+process and vitest runs its files in worker threads that do not re-read it. The
+measured exposure in #2503 was in the node suites.
 
 # Condition vs incident: which alerts get an all-clear (#1151)
 

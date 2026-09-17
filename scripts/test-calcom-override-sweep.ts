@@ -66,7 +66,10 @@ const candidate = (over: Partial<OverrideCandidate> = {}): OverrideCandidate => 
     candidate({ id: "no-account-yet", effect: "skipped: not in cal.com (a@b.com)" }),
     candidate({ id: "calcom-off", effect: "skipped: cal.com not configured" }),
   ];
-  const picked = selectCandidates(rows).map((r) => r.id);
+  // Pinned at BOTH ends. The fixture's start is NOW plus 48 hours, so leaving the
+  // clock to the real one walked the pair out of the retry window entirely and the
+  // assertion below stopped being about the rule it names (L130).
+  const picked = selectCandidates(rows, NOW).map((r) => r.id);
   eq(
     JSON.stringify([...picked].sort()),
     JSON.stringify(["failed", "never-attempted", "no-account-yet"]),

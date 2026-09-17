@@ -151,9 +151,17 @@ export function agentEmailForRetry(
  */
 export const PROVISIONAL_RETRY_WINDOW_DAYS = 14;
 
+/**
+ * `nowMs` is REQUIRED rather than defaulted (#2502). A default read of the clock is
+ * a seam nobody has to use, so the one caller that forgot it was a test whose
+ * fixture start was pinned to a constant and whose horizon walked with real time:
+ * the pair had drifted into asserting about a window nobody chose (L130). The
+ * monitor lane already holds a clock and passes it, so nothing production side wanted
+ * the default.
+ */
 export function selectCandidates(
   rows: OverrideCandidate[],
-  nowMs: number = Date.now(),
+  nowMs: number,
 ): OverrideCandidate[] {
   const horizon = nowMs + PROVISIONAL_RETRY_WINDOW_DAYS * 24 * 60 * 60 * 1000;
   const picked = rows.filter((r) => {

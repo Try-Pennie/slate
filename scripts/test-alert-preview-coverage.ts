@@ -18,7 +18,8 @@
 //      shipped: an undefined/NaN/[object Object] left in a sentence, a raw JSON
 //      blob, a value truncated mid-word);
 //   4. the render is deterministic, so a preview diff in review means the COPY
-//      changed, not that the clock moved.
+//      changed, not that the clock moved: neither the preview NOR the builders it
+//      calls may read the clock, and since #2502 the scan covers both.
 //
 // It deliberately does NOT try to judge whether the wording is good. That is what
 // the rendered output is for, read by a person. This only guarantees there is
@@ -33,7 +34,12 @@ import {
   previewsByKey,
 } from "../src/lib/notify/alert-preview.ts";
 import { HANDOFF_KINDS } from "../src/lib/handoffs/kinds.ts";
-import { assert, finish } from "./lib/harness.ts";
+import { existsSync, readFileSync } from "node:fs";
+import { join, resolve } from "node:path";
+import { ALERT_PREVIEW, scanAlertCopyClockReads } from "./lib/scan-alert-copy-modules.ts";
+import { assert, eq, finish } from "./lib/harness.ts";
+
+const ROOT = resolve(import.meta.dirname, "..");
 
 // --- anti-vacuity -------------------------------------------------------------
 // An empty preview list would make every per-key check below pass by default.
@@ -175,6 +181,117 @@ for (const p of ALERT_PREVIEWS) {
     ),
   ].join("\n");
   assert(first === second, "rendering twice produces identical copy (no wall-clock in the fixtures)");
+}
+
+// --- 5: and structurally so, by reading the builders' own source (#2502) --------
+// The pair above is the cheap half and it is blind to the thing it is named for: the
+// clock does not move between two renders a millisecond apart, so a builder reading
+// it renders identically twice and differently tomorrow (L713). That is what shipped
+// on the booker side as #2497, where `dayWord` read `DateTime.now()`, its test pinned
+// the other end, and the suite went red at midnight with nobody having touched the
+// code, taking main's deploy with it.
+//
+// The module list is DERIVED from what the preview imports rather than written out
+// here, so a copy builder added tomorrow is covered by construction instead of being
+// exempt from the guard meant to catch it (L96).
+{
+  const io = {
+    readFile: (p: string) => readFileSync(p, "utf8"),
+    exists: (p: string) => existsSync(p),
+  };
+  const scan = scanAlertCopyClockReads(ROOT, io);
+
+  // The anti-vacuity floor, for the same reason every other check here has one: a
+  // renamed preview, a changed import style or a resolver that found nothing would
+  // make every assertion below pass over an empty list (L98).
+  assert(
+    scan.modules.length >= 30,
+    `the preview's copy modules were found (expected at least 30, got ${scan.modules.length})`,
+  );
+  assert(
+    scan.modules.includes(join("src", "lib", "booking", "alert-copy.ts")),
+    "including the booking alert copy, so the list really is the preview's own imports",
+  );
+  eq(
+    scan.unresolved.join(", "),
+    "",
+    "every module the preview imports resolves to a file, so none was silently dropped",
+  );
+
+  eq(
+    scan.findings.length,
+    0,
+    "no alert copy builder reads the clock" +
+      (scan.findings.length
+        ? ` (${scan.findings.map((f) => `${f.file}:${f.line} ${f.read}`).join(", ")})`
+        : ""),
+  );
+
+  // The controls, without which a path typo or a resolver that matched nothing would
+  // report the whole set clean for ever (L1). They use an OVERLAY of the real tree,
+  // one file's content replaced in memory, so the plant is never written to the repo.
+  {
+    const victim = scan.modules.find((m) => m.endsWith(join("ooo", "alert-copy.ts")));
+    assert(victim !== undefined, "a real copy module was found to plant a clock read in");
+
+    const overlay = (rel: string, source: string) => ({
+      readFile: (p: string) => (p === join(ROOT, rel) ? source : readFileSync(p, "utf8")),
+      exists: io.exists,
+    });
+
+    const planted = scanAlertCopyClockReads(
+      ROOT,
+      overlay(
+        victim as string,
+        `${readFileSync(join(ROOT, victim as string), "utf8")}\n` +
+          "export const whenIsIt = () => DateTime.now().toISODate();\n",
+      ),
+    );
+    eq(planted.findings.length, 1, "a builder that DID read the clock is caught");
+    eq(
+      planted.findings[0]?.file,
+      victim,
+      "and it is blamed on the module it was planted in, not on the preview",
+    );
+
+    // A comment merely naming the clock is not a finding, or the guard would fire on
+    // its own explanation of itself and be annotated into silence.
+    const talkedAbout = scanAlertCopyClockReads(
+      ROOT,
+      overlay(
+        victim as string,
+        `${readFileSync(join(ROOT, victim as string), "utf8")}\n` +
+          "// This deliberately takes nowMs rather than calling DateTime.now().\n",
+      ),
+    );
+    eq(talkedAbout.findings.length, 0, "while a comment merely naming the clock is not");
+
+    // A clock read in the PREVIEW itself is caught too. It seeds every builder's
+    // fixtures, so a date taken from the clock there moves every rendered message.
+    const inPreview = scanAlertCopyClockReads(
+      ROOT,
+      overlay(
+        ALERT_PREVIEW,
+        `${readFileSync(join(ROOT, ALERT_PREVIEW), "utf8")}\nconst seededAt = Date.now();\n`,
+      ),
+    );
+    eq(inPreview.findings.length, 1, "a clock read in the preview's own fixtures is caught");
+
+    // An import the tree cannot answer is REPORTED rather than quietly shrinking the
+    // scanned set, which is how a rename would leave everything reading as clean.
+    const renamed = scanAlertCopyClockReads(
+      ROOT,
+      overlay(
+        ALERT_PREVIEW,
+        `import { nothing } from "@/lib/notify/no-such-module";\n${readFileSync(join(ROOT, ALERT_PREVIEW), "utf8")}`,
+      ),
+    );
+    eq(
+      renamed.unresolved.join(", "),
+      "@/lib/notify/no-such-module",
+      "an import that resolves to nothing is named rather than dropped",
+    );
+  }
 }
 
 console.log(
