@@ -2187,8 +2187,9 @@ CALENDAR rather than by commit is how a gate starts being skipped (L36). Not CI:
 would gate merges on a question the change in front of it did not ask, and a
 legitimately date sensitive suite should be fixed deliberately rather than discovered
 by somebody trying to merge something else. Daily, at 04:40 UTC, costs three passes of
-the node suite sharing one install: roughly 6 minutes of wall clock and about 6 billed
-minutes a day on ubuntu-latest's 1x multiplier.
+the node suite sharing one install: about 9 minutes of wall clock and about 9 billed
+minutes a day on ubuntu-latest's 1x multiplier. Measured off run 35266508062 (3m7s for
+the whole node-tests job), not off the 106s the comment beside that job still claims.
 
 The three shifts are `+1d` (the #2497 shape itself), `+3mo` (a month roll, and from
 most dates a clock change) and `+13mo` (a year roll and, from ANY date, both of the

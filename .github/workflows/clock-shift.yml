@@ -28,11 +28,12 @@ name: Shifted clock test run
 #     finds it within a day of it being written and always before the day it would
 #     have broken main, at three passes a day rather than three per push.
 #
-# WHAT IT COSTS. Three passes of the node suite, sequential, sharing one checkout and
-# one install: about 106s each at the measured CI duration plus about 25s of setup,
-# so roughly 6 minutes of wall clock and, on ubuntu-latest at the 1x multiplier, about
-# 6 billed minutes a day. That is the price of the whole mechanism; a matrix would pay
-# the 25s setup three times over for no wall clock gain on a job nobody waits for.
+# WHAT IT COSTS, measured rather than quoted from the comment beside the CI job, which
+# still says 106s and is stale: run 35266508062 took 3m7s for the whole node-tests job,
+# so a pass is roughly 2m40s once setup is taken off. Three passes, sequential, sharing
+# one checkout and one install, is about 9 minutes of wall clock and, on ubuntu-latest
+# at the 1x multiplier, about 9 billed minutes a day. A matrix would pay the setup three
+# times over for no wall clock gain on a job nobody waits for.
 #
 # WHAT IT CANNOT SEE, said here so a green run is never read as more than it is
 # (L400): the vitest suites are NOT shifted. The hook is an `--import` on each node
@@ -73,8 +74,9 @@ concurrency:
 
 jobs:
   shifted:
-    # Three passes of a suite whose slowest CI run is about 106s, plus setup. Well
-    # clear, and low enough that a hung suite is reported rather than sitting there.
+    # Three passes of a suite measured at about 2m40s on a runner, plus setup, so about
+    # 9 minutes. Well clear, and low enough that a hung suite is reported rather than
+    # sitting there until GitHub's own six hour ceiling.
     timeout-minutes: 25
     runs-on: ubuntu-latest
     env:
