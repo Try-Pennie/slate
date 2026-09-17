@@ -3,7 +3,7 @@ import StandaloneBookerShell from "@/components/StandaloneBookerShell";
 import { loadBookingHorizonDays } from "@/lib/booking/settings";
 import { loadReasonOptions } from "@/lib/booking/reason-options";
 import { resolveRequestedCode } from "@/lib/routing/catchall";
-import { existingCallForLanding } from "@/lib/booking/service";
+import { existingCallForLanding, landingAttendee } from "@/lib/booking/service";
 import { DEFAULT_BRAND_COLOR } from "@/lib/brand-label";
 
 export const dynamic = "force-dynamic";
@@ -64,6 +64,16 @@ export default async function BookingPage({
   // them. It never throws: a check that could not run shows the ordinary picker,
   // and the confirm still refuses at the end of it.
   const landingCall = await existingCallForLanding({ salesforceId: id });
+  // #2208: the same id that recognises them fills the form they would otherwise
+  // retype. The pilot link carries none of the three in its query string, so
+  // before this every recognised lead typed out a name, an email and a number
+  // Slate was already holding. Every value lands in an editable field, and the
+  // link's own value always wins, so nothing here is presented as a fact the lead
+  // cannot correct.
+  const attendee = await landingAttendee(
+    { salesforceId: id },
+    { name: first(sp, "name"), email: first(sp, "email"), phone },
+  );
 
   return (
     <StandaloneBookerShell embedded={embedded} theme={theme}>
@@ -71,11 +81,7 @@ export default async function BookingPage({
         bucketCode={bucketCode}
         requestedCode={requestedCode}
         salesforceId={id}
-        attendee={{
-          name: first(sp, "name"),
-          email: first(sp, "email"),
-          phone,
-        }}
+        attendee={attendee}
         prefill={prefill}
         embedded={embedded}
         theme={theme}

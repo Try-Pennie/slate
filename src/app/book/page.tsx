@@ -5,7 +5,7 @@ import { supabaseAdmin } from "@/lib/supabase/admin";
 import { loadBookingHorizonDays } from "@/lib/booking/settings";
 import { loadReasonOptions } from "@/lib/booking/reason-options";
 import { resolveRequestedCode } from "@/lib/routing/catchall";
-import { existingCallForLanding } from "@/lib/booking/service";
+import { existingCallForLanding, landingAttendee } from "@/lib/booking/service";
 import { DEFAULT_BRAND_COLOR } from "@/lib/brand-label";
 
 export const dynamic = "force-dynamic";
@@ -90,6 +90,13 @@ export default async function BookEntry({
 
   const embedded = first(sp, "embed") === "1";
   const theme = first(sp, "theme") === "dark" ? ("dark" as const) : ("light" as const);
+  // #2208: through the SAME resolver `/booking/{id}` uses, because both routes
+  // grade the same identity and a second copy of this rule would let one of them
+  // go on asking a recognised lead to retype what Slate holds (L613).
+  const attendee = await landingAttendee(
+    { salesforceId: externalId },
+    { name: first(sp, "name"), email: first(sp, "email"), phone },
+  );
 
   return (
     <StandaloneBookerShell embedded={embedded} theme={theme}>
@@ -102,11 +109,7 @@ export default async function BookEntry({
         bucketCode={bucketCode}
         requestedCode={requestedCode}
         salesforceId={externalId}
-        attendee={{
-          name: first(sp, "name"),
-          email: first(sp, "email"),
-          phone,
-        }}
+        attendee={attendee}
         prefill={prefill}
         embedded={embedded}
         theme={theme}

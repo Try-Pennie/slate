@@ -18,6 +18,8 @@ import {
   closedNoReopenDate,
   BOOKER_PHONE_COPY,
   DUPLICATE_COPY,
+  DETAILS_COPY,
+  longDayLabel,
 } from "@/lib/booking/booker-copy";
 import { PHONE_COPY, advisorWillCall } from "@/lib/booking/manage-copy";
 import { DateTime } from "luxon";
@@ -1377,17 +1379,21 @@ describe("Booker phone handling (#1332, #1333)", () => {
     expect(panel.textContent).not.toMatch(/attendee phone|phone number/i);
   });
 
-  it("reads back the number as the lead types it, in the shape the field shows", async () => {
+  // This used to assert that the PANEL echoed the number back as it was typed.
+  // #2208 settled where that number is stated on the details step, and the answer
+  // is the field: the panel's row and the field said it twice on one composed
+  // screen (L605), and only one of the two can be corrected. So the shape is
+  // asserted where it now lives rather than the assertion being deleted, and
+  // "the two never disagree" (#1332) is kept by there being one of them.
+  it("shapes the number as the lead types it, in the field that carries it", async () => {
     global.fetch = okFetch();
     render(<Booker {...baseProps} />);
     await pickFirstDay();
     await userEvent.click(await screen.findByRole("button", { name: /:\d{2}/ }));
     await userEvent.type(screen.getByLabelText("Phone"), "2155550100");
 
-    // The panel and the field never disagree about the same number (#1332).
-    const panel = document.querySelector("aside")!;
-    expect(panel.textContent).toContain("Your number:");
-    expect(panel.textContent).toContain("(215) 555-0100");
+    expect((screen.getByLabelText("Phone") as HTMLInputElement).value).toBe("(215) 555-0100");
+    expect(document.querySelector("aside")!.textContent).not.toContain("(215) 555-0100");
   });
 
   // #1356, Dan's decision: Pennie can only CALL a US number, so a prefill that is
@@ -2240,5 +2246,137 @@ describe("nearest free times after a refused confirm (#1319)", () => {
     // ONE of them: the picker's own load-error notice already carries a retry, and two
     // identical controls a few lines apart read as a broken page.
     expect(screen.getAllByRole("button", { name: NEAREST_TIMES_COPY.retry })).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The details step, read as one COMPOSED screen (#2208, #2205, #2204).
+//
+// Each of these was found by looking at the whole step rather than at a
+// component: the panel and the field both stated the number, the line above the
+// form named a day with no month and no year, and the last line before the
+// button explained the button.
+const plainFetch = () =>
+  vi.fn(async () => ({ ok: true, json: async () => availability }) as Response) as unknown as typeof fetch;
+
+describe("the booker details step", () => {
+  // #2208: somebody the landing link already identifies is not asked to retype
+  // what Slate holds. The server resolves it (`landingAttendee`); what matters
+  // here is that it arrives in fields the lead can READ and CHANGE, so an
+  // inference is never presented as a recorded fact (L192).
+  it("starts the form with what Slate already knows, in fields the lead can correct", async () => {
+    global.fetch = plainFetch();
+    render(
+      <Booker
+        {...baseProps}
+        salesforceId="003xx"
+        attendee={{ name: "Dana Lead", email: "dana@example.com", phone: "(203) 561-5295" }}
+      />,
+    );
+    await pickFirstDay();
+    await userEvent.click(await screen.findByRole("button", { name: /:\d{2}/ }));
+
+    // The name is SPLIT in front of them (#2362), so the guess Slate made is the
+    // thing being shown rather than something hidden behind one box.
+    expect((screen.getByLabelText("First name") as HTMLInputElement).value).toBe("Dana");
+    expect((screen.getByLabelText("Last name") as HTMLInputElement).value).toBe("Lead");
+    expect((screen.getByLabelText("Email") as HTMLInputElement).value).toBe("dana@example.com");
+    expect((screen.getByLabelText("Phone") as HTMLInputElement).value).toBe("(203) 561-5295");
+
+    // And correcting one really takes: a value that could not be edited would be
+    // presented as a fact about them rather than as a starting point.
+    await userEvent.clear(screen.getByLabelText("Email"));
+    await userEvent.type(screen.getByLabelText("Email"), "new@example.com");
+    expect((screen.getByLabelText("Email") as HTMLInputElement).value).toBe("new@example.com");
+  });
+
+  // L605, read as the composed page: the number was stated twice on this one
+  // step, in the panel's row and in the field the lead is typing it into. The
+  // FIELD survives, because it is the one they can change and the one that
+  // decides what is submitted.
+  it("states the lead's number once on the step, in the field that owns it", async () => {
+    global.fetch = plainFetch();
+    render(<Booker {...baseProps} attendee={{ name: "", email: "", phone: "(215) 555-0100" }} />);
+
+    // Before a time is picked there is no field, so the panel is the ONLY place a
+    // prefilled lead can read back what Slate holds. That row stays.
+    const panel = () => document.querySelector("aside")!;
+    await dayChip();
+    expect(panel().textContent).toContain("(215) 555-0100");
+
+    await pickFirstDay();
+    await userEvent.click(await screen.findByRole("button", { name: /:\d{2}/ }));
+
+    expect((screen.getByLabelText("Phone") as HTMLInputElement).value).toBe("(215) 555-0100");
+    expect(panel().textContent).not.toContain("(215) 555-0100");
+    expect(panel().textContent).not.toMatch(/your number/i);
+    // The panel's other facts are untouched: this is one row standing down, not
+    // the panel emptying.
+    expect(panel().textContent).toMatch(/30m/);
+  });
+
+  // #2204: the sentence between the Phone field and the Confirm button explained
+  // the screen back to the reader (L604). Every fact in it was already on the
+  // page, said better by the page itself.
+  it("explains neither the button nor the field it sat between", async () => {
+    global.fetch = plainFetch();
+    render(<Booker {...baseProps} />);
+    await pickFirstDay();
+    await userEvent.click(await screen.findByRole("button", { name: /:\d{2}/ }));
+
+    const step = document.body.textContent ?? "";
+    expect(step).not.toMatch(/Booking this call means/i);
+    expect(step).not.toMatch(/specialist will phone you/i);
+    // What the step DOES say is still all there, so this is a deletion rather than
+    // the step having lost its words.
+    expect(screen.getByRole("heading", { name: DETAILS_COPY.heading })).toBeTruthy();
+    expect(screen.getByRole("button", { name: DETAILS_COPY.confirm })).toBeTruthy();
+  });
+});
+
+// #2205: a lead reads back a committed time in more than one place, and the
+// places must spell it the same way (L118). The details step already carried the
+// full date with the year (#2361); these two did not.
+describe("a committed time is spelled the same way wherever it is read back (#2205)", () => {
+  const ZONE_HERE = "America/New_York";
+
+  it("names the full date, with the year, on the confirmation screen", async () => {
+    global.fetch = vi.fn(async (url: RequestInfo | URL) => {
+      if (String(url).includes("/api/availability")) {
+        return { ok: true, json: async () => availability } as Response;
+      }
+      return { ok: true, status: 200, json: async () => ({ startsAt: slotIso }) } as Response;
+    }) as unknown as typeof fetch;
+
+    render(<Booker {...baseProps} />);
+    await fillAndConfirm();
+    await screen.findByText("You're all set");
+
+    const full = longDayLabel(slotIso, ZONE_HERE, { year: true });
+    expect(document.body.textContent).toContain(full);
+    // The year is the half easiest to argue away and the one that decides a
+    // booking made in late December, so it is asserted on its own.
+    expect(full).toMatch(/, \d{4}$/);
+  });
+
+  it("names the full date, with the year, on the call a recognised lead already has", async () => {
+    const existing = new Date(Date.now() + 9 * 24 * 60 * 60 * 1000).toISOString();
+    global.fetch = plainFetch();
+    render(
+      <Booker
+        {...baseProps}
+        salesforceId="003xx"
+        landingCall={{
+          disclose: true,
+          startsAt: existing,
+          advisorName: null,
+          manageToken: "tok-old",
+          mayCancel: true,
+          phone: null,
+        }}
+      />,
+    );
+    await screen.findByText("You already have a call booked");
+    expect(document.body.textContent).toContain(longDayLabel(existing, ZONE_HERE, { year: true }));
   });
 });

@@ -168,9 +168,17 @@ export const DETAILS_COPY = {
   confirming: "Booking your call…",
   /** The middle of the three states every time-taking action must keep distinct. */
   stillWorking: "Still working… this is taking longer than usual.",
-  /** The lead's own number, echoed back as a check on what they typed. It says
-   *  nothing about the call: the agent is not chosen until confirm, so the panel
-   *  cannot honestly claim anything about who dials (#1333). */
+  /**
+   * The lead's own number, read back on the event panel. It says nothing about
+   * the call: the agent is not chosen until confirm, so the panel cannot honestly
+   * claim anything about who dials (#1333).
+   *
+   * Shown only while a time is being PICKED (#2208). Once the details step is
+   * open the Phone field carries the same number, and the field is the one the
+   * lead can correct, so the panel's row stands down rather than stating it twice
+   * on one screen (L605). It stays for the picking step because a lead the link
+   * identifies now arrives with a number filled in, and that step has no field.
+   */
   yourNumber: "Your number:",
   /**
    * What each field asks for (#2362).
@@ -584,28 +592,13 @@ export function legalLinks(): { label: string; href: string }[] {
   ];
 }
 
-/**
- * The one line above the confirm button.
- *
- * It describes WHAT HAPPENS rather than asserting that the lead has agreed to
- * anything. Slate records no consent anywhere, so copy saying "you agree" or
- * "you consent" would be a claim the product cannot support, and copy is a
- * contract (L21). Booking a call is itself the request to be called, and saying
- * so plainly is both true and the thing the lead actually wants to know.
- *
- * It promises no outcome: Pennie is a lending marketplace and never guarantees
- * one.
- *
- * It says "the number you gave" rather than naming a position on the page. The
- * phone sits in the LEFT column on desktop and above the button on mobile, so
- * "above" is true in one layout and false in the other.
- */
-export function contactDisclosure(): string {
-  return (
-    "Booking this call means a Pennie specialist will phone you on the number " +
-    "you gave, at the time you picked."
-  );
-}
+// #2204 deleted the line that used to sit above the confirm button. It said what
+// the button would do and what the field above it was for, which is the screen
+// explained back to the reader (L604), and every fact in it was already on the
+// step: the heading names the call, the line under it states the time in full,
+// the field is labelled Phone and the button says "Confirm booking". Nothing
+// legal rested on it, because Slate records no consent anywhere and the sentence
+// claimed no agreement. The legal links below are unaffected and stay.
 
 export const LEGAL_COPY = {
   /** Labels the footer for assistive tech, so the links are not two bare words

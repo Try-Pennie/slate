@@ -26,7 +26,6 @@ import {
   DETAILS_COPY,
   LEGAL_COPY,
   legalLinks,
-  contactDisclosure,
   DUPLICATE_COPY,
   HONEYPOT_LABEL,
   INCOMPLETE_PHONE_NOTICE,
@@ -75,6 +74,7 @@ import {
   movedNote,
   phoneSaved,
 } from "@/lib/booking/manage-copy";
+import { DateTime } from "luxon";
 import { eventDescription, eventSummary } from "@/lib/booking/core";
 import { formatSlotTime } from "@/lib/booking/slot-label";
 import { REASSIGN_INVITE_DESCRIPTION } from "@/lib/booking/orchestration";
@@ -110,6 +110,19 @@ const DAY = "Monday, August 17";
  * The instant is fixed, so the render stays deterministic.
  */
 const SLOT_ISO = "2026-08-17T18:30:00.000Z";
+/**
+ * The same fixed instant, spelled the way every COMMITMENT READBACK spells it:
+ * the full weekday, month, day and year (#2205).
+ *
+ * Built by the shared formatter rather than written out beside `DAY`, so the
+ * preview cannot show a date the product does not produce. `DAY` stays for the
+ * places that legitimately name a day without committing to it (a day whose times
+ * have gone, the count announced when a day settles).
+ */
+const DAY_FULL = longDayLabel(SLOT_ISO, ZONE, { year: true });
+/** The same instant as the move panel abbreviates it, which is a choice being
+ *  previewed rather than a commitment being read back. */
+const DAY_SHORT = DateTime.fromISO(SLOT_ISO, { zone: ZONE }).toFormat("ccc, LLL d");
 const TIME = formatSlotTime(SLOT_ISO, ZONE);
 const ZONE_LABEL = "EDT";
 const PHONE = "(215) 555-0100";
@@ -136,6 +149,15 @@ export function bookerCopyScreens(): CopyScreen[] {
           state: "one time left, so the count must not read as plural",
           text: timesAvailableAnnouncement(1, DAY),
           screenReaderOnly: true,
+        },
+        // #2208 moved this here from the details step, because that is where it is
+        // shown now. It reads back the number a landing link arrived with, on the
+        // one screen where there is no field carrying it: once a time is picked the
+        // form states it, and two copies of one number on one screen is the
+        // duplication this preview exists to make visible (L605).
+        {
+          state: "the link arrived with a number, and no time is picked yet",
+          text: phoneEchoLine(PHONE),
         },
       ],
     },
@@ -186,7 +208,12 @@ export function bookerCopyScreens(): CopyScreen[] {
         "the highest intent screen in the product, so it has to state the time it is " +
         "committing to in full (#2361). Read the four field labels together: the name " +
         "is asked in two fields now, the way cal.com asks, so the first name is " +
-        "answered rather than worked out from whatever was typed (#2362).",
+        "answered rather than worked out from whatever was typed (#2362). Nothing " +
+        "stands between the last field and the button any more (#2204): the sentence " +
+        "that did explained the button and the field, which every other word here " +
+        "already says better. For a lead the link identifies these fields arrive " +
+        "filled (#2208), so read them as a form somebody is checking rather than one " +
+        "they are starting.",
       lines: [
         { state: "what the screen is for", text: DETAILS_COPY.heading },
         {
@@ -201,10 +228,6 @@ export function bookerCopyScreens(): CopyScreen[] {
         { state: "the booking is being made", text: DETAILS_COPY.confirming },
         { state: "it has been running a while", text: DETAILS_COPY.stillWorking },
         {
-          state: "their number, echoed back",
-          text: phoneEchoLine(PHONE),
-        },
-        {
           state:
             "they arrived with a number we cannot call, or typed one carrying an extension",
           text: US_ONLY_PHONE_NOTICE,
@@ -216,10 +239,6 @@ export function bookerCopyScreens(): CopyScreen[] {
         {
           state: "they arrived with a number carrying an extension, so the field is empty",
           text: EXTENSION_PHONE_PREFILL_NOTICE,
-        },
-        {
-          state: "what handing over the number leads to (#1041)",
-          text: contactDisclosure(),
         },
         { state: "the bot trap", text: HONEYPOT_LABEL, screenReaderOnly: true },
       ],
@@ -288,7 +307,7 @@ export function bookerCopyScreens(): CopyScreen[] {
       purpose: "The one branded moment, and the last thing most leads will read.",
       lines: [
         { state: "the heading", text: CONFIRMED_COPY.heading },
-        { state: "when it is", text: confirmedWhen(DAY, TIME, ZONE_LABEL) },
+        { state: "when it is", text: confirmedWhen(DAY_FULL, TIME, ZONE_LABEL) },
         { state: "the invite", text: inviteOnItsWay(EMAIL) },
         {
           state: "the invite, with no address to name",
@@ -297,7 +316,7 @@ export function bookerCopyScreens(): CopyScreen[] {
         { state: "the link onward", text: CONFIRMED_COPY.manageLink },
         {
           state: "what is announced",
-          text: confirmedAnnouncement(DAY, TIME, ZONE_LABEL),
+          text: confirmedAnnouncement(DAY_FULL, TIME, ZONE_LABEL),
           screenReaderOnly: true,
         },
       ],
@@ -311,7 +330,7 @@ export function bookerCopyScreens(): CopyScreen[] {
         { state: "the heading", text: DUPLICATE_COPY.heading },
         {
           state: "the match was strong enough to name it",
-          text: duplicateSetFor(`${DAY} at ${TIME}`),
+          text: duplicateSetFor(`${DAY_FULL} at ${TIME}`),
         },
         { state: "and the way to act on it", text: DUPLICATE_COPY.viewOrCancel },
         {
@@ -331,7 +350,11 @@ export function bookerCopyScreens(): CopyScreen[] {
         // previewed first.
         { state: "reached on landing, so the way on is the picker", text: MOVE_COPY.pickAnotherTime },
         { state: "why they are moving it", text: MOVE_COPY.reasonLegend },
-        { state: "a time is chosen", text: moveToTime(`${DAY} at ${TIME}`) },
+        // Abbreviated, because the panel builds this one from `shortDay`: the time
+        // named here is one the lead just tapped out of a list that spells days the
+        // same abbreviated way, not a commitment being read back. The preview used
+        // the long form, so it showed a sentence the product does not produce.
+        { state: "a time is chosen", text: moveToTime(`${DAY_SHORT} at ${TIME}`) },
         { state: "no time chosen yet", text: MOVE_COPY.moveNoTime },
         { state: "the move is running", text: MOVE_COPY.moving },
         { state: "the way out", text: keepExistingTime("Mon") },
@@ -350,7 +373,9 @@ export function bookerCopyScreens(): CopyScreen[] {
         // it withheld this.
         { state: "the way to cancel it, before it is confirmed", text: BOOKER_CANCEL_COPY.start },
         { state: "confirming that cancel", text: BOOKER_CANCEL_COPY.heading },
-        { state: "what it costs, naming the call", text: cancelConsequenceFor(`${DAY} at ${TIME}`) },
+        // The panel builds this from the same `longDay` the line above it uses, so
+        // it carries the year too (#2205).
+        { state: "what it costs, naming the call", text: cancelConsequenceFor(`${DAY_FULL} at ${TIME}`) },
         { state: "why they are cancelling", text: BOOKER_CANCEL_COPY.reasonLegend },
         { state: "the destructive control itself", text: BOOKER_CANCEL_COPY.confirm },
         { state: "while it runs", text: BOOKER_CANCEL_COPY.confirming },
