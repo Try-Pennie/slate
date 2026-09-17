@@ -276,7 +276,9 @@ export function parseListQuery(params: URLSearchParams): ListParseResult {
     offset = decoded;
   }
   if (offset > MAX_LIST_OFFSET) {
-    return bad("Result window too large — narrow your filters (use afterStart/beforeEnd or updatedSince)");
+    return bad(
+      "Result window too large. Narrow your filters (use afterStart/beforeEnd or updatedSince)",
+    );
   }
 
   return {

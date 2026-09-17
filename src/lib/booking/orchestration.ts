@@ -804,6 +804,22 @@ export interface BookingDeps {
     bookingId: string,
   ): Promise<void>;
   /**
+   * Forget that a 24 hour reminder has gone out for this booking (#2500).
+   *
+   * The stored record is the START a reminder was sent about, so a booking that
+   * MOVES earns a fresh reminder by construction. A reassign at the same start does
+   * NOT move, so the record still matches and no second reminder goes out, and the
+   * lead is left holding a message naming the advisor who is no longer taking the
+   * call, sent from a mailbox that is no longer watching for their reply. The
+   * reminder is a property of the appointment and who is calling is part of the
+   * appointment, so a change of advisor invalidates it.
+   *
+   * Idempotent, and safe on a booking that was never reminded: it writes null over
+   * null. It does NOT send anything; the lane picks the booking up on its next tick
+   * if the call is still inside the window, and ignores it if it is not.
+   */
+  clearReminderRecord(bookingId: string): Promise<void>;
+  /**
    * Atomic reassign swap (#449): under a row lock, set the booking to the new
    * agent + event + trace and RETURN the event being replaced (so the caller
    * deletes exactly that, never a stale one) — closing the concurrent-distinct-
@@ -4106,6 +4122,23 @@ export async function reassignBooking(
       notifyAttendee: false,
     });
   }
+
+  // #2500: the advisor has changed, so any 24 hour reminder already sent names the
+  // wrong person and came from the wrong mailbox. Forget it, and the reminder lane
+  // sends a fresh one on its next tick if the call is still inside the window.
+  //
+  // Best effort ON PURPOSE, and the direction it fails matters. This runs AFTER the
+  // durable anchor has committed, so a failure here leaves exactly the behaviour
+  // this repo had before it: a reminder naming the previous advisor. Throwing would
+  // abandon the calendar cleanup, the busy block move and the webhooks below for a
+  // message that is a nicety beside them, which is the worse trade.
+  await deps.clearReminderRecord(booking.id).catch((err) => {
+    log.error(
+      "booking",
+      { msg: "reminder record clear failed after reassign", booking_id: booking.id },
+      err instanceof Error ? err : new Error(String(err)),
+    );
+  });
 
   // #518: create + swap + delete-old are done; the intent's crash-safety window
   // is closed, so drop it. Anything past this point (the outbox side effects

@@ -4,11 +4,19 @@ import { supabaseAdmin } from "@/lib/supabase/admin";
 import { unwrap } from "@/lib/db/result";
 import { appUrl } from "@/lib/env";
 import { sendGmailEmail } from "@/lib/notify/email";
-import { sendThrottledAlert } from "@/lib/notify/dispatch";
+import { sendThrottledAlert, resolveAlert } from "@/lib/notify/dispatch";
 import { shortErrorReason } from "@/lib/notify/error-text";
 import { recordHeartbeat } from "@/lib/monitor/heartbeat";
+import { selectAllPages } from "@/lib/supabase/paginate";
 import { REMINDER_LEAD_MS } from "@/lib/booking/reminder";
 import { runBookingReminders, type DueBooking } from "@/lib/booking/reminder-send";
+import { runReminderFailureRateCheck } from "@/lib/booking/reminder-rate";
+import {
+  loadReminderRateState,
+  reminderRateDay,
+  saveReminderRateState,
+} from "@/lib/booking/reminder-rate-store";
+import { SHIPPED_REMINDER_FAILURE_RATE_THRESHOLDS } from "@/lib/monitor/failure-rate-thresholds";
 import { log } from "@/lib/log";
 
 export const dynamic = "force-dynamic";
@@ -25,12 +33,15 @@ export const dynamic = "force-dynamic";
  * trigger, which is the invocation already short of CPU headroom (#1245, #2021).
  */
 
-/** One page of candidates per tick. Sized well above real volume: the busiest hour
- *  measured across the whole roster is 230 leads (#2484), so a five minute tick can
- *  never approach this, and a cap that is never reached cannot silently drop a lead. */
-const MAX_PER_TICK = 200;
-
-/** One page a day at most about a broken send path, so a bad hour is one message. */
+/**
+ * At most one page every six hours about a broken send path, so a bad afternoon is
+ * one message rather than one per lead.
+ *
+ * It applies to BOTH keys this lane can send, and they say different things: the per
+ * booking incident names one booking, and the share names a wave (#2496). Six hours
+ * is deliberate for the second as well, since the condition it reports lasts until
+ * somebody repairs it and repeating that hourly is how a page stops being read (L36).
+ */
 const REMINDER_ALERT_COOLDOWN_MS = 6 * 60 * 60 * 1000;
 
 export async function GET(req: NextRequest) {
@@ -53,13 +64,43 @@ export async function GET(req: NextRequest) {
   const run = await runBookingReminders({
     now: () => now,
     loadDue: async () => {
-      // unwrap, NOT a swallowed read. An empty list here is indistinguishable from
-      // "nobody needs reminding", which is the normal state, so a failed read would
-      // silently stop every reminder and look exactly like a quiet afternoon
-      // (#277, the class this repo keeps meeting). A throw fails the tick, and the
-      // lane's heartbeat lapses, which is what pages.
-      const rows = (unwrap(
-        await db
+      // PAGINATED, not one capped page (#2500).
+      //
+      // This used to be a single `.limit(200)`, justified against the busiest hour
+      // measured across the roster. The justification was about the wrong quantity:
+      // the WINDOW is a day, and a booking stays in it for the whole 24 hours before
+      // it starts, reminded or not. So once more than 200 live bookings sat inside a
+      // day the page filled with rows already dealt with, the unreminded ones behind
+      // them were never reached, and nothing said so: the heartbeat stamped, `sent`
+      // stayed non zero, and a truncated page is indistinguishable from the whole set
+      // (L101, L98).
+      //
+      // Narrowing the query to the rows that are actually work is not available
+      // here. The condition is `reminder_sent_for is distinct from starts_at`, a
+      // comparison between two COLUMNS, which PostgREST cannot express as a filter,
+      // and the arithmetic dodge does not hold either: a booking that MOVED carries
+      // the start it used to hold, which can sit anywhere. So the read pages instead,
+      // which is exact rather than clever, and the judgement stays where it already
+      // lives (`reminderDue`).
+      //
+      // `selectAllPages` throws on a read error rather than returning a short list,
+      // which is the `unwrap` rule by the other route. An empty list here is
+      // indistinguishable from "nobody needs reminding", which is the normal state,
+      // so a failed read that degraded would silently stop every reminder and look
+      // exactly like a quiet afternoon (#277). A throw fails the tick, and the lane's
+      // heartbeat lapses, which is what pages.
+      const rows = await selectAllPages<{
+        id: string;
+        starts_at: string;
+        reminder_sent_for: string | null;
+        status: string;
+        attendee_email: string | null;
+        agent_email: string | null;
+        agent_name: string | null;
+        timezone: string;
+        manage_token: string;
+      }>("bookings due a reminder", (from, to) =>
+        db
           .from("bookings")
           .select(
             "id, starts_at, reminder_sent_for, status, attendee_email, agent_email, agent_name, timezone, manage_token, buckets!inner(is_test)",
@@ -73,19 +114,13 @@ export async function GET(req: NextRequest) {
           // SMOKE about its own fixture would be a live email nobody asked for
           // (#396).
           .eq("buckets.is_test", false)
-          .limit(MAX_PER_TICK),
-        "bookings due a reminder",
-      ) ?? []) as {
-        id: string;
-        starts_at: string;
-        reminder_sent_for: string | null;
-        status: string;
-        attendee_email: string | null;
-        agent_email: string | null;
-        agent_name: string | null;
-        timezone: string;
-        manage_token: string;
-      }[];
+          // A keyset the pages can be cut on. A read with no order is in whatever
+          // order came back (L343), and page two of an unordered read can repeat or
+          // skip rows from page one.
+          .order("starts_at", { ascending: true })
+          .order("id", { ascending: true })
+          .range(from, to),
+      );
       for (const r of rows) rowsSeen.set(r.id, r.reminder_sent_for);
       return rows
         .filter((r): r is typeof r & { agent_email: string } => !!r.agent_email)
@@ -155,6 +190,57 @@ export async function GET(req: NextRequest) {
     failed: run.failed,
     skipped: run.skipped,
     lost: run.lost,
+    attempted: run.attempted,
+  });
+
+  /**
+   * Is this ONE lead's reminder, or every lead's? (#2496)
+   *
+   * The per booking incident above cannot answer that: it is throttled at six hours,
+   * so one refused address and a total outage arrive as the same single message at
+   * the same rate. This folds the tick into a rolling window and pages on the SHARE,
+   * which is the only thing that can tell the two apart.
+   *
+   * It runs AFTER the sends and cannot stop them: every failure inside it is caught
+   * and reported, because a monitor bolted onto a lane that emails real people must
+   * not be able to take that lane down.
+   */
+  const rate = await runReminderFailureRateCheck({
+    nowMs: now,
+    day: reminderRateDay(now),
+    tick: { attempts: run.attempted, failures: run.failed, byCode: run.byCode },
+    thresholds: SHIPPED_REMINDER_FAILURE_RATE_THRESHOLDS,
+    cooldownMs: REMINDER_ALERT_COOLDOWN_MS,
+    loadState: loadReminderRateState,
+    saveState: saveReminderRateState,
+    notify: async (key, cooldownMs, text) => {
+      // alert-key: booking_reminders_failing
+      // alert-text-ok: the text is built by `formatReminderFailureRateAlert`, which
+      // carries counts and one of six codes rather than the provider's body.
+      await sendThrottledAlert(key, cooldownMs, text);
+    },
+    // alert-key: booking_reminders_failing
+    // all-clear-proof: scripts/test-booking-reminder-rate.ts - a tick whose window
+    // could not be READ returns `unverified` and is asserted to resolve nothing, and
+    // a window below the floor is `insufficient` and resolves nothing either. The
+    // recovery hangs only off a MEASURED healthy verdict (#1134, #1152).
+    resolve: async (key, text) => resolveAlert(key, text),
+    log: (fields) => log.info("booking-reminder", fields),
+    onError: (context, err) =>
+      log.error(
+        "booking-reminder",
+        { msg: "reminder rate step failed", step: context },
+        err instanceof Error ? err : new Error(shortErrorReason(err)),
+      ),
+  }).catch((err) => {
+    // Nothing above throws today, and a fault nobody predicted here must still not
+    // cost a lead their reminder or the lane its heartbeat.
+    log.error(
+      "booking-reminder",
+      { msg: "reminder rate check threw" },
+      err instanceof Error ? err : new Error(shortErrorReason(err)),
+    );
+    return { status: "unverified", why: "state" } as const;
   });
 
   // Stamped at the END, so a tick that threw on the read never stamps and the lane
@@ -165,5 +251,10 @@ export async function GET(req: NextRequest) {
     log.error("booking-reminder", { msg: "heartbeat failed" }, e instanceof Error ? e : new Error(shortErrorReason(e))),
   );
 
-  return NextResponse.json(run);
+  return NextResponse.json({
+    ...run,
+    // Said out loud, because "the share was fine" and "the share could not be
+    // measured" are the same silence otherwise (L98).
+    rate: rate.status === "checked" ? rate.verdict.status : "unverified",
+  });
 }

@@ -1,14 +1,29 @@
 // Copy guard: user-facing source must not contain em/en dashes or the
 // unreleased platform name (see slate-copy-rules). Scans src/app, src/components,
-// src/lib/notify, and src/lib/webhooks (webhook payloads and labels are sent to
-// Regal, so their strings are user-visible too, #174), ignoring code comments.
+// src/lib/notify, src/lib/webhooks (webhook payloads and labels are sent to
+// Regal, so their strings are user-visible too, #174) and src/lib/booking,
+// ignoring code comments.
+//
+// `src/lib/booking` was added by #2500, and it is the directory holding the MOST
+// lead-facing wording in the repo: `booker-copy.ts`, `manage-copy.ts` and the 24
+// hour reminder email's builders all live there, and none of them was scanned. The
+// reminder's strings were clean on the day this was widened, which is exactly when
+// a guard is worth adding: a rule that only arrives with its first violation has
+// already shipped one.
+//
 // Run via pnpm test (auto-discovered).
 // Run: node --experimental-strip-types scripts/test-copy.ts
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { assert, fail, finish } from "./lib/harness.ts";
 
-const TARGET_DIRS = ["src/app", "src/components", "src/lib/notify", "src/lib/webhooks"];
+const TARGET_DIRS = [
+  "src/app",
+  "src/components",
+  "src/lib/notify",
+  "src/lib/webhooks",
+  "src/lib/booking",
+];
 const FORBIDDEN: { re: RegExp; label: string }[] = [
   { re: /[—–]/, label: "an em/en dash" },
   { re: /cadence/i, label: "the unreleased platform name" },
@@ -85,5 +100,15 @@ assert(
 
 // #174: src/lib/webhooks must be in the scan set (webhook copy reaches Regal).
 assert(TARGET_DIRS.includes("src/lib/webhooks"), "scan set includes src/lib/webhooks (#174)");
+
+// #2500: and src/lib/booking, which holds the booker's copy, the manage page's copy
+// and the 24 hour reminder email's. A directory silently dropped from this list
+// exempts everything in it from the check meant to catch it (L96), and the scan
+// passing over an empty set reads exactly like a clean tree (L98).
+assert(TARGET_DIRS.includes("src/lib/booking"), "scan set includes src/lib/booking (#2500)");
+assert(
+  files.some((f) => f.includes("booker-copy")) && files.some((f) => f.includes("reminder")),
+  `the booking copy files were really walked (${files.length} files in the scan set)`,
+);
 
 finish();

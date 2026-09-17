@@ -99,12 +99,25 @@ export interface RateThresholds {
   failPct: number;
 }
 
-/** Drop samples that have aged out of the window. Strictly older than the cutoff
- *  goes; a sample exactly on the boundary is still inside the window. */
-function prune(samples: RateSample[], atMs: number, windowMs: number): RateSample[] {
+/**
+ * Drop samples that have aged out of the window. Strictly older than the cutoff
+ * goes; a sample exactly on the boundary is still inside the window.
+ *
+ * Exported because the reminder lane's own rolling window (#2496) is judged by
+ * `judgeFailureRate` below and so has to age its samples by exactly the same rule.
+ * A second copy of this filter would be two things that must agree about what "in
+ * the window" means, and the drift between them would be silent (L370).
+ */
+export function pruneSamples(
+  samples: RateSample[],
+  atMs: number,
+  windowMs: number,
+): RateSample[] {
   const cutoff = atMs - windowMs;
   return samples.filter((s) => s.atMs > cutoff);
 }
+
+const prune = pruneSamples;
 
 /** Per-code delta between two cumulative maps, keeping only real increases. A
  *  code that appears for the first time counts from zero. */

@@ -1,4 +1,5 @@
 import { reminderDue, reminderSubject, reminderBody } from "./reminder.ts";
+import { classifyReminderSendFailure } from "./reminder-rate.ts";
 import type { MimeMessage } from "@/lib/notify/email-mime";
 import { parseStampMs } from "@/lib/date/stamp";
 
@@ -67,6 +68,20 @@ export interface ReminderRun {
   skipped: number;
   /** Due, and claimed by somebody else this tick. */
   lost: number;
+  /**
+   * Sends ATTEMPTED, which is `sent + failed` and deliberately not the row count
+   * (#2496). It is the denominator of the failure share, and a booking that was
+   * skipped or lost was never attempted: counting either would make a real outage
+   * look proportionally smaller exactly while it was happening.
+   */
+  attempted: number;
+  /**
+   * This tick's failures by `ReminderFailureCode`, so the share can name what is
+   * failing. Classified where the error is CAUGHT rather than where the window is
+   * stored, because the raw message must not travel any further than this: a map
+   * keyed on one would hold a key per wording (L131).
+   */
+  byCode: Record<string, number>;
 }
 
 /**
@@ -87,7 +102,14 @@ export function reminderFailedAlert(bookingId: string, reason: string): string {
 export async function runBookingReminders(deps: ReminderDeps): Promise<ReminderRun> {
   const nowMs = deps.now();
   const rows = await deps.loadDue();
-  const run: ReminderRun = { sent: 0, failed: 0, skipped: 0, lost: 0 };
+  const run: ReminderRun = {
+    sent: 0,
+    failed: 0,
+    skipped: 0,
+    lost: 0,
+    attempted: 0,
+    byCode: {},
+  };
 
   for (const row of rows) {
     // Re-judged here rather than trusted from the query, so the rule has ONE owner
@@ -126,6 +148,9 @@ export async function runBookingReminders(deps: ReminderDeps): Promise<ReminderR
       // so "tomorrow" and "is this due" can never disagree about what day it is.
       nowMs,
     };
+    // Counted BEFORE the call, so a send that threw is in the denominator of its
+    // own failure share rather than only in the numerator.
+    run.attempted += 1;
     try {
       await deps.send({
         // The advisor's own mailbox, so a lead who replies reaches the person they
@@ -141,6 +166,10 @@ export async function runBookingReminders(deps: ReminderDeps): Promise<ReminderR
       // everybody else theirs (L73).
       run.failed += 1;
       const reason = err instanceof Error ? err.message : String(err);
+      // Classified here and nowhere later: the raw message stops at this line, and
+      // what travels on is one of six codes the window can be keyed by (#2496).
+      const code = classifyReminderSendFailure(reason);
+      run.byCode[code] = (run.byCode[code] ?? 0) + 1;
       // alert-text-ok: the reason is shortened by the caller's own formatter before
       // it reaches Slack; this builder receives an already short string.
       // swallow-ok: this IS the failure path's own reporter, so a throw from it has

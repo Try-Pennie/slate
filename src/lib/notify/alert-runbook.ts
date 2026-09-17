@@ -120,6 +120,10 @@ const FAMILY_BY_KEY: Record<string, AlertFamily> = {
   // webhook, and it is the one with no retry behind it, so the remedy is this
   // family's: look at what did not land for that specific booking.
   booking_reminder_failed: "a-booking-side-effect-did-not-complete",
+  // #2496. Same family, deliberately: the remedy is still "look at what did not
+  // land", and the difference between this and the key above is how MANY bookings
+  // it landed for, which the message itself says.
+  booking_reminders_failing: "a-booking-side-effect-did-not-complete",
   outbox_drain_stuck: "a-booking-side-effect-did-not-complete",
   outbox_all_handed_off: "a-booking-side-effect-did-not-complete",
   reservation_drain_stuck: "a-booking-side-effect-did-not-complete",
