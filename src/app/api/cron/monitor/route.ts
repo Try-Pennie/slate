@@ -135,6 +135,12 @@ import {
   runCanaryGapFills,
   postWorkflowDispatch,
 } from "@/lib/monitor/canary-trigger";
+import {
+  fetchRecentRuns,
+  fetchRunJobs,
+  runCiHealthCheck,
+} from "@/lib/monitor/github-ci-health";
+import { BUILD_COMMIT } from "@/lib/build-info";
 import { githubCanaryToken, appUrl } from "@/lib/env";
 import {
   runMigrationDriftCheck,
@@ -2230,6 +2236,44 @@ export async function GET(req: NextRequest) {
       }),
     );
 
+    // Two things about GitHub Actions that nothing inside Slate could see, from ONE
+    // listing of recent runs (#2476, #2229).
+    //
+    // It lives HERE rather than in a workflow because an Actions workflow cannot
+    // report on Actions being unavailable: the run that would carry the report is
+    // the run that did not happen. This lane keeps running when GitHub does not.
+    //
+    // Cost on the invocation four cron lanes share: ONE subrequest per five minute
+    // tick, plus a second one only when the newest completed run failed, which is
+    // the only case that needs its jobs read. Quiet no-op until GITHUB_CANARY_TOKEN
+    // is set, like the gap filler above it. Never throws.
+    const ciHealth = await steps.run("ci_health", null, () =>
+      runCiHealthCheck({
+        nowMs: now,
+        servedCommit: BUILD_COMMIT,
+        token: canaryToken,
+        readRuns: (token) => fetchRecentRuns(token),
+        readJobs: (token, runId) => fetchRunJobs(token, runId),
+        cooldownMs: {
+          deploy: settings.cooldownMs.main_not_deployed,
+          refusal: settings.cooldownMs.ci_runs_refused,
+        },
+        // alert-key: main_not_deployed
+        // alert-key: ci_runs_refused
+        // alert-text-ok: our own copy from github-ci-health.ts, never a raw error.
+        notify: sendThrottledAlert,
+        // Both are conditions: each stays true until somebody deploys or until the
+        // account can run jobs again, and this lane re-measures both every tick.
+        // alert-key: main_not_deployed
+        // alert-key: ci_runs_refused
+        // all-clear-proof: scripts/test-github-ci-health.ts - an unreadable or
+        // throwing runs listing clears neither key, because it measured neither.
+        resolve: resolveAlert,
+        log: (msg, fields) => log.info("ci-health", { msg, ...fields }),
+        onError: (msg, err) => log.error("ci-health", { msg }, err),
+      }),
+    );
+
     // --- cal.com override sweep (#1253) -------------------------------------
     //
     // Retry an approved absence whose cal.com override FAILED, while it still
@@ -2407,6 +2451,10 @@ export async function GET(req: NextRequest) {
       // this check exists to keep apart (#1454).
       rosterCoverage,
       overrideSweep,
+      // null when the step failed, and "not-measured" inside when GitHub could not
+      // be read: "main's tip is live" and "nothing could say" must not render the
+      // same (#2476, #2229).
+      ciHealth,
       inactiveBookings,
       strandedCoverage,
       // null when the step failed, never a clear-looking zero: this check's whole

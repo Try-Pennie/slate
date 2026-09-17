@@ -38,7 +38,9 @@ export type MonitorAlertKey =
   | "schedule_parity_drift"
   | "agents_on_unset_hours"
   | "handoff_channel_unset"
-  | "handoff_undelivered";
+  | "handoff_undelivered"
+  | "main_not_deployed"
+  | "ci_runs_refused";
 
 export const ALERT_KEYS: MonitorAlertKey[] = [
   "availability_data_anomaly",
@@ -69,6 +71,8 @@ export const ALERT_KEYS: MonitorAlertKey[] = [
   "agents_on_unset_hours",
   "handoff_channel_unset",
   "handoff_undelivered",
+  "main_not_deployed",
+  "ci_runs_refused",
 ];
 
 /**
@@ -290,6 +294,18 @@ export const ALERT_FIELDS: {
     label: "Debt tier offering no times",
     help: "A whole debt tier (Low, Medium, High, Very High or Ultra High) is offering no booking time before the end of the next working day, either because nobody is assigned to it or because every agent on it is full. Leads asking for that tier are served by a lower tier meanwhile. A bucket or backend inside a tier that is still offering times is not reported.",
   },
+  {
+    key: "main_not_deployed",
+    urgency: "page",
+    label: "Merged work that is not live",
+    help: "The site is serving an older commit than main's tip, long after that commit landed. The usual cause is a run that was cancelled before it reached the deploy job, with nothing merged after it to carry the work live.",
+  },
+  {
+    key: "ci_runs_refused",
+    urgency: "page",
+    label: "CI runs refused before they start",
+    help: "GitHub is failing workflow jobs without running them, so every check goes red in about two seconds with no log behind it. While it lasts nothing automatic is watching main, because the push guard is a workflow too.",
+  },
 ];
 
 // Coded defaults (the pre-#571 compile-time constants). Cooldowns in ms.
@@ -418,6 +434,15 @@ export const MONITOR_DEFAULTS = {
     // Handoffs not reaching the channel (#2367): the lane retries every tick, so a
     // repeat only says something when the retries are still failing. Hourly.
     handoff_undelivered: 60 * 60_000,
+    // Merged work that is not live (#2476). It stays true until somebody re-runs a
+    // deploy or merges again, and every hour it stands is an hour the fix somebody
+    // believes shipped is not running. Hourly, like the other pages whose remedy is
+    // a person doing something.
+    main_not_deployed: 60 * 60_000,
+    // CI refused before it starts (#2229). The remedy is a billing or account change
+    // somebody has to make, and while it lasts main is unguarded, so it should keep
+    // asking. Hourly.
+    ci_runs_refused: 60 * 60_000,
   },
   floor30: 5,
   floor120: 20,

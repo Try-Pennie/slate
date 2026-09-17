@@ -612,3 +612,128 @@ export function stalePerRunDeclarations(
   }
   return out;
 }
+
+/* --------------------------------------------------------------------------
+ * ORG level settings (#2342)
+ *
+ * `gh variable list` and `gh secret list` are REPO scope only. A setting defined
+ * on the organisation is perfectly usable by a workflow in this repo and invisible
+ * to that listing, so every reference to one reads as missing. On 2026-09-14 that
+ * refused a push naming seven settings that all existed, which is the shape of a
+ * guard people learn to override (L36), and the next time it is right nobody reads
+ * it.
+ *
+ * The existing code is already careful about the neighbouring failure: a listing
+ * that THROWS is its own outcome rather than an empty set. The org case slips past
+ * that because the repo listing SUCCEEDS and is merely incomplete.
+ *
+ * So a reference absent from repo scope is split three ways rather than two, and
+ * the two that are not findings are said out loud (L11, L98):
+ *
+ *   present    the org listing holds it, so it is configured after all.
+ *   missing    the org listing was READ and does not hold it. A real finding.
+ *   unchecked  nothing here could answer. Either the org listing was refused (the
+ *              local token cannot read org scope: measured 403 on 2026-09-14), or
+ *              the org holds it shared with SELECTED repositories and the listing
+ *              cannot say whether this repo is one of them.
+ *
+ * `unchecked` must never render as `missing`. It must never render as `present`
+ * either, which is why a selected-repo setting is not simply counted as existing:
+ * the whole fault being guarded is a reference that reads as configured while
+ * interpolating the empty string.
+ * -------------------------------------------------------------------------- */
+
+/**
+ * One scope's listing. `available: false` is not an empty listing: nothing was
+ * read, and the two must never be folded together (L98).
+ *
+ * Each name carries the number of repositories the setting is shared with
+ * explicitly. Zero means it is not restricted to a selected list, so this repo can
+ * read it. Anything above zero means the listing cannot say whether this repo is
+ * among them.
+ */
+export type SettingListing =
+  | { available: true; vars: Map<string, number>; secrets: Map<string, number> }
+  | { available: false; reason: string };
+
+export interface UncheckedRef extends RepoSettingRef {
+  /** Why this reference could not be judged, in the words a reader needs. */
+  reason: string;
+}
+
+export interface OrgScopeSplit {
+  /** Absent from every scope that could be read. A real finding. */
+  missing: RepoSettingRef[];
+  /** Nothing available could answer for it. Never a finding, never a pass. */
+  unchecked: UncheckedRef[];
+  /** Found in org scope, so configured after all. */
+  present: RepoSettingRef[];
+}
+
+/**
+ * Split the references absent from REPO scope against the ORG listing.
+ *
+ * Pure: the caller owns talking to GitHub, so the decision is drivable with no
+ * network and no remote.
+ */
+export function splitByOrgScope(
+  absentFromRepo: RepoSettingRef[],
+  org: SettingListing,
+): OrgScopeSplit {
+  const missing: RepoSettingRef[] = [];
+  const unchecked: UncheckedRef[] = [];
+  const present: RepoSettingRef[] = [];
+
+  for (const ref of absentFromRepo) {
+    if (!org.available) {
+      unchecked.push({
+        ...ref,
+        reason:
+          `it is not a repo setting and the organisation listing could not be read, ` +
+          `so nothing here can say whether the organisation defines it (${org.reason})`,
+      });
+      continue;
+    }
+    const scope = ref.kind === "vars" ? org.vars : org.secrets;
+    const selectedRepos = scope.get(ref.name);
+    if (selectedRepos === undefined) {
+      missing.push(ref);
+      continue;
+    }
+    if (selectedRepos > 0) {
+      unchecked.push({
+        ...ref,
+        reason:
+          `the organisation defines it and shares it with ${selectedRepos} selected ` +
+          `repositories, and this listing cannot say whether this repo is one of them`,
+      });
+      continue;
+    }
+    present.push(ref);
+  }
+
+  return { missing, unchecked, present };
+}
+
+/**
+ * What a FAILED org listing means, which is two different things.
+ *
+ * A repository owned by a PERSON has no organisation, so `/orgs/<login>/actions/
+ * variables` answers 404. That is not a refusal: there genuinely is no org scope,
+ * the repo listing already saw everything there is, and treating it as unreadable
+ * would turn every real finding into an unchecked one and leave the guard toothless
+ * while still printing reassuring output.
+ *
+ * Anything else (403 for a token without organisation access, a network failure,
+ * gh not authenticated) means nothing was read and the references it would have
+ * answered for cannot be judged.
+ */
+export function classifyOrgListingError(
+  stderr: string,
+): { kind: "no-org" } | { kind: "refused"; reason: string } {
+  const text = stderr.trim();
+  if (/HTTP 404/i.test(text) || /\bnot found\b/i.test(text)) return { kind: "no-org" };
+  // One line, and short: this is quoted into a note a person reads at a push.
+  const firstLine = text.split("\n").map((s) => s.trim()).filter(Boolean)[0] ?? "no output";
+  return { kind: "refused", reason: firstLine.slice(0, 200) };
+}

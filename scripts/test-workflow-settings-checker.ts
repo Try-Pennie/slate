@@ -140,8 +140,57 @@ const PLAIN_WORKFLOW = [
   "",
 ].join("\n");
 
-const stub = (vars: string[], secrets: string[]) =>
-  `#!/bin/sh\ncase "$1" in\n  variable) printf '%s\\n' ${vars.map((v) => `'${v}'`).join(" ") || "''"} ;;\n  secret) printf '%s\\n' ${secrets.map((s) => `'${s}'`).join(" ") || "''"} ;;\nesac\n`;
+/**
+ * What the stub answers for the ORGANISATION listing (#2342).
+ *
+ * `available` with empty lists is the default, which is a real organisation that
+ * simply defines nothing: it leaves every earlier case judging exactly what it
+ * judged before this scope existed. `refused` is the state measured on 2026-09-14,
+ * where the local token answers 403 for the org while the repo listing answers
+ * happily.
+ */
+type OrgStub =
+  | { kind: "empty" }
+  | { kind: "holds"; vars?: [string, number][]; secrets?: [string, number][] }
+  | { kind: "refused"; message: string }
+  | { kind: "no-such-org" }
+  | { kind: "no-owner" };
+
+const orgJson = (rows: [string, number][] = []) =>
+  JSON.stringify(rows.map(([name, numSelectedRepos]) => ({ name, numSelectedRepos })));
+
+/**
+ * `$1` is gh's first argument, so `repo view`, `variable list` and `secret list`
+ * are told apart by it, and the ORG listing is told from the REPO one by the
+ * `--org` flag anywhere in the argument list. A stub that answered both the same
+ * way would leave the org call reading the repo's own settings and prove nothing.
+ */
+function orgArm(kind: "variable" | "secret", org: OrgStub): string {
+  switch (org.kind) {
+    case "empty":
+      return `printf '%s\\n' '[]'`;
+    case "holds":
+      return `printf '%s\\n' '${orgJson(kind === "variable" ? org.vars : org.secrets)}'`;
+    case "refused":
+      return `printf '%s\\n' '${org.message}' >&2; exit 1`;
+    case "no-such-org":
+      return `printf '%s\\n' 'gh: Not Found (HTTP 404)' >&2; exit 1`;
+    case "no-owner":
+      return `printf '%s\\n' '[]'`;
+  }
+}
+
+const stub = (vars: string[], secrets: string[], org: OrgStub = { kind: "empty" }) => {
+  const arm = (kind: "variable" | "secret", names: string[]) =>
+    `  ${kind}) case "$*" in\n    *--org*) ${orgArm(kind, org)} ;;\n    *) printf '%s\\n' ${
+      names.map((n) => `'${n}'`).join(" ") || "''"
+    } ;;\n  esac ;;\n`;
+  const owner =
+    org.kind === "no-owner"
+      ? `  repo) printf '%s\\n' '' ;;\n`
+      : `  repo) printf '%s\\n' 'Try-Pennie' ;;\n`;
+  return `#!/bin/sh\ncase "$1" in\n${owner}${arm("variable", vars)}${arm("secret", secrets)}esac\n`;
+};
 
 // --- every referenced setting exists -------------------------------------------
 {
@@ -461,6 +510,142 @@ const PER_RUN = [
   assert(
     /all 2 referenced repo settings exist/.test(r.out),
     `and counts only the fixture's own references, so the seam really redirected the scan (got ${r.out.trim()})`,
+  );
+}
+
+// --- settings defined on the ORGANISATION (#2342) ------------------------------
+//
+// `gh variable list` and `gh secret list` are repo scope only. A setting the
+// organisation defines is usable by the workflow and invisible to that listing, so
+// the check named seven correctly configured settings as missing on 2026-09-14 and
+// refused the push. A guard whose routine remedy is to override it is one nobody
+// reads the next time it is right (L36).
+
+// The organisation holds it: configured after all, and the run passes.
+{
+  const r = runChecker(
+    stub(["BOOKING_API_KEY"], ["BOOKING_API_KEY"], {
+      kind: "holds",
+      vars: [["SLATE_BASE_URL", 0]],
+    }),
+    { "a.yml": PLAIN_WORKFLOW },
+  );
+  assert(r.code === 0, `an org level variable satisfies the reference (got ${r.out.trim()})`);
+  assert(
+    !r.out.includes("vars.SLATE_BASE_URL"),
+    `and is not reported missing (got ${r.out.trim()})`,
+  );
+}
+
+// The state measured on 2026-09-14: the repo listing answers, the ORG listing is
+// refused. The reference must not be reported as one that was checked and found
+// missing, and the run must not block the push over a setting it never judged.
+{
+  const r = runChecker(
+    stub([], [], { kind: "refused", message: "gh: Resource not accessible (HTTP 403)" }),
+    { "a.yml": PLAIN_WORKFLOW },
+  );
+  assert(r.code === 0, `a refused org listing does not block the push (got ${r.out.trim()})`);
+  assert(
+    /could NOT be checked/.test(r.out),
+    `and says the references were not checked (got ${r.out.trim()})`,
+  );
+  assert(
+    r.out.includes("403"),
+    `and quotes what the org listing said, so it is diagnosable (got ${r.out.trim()})`,
+  );
+  assert(
+    !/point at a repo setting that does not exist/.test(r.out),
+    "and never renders an unchecked reference as a missing one",
+  );
+  assert(
+    !/all \d+ referenced repo settings exist/.test(r.out),
+    "and never claims a clean result for references it could not judge",
+  );
+  assert(
+    /0 of 2 referenced repo settings exist/.test(r.out),
+    `and says how many it really judged (got ${r.out.trim()})`,
+  );
+}
+
+// An org setting shared with a SELECTED list of repositories: the listing cannot
+// say whether this repo is on it, so it is unchecked rather than present. Counting
+// it as configured would wave through the exact reference that interpolates an
+// empty string, which is the whole fault being guarded.
+{
+  const r = runChecker(
+    stub([], [], { kind: "holds", vars: [["SLATE_BASE_URL", 4]], secrets: [["BOOKING_API_KEY", 0]] }),
+    { "a.yml": PLAIN_WORKFLOW },
+  );
+  assert(r.code === 0, "a selected-repo org setting does not block the push");
+  assert(
+    /could NOT be checked/.test(r.out) && r.out.includes("vars.SLATE_BASE_URL"),
+    `and is named as unchecked (got ${r.out.trim()})`,
+  );
+  assert(
+    /4 selected/.test(r.out),
+    `with the reason, so the reader knows what to look at (got ${r.out.trim()})`,
+  );
+  assert(
+    /1 of 2 referenced repo settings exist/.test(r.out),
+    `and the secret it COULD judge still counts as judged (got ${r.out.trim()})`,
+  );
+}
+
+// The control that stops this from being the guard switched off: an org listing
+// that was READ and does not hold the name is still a real finding.
+{
+  const r = runChecker(stub([], [], { kind: "empty" }), { "a.yml": PLAIN_WORKFLOW });
+  assert(r.code !== 0, "a setting neither scope defines still fails");
+  assert(
+    r.out.includes("vars.SLATE_BASE_URL") && r.out.includes("secrets.BOOKING_API_KEY"),
+    `and both are named (got ${r.out.trim()})`,
+  );
+  assert(
+    !/could NOT be checked/.test(r.out),
+    "and nothing is reported unchecked, because the org listing was read",
+  );
+}
+
+// A repository owned by a PERSON has no organisation at all, so the org endpoint
+// answers 404. That is not a refusal: there is no second scope to read, the repo
+// listing already saw everything, and treating it as unreadable would turn every
+// real finding into an unchecked one while printing reassuring output.
+{
+  const r = runChecker(stub([], [], { kind: "no-such-org" }), { "a.yml": PLAIN_WORKFLOW });
+  assert(r.code !== 0, "a repo with no organisation behind it still reports a missing setting");
+  assert(
+    r.out.includes("vars.SLATE_BASE_URL"),
+    `and names it (got ${r.out.trim()})`,
+  );
+  assert(
+    !/could NOT be checked/.test(r.out),
+    "and reports nothing as unchecked, since there was nothing more to read",
+  );
+}
+
+// gh answering with no owner is a read that failed, not an absent organisation, so
+// it must not be folded into the 404 case above.
+{
+  const r = runChecker(stub([], [], { kind: "no-owner" }), { "a.yml": PLAIN_WORKFLOW });
+  assert(r.code === 0, "an unresolvable owner does not block the push");
+  assert(
+    /could NOT be checked/.test(r.out) && /owner/i.test(r.out),
+    `and says the owner is what could not be resolved (got ${r.out.trim()})`,
+  );
+}
+
+// A fully configured repo never asks the organisation at all, so it pays no extra
+// round trips. Proved by a stub that FAILS every org call: reaching one would make
+// this case loud rather than leaving the saving to be assumed.
+{
+  const r = runChecker(
+    stub(REAL_VARS, REAL_SECRETS, { kind: "refused", message: "the org listing was reached" }),
+  );
+  assert(r.code === 0, `a fully configured repo passes (got ${r.out.trim()})`);
+  assert(
+    !r.out.includes("the org listing was reached"),
+    `and never asked the organisation (got ${r.out.trim()})`,
   );
 }
 

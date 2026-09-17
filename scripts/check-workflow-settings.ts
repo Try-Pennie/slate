@@ -21,14 +21,18 @@ import { execFileSync } from "node:child_process";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
+  classifyOrgListingError,
   mayDeclarePerRun,
   missingRepoSettings,
   perRunDeclarations,
   referencedRepoSettings,
+  splitByOrgScope,
   splitPerRunMissing,
   stalePerRunDeclarations,
   workflowTriggers,
   type RepoSettingRef,
+  type SettingListing,
+  type UncheckedRef,
 } from "./lib/scan-workflow-env-coverage.ts";
 
 const repoRoot = new URL("..", import.meta.url).pathname;
@@ -70,6 +74,70 @@ function listNames(kind: "variable" | "secret"): Set<string> {
           e.code === "ENOENT" ? "gh is not installed." : (e.stderr ?? "").trim()
         }`,
     );
+  }
+}
+
+/**
+ * The organisation's own variables and secrets (#2342).
+ *
+ * `gh variable list` and `gh secret list` are REPO scope only, so a setting defined
+ * on the organisation is usable by the workflow and invisible to them. Reporting
+ * one as missing is how a guard teaches people to override it (L36): on 2026-09-14
+ * it refused a push naming seven settings that all existed.
+ *
+ * Read ONLY when something is absent from repo scope, so a fully configured repo
+ * pays nothing for it.
+ *
+ * `numSelectedRepos` comes back with the name because an org setting can be shared
+ * with a chosen list of repositories, and this listing cannot say whether this repo
+ * is on it. That case is UNCHECKED rather than present: counting it as configured
+ * would wave through exactly the reference that interpolates an empty string.
+ */
+function listOrgNames(): SettingListing {
+  let owner = "";
+  try {
+    owner = execFileSync("gh", ["repo", "view", "--json", "owner", "--jq", ".owner.login"], {
+      cwd: repoRoot,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+    }).trim();
+  } catch (err) {
+    const e = err as { stderr?: string };
+    return {
+      available: false,
+      reason: `gh could not say who owns this repository: ${(e.stderr ?? "").trim().split("\n")[0] ?? "no output"}`,
+    };
+  }
+  if (!owner) {
+    return { available: false, reason: "gh reported no owner for this repository" };
+  }
+
+  const read = (kind: "variable" | "secret"): Map<string, number> => {
+    const out = execFileSync(
+      "gh",
+      [kind, "list", "--org", owner, "--json", "name,numSelectedRepos"],
+      { cwd: repoRoot, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
+    );
+    const rows = JSON.parse(out || "[]") as { name?: string; numSelectedRepos?: number }[];
+    const map = new Map<string, number>();
+    for (const row of rows) {
+      if (typeof row.name === "string" && row.name) map.set(row.name, row.numSelectedRepos ?? 0);
+    }
+    return map;
+  };
+
+  try {
+    return { available: true, vars: read("variable"), secrets: read("secret") };
+  } catch (err) {
+    const e = err as { stderr?: string; stdout?: string };
+    const classified = classifyOrgListingError(`${e.stderr ?? ""}\n${e.stdout ?? ""}`);
+    if (classified.kind === "no-org") {
+      // A repository owned by a person, not an organisation. There is no org scope
+      // to read, so the repo listing already saw everything: an EMPTY org listing
+      // is the correct answer, not an unreadable one.
+      return { available: true, vars: new Map(), secrets: new Map() };
+    }
+    return { available: false, reason: `${owner}: ${classified.reason}` };
   }
 }
 
@@ -140,8 +208,27 @@ if (stale.length > 0) {
 }
 
 const existing = { vars: listNames("variable"), secrets: listNames("secret") };
-const missing = missingRepoSettings(referenced, existing);
-const { failing, unjudged } = splitPerRunMissing(missing, seenIn, declaredByFile);
+const absentFromRepo = missingRepoSettings(referenced, existing);
+// The per-run split runs FIRST, on purpose. A setting every referencing workflow
+// declares is provisioned per run already has a stated reason for being absent, and
+// reporting it as one the organisation could not be asked about would replace that
+// reason with a vaguer one (L11). It also means the org is not asked about the seven
+// LOADTEST settings, which are absent by design on every run.
+const { failing: undeclared, unjudged } = splitPerRunMissing(
+  absentFromRepo,
+  seenIn,
+  declaredByFile,
+);
+// Only then ask the organisation, and only about what is left, so a fully configured
+// repo and a repo whose only absences are declared both pay no extra round trips
+// (#2342).
+const org: SettingListing =
+  undeclared.length === 0
+    ? { available: true, vars: new Map(), secrets: new Map() }
+    : listOrgNames();
+const scoped = splitByOrgScope(undeclared, org);
+const failing: RepoSettingRef[] = scoped.missing;
+const unchecked: UncheckedRef[] = scoped.unchecked;
 
 // Said out loud, because a run that judged fewer references than it read and a run
 // that found everything present must never read the same (L98). The pre-push hook
@@ -168,6 +255,28 @@ if (unjudged.length > 0) {
   );
 }
 
+// A reference nothing could answer for (#2342). Printed with the same `note:`
+// prefix the per-run narrowing uses, and for the same reason: the hook echoes it,
+// so the reader of the push sees which references went unjudged. It must never
+// render as a reference that was checked and found missing, and it must never be
+// silent, because a run that could see less than the whole and a run that found
+// everything present must not read the same (L11, L98).
+if (unchecked.length > 0) {
+  const groups = new Map<string, string[]>();
+  for (const u of unchecked) {
+    groups.set(u.reason, [...(groups.get(u.reason) ?? []), `${u.kind}.${u.name}`]);
+  }
+  const lines = [...groups].map(
+    ([reason, names]) => `  ${names.join(", ")}\n    because ${reason}`,
+  );
+  console.log(
+    `note: ${unchecked.length} referenced setting(s) could NOT be checked, so this run ` +
+      `says nothing about whether they exist:\n${lines.join("\n")}\n` +
+      `  Check them by hand, or run this with a token that can read the organisation's ` +
+      `Actions variables and secrets.`,
+  );
+}
+
 if (failing.length > 0) {
   const lines = failing.map((m) => {
     const where = (seenIn.get(`${m.kind}.${m.name}`) ?? []).join(", ");
@@ -184,11 +293,14 @@ if (failing.length > 0) {
   );
 }
 
-const judged = referenced.length - unjudged.length;
+const judged = referenced.length - unjudged.length - unchecked.length;
+const notJudged: string[] = [];
+if (unjudged.length > 0) notJudged.push(`${unjudged.length} declared provisioned per run`);
+if (unchecked.length > 0) notJudged.push(`${unchecked.length} this run could not check`);
 console.log(
-  unjudged.length > 0
+  notJudged.length > 0
     ? `ok: ${judged} of ${referenced.length} referenced repo settings exist; ` +
-        `${unjudged.length} declared provisioned per run were not judged ` +
+        `${notJudged.join(" and ")} were not judged ` +
         `(${existing.vars.size} variables, ${existing.secrets.size} secrets listed)`
     : `ok: all ${referenced.length} referenced repo settings exist ` +
         `(${existing.vars.size} variables, ${existing.secrets.size} secrets listed)`,

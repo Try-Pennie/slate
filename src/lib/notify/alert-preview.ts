@@ -119,6 +119,12 @@ import {
 } from "@/lib/monitor/beyond-overflow";
 import { bookerUnstaffedAlert } from "@/lib/booking/alert-copy";
 import {
+  formatCiRefusedAlert,
+  formatCiStartedRecovery,
+  formatDeployLiveRecovery,
+  formatDeployNotLiveAlert,
+} from "@/lib/monitor/github-ci-health";
+import {
   oooAgentCalendarAlert,
   oooAgentDmAlert,
   oooBusyBlockFallbackAlert,
@@ -1519,6 +1525,69 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     state: "every event has a subscriber again",
     channel: "recovery",
     text: formatUnsubscribedEventsRecovery(),
+  },
+  // #2476: main merged and not live. The three endings read differently on purpose:
+  // one names a run to re-run, one sends the reader to a deploy job that reported
+  // success, and the third admits it does not recognise the ending.
+  {
+    key: "main_not_deployed",
+    state: "the last merge of a burst was cancelled and nothing followed it",
+    channel: "alert",
+    text: formatDeployNotLiveAlert({
+      reason: "cancelled",
+      tipSha: "56f16b8b1c2d3e4f5061728394a5b6c7d8e9f001",
+      servedCommit: "d5ca0d1e4f60",
+      behindMs: 95 * 60_000,
+      runUrl: "https://github.com/Try-Pennie/slate/actions/runs/35200000001",
+    }),
+  },
+  {
+    key: "main_not_deployed",
+    state: "the run reported success and the commit still is not being served",
+    channel: "alert",
+    text: formatDeployNotLiveAlert({
+      reason: "succeeded",
+      tipSha: "56f16b8b1c2d3e4f5061728394a5b6c7d8e9f001",
+      servedCommit: "d5ca0d1e4f60",
+      behindMs: 40 * 60_000,
+      runUrl: "https://github.com/Try-Pennie/slate/actions/runs/35200000002",
+    }),
+  },
+  {
+    key: "main_not_deployed",
+    state: "an ending this check does not recognise",
+    channel: "alert",
+    text: formatDeployNotLiveAlert({
+      reason: "unknown",
+      tipSha: "56f16b8b1c2d3e4f5061728394a5b6c7d8e9f001",
+      servedCommit: "d5ca0d1e4f60",
+      behindMs: 6 * 60 * 60_000,
+      runUrl: "https://github.com/Try-Pennie/slate/actions/runs/35200000003",
+    }),
+  },
+  {
+    key: "main_not_deployed",
+    state: "the tip is live again",
+    channel: "recovery",
+    text: formatDeployLiveRecovery("56f16b8b1c2d3e4f5061728394a5b6c7d8e9f001"),
+  },
+  // #2229: a run GitHub refused to start. One state, because the reader's next move
+  // is the same whatever refused it, and the message says so rather than naming a
+  // cause the check never measured.
+  {
+    key: "ci_runs_refused",
+    state: "the newest run's jobs executed nothing",
+    channel: "alert",
+    text: formatCiRefusedAlert({
+      runName: "CI",
+      runUrl: "https://github.com/Try-Pennie/slate/actions/runs/35200000004",
+    }),
+  },
+  {
+    key: "ci_runs_refused",
+    state: "jobs are starting again",
+    channel: "recovery",
+    text: formatCiStartedRecovery(),
   },
   // #2367: the two ways booking handoffs fail to reach the sales side.
   {
