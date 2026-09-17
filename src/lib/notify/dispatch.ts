@@ -82,6 +82,9 @@ export async function sendThrottledAlert(
   if (!mayWriteAlerts(key, "page")) return;
   if (!slackConfigured()) return;
   const db = supabaseAdmin();
+  // error-ok: an empty result reads as "never sent", which SENDS. That is the
+  // fail safe side and the same one #1169 chose for an unreadable stamp: a lost
+  // cooldown costs a duplicate page, a swallowed one would mute the alert.
   const { data } = await db
     .from("alert_state")
     .select("last_sent_at")

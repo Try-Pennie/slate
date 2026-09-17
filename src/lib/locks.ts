@@ -20,6 +20,11 @@ export async function acquireLock(
   if (!ins.error) return claimIso;
 
   // Key exists: steal it only if the current claim is stale.
+  // error-ok: a refused update arrives as `data: null`, which reads as "somebody
+  // else holds it" and is the SAFE side of this gate: the lane skips this tick
+  // and the next one retries. A read that stayed broken would stop the lane
+  // entirely, and the lane watchdog pages on exactly that (#1027 family), so the
+  // silence is watched rather than absolute.
   const { data } = await db
     .from("sync_locks")
     .update({ claimed_at: claimIso })

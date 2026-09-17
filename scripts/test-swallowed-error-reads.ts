@@ -102,6 +102,23 @@
 // built over three lines and a single hop stopped at a definition carrying no
 // `.from(`.
 //
+// #2542 ended the directory list. The surface is DERIVED (everything under
+// `src/`, minus a named exclusion carrying its reason), because a list grown one
+// incident at a time leaves everything not yet on it exempt from the check meant
+// to catch it, and nine widenings had not made that stop happening. Eight live
+// reads sat outside the list with the SHIPPED scanner flagging every one. Two are
+// worth naming: the booker's own `is_test` refusal read a FAILED `buckets` query
+// as "not a test bucket", so an unreadable table renders the public booker for a
+// SMOKE code; and `ensureDefaultSchedules` read a failed `availability_schedules`
+// query as "every agent is uncovered" and would refill a week somebody
+// personalised on /me. Both `unwrap` now. Four more were genuine safe degrades
+// and carry an `// error-ok:` naming what the empty result degrades TO.
+//
+// Its named BLOCKER is fixed in the same change: the opt-out reader could not see
+// a marker inside a ternary, so `AppHeader.tsx:123` (a deliberate, reasoned
+// `// error-ok:` written after the `?`) would have been a false positive the day
+// the surface widened. That is now the one shared reader, #2200.
+//
 // The boundary with scripts/test-unchecked-writes.ts is exact: a write with no
 // `.select(` has a result that goes nowhere, which is that guard's class; a write
 // WITH one has a result somebody consumes and believes, which is this one's.
@@ -113,7 +130,7 @@
 // the real booking/service.ts with its `// error-ok:` opt-outs stripped (which
 // MUST be caught, proving the guard verifies something against real reads).
 // Run: node --experimental-strip-types scripts/test-swallowed-error-reads.ts
-import { readdirSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { scanSwallowedErrorReads } from "./lib/scan-swallowed-error-reads.ts";
 import { assert, finish } from "./lib/harness.ts";
@@ -395,7 +412,33 @@ for (const f of FIXTURES) {
   assert(found === f.flagged, `${f.flagged ? "flags" : "allows"}: ${f.name}`);
 }
 
-// --- the scan surface: availability, booking, google, routing (#865), ooo (#1674) ---
+// --- the scan surface: ALL of src/, minus a named exclusion list (#2542) -------
+//
+// It was a hand written directory list, grown one incident at a time (#865,
+// #963, #1036, #1629, #1647, #1648, #1674, #2383, #2511), and what was not yet on
+// it was exempt from the check meant to catch it (L96). Eight live reads sat
+// outside it with the shipped scanner flagging every one, including the booker's
+// own `is_test` refusal, which read a FAILED `buckets` query as "not a test
+// bucket" and would have rendered the public booker for a SMOKE code.
+//
+// So the surface is DERIVED: everything under `src/`, minus entries named below
+// with a reason each. A derived surface cannot fall behind a new directory, and a
+// reason per exclusion is what stops the list becoming the old one under another
+// name (L129, L233).
+
+/**
+ * Files the scan does not read, each with the reason it cannot hold this defect.
+ *
+ * A `*.test.ts(x)` is excluded by the walk itself, because a test's own fixtures
+ * are not production reads.
+ */
+const EXCLUDED: Readonly<Record<string, string>> = {
+  // Never imported at runtime: it exists only so `tsc` checks the hand written
+  // PostgREST relationships. Its reads never EXECUTE, so there is no error to
+  // swallow and no empty result for anything to believe. Its own docstring says
+  // so, and its `(await ...).data` shape is the point of the assertions.
+  "src/lib/db/schema.type-test.ts": "never imported at runtime; type-checked only",
+};
 
 function tsFiles(dir: string, recursive = false): string[] {
   const out: string[] = [];
@@ -409,7 +452,23 @@ function tsFiles(dir: string, recursive = false): string[] {
   return out;
 }
 
-const surface = [
+const rel = (file: string) => file.slice(ROOT.length + 1).replaceAll("\\", "/");
+
+const surface = tsFiles(join(ROOT, "src"), true).filter((f) => !(rel(f) in EXCLUDED));
+
+// An exclusion naming a file that no longer exists reads as a considered decision
+// while covering nothing (L346), so every entry has to be a real file.
+for (const [path, why] of Object.entries(EXCLUDED)) {
+  assert(
+    existsSync(join(ROOT, path)),
+    `the exclusion for ${path} names a file that exists (${why})`,
+  );
+}
+
+// The old hand written list, kept ONLY as the proof that the derived surface is a
+// superset of it: a walk that silently stopped early and a clean tree produce the
+// same empty finding list (L98).
+const previouslyScanned = [
   ...tsFiles(join(ROOT, "src", "lib", "availability")),
   ...tsFiles(join(ROOT, "src", "lib", "booking")),
   ...tsFiles(join(ROOT, "src", "lib", "google")),
@@ -466,7 +525,25 @@ const surface = [
   // 200 that looked like a quiet morning.
   ...tsFiles(join(ROOT, "src", "app", "api", "cron"), true),
 ];
-assert(surface.length > 0, `found source files to scan (got ${surface.length})`);
+
+// A walk that reached nothing, or a fraction of the tree, reports clean exactly
+// as a clean tree does, so the surface is REFUSED rather than merely reported
+// when it cannot be what it claims to be (L98, L320).
+assert(surface.length > 300, `the walk reached the whole src tree (got ${surface.length} files)`);
+const missed = previouslyScanned.filter((f) => !surface.includes(f));
+assert(
+  missed.length === 0,
+  `the derived surface covers every path the hand written list held (missing ${JSON.stringify(missed.map(rel))})`,
+);
+assert(
+  surface.length > previouslyScanned.length,
+  `the derived surface is WIDER than the list it replaced ` +
+    `(${surface.length} files against ${previouslyScanned.length})`,
+);
+assert(
+  !surface.some((f) => rel(f) in EXCLUDED),
+  "every named exclusion is really out of the scanned surface",
+);
 
 // --- real-file mutation control: stripping the opt-outs MUST be caught --------
 // booking/service.ts carries the `// error-ok:` opt-outs on its deliberately
@@ -930,9 +1007,8 @@ for (const file of surface) {
 }
 if (siteCount === 0) {
   console.log(
-    `ok: no swallowed-error reads across ${surface.length} availability, booking, ` +
-      `google, routing, salesforce, webhook, admin, agent-page, provisioning, time off, ` +
-      `monitoring and cron lane source files`,
+    `ok: no swallowed-error reads across ${surface.length} source files, which is ` +
+      `all of src/ minus ${Object.keys(EXCLUDED).length} named exclusion(s)`,
   );
 }
 

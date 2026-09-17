@@ -2,6 +2,7 @@ import Booker from "@/components/Booker";
 import StandaloneBookerShell from "@/components/StandaloneBookerShell";
 import { ClientErrorBeacon } from "@/components/ClientErrorBeacon";
 import { supabaseAdmin } from "@/lib/supabase/admin";
+import { unwrap } from "@/lib/db/result";
 import { loadBookingHorizonDays } from "@/lib/booking/settings";
 import { loadReasonOptions } from "@/lib/booking/reason-options";
 import { resolveRequestedCode } from "@/lib/routing/catchall";
@@ -41,11 +42,18 @@ export default async function BookEntry({
   const resolved = resolveRequestedCode(requestedCode);
   const bucketCode = resolved.code;
 
-  const { data: bucketRow } = await supabaseAdmin()
-    .from("buckets")
-    .select("org_id, is_test")
-    .eq("code", bucketCode)
-    .maybeSingle();
+  // #2542: `unwrap`, not a swallowed read. `bucketRow?.is_test` reads a FAILED
+  // query as "not a test bucket", so an unreadable `buckets` table renders the
+  // public booker for a SMOKE code (#396) instead of refusing it. A real read
+  // error is a broken deploy and belongs on the screen as one.
+  const bucketRow = unwrap(
+    await supabaseAdmin()
+      .from("buckets")
+      .select("org_id, is_test")
+      .eq("code", bucketCode)
+      .maybeSingle(),
+    "book page bucket",
+  );
   // A synthetic test bucket (#396) has no public booking page — treat its code
   // like a misconfigured link rather than rendering an (empty) Booker for it.
   if (bucketRow?.is_test) {

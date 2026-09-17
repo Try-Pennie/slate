@@ -202,6 +202,10 @@ export async function POST(req: NextRequest) {
 
     if (action?.action_id === OOO_REJECT_ACTION && requestId) {
       // The modal must open before the trigger_id expires (~3s), so do it inline.
+      // error-ok: this read only DECORATES the modal with the dates. An empty
+      // result falls back to "this request", the modal still opens inside the
+      // 3s window and the rejection it collects is unaffected, so nothing
+      // downstream reads the emptiness as a fact about the request.
       const { data } = await supabaseAdmin()
         .from("ooo_requests")
         .select("starts_at, ends_at, display_tz_id, display_tz_label")

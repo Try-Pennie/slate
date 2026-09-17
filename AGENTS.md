@@ -964,11 +964,15 @@ day. That was #277; it routed the availability-critical reads through **`unwrap`
 (`data: null, error: null`) through unchanged.
 
 **`scripts/test-swallowed-error-reads.ts`** (#315) keeps that invariant from
-eroding. It scans `src/lib/availability/*`, `src/lib/booking/*`,
-`src/lib/google/*`, `src/lib/routing/*`, `src/lib/salesforce/*`,
-`src/lib/webhooks/*`, `src/lib/ooo/*`, `src/lib/monitor/*`, `src/lib/provision.ts`
-and the whole `src/app/admin/**`, `src/app/me/**` and `src/app/api/cron/**` trees,
-and fails on an awaited SELECT whose `error` is never consulted. The scan logic lives in
+eroding. It scans **all of `src/`** and fails on an awaited SELECT whose `error`
+is never consulted. That surface is DERIVED rather than listed (#2542): it used to
+be a hand written directory list grown one incident at a time, so everything not
+yet on it was exempt from the check meant to catch it (L96), and nine widenings
+had not made that stop happening. Eight live reads sat outside the list with the
+shipped scanner flagging every one, the booker's own `is_test` refusal among them.
+A file leaves the surface only through the NAMED exclusion list in that file, each
+entry carrying its reason; today it holds one, `src/lib/db/schema.type-test.ts`,
+which is never imported at runtime. The scan logic lives in
 `scripts/lib/scan-swallowed-error-reads.ts` (unit-testable), and the guard carries
 positive controls (stripping the opt-outs from the real `booking/service.ts`, and
 reverting `staffing-depth-load.ts`'s four unwraps, must both be caught) so it can

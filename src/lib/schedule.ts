@@ -1,4 +1,5 @@
 import { supabaseAdmin } from "@/lib/supabase/admin";
+import { unwrap } from "@/lib/db/result";
 import { defaultRuleRows, type OrgDefaults } from "@/lib/schedule-core";
 import { selectAllPages } from "@/lib/supabase/paginate";
 
@@ -42,17 +43,26 @@ export async function upsertUserSchedule(
 export async function ensureDefaultSchedules(orgId: string): Promise<number> {
   const db = supabaseAdmin();
 
-  const { data: org } = await db
-    .from("organizations")
-    .select(
-      "default_timezone, default_start_minute, default_end_minute, default_weekdays",
-    )
-    .eq("id", orgId)
-    .single();
+  // #2542: `unwrap`, not a swallowed read. A failed read arrives here as "no
+  // org row", this returns 0, and the caller reads that as "every agent already
+  // has hours" while newly synced agents keep zero availability.
+  const org = unwrap(
+    await db
+      .from("organizations")
+      .select(
+        "default_timezone, default_start_minute, default_end_minute, default_weekdays",
+      )
+      .eq("id", orgId)
+      .single(),
+    "ensureDefaultSchedules org defaults",
+  );
   if (!org) return 0;
   const defaults = org as unknown as OrgDefaults;
 
-  const [{ data: users }, { data: schedules }, ruleRows] = await Promise.all([
+  // The same #2542 reading applies to both of these, and the second is the
+  // dangerous one: an unreadable `availability_schedules` makes EVERY agent look
+  // uncovered, and this fill then replaces a week somebody personalised on /me.
+  const [usersRes, schedulesRes, ruleRows] = await Promise.all([
     db.from("users").select("id").eq("org_id", orgId),
     db.from("availability_schedules").select("id, user_id"),
     // Paged: one rule per agent per working weekday, so the 200-agent design
@@ -63,6 +73,8 @@ export async function ensureDefaultSchedules(orgId: string): Promise<number> {
       db.from("availability_rules").select("schedule_id").range(from, to),
     ),
   ]);
+  const users = unwrap(usersRes, "ensureDefaultSchedules users");
+  const schedules = unwrap(schedulesRes, "ensureDefaultSchedules schedules");
   const scheduleRows = (schedules ?? []) as { id: string; user_id: string }[];
   const withRules = new Set(ruleRows.map((r) => r.schedule_id));
   const covered = new Set(
