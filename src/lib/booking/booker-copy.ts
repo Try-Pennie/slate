@@ -36,8 +36,8 @@ import { formatLongDate } from "../date/parse.ts";
  * second copy of it (#2221). `@/lib/date/parse` imports nothing but Luxon, so
  * the no-alias rule above still holds and scripts can still drive this natively.
  */
-export function longDayLabel(iso: string, zone: string): string {
-  return formatLongDate(DateTime.fromISO(iso, { zone })) ?? "";
+export function longDayLabel(iso: string, zone: string, opts?: { year?: boolean }): string {
+  return formatLongDate(DateTime.fromISO(iso, { zone }), opts) ?? "";
 }
 
 // --- the times panel ---------------------------------------------------------
@@ -150,6 +150,20 @@ export const NEXT_DAYS_COPY = {
 // --- the details step --------------------------------------------------------
 
 export const DETAILS_COPY = {
+  /**
+   * What this screen is for, said once, at the top of it (#2361).
+   *
+   * Measured against cal.com on 2026-09-15: its confirm step is headed
+   * ("Confirm your details") and states the booking in full underneath. Slate's
+   * had no heading at all, so the highest intent screen in the product was also
+   * the only one that did not say what it was.
+   *
+   * It names the CALL rather than the details, because the fields are labelled
+   * for themselves and a title over them saying they are details would be a
+   * sentence about the interface (L604). The button below names the act; this
+   * names the screen, so neither is the other said twice (L605).
+   */
+  heading: "Confirm your call",
   confirm: "Confirm booking",
   confirming: "Booking your call…",
   /** The middle of the three states every time-taking action must keep distinct. */
@@ -158,7 +172,44 @@ export const DETAILS_COPY = {
    *  nothing about the call: the agent is not chosen until confirm, so the panel
    *  cannot honestly claim anything about who dials (#1333). */
   yourNumber: "Your number:",
+  /**
+   * What each field asks for (#2362).
+   *
+   * They were built in the component by capitalising the state key, which made
+   * them the one set of lead facing words the preview could not show and the one
+   * set nobody could read before shipping. The NAME is now two fields, the way
+   * cal.com asks, so the first name is answered rather than derived; the last is
+   * optional, so somebody with one name is not refused.
+   */
+  fields: {
+    firstName: "First name",
+    lastName: "Last name",
+    email: "Email",
+    phone: "Phone",
+  },
 } as const;
+
+/**
+ * The chosen time, stated in full on the screen that commits to it (#2361).
+ *
+ * It said "Tue 15" and a time, under no heading, while the weekday, the month
+ * and the year lived nowhere on the step. The YEAR is the one that matters most
+ * and is easiest to argue away: a lead booking in late December is choosing
+ * between two years on a day strip whose chips carry a weekday, a day number and
+ * a month, and nothing else on the page names one.
+ *
+ * It does NOT state the DURATION, although cal.com's step does. The event panel
+ * states it on this same composed screen, in both layouts, so a second copy here
+ * would be one fact said twice on one surface (L605). Read the page, not the
+ * component.
+ *
+ * It does not name the timezone either, for the same reason twice over: the zone
+ * picker sits above the day strip on this step and the event panel names it again
+ * below.
+ */
+export function chosenWhen(day: string, time: string): string {
+  return `${day} at ${time}`;
+}
 
 /**
  * Why the phone field is empty when the lead arrived with a number (#1356).
@@ -309,8 +360,10 @@ export const CONFIRMED_COPY = {
   manageLink: "View or manage your booking",
 } as const;
 
+/** Built from the confirm step's own join, so the screen a lead commits on and the
+ *  screen that confirms it cannot spell one instant two ways (L41). */
 export function confirmedWhen(day: string, time: string, zoneLabel: string): string {
-  return `${day} at ${time} (${zoneLabel})`;
+  return `${chosenWhen(day, time)} (${zoneLabel})`;
 }
 
 /** Falls back to a phrase, never to an empty gap: "on its way to ." would read as
@@ -333,9 +386,16 @@ export function confirmedAnnouncement(day: string, time: string, zoneLabel: stri
 export const DUPLICATE_COPY = {
   heading: "Heads up: you already have another call booked",
   viewOrCancel: "View or cancel that booking",
-  /** The withheld case. Names nothing, hands over no token. */
+  /**
+   * The withheld case. Names nothing, hands over no token.
+   *
+   * It used to point at "the confirmation email we sent you", which Pennie does
+   * not send: #64 settled the confirmation as Google's native calendar
+   * invitation, from the advisor's calendar. Same correction as the not found
+   * screen (#2364), because it was the same sentence in three places (L30).
+   */
   checkYourEmail:
-    "Check the confirmation email we sent you if you need to view or change it.",
+    "Check the calendar invitation for that call if you need to view or change it.",
 } as const;
 
 export function duplicateSetFor(when: string): string {

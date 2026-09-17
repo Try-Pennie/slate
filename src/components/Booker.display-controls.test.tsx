@@ -102,7 +102,7 @@ describe("Booker display controls (#2160)", () => {
     await userEvent.click(await dayChip());
     await userEvent.click(await screen.findByRole("button", { name: /:\d{2}/ }));
 
-    await screen.findByLabelText("Name");
+    await screen.findByLabelText("First name");
 
     // The strip above them stays clickable on this step (a day chip takes the
     // lead back to that day's times), so a row that vanished while the control
@@ -125,7 +125,7 @@ describe("Booker display controls (#2160)", () => {
     render(<Booker {...baseProps} />);
     await userEvent.click(await dayChip());
     await userEvent.click(await screen.findByRole("button", { name: /:\d{2}/ }));
-    await screen.findByLabelText("Name");
+    await screen.findByLabelText("First name");
 
     const before = screen.getByTestId("chosen-time").textContent;
 
@@ -137,7 +137,8 @@ describe("Booker display controls (#2160)", () => {
       expect(screen.getByTestId("chosen-time").textContent).not.toBe(before);
     });
 
-    await userEvent.type(screen.getByLabelText("Name"), "Dana Lead");
+    await userEvent.type(screen.getByLabelText("First name"), "Dana");
+    await userEvent.type(screen.getByLabelText("Last name"), "Lead");
     await userEvent.type(screen.getByLabelText("Email"), "dana@example.com");
     await userEvent.type(screen.getByLabelText("Phone"), "(203) 561-5295");
     await userEvent.click(screen.getByRole("button", { name: /confirm booking/i }));

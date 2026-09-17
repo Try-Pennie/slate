@@ -23,11 +23,15 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import Booker from "@/components/Booker";
 import ManageBooking from "@/components/ManageBooking";
+import ManageNotFound from "@/components/ManageNotFound";
+import { formatSlotTime } from "@/lib/booking/slot-label";
 import { RESCHEDULE_REASONS, CANCEL_REASONS } from "@/lib/booking/core";
 import {
   CONFIRMED_COPY,
   DETAILS_COPY,
+  chosenWhen,
   contactDisclosure,
+  longDayLabel,
   NEAREST_TIMES_COPY,
   NEXT_DAYS_COPY,
   PICKER_COPY,
@@ -40,6 +44,7 @@ import {
   BEFORE_COPY,
   CANCEL_COPY,
   LIVE_COPY,
+  NOT_FOUND_COPY,
   PHONE_COPY,
   RESCHEDULE_COPY,
   advisorWillCall,
@@ -103,6 +108,31 @@ describe("the preview shows what the booker actually renders (#1343)", () => {
     // and so cannot tell whether this sentence reached a customer or only the
     // preview.
     expect(pageText()).toContain(contactDisclosure());
+
+    // #2361: the step says what it is for, and states the chosen time in full.
+    // The heading is asserted as a HEADING rather than as text, because the fault
+    // it fixes was a step with no heading at all.
+    expect(screen.getByRole("heading", { name: DETAILS_COPY.heading })).toBeTruthy();
+    expect(screen.getByTestId("chosen-time").textContent).toBe(
+      chosenWhen(longDayLabel(slotIso, ZONE, { year: true }), formatSlotTime(slotIso, ZONE)),
+    );
+
+    // #2362: the name is asked in two fields, in the builder's words, and the
+    // preview's labels are the ones actually on screen.
+    for (const label of Object.values(DETAILS_COPY.fields)) {
+      expect(screen.getByLabelText(label)).toBeTruthy();
+    }
+  });
+
+  // #2364: the terminal screen for a link that resolved to nothing. Its words used
+  // to live inline in the component, so the preview could not show them and nobody
+  // read the one instruction on it until a lead followed it to an inbox with no
+  // such email in it.
+  it("uses the builder's words on the booking-not-found screen", () => {
+    render(<ManageNotFound theme="light" />);
+    for (const line of [NOT_FOUND_COPY.heading, NOT_FOUND_COPY.causes, NOT_FOUND_COPY.recovery]) {
+      expect(pageText()).toContain(line);
+    }
   });
 
   it("uses the builder's words for the closed state and the search button", async () => {
@@ -157,7 +187,8 @@ describe("the preview shows what the booker actually renders (#1343)", () => {
     await act(async () => {});
     fireEvent.click(screen.getByRole("button", { name: /^(TODAY|MON|TUE|WED|THU|FRI|SAT|SUN)/ }));
     fireEvent.click(screen.getByRole("button", { name: /:\d{2}/ }));
-    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Dana Lead" } });
+    fireEvent.change(screen.getByLabelText(DETAILS_COPY.fields.firstName), { target: { value: "Dana" } });
+    fireEvent.change(screen.getByLabelText(DETAILS_COPY.fields.lastName), { target: { value: "Lead" } });
     fireEvent.change(screen.getByLabelText("Email"), { target: { value: "dana@example.com" } });
     fireEvent.change(screen.getByLabelText("Phone"), { target: { value: "(203) 561-5295" } });
     fireEvent.click(screen.getByRole("button", { name: DETAILS_COPY.confirm }));
@@ -206,7 +237,8 @@ describe("the preview shows what the booker actually renders (#1343)", () => {
     await act(async () => {});
     fireEvent.click(screen.getByRole("button", { name: /^(TODAY|MON|TUE|WED|THU|FRI|SAT|SUN)/ }));
     fireEvent.click(screen.getByRole("button", { name: /:\d{2}/ }));
-    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Dana Lead" } });
+    fireEvent.change(screen.getByLabelText(DETAILS_COPY.fields.firstName), { target: { value: "Dana" } });
+    fireEvent.change(screen.getByLabelText(DETAILS_COPY.fields.lastName), { target: { value: "Lead" } });
     fireEvent.change(screen.getByLabelText("Email"), { target: { value: "new@example.com" } });
     fireEvent.change(screen.getByLabelText("Phone"), { target: { value: "(203) 561-5295" } });
     fireEvent.click(screen.getByRole("button", { name: DETAILS_COPY.confirm }));

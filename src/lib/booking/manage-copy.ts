@@ -19,6 +19,43 @@
  * No `@/` imports, so scripts can drive it node-natively.
  */
 
+// --- the link resolved to no booking ------------------------------------------
+
+/**
+ * What a lead reads when their manage link finds nothing (#634, reworded #2364).
+ *
+ * The screen is the good part and is better than the incumbent's: cal.com answers
+ * a dead booking link with a generic 404 offering its own documentation and blog.
+ * This one says what happened, why it may have happened, and what to do.
+ *
+ * The instruction was the wrong part. It said to open "the most recent
+ * confirmation email from Pennie", and there is no such email: #64 settled the
+ * confirmation as Google's native calendar invitation, sent from the ADVISOR's
+ * calendar, and Slate sends nothing else. So a lead searching their inbox for
+ * Pennie found nothing, while the link they needed sat in an invitation from
+ * somebody they may not recognise by name.
+ *
+ * The recovery itself was always real: the invite's description carries
+ * "Reschedule or cancel: <link>" (`eventDescription` in `booking/core.ts`), which
+ * is why the sentence names those words rather than describing them. It names the
+ * SENDER too, because "not from Pennie" is the whole reason the old instruction
+ * failed, and it says "your advisor" rather than a name or a pronoun: nothing on
+ * the agent record says how a person wants to be referred to, and this screen has
+ * no booking in scope to read one from anyway.
+ *
+ * It lives here rather than inline in `ManageNotFound` so it can be read before it
+ * ships, like every other sentence a lead can reach (L41).
+ */
+export const NOT_FOUND_COPY = {
+  heading: "We couldn't find that booking",
+  causes:
+    "The link may have expired, the booking may have already been cancelled, or the " +
+    "address might be slightly off.",
+  recovery:
+    "Look for the calendar invitation your advisor sent for this call. The link to " +
+    "reschedule or cancel is in the invitation's details.",
+} as const;
+
 // --- the live booking ---------------------------------------------------------
 
 export const LIVE_COPY = {
@@ -88,7 +125,8 @@ export const PHONE_COPY = {
  * happened, and a single "could not save" would flatten both (L11).
  */
 export const MANAGE_PHONE_NOT_FOUND =
-  "We could not find this booking. Open the link from your confirmation email again.";
+  "We could not find this booking. Open the reschedule or cancel link in your calendar " +
+  "invitation again.";
 export const MANAGE_PHONE_NOT_CHANGEABLE =
   "This call is over, so there is no number left to change. Book a new time whenever you are ready.";
 

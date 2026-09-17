@@ -43,8 +43,10 @@ import {
   noAdvisorsAvailable,
   closedNoReopenDate,
   closedUntil,
+  chosenWhen,
   confirmedAnnouncement,
   confirmedWhen,
+  longDayLabel,
   duplicateSetFor,
   inviteOnItsWay,
   BOOKER_CANCEL_COPY,
@@ -61,6 +63,7 @@ import {
   CANCEL_COPY,
   DONE_COPY,
   LIVE_COPY,
+  NOT_FOUND_COPY,
   RESCHEDULE_COPY,
   MANAGE_PHONE_NOT_CHANGEABLE,
   MANAGE_PHONE_NOT_FOUND,
@@ -106,7 +109,8 @@ const DAY = "Monday, August 17";
  * what a lead reads, and a preview that is believed and wrong is worse than none.
  * The instant is fixed, so the render stays deterministic.
  */
-const TIME = formatSlotTime("2026-08-17T18:30:00.000Z", ZONE);
+const SLOT_ISO = "2026-08-17T18:30:00.000Z";
+const TIME = formatSlotTime(SLOT_ISO, ZONE);
 const ZONE_LABEL = "EDT";
 const PHONE = "(215) 555-0100";
 const EMAIL = "dana@example.com";
@@ -177,8 +181,22 @@ export function bookerCopyScreens(): CopyScreen[] {
     },
     {
       screen: "Booker: the details step",
-      purpose: "The last screen before a commitment, so nothing here may over promise.",
+      purpose:
+        "The last screen before a commitment, so nothing here may over promise, and " +
+        "the highest intent screen in the product, so it has to state the time it is " +
+        "committing to in full (#2361). Read the four field labels together: the name " +
+        "is asked in two fields now, the way cal.com asks, so the first name is " +
+        "answered rather than worked out from whatever was typed (#2362).",
       lines: [
+        { state: "what the screen is for", text: DETAILS_COPY.heading },
+        {
+          state: "the chosen time, stated in full",
+          text: chosenWhen(longDayLabel(SLOT_ISO, ZONE, { year: true }), TIME),
+        },
+        ...Object.values(DETAILS_COPY.fields).map((label) => ({
+          state: `the ${label.toLowerCase()} field asks for`,
+          text: label,
+        })),
         { state: "the button at rest", text: DETAILS_COPY.confirm },
         { state: "the booking is being made", text: DETAILS_COPY.confirming },
         { state: "it has been running a while", text: DETAILS_COPY.stillWorking },
@@ -433,6 +451,19 @@ export function bookerCopyScreens(): CopyScreen[] {
         { state: "the move landed", text: RESCHEDULE_COPY.moved },
         { state: "and what follows it", text: movedNote(EMAIL) },
         { state: "no address on the booking", text: movedNote(null) },
+      ],
+    },
+    {
+      screen: "Manage: the link found no booking",
+      purpose:
+        "The end of the road for a lead whose link is stale, mistyped or truncated, " +
+        "so the one instruction on it has to name something that really exists. It " +
+        "named a confirmation email from Pennie for months, and Pennie sends none " +
+        "(#64, #2364): the link lives in the calendar invitation the advisor sent.",
+      lines: [
+        { state: "what happened", text: NOT_FOUND_COPY.heading },
+        { state: "why it may have happened", text: NOT_FOUND_COPY.causes },
+        { state: "what to do about it", text: NOT_FOUND_COPY.recovery },
       ],
     },
     {

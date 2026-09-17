@@ -17,6 +17,58 @@ import { isUsPhone, PHONE_DIGITS, splitPhoneExtension } from "./phone-format.ts"
 export type AttendeeInput = { name?: string; email?: string; phone?: string };
 export type AttendeeErrors = Partial<Record<"name" | "email" | "phone", string>>;
 
+/**
+ * The name as the BOOKER asks for it: two fields, the way cal.com asks (#2362).
+ *
+ * The payload, the stored row and `validateAttendee` all carry one `name` and go
+ * on doing so. These two exist so the FIRST name is something a lead answered
+ * rather than something Slate worked out by splitting whatever they typed into a
+ * single box. That guess was right for "Mary Smith" and wrong for "Smith, Mary",
+ * and it is not internal: it reaches Regal and greets the lead in the first
+ * message Pennie ever sends them.
+ */
+export type NameFields = { firstName?: string; lastName?: string };
+export type NameFieldErrors = Partial<Record<"firstName" | "lastName", string>>;
+
+/** What the two fields make: the one name every layer below the form carries. */
+export function joinName(fields: NameFields): string {
+  return [fields.firstName?.trim(), fields.lastName?.trim()]
+    .filter((part): part is string => !!part)
+    .join(" ");
+}
+
+/**
+ * A prefilled full name, shown as the two fields.
+ *
+ * This is the one split left, and it happens IN FRONT OF THE LEAD: a landing page
+ * hands over one string, the fields show what Slate made of it, and the person can
+ * correct it before they commit. An inference somebody can see and change is not
+ * an inference presented as a recorded fact (L192).
+ *
+ * Everything after the first word is the last name, so joining the two back
+ * together returns exactly what arrived.
+ */
+export function splitName(full: string | null | undefined): Required<NameFields> {
+  const parts = (full ?? "").trim().split(/\s+/).filter((p) => p.length > 0);
+  return { firstName: parts[0] ?? "", lastName: parts.slice(1).join(" ") };
+}
+
+/**
+ * Which FIELD is wrong, which the joined name cannot say.
+ *
+ * Only the first name is required, matching cal.com and leaving somebody with one
+ * name able to book. It is never stricter than `validateAttendee`, which judges
+ * the joined value: a non-empty first name always joins to a non-empty name, so
+ * the form refuses nothing the server would have taken (L99). The length cap is
+ * the server's, on the joined value, because that is what gets stored.
+ */
+export function nameFieldErrors(fields: NameFields): NameFieldErrors {
+  const errors: NameFieldErrors = {};
+  if (!fields.firstName?.trim()) errors.firstName = "Enter your first name";
+  else if (joinName(fields).length > MAX) errors.firstName = "Name is too long";
+  return errors;
+}
+
 const EMAIL_SHAPE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
 // Contact length cap (#1034): reject a multi-MB blob before it reaches Postgres /
 // gcal event bodies / webhook payloads. Checked before the shape regex so a huge

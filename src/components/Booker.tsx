@@ -10,7 +10,14 @@ import { SlotTimes } from "@/components/SlotTimes";
 import { useSlotPicker } from "@/components/use-slot-picker";
 import { rescheduleOffersAlternatives } from "@/lib/booking/nearest-slots";
 import { NearestTimesPanel } from "@/components/NearestTimes";
-import { validateAttendee, type AttendeeErrors } from "@/lib/attendee";
+import {
+  validateAttendee,
+  nameFieldErrors,
+  joinName,
+  splitName,
+  type AttendeeErrors,
+  type NameFieldErrors,
+} from "@/lib/attendee";
 import { prefillPhone } from "@/lib/phone-format";
 import { usePhoneCaret } from "@/lib/usePhoneCaret";
 import { PHONE_COPY, advisorWillCall } from "@/lib/booking/manage-copy";
@@ -31,6 +38,8 @@ import {
   BOOKING_ERROR_COPY,
   CONFIRMED_COPY,
   DETAILS_COPY,
+  chosenWhen,
+  longDayLabel,
   contactDisclosure,
   DUPLICATE_COPY,
   HONEYPOT_LABEL,
@@ -67,10 +76,61 @@ import { embedParentOrigin } from "@/lib/embed/parent-origin";
 import ReasonPicker from "@/components/ReasonPicker";
 import { validateReason, type ReasonOption } from "@/lib/booking/core";
 
+/** What the page hands over: one name, as every layer below the form carries it. */
 interface Attendee {
   name: string;
   email: string;
   phone: string;
+}
+
+/**
+ * What the FORM holds (#2362).
+ *
+ * The name is two fields here and one everywhere else. cal.com asks for a first
+ * name and Slate worked one out by splitting whatever was typed into a single
+ * box, which is right for "Mary Smith" and wrong for "Smith, Mary"; that value is
+ * not internal, it reaches Regal and greets the lead in the first message Pennie
+ * sends. The two are joined on submit, so the payload, the stored row and every
+ * consumer are unchanged.
+ */
+interface AttendeeFields {
+  firstName: string;
+  lastName: string;
+  email: string;
+  phone: string;
+}
+
+/** The fields, in the order they are asked and in the order focus walks them. */
+const ATTENDEE_FIELDS = ["firstName", "lastName", "email", "phone"] as const;
+
+/**
+ * What a browser should offer to fill each field with.
+ *
+ * Named per field rather than derived from the key, because the two name fields
+ * take the values the platform actually publishes: a browser that has "Mary" and
+ * "Smith" stored cannot fill either from a field calling itself `name`.
+ */
+const AUTOCOMPLETE = {
+  firstName: "given-name",
+  lastName: "family-name",
+  email: "email",
+  phone: "tel",
+} as const;
+
+/** What can be wrong, per field the lead can actually correct. */
+type FormFieldErrors = NameFieldErrors & Pick<AttendeeErrors, "email" | "phone">;
+
+/**
+ * A server refusal, shown against a field.
+ *
+ * The API judges the joined `name`, so it can only ever blame `name`. The form
+ * asks in two fields and makes the first one required, so that refusal belongs on
+ * the first name: putting it on a field the lead cannot see would be a message
+ * about a state they cannot change (L111).
+ */
+function formErrorsFromServer(errors: AttendeeErrors): FormFieldErrors {
+  const { name, ...rest } = errors;
+  return name ? { ...rest, firstName: name } : rest;
 }
 
 /** The lead's OTHER active booking, surfaced by /booking so the confirmation
@@ -404,10 +464,16 @@ export default function Booker({
   // type it back either. An empty field with no explanation would send them to
   // press confirm and be told "enter your phone number", which is true and useless.
   const initialPhone = useMemo(() => prefillPhone(initialAttendee.phone), [initialAttendee.phone]);
-  const [attendee, setAttendee] = useState<Attendee>(() => ({
-    ...initialAttendee,
+  // #2362: a prefilled full name is shown SPLIT, in the two fields, so the guess
+  // is in front of the lead and can be corrected before they commit. An inference
+  // somebody can see and change is not one presented as a recorded fact (L192).
+  const [attendee, setAttendee] = useState<AttendeeFields>(() => ({
+    ...splitName(initialAttendee.name),
+    email: initialAttendee.email,
     phone: initialPhone.value,
   }));
+  /** The one name every layer below this form carries. */
+  const attendeeName = joinName(attendee);
   // Shown until they type something, then it has served its purpose: it explains
   // an empty field, and the field is no longer empty. The SENTENCE comes from the
   // reason the number was dropped, never from the value, so an unfinished number
@@ -417,7 +483,10 @@ export default function Booker({
   // Honeypot (#1033): a real user never sees or fills the hidden decoy below, so
   // it stays empty; a bot that fills every field trips the server-side check.
   const [honeypot, setHoneypot] = useState("");
-  const [fieldErrors, setFieldErrors] = useState<AttendeeErrors>({});
+  // Keyed by the FIELD a lead can correct, which is not what the server judges:
+  // it validates the joined name and can only answer `name`, so a refusal from it
+  // is shown on the first name, the field the form makes required (#2362).
+  const [fieldErrors, setFieldErrors] = useState<FormFieldErrors>({});
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // #1332 shapes the number as it is typed; #2162 keeps the caret where the lead
@@ -466,7 +535,7 @@ export default function Booker({
   // mounts in its place; without this, keyboard focus drops to <body> and the
   // user has to re-traverse the calendar to reach the form.
   useEffect(() => {
-    if (selectedSlot) document.getElementById("booker-name")?.focus();
+    if (selectedSlot) document.getElementById("booker-firstName")?.focus();
   }, [selectedSlot]);
 
   // #1339: the button that revealed the far-side days is gone once they are on
@@ -574,10 +643,16 @@ export default function Booker({
   async function submit() {
     if (!selectedSlot) return;
 
-    const errors = validateAttendee(attendee);
+    // Two judgements, one per question. `validateAttendee` is the shared rule the
+    // server runs too, over the joined name; `nameFieldErrors` says WHICH of the
+    // two name fields to blame, which the joined value cannot (#2362).
+    const errors: FormFieldErrors = {
+      ...formErrorsFromServer(validateAttendee({ ...attendee, name: attendeeName })),
+      ...nameFieldErrors(attendee),
+    };
     setFieldErrors(errors);
     if (Object.keys(errors).length > 0) {
-      const first = (["name", "email", "phone"] as const).find((f) => errors[f]);
+      const first = ATTENDEE_FIELDS.find((f) => errors[f]);
       if (first) document.getElementById(`booker-${first}`)?.focus();
       return;
     }
@@ -601,7 +676,7 @@ export default function Booker({
           timezone: zone,
           salesforceId,
           attendee: {
-            name: attendee.name.trim(),
+            name: attendeeName,
             email: attendee.email.trim(),
             phone: attendee.phone.trim(),
           },
@@ -646,7 +721,7 @@ export default function Booker({
         // rather than left tappable with a time that has gone.
         picker.retry();
       } else {
-        if (data.fieldErrors) setFieldErrors(data.fieldErrors);
+        if (data.fieldErrors) setFieldErrors(formErrorsFromServer(data.fieldErrors));
         setError(data.error ?? BOOKING_ERROR_COPY.generic);
       }
     } finally {
@@ -739,7 +814,7 @@ export default function Booker({
 
   /** Only the details that carry a value: see the send site below (#2203). */
   const typedDetails: { name?: string; email?: string; phone?: string } = {};
-  if (attendee.name.trim()) typedDetails.name = attendee.name.trim();
+  if (attendeeName) typedDetails.name = attendeeName;
   if (attendee.email.trim()) typedDetails.email = attendee.email.trim();
   // #2210: and never the number, once one has been corrected on this screen. The
   // panel offers no correction for the name or the email, so those still travel:
@@ -1285,10 +1360,10 @@ export default function Booker({
     );
   }
 
-  // `activeDay` is a bare date keyed in `zone`, so parse it back in that zone:
-  // `.setZone` on a machine-zone midnight would slide the label a day when the
-  // picked zone differs from the device's.
-  const selectedDate = activeDay ? DateTime.fromISO(activeDay, { zone }) : null;
+  // The chosen day used to be derived here, from `activeDay`, a bare date that had
+  // to be parsed back in `zone` or the label slid by a day. #2361 builds the line
+  // from `selectedSlot` and `zone` through `longDayLabel` instead, so the instant
+  // itself names its own day and there is nothing to keep in step.
 
   // Rose error notice; rendered in whichever right-column branch is active
   // (the 409 race resets selectedSlot, so the message must show on the slot list too).
@@ -1562,14 +1637,22 @@ export default function Booker({
           >
             ‹ Back
           </button>
+          {/* #2361: the step says what it is for, once, above the thing being
+              committed to. */}
+          <h2 className={`text-base font-semibold ${c.title}`}>{DETAILS_COPY.heading}</h2>
           {/* #2172: this line is the details step's own statement of what is
               being booked, so it reads `hour12` and `zone` through the same
               `fmtTime` the list does. Two formatters here would let the summary
-              and the times disagree about the same instant. */}
-          <p data-testid="chosen-time" className={`text-sm font-semibold ${c.title}`}>
-            {selectedDate?.toFormat("ccc d")} · {fmtTime(selectedSlot)}
+              and the times disagree about the same instant.
+
+              #2361: and it states the whole instant, weekday and month and year
+              included. It used to say "Tue 15" and a time, while the only other
+              place the date appeared was the day strip, whose chips carry no
+              year at all. */}
+          <p data-testid="chosen-time" className={`text-sm font-semibold tabular-nums ${c.title}`}>
+            {chosenWhen(longDayLabel(selectedSlot, zone, { year: true }), fmtTime(selectedSlot))}
           </p>
-          {(["name", "email", "phone"] as const).map((field) => (
+          {ATTENDEE_FIELDS.map((field) => (
             <div key={field}>
               {/* Persistent visible label (#632): the field's purpose stays put
                   after a value is typed, unlike the old placeholder-only step. */}
@@ -1577,7 +1660,7 @@ export default function Booker({
                 htmlFor={`booker-${field}`}
                 className={`mb-1 block text-xs font-semibold ${c.muted}`}
               >
-                {field[0].toUpperCase() + field.slice(1)}
+                {DETAILS_COPY.fields[field]}
               </label>
               <input
                 id={`booker-${field}`}
@@ -1585,11 +1668,13 @@ export default function Booker({
                 type={
                   field === "email" ? "email" : field === "phone" ? "tel" : "text"
                 }
-                autoComplete={field === "phone" ? "tel" : field}
+                autoComplete={AUTOCOMPLETE[field]}
                 inputMode={
                   field === "email" ? "email" : field === "phone" ? "tel" : undefined
                 }
-                aria-required="true"
+                // The last name is the one optional field, as it is on cal.com, so
+                // somebody with one name is never refused (#2362).
+                aria-required={field === "lastName" ? undefined : "true"}
                 aria-invalid={fieldErrors[field] ? true : undefined}
                 aria-describedby={
                   fieldErrors[field] ? `booker-${field}-error` : undefined
