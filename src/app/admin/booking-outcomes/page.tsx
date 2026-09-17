@@ -25,6 +25,7 @@ function sinceIso(days: number): string {
 const OUTCOME_LABEL: Record<string, string> = {
   created: "Created",
   rescheduled: "Rescheduled",
+  cancelled: "Cancelled",
   deduped: "Deduped",
   confirm_required: "Confirm required",
   error: "Error",

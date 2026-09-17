@@ -235,6 +235,13 @@ export function bookerCopyScreens(): CopyScreen[] {
           state: "we could not read whether booking is stopped",
           text: BOOKING_ERROR_COPY.bookingPauseUnreadable,
         },
+        // #2373: read this one directly above `slotTaken`. That is a lost race, and it
+        // names the action the lead can take; this is the write not running, and it
+        // must not borrow those words, because nothing they choose repairs it.
+        {
+          state: "the cancel or the move did not run at all, so nothing changed",
+          text: BOOKING_ERROR_COPY.writeFailed,
+        },
       ],
     },
     {

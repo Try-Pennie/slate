@@ -16,6 +16,7 @@ import {
   UnknownBucketError,
   BookingNotFoundError,
 } from "@/lib/booking/service";
+import { isBookingWriteFailure } from "@/lib/booking/gated-write";
 import { GENERIC_ERROR_MESSAGE, reportInternalError } from "@/lib/api/errors";
 import { DIRECT_BOOKING_API_READ_HOURLY_RATE_RULES } from "@/lib/rate-limit-core";
 import { log } from "@/lib/log";
@@ -362,9 +363,14 @@ async function apiErrorBody(
  *  is NOT_FOUND; anything else is an unexpected INTERNAL. */
 function mapLookupError(err: unknown): {
   httpStatus: number;
-  code: "NOT_FOUND" | "INTERNAL";
+  code: "NOT_FOUND" | "WRITE_FAILED" | "INTERNAL";
 } {
   if (err instanceof BookingNotFoundError) return { httpStatus: 404, code: "NOT_FOUND" };
+  // #2373: the cancel claim did not RUN, so the booking still stands. A bot reads
+  // INTERNAL as an unexpected fault to escalate and 404 as "already gone", and both
+  // are wrong here: nothing happened and a retry really can succeed. Its own code,
+  // because the instruction differs from every other ending on this path.
+  if (isBookingWriteFailure(err)) return { httpStatus: 503, code: "WRITE_FAILED" };
   return { httpStatus: 500, code: "INTERNAL" };
 }
 

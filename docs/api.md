@@ -284,6 +284,10 @@ DELETE /api/bookings?bookingId=<uuid>&externalId=<id>
 - Not found, not owned, or not active: `404 { "code": "NOT_FOUND" }`. A repeat
   cancel of an already cancelled booking therefore returns `404` (the cancel
   claim is atomic, #413, so the side effects fire exactly once).
+- The cancel statement did not run: `503 { "code": "WRITE_FAILED" }` (#2373).
+  Kept apart from both of the above because the instruction differs: the booking
+  is untouched and still active, so this is neither "already gone" nor a fault to
+  escalate, and a retry can succeed.
 
 > There is no separate reschedule endpoint on this API. To move a booking,
 > re-submit `POST /api/bookings` with the same `externalId` and a new `start`

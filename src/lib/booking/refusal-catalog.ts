@@ -562,6 +562,116 @@ export const REFUSAL_CATALOG: RefusalPath[] = [
     rateSignal: { kind: "covered" },
     why: "An unexpected fault while moving a call, judged on the same share as the others.",
   },
+  {
+    id: "reschedule_write_failed",
+    surface: "manage page",
+    outcome: "503, told nothing changed and to try again in a moment",
+    counting: { kind: "error", code: "reschedule_write_failed" },
+    rateSignal: { kind: "covered" },
+    why:
+      "The gated commit did not RUN (#2373), so the call is exactly where it was. It used to " +
+      "arrive as reschedule_conflict, because a refused statement and a concurrent change both " +
+      "made the update touch zero rows, so a lead was told to refresh and pick again by a write " +
+      "that never happened. One is a blip a retry clears; a run of them is the bookings table " +
+      "unreachable on the move path, which is an outage and is exactly the shape the share " +
+      "exists to page on. It also pages on its own through the internal-error chokepoint, and " +
+      "is counted here so a sustained one is visible as a share rather than as one page per " +
+      "fifteen minutes.",
+  },
+
+  // --- the manage page's cancel, and the booker's panel, which share one route ---
+  // #2373 brought this surface into the catalog. It recorded nothing at all before,
+  // so a cancel that turned a lead away was invisible to every counter Slate has.
+  {
+    id: "cancel_rate_limited",
+    surface: "manage page",
+    outcome: "429, asked to try again in a moment",
+    counting: { kind: "none" },
+    rateSignal: { kind: "none" },
+    why:
+      "The same reasoning as reschedule_rate_limited beside it. Twenty requests a minute is far " +
+      "above cancelling one appointment, and reaching a booking at all needs its unguessable " +
+      "manage token, so a trip is one host hammering tokens rather than a customer being turned " +
+      "away. Counting it would put that volume in the denominator the failure share is measured " +
+      "against and make a real outage look proportionally smaller during a flood.",
+  },
+  {
+    id: "cancel_invalid_request",
+    surface: "manage page",
+    outcome: "400, told the request was invalid",
+    counting: { kind: "none" },
+    rateSignal: { kind: "none" },
+    why:
+      "Both surfaces that reach this route send one fixed shape, so a body Slate rejects is a " +
+      "hand-made request rather than a lead using the product. If either page ever sent the " +
+      "wrong shape, EVERY cancel would fail, which cancel_internal below would report as a " +
+      "share within minutes, so a second count here would say nothing new.",
+  },
+  {
+    id: "cancel_invalid_reason",
+    surface: "manage page",
+    outcome: "400, told the reason is not one of the offered ones",
+    counting: { kind: "none" },
+    rateSignal: { kind: "none" },
+    why:
+      "The reason arrives from a fixed list the same page rendered, so a value outside it is a " +
+      "hand-made request. A wave would mean the list and the validator disagree, a shape the " +
+      "copy-parity tests already hold, so a counter here would duplicate a guard that fails " +
+      "earlier and louder.",
+  },
+  {
+    id: "cancel_not_cancellable",
+    surface: "manage page",
+    outcome: "409, told the call has already taken place",
+    counting: { kind: "none" },
+    rateSignal: { kind: "none" },
+    why:
+      "The meeting happened (#618), so there is nothing to cancel and a completed booking must " +
+      "never regress. Nobody is being turned away from anything they could still have, and the " +
+      "volume measures how many leads open an old manage link after their call, which is a fact " +
+      "about people rather than about Slate. Counting it would put that in the denominator the " +
+      "failure share is measured against for no reading anybody would act on.",
+  },
+  {
+    id: "cancel_lost_race",
+    surface: "manage page",
+    outcome: "200, told it is cancelled, because it is: somebody else got there first",
+    counting: { kind: "error", code: "cancel_lost_race" },
+    rateSignal: { kind: "covered" },
+    why:
+      "The lead is told the truth and nothing is refused, so this is here for the RATE rather " +
+      "than for the reader (#2373, L77). One is a second tab or an admin cancelling the same " +
+      "booking, which is the claim working exactly as designed. A run of them is something " +
+      "terminating bookings underneath their owners, and no other check in Slate would see it: " +
+      "the same reasoning as reschedule_conflict, which is its twin on the move path. An " +
+      "expected error nobody counts is filed as normal at every volume, which is how the " +
+      "2026-08-06 cal.com failure went unseen for two hours.",
+  },
+  {
+    id: "cancel_write_failed",
+    surface: "manage page",
+    outcome: "503, told nothing changed and to try again in a moment",
+    counting: { kind: "error", code: "cancel_write_failed" },
+    rateSignal: { kind: "covered" },
+    why:
+      "The gated claim did not RUN (#2373), so the booking, the Google invite and the advisor's " +
+      "slot all stand. This is the defect the issue was opened about: it was indistinguishable " +
+      "from the lost race above, and the route answered ok, so the lead read that their call was " +
+      "cancelled when it was not. It is deliberately NOT the same entry as that one, because a " +
+      "shared id would let an ordinary race explain away an unreachable table (L11). Counted so " +
+      "a sustained one shows as a share, and it also pages on its own through the " +
+      "internal-error chokepoint, because one instance already told a customer something false.",
+  },
+  {
+    id: "cancel_internal",
+    surface: "manage page",
+    outcome: "500, a generic failure",
+    counting: { kind: "error", code: "cancel_internal" },
+    rateSignal: { kind: "covered" },
+    why:
+      "An unexpected fault while cancelling a call, judged on the same share as its reschedule " +
+      "twin. Counted alongside the successes this route now records, so the share stays a share.",
+  },
 ];
 
 /** Lookup by the id a call site names. */

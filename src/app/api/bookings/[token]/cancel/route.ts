@@ -3,7 +3,9 @@ import { z } from "zod";
 import { cancelBooking, BookingNotCancellableError } from "@/lib/booking/service";
 import { validateReason } from "@/lib/booking/core";
 import { loadReasonOptions } from "@/lib/booking/reason-options";
-import { internalErrorResponse } from "@/lib/api/errors";
+import { isBookingWriteFailure } from "@/lib/booking/gated-write";
+import { recordApiOutcome } from "@/lib/monitor/record-api-outcome";
+import { internalErrorResponse, reportInternalError } from "@/lib/api/errors";
 import { manageWithinLimit } from "@/lib/rate-limit";
 // From the pure core rather than the re-export, so a test can stub the limiter without
 // also having to hand back a working clientIp.
@@ -25,6 +27,7 @@ export async function POST(
   // database round trip per request with nothing counting them. Fails OPEN, so a
   // limiter hiccup can never stop a real customer cancelling.
   if (!(await manageWithinLimit(clientIp(req.headers)))) {
+    // refusal: cancel_rate_limited
     return NextResponse.json(
       { error: "Too many requests. Please try again in a moment." },
       { status: 429 },
@@ -34,6 +37,7 @@ export async function POST(
   const { token } = await params;
   const parsed = schema.safeParse(await req.json().catch(() => ({})));
   if (!parsed.success) {
+    // refusal: cancel_invalid_request
     return NextResponse.json({ error: "Invalid request" }, { status: 400 });
   }
 
@@ -45,17 +49,50 @@ export async function POST(
     reasonOptions.cancel.selectable,
   );
   if (!reason.ok) {
+    // refusal: cancel_invalid_reason
     return NextResponse.json({ error: reason.error }, { status: 400 });
   }
 
   try {
-    await cancelBooking(token, reason.reason, "customer");
+    const claimed = await cancelBooking(token, reason.reason, "customer");
+    // #2373: the two ways this ends with the booking cancelled, counted apart.
+    //
+    // `claimed` is true when THIS request made the transition and false when a
+    // concurrent cancel or completion already had. The lead is told the same thing
+    // either way, because it is true either way: their call is off. What differs is
+    // what a RUN of the second one means, which is something terminating bookings
+    // underneath their owners, and nothing else in Slate would see it.
+    //
+    // The success is recorded alongside the refusals below so the share stays a
+    // share: counting only the failures would inflate the very number the
+    // booking-failure window pages on.
+    if (claimed) {
+      recordApiOutcome("cancelled", "", null, { by: "manageToken", token });
+    } else {
+      // refusal: cancel_lost_race
+      recordApiOutcome("error", "", "cancel_lost_race", { by: "manageToken", token });
+    }
     return NextResponse.json({ ok: true });
   } catch (err) {
     // The meeting already completed (#618): a friendly 4xx no-op, not a crash.
     if (err instanceof BookingNotCancellableError) {
+      // refusal: cancel_not_cancellable
       return NextResponse.json({ error: err.message }, { status: 409 });
     }
+    // #2373: the gated write did not RUN, so nothing is cancelled. This used to be
+    // indistinguishable from losing the claim, and the answer was `{ ok: true }`:
+    // the lead read that their call was cancelled while the booking, the invite and
+    // the advisor's slot all stood. It is reported through the same chokepoint an
+    // unexpected fault goes through, so somebody is paged, and answered 503 rather
+    // than 500 because a retry really can succeed.
+    if (isBookingWriteFailure(err)) {
+      recordApiOutcome("error", "", "cancel_write_failed", { by: "manageToken", token });
+      await reportInternalError(err, "bookings/[token]/cancel");
+      // refusal: cancel_write_failed
+      return NextResponse.json({ error: err.message }, { status: 503 });
+    }
+    recordApiOutcome("error", "", "cancel_internal", { by: "manageToken", token });
+    // refusal: cancel_internal
     return internalErrorResponse(err, "bookings/[token]/cancel");
   }
 }

@@ -264,6 +264,23 @@ export const BOOKING_ERROR_COPY = {
    *  the instruction really is different: this one clears itself and a retry works,
    *  where the pause above does not (L11). */
   bookingPauseUnreadable: "Something went wrong on our side. Please try again in a moment.",
+  /**
+   * #2373: the write we tried to make did not run, so nothing moved.
+   *
+   * The sentence a lead reads when a gated booking write FAILED, as opposed to
+   * losing the race. It is deliberately noun free ("nothing changed", never "your
+   * call" or "your booking"), because one endpoint serves both surfaces and the
+   * booker says call where the manage page says booking.
+   *
+   * It states that NOTHING CHANGED, which is the fact the old behaviour got
+   * exactly backwards: a failed cancel answered ok and the lead was told the call
+   * was gone while it stood. And it names no action beyond waiting, because there
+   * is none: picking another time repairs a lost race and does nothing at all for
+   * a write that never ran, so offering it would send the reader somewhere that
+   * cannot help (L111).
+   */
+  writeFailed:
+    "Something went wrong on our side, so nothing changed. Please try again in a moment.",
 } as const;
 
 /**

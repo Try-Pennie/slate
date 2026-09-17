@@ -11,8 +11,9 @@ import {
 } from "@/lib/booking/service";
 import { validateReason } from "@/lib/booking/core";
 import { loadReasonOptions } from "@/lib/booking/reason-options";
+import { isBookingWriteFailure } from "@/lib/booking/gated-write";
 import { recordApiOutcome } from "@/lib/monitor/record-api-outcome";
-import { internalErrorResponse } from "@/lib/api/errors";
+import { internalErrorResponse, reportInternalError } from "@/lib/api/errors";
 import { INPUT_LIMITS } from "@/lib/booking/input-limits";
 import { manageWithinLimit } from "@/lib/rate-limit";
 // From the pure core rather than the re-export, so a test can stub the limiter without
@@ -129,6 +130,20 @@ export async function POST(
     if (err instanceof VerifyUnavailableError) {
       recordApiOutcome("error", "", "reschedule_verify_unavailable", { by: "manageToken", token });
       // refusal: reschedule_verify_unavailable
+      return NextResponse.json({ error: err.message }, { status: 503 });
+    }
+    // #2373: the gated commit did not RUN, so the call has not moved. Kept ABOVE
+    // the conflict branch below because it used to be answered BY it: a refused
+    // statement made `commitReschedule` report zero rows, which reads as a
+    // concurrent change, so the lead was told to refresh and pick again by a write
+    // that never happened. Refreshing repairs a lost race and does nothing at all
+    // for this, so it gets its own retriable status and a sentence that says
+    // nothing changed. Reported through the same chokepoint an unexpected fault
+    // goes through, so somebody is paged rather than only counted.
+    if (isBookingWriteFailure(err)) {
+      recordApiOutcome("error", "", "reschedule_write_failed", { by: "manageToken", token });
+      await reportInternalError(err, "bookings/[token]/reschedule");
+      // refusal: reschedule_write_failed
       return NextResponse.json({ error: err.message }, { status: 503 });
     }
     // Fail-closed lock claim on a transient DB error (#479): safe to retry, so a

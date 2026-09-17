@@ -7,6 +7,7 @@ import {
   releaseOutboxLeaseRow,
 } from "@/lib/booking/outbox-lease";
 import { unwrap, isSlotClash, type DbResult } from "@/lib/db/result";
+import { gatedWriteApplied, gatedWriteRows } from "@/lib/booking/gated-write";
 import { appUrl } from "@/lib/env";
 import {
   resolveBucketByCode,
@@ -1294,16 +1295,22 @@ function realDeps(deferSend?: WebhookSendScheduler): BookingDeps {
 
     // --- Outbox (#429 P2) ---
     enqueueOutbox: async (row) => {
-      const { data } = await supabaseAdmin()
-        .from("booking_outbox")
-        .insert({
-          booking_id: row.booking_id,
-          action: row.action,
-          steps: row.steps,
-          payload: row.payload,
-        })
-        .select("id")
-        .single();
+      // #2373: `unwrap` so a REFUSED insert throws with the database's own reason
+      // rather than falling through to the generic "returned no row" below, which
+      // said the same thing for a statement that ran and one that never did.
+      const data = unwrap(
+        await supabaseAdmin()
+          .from("booking_outbox")
+          .insert({
+            booking_id: row.booking_id,
+            action: row.action,
+            steps: row.steps,
+            payload: row.payload,
+          })
+          .select("id")
+          .single(),
+        "booking_outbox",
+      );
       if (!data) throw new Error("enqueueOutbox: insert returned no row");
       return (data as { id: string }).id;
     },
@@ -1409,13 +1416,18 @@ function realDeps(deferSend?: WebhookSendScheduler): BookingDeps {
 
     leaseReservation: async (id) => {
       const now = Date.now();
-      const { data } = await supabaseAdmin()
-        .from("booking_reservations")
-        .update({ lease_until: new Date(now + RESERVATION_LEASE_TTL_MS).toISOString() })
-        .eq("id", id)
-        .or(`lease_until.is.null,lease_until.lt.${new Date(now).toISOString()}`)
-        .select("id");
-      return ((data ?? []) as unknown[]).length > 0;
+      // #2373: false means another holder has the lease, which is the drain
+      // coalescing correctly. A refused statement is not that, and pretending it
+      // is leaves the reservation looking busy rather than unreachable.
+      return gatedWriteApplied(
+        "reservation_lease",
+        await supabaseAdmin()
+          .from("booking_reservations")
+          .update({ lease_until: new Date(now + RESERVATION_LEASE_TTL_MS).toISOString() })
+          .eq("id", id)
+          .or(`lease_until.is.null,lease_until.lt.${new Date(now).toISOString()}`)
+          .select("id"),
+      );
     },
 
     releaseReservationLease: async (id) => {
@@ -1468,8 +1480,11 @@ function realDeps(deferSend?: WebhookSendScheduler): BookingDeps {
         guard.gcalEventId === null
           ? withAssignee.is("gcal_event_id", null)
           : withAssignee.eq("gcal_event_id", guard.gcalEventId);
-      const { data } = await gated.select("id");
-      return ((data ?? []) as { id: string }[]).length > 0;
+      // #2373: `false` here means the booking is no longer the one we started
+      // moving. A statement Postgres REFUSED used to produce the same false, and
+      // the caller turned that into a conflict telling the lead to refresh and
+      // pick again, which is advice that cannot work when nothing ran.
+      return gatedWriteApplied("reschedule_commit", await gated.select("id"));
     },
 
     claimCancellation: async (bookingId) => {
@@ -1478,13 +1493,19 @@ function realDeps(deferSend?: WebhookSendScheduler): BookingDeps {
       // complete-cron tick that already terminated it touches 0 rows (#618); a
       // completed booking can never regress to cancelled. `.select` returns the
       // row only when THIS call made the transition.
-      const { data } = await supabaseAdmin()
-        .from("bookings")
-        .update({ status: "cancelled" })
-        .eq("id", bookingId)
-        .in("status", ["confirmed", "rescheduled"])
-        .select("id");
-      return ((data ?? []) as { id: string }[]).length > 0;
+      // #2373: the headline case. A refused statement used to be indistinguishable
+      // from having lost the claim, and the cancel route reported that as
+      // `{ ok: true }`, so the lead read "Your call is cancelled" while the
+      // booking, the invite and the advisor's slot all stood.
+      return gatedWriteApplied(
+        "cancel_claim",
+        await supabaseAdmin()
+          .from("bookings")
+          .update({ status: "cancelled" })
+          .eq("id", bookingId)
+          .in("status", ["confirmed", "rescheduled"])
+          .select("id"),
+      );
     },
 
     completeBookingsIfDue: async (bookingIds) => {
@@ -1493,13 +1514,19 @@ function realDeps(deferSend?: WebhookSendScheduler): BookingDeps {
       // being completable means an overlapping complete-cron tick that already
       // transitioned some of them touches 0 of those (#163); `.select` returns
       // only the rows this UPDATE actually changed.
-      const { data } = await supabaseAdmin()
-        .from("bookings")
-        .update({ status: "completed" })
-        .in("id", bookingIds)
-        .in("status", ["confirmed", "rescheduled"])
-        .select("id");
-      return ((data ?? []) as { id: string }[]).map((r) => r.id);
+      // #2373: an empty list here means an overlapping tick already completed them.
+      // A refused statement used to say the same thing, which the drain reads as a
+      // stall it can do nothing about rather than as a fault somebody should hear.
+      const rows = gatedWriteRows<{ id: string }>(
+        "complete_due",
+        await supabaseAdmin()
+          .from("bookings")
+          .update({ status: "completed" })
+          .in("id", bookingIds)
+          .in("status", ["confirmed", "rescheduled"])
+          .select("id"),
+      );
+      return (rows ?? []).map((r) => r.id);
     },
 
     // Per-booking reschedule lease (#439). Bound to the live client; the full
@@ -2213,10 +2240,16 @@ export async function cancelBooking(
   token: string,
   reason: ValidatedReason,
   initiator: BookingEventInitiator,
-): Promise<void> {
-  // Manage-link/admin cancel is idempotent: a re-cancel is a fine no-op, so the
-  // transition flag is discarded here (only the direct API maps it to 404, #398).
-  await orchestration.cancelBooking(token, reason, initiator, realDeps(deferWebhookSend));
+): Promise<boolean> {
+  // True when THIS call made the transition; false when it lost the claim to a
+  // concurrent cancel or completion, which is idempotent and fine (only the direct
+  // API maps it to 404, #398).
+  //
+  // #2373: the flag used to be DISCARDED here, and that was only safe while false
+  // meant one thing. It no longer does: a write that never ran throws
+  // BookingWriteFailedError instead, so false is now exactly "somebody else got
+  // there first" and is worth reporting rather than swallowing.
+  return orchestration.cancelBooking(token, reason, initiator, realDeps(deferWebhookSend));
 }
 
 /**

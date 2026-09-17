@@ -59,6 +59,7 @@ import { chunkIdsByUrlBudget } from "@/lib/db/id-batch";
 import { log } from "@/lib/log";
 import { externalDoubleBookAlert } from "@/lib/notify/misc-alert-copy";
 import { afterResponse } from "@/lib/after-response";
+import { gatedWriteRows } from "@/lib/booking/gated-write";
 
 // Renew well before Google's ~7-day watch TTL so a cron outage can't drop push.
 const WATCH_RENEW_THRESHOLD_MS = 3 * 24 * 60 * 60 * 1000;
@@ -1014,13 +1015,19 @@ export async function syncByChannel(
   await db.from("agent_calendars").update({ sync_pending: true }).eq("id", cal.id);
 
   const { claimIso, staleBeforeIso } = claimWindow(Date.now(), CALENDAR_CLAIM_TTL_MS);
-  const { data: claimed } = await db
-    .from("agent_calendars")
-    .update({ sync_claimed_at: claimIso })
-    .eq("id", cal.id)
-    .or(`sync_claimed_at.is.null,sync_claimed_at.lt.${staleBeforeIso}`)
-    .select("id");
-  if (!claimed?.length) return "coalesced";
+  // #2373: "coalesced" means another pass holds this calendar, which is the
+  // coalescer working. A REFUSED statement used to report the same thing, so a
+  // push that reached nothing at all read as one that was deliberately merged.
+  const claimed = gatedWriteRows(
+    "calendar_sync_claim",
+    await db
+      .from("agent_calendars")
+      .update({ sync_claimed_at: claimIso })
+      .eq("id", cal.id)
+      .or(`sync_claimed_at.is.null,sync_claimed_at.lt.${staleBeforeIso}`)
+      .select("id"),
+  );
+  if (!claimed) return "coalesced";
 
   const email = await loadAgentEmail(cal.user_id);
   try {
