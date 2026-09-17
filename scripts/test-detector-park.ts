@@ -18,14 +18,22 @@
 // customers, and judging it against the four day blindness bound turned that into
 // a daily page for four days.
 //
-// NOTHING IS PARKED TODAY (#2484), and this suite is the reason that is safe. The
-// failure rate entry was the last one, and it went when its stated reason stopped
-// being true: it said one canary pass records 16 attempts against a floor of 20 in
-// a rolling hour, and the floor is 10 in four hours now, fitted to 27,122 real
-// leads. A mechanism whose every test is deleted along with its last user is one
-// that breaks silently the next time somebody reaches for it (L535, L29), so the
-// behaviour below is driven through a SYNTHETIC registry, and only the assertions
-// that were about the failure rate entry ITSELF were retired (L430).
+// THE FAILURE RATE WATCH IS PARKED AGAIN (#2499, arms again on #2513). #2484
+// removed its park believing the new floor was reachable by the smoke canary, and
+// it is not: `booking-failure-rate-store.ts` passes `p_include_test: false` to the
+// outcome mix RPC, and has since #1637, so every canary attempt counts ZERO toward
+// the floor whatever the floor is. The detector therefore cannot conclude until
+// real Low leads book, and an un-parked watch would page "never concluded" every
+// four days naming an action nobody could take that morning (L111, L36).
+//
+// The park is the reversible half of that choice. Letting the canary count again
+// would reverse #1637 and have the detector conclude about the canary rather than
+// about leads, which is a verdict on the wrong population.
+//
+// The registry is STILL driven through a synthetic entry below as well as the
+// shipped one. A mechanism whose every test rides on the one live entry breaks
+// silently the day that entry goes (L535, L29), and the shipped entry is by design
+// temporary.
 //
 // Run: node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/test-detector-park.ts
 import { VERDICT_STALE_BOUNDS_MS } from "../src/lib/monitor/health.ts";
@@ -38,6 +46,7 @@ import {
   parkedDetector,
   detectorParkState,
 } from "../src/lib/monitor/verdict-freshness.ts";
+import { SHIPPED_FAILURE_RATE_THRESHOLDS } from "../src/lib/monitor/failure-rate-thresholds.ts";
 import {
   verdictParkedInfoText,
   verdictUnparkAlertText,
@@ -115,14 +124,34 @@ const FIXTURE_REGISTRY = {
     );
   }
 
-  // RETIRED by #2484: this used to assert the failure rate check IS parked. Its
-  // park was removed when its stated reason expired, so the assertion now defends
-  // a decision that has been reversed (L252). Every OTHER lane is still asserted
-  // armed below, and the shape rules above are driven by the fixture registry, so
-  // nothing that was protecting the mechanism was dropped with it.
+  // #2499. The failure rate watch is parked, and this says so rather than leaving
+  // it to be inferred from a loop that an empty registry satisfies perfectly.
+  const failureRate = parkedDetector(FAILURE_RATE_VERDICT_LANE);
   assert(
-    Object.keys(PARKED_VERDICT_DETECTORS).length === 0,
-    "nothing is parked today, which is the state #2484 left behind and is worth stating rather than assuming",
+    !!failureRate,
+    "the failing bookings verdict watch is parked, because the canary cannot reach the floor (#2499)",
+  );
+
+  // The REASON is the whole park, so it is read rather than counted. It has to
+  // carry the fact the park rests on, which is that test attempts are excluded
+  // from the count the floor is measured against, and the condition that ends it,
+  // which is real traffic rather than a date.
+  const reason = failureRate?.reason ?? "";
+  assert(
+    /p_include_test/.test(reason),
+    "the reason names the exclusion the park rests on, so a reader can check it rather than take it",
+  );
+  assert(
+    /pilot|real Low|real traffic/i.test(reason),
+    "the reason names the arrival of real traffic as the condition that ends the park",
+  );
+
+  // Derived, never restated (L63). The un-park window asks whether the detector is
+  // concluding NOW, and "now" for this check is the window it judges, which moved
+  // once already in #2484 and took this number's meaning with it.
+  assert(
+    failureRate?.unparkWithinMs === SHIPPED_FAILURE_RATE_THRESHOLDS.windowMs,
+    "the un-park window is the check's OWN rolling window, read from the shipped thresholds",
   );
 
   // The shape rules, driven through the fixture so they are exercised rather than
@@ -173,9 +202,9 @@ const FIXTURE_REGISTRY = {
     LOW_VOLUME_VERDICT_LANE,
     OOO_PROTECTION_VERDICT_LANE,
     AVAILABILITY_TRUTH_VERDICT_LANE,
-    // The failure rate lane is one of these since #2484, which is the change: a
-    // lane with no entry must read as ARMED whatever its stamp says.
-    FAILURE_RATE_VERDICT_LANE,
+    // The failure rate lane was one of these between #2484 and #2499. It is parked
+    // again, so asserting it armed would defend a decision that has been reversed
+    // (L252); the shipped park's own three states are driven below.
   ]) {
     for (const stamp of [null, NOW, NOW - 10 * bound, 0]) {
       assert(
@@ -236,19 +265,102 @@ const FIXTURE_REGISTRY = {
   );
 }
 
+// --- the SHIPPED park, driven through the real registry (#2499) -----------------
+// Everything above is the mechanism. This is the decision: the failing bookings
+// watch must be silent about being blind for as long as nothing but the canary is
+// booking, and must speak the moment real leads are.
+{
+  const shippedWindow = SHIPPED_FAILURE_RATE_THRESHOLDS.windowMs;
+  const bound = VERDICT_STALE_BOUNDS_MS[FAILURE_RATE_VERDICT_LANE];
+
+  // The state production is in today, and the one #2499 is about: no verdict has
+  // ever been stamped, because no attempt the canary makes is counted. Un-parked
+  // this is a page every four days that nobody can act on.
+  assert(
+    detectorParkState(FAILURE_RATE_VERDICT_LANE, null, NOW) === "parked",
+    "a watch that has never concluded does not page while the park stands",
+  );
+  assert(
+    detectorParkState(FAILURE_RATE_VERDICT_LANE, undefined, NOW) === "parked",
+    "and an absent stamp reads the same way as a null one",
+  );
+
+  // The failure path, and the one that matters most here: a verdict landing far
+  // enough back that it says nothing about now must NOT read as the pilot starting.
+  // #1562 is the measured case, two canary passes landing inside one window in
+  // 2026-08, and what it bought was a daily page for four days.
+  assert(
+    bound > shippedWindow,
+    "the blindness bound is wider than the check's own window, so a stale verdict can sit inside it",
+  );
+  assert(
+    detectorParkState(FAILURE_RATE_VERDICT_LANE, NOW - shippedWindow - 1, NOW) === "parked",
+    "a verdict older than the check's own window leaves the park standing",
+  );
+  assert(
+    detectorParkState(FAILURE_RATE_VERDICT_LANE, 0, NOW) === "parked",
+    "an unreadable stamp is not the pilot starting either",
+  );
+
+  // And the half that takes the park back out on its own, so nobody has to
+  // remember: real Low traffic keeps the stamp fresh on essentially every tick.
+  assert(
+    detectorParkState(FAILURE_RATE_VERDICT_LANE, NOW - 5 * 60_000, NOW) === "unpark",
+    "a verdict from one monitor tick ago is the traffic the park was waiting for",
+  );
+}
+
+// --- the bound's reasoning names the constant, never the numbers (#2499) --------
+// `health.ts` carried "20 attempts inside a rolling hour" for three weeks after
+// #2484 made it 10 in four. A sentence restating a constant is a second copy of it
+// that nothing compares (L63), and this bound's own comment is the place a reader
+// goes to understand why four days is right.
+{
+  const health = readFileSync(
+    join(import.meta.dirname, "..", "src", "lib", "monitor", "health.ts"),
+    "utf8",
+  );
+  assert(
+    health.includes("failure-rate-thresholds"),
+    "the bound's reasoning points at the module the floor and the window really live in",
+  );
+  assert(
+    !/\d+\s+attempts/.test(health),
+    "and it does not restate the floor as a number, which is what went stale",
+  );
+  assert(
+    !/rolling hour/.test(health),
+    "nor the window, which moved to four hours in #2484 and left the sentence behind",
+  );
+}
+
 // --- the park is visible, and says how it ends ---------------------------------
 {
   const parked = Object.keys(PARKED_VERDICT_DETECTORS);
-  // Driven through the fixture's lane list for the same reason as the page below:
-  // the shipped registry is empty, so the real call renders the "nothing is parked"
-  // form, which says nothing about whether a park is VISIBLE when there is one.
-  const info = verdictParkedInfoText([FIXTURE_LANE], FIXTURE_REGISTRY);
-  assert(info.length > 120, "the whisper says what is off, not just that something is");
+  // The SHIPPED whisper, rendered from the shipped registry: this is the message a
+  // person really reads while the safety net is off, and a park being VISIBLE is the
+  // whole difference between a park and a detector nobody is watching.
+  assert(parked.length > 0, "there is a shipped park to render, or this proves nothing");
+  const shippedInfo = verdictParkedInfoText(parked);
   for (const lane of parked) {
     const entry = PARKED_VERDICT_DETECTORS[lane as keyof typeof PARKED_VERDICT_DETECTORS];
-    assert(info.includes(entry?.reason ?? " "), `the whisper carries ${lane}'s reason`);
-    assert(info.includes(`#${entry?.issue}`), `the whisper names the issue that arms ${lane}`);
+    assert(
+      shippedInfo.includes(entry?.reason ?? "no entry"),
+      `the whisper carries ${lane}'s reason`,
+    );
+    assert(
+      shippedInfo.includes(`#${entry?.issue}`),
+      `the whisper names the issue that arms ${lane}`,
+    );
   }
+  assert(!/\bundefined\b/.test(shippedInfo), "the shipped whisper renders no missing value");
+  assert(!DASHES.test(shippedInfo), "and it carries no dashes either");
+
+  // The same call driven through the FIXTURE, so the rendering stays exercised for a
+  // lane this file controls: the shipped entry is temporary by design and its removal
+  // must not take the mechanism's coverage with it (L535).
+  const info = verdictParkedInfoText([FIXTURE_LANE], FIXTURE_REGISTRY);
+  assert(info.length > 120, "the whisper says what is off, not just that something is");
   assert(!DASHES.test(info), "the whisper has no dashes");
   assert(
     !/^Slate\b/.test(info),
@@ -265,11 +377,17 @@ const FIXTURE_REGISTRY = {
   // sides of the assertion go missing together and it passes while proving nothing
   // (L1, L70). The explicit no-undefined check below is what keeps that from
   // coming back the next time a lane is armed.
-  // Rendered through the FIXTURE registry since #2484: the shipped one is empty, so
-  // asking for a real lane's copy would compare "#undefined" against "#undefined",
-  // both sides going missing together and the assertion passing while proving
-  // nothing (L1, L70). That is the trap the original file warned about for the
-  // truth probe, arriving for the lane it warned about it from.
+  // It is rendered through the FIXTURE registry as well as the shipped one, so the
+  // copy stays covered on the day the shipped entry goes away again.
+  const shippedAlert = verdictUnparkAlertText(parked[0]!);
+  assert(/reached a verdict/i.test(shippedAlert), "the shipped page says what changed");
+  assert(
+    shippedAlert.includes(`#${PARKED_VERDICT_DETECTORS[parked[0] as keyof typeof PARKED_VERDICT_DETECTORS]?.issue}`),
+    "and names the issue that takes the park back out",
+  );
+  assert(!/\bundefined\b/.test(shippedAlert), "and renders no missing value");
+  assert(!DASHES.test(shippedAlert), "and carries no dashes");
+
   const alert = verdictUnparkAlertText(FIXTURE_LANE, FIXTURE_REGISTRY);
   assert(/reached a verdict/i.test(alert), "the page says what changed");
   assert(

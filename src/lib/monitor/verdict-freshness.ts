@@ -19,14 +19,17 @@
  * CONCLUDE. So these detectors get a second, differently shaped stamp, written
  * only on a measured verdict and watched against its own bound.
  *
- * PURE (type only imports, erased at runtime), so
- * scripts/test-verdict-freshness.ts drives every branch node natively.
+ * PURE, so scripts/test-verdict-freshness.ts drives every branch node natively.
+ * Every import here is a type except one, `SHIPPED_FAILURE_RATE_THRESHOLDS`, which
+ * is a constants module whose own imports are types: a park's un-park window is
+ * DERIVED from the window the check judges rather than restated beside it (L63).
  */
 import type { LaneWatchdogOutcome } from "@/lib/monitor/health";
 import type { TruthResult } from "@/lib/monitor/availability-truth";
 import type { FailureRateResult } from "@/lib/monitor/booking-failure-rate";
 import type { LowVolumeResult } from "@/lib/monitor/booking-volume";
 import type { OooProtectionResult } from "@/lib/monitor/ooo-protection";
+import { SHIPPED_FAILURE_RATE_THRESHOLDS } from "@/lib/monitor/failure-rate-thresholds";
 
 /**
  * The lane names these detectors stamp, namespaced away from the cron lane
@@ -248,14 +251,33 @@ export const PARKED_VERDICT_DETECTORS: Partial<Record<DetectorVerdictLane, Parke
   // consecutive monitor ticks. The daily un-park page is what said so, unprompted,
   // for four days. Note this arms the WATCH on the probe concluding, not the drift
   // page itself, which is a separate switch and still off (#1371).
-  // The failure rate park was REMOVED here on 2026-09-16 (#2484), and the reason
-  // it gave is why. It said one full canary pass records 16 attempts against a
-  // floor of 20 in a rolling hour, so a pass lands four short. Both halves of that
-  // moved: the floor is 10 now and the window is four hours, fitted to 27,122 real
-  // leads (`failure-rate-thresholds.ts`), so a single canary pass clears it and the
-  // detector can reach a verdict without real traffic at all. A park whose stated
-  // reason has stopped being true is a recorded decision defending a state nobody
-  // chose (L346), and this family exists to notice a detector that never concludes.
+  //
+  // The failure rate park was removed on 2026-09-16 (#2484) and PUT BACK on
+  // 2026-09-17 (#2499), because the reason #2484 gave for removing it was measured
+  // wrong. It said a single canary pass now clears the floor, and no canary pass
+  // can ever clear it: `booking-failure-rate-store.ts` passes `p_include_test:
+  // false` to the outcome mix RPC and has done since #1637, so a test attempt
+  // counts ZERO whatever the floor is. So the detector cannot conclude until real
+  // Low leads book, and the un-parked watch would have paged "never concluded"
+  // every four days, and daily once the page itself is armed (#1367), naming
+  // something nobody could do that morning (L111, L36).
+  //
+  // The other two options were weighed and this is the reversible one. Letting the
+  // canary count toward the floor again would reverse #1637 on purpose and have the
+  // detector conclude about the CANARY rather than about leads, which is a verdict
+  // on the wrong population. Accepting a page every four days that nobody can act
+  // on is how a channel stops being read by the second week.
+  [FAILURE_RATE_VERDICT_LANE]: {
+    reason:
+      "no real lead has booked yet, and the smoke canary cannot stand in for one: the outcome mix read passes p_include_test false (#1637), so every canary attempt counts zero toward the floor of attempts the check needs before it will judge. It can only conclude once the Low pilot page is live and real leads are booking",
+    issue: 2513,
+    // The window the check itself judges, read from the shipped thresholds rather
+    // than restated here. This number means "is the detector concluding NOW", and
+    // now for this check is one of its own rolling windows: a verdict from before
+    // the window it is in says nothing about whether it can judge today. Restating
+    // it is what went stale when #2484 moved the window from one hour to four.
+    unparkWithinMs: SHIPPED_FAILURE_RATE_THRESHOLDS.windowMs,
+  },
 };
 
 /**
