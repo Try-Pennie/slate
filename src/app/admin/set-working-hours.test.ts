@@ -138,9 +138,11 @@ describe("setWorkingHours", () => {
   it("writes the whole week through the one transactional call", async () => {
     await expect(setWorkingHours(hoursForm())).rejects.toThrow("NEXT_REDIRECT:/admin/agents/u1?ok=working-hours");
     expect(rpc).toHaveBeenCalledTimes(1);
-    const [fn, args] = rpc.mock.calls[0] as [string, { p_schedule_id: string; p_rules: unknown[] }];
-    expect(fn).toBe("replace_availability_rules");
-    expect(args.p_schedule_id).toBe("sched1");
+    // #2002: one call carrying the zone as well as the week, so neither can land
+    // without the other.
+    const [fn, args] = rpc.mock.calls[0] as [string, { p_user_id: string; p_rules: unknown[] }];
+    expect(fn).toBe("replace_user_schedule");
+    expect(args.p_user_id).toBe("u1");
     expect(args.p_rules).toEqual([1, 2, 3, 4, 5].map((weekday) => ({
       weekday,
       start_minute: 480,
@@ -433,7 +435,9 @@ describe("the timezone on a working-hours save (#1671)", () => {
     fd.set("timezone", "America/Los_Angeles");
     await expect(setWorkingHours(fd)).rejects.toThrow(/ok=working-hours/);
     expect(rpc).toHaveBeenCalledTimes(1);
-    expect(upsertUserSchedule).toHaveBeenCalledWith("u1", "America/Los_Angeles");
+    // #2002: the zone rides on the one transactional call rather than being
+    // committed ahead of it.
+    expect((rpc.mock.calls[0][1] as { p_timezone: string }).p_timezone).toBe("America/Los_Angeles");
   });
 
   it("refuses an unreadable org default zone, so no new agent adopts it", async () => {
@@ -465,7 +469,7 @@ describe("useDefaultHours (#1670)", () => {
     await expect(useDefaultHours(form())).rejects.toThrow(/ok=working-hours/);
     expect(rpc).toHaveBeenCalledTimes(1);
     const [fn, args] = rpc.mock.calls[0] as [string, { p_rules: unknown[] }];
-    expect(fn).toBe("replace_availability_rules");
+    expect(fn).toBe("replace_user_schedule");
     expect(args.p_rules).toHaveLength(5);
     // A direct touch of the rules table is the defect itself.
     expect(fromTable).not.toHaveBeenCalledWith("availability_rules");
@@ -586,5 +590,45 @@ describe("the hours actions refresh the page their form is on (#1769)", () => {
     fd.set("user_id", "u1");
     await useDefaultHours(fd).catch(() => {});
     expect(revalidatePath).toHaveBeenCalledWith("/admin/agents/u1");
+  });
+});
+
+// #2002: the write was two writes and the docstring claimed one. The timezone was
+// upserted first and committed on its own, then the rules were replaced. So a
+// failed rules write left the agent holding the NEW zone over their OLD hours,
+// which moves every hour they are bookable by the offset between the two, with
+// nothing reporting it and the form redrawing the hours it had not changed.
+//
+// What is pinned here is that no timezone can reach the database unless the rules
+// landed with it. The rollback itself is Postgres's (migration 0129); these are
+// the assertions that the action goes through the one call and keeps nothing on
+// the side.
+describe("a failed hours write leaves the timezone exactly as it was (#2002)", () => {
+  it("writes no timezone when the rules write fails", async () => {
+    rpc.mockResolvedValue({ data: null, error: { message: "deadlock detected" } });
+    const fd = hoursForm();
+    fd.set("timezone", "America/Los_Angeles");
+    await expect(setWorkingHours(fd)).rejects.toThrow(/could not be saved/i);
+    expect(upsertUserSchedule).not.toHaveBeenCalled();
+  });
+
+  it("writes no timezone when the database records a different number of days", async () => {
+    rpc.mockResolvedValue({ data: 3, error: null });
+    const fd = hoursForm();
+    fd.set("timezone", "America/Los_Angeles");
+    await expect(setWorkingHours(fd)).rejects.toThrow(/expected 5 days/i);
+    expect(upsertUserSchedule).not.toHaveBeenCalled();
+  });
+
+  it("CONTROL: a saved week carries its timezone on the same one call", async () => {
+    const fd = hoursForm();
+    fd.set("timezone", "America/Los_Angeles");
+    await expect(setWorkingHours(fd)).rejects.toThrow(/ok=working-hours/);
+    expect(rpc).toHaveBeenCalledTimes(1);
+    const [fn, args] = rpc.mock.calls[0] as [string, Record<string, unknown>];
+    expect(fn).toBe("replace_user_schedule");
+    expect(args.p_user_id).toBe("u1");
+    expect(args.p_timezone).toBe("America/Los_Angeles");
+    expect(args.p_expected).toBe(5);
   });
 });
