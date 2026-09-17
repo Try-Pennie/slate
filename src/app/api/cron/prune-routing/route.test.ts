@@ -327,7 +327,12 @@ describe("GET /api/cron/prune-routing (verify-gated, #1102)", () => {
     db.state.deleteError = { message: "delete blew up" };
     const res = await GET(req());
     expect(res.status).toBe(500);
-    expect((await res.json()).error).toBe("delete blew up");
+    const { error } = await res.json();
+    expect(error).toContain("delete blew up");
+    // #2388 splits the delete across requests, so the lane's error also has to say
+    // how much of the sweep landed: some rows can be gone while the rest are not.
+    expect(error).toMatch(/partial sweep/);
+    expect(error).toContain("0 row(s) already destroyed");
     expect(locks.releaseLock).toHaveBeenCalledTimes(1);
   });
 });

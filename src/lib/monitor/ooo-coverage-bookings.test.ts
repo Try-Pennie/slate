@@ -14,7 +14,8 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 const paginate = vi.hoisted(() => ({ selectAllPages: vi.fn() }));
 vi.mock("@/lib/supabase/paginate", () => paginate);
 
-import { loadOooCoverageBookings } from "@/lib/monitor/ooo-coverage-bookings";
+import { loadOooCoverageBookings, loadSnapshottedBookingIds } from "@/lib/monitor/ooo-coverage-bookings";
+import { MAX_IN_FILTER_BYTES, idFilterBytes } from "@/lib/db/id-batch";
 
 interface Recorded {
   table: string;
@@ -119,5 +120,59 @@ describe("what it answers", () => {
     const { db } = fakeDb();
     paginate.selectAllPages.mockRejectedValueOnce(new Error("read failed [monitor ooo coverage bookings]"));
     await expect(loadOooCoverageBookings(db, ["u1"], NOW)).rejects.toThrow(/read failed/);
+  });
+});
+
+// #2388. The sibling read: which of those bookings already carry a coverage sweep
+// row. It lived inline in the monitor handler and put EVERY booking id into one
+// `.in("booking_id", ...)` filter, over a list read with `selectAllPages` precisely
+// because it is expected to exceed a page. PostgREST puts that filter in the query
+// string, so past roughly 266 uuids the request is REFUSED, the OOO coverage check
+// throws on every tick, and it goes quiet for the agents it exists to protect.
+// Measured on 2026-08-31: 24 agents with approved time off holding fifteen upcoming
+// calls each is 360 ids, past the refusal point.
+describe("loadSnapshottedBookingIds", () => {
+  const manyIds = (n: number) =>
+    Array.from({ length: n }, (_, i) => `00000000-0000-4000-8000-${String(i).padStart(12, "0")}`);
+
+  it("never puts more ids in one filter than a URL can carry", async () => {
+    const ids = manyIds(400);
+    // Positive control: this many ids really is over the ceiling, or the split is
+    // being asserted against what was only ever going to be a single request.
+    expect(idFilterBytes(ids)).toBeGreaterThan(MAX_IN_FILTER_BYTES);
+
+    const { db, calls } = fakeDb();
+    await loadSnapshottedBookingIds(db, ids);
+    const sent = calls
+      .flatMap((c) => c.in)
+      .filter(([col]) => col === "booking_id")
+      .map(([, v]) => v as string[]);
+    expect(sent.length).toBeGreaterThan(1);
+    for (const batch of sent) expect(idFilterBytes(batch)).toBeLessThanOrEqual(MAX_IN_FILTER_BYTES);
+    // Every id is asked about exactly once: a dropped batch would report a booking as
+    // unswept and page about a sweep that is working.
+    expect(sent.flat()).toEqual(ids);
+  });
+
+  it("unions the rows from every request", async () => {
+    const { db } = fakeDb([{ booking_id: "bk-1" }]);
+    const out = await loadSnapshottedBookingIds(db, manyIds(400));
+    // The fake answers the same row to every request, so a union holds one entry
+    // while a plain concatenation would hold several.
+    expect([...out]).toEqual(["bk-1"]);
+  });
+
+  it("asks nothing when there are no bookings", async () => {
+    const { db, calls } = fakeDb();
+    expect([...(await loadSnapshottedBookingIds(db, []))]).toEqual([]);
+    expect(calls).toHaveLength(0);
+  });
+
+  // The failure case: a refused or failed request must never come back as "none of
+  // these bookings has a sweep row", which reads as a real gap and pages about it.
+  it("THROWS on a failed request rather than under-reporting the sweep rows", async () => {
+    const { db } = fakeDb();
+    paginate.selectAllPages.mockRejectedValueOnce(new Error("read failed [monitor ooo coverage snapshotted]"));
+    await expect(loadSnapshottedBookingIds(db, manyIds(400))).rejects.toThrow(/read failed/);
   });
 });

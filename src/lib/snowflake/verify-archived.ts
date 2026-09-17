@@ -34,6 +34,7 @@
 
 import { escapeSqlLiteral, executeStatement } from "./client";
 import { readSnowflakeConfig } from "./config";
+import { PartialIdSweepError, inIdChunks } from "@/lib/db/id-batch";
 
 /** A Supabase row up for destruction: its id and its watermark value. */
 export interface Candidate {
@@ -231,12 +232,42 @@ export async function destroyVerified(opts: DestroyVerifiedOpts): Promise<Destro
     );
   }
 
-  const destroyed = await destroy(archived);
-  if (destroyed === 0) {
-    throw new Error(
-      `${table}: ${archived.length} row(s) verified archived but the destructive write affected 0 rows; predicate and verified set disagree`,
-    );
-  }
+  // Split the write across requests (#2388). Every lane reads up to
+  // MAX_VERIFY_BATCH candidates, and a `.in("id", ids)` filter rides in the QUERY
+  // STRING, so 500 uuids is roughly 18.6 KB against a ceiling measured between 13
+  // and 15 KB: PostgREST REFUSES it. The lane then destroys nothing, finds the same
+  // rows tomorrow, and the retention gate keeps the export frozen behind it, so the
+  // failure is permanent rather than a blip. The zero rows check could never see it,
+  // because on a refusal the write never runs at all.
+  //
+  // It is owned here rather than in each lane's `destroy` callback so a fifth lane
+  // cannot be written without it: a rule every call site has to opt into is enforced
+  // by nobody (L621). The callback is therefore handed a BATCH, never the whole set.
+  const counts = await inIdChunks(`${table} destroy`, archived, async (batch) => {
+    const affected = await destroy(batch);
+    // Asked per BATCH, not of the total. A sum cannot see one component collapsing
+    // (L367): a request that silently affected nothing would be hidden by its
+    // neighbours succeeding, which is the same "predicate and verified set disagree"
+    // fault this has always refused, only harder to notice.
+    if (affected === 0) {
+      throw new Error(
+        `${batch.length} row(s) verified archived but the destructive write affected 0 rows; predicate and verified set disagree`,
+      );
+    }
+    return affected;
+  }).catch((err: unknown) => {
+    // A sweep that destroyed some rows and then failed must never read as a finished
+    // one. It still throws, because the remainder is real work nobody else picks up,
+    // and the message carries the ROW count beside the batch count: for a redaction
+    // lane those rows are irreversibly blanked and an audit has to account for them.
+    if (err instanceof PartialIdSweepError) {
+      const rows = (err.completed as number[]).reduce((a, b) => a + b, 0);
+      throw new Error(`${err.message} (${rows} row(s) already destroyed)`, { cause: err });
+    }
+    throw err;
+  });
+
+  const destroyed = counts.reduce((a, b) => a + b, 0);
   return { candidates: candidates.length, destroyed, problems };
 }
 

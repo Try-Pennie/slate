@@ -113,3 +113,112 @@ export function chunkIdsByUrlBudget(
   if (current.length > 0) chunks.push(current);
   return chunks;
 }
+
+/**
+ * A sweep that spent some of its ids and then met a failure (#2388).
+ *
+ * Splitting a list of ids across several requests turns one all or nothing call
+ * into a sequence, and a sequence can stop in the middle. That middle state is the
+ * dangerous one for a retention lane: the rows in the finished requests are already
+ * redacted or deleted, irreversibly, while the caller's own counters never saw
+ * them. A bare rethrow loses the only record that anything happened at all.
+ *
+ * So every failure inside `inIdChunks` arrives as this, carrying what completed,
+ * in the MESSAGE as well as in the fields, because a log line is all an operator
+ * reads at three in the morning. The original failure is kept as `cause` and quoted
+ * in the message, so wrapping costs no diagnosis.
+ */
+export class PartialIdSweepError extends Error {
+  readonly chunksCompleted: number;
+  readonly chunksTotal: number;
+  readonly idsCompleted: number;
+  readonly idsTotal: number;
+  /** The results of the requests that DID finish, for the caller to account for. */
+  readonly completed: unknown[];
+
+  constructor(
+    label: string,
+    counts: {
+      chunksCompleted: number;
+      chunksTotal: number;
+      idsCompleted: number;
+      idsTotal: number;
+      completed: unknown[];
+    },
+    cause: unknown,
+  ) {
+    const reason = cause instanceof Error ? cause.message : String(cause);
+    super(
+      `${label}: partial sweep, ${counts.chunksCompleted} of ${counts.chunksTotal} batch(es) completed ` +
+        `(${counts.idsCompleted} of ${counts.idsTotal} ids spent) before it failed: ${reason}`,
+      { cause },
+    );
+    this.name = "PartialIdSweepError";
+    this.chunksCompleted = counts.chunksCompleted;
+    this.chunksTotal = counts.chunksTotal;
+    this.idsCompleted = counts.idsCompleted;
+    this.idsTotal = counts.idsTotal;
+    this.completed = counts.completed;
+  }
+}
+
+/**
+ * Run `run` once per URL budget sized batch of `ids`, in order, and answer one
+ * result per batch.
+ *
+ * This is the half of the problem `chunkIdsByUrlBudget` deliberately does not
+ * solve. That function says how many ids fit in one request; this one owns what
+ * happens when request three of five is refused. Both live here so a caller cannot
+ * pick up the measuring and leave the accounting behind, which is how #2388 read on
+ * the retention lanes: they measured nothing and accounted for nothing, handing 500
+ * uuids to one filter that PostgREST refuses outright.
+ *
+ * Two properties, and the second is the one worth having:
+ *
+ *   - no request carries more ids than the measured byte ceiling allows;
+ *   - a failure partway through is reported AS a partial sweep. It throws, because
+ *     a lane that deleted two batches of five must not answer 200 and let the
+ *     remainder go unnoticed until somebody audits the table, and the throw names
+ *     what was already spent, because for a redaction lane that work cannot be
+ *     undone.
+ *
+ * Safe to retry, which matters because every caller is a scheduled lane that can be
+ * re run or crash midway: the runner holds no state between calls, and each caller's
+ * own predicate (a redacted row no longer matches, a deleted row is gone) drops the
+ * finished ids out of the next run's candidate read.
+ *
+ * The NAME is not free choice. `scripts/test-monitor-step-coverage.ts` treats any
+ * `await run<Capital>(...)` outside a `steps.run` boundary as a monitor check that
+ * escaped containment, so calling this `runInIdChunks` made every use of it inside
+ * the monitor lane fail that guard. Two functions sharing a naming convention are
+ * read as sharing a meaning (L263), so this one stays out of that space.
+ */
+export async function inIdChunks<T>(
+  label: string,
+  ids: string[],
+  run: (chunk: string[]) => Promise<T>,
+): Promise<T[]> {
+  const chunks = chunkIdsByUrlBudget(ids);
+  const completed: T[] = [];
+  let idsCompleted = 0;
+
+  for (const chunk of chunks) {
+    try {
+      completed.push(await run(chunk));
+    } catch (cause) {
+      throw new PartialIdSweepError(
+        label,
+        {
+          chunksCompleted: completed.length,
+          chunksTotal: chunks.length,
+          idsCompleted,
+          idsTotal: ids.length,
+          completed,
+        },
+        cause,
+      );
+    }
+    idsCompleted += chunk.length;
+  }
+  return completed;
+}

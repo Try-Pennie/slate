@@ -11,12 +11,15 @@ const db = vi.hoisted(() => {
     rows: [] as Record<string, unknown>[],
     error: null as { message: string } | null,
     inIds: [] as string[],
+    /** EVERY `in` filter this read sent, since #2388 splits it across requests. */
+    inCalls: [] as string[][],
     skipFilters: [] as string[],
   };
   const chain: Record<string, unknown> = {};
   chain.select = () => chain;
   chain.in = (_col: string, ids: string[]) => {
     state.inIds = ids;
+    state.inCalls.push(ids);
     return chain;
   };
   // applySkipRedacted chains .is()/.eq() for the tables that redact in place.
@@ -42,6 +45,7 @@ vi.mock("./client", async (importOriginal) => ({
 vi.mock("@/lib/log", () => ({ log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } }));
 
 import { reexportByIds, repairUnverified } from "./reexport";
+import { MAX_IN_FILTER_BYTES, idFilterBytes } from "@/lib/db/id-batch";
 import { readSnowflakeConfig } from "./config";
 import { log } from "@/lib/log";
 
@@ -60,7 +64,53 @@ afterEach(() => {
   db.state.rows = [];
   db.state.error = null;
   db.state.inIds = [];
+  db.state.inCalls = [];
   db.state.skipFilters = [];
+});
+
+// #2388. `repairUnverified` hands this whole problem list, which is bounded only by
+// MAX_VERIFY_BATCH (500). The Supabase read puts those ids in the query string, and
+// 500 uuids is roughly 18.6 KB against a ceiling measured between 13 and 15 KB, so
+// the read is REFUSED. That is the repair path, so it fails exactly when a lane has
+// already refused to destroy rows and is relying on this to make tomorrow work: the
+// `// cap-safe: ... capped at MAX_VERIFY_BATCH` comment it carried was a ROW count
+// justifying a URL byte constraint, which is the mistake the whole module records.
+describe("the read splits across requests (#2388)", () => {
+  const manyIds = (n: number) =>
+    Array.from({ length: n }, (_, i) => `00000000-0000-4000-8000-${String(i).padStart(12, "0")}`);
+
+  it("never asks for more ids than one URL can carry", async () => {
+    vi.mocked(readSnowflakeConfig).mockReturnValue(cfg);
+    const ids = manyIds(500);
+    // Positive control: the bound the caller is allowed to reach really is over the
+    // ceiling, or this is measuring a single request.
+    expect(idFilterBytes(ids)).toBeGreaterThan(MAX_IN_FILTER_BYTES);
+    db.state.rows = [{ id: "x", org_id: "o" }];
+
+    await reexportByIds("routing_decisions", ids);
+    expect(db.state.inCalls.length).toBeGreaterThan(1);
+    for (const sent of db.state.inCalls) expect(idFilterBytes(sent)).toBeLessThanOrEqual(MAX_IN_FILTER_BYTES);
+    expect(db.state.inCalls.flat()).toEqual(ids);
+  });
+
+  // The failure case. A refusal partway through means some rows reached the
+  // warehouse and the rest did not, and `repairUnverified` swallows this on purpose,
+  // so the message is the only record that it happened at all.
+  it("reports a failed request as a PARTIAL repair rather than a short answer", async () => {
+    vi.mocked(readSnowflakeConfig).mockReturnValue(cfg);
+    db.state.rows = [{ id: "x", org_id: "o" }];
+    let merges = 0;
+    sf.executeStatement.mockImplementation(async () => {
+      merges += 1;
+      if (merges === 2) throw new Error("warehouse refused");
+      return { data: [] };
+    });
+    const err = (await reexportByIds("routing_decisions", manyIds(500)).catch((e) => e)) as Error;
+    expect(err).toBeInstanceOf(Error);
+    expect(err.message).toMatch(/partial/i);
+    expect(err.message).toContain("warehouse refused");
+    expect(err.message).toMatch(/\b1 of \d+\b/);
+  });
 });
 
 describe("reexportByIds", () => {
