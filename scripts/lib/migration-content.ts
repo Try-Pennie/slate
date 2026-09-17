@@ -53,20 +53,50 @@ export function versionOf(filename: string): string {
 export interface LockEntry {
   version: string;
   digest: string;
+  /**
+   * True when this line records an INTENTION rather than a fact: the content is
+   * recorded, the `supabase db push` has not happened yet (#1642).
+   *
+   * The lock was being asked to mean two things at once. The runbook says to write it
+   * only after the apply succeeds, "never before, or the lock records an intention
+   * rather than a fact", and the push gate demands an entry for every migration file on
+   * disk. Following both was impossible: a branch carrying a correctly unapplied
+   * migration could not be pushed until the lock claimed it had been applied.
+   *
+   * So the line says which it is. Pending is about whether the migration RAN and never
+   * about whether its content is watched: the digest is recorded and compared either
+   * way, so a pending migration edited after it was written is caught exactly like an
+   * applied one.
+   *
+   * What keeps it honest is that something insists the intention becomes a fact, and the
+   * only check that can know is the drift gate, which reads the remote. An applied
+   * migration whose entry still says pending fails there.
+   */
+  pending: boolean;
 }
 
+/** The one word a line may carry after its digest, and the only one. */
+export const PENDING_MARKER = "pending";
+
 /**
- * Parse the lock file: one `version digest` pair per line, `#` comments ignored.
- * A plain text format on purpose, so a diff on it reads as "this migration's
- * content changed" rather than as a wall of reformatted JSON.
+ * Parse the lock file: `version digest` per line, optionally followed by `pending`,
+ * `#` comments ignored. A plain text format on purpose, so a diff on it reads as
+ * "this migration's content changed" rather than as a wall of reformatted JSON.
+ *
+ * A third field this does not recognise REFUSES the line rather than dropping to a
+ * fact. A typo for `pending` would otherwise promote an intention to a fact silently,
+ * which is the exact confusion the marker exists to remove.
  */
 export function parseLock(text: string): LockEntry[] {
   const entries: LockEntry[] = [];
   for (const line of text.split("\n")) {
     const trimmed = line.trim();
     if (!trimmed || trimmed.startsWith("#")) continue;
-    const [version, digest] = trimmed.split(/\s+/);
-    if (version && digest) entries.push({ version, digest });
+    const [version, digest, marker, ...rest] = trimmed.split(/\s+/);
+    if (!version || !digest) continue;
+    if (rest.length > 0) continue;
+    if (marker !== undefined && marker !== PENDING_MARKER) continue;
+    entries.push({ version, digest, pending: marker === PENDING_MARKER });
   }
   return entries;
 }

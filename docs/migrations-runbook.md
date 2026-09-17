@@ -33,8 +33,28 @@ rather than reasoning it out per PR.
    types in `src/lib/db/schema.ts` to match.
 2. **Bump the shipped version** in `src/lib/db/migration-version.ts`
    (`SHIPPED_MIGRATION_VERSION = "NNNN"`) in the **same commit** as the migration.
-3. **Push the branch and open the PR.** The `migration-drift` check will fail with
-   `Committed migrations are not applied to the remote DB. Run: supabase db push`.
+3. **Record the migration's content as PENDING, then push the branch and open the PR.**
+
+   <!-- runbook-verified: 2026-09-17 (4a2cae49) run against this repo. With a throwaway 0131 on disk it
+        wrote "recorded 130 migrations, 1 as pending" and the entry
+        "0131 362beeaa... pending"; feeding that lock plus an APPLIED remote to
+        migrationDriftVerdict produced the refusal naming 0131 and the command to run.
+        Re-running with no flag restored every entry to a fact, and the throwaway file and
+        its entry were removed. -->
+
+   ```
+   node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/update-migration-lock.ts --pending
+   ```
+
+   This is step 5 run in its intention mode, and it is what makes the rest of this
+   procedure followable (#1642). The push gate demands a lock entry for every migration
+   file on disk, so without one the branch cannot be pushed at all; step 5 rightly refuses
+   to call a migration applied before it has been. `--pending` records the content and
+   marks the entry `pending`, so the lock says which of the two things it means instead of
+   conflating them. Nothing already recorded as a fact is ever demoted.
+
+   Commit the lock with the migration, then push. The `migration-drift` check will fail
+   with `Committed migrations are not applied to the remote DB. Run: supabase db push`.
    That is expected: the migration is not on prod yet.
 4. **Apply to prod:**
 
@@ -71,9 +91,15 @@ rather than reasoning it out per PR.
    node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/update-migration-lock.ts
    ```
 
-   Commit the changed `applied-content.lock` with the migration. Deliberately editing
-   an already applied migration is done the same way: change the file, re-run this,
-   and the lock's diff is what a reviewer sees.
+   Run it with NO flag, which rewrites every entry as a fact and clears the `pending`
+   marker step 3 wrote. Commit the changed `applied-content.lock`. Deliberately editing an
+   already applied migration is done the same way: change the file, re-run this, and the
+   lock's diff is what a reviewer sees.
+
+   **Forgetting this step is caught rather than assumed** (#1642). `migration-drift` reads
+   the remote, so it is the only check that can see a migration applied while the lock
+   still calls it an intention, and it refuses the merge with the command to run. That is
+   what lets step 3 record an intention safely: the intention cannot survive to main.
 6. **Re-run the merge gate.** `gh run rerun <run-id> --failed`, then confirm the
    `migration-drift` check is green (`gh pr checks <pr>`).
 7. **Merge.** The push to main deploys the code, now that its schema is already in

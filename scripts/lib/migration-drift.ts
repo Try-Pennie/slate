@@ -48,11 +48,15 @@ export function readMigrationRows(output: string): MigrationRow[] {
   return rows;
 }
 
+import type { LockEntry } from "./migration-content.ts";
+
 export interface MigrationDriftVerdict {
   ok: boolean;
   /** The committed migrations the remote has not got. Empty when none were SEEN,
    *  which is not the same as none existing, hence `ok` carrying that separately. */
   unapplied: string[];
+  /** Applied on the remote, and the content lock still calls the entry an intention. */
+  unconfirmed: string[];
   /** What was decided and on what, in a sentence a reader of the CI log can act on. */
   reason: string;
 }
@@ -66,12 +70,28 @@ export interface MigrationDriftVerdict {
  * notice, which is the moment a green verdict is most likely to be believed and
  * acted on (L98). It fails, and it says which of the two it is.
  */
-export function migrationDriftVerdict(output: string): MigrationDriftVerdict {
+export function migrationDriftVerdict(
+  output: string,
+  /**
+   * The content lock, when the caller has it (#1642).
+   *
+   * A lock entry may record an INTENTION (`pending`) so that a branch carrying a
+   * correctly unapplied migration can be pushed at all. That is only safe because
+   * something insists the intention becomes a fact, and this is the only check that can
+   * know: it reads the REMOTE, so it is the one place that can see a migration is
+   * applied while the lock still calls it an intention.
+   *
+   * Optional, so a caller that has not been updated gets exactly the verdict it always
+   * got rather than silently checking less than it reports.
+   */
+  lock?: readonly LockEntry[],
+): MigrationDriftVerdict {
   const rows = readMigrationRows(output);
   if (rows.length === 0) {
     return {
       ok: false,
       unapplied: [],
+      unconfirmed: [],
       reason:
         "read no migration rows from the CLI, so nothing was checked. This is not an " +
         "applied database; it is an output the gate could not read.",
@@ -82,14 +102,36 @@ export function migrationDriftVerdict(output: string): MigrationDriftVerdict {
     return {
       ok: false,
       unapplied,
+      unconfirmed: [],
       reason:
         `${unapplied.length} committed migration(s) are not applied on the remote ` +
         `(${unapplied.join(", ")}). Run: supabase db push`,
     };
   }
+
+  // Everything committed is applied. The remaining question is whether the lock has
+  // caught up with that, and it is deliberately asked AFTER the unapplied check: a
+  // migration that is not applied yet is supposed to be pending, so asking first would
+  // report the ordinary state as a fault.
+  const pending = new Set((lock ?? []).filter((e) => e.pending).map((e) => e.version));
+  const unconfirmed = rows.filter((r) => pending.has(r.local)).map((r) => r.local);
+  if (unconfirmed.length > 0) {
+    return {
+      ok: false,
+      unapplied: [],
+      unconfirmed,
+      reason:
+        `${unconfirmed.length} migration(s) have been applied on the remote and the content ` +
+        `lock still records them as an intention (${unconfirmed.join(", ")}). The lock is ` +
+        `what notices a migration edited after it ran, and it cannot do that while it says ` +
+        `pending. Run: node --experimental-strip-types scripts/update-migration-lock.ts`,
+    };
+  }
+
   return {
     ok: true,
     unapplied: [],
+    unconfirmed: [],
     reason: `all ${rows.length} committed migration(s) are applied on the remote.`,
   };
 }

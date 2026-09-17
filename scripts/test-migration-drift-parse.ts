@@ -24,6 +24,7 @@
  *        scripts/test-migration-drift-parse.ts
  */
 import { readMigrationRows, migrationDriftVerdict } from "./lib/migration-drift.ts";
+import { parseLock } from "./lib/migration-content.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
 /** What the CLI really prints, header and all. */
@@ -122,5 +123,50 @@ assert(
   migrationDriftVerdict(APPLIED).ok && !migrationDriftVerdict(UNAPPLIED).ok,
   "the verdict really distinguishes an applied database from a drifted one",
 );
+
+// --- the lock's intention has to become a fact, and this is what notices (#1642) --------
+//
+// A lock entry may say `pending`, meaning the content is recorded and the apply has not
+// happened. That is what makes the documented order followable. It is only safe because
+// something insists the intention is converted, and the only place that can know is here:
+// this gate reads the REMOTE, so it is the one check that can see a migration is applied
+// while the lock still calls it an intention.
+//
+// A pending entry for a migration the remote has NOT got is correct and passes: that is the
+// state a branch is legitimately pushed in.
+{
+  const pendingLock = parseLock("0099 a pending\n0100 b\n0101 c pending\n");
+
+  const stillPending = migrationDriftVerdict(UNAPPLIED, pendingLock);
+  eq(
+    stillPending.unapplied,
+    ["0101"],
+    "an unapplied migration whose entry is pending is the ordinary state, reported as unapplied",
+  );
+
+  const appliedButPending = migrationDriftVerdict(APPLIED, pendingLock);
+  eq(appliedButPending.ok, false, "an APPLIED migration whose entry still says pending fails");
+  assert(
+    /0099/.test(appliedButPending.reason),
+    `and names it (got: ${appliedButPending.reason})`,
+  );
+  assert(
+    /update-migration-lock/.test(appliedButPending.reason),
+    "and names the command that converts it, so the reader is not left guessing",
+  );
+  assert(
+    !/not applied/.test(appliedButPending.reason),
+    "and does not read as an unapplied migration, which is a different thing to go and do",
+  );
+
+  // The control: with every entry a fact, the same applied output passes. Without this the
+  // assertion above is satisfied by a gate that fails on everything.
+  const confirmed = migrationDriftVerdict(APPLIED, parseLock("0099 a\n0100 b\n0101 c\n"));
+  eq(confirmed.ok, true, "CONTROL: the same applied database passes once the lock records facts");
+
+  // And with no lock handed in at all, the gate judges exactly what it always did, so a
+  // caller that has not been updated is not silently checking less than it reports.
+  eq(migrationDriftVerdict(APPLIED).ok, true, "no lock passed means the original verdict, unchanged");
+}
 
 finish();

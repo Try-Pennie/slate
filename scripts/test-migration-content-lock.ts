@@ -156,8 +156,8 @@ const digest = (sql: string) =>
 {
   const text = "# a comment\n\n0001 abc\n  0002   def  \n# trailing note\n";
   eq(parseLock(text), [
-    { version: "0001", digest: "abc" },
-    { version: "0002", digest: "def" },
+    { version: "0001", digest: "abc", pending: false },
+    { version: "0002", digest: "def", pending: false },
   ], "comments, blank lines and stray whitespace are not entries");
   eq(parseLock(""), [], "an empty lock parses to nothing rather than throwing");
 }
@@ -175,6 +175,39 @@ const digest = (sql: string) =>
     digest(readFileSync(join(DIR, sample), "utf8")),
     "the digest in the lock is the one this suite computes for the same file",
   );
+}
+
+// --- an entry can say it is an INTENTION rather than a fact (#1642) -------------------
+//
+// The runbook says to record the lock only AFTER `supabase db push` has succeeded, so it
+// records what really ran. The push gate demands an entry for every migration file on disk.
+// Following both was impossible: the branch could not be pushed until the lock claimed a
+// migration had been applied that had not been.
+//
+// So a line can carry `pending`, which means the content is recorded and the apply has not
+// happened yet. The lock stops conflating the two things it was being asked to mean, and
+// the CONFIRMATION lands where the live knowledge already is: the drift gate, which reads
+// the remote, refuses an applied migration whose entry still says pending.
+{
+  const text = "0001 abc\n0002 def pending\n";
+  eq(parseLock(text), [
+    { version: "0001", digest: "abc", pending: false },
+    { version: "0002", digest: "def", pending: true },
+  ], "a third field marks an entry as an intention rather than a fact");
+
+  // The digest is still recorded and still compared, so a pending migration EDITED after
+  // it was written is caught exactly like an applied one. Pending is about whether it ran,
+  // never about whether its content is watched.
+  const drift = compareToLock(
+    [{ version: "0002", digest: "CHANGED" }],
+    parseLock("0002 def pending\n"),
+  );
+  eq(drift.changed.length, 1, "a pending entry still catches a content change");
+  eq(drift.unlocked, [], "and a pending entry counts as recorded, so the push gate passes");
+
+  // A word this does not understand is not silently a fact: it fails to parse rather than
+  // being dropped to `pending: false`, or a typo would quietly promote an intention.
+  eq(parseLock("0003 ghi pendign\n"), [], "an unreadable third field is refused, never read as a fact");
 }
 
 finish();
