@@ -35,6 +35,7 @@ import {
   doneBody,
   doneHeading,
   liveHeading,
+  movedNote,
   phoneSaved as phoneSaved_,
 } from "@/lib/booking/manage-copy";
 
@@ -149,6 +150,11 @@ export default function ManageBooking({
   const [nowMs, setNowMs] = useState(() => Date.now());
   const [status, setStatus] = useState(initialStatus);
   const [rescheduling, setRescheduling] = useState(false);
+  // #2215: set ONLY by a move made on this page, and never derived from the
+  // stored status, which records that the booking was moved at some point rather
+  // than that it was moved just now. That is what makes the confirmation below
+  // reachable from the action alone.
+  const [moved, setMoved] = useState(false);
   const today = useMemo(
     () => DateTime.now().setZone(timeZone).startOf("day"),
     [timeZone],
@@ -244,7 +250,11 @@ export default function ManageBooking({
       if (ok) {
         setStart(data.startsAt ?? newStart);
         setNowMs(Date.now());
+        // Kept in step with the row the server just wrote. Nothing on this page
+        // is shown because of it any more (#2215): what the move says for itself
+        // hangs off `moved` below, which only this line can set.
         setStatus("rescheduled");
+        setMoved(true);
         setRescheduling(false);
       } else {
         setError(data.error ?? RESCHEDULE_COPY.failed);
@@ -333,26 +343,13 @@ export default function ManageBooking({
   return (
     <div data-theme={theme} className="min-h-dvh bg-bg p-6 text-fg">
       <div className="mx-auto max-w-[740px]">
-        {/* #1336: a completed reschedule states its outcome. The panel used to
-            simply re-render, so a lead had no confirmation the move landed, that
-            a fresh invite was coming, or that the old time had been released. */}
-        {status === "rescheduled" && !rescheduling && (
-          <div
-            role="status"
-            className="mb-4 rounded-2xl bg-pennie-sky-soft px-6 py-5 dark:bg-accent/15"
-          >
-            <p className="text-sm font-semibold text-fg">Your call is moved</p>
-            <p className="mt-1 text-sm text-fg-muted">
-              It is now{" "}
-              <span className="tabular-nums text-fg">
-                {longDayOf(start)} at {timeOf(start)}
-              </span>
-              .{attendeeEmail ? ` A new invite is on its way to ${attendeeEmail}, and` : " A new invite is on its way, and"}{" "}
-              the time you were holding has been released.
-            </p>
-          </div>
-        )}
-
+        {/* #2215 removed the banner that used to sit here. It was gated on
+            `status === "rescheduled"`, which a reschedule writes onto the row
+            permanently, so it was a moment rendered from a persistent state:
+            every later visit to the manage link was told the call had just
+            moved, and told that the invite the reader had clicked through to get
+            here was still on its way. What #1336 put it there for now lives
+            beside the actions, driven by the move itself. */}
         <div className="overflow-hidden rounded-2xl border border-border bg-surface shadow-xs">
           {/* One grid, five blocks. Narrow width has its OWN order (#1338): most
               people open this from a calendar reminder on a phone, so the time
@@ -555,6 +552,19 @@ export default function ManageBooking({
                 </div>
               ) : (
                 <>
+                  {/* #1336 as #2215 rebuilt it: the move states its own outcome,
+                      beside the actions the lead just used, and only ever because
+                      the move happened here. The new time is the hero in the panel
+                      to the left, so this says the two things that panel cannot:
+                      a fresh invite is coming, and the time they were holding is
+                      gone. Quiet type rather than a band, because it follows an
+                      action the lead took on purpose. */}
+                  {moved && (
+                    <div role="status" className="mb-4">
+                      <p className="text-sm font-semibold text-fg">{RESCHEDULE_COPY.moved}</p>
+                      <p className="mt-1 text-sm text-fg-muted">{movedNote(attendeeEmail)}</p>
+                    </div>
+                  )}
                   {/* Computed at render, so it tracks a reschedule. The advisor's
                       first name is dropped when unresolvable rather than
                       replaced. */}
@@ -672,6 +682,9 @@ export default function ManageBooking({
                         setRescheduling(true);
                         setReschedReason("");
                         setReschedDetail("");
+                        // Reopening the panel is the lead saying this time is not
+                        // right either, so the last move's confirmation goes.
+                        setMoved(false);
                       }}
                       className="pn-btn pn-btn--additional min-h-[44px] rounded-lg px-5 text-sm"
                     >

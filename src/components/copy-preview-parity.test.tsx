@@ -41,7 +41,9 @@ import {
   CANCEL_COPY,
   LIVE_COPY,
   PHONE_COPY,
+  RESCHEDULE_COPY,
   advisorWillCall,
+  movedNote,
   phoneSaved,
 } from "@/lib/booking/manage-copy";
 
@@ -294,6 +296,31 @@ describe("the preview shows what the manage page actually renders (#1343)", () =
     expect(pageText()).toContain(NEAREST_TIMES_COPY.heading);
     expect(pageText()).toContain(NEAREST_TIMES_COPY.hintMove);
     expect(pageText()).not.toContain(NEAREST_TIMES_COPY.hint);
+  });
+
+  // #2215: what a move done on this page says for itself. It was inline in the
+  // component until this change, so the preview never carried it and nobody could
+  // read it before it shipped. The state is reached by actually moving the call,
+  // because it is now reachable from the action and from nothing else.
+  it("uses the builder's words for a move made on this page", async () => {
+    global.fetch = vi.fn(async (url: RequestInfo | URL) => {
+      const u = String(url);
+      if (u.includes("/reschedule")) {
+        return { ok: true, status: 200, json: async () => ({ startsAt: slotIso }) } as Response;
+      }
+      return { ok: true, status: 200, json: async () => ({ slots: [slotIso] }) } as Response;
+    }) as unknown as typeof fetch;
+
+    render(<ManageBooking {...manageProps} />);
+    await act(async () => {});
+    fireEvent.click(screen.getByRole("button", { name: LIVE_COPY.reschedule }));
+    fireEvent.click(screen.getByRole("radio", { name: /schedule conflict/i }));
+    fireEvent.click((await screen.findAllByRole("button", { name: /^(MON|TUE|WED|THU|FRI|SAT|SUN|TODAY)/ }))[0]);
+    fireEvent.click((await screen.findAllByRole("button", { name: /:\d{2}/ }))[0]);
+    await act(async () => {});
+
+    expect(await screen.findByText(RESCHEDULE_COPY.moved)).toBeTruthy();
+    expect(pageText()).toContain(movedNote(manageProps.attendeeEmail));
   });
 
   it("uses the builder's words when confirming a cancel", async () => {
