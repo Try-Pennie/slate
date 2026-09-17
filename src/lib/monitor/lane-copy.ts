@@ -20,6 +20,7 @@ import {
   LANE_WATCHDOG_VERDICT_LANE,
   TIER_STAFFING_VERDICT_LANE,
   BURST_COUNTER_VERDICT_LANE,
+  KILL_SWITCH_VERDICT_LANE,
   parkedDetector,
 } from "@/lib/monitor/verdict-freshness";
 
@@ -189,6 +190,22 @@ const VERDICT_SUBJECT: Record<string, { what: string; cost: string; look: string
     look:
       "whether the daily burst-counter workflow ran at all in the Actions tab, then what its last " +
       "run said, since it ends on a different exit code for each way the check can fail",
+  },
+  [KILL_SWITCH_VERDICT_LANE]: {
+    what: "the nightly proof that public booking can still be stopped",
+    cost:
+      "nothing is confirming that the one lever which stops Slate putting invites on agents' " +
+      "calendars still works, and the same gate refuses EVERY lead when it cannot read its own " +
+      "flag, so the first sign either way would be leads being turned away or a booking nobody " +
+      "could stop",
+    // WHETHER IT RAN comes first, for the reason the burst counter's entry gives just
+    // above: every BAD verdict this check can reach stamps, so the only ways this page can
+    // fire are a run that could not reach the deployment and a run that never happened.
+    // After that the run is the whole diagnosis, since the command ends on a different exit
+    // code for each cause and the reporter posts its own sentence.
+    look:
+      "whether the nightly kill-switch workflow ran at all in the Actions tab, then what its " +
+      "last run said, since it ends on a different exit code for each way the check can fail",
   },
   [TWILIO_ROSTER_VERDICT_LANE]: {
     what: "the hourly roster sync's Twilio half, which takes an agent out of the bookable pool when Twilio marks them redistribute",

@@ -41,7 +41,8 @@ export type MonitorAlertKey =
   | "handoff_channel_unset"
   | "handoff_undelivered"
   | "main_not_deployed"
-  | "ci_runs_refused";
+  | "ci_runs_refused"
+  | "public_booking_stopped";
 
 export const ALERT_KEYS: MonitorAlertKey[] = [
   "availability_data_anomaly",
@@ -75,6 +76,7 @@ export const ALERT_KEYS: MonitorAlertKey[] = [
   "handoff_undelivered",
   "main_not_deployed",
   "ci_runs_refused",
+  "public_booking_stopped",
 ];
 
 /**
@@ -309,6 +311,12 @@ export const ALERT_FIELDS: {
     help: "The site is serving an older commit than main's tip, long after that commit landed. The usual cause is a run that was cancelled before it reached the deploy job, with nothing merged after it to carry the work live.",
   },
   {
+    key: "public_booking_stopped",
+    urgency: "alert",
+    label: "Online booking left stopped",
+    help: "The kill switch that stops Slate taking public bookings has been on for longer than the incident lever is meant to be held for. Nothing is broken: somebody turned it off deliberately and it asks whether that is still intended. It ends by itself when booking is started again.",
+  },
+  {
     key: "ci_runs_refused",
     urgency: "page",
     label: "CI runs refused before they start",
@@ -457,6 +465,12 @@ export const MONITOR_DEFAULTS = {
     // somebody has to make, and while it lasts main is unguarded, so it should keep
     // asking. Hourly.
     ci_runs_refused: 60 * 60_000,
+    // Online booking left stopped (#2366). It repeats while it stands, because the
+    // whole point is that the person who stopped it has forgotten, and one message
+    // is exactly what a forgetful reader misses. Four hours rather than hourly: it
+    // is a question about a deliberate state, and a state somebody is deliberately
+    // holding through a long incident must not be asked about every hour (L36).
+    public_booking_stopped: 4 * 60 * 60_000,
   },
   floor30: 5,
   floor120: 20,

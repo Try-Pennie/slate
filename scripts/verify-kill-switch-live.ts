@@ -32,9 +32,20 @@
 // that glob is the offline unit suite. Its decision logic is pinned offline by
 // `scripts/test-kill-switch-live-control.ts`.
 //
+// ON A SCHEDULE SINCE #2493. `.github/workflows/kill-switch.yml` runs it nightly, outside the
+// hours the org advertises, and stamps `verdict:kill-switch` only when a run MEASURED whether the
+// gate refuses and releases. That is why every ending now writes a summary file as well as exiting
+// on its own code: an exit code alone cannot tell a real ending from an uncaught throw, because
+// node exits 1 on both (L11, L98). A hand run sets no path and writes nothing.
+//
 // Env overrides:
 //   SLATE_BASE_URL     the deployment to ask (default https://slate.trypennie.app)
 //   KILL_SWITCH_BUCKET the bucket whose availability is read (default 111, a real public one)
+// env-ok: KILL_SWITCH_BUCKET (a local override only; the scheduled run wants the coded
+//   default, which is a real public bucket. Wiring it as a repo variable would be one more
+//   setting that has to exist before the nightly proof can run, and an unset one
+//   interpolates to the empty string, which is the #1495 fault)
+//   KILL_SWITCH_SUMMARY_FILE  where to record the verdict for the scheduled reporter
 import { loadEnvFiles, envOr } from "./smoke-env.ts";
 
 loadEnvFiles([".env.local", ".dev.vars"]);
@@ -54,6 +65,23 @@ const { BOOKING_ERROR_COPY } = await import("@/lib/booking/booker-copy");
 const { KILL_SWITCH_EXIT, readProbeReply, judgeKillSwitchRun, restoreFailureMessage } = await import(
   "./lib/kill-switch-live-control.ts"
 );
+const { writeKillSwitchSummary } = await import("./lib/kill-switch-run-outcome.ts");
+
+const SUMMARY_FILE = process.env.KILL_SWITCH_SUMMARY_FILE ?? "";
+
+/**
+ * Record the verdict for the scheduled reporter, then leave.
+ *
+ * Every ending goes through here, so a code added later cannot ship as the one the
+ * lane reads as "the run died before deciding".
+ */
+function leave(exit: number, detail: string): never {
+  const wrote = writeKillSwitchSummary(SUMMARY_FILE, { exit, detail });
+  if (SUMMARY_FILE && !wrote.written) {
+    console.error(`(could not record the verdict for the scheduled lane: ${wrote.why})`);
+  }
+  process.exit(exit);
+}
 type ProbeReply = import("./lib/kill-switch-live-control.ts").ProbeReply;
 type AvailabilityReading = import("./lib/kill-switch-live-control.ts").AvailabilityReading;
 
@@ -127,16 +155,18 @@ if (before === null) {
   process.exit(1);
 }
 if (before.public_booking_paused === true) {
-  console.error(
-    "FAILED (already-paused): public booking is ALREADY paused on this deployment. Somebody stopped it on " +
-      "purpose, and finishing this run would turn it back on for them. Nothing was attempted.",
-  );
-  process.exit(1);
+  const detail =
+    "Public booking is ALREADY stopped on this deployment. Somebody stopped it on purpose, and " +
+    "finishing this run would turn it back on for them, so nothing was attempted. Start booking " +
+    "again from the admin business hours page and this will test the switch on its next run.";
+  console.error(`FAILED (already-paused): ${detail}`);
+  leave(KILL_SWITCH_EXIT.alreadyPaused, detail);
 }
 
 console.log(`verify:kill-switch against ${BASE} (availability bucket ${BUCKET})`);
 
 let restored = true;
+let flagNotSet = false;
 let paused: ProbeReply = { kind: "no-answer", detail: "the paused half never ran" };
 let availabilityPaused: AvailabilityReading = { ok: false, slots: null };
 let pausedCopyIsPauseCopy = false;
@@ -149,27 +179,36 @@ console.log(`  flag off: booker answered ${open.kind}, availability ${availabili
 
 try {
   if (!(await setPaused(true))) {
-    console.error(
-      "FAILED (flag-not-set): the pause flag could not be written or did not read back as set, so the paused half " +
-        "was never exercised. Nothing is left paused.",
+    flagNotSet = true;
+  } else {
+    paused = await probeBooking();
+    availabilityPaused = await readAvailability();
+    // Compared against the SHIPPED builder rather than a pattern written here, so the two cannot
+    // drift and a copy edit cannot quietly turn this into a check that matches nothing (L41).
+    pausedCopyIsPauseCopy =
+      paused.kind === "refused" && paused.copy.trim() === BOOKING_ERROR_COPY.bookingsPaused.trim();
+    console.log(
+      `  flag on:  booker answered ${paused.kind}, availability ${availabilityPaused.ok ? `${availabilityPaused.slots} times` : "did not answer"}`,
     );
-    process.exit(KILL_SWITCH_EXIT.noAnswer);
   }
-  paused = await probeBooking();
-  availabilityPaused = await readAvailability();
-  // Compared against the SHIPPED builder rather than a pattern written here, so the two cannot
-  // drift and a copy edit cannot quietly turn this into a check that matches nothing (L41).
-  pausedCopyIsPauseCopy =
-    paused.kind === "refused" && paused.copy.trim() === BOOKING_ERROR_COPY.bookingsPaused.trim();
-  console.log(
-    `  flag on:  booker answered ${paused.kind}, availability ${availabilityPaused.ok ? `${availabilityPaused.slots} times` : "did not answer"}`,
-  );
 } finally {
   // In a `finally`, because a throw between the flip and the restore leaves PUBLIC BOOKING
   // STOPPED (L514, L515). Tried twice: the first failure is usually transient, and the cost of
   // giving up is that real leads are refused until somebody notices.
   restored = await setPaused(false).catch(() => false);
   if (!restored) restored = await setPaused(false).catch(() => false);
+}
+
+// The write failure is judged AFTER the restore, never instead of it: a flag that was
+// half set and could not be read back still has to be cleared, and a stranded flag
+// outranks every other finding here.
+if (flagNotSet && restored) {
+  const detail =
+    "The pause flag could not be written, or did not read back as set, so the paused half was " +
+    "never exercised and nothing was measured about the switch. Nothing is left stopped. Check " +
+    "that booking_settings row 1 is writable with this key.";
+  console.error(`FAILED (flag-not-set): ${detail}`);
+  leave(KILL_SWITCH_EXIT.flagNotSet, detail);
 }
 
 const verdict = judgeKillSwitchRun({
@@ -183,10 +222,10 @@ const verdict = judgeKillSwitchRun({
 
 if (verdict.ok) {
   console.log(`PASSED: ${verdict.message}`);
-  process.exit(KILL_SWITCH_EXIT.ok);
+  leave(KILL_SWITCH_EXIT.ok, verdict.message);
 }
 // The restore failure is shouted rather than logged, because it is the one outcome that goes on
 // turning real leads away after this command exits.
 if (verdict.exitCode === KILL_SWITCH_EXIT.notRestored) console.error(`\n${restoreFailureMessage()}\n`);
 console.error(`FAILED (exit ${verdict.exitCode}): ${verdict.message}`);
-process.exit(verdict.exitCode);
+leave(verdict.exitCode, verdict.message);

@@ -1,0 +1,172 @@
+name: Kill switch
+
+# The nightly proof that public booking can still be stopped (#2493).
+#
+# `pnpm verify:kill-switch` (#2365) is the only thing that can see the fault that would
+# matter most: the gate deliberately fails CLOSED, so a booker that cannot read its own
+# flag refuses EVERY lead, and the only other signal would be the booking failure rate
+# window firing under `booking_pause_unreadable` after real people had been turned away.
+# The switch's live PAUSED state has never once run except when somebody ran this command
+# by hand, and before this workflow that had happened exactly once, in the session that
+# wrote it. That is the state `verify:burst-counter` was in when #2392 found the burst path
+# had moved five times with nobody re-running the proof: a rule that lives only in a prompt
+# is a hope (L27), and a check that has never once concluded is measuring nothing (L557).
+#
+# WHY IT DOES NOT SIMPLY COPY #2392'S DAILY MORNING SLOT, which is the decision this
+# workflow exists to record. Running this command STOPS PUBLIC BOOKING for about two
+# seconds: it writes `booking_settings.public_booking_paused` true, sends one deliberately
+# malformed booking, and writes it back false. A recurring automated pause is cheap before
+# cutover and expensive after it, so the schedule sits OUTSIDE the hours the org advertises
+# rather than in the morning where the burst counter's does.
+#
+# The other two options were weighed and this is the one that keeps the proof automatic.
+# Running it on a deploy that touches the kill switch path covers the change that breaks it
+# and not the change somewhere else that breaks it, and it is exactly the "somebody has to
+# have thought about it" rule that failed for the burst counter. Leaving it hand run and
+# recording that in AGENTS.md is a rule that lives only in a prompt, which is where this
+# started.
+#
+# WHAT IT COSTS, and it is not free. One run a day pauses public booking for about two
+# seconds at roughly 03:10 Eastern on a day the org advertises as shut (08:00 to 20:00
+# Monday to Saturday, `business_hours`), in both offsets the Eastern clock takes. A lead who
+# posts a booking inside those two seconds is answered with the paused copy, which tells
+# them to try again shortly, and the booker's own retry works. That is the residual risk,
+# stated rather than implied.
+#
+# It REFUSES to run at all against a deployment where somebody has already stopped public
+# booking (exit 13), because finishing would turn it back on for them. The proof stands
+# down and says so, and a run of those is what `public_booking_stopped` (#2366) is for.
+#
+# Needs the SUPABASE_SECRET_KEY, BOOKING_API_KEY and SLACK_BOT_TOKEN repo secrets, and the
+# SLATE_BASE_URL and SLACK_ALERTS_CHANNEL repo variables. All five already exist for the
+# canary, the parity sweep and the weekly replay; `pnpm check:workflow-settings` is what
+# says so.
+#
+# There is deliberately NO gap filler for a run GitHub drops, matching the burst counter:
+# the staleness bound on `verdict:kill-switch` is set to survive one dropped run instead.
+on:
+  schedule:
+    # 07:10 UTC daily, which is roughly 03:10 Eastern: deep inside the closed window in
+    # both offsets the Eastern clock takes, so the two second pause lands where the org
+    # advertises no availability at all. Not on the hour, where GitHub's scheduling queue
+    # is busiest and runs are most often dropped, and clear of every other schedule in this
+    # repo (clock-shift 04:40, coverage 05:40, the canary at :00 and :30 with its 6h full
+    # pass on the hour, burst-counter 10:50, schedule-parity 12:20, router-replay 13:20) so
+    # two jobs never queue together.
+    - cron: "10 7 * * *"
+  # No inputs, so a hand dispatch is the same run the schedule makes. Anyone who has just
+  # changed the kill switch path can run it here without waiting for tonight, which is what
+  # makes this the ANSWER to "re-run it after a change" rather than a second copy of it.
+  workflow_dispatch:
+
+concurrency:
+  group: kill-switch
+  cancel-in-progress: false
+
+jobs:
+  kill-switch:
+    # The work is two HTTP requests to the booker, two availability reads and four
+    # single-row database writes, which is seconds. What the ten minutes covers is the
+    # install and a slow deployment, and an explicit timeout is required of every job here
+    # (L313). It is also part of the staleness bound's arithmetic, because the stamp lands
+    # at the END of a run.
+    timeout-minutes: 10
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+        with:
+          version: 10
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24
+          cache: pnpm
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      # Skip quietly until the key is configured, so merging this does not fail a run every
+      # night before setup. An absent key is "not configured yet"; a present but wrong one
+      # still runs and reports.
+      #
+      # A skip stamps nothing, so a workflow left unconfigured goes stale against the 52
+      # hour bound and pages as a detector that has never once concluded, which is exactly
+      # what it would be.
+      - name: Preflight (is the proof configured?)
+        id: pre
+        env:
+          SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+        run: |
+          if [ -n "$SUPABASE_SECRET_KEY" ]; then
+            echo "configured=1" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=0" >> "$GITHUB_OUTPUT"
+            echo "::notice::SUPABASE_SECRET_KEY is not set as a repo secret, so the kill switch proof is skipping. Add it in Settings > Secrets and variables > Actions."
+          fi
+
+      # `continue-on-error`, because this step's exit code is the FINDING: it exits non-zero
+      # on every ending other than a proven switch, and several of those are exactly what
+      # the run is for. The step below is what decides whether anybody is told and whether
+      # the detector concluded, and failing the job here would skip it and leave the finding
+      # in the Actions tab with nobody reading it.
+      - name: Prove public booking can still be stopped
+        id: verify
+        continue-on-error: true
+        if: steps.pre.outputs.configured == '1'
+        env:
+          # The URL is written out rather than referenced as a repo variable, matching
+          # ci.yml, schedule-parity.yml and router-replay.yml: it is not a secret, and a
+          # variable would be one more setting to create before this can ever run.
+          NEXT_PUBLIC_SUPABASE_URL: https://drukfvgaynzrralbzkzj.supabase.co
+          SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+          SLATE_BASE_URL: ${{ vars.SLATE_BASE_URL }}
+          # A literal path, not a repo variable: it is an internal handoff between two steps
+          # of the same job, and the step below reads the same path.
+          KILL_SWITCH_SUMMARY_FILE: kill-switch-summary.json
+        run: node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/verify-kill-switch-live.ts
+
+      # Runs whatever the step above did, because "the switch does not refuse" and "the run
+      # never decided" are two different things to say and the second has no exit code of
+      # its own that this could trust: node exits 1 on an uncaught throw and 1 is also a
+      # real ending of the command. The summary FILE is the evidence, and an absent one
+      # means the run died before reaching a verdict (L98).
+      #
+      # Bare node, no alias hook: scripts/test-dependency-free-scripts.ts holds it to
+      # importing nothing outside scripts/.
+      - name: Say what the proof found
+        id: report
+        if: always() && steps.pre.outputs.configured == '1'
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_ALERTS_CHANNEL: ${{ vars.SLACK_ALERTS_CHANNEL }}
+          KILL_SWITCH_SUMMARY_FILE: kill-switch-summary.json
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: node --experimental-strip-types scripts/notify-kill-switch.ts
+
+      # Stamped ONLY when the run MEASURED whether the gate refuses while on and releases
+      # while off, never merely because the workflow ran. A deployment that did not answer,
+      # a flag that could not be written, a switch somebody had already thrown: each of
+      # those leaves this unstamped, the verdict goes stale and the lane watchdog pages,
+      # because a detector that has stopped concluding otherwise looks exactly like one
+      # finding nothing wrong (#1394).
+      #
+      # The BAD verdicts stamp too, and that is deliberate: a booker that takes a booking
+      # while paused, or refuses while open, is a definite reading of the thing under test,
+      # and the reporter above has already said what was found. The stamp answers "is this
+      # detector concluding", never "is the switch well".
+      #
+      # `always()` is load bearing rather than tidiness. Without a status function GitHub
+      # implicitly ANDs `success()` into a custom `if`, so a Slack post that failed in the
+      # step above would skip this one and leave the verdict unstamped for a reason that has
+      # nothing to do with the switch. That is two checks sharing one status field (L53):
+      # whether the run CONCLUDED is a fact about the gate, and whether anybody was told is
+      # a fact about Slack. The reporter writes its output before it exits non-zero,
+      # precisely so this can still read it.
+      - name: Stamp the verdict (a measured verdict only)
+        if: always() && steps.pre.outputs.configured == '1' && steps.report.outputs.concluded == '1'
+        env:
+          BOOKING_API_KEY: ${{ secrets.BOOKING_API_KEY }}
+          SLATE_BASE_URL: ${{ vars.SLATE_BASE_URL }}
+        run: |
+          base="${SLATE_BASE_URL:-https://slate.trypennie.app}"
+          curl -fsS -X POST "${base%/}/api/smoke/heartbeat?lane=verdict:kill-switch" \
+            -H "authorization: Bearer $BOOKING_API_KEY"

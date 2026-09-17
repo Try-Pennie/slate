@@ -229,6 +229,11 @@ export const ALERT_CATALOG: AlertEntry[] = [
     why: "The running deployment cannot use its request rate limits, which stays true until a deploy puts them back, so the reader needs to be told when it is over (#1529).",
   },
   {
+    key: "public_booking_stopped",
+    kind: "condition",
+    why: "The kill switch is on, which stays true until a person turns public booking back on; the monitor lane reads the stored flag every tick, so a tick that reads it false is the measured healthy result that ends it (#2366).",
+  },
+  {
     key: "main_not_deployed",
     kind: "condition",
     why: "Main is merged and not live, which stays true until a deploy carries it; the monitor lane compares the served commit against main's tip every tick, so it ends when they agree again (#2476).",

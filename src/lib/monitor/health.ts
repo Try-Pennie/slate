@@ -390,6 +390,21 @@ export const VERDICT_STALE_BOUNDS_MS: Record<string, number> = {
   // without revisiting this fails the build, and it also refuses a bound with days of
   // slack in it: a bound that cannot be wrong is one that notices nothing.
   "verdict:burst-counter": 52 * 60 * MIN,
+  // The nightly proof that public booking can still be stopped (#2493). The same
+  // arithmetic as the burst counter above and for the same reasons, because it is the
+  // same shape of thing: a daily GitHub workflow, stamped at the end of a run, with no
+  // gap filler.
+  //
+  //   24h    the workflow's own cadence, read off its cron.
+  //   x2     so ONE dropped run does not page.
+  //   +3h    the worst GitHub scheduling LATENESS this repo has measured.
+  //   +10m   the job's own `timeout-minutes`, because the stamp lands at the END of a run.
+  //
+  // That is 51h10m, and 52 clears it by under an hour.
+  // `scripts/test-kill-switch-schedule.ts` re-derives all of it FROM the workflow file,
+  // so editing the cron or the timeout without revisiting this fails the build, and it
+  // also refuses a bound with days of slack in it.
+  "verdict:kill-switch": 52 * 60 * MIN,
 };
 
 /**

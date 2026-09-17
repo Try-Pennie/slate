@@ -898,7 +898,7 @@ which was the command accusing its subject of a fault its own read had caused.
 | exit | what it met |
 |---|---|
 | 0 | the switch refuses while on, takes the request while off, and leaves availability alone |
-| 1 | no Supabase credentials, no settings row, or bookings already paused; nothing was attempted |
+| 1 | no Supabase credentials or no settings row; nothing was attempted |
 | 2 | **the flag is STILL ON**: public booking is stopped and a person must clear it |
 | 3 | the switch was on and the booker took the request anyway |
 | 4 | **the booker refused while the flag was OFF**, so it is turning leads away by itself |
@@ -910,6 +910,8 @@ which was the command accusing its subject of a fault its own read had caused.
 | 10 | this deployment has no public booking route |
 | 11 | something this command cannot read answered |
 | 12 | availability could not be read in EITHER half, so that half is unmeasured |
+| 13 | bookings were ALREADY stopped, so the run stood down without testing anything |
+| 14 | the pause flag could not be written, so the paused half never ran; nothing is left stopped |
 
 Exit 2 outranks every other finding, because it is the only one that goes on turning
 real leads away after the command exits: a reader sent to investigate "the switch does
@@ -924,6 +926,114 @@ direct database read rather than by the command's own.
 Decision logic is pinned offline by `scripts/test-kill-switch-live-control.ts`, which
 drives every verdict, the ordering and the whole exit table through hand written
 replies with no network and no database.
+
+Exits 13 and 14 were split off the credentials exit and the no-reply exit by #2493,
+because on a schedule they mean something the codes they shared never did: 13 is a
+deployment where somebody has deliberately stopped bookings and finishing the run would
+start them again for them, and 14 is a database write problem rather than an unreachable
+deployment. Neither is a pass and neither is a fault (L11, L98).
+## It runs NIGHTLY, and outside the hours the org advertises (#2493)
+
+The command had run exactly once, in the session that wrote it, which is the state
+`verify:burst-counter` was in when #2392 found the burst path had moved five times with
+nobody re-running the proof. A rule that lives only in a prompt is a hope (L27), and a
+check that has never once concluded is measuring nothing (L557). So this takes the same
+answer that issue took, with ONE difference the schedule has to carry.
+
+**Running this command STOPS public booking for about two seconds.** A recurring
+automated pause is cheap before cutover and expensive after it, so
+`.github/workflows/kill-switch.yml` runs at **07:10 UTC**, roughly 03:10 Eastern, which
+is outside the org's advertised 08:00 to 20:00 Monday to Saturday in BOTH offsets the
+Eastern clock takes. `scripts/test-kill-switch-schedule.ts` reads that window out of
+`SEEDED_BUSINESS_HOURS` and re-derives the comparison from the cron, so a schedule
+edited into business hours fails the build rather than being noticed later.
+
+That is the residual risk, stated rather than implied: a lead who posts a booking inside
+those two seconds is answered with the paused copy, which tells them to try again
+shortly. The two options not taken are recorded here so nobody re-opens them by accident.
+Running it on a deploy that touches the kill switch path covers the change that breaks it
+and not the change somewhere else that breaks it, and it is exactly the "somebody has to
+have thought about it" rule that failed for the burst counter. Leaving it hand run and
+recording that in this file is a rule that lives only in a prompt, which is where this
+started. A hand dispatch is still the same run the schedule makes, so somebody who has
+just changed the kill switch path gets an answer now rather than tonight.
+
+**It stamps `verdict:kill-switch`**, in the `VERDICT_STALE_BOUNDS_MS` family (#1394),
+judged with `neverIsStale` ON, because "has never once concluded" is the exact state
+this issue was about. Two things about that stamp are the whole design:
+
+- **Only a run that MEASURED whether the gate refuses and releases may write it.** Six
+  endings conclude and eight do not, and the interesting ones are the bad verdicts that
+  DO stamp: a booker that takes a booking while paused, one that refuses while open, and
+  one refusing with the cannot-read copy are all definite readings of the thing under
+  test, so they stamp AND are posted to Slack. `notRestored` deliberately does NOT stamp
+  although it is the loudest thing in the table: it is judged before anything else the
+  run found, so the gate's own behaviour may never have been reached. Nor does exit 13,
+  because a run that stood down tested nothing. The mapping is in
+  `scripts/lib/kill-switch-run-outcome.ts`, one entry per exit code, and the guard walks
+  `KILL_SWITCH_EXIT` so a fifteenth ending cannot inherit somebody's guess.
+- **The bound is 52 hours and every part of it is derived** (L614): 24h of cadence,
+  doubled so one dropped run does not page, plus the 3h worst lateness this repo has
+  measured, plus the job's own 10 minute timeout, because the stamp lands at the END of a
+  run. There is deliberately no gap filler, matching the burst counter.
+
+**The run speaks from the runner** (`scripts/notify-kill-switch.ts`, bare node like the
+other alerters): it repeats once a night until a run passes, and a run that passes says
+nothing.
+
+# Public booking stopped and left that way (#2366)
+
+The kill switch above is visible on the admin Overview, which helps whoever looks.
+Nothing raised a hand at whoever does not, and the failure is ordinary: somebody stops
+bookings at 2am to contain a problem, fixes the problem, and does not flip it back. Slate
+then takes zero bookings while every other signal reads healthy, because everything else
+IS healthy. What eventually notices is the low booking volume alarm, and it reports a
+DROUGHT, which sends a reader to the funnel, the embed and the availability cache, none
+of which is wrong.
+
+`public_booking_stopped` is the notice, raised by the monitor lane's `booking_pause` step
+(`src/lib/monitor/booking-pause.ts`). Four decisions in it are worth knowing.
+
+**It is a CONDITION, so it carries an all clear**, hung off a tick that READ the flag and
+found it false, never off a tick that merely did not speak (#1134, #1152). A tick holding
+under the threshold clears nothing either: bookings are stopped, which is not a healthy
+reading whatever the threshold says.
+
+**It is not a fault, and the copy says so.** Somebody pulled that switch deliberately, so
+the message says how long it has stood and asks whether it is still meant to be off.
+There is no auto unpause and there should not be: a switch that lifted itself would start
+taking bookings again in the middle of the incident it was thrown for, which is worse
+than being forgotten. L523 asks for an expiry AND visibility on a hand set suppression;
+visibility is the half that helps here.
+
+**How long is too long is DERIVED.** `PAUSE_NOTICE_AFTER_MS` is
+`LOW_VOLUME_WINDOW_MINUTES.long`, the low volume alarm's long window, read from that
+constant rather than restated (L41, L401). It is the longest span Slate already treats as
+long enough to say something about bookings not happening, so a notice firing sooner
+would call a stretch too long while the alarm beside it called the same stretch ordinary.
+At that mark the two arrive together and this one names the cause the volume alarm
+structurally cannot see. The span is WALL CLOCK from the moment the switch was set, not
+counted in open hours: counting only advertised time would delay the morning notice about
+a 2am pause by the whole threshold, which is the exact case this exists for. What the
+org's hours decide is when the notice is SPOKEN, and a week the lane could not read errs
+toward speaking, because the fact is fully measured and only the choice of a civil hour
+is unknown.
+
+**The clock comes from a column of its own, maintained by the database.**
+`booking_settings.public_booking_paused_at` (migration 0131) is stamped by a trigger at
+the transition into stopped, never by application code. Not `updated_at`, which is shared
+with the other columns on that single settings row, so editing the horizon would push the
+pause clock forward. Not the admin action either: the control posts the STATE it wants
+rather than toggling, so two admins reacting to one incident both press stop and a writer
+that set the stamp unconditionally would restart the clock each time; and `pnpm
+verify:kill-switch` and hand SQL write the flag too. One writer at the layer every path
+shares (L593). A paused row with NO stamp is spoken about rather than waited out, because
+there is no clock to wait.
+
+The monitor's reader (`readPublicBookingPauseState`) THROWS on a read error, which is the
+deliberate difference from the booking path's reader beside it: the step boundary reports
+it under `monitor_step_failing` and the lane renders `unreadable`, so a run that could not
+measure never looks like one that measured and found the switch off (L98).
 
 # Is the shadow run trustworthy today? (`pnpm verify:parallel-run-readiness`)
 

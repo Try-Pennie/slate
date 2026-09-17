@@ -62,7 +62,7 @@ Keys: `empty_tier:*`, `bucket_slots_stale`, `availability_booked_solid`,
 `availability_data_anomaly`, `availability_drift:*`, `fallback_covered_availability`,
 `thin_tier_staffing`, `tier_fallback:*`, `tier_fallback_deep:*`, `no_eligible_agents:*`,
 `low_booking_volume`, `booking_failure_rate`, `calendar_window_uncovered`,
-`booker_unstaffed:*`.
+`booker_unstaffed:*`, `public_booking_stopped`.
 
 **What fired it.** Something between the roster and the cache means a lead sees fewer
 times than they should, or none. The alerts are deliberately split by CAUSE, because
@@ -89,7 +89,19 @@ urgent of the two.
 - It is throttled to one per bucket per half hour, so the count in Slack is not the
   count of customers who met it.
 
+**`public_booking_stopped` is the one cause in this family that is not a fault**
+(#2366). Somebody threw the kill switch on purpose and it has been on longer than the
+incident lever is meant to be held for, so the booker is refusing every new booking by
+design. It is first in this section for a reason: while it stands, `low_booking_volume`
+reports the same silence as a drought and sends a reader after a funnel problem that is
+not there, so **check the switch before anything else here**. The Overview and the admin
+business hours page both show it, and starting booking again is what ends the notice; if
+it is still meant to be off, nothing needs doing and the notice repeats while it stands.
+
 **First checks.**
+- Is public booking stopped? The admin Overview says so in a row of its own, and
+  `public_booking_stopped` names how long it has been. Everything below is a different
+  question.
 - `GET /api/health/availability`: 503 with `staffedBuckets` tells you whether the
   fleet or one tier is empty. `staffedBuckets: null` means it could not measure, which
   is its own answer (#1629).
