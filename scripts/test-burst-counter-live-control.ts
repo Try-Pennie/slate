@@ -335,14 +335,16 @@ const body = (value: unknown) => JSON.stringify(value);
 
 // --- the documented exits are the shipped ones ------------------------------
 {
-  // AGENTS.md tells a reader what each non-zero exit MEANS, which is the whole reason the codes
-  // are worth having: a table nobody checks becomes more trusted the longer it sits there, not
-  // less (L210, L244). Derived from the section itself rather than from "the only table in the
-  // file", so a second table added later cannot answer for this one.
-  const doc = readFileSync(join(import.meta.dirname, "..", "AGENTS.md"), "utf8");
+  // docs/verify-commands.md tells a reader what each non-zero exit MEANS, which is the whole
+  // reason the codes are worth having: a table nobody checks becomes more trusted the longer it
+  // sits there, not less (L210, L244). Derived from the section itself rather than from "the only
+  // table in the file", so a second table added later cannot answer for this one.
+  // The section moved out of AGENTS.md in #2393, which is loaded into every session and pays for
+  // an exit code table on every request; AGENTS.md keeps the rule and points here.
+  const doc = readFileSync(join(import.meta.dirname, "..", "docs/verify-commands.md"), "utf8");
   const heading = "# Proving the burst counter answers";
   const start = doc.indexOf(heading);
-  assert(start !== -1, "AGENTS.md documents the command");
+  assert(start !== -1, "docs/verify-commands.md documents the command");
   const rest = doc.slice(start + heading.length);
   const nextHeading = rest.indexOf("\n# ");
   const section = nextHeading === -1 ? rest : rest.slice(0, nextHeading);

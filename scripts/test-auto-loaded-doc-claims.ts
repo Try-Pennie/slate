@@ -1,0 +1,131 @@
+// #2398: hand maintained numbers and lists in AGENTS.md and docs/review-process.md
+// had drifted and nothing derived them. Three guards, each blind where the others
+// look:
+//
+//   1. no hand written count of the repo's own tree survives in the docs a
+//      session loads or a reviewer is pointed at (scan-doc-claims.ts says why);
+//   2. AGENTS.md's copy of SAFE_TABLES is checked against the constant in BOTH
+//      directions, because the harm reported was a table the doc left out (a
+//      reader adding a read on `business_hours` was told every unlisted table is
+//      flagged, and told to add it to a list that already held it);
+//   3. every `verify:` command in package.json is named in AGENTS.md AND carries
+//      its detail in docs/verify-commands.md, so moving a section out of the
+//      auto loaded file cannot quietly lose one.
+//
+// Run: node --experimental-strip-types scripts/test-auto-loaded-doc-claims.ts
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { SAFE_TABLES } from "./lib/scan-src-capped-reads.ts";
+import { FORBIDDEN_CLAIMS, scanDocClaims } from "./lib/scan-doc-claims.ts";
+import { assert, fail, finish } from "./lib/harness.ts";
+
+const root = join(import.meta.dirname, "..");
+const read = (rel: string) => readFileSync(join(root, rel), "utf8");
+
+// Every document a session loads, plus the one a reviewer is sent to and the one
+// the verify detail moved into. A doc left off this list is exempt from the
+// guard written to cover it (L96), so the list is short and deliberate.
+const SCANNED = [
+  "AGENTS.md",
+  "CLAUDE.md",
+  "docs/review-process.md",
+  "docs/verify-commands.md",
+];
+
+// --- 1. No hand written count of the repo's own tree --------------------------
+
+{
+  const findings = SCANNED.flatMap((f) => scanDocClaims(f, read(f)));
+  for (const f of findings) {
+    fail(`${f.file}:${f.line} restates a count the tree already answers: ${f.reason}\n    ${f.text}`);
+  }
+  assert(findings.length === 0, `no auto loaded doc restates a count of the repo's own tree (${findings.length} found)`);
+}
+
+// Positive control: the scanner has to be seen catching each shape it claims to
+// catch, or a rule nobody can violate and a rule nobody checks read the same.
+{
+  const planted = [
+    "CI runs the ~120 node script suites before every push.",
+    "The tree carries roughly 100 errors, almost all in fakes.",
+    "It prints every string a lead can read (68 lines across 13 screens).",
+    "On top of those sit about two dozen repo invariant guards.",
+  ];
+  const caught = scanDocClaims("planted.md", planted.join("\n\n"));
+  assert(caught.length === planted.length, `every planted hand count is caught (${caught.length} of ${planted.length})`);
+  assert(
+    new Set(caught.map((c) => c.reason)).size === FORBIDDEN_CLAIMS.length,
+    "each forbidden shape is reached by a planted line, so none is a dead rule",
+  );
+}
+
+// And the wrapped shape, which the first version of this scanner read as clean
+// over two of the four real instances it was written for (L278).
+{
+  const wrapped = [
+    "end to end pass. The pyramid is intentionally bottom heavy: ~120 node script",
+    "suites (`pnpm test`) plus the vitest suites all run in the pre-push gate.",
+    "",
+    "before it shipped.** It prints every string a lead can read (68",
+    "lines across 13 screens), grouped by screen and by the state that produces it.",
+  ].join("\n");
+  const caught = scanDocClaims("wrapped.md", wrapped);
+  assert(caught.length === 2, `a claim broken across a line wrap is caught (${caught.length} of 2)`);
+}
+
+// Negative control: a measurement of the WORLD must survive, or the guard would
+// push people into deleting the dated figures that are the point.
+{
+  const kept = [
+    "It takes about 40s, not the ~20s this file used to claim (#1594).",
+    "about 25,000 routed leads over 30 days, replayed through resolveRequestedCode",
+    "the design target (100 to 200 agents, ~60 buckets)",
+    "Making jsdom opt in cut the vitest suite from about 8.2s to about 4.3s (#608).",
+  ];
+  const caught = scanDocClaims("kept.md", kept.join("\n"));
+  assert(caught.length === 0, `a measurement of the world is not refused (${caught.length} false positives)`);
+}
+
+// --- 2. SAFE_TABLES, both directions ------------------------------------------
+
+{
+  const agents = read("AGENTS.md");
+  const block = /The allowlist \(`SAFE_TABLES`[\s\S]*?\*\*Every other table defaults/.exec(agents)?.[0] ?? "";
+  assert(block.length > 0, "AGENTS.md carries the SAFE_TABLES paragraph the check is about");
+  const named = new Set([...block.matchAll(/`([a-z_]+)`/g)].map((m) => m[1]).filter((t) => t !== "SAFE_TABLES"));
+  for (const table of SAFE_TABLES) {
+    assert(named.has(table), `AGENTS.md names SAFE_TABLES entry \`${table}\``);
+  }
+  for (const table of named) {
+    assert(
+      SAFE_TABLES.has(table),
+      `AGENTS.md names \`${table}\` as roster bounded and the scanner does not, so the doc would send a reader to add a cap-safe opt-out the guard never asked for`,
+    );
+  }
+  assert(SAFE_TABLES.size > 10, `the constant was really read (${SAFE_TABLES.size} tables)`);
+}
+
+// --- 3. Every verify command is named where a reader will look ----------------
+
+{
+  const pkg = JSON.parse(read("package.json")) as { scripts: Record<string, string> };
+  const commands = Object.keys(pkg.scripts).filter((k) => k.startsWith("verify:"));
+  assert(commands.length > 0, `package.json declares verify commands (${commands.length})`);
+  const agents = read("AGENTS.md");
+  const runbook = read("docs/verify-commands.md");
+  for (const cmd of commands) {
+    assert(agents.includes(cmd), `AGENTS.md names \`pnpm ${cmd}\``);
+    assert(runbook.includes(cmd), `docs/verify-commands.md carries the detail for \`pnpm ${cmd}\``);
+  }
+  // And the other direction: a command the runbook describes that no longer
+  // exists sends somebody to run something that is gone.
+  for (const named of new Set([...runbook.matchAll(/pnpm (verify:[a-z-]+)/g)].map((m) => m[1]))) {
+    assert(commands.includes(named), `docs/verify-commands.md only describes real commands (\`${named}\`)`);
+  }
+  assert(
+    agents.includes("docs/verify-commands.md"),
+    "AGENTS.md points at the runbook the detail moved into, so the rule keeps its evidence",
+  );
+}
+
+finish();
