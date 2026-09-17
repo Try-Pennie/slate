@@ -72,6 +72,11 @@ export function readShiftLog(
       "the run left no summary line, so it died before the suite finished. Read the step's output.",
     );
   }
+  // Both captures are `\d+`, so neither can be NaN, and the comparisons below are
+  // equalities rather than thresholds: a NaN that somehow reached them would fail
+  // `executed !== expectedSuites` and land on `unmeasured`, which is the fail safe
+  // side (L50). A parsed number reaching a threshold check is how the permissive
+  // branch gets taken with no error raised anywhere.
   const passed = Number(m[1]);
   const failed = Number(m[2]);
   const clock = (m[3] ?? "").trim();

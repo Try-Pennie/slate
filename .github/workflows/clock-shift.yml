@@ -41,6 +41,16 @@ name: Shifted clock test run
 # exposure in #2503 was in the node suites (9 of 432 read the real clock), and the
 # vitest half needs a seam of its own rather than this one stretched over it.
 #
+# NO HEARTBEAT, deliberately, which is the one place this departs from the other
+# scheduled lanes (L13). GitHub drops scheduled runs, and every lane that must not go
+# quiet stamps `lane_heartbeats` so the watchdog pages when it does. This one is
+# preventive rather than protective: what it finds is a fault already sitting in the
+# tree that becomes visible on a future date, so a dropped day is found the next
+# morning and nothing is at risk in between. A stamp would cost a monitor lane read
+# and a staleness bound on the budget four cron lanes share, to page about a check
+# nobody is waiting on. A run that RUNS and finds something still speaks, which is the
+# half that matters.
+#
 # Needs the SLACK_BOT_TOKEN repo secret and the SLACK_ALERTS_CHANNEL repo variable,
 # the same two the other scheduled lanes use.
 on:
