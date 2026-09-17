@@ -21,6 +21,17 @@ const ROSTER_ZONE = "America/New_York";
 export const OUTCOME_ORDER = [
   "created",
   "rescheduled",
+  /**
+   * A cancel THIS request made (#2373).
+   *
+   * In the denominator for the same reason `rescheduled` is: the manage page's
+   * cancel records its refusals, and adding only those would inflate the very share
+   * the failure-rate window pages on. A cancel that lost the claim to a concurrent
+   * one is recorded as an error under `cancel_lost_race` instead, because one is a
+   * second tab and a run of them is something terminating bookings underneath their
+   * owners, which nothing else in Slate would see.
+   */
+  "cancelled",
   "deduped",
   "confirm_required",
   "error",

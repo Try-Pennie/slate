@@ -3780,6 +3780,13 @@ async function applyReschedule(
   // concurrent cancel (status flip) or reassign (assignee + event id swap) makes
   // this touch 0 rows, so we don't resurrect a cancelled booking or clobber the
   // reassign.
+  // #2373: this THROWS when the statement did not run, rather than reporting zero
+  // rows. That is deliberate and it is safe to run twice: a throw here is exactly
+  // a crash here, which the durable pin above already handles, so a retry
+  // recomputes the same seq and the same deterministic event id and re-reads the
+  // row through the `alreadyCommitted` branch below. Rolling the event back on a
+  // failed write would be wrong for the same reason it is wrong on a crash: the
+  // next attempt is going to reuse it.
   const committed = await deps.commitReschedule(
     booking.id,
     {

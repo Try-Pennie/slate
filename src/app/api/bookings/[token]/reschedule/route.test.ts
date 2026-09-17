@@ -53,6 +53,10 @@ vi.mock("@/lib/booking/service", () => service);
 vi.mock("@/lib/monitor/record-api-outcome", () => ({ recordApiOutcome }));
 
 import { POST } from "./route";
+// Deliberately NOT mocked: the point of #2373 is that the route branches on the real
+// classification rather than on how an error happens to be worded.
+import { BookingWriteFailedError } from "@/lib/booking/gated-write";
+import { BOOKING_ERROR_COPY } from "@/lib/booking/booker-copy";
 
 function req(body: unknown): Parameters<typeof POST>[0] {
   return {
@@ -99,6 +103,52 @@ describe("POST /bookings/[token]/reschedule", () => {
       expect(res.status).toBe(409);
       expect((await res.json()).reason).toBe(reason);
     }
+  });
+
+  // #2373. The two are driven together: the commit's lost race and its failed write
+  // both used to arrive as RescheduleConflictError, so the lead was told to refresh
+  // and pick again by a statement that never ran, which no choice of theirs repairs.
+  it("separates a commit that FAILED from one that lost the race (#2373)", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+
+    service.rescheduleBooking.mockRejectedValueOnce(new service.RescheduleConflictError());
+    const raced = await POST(
+      req({ start: "2026-07-01T15:00:00.000Z", reason: "schedule_conflict" }),
+      params,
+    );
+    const racedBody = await raced.json();
+
+    service.rescheduleBooking.mockRejectedValueOnce(
+      new BookingWriteFailedError("reschedule_commit", "statement timeout"),
+    );
+    const failed = await POST(
+      req({ start: "2026-07-01T15:00:00.000Z", reason: "schedule_conflict" }),
+      params,
+    );
+    const failedBody = await failed.json();
+
+    // A lost race is the lead's to act on, so it keeps its 409 and its own reason.
+    expect(raced.status).toBe(409);
+    expect(racedBody.reason).toBe("reschedule_conflict");
+    // A failed write is not, so it is retriable and says nothing moved.
+    expect(failed.status).toBe(503);
+    expect(failedBody.error).toBe(BOOKING_ERROR_COPY.writeFailed);
+    expect(failedBody.error).not.toMatch(/timeout/);
+    // And neither answers for the other, on the wire or in the tally.
+    expect(failed.status).not.toBe(raced.status);
+    expect(failedBody.error).not.toBe(racedBody.error);
+    expect(recordApiOutcome).toHaveBeenCalledWith(
+      "error",
+      "",
+      "reschedule_conflict",
+      expect.anything(),
+    );
+    expect(recordApiOutcome).toHaveBeenCalledWith(
+      "error",
+      "",
+      "reschedule_write_failed",
+      expect.anything(),
+    );
   });
 
   it("maps RescheduleLockUnavailableError to a retriable 503 (not a generic 500) (#479)", async () => {

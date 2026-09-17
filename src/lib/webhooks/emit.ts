@@ -9,6 +9,7 @@ import { log } from "@/lib/log";
 import { webhookDeadAlert, webhookDeadRecovery } from "@/lib/monitor/cron-alert-copy";
 import type { BookingEventPayload } from "@/lib/webhooks/types";
 import type { WebhookEndpoint, WebhookEvent } from "@/lib/db/types";
+import { gatedWriteApplied } from "@/lib/booking/gated-write";
 
 const WEBHOOK_TIMEOUT_MS = 5000;
 const DEAD_LETTER_COOLDOWN_MS = 30 * 60 * 1000;
@@ -278,13 +279,18 @@ async function claimDeliveryAttempt(
   deliveryId: string,
   currentAttempts: number,
 ): Promise<boolean> {
-  const { data } = await db
-    .from("webhook_deliveries")
-    .update({ attempts: currentAttempts + 1 })
-    .eq("id", deliveryId)
-    .eq("attempts", currentAttempts)
-    .select("id");
-  return (data?.length ?? 0) > 0;
+  // #2373: false means a concurrent actor already advanced this attempt, so the
+  // caller skips the send. A REFUSED statement said the same thing, which turned
+  // an unreachable table into a delivery nobody sends and nobody hears about.
+  return gatedWriteApplied(
+    "webhook_attempt_claim",
+    await db
+      .from("webhook_deliveries")
+      .update({ attempts: currentAttempts + 1 })
+      .eq("id", deliveryId)
+      .eq("attempts", currentAttempts)
+      .select("id"),
+  );
 }
 
 export async function retryFailedDeliveries(): Promise<number> {

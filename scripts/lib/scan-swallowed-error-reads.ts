@@ -153,6 +153,16 @@ export interface SwallowedReadFinding {
    * (the two where the result never gets a name at all).
    */
   shape: "destructure" | "result-object" | "inline-await" | "result-loop";
+  /**
+   * True when the chain is an update-returning-select rather than a plain read
+   * (#2373), so the failure message can name the right remedy: these want the
+   * shared gated-write classifier, not `unwrap`.
+   *
+   * Left unset on the `result-loop` shape, which judges a WAVE of chains rather
+   * than one, so no single answer would be true of it. No gated write is written
+   * that way today; if one appears it is still FLAGGED, just without the label.
+   */
+  gatedWrite?: boolean;
 }
 
 // `const { ... } = await` (also let / var). `[^{}]*` keeps it to a flat object
@@ -227,18 +237,32 @@ export function hasCommentOptOut(source: string, index: number, token: string): 
 function analysisText(source: string, exprStart: number): string {
   const semi = source.indexOf(";", exprStart);
   const expr = source.slice(exprStart, semi === -1 ? Math.min(exprStart + 600, source.length) : semi);
-  if (expr.includes(".from(")) return expr;
 
-  const lead = /^\s*([A-Za-z_$][\w$]*)\s*(?:\.|$)/.exec(expr);
-  if (!lead) return expr;
-  const varName = lead[1];
-  const defRe = new RegExp(`(?:const|let|var)\\s+${varName}\\s*=`, "g");
-  let defIndex = -1;
-  for (const dm of source.slice(0, exprStart).matchAll(defRe)) defIndex = dm.index as number;
-  if (defIndex === -1) return expr;
-  const defEnd = source.indexOf(";", defIndex);
-  const def = source.slice(defIndex, defEnd === -1 ? exprStart : defEnd);
-  return `${def};${expr}`;
+  // #2373: follow the builder back MORE THAN ONE hop. `commitReschedule` is built
+  // over three lines (`base` narrowed into `withAssignee` narrowed into `gated`),
+  // so a single hop stopped at a definition carrying no `.from(` and the chain read
+  // as not-a-Supabase-call at all: the guard reported clean over the gated write
+  // this issue is about. Bounded rather than unbounded, and it stops the moment the
+  // `.from(` is in hand, so it never walks off into unrelated declarations.
+  const MAX_HOPS = 5;
+  let text = expr;
+  let rhs = expr;
+  let searchBefore = exprStart;
+  for (let hop = 0; hop < MAX_HOPS && !text.includes(".from("); hop++) {
+    const lead = /^\s*([A-Za-z_$][\w$]*)\s*(?:\.|$)/.exec(rhs);
+    if (!lead) break;
+    const defRe = new RegExp(`(?:const|let|var)\\s+${lead[1]}\\s*=`, "g");
+    let defIndex = -1;
+    for (const dm of source.slice(0, searchBefore).matchAll(defRe)) defIndex = dm.index as number;
+    if (defIndex === -1) break;
+    const defEnd = source.indexOf(";", defIndex);
+    const def = source.slice(defIndex, defEnd === -1 ? searchBefore : defEnd);
+    text = `${def};${text}`;
+    const eq = def.indexOf("=");
+    rhs = eq === -1 ? "" : def.slice(eq + 1);
+    searchBefore = defIndex;
+  }
+  return text;
 }
 
 /** True if the chain is a Supabase list read (a `.select(` reached before any mutator). */
@@ -251,6 +275,40 @@ function isSelectRead(text: string): boolean {
     if (idx !== -1 && idx < sel) return false; // a write reached first
   }
   return true;
+}
+
+/**
+ * True if the chain is a GATED WRITE: a mutator reached BEFORE a `.select(` on a
+ * Supabase chain, the "update ... returning" shape (#2373).
+ *
+ * This used to be the definition of "not our problem" and it was the wrong
+ * boundary. Such a write is narrowed by the state it expects to find and returns
+ * the rows it actually transitioned, so its caller reads `data.length > 0` as "I
+ * won the race". supabase-js resolves a REFUSED statement as
+ * `{ data: null, error }`, and a null `data` has length zero, so a write that
+ * never ran was indistinguishable from one that lost. On the cancel path that
+ * reached a customer: the route answered `{ ok: true }` and the lead read "Your
+ * call is cancelled" while the booking, the invite and the advisor's slot stood.
+ *
+ * It is NOT the same class as the bare discarded write that
+ * scan-unchecked-writes.ts owns: there the result goes nowhere, here it is
+ * consumed and believed. The two boundaries meet exactly, at whether the chain
+ * carries a `.select(`.
+ */
+function isGatedWrite(text: string): boolean {
+  if (!text.includes(".from(")) return false;
+  const sel = text.indexOf(".select(");
+  if (sel === -1) return false;
+  return MUTATORS.some((m) => {
+    const idx = text.indexOf(m);
+    return idx !== -1 && idx < sel;
+  });
+}
+
+/** Either kind of awaited Supabase chain whose ROWS are consumed, and so whose
+ *  `error` has to be consulted by somebody. */
+function isRowReturningChain(text: string): boolean {
+  return isSelectRead(text) || isGatedWrite(text);
 }
 
 /**
@@ -455,7 +513,7 @@ function scanResultObjectReads(source: string, file: string): SwallowedReadFindi
     reportSpan?: { start: number; end: number },
   ) => {
     if (!name || seen.has(name)) return;
-    if (!isSelectRead(chainText)) return; // a write, or not a supabase select
+    if (!isRowReturningChain(chainText)) return; // not a supabase chain returning rows
     const dataReads = memberReadIndexes(masked, name, "data");
     if (dataReads.length === 0) return; // the result is never consumed as `.data`
     if (memberReadIndexes(masked, name, "error").length > 0) return; // error is consulted
@@ -477,6 +535,7 @@ function scanResultObjectReads(source: string, file: string): SwallowedReadFindi
       binding: `${name}.data`,
       snippet: snippet.length > 100 ? `${snippet.slice(0, 97)}...` : snippet,
       shape: "result-object",
+      gatedWrite: isGatedWrite(chainText),
     });
   };
 
@@ -542,7 +601,7 @@ function scanInlineAwaitReads(source: string, file: string): SwallowedReadFindin
     const awaited = /^\s*await\b/.exec(inner);
     if (!awaited) continue;
     const chain = resolveLeadChain(masked, inner.slice(awaited[0].length), openIndex);
-    if (!isSelectRead(chain)) continue; // a write, or not a supabase select
+    if (!isRowReturningChain(chain)) continue; // not a supabase chain returning rows
     if (hasOptOut(source, openIndex) || hasOptOut(source, closeIndex)) continue;
     findings.push({
       file,
@@ -550,6 +609,7 @@ function scanInlineAwaitReads(source: string, file: string): SwallowedReadFindin
       binding: "(await ...).data",
       snippet: snippetOf(source, openIndex, closeIndex + m[0].length),
       shape: "inline-await",
+      gatedWrite: isGatedWrite(chain),
     });
   }
   return findings;
@@ -621,7 +681,7 @@ function scanResultLoopReads(source: string, file: string): SwallowedReadFinding
         elements.push(resolveLeadChain(masked, masked.slice(open + 1, close), open));
       }
     }
-    if (!elements.some((e) => isSelectRead(e))) continue;
+    if (!elements.some((e) => isRowReturningChain(e))) continue;
 
     // The read itself, inside the loop body, with `.error` consulted nowhere.
     const body = loopBodySpan(masked, forIndex + m[0].length);
@@ -654,7 +714,7 @@ export function scanSwallowedErrorReads(source: string, file = "<source>"): Swal
     const destructureIndex = m.index as number;
     const exprStart = destructureIndex + m[0].length;
     const text = analysisText(source, exprStart);
-    if (!isSelectRead(text)) continue; // a write, or not a supabase select
+    if (!isRowReturningChain(text)) continue; // not a supabase chain returning rows
     if (hasOptOut(source, destructureIndex)) continue; // documented null-tolerant
 
     const snippet = text.replace(/\s+/g, " ").trim();
@@ -664,6 +724,7 @@ export function scanSwallowedErrorReads(source: string, file = "<source>"): Swal
       binding: m[1].trim(),
       snippet: snippet.length > 100 ? `${snippet.slice(0, 97)}...` : snippet,
       shape: "destructure",
+      gatedWrite: isGatedWrite(text),
     });
   }
   findings.push(...scanResultObjectReads(source, file));

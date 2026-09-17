@@ -229,6 +229,7 @@ Every failure returns `{ "error": "<message>", "code": "<CODE>" }` (plus
 | `NO_ELIGIBLE_AGENTS` | 409 | Bucket has zero eligible agents | Config error (e.g. unsynced XBC) — stop, escalate. |
 | `SLOT_TAKEN` | 409 | The slot filled before booking | Re-query availability, pick another slot. |
 | `VERIFY_UNAVAILABLE` | 503 | Couldn't confirm calendars (transient) | Retry shortly. |
+| `WRITE_FAILED` | 503 | The cancel statement did not run, so the booking still stands (DELETE only) | Retry shortly. Nothing changed, so a retry is safe. |
 | `INTERNAL` | 500 | Unexpected | Retry once; if it persists, escalate. |
 
 `UNKNOWN_BUCKET` / `NO_ELIGIBLE_AGENTS` are deliberately distinct from

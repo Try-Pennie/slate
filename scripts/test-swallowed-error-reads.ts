@@ -81,6 +81,31 @@
 // to be the "empty is indistinguishable from an answer" class rather than a safe
 // degrade, so all five were fixed and none annotated.
 //
+// #2373 widened the SHAPE again, to the GATED WRITE: an update narrowed by the
+// state it expects to find, returning the rows it transitioned
+// (`update(...).eq(...).in("status", ACTIVE).select("id")`). That was EXEMPT by
+// design, on the stated grounds that a write is "a different concern", and the
+// exemption was the defect. Such a write's caller reads `data.length > 0` as "I
+// won the race"; supabase-js resolves a refused statement as
+// `{ data: null, error }`, whose length is zero, so a write that NEVER RAN was
+// reported as having lost. `claimCancellation` sat inside this scanned tree the
+// whole time and the guard reported clean over it on every run, which is what an
+// exemption and a clean tree have in common (L98). It reached a customer: the
+// cancel route answered `{ ok: true }` and the lead read "Your call is cancelled"
+// while the booking, the Google invite and the advisor's slot all stood.
+//
+// The remedy for one of these is NOT `unwrap`, which would turn every ordinary
+// lost race into a throw. It is the shared classifier in
+// `src/lib/booking/gated-write.ts`, which separates the two, and the failure
+// message names it rather than the read's remedy. The same widening also made
+// the builder resolution follow MORE THAN ONE hop, because `commitReschedule` is
+// built over three lines and a single hop stopped at a definition carrying no
+// `.from(`.
+//
+// The boundary with scripts/test-unchecked-writes.ts is exact: a write with no
+// `.select(` has a result that goes nowhere, which is that guard's class; a write
+// WITH one has a result somebody consumes and believes, which is this one's.
+//
 // The scan logic lives in scripts/lib/scan-swallowed-error-reads.ts so it is
 // unit-testable. This file exercises it against fixtures (a positive control that
 // proves the detector actually flags the bad pattern, so it can't rot into a
@@ -163,21 +188,48 @@ const FIXTURES: Fixture[] = [
     src: `const rows = await selectAllPages(db.from("availability_schedules").select("id, user_id"));\nreturn rows;`,
   },
 
-  // NOT FLAGGED: writes (a mutator reached before the select) ------------------
+  // FLAGGED since #2373: the GATED WRITE, a mutator reached before the select ---
+  //
+  // These four were `flagged: false` for two years, and the exemption they
+  // defended is the defect this issue is about (L252: a reversed decision DELETES
+  // the test that defended it rather than keeping it as a guard for the rejected
+  // behaviour). Such a write returns the rows it transitioned and its caller reads
+  // `data.length > 0` as "I won the race"; a REFUSED statement resolves
+  // `{ data: null, error }`, whose length is zero, so the write that never ran was
+  // reported as a lost race. On the cancel path that reached a customer.
   {
-    name: "update ... returning (mutator before select)",
-    flagged: false,
+    name: "update ... returning, data only (the #2373 cancel claim)",
+    flagged: true,
     src: `const { data } = await supabaseAdmin().from("bookings").update({ status: "cancelled" }).eq("id", id).select("id");\nreturn ((data ?? []) as unknown[]).length > 0;`,
   },
   {
-    name: "insert ... returning without error is a write, not a read",
-    flagged: false,
+    name: "insert ... returning, data only",
+    flagged: true,
     src: `const { data } = await db.from("booking_outbox").insert(rowToWrite).select("id");\nreturn (data ?? []).length;`,
   },
   {
-    name: "multi-level write builder (base.update -> gated.select)",
-    flagged: false,
+    name: "multi-level write builder (base.update -> gated.select), the real commitReschedule shape",
+    flagged: true,
     src: `const base = supabaseAdmin().from("bookings").update(patch).eq("id", id);\nconst gated = base.eq("assigned_user_id", u);\nconst { data } = await gated.select("id");\nreturn ((data ?? []) as unknown[]).length > 0;`,
+  },
+  {
+    name: "gated write that binds error is compliant, like any other chain",
+    flagged: false,
+    src: `const { data, error } = await db.from("bookings").update(patch).eq("id", id).select("id");\nif (error) throw error;\nreturn ((data ?? []) as unknown[]).length > 0;`,
+  },
+  {
+    name: "gated write routed through the shared classifier (no bare destructure)",
+    flagged: false,
+    src: `return gatedWriteApplied("cancel_claim", await db.from("bookings").update(patch).eq("id", id).select("id"));`,
+  },
+
+  // NOT FLAGGED: a write with no `.select(` at all. Its result goes nowhere, which
+  // is the DISCARDED write scan-unchecked-writes.ts owns; the two boundaries meet
+  // exactly at whether the chain returns rows somebody then believes.
+  {
+    name: "bare write with no returning select",
+    flagged: false,
+    src: `const { data } = await db.from("bookings").update({ status: "cancelled" }).eq("id", id);\nreturn data;`,
   },
 
   // NOT FLAGGED: not a supabase select ----------------------------------------
@@ -244,8 +296,8 @@ const FIXTURES: Fixture[] = [
     src: `const [pingRes] = await Promise.all([db.from("users").select("id").limit(1)]);\nreturn pingRes != null;`,
   },
   {
-    name: "result object from a WRITE (mutator before the select)",
-    flagged: false,
+    name: "result object from a GATED WRITE (mutator before the select) (#2373)",
+    flagged: true,
     src: `const [updRes] = await Promise.all([db.from("bookings").update(patch).eq("id", id).select("id")]);\nreturn ((updRes.data ?? []) as unknown[]).length > 0;`,
   },
   {
@@ -297,8 +349,8 @@ const FIXTURES: Fixture[] = [
     src: `const buckets = (unwrap(await db.from("buckets").select("*").in("id", ids), "join") ?? []) as Bucket[];\nreturn buckets.length;`,
   },
   {
-    name: "inline await on a WRITE (mutator before the select)",
-    flagged: false,
+    name: "inline await on a GATED WRITE (mutator before the select) (#2373)",
+    flagged: true,
     src: `const ids = ((await db.from("bookings").update(patch).eq("id", id).select("id")).data ?? []) as Row[];\nreturn ids.length;`,
   },
   {
@@ -711,6 +763,33 @@ assert(
   `the inline-await finding names the read it is about (got: ${inlineFindings[0].snippet})`,
 );
 
+// A control on the GATED WRITE shape (#2373), driven off the write the issue was
+// filed about. Until this shipped a mutator reached before the `.select(` was
+// EXEMPT by design, so `claimCancellation` sat inside the scanned tree with its
+// `error` read nowhere and the guard reported clean over it on every run: the
+// exemption and a clean tree are indistinguishable (L1, L98). Put it back the way
+// it was and the guard must catch it, and catch exactly one write, or a scanner
+// flagging everything would satisfy this just as well.
+const claimReverted = serviceSrc.replace(
+  /return gatedWriteApplied\(\n\s*"cancel_claim",\n\s*await supabaseAdmin\(\)\n((\s|\S)*?)\.select\("id"\),\n(\s*)\);/,
+  'const { data } = await supabaseAdmin()\n$1.select("id");\n$3return ((data ?? []) as { id: string }[]).length > 0;',
+);
+assert(
+  claimReverted !== serviceSrc,
+  "the cancel-claim revert control actually changed service.ts (else it proves nothing)",
+);
+const claimFindings = scanSwallowedErrorReads(claimReverted, servicePath);
+assert(
+  claimFindings.length === 1 && claimFindings[0].gatedWrite === true,
+  `positive control: the reverted cancel claim is caught as a gated write (got ${JSON.stringify(
+    claimFindings.map((f) => ({ shape: f.shape, gatedWrite: f.gatedWrite })),
+  )})`,
+);
+assert(
+  claimFindings[0].snippet.includes('.update({ status: "cancelled" })'),
+  `the gated-write finding names the write it is about (got: ${claimFindings[0].snippet})`,
+);
+
 // And the same on availability/service.ts, on the bucket lookup the booker itself
 // makes. It used to revert the empty-bucket sweep's roster read, which #2505
 // deleted with the sweep; re-pointed rather than dropped, because a control that
@@ -826,13 +905,20 @@ for (const file of surface) {
       "result-loop": `awaited select wave looped over, reading each result's \`${fnd.binding}\` with its \`.error\` read nowhere`,
       destructure: `awaited select destructured for \`${fnd.binding}\` without consulting \`error\``,
     };
-    assert(
-      false,
-      `${fnd.file}:${fnd.line} ${what[fnd.shape]}; ` +
-        `route it through unwrap (src/lib/db/result.ts), also read \`error\` and check it, ` +
+    // #2373: a gated write wants a different remedy from a read, so it is named
+    // rather than sent to `unwrap`, which would turn every lost race into a throw.
+    const remedy = fnd.gatedWrite
+      ? `route it through gatedWriteRows / gatedWriteApplied (src/lib/booking/gated-write.ts), ` +
+        `so a statement that never RAN stops being reported as a lost race, ` +
+        `or also read \`error\` and check it. ` +
+        `The question that decides it: what does this caller DO with zero rows?`
+      : `route it through unwrap (src/lib/db/result.ts), also read \`error\` and check it, ` +
         `or annotate // error-ok: <reason> if it deliberately tolerates a null/empty result. ` +
         `The question that decides which: not "can this read fail harmlessly" but ` +
-        `"can anything downstream read the empty result as an answer?" [${fnd.snippet}]`,
+        `"can anything downstream read the empty result as an answer?"`;
+    assert(
+      false,
+      `${fnd.file}:${fnd.line} ${what[fnd.shape]}; ${remedy} [${fnd.snippet}]`,
     );
   }
 }

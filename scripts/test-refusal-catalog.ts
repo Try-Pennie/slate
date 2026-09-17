@@ -37,6 +37,11 @@ const FILES = [
   "src/app/booking/route.ts",
   "src/app/api/bookings/route.ts",
   "src/app/api/bookings/[token]/reschedule/route.ts",
+  // #2373. The lead cancel route, reached by both the manage page and the booker's
+  // panel. It recorded nothing at all and named no decision, so a cancel that turned
+  // a lead away was invisible to every counter Slate has, and the one that told them
+  // a call was cancelled while it stood was invisible too.
+  "src/app/api/bookings/[token]/cancel/route.ts",
 ];
 
 /** Source with comments kept (the annotations live in them) and with them
