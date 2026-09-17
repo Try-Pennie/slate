@@ -229,6 +229,11 @@ export const ALERT_CATALOG: AlertEntry[] = [
     why: "The running deployment cannot use its request rate limits, which stays true until a deploy puts them back, so the reader needs to be told when it is over (#1529).",
   },
   {
+    key: "definer_grants_to_web_roles",
+    kind: "condition",
+    why: "A database function running with its owner's privileges is executable by a web role, which stays true until somebody revokes the grant, so the reader needs to be told when it is over (#2447).",
+  },
+  {
     key: "agents_on_unset_hours",
     kind: "condition",
     why:

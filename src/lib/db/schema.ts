@@ -299,6 +299,21 @@ export interface Database {
         };
         Returns: number;
       };
+      /** Every SECURITY DEFINER function in `public` with whether the two web roles hold
+       *  EXECUTE on it (#2447, migration 0130). The repository guard cannot see a grant made
+       *  by hand or a function defined in no migration, so the monitor lane asks the
+       *  database. Returns rows, never a verdict: which functions are excused, and on what
+       *  grounds, is decided in `src/lib/monitor/definer-grants.ts`. */
+      definer_function_web_grants: {
+        Args: Record<string, never>;
+        Returns: {
+          name: string;
+          args: string;
+          returns: string;
+          anon_execute: boolean;
+          authenticated_execute: boolean;
+        }[];
+      };
       /** Replaces a bucket's manual members in ONE transaction (#1930, migration
        *  0114), so a failure cannot leave a routing pool with nobody in it while
        *  the save reads as done. Unlike `replace_availability_rules` it does NOT
