@@ -164,3 +164,53 @@ describe("ensureDefaultSchedules (#1670)", () => {
     expect(rpc).not.toHaveBeenCalled();
   });
 });
+
+// #2542: a failed READ must not arrive as an answer.
+//
+// These three reads sat outside the swallowed-read guard's hand written
+// directory list, so nothing had ever asked what they do on a refusal. Two of
+// them are dangerous in opposite directions and neither is visible from the call
+// site: an unreadable `organizations` row made this return 0, which the caller
+// reads as "every agent already has hours", and an unreadable
+// `availability_schedules` made EVERY agent look uncovered, so this fill would
+// replace a week somebody personalised on /me with the org default.
+describe("ensureDefaultSchedules on an unreadable read (#2542)", () => {
+  it("throws rather than reporting nothing to fill when the org row cannot be read", async () => {
+    tables.results.organizations = { data: null, error: { message: "column does not exist" } };
+    tables.results.availability_schedules = { data: [{ id: "s1", user_id: "u1" }], error: null };
+
+    await expect(ensureDefaultSchedules("org1")).rejects.toThrow(/column does not exist/);
+    expect(rpc).not.toHaveBeenCalled();
+    expect(upserted.rows).toEqual([]);
+  });
+
+  it("throws rather than treating an unreadable schedules table as nobody having hours", async () => {
+    tables.results.availability_schedules = { data: null, error: { message: "permission denied" } };
+
+    await expect(ensureDefaultSchedules("org1")).rejects.toThrow(/permission denied/);
+    // Nothing was written, so a week somebody personalised is still theirs.
+    expect(rpc).not.toHaveBeenCalled();
+    expect(upserted.rows).toEqual([]);
+    expect(inserted.rows).toEqual([]);
+  });
+
+  it("throws rather than filling for a roster it could not read", async () => {
+    tables.results.users = { data: null, error: { message: "statement timeout" } };
+
+    await expect(ensureDefaultSchedules("org1")).rejects.toThrow(/statement timeout/);
+    expect(upserted.rows).toEqual([]);
+  });
+
+  // The CONTROL, so the three above cannot pass by this function throwing on
+  // everything: the same fixture with every read healthy still fills, and the
+  // "not found" case (a null row with NO error) still returns 0 rather than
+  // throwing, which is the distinction `unwrap` exists to keep.
+  it("CONTROL: a healthy read still fills, and a genuinely absent org still returns 0", async () => {
+    tables.results.availability_schedules = { data: [{ id: "s1", user_id: "u1" }], error: null };
+    expect(await ensureDefaultSchedules("org1")).toBe(1);
+
+    vi.clearAllMocks();
+    tables.results.organizations = { data: null, error: null };
+    expect(await ensureDefaultSchedules("org1")).toBe(0);
+  });
+});
