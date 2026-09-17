@@ -24,23 +24,23 @@
 // Run: node --experimental-strip-types --import ./scripts/register-paths.mjs \
 //        scripts/test-ledger-premise.ts
 import { readFileSync } from "node:fs";
-import { execFileSync } from "node:child_process";
-import { scrubbedGitEnv } from "./lib/git-env.ts";
+import { sourceFiles } from "./lib/source-files.ts";
 import { assert, eq, fail, finish } from "./lib/harness.ts";
 
 /** The claims that are wrong, as they were actually written. */
 export const RETIRED_PREMISE = [/position is which/i, /position\s+off\b/i];
 
+/**
+ * Through the shared enumeration (#2421), which refuses a listing it cannot
+ * believe rather than reporting the retired premise gone from a tree it never
+ * read. This file has to quote the claim in order to forbid it.
+ */
 function tracked(): string[] {
-  return execFileSync("git", ["ls-files", "src", "scripts", "DESIGN.md"], {
-    encoding: "utf8",
-    env: scrubbedGitEnv(),
-  })
-    .split("\n")
-    .filter(Boolean)
-    .filter((f) => /\.(tsx?|css|md)$/.test(f))
-    // This file has to quote the claim in order to forbid it.
-    .filter((f) => f !== "scripts/test-ledger-premise.ts");
+  return sourceFiles({
+    paths: ["src", "scripts", "DESIGN.md"],
+    match: /\.(tsx?|css|md)$/,
+    exclude: (f) => f === "scripts/test-ledger-premise.ts",
+  });
 }
 
 {

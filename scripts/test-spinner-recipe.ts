@@ -15,31 +15,20 @@
 //
 // Run: node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/test-spinner-recipe.ts
 import { readFileSync } from "node:fs";
-import { execFileSync } from "node:child_process";
-import { scrubbedGitEnv } from "./lib/git-env.ts";
+import { sourceFiles } from "./lib/source-files.ts";
 import { scanSpinners, SPINNER_COMPONENT } from "./lib/scan-spinners.ts";
 import { assert, eq, fail, finish } from "./lib/harness.ts";
 
-/** Every source file, from git, so nothing untracked or ignored is scanned. */
-function sourceFiles(): string[] {
-  // Scrubbed because the pre-push hook exports GIT_DIR and friends, and an
-  // inherited GIT_DIR makes this read the real repo rather than its own cwd
-  // (#848/#853); scripts/test-git-env-isolation.ts enforces it.
-  return execFileSync("git", ["ls-files", "src"], {
-    encoding: "utf8",
-    env: scrubbedGitEnv(),
-  })
-    .split("\n")
-    .filter((f) => /\.tsx?$/.test(f));
-}
-
 // --- the tree itself -------------------------------------------------------
+//
+// Through the shared enumeration (#2421), which refuses a listing it cannot
+// believe rather than reporting a clean tree over zero files. A test file
+// asserts the absence of the old recipe, which means it has to spell it.
 {
-  const offenders = sourceFiles()
-    // A test file asserts the absence of the old recipe, which means it has to
-    // spell it.
-    .filter((f) => !/\.test\.tsx?$/.test(f))
-    .flatMap((f) => scanSpinners(f, readFileSync(f, "utf8")));
+  const offenders = sourceFiles({
+    match: /\.tsx?$/,
+    exclude: (f) => /\.test\.tsx?$/.test(f),
+  }).flatMap((f) => scanSpinners(f, readFileSync(f, "utf8")));
 
   if (offenders.length === 0) {
     assert(true, "no component in src/ draws its own spinner");

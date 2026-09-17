@@ -9,32 +9,24 @@
 //
 // Run: node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/test-focus-ring-recipe.ts
 import { readFileSync } from "node:fs";
-import { execFileSync } from "node:child_process";
-import { scrubbedGitEnv } from "./lib/git-env.ts";
+import { sourceFiles } from "./lib/source-files.ts";
 import { scanFocusRings } from "./lib/scan-focus-rings.ts";
 import { assert, fail, finish } from "./lib/harness.ts";
 
-/** Every source file, from git, so nothing untracked or ignored is scanned. */
-function sourceFiles(): string[] {
-  // Scrubbed because the pre-push hook exports GIT_DIR and friends, and an
-  // inherited GIT_DIR makes this read the real repo rather than its own cwd
-  // (#848/#853); scripts/test-git-env-isolation.ts enforces it.
-  return execFileSync("git", ["ls-files", "src"], {
-    encoding: "utf8",
-    env: scrubbedGitEnv(),
-  })
-    .split("\n")
-    .filter((f) => /\.(tsx?|css)$/.test(f));
-}
-
 // --- the tree itself ---
+//
+// Through the shared enumeration (#2421), which refuses a listing it cannot
+// believe rather than reporting a clean tree over zero files, and which reaches
+// the file somebody is writing as well as the ones git already tracks.
+//
+// globals.css is where the recipe LIVES, so it is the one file that names the
+// colour. Test files assert the absence of the old utility, which means they
+// have to spell it.
 {
-  const offenders = sourceFiles()
-    // globals.css is where the recipe LIVES, so it is the one file that names the
-    // colour. Test files assert the absence of the old utility, which means they
-    // have to spell it.
-    .filter((f) => f !== "src/app/globals.css" && !/\.test\.tsx?$/.test(f))
-    .flatMap((f) => scanFocusRings(f, readFileSync(f, "utf8")));
+  const offenders = sourceFiles({
+    match: /\.(tsx?|css)$/,
+    exclude: (f) => f === "src/app/globals.css" || /\.test\.tsx?$/.test(f),
+  }).flatMap((f) => scanFocusRings(f, readFileSync(f, "utf8")));
 
   if (offenders.length === 0) {
     assert(true, "no component in src/ declares its own focus ring colour");

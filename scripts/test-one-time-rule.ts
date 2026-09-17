@@ -15,8 +15,7 @@
 //
 // Run: node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/test-one-time-rule.ts
 import { readFileSync } from "node:fs";
-import { execFileSync } from "node:child_process";
-import { scrubbedGitEnv } from "./lib/git-env.ts";
+import { sourceFiles } from "./lib/source-files.ts";
 import { scanTimeRules } from "./lib/scan-time-rules.ts";
 import { assert, fail, finish } from "./lib/harness.ts";
 
@@ -39,15 +38,13 @@ const HOME = "src/lib/date/parse.ts";
  * the opt-out marker as well, which is the whole cost of the widening.
  */
 function scannedFiles(): string[] {
-  // The env is scrubbed because the pre-push hook exports GIT_DIR and friends, and
-  // an inherited GIT_DIR makes this read the real repo rather than its own cwd
-  // (#848/#853). scripts/test-git-env-isolation.ts enforces it.
-  return execFileSync("git", ["ls-files", "src"], {
-    encoding: "utf8",
-    env: scrubbedGitEnv(),
-  })
-    .split("\n")
-    .filter((f) => /\.tsx?$/.test(f) && !/\.test\.tsx?$/.test(f) && f !== HOME);
+  // Through the shared enumeration (#2421), which refuses a listing it cannot
+  // believe. The floor below used to be this file's own; it stays, because it is
+  // a tighter number than the shared one and it is the thing this suite reports.
+  return sourceFiles({
+    match: /\.tsx?$/,
+    exclude: (f) => /\.test\.tsx?$/.test(f) || f === HOME,
+  });
 }
 
 

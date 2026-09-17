@@ -7,33 +7,20 @@
 //
 // Run: node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/test-submit-feedback.ts
 import { readFileSync } from "node:fs";
-import { execFileSync } from "node:child_process";
-import { scrubbedGitEnv } from "./lib/git-env.ts";
+import { sourceFiles } from "./lib/source-files.ts";
 import { scanSubmitFeedback } from "./lib/scan-submit-feedback.ts";
 import { assert, fail, finish } from "./lib/harness.ts";
 
-/** Every rendered source file, from git so nothing untracked is scanned. */
-function sourceFiles(): string[] {
-  // The env is scrubbed because the pre-push hook exports GIT_DIR and friends, and
-  // an inherited GIT_DIR would make this read the real repo rather than its own
-  // cwd (#848/#853).
-  return execFileSync("git", ["ls-files", "src"], {
-    encoding: "utf8",
-    env: scrubbedGitEnv(),
-  })
-    .split("\n")
-    .filter(
-      (f) =>
-        f.endsWith(".tsx") &&
-        !f.endsWith(".test.tsx") &&
-        // The control itself, which is where the one raw submit belongs.
-        f !== "src/components/ui/SubmitButton.tsx",
-    );
-}
-
 // --- the tree ---
+//
+// Through the shared enumeration (#2421), which refuses a listing it cannot
+// believe rather than reporting a clean tree over zero files. SubmitButton is
+// the control itself, which is where the one raw submit belongs.
 {
-  const offenders = sourceFiles().flatMap((f) => scanSubmitFeedback(f, readFileSync(f, "utf8")));
+  const offenders = sourceFiles({
+    match: /\.tsx$/,
+    exclude: (f) => f.endsWith(".test.tsx") || f === "src/components/ui/SubmitButton.tsx",
+  }).flatMap((f) => scanSubmitFeedback(f, readFileSync(f, "utf8")));
   if (offenders.length === 0) {
     assert(true, "every submit in src/ goes through SubmitButton");
   } else {
