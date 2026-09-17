@@ -1607,6 +1607,35 @@ number under a heading covering six would drop five readings on a screen whose
 job is to report them. That cannot happen while the pool key covers every input,
 which is exactly why it is guarded.
 
+# Does production hold a table no migration created? (`pnpm verify:table-drift`)
+
+Every table guard in this repo enumerates from the MIGRATION FILES: the RLS scan, the
+grants scan (#2271), `applied-content.lock`. A table that exists only in the database is
+exempt from all of them by construction, and invisibly, because a scan that never reached
+it and a scan that found nothing wrong produce the same empty result (L96, L456, L98).
+#2271's blanket `grant ... on all tables in schema public` reaches such a table while
+nothing says whether its RLS is right.
+
+`pnpm verify:table-drift` compares the two sides. It reads production and writes nothing.
+The live list comes from PostgREST's own root document, so it needs no function added to
+the database to ask a question about the database, and the declared list goes through the
+repo's own `parseDeclaredTables`, so the two sides cannot disagree about what declared
+means. Measured 2026-09-17: 41 live, 40 declared, one difference.
+
+That one is `availability_rules_backup_1255`, the snapshot the roster hours backfill took
+before rewriting every agent's week. It is RECORDED in `KNOWN_UNDECLARED_TABLES`
+(`scripts/lib/table-drift.ts`) with a reason and the issue that removes it, rather than
+excused by a filter: an entry whose table has since gone is reported as dead config, so a
+record cannot outlive what it covers. Dropping a safety copy is somebody's decision, which
+is why the command records it rather than acting.
+
+Exits: 0 agreement, 1 no credentials, 2 nothing read (an empty list on either side is a
+read or a parse that did not work, never a database or a repo with no tables), 3 the live
+read failed, 4 a table nothing declared and nothing records, 5 a table the migrations
+declare and production does not have, 6 a record covering a table that is gone. It exits on
+its worst finding and reports every one, so a departed table cannot hide an undeclared one.
+Decision logic is pinned offline by `scripts/test-table-drift.ts`.
+
 # Capped single-page reads (the `// cap-safe:` convention)
 
 PostgREST returns at most **one 1000-row page** per list read. Code that then
