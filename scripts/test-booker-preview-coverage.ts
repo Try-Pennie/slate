@@ -31,6 +31,7 @@
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { bookerCopyScreens } from "../src/lib/booking/copy-preview.ts";
+import { scanCopyClockReads } from "./lib/scan-copy-clock-reads.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
 const ROOT = join(import.meta.dirname, "..");
@@ -124,34 +125,68 @@ for (const screen of screens) {
   // renamed directory, would pass every assertion below over an empty list.
   assert(copyModules.length >= 5, `the copy modules were found (got ${copyModules.length})`);
 
-  const CLOCK_READS = ["Date.now(", "new Date()", "DateTime.now(", "DateTime.local("];
-  /** Comments talk ABOUT the clock; only real code may not read it. */
-  const stripComments = (s: string) =>
-    s.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
-
   for (const rel of copyModules) {
-    const src = stripComments(readFileSync(join(ROOT, rel), "utf8"));
-    for (const forbidden of CLOCK_READS) {
-      assert(
-        !src.includes(forbidden),
-        `${rel} takes its clock as an argument rather than reading it (${forbidden}), ` +
-          `so its copy cannot change at midnight on its own`,
-      );
-    }
+    const findings = scanCopyClockReads(readFileSync(join(ROOT, rel), "utf8"), rel);
+    eq(
+      findings.length,
+      0,
+      `${rel} takes its clock as an argument rather than reading it` +
+        (findings.length ? ` (${findings.map((f) => `${f.line}: ${f.read}`).join(", ")})` : ""),
+    );
   }
 
-  // Positive control, or a path typo would report every module clean for ever.
+  // Controls. Without these a path typo, or a scanner that matched nothing,
+  // would report every module clean for ever (L1, L98).
   {
-    const planted = stripComments("export function f(){ return DateTime.now().toISO(); }");
-    assert(
-      CLOCK_READS.some((c) => planted.includes(c)),
-      "a builder that DID read the clock is caught by this scan",
+    eq(
+      scanCopyClockReads("export function f(){ return DateTime.now().toISO(); }").length,
+      1,
+      "a builder that DID read the clock is caught",
     );
-    // And the comment stripping must not be what makes a real read invisible.
-    const commentOnly = stripComments("// this deliberately avoids DateTime.now()\nexport const x = 1;");
-    assert(
-      !CLOCK_READS.some((c) => commentOnly.includes(c)),
+    eq(
+      scanCopyClockReads("// this deliberately avoids DateTime.now()\nexport const x = 1;").length,
+      0,
       "while a comment merely naming the clock is not a finding",
+    );
+
+    // The escape hatch, which every other convention guard in this repo carries
+    // (`cap-safe`, `error-ok`, `parse-ok`, `write-ok`). Without one, the next
+    // person with a legitimate reason has to edit the guard to get past it, and
+    // a guard whose routine remedy is to switch it off is one nobody trusts (L36).
+    eq(
+      scanCopyClockReads(
+        "// clock-ok: this builder is the preview's own fixture seed, never lead facing\n" +
+          "export const seed = Date.now();",
+      ).length,
+      0,
+      "a hatch carrying a reason suppresses the finding",
+    );
+    eq(
+      scanCopyClockReads("export const seed = Date.now(); // clock-ok: seeded by the caller").length,
+      0,
+      "and it may sit on the line itself, not only above it",
+    );
+
+    // A hatch with NO reason is REFUSED, so it cannot be taken by writing the
+    // token alone (L675). It is still a finding, and it says which kind it is.
+    const unreasoned = scanCopyClockReads("// clock-ok:\nexport const seed = Date.now();");
+    eq(unreasoned.length, 1, "a hatch with no reason does not suppress anything");
+    assert(
+      unreasoned[0]!.unreasonedOptOut,
+      "and it is reported as an unreasoned hatch rather than as a plain clock read",
+    );
+    eq(
+      scanCopyClockReads("// clock-ok: {}\nexport const seed = Date.now();").length,
+      1,
+      "nor does one whose reason is punctuation rather than words",
+    );
+
+    // A DIFFERENT convention's opt-out must not suppress this one, or adding a
+    // rule behind an existing token silently widens every use of it (L448).
+    eq(
+      scanCopyClockReads("// error-ok: the read is best effort\nexport const seed = Date.now();").length,
+      1,
+      "another convention's opt-out does not reach this rule",
     );
   }
 }

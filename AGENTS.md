@@ -2083,6 +2083,38 @@ Two guards, and each is blind where the other looks:
   inline sentence while the preview rendered happily from the builder, showing text
   that no longer ships. That is worse than no preview, because it would be believed.
 
+## A copy builder takes its clock (the `// clock-ok:` convention, #2497)
+
+A sentence naming a day ("today", "tomorrow", "Thursday") is a relationship
+between the appointment and the reader's present, so a builder that pins one end
+and reads the other for itself renders a different sentence every day from the
+same input. `dayWord` in `src/lib/booking/reminder.ts` did exactly that: its test
+pinned the clock to a constant, the suite passed on the day it merged and went red
+at midnight on 2026-09-17 with no code change, which skipped main's deploy and left
+#2484's monitoring floor merged and not live.
+
+**The determinism check that was supposed to catch it structurally could not.**
+Rendering twice and comparing cannot see a clock read, because the clock does not
+move between two renders a millisecond apart, so it read clean over the defect it
+is named for (L713). `scanCopyClockReads` (`scripts/lib/scan-copy-clock-reads.ts`)
+is the half that works: it reads the SOURCE of every copy module in
+`src/lib/booking` plus `reminder.ts`, enumerated by GLOB rather than a hand written
+list, so a module added tomorrow is covered by construction (L96).
+
+It matches four spellings as text (`Date.now(`, `new Date()`, `DateTime.now(`,
+`DateTime.local(`) and says in its own header what it cannot see: a clock reached
+through an imported helper or an injected collaborator is not flagged.
+
+**The escape hatch is `// clock-ok: <why>`**, on or in the `//` block directly
+above the line, refused when it carries no reason, and a refused one is reported as
+an unreasoned hatch rather than as a plain clock read, since the two send a reader
+to do different things. It is deliberately its OWN token and not `error-ok` or
+`parse-ok`: those are written about a database read or write, and putting a second
+rule behind an existing suppression widens every existing use of it (L448).
+
+**The alert copy preview still has the blind spot** (#2502): it proves determinism
+by the same repeat and scans no builders. Its builders are clean today.
+
 # Condition vs incident: which alerts get an all-clear (#1151)
 
 Every alert key Slate can send is classified in **`src/lib/notify/alert-catalog.ts`**
