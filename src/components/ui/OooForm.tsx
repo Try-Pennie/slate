@@ -13,6 +13,7 @@ import {
   cancelActForOutcomeKind,
 } from "@/lib/ooo/cancel-copy";
 import { UnsavedGuard } from "@/components/ui/UnsavedGuard";
+import { btnSecondaryCls } from "@/components/ui/styles";
 
 // Sentinel <option> value that reveals the searchable full-IANA fallback (#1007,
 // mirroring the booker's #219 picker); a real zone id can never collide with it.
@@ -133,7 +134,7 @@ export function OooForm({
       {stalled && (
         <div
           role="alert"
-          className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-[var(--error)] bg-error/5 px-5 py-4 text-sm text-error"
+          className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-[var(--error)] px-5 py-4 text-sm text-error"
         >
           <span>
             This is taking longer than it should. Please refresh the page and
@@ -142,7 +143,7 @@ export function OooForm({
           <button
             type="button"
             onClick={() => window.location.reload()}
-            className="rounded-md px-3 py-1.5 text-sm font-semibold text-error transition-colors hover:bg-error/10"
+            className={btnSecondaryCls}
           >
             Refresh
           </button>
@@ -204,7 +205,7 @@ export function OooForm({
           <div
             ref={errorRef}
             role="alert"
-            className="mb-5 rounded-md border border-[var(--error)] bg-error/5 px-5 py-4 text-sm text-error"
+            className="mb-5 rounded-md border border-[var(--error)] px-5 py-4 text-sm text-error"
           >
             <p>{state.error}</p>
             {state.conflictRequestId && (

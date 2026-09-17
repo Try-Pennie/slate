@@ -1,54 +1,43 @@
 "use client";
 
-import { useState } from "react";
-import { SubmitButton } from "@/components/ui/SubmitButton";
-import { btnSecondaryCls } from "@/components/ui/styles";
+import { DestructiveConfirm } from "@/components/ui/DestructiveConfirm";
+import { declineConfirmCopy } from "@/lib/ooo/decline-copy";
 
 /**
- * Two-step confirm for declining a time-off request — declining rejects an
- * agent's real time off and DMs them, so a single misclick shouldn't do it.
- * Mirrors the inline confirm on the agent's Cancel control (RequestActions):
- * the Decline button is replaced by a Keep it / Yes, decline pair in a soft-rose
- * group. Lives inside the existing reject <form>, so the optional note submits
- * with it and SubmitButton can reflect the in-flight state.
+ * The manager's two step Decline (#193).
+ *
+ * Declining rejects an agent's real time off and tells them in Slack, so a single
+ * misclick must not do it. It renders no form of its own: it lives inside the
+ * existing reject form, which is the only place it can be and still carry the
+ * optional note typed beside it.
+ *
+ * The confirm is `DestructiveConfirm` (#2455), the same one the agent's own
+ * Cancel uses. This file used to hold a second copy of that markup, down to the
+ * identical hand rolled destructive button, and the two were free to drift while
+ * each read as reasonable on its own. The panel and the buttons are now decided
+ * in one place, and so is the shape of the question: an act named with what it is
+ * about, and a consequence derived from the request rather than a generic warning
+ * (`@/lib/ooo/decline-copy`).
  */
-
-const ghost =
-  "rounded-md px-3 py-1.5 text-sm font-semibold transition-colors";
-
-export function DeclineConfirm({ agentName }: { agentName: string }) {
-  const [confirming, setConfirming] = useState(false);
-
-  if (!confirming) {
-    return (
-      <button
-        type="button"
-        onClick={() => setConfirming(true)}
-        className={btnSecondaryCls}
-      >
-        Decline
-      </button>
-    );
-  }
+export function DeclineConfirm({
+  agentName,
+  dayCount,
+}: {
+  agentName: string;
+  /** How many of the agent's days the request covers, in its own zone. */
+  dayCount: number;
+}) {
+  const { question, consequence } = declineConfirmCopy(agentName, dayCount);
 
   return (
-    <span className="pn-confirm-enter flex items-center gap-1 rounded-lg bg-error/5 p-1">
-      <span className="pl-2 pr-1 text-sm text-fg-muted">
-        Decline {agentName}&apos;s request?
-      </span>
-      <button
-        type="button"
-        onClick={() => setConfirming(false)}
-        className={`${ghost} text-fg-muted hover:bg-pennie-sky-soft hover:text-fg dark:hover:bg-accent/15`}
-      >
-        Keep it
-      </button>
-      <SubmitButton
-        className={`${ghost} bg-error/10 text-error hover:bg-error/20`}
-        pendingLabel="Declining…"
-      >
-        Yes, decline
-      </SubmitButton>
-    </span>
+    <DestructiveConfirm
+      openLabel="Decline"
+      question={question}
+      consequence={consequence}
+      dismissLabel="Keep it"
+      confirmLabel="Yes, decline"
+      pendingLabel="Declining"
+      panelClassName="w-full"
+    />
   );
 }

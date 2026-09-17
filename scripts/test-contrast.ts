@@ -617,6 +617,121 @@ atLeast(rose, surfaceLight, 3, "danger button border on a light card");
 atLeast(roseDark, surfaceDarkCard, 4.5, "danger button label on a dark card"); // 4.91
 atLeast(roseDark, surfaceDarkCard, 3, "danger button border on a dark card");
 
+// ============================================================================
+// THE DESTRUCTIVE CONFIRM, INCLUDING THE STATE A POINTER IS IN (#2455)
+// ============================================================================
+//
+// Everything above measures the danger button AT REST. Its hover was a 12% rose
+// wash, and a wash is TRANSLUCENT, so what the label ended up on was whatever sat
+// behind the button and nothing measured any of it. Two surfaces, two answers,
+// both under AA, in the state a mouse user is in at the moment of pressing:
+//
+//   rose label on a 12% rose wash over a white card    4.33:1
+//   the same label on the same wash over the page      4.03:1
+//
+// The two hand rolled confirms stacked a second wash under that one and got
+// 4.17:1 and 3.89:1, which is the 3.79:1 axe measured on the live page.
+//
+// The composite is what the tripwires below record, so a wash cannot come back
+// wearing a different alpha.
+function composite(over_: RGB, alpha: number, under: RGB): RGB {
+  return [0, 1, 2].map((i) => over_[i] * alpha + under[i] * (1 - alpha)) as RGB;
+}
+
+// ONE. The hover is an OPAQUE fill now, so it has one value wherever it lands and
+// can be measured once. Its foreground FLIPS with the theme, which is the pair
+// shape that goes wrong silently (L213), so both halves are read in both themes
+// and the wrong half is held below as a tripwire.
+for (const [theme, read] of [
+  ["light", r],
+  ["dark", rDark],
+] as [string, (n: string) => RGB][]) {
+  const fill = read("--error");
+  atLeast(read("--fg-on-error"), fill, 4.5, `danger button label on its own hover fill (${theme})`);
+  for (const surface of ["--field", "--surface", "--bg"]) {
+    atLeast(fill, read(surface), 3, `danger button hover fill against ${surface} (${theme})`);
+  }
+}
+
+// TWO. The rest state, on the ground the shared confirm panel actually paints.
+// `--field` rather than a rose wash, and that is the whole finding: the panel is
+// neutral so this number is true wherever the panel lands.
+for (const [theme, read] of [
+  ["light", r],
+  ["dark", rDark],
+] as [string, (n: string) => RGB][]) {
+  const label = read("--error");
+  atLeast(label, read("--field"), 4.5, `destructive confirm label on the panel (${theme})`);
+  atLeast(label, read("--field"), 3, `destructive confirm border on the panel (${theme})`);
+  // The panel's own rose edge, against both surfaces it can sit on: the agent's
+  // list is drawn straight on the page and the manager's queue is inside a card,
+  // which is exactly why the same class string measured two different ways.
+  for (const behind of ["--bg", "--surface"]) {
+    atLeast(read("--error"), read(behind), 3, `the confirm panel's rose edge against ${behind} (${theme})`);
+  }
+}
+
+// THREE. The tripwires. Each is a treatment somebody would reasonably reach for,
+// and each must STAY failing or the assertions above are passing unexamined.
+below(
+  rose,
+  composite(rose, 0.1, composite(rose, 0.05, r("--bg"))),
+  4.5,
+  "the hand rolled confirm on the agent's page - the 3.89 this issue was opened about",
+);
+below(
+  rose,
+  composite(rose, 0.1, composite(rose, 0.05, r("--surface"))),
+  4.5,
+  "the same class string on the manager's card - the same defect measuring 4.17",
+);
+below(
+  rose,
+  composite(rose, 0.12, r("--surface")),
+  4.5,
+  "the old hover wash on a card - why the hover is an opaque fill",
+);
+below(
+  rose,
+  composite(rose, 0.12, r("--bg")),
+  4.5,
+  "the old hover wash on the page - the same wash, a worse number, nothing measuring either",
+);
+// The wash pale enough to keep a rose label at 4.5:1 is not a surface at all, so
+// there is no alpha that satisfies both. This is the measurement that says the
+// panel had to go neutral rather than get a lighter tint.
+below(
+  composite(rose, 0.08, white),
+  r("--bg"),
+  1.05,
+  "the palest rose wash a rose label survives, against the page - no separation, so no wash works",
+);
+// And the foreground that must not be shared between the themes. Each theme's
+// value is the other theme's failure, which is why `--fg-on-error` exists.
+below(white, roseDark, 4.5, "light's label on the dark rose fill - 2.39, an invisible label");
+below(graphite, rose, 4.5, "dark's label on the light rose fill - 2.42, the same failure the other way");
+
+// FOUR. And the CSS really declares that pair, read out of the rule rather than
+// restated here, so these numbers cannot go on passing about a button that has
+// gone back to painting a wash (L63).
+{
+  const hover = CSS.match(/\.pn-btn--danger:hover\s*\{([\s\S]*?)\}/);
+  assert(hover !== null, ".pn-btn--danger declares a hover state");
+  const decl = hover?.[1] ?? "";
+  assert(
+    /background:\s*var\(--error\)/.test(decl),
+    "the danger button's hover background is the opaque rose, not a wash",
+  );
+  assert(
+    /color:\s*var\(--fg-on-error\)/.test(decl),
+    "and it repaints the label with the foreground measured against that fill",
+  );
+  assert(
+    !/--error-bg/.test(CSS),
+    "the translucent rose wash token is gone rather than left beside its replacement",
+  );
+}
+
 // --- #1881: the header tab's pending count -----------------------------------
 //
 // The pair is READ OUT OF THE COMPONENT'S OWN CLASSES rather than restated here,

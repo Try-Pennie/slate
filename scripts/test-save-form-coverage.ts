@@ -35,7 +35,9 @@ const STILL_POSTING_DIRECTLY = new Set(
     "src/components/ui/BusinessHoursExceptions.tsx",
     "src/components/ui/BusinessHoursForm.tsx",
     "src/components/ui/OooForm.tsx",
-    "src/components/ui/RequestActions.tsx",
+    // The agent's time off cancel, which moved here from RequestActions.tsx with
+    // #2455: the confirm's panel, buttons and form are one component now.
+    "src/components/ui/DestructiveConfirm.tsx",
     // The wrapper itself renders the `<form>` every migrated component uses.
     "src/components/ui/SaveForm.tsx",
   ].map((p) => join(...p.split("/"))),
