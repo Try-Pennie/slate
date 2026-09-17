@@ -79,16 +79,30 @@ export interface ReminderCopyInput {
   timezone: string;
   /** Where they can move or cancel. */
   manageUrl: string;
+  /**
+   * The instant this copy is being written AT, which the caller passes rather than
+   * the builder reading (#2497). "tomorrow" is a relationship between two times, so
+   * a builder that pins one end and reads the other for itself renders a different
+   * sentence every day from the same input: it cannot be tested, it cannot be
+   * previewed, and it changes at midnight with nobody touching it. It is REQUIRED,
+   * not defaulted, so `tsc` names every construction site rather than one caller
+   * silently keeping the old behaviour (L168).
+   */
+  nowMs: number;
 }
 
 /**
  * "tomorrow" is a claim about the reader's calendar, not about 24 hours, and a
  * booking made inside the window is reminded at once. For a call two hours away
  * "tomorrow" is simply false, so the day is decided in the lead's own zone.
+ *
+ * A clock the caller could not read falls to "soon", the same wording an unreadable
+ * start falls to: a day nobody worked out must not be asserted to a lead, and
+ * "Invalid DateTime" must never reach an inbox.
  */
 function dayWord(input: ReminderCopyInput): string {
   const at = DateTime.fromISO(input.startsAtIso, { zone: input.timezone });
-  const now = DateTime.now().setZone(input.timezone);
+  const now = DateTime.fromMillis(input.nowMs, { zone: input.timezone });
   if (!at.isValid || !now.isValid) return "soon";
   const days = at.startOf("day").diff(now.startOf("day"), "days").days;
   if (days <= 0) return "today";

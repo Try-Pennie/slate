@@ -129,6 +129,12 @@ const booking = (over: Partial<Parameters<typeof reminderDue>[0]> = {}) => ({
     startsAtIso: new Date(NOW + 20 * HOUR).toISOString(),
     timezone: "America/New_York",
     manageUrl: "https://slate.trypennie.app/manage/abc",
+    // The copy is told what "now" is rather than reading the clock (#2497). Both
+    // ends of the relationship "tomorrow" describes have to be pinned, or the
+    // fixture means a different thing every day and the suite goes red with no
+    // code change (L130): this one shipped on the 16th saying "tomorrow" and said
+    // "today" from midnight on the 17th, which took main's deploy down with it.
+    nowMs: NOW,
   };
   const subject = reminderSubject(args);
   const body = reminderBody(args);
@@ -169,6 +175,33 @@ const booking = (over: Partial<Parameters<typeof reminderDue>[0]> = {}) => ({
   const sameDay = reminderSubject({ ...args, startsAtIso: new Date(NOW + 2 * HOUR).toISOString() });
   assert(!/tomorrow/i.test(sameDay), "a call later TODAY is not described as tomorrow");
   assert(/today/i.test(sameDay), "it says today instead");
+
+  // The control that makes the two assertions above mean something. ONE instant,
+  // read from two different "now"s, must be described differently: that is only
+  // true of copy that consults the clock it was GIVEN. A builder still reading
+  // `DateTime.now()` renders the same word for both, and on the one day a year
+  // where the real clock happens to agree with the fixture it would otherwise
+  // satisfy every assertion above while being exactly the defect (L1).
+  {
+    // Both "now"s are derived from the CALL rather than written as arithmetic off
+    // NOW, because the hour that separates the two days is Eastern and the fixture
+    // is UTC: a number picked by hand here is a conversion somebody did once, and
+    // the test would then pin the mistake rather than the rule (L401).
+    const call = args.startsAtIso;
+    const callMs = Date.parse(call);
+    const nightBefore = reminderSubject({ ...args, startsAtIso: call, nowMs: NOW });
+    const sameMorning = reminderSubject({ ...args, startsAtIso: call, nowMs: callMs - HOUR });
+    assert(/tomorrow/i.test(nightBefore), "read the evening before, the call is tomorrow");
+    assert(/today/i.test(sameMorning), "and read on the morning itself, the very same call is today");
+  }
+
+  // A clock the caller could not read must not become "Invalid DateTime" in a
+  // lead's inbox, and must not silently pick a day either.
+  {
+    const unreadable = reminderSubject({ ...args, nowMs: NaN });
+    assert(!/undefined|NaN|Invalid/.test(unreadable), "an unreadable clock leaks nothing into the subject");
+    assert(!/today|tomorrow/i.test(unreadable), "and claims no day it could not work out");
+  }
 }
 
 finish();
