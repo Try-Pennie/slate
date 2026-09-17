@@ -160,7 +160,7 @@ Warm neutrals doing almost all the work, with a single cool accent that means "t
 
 ### Named Rules
 
-**The One Pen Rule.** Sky is the only colour that may mean "do this". Yellow, mint and peach are illustration accents and may never carry a call to action. If two things on a screen are competing to be the next action, one of them is wrong.
+**The One Pen Rule.** Sky is the only colour that may mean "do this". Yellow, mint and peach are illustration accents and may never carry a call to action. If two things on a screen are competing to be the next action, one of them is wrong. Held by `scripts/test-design-rules.ts` for the mechanical half, an accent fill on a button or a link; whether two sky things are competing on one screen is a judgement nothing here can make.
 
 **The Bare Mark Rule.** A colour carrying meaning with no word beside it needs 3:1, and most of the palette cannot. Measured: neither green (1.82 and 2.44 on beige) and not yellow (1.34), which is why those are washes and illustration. Rose can, in both themes, at 4.01 at its worst. Green Mark exists so healthy has something to reach for, and it is scoped rather than general. The trap is that the record reads as permission: somebody reaches for the colour named beside the meaning, gets a mark nobody can see, and nothing fails, which is exactly how 25 focus rings shipped at 1.57:1.
 
@@ -190,9 +190,9 @@ Warm neutrals doing almost all the work, with a single cool accent that means "t
 
 ### Named Rules
 
-**The 600 Ceiling Rule.** PP Mori ships 200, 400 and 600. Medium is not used at all and 700 is aliased to 600, so there is no bolder weight to reach for. Emphasis comes from size, colour or space, never from a heavier face. `font-synthesis: none` is set so the browser cannot fake one.
+**The 600 Ceiling Rule.** PP Mori ships 200, 400 and 600. Medium is not used at all and 700 is aliased to 600, so there is no bolder weight to reach for. Emphasis comes from size, colour or space, never from a heavier face. `font-synthesis: none` is set so the browser cannot fake one. Held by `scripts/test-design-rules.ts`, which is what makes it enforceable at all: a weight off the ladder renders as one the design never named, so the mistake is invisible on screen in both directions. `font-medium` was on a heading in the booker for months, matching down to body weight, and nothing looked wrong.
 
-**The Ledger Numerals Rule.** Anything a reader might compare down a column gets tabular numerals: rates, payments, counts, durations, times and dates. A figure that jumps sideways as it updates is a defect.
+**The Ledger Numerals Rule.** Anything a reader might compare down a column gets tabular numerals: rates, payments, counts, durations, times and dates. A figure that jumps sideways as it updates is a defect. Deliberately ADVISORY rather than guarded (#1813): whether a figure is one a reader compares needs to know what the column is, and a scan for a bare number would name every count, id and duration in the product on its first run. That is said here so this rule's silence is not read as enforcement, which is the thing a record cannot afford to leave ambiguous.
 
 **The Plain Label Rule.** Labels are sentence case with no letter spacing. Uppercase tracked labels read as institutional, which is the opposite of the voice.
 
@@ -235,7 +235,7 @@ Borders are hairlines and are mostly absent in light mode, where the shadow does
 
 ### Named Rules
 
-**The Pills Are Badges Rule.** A fully rounded shape means "this is a status", never "this is a button". Buttons are 12px or 16px. A pill shaped button reads as a tag and steals the affordance from the real controls on the screen.
+**The Pills Are Badges Rule.** A fully rounded shape means "this is a status", never "this is a button". Buttons are 12px or 16px. A pill shaped button reads as a tag and steals the affordance from the real controls on the screen. Held by `scripts/test-design-rules.ts`, which judges the SHAPE rather than the radius: a circular icon button and a calendar day cell are fully rounded and read as neither a tag nor a defect, so what it names is a fully rounded control with room for a word in it.
 
 ## Components
 
