@@ -82,9 +82,17 @@ assert(Number.isFinite(timeoutMin), "the job declares an explicit timeout (L313)
 // outside it, in BOTH offsets the Eastern clock takes, and a change to the cron that
 // walked it into business hours has to fail rather than be noticed later.
 //
-// The advertised week comes from the SEEDED business hours the org really runs on,
-// never from a window restated here: two copies of "when is Pennie open" drift and this
-// one would drift silently (L41).
+// The advertised week comes from the SEEDED business hours, never from a window
+// restated here: two copies of "when is Pennie open" drift and this one would drift
+// silently (L41).
+//
+// WHAT THIS CANNOT SEE, so a green run is never read as more than it measured (L400).
+// The seeded week is what the migration writes and what an unconfigured table falls
+// back to; the LIVE week lives in `business_hours` and an admin may edit it. A repo
+// scan cannot read a database, so an org that opened 00:00 to 06:00 would walk the
+// advertised day over this cron with nothing here saying so. Measured 2026-09-17 the
+// stored week matches the seed (08:00 to 20:00, Monday to Saturday), and the run lands
+// roughly five hours clear of the earliest advertised minute in either offset.
 {
   const [minuteField, hourField] = cron.split(/\s+/);
   const utcHour = Number(hourField);
