@@ -13,7 +13,8 @@
 //   2. nothing renders `undefined`, `NaN`, `[object Object]`, a leaked null, or a
 //      raw JSON blob, which is how a builder given the wrong shape fails;
 //   3. the render is DETERMINISTIC, so a diff means the copy changed rather than
-//      the clock moving (the preview must never read `Date.now`);
+//      the clock moving: neither the preview NOR the builders it prints may read
+//      the clock, and since #2497 the scan covers both;
 //   4. the copy obeys the repo's own writing rules, since these strings are the
 //      ones a customer reads: no em or en dashes, no emoji;
 //   5. every state label is distinct within its screen, so two rows cannot
@@ -27,7 +28,7 @@
 // copy was moved out of the components in the first place (L41).
 //
 // Run: node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/test-booker-preview-coverage.ts
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { bookerCopyScreens } from "../src/lib/booking/copy-preview.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
@@ -99,13 +100,58 @@ for (const screen of screens) {
 
   // And structurally so: a builder reading the clock would drift a day at
   // midnight and read as a copy change in every diff taken after it.
-  const src = readFileSync(join(ROOT, "src", "lib", "booking", "copy-preview.ts"), "utf8")
-    .replace(/\/\*[\s\S]*?\*\//g, "")
-    .replace(/^\s*\/\/.*$/gm, "");
-  for (const forbidden of ["Date.now(", "new Date()", "DateTime.now(", "DateTime.local("]) {
+  //
+  // This scans the BUILDERS as well as the preview, which it did not until #2497
+  // (L63: the preview file alone is a proxy for the quantity being protected).
+  // `reminder.ts` decided "today" against "tomorrow" from `DateTime.now()` while
+  // its test pinned the other end of that relationship, so the suite went red at
+  // midnight on 2026-09-17 with nobody having touched the code, and took main's
+  // deploy down with it. Two renders a millisecond apart cannot see that: the
+  // clock does not move between them, which is why the STATIC read is the check
+  // that matters and the pair above is only the cheap half.
+  //
+  // The list is a GLOB, never a hand written registry, so a copy module added
+  // tomorrow is covered by construction rather than exempt from the guard meant
+  // to catch it (L96). `reminder.ts` is named alongside it because it builds an
+  // email rather than a screen and so carries no `-copy` in its name.
+  const copyModules = [
+    ...readdirSync(join(ROOT, "src", "lib", "booking"))
+      .filter((f) => f.endsWith(".ts") && !f.endsWith(".test.ts") && f.includes("copy"))
+      .map((f) => join("src", "lib", "booking", f)),
+    join("src", "lib", "booking", "reminder.ts"),
+  ];
+  // The floor is the anti-vacuity one (L98): a glob that matched nothing, or a
+  // renamed directory, would pass every assertion below over an empty list.
+  assert(copyModules.length >= 5, `the copy modules were found (got ${copyModules.length})`);
+
+  const CLOCK_READS = ["Date.now(", "new Date()", "DateTime.now(", "DateTime.local("];
+  /** Comments talk ABOUT the clock; only real code may not read it. */
+  const stripComments = (s: string) =>
+    s.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+
+  for (const rel of copyModules) {
+    const src = stripComments(readFileSync(join(ROOT, rel), "utf8"));
+    for (const forbidden of CLOCK_READS) {
+      assert(
+        !src.includes(forbidden),
+        `${rel} takes its clock as an argument rather than reading it (${forbidden}), ` +
+          `so its copy cannot change at midnight on its own`,
+      );
+    }
+  }
+
+  // Positive control, or a path typo would report every module clean for ever.
+  {
+    const planted = stripComments("export function f(){ return DateTime.now().toISO(); }");
     assert(
-      !src.includes(forbidden),
-      `the preview does not read the clock (${forbidden}), so a diff means the copy changed`,
+      CLOCK_READS.some((c) => planted.includes(c)),
+      "a builder that DID read the clock is caught by this scan",
+    );
+    // And the comment stripping must not be what makes a real read invisible.
+    const commentOnly = stripComments("// this deliberately avoids DateTime.now()\nexport const x = 1;");
+    assert(
+      !CLOCK_READS.some((c) => commentOnly.includes(c)),
+      "while a comment merely naming the clock is not a finding",
     );
   }
 }

@@ -122,6 +122,9 @@ export async function runBookingReminders(deps: ReminderDeps): Promise<ReminderR
       startsAtIso: row.startsAtIso,
       timezone: row.timezone,
       manageUrl: row.manageUrl,
+      // The lane's own clock, the same one the due check above was judged against,
+      // so "tomorrow" and "is this due" can never disagree about what day it is.
+      nowMs,
     };
     try {
       await deps.send({
