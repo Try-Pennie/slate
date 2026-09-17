@@ -6,6 +6,7 @@ import { DateTime } from "luxon";
 import ManageBooking from "@/components/ManageBooking";
 import { RESCHEDULE_REASONS, CANCEL_REASONS } from "@/lib/booking/core";
 import { NEAREST_TIMES_COPY } from "@/lib/booking/booker-copy";
+import { RESCHEDULE_COPY, movedNote } from "@/lib/booking/manage-copy";
 
 // Regression coverage for the booker hardening (#168): cancel must use an
 // in-DOM confirm (not native confirm()) and surface a failed POST instead of
@@ -565,7 +566,12 @@ describe("ManageBooking", () => {
       expect(cancel.className).toContain("min-h-[44px]");
     });
 
-    it("states the outcome of a completed reschedule", async () => {
+    // #2215: the confirmation is reachable ONLY from the action on this page. It
+    // used to be gated on `status === "rescheduled"`, which a reschedule writes
+    // onto the row permanently, so every later visit to the manage link was told
+    // its call had just moved and that an invite the reader was standing in was
+    // still on its way.
+    it("states the outcome of a reschedule done on this page", async () => {
       mockFetch({
         availability: { ok: true, body: { slots: ["2026-06-21T15:00:00.000Z"] } },
         reschedule: { ok: true, body: { startsAt: "2026-06-21T15:00:00.000Z" } },
@@ -576,11 +582,45 @@ describe("ManageBooking", () => {
       await pickDay();
       await userEvent.click(await screen.findByRole("button", { name: /:\d{2}/ }));
 
-      // The new time, that a fresh invite is coming, and that the old time is gone.
-      expect(await screen.findByText("Your call is moved")).toBeTruthy();
-      const body = screen.getByText(/A new invite is on its way/);
-      expect(body.textContent).toContain("dana@example.com");
-      expect(body.textContent).toMatch(/released/);
+      // The two facts the card beneath cannot show: a fresh invite is coming, and
+      // the time they were holding is gone. The new time itself is the hero above,
+      // so it is not said a second time.
+      expect(await screen.findByText(RESCHEDULE_COPY.moved)).toBeTruthy();
+      expect(screen.getByText(movedNote(baseProps.attendeeEmail))).toBeTruthy();
+    });
+
+    // #2215, the defect itself: Dan opened the manage link FROM the reschedule
+    // invite and was told his call was moved, having moved nothing.
+    it("says nothing about a move on a visit that moved nothing", () => {
+      mockFetch({});
+      render(<ManageBooking {...baseProps} status="rescheduled" />);
+
+      expect(screen.queryByText(RESCHEDULE_COPY.moved)).toBeNull();
+      expect(screen.queryByText(/A new invite is on its way/)).toBeNull();
+      // And the page is still the ordinary live one.
+      expect(screen.getByRole("button", { name: /^reschedule$/i })).toBeTruthy();
+    });
+
+    // Reopening the panel is the lead saying this time is not right either, so the
+    // confirmation of the last move must not sit over the times they are reading.
+    it("clears the confirmation when the reschedule panel is opened again", async () => {
+      mockFetch({
+        availability: { ok: true, body: { slots: ["2026-06-21T15:00:00.000Z"] } },
+        reschedule: { ok: true, body: { startsAt: "2026-06-21T15:00:00.000Z" } },
+      });
+      render(<ManageBooking {...baseProps} />);
+      await userEvent.click(screen.getByRole("button", { name: /^reschedule$/i }));
+      await userEvent.click(screen.getByRole("radio", { name: /schedule conflict/i }));
+      await pickDay();
+      await userEvent.click(await screen.findByRole("button", { name: /:\d{2}/ }));
+      expect(await screen.findByText(RESCHEDULE_COPY.moved)).toBeTruthy();
+
+      await userEvent.click(screen.getByRole("button", { name: /^reschedule$/i }));
+      expect(screen.queryByText(RESCHEDULE_COPY.moved)).toBeNull();
+
+      // And it does not come back when they leave the panel without moving anything.
+      await userEvent.click(screen.getByRole("button", { name: "Keep my current time" }));
+      expect(screen.queryByText(RESCHEDULE_COPY.moved)).toBeNull();
     });
   });
 

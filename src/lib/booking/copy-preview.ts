@@ -69,6 +69,7 @@ import {
   doneBody,
   doneHeading,
   liveHeading,
+  movedNote,
   phoneSaved,
 } from "@/lib/booking/manage-copy";
 import { eventDescription, eventSummary } from "@/lib/booking/core";
@@ -418,7 +419,7 @@ export function bookerCopyScreens(): CopyScreen[] {
       screen: "Manage: picking a new time",
       purpose:
         "The same picker the booker runs on, so a lead moving a call meets the " +
-        "surface they booked on.",
+        "surface they booked on, and what the move says for itself once it lands.",
       lines: [
         { state: "why they are moving it", text: RESCHEDULE_COPY.reasonLegend },
         { state: "a reason is set, so the times are live", text: RESCHEDULE_COPY.pickReady },
@@ -427,6 +428,11 @@ export function bookerCopyScreens(): CopyScreen[] {
         { state: "nothing is offered", text: RESCHEDULE_COPY.noTimes },
         { state: "the way out", text: RESCHEDULE_COPY.keepCurrent },
         { state: "it failed", text: RESCHEDULE_COPY.failed },
+        // #2215: said by the move done on this page and by nothing else, so a
+        // later visit to the same link is never told it has just happened.
+        { state: "the move landed", text: RESCHEDULE_COPY.moved },
+        { state: "and what follows it", text: movedNote(EMAIL) },
+        { state: "no address on the booking", text: movedNote(null) },
       ],
     },
     {

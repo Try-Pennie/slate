@@ -134,7 +134,30 @@ export const RESCHEDULE_COPY = {
   keepCurrent: "Keep my current time",
   noTimes: "All times are taken right now. Check back soon.",
   failed: "Could not reschedule. Please try again.",
+  /**
+   * What a move done ON this page says for itself once it lands (#1336, #2215).
+   *
+   * Reachable only from the action. It used to be gated on the booking's stored
+   * status, which a reschedule sets permanently, so it was a moment rendered from
+   * a persistent state: every later visit to the manage link was told the call had
+   * just moved, and told that an invite the reader had clicked through to get here
+   * was still on its way.
+   */
+  moved: "Your call is moved",
 } as const;
+
+/**
+ * The two facts the card cannot show for itself: a fresh invite is coming, and
+ * the time they were holding is gone. The NEW time is the hero on the same
+ * screen, so it is not said here a second time (L605).
+ *
+ * Falls back to a phrase rather than to a gap, like every other address line
+ * here: "on its way to , and" reads as broken rather than as unknown.
+ */
+export function movedNote(attendeeEmail: string | null): string {
+  const to = attendeeEmail ? ` to ${attendeeEmail}` : "";
+  return `A new invite is on its way${to}, and the time you were holding has been released.`;
+}
 
 // --- a booking that is over ---------------------------------------------------
 // Cancelled and already-happened are DIFFERENT screens: one is a decision the lead
