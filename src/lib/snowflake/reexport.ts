@@ -25,6 +25,7 @@
  */
 
 import { supabaseAdmin } from "@/lib/supabase/admin";
+import { inIdChunks } from "@/lib/db/id-batch";
 import { executeStatement } from "./client";
 import { readSnowflakeConfig } from "./config";
 import { MIRROR_TABLES } from "./export-core";
@@ -50,20 +51,34 @@ export async function reexportByIds(table: string, ids: string[]): Promise<numbe
   const config = readSnowflakeConfig();
   if (!config) throw new Error(`reexportByIds ${table}: mirror not configured`);
 
-  // cap-safe: bounded by an explicit id list, itself capped at MAX_VERIFY_BATCH.
-  const { data, error } = await applySkipRedacted(
-    table,
-    supabaseAdmin()
-      .from(table)
-      .select(spec.cols.map((c) => c.name).join(","))
-      .in("id", ids),
-  );
-  if (error) throw new Error(`reexportByIds ${table} read: ${error.message}`);
-  const rows = (data ?? []) as Record<string, unknown>[];
-  if (rows.length === 0) return 0;
+  // Split across requests (#2388). The bound above is a ROW count, sized for the
+  // Snowflake statement, and it says nothing about the URL this read travels in: 500
+  // uuids is roughly 18.6 KB against a ceiling measured between 13 and 15 KB, so the
+  // read was REFUSED outright at the full bound. That mattered here more than
+  // anywhere, because this IS the repair: it runs only once a lane has already
+  // refused to destroy rows and is relying on this to make tomorrow's run work.
+  //
+  // Each batch is read and MERGEd on its own, so the warehouse statement shrinks with
+  // the request rather than holding every row until the end. Re-running is harmless:
+  // the MERGE is keyed by id and idempotent, so a batch sent twice is a no-op.
+  const sentPerBatch = await inIdChunks(`reexportByIds ${table}`, ids, async (batch) => {
+    // cap-safe: bounded by an explicit id list, already split to the URL budget.
+    const { data, error } = await applySkipRedacted(
+      table,
+      supabaseAdmin()
+        .from(table)
+        .select(spec.cols.map((c) => c.name).join(","))
+        .in("id", batch),
+    );
+    if (error) throw new Error(`read: ${error.message}`);
+    const rows = (data ?? []) as Record<string, unknown>[];
+    if (rows.length === 0) return 0;
 
-  await executeStatement(config, buildMergeSql(spec.table, spec.cols, rows));
-  return rows.length;
+    await executeStatement(config, buildMergeSql(spec.table, spec.cols, rows));
+    return rows.length;
+  });
+
+  return sentPerBatch.reduce((a, b) => a + b, 0);
 }
 
 /**

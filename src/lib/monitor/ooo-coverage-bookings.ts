@@ -1,5 +1,6 @@
 import type { supabaseAdmin } from "@/lib/supabase/admin";
 import { selectAllPages } from "@/lib/supabase/paginate";
+import { inIdChunks } from "@/lib/db/id-batch";
 import { ACTIVE_BOOKING_STATUSES } from "@/lib/booking/bulk-reassign-store";
 
 /**
@@ -54,4 +55,45 @@ export async function loadOooCoverageBookings(
       error?: { message: string } | null;
     }>,
   );
+}
+
+/**
+ * Which of those bookings already carry a coverage sweep row, in whatever number of
+ * requests that takes (#2388).
+ *
+ * Any status counts: a row means #1242 owns the outcome, so the coverage check says
+ * nothing about that booking.
+ *
+ * Lifted out of the monitor route alongside its sibling above, because it carried
+ * the defect that sibling's own lifting was meant to make visible. It put EVERY
+ * booking id into one `.in("booking_id", ...)` filter, over a list read with
+ * `selectAllPages` precisely because it is expected to exceed a page. PostgREST puts
+ * an `in` filter in the QUERY STRING, so past roughly 266 uuids the request is
+ * REFUSED at the transport rather than truncated, and the whole check then throws on
+ * every five minute tick, silently, for exactly the agents it exists to protect.
+ * Measured on 2026-08-31, 24 agents with approved time off holding fifteen upcoming
+ * calls each is 360 ids, already past that point.
+ *
+ * It answers a SET, because every caller asks whether one booking is in it and a
+ * union is the only shape that survives being assembled from several requests.
+ *
+ * It throws on a read error, through `selectAllPages` and `inIdChunks`: an empty
+ * or short answer here means "no sweep has touched these", which reads as a real
+ * coverage gap and pages about a sweep that is working.
+ */
+export async function loadSnapshottedBookingIds(
+  db: ReturnType<typeof supabaseAdmin>,
+  bookingIds: string[],
+): Promise<Set<string>> {
+  if (bookingIds.length === 0) return new Set();
+  const pages = await inIdChunks("monitor ooo coverage snapshotted", bookingIds, (batch) =>
+    selectAllPages<{ booking_id: string }>("monitor ooo coverage snapshotted", (from, to) =>
+      db
+        .from("bulk_reassign_items")
+        .select("booking_id")
+        .in("booking_id", batch)
+        .range(from, to),
+    ),
+  );
+  return new Set(pages.flat().map((r) => r.booking_id));
 }

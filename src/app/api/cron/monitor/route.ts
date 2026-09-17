@@ -226,7 +226,8 @@ import {
 import { ACTIONABLE_ITEM_STATUSES } from "@/lib/booking/bulk-reassign";
 import { unwrap } from "@/lib/db/result";
 import { ACTIVE_BOOKING_STATUSES } from "@/lib/booking/bulk-reassign-store";
-import { loadOooCoverageBookings } from "@/lib/monitor/ooo-coverage-bookings";
+import { loadOooCoverageBookings, loadSnapshottedBookingIds } from "@/lib/monitor/ooo-coverage-bookings";
+import { inIdChunks } from "@/lib/db/id-batch";
 import { selectAllPages } from "@/lib/supabase/paginate";
 import type { Attributes, Bucket } from "@/lib/db/types";
 import { log } from "@/lib/log";
@@ -1528,29 +1529,48 @@ export async function GET(req: NextRequest) {
       if (items.length === 0) return [];
       // Only an UPCOMING appointment needs a person: a stranded one that has passed
       // is history, and paging about it would never clear.
-      const bookings = (unwrap(
-        await db
-          .from("bookings")
-          // cap-safe: primary-key lookup of the (few) stranded items' bookings.
-          .select("id")
-          .in("id", items.map((it) => it.booking_id))
-          .in("status", ACTIVE_BOOKING_STATUSES)
-          .gte("starts_at", new Date(now).toISOString()),
+      //
+      // Split across requests (#2388). `items` comes from `selectAllPages`, so it is
+      // unbounded by construction, and one `in` filter of every booking id is refused
+      // by PostgREST past roughly 266 uuids. A refusal here reads as "nothing is
+      // upcoming" only because the throw takes the whole check with it, which is the
+      // quiet direction: the stranded appointments stay stranded and unreported.
+      const bookingPages = await inIdChunks(
         "monitor stranded coverage bookings",
-      ) ?? []) as { id: string }[];
-      const upcoming = new Set(bookings.map((b) => b.id));
+        items.map((it) => it.booking_id),
+        async (batch) =>
+          (unwrap(
+            await db
+              .from("bookings")
+              // cap-safe: primary-key lookup, already split to the URL budget.
+              .select("id")
+              .in("id", batch)
+              .in("status", ACTIVE_BOOKING_STATUSES)
+              .gte("starts_at", new Date(now).toISOString()),
+            "monitor stranded coverage bookings",
+          ) ?? []) as { id: string }[],
+      );
+      const upcoming = new Set(bookingPages.flat().map((b) => b.id));
       const live = items.filter((it) => upcoming.has(it.booking_id));
       if (live.length === 0) return [];
-      // The out agent lives on the job, so resolve the (few) jobs these belong to.
-      const jobs = (unwrap(
-        await db
-          .from("bulk_reassign_jobs")
-          // cap-safe: primary-key lookup of the jobs the stranded items belong to.
-          .select("id, out_user_id")
-          .in("id", [...new Set(live.map((it) => it.job_id))]),
+      // The out agent lives on the job, so resolve the jobs these belong to. Split
+      // across requests (#2388): `bulk_reassign_jobs` accumulates over time, so the
+      // distinct job ids behind a set of actionable items are bounded by nothing in
+      // particular, unlike the AGENT ids below, which the roster bounds.
+      const jobPages = await inIdChunks(
         "monitor stranded coverage jobs",
-      ) ?? []) as { id: string; out_user_id: string }[];
-      const outByJob = new Map(jobs.map((j) => [j.id, j.out_user_id]));
+        [...new Set(live.map((it) => it.job_id))],
+        async (batch) =>
+          (unwrap(
+            await db
+              .from("bulk_reassign_jobs")
+              // cap-safe: primary-key lookup, already split to the URL budget.
+              .select("id, out_user_id")
+              .in("id", batch),
+            "monitor stranded coverage jobs",
+          ) ?? []) as { id: string; out_user_id: string }[],
+      );
+      const outByJob = new Map(jobPages.flat().map((j) => [j.id, j.out_user_id]));
       const stranded: StrandedAppointment[] = live.flatMap((it) => {
         const outUserId = outByJob.get(it.job_id);
         return outUserId
@@ -1563,6 +1583,10 @@ export async function GET(req: NextRequest) {
           .from("users")
           // cap-safe: primary-key lookup of the affected out agents.
           .select("id, name, email")
+          // in-chunk-ok: DEDUPED agent ids, so this is bounded by the roster and not
+          // by the stranded items it was derived from. At the 200 agent design target
+          // that is 7,520 bytes against a 10,000 byte budget and the 14,878 smallest
+          // size measured refused, so roughly 266 ids fit.
           .in("id", [...new Set(stranded.map((s) => s.outUserId))]),
         "monitor stranded coverage agents",
       ) ?? []) as CoverageOutAgent[];
@@ -1604,12 +1628,17 @@ export async function GET(req: NextRequest) {
           .range(from, to),
       );
       if (requests.length === 0) return { requests: [], blocks: [] };
+      // DEDUPED agent ids, so every filter below is bounded by the roster rather than
+      // by the unbounded request list they came from: at the 200 agent design target
+      // that is 7,520 bytes against a 10,000 byte budget and the 14,878 smallest size
+      // measured refused, so roughly 266 ids fit (#2388).
       const userIds = [...new Set(requests.map((r) => r.user_id))];
       const agents = (unwrap(
         await db
           .from("users")
           // cap-safe: primary-key lookup of the (few) agents with approved time off.
           .select("id, name, email")
+          // in-chunk-ok: bounded by the roster, see the note on userIds above.
           .in("id", userIds),
         "monitor approved time off agents",
       ) ?? []) as { id: string; name: string | null; email: string | null }[];
@@ -1628,6 +1657,7 @@ export async function GET(req: NextRequest) {
         db
           .from("busy_blocks")
           .select("user_id, starts_at, ends_at")
+          // in-chunk-ok: bounded by the roster, see the note on userIds above.
           .in("user_id", userIds)
           .gte("ends_at", new Date(now).toISOString())
           .lte("starts_at", lastEnd)
@@ -1709,24 +1739,21 @@ export async function GET(req: NextRequest) {
           .range(from, to),
       );
       if (absences.length === 0) return [];
+      // DEDUPED agent ids, so every filter below is bounded by the roster rather than
+      // by the unbounded absence list they came from: at the 200 agent design target
+      // that is 7,520 bytes against a 10,000 byte budget and the 14,878 smallest size
+      // measured refused, so roughly 266 ids fit (#2388).
       const userIds = [...new Set(absences.map((r) => r.user_id))];
       // Lifted into its own module by #2369, because it filtered `bookings` on an
       // `is_test` column that table does not have, so this check had never run and
       // nothing inline in a handler this size could be tested.
       const bookings = await loadOooCoverageBookings(db, userIds, nowIso);
       if (bookings.length === 0) return [];
-      // Which of those already have a sweep row, in one batched lookup. Any status
-      // counts: a row means #1242 owns the outcome, so this check says nothing.
-      const snapshotted = await selectAllPages<{ booking_id: string }>(
-        "monitor ooo coverage snapshotted",
-        (from, to) =>
-          db
-            .from("bulk_reassign_items")
-            .select("booking_id")
-            .in("booking_id", bookings.map((b) => b.id))
-            .range(from, to),
-      );
-      const hasRow = new Set(snapshotted.map((s) => s.booking_id));
+      // Which of those already have a sweep row. Lifted out beside the read above by
+      // #2388: it put every booking id into ONE `in` filter, which PostgREST refuses
+      // past roughly 266 uuids, so the whole check threw on every tick at the count
+      // this roster already reaches.
+      const hasRow = await loadSnapshottedBookingIds(db, bookings.map((b) => b.id));
       // An ACTIVE job is the pending-count signal: the engine flips a job to done only
       // once nothing is pending, so while one is active that agent's sweep is working.
       // Paginated rather than annotated cap-safe: a truncated page would drop an
@@ -1740,6 +1767,7 @@ export async function GET(req: NextRequest) {
             .from("bulk_reassign_jobs")
             .select("out_user_id")
             .eq("status", "active")
+            // in-chunk-ok: bounded by the roster, see the note on userIds above.
             .in("out_user_id", userIds)
             .range(from, to),
       );
@@ -1748,6 +1776,7 @@ export async function GET(req: NextRequest) {
           .from("users")
           // cap-safe: primary-key lookup of the (few) agents with approved time off.
           .select("id, name, email")
+          // in-chunk-ok: bounded by the roster, see the note on userIds above.
           .in("id", userIds),
         "monitor ooo coverage agents",
       ) ?? []) as CoverageGapAgent[];

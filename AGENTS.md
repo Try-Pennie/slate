@@ -1699,6 +1699,63 @@ a new table must be justified, not silently unguarded.** When you add a table
 whose row count is bounded by the roster rather than by booking volume or time,
 add it to `SAFE_TABLES`; otherwise leave it off and make each read cap-safe.
 
+# An `in` filter fed from an unbounded list (the `// in-chunk-ok:` convention)
+
+The capped read above is about a response that comes back SHORT. This is the
+opposite end of the same table: a request that never goes out at all.
+
+`.in("id", ids)` puts every id in the QUERY STRING, so a long enough list is
+**REFUSED at the transport** rather than truncated. Measured against the real prod
+PostgREST on 2026-08-04 with 36 character uuids: 350 ids (13,028 bytes) is accepted,
+400 (14,878) is refused, 1,000 gives a 400 and 2,000 a 414. `MAX_IN_FILTER_BYTES`
+(`src/lib/db/id-batch.ts`) sits at 10,000, well inside proven good territory, which
+is roughly **266 uuids** per request.
+
+**Bytes decide, never a row count.** That number was got wrong three times, every
+time by carrying a count over from a call site whose ids were a different length
+(#1259, #1267, #1268). So split with **`chunkIdsByUrlBudget`**, which measures the
+ids it is actually given, and run the split with **`inIdChunks`**, which owns what
+happens when request three of five fails.
+
+**Splitting without accounting is the other half of the defect** (#2388). A sweep
+that deleted two batches of five and then met a refusal must never answer as though
+it finished: the remainder is real work nobody else picks up, and on a redaction lane
+the finished batches are irreversibly blanked. `inIdChunks` therefore THROWS a
+`PartialIdSweepError` naming how many batches and ids landed, and `destroyVerified`
+adds the ROW count on its way past. A per BATCH zero rows check sits inside the loop
+for the same reason: a sum cannot see one component collapsing (L367).
+
+**The four retention lanes are covered by construction, not by a comment.** Each one
+reads up to `MAX_VERIFY_BATCH` (500) candidates and hands `destroyVerified` a
+`destroy(ids)` callback, and 500 uuids is roughly 18.6 KB, so every lane was refused
+outright the first night a retention window opened on production volume: nothing
+redacted, the same 500 candidates the next night, and the retention gate freezing the
+export behind a permanent failure. The split is owned INSIDE `destroyVerified`, so
+the callback is handed a batch and a fifth lane cannot be written without it. A rule
+every call site must opt into is enforced by nobody (L621).
+
+**The guard** is `scripts/test-unchunked-in-filters.ts`
+(`scripts/lib/scan-unchunked-in-filters.ts`), which fails the build on an `.in(` whose
+value is built from a list this repo read with `selectAllPages`, or with an exported
+function whose own body pages. That reader list is DERIVED by scanning the tree, so a
+reader added tomorrow is covered rather than exempt (L96). Its positive control puts
+the real defect back into the real monitor route in memory and requires itself to
+catch it.
+
+Its sibling `scripts/test-batch-sizes.ts` catches a list that IS split but by a
+literal stride. This one catches the list that is not split at all.
+
+**The escape hatch is `// in-chunk-ok: <why>`**, on or in the `//` block directly
+above the `.in(` line, and it is refused when it carries no reason. Use it for a set
+the ROSTER bounds rather than the growth table it was read from: a deduplicated agent
+id list is at most 200 ids at the design target, which is 7,520 bytes against the
+10,000 budget. Say which population bounds it, not just that it is small.
+
+What the scan CANNOT see is named in its own header: a list crossing a function
+boundary as a callback parameter (which is why `destroyVerified` owns its split), an
+array destructure of a `Promise.all` of paginated reads, and a `.limit(n)` above the
+ceiling.
+
 # Swallowed-error reads (the `// error-ok:` convention)
 
 A read that destructures `const { data } = await db.from("t").select(...)` and

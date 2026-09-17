@@ -35,6 +35,7 @@ import {
   type VerifyVerdict,
 } from "./verify-archived";
 import { readSnowflakeConfig } from "./config";
+import { MAX_IN_FILTER_BYTES, idFilterBytes, PartialIdSweepError } from "@/lib/db/id-batch";
 import { executeStatement } from "./client";
 
 const cands: Candidate[] = [
@@ -316,5 +317,130 @@ describe("destroyVerified", () => {
         },
       }),
     ).rejects.toThrow(/unreachable/);
+  });
+});
+
+// #2388. Every lane reads up to MAX_VERIFY_BATCH (500) candidates and used to hand
+// the whole verified list to ONE `.in("id", ids)` filter. PostgREST puts that in the
+// query string, and 500 uuids is about 18.6 KB against a ceiling measured between 13
+// and 15 KB, so the write is REFUSED at the transport. The lane then throws, redacts
+// nothing, and finds the same 500 rows tomorrow: a permanent stop rather than a blip,
+// behind the retention gate that freezes the export while it lasts.
+//
+// The splitting is owned HERE rather than in each lane, so a fifth lane cannot be
+// written without it (L621). These assert the two halves that matter: no request is
+// oversized, and a failure partway through is never reported as a finished sweep.
+describe("destroyVerified splits the write across requests (#2388)", () => {
+  const manyIds = (n: number) =>
+    Array.from({ length: n }, (_, i) => `00000000-0000-4000-8000-${String(i).padStart(12, "0")}`);
+  const manyCands = (n: number): Candidate[] =>
+    manyIds(n).map((id) => ({ id, watermark: "2026-01-01T00:00:00.000Z" }));
+  const verifyAll = (ids: string[]) => async (): Promise<VerifyOutcome> => ({ archived: ids, problems: [] });
+
+  it("never hands one request more ids than the URL budget allows", async () => {
+    const ids = manyIds(500);
+    // Positive control: the number the lanes actually read must be over the ceiling,
+    // or this whole block is measuring a single request and proves nothing.
+    expect(idFilterBytes(ids)).toBeGreaterThan(MAX_IN_FILTER_BYTES);
+
+    const sent: string[][] = [];
+    const r = await destroyVerified({
+      table: "bookings",
+      watermarkCol: "updated_at",
+      candidates: manyCands(500),
+      destroy: async (chunk) => {
+        sent.push(chunk);
+        return chunk.length;
+      },
+      verify: verifyAll(ids),
+    });
+    expect(sent.length).toBeGreaterThan(1);
+    for (const chunk of sent) expect(idFilterBytes(chunk)).toBeLessThanOrEqual(MAX_IN_FILTER_BYTES);
+    // Every verified row is still destroyed exactly once, and the counts are summed.
+    expect(sent.flat()).toEqual(ids);
+    expect(r.destroyed).toBe(500);
+    expect(r.candidates).toBe(500);
+  });
+
+  it("does not split a batch small enough for one request", async () => {
+    const sent: string[][] = [];
+    await destroyVerified({
+      table: "routing_decisions",
+      watermarkCol: "created_at",
+      candidates: cands,
+      destroy: async (chunk) => {
+        sent.push(chunk);
+        return chunk.length;
+      },
+      verify: verifyAll(cands.map((c) => c.id)),
+    });
+    expect(sent).toHaveLength(1);
+  });
+
+  // THE case this issue is about. A retention lane that redacts two batches and then
+  // meets a refusal must not answer as though the sweep finished: the remaining rows
+  // are still carrying contact data and nothing else will notice.
+  it("THROWS on a mid sweep failure, naming what was already destroyed", async () => {
+    let calls = 0;
+    const err = (await destroyVerified({
+      table: "bookings",
+      watermarkCol: "updated_at",
+      candidates: manyCands(500),
+      destroy: async (chunk) => {
+        calls += 1;
+        if (calls === 2) throw new Error("PostgREST refused the request");
+        return chunk.length;
+      },
+      verify: verifyAll(manyIds(500)),
+    }).catch((e) => e)) as Error;
+
+    expect(err).toBeInstanceOf(Error);
+    // It says a sweep happened and did not finish, it says how much of it landed, and
+    // it keeps the underlying refusal so nobody has to guess at the cause.
+    expect(err.message).toContain("bookings");
+    expect(err.message).toMatch(/partial/i);
+    expect(err.message).toContain("PostgREST refused the request");
+    // The rows the finished requests DID destroy are named, because for a redaction
+    // lane that work cannot be undone and a later audit has to account for it.
+    expect(err.message).toMatch(/\b1 of \d+\b/);
+    expect(err.message).toMatch(/destroyed/i);
+  });
+
+  // L367: a sum over chunks cannot see one component collapsing. The pre-#2388 check
+  // compared the TOTAL against zero, so a batch that silently affected nothing was
+  // invisible as long as its neighbours worked.
+  it("throws when ONE request affects no rows, even though the others did", async () => {
+    let calls = 0;
+    await expect(
+      destroyVerified({
+        table: "webhook_deliveries",
+        watermarkCol: "updated_at",
+        candidates: manyCands(500),
+        destroy: async (chunk) => {
+          calls += 1;
+          return calls === 2 ? 0 : chunk.length;
+        },
+        verify: verifyAll(manyIds(500)),
+      }),
+    ).rejects.toThrow(/affected 0 rows/);
+  });
+
+  // A single request failing reads through the same shape, so no lane has two error
+  // types to handle, and it says ZERO destroyed rather than leaving that to be
+  // inferred from silence.
+  it("reports a single failed request the same way, naming zero destroyed", async () => {
+    const err = (await destroyVerified({
+      table: "booking_outbox",
+      watermarkCol: "updated_at",
+      candidates: cands,
+      destroy: async () => {
+        throw new Error("boom");
+      },
+      verify: verifyAll(cands.map((c) => c.id)),
+    }).catch((e) => e)) as Error;
+    expect(err.message).toMatch(/partial/i);
+    expect(err.message).toContain("boom");
+    expect(err.message).toContain("0 row(s) already destroyed");
+    expect(err.cause).toBeInstanceOf(PartialIdSweepError);
   });
 });

@@ -208,7 +208,12 @@ describe("GET /api/cron/prune-webhook-payloads", () => {
     db.state.updateError = { message: "boom" };
     const res = await GET(req());
     expect(res.status).toBe(500);
-    expect((await res.json()).error).toBe("boom");
+    const { error } = await res.json();
+    expect(error).toContain("boom");
+    // #2388 splits the write across requests, so the lane's error also has to say how
+    // much of the sweep landed: some payloads can be erased while the rest are not.
+    expect(error).toMatch(/partial sweep/);
+    expect(error).toContain("0 row(s) already destroyed");
     expect(locks.releaseLock).toHaveBeenCalledWith("cron_prune_webhook_payloads", "lease");
   });
 });
