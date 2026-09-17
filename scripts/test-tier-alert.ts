@@ -128,4 +128,37 @@ for (const bad of [
 // A movement UPWARD is not a fallback and cannot be described as one.
 assert(tierFallbackAlert({ requestedCode: "111", effectiveCode: "511" }) === null, "an upward move alerts nothing");
 
+// --- the backend a lead LANDED on is named by what it means (#2486) ---
+//
+// `531 -> 411` became reachable when the ladder gained the whole tier rung, and
+// `BACKEND["1"].label` is "Both", so the notice read "went to Both". Digit 1 does
+// not mean the agent serves both backend services; it means the pool carries no
+// backend restriction at all, so the sentence stated an attribute of the person
+// that nothing had measured (L192). Digit 0 is "None" and reads worse still.
+for (const [requested, effective] of [
+  ["531", "411"],
+  ["521", "411"],
+  ["532", "412"],
+]) {
+  const out = tierFallbackAlert({ requestedCode: requested, effectiveCode: effective });
+  assert(out !== null, `${requested} to ${effective} is a tier drop and alerts`);
+  assert(
+    !/went to (Both|None)/.test(out!.text),
+    `${requested} to ${effective} does not name a backend digit as if it were a service (got: ${out!.text})`,
+  );
+  assert(
+    out!.text.includes("the tier's whole pool"),
+    `${requested} to ${effective} says what the pool actually is (got: ${out!.text})`,
+  );
+}
+
+// And the control the other way: a real backend service is still NAMED, so the
+// fix above cannot have been achieved by dropping the clause for everyone (L1).
+const toAchieve = tierFallbackAlert({ requestedCode: "521", effectiveCode: "431" });
+assert(toAchieve !== null, "a Beyond code dropping a tier onto Achieve alerts");
+assert(
+  toAchieve!.text.includes("went to Achieve"),
+  `a real backend service is still named (got: ${toAchieve!.text})`,
+);
+
 finish();

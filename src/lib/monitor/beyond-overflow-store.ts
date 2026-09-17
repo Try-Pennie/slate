@@ -43,7 +43,7 @@
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { unwrapCount } from "@/lib/db/result";
 import {
-  ACHIEVE_CODES,
+  OVERFLOW_CODES,
   BEYOND_CODES,
   BEYOND_OVERFLOW_WINDOW_HOURS,
   type BeyondOverflowWindow,
@@ -79,7 +79,7 @@ export async function readBeyondOverflowWindow(nowMs: number): Promise<BeyondOve
       .eq("buckets.is_test", false)
       .eq("outcome", "booked")
       .in("requested_code", BEYOND_CODES)
-      .in("bucket_code", ACHIEVE_CODES)
+      .in("bucket_code", OVERFLOW_CODES)
       .gte("created_at", since),
     "routing_decisions beyond overflowed",
   );

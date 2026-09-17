@@ -50,7 +50,18 @@ export function tierFallbackAlert(input: {
   const tiersDropped = Number(requestedCode[0]) - Number(effectiveCode[0]);
   const backendChanged = requestedCode[1] !== effectiveCode[1];
   // Named, so the notice says who took the booking rather than a digit.
-  const took = BACKEND[effectiveCode[1]]?.label ?? "another";
+  //
+  // Digits 0 and 1 are NOT backend services and must not be rendered as though
+  // they were. `BACKEND["1"].label` is "Both" and `BACKEND["0"].label` is "None",
+  // so before #2486 made those rungs reachable this read "went to Both", which
+  // states an attribute of the person who took the booking that nothing measured:
+  // the digit means the pool carries no backend restriction, not that the agent
+  // serves both services (L192). Whoever took it is whoever was free in that
+  // tier, which is what the sentence now says.
+  const landedUnconstrained = effectiveCode[1] === "0" || effectiveCode[1] === "1";
+  const took = landedUnconstrained
+    ? "the tier's whole pool"
+    : (BACKEND[effectiveCode[1]]?.label ?? "another");
 
   if (tiersDropped >= 2) {
     return {

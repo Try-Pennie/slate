@@ -38,21 +38,38 @@ async function run() {
   r = await selectWithTierFallback("522", async (c) => (c === "532" || c === "422" ? ["s"] : []));
   assert(r?.effectiveCode === "532", `the same tier Achieve rung comes first (got ${r?.effectiveCode})`);
 
-  // --- the BOOKING cascade, on the case the issue names ---
+  // --- the BOOKING cascade, on the case #2486 changed ---
   //
-  // Both rungs of the requested tier dry, the tier below books. What matters is
-  // that the effective code is the Beyond bucket one tier down rather than the
-  // Achieve bucket in the requested tier, and that the rung count is 2 while only
-  // ONE debt tier was actually dropped, which is why the alert reads the codes
-  // rather than this number.
-  const dryTier = await walkTierLadder<string>("522", async (c) =>
+  // Beyond and Achieve both dry at the requested tier. Before #2486 this dropped
+  // a debt tier and booked `422`; now the tier's WHOLE pool is asked first, so
+  // the lead keeps the debt tier they asked for and books `512`. Re-derived from
+  // the new ladder rather than adjusted, because the decision it encoded was
+  // deliberately reversed (L430): offering a lower debt tier while somebody in
+  // the requested tier had not been asked is the defect #2486 was opened about.
+  const crossTier = await walkTierLadder<string>("522", async (c) =>
     c === "522" || c === "532" ? { hit: false } : { hit: true, value: c },
   );
   assert(
-    dryTier?.effectiveCode === "422",
-    `a dry tier drops to the next Beyond rung (got ${dryTier?.effectiveCode})`,
+    crossTier?.effectiveCode === "512",
+    `a dry backend crosses to the tier's whole pool (got ${crossTier?.effectiveCode})`,
   );
-  assert(dryTier?.rungsDropped === 2, `two rungs were walked (got ${dryTier?.rungsDropped})`);
+  assert(crossTier?.rungsDropped === 2, `two rungs were walked (got ${crossTier?.rungsDropped})`);
+  assert(
+    Number("522"[0]) - Number(crossTier!.effectiveCode[0]) === 0,
+    "and NO debt tier was dropped, which is the whole point of #2486",
+  );
+
+  // The tier is still dropped once it is genuinely exhausted, so the widening
+  // cannot have turned the tier drop off. Both directions, or the assertion
+  // above is satisfied by a ladder that never drops a tier at all (L1).
+  const dryTier = await walkTierLadder<string>("522", async (c) =>
+    c === "522" || c === "532" || c === "512" ? { hit: false } : { hit: true, value: c },
+  );
+  assert(
+    dryTier?.effectiveCode === "422",
+    `an exhausted tier still drops to the next one (got ${dryTier?.effectiveCode})`,
+  );
+  assert(dryTier?.rungsDropped === 3, `three rungs were walked (got ${dryTier?.rungsDropped})`);
   assert(
     Number("522"[0]) - Number(dryTier!.effectiveCode[0]) === 1,
     "and exactly one debt tier was dropped, which is what the alert says",

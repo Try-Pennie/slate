@@ -90,21 +90,38 @@ export const BEYOND_CODES: string[] = allXbcCodes().filter(
 );
 
 /**
- * Every bucket code whose backend digit is Achieve.
+ * Every bucket code a Beyond lead can be booked on having LEFT the Beyond pool.
  *
- * This is the BOOKED side of the count, and it is the whole 15 rather than only
- * the same tier partner on purpose: a Beyond code can reach an Achieve pool one
- * or more debt tiers down as well (522 to 432), and that carries exactly the same
- * Colorado consequence as 522 to 532. `scripts/test-beyond-overflow.ts` asks the
- * real `tierLadder` whether every Achieve rung any Beyond code can reach is in
- * here, so the two can never disagree about what a rung is (L107).
+ * This is the BOOKED side of the count. It is defined by what the pool does NOT
+ * require rather than by one backend name, which is the distinction #2486 broke:
+ * the ladder gained an unconstrained rung (`522` can now reach `512`), whose
+ * backend digit is `1`, so a list of Achieve codes counted that booking as an
+ * ordinary Beyond booking and the exposure below silently shrank. A registry
+ * keyed on one spelling only ever checks what the registry lists (L96), and the
+ * number it feeds is the published size of the Colorado consequence, so the
+ * shrink would have read as the overflow improving (L624, L683).
+ *
+ * It is the whole set rather than only the same tier partner on purpose: a
+ * Beyond code can reach one of these a debt tier or more down as well (522 to
+ * 432), and that carries exactly the same consequence as 522 to 532.
+ *
+ * WHY AN UNCONSTRAINED RUNG REALLY IS AN OVERFLOW, since its pool contains the
+ * Beyond agent and so looks like it might not be: both cascades try the Beyond
+ * rung FIRST and only walk on when it found nobody, so reaching `512` means
+ * every Beyond agent in that tier was already unavailable and whoever takes the
+ * booking is not one of them.
+ *
+ * `scripts/test-beyond-overflow.ts` asks the real `tierLadder` to classify EVERY
+ * rung any Beyond code can reach, as this or as a Beyond pool, and fails on one
+ * that is neither, so a fourth kind of rung cannot be added without a decision
+ * (L107, L129).
  */
-export const ACHIEVE_CODES: string[] = allXbcCodes().filter(
-  (c) => BACKEND[c[1]!]?.key === "achieve",
+export const OVERFLOW_CODES: string[] = allXbcCodes().filter(
+  (c) => BACKEND[c[1]!]?.key !== "beyond",
 );
 
 export interface BeyondOverflowWindow {
-  /** Bookings in the window requested on a Beyond code and taken by an Achieve agent. */
+  /** Bookings in the window requested on a Beyond code and booked outside the Beyond pool. */
   overflowed: number;
   /** Every booking in the window requested on a Beyond code, overflowed or not. */
   beyondBooked: number;
@@ -177,12 +194,14 @@ export function beyondOverflowNoticeText(
       : `so it cannot say which of the ${v.overflowed} are affected`;
   return (
     `Beyond overflow, last ${windowHours}h: ${v.overflowed} of ${v.beyondBooked} ${noun} ${verb} ` +
-    `by an Achieve agent because no Beyond agent was free. This is expected. Pennie is moving off ` +
+    `by an agent outside the Beyond pool because no Beyond agent was free. This is expected. ` +
+    `Pennie is moving off ` +
     `Beyond as a backend service (Dan, 2026-09-13), so the Beyond pool is small on purpose and the ` +
     `overflow rung is the routing ladder working. No staffing action is being asked for. ` +
     // Phrased as the RULE rather than as a claim that it happened, because this
     // check did not measure it and a message may claim only what it measured (L11).
-    `One thing to check: Achieve does not lend in Colorado or West Virginia, so an overflowed ` +
+    `One thing to check: an agent outside the Beyond pool is almost always Achieve only, and ` +
+    `Achieve does not lend in Colorado or West Virginia, so an overflowed ` +
     `lead in either state has been booked with somebody who cannot place them. Slate does not ` +
     `hold the lead's state, ${which}. Look them up in Salesforce if the count is larger than ` +
     `you expected.`
