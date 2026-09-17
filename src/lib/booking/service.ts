@@ -767,7 +767,16 @@ async function fetchAgentWorkingHours(
  * connections. Default is inline: a new caller that forgets to opt in stays on
  * today's safe (if slower) behavior rather than silently deferring.
  */
-function realDeps(deferSend?: WebhookSendScheduler): BookingDeps {
+/**
+ * The REAL dependency wiring, exported so it can be driven directly (#2482).
+ *
+ * Every orchestration test injects fakes, which is right for the orchestration and
+ * leaves the wiring itself, the half that actually talks to Postgres, covered by
+ * nothing. That is where a write discarding its result lives, so that is what has
+ * to be tested: `scripts/../service-deps.test.ts` hands it a client that refuses
+ * and asserts the writes that must not carry on regardless really refuse.
+ */
+export function realDeps(deferSend?: WebhookSendScheduler): BookingDeps {
   return {
     deferSend,
     resolveBucketByCode,

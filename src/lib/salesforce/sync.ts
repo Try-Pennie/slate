@@ -910,23 +910,7 @@ export async function syncSalesforceAgents(over: Partial<SyncDeps> = {}): Promis
       (u) => u.role === "agent" && managerEmails.has(normalizeEmail(u.email)),
     )
     .map((u) => u.id);
-  let managersPromoted = 0;
-  if (toPromote.length) {
-    // The count is claimed on the write's own answer, never on having reached this
-    // line (#2482). A refused update left `managersPromoted` naming people who are
-    // still agents, and the run reported them promoted, so the approver who cannot
-    // open the queue looks like a Slate defect rather than a write that did not
-    // happen. It throws rather than counting zero, because the roster sync's other
-    // failures are surfaced the same way and a partial run reporting success is the
-    // thing this whole issue is about.
-    const { error } = await db.from("users").update({ role: "manager" }).in("id", toPromote);
-    if (error) {
-      throw new Error(
-        `promoting ${toPromote.length} manager(s) failed: ${error.message}`,
-      );
-    }
-    managersPromoted = toPromote.length;
-  }
+  const managersPromoted = await promoteToManager(db, toPromote);
 
   // ---------------------------------------------------------------------------
   // The shared cross system rep key (#1587).
@@ -1219,4 +1203,31 @@ export async function syncSalesforceAgents(over: Partial<SyncDeps> = {}): Promis
     rosterUnconfirmedAmbiguous: divergence.ambiguous,
     rosterUnconfirmedBookable: divergence.bookable,
   };
+}
+
+
+/**
+ * Give everyone Salesforce lists as an approver the `manager` role, and report how
+ * many really got it (#2482).
+ *
+ * Its own function so the rule can be driven at all: the promotion sat inline in a
+ * sync that needs a Salesforce client, a roster and a database before it will run,
+ * so the one thing worth asserting about it was unreachable.
+ *
+ * It THROWS rather than counting zero. The count used to be claimed on having
+ * reached the line rather than on the write's answer, so a refused update left the
+ * run reporting people promoted who are still agents, and the approver who cannot
+ * open the time off queue looks like a Slate defect rather than a write that never
+ * happened. The roster sync surfaces its other failures the same way.
+ */
+export async function promoteToManager(
+  db: ReturnType<typeof supabaseAdmin>,
+  userIds: readonly string[],
+): Promise<number> {
+  if (userIds.length === 0) return 0;
+  const { error } = await db.from("users").update({ role: "manager" }).in("id", [...userIds]);
+  if (error) {
+    throw new Error(`promoting ${userIds.length} manager(s) failed: ${error.message}`);
+  }
+  return userIds.length;
 }

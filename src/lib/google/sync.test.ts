@@ -158,6 +158,8 @@ function syncFlowDb(opts: {
    *  something to delete and still deleted nothing. Without these the assertion is
    *  vacuous: an empty table deletes nothing whether the guard exists or not. */
   busyBlocks?: Record<string, unknown>[];
+  /** Make every insert refuse, the way Postgres refuses (#2482). */
+  insertError?: { message: string };
 }) {
   const deletes: string[] = [];
   const inserts: { table: string; rows: unknown }[] = [];
@@ -178,7 +180,7 @@ function syncFlowDb(opts: {
       range: () => b,
       insert: (rows: unknown) => {
         inserts.push({ table, rows });
-        return Promise.resolve({ error: null });
+        return Promise.resolve({ error: opts.insertError ?? null });
       },
       update: (payload: Record<string, unknown>) => {
         updates.push({ table, payload });
@@ -1512,5 +1514,48 @@ describe("hydrateCalendar write ordering (#1261)", () => {
     // But the attempt is still stamped, so the rotation moves on rather than retrying the
     // same pathological calendar on every tick.
     expect(attemptStamps(updates)).toHaveLength(1);
+  });
+});
+
+// #2482: adding a calendar row is how a calendar becomes something Slate syncs at
+// all. The insert used to discard its result, so a refusal left the agent with a
+// calendar Google knows about and Slate does not: its busy time never reaches the
+// cache, the agent is offered over meetings they really have, and every surface
+// reported the reconcile as done. That is the stranded-agent shape (#2481) reached
+// through the write nobody was reading.
+describe("a calendar Slate could not record is not a calendar it has (#2482)", () => {
+  // Slate stores nothing for this agent yet, and Google reports their primary. That
+  // is the state a new hire is in, and the one write between them and being synced
+  // at all. Only a PRIMARY is selectable (calendar-select.ts), so a fixture whose
+  // primary is already stored has nothing to insert and would prove nothing.
+  const listed = [
+    { id: "agent@x.com", primary: true, selected: true, accessRole: "owner" },
+    { id: "team@group.calendar.google.com", selected: true, accessRole: "reader" },
+  ];
+
+  it("reports an error rather than a reconcile that recorded nothing", async () => {
+    const { db } = syncFlowDb({
+      email: "agent@x.com",
+      calendars: [],
+      insertError: { message: "permission denied for table agent_calendars" },
+    });
+    admin.current = db;
+    calMock.listCalendars.mockResolvedValue(listed);
+
+    const result = await ensureWatches("agent-1");
+    expect(result.status).toBe("error");
+  });
+
+  // CONTROL: the same listing with a database that accepts the write really does
+  // add the calendar. Without this the assertion above is satisfied by an
+  // ensureWatches that errors on everything (L159).
+  it("CONTROL: the same listing adds the calendar when the write lands", async () => {
+    const { db, inserts } = syncFlowDb({ email: "agent@x.com", calendars: [] });
+    admin.current = db;
+    calMock.listCalendars.mockResolvedValue(listed);
+
+    const result = await ensureWatches("agent-1");
+    expect(inserts.some((i) => i.table === "agent_calendars")).toBe(true);
+    expect(result.status).not.toBe("error");
   });
 });
