@@ -101,6 +101,8 @@ const healthy = () => ({
   // #2382: the dead man's switch's own verdict. It concludes on every monitor tick
   // the heartbeat table is readable, so a healthy fleet has a stamp minutes old.
   "verdict:lane-watchdog": ago(5 * MIN),
+  // #2505: concludes on every tick the roster and the slot rows are readable.
+  "verdict:tier-staffing": ago(5 * MIN),
   // #2392: the daily proof that the burst counter answers, stamped by a GitHub
   // workflow rather than by this Worker. A healthy fleet has yesterday's run in it,
   // which is well inside the 52h bound that carries it over one dropped run.

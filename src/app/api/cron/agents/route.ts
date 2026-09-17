@@ -47,11 +47,6 @@ export async function GET(req: NextRequest) {
       // one that found nobody tagged, and those are opposite facts.
       twilio: outcome.twilio,
       hoursApplied: outcome.hoursApplied,
-      emptyBuckets: outcome.emptyBuckets,
-      // Whether those buckets paged once for the set instead of once each, so the
-      // response says which of the two happened rather than leaving it to be
-      // inferred from Slack.
-      emptyBucketsAggregated: outcome.emptyBucketsAggregated,
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);

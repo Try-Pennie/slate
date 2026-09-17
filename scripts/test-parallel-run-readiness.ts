@@ -26,6 +26,7 @@ function healthy(over: Partial<ReadinessFacts> = {}): ReadinessFacts {
     pendingBookable: [],
     calendars: { bookableAgents: 102, missingRows: [], uncovered: [] },
     emptyBuckets: { realBuckets: 60, empty: [] },
+    emptyTiers: { measuredTiers: 5, empty: [] },
     unsetHours: [],
     ...over,
   };
@@ -64,6 +65,15 @@ function healthy(over: Partial<ReadinessFacts> = {}): ReadinessFacts {
     ["a bookable agent with no calendar row", { calendars: { bookableAgents: 102, missingRows: ["a@x"], uncovered: [] } }, READINESS_EXIT.calendarMissing],
     ["a calendar not hydrated to the horizon", { calendars: { bookableAgents: 102, missingRows: [], uncovered: ["b@x"] } }, READINESS_EXIT.calendarUncovered],
     ["an empty real bucket", { emptyBuckets: { realBuckets: 60, empty: ["120", "121", "122"] } }, READINESS_EXIT.bucketEmpty],
+    // #2505: the gate was BLIND to this. `emptyBuckets` drops any code whose
+    // ladder reaches a staffed rung, and every tier 5 code reaches tier 4, so a
+    // completely unstaffed Ultra High used to produce exit 0 READY on the very
+    // morning a pilot was being judged.
+    [
+      "a debt tier with nobody assigned",
+      { emptyTiers: { measuredTiers: 5, empty: ["Ultra High"] } },
+      READINESS_EXIT.tierEmpty,
+    ],
     ["an agent on hours nobody set", { unsetHours: ["cfrank@x", "jsaminu@x"] }, READINESS_EXIT.hoursUnset],
   ];
   const seen = new Map<number, number>();
@@ -112,5 +122,47 @@ function healthy(over: Partial<ReadinessFacts> = {}): ReadinessFacts {
   eq(new Set(codes).size, codes.length, "every outcome has a distinct exit code");
   assert(!(codes as number[]).includes(1), "1 is reserved for not configured, decided by the entry before any judging");
 }
+
+// --- an empty DEBT TIER outranks an empty bucket (#2505) ----------------------
+//
+// A bucket with nobody in it is served by the rest of its debt tier (#2486). A
+// debt tier with nobody in it is served only by dropping the lead a tier, which
+// is the thing a pilot is measuring, so it must name the run.
+{
+  const both = judgeReadiness(
+    healthy({
+      emptyTiers: { measuredTiers: 5, empty: ["Ultra High"] },
+      emptyBuckets: { realBuckets: 60, empty: ["120"] },
+    }),
+  );
+  eq(both.exit, READINESS_EXIT.tierEmpty, "the tier finding names the run, not the bucket one");
+  assert(
+    both.findings.some((f) => f.kind === "bucket-empty"),
+    "and the bucket finding is still listed, so nobody is sent to fix one of two",
+  );
+  assert(
+    both.findings[0].detail.includes("Ultra High"),
+    `the worst finding names the tier in words (got: ${both.findings[0].detail})`,
+  );
+}
+
+// An unreadable tier read vouches for nothing beneath it, and never reads as
+// "every tier is staffed" (L215).
+{
+  const j = judgeReadiness(healthy({ emptyTiers: null }));
+  eq(j.exit, READINESS_EXIT.unreadable, "an unreadable tier read refuses the run");
+  assert(
+    j.findings[0].detail.includes("debt tiers"),
+    `and says which read it could not make (got: ${j.findings[0].detail})`,
+  );
+}
+
+// Zero tiers measured judges nothing, exactly as zero buckets does: an empty map
+// is the shape of a broken read, never a healthy roster (L98).
+eq(
+  judgeReadiness(healthy({ emptyTiers: { measuredTiers: 0, empty: [] } })).exit,
+  READINESS_EXIT.nothingMeasured,
+  "measuring no tier at all judges nothing",
+);
 
 finish();

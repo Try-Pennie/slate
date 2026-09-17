@@ -33,11 +33,11 @@ describe("alert keys", () => {
     // deliberately dark roster (#1272) turned it into sixty messages a wave there
     // was no way to quiet it short of a deploy. Moving it here must not change what
     // it does by default.
-    expect(ALERT_KEYS).toContain("empty_buckets");
-    expect(MONITOR_DEFAULTS.cooldownMs.empty_buckets).toBe(6 * 60 * 60_000);
-    expect(resolveCooldownMs([]).empty_buckets).toBe(6 * 60 * 60_000);
+    expect(ALERT_KEYS).toContain("empty_tier");
+    expect(MONITOR_DEFAULTS.cooldownMs.empty_tier).toBe(6 * 60 * 60_000);
+    expect(resolveCooldownMs([]).empty_tier).toBe(6 * 60 * 60_000);
     // And a stored value wins, which is the point of moving it.
-    expect(resolveCooldownMs([{ key: "empty_buckets", cooldown_min: 10080 }]).empty_buckets).toBe(
+    expect(resolveCooldownMs([{ key: "empty_tier", cooldown_min: 10080 }]).empty_tier).toBe(
       10080 * 60_000,
     );
   });

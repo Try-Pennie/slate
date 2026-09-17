@@ -19,6 +19,7 @@
  *     default, because widening hours an admin narrowed is the one outcome nobody
  *     would notice: the booker would simply keep offering the old times.
  */
+import { DateTime } from "luxon";
 
 /** One open window, the same shape as an agent's `availability_rules` row. */
 export interface BusinessWindow {
@@ -122,6 +123,56 @@ export function windowOnDate(
   }
   const rule = hours.rules.find((r) => r.weekday === weekday);
   return rule ? { start_minute: rule.start_minute, end_minute: rule.end_minute } : null;
+}
+
+/**
+ * When the NEXT open business day ends, as epoch ms, or null when the org has no
+ * open day inside `lookaheadDays` (#2505).
+ *
+ * The window the debt tier alarm judges against. Dan, 2026-09-17: "only alert if
+ * there are no slots in the next 24 hours/business day (like obviously there
+ * would be no slots on sunday)."
+ *
+ * It starts at TOMORROW rather than today, so the answer is always "the rest of
+ * today, plus one whole open day". Taking the end of today would shrink to a
+ * minute at 19:59 and page about a tier with nothing left in the last minute of
+ * the evening, which is a healthy tier and an alarm nobody would read twice
+ * (L36). A flat 24 hours would ask about Sunday on a Saturday evening and page
+ * every weekend.
+ *
+ * Closed days are SKIPPED rather than counted, which is the same sentence: it
+ * asks `windowOnDate`, the single judge of whether the org is open on a date, so
+ * a holiday exception shutting Monday moves the window to Tuesday and no second
+ * copy of the weekly rules is consulted (L107).
+ *
+ * NULL rather than a guess when no open day is found. An org shut for a fortnight
+ * is a real state, and a caller that got a fabricated window would judge a tier
+ * against a day nobody is working: the alarm treats null as "could not measure"
+ * and concludes nothing, which is the honest answer (L215).
+ */
+export function nextOpenDayEndMs(
+  hours: { zone: string; rules: BusinessWindow[]; exceptions: BusinessHoursException[] },
+  nowMs: number,
+  lookaheadDays = 14,
+): number | null {
+  const today = DateTime.fromMillis(nowMs, { zone: hours.zone }).startOf("day");
+  for (let i = 1; i <= lookaheadDays; i++) {
+    const day = today.plus({ days: i });
+    const window = windowOnDate(hours, day.toISODate() ?? "", day.weekday);
+    if (!window) continue;
+    // Wall clock, never an added duration: on a DST transition day adding
+    // minutes from midnight shifts the close by the offset delta.
+    if (window.end_minute >= DAY_END_MINUTE) return day.plus({ days: 1 }).startOf("day").toMillis();
+    return day
+      .set({
+        hour: Math.floor(window.end_minute / 60),
+        minute: window.end_minute % 60,
+        second: 0,
+        millisecond: 0,
+      })
+      .toMillis();
+  }
+  return null;
 }
 
 /**

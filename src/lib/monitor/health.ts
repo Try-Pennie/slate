@@ -318,6 +318,14 @@ export const VERDICT_STALE_BOUNDS_MS: Record<string, number> = {
   // failing over and over, and 6 hours is a long maintenance window rather than a
   // measure of anything the detector does.
   "verdict:ooo-protection": 6 * 60 * MIN,
+  // The debt tier staffing alarm (#2505). Like the time off check above, it has
+  // NO legitimate silence: it concludes on every 5 minute tick where the roster
+  // and the cached slot rows are readable, including ticks where every tier is
+  // healthy, because "all five tiers are offering times" is an answer. Six hours
+  // is therefore a maintenance window rather than a measure of the cadence, and
+  // matching the sibling above keeps two bounds that mean the same thing from
+  // being two different numbers nobody can re-derive.
+  "verdict:tier-staffing": 6 * 60 * MIN,
   // The Twilio half of the hourly roster sync (#2114). Six missed runs.
   //
   // It is the only thing watching that job at all: the hourly roster sync has no

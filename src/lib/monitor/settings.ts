@@ -23,7 +23,7 @@ export type MonitorAlertKey =
   | "coverage_needs_human"
   | "ooo_coverage_gap"
   | "ooo_calcom_unprotected"
-  | "empty_buckets"
+  | "empty_tier"
   | "booking_failure_rate"
   | "catchall_rate"
   | "availability_drift"
@@ -53,7 +53,7 @@ export const ALERT_KEYS: MonitorAlertKey[] = [
   "coverage_needs_human",
   "ooo_coverage_gap",
   "ooo_calcom_unprotected",
-  "empty_buckets",
+  "empty_tier",
   "booking_failure_rate",
   "availability_drift",
   "booker_empty_reason",
@@ -277,10 +277,10 @@ export const ALERT_FIELDS: {
     help: "A booking handoff has waited more than 30 minutes without being posted to the handoff channel, so the sales team has not been told. Ends once every open handoff has been posted.",
   },
   {
-    key: "empty_buckets",
+    key: "empty_tier",
     urgency: "alert",
-    label: "Bucket with nobody to route to",
-    help: "A booking bucket has no eligible bookable agent, so a lead sent there cannot be booked. A broad outage pages once for the whole set rather than once per bucket.",
+    label: "Debt tier offering no times",
+    help: "A whole debt tier (Low, Medium, High, Very High or Ultra High) is offering no booking time before the end of the next working day, either because nobody is assigned to it or because every agent on it is full. Leads asking for that tier are served by a lower tier meanwhile. A bucket or backend inside a tier that is still offering times is not reported.",
   },
 ];
 
@@ -350,7 +350,11 @@ export const MONITOR_DEFAULTS = {
     // with nobody stays wrong until someone is staffed onto it, so it repeats while
     // it lasts, six-hourly. Tunable since a deliberately dark roster (#1272) turned
     // it into sixty messages a wave with no way to quiet it.
-    empty_buckets: 6 * 60 * 60_000,
+    // Debt tier offering no times (#2505). Six hours, inherited from the per
+    // bucket page it replaces: the repair is a staffing or calendar change that
+    // takes hours rather than minutes, and a tighter cooldown would repeat the
+    // same finding through one working morning.
+    empty_tier: 6 * 60 * 60_000,
     // Customers being turned away (#1313): an active outage costing bookings by
     // the minute, so it repeats faster than the staffing nudges. Half an hour is
     // long enough not to spam a live incident, short enough that a page missed at

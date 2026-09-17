@@ -38,7 +38,7 @@ const row = (key: string, cooldown_min: number | null, updated_at = "2026-08-05T
 // --- The live state this issue was filed about ---
 {
   const rows = [
-    row("empty_buckets", 10080, "2026-08-05T10:00:00.000Z"),
+    row("empty_tier", 10080, "2026-08-05T10:00:00.000Z"),
     row("availability_data_anomaly", 10080, "2026-08-04T09:00:00.000Z"),
   ];
   const quiet = quietedAlarms(rows);
@@ -57,11 +57,11 @@ const row = (key: string, cooldown_min: number | null, updated_at = "2026-08-05T
   // leaves the effective cooldown at the coded default, so reporting one would
   // send somebody to fix a setting that is already correct.
   for (const bad of [0, -5, 1.5, null]) {
-    const rows = [row("empty_buckets", bad as number | null)];
-    const effective = resolveCooldownMs(rows).empty_buckets;
+    const rows = [row("empty_tier", bad as number | null)];
+    const effective = resolveCooldownMs(rows).empty_tier;
     eq(
       effective,
-      MONITOR_DEFAULTS.cooldownMs.empty_buckets,
+      MONITOR_DEFAULTS.cooldownMs.empty_tier,
       `a stored ${String(bad)} leaves the alert at its default`,
     );
     eq(
@@ -74,13 +74,13 @@ const row = (key: string, cooldown_min: number | null, updated_at = "2026-08-05T
 
 {
   // A value BELOW the default makes the alarm noisier, not quieter.
-  const rows = [row("empty_buckets", 1)];
+  const rows = [row("empty_tier", 1)];
   eq(quietedAlarms(rows).length, 0, "a shorter cooldown is not a quieted alarm");
 }
 
 {
   // Exactly the default is not quieter than the default.
-  const k = "empty_buckets" as const;
+  const k = "empty_tier" as const;
   const rows = [row(k, defMin(k))];
   eq(quietedAlarms(rows).length, 0, "a value equal to the default is not reported");
   eq(quietedAlarms([row(k, defMin(k) + 1)]).length, 1, "one minute above it is");

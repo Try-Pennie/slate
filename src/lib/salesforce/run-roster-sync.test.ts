@@ -74,10 +74,8 @@ describe("runRosterSync (#2071)", () => {
     if (out.skipped) return;
     expect(sync.syncSalesforceAgents).toHaveBeenCalledTimes(1);
     expect(schedule.ensureDefaultSchedules).toHaveBeenCalledWith("org1");
-    expect(availability.alertOnEmptyBuckets).toHaveBeenCalledTimes(1);
     expect(streak.clearFailureStreak).toHaveBeenCalledWith("cron_agents_failures");
     expect(out.hoursApplied).toBe(2);
-    expect(out.emptyBuckets).toEqual(["411"]);
   });
 
   it("reports an overlapping run instead of starting a second one, and touches nothing", async () => {

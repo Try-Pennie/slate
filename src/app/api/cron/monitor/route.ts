@@ -37,6 +37,15 @@ import {
 } from "@/lib/monitor/busy-drift-sampler";
 import { readAgentBusyRange } from "@/lib/monitor/availability-truth-store";
 import { runRosterCoverageCheck } from "@/lib/monitor/roster-coverage";
+import {
+  planTierAlerts,
+  tierStaffingKey,
+  tierUnstaffedMessage,
+  tierNoSlotsMessage,
+  tierRecoveredMessage,
+} from "@/lib/monitor/tier-staffing";
+import { loadTierAgentCounts, tierReadings } from "@/lib/monitor/tier-staffing-load";
+import { nextOpenDayEndMs } from "@/lib/booking/business-hours";
 import { coverageForWeek } from "@/lib/booking/business-hours-coverage";
 import {
   loadCoverageAgents,
@@ -95,6 +104,8 @@ import { recordHeartbeat, readHeartbeatMs } from "@/lib/monitor/heartbeat";
 import { recordDetectorVerdict } from "@/lib/monitor/verdict-store";
 import {
   AVAILABILITY_TRUTH_VERDICT_LANE,
+  TIER_STAFFING_VERDICT_LANE,
+  tierStaffingReachedVerdict,
   FAILURE_RATE_VERDICT_LANE,
   LOW_VOLUME_VERDICT_LANE,
   OOO_PROTECTION_VERDICT_LANE,
@@ -719,6 +730,80 @@ export async function GET(req: NextRequest) {
     });
     if (!gates.rosterCoverage.run) {
       log.warn("monitor", { msg: "roster coverage skipped", why: gates.rosterCoverage.why });
+    }
+
+    // --- Can a lead in each DEBT TIER actually get a time? (#2505) ---
+    //
+    // The unit is the debt tier, not the bucket. Dan, 2026-09-17: "I only want to
+    // be paged if there are literally no (for example) ultra high agents staffed.
+    // or no medium agents, etc." A bucket or a backend with nobody in it is not a
+    // customer problem while the rest of its tier can take the lead, and since
+    // #2486 the ladder tries every bucket in the tier before dropping one.
+    //
+    // And the trigger is SLOTS, not rostered hours, which is the other half of the
+    // same call: "maybe it doesn't matter if nobody is staffed at a specific point
+    // because we just don't offer that time slot." If nobody works Saturday, Slate
+    // offers no Saturday and the lead books Monday. Nothing is broken, so nothing
+    // pages. What the alarm asks is whether the tier is offering a time inside the
+    // next OPEN business day, which is why a closed Sunday is skipped rather than
+    // paged about.
+    //
+    // Asked per tier and NEVER through the ladder. After #2486 a lead whose tier is
+    // dry falls to a lower one, so "can this lead book" is almost always yes, and a
+    // ladder aware question would mute exactly the Ultra High case this exists to
+    // report.
+    //
+    // The roster read is inside this boundary rather than a shared setup read,
+    // because nothing else needs it: a throw here fails this step alone, stamps no
+    // verdict, and the freshness watch is what says so. ---
+    const tierStaffing = await steps.run("tier_staffing", null, async () => {
+      if (!gates.tierStaffing.run) return null;
+      // Non-null inside here: the gate refuses to run without the week.
+      const windowEndMs = nextOpenDayEndMs(businessHours!, now);
+      // No open day inside a fortnight is not a window to judge against, and a
+      // guessed one would hold every tier to a day nobody is working (L215).
+      if (windowEndMs === null) {
+        log.warn("monitor", { msg: "tier staffing skipped", why: "no open business day ahead" });
+        return null;
+      }
+      const readings = tierReadings({
+        agentCounts: await loadTierAgentCounts(),
+        slotByCode: slotByCode!,
+      });
+      const plan = planTierAlerts(readings, windowEndMs);
+      log.info("monitor", {
+        msg: "tier staffing",
+        paged: plan.page.length,
+        recovered: plan.recovered.length,
+        unmeasured: plan.unmeasured.length,
+        window_end: new Date(windowEndMs).toISOString(),
+      });
+      for (const t of plan.page) {
+        // alert-text-ok: our own copy from tier-staffing.ts, built from measured
+        // counts; no error text can reach it.
+        // alert-key: empty_tier:*
+        await sendThrottledAlert(
+          tierStaffingKey(t.tier),
+          settings.cooldownMs.empty_tier,
+          t.kind === "unstaffed" ? tierUnstaffedMessage(t) : tierNoSlotsMessage(t),
+        ).catch(() => {});
+      }
+      // Driven by the MEASURED healthy tiers, never by "we did not page this one":
+      // a tier whose reads failed is in neither list, so a recovery is never
+      // announced off a tick that did not look (#1134, #1152).
+      //
+      const tierAllClears = plan.recovered.map((t) => ({
+        key: tierStaffingKey(t.tier),
+        text: tierRecoveredMessage(t),
+      }));
+      // alert-key: empty_tier:*
+      // all-clear-proof: scripts/test-tier-staffing.ts drives planTierAlerts with
+      // each read failed in turn and pins that the clear list stays empty.
+      await resolveRecovered(tierAllClears).catch(() => {});
+      return plan;
+    });
+    if (!gates.tierStaffing.run) {
+      log.warn("monitor", { msg: "tier staffing skipped", why: gates.tierStaffing.why });
     }
 
     // Skipped entirely when the week could not be read (#1296). An empty slot map
@@ -2220,6 +2305,14 @@ export async function GET(req: NextRequest) {
       recordDetectorVerdict(
         LANE_WATCHDOG_VERDICT_LANE,
         laneWatchdogReachedVerdict(laneWatchdog),
+      ),
+      // #2505: the alarm that is silent on a healthy day AND on a broken one.
+      // Every debt tier is staffed today, so it ships having never fired; the
+      // absence of this stamp is the only thing that can tell a working detector
+      // from a dead one.
+      recordDetectorVerdict(
+        TIER_STAFFING_VERDICT_LANE,
+        tierStaffingReachedVerdict(tierStaffing),
       ),
     ]).catch((err) =>
       // recordHeartbeat already swallows its own DB errors, so reaching here means

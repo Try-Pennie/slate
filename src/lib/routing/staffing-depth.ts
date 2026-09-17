@@ -2,6 +2,7 @@ import type { Attributes, Bucket } from "@/lib/db/types";
 import { agentIdsFromPool } from "@/lib/availability/pool";
 import { poolKeyFor } from "@/lib/availability/pool-key";
 import { poolLabel } from "@/lib/availability/pool-label";
+import { DEBT_TIER } from "@/lib/xbc";
 
 /**
  * Proactive per-tier staffing depth (#584/#569): how many currently-bookable
@@ -186,4 +187,97 @@ export function bucketStaffingDepths(
       (a, b) =>
         a.effectiveDepth - b.effectiveDepth || a.depth - b.depth || a.code.localeCompare(b.code),
     );
+}
+
+/**
+ * Depth per DEBT TIER, rolled up from the per pool rows (#2505).
+ *
+ * The thin whisper used to name every thin POOL, so a Beyond pool sitting at one
+ * agent was named daily while its debt tier held eighty four people and every
+ * lead asking for it was served. Since #2486 the ladder tries every bucket in the
+ * tier before dropping one, so a thin pool inside a staffed tier strands nobody.
+ * The whisper counts tiers now, and the per pool depth stays on `/admin/tiers`,
+ * which is the screen somebody goes to in order to look.
+ *
+ * A tier's depth is the count of DISTINCT agents across its pools, never the sum:
+ * the pools overlap heavily (an unconstrained pool contains every Achieve agent
+ * in the tier), so adding them would report a tier as several times deeper than
+ * it is, and the alarm would go quiet on exactly the thin tiers it exists to name.
+ */
+export interface DebtTierDepth {
+  /** The first XBC digit, "1" to "5". */
+  tier: string;
+  /** The tier in words, from the shared routing vocabulary. */
+  name: string;
+  /** Distinct currently-bookable eligible agents across the tier, fallback-blind. */
+  depth: number;
+  /** Distinct agents minus those out today. The short-term risk number. */
+  effectiveDepth: number;
+  /** How many of the tier's agents are out today. */
+  outCount: number;
+  /** Display name of the only agent when depth === 1, else null. */
+  soleAgentName: string | null;
+  flag: StaffingFlag;
+  effectiveFlag: StaffingFlag;
+}
+
+/**
+ * How thin a whole DEBT TIER counts as, which is NOT the pool scale.
+ *
+ * `staffingFlag` was fitted to a pool, where one or two agents is the real shape
+ * and three is genuinely healthy. Debt tiers are 75 / 66 / 43 / 19 / 5 deep
+ * (measured 2026-09-17), so reusing that scale would let Low fall from 75 to 3
+ * and still read `ok`, which is a threshold judging a distribution it was never
+ * fitted to (L172, L354).
+ *
+ * The line is drawn where a tier stops being able to absorb ONE absence and a
+ * booking: at or below two, a single person being out can empty it, which is the
+ * thing worth a nudge. The smallest live tier is Ultra High at 5, so this is
+ * silent today and its firing is exercised in the suite rather than by the
+ * roster (L1).
+ *
+ * Deliberately NOT proportional. A percentage of a tier's own size means Low has
+ * to lose seventy people before it speaks, and the question being asked is not
+ * "has this tier shrunk" but "can it still take a call tomorrow".
+ */
+export function debtTierFlag(depth: number): StaffingFlag {
+  if (depth <= 0) return "none";
+  if (depth === 1) return "spof";
+  if (depth === 2) return "thin";
+  return "ok";
+}
+
+/** Roll the per pool rows up to one row per debt tier. */
+export function debtTierDepths(depths: TierDepth[]): DebtTierDepth[] {
+  const byTier = new Map<string, TierDepth[]>();
+  for (const row of depths) {
+    // The first digit of a valid XBC code. A row whose code is not one (a hand
+    // made bucket) belongs to no debt tier and is left out rather than filed
+    // under a digit it does not have.
+    if (!/^[1-5][0-3][0-2]$/.test(row.code)) continue;
+    const tier = row.code[0]!;
+    byTier.set(tier, [...(byTier.get(tier) ?? []), row]);
+  }
+  const out: DebtTierDepth[] = [];
+  for (const [tier, rows] of byTier) {
+    // DISTINCT agents, by id, across every pool in the tier.
+    const all = new Map<string, { id: string; name: string; out: boolean }>();
+    for (const r of rows) for (const a of r.agents) all.set(a.id, a);
+    const agents = [...all.values()];
+    const depth = agents.length;
+    const outCount = agents.filter((a) => a.out).length;
+    const effectiveDepth = depth - outCount;
+    out.push({
+      tier,
+      name: DEBT_TIER[tier]?.label ?? tier,
+      depth,
+      effectiveDepth,
+      outCount,
+      soleAgentName: depth === 1 ? (agents[0]?.name ?? null) : null,
+      flag: debtTierFlag(depth),
+      effectiveFlag: debtTierFlag(effectiveDepth),
+    });
+  }
+  // Thinnest first, so the tier in most trouble is at the top of the notice.
+  return out.sort((a, b) => a.effectiveDepth - b.effectiveDepth || a.tier.localeCompare(b.tier));
 }

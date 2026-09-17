@@ -50,21 +50,25 @@ const with_ = (over: Partial<SetupReadiness>): SetupReadiness => ({ ...ALL_SETUP
     /** #1262: the drift sampler compares over the horizon window, so only that
      *  read gates it. */
     drift: boolean;
+    /** #2505: the debt tier alarm needs the org's week (which is both the window
+     *  it judges against and the filter the offered times are counted through)
+     *  and the cached slot rows (which ARE the reading). */
+    tiers: boolean;
   }[] = [
-    { name: "buckets", scan: false, truth: true, volume: true, window: true, drift: true },
-    { name: "slotHealth", scan: false, truth: true, volume: true, window: true, drift: true },
+    { name: "buckets", scan: false, truth: true, volume: true, window: true, drift: true, tiers: true },
+    { name: "slotHealth", scan: false, truth: true, volume: true, window: true, drift: true, tiers: false },
     // #1298: the volume alarm asks whether the org is open before deciding a quiet
     // half hour is worth mentioning, and it asks the org's REAL hours now rather
     // than a second hardcoded copy. So this read gates it, and neither fallback is
     // acceptable: guessing open pages for an ordinary closed evening, guessing shut
     // silences a genuinely dead Monday morning.
-    { name: "businessHours", scan: false, truth: true, volume: false, window: true, drift: true },
-    { name: "workingHours", scan: false, truth: true, volume: true, window: true, drift: true },
+    { name: "businessHours", scan: false, truth: true, volume: false, window: true, drift: true, tiers: false },
+    { name: "workingHours", scan: false, truth: true, volume: true, window: true, drift: true, tiers: true },
     // The horizon is the one read BOTH availability checks need: the scan compares a
     // probe against a row computed over that window, and the probe checks the times
     // offered inside it. Guessing it would make the two sides disagree by
     // construction (#216). The volume alarm counts bookings and needs neither.
-    { name: "horizonDays", scan: false, truth: false, volume: true, window: false, drift: false },
+    { name: "horizonDays", scan: false, truth: false, volume: true, window: false, drift: false, tiers: true },
   ];
   for (const c of cases) {
     const g = monitorSetupGates(with_({ [c.name]: false }));
@@ -73,6 +77,7 @@ const with_ = (over: Partial<SetupReadiness>): SetupReadiness => ({ ...ALL_SETUP
     eq(g.lowVolume.run, c.volume, `${c.name} unreadable: low-volume alarm runs = ${c.volume}`);
     eq(g.calendarWindow.run, c.window, `${c.name} unreadable: calendar window check runs = ${c.window}`);
     eq(g.busyDrift.run, c.drift, `${c.name} unreadable: busy drift sampler runs = ${c.drift}`);
+    eq(g.tierStaffing.run, c.tiers, `${c.name} unreadable: debt tier alarm runs = ${c.tiers}`);
   }
 }
 

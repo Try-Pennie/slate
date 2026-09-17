@@ -219,7 +219,7 @@ describe("Buckets default-bucket section (#1016)", () => {
 describe("AlertSettings quieted-alarm notice (#1289)", () => {
   const quietRows = [
     {
-      key: "empty_buckets",
+      key: "empty_tier",
       cooldown_min: 10080,
       updated_at: "2026-08-05T10:00:00.000Z",
       updated_by: null,
@@ -250,7 +250,7 @@ describe("AlertSettings quieted-alarm notice (#1289)", () => {
     const listed = [...document.querySelectorAll("[data-quieted-alarm]")].map((n) =>
       n.getAttribute("data-quieted-alarm"),
     );
-    expect(listed).toEqual(["availability_data_anomaly", "empty_buckets"]);
+    expect(listed).toEqual(["availability_data_anomaly", "empty_tier"]);
   });
 
   it("says nothing when every cooldown is at or below its default", async () => {
@@ -258,7 +258,7 @@ describe("AlertSettings quieted-alarm notice (#1289)", () => {
     db.results.monitor_settings = {
       // At its default, and one deliberately shorter (noisier, not quieter).
       data: [
-        { key: "empty_buckets", cooldown_min: 360, updated_at: "2026-08-05T10:00:00.000Z", updated_by: null },
+        { key: "empty_tier", cooldown_min: 360, updated_at: "2026-08-05T10:00:00.000Z", updated_by: null },
         { key: "low_booking_volume", cooldown_min: 5, updated_at: "2026-08-05T10:00:00.000Z", updated_by: null },
       ],
       error: null,
@@ -273,7 +273,7 @@ describe("AlertSettings quieted-alarm notice (#1289)", () => {
   it("stays silent for a stored value the alerts ignore", async () => {
     auth.currentUser.mockResolvedValueOnce(ADMIN);
     db.results.monitor_settings = {
-      data: [{ key: "empty_buckets", cooldown_min: 0, updated_at: "2026-08-05T10:00:00.000Z", updated_by: null }],
+      data: [{ key: "empty_tier", cooldown_min: 0, updated_at: "2026-08-05T10:00:00.000Z", updated_by: null }],
       error: null,
     };
     render(await AlertSettingsPage(props));

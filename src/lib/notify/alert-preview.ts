@@ -23,6 +23,12 @@
  * the fixture should be the state that embarrasses it.
  */
 import { ALERT_CATALOG, type AlertKind } from "@/lib/notify/alert-catalog";
+import { noEligibleAgentsAlert } from "@/lib/availability/bucket-coverage";
+import {
+  tierUnstaffedMessage,
+  tierNoSlotsMessage,
+  tierRecoveredMessage,
+} from "@/lib/monitor/tier-staffing";
 import { RECOMPUTE_BEHIND_CYCLES, RECOMPUTE_REARM_CYCLES } from "@/lib/availability/recompute-alert";
 import {
   formatWatchLapseAlert,
@@ -262,13 +268,6 @@ import {
   verifyReadFailedAlert,
   stalePhoneInviteAlert,
 } from "@/lib/booking/alert-copy";
-import {
-  emptyBucketMessage,
-  recoveredBucketMessage,
-  noEligibleAgentsAlert,
-  emptyBucketsAggregateMessage,
-  emptyBucketsAggregateRecoveredMessage,
-} from "@/lib/availability/bucket-coverage";
 import {
   formatUnsubscribedEventsAlert,
   formatUnsubscribedEventsRecovery,
@@ -704,75 +703,30 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     text: formatFailureRateAllClear({ attempts: 90, failures: 2, pct: 2, windowMinutes: 60 }),
   },
   {
-    key: "empty_buckets:*",
-    state: "a pool with nobody to route to",
+    key: "empty_tier:*",
+    state: "nobody is assigned to the tier at all",
     channel: "alert",
-    text: emptyBucketMessage({
-      key: "very-high",
-      label: "Very High",
-      codes: ["400", "401", "402", "410", "411", "412"],
-      representative: "400",
-    }),
+    text: tierUnstaffedMessage({ tier: "5", label: "Ultra High" }),
   },
   {
-    key: "empty_buckets:*",
-    state: "a pool of one code, whose criteria have no name",
+    key: "empty_tier:*",
+    state: "the tier has agents and none of them has an opening",
     channel: "alert",
-    text: emptyBucketMessage({
-      key: "custom",
-      label: null,
-      codes: ["411"],
-      representative: "411",
-    }),
+    text: tierNoSlotsMessage({ tier: "4", label: "Very High", agents: 19 }),
   },
   {
-    key: "empty_buckets:*",
-    state: "recovered with a single agent",
+    key: "empty_tier:*",
+    state: "the tier rests on one agent and they are full",
+    channel: "alert",
+    text: tierNoSlotsMessage({ tier: "5", label: "Ultra High", agents: 1 }),
+  },
+  {
+    key: "empty_tier:*",
+    state: "the tier is offering times again",
     channel: "recovery",
-    text: recoveredBucketMessage(
-      { key: "very-high", label: "Very High", codes: ["411"], representative: "411" },
-      1,
-    ),
+    text: tierRecoveredMessage({ tier: "5", label: "Ultra High" }),
   },
-  {
-    key: "empty_buckets:*",
-    state: "recovered with several agents",
-    channel: "recovery",
-    text: recoveredBucketMessage(
-      { key: "very-high", label: "Very High", codes: ["411"], representative: "411" },
-      6,
-    ),
-  },
-  {
-    key: "empty_buckets:*",
-    state: "the whole routing matrix is dark (one page for every pool)",
-    channel: "alert",
-    text: emptyBucketsAggregateMessage(15, 15, 0),
-  },
-  {
-    key: "empty_buckets:*",
-    state: "many pools dead while agents ARE bookable",
-    channel: "alert",
-    text: emptyBucketsAggregateMessage(6, 15, 40),
-  },
-  {
-    key: "empty_buckets:*",
-    state: "many buckets dead, agent count unreadable",
-    channel: "alert",
-    text: emptyBucketsAggregateMessage(60, 60, null),
-  },
-  {
-    key: "empty_buckets:*",
-    state: "the broad outage cleared completely",
-    channel: "recovery",
-    text: emptyBucketsAggregateRecoveredMessage(0, 60),
-  },
-  {
-    key: "empty_buckets:*",
-    state: "the broad outage cleared with buckets still dead",
-    channel: "recovery",
-    text: emptyBucketsAggregateRecoveredMessage(3, 60),
-  },
+
   {
     key: "no_eligible_agents:*",
     state: "a live booking hit the dead zone",
@@ -1739,40 +1693,29 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     key: "thin_tier_staffing",
     state: "a tier is resting on one agent",
     channel: "info",
-    // #2237: a pool, not a code. The six codes of a tier resolve the same agents,
-    // so the reader sees one line naming every booking link it covers rather than
-    // six identical ones filling the whole list.
+    // #2505: a DEBT TIER, not a pool and not a code. A thin pool inside a staffed
+    // tier strands nobody, so the whisper counts the five tiers and the per pool
+    // depth stays on /admin/tiers.
     text: formatThinTierNotice([
-      ...["520", "521", "522"].map((code) => ({
-        code,
-        name: "Ultra High with Beyond",
+      {
+        tier: "5",
+        name: "Ultra High",
         depth: 1,
         effectiveDepth: 1,
         outCount: 0,
         soleAgentName: "Jordan Reyes",
-        hasWorkingFallback: false,
         flag: "spof" as const,
         effectiveFlag: "spof" as const,
-        agents: [{ id: "u1", name: "Jordan Reyes", out: false }],
-        poolKey: "ultra-high-beyond",
-        poolLabel: "Ultra High with Beyond",
-      })),
+      },
       {
-        code: "311",
+        tier: "3",
         name: "High",
         depth: 2,
         effectiveDepth: 1,
         outCount: 1,
         soleAgentName: null,
-        hasWorkingFallback: true,
-        flag: "thin",
-        effectiveFlag: "spof",
-        agents: [
-          { id: "u2", name: "Sam Okafor", out: false },
-          { id: "u3", name: "Priya Nair", out: true },
-        ],
-        poolKey: "high",
-        poolLabel: "High",
+        flag: "thin" as const,
+        effectiveFlag: "spof" as const,
       },
     ]),
   },

@@ -673,9 +673,12 @@ assert(
   `the inline-await finding names the read it is about (got: ${inlineFindings[0].snippet})`,
 );
 
-// And the same on availability/service.ts, whose empty-bucket sweep read the
-// roster the inline way. A monitor that scores a failed read as an empty roster
-// pages about nothing and clears nothing.
+// And the same on availability/service.ts, on the bucket lookup the booker itself
+// makes. It used to revert the empty-bucket sweep's roster read, which #2505
+// deleted with the sweep; re-pointed rather than dropped, because a control that
+// stops exercising the real tree is a positive control in name only (L1). A
+// swallowed error here reads as "no such bucket", which is a 404 for a lead whose
+// booking link is perfectly good.
 const availServicePath = join(ROOT, "src", "lib", "availability", "service.ts");
 const availServiceSrc = readFileSync(availServicePath, "utf8");
 assert(
@@ -683,16 +686,16 @@ assert(
   "the real availability/service.ts is clean",
 );
 const availReverted = availServiceSrc.replace(
-  /\(unwrap\(\n(\s*)await supabaseAdmin\(\)\.from\("buckets"\)\.select\("\*"\)\.eq\("is_test", false\),\n\s*"empty-bucket sweep roster",\n\s*\) \?\? \[\]\) as Bucket\[\]/,
-  '((await supabaseAdmin().from("buckets").select("*").eq("is_test", false)).data ?? []) as Bucket[]',
+  /const row = unwrap\(\n\s*await db\n(\s|\S)*?"bucket by code",\n\s*\);/,
+  'const row = (await db.from("buckets").select("*, event_types(*)").eq("code", code).maybeSingle()).data;',
 );
 assert(
   availReverted !== availServiceSrc,
-  "the empty-bucket revert control actually changed availability/service.ts (else it proves nothing)",
+  "the bucket-lookup revert control actually changed availability/service.ts (else it proves nothing)",
 );
 assert(
   scanSwallowedErrorReads(availReverted, availServicePath).some((f) => f.shape === "inline-await"),
-  "positive control: the reverted empty-bucket roster read is caught as inline-await",
+  "positive control: the reverted bucket lookup is caught as inline-await",
 );
 
 // --- repo invariant: the whole scan surface is clean --------------------------

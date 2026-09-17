@@ -28,6 +28,8 @@ const { readHeartbeatMs } = await import("@/lib/monitor/heartbeat");
 const { isAlertFiring } = await import("@/lib/notify/dispatch");
 const { loadBookingHorizonDays } = await import("@/lib/booking/settings");
 const { agentsOnUnsetHours } = await import("@/lib/monitor/unset-hours");
+const { loadTierAgentCounts } = await import("@/lib/monitor/tier-staffing-load");
+const { DEBT_TIER } = await import("@/lib/xbc");
 const { judgeReadiness } = await import("./lib/parallel-run-readiness.ts");
 type ReadinessFacts = import("./lib/parallel-run-readiness.ts").ReadinessFacts;
 
@@ -121,6 +123,20 @@ const emptyBuckets = await section("buckets", async () => {
   return { realBuckets: buckets.length, empty: emptyBucketCodes(coverage).sort() };
 });
 
+// #2505: the question the gate could not answer before. Asked of the same
+// criteria-only predicate the monitor lane's alarm uses, so the gate and the
+// alarm cannot drift on what "this tier has nobody" means (L107).
+const emptyTiers = await section("debt tiers", async () => {
+  const counts = await loadTierAgentCounts();
+  return {
+    measuredTiers: counts.size,
+    empty: [...counts.entries()]
+      .filter(([, n]) => n <= 0)
+      .map(([tier]) => DEBT_TIER[tier]?.label ?? tier)
+      .sort(),
+  };
+});
+
 const unsetHours = await section("hours sources", async () => {
   const agents = (unwrap(
     await db.from("users").select("id, email, name").eq("bookable", true).is("deactivated_at", null).eq("is_test", false),
@@ -176,6 +192,7 @@ const facts: ReadinessFacts = {
   pendingBookable,
   calendars,
   emptyBuckets,
+  emptyTiers,
   unsetHours,
 };
 const verdict = judgeReadiness(facts);

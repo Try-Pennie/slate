@@ -15,7 +15,6 @@ import { syncSalesforceAgents, AGENTS_SYNC_STREAK_KEY, type SyncResult } from "@
 import { activationAllowance } from "@/lib/bookable/activation-allowance";
 import { ensureDefaultOrg } from "@/lib/provision";
 import { ensureDefaultSchedules } from "@/lib/schedule";
-import { alertOnEmptyBuckets } from "@/lib/availability/service";
 import { acquireLock, releaseLock } from "@/lib/locks";
 import { sendThrottledAlert, resolveAlert } from "@/lib/notify/dispatch";
 import { clearFailureStreak, recordConsecutiveStreak } from "@/lib/notify/streak";
@@ -80,8 +79,6 @@ export type RosterSyncOutcome =
        */
       twilio: { ok: true; result: TwilioSyncResult } | { ok: false; reason: string };
       hoursApplied: number;
-      emptyBuckets: string[];
-      emptyBucketsAggregated: boolean;
     };
 
 /**
@@ -110,9 +107,8 @@ export async function runRosterSync(): Promise<RosterSyncOutcome> {
     //  - after Salesforce, because the Salesforce half can make somebody bookable
     //    on their first debt team and Twilio's Redistribute tag has to beat that.
     //    The other order would admit a withheld agent for an hour every hour.
-    //  - before `alertOnEmptyBuckets`, because taking twelve agents out of the pool
-    //    can be what empties a bucket, and the alarm has to see the state the run
-    //    actually leaves rather than the one before its own flips.
+    //  - and it stays before the roster report, because taking twelve agents out
+    //    of the pool changes what every later count in this run reports.
     //
     // Contained, so a Twilio failure cannot destroy the Salesforce half's report:
     // by this point those writes have already committed, and throwing here would
@@ -168,12 +164,12 @@ export async function runRosterSync(): Promise<RosterSyncOutcome> {
     );
 
     const hoursApplied = await ensureDefaultSchedules(org.id);
-    // After the roster settles, flag any bucket that now routes to nobody (#327).
-    // Best-effort: a monitoring miss must never fail the roster reconcile.
-    const coverage = await alertOnEmptyBuckets().catch(() => ({
-      empty: [] as string[],
-      aggregated: false,
-    }));
+    // The per bucket coverage sweep used to run here (#327). It was retired by
+    // #2505: a bucket with nobody in it is not a customer problem while the rest
+    // of its debt tier can take the lead, and since #2486 the ladder tries every
+    // bucket in the tier before dropping one. The question is asked per DEBT TIER
+    // now, on the monitor lane, where the cached slot rows and the org's week are
+    // already in hand (`empty_tier:<digit>`).
     // Clean pass: reset the streak so a later isolated failure starts from zero.
     await clearFailureStreak(AGENTS_SYNC_STREAK_KEY);
     // #1151: a failing roster sync is a CONDITION, and this successful run IS the
@@ -295,8 +291,6 @@ export async function runRosterSync(): Promise<RosterSyncOutcome> {
       sync,
       twilio,
       hoursApplied,
-      emptyBuckets: coverage.empty,
-      emptyBucketsAggregated: coverage.aggregated,
     };
   } finally {
     await releaseLock(AGENTS_LOCK_KEY, lock);
