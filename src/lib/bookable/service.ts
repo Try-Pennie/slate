@@ -169,10 +169,19 @@ async function checkActivationGate(
  *  finally succeeded or a person decided either way. Clearing it here, in the one
  *  write, is what stops the sync retrying a decision a human has already made. */
 export async function writeBookable(userId: string, bookable: boolean): Promise<void> {
-  await supabaseAdmin()
+  // THROWS on a refused write (#2482). supabase-js resolves `{ error }` rather than
+  // throwing, so this used to run to completion whether Postgres wrote the row or
+  // not, and every caller then reported the flip as done: the agent stays out of
+  // (or in) the pool while the roster sync counts them activated, the admin page
+  // says saved, and the pending mark is treated as settled. That is the exact
+  // shape #2381 and #2481 are about, arriving through the one write they all share.
+  const { error } = await supabaseAdmin()
     .from("users")
     .update({ bookable, bookable_pending_since: null })
     .eq("id", userId);
+  if (error) {
+    throw new Error(`bookable write failed for ${userId}: ${error.message}`);
+  }
 }
 
 /**

@@ -58,6 +58,7 @@ export async function recordFailureStreak(
 /** Clear a failure streak after a clean pass. Best-effort. */
 export async function clearFailureStreak(key: string): Promise<void> {
   try {
+    // write-ok: a refused clear leaves the streak, so the next failure counts from a higher number and alerts sooner. It never suppresses one.
     await supabaseAdmin().from("rate_limits").delete().eq("key", key);
   } catch {
     // A tracking miss must never break the caller.

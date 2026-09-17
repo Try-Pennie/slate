@@ -117,8 +117,17 @@ export function realDeps(): OooDeps {
       return { ok: true, request: data as OooRequest };
     },
 
+    // THROWS on a refused write (#2482). Every OOO status transition goes through
+    // here, and the caller that writes `side_effects` returns `{ ...request, ...patch }`
+    // straight afterwards, so a refused update used to leave the request in its old
+    // state while the Slack message, the calendar events and the cal.com override all
+    // proceeded as though it had changed. A caller that can carry on regardless has to
+    // say so at its own site rather than have this one swallow it for everybody.
     patchRequest: async (id, patch) => {
-      await db().from("ooo_requests").update(patch).eq("id", id);
+      const { error } = await db().from("ooo_requests").update(patch).eq("id", id);
+      if (error) {
+        throw new Error(`ooo request ${id} could not be updated: ${error.message}`);
+      }
     },
 
     // #1674: a swallowed error here reads as "the requesting agent no longer
@@ -180,14 +189,26 @@ export function realDeps(): OooDeps {
     },
 
     deleteBusyBlock: async ({ id, userId, gcalEventId }) => {
+      // #2482: these THROW, which is what the catch below was already written for.
+      // It says a slate-source leftover is the bad case and alerts on it, and that
+      // was only ever reached by a delete that raised. supabase-js resolves a
+      // refused statement instead of throwing, so the one failure the handler
+      // exists to catch was the one it could not see: the block stayed, the agent
+      // stayed blocked, and the recompute below ran as though they were free.
       const run = async () => {
-        if (id) await db().from("busy_blocks").delete().eq("id", id);
+        if (id) {
+          const { error } = await db().from("busy_blocks").delete().eq("id", id);
+          if (error) throw new Error(`busy block ${id} not deleted: ${error.message}`);
+        }
         if (gcalEventId) {
-          await db()
+          const { error } = await db()
             .from("busy_blocks")
             .delete()
             .eq("user_id", userId)
             .eq("gcal_event_id", gcalEventId);
+          if (error) {
+            throw new Error(`busy block for ${gcalEventId} not deleted: ${error.message}`);
+          }
         }
       };
       try {

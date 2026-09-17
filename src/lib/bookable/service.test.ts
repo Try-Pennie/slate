@@ -13,6 +13,8 @@ import type { PoolEntryResult } from "@/lib/google/pool-entry";
 const updates: Array<{ id: string; bookable: boolean }> = [];
 /** Every patch as written, so the columns BESIDE bookable can be asserted (#2071). */
 const patches: Array<{ id: string; patch: Record<string, unknown> }> = [];
+/** Set to make the next write refuse, the way Postgres refuses (#2482). */
+let nextWriteError: { message: string } | null = null;
 let currentUser: {
   id: string;
   bookable: boolean;
@@ -32,6 +34,11 @@ vi.mock("@/lib/supabase/admin", () => ({
           // also writes `bookable_pending_since` on its own before the gate, and
           // folding that in here would make every "wrote exactly one flip"
           // assertion read as two. Every write, of either kind, is in `patches`.
+          if (nextWriteError) {
+            const err = nextWriteError;
+            nextWriteError = null;
+            return { error: err };
+          }
           if ("bookable" in patch) updates.push({ id, bookable: patch.bookable });
           patches.push({ id, patch });
           return { error: null };
@@ -384,4 +391,30 @@ describe("onboarding on the way INTO the pool (#2302)", () => {
   });
 
 
+});
+
+
+// #2482: the one write that flips bookable used to discard its result. supabase-js
+// resolves `{ error }` rather than throwing, so a refused update ran to completion
+// and every caller recorded the flip as done: the agent stays out of the pool while
+// the roster sync counts them activated and the admin page says saved. That is the
+// shape #2381 and #2481 are about, arriving through the write they all share.
+describe("a refused bookable write is not a completed one (#2482)", () => {
+  it("throws rather than reporting a flip that did not happen", async () => {
+    nextWriteError = { message: "permission denied for table users" };
+    await expect(writeBookable("u1", true)).rejects.toThrow(/permission denied/);
+  });
+
+  it("names the user, so a failure in a sweep says which one", async () => {
+    nextWriteError = { message: "deadlock detected" };
+    await expect(writeBookable("u-42", false)).rejects.toThrow(/u-42/);
+  });
+
+  // CONTROL: without this the two above are satisfied by a function that always
+  // throws, which would take the whole roster out of the pool (L159).
+  it("CONTROL: a write that lands still returns, and writes the flip", async () => {
+    nextWriteError = null;
+    await expect(writeBookable("u2", true)).resolves.toBeUndefined();
+    expect(updates.at(-1)).toEqual({ id: "u2", bookable: true });
+  });
 });
