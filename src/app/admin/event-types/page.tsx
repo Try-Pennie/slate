@@ -5,6 +5,8 @@ import { canEditOrgSettings } from "@/lib/auth/roles";
 import { consoleHiddenFor } from "@/lib/env";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { createEventType } from "@/app/admin/actions";
+import { SettingsSaveNotice } from "@/app/admin/settings/SettingsSaveNotice";
+import { savedOutcome, savedSentence } from "@/lib/admin/save-outcomes";
 import { UnreadableNotice } from "@/components/ui/UnreadableNotice";
 import { SubmitButton } from "@/components/ui/SubmitButton";
 import { AdminPageHeader, AdminDenied } from "@/components/admin/AdminPageHeader";
@@ -18,7 +20,15 @@ import type { EventType } from "@/lib/db/types";
 
 export const dynamic = "force-dynamic";
 
-export default async function EventTypesPage() {
+export default async function EventTypesPage({
+  searchParams,
+}: {
+  /** What the add form came back saying (#2385). A duplicate title and a blank
+   *  one are both refusals the reader can fix, and both used to throw. */
+  searchParams: Promise<{ ok?: string; error?: string }>;
+}) {
+  const sp = await searchParams;
+  const saved = savedSentence(savedOutcome(sp.ok));
   const me = await currentUser();
   if (!me) redirect("/login");
   if (!canEditOrgSettings(me.role)) return <AdminDenied need="an admin" />;
@@ -38,6 +48,8 @@ export default async function EventTypesPage() {
       <AdminPageHeader title="Event types">
         What a bucket can be booked for, and how long each one runs.
       </AdminPageHeader>
+      {saved && <SettingsSaveNotice ok saved={saved} error={sp.error} />}
+      {sp.error && !saved && <SettingsSaveNotice ok={false} error={sp.error} saved="" />}
       <section className={cardCls}>
         {/* #1915: no heading of its own. The page header above names this,
             and a section that IS the page restating the page's title is the

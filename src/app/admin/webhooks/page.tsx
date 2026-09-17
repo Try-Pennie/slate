@@ -15,7 +15,14 @@ import { deliveryDisplay } from "@/lib/webhooks/delivery-display";
 import { unwrap } from "@/lib/db/result";
 import { log } from "@/lib/log";
 import { UnreadableNotice } from "@/components/ui/UnreadableNotice";
-import { resendFeedback, type ResendResult } from "@/lib/webhooks/resend-feedback";
+import {
+  replayFeedback,
+  resendFeedback,
+  type ResendFeedback,
+  type ResendResult,
+} from "@/lib/webhooks/resend-feedback";
+import { SettingsSaveNotice } from "@/app/admin/settings/SettingsSaveNotice";
+import { savedOutcome, savedSentence } from "@/lib/admin/save-outcomes";
 import { SubmitButton } from "@/components/ui/SubmitButton";
 import { Pill } from "@/components/ui/Pill";
 import { AdminPageHeader, AdminDenied } from "@/components/admin/AdminPageHeader";
@@ -46,9 +53,26 @@ type DeliveryRow = Pick<
 export default async function WebhooksPage({
   searchParams,
 }: {
-  searchParams: Promise<{ resend?: string; webhook_error?: string }>;
+  /**
+   * What this page's four forms came back saying (#2384).
+   *
+   * All of them used to name `/admin`, which declares no search params, so every
+   * outcome they wrote was encoded, attached to a URL and thrown away while the
+   * admin was moved off the page they pressed the button on. `ok` and `error` are
+   * the same channel every other admin page uses; `resend` and `replay` carry the
+   * two action results, which are not saves and have more than two endings each.
+   */
+  searchParams: Promise<{
+    ok?: string;
+    error?: string;
+    resend?: string;
+    replay?: string;
+  }>;
 }) {
   const sp = await searchParams;
+  const saved = savedSentence(savedOutcome(sp.ok));
+  const replay = replayFeedback(sp.replay);
+  const resend = sp.resend ? resendFeedback(sp.resend as ResendResult) : null;
   const me = await currentUser();
   if (!me) redirect("/login");
   if (!canEditOrgSettings(me.role)) return <AdminDenied need="an admin" />;
@@ -110,36 +134,20 @@ export default async function WebhooksPage({
       <AdminPageHeader title="Webhooks">
         Where Slate posts booking events, and what it has tried to deliver.
       </AdminPageHeader>
-      {/* #1076: every resend outcome says something. A refusal used to be logged
+      {/* #2384: all four outcomes, drawn by the SAME component every other admin
+          page draws its outcome with, rather than by this page's own copy of the
+          markup. Two panels differing only in which file they live in is how the
+          save confirmation and the resend confirmation drifted apart in the first
+          place, and the shared one is the piece that also clears the parameter out
+          of the address bar so a reload does not re-show a stale notice.
+
+          #1076: every resend outcome says something. A refusal used to be logged
           server side and nothing else, so the admin pressed the button and watched
           the log re-render unchanged, which is indistinguishable from it working. */}
-      {sp.resend &&
-        (() => {
-          const fb = resendFeedback(sp.resend as ResendResult);
-          return fb.tone === "ok" ? (
-            <div
-              role="status"
-              className="rounded-md bg-[var(--pennie-green-wash)] px-5 py-4 text-sm text-pennie-graphite"
-            >
-              {fb.message}
-            </div>
-          ) : (
-            <div
-              role="alert"
-              className="rounded-md border border-[var(--error)] px-5 py-4 text-sm text-error"
-            >
-              {fb.message}
-            </div>
-          );
-        })()}
-      {sp.webhook_error && (
-        <div
-          role="alert"
-          className="rounded-md border border-[var(--error)] px-5 py-4 text-sm text-error"
-        >
-          Webhook not saved: {sp.webhook_error}
-        </div>
-      )}
+      {saved && <SettingsSaveNotice ok saved={saved} error={sp.error} />}
+      {sp.error && !saved && <SettingsSaveNotice ok={false} error={sp.error} saved="" />}
+      <ActionNotice feedback={resend} />
+      <ActionNotice feedback={replay} />
       <section className={cardCls}>
         <h2 className="mb-2 text-sm font-semibold">Webhook endpoint</h2>
         {/* #1952: what a format IS now lives beside the CONTROL below, derived
@@ -434,5 +442,26 @@ export default async function WebhooksPage({
         )}
       </section>
     </>
+  );
+}
+
+/**
+ * One of this page's two ACTION results (#2384), drawn by the same notice every
+ * admin save uses.
+ *
+ * Written once rather than at each of the two call sites, because the tone to
+ * `ok`/`error` mapping is the same decision both times and a second hand rolled
+ * copy of it is how the resend banner and the save banner drifted apart before
+ * this (L613). `null` is the ordinary case: nobody has pressed either button.
+ */
+function ActionNotice({ feedback }: { feedback: ResendFeedback | null }) {
+  if (!feedback) return null;
+  const ok = feedback.tone === "ok";
+  return (
+    <SettingsSaveNotice
+      ok={ok}
+      saved={ok ? feedback.message : ""}
+      error={ok ? undefined : feedback.message}
+    />
   );
 }

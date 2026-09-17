@@ -95,3 +95,51 @@ export function resendFeedback(result: ResendResult): ResendFeedback {
       };
   }
 }
+
+/**
+ * What the admin is told after pressing Replay failed deliveries (#2384).
+ *
+ * The batch control never said anything at all. Success revalidated the Overview
+ * and returned void, and a second press inside the five minute dedupe window
+ * `return`ed in silence, so the one thing that re-fires a receiver's whole
+ * backlog after an outage was indistinguishable from a broken button on exactly
+ * the press somebody makes when they are not sure the first one worked. That is
+ * the fault #1076 closed for the Resend button beside it, left open here.
+ *
+ * The value it takes is either a COUNT or the word `deduped`, so the three things
+ * a reader can meet are three different sentences: none found, some queued, and
+ * this window was already replayed.
+ *
+ * Zero is not a failure and does not read as one. An outage with nothing dead
+ * lettered in the chosen window is the ordinary healthy answer, and the reader's
+ * next move is to widen the window, which the sentence says.
+ */
+export function replayFeedback(raw: string | undefined | null): ResendFeedback | null {
+  if (!raw) return null;
+  if (raw === "deduped") {
+    return {
+      tone: "error",
+      message:
+        "These deliveries were replayed in the last few minutes, so nothing was sent again. Wait five minutes before replaying the same window.",
+    };
+  }
+  const queued = Number(raw);
+  // A value that is not a count is not silently rounded into one: something other
+  // than this action put it in the address bar, and inventing a number for it
+  // would confirm a replay nobody ran (L11).
+  if (!Number.isInteger(queued) || queued < 0) return null;
+  if (queued === 0) {
+    return {
+      tone: "ok",
+      message:
+        "No failed deliveries were found in that window, so nothing was sent. Try a longer window if you are looking for an older failure.",
+    };
+  }
+  return {
+    tone: "ok",
+    message:
+      queued === 1
+        ? "1 failed delivery was queued to send again. The log below shows how it goes."
+        : `${queued} failed deliveries were queued to send again. The log below shows how they go.`,
+  };
+}

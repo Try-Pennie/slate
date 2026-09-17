@@ -290,6 +290,11 @@ function mockDb(overrides: Record<string, Result> = {}) {
 const props = { searchParams: Promise.resolve({}) };
 const fails = (message: string): Result => ({ data: null, error: { message } });
 
+/** The same page, opened at the address one of its own actions redirects to. */
+const withQuery = (query: Record<string, string>) => ({
+  searchParams: Promise.resolve(query),
+});
+
 beforeEach(() => {
   vi.clearAllMocks();
   env.consoleHiddenFor.mockReturnValue(false);
@@ -330,7 +335,7 @@ describe("every read healthy (the control)", () => {
 
   it("draws the real event types", async () => {
     mockDb();
-    render(await EventTypesPage());
+    render(await EventTypesPage(props));
     expect(screen.getAllByText(/Advisor Call/).length).toBeGreaterThan(0);
     expect(screen.queryByText(/could not be read/i)).toBeNull();
   });
@@ -472,7 +477,7 @@ describe("the memberships read is scoped and paged (#1933)", () => {
 describe("an unreadable table (#1629)", () => {
   it("says the event types could not be read instead of listing none", async () => {
     mockDb({ event_types: fails("event_types read exploded") });
-    render(await EventTypesPage());
+    render(await EventTypesPage(props));
     expect(screen.getAllByText(/event types could not be read/i).length).toBeGreaterThan(0);
     // "None yet." beside a create form is an invitation to make a duplicate.
     expect(screen.queryByText(/^None yet\.$/)).toBeNull();
@@ -572,5 +577,122 @@ describe("an unreadable table (#1629)", () => {
     fireEvent.click(screen.getByRole("button", { name: /Edit 311/ }));
     expect(screen.getAllByText(/Ada Byron/).length).toBeGreaterThan(0);
     expect(screen.getAllByText(/Advisor Call/).length).toBeGreaterThan(0);
+  });
+});
+
+// #2385 / #2384. An action says what it did, on the page the person is on.
+//
+// These are the READING half. The action tests in `actions.test.ts` prove each
+// one now redirects to the right route carrying the right sentence; nothing there
+// can prove the page at the far end DRAWS it, and a redirect carrying a perfect
+// reason to a page that renders nothing is the defect both issues are about
+// (L586). So every one of these opens the page at the exact address its own
+// action redirects to, and requires the words on screen.
+describe("a refusal reaches the page it was refused on (#2385)", () => {
+  it("draws a duplicate bucket code as a sentence, not as an error screen", async () => {
+    mockDb();
+    render(
+      await BucketsPage(withQuery({ error: "A bucket with code 412 already exists." })),
+    );
+    expect(screen.getByRole("alert").textContent).toMatch(/code 412 already exists/i);
+  });
+
+  it("draws a refused event type title on the page the add form is on", async () => {
+    mockDb();
+    render(
+      await EventTypesPage(
+        withQuery({ error: "An event type called Advisor Call already exists." }),
+      ),
+    );
+    expect(screen.getByRole("alert").textContent).toMatch(/already exists/i);
+  });
+
+  // The half that matters most: a refusal must never be drawn beside a
+  // confirmation. The action redirects with ONE of the two, and a page that drew
+  // both would put "Event type created." over a create that never happened, which
+  // is worse than the silence this replaces (L12).
+  it("shows no confirmation beside a refusal", async () => {
+    mockDb();
+    render(
+      await EventTypesPage(withQuery({ error: "An event type needs a title." })),
+    );
+    expect(screen.queryByText(/Event type created/i)).toBeNull();
+    expect(screen.queryByRole("status")).toBeNull();
+  });
+
+  it("confirms a created event type on that same page", async () => {
+    mockDb();
+    render(await EventTypesPage(withQuery({ ok: "event-type-created" })));
+    expect(screen.getByRole("status").textContent).toMatch(/Event type created/i);
+  });
+
+  // A pasted or bookmarked link carrying a value this page never issues must draw
+  // nothing, rather than resolving to some sentence: confirming a save nobody
+  // performed on a page that was just opened is the failure the parser exists to
+  // prevent (L11).
+  it("draws nothing for an outcome it does not recognise", async () => {
+    mockDb();
+    render(await EventTypesPage(withQuery({ ok: "1" })));
+    expect(screen.queryByRole("status")).toBeNull();
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+});
+
+describe("the webhooks page shows what its own buttons did (#2384)", () => {
+  it("draws a refused endpoint URL, on the page the form is on", async () => {
+    mockDb();
+    render(
+      await WebhooksPage(
+        withQuery({ error: "The endpoint URL has to start with https, so nothing was saved." }),
+      ),
+    );
+    expect(screen.getByRole("alert").textContent).toMatch(/https/i);
+  });
+
+  it("confirms a saved endpoint", async () => {
+    mockDb();
+    render(await WebhooksPage(withQuery({ ok: "webhook-endpoint" })));
+    expect(screen.getByRole("status").textContent).toMatch(/Webhook endpoint saved/i);
+  });
+
+  it("says what a resend did", async () => {
+    mockDb();
+    render(await WebhooksPage(withQuery({ resend: "sent" })));
+    expect(screen.getByRole("status").textContent).toMatch(/re-sent/i);
+  });
+
+  it("says a resend was refused, as something that did not happen", async () => {
+    mockDb();
+    render(await WebhooksPage(withQuery({ resend: "payload-erased" })));
+    expect(screen.getByRole("alert").textContent).toMatch(/retention/i);
+    expect(screen.queryByRole("status")).toBeNull();
+  });
+
+  it("says how many a replay queued", async () => {
+    mockDb();
+    render(await WebhooksPage(withQuery({ replay: "3" })));
+    expect(screen.getByRole("status").textContent).toMatch(/3 failed deliveries were queued/i);
+  });
+
+  // Zero is the ordinary healthy answer and must not read as a failure, and it
+  // must not read as nothing happening either: the press is the moment somebody
+  // needs to learn the window they picked held nothing.
+  it("says a replay found nothing, rather than saying nothing", async () => {
+    mockDb();
+    render(await WebhooksPage(withQuery({ replay: "0" })));
+    expect(screen.getByRole("status").textContent).toMatch(/No failed deliveries were found/i);
+  });
+
+  it("tells a second presser the window was already replayed", async () => {
+    mockDb();
+    render(await WebhooksPage(withQuery({ replay: "deduped" })));
+    expect(screen.getByRole("alert").textContent).toMatch(/already replayed|last few minutes/i);
+  });
+
+  it("draws nothing for a replay value it cannot read", async () => {
+    mockDb();
+    render(await WebhooksPage(withQuery({ replay: "lots" })));
+    expect(screen.queryByRole("status")).toBeNull();
+    expect(screen.queryByRole("alert")).toBeNull();
   });
 });

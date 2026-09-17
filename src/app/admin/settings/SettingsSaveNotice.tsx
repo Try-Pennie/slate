@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { OUTCOME_PARAMS } from "@/lib/admin/save-outcomes";
 
 interface SettingsSaveNoticeProps {
   /** Set when the save action redirected back with ?ok=1. */
@@ -41,11 +42,15 @@ export function SettingsSaveNotice({ ok, error, saved }: SettingsSaveNoticeProps
         : null,
   );
 
+  // #2384: every outcome parameter, from the one list, not the two this knew
+  // about. The webhooks page carries its action results in `?resend=` and
+  // `?replay=`, and a parameter left in the address bar re-shows the notice on a
+  // reload or a copied link, which is the stale confirmation this effect exists
+  // to prevent, wearing a different parameter name.
   useEffect(() => {
     const url = new URL(window.location.href);
-    if (url.searchParams.has("ok") || url.searchParams.has("error")) {
-      url.searchParams.delete("ok");
-      url.searchParams.delete("error");
+    if (OUTCOME_PARAMS.some((p) => url.searchParams.has(p))) {
+      for (const p of OUTCOME_PARAMS) url.searchParams.delete(p);
       window.history.replaceState(null, "", url.pathname + url.search + url.hash);
     }
   }, []);

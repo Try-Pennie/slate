@@ -55,7 +55,9 @@ export const SAVE_OUTCOMES = [
   "bucket-created",
   "bucket-routing",
   "bucket-updated",
+  "event-type-created",
   "org-default-hours",
+  "webhook-endpoint",
   "working-hours",
 ] as const;
 
@@ -83,7 +85,12 @@ export const SAVE_OUTCOME_COPY: Record<Exclude<SaveOutcome, DynamicOutcome>, str
   "bucket-created": "Bucket created.",
   "bucket-routing": "Bucket routing saved.",
   "bucket-updated": "Bucket saved.",
+  "event-type-created": "Event type created.",
   "org-default-hours": "Default hours for a new agent saved.",
+  // #2384: the endpoint save used to revalidate the Overview and say nothing at
+  // all, so a successful save and a refused one drew the same screen: the form
+  // redrawn with whatever was stored before the press.
+  "webhook-endpoint": "Webhook endpoint saved.",
   // #1997: "Hours saved." and nothing more. It used to recite the whole week,
   // which put the week on screen three times at once: here, in the summary
   // paragraph directly beneath, and in the day rows that hold every one of those
@@ -143,3 +150,38 @@ export function savedSentence(outcome: SaveOutcome | null): string | null {
 export function savedQuery(outcome: SaveOutcome): string {
   return `?ok=${outcome}`;
 }
+
+/**
+ * The query string a REFUSED action redirects with, and the twin of
+ * `savedQuery` (#2385).
+ *
+ * A refusal is a sentence about the REQUEST, something the reader submitted and
+ * can change, so it travels back to the page they submitted from and is drawn
+ * there. A FAULT is a sentence about the SYSTEM, a write Postgres refused or a
+ * row that did not come back, which no retyping fixes: that still throws, the
+ * boundary truthfully says the state is unknown, and the detail goes to the log.
+ *
+ * Fifteen sites used to build this string by hand. One builder, because the
+ * parameter name is half of a contract with every page that renders it, and a
+ * second spelling is a refusal that arrives nowhere while every part reads as
+ * wired up (L41).
+ *
+ * The reason travels as free text rather than as a code, unlike the outcomes
+ * above, and the difference is deliberate: a save confirms one of a closed set of
+ * things, while a refusal has to name the value that was rejected, which no
+ * closed set can hold. It is encoded here so no call site can forget, and the
+ * pages render it as text, never as markup.
+ */
+export function refusedQuery(reason: string): string {
+  return `?error=${encodeURIComponent(reason)}`;
+}
+
+/**
+ * Every query parameter an outcome travels in, so the notice can strip them all
+ * from the address bar once it has been read.
+ *
+ * One list, because a parameter left behind re-shows a stale notice on a reload
+ * or a copied link, and the webhooks page's own two were invisible to the
+ * stripper that only knew about `ok` and `error`.
+ */
+export const OUTCOME_PARAMS = ["ok", "error", "resend", "replay"] as const;
