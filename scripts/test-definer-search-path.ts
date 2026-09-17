@@ -265,6 +265,9 @@ const EXPECTED_PINNED = [
   // #1930: replaces a bucket's manual members in one transaction, so a failure
   // cannot leave a routing pool with nobody in it while the save reads as done.
   "replace_bucket_members",
+  // #2002: replaces an agent's timezone AND their week in one transaction, so a
+  // failed rules write cannot leave the new zone sitting over the old hours.
+  "replace_user_schedule",
   // #2369: the digit rule two stored phone numbers are compared by. Deliberately not
   // libphonenumber, which no SQL expression reproduces; see migration 0124.
   "slate_phone_match_key",

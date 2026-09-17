@@ -1744,7 +1744,10 @@ describe("the reads that decide authorization or a write must refuse, not guess 
       await expect(useDefaultHours(form({ user_id: "u2" }))).rejects.toThrow(
         "NEXT_REDIRECT:/admin/agents/u2?ok=working-hours",
       );
-      expect(schedule.upsertUserSchedule).toHaveBeenCalledWith("u2", "America/Denver");
+      // #2002: the zone now rides on the one transactional call, so it is read off
+      // that call rather than off a separate upsert that used to commit alone.
+      expect(rpc).toHaveBeenCalledTimes(1);
+      expect(rpc.mock.calls[0][1]).toMatchObject({ p_user_id: "u2", p_timezone: "America/Denver" });
     });
 
     it("adopts the org default only when the agent genuinely has no schedule", async () => {
@@ -1754,7 +1757,8 @@ describe("the reads that decide authorization or a write must refuse, not guess 
       await expect(useDefaultHours(form({ user_id: "u2" }))).rejects.toThrow(
         "NEXT_REDIRECT:/admin/agents/u2?ok=working-hours",
       );
-      expect(schedule.upsertUserSchedule).toHaveBeenCalledWith("u2", "America/Chicago");
+      expect(rpc).toHaveBeenCalledTimes(1);
+      expect(rpc.mock.calls[0][1]).toMatchObject({ p_user_id: "u2", p_timezone: "America/Chicago" });
     });
 
     // #2103: the self service path this paired with is gone, along with the

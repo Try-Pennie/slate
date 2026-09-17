@@ -46,7 +46,6 @@ import {
   roleLabel,
 } from "@/lib/auth/roles";
 import { roundUpToQuarterHour } from "@/lib/date/parse";
-import { upsertUserSchedule } from "@/lib/schedule";
 import { SEED_START_TIME, SEED_END_TIME } from "@/lib/schedule-core";
 import {
   parseBusinessHoursForm,
@@ -179,18 +178,25 @@ async function requireManageAgent(
 }
 
 /**
- * Replaces a user's weekly schedule (one schedule row + its rules), atomically
- * (#1293).
+ * Replaces a user's weekly schedule, the timezone and the rules together, in ONE
+ * transaction (#1293, #2002).
  *
- * Three things this must never do, because each one silently removes an agent from
- * every bucket's availability while reporting a successful save:
+ * Four things this must never do, because each one silently changes when an agent
+ * is offered while reporting a successful save:
  *
  *   1. Apply an input that cannot produce a real week. Refused BEFORE anything is
  *      written, with a message for the person who pressed save.
  *   2. Leave the schedule half written. The delete and the insert are one
  *      transaction inside `replace_availability_rules` (migration 0097), so a
  *      failure keeps the previous rules rather than clearing them.
- *   3. Swallow the write's error. It throws, which the server action surfaces.
+ *   3. Commit the TIMEZONE on its own. It used to: the schedule row was upserted
+ *      with the new zone before the rules were replaced, so a failed rules write
+ *      left the agent holding the new zone over their old hours, which moves every
+ *      bookable hour by the offset between the two with nothing reporting it.
+ *      `replace_user_schedule` (migration 0129) owns the row and its rules, and the
+ *      expected count is checked inside that same transaction rather than compared
+ *      here, where the comparison can only happen after the write has committed.
+ *   4. Swallow the write's error. It throws, which the server action surfaces.
  */
 async function replaceUserSchedule(
   userId: string,
@@ -208,21 +214,34 @@ async function replaceUserSchedule(
   if (!plan.ok) throw new Error(plan.error);
 
   const db = supabaseAdmin();
-  // The VALIDATED zone, never the raw argument: an unreadable one makes every
-  // weekday comparison in `isWithinWorkingHours` false, so the agent is bookable
-  // at no time at all while the form still renders their hours (#1671).
-  const scheduleId = await upsertUserSchedule(userId, plan.timezone);
-  const { data, error } = await db.rpc("replace_availability_rules", {
-    p_schedule_id: scheduleId,
+  // ONE call, because the zone and the week are one change (#2002). This used to
+  // upsert the schedule row with the new zone and THEN replace the rules, so a
+  // failed rules write left the agent holding the new zone over their old hours:
+  // every hour they are bookable moved by the offset between the two, invisibly,
+  // while the form redrew the hours it had not changed. Migration 0129 owns the
+  // row and its rules together, so a refusal anywhere inside leaves the agent
+  // exactly as they were.
+  //
+  // The zone travelling here is the VALIDATED one, never the raw argument: an
+  // unreadable one makes every weekday comparison in `isWithinWorkingHours` false,
+  // so the agent is bookable at no time at all while the form still renders their
+  // hours (#1671).
+  const { data, error } = await db.rpc("replace_user_schedule", {
+    p_user_id: userId,
+    p_timezone: plan.timezone,
     p_rules: plan.rules,
     p_source: source,
+    // The count is enforced INSIDE the transaction, so a write that landed the
+    // wrong number of rules rolls the zone back with it.
+    p_expected: plan.rules.length,
   });
   if (error) {
     throw new Error(`Your hours could not be saved: ${error.message}`);
   }
-  // Claim success only on the count the database reports, never on the absence of
-  // an error: a write that landed a different number of rules than asked for is a
-  // silently wrong schedule, and this is the last place that can tell.
+  // A returned count this cannot read is a different failure from a count the
+  // database refused: nothing came back to judge, so success is not claimable.
+  // The comparison stays as well, because a client that cannot tell 5 from 3 has
+  // no business reporting a save either way.
   const written = typeof data === "number" ? data : Number.NaN;
   if (written !== plan.rules.length) {
     throw new Error(
@@ -1278,9 +1297,10 @@ export async function useDefaultHours(form: FormData): Promise<void> {
   };
 
   // Applying the org default keeps the agent's own timezone if they have one,
-  // else adopts the org default. Pass it back through upsertUserSchedule so the
-  // single-row (user_id) unique index (#532) is honored without a check-then-
-  // insert race.
+  // else adopts the org default. It is passed back through
+  // `replace_user_schedule`, whose upsert honours the single row (user_id) unique
+  // index (#532) without a check then insert race, and which commits the zone and
+  // the week together (#2002).
   const existing = unwrap(
     await db.from("availability_schedules").select("timezone").eq("user_id", userId).maybeSingle(),
     "agent schedule timezone",

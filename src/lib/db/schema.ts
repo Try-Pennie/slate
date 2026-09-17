@@ -281,6 +281,24 @@ export interface Database {
         };
         Returns: number;
       };
+      /** Replaces an agent's timezone AND their whole week in ONE transaction
+       *  (#2002, migration 0129). The zone used to be upserted separately and
+       *  committed on its own, so a failed rules write left the new zone over the
+       *  old hours and moved every bookable hour by the offset between them. It
+       *  resolves the schedule row by user, then goes through
+       *  `replace_availability_rules`, so there is still one place that replaces a
+       *  week. `p_expected` is checked inside the transaction, because a count
+       *  compared by the caller can only be compared once the write has committed. */
+      replace_user_schedule: {
+        Args: {
+          p_user_id: string;
+          p_timezone: string;
+          p_rules: { weekday: number; start_minute: number; end_minute: number }[];
+          p_source: "seed" | "agent" | "admin" | "calcom-import";
+          p_expected: number;
+        };
+        Returns: number;
+      };
       /** Replaces a bucket's manual members in ONE transaction (#1930, migration
        *  0114), so a failure cannot leave a routing pool with nobody in it while
        *  the save reads as done. Unlike `replace_availability_rules` it does NOT
