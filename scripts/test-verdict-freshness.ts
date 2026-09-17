@@ -392,9 +392,15 @@ const HOUR = 60 * 60_000;
 // this is the rare path rather than the common one, and that is exactly the kind
 // that ships unexercised (L535). It names the registry instead, which is where the
 // reader has to go either way.
+//
+// It stood on the failure rate lane until #2499 parked that one again, so it asks
+// the time off check instead. The lane it names has to be one with NO entry, which
+// the assertion below is what establishes: reading a registry that happens to hold
+// the lane would compare "#undefined" against "#undefined", both sides going
+// missing together (L70).
 {
-  const NOT_PARKED = FAILURE_RATE_VERDICT_LANE;
-  assert(parkedDetector(NOT_PARKED) === null, "the fixture lane really has no park entry");
+  const NOT_PARKED = OOO_PROTECTION_VERDICT_LANE;
+  assert(parkedDetector(NOT_PARKED) === null, "the lane driven here really has no park entry");
 
   for (const text of [verdictUnparkAlertText(NOT_PARKED), verdictUnparkLapsedText(NOT_PARKED)]) {
     assert(!/undefined/.test(text), "no un-park copy renders the word undefined");

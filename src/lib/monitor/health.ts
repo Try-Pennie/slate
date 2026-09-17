@@ -301,11 +301,18 @@ export const RETENTION_STALE_BOUNDS_MS: Record<string, number> = {
  *    pass of roughly 60 buckets takes about 5 hours. 24h is nearly five passes:
  *    long enough that ordinary gaps (a quiet bucket, a bad minute at Google)
  *    cannot trip it, short enough to catch a probe that is simply not working.
- *  - `verdict:booking-failure-rate` needs 20 attempts inside a rolling hour, and
+ *  - `verdict:booking-failure-rate` needs a floor of booking attempts inside its
+ *    rolling window before it will judge at all, and
  *    `verdict:low-booking-volume` only judges Mon to Fri 08:00 to 20:00 Eastern.
  *    Both are legitimately silent from Friday evening to Monday morning, about
  *    60 hours, and a public holiday Monday stretches that to about 84. 4 days
  *    clears both, so a weekend is never the cause.
+ *
+ *    The floor and the window themselves are deliberately NOT quoted here. They
+ *    live in `failure-rate-thresholds.ts`, fitted to real lead volume, and this
+ *    sentence carried the pre #2484 pair for three weeks after they moved: a
+ *    restatement is a second copy nothing compares (L63). What sets the bound is
+ *    the weekend below the floor, whatever the floor is.
  */
 export const VERDICT_STALE_BOUNDS_MS: Record<string, number> = {
   "verdict:availability-truth": 24 * 60 * MIN,

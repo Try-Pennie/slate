@@ -367,7 +367,7 @@ export default async function AlertSettingsPage({
           <p className="mt-1 text-xs text-fg-muted">
             Off: Slate still checks every 5 minutes and records what it finds in the
             logs, but nobody is notified. On: Slack gets an alert when too many booking
-            attempts fail over the last hour, and a follow up once bookings are
+            attempts fail over its rolling window, and a follow up once bookings are
             completing again. Leave this off until real booking traffic has run for a
             while, so the threshold is set against numbers someone has seen.
           </p>
