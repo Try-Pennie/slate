@@ -35,9 +35,15 @@ const DIGEST_ALERT_COOLDOWN_MS = 6 * 60 * 60 * 1000;
 
 /**
  * Daily 7am ET digest (port of the Pipedream flow): emails a CSV of every OOO
- * request approved the previous day. Two UTC crons (11:00 + 12:00) straddle DST
- * so one lands at 7am ET; isApprovalsDigestTime lets exactly one fire. Skips
- * silently on days with zero approvals. `?force=1` bypasses the time gate.
+ * request approved since the last report went out. Two UTC crons (11:00 + 12:00)
+ * straddle DST so one lands at 7am ET; isApprovalsDigestTime lets exactly one
+ * fire. Skips silently on days with zero approvals. `?force=1` bypasses the time
+ * gate.
+ *
+ * "Since the last report went out" rather than "the previous day" (#2543): the
+ * window comes from a WATERMARK, so a morning this lane missed is covered by the
+ * next run rather than falling out of every later one. On the ordinary morning
+ * that is yesterday and the email is word for word what it always was.
  */
 export async function GET(req: NextRequest) {
   if (!isAuthorizedCron(req)) {
