@@ -28,6 +28,7 @@ export {
   contactRateKeys,
   ROUTING_HOURLY_RATE_RULES,
   CLIENT_ERROR_RATE_RULES,
+  CSP_REPORT_RATE_RULES,
 } from "@/lib/rate-limit-core";
 export type { RateLimitRule } from "@/lib/rate-limit-core";
 import {

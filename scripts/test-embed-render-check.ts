@@ -17,6 +17,7 @@ import {
   embedHostPage,
   judgeEmbedRender,
   type EmbedObservation,
+  isCspRefusal,
 } from "./lib/embed-render-check.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
@@ -29,6 +30,7 @@ function seen(over: Partial<EmbedObservation> = {}): EmbedObservation {
     frameText:
       "Loan Consultation. Pick a time that works for you. Nobody is available before then.",
     consoleErrors: [],
+    cspViolations: [],
     ...over,
   };
 }
@@ -201,6 +203,7 @@ const byOutcome = new Map(
     seen({ bookerMounted: false, frameText: "" }),
     seen({ bookerMounted: false, frameText: "This booking link is not available." }),
     seen({ consoleErrors: ["boom"] }),
+    seen({ cspViolations: ["Refused to load the script because it violates the following Content Security Policy directive"] }),
     seen(),
   ].map((o) => {
     const v = judgeEmbedRender(o);
@@ -241,5 +244,57 @@ eq(
     "the trigger carries the same attributes the embed binds to");
   assert(page.includes("xbc=120"), "and routes by the bucket code the check was given");
 }
+
+
+// ---------------------------------------------------------------------------
+// #2565: a policy that breaks the embed fails SILENTLY from our side. The booker
+// is in an iframe on a partner page, so the browser's refusal lands in a console
+// nobody reads, and a lead meets a blank panel. This is the only signal that sees
+// it, which is why it gets its own outcome rather than joining console errors.
+// ---------------------------------------------------------------------------
+
+eq(
+  judgeEmbedRender(seen({ cspViolations: ["Refused to load the script 'https://x.test/a.js' because it violates the following Content Security Policy directive: \"script-src 'self'\""] })).outcome,
+  "csp-violations",
+  "a content security policy refusal is reported even though the booker drew",
+);
+
+// It must outrank console errors, because a CSP refusal is ALSO written to the
+// console: asked in the other order this outcome could never fire, and a policy
+// breaking the embed would read as an ordinary console error (L11).
+eq(
+  judgeEmbedRender(
+    seen({
+      cspViolations: ["Refused to load the script because it violates the following Content Security Policy directive"],
+      consoleErrors: ["TypeError: something unrelated"],
+    }),
+  ).outcome,
+  "csp-violations",
+  "a policy refusal outranks an unrelated console error rather than being masked by it",
+);
+
+// And it must not fire on a healthy page, or it would be red from the day it
+// shipped and stop being read (L36).
+eq(judgeEmbedRender(seen()).outcome, "rendered", "no refusals means no policy finding");
+
+assert(
+  judgeEmbedRender(seen({ cspViolations: ["Refused to load the script because it violates the following Content Security Policy directive"] }))
+    .reason.includes("report only"),
+  "the message says the policy is report only, so the reader is not sent to fix an outage that is not happening",
+);
+
+// The predicate that routes a console line into that bucket, driven both ways.
+assert(
+  isCspRefusal("Refused to connect to 'https://x.test' because it violates the following Content Security Policy directive: \"connect-src 'self'\""),
+  "a browser refusal line is recognised",
+);
+assert(
+  isCspRefusal("[Report Only] Refused to load the script because it violates the following Content Security Policy directive"),
+  "the report only variant is recognised too, which is the only kind this phase can produce",
+);
+assert(
+  !isCspRefusal("TypeError: Cannot read properties of undefined"),
+  "an ordinary error is not mistaken for a policy refusal",
+);
 
 finish();

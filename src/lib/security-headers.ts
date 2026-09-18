@@ -8,9 +8,13 @@
  * embeddable on partner pages (see slate-embed-contract), so the framing headers
  * are the ONLY ones scoped to staff paths.
  *
- * The CSP is `frame-ancestors` ONLY (no `script-src`/`default-src`, which would
- * need nonces for Next's inline runtime and could silently break the app). A full
- * content CSP is a separate effort.
+ * The ENFORCING policy here is `frame-ancestors` ONLY, and stays that way. The
+ * script policy (`src/lib/csp.ts`, #2565) is served REPORT ONLY, on a separate
+ * header, by the same middleware; enforcing it is a later change gated on reading
+ * real violations rather than on it looking right. The comment that used to sit
+ * here said a content CSP "could silently break the app" and left it at that,
+ * which is a deferral with no owner and no date. What it was worried about was
+ * measured before any of this was written: see the header of `csp.ts`.
  *
  * The non-framing hardening (HSTS, nosniff, Referrer-Policy) is intentionally NOT
  * here: none of it restricts framing, so it is served on EVERY response via
