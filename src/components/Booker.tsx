@@ -5,6 +5,8 @@ import { formatClockTime, formatLongDate } from "@/lib/date/parse";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { ArrowRightIcon } from "@/components/icons";
+import { BookerButton } from "@/components/BookerButton";
+import type { BookerButtonVariant } from "@/components/booker-button";
 import { BookerStrip, BookerStripSkeleton } from "@/components/BookerStrip";
 import { SlotTimes } from "@/components/SlotTimes";
 import { useSlotPicker } from "@/components/use-slot-picker";
@@ -916,9 +918,9 @@ export default function Booker({
    * a shared decision exists to prevent (L613).
    */
   const panelActionIsPrimary = !editingCallPhone;
-  const panelActionCls = panelActionIsPrimary
-    ? c.confirm
-    : `border ${c.toggleBorder} ${c.body} ${c.navHover}`;
+  const panelActionVariant: BookerButtonVariant = panelActionIsPrimary
+    ? "primary"
+    : "secondary";
   const panelActionStyle = panelActionIsPrimary ? confirmStyle : undefined;
   /** Marks whichever control currently carries the emphasis, so the "exactly one"
    *  rule can be asserted rather than eyeballed on every change. */
@@ -1016,16 +1018,19 @@ export default function Booker({
                       </p>
                     )}
                     <div className="mt-3 flex flex-col gap-2">
-                      <button
+                      <BookerButton
+                        palette={c}
+                        variant="primary"
                         type="submit"
                         disabled={savingCallPhone}
-                        className={`inline-flex min-h-12 items-center justify-center rounded-lg px-5 text-sm font-semibold disabled:opacity-60 ${c.confirm}`}
                         style={confirmStyle}
                         data-testid="panel-primary"
                       >
                         {savingCallPhone ? PHONE_COPY.saving : PHONE_COPY.save}
-                      </button>
-                      <button
+                      </BookerButton>
+                      <BookerButton
+                        palette={c}
+                        variant="secondary"
                         type="button"
                         onClick={() => {
                           setEditingCallPhone(false);
@@ -1033,10 +1038,9 @@ export default function Booker({
                           setCallPhoneError(null);
                         }}
                         disabled={savingCallPhone}
-                        className={`inline-flex min-h-12 items-center justify-center rounded-lg border px-5 text-sm font-semibold disabled:opacity-60 ${c.toggleBorder} ${c.body} ${c.navHover}`}
                       >
                         {PHONE_COPY.cancel}
-                      </button>
+                      </BookerButton>
                     </div>
                     {/* Still ALIVE, distinct from started and from failed, on an
                         action that reaches Google as well as the database. */}
@@ -1126,14 +1130,17 @@ export default function Booker({
                     </p>
                   )}
                   <div className="mt-4 flex flex-col gap-3">
-                    <button
+                    <BookerButton
+                      palette={c}
+                      variant="danger"
                       onClick={() => void cancelExistingCall()}
                       disabled={submitting || !cancelReasonValid}
-                      className="inline-flex min-h-12 items-center justify-center rounded-lg bg-[var(--error)] px-5 text-sm font-semibold text-white transition-opacity hover:opacity-90 disabled:opacity-60"
                     >
                       {submitting ? BOOKER_CANCEL_COPY.confirming : BOOKER_CANCEL_COPY.confirm}
-                    </button>
-                    <button
+                    </BookerButton>
+                    <BookerButton
+                      palette={c}
+                      variant="secondary"
                       onClick={() => {
                         setConfirmingCancel(false);
                         setCancelReason("");
@@ -1141,16 +1148,17 @@ export default function Booker({
                         setError(null);
                       }}
                       disabled={submitting}
-                      className={`inline-flex min-h-12 items-center justify-center rounded-lg border px-5 text-sm font-semibold disabled:opacity-60 ${c.toggleBorder} ${c.body} ${c.navHover}`}
                     >
                       {BOOKER_CANCEL_COPY.keep}
-                    </button>
+                    </BookerButton>
                   </div>
                 </div>
               ) : (
               <div className="mt-6 flex flex-col gap-3">
                 {onLanding ? (
-                  <button
+                  <BookerButton
+                    palette={c}
+                    variant={panelActionVariant}
                     onClick={() => {
                       // #2203: the call is KEPT. Clearing it here dropped a lead
                       // the link had just named into the anonymous flow, which
@@ -1160,18 +1168,18 @@ export default function Booker({
                       setOnLanding(false);
                       setPickingMoveTime(true);
                     }}
-                    className={`inline-flex min-h-12 items-center justify-center rounded-lg px-5 text-sm font-semibold ${panelActionCls}`}
                     style={panelActionStyle}
                     {...panelPrimaryProps(panelActionIsPrimary)}
                   >
                     {MOVE_COPY.pickAnotherTime}
-                  </button>
+                  </BookerButton>
                 ) : (
                   <>
-                    <button
+                    <BookerButton
+                      palette={c}
+                      variant={panelActionVariant}
                       onClick={() => void moveExistingCall()}
                       disabled={submitting || !moveReasonValid || !selectedSlot}
-                      className={`inline-flex min-h-12 items-center justify-center rounded-lg px-5 text-sm font-semibold disabled:opacity-60 ${panelActionCls}`}
                       style={panelActionStyle}
                       {...panelPrimaryProps(panelActionIsPrimary)}
                     >
@@ -1180,8 +1188,10 @@ export default function Booker({
                         : newWhen
                           ? moveToTime(newWhen)
                           : MOVE_COPY.moveNoTime}
-                    </button>
-                    <button
+                    </BookerButton>
+                    <BookerButton
+                      palette={c}
+                      variant="secondary"
                       onClick={() => {
                         // #2203: a lead the link named still HAS this call, so the
                         // way back is the panel about it. Dropping them into the
@@ -1193,23 +1203,23 @@ export default function Booker({
                         setMoveDetail("");
                       }}
                       disabled={submitting}
-                      className={`inline-flex min-h-12 items-center justify-center rounded-lg border px-5 text-sm font-semibold disabled:opacity-60 ${c.toggleBorder} ${c.body} ${c.navHover}`}
                     >
                       {keepExistingTime(shortDay(existingCall.startsAt))}
-                    </button>
+                    </BookerButton>
                   </>
                 )}
                 {/* Last, and quietest. Rare and irreversible goes at the bottom
                     (L609), and it is a plain control rather than a red one until
                     it is pressed: nothing is destroyed by opening the question. */}
                 {existingCall.mayCancel && (
-                  <button
+                  <BookerButton
+                    palette={c}
+                    variant="quiet"
                     onClick={() => setConfirmingCancel(true)}
                     disabled={submitting}
-                    className={`inline-flex min-h-12 items-center justify-center rounded-lg px-5 text-sm font-semibold underline underline-offset-2 hover:no-underline disabled:opacity-60 ${c.muted}`}
                   >
                     {BOOKER_CANCEL_COPY.start}
-                  </button>
+                  </BookerButton>
                 )}
               </div>
               )}
@@ -1242,17 +1252,19 @@ export default function Booker({
           <h2 className={`text-xl font-semibold ${c.title}`}>
             {BOOKER_CANCEL_COPY.doneHeading}
           </h2>
-          <button
+          <BookerButton
+            palette={c}
+            variant="primary"
+            className="mt-6"
             onClick={() => {
               setCancelled(false);
               setOnLanding(false);
               setSelectedSlot(null);
             }}
-            className={`mt-6 inline-flex min-h-12 items-center justify-center rounded-lg px-5 text-sm font-semibold ${c.confirm}`}
             style={confirmStyle}
           >
             {BOOKER_CANCEL_COPY.doneBookAgain}
-          </button>
+          </BookerButton>
         </div>
       </div>
     );
@@ -1523,12 +1535,14 @@ export default function Booker({
           the far ahead search is deliberately NOT offered, because we do not know
           there is a far side to look at. */}
       {emptyCause === "unknown" && (
-        <button
+        <BookerButton
+          palette={c}
+          variant="secondary"
+          size="sm"
           onClick={() => picker.retry()}
-          className={`inline-flex min-h-11 items-center justify-center rounded-lg border px-4 text-sm font-semibold ${c.toggleBorder} ${c.body} ${c.navHover}`}
         >
           {UNCLASSIFIED_EMPTY_RETRY}
-        </button>
+        </BookerButton>
       )}
       {isClosure && nextDaySlots === null && (
         <>
@@ -1539,10 +1553,12 @@ export default function Booker({
                 : NEXT_DAYS_COPY.failed}
             </p>
           )}
-          <button
+          <BookerButton
+            palette={c}
+            variant="secondary"
+            size="sm"
             onClick={() => void revealNextDays()}
             disabled={loadingNext}
-            className={`inline-flex min-h-11 items-center justify-center rounded-lg border px-4 text-sm font-semibold disabled:opacity-60 ${c.toggleBorder} ${c.body} ${c.navHover}`}
           >
             {loadingNext ? (
               // Dots AND the word. The dots are what reads as working from the
@@ -1557,7 +1573,7 @@ export default function Booker({
             ) : (
               NEXT_DAYS_COPY.ask
             )}
-          </button>
+          </BookerButton>
           {/* Still ALIVE, distinct from started: a search this slow needs to say so
               before a lead concludes it is broken and leaves. Announced, so it
               reaches somebody who is not watching the button. Gone the instant the
@@ -1745,17 +1761,20 @@ export default function Booker({
               the reader (L604), and every fact in it was already on the page: the
               heading names the call, the line under it states the time, the field
               is labelled Phone and the button says Confirm booking. */}
-          <button
+          <BookerButton
+            palette={c}
+            variant="primary"
+            size="lg"
             onClick={submit}
             disabled={submitting}
             style={confirmStyle}
-            className={`group inline-flex min-h-14 w-full items-center justify-center gap-2 rounded-xl px-4 text-base font-semibold ${c.confirm} active:translate-y-px disabled:opacity-60`}
+            className="group w-full gap-2 active:translate-y-px"
           >
             {submitting ? DETAILS_COPY.confirming : DETAILS_COPY.confirm}
             {!submitting && (
               <ArrowRightIcon className="h-4 w-4 transition-transform duration-150 ease-[cubic-bezier(0.2,0.8,0.2,1)] group-enabled:group-hover:translate-x-1" />
             )}
-          </button>
+          </BookerButton>
           {submitting && stalled && (
             <p
               role="status"
