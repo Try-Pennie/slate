@@ -148,13 +148,19 @@ export function laneNote(lane: LaneName): string {
  *
  * The count is derived, so a tenth watched lane cannot leave this sentence
  * claiming nine.
+ *
+ * Since #2543 the two time off jobs ARE watched, by `TIME_OFF_STALE_BOUNDS_MS` and
+ * the Slack lane watchdog. They stay out of THIS map because it drives the external
+ * /api/health 503, and a morning report that did not go out is a missing safety net
+ * rather than the site being down. So the sentence says these bounds do not apply
+ * to them rather than that a heartbeat would mean nothing, which stopped being true.
  */
 export function cronLanesNote(): string {
   return (
     `The ${LANE_NAMES.length} lanes that run every minute or every few minutes, each stamping ` +
     `a heartbeat when a tick succeeds. The hourly roster sync, the two time off jobs and the ` +
-    `Snowflake export are not here: they run too seldom for a heartbeat to mean much, and each ` +
-    `raises its own alert instead.`
+    `Snowflake export are not here: they run too seldom for these bounds to mean anything, and ` +
+    `each raises its own alert instead.`
   );
 }
 
@@ -275,6 +281,51 @@ export const RETENTION_STALE_BOUNDS_MS: Record<string, number> = {
   // #1180. Same daily cadence and the same reasoning as its siblings: one missed
   // or failing run pages, and cron jitter never causes it.
   "prune-warehouse-pii": 28 * 60 * MIN,
+};
+
+/**
+ * The two daily time off lanes (#2543). Until now neither appeared in any bounds
+ * map, so a lane that stopped firing was watched by nothing at all.
+ *
+ * Slack only, like the mirror and retention families and for the same reason: a
+ * morning report that did not go out is a missing safety net, never an app
+ * outage, so none of these may flip the external /api/health 503.
+ *
+ * FOUR stamps for two lanes, because "the cron fired" and "the work happened" are
+ * different questions with different remedies (L11). The pair of them is what
+ * tells a reader whether to look at the schedule or at the route:
+ *
+ *   ooo-approvals          the cron reached the route, stamped even on the tick
+ *                          the 7am ET gate no-ops, so it means the dispatcher is
+ *                          firing and nothing more
+ *   ooo-approvals-report   yesterday's approvals were actually reported, or there
+ *                          were genuinely none to report. This one is ALSO the
+ *                          catch-up watermark: the run reads it to decide how far
+ *                          back to reach, so a stale stamp and a widening report
+ *                          are the same fact seen twice
+ *   ooo-digest             the same, for the 9am ET pending nudge
+ *   ooo-digest-nudge       every manager with a pending request was nudged, or the
+ *                          queue was genuinely empty
+ *
+ * `neverIsStale` is ON, as for the retention lanes: a lane that throws on its
+ * first run never stamps, and invisible forever is the worse failure for work that
+ * only happens once a day. The grace window in `pageWithGraceWindow` is what stops
+ * that paging on the deploy that introduces these stamps.
+ *
+ * THE BOUNDS ARE DERIVED, not chosen. The approvals lane fires daily, so its
+ * longest legitimate silence is a day; the pending digest fires Mon to Fri, so its
+ * longest legitimate silence is the WEEKEND, about three days, and a bound reasoned
+ * from "daily plus slack" would page every Sunday for ever.
+ * `scripts/test-time-off-lane-bounds.ts` re-derives both from the shipped cron
+ * expressions and the shipped time gates and fails on a bound that is under the gap
+ * or more than 12 hours over it, so neither number can be edited into one that
+ * cries wolf or one that notices nothing.
+ */
+export const TIME_OFF_STALE_BOUNDS_MS: Record<string, number> = {
+  "ooo-approvals": 28 * 60 * MIN,
+  "ooo-approvals-report": 28 * 60 * MIN,
+  "ooo-digest": 76 * 60 * MIN,
+  "ooo-digest-nudge": 76 * 60 * MIN,
 };
 
 /**

@@ -33,6 +33,11 @@ export const NOTIFIER_CALLS = [
   "recordHeartbeat",
   "reportCompletionSaturation",
   "reportDeletionSaturation",
+  // #2544, the sibling of the two above and allowed for the same reason: it is the
+  // thing that TELLS somebody the complete lane's sweeps are failing, and a
+  // reporter that took the lane down would be worse than the silence it replaces
+  // (L71). It swallows its own dispatch errors internally too.
+  "reportSweepFailures",
 ];
 
 /**

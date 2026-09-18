@@ -28,6 +28,7 @@ import {
   CANARY_STALE_BOUNDS_MS,
   MIRROR_STALE_BOUNDS_MS,
   RETENTION_STALE_BOUNDS_MS,
+  TIME_OFF_STALE_BOUNDS_MS,
   VERDICT_STALE_BOUNDS_MS,
 } from "../src/lib/monitor/health.ts";
 import { assert, finish } from "./lib/harness.ts";
@@ -46,6 +47,8 @@ const BOUNDS: Record<string, Record<string, number>> = {
   // whole feature is the observation that a stamp nobody reads is worse than no
   // stamp, because its presence reads as coverage.
   VERDICT_STALE_BOUNDS_MS,
+  // #2543: the two daily time off lanes, four stamps between them.
+  TIME_OFF_STALE_BOUNDS_MS,
 };
 
 // A lane that deliberately stamps with NO bound watching it. Empty on purpose: an
@@ -74,9 +77,36 @@ function tsFiles(dir: string): string[] {
  * failure: the scan cannot know what it stamps, and silently ignoring it would put
  * the hole right back.
  */
+/**
+ * Every `export const NAME = "literal"` in src/, as `NAME -> "literal"` (#2543).
+ *
+ * A third readable shape, beside the inline literal and the allowlist. Two lanes
+ * that must agree about a name (the route that STAMPS it and the bounds map that
+ * WATCHES it) are exactly the case for a shared constant, and without this the
+ * guard's only advice would be to write the string twice, which is the drift it
+ * exists to catch (L41). A name that resolves to two different literals is dropped
+ * rather than guessed at, because a wrong resolution would report a lane as
+ * covered when it is not (L98).
+ */
+function exportedStringConstants(files: string[]): Map<string, string> {
+  const seen = new Map<string, string>();
+  const ambiguous = new Set<string>();
+  for (const file of files) {
+    const src = readFileSync(file, "utf8");
+    for (const m of src.matchAll(/export const ([A-Z][A-Z0-9_]*)\s*=\s*["'`]([^"'`]+)["'`]/g)) {
+      const [, name, value] = m as unknown as [string, string, string];
+      if (seen.has(name) && seen.get(name) !== value) ambiguous.add(name);
+      else seen.set(name, value);
+    }
+  }
+  for (const name of ambiguous) seen.delete(name);
+  return seen;
+}
+
 function stampedLanes(): { lanes: Map<string, string>; opaque: string[] } {
   const lanes = new Map<string, string>();
   const opaque: string[] = [];
+  const constants = exportedStringConstants(tsFiles(SRC));
 
   for (const file of tsFiles(SRC)) {
     // The helper's own definition, not a stamp site.
@@ -96,6 +126,8 @@ function stampedLanes(): { lanes: Map<string, string>; opaque: string[] } {
       const literal = /^["'`]([^"'`]+)["'`]$/.exec(arg);
       if (literal) {
         lanes.set(literal[1], where);
+      } else if (constants.has(arg)) {
+        lanes.set(constants.get(arg)!, where);
       } else if (allowlisted.length === 0) {
         opaque.push(`${where}: recordHeartbeat(${arg})`);
       }
@@ -118,6 +150,21 @@ assert(
 );
 for (const known of ["sync", "monitor", "snowflake-export", "smoke-canary-full", "verdict:availability-truth"]) {
   assert(stamped.has(known), `scan finds the ${known} stamp`);
+}
+// The constant-resolved shape needs its own control (#2543): these four are stamped
+// through a shared constant rather than an inline literal, so a regression in that
+// resolution would drop them from the scan, and a stamp the scan cannot see is one
+// nothing holds to having a bound.
+for (const viaConstant of [
+  "ooo-approvals",
+  "ooo-approvals-report",
+  "ooo-digest",
+  "ooo-digest-nudge",
+]) {
+  assert(
+    stamped.has(viaConstant),
+    `scan resolves the ${viaConstant} stamp through its shared constant, rather than only seeing inline literals`,
+  );
 }
 assert(
   opaque.length === 0,

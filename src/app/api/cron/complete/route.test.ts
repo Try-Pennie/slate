@@ -15,6 +15,11 @@ const service = vi.hoisted(() => ({
 const emit = vi.hoisted(() => ({ retryFailedDeliveries: vi.fn(async () => 0) }));
 const heartbeat = vi.hoisted(() => ({ recordHeartbeat: vi.fn(async () => {}) }));
 const saturation = vi.hoisted(() => ({ reportCompletionSaturation: vi.fn(async () => {}) }));
+const sweepFailure = vi.hoisted(() => ({
+  reportSweepFailures: vi.fn(async (_outcomes: { key: string; ok: boolean }[]) => {}),
+  COMPLETION_SWEEP_FAILING_KEY: "completion_sweep_failing",
+  WEBHOOK_RETRY_SWEEP_FAILING_KEY: "webhook_retry_sweep_failing",
+}));
 
 vi.mock("@/lib/cron", () => cron);
 vi.mock("@/lib/locks", () => locks);
@@ -23,6 +28,7 @@ vi.mock("@/lib/webhooks/emit", () => emit);
 vi.mock("@/lib/google/sync-coalesce", () => ({ CRON_LOCK_TTL_MS: 1000 }));
 vi.mock("@/lib/monitor/heartbeat", () => heartbeat);
 vi.mock("@/lib/monitor/sweep-saturation", () => saturation);
+vi.mock("@/lib/monitor/sweep-failure", () => sweepFailure);
 
 import { GET } from "./route";
 
@@ -107,5 +113,50 @@ describe("GET /api/cron/complete", () => {
     const res = await GET(req());
     expect(res.status).toBe(200);
     expect(heartbeat.recordHeartbeat).toHaveBeenCalledWith("complete");
+  });
+
+  // #2544. The saturation streak above is deliberately told NOTHING by a failed
+  // run, and until now nothing else spoke for that outcome either: the catch
+  // logged, the body said `completed: "error"` on a 200, and the heartbeat was
+  // stamped either way, so a sweep failing every five minutes paged nobody.
+  it("reports both sweeps as healthy on an ordinary tick", async () => {
+    cron.isAuthorizedCron.mockReturnValueOnce(true);
+    await GET(req());
+    expect(sweepFailure.reportSweepFailures).toHaveBeenCalledWith([
+      { key: "completion_sweep_failing", ok: true },
+      { key: "webhook_retry_sweep_failing", ok: true },
+    ]);
+  });
+
+  it("reports the completion sweep as failing when it throws", async () => {
+    cron.isAuthorizedCron.mockReturnValueOnce(true);
+    service.completePastBookings.mockRejectedValueOnce(new Error("completion boom"));
+    const res = await GET(req());
+    // The lane stays alive and honest: a 200, an "error" in the body, AND a signal
+    // somebody will actually receive.
+    expect(res.status).toBe(200);
+    expect((await res.json()).completed).toBe("error");
+    expect(sweepFailure.reportSweepFailures).toHaveBeenCalledWith([
+      { key: "completion_sweep_failing", ok: false },
+      { key: "webhook_retry_sweep_failing", ok: true },
+    ]);
+  });
+
+  it("reports the delivery retry as failing on its own, without accusing the other sweep", async () => {
+    cron.isAuthorizedCron.mockReturnValueOnce(true);
+    emit.retryFailedDeliveries.mockRejectedValueOnce(new Error("retry boom"));
+    await GET(req());
+    expect(sweepFailure.reportSweepFailures).toHaveBeenCalledWith([
+      { key: "completion_sweep_failing", ok: true },
+      { key: "webhook_retry_sweep_failing", ok: false },
+    ]);
+  });
+
+  // Monitoring must never take down the lane it watches (L71).
+  it("still returns 200 when the sweep failure report throws", async () => {
+    cron.isAuthorizedCron.mockReturnValueOnce(true);
+    sweepFailure.reportSweepFailures.mockRejectedValueOnce(new Error("slack down"));
+    const res = await GET(req());
+    expect(res.status).toBe(200);
   });
 });

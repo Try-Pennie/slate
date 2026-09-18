@@ -5,7 +5,7 @@
  * calling these, instead of holding a second copy that would drift the first time
  * someone edited one and not the other (L41). The watchdog imports them back.
  *
- * Five lane families, five voices, deliberately: these lanes fail for different
+ * Six lane families, six voices, deliberately: these lanes fail for different
  * reasons and are recovered by different people doing different things, and
  * #1123 already had to unpick one shared message that pointed responders at the
  * wrong lane and lock.
@@ -110,6 +110,89 @@ export function mirrorRecoveryText(lane: string): string {
   return (
     `The Snowflake mirror export lane is running again, so the analytics ` +
     `warehouse is being kept up to date. No action is needed.`
+  );
+}
+
+/**
+ * What each time off stamp means when it goes quiet (#2543).
+ *
+ * Four stamps, four sentences, for the #1123 reason: the two lanes each carry a
+ * "the cron reached the route" stamp and a "the work happened" one, and those send
+ * a reader to two different places. Telling somebody the schedule has stopped when
+ * the route is firing and throwing wastes the morning the report did not go out.
+ *
+ * `cost` is what a person loses while it holds, and `look` is where to go. Both
+ * are phrased for a reader who does not know these lanes exist.
+ */
+const TIME_OFF_SUBJECT: Record<string, { what: string; cost: string; look: string }> = {
+  "ooo-approvals": {
+    what: "the daily time off approvals report",
+    cost:
+      "nothing is reaching the route at all, so no report can go out however healthy the rest of it is",
+    look:
+      "the ooo-approvals entries in worker/cron-routes.ts and wrangler.jsonc, then the Worker logs for tag=cron",
+  },
+  "ooo-approvals-report": {
+    what: "the daily CSV of yesterday's approved time off",
+    cost:
+      "the sales managers are getting no record of who was approved, and the report catches up its own gap when it next runs, so the days since are still recoverable",
+    look: "the Worker logs for the /api/cron/ooo-approvals 500, and that Gmail can still send",
+  },
+  "ooo-digest": {
+    what: "the morning nudge about pending time off",
+    cost:
+      "nothing is reaching the route at all, so no manager can be nudged however healthy the rest of it is",
+    look:
+      "the ooo-digest entries in worker/cron-routes.ts and wrangler.jsonc, then the Worker logs for tag=cron",
+  },
+  "ooo-digest-nudge": {
+    what: "the morning nudge about pending time off",
+    cost:
+      "no manager is being reminded of the requests waiting on them, so agents are waiting on approvals nobody has been told about",
+    look: "the Worker logs for the /api/cron/ooo-digest 500, and that Slack still accepts a DM",
+  },
+};
+
+/**
+ * A time off lane that has gone quiet (#2543).
+ *
+ * Deliberately not the core lane wording: these fire once a day rather than once a
+ * minute, so a CPU kill on the shared invocation is not the usual cause and sending
+ * the reader to look for one would send them after a fault that is not there. The
+ * bound is quoted in hours or days rather than minutes, because "has not run for
+ * 4,380 minutes" is arithmetic shown to somebody reading a phone.
+ */
+export function timeOffLaneAlertText(lane: StaleLane): string {
+  const subject = TIME_OFF_SUBJECT[lane.lane]!;
+  const bound = describeGap(lane.maxStaleMs);
+  const opener = `${subject.what[0]!.toUpperCase()}${subject.what.slice(1)} `;
+  if (lane.unreadable) {
+    return (
+      `${opener}has a last-run record that cannot be read, so it is being treated as ` +
+      `stopped (expected a run at least every ${bound}). While that holds, ${subject.cost}. ` +
+      `Check ${subject.look}.`
+    );
+  }
+  if (!Number.isFinite(lane.ageMs)) {
+    return (
+      `${opener}has NEVER once run, so it has either failed every run since it was ` +
+      `deployed or is not being scheduled (expected a run at least every ${bound}). ` +
+      `${subject.cost[0]!.toUpperCase()}${subject.cost.slice(1)}. Check ${subject.look}.`
+    );
+  }
+  return (
+    `${opener}has not run in ${describeGap(lane.ageMs)} (expected at least every ${bound}). ` +
+    `While that holds, ${subject.cost}. Check ${subject.look}.`
+  );
+}
+
+/** All-clear for a time off lane (#2543). It names the work that is happening
+ *  again, because the page was about a morning that produced nothing. */
+export function timeOffRecoveryText(lane: string): string {
+  const subject = TIME_OFF_SUBJECT[lane]!;
+  return (
+    `${subject.what[0]!.toUpperCase()}${subject.what.slice(1)} has run again inside its ` +
+    `bound, so the earlier page is cleared. No action is needed.`
   );
 }
 

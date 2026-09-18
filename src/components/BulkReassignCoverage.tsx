@@ -15,6 +15,7 @@ import {
 } from "@/lib/booking/move-progress";
 import {
   COVERAGE_PANEL_NAME,
+  coverageMoveMayStart,
   coverageNothingMovedNotice,
   coverageNothingToMoveSentence,
   coveragePanelDescription,
@@ -109,6 +110,15 @@ export default function BulkReassignCoverage({
    * showed the reader "Enter a range" when they had entered one (L10, L11).
    */
   const [preview, setPreview] = useState<CoveragePreviewState>({ kind: "unasked" });
+  /**
+   * How many times the reader has asked for the count again (#2157).
+   *
+   * The count is debounced on the RANGE, so a read that failed has no second
+   * attempt unless the dates change: "try again in a moment" named an action
+   * nothing would carry out (L111). Since an unreadable count now REFUSES the
+   * move, the refusal owes a way out that is not "edit the range you meant".
+   */
+  const [countAttempt, setCountAttempt] = useState(0);
 
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -178,7 +188,9 @@ export default function BulkReassignCoverage({
       cancelled = true;
       clearTimeout(t);
     };
-  }, [base, from, to, jobId]);
+    // `countAttempt` is in the deps so Count again really re-reads (#2157). Without
+    // it the button would be a control that looks like it did something.
+  }, [base, from, to, jobId, countAttempt]);
 
   // Poll while a job is running and not yet done. The fetch lives in the effect
   // (like useFetchList) so setState only happens after an await, never
@@ -364,15 +376,35 @@ export default function BulkReassignCoverage({
             {nothingMoved ? coverageNothingMovedNotice(agentName) : coveragePreviewLine(preview)}
           </p>
 
+          {/* The way out of the refusal (#2157). Only on the state that refuses,
+              because a retry offered beside a working count is a control with
+              nothing to do. Secondary, since the reader's next move is to get the
+              count back rather than to press the primary action. */}
+          {preview.kind === "unreadable" && (
+            <div className="mt-3">
+              <button
+                type="button"
+                className={btnSecondaryCls}
+                onClick={() => setCountAttempt((n) => n + 1)}
+              >
+                Count again
+              </button>
+            </div>
+          )}
+
           {error && <p className="mt-3 text-sm text-[var(--error)]">{error}</p>}
 
           <button
             type="button"
             className={`${btnCls} mt-4 disabled:cursor-not-allowed disabled:opacity-50`}
+            /* #2157: ONE predicate, shared with the line above, rather than a list
+               of states assembled here. It used to enumerate the states that may
+               not start, so "the count could not be read" inherited permission from
+               nobody having thought about it, and a manager could move real
+               customers' appointments without knowing how many. */
             disabled={
               starting ||
-              preview.kind === "counting" ||
-              (preview.kind === "count" && preview.count === 0) ||
+              !coverageMoveMayStart(preview) ||
               (reasonCode === "other" && !reasonDetail.trim())
             }
             onClick={start}

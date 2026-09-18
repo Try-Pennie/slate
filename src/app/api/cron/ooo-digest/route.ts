@@ -21,6 +21,8 @@ import {
 } from "@/lib/monitor/cron-alert-copy";
 import { recordConsecutiveStreak, clearFailureStreak } from "@/lib/notify/streak";
 import { sendThrottledAlert, resolveAlert } from "@/lib/notify/dispatch";
+import { recordHeartbeat } from "@/lib/monitor/heartbeat";
+import { OOO_DIGEST_ATTEMPT_LANE, OOO_DIGEST_NUDGE_LANE } from "@/lib/ooo/time-off-lanes";
 
 export const dynamic = "force-dynamic";
 
@@ -121,6 +123,11 @@ export async function GET(req: NextRequest) {
   if (!isAuthorizedCron(req)) {
     return new NextResponse("unauthorized", { status: 401 });
   }
+  // #2543: the cron reached the route. Stamped BEFORE the time gate, so it is
+  // written by both weekday triggers and says one thing only, that the dispatcher
+  // is firing. Whether anybody was nudged is the second stamp, further down.
+  await recordHeartbeat(OOO_DIGEST_ATTEMPT_LANE);
+
   const force = req.nextUrl.searchParams.get("force") === "1";
   if (!force && !isDigestTime(Date.now())) {
     return NextResponse.json({ skipped: "not 9am ET" });
@@ -158,6 +165,11 @@ export async function GET(req: NextRequest) {
     | "reason"
   >[];
   if (pendingReqs.length === 0) {
+    // #2543: a MEASURED outcome, so the nudge stamp moves. "Nobody is waiting on a
+    // manager this morning" is an answer, and the read above throws rather than
+    // arriving here empty (#2383), so this branch can no longer be a failed read
+    // wearing a quiet morning's clothes.
+    await recordHeartbeat(OOO_DIGEST_NUDGE_LANE);
     return NextResponse.json({ sent: 0, pending: 0 });
   }
 
@@ -252,6 +264,15 @@ export async function GET(req: NextRequest) {
     // Escalate a mapping that stays broken across runs, instead of swallowing it.
     await noteDigestDelivery(d.managerId, label, ok);
   }
+
+  // #2543: the run reached the end of the queue, so the morning's nudging really
+  // happened. A per manager Slack failure does NOT withhold this: that condition
+  // has its own streak and its own page a few lines up, and suppressing the stamp
+  // for it would report the SCHEDULE as stopped when it is running perfectly and
+  // one address is wrong (L11). What withholds the stamp is a throw before here,
+  // which is the unreadable queue this lane used to answer 200 to.
+  await recordHeartbeat(OOO_DIGEST_NUDGE_LANE);
+
   return NextResponse.json({
     sent,
     failed,
