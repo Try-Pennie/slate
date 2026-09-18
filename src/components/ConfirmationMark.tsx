@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useSyncExternalStore } from "react";
+import { useEffect, useState, useSyncExternalStore, type ComponentType } from "react";
 import { CONFIRMATION_MARK } from "@/lib/booking/confirmation-mark";
 
 const REDUCED = "(prefers-reduced-motion: reduce)";
@@ -26,33 +26,72 @@ function motionOnServer(): boolean {
   return false;
 }
 
+type Player = ComponentType<{
+  onEnded: () => void;
+  onFailed: () => void;
+}>;
+
 /**
- * The check mark on the confirmation screen (#2163). See
- * `@/lib/booking/confirmation-mark` for what the two assets are, why the panel is
- * painted that exact cream, and why it does not rest on the video's own last
- * frame.
+ * The player, its wasm and the 65 animation frames, fetched only once somebody
+ * is looking at the confirmation screen.
+ *
+ * A static import would put the player in the booker's FIRST load, which is a
+ * date picker: every lead would pay for it and only the ones who book would ever
+ * see it draw.
+ */
+async function loadPlayer(): Promise<Player> {
+  return (await import("@/components/ConfirmationMarkPlayer")).ConfirmationMarkPlayer;
+}
+
+/**
+ * The check mark on the confirmation screen (#2163, drawn by dotLottie since
+ * #2560). See `@/lib/booking/confirmation-mark` for what the assets are, why
+ * both of them are transparent, and why it does not rest on the animation's own
+ * last frame.
  *
  * **Reduced motion is handled HERE, not by the stylesheet.** The global guard in
  * globals.css sets `animation-duration` and `transition-duration`, which are CSS
- * properties. A playing video is neither, so it would run at full speed for
- * somebody who has asked their system for less motion, with a rule that reads as
- * covering all motion sitting directly above it.
+ * properties. A canvas painting itself frame by frame is neither, so it would run
+ * at full speed for somebody who has asked their system for less motion, with a
+ * rule that reads as covering all motion sitting directly above it.
  *
- * The still is ALWAYS in the tree, underneath. That is what makes the ending a
- * reveal rather than a swap, and it means a browser that cannot decode the video
- * (headless Chromium ships no H.264 decoder at all, and it is not alone) shows the
- * right picture rather than an empty box, with the poster covering the same case
- * for the frames before the first one arrives.
+ * **The still is ALWAYS in the tree, underneath.** That is what makes the ending
+ * a reveal rather than a swap, and it is the whole answer to every way the player
+ * can be absent: a chunk that never arrives, a wasm that will not load, an
+ * animation that will not fetch, and a lead who asked for less motion all leave
+ * the same correct picture rather than an empty panel.
  */
 export function ConfirmationMark() {
   const playable = useSyncExternalStore(subscribe, prefersMotion, motionOnServer);
-  const [ended, setEnded] = useState(false);
+  const [player, setPlayer] = useState<Player | null>(null);
+  const [phase, setPhase] = useState<"playing" | "ended" | "failed">("playing");
+
+  useEffect(() => {
+    if (!playable) return;
+    let live = true;
+    loadPlayer().then(
+      (component) => {
+        // Stored behind a function, or React would call it as an updater.
+        if (live) setPlayer(() => component);
+      },
+      () => {
+        // The safe path, and the reason this is not a fail-loud site: the still
+        // coin is already drawn and stays drawn, so a lead who never gets this
+        // chunk sees the same mark as a lead whose system asked for less motion.
+        // There is nothing for them to do and nothing for anyone to fix in the
+        // moment, so it must not throw out of a render that is otherwise fine.
+        if (live) setPhase("failed");
+      },
+    );
+    return () => {
+      live = false;
+    };
+  }, [playable]);
+
+  const Player = player;
 
   return (
-    <div
-      className="mx-auto flex max-w-72 items-center justify-center rounded-xl px-6 py-5"
-      style={{ background: CONFIRMATION_MARK.ground }}
-    >
+    <div className="mx-auto flex max-w-72 items-center justify-center px-6 py-5">
       <div className="relative h-36 w-36">
         {/* eslint-disable-next-line @next/next/no-img-element */}
         <img
@@ -63,25 +102,23 @@ export function ConfirmationMark() {
           height={CONFIRMATION_MARK.size}
           className="absolute inset-0 h-36 w-36 object-contain"
         />
-        {playable && (
-          <video
-            src={CONFIRMATION_MARK.video}
-            poster={CONFIRMATION_MARK.still}
-            width={CONFIRMATION_MARK.size}
-            height={CONFIRMATION_MARK.size}
-            autoPlay
-            muted
-            playsInline
-            // No `loop`: it plays once and gives way to the still beneath it.
-            onEnded={() => setEnded(true)}
-            data-ended={ended ? "true" : "false"}
+        {playable && Player && phase !== "failed" ? (
+          // The positioning and the fade are on a layer THIS component owns.
+          // DotLottieReact renders a wrapper of its own and puts `className` on
+          // it, so handing it these classes would work by accident, and it drops
+          // `style` entirely whenever a className is set, so the settle duration
+          // would silently never apply.
+          <div
+            data-testid="confirmation-mark-layer"
             aria-hidden="true"
             style={{ transitionDuration: `${CONFIRMATION_MARK.settleMs}ms` }}
-            className={`absolute inset-0 h-36 w-36 object-contain transition-opacity ${
-              ended ? "opacity-0" : "opacity-100"
+            className={`absolute inset-0 h-36 w-36 transition-opacity ${
+              phase === "ended" ? "opacity-0" : "opacity-100"
             }`}
-          />
-        )}
+          >
+            <Player onEnded={() => setPhase("ended")} onFailed={() => setPhase("failed")} />
+          </div>
+        ) : null}
       </div>
     </div>
   );
