@@ -139,6 +139,7 @@ function makeTierDropDeps(): BookingDeps {
     }),
     insertBusyBlocks: noop,
     moveBusyBlock: noop,
+    clearReminderRecord: noop,
     reassignSwap: async () => ({ prevGcalEventId: null, prevAgentEmail: null, updated: true }),
     deleteBusyBlocksForBooking: noop,
     deleteGcalMirrorBlock: noop,

@@ -78,6 +78,7 @@ import {
 import { eventDescription, eventSummary } from "@/lib/booking/core";
 import { formatSlotTime } from "@/lib/booking/slot-label";
 import { REASSIGN_INVITE_DESCRIPTION } from "@/lib/booking/orchestration";
+import { reminderBody, reminderSubject } from "@/lib/booking/reminder";
 
 /** One line of copy, and the state that puts it on screen. */
 export interface CopyLine {
@@ -534,6 +535,88 @@ export function inviteCopyScreens(): CopyScreen[] {
         "advisor, so it has to explain a fresh invite for a call they already have.",
       lines: [
         { state: "the body", text: REASSIGN_INVITE_DESCRIPTION },
+      ],
+    },
+  ];
+}
+
+/**
+ * The 24 hour reminder EMAIL (#2495).
+ *
+ * The only lead-facing surface Slate composes and sends itself rather than handing to
+ * Google, and until now the only way to read its wording was to trigger a real send
+ * to a real inbox. It is also the message a lead is most likely to REPLY to, because
+ * it goes from the advisor's own mailbox and says so, which makes its tone the thing
+ * worth looking at.
+ *
+ * It is not a React component, so the parity test cannot mount it; that is true of
+ * the calendar invite above too, and neither needs it. What makes both trustworthy is
+ * the rule the whole file rests on: this CALLS `reminderSubject` and `reminderBody`,
+ * the very builders the lane sends with, and holds no wording of its own (L41).
+ *
+ * The states are the ones that read DIFFERENTLY, which is the whole reason the
+ * builder takes a clock (#2497). `nowMs` is a fixture here like every other value, so
+ * the render is the same at midnight as at noon.
+ */
+export function reminderCopyScreens(): CopyScreen[] {
+  const manageUrl = "https://slate.trypennie.app/booking/manage/8f2c1a";
+  const advisor = "Jordan Lee";
+  /** The instant the reminder is written AT. The call below is 20 hours later. */
+  const REMINDER_NOW_MS = Date.UTC(2026, 7, 16, 22, 0, 0);
+  /** A call the day after the reminder, which is the ordinary case. */
+  const TOMORROW_ISO = SLOT_ISO;
+  /** A call LATER THE SAME DAY, which a booking made inside the window produces: it
+   *  is reminded at once, and "tomorrow" would simply be false. */
+  const TODAY_ISO = "2026-08-16T23:30:00.000Z";
+
+  const tomorrow = {
+    agentName: advisor,
+    startsAtIso: TOMORROW_ISO,
+    timezone: ZONE,
+    manageUrl,
+    nowMs: REMINDER_NOW_MS,
+  };
+  const laterToday = { ...tomorrow, startsAtIso: TODAY_ISO };
+  const otherZone = { ...tomorrow, timezone: "America/Los_Angeles" };
+
+  return [
+    {
+      screen: "Reminder email: the call is tomorrow",
+      purpose:
+        "The one message Pennie composes and sends a lead itself, a day before their " +
+        "call, from the advisor's own mailbox. It has to say who is calling and when, " +
+        "that there is nothing to set up, and how to move it.",
+      lines: [
+        {
+          state: "the subject line, which is most of what gets read",
+          text: reminderSubject(tomorrow),
+        },
+        { state: "the body", text: reminderBody(tomorrow) },
+      ],
+    },
+    {
+      screen: "Reminder email: the call is later today",
+      purpose:
+        "A booking made inside the 24 hour window is reminded at once, so this arrives " +
+        "alongside the calendar invite and must not claim the call is tomorrow. Worth " +
+        "reading beside the one above: the two differ by one word that would be " +
+        "plainly false if it were wrong.",
+      lines: [
+        { state: "the subject line", text: reminderSubject(laterToday) },
+        { state: "the body", text: reminderBody(laterToday) },
+      ],
+    },
+    {
+      screen: "Reminder email: a lead in another timezone",
+      purpose:
+        "The time is spelled in the LEAD's zone and carries it, because an email is " +
+        "read away from the page that set it and nothing else on screen says which " +
+        "clock it is in.",
+      lines: [
+        {
+          state: "the subject line, with the zone the lead chose",
+          text: reminderSubject(otherZone),
+        },
       ],
     },
   ];

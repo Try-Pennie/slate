@@ -30,7 +30,11 @@
 // Run: node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/test-booker-preview-coverage.ts
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
-import { bookerCopyScreens } from "../src/lib/booking/copy-preview.ts";
+import {
+  bookerCopyScreens,
+  inviteCopyScreens,
+  reminderCopyScreens,
+} from "../src/lib/booking/copy-preview.ts";
 import { scanCopyClockReads } from "./lib/scan-copy-clock-reads.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
@@ -42,6 +46,18 @@ const EMOJI = new RegExp("[\\u{1F300}-\\u{1FAFF}\\u{2600}-\\u{27BF}]", "u");
 const LEAKS = /undefined|NaN|\[object Object\]|\bnull\b|\{"/;
 
 const screens = bookerCopyScreens();
+
+/**
+ * Every group `pnpm preview:booker` prints, not only the screens.
+ *
+ * The per line checks below used to run over `bookerCopyScreens()` alone, so the
+ * calendar invite's wording (#1421) and the 24 hour reminder email's (#2495) were
+ * printed by the preview and checked by nothing: a guard's NAME is not a statement
+ * of its coverage (L400). The embed's block is deliberately still out, because it
+ * is read out of the shipping `widget.js` by the preview script and has its own
+ * guard there.
+ */
+const allScreens = [...screens, ...inviteCopyScreens(), ...reminderCopyScreens()];
 
 // --- 6. anti-vacuity ----------------------------------------------------------
 // A broken import or a renamed export would return nothing, and every assertion
@@ -69,8 +85,18 @@ assert(
   "both lead-facing surfaces are covered, not just one",
 );
 
+// The lead-facing surfaces that are NOT screens are each named, so one of them
+// dropping out of the preview fails here rather than quietly shrinking the set the
+// checks below run over (L98).
+for (const required of ["Calendar invite: the appointment", "Reminder email: the call is tomorrow"]) {
+  assert(
+    allScreens.some((s) => s.screen === required),
+    `"${required}" is previewed`,
+  );
+}
+
 // --- 1, 2, 4. every line is a real, clean, readable string ---------------------
-for (const screen of screens) {
+for (const screen of allScreens) {
   assert(screen.purpose.trim().length > 20, `${screen.screen} says what the screen is for`);
   assert(screen.lines.length > 0, `${screen.screen} has at least one state`);
 
@@ -95,9 +121,9 @@ for (const screen of screens) {
 
 // --- 3. deterministic ---------------------------------------------------------
 {
-  const once = JSON.stringify(bookerCopyScreens());
-  const twice = JSON.stringify(bookerCopyScreens());
-  eq(once, twice, "two renders of the preview are identical");
+  const render = () =>
+    JSON.stringify([...bookerCopyScreens(), ...inviteCopyScreens(), ...reminderCopyScreens()]);
+  eq(render(), render(), "two renders of the preview are identical");
 
   // And structurally so: a builder reading the clock would drift a day at
   // midnight and read as a copy change in every diff taken after it.

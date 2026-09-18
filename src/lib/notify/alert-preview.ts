@@ -313,6 +313,10 @@ import {
 import { HANDOFF_UNDELIVERED_AFTER_MS } from "@/lib/handoffs/check";
 import { formatOwnerReassignNotice } from "@/lib/booking/owner-notice-copy";
 import { reminderFailedAlert } from "@/lib/booking/reminder-send";
+import {
+  formatReminderFailureRateAlert,
+  formatReminderFailureRateAllClear,
+} from "@/lib/booking/reminder-rate";
 import type { HandoffKind } from "@/lib/handoffs/kinds";
 
 /** One rendered state of one alert. */
@@ -2213,6 +2217,47 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     // The REAL builder, never a copy of its wording (L41): a preview showing text
     // that is not what ships would be worse than no preview.
     text: reminderFailedAlert("bk_8f21c4", "Gmail send failed: 503"),
+  },
+  // #2496. The one above and the three below are the whole point of the issue: they
+  // are the same fault at two very different sizes, and they have to READ that way
+  // side by side or the second says nothing the first did not.
+  {
+    key: "booking_reminders_failing",
+    state: "every reminder in the window failing, with a repair to name",
+    channel: "alert",
+    text: formatReminderFailureRateAlert({
+      attempts: 24,
+      failures: 24,
+      pct: 100,
+      windowMinutes: 240,
+      topCodes: [{ code: "not_authorised", count: 24 }],
+    }),
+  },
+  {
+    key: "booking_reminders_failing",
+    state: "a share of them failing, on a code with no canned advice",
+    channel: "alert",
+    text: formatReminderFailureRateAlert({
+      attempts: 31,
+      failures: 9,
+      pct: 29,
+      windowMinutes: 240,
+      topCodes: [
+        { code: "unclassified", count: 6 },
+        { code: "provider_unavailable", count: 3 },
+      ],
+    }),
+  },
+  {
+    key: "booking_reminders_failing",
+    state: "the wave is over",
+    channel: "recovery",
+    text: formatReminderFailureRateAllClear({
+      attempts: 46,
+      failures: 0,
+      pct: 0,
+      windowMinutes: 240,
+    }),
   },
   {
     key: "busy_block_write_through",

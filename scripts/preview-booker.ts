@@ -9,7 +9,11 @@
 // here is what ships. See src/lib/booking/copy-preview.ts.
 //
 // Run: pnpm preview:booker
-import { bookerCopyScreens, inviteCopyScreens } from "../src/lib/booking/copy-preview.ts";
+import {
+  bookerCopyScreens,
+  inviteCopyScreens,
+  reminderCopyScreens,
+} from "../src/lib/booking/copy-preview.ts";
 import { embedCopyEntries, embedCopyState } from "../src/lib/booking/embed-copy.ts";
 
 /**
@@ -34,7 +38,14 @@ const embedScreen = {
 
 let screens = 0;
 let lines = 0;
-for (const screen of [...bookerCopyScreens(), embedScreen, ...inviteCopyScreens()]) {
+for (const screen of [
+  ...bookerCopyScreens(),
+  embedScreen,
+  ...inviteCopyScreens(),
+  // #2495. Last, because it is the last thing a lead reads before the call, and
+  // because it is the only one of these Slate composes AND sends itself.
+  ...reminderCopyScreens(),
+]) {
   screens++;
   console.log(`\n${"=".repeat(78)}`);
   console.log(screen.screen);

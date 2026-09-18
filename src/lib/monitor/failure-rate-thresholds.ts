@@ -55,3 +55,42 @@ export const SHIPPED_FAILURE_RATE_THRESHOLDS: RateThresholds = {
   minAttempts: 10,
   failPct: 20,
 };
+
+/**
+ * When a wave of reminder emails that did not go out is a page rather than one
+ * lead's bad address (#2496).
+ *
+ * `booking_reminder_failed` fires per booking and is throttled at six hours, so a
+ * single refused recipient and every reminder in the roster failing arrive as one
+ * message at the same rate. The two send different people to do different things,
+ * so the lane measures a SHARE as well, in the same shape as the booking failure
+ * rate above and judged by the same `judgeFailureRate`.
+ *
+ * ## Why these numbers, and why they are the same as the pair above
+ *
+ * They are the same because the argument that produced them is the same one, not
+ * because they were copied: the measurement in #2484 is the only real traffic
+ * either check can be fitted to, and a reminder wave is strictly SMALLER than the
+ * lead volume that measurement counted, since only a lead who books gets one.
+ *
+ * On the pilot page #2484 measured a median of 18 Low leads an hour, so a four
+ * hour window sees about 72 leads and some fraction of that in bookings. Ten
+ * attempts is what that fraction can be relied on to reach inside one window while
+ * still being large enough that one failure cannot carry the share: at the floor a
+ * breach takes three failures, not one (L139, the floor low enough to be reachable
+ * is also low enough for saturation and noise to look alike).
+ *
+ * A shorter window was rejected for the reason the booking check rejected it. It
+ * would not shorten the time to a page, because the window ROLLS and the check
+ * judges as soon as the floor has accumulated; it would only make the denominator
+ * smaller, and a denominator of five turns two bad addresses into a 40 percent
+ * share.
+ *
+ * Re-measure as the flip widens, and expect this floor to move before the booking
+ * one does: it sits on the smaller of the two populations.
+ */
+export const SHIPPED_REMINDER_FAILURE_RATE_THRESHOLDS: RateThresholds = {
+  windowMs: 4 * 60 * 60_000,
+  minAttempts: 10,
+  failPct: 20,
+};

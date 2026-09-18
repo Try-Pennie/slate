@@ -157,4 +157,54 @@ function spy(over: Partial<ReminderDeps> = {}) {
   eq(result.skipped, 1, "the run counts it, because a silent skip is how a gap hides");
 }
 
+// --- the run reports WHY each send failed, in a bounded vocabulary ---------------
+//
+// #2496. One lead's refused address and every reminder failing are the same single
+// throttled message today, so the lane also measures a SHARE, and a share is only
+// actionable if it can name what is failing. The classification happens HERE, where
+// the error is caught, rather than in the window: the window stores counts, and a
+// map keyed on the provider's raw message would have one key per message.
+{
+  const boom = (msg: string) => async () => {
+    throw new Error(msg);
+  };
+  const s = spy({
+    loadDue: async () => [
+      due({ id: "a", attendeeEmail: "a@x.com" }),
+      due({ id: "b", attendeeEmail: "b@x.com" }),
+      due({ id: "c", attendeeEmail: "c@x.com" }),
+    ],
+  });
+  let n = 0;
+  s.deps.send = async () => {
+    n += 1;
+    if (n === 1) return boom("Gmail send failed: 403 forbidden")();
+    if (n === 2) return boom("Gmail send failed: 403 forbidden")();
+    return boom("Gmail send failed: 400 Invalid To header")();
+  };
+  const result = await runBookingReminders(s.deps);
+  eq(result.failed, 3, "all three failed");
+  eq(result.attempted, 3, "and all three were attempted");
+  eq(result.byCode.not_authorised, 2, "two of them because the mailbox refused us");
+  eq(result.byCode.recipient_refused, 1, "and one because the address was rejected");
+}
+
+// --- a lead with no address is not an ATTEMPT --------------------------------------
+//
+// The share is failures over sends ATTEMPTED. Counting a booking with no address in
+// the denominator would make a real outage look proportionally smaller exactly while
+// it was happening, which is the thing a share exists to prevent.
+{
+  const s = spy({
+    loadDue: async () => [
+      due({ id: "a", attendeeEmail: null }),
+      due({ id: "b", attendeeEmail: "b@x.com" }),
+    ],
+  });
+  const result = await runBookingReminders(s.deps);
+  eq(result.skipped, 1, "the addressless booking is skipped");
+  eq(result.attempted, 1, "and is not in the denominator of the share");
+  eq(Object.keys(result.byCode).length, 0, "a clean run names no failure reasons");
+}
+
 finish();

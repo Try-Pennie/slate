@@ -439,6 +439,11 @@ export const ALERT_CATALOG: AlertEntry[] = [
       "every monitor tick (#1280). It was an incident until that sweep existed.",
   },
   {
+    key: "booking_reminders_failing",
+    kind: "condition",
+    why: "A SHARE of the reminder emails in a rolling window did not go out, which is a broken send path rather than one lead's address: a refused mailbox delegation or a Gmail outage goes on costing every lead their reminder until somebody repairs it. Its sibling `booking_reminder_failed` is the incident about one booking and rightly has no recovery; this one has a healthy state to observe, and the reader who was paged about a wave needs to know when the wave ended (#2496).",
+  },
+  {
     key: "ooo_calcom_unprotected",
     kind: "condition",
     why: "An agent is on approved time off right now with no cal.com block in place, so cal.com can still book them while they are away; it stays true until a retry lands the override or the absence ends, and the monitor lane re-measures every 5 minutes.",
