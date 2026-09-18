@@ -35,7 +35,15 @@ vi.mock("@/lib/booking/reason-options", () => ({
     cancel: { active: [] },
   })),
 }));
-vi.mock("@/lib/booking/service", () => ({ existingCallForLanding: vi.fn(async () => null) }));
+// #2556 gave the page a second call into this module, so the mock has to carry it or
+// every case here dies on the import rather than on what it is testing. It answers the
+// link's own values unchanged, which is what a landing page carrying all three costs:
+// this suite is about the BUCKET read, and the attendee resolution must not decide
+// anything in it.
+vi.mock("@/lib/booking/service", () => ({
+  existingCallForLanding: vi.fn(async () => null),
+  landingAttendee: vi.fn(async (_identity: unknown, link: unknown) => link),
+}));
 
 import BookEntry from "./page";
 
