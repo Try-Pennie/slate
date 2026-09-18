@@ -132,13 +132,27 @@ retention, and covered by §1 of the retention doc.
 ## 4. Snowflake (archival mirror)
 
 **What goes there.** The booking mirror exports `attendee_name`, `attendee_email`,
-`attendee_phone`, `prefill` and, notably, **`manage_token`**
-(`src/lib/snowflake/export-core.ts`).
+`attendee_phone` and `prefill` (`src/lib/snowflake/export-core.ts`).
 
-The manage token is worth calling out separately, because it is not a description of
-the person, it is a **credential**: whoever holds it can reschedule or cancel that
-booking without any other authentication. It is mirrored to the warehouse along with
-the contact data, so warehouse read access is effectively booking control access.
+**It no longer carries the booking manage token** (slate#2564). That token is not a
+description of the person, it is a **credential**: whoever holds it can reschedule or
+cancel that booking with no other authentication, so mirroring it made warehouse read
+access equal to booking control access.
+
+It reached the warehouse by two routes, and the second was the larger. Measured on
+2026-09-18, `bookings.manage_token` covered 2,392 rows while
+`webhook_deliveries.payload.manage_url`, the same token in a link inside a payload
+mirrored whole, covered 6,522 of 6,550 deliveries. Both are stripped now, both are
+declared in one place (`src/lib/snowflake/mirror-credentials.ts`), and three things
+are derived from that declaration: the redaction applied in `buildMergeSql`, which
+every merge path goes through; the 6 hourly sweep that clears rows already exported
+and pages if a residual survives; and `scripts/test-mirror-credentials.ts`, which
+fails the build when a credential shaped column joins the mirror without being
+declared or reasoned about.
+
+The warehouse columns are left in place and permanently null rather than dropped: a
+DROP is hand applied DDL against production that would break any consumer naming
+them, and gains nothing over a column nothing writes.
 
 **Who can see it.** Whoever holds Snowflake access. Slate's own export role can
 UPDATE as well as INSERT, so Slate can redact the warehouse itself

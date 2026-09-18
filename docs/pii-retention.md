@@ -351,13 +351,18 @@ Two things in it that change how a request should be answered, so they are flagg
 here too rather than only there:
 
 - **Slate does not hold the consent it asserts.** On `booking.created` it sends
-  `voiceOptIn` / `smsOptIn` / `emailOptIn` as subscribed to Regal, and there is no
-  consent checkbox, privacy notice or policy link anywhere on the booker. Consent is
-  captured upstream on the landing page, so "prove this person agreed to be called"
-  cannot be answered from Slate's own data. #1041 is the issue for the booker side.
-- **The Snowflake mirror carries `manage_token`**, which is a credential rather than
-  a description: whoever holds it can reschedule or cancel that booking with no other
-  authentication. Warehouse read access is therefore booking control access.
+  `voiceOptIn` / `smsOptIn` / `emailOptIn` as subscribed to Regal. #1041 has since put
+  privacy policy and terms links on the standalone booker and the manage page, and the
+  embedded booker inherits the host page's, but a policy link is not a record that this
+  person agreed to be called: there is still no consent checkbox and Slate records no
+  consent of its own. Consent is captured upstream on the landing page, so "prove this
+  person agreed to be called" cannot be answered from Slate's own data.
+- **The Snowflake mirror no longer carries the booking manage token** (#2564). It
+  reached the warehouse twice, as `bookings.manage_token` and inside
+  `webhook_deliveries.payload.manage_url`, and both are stripped at the one point
+  every merge path goes through. A 6 hourly sweep clears what was already exported
+  and pages if any survives, and a build guard stops another credential joining the
+  mirror. The warehouse columns are left in place and permanently null.
 
 ## 9. Confirmed legal positions (2026-07-29)
 

@@ -190,6 +190,8 @@ import {
   erasureResidualRecovery,
   purgeSqlBrokenAlert,
   purgeSqlBrokenRecovery,
+  credentialSweepAlert,
+  CREDENTIAL_SWEEP_RECOVERY,
 } from "@/lib/snowflake/alert-copy";
 import {
   agentSyncFailureAlert,
@@ -2629,6 +2631,19 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     ]) },
   { key: "snowflake_purge_sql_broken", state: "running again", channel: "recovery",
     text: purgeSqlBrokenRecovery() },
+  // #2564. Both credentials shown at once, because the reader's question is what a
+  // warehouse account can currently DO, and the answer is the union of them.
+  { key: "snowflake_credential_residual", state: "a credential survived the sweep", channel: "alert",
+    text: credentialSweepAlert([
+      "bookings.manage_token: 1 row still holds the credential after the sweep",
+      "webhook_deliveries.payload:manage_url: 17 rows still hold the credential after the sweep",
+    ]) },
+  { key: "snowflake_credential_residual", state: "the count could not be read", channel: "alert",
+    text: credentialSweepAlert([
+      "bookings.manage_token: could not read the residual count, so the sweep is unverified",
+    ]) },
+  { key: "snowflake_credential_residual", state: "the mirror is clean", channel: "recovery",
+    text: CREDENTIAL_SWEEP_RECOVERY },
 
   // --- the hourly and every-minute lanes ---------------------------------------
   { key: "agent_sync_failures", state: "consecutive failures", channel: "alert",

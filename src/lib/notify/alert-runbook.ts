@@ -215,6 +215,7 @@ const FAMILY_BY_KEY: Record<string, AlertFamily> = {
   snowflake_erasure_residual: "the-warehouse-mirror-or-an-erasure-is-in-doubt",
   snowflake_erasure_residual_test: "the-warehouse-mirror-or-an-erasure-is-in-doubt",
   snowflake_purge_sql_broken: "the-warehouse-mirror-or-an-erasure-is-in-doubt",
+  snowflake_credential_residual: "the-warehouse-mirror-or-an-erasure-is-in-doubt",
   retention_skipped: "the-warehouse-mirror-or-an-erasure-is-in-doubt",
 
   // A control that is supposed to bound something has stopped bounding it.

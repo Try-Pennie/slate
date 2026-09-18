@@ -111,3 +111,43 @@ describe("buildMergeSql", () => {
     expect(evil).toContain(`'{"note":"O''Brien"}'`);
   });
 });
+
+describe("no merge path can carry a credential into the warehouse (#2564)", () => {
+  it("sends NULL for the booking manage token however the caller supplies it", () => {
+    const sql = buildMergeSql(
+      "bookings",
+      [{ name: "id", type: "varchar" }, { name: "manage_token", type: "varchar" }],
+      [{ id: "bk1", manage_token: "tok-secret" }],
+    );
+
+    expect(sql).not.toContain("tok-secret");
+    expect(sql).toContain("NULL");
+  });
+
+  it("strips the manage URL from a delivery payload and keeps the rest of it", () => {
+    const sql = buildMergeSql(
+      "webhook_deliveries",
+      [{ name: "id", type: "varchar" }, { name: "payload", type: "variant" }],
+      [{
+        id: "d1",
+        payload: { booking_id: "bk1", manage_url: "https://slate.example/booking/manage/tok-secret" },
+      }],
+    );
+
+    expect(sql).not.toContain("tok-secret");
+    expect(sql).not.toContain("manage_url");
+    // payload:booking_id is the only key the erasure verify can find these rows by.
+    expect(sql).toContain("booking_id");
+  });
+
+  it("is applied here rather than at each call site, so reexport gets it too", () => {
+    // reexportByIds and the two export lanes all build their SQL through this
+    // function and nothing else, so the redaction cannot be forgotten by a caller.
+    const sql = buildMergeSql(
+      "bookings",
+      [{ name: "id", type: "varchar" }, { name: "manage_token", type: "varchar" }],
+      [{ id: "bk-repair", manage_token: "tok-from-a-repair" }],
+    );
+    expect(sql).not.toContain("tok-from-a-repair");
+  });
+});

@@ -148,6 +148,14 @@ export const ALERT_CATALOG: AlertEntry[] = [
     why: "The purge SQL stays broken until someone fixes it; the 6h probe re-runs it against the warehouse.",
   },
   {
+    key: "snowflake_credential_residual",
+    kind: "condition",
+    why:
+      "The warehouse still holds a booking manage token after the sweep, so a warehouse " +
+      "reader can reschedule or cancel those bookings. It stays true until a sweep measures " +
+      "zero residual, which is the recovery.",
+  },
+  {
     key: "agent_sync_failures",
     kind: "condition",
     why: "The Salesforce roster sync is failing on consecutive runs; a successful run ends it.",
