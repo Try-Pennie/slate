@@ -8,18 +8,16 @@
  * page at slate.trypennie.app/book has no page around it, so it inherits nothing.
  *
  * This pins the parts that are not a matter of taste: that the links point at
- * pages that really exist, that the disclosure describes what happens rather than
- * asserting a consent we have not obtained, and that all of it obeys the copy
- * rules the rest of the booker is held to.
+ * pages that really exist, and that all of it obeys the copy rules the rest of
+ * the booker is held to.
+ *
+ * #2204 deleted the third thing it used to pin, the contact disclosure above the
+ * confirm button, along with the sentence itself.
  *
  * Run: node --experimental-strip-types --import ./scripts/register-paths.mjs \
  *        scripts/test-booker-legal-copy.ts
  */
-import {
-  LEGAL_COPY,
-  legalLinks,
-  contactDisclosure,
-} from "../src/lib/booking/booker-copy.ts";
+import { LEGAL_COPY, legalLinks } from "../src/lib/booking/booker-copy.ts";
 import { bookerCopyScreens } from "../src/lib/booking/copy-preview.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
@@ -44,6 +42,11 @@ const EMOJI = /[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/u;
     );
     assert(link.label.trim().length > 0, "every link has a label a person can read");
     assert(!DASHES.test(link.label), `${link.label} carries no dash`);
+    // #2204 took the disclosure and its emoji check with it. The rule is about
+    // lead-facing copy rather than about that one sentence, so it moves onto what
+    // this file still checks rather than leaving with the thing it was written
+    // beside (L362).
+    assert(!EMOJI.test(link.label), `${link.label} carries no emoji`);
   }
 
   const hrefs = links.map((l) => l.href);
@@ -58,31 +61,13 @@ const EMOJI = /[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/u;
   eq(new Set(hrefs).size, hrefs.length, "no link is offered twice");
 }
 
-// ---------------------------------------------------- the disclosure
-
-{
-  const text = contactDisclosure();
-
-  // It must describe what HAPPENS. It must not assert that the lead has agreed to
-  // anything: we are not capturing a consent record here, and copy claiming one
-  // would be a claim the system cannot support (L21, copy is a contract).
-  assert(/call|contact/i.test(text), "it says they will be contacted");
-  assert(
-    !/\byou (agree|consent)\b|\bby (booking|submitting)[^.]*you (agree|consent)\b/i.test(text),
-    "it does not assert an agreement the product never recorded",
-  );
-
-  // Pennie is a lending marketplace and may never guarantee an outcome.
-  assert(
-    !/\bguarantee|\bwill (?:reduce|settle|eliminate)\b/i.test(text),
-    "it promises no outcome",
-  );
-
-  assert(!DASHES.test(text), "no dash as punctuation");
-  assert(!EMOJI.test(text), "no emoji in lead-facing copy");
-  assert(text.trim().endsWith("."), "it is a finished sentence");
-  assert(text.length <= 220, "one line, read on a phone above the confirm button");
-}
+// ---------------------------------------------------- the disclosure, deleted
+//
+// #2204 removed the sentence that used to sit above the confirm button, and its
+// assertions went with it rather than being left pointed at a builder nobody
+// calls (L252, L430). The dash and emoji rules it carried moved onto the links
+// and the heading above, and every remaining line the booker can show is held to
+// the same two by `scripts/test-booker-preview-coverage.ts`.
 
 // ---------------------------------------------------- reachable in the preview
 
@@ -93,10 +78,6 @@ const EMOJI = /[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/u;
   const screens = bookerCopyScreens();
   const all = screens.flatMap((s) => s.lines.map((l) => l.text));
 
-  assert(
-    all.includes(contactDisclosure()),
-    "the contact disclosure appears in the preview",
-  );
   for (const link of legalLinks()) {
     assert(
       all.includes(link.label),
@@ -109,6 +90,7 @@ const EMOJI = /[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/u;
 
 {
   assert(!DASHES.test(LEGAL_COPY.heading), "the footer heading carries no dash");
+  assert(!EMOJI.test(LEGAL_COPY.heading), "the footer heading carries no emoji");
   assert(LEGAL_COPY.heading.trim().length > 0, "and is not blank");
 }
 

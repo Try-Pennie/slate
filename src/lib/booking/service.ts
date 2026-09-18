@@ -20,6 +20,13 @@ import {
   getBucketSlotsWithFallback,
   getCachedBucketSlots,
 } from "@/lib/availability/slot-cache";
+import {
+  attendeeForLanding,
+  knownContactFromBookings,
+  type KnownContact,
+  type KnownContactRow,
+  type LinkAttendee,
+} from "@/lib/booking/known-lead";
 import { loadBusinessHours } from "@/lib/booking/business-hours-load";
 import { recordRoutingDecision } from "@/lib/routing/record";
 import { touchedBucketCodes } from "@/lib/availability/precompute";
@@ -2165,6 +2172,78 @@ export async function existingCallForLanding(identity: {
     log.warn("booking", { msg: "landing existing-call check failed, showing the picker" }, err);
     return null;
   }
+}
+
+/**
+ * How many of this person's bookings the details prefill reads.
+ *
+ * Small on purpose: it exists to look past a row whose contact columns retention
+ * has already cleared (#1071) or which a direct API caller made with no name, not
+ * to walk a history. Bounded, so the read can never come back as a truncated page
+ * read as the whole set.
+ */
+const KNOWN_CONTACT_ROWS = 5;
+
+/**
+ * What Slate already holds about the lead a landing link identifies (#2208).
+ *
+ * The same id `existingCallForLanding` recognises them by, asked of the same table
+ * WITHOUT the active-status filter, because the lead this exists for is precisely
+ * the one with no active call. The order is declared in the query and decided
+ * again in `knownContactFromBookings`, which is what actually answers.
+ *
+ * IT NEVER THROWS, for the reason the existing-call check above never throws: a
+ * read it could not make leaves the lead with the empty form they get today, and
+ * nothing downstream reads that emptiness as a fact about them. The failure is
+ * LOGGED rather than swallowed, so a lookup that has stopped working is visible
+ * instead of looking like a roster nobody has any details for.
+ */
+export async function knownContactForLanding(identity: {
+  salesforceId?: string | null;
+}): Promise<KnownContact | null> {
+  const salesforceId = identity.salesforceId?.trim();
+  if (!salesforceId) return null;
+  try {
+    const rows = unwrap(
+      await supabaseAdmin()
+        .from("bookings")
+        .select("id, created_at, attendee_name, attendee_email, attendee_phone")
+        .eq("salesforce_id", salesforceId)
+        .order("created_at", { ascending: false })
+        .order("id", { ascending: false })
+        .limit(KNOWN_CONTACT_ROWS),
+      "landing known-contact lookup",
+    ) as KnownContactRow[] | null;
+    return knownContactFromBookings(rows ?? []);
+  } catch (err) {
+    log.warn(
+      "booking",
+      { msg: "landing contact lookup failed, showing an empty details form" },
+      err,
+    );
+    return null;
+  }
+}
+
+/**
+ * What the booker's details form starts with, for BOTH landing routes (#2208).
+ *
+ * One implementation, deliberately. `/booking/{id}` and `/book?external_id=` build
+ * the same `attendee` prop out of the same query string and grade the same
+ * identity, so two copies of this would be two answers to one question and the
+ * drift would be silent (L613): one route would go on asking a recognised lead to
+ * retype their own number while the other did not.
+ *
+ * The record is only read when the link left something out, so a landing page that
+ * carries all three costs nothing.
+ */
+export async function landingAttendee(
+  identity: { salesforceId?: string | null },
+  link: LinkAttendee,
+): Promise<LinkAttendee> {
+  const complete = link.name.trim() && link.email.trim() && link.phone.trim();
+  if (complete) return attendeeForLanding(link, null);
+  return attendeeForLanding(link, await knownContactForLanding(identity));
 }
 
 /** The lead's own details on a booking (#2164), for a caller that is not moving it. */

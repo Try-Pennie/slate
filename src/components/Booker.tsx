@@ -40,7 +40,6 @@ import {
   DETAILS_COPY,
   chosenWhen,
   longDayLabel,
-  contactDisclosure,
   DUPLICATE_COPY,
   HONEYPOT_LABEL,
   MOVE_COPY,
@@ -933,8 +932,10 @@ export default function Booker({
   // about us and draws attention to something the lead never asked about), the
   // call they have is simply put in front of them with the obvious thing to do.
   if (existingCall && !pickingMoveTime) {
-    const longDay = (iso: string) =>
-      formatLongDate(DateTime.fromISO(iso).setZone(zone)) ?? "";
+    // #2205: with the year, because the details step commits to a time spelled
+    // that way and this panel reads one back. Two readbacks of the same kind of
+    // fact spelling it differently is the duplication rule in reverse (L118).
+    const longDay = (iso: string) => longDayLabel(iso, zone, { year: true });
     const shortDay = (iso: string) =>
       DateTime.fromISO(iso).setZone(zone).toFormat("ccc, LLL d");
     const newWhen = selectedSlot
@@ -1261,9 +1262,11 @@ export default function Booker({
     const movedNote = confirmed.contactChanged
       ? movedContactNote(confirmed.contactChanged)
       : null;
-    const confirmedDay = DateTime.fromISO(confirmed.start)
-      .setZone(zone)
-      .toFormat("cccc, LLL d");
+    // #2205: the last thing most leads read, and the other place a committed time
+    // is read back, so it is spelled exactly as the step that committed to it: the
+    // full weekday, month, day and year, through the one shared formatter rather
+    // than a second `toFormat` beside it (L118, #2221).
+    const confirmedDay = longDayLabel(confirmed.start, zone, { year: true });
     const confirmedTime = fmtTime(confirmed.start);
     const zoneLabel = zone.replace(/_/g, " ");
     // Carry the booker's theme onto the manage link so the manage page opens in
@@ -1329,10 +1332,14 @@ export default function Booker({
               {confirmed.duplicateWarning.disclose ? (
                 <>
                   <p className={`mt-1 text-sm ${c.muted}`}>
+                    {/* The same spelling as the line above it: this names a call
+                        the lead already has, on the screen that just named the one
+                        they made, and two dates a few lines apart written two ways
+                        read as two different kinds of fact (#2205, L118). */}
                     {duplicateSetFor(
-                      `${DateTime.fromISO(confirmed.duplicateWarning.startsAt)
-                        .setZone(zone)
-                        .toFormat("cccc, LLL d")} at ${fmtTime(confirmed.duplicateWarning.startsAt)}`,
+                      `${longDayLabel(confirmed.duplicateWarning.startsAt, zone, {
+                        year: true,
+                      })} at ${fmtTime(confirmed.duplicateWarning.startsAt)}`,
                     )}
                   </p>
                   <a
@@ -1732,12 +1739,12 @@ export default function Booker({
             />
           </div>
           {errorAlert}
-          {/* #1041: what handing over the number actually leads to, said before
-              the commitment rather than after it. It describes what happens and
-              claims no agreement, because Slate records no consent anywhere and
-              copy is a contract. It renders in the embed too: this is about the
-              data being collected, not about whose page is around it. */}
-          <p className={`text-center text-xs ${c.muted}`}>{contactDisclosure()}</p>
+          {/* #2204: nothing sits between the last field and the button. The
+              sentence that used to (#1041) said what the button would do and what
+              the field above it was for, which is the screen explained back to
+              the reader (L604), and every fact in it was already on the page: the
+              heading names the call, the line under it states the time, the field
+              is labelled Phone and the button says Confirm booking. */}
           <button
             onClick={submit}
             disabled={submitting}
@@ -1845,8 +1852,18 @@ export default function Booker({
             Rendered only once there IS a number, rather than as a placeholder row:
             a row that says "Attendee phone number" is a label pretending to be a
             value, and inventing one for a field the lead has not filled in is the
-            thing this panel got wrong in the first place. */}
-        {attendee.phone && (
+            thing this panel got wrong in the first place.
+
+            And only while the details step is CLOSED (#2208, L605). Read as one
+            composed screen rather than as two components, this row and the Phone
+            field state the same number twice, side by side on a laptop and one
+            above the other on a phone. The FIELD is the one that survives: it is
+            the number that will be submitted, it is labelled, and it is the only
+            one of the two the lead can change. The row is not deleted, because
+            while a time is being picked there is no field at all and this is then
+            the only place a prefilled lead can read back what Slate holds, which
+            prefilling made the ordinary case rather than a rarity. */}
+        {attendee.phone && !selectedSlot && (
           <div className="flex items-start gap-2">
             <span className={`mt-0.5 shrink-0 ${c.faint}`}>
               <PhoneIcon />

@@ -30,7 +30,7 @@ import {
   CONFIRMED_COPY,
   DETAILS_COPY,
   chosenWhen,
-  contactDisclosure,
+  confirmedWhen,
   longDayLabel,
   NEAREST_TIMES_COPY,
   NEXT_DAYS_COPY,
@@ -103,11 +103,10 @@ describe("the preview shows what the booker actually renders (#1343)", () => {
     fireEvent.click(screen.getByRole("button", { name: /:\d{2}/ }));
     expect(screen.getByRole("button", { name: DETAILS_COPY.confirm })).toBeTruthy();
 
-    // #1041: the contact disclosure is on the SAME screen as the confirm button,
-    // which is the only place it means anything. A static scan cannot mount React
-    // and so cannot tell whether this sentence reached a customer or only the
-    // preview.
-    expect(pageText()).toContain(contactDisclosure());
+    // #2204 deleted the contact disclosure that used to be asserted here, and
+    // this assertion went with it rather than being adjusted to point somewhere
+    // else (L252). What replaces it is the rest of this test: the step's own
+    // words, which is what that sentence was restating.
 
     // #2361: the step says what it is for, and states the chosen time in full.
     // The heading is asserted as a HEADING rather than as text, because the fault
@@ -195,6 +194,16 @@ describe("the preview shows what the booker actually renders (#1343)", () => {
 
     expect(await screen.findByText(CONFIRMED_COPY.heading)).toBeTruthy();
     expect(pageText()).toContain(CONFIRMED_COPY.manageLink);
+    // #2205: the when-line is the other place a lead reads a committed time back,
+    // so it is asserted against the SAME builder and the SAME full date the
+    // details step commits with, rather than against a copy of the words.
+    expect(pageText()).toContain(
+      confirmedWhen(
+        longDayLabel(slotIso, ZONE, { year: true }),
+        formatSlotTime(slotIso, ZONE),
+        ZONE.replace(/_/g, " "),
+      ),
+    );
   });
 
   // #2164: a lead who already has a call, comes back, and types different details.
