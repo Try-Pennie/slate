@@ -35,7 +35,15 @@ export const THEME_COOKIE_MAX_AGE = 60 * 60 * 24 * 365;
  */
 export const DEFAULT_THEME_PREFERENCE: ThemePreference = "light";
 
-const PREFERENCES: readonly ThemePreference[] = ["system", "light", "dark"];
+/**
+ * The preference vocabulary, exported since #2565 so the content security policy
+ * can DERIVE the set of boot scripts it must allow rather than restating it. A
+ * fourth preference then ships with its hash instead of shipping a script the
+ * policy has never heard of.
+ */
+export const THEME_PREFERENCES: readonly ThemePreference[] = ["system", "light", "dark"];
+
+const PREFERENCES = THEME_PREFERENCES;
 
 export function isThemePreference(value: unknown): value is ThemePreference {
   return typeof value === "string" && (PREFERENCES as readonly string[]).includes(value);

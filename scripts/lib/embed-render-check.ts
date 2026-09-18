@@ -50,6 +50,7 @@ export const EMBED_RENDER_OUTCOMES = [
   "frame-blank",
   "link-refused",
   "load-failed",
+  "csp-violations",
   "console-errors",
 ] as const;
 
@@ -90,6 +91,20 @@ export interface EmbedObservation {
   frameText: string;
   /** Browser console errors and uncaught page errors, in the order seen. */
   consoleErrors: string[];
+  /**
+   * Content Security Policy refusals the browser reported, in ANY frame (#2565).
+   *
+   * Separated from `consoleErrors` deliberately. A policy that breaks the embed
+   * fails SILENTLY from our side: the booker is in an iframe on somebody else's
+   * page, so the only place the error appears is a console we never see, and by
+   * the time anyone notices, leads have been meeting a blank panel. This is the
+   * one signal that sees it, and folding it in with ordinary console errors would
+   * let an unrelated error answer for it and name the wrong repair (L11).
+   *
+   * While the policy is REPORT ONLY a violation breaks nothing, which is exactly
+   * why it is worth having: it is the advance warning that enforcing WOULD.
+   */
+  cspViolations: string[];
 }
 
 /** The booker's own refusal, quoted so the reader sees which one it was. */
@@ -108,6 +123,19 @@ export interface EmbedVerdict {
  * literally empty, so the floor is a few characters rather than one.
  */
 export const FRAME_TEXT_FLOOR = 10;
+
+/**
+ * Whether a console line is the browser refusing something under the policy.
+ *
+ * Matched on the browser's own wording rather than on our policy's contents,
+ * because the line we need to recognise is written by the browser and names the
+ * directive it enforced. Chrome and Firefox both say "Content Security Policy";
+ * the report only variants say "would refuse" or name the report only directive,
+ * so the match is deliberately loose about the verb and strict about the phrase.
+ */
+export function isCspRefusal(text: string): boolean {
+  return /content security policy/i.test(text);
+}
 
 /**
  * The verdict, in a fixed order.
@@ -155,6 +183,21 @@ export function judgeEmbedRender(o: EmbedObservation): EmbedVerdict {
         "The embed's modal opened and the booker never drew anything inside it. This is the " +
         "blank booker: a lead clicking Book gets an empty panel. Open /book directly to see " +
         "whether the page itself is broken or only the embedded route is.",
+    };
+  }
+  if (o.cspViolations.length > 0) {
+    // Ranked ABOVE console errors on purpose: a CSP refusal is reported through
+    // the console too, so asking about console errors first would mean this
+    // outcome could never fire and would read as a policy nothing ever violated.
+    const first = o.cspViolations[0];
+    return {
+      outcome: "csp-violations",
+      reason:
+        `The embedded booker drew, and the browser refused ${o.cspViolations.length} ` +
+        `thing${o.cspViolations.length === 1 ? "" : "s"} against the content security policy. ` +
+        "The policy is report only, so nothing is broken yet and this is the warning that " +
+        `enforcing it would break the embed. Read tag=csp-report in the Worker logs. ` +
+        `First refusal: ${first}`,
     };
   }
   if (o.consoleErrors.length > 0) {

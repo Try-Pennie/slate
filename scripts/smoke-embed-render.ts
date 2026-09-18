@@ -42,6 +42,7 @@ import { appendFileSync } from "node:fs";
 import { chromium, type Browser } from "playwright";
 import {
   embedHostPage,
+  isCspRefusal,
   judgeEmbedRender,
   type EmbedObservation,
 } from "./lib/embed-render-check.ts";
@@ -83,13 +84,20 @@ const failureLog = failureLogPath(process.env);
  *  would leave the canary reporting nothing at all rather than a failure. */
 async function observe(browser: Browser): Promise<EmbedObservation | { driverError: string }> {
   const consoleErrors: string[] = [];
+  // #2565: a CSP refusal reaches the console of whichever frame it happened in,
+  // and playwright reports every frame's console on the page, which is the only
+  // way to see one inside the cross origin booker iframe.
+  const cspViolations: string[] = [];
   const context = await browser.newContext();
   const page = await context.newPage();
   // Both channels: a thrown exception never reaches console.error, and a logged
   // error never becomes a page error, so listening to one discards half of what
   // the browser is telling us (L219).
   page.on("console", (msg) => {
-    if (msg.type() === "error") consoleErrors.push(msg.text());
+    if (msg.type() !== "error") return;
+    const text = msg.text();
+    if (isCspRefusal(text)) cspViolations.push(text);
+    else consoleErrors.push(text);
   });
   page.on("pageerror", (err) => consoleErrors.push(String(err)));
 
@@ -114,6 +122,7 @@ async function observe(browser: Browser): Promise<EmbedObservation | { driverErr
         bookerMounted: false,
         frameText: "",
         consoleErrors,
+        cspViolations,
       };
     }
 
@@ -151,7 +160,7 @@ async function observe(browser: Browser): Promise<EmbedObservation | { driverErr
       frameText = "";
     }
 
-    return { modalPresent, loadFailedShown, bookerMounted, frameText, consoleErrors };
+    return { modalPresent, loadFailedShown, bookerMounted, frameText, consoleErrors, cspViolations };
   } catch (err) {
     return { driverError: String(err) };
   } finally {

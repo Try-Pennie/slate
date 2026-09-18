@@ -153,6 +153,17 @@ export const CLIENT_ERROR_RATE_RULES: RateLimitRule[] = [
   { prefix: "clienterr:h", windowSeconds: 3600, max: 60 },
 ];
 
+/**
+ * The CSP violation report ceiling (#2565). Higher than the client error beacon's
+ * because one broken page legitimately produces one report per blocked resource
+ * per load rather than one per person, and low enough that a flood cannot turn a
+ * public unauthenticated path into unbounded log volume.
+ */
+export const CSP_REPORT_RATE_RULES: RateLimitRule[] = [
+  { prefix: "cspreport:m", windowSeconds: 60, max: 30 },
+  { prefix: "cspreport:h", windowSeconds: 3600, max: 300 },
+];
+
 export const ROUTING_HOURLY_RATE_RULES: RateLimitRule[] = [
   { prefix: "routing:h", windowSeconds: 3600, max: 200 },
 ];
@@ -410,6 +421,18 @@ export const CLIENT_ERROR_ADDRESS_POLICY: AddressLimitPolicy = {
   onUnidentified: "refuse",
   unidentifiedWhy:
     "dropping one report costs a log line, while an unmetered public path to Slack costs the pager, so this limit fails closed on a caller it cannot identify exactly as it already fails closed on a limiter it cannot reach",
+};
+
+/**
+ * The CSP report endpoint's answer for a caller it cannot identify (#2565), the
+ * same one the client error beacon gives and for the same reason.
+ */
+export const CSP_REPORT_ADDRESS_POLICY: AddressLimitPolicy = {
+  area: "csp-report",
+  friendly: "CSP violation reports",
+  onUnidentified: "refuse",
+  unidentifiedWhy:
+    "dropping one report costs a line in a log nobody is waiting on, while an unmetered public path that writes costs more, so this limit fails closed on a caller it cannot identify exactly as it already fails closed on a limiter it cannot reach",
 };
 
 /**
