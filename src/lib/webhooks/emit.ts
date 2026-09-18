@@ -264,7 +264,24 @@ export async function emitWebhook(
       // recoverable by the retry sweep. On a user-facing path the scheduler
       // hands the POST to Next after() so the response isn't blocked on it; the
       // cron drains send inline (deferSend undefined) under their fan-out cap.
-      const doSend = () => send(endpoint, (delivery as { id: string }).id, event, payload, 1);
+      // #2563: the first send takes the SAME claim every other path takes. It is
+      // inside doSend, not around it, on purpose: claiming at emit time would leave
+      // the sweep reading attempts=1 and claiming 1 to 2, which is a second POST
+      // rather than a refusal. Here both actors read 0 and exactly one wins.
+      const doSend = async () => {
+        const deliveryId = (delivery as { id: string }).id;
+        if (await claimAndSend(db, endpoint, deliveryId, event, payload, 0)) return;
+        // Standing down is correct (the other actor is sending it), and silence is
+        // not. The sweep can only beat a first send that hung past the one minute
+        // backoff, while the send itself times out at five seconds, so this should
+        // never fire; one that fires often is a symptom nothing else counts (L77).
+        log.warn("webhook-emit", {
+          msg: "first send lost the attempt claim",
+          endpoint_id: endpoint.id,
+          delivery_id: deliveryId,
+          event,
+        });
+      };
       if (deferSend) deferSend(doSend);
       else await doSend();
     }),
@@ -300,6 +317,30 @@ async function claimDeliveryAttempt(
       .eq("attempts", currentAttempts)
       .select("id"),
   );
+}
+
+/**
+ * Claim the attempt, then send: the ONE way a delivery goes out the door.
+ *
+ * Every send is an attempt another actor can be making at the same moment (#2563):
+ * the cron sweep, a manual resend, an operator replay and the first send all
+ * address the same row, and `claimDeliveryAttempt` is what decides which of them
+ * owns this attempt. Pairing the claim with the POST here, rather than leaving
+ * each call site to remember, is what makes a double POST impossible instead of
+ * merely unlikely: a new send path cannot opt out of a claim it cannot reach
+ * around (L621). Returns whether this caller sent.
+ */
+async function claimAndSend(
+  db: ReturnType<typeof supabaseAdmin>,
+  endpoint: WebhookEndpoint,
+  deliveryId: string,
+  event: WebhookEvent,
+  payload: BookingEventPayload,
+  currentAttempts: number,
+): Promise<boolean> {
+  if (!(await claimDeliveryAttempt(db, deliveryId, currentAttempts))) return false;
+  await send(endpoint, deliveryId, event, payload, currentAttempts + 1);
+  return true;
 }
 
 export async function retryFailedDeliveries(): Promise<number> {
@@ -349,9 +390,7 @@ export async function retryFailedDeliveries(): Promise<number> {
     const endpoint = byId.get(r.endpoint_id);
     if (!endpoint) continue;
     // Claim the attempt before sending so a concurrent resend can't double-fire.
-    if (!(await claimDeliveryAttempt(db, r.id, r.attempts))) continue;
-    await send(endpoint, r.id, r.event, r.payload, r.attempts + 1);
-    retried++;
+    if (await claimAndSend(db, endpoint, r.id, r.event, r.payload, r.attempts)) retried++;
   }
   return retried;
 }
@@ -413,9 +452,15 @@ export async function resendDelivery(
 
   // Claim the attempt (#623) so a resend that races the cron retry sweep (or a
   // duplicate resend) can't double-POST the same attempt.
-  if (!(await claimDeliveryAttempt(db, row.id, row.attempts))) return "deduped";
-  await send(endpoint as WebhookEndpoint, row.id, row.event, row.payload, row.attempts + 1);
-  return "sent";
+  const sent = await claimAndSend(
+    db,
+    endpoint as WebhookEndpoint,
+    row.id,
+    row.event,
+    row.payload,
+    row.attempts,
+  );
+  return sent ? "sent" : "deduped";
 }
 
 /**
@@ -479,8 +524,10 @@ export async function replayDeadLetteredDeliveries(
     if (!isDeadLettered(r.status, r.attempts)) continue;
     const endpoint = byId.get(r.endpoint_id);
     if (!endpoint) continue;
-    await send(endpoint, r.id, r.event, r.payload, r.attempts + 1);
-    replayed++;
+    // #2563: replay claimed nothing, so an operator clicking twice, or a replay
+    // racing the manual resend (which ignores the cap and addresses the same dead
+    // letter), posted the event twice.
+    if (await claimAndSend(db, endpoint, r.id, r.event, r.payload, r.attempts)) replayed++;
   }
   return replayed;
 }

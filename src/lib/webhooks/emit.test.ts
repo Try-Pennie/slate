@@ -19,6 +19,12 @@ const state = vi.hoisted(() => ({
   insertError: null as null | { code?: string; message: string },
   endpointsError: null as null | { code?: string; message: string },
   updates: [] as Record<string, unknown>[],
+  // #2563: when set, the attempt claim is resolved by a REAL compare and swap
+  // over this store (delivery id -> attempts) instead of the claimWins flag.
+  // A race test driven by a flag we set ourselves only confirms our own
+  // assumption about who wins (L70); this lets both actors read the same 0 and
+  // makes exactly one of them win on the store's own arithmetic.
+  cas: null as null | Map<string, number>,
 }));
 
 function resolve(b: Record<string, unknown>, table: string) {
@@ -31,6 +37,18 @@ function resolve(b: Record<string, unknown>, table: string) {
       // update().eq()...select("id") is the CAS claim; a bare update().eq() is
       // send()'s final status write.
       if (b._selectedAfterUpdate) {
+        if (state.cas) {
+          const eqs = b._eqs as { col: string; val: unknown }[];
+          const idEq = eqs.find((e) => e.col === "id");
+          const attemptsEq = eqs.find((e) => e.col === "attempts");
+          // A claim that names no row or no expected attempt count is not a claim.
+          if (!idEq || !attemptsEq) return { data: [] };
+          const id = String(idEq.val);
+          const expected = Number(attemptsEq.val);
+          if (state.cas.get(id) !== expected) return { data: [] };
+          state.cas.set(id, expected + 1);
+          return { data: [{ id }] };
+        }
         return { data: state.claimWins ? [{ id: "claimed" }] : [] };
       }
       return { data: null };
@@ -45,6 +63,7 @@ function makeBuilder(table: string) {
     _updated: false,
     _selectedAfterUpdate: false,
     _single: false,
+    _eqs: [] as { col: string; val: unknown }[],
   };
   const self = () => b;
   b.select = () => {
@@ -57,6 +76,7 @@ function makeBuilder(table: string) {
   b.gte = self;
   b.eq = (col: string, val: unknown) => {
     state.filters.push({ table, col, val });
+    (b._eqs as { col: string; val: unknown }[]).push({ col, val });
     return b;
   };
   b.contains = (col: string, val: unknown) => {
@@ -103,6 +123,10 @@ const notify = vi.hoisted(() => ({
   resolveAlert: vi.fn(async (_key: string, _text: string) => true),
 }));
 vi.mock("@/lib/notify/dispatch", () => notify);
+// #2563: a first send that loses its claim skips, which is correct and should
+// still leave a record, so the lost-claim line is asserted rather than assumed.
+const logged = vi.hoisted(() => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn() }));
+vi.mock("@/lib/log", () => ({ log: logged }));
 
 import {
   emitWebhook,
@@ -111,6 +135,7 @@ import {
   replayDeadLetteredDeliveries,
 } from "./emit";
 import type { BookingEventPayload } from "@/lib/webhooks/types";
+import { WEBHOOK_MAX_ATTEMPTS } from "@/lib/webhooks/retry";
 
 const endpoint = {
   id: "ep1",
@@ -145,6 +170,7 @@ beforeEach(() => {
   state.insertError = null;
   state.endpointsError = null;
   state.updates = [];
+  state.cas = null;
   from.mockImplementation((table: string) => makeBuilder(table));
   fetchMock.mockResolvedValue(reply({ ok: true, status: 200, body: "ok" }));
   vi.stubGlobal("fetch", fetchMock);
@@ -166,6 +192,18 @@ function reply(opts: { ok: boolean; status: number; body: string; headers?: Reco
     headers: new Headers(opts.headers ?? {}),
     text: async () => opts.body,
   };
+}
+
+/**
+ * The write `send()` makes to record the outcome, found by what it CARRIES rather
+ * than by its position: since #2563 the attempt claim is an update too, and it
+ * lands first. An assertion keyed on updates[0] would read the claim and report a
+ * missing status.
+ */
+function statusWrite(): Record<string, unknown> {
+  const row = state.updates.find((u) => typeof u.status === "string");
+  if (!row) throw new Error("send() recorded no outcome for this delivery");
+  return row;
 }
 
 describe("retryFailedDeliveries", () => {
@@ -302,8 +340,8 @@ describe("emitWebhook", () => {
 
     await expect(emitWebhook("o1", "booking.created", payload, "bk1")).resolves.toBeUndefined();
 
-    expect(state.updates[0]).toMatchObject({ status: "failed", attempts: 1 });
-    expect(String(state.updates[0].last_response)).toContain("500");
+    expect(statusWrite()).toMatchObject({ status: "failed", attempts: 1 });
+    expect(String(statusWrite().last_response)).toContain("500");
   });
 
   it("marks the delivery failed (and does not throw) when the receiver times out", async () => {
@@ -311,13 +349,13 @@ describe("emitWebhook", () => {
 
     await expect(emitWebhook("o1", "booking.created", payload, "bk1")).resolves.toBeUndefined();
 
-    expect(state.updates[0]).toMatchObject({ status: "failed", attempts: 1 });
+    expect(statusWrite()).toMatchObject({ status: "failed", attempts: 1 });
   });
 
   it("marks the delivery a success when the receiver accepts", async () => {
     await emitWebhook("o1", "booking.created", payload, "bk1");
 
-    expect(state.updates[0]).toMatchObject({ status: "success", attempts: 1 });
+    expect(statusWrite()).toMatchObject({ status: "success", attempts: 1 });
   });
 });
 
@@ -386,7 +424,7 @@ describe("emitWebhook deferred send (#884)", () => {
     // Running the scheduled work is what performs the send and marks the row.
     await scheduled[0]();
     expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(state.updates[0]).toMatchObject({ status: "success", attempts: 1 });
+    expect(statusWrite()).toMatchObject({ status: "success", attempts: 1 });
   });
 
   it("sends inline when no scheduler is supplied (unchanged for cron drains)", async () => {
@@ -648,5 +686,92 @@ describe("dead-letter page never carries the reply body (#2418)", () => {
     expect(text).toContain("8f2c1a9b4d5e6f70-EWR");
     expect(text).not.toContain("no reply body");
     expect(text).not.toContain("never saw the request");
+  });
+});
+
+/**
+ * #2563: the FIRST send was the one delivery path that posted without claiming the
+ * attempt. Every other path (the retry sweep, a manual resend) compare-and-swaps
+ * `attempts` first, so exactly one actor owns an attempt; the first send did not,
+ * and the protection everywhere else read as covering it.
+ *
+ * These tests drive the race directly rather than asserting the claim was called:
+ * the fake holds a real attempts store, both actors read the same 0, and the store's
+ * own arithmetic decides the winner. A test that set a claimWins flag itself would
+ * only confirm the assumption it encodes (L70).
+ */
+describe("first send attempt claim (#2563)", () => {
+  const payload = { booking_id: "bk1", bucket_code: "411" } as unknown as BookingEventPayload;
+
+  it("posts ONCE when a first send and the retry sweep race the same delivery row", async () => {
+    // The state a first send that hangs leaves behind: the row is durable, pending,
+    // and still at attempt 0, which is exactly what the sweep picks up.
+    state.cas = new Map([["d-new", 0]]);
+    state.deliveries = [delivery("d-new", 0)];
+
+    await Promise.all([
+      emitWebhook("o1", "booking.created", payload, "bk1"),
+      retryFailedDeliveries(),
+    ]);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(state.cas.get("d-new")).toBe(1);
+  });
+
+  it("does not POST, and does not throw into the booking path, when the first send loses the claim", async () => {
+    // Another actor has already advanced this attempt, so the first send must stand
+    // down. It must not throw: emitWebhook is awaited by the booking flow, and a
+    // throw here would fail a real booking over a webhook it does not own.
+    state.cas = new Map([["d-new", 3]]);
+
+    await expect(emitWebhook("o1", "booking.created", payload, "bk1")).resolves.toBeUndefined();
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(state.inserted).toHaveLength(1); // the durable row is still recorded
+    // Skipping is right, and silence is not: the sweep can only beat a first send
+    // that hung past the one minute backoff, which should never happen while the
+    // send times out at five seconds. If it starts happening, the only way to find
+    // out is this line, since nothing else counts a lost first claim (L77).
+    expect(logged.warn).toHaveBeenCalledWith(
+      "webhook-emit",
+      expect.objectContaining({ msg: "first send lost the attempt claim" }),
+    );
+  });
+
+  it("claims inside the deferred send, not at emit time, so both actors read the same attempt", async () => {
+    // Placement is load bearing. Claiming at emit time would leave the sweep reading
+    // attempts=1 and claiming 1 to 2, which is a second POST rather than a refusal.
+    state.cas = new Map([["d-new", 0]]);
+    const scheduled: (() => void | Promise<void>)[] = [];
+
+    await emitWebhook("o1", "booking.created", payload, "bk1", false, (fn) => {
+      scheduled.push(fn);
+    });
+
+    expect(state.cas.get("d-new")).toBe(0); // nothing claimed while the send is queued
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    await scheduled[0]!();
+
+    expect(state.cas.get("d-new")).toBe(1);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("posts ONCE when two replays race one dead-lettered row", async () => {
+    // The site the review did not name: replayDeadLetteredDeliveries sent without a
+    // claim too, so an operator clicking replay twice, or a replay racing a manual
+    // resend (which ignores the cap), double POSTs the same dead letter.
+    state.cas = new Map([["d-dead", WEBHOOK_MAX_ATTEMPTS]]);
+    state.deliveries = [
+      { ...delivery("d-dead", WEBHOOK_MAX_ATTEMPTS), status: "failed" },
+    ];
+
+    const [a, b] = await Promise.all([
+      replayDeadLetteredDeliveries("o1", new Date(Date.now() - 86_400_000).toISOString()),
+      replayDeadLetteredDeliveries("o1", new Date(Date.now() - 86_400_000).toISOString()),
+    ]);
+
+    expect(a + b).toBe(1);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });
