@@ -91,16 +91,30 @@ sent as **traits** keyed by the phone number and email address
 **The consent assertion, and where consent actually comes from.** On
 `booking.created`, Slate sends `voiceOptIn`, `smsOptIn` and `emailOptIn` as
 `subscribed: true`. **Slate does not collect that consent and holds no record of
-it.** There is no consent checkbox, no privacy notice and no policy link anywhere on
-the booker: `src/lib/booking/booker-copy.ts` holds every sentence a lead reads and
-contains none. Consent is captured upstream on the Pennie landing page that sends
-the lead to Slate, and Slate asserts it on that basis with nothing in its own data
-to evidence it.
+it.** There is no consent checkbox and no consent sentence anywhere on the booker:
+`src/lib/booking/booker-copy.ts` holds every sentence a lead reads and contains
+none, and `pnpm preview:booker` prints the lot. Consent is captured upstream on the
+Pennie landing page that sends the lead to Slate, and Slate asserts it on that basis
+with nothing in its own data to evidence it.
 
-That is the single largest gap in this map. If asked "prove this person consented to
-being called", Slate cannot; the answer has to come from the landing page's own
-records. **#1041** is the issue for putting a privacy link and consent copy on the
-booker itself.
+**The policy links exist, and they are not the same thing as consent.** #1041 put
+Pennie's Privacy policy and Terms of service on the lead facing surfaces that stand
+alone: `legalLinks` in `src/lib/booking/booker-copy.ts`, rendered by
+`src/components/LegalFooter.tsx` on the standalone booker
+(`StandaloneBookerShell`) and on the manage page. They are absolute links to
+trypennie.com, because those surfaces are served from slate.trypennie.app. The
+EMBEDDED booker does not render them and does not need to: it sits inside a
+trypennie.com page that already carries Pennie's policies. #2204 then deleted the
+sentence that used to sit above the confirm button, on the grounds that it
+explained the screen back to the reader and nothing legal rested on it, since Slate
+records no consent anywhere and the sentence claimed no agreement. Neither change
+altered what this section is about: a link to a policy tells a lead where the terms
+are, and it is not a record that this person agreed to be called.
+
+So the gap stands, narrower than it was. If asked "prove this person consented to
+being called", Slate still cannot; the answer has to come from the landing page's
+own records. What has changed since #1041 is only that a lead reaching the booker
+directly can now find the policy.
 
 **Retention.** Regal's and Cadence's own, unknown to Slate.
 

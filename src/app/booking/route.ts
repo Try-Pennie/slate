@@ -35,6 +35,7 @@ import { judgePublicBooking } from "@/lib/booking/kill-switch";
 import { readPublicBookingPaused } from "@/lib/booking/settings";
 import { BOOKING_ERROR_COPY } from "@/lib/booking/booker-copy";
 import { internalErrorResponse } from "@/lib/api/errors";
+import { noStore } from "@/lib/api/no-store";
 import { recordApiOutcome } from "@/lib/monitor/record-api-outcome";
 import { log } from "@/lib/log";
 
@@ -73,7 +74,17 @@ function rawBucketCode(raw: unknown): string {
   return typeof v === "string" ? v.slice(0, 16) : "";
 }
 
+/**
+ * #2561: one wrapper rather than a header on each of the returns below. Every
+ * ending of this handler, the confirmations and the refusals alike, describes one
+ * lead's request at one moment, and a return added later carries the directive by
+ * construction instead of by somebody remembering (L96).
+ */
 export async function POST(req: NextRequest) {
+  return noStore(await handlePost(req));
+}
+
+async function handlePost(req: NextRequest) {
   const ip = clientIp(req.headers);
   // #1557: the address ceilings on this endpoint SERVE a caller they cannot identify rather
   // than counting them into one shared bucket. Refusing one refuses a customer at the last

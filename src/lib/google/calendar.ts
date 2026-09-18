@@ -603,7 +603,19 @@ export async function deleteEvent(
     { method: "DELETE" },
   );
   if (!res.ok && res.status !== 404 && res.status !== 410) {
-    throw new Error(`events.delete failed: ${res.status} ${await res.text()}`);
+    // A typed error, not a plain one (#2561), for the same reason the sibling
+    // `deleteEventOnCalendar` was given one in #2371. `reachabilityFromError`
+    // reads the status and the reason off a GoogleHttpError and calls everything
+    // else TRANSIENT, so a plain Error here made a `403 notACalendarUser` (an
+    // advisor who was never given Calendar) and a revoked delegation both look
+    // like a blip, to `deleteEventBestEffort` and to the retry drain behind it.
+    // Same message shape as before, so nothing matching on the text changes.
+    const text = await res.text();
+    throw new GoogleHttpError(
+      `events.delete failed: ${res.status} ${text}`,
+      res.status,
+      parseGoogleErrorReason(text),
+    );
   }
 }
 

@@ -26,6 +26,7 @@
 
 import { log } from "@/lib/log";
 import { shortErrorReason } from "@/lib/notify/error-text";
+import { compareStringsDesc } from "@/lib/compare";
 import { readSnowflakeConfig } from "./config";
 import { readErasureAuditRows, type ErasureAuditRow } from "./erasure-trail";
 import { residualsForBookingIds } from "./erasure-audit";
@@ -49,7 +50,7 @@ const bookingIdsOf = (row: ErasureAuditRow): string[] => row.details?.booking_id
  * the guard in `scripts/test-date-parse-guard.ts` watches for in this directory.
  */
 const newestFirst = (a: ErasureAuditRow, b: ErasureAuditRow): number =>
-  a.created_at < b.created_at ? 1 : a.created_at > b.created_at ? -1 : 0;
+  compareStringsDesc(a.created_at, b.created_at);
 
 function unmeasured(rows: ErasureAuditRow[], reason: string): ErasureWorklistEntry[] {
   return rows.map((r) => ({
