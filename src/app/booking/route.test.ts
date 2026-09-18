@@ -563,3 +563,70 @@ describe("POST /booking kill switch", () => {
     expect(pausedOutcomes.some((c) => c[0] === "error")).toBe(false);
   });
 });
+
+// #2561: the confirm's answer names one lead's booking and carries the manage URL a
+// cancel or reschedule is authorised by. Nothing between the browser and the Worker
+// was told not to keep it, so a shared cache (a corporate proxy, an ISP one, a
+// back/forward store) could hand one lead's confirmation to the next reader. Every
+// ending is asserted, not just the happy one: the header is applied by wrapping the
+// handler rather than by stamping each of its thirteen returns, and the thing worth
+// proving about a wrapper is that a return nobody remembered still carries it (L96).
+describe("confirm answers are never stored (#2561)", () => {
+  const noStore = (res: Response) => res.headers.get("cache-control");
+
+  beforeEach(() => {
+    rateLimit.allowRequest.mockReset();
+    rateLimit.allowRequest.mockResolvedValue(true);
+    rateLimit.bookingWithinLimit.mockReset();
+    rateLimit.bookingWithinLimit.mockResolvedValue(true);
+    service.createBooking.mockReset();
+    service.findDuplicateBookingWarning.mockReset();
+    service.findDuplicateBookingWarning.mockResolvedValue(null);
+    bookingSettings.readPublicBookingPaused.mockResolvedValue(false);
+  });
+
+  it("on a confirmed booking", async () => {
+    service.createBooking.mockResolvedValueOnce({
+      booking: { id: "b1", starts_at: "2026-07-01T15:00:00Z", ends_at: "2026-07-01T15:30:00Z", agent_name: "A", agent_email: "a@b.com" },
+      manageUrl: "https://slate.trypennie.app/booking/manage/tok1",
+    });
+    const res = await post(VALID_BODY);
+    expect(res.status).toBe(200);
+    expect(noStore(res)).toBe("no-store");
+  });
+
+  it("on a rejected body, which never reaches the booking layer", async () => {
+    const res = await post({ ...VALID_BODY, bucketCode: "" });
+    expect(res.status).toBe(400);
+    expect(noStore(res)).toBe("no-store");
+  });
+
+  it("on a throttled address, the one refusal a cache could replay for free", async () => {
+    rateLimit.bookingWithinLimit.mockResolvedValueOnce(false);
+    const res = await post(VALID_BODY);
+    expect(res.status).toBe(429);
+    expect(noStore(res)).toBe("no-store");
+  });
+
+  it("while public booking is paused, which answers from the kill switch", async () => {
+    bookingSettings.readPublicBookingPaused.mockResolvedValueOnce(true);
+    const res = await post(VALID_BODY);
+    expect(res.status).toBe(503);
+    expect(noStore(res)).toBe("no-store");
+  });
+
+  it("on a taken slot, which answers 409 through the error map", async () => {
+    service.createBooking.mockRejectedValueOnce(new service.SlotUnavailableError("taken"));
+    const res = await post(VALID_BODY);
+    expect(res.status).toBe(409);
+    expect(noStore(res)).toBe("no-store");
+  });
+
+  it("on an unexpected fault, which returns through a different helper entirely", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    service.createBooking.mockRejectedValueOnce(new Error("boom"));
+    const res = await post(VALID_BODY);
+    expect(res.status).toBe(500);
+    expect(noStore(res)).toBe("no-store");
+  });
+});

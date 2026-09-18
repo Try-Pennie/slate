@@ -439,7 +439,16 @@ export class BookingNotChangeableError extends Error {
  *  Exported for its own test (#1049): reaching it through cancel/reschedule needs
  *  the whole BookingDeps surface, and the behaviour worth pinning is narrow:
  *  when BOTH the live delete and the queue write fail, the event is orphaned on
- *  the agent's calendar and that must leave a trace. */
+ *  the agent's calendar and that must leave a trace.
+ *
+ *  #2561 made `deleteEvent` throw a typed `GoogleHttpError`, so the failure here
+ *  is now CLASSIFIABLE through `reachabilityFromError`. It is deliberately not
+ *  branched on: a definitive failure (an account that is gone, or was never given
+ *  Calendar) still belongs in the queue, because the queue row is the only record
+ *  that an event is orphaned on a calendar nobody can reach, and dropping it would
+ *  trade a retry nobody can satisfy for a silence nobody can see. What SHOULD
+ *  change is how the drain below ends such a row, and that needs its own alert
+ *  wording rather than riding on copy that says "failed N+ times". */
 export async function deleteEventBestEffort(
   deps: BookingDeps,
   email: string,
@@ -1141,6 +1150,15 @@ export const PENDING_DELETION_GIVE_UP_AT = 50;
  * remove on success (404/410 already-gone counts as success); on failure bump
  * the attempt count and report rows that crossed the alert threshold. Pure —
  * the caller (sync lane) sends the throttled alert for `stuck`.
+ *
+ * Every failure is retried the same way, including one `reachabilityFromError`
+ * would now call definitive (#2561). That is a known cost, not an oversight: a
+ * calendar that is gone or was never provisioned is retried until
+ * PENDING_DELETION_GIVE_UP_AT, and the page it raises at
+ * PENDING_DELETION_ALERT_AFTER reads as a stuck retry rather than as an account a
+ * Workspace admin has to fix. Ending such a row early means new alert copy and a
+ * catalog entry for it, so it is a change of its own rather than part of typing
+ * the error.
  */
 export async function processPendingEventDeletions(
   deps: BookingDeps,

@@ -1,4 +1,5 @@
 import { DateTime } from "luxon";
+import { compareStrings } from "../compare.ts";
 
 /**
  * Pure round-robin / fair-assignment ordering. Pointer-free (no stored
@@ -146,7 +147,7 @@ export function orderByBucketShare(
     const ta = share.counts[a]?.lastBookedAtMs ?? Number.NEGATIVE_INFINITY;
     const tb = share.counts[b]?.lastBookedAtMs ?? Number.NEGATIVE_INFINITY;
     if (ta !== tb) return ta - tb;
-    return a < b ? -1 : a > b ? 1 : 0;
+    return compareStrings(a, b);
   });
 }
 
@@ -165,7 +166,7 @@ export function orderByRecency(
     const ta = share.counts[a]?.lastBookedAtMs ?? Number.NEGATIVE_INFINITY;
     const tb = share.counts[b]?.lastBookedAtMs ?? Number.NEGATIVE_INFINITY;
     if (ta !== tb) return ta - tb;
-    return a < b ? -1 : a > b ? 1 : 0;
+    return compareStrings(a, b);
   });
 }
 

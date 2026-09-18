@@ -153,3 +153,48 @@ describe("manage cancel is throttled per address (#1046)", () => {
     expect(res.status).not.toBe(429);
   });
 });
+
+// #2561: a lead's cancel is a mutation, and its answer describes one booking at one
+// moment. Nothing between the browser and the Worker is told that today, so a shared
+// cache (a corporate proxy, an ISP one, a browser back/forward store) is free to keep
+// it and hand it to the next reader, including the refusals, which are the answers
+// most worth not replaying.
+//
+// Every ending is asserted, not just the happy one: the header is applied by wrapping
+// the handler rather than by stamping each return, and the thing worth proving about
+// a wrapper is that a return nobody remembered still carries it (L96).
+describe("cancel answers are never stored (#2561)", () => {
+  const noStore = (res: Response) => res.headers.get("cache-control");
+
+  // `vi.clearAllMocks` clears the CALLS and leaves a queued `mockResolvedValueOnce`
+  // in place, so an earlier test that queued one and never reached it answers the
+  // first call made here instead of the mock this test set up (L439's shape, one
+  // suite along). Reset the queue rather than inherit it.
+  beforeEach(() => service.cancelBooking.mockReset());
+
+  it("on a successful cancel", async () => {
+    service.cancelBooking.mockResolvedValueOnce(true);
+    expect(noStore(await POST(req({ reason: "schedule_conflict" }), params))).toBe("no-store");
+  });
+
+  it("on a rejected body, which never reaches the booking layer", async () => {
+    const res = await POST(req({ reason: 42 }), params);
+    expect(res.status).toBe(400);
+    expect(noStore(res)).toBe("no-store");
+  });
+
+  it("on a throttled address, the one refusal a cache could replay for free", async () => {
+    rateLimit.manageWithinLimit.mockResolvedValueOnce(false);
+    const res = await POST(req({ reason: "schedule_conflict" }), params);
+    expect(res.status).toBe(429);
+    expect(noStore(res)).toBe("no-store");
+  });
+
+  it("on an unexpected fault, which returns through a different helper entirely", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    service.cancelBooking.mockRejectedValueOnce(new Error("boom"));
+    const res = await POST(req({ reason: "schedule_conflict" }), params);
+    expect(res.status).toBe(500);
+    expect(noStore(res)).toBe("no-store");
+  });
+});

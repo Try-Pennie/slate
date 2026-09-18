@@ -98,7 +98,7 @@ export default function LoginPage() {
       <section className="relative hidden flex-col gap-6 overflow-hidden bg-pennie-navy p-8 sm:flex lg:justify-between lg:p-12">
         {/* eslint-disable-next-line @next/next/no-img-element -- decorative brand art; OpenNext/CF has no image loader */}
         <img
-          src="/brand/login-art.jpg"
+          src="/brand/login-art.webp"
           alt=""
           aria-hidden="true"
           className="pointer-events-none absolute inset-0 h-full w-full object-cover object-center"

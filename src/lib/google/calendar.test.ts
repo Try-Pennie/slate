@@ -13,6 +13,7 @@ vi.mock("@/lib/google/dwd", () => dwd);
 import {
   listCalendars,
   createEventOnCalendar,
+  deleteEvent,
   deleteEventOnCalendar,
   updateEventDescription,
   syncEvents,
@@ -148,6 +149,77 @@ describe("deleteEventOnCalendar throws a classifiable error (#2371)", () => {
   it("still treats an already gone event as success", async () => {
     vi.stubGlobal("fetch", async () => new Response("", { status: 404 }));
     await expect(deleteEventOnCalendar("a@b.com", "b@b.com", "evt-1")).resolves.toBeUndefined();
+  });
+});
+
+// #2561: the same defect as #2371, one function along. The booking cancel's delete
+// (and the retry drain behind it) threw a PLAIN Error, which carries no status, so
+// `reachabilityFromError` scored every refusal TRANSIENT. An advisor who was never
+// given Calendar, or whose account has gone, was retried by the drain every tick and
+// then paged about with advice that can never work, while a real blip looked exactly
+// the same.
+describe("deleteEvent throws a classifiable error (#2561)", () => {
+  beforeEach(() => dwd.getDelegatedToken.mockResolvedValue("tok"));
+  afterEach(() => vi.unstubAllGlobals());
+
+  const caught = async (status: number, body: string) => {
+    vi.stubGlobal("fetch", async () => new Response(body, { status }));
+    try {
+      await deleteEvent("a@b.com", "evt-1");
+      throw new Error("expected deleteEvent to throw");
+    } catch (err) {
+      return err;
+    }
+  };
+
+  it("carries the status and reason, so a never provisioned calendar reads as definitive", async () => {
+    const err = await caught(
+      403,
+      JSON.stringify({ error: { errors: [{ reason: "notACalendarUser" }] } }),
+    );
+    expect(reachabilityFromError(err)).toBe("not-provisioned");
+    expect(isDefinitiveFailure(reachabilityFromError(err))).toBe(true);
+  });
+
+  it("classifies a gone account as definitive too", async () => {
+    const err = await caught(401, "unauthorized");
+    expect(reachabilityFromError(err)).toBe("gone");
+    expect(isDefinitiveFailure(reachabilityFromError(err))).toBe(true);
+  });
+
+  it("and a 503 still reads as transient, so the two are told apart", async () => {
+    // The control: without it, a change that classified everything as definitive
+    // would satisfy the assertions above while stopping every legitimate retry (L1).
+    const err = await caught(503, "backendError");
+    expect(reachabilityFromError(err)).toBe("transient");
+    expect(isDefinitiveFailure(reachabilityFromError(err))).toBe(false);
+  });
+
+  it("keeps the message shape, so nothing reading last_error changes", async () => {
+    const err = await caught(503, "backendError");
+    expect(String((err as Error).message)).toContain("events.delete failed: 503");
+  });
+
+  for (const status of [404, 410]) {
+    it(`still treats an already gone event (${status}) as success`, async () => {
+      vi.stubGlobal("fetch", async () => new Response("", { status }));
+      await expect(deleteEvent("a@b.com", "evt-1")).resolves.toBeUndefined();
+    });
+  }
+
+  it("still tells the attendee unless the caller says not to", async () => {
+    // The reassign (#969) is the silent one; every other delete is a real
+    // cancellation the customer is owed an email about. Pinned here because the
+    // typed throw above sits in the same function and a rewrite could lose it.
+    const urls: string[] = [];
+    vi.stubGlobal("fetch", async (url: string) => {
+      urls.push(String(url));
+      return new Response("", { status: 200 });
+    });
+    await deleteEvent("a@b.com", "evt-1");
+    await deleteEvent("a@b.com", "evt-2", { notifyAttendee: false });
+    expect(urls[0]).toContain("sendUpdates=all");
+    expect(urls[1]).toContain("sendUpdates=none");
   });
 });
 

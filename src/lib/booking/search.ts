@@ -1,6 +1,7 @@
 import { supabaseAdmin } from "../supabase/admin.ts";
 import { unwrap } from "../db/result.ts";
 import { escapeLike } from "../sql-like.ts";
+import { compareStringsDesc } from "../compare.ts";
 import {
   rosterNameResolver,
   type HistoryRosterUser,
@@ -135,7 +136,7 @@ const defaultDeps: BookingSearchDeps = {
       for (const row of rows ?? []) byId.set(row.id, row);
     }
     return [...byId.values()]
-      .sort((a, b) => (a.starts_at < b.starts_at ? 1 : a.starts_at > b.starts_at ? -1 : 0))
+      .sort((a, b) => compareStringsDesc(a.starts_at, b.starts_at))
       .slice(0, limit);
   },
   async users(ids) {

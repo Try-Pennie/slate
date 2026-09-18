@@ -13,6 +13,8 @@
  * expected is then a fair judgement regardless of how often the agent is free.
  */
 
+import { compareStrings } from "../compare.ts";
+
 /** One booking's routing outcome: which pool, who got it, and who was eligible. */
 export interface TraceRow {
   bucketCode: string;
@@ -125,7 +127,7 @@ export function computeFairness(
         .sort((a, b) => a.deviation - b.deviation);
       return { bucketCode, bookings, insufficient: bookings < opts.minBookings, agents };
     })
-    .sort((a, b) => (a.bucketCode < b.bucketCode ? -1 : a.bucketCode > b.bucketCode ? 1 : 0));
+    .sort((a, b) => compareStrings(a.bucketCode, b.bucketCode));
 
   // Raw bookings-received count per agent (#424): counts the current
   // assigned_user_id of every booking, so reassign/reschedule credit is not

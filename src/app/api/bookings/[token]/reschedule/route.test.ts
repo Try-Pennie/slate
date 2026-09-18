@@ -349,3 +349,58 @@ describe("manage reschedule is throttled per address (#1046)", () => {
     expect(res.status).not.toBe(429);
   });
 });
+
+// #2561: a lead's reschedule is a mutation, and its answer describes one booking at
+// one moment, carrying the manage URL with it. Nothing between the browser and the
+// Worker was told that, so a shared cache was free to keep it and hand it to the next
+// reader. Every ending is asserted, not just the happy one: the header is applied by
+// wrapping the handler rather than by stamping each return, and the thing worth
+// proving about a wrapper is that a return nobody remembered still carries it (L96).
+describe("reschedule answers are never stored (#2561)", () => {
+  const VALID = { start: "2026-07-01T15:00:00.000Z", reason: "schedule_conflict" };
+  const noStore = (res: Response) => res.headers.get("cache-control");
+
+  // `vi.clearAllMocks` clears the CALLS and leaves a queued `mockResolvedValueOnce`
+  // in place, so an earlier test that queued one and never reached it answers the
+  // first call made here instead of the mock this test set up. Reset the queue
+  // rather than inherit it.
+  beforeEach(() => service.rescheduleBooking.mockReset());
+
+  it("on a successful move", async () => {
+    service.rescheduleBooking.mockResolvedValueOnce({
+      booking: { id: "b1", starts_at: "2026-07-01T15:00:00Z", ends_at: "2026-07-01T15:30:00Z" },
+      manageUrl: "https://slate.trypennie.app/booking/manage/tok1",
+    });
+    const res = await POST(req(VALID), params);
+    expect(res.status).toBe(200);
+    expect(noStore(res)).toBe("no-store");
+  });
+
+  it("on a rejected body, which never reaches the booking layer", async () => {
+    const res = await POST(req({ start: 42 }), params);
+    expect(res.status).toBe(400);
+    expect(noStore(res)).toBe("no-store");
+  });
+
+  it("on a throttled address, the one refusal a cache could replay for free", async () => {
+    rateLimit.manageWithinLimit.mockResolvedValueOnce(false);
+    const res = await POST(req(VALID), params);
+    expect(res.status).toBe(429);
+    expect(noStore(res)).toBe("no-store");
+  });
+
+  it("on a concurrent change, which answers 409 through its own branch", async () => {
+    service.rescheduleBooking.mockRejectedValueOnce(new service.RescheduleConflictError());
+    const res = await POST(req(VALID), params);
+    expect(res.status).toBe(409);
+    expect(noStore(res)).toBe("no-store");
+  });
+
+  it("on an unexpected fault, which returns through a different helper entirely", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    service.rescheduleBooking.mockRejectedValueOnce(new Error("boom"));
+    const res = await POST(req(VALID), params);
+    expect(res.status).toBe(500);
+    expect(noStore(res)).toBe("no-store");
+  });
+});

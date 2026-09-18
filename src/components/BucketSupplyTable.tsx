@@ -9,6 +9,7 @@ import {
 } from "@/lib/admin/bucket-supply";
 import { DEBT_TIER } from "@/lib/xbc";
 import { LegendList } from "@/components/ui/LegendList";
+import { DayHeaderCell } from "@/components/ui/DayHeaderCell";
 import {
   SUPPLY_ALARMING_STATES,
   SUPPLY_DAY_GROUP_HEADER,
@@ -219,19 +220,14 @@ export function BucketSupplyTable({
               <th scope="col" className="px-3 pb-2.5 text-left font-normal">
                 Available today
               </th>
-              {days.map((day, i) => {
-                const d = DateTime.fromISO(day.iso, { zone });
-                return (
-                  <th
-                    key={day.iso}
-                    scope="col"
-                    className={`px-2 pb-2.5 font-semibold ${i === 0 ? "border-l border-border" : ""}`}
-                  >
-                    <span className="block">{d.toFormat("ccc")}</span>
-                    <span className="block font-normal tabular-nums">{d.toFormat("d LLL")}</span>
-                  </th>
-                );
-              })}
+              {days.map((day, i) => (
+                <DayHeaderCell
+                  key={day.iso}
+                  iso={day.iso}
+                  zone={zone}
+                  className={`px-2 pb-2.5 font-semibold ${i === 0 ? "border-l border-border" : ""}`}
+                />
+              ))}
             </tr>
           </thead>
           {groups.map((group) => (

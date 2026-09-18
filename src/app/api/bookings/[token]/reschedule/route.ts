@@ -14,6 +14,7 @@ import { loadReasonOptions } from "@/lib/booking/reason-options";
 import { isBookingWriteFailure } from "@/lib/booking/gated-write";
 import { recordApiOutcome } from "@/lib/monitor/record-api-outcome";
 import { internalErrorResponse, reportInternalError } from "@/lib/api/errors";
+import { noStore } from "@/lib/api/no-store";
 import { INPUT_LIMITS } from "@/lib/booking/input-limits";
 import { manageWithinLimit } from "@/lib/rate-limit";
 // From the pure core rather than the re-export, so a test can stub the limiter without
@@ -51,7 +52,21 @@ const schema = z.object({
     .optional(),
 });
 
+/**
+ * #2561: one wrapper rather than a header on each of the returns below. Every
+ * ending of this handler, the moves and the refusals alike, describes one lead's
+ * booking at one moment and carries the manage URL with it, and a return added
+ * later carries the directive by construction instead of by somebody remembering
+ * (L96).
+ */
 export async function POST(
+  req: NextRequest,
+  ctx: { params: Promise<{ token: string }> },
+) {
+  return noStore(await handlePost(req, ctx));
+}
+
+async function handlePost(
   req: NextRequest,
   { params }: { params: Promise<{ token: string }> },
 ) {

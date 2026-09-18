@@ -4,6 +4,7 @@ import { BUSINESS_ZONE } from "@/lib/booking/business-hours";
 import { gridTotals, type AvailabilityGrid } from "@/lib/admin/availability-grid";
 import { CELL_TREATMENTS, cellTitle, treatmentFor } from "@/lib/admin/availability-grid-copy";
 import { LegendList } from "@/components/ui/LegendList";
+import { DayHeaderCell } from "@/components/ui/DayHeaderCell";
 
 /**
  * The availability grid's table and its key (#1302).
@@ -59,15 +60,14 @@ export function AvailabilityGridTable({ grid }: { grid: AvailabilityGrid }) {
               <th scope="col" className="px-3 py-2.5 text-left font-semibold">
                 Hour
               </th>
-              {grid.days.map((day) => {
-                const d = DateTime.fromISO(day.iso, { zone: BUSINESS_ZONE });
-                return (
-                  <th key={day.iso} scope="col" className="px-2 py-2.5 font-semibold">
-                    <span className="block">{d.toFormat("ccc")}</span>
-                    <span className="block font-normal tabular-nums">{d.toFormat("d LLL")}</span>
-                  </th>
-                );
-              })}
+              {grid.days.map((day) => (
+                <DayHeaderCell
+                  key={day.iso}
+                  iso={day.iso}
+                  zone={BUSINESS_ZONE}
+                  className="px-2 py-2.5 font-semibold"
+                />
+              ))}
             </tr>
           </thead>
           <tbody>
