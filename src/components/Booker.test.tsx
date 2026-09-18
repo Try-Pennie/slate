@@ -27,6 +27,17 @@ import { messageLines } from "@/lib/booking/slot-picker";
 import { CANCEL_REASONS, RESCHEDULE_REASONS } from "@/lib/booking/core";
 import { CONFIRMATION_MARK } from "@/lib/booking/confirmation-mark";
 
+// The confirmation mark's dotLottie player, stood down for this file (#2560).
+// It is a wasm runtime: jsdom has no IntersectionObserver for it to observe with
+// and no server to fetch the wasm from, so every test reaching the confirmation
+// screen paid several seconds to boot a player that can never draw and then
+// threw out of a passive effect. What the player itself does is covered by
+// src/components/confirmation-mark.test.tsx, and what it looks like is covered in
+// a real browser; this file is about the booker.
+vi.mock("@/components/ConfirmationMarkPlayer", () => ({
+  ConfirmationMarkPlayer: () => null,
+}));
+
 // #625: the confirm POST must not freeze the button in "Booking your call…" if
 // the request rejects at the network layer (flaky mobile). It surfaces an error
 // and re-enables so the lead can retry.
@@ -268,12 +279,11 @@ describe("Booker confirm", () => {
     await fillAndConfirm();
 
     await screen.findByText("You're all set");
-    // Whichever form the mark takes for this viewer (the animation, or the still
-    // under reduced motion), the embed gets it. What #637 forbids is the embed
-    // being fobbed off with something smaller than the standalone page shows.
-    const mark = document.querySelector(
-      `video[src="${CONFIRMATION_MARK.video}"], img[src="${CONFIRMATION_MARK.still}"]`,
-    );
+    // The still coin is the layer that is always in the tree, whichever form the
+    // mark takes for this viewer (#2560: the animation draws over it, or a
+    // reduced motion lead gets it alone). What #637 forbids is the embed being
+    // fobbed off with something smaller than the standalone page shows.
+    const mark = document.querySelector(`img[src="${CONFIRMATION_MARK.still}"]`);
     expect(mark).not.toBeNull();
   });
 

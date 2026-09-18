@@ -1,43 +1,42 @@
 // @vitest-environment jsdom
 //
-// #2163: the confirmation screen's one branded moment.
+// #2163 put the branded mark on the confirmation screen; #2560 changed what
+// draws it, and this file is about the part that has to survive that change.
 //
-// Dan, 2026-09-09, seeing the graphic that was there: "what the hell is this
-// image?" It was a scatter of blank iridescent discs, which says money rather
-// than "your call is booked", and it is the LAST thing a lead sees.
+// The mark used to be an autoplaying `<video>`, and iOS refuses to autoplay one
+// in Low Power Mode. Many iPhone owners leave Low Power Mode on permanently, so
+// that was a standing share of leads seeing nothing happen on the one branded
+// moment in the booker. A dotLottie player draws with JavaScript, which Low
+// Power Mode cannot block.
 //
-// Pennie already has the right asset and it is the one the live cal.com
-// confirmation shows today: an iridescent coin with a tick struck into it, as a
-// 2.1 second animation and as a still. Both are vendored into public/brand.
-//
-// What is asserted here is everything about it that fails SILENTLY. A video that
-// autoplays with sound, one that loops forever on a resting screen, one that
-// plays for somebody who asked their system for less motion, and one that shows
-// an empty box where a browser cannot decode it, all look fine in review and in
-// any test that only checks the element is present.
+// What is asserted here is everything about the swap that fails SILENTLY. A
+// player that never arrives, one that arrives and cannot start, and one that
+// mounts for somebody who asked their system for less motion all look fine in
+// review and in any test that only checks the canvas is present. The still coin
+// is what stands behind all three, so it is asserted before the player, with the
+// player, and after the player has gone.
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { fireEvent, render, screen } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
-import Booker from "@/components/Booker";
-import { CANCEL_REASONS, RESCHEDULE_REASONS } from "@/lib/booking/core";
+import { act, render, screen } from "@testing-library/react";
+import { ConfirmationMark } from "@/components/ConfirmationMark";
 import { CONFIRMATION_MARK } from "@/lib/booking/confirmation-mark";
 
-const slotIso = new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString();
-const availability = {
-  bucket: { code: "411" },
-  orgName: "Pennie",
-  eventType: { name: "Advisor Call", description: null, durationMin: 30 },
-  slots: [slotIso],
-};
-const baseProps = {
-  bucketCode: "411",
-  salesforceId: null,
-  attendee: { name: "", email: "", phone: "" },
-  prefill: {},
-  rescheduleReasons: RESCHEDULE_REASONS,
-  cancelReasons: CANCEL_REASONS,
-  horizonDays: 4,
-};
+/** What the real player was handed, so a test can drive its two outcomes. */
+const stub = vi.hoisted(() => ({
+  props: null as null | { onEnded: () => void; onFailed: () => void },
+  mounts: 0,
+}));
+
+// The player is behind a dynamic import so it stays out of the booker's first
+// load, and this stands in for it. The EXPORT NAME is not taken on trust: the
+// dynamic import in ConfirmationMark is typechecked, so `tsc` fails if this and
+// the real module ever disagree about what is exported.
+vi.mock("@/components/ConfirmationMarkPlayer", () => ({
+  ConfirmationMarkPlayer: (props: { onEnded: () => void; onFailed: () => void }) => {
+    stub.props = props;
+    stub.mounts += 1;
+    return <canvas data-testid="mark-player" aria-hidden="true" />;
+  },
+}));
 
 /** Answer `prefers-reduced-motion` the way a browser would. jsdom has no media
  *  query engine at all, so without this every query returns false and the
@@ -55,115 +54,113 @@ function withReducedMotion(reduce: boolean) {
   })) as unknown as typeof window.matchMedia;
 }
 
-async function book() {
-  await userEvent.click(
-    await screen.findByRole("button", { name: /^(TODAY|MON|TUE|WED|THU|FRI|SAT|SUN)/ }),
-  );
-  await userEvent.click(await screen.findByRole("button", { name: /:\d{2}/ }));
-  await userEvent.type(screen.getByLabelText("First name"), "Dana");
-  await userEvent.type(screen.getByLabelText("Last name"), "Lead");
-  await userEvent.type(screen.getByLabelText("Email"), "dana@example.com");
-  await userEvent.type(screen.getByLabelText("Phone"), "(203) 561-5295");
-  await userEvent.click(screen.getByRole("button", { name: /confirm booking/i }));
-  return screen.findByText("You're all set");
+function still(): HTMLImageElement | null {
+  return document.querySelector(`img[src="${CONFIRMATION_MARK.still}"]`);
+}
+
+/** Let the dynamic import settle. It resolves on a microtask, so this is a tick
+ *  of the queue rather than a wait on the clock: nothing here depends on how
+ *  busy the machine is. */
+async function playerArrives() {
+  await act(async () => {
+    await Promise.resolve();
+    await Promise.resolve();
+  });
 }
 
 beforeEach(() => {
-  vi.clearAllMocks();
+  stub.props = null;
+  stub.mounts = 0;
   withReducedMotion(false);
-  global.fetch = vi.fn(async (url: RequestInfo | URL) => {
-    if (String(url).includes("/api/availability")) {
-      return { ok: true, json: async () => availability } as Response;
-    }
-    return { ok: true, status: 200, json: async () => ({ startsAt: slotIso }) } as Response;
-  }) as unknown as typeof fetch;
 });
 
-describe("confirmation mark (#2163)", () => {
-  it("plays the check mark once, silently, and holds its last frame", async () => {
-    render(<Booker {...baseProps} />);
-    await book();
+describe("confirmation mark (#2163, #2560)", () => {
+  it("shows the still coin before the player has arrived", () => {
+    render(<ConfirmationMark />);
 
-    const video = document.querySelector("video") as HTMLVideoElement;
-    expect(video).not.toBeNull();
-    expect(video.getAttribute("src")).toBe(CONFIRMATION_MARK.video);
-
-    // Autoplay is refused without muted in every browser, and a confirmation
-    // screen that makes noise is worse than one with no animation at all.
-    expect(video.muted || video.hasAttribute("muted")).toBe(true);
-    // A resting screen, so it plays once and stays on the check mark.
-    expect(video.hasAttribute("loop")).toBe(false);
-    expect(video.hasAttribute("autoplay")).toBe(true);
-    // iOS refuses to play inline without this and takes over the whole screen.
-    expect(video.hasAttribute("playsinline")).toBe(true);
+    // The first paint is the still ALONE: the player is a separate chunk that is
+    // still being fetched, and a lead on a slow connection must not be looking
+    // at an empty panel while that happens.
+    expect(still()).not.toBeNull();
+    expect(screen.queryByTestId("mark-player")).toBeNull();
   });
 
-  it("shows the still where the video cannot be decoded, rather than an empty box", async () => {
-    render(<Booker {...baseProps} />);
-    await book();
+  it("keeps the still underneath while the player draws", async () => {
+    render(<ConfirmationMark />);
+    await playerArrives();
 
-    const video = document.querySelector("video") as HTMLVideoElement;
-    // Headless Chromium cannot decode H.264 AT ALL (canPlayType returns ""), and
-    // it is not alone. A poster means those viewers get the same picture, still.
-    expect(video.getAttribute("poster")).toBe(CONFIRMATION_MARK.still);
-  });
-
-  it("shows the still, and no video, for a lead who asked for less motion", async () => {
-    withReducedMotion(true);
-    render(<Booker {...baseProps} />);
-    await book();
-
-    // The CSS guard in globals.css reaches animation-duration and
-    // transition-duration, which a playing video is neither of, so this branch is
-    // the only thing standing between that lead and a full speed animation.
-    expect(document.querySelector("video")).toBeNull();
-    const still = document.querySelector(`img[src="${CONFIRMATION_MARK.still}"]`);
-    expect(still).not.toBeNull();
+    expect(screen.getByTestId("mark-player")).not.toBeNull();
+    // Underneath, not instead of. That is what makes the ending a reveal rather
+    // than a swap, and it means nothing can flash empty in between.
+    expect(still()).not.toBeNull();
   });
 
   it("gives way to the still coin when it ends, rather than resting on its own last frame", async () => {
-    render(<Booker {...baseProps} />);
-    await book();
+    render(<ConfirmationMark />);
+    await playerArrives();
 
-    const video = document.querySelector("video") as HTMLVideoElement;
+    expect(screen.getByTestId("confirmation-mark-layer").className).toContain("opacity-100");
+
     // The animation resolves to a small pale flat tick, which is a weak thing to
     // leave on screen and is a DIFFERENT picture from the one a reduced motion
     // lead sees. Every lead ends up looking at the same mark.
-    expect(video.getAttribute("data-ended")).toBe("false");
+    act(() => stub.props!.onEnded());
+    const layer = screen.getByTestId("confirmation-mark-layer");
+    expect(layer.className).toContain("opacity-0");
+    // The fade is on a layer this component owns, because the player library
+    // drops a `style` prop whenever a className is set, so a duration handed to
+    // it would silently never apply.
+    expect(layer.getAttribute("style")).toContain(`${CONFIRMATION_MARK.settleMs}ms`);
+    expect(still()).not.toBeNull();
+  });
 
-    // The still is already underneath, which is what makes this a reveal rather
-    // than a swap, and is why nothing can flash empty in between.
-    const still = document.querySelector(`img[src="${CONFIRMATION_MARK.still}"]`);
-    expect(still).not.toBeNull();
+  it("leaves the still, and nothing else, when the player cannot start", async () => {
+    render(<ConfirmationMark />);
+    await playerArrives();
 
-    fireEvent.ended(video);
-    expect(video.getAttribute("data-ended")).toBe("true");
-    expect(video.className).toContain("opacity-0");
+    // A wasm that will not load, or an animation that will not fetch. The canvas
+    // goes away entirely rather than sitting there transparent: an element that
+    // will never draw is one more thing that can go wrong on top of the still.
+    act(() => stub.props!.onFailed());
+    expect(screen.queryByTestId("mark-player")).toBeNull();
+    expect(still()).not.toBeNull();
+  });
+
+  it("never mounts the player for a lead who asked for less motion", async () => {
+    withReducedMotion(true);
+    render(<ConfirmationMark />);
+    await playerArrives();
+
+    // The CSS guard in globals.css reaches animation-duration and
+    // transition-duration, and a canvas painting itself frame by frame is
+    // neither, so this branch is the only thing standing between that lead and a
+    // full speed animation. Not mounted at all, so the chunk is never fetched
+    // either.
+    expect(stub.mounts).toBe(0);
+    expect(screen.queryByTestId("mark-player")).toBeNull();
+    expect(still()).not.toBeNull();
   });
 
   it("is decorative in the accessibility tree, because the words carry the news", async () => {
-    render(<Booker {...baseProps} />);
-    await book();
+    render(<ConfirmationMark />);
+    await playerArrives();
 
-    const marks = Array.from(document.querySelectorAll("video, img[src*='checkmark']"));
-    expect(marks.length).toBeGreaterThan(0);
-    // The heading, the recap and the live region already say a booking was made.
-    // A described graphic here would make a screen reader say it twice, and BOTH
-    // layers are in the tree at once, so both have to be silent.
+    const marks = [still(), screen.getByTestId("confirmation-mark-layer")];
     for (const mark of marks) {
-      expect(mark.getAttribute("aria-hidden")).toBe("true");
+      // The heading, the recap and the live region already say a booking was
+      // made. A described graphic here would make a screen reader say it twice,
+      // and BOTH layers are in the tree at once, so both have to be silent.
+      expect(mark!.getAttribute("aria-hidden")).toBe("true");
     }
   });
 
-  it("names one size for the mark, so the embed's height does not jump as it loads", async () => {
-    render(<Booker {...baseProps} />);
-    await book();
+  it("names one size for the still, so the embed's height does not jump as it loads", () => {
+    render(<ConfirmationMark />);
 
-    const video = document.querySelector("video") as HTMLVideoElement;
     // The host sizes the iframe from the Booker's own resize message, so an
     // element that arrives with no intrinsic size and then gets one posts two
     // different heights and the frame visibly jumps.
-    expect(video.getAttribute("width")).toBe(String(CONFIRMATION_MARK.size));
-    expect(video.getAttribute("height")).toBe(String(CONFIRMATION_MARK.size));
+    expect(still()!.getAttribute("width")).toBe(String(CONFIRMATION_MARK.size));
+    expect(still()!.getAttribute("height")).toBe(String(CONFIRMATION_MARK.size));
   });
 });

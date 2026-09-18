@@ -22,6 +22,21 @@ if (typeof document !== "undefined") {
     };
   }
 
+  // jsdom has no IntersectionObserver either; the confirmation mark's dotLottie
+  // player observes its own canvas so it can stop painting while off screen
+  // (#2560). Without this the player throws out of a passive effect, which fails
+  // the test that mounted it and says nothing about what went wrong.
+  if (typeof globalThis.IntersectionObserver === "undefined") {
+    globalThis.IntersectionObserver = class {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+      takeRecords() {
+        return [];
+      }
+    } as unknown as typeof IntersectionObserver;
+  }
+
   const { cleanup } = await import("@testing-library/react");
   afterEach(() => cleanup());
 }

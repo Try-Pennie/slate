@@ -17,6 +17,7 @@
     "cf:deploy": "opennextjs-cloudflare build && opennextjs-cloudflare deploy",
     "cf:deploy:verified": "node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/deploy-verified.ts",
     "prepare": "git config core.hooksPath .githooks || true",
+    "build:confirmation-mark": "node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/build-confirmation-mark-assets.ts",
     "preview:booker": "node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/preview-booker.ts",
     "preview:alerts": "node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/preview-alerts.ts",
     "check:workflow-settings": "node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/check-workflow-settings.ts",
@@ -35,6 +36,7 @@
     "loadtest:export-shape": "node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/loadtest/export-roster-shape.ts"
   },
   "dependencies": {
+    "@lottiefiles/dotlottie-react": "^0.19.16",
     "@supabase/ssr": "^0.12.5",
     "@supabase/supabase-js": "^2.112.4",
     "googleapis": "^173.0.0",
