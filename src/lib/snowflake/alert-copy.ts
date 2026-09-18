@@ -188,3 +188,23 @@ export function erasureResidualRecovery(): string {
           "complete. The audit finds no remaining data for the erased bookings, so the compliance " +
           "request is fully honored and the earlier page is cleared. No action is needed.";
 }
+
+/** One line naming what is wrong, for an alert read on a phone. The counts and
+ *  the field names are ours; no warehouse reply text reaches it. */
+export function credentialSweepAlert(reasons: string[]): string {
+  return (
+    `The Snowflake mirror still holds a booking credential after the sweep. ` +
+    `A warehouse reader can reschedule or cancel those bookings. ` +
+    reasons.join("; ") +
+    `. Diagnose via tag=credential-sweep in the Worker logs.`
+  );
+}
+
+/** The all-clear. This is a CONDITION (the warehouse holds something it should
+ *  not) and it ends when the sweep clears it, so it says so. */
+export const CREDENTIAL_SWEEP_RECOVERY =
+  "The Snowflake mirror no longer holds any booking credential. No action is needed.";
+
+/** The alert key, for the preview and the tests. The route names it literally at
+ *  the call site, because the catalog coverage guard reads the key there and
+ *  cannot follow a constant (an unreadable key is a hard failure, by design). */

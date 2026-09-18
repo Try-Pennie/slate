@@ -25,6 +25,7 @@
 
 import { escapeSqlLiteral } from "./client";
 import { LOAD_STAMP_COL } from "./export-core";
+import { redactMirrorCredentials } from "./mirror-credentials";
 
 export type ColType = "varchar" | "number" | "boolean" | "timestamp_tz" | "timestamp_ntz" | "variant";
 
@@ -39,6 +40,11 @@ export interface ColSpec {
 export const LOAD_STAMP_SQL = "SYSDATE()";
 
 export function buildMergeSql(tableName: string, cols: ColSpec[], rows: Array<Record<string, unknown>>): string {
+  // #2564: strip the declared credentials HERE rather than at each caller. The
+  // incremental lane, the backfill lane and reexportByIds all build their SQL
+  // through this function and nothing else, so a merge path cannot carry a manage
+  // token into the warehouse by forgetting a step it never has to remember (L621).
+  const safeRows = redactMirrorCredentials(tableName, rows);
   // The load stamp is appended to the target column list only: it has no source
   // column, so it never appears in the VALUES tuple or the USING projection.
   const colList = [...cols.map((c) => c.name), LOAD_STAMP_COL].join(", ");
@@ -49,7 +55,7 @@ export function buildMergeSql(tableName: string, cols: ColSpec[], rows: Array<Re
     ...cols.filter((c) => c.name !== "id").map((c) => `${c.name} = s.${c.name}`),
     `${LOAD_STAMP_COL} = ${LOAD_STAMP_SQL}`,
   ].join(", ");
-  const valuesList = rows
+  const valuesList = safeRows
     .map((r) => "(" + cols.map((c) => formatValue(r[c.name], c.type)).join(", ") + ")")
     .join(", ");
   const tupleAlias = "(" + cols.map((c) => c.name).join(", ") + ")";

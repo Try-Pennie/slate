@@ -18,11 +18,18 @@ const notify = vi.hoisted(() => ({
 }));
 const heartbeat = vi.hoisted(() => ({ recordHeartbeat: vi.fn(async () => {}) }));
 const purge = vi.hoisted(() => ({ runErasurePurgeSqlProbe: vi.fn() }));
+const credentialSweep = vi.hoisted(() => ({
+  runMirrorCredentialSweep: vi.fn(),
+  credentialSweepAlert: (reasons: string[]) => `credential residual: ${reasons.join("; ")}`,
+  CREDENTIAL_SWEEP_RECOVERY: "cleared",
+  CREDENTIAL_SWEEP_ALERT_KEY: "snowflake_credential_residual",
+}));
 
 vi.mock("@/lib/cron", () => cron);
 vi.mock("@/lib/locks", () => locks);
 vi.mock("@/lib/snowflake/erasure-audit", () => audit);
 vi.mock("@/lib/snowflake/purge", () => purge);
+vi.mock("@/lib/snowflake/credential-sweep", () => credentialSweep);
 vi.mock("@/lib/notify/dispatch", () => notify);
 vi.mock("@/lib/monitor/heartbeat", () => heartbeat);
 vi.mock("@/lib/log", () => ({ log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } }));
@@ -55,6 +62,7 @@ beforeEach(() => {
   locks.acquireLock.mockResolvedValue("lease");
   audit.auditSnowflakeErasures.mockResolvedValue({ ...AUDIT_DEFAULTS, ok: true, erasedBookings: 0, residuals: [], reasons: [] });
   purge.runErasurePurgeSqlProbe.mockResolvedValue({ ok: true, statements: [], reasons: [] });
+  credentialSweep.runMirrorCredentialSweep.mockResolvedValue({ ok: true, cleared: {}, residual: {}, reasons: [] });
 });
 
 /** Keys the run sent an alert on / cleared, so an assertion names the condition it
@@ -372,5 +380,68 @@ describe("GET /api/cron/erasure-audit test/real routing", () => {
     expect(notify.resolveAlert.mock.calls.map((c) => c[0])).not.toContain(
       "snowflake_erasure_residual_test",
     );
+  });
+});
+
+/**
+ * #2564: the mirror carried the booking manage token, a credential rather than a
+ * description of the person, so warehouse read access was booking control access.
+ * The sweep clears what was already exported. It sits on this lane because this is
+ * the lane about the warehouse holding something it should not.
+ */
+describe("the mirror credential sweep", () => {
+  it("pages on its OWN key when a credential survives the sweep", async () => {
+    credentialSweep.runMirrorCredentialSweep.mockResolvedValue({
+      ok: false,
+      cleared: { "bookings.manage_token": 0 },
+      residual: { "bookings.manage_token": 4 },
+      reasons: ["bookings.manage_token: 4 row(s) still hold the credential after the sweep"],
+    });
+
+    await GET(req());
+
+    expect(alertedKeys()).toContain("snowflake_credential_residual");
+    // A clean erasure audit must never clear a credential page, and vice versa: two
+    // independent conditions cannot share one status field (L53).
+    expect(clearedKeys()).not.toContain("snowflake_credential_residual");
+  });
+
+  it("clears the condition off a MEASURED clean sweep", async () => {
+    await GET(req());
+
+    expect(alertedKeys()).not.toContain("snowflake_credential_residual");
+    expect(clearedKeys()).toContain("snowflake_credential_residual");
+  });
+
+  it("clears NOTHING when the mirror is unconfigured, because it measured nothing", async () => {
+    credentialSweep.runMirrorCredentialSweep.mockResolvedValue({
+      skipped: true,
+      ok: true,
+      cleared: {},
+      residual: {},
+      reasons: [],
+    });
+
+    await GET(req());
+
+    expect(alertedKeys()).not.toContain("snowflake_credential_residual");
+    expect(clearedKeys()).not.toContain("snowflake_credential_residual");
+  });
+
+  it("does not let a failing sweep take out the erasure audit beside it", async () => {
+    // The two are independent conditions on one lane. A sweep that throws must not
+    // mean nobody hears about an incomplete erasure.
+    credentialSweep.runMirrorCredentialSweep.mockRejectedValue(new Error("warehouse unreachable"));
+    audit.auditSnowflakeErasures.mockResolvedValue({ ...AUDIT_DEFAULTS,
+      ok: false,
+      erasedBookings: 1,
+      residuals: [{ table: "bookings", residual: 1 }],
+      reasons: ["bookings: 1 erased booking row(s) still hold contact PII in Snowflake"],
+    });
+
+    const res = await GET(req());
+
+    expect(alertedKeys()).toContain("snowflake_erasure_residual");
+    expect(res.status).toBe(500);
   });
 });

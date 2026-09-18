@@ -88,6 +88,15 @@ CREATE TABLE IF NOT EXISTS bookings (
   attendee_phone      VARCHAR,
   prefill             VARIANT,
   gcal_event_id       VARCHAR,
+  -- Never written since #2564, and deliberately not dropped. The manage token is a
+  -- credential, not a description of the person: whoever holds it can reschedule or
+  -- cancel that booking with no other authentication, so mirroring it made warehouse
+  -- read access equal to booking control access. The export strips it, the 6h sweep
+  -- blanks what was already here, and scripts/test-mirror-credentials.ts fails the
+  -- build if it or anything else credential shaped rejoins the mirror. The column is
+  -- left in place rather than dropped because a DROP is hand applied DDL against
+  -- production that would break any consumer naming it, and gains nothing over a
+  -- column that is permanently null and guarded.
   manage_token        VARCHAR,
   idempotency_key     VARCHAR,
   external_id         VARCHAR,
