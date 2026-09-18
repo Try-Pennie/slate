@@ -30,6 +30,7 @@
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { assert, fail, finish } from "./lib/harness.ts";
+import { hasOptOut } from "./lib/opt-out.ts";
 
 const SRC = join("src");
 
@@ -70,22 +71,14 @@ const ROSE_BG = /\bbg-(?:error(?:-bg)?(?:\/\d+)?\b|\[var\(--error\)\])/;
 const ROSE_HOVER = /\bhover:(?:bg|text|border)-(?:error(?:-bg)?(?:\/\d+)?\b|\[var\(--error\)\])/;
 
 /**
- * The opt out, on the line or in the `//` block directly above it.
+ * The opt out, on the line or in the comment block directly above it.
  *
- * It must carry a REASON, and the reason has to start with a word, or the
- * surrounding syntax satisfies the check and the escape reads as reasoned when
- * nobody reasoned (L675).
+ * It must carry a REASON, or the surrounding syntax satisfies the check and the
+ * escape reads as reasoned when nobody reasoned (L675). That rule lives in the
+ * one shared reader now (#2200).
  */
-const OPT_OUT = /\/\/\s*destructive-ok:\s*\w/;
-
 function optedOut(lines: string[], i: number): boolean {
-  if (OPT_OUT.test(lines[i])) return true;
-  for (let j = i - 1; j >= 0; j--) {
-    const line = lines[j].trim();
-    if (!line.startsWith("//")) return false;
-    if (OPT_OUT.test(line)) return true;
-  }
-  return false;
+  return hasOptOut(lines, i, "destructive-ok:");
 }
 
 /**

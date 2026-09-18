@@ -38,6 +38,8 @@
 // component's own class string, which is judged where that string is written
 // rather than at each call site.
 
+import { hasOptOut } from "./opt-out.ts";
+
 export type DesignRuleHit = {
   file: string;
   line: number;
@@ -45,9 +47,6 @@ export type DesignRuleHit = {
   found: string;
   why: string;
 };
-
-/** The opt-out, which must carry a reason on its own line (L675). */
-const OPT_OUT_RE = /(?:\/\/|\{?\/\*|\*)[^\S\r\n]*design-ok:[^\S\r\n]*\S+/;
 
 /** Anything a person presses or follows. */
 const CONTROL_TAGS = new Set(["button", "a", "Link", "SubmitButton", "NavLink"]);
@@ -89,16 +88,7 @@ const ACCENT_FILL_RE =
   /\b(?:hover:|dark:|focus:)*bg-(?:pennie-)?(?:yellow|mint|peach)(?:-\w+)?\b|bg-\[var\(--(?:pennie-)?(?:yellow|mint|peach)[^)]*\)\]/;
 
 function optedOut(lines: string[], i: number): boolean {
-  if (OPT_OUT_RE.test(lines[i])) return true;
-  for (let up = i - 1; up >= 0; up--) {
-    const above = lines[up].trim();
-    if (above === "") continue;
-    if (!above.startsWith("//") && !above.startsWith("*") && !above.startsWith("{/*") && !above.startsWith("/*")) {
-      return false;
-    }
-    if (OPT_OUT_RE.test(above)) return true;
-  }
-  return false;
+  return hasOptOut(lines, i, "design-ok:");
 }
 
 /**

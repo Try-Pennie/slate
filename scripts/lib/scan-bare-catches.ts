@@ -25,6 +25,8 @@
 
 /** Calls whose failure is genuinely fine to drop: telling someone FAILED, which
  *  must not escalate into breaking the operation that was being reported. */
+import { hasOptOut } from "./opt-out.ts";
+
 export const NOTIFIER_CALLS = [
   "sendThrottledAlert",
   "sendThrottledInfo",
@@ -151,17 +153,6 @@ function statementStart(src: string, at: number): number {
   return 0;
 }
 
-/** The `//` comment block immediately above the given line, joined. */
-function commentBlockAbove(lines: string[], lineIdx: number): string {
-  const out: string[] = [];
-  for (let i = lineIdx - 1; i >= 0; i--) {
-    const t = lines[i].trim();
-    if (t.startsWith("//")) out.unshift(t);
-    else break;
-  }
-  return out.join(" ");
-}
-
 export function scanBareCatches(source: string): BareCatchFinding[] {
   const lines = source.split("\n");
   // All index math runs on the string-blanked copy so a brace inside alert copy
@@ -191,8 +182,7 @@ export function scanBareCatches(source: string): BareCatchFinding[] {
 
     const isNotifier =
       NOTIFIER_CALLS.some((n) => statement.includes(n)) || NOTIFIER_SEAM_RE.test(statement);
-    const optedOut =
-      rawLine.includes(OPT_OUT) || commentBlockAbove(lines, lineIdx).includes(OPT_OUT);
+    const optedOut = hasOptOut(lines, lineIdx, OPT_OUT);
 
     findings.push({
       line: lineIdx + 1,

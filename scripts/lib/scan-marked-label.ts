@@ -26,6 +26,8 @@
  * booking outcomes page has one per row and the first version of this reported all
  * of them.
  */
+import { hasOptOut } from "./opt-out.ts";
+
 const SIZE = "(?:h-(?:1|1\\.5|2|2\\.5|3)\\b[^\"'`]*\\bw-(?:1|1\\.5|2|2\\.5|3)|size-(?:1|1\\.5|2|2\\.5|3))";
 const MARK = new RegExp(`\\b${SIZE}\\b[^"'\`]*\\brounded-full\\b|\\brounded-full\\b[^"'\`]*\\b${SIZE}\\b`);
 
@@ -57,8 +59,6 @@ const LABEL = />\s*(?:\{[^}]*\}|[A-Za-z0-9])/;
  * neighbours that each carry one is evidence nobody reasoned about it (L233), so an
  * exemption that reads as deliberate has to actually say something.
  */
-const OPT_OUT = /mark-ok:[ \t]*[A-Za-z0-9]/;
-
 /** Files that own this alignment rather than repeat it, each for a stated reason. */
 const OWNERS: Readonly<Record<string, string>> = {
   "src/components/ui/MarkedLabel.tsx": "is the shared component",
@@ -135,23 +135,5 @@ function enclosingRow(lines: string[], at: number): number | null {
  * first line while the line above the code is its last.
  */
 function optedOut(lines: string[], at: number): boolean {
-  if (OPT_OUT.test(lines[at]!)) return true;
-  let j = at - 1;
-  while (j >= 0 && lines[j]!.trim() === "") j--;
-  if (j < 0) return false;
-  const line = lines[j]!.trim();
-
-  if (line.startsWith("//")) {
-    const run: string[] = [];
-    for (let k = j; k >= 0 && lines[k]!.trim().startsWith("//"); k--) run.push(lines[k]!);
-    return OPT_OUT.test(run.join("\n"));
-  }
-
-  if (!line.endsWith("*/") && !line.endsWith("*/}")) return false;
-  const block: string[] = [];
-  for (let k = j; k >= 0; k--) {
-    block.push(lines[k]!);
-    if (lines[k]!.includes("/*")) return OPT_OUT.test(block.join("\n"));
-  }
-  return false;
+  return hasOptOut(lines, at, "mark-ok:");
 }

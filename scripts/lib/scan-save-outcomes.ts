@@ -8,6 +8,8 @@
  */
 
 /** One server action, as the scan sees it. */
+import { readOptOut, readOptOutOnLine } from "./opt-out.ts";
+
 export interface ScannedAction {
   name: string;
   /** Does it change anything? */
@@ -83,17 +85,7 @@ const OUTCOME_SHAPES = [
 
 /** A `// outcome-ok: <reason>` on, or in the comment block above, a line. */
 function exemptionAbove(lines: string[], at: number): string | null {
-  for (let i = at; i >= 0 && i > at - 12; i--) {
-    const m = lines[i].match(/\/\/\s*outcome-ok:\s*(.+)$/);
-    if (m) return m[1].trim();
-    // Stop at the first line that is neither a comment nor blank, except the
-    // declaration itself, so an exemption cannot be inherited from the action
-    // above this one.
-    if (i !== at && lines[i].trim() && !lines[i].trim().startsWith("*") && !lines[i].trim().startsWith("//") && !lines[i].trim().startsWith("/*")) {
-      return null;
-    }
-  }
-  return null;
+  return markerAbove(lines, at, "outcome-ok");
 }
 
 /** Split a source file into its exported server actions. */
@@ -158,8 +150,8 @@ export function findSilentActions(
 export function findReasonlessExemptions(file: string, src: string): SaveOutcomeFinding[] {
   const found: SaveOutcomeFinding[] = [];
   for (const line of src.split("\n")) {
-    const m = line.match(/\/\/\s*outcome-ok:\s*(.*)$/);
-    if (m && m[1].trim().length < 12) {
+    const m = readOptOutOnLine(line, "outcome-ok:");
+    if (m.present && m.reason.length < 12) {
       found.push({ file, name: line.trim().slice(0, 60), why: "outcome-ok with no real reason" });
     }
   }
@@ -262,21 +254,8 @@ function actionAt(src: string, offset: number): string | null {
 
 /** A `// <token>: <reason>` on, or in the comment block above, a line. */
 function markerAbove(lines: string[], at: number, token: string): string | null {
-  const re = new RegExp(`//\\s*${token}:\\s*(.+)$`);
-  for (let i = at; i >= 0 && i > at - 12; i--) {
-    const m = lines[i].match(re);
-    if (m) return m[1].trim();
-    if (
-      i !== at &&
-      lines[i].trim() &&
-      !lines[i].trim().startsWith("*") &&
-      !lines[i].trim().startsWith("//") &&
-      !lines[i].trim().startsWith("/*")
-    ) {
-      return null;
-    }
-  }
-  return null;
+  const found = readOptOut(lines, at, `${token}:`, { reach: 12 });
+  return found.present && found.reasoned ? found.reason : null;
 }
 
 export function scanThrows(src: string): ScannedThrow[] {
@@ -321,8 +300,8 @@ export function findThrownRefusals(
 export function findReasonlessThrowExemptions(file: string, src: string): SaveOutcomeFinding[] {
   const found: SaveOutcomeFinding[] = [];
   for (const line of src.split("\n")) {
-    const m = line.match(/\/\/\s*throw-ok:\s*(.*)$/);
-    if (m && m[1].trim().length < 12) {
+    const m = readOptOutOnLine(line, "throw-ok:");
+    if (m.present && m.reason.length < 12) {
       found.push({ file, name: line.trim().slice(0, 60), why: "throw-ok with no real reason" });
     }
   }

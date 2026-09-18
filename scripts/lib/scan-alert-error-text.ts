@@ -58,6 +58,8 @@
 // value which is already short and human (an internally built reason string).
 
 /** Interpolations that are already routed through the shared formatter. */
+import { hasOptOutAtOffset } from "./opt-out.ts";
+
 const ROUTED = /\b(?:shortFailureReason|shortErrorReason)\s*\(/;
 
 /**
@@ -102,17 +104,9 @@ function lineOf(source: string, index: number): number {
   return line;
 }
 
-/** `// alert-text-ok:` on the line, or in the `//` block directly above it. */
+/** `// alert-text-ok:` on the line, or in the comment block directly above it. */
 function hasOptOut(source: string, index: number): boolean {
-  const lines = source.slice(0, index).split("\n");
-  const own = lines[lines.length - 1] ?? "";
-  if (/\/\/\s*alert-text-ok/i.test(own)) return true;
-  for (let i = lines.length - 2; i >= 0; i--) {
-    const trimmed = lines[i].trim();
-    if (!trimmed.startsWith("//")) break;
-    if (/\/\/\s*alert-text-ok/i.test(trimmed)) return true;
-  }
-  return false;
+  return hasOptOutAtOffset(source, index, "alert-text-ok:");
 }
 
 /** The source span of the call's argument list, from `(` to its matching `)`. */

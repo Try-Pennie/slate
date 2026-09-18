@@ -24,12 +24,12 @@
  */
 
 /** The chain shape: `.from("event_types")` followed by a write. */
+import { hasOptOut } from "./opt-out.ts";
+
 const WRITE_AFTER_FROM =
   /\.from\(\s*["']event_types["']\s*\)\s*(?:\r?\n\s*)?\.\s*(update|upsert|delete)\s*\(/g;
 
 /** The per site opt-out, on the line or in the `//` block directly above it. */
-const OPT_OUT = /\/\/\s*event-type-write-ok:/;
-
 export interface EventTypeWriteFinding {
   file: string;
   line: number;
@@ -38,14 +38,13 @@ export interface EventTypeWriteFinding {
 }
 
 /** Is this line, or the comment block directly above it, opted out? */
+/**
+ * A blank line between the comment and the write BREAKS the association here, so
+ * an excuse cannot drift away from what it excuses. That is stricter than the
+ * shared default and it is deliberate, which is why it is asked for by name.
+ */
 function optedOut(lines: string[], index: number): boolean {
-  if (OPT_OUT.test(lines[index] ?? "")) return true;
-  for (let i = index - 1; i >= 0; i--) {
-    const line = (lines[i] ?? "").trim();
-    if (!line.startsWith("//")) return false;
-    if (OPT_OUT.test(line)) return true;
-  }
-  return false;
+  return hasOptOut(lines, index, "event-type-write-ok:", { blankLineEndsRegion: true });
 }
 
 /**

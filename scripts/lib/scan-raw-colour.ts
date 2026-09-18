@@ -43,6 +43,8 @@
 // response to a guard flagging the documentation is to delete the sentence that
 // explains the colour, which is worse than the thing it was reporting.
 
+import { hasOptOut, textHasOptOut } from "./opt-out.ts";
+
 export type RawColourHit = {
   file: string;
   line: number;
@@ -59,7 +61,6 @@ export const TOKEN_HOME = "src/app/globals.css";
 // belongs in the docstring that already explains the value rather than in a
 // second comment beside it. Requiring an opener is what stops the same words
 // inside a string literal from opting anything out.
-const OPT_OUT_RE = /(?:\/\/|\/\*|\*)[^\S\r\n]*colour-ok:[^\S\r\n]*\S+/;
 
 /**
  * The whole file is a declaration site, and says why.
@@ -75,12 +76,11 @@ const OPT_OUT_RE = /(?:\/\/|\/\*|\*)[^\S\r\n]*colour-ok:[^\S\r\n]*\S+/;
  * `scripts/test-raw-colour.ts` NAMES every file carrying one on every run, so a
  * standing exemption is listed rather than silent (L523).
  */
-const FILE_OPT_OUT_RE = /(?:\/\/|\*|\/\*)[^\S\r\n]*colour-ok-file:[^\S\r\n]*\S+/;
 const FILE_OPT_OUT_WINDOW = 40;
 
 /** True when `source` declares itself a colour declaration site, with a reason. */
 export function fileOptedOut(source: string): boolean {
-  return FILE_OPT_OUT_RE.test(source.split("\n").slice(0, FILE_OPT_OUT_WINDOW).join("\n"));
+  return textHasOptOut(source.split("\n").slice(0, FILE_OPT_OUT_WINDOW).join("\n"), "colour-ok-file:");
 }
 
 /**
@@ -121,7 +121,7 @@ export function codeOnly(text: string): string {
       // lookback below can walk up to the marker: a block comment's
       // CONTINUATION lines start with an ordinary word and would otherwise read
       // as code and stop it short.
-      OPT_OUT_RE.test(m)
+      textHasOptOut(m, "colour-ok:")
         ? m
             .split("\n")
             .map((l) => `//${l}`)
@@ -131,21 +131,15 @@ export function codeOnly(text: string): string {
     .split("\n")
     .map((line) => {
       if (!/^\s*(?:\/\/|\*)/.test(line)) return line;
-      return OPT_OUT_RE.test(line) ? line : "";
+      return textHasOptOut(line, "colour-ok:") ? line : "";
     })
     .join("\n");
 }
 
 function optedOut(lines: string[], i: number): boolean {
-  if (OPT_OUT_RE.test(lines[i])) return true;
-  for (let back = i - 1; back >= 0 && back >= i - 4; back--) {
-    const prev = lines[back];
-    if (OPT_OUT_RE.test(prev)) return true;
-    // Stop at the first line that is neither a comment nor blank, so a marker
-    // belonging to an earlier statement cannot cover this one.
-    if (prev.trim() !== "" && !/^\s*(?:\{?\/\*|\/\/|\*)/.test(prev)) return false;
-  }
-  return false;
+  // Bounded reach: the subject is a colour literal inside markup rather than a
+  // statement, so a marker four lines up is as far as the convention reaches.
+  return hasOptOut(lines, i, "colour-ok:", { reach: 4 });
 }
 
 /** Every raw colour in one file. `file` is used only to report the hit. */

@@ -28,6 +28,8 @@
 // spellings while explaining themselves, and a scan of the raw text reports the
 // explanation as a paragraph that is not there.
 
+import { hasOptOut, textHasOptOut } from "./opt-out.ts";
+
 export type ProseWidthHit = {
   file: string;
   line: number;
@@ -42,7 +44,6 @@ export const PROSE_HOME = "src/components/ui/styles.ts";
 // The marker must sit directly behind a comment opener, `*` included so a
 // docstring continuation line can carry it. Requiring an opener is what stops
 // the same words inside a string literal from opting anything out.
-const OPT_OUT_RE = /(?:\/\/|\/\*|\*)[^\S\r\n]*prose-width-ok:[^\S\r\n]*\S+/;
 
 /** Tailwind's own name for the same 65ch. */
 const NAMED_RE = /\bmax-w-prose\b/g;
@@ -59,7 +60,7 @@ export function codeOnly(text: string): string {
       // lookback below meets one, reads it as code, and stops short of the
       // marker sitting two lines further up. That is how a JSX comment, which is
       // the only comment JSX allows between elements, failed to opt anything out.
-      OPT_OUT_RE.test(m)
+      textHasOptOut(m, "prose-width-ok:")
         ? m
             .split("\n")
             .map((l) => `//${l}`)
@@ -69,21 +70,15 @@ export function codeOnly(text: string): string {
     .split("\n")
     .map((line) => {
       if (!/^\s*(?:\/\/|\*)/.test(line)) return line;
-      return OPT_OUT_RE.test(line) ? line : "";
+      return textHasOptOut(line, "prose-width-ok:") ? line : "";
     })
     .join("\n");
 }
 
 function optedOut(lines: string[], i: number): boolean {
-  if (OPT_OUT_RE.test(lines[i])) return true;
-  for (let back = i - 1; back >= 0 && back >= i - 6; back--) {
-    const prev = lines[back];
-    if (OPT_OUT_RE.test(prev)) return true;
-    // Stop at the first line that is neither a comment nor blank, so a marker
-    // belonging to an earlier element cannot cover this one.
-    if (prev.trim() !== "" && !/^\s*(?:\{?\/\*|\/\/|\*)/.test(prev)) return false;
-  }
-  return false;
+  // Bounded reach: the subject line here is a rendered class rather than a
+  // statement, so a marker six lines up is as close as the convention gets.
+  return hasOptOut(lines, i, "prose-width-ok:", { reach: 6 });
 }
 
 /** Every hand written reading width in one file. */

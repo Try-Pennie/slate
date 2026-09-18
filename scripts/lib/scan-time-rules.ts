@@ -14,7 +14,9 @@
  * 5:45pm. Each implementation was tested against itself, which is why it survived.
  */
 
-const OPT_OUT = /\/\/\s*one-time-rule-ok:\s*\S/;
+import { hasOptOut } from "./opt-out.ts";
+
+const OPT_OUT = "one-time-rule-ok:";
 
 /**
  * The long DATE rule carries its OWN opt-out token (#2221).
@@ -24,14 +26,14 @@ const OPT_OUT = /\/\/\s*one-time-rule-ok:\s*\S/;
  * silently also exempt a date that appeared on the same line later (L448). The
  * two answer different questions and are spelled differently.
  */
-const DATE_OPT_OUT = /\/\/\s*one-date-rule-ok:\s*\S/;
+const DATE_OPT_OUT = "one-date-rule-ok:";
 
 interface Rule {
   /** What a second copy looks like. */
   pattern: RegExp;
   why: string;
   /** Which marker exempts this rule. Defaults to the time one. */
-  optOut?: RegExp;
+  optOut?: string;
 }
 
 /** What a long date spelled by hand is called, whichever way it was built. */
@@ -87,7 +89,7 @@ const RULES: Rule[] = [
 function scanLuxonLongDate(
   file: string,
   text: string,
-  exempt: (lineIndex: number, optOut: RegExp) => boolean,
+  exempt: (lineIndex: number, optOut: string) => boolean,
 ): { file: string; line: number; why: string }[] {
   const out: { file: string; line: number; why: string }[] = [];
   const call = /toFormat\(\s*(["'][^"']*["'])/g;
@@ -113,7 +115,7 @@ function scanLuxonLongDate(
 function scanMultilineIntl(
   file: string,
   text: string,
-  exempt: (lineIndex: number, optOut: RegExp) => boolean,
+  exempt: (lineIndex: number, optOut: string) => boolean,
 ): { file: string; line: number; why: string }[] {
   const out: { file: string; line: number; why: string }[] = [];
   const call = /new\s+Intl\.DateTimeFormat\s*\([^{]*\{([^{}]*)\}/g;
@@ -132,16 +134,8 @@ function scanMultilineIntl(
 /** Every second copy of a time or long date rule in `text`. */
 export function scanTimeRules(file: string, text: string): { file: string; line: number; why: string }[] {
   const lines = text.split("\n");
-  /** Whether `marker` sits on this line, or in the `//` block directly above it. */
-  const exempt = (i: number, marker: RegExp): boolean => {
-    if (marker.test(lines[i])) return true;
-    for (let up = i - 1; up >= 0; up--) {
-      const above = lines[up].trim();
-      if (!above.startsWith("//") && !above.startsWith("*")) break;
-      if (marker.test(above)) return true;
-    }
-    return false;
-  };
+  /** Whether `marker` sits on this line, or in the comment block directly above it. */
+  const exempt = (i: number, marker: string): boolean => hasOptOut(lines, i, marker);
   const out: { file: string; line: number; why: string }[] = [];
   lines.forEach((line, i) => {
     for (const rule of RULES) {

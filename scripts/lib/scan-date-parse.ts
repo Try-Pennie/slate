@@ -30,6 +30,8 @@
 // quietly wrong, and a missed site here is the bug shipping again. Over-flagging
 // costs one comment; under-flagging costs an outage that looks healthy.
 
+import { hasOptOut as sharedHasOptOut } from "./opt-out.ts";
+
 export interface RawDateParseFinding {
   file: string;
   line: number;
@@ -45,13 +47,7 @@ const NAN_CHECKS = ["Number.isFinite(", "Number.isNaN(", "isNaN("];
  * (so a multi-line justification counts). Mirrors the sibling scanners' hatch.
  */
 function hasOptOut(lines: string[], index: number): boolean {
-  if (/\/\/\s*parse-ok/i.test(lines[index])) return true;
-  for (let i = index - 1; i >= 0; i--) {
-    const trimmed = lines[i].trim();
-    if (!trimmed.startsWith("//")) break;
-    if (/\/\/\s*parse-ok/i.test(trimmed)) return true;
-  }
-  return false;
+  return sharedHasOptOut(lines, index, "parse-ok:");
 }
 
 /**

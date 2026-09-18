@@ -15,6 +15,8 @@
  * left out deliberately rather than forgotten. Add a code here as its class is
  * cleared; the guard's own message says so.
  */
+import { hasOptOut as sharedHasOptOut } from "./opt-out.ts";
+
 export const BREAKING_CODES = ["TS2304", "TS2307"] as const;
 
 /** The opt-out, matching the repo's other one-line conventions. */
@@ -45,19 +47,7 @@ export function parseTscErrors(output: string): TscError[] {
  * would let somebody silence a real undefined name with four characters.
  */
 export function hasOptOut(sourceLines: string[], lineNumber: number): boolean {
-  const carries = (text: string | undefined): boolean => {
-    if (!text) return false;
-    const i = text.indexOf(OPT_OUT);
-    return i >= 0 && text.slice(i + OPT_OUT.length).trim().length > 0;
-  };
-  if (carries(sourceLines[lineNumber - 1])) return true;
-  for (let i = lineNumber - 2; i >= 0; i--) {
-    const t = sourceLines[i]?.trim() ?? "";
-    if (t === "") continue;
-    if (!t.startsWith("//")) return false;
-    if (carries(t)) return true;
-  }
-  return false;
+  return sharedHasOptOut(sourceLines, lineNumber - 1, OPT_OUT);
 }
 
 /**

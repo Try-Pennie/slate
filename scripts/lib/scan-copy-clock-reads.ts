@@ -41,6 +41,8 @@
  * builder would exempt a clock read nobody meant to exempt.
  */
 
+import { readOptOut } from "./opt-out.ts";
+
 export interface CopyClockFinding {
   file: string;
   /** 1 indexed, so it can be read straight off an editor's gutter. */
@@ -64,17 +66,7 @@ export const CLOCK_READS = ["Date.now(", "new Date()", "DateTime.now(", "DateTim
 
 export const CLOCK_OPT_OUT_TOKEN = "clock-ok";
 
-/**
- * The reason must begin with a LETTER, so the surrounding syntax cannot satisfy
- * it and a hatch taken with a bare token or a stray brace reads as unreasoned
- * (L675). Anchored to this token alone, so another convention's opt-out on the
- * line above can never suppress this rule (L448).
- */
-const OPT_OUT_WITH_REASON = new RegExp(`//\\s*${CLOCK_OPT_OUT_TOKEN}:\\s*[A-Za-z]`);
-const OPT_OUT_ANY = new RegExp(`//\\s*${CLOCK_OPT_OUT_TOKEN}:`);
 
-/** A `//` comment line, whatever its indentation. */
-const isCommentLine = (line: string) => line.trim().startsWith("//");
 
 /**
  * Whether the line itself, or the unbroken `//` block directly above it, carries
@@ -83,20 +75,7 @@ const isCommentLine = (line: string) => line.trim().startsWith("//");
  * functions above cannot reach down and suppress an unrelated read.
  */
 function optOutAt(lines: string[], index: number): { present: boolean; reasoned: boolean } {
-  const consider = (line: string) =>
-    OPT_OUT_ANY.test(line) ? { present: true, reasoned: OPT_OUT_WITH_REASON.test(line) } : null;
-
-  const own = consider(lines[index]!);
-  if (own) return own;
-
-  for (let i = index - 1; i >= 0; i--) {
-    const line = lines[i]!;
-    if (line.trim() === "") continue;
-    if (!isCommentLine(line)) break;
-    const found = consider(line);
-    if (found) return found;
-  }
-  return { present: false, reasoned: false };
+  return readOptOut(lines, index, `${CLOCK_OPT_OUT_TOKEN}:`);
 }
 
 /**
@@ -112,7 +91,7 @@ function blankComments(source: string): string[] {
     // Keep the comment text only when it carries this rule's token, so the
     // opt-out is still readable while the prose around it cannot match.
     const comment = line.slice(at);
-    return line.slice(0, at) + (OPT_OUT_ANY.test(comment) ? comment : "");
+    return line.slice(0, at) + (comment.includes(`${CLOCK_OPT_OUT_TOKEN}:`) ? comment : "");
   });
 }
 

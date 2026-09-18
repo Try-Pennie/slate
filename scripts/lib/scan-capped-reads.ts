@@ -15,6 +15,8 @@
 // dependency-free like the other repo-invariant guards, and the escape hatches
 // keep it from false-flagging the legitimately-narrow lookups.
 
+import { hasOptOutAtOffset } from "./opt-out.ts";
+
 export interface CappedReadFinding {
   file: string;
   line: number;
@@ -50,16 +52,7 @@ function lineOf(source: string, index: number): number {
  * comment lines immediately above it (so a multi-line justification counts).
  */
 function hasOptOut(source: string, callIndex: number): boolean {
-  const lines = source.slice(0, callIndex).split("\n");
-  // The call's own line (may carry a trailing // cap-safe comment).
-  if (/\/\/\s*cap-safe/i.test(lines[lines.length - 1] ?? "")) return true;
-  // Walk upward over the contiguous comment block directly above the call.
-  for (let i = lines.length - 2; i >= 0; i--) {
-    const trimmed = lines[i].trim();
-    if (!trimmed.startsWith("//")) break;
-    if (/\/\/\s*cap-safe/i.test(trimmed)) return true;
-  }
-  return false;
+  return hasOptOutAtOffset(source, callIndex, "cap-safe:");
 }
 
 /**

@@ -48,6 +48,8 @@
 // Deliberately a text scan, not a parser: lightweight and dependency-free, in the
 // same family as scan-batch-sizes.ts and scan-swallowed-error-reads.ts.
 
+import { readOptOut } from "./opt-out.ts";
+
 export interface UnchunkedInFinding {
   file: string;
   line: number;
@@ -63,7 +65,6 @@ export interface ScanInput {
   source: string;
 }
 
-const OPT_OUT = /\/\/\s*in-chunk-ok:\s*(.*)$/;
 /** A batch handed out by one of the two splitters, in either spelling. */
 const CHUNK_LOOP = /for\s*\(\s*const\s+(\w+)\s+of\s+chunkIdsByUrlBudget\s*\(/g;
 /**
@@ -191,16 +192,8 @@ function inFilterValue(code: string, open: number): string | null {
 
 /** Whether an `// in-chunk-ok:` sits on, or in the `//` block above, this line. */
 function optOut(lines: string[], index: number): { present: boolean; reason: string } {
-  const here = OPT_OUT.exec(lines[index] ?? "");
-  if (here) return { present: true, reason: here[1].trim() };
-  for (let i = index - 1; i >= 0; i -= 1) {
-    const line = (lines[i] ?? "").trim();
-    if (line === "") continue;
-    if (!line.startsWith("//")) break;
-    const above = OPT_OUT.exec(line);
-    if (above) return { present: true, reason: above[1].trim() };
-  }
-  return { present: false, reason: "" };
+  const found = readOptOut(lines, index, "in-chunk-ok:");
+  return { present: found.present, reason: found.reason };
 }
 
 export function scanUnchunkedInFilters(inputs: ScanInput[]): UnchunkedInFinding[] {

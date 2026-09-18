@@ -7,6 +7,8 @@
 // guard reading one giant block still finds whatever it is looking for SOMEWHERE
 // in the file (L135).
 
+import { readTextOptOut } from "./opt-out.ts";
+
 export type WorkflowJob = {
   /** The job's key, as `needs:` and the checks API see it. */
   name: string;
@@ -147,12 +149,11 @@ export function transitiveNeeds(jobs: WorkflowJob[], start: string): Set<string>
  * decision somebody made (L233).
  */
 export function readJobMarker(jobBody: string, marker: string): string | null {
-  // The whitespace classes are HORIZONTAL only. A plain `\s*` after the colon
-  // matches the newline too, so an empty marker reads the NEXT line as its
-  // reason, and a marker with nothing written after it reads as a decision.
-  const re = new RegExp(`^[^\\S\\n]*#[^\\S\\n]*${marker}:[^\\S\\n]*(\\S[^\\n]*)$`, "m");
-  const m = jobBody.match(re);
-  return m ? (m[1] as string).trim() : null;
+  // A marker with nothing written after it is NOT a decision, which is why this
+  // goes through the shared reader rather than a pattern of its own (#2200): a
+  // looser one reads the NEXT line as the reason and every empty marker passes.
+  const found = readTextOptOut(jobBody, `${marker}:`, { syntax: ["hash"] });
+  return found.present && found.reasoned ? found.reason : null;
 }
 
 export type WorkflowTriggers = {

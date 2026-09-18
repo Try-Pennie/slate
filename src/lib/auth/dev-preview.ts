@@ -21,6 +21,10 @@ export async function devPreviewUser(): Promise<User | null> {
   const store = await cookies();
   const email = store.get(DEV_PREVIEW_COOKIE)?.value;
   if (!email) return null;
+  // error-ok: a failed read leaves the preview unset, which is what an unknown
+  // email already does, so localhost falls back to ordinary sign in. This whole
+  // module is inert in production, so the empty result reaches no lead and no
+  // agent.
   const { data } = await supabaseAdmin()
     .from("users")
     .select("*")

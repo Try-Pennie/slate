@@ -29,16 +29,13 @@
  * and it is deliberately out of scope.
  */
 
+import { hasOptOut } from "./opt-out.ts";
+
 export interface SubmitSite {
   file: string;
   line: number;
   why: string;
 }
-
-// Either comment style, because JSX markup carries `{/* ... */}` rather than `//`.
-// The reason must not be the comment's own terminator, or `{/* submit-feedback-ok: */}`
-// reads as a reason and the convention decays into a magic word.
-const OPT_OUT = /(?:\/\/|\{?\/\*)\s*submit-feedback-ok:\s*(?!\*\/)\S/;
 
 /**
  * A form opening tag whose action is a FUNCTION, not a URL.
@@ -55,14 +52,12 @@ const ACTION_FORM = /<(?:form|SaveForm)\b[^>]*\saction=\{/;
 const FORM_OPEN = /<(?:form|SaveForm)\b/;
 const FORM_CLOSE = /<\/(?:form|SaveForm)>/;
 
+// Either comment style, because JSX markup carries `{/* ... */}` rather than `//`,
+// and the reason must not be the comment's own terminator or
+// `{/* submit-feedback-ok: */}` reads as a reason and the convention decays into a
+// magic word. Both rules live in the one shared reader now (#2200).
 function optedOut(lines: string[], i: number): boolean {
-  if (OPT_OUT.test(lines[i])) return true;
-  for (let up = i - 1; up >= 0; up--) {
-    const above = lines[up].trim();
-    if (!above.startsWith("//") && !above.startsWith("*") && !above.startsWith("{/*")) break;
-    if (OPT_OUT.test(above)) return true;
-  }
-  return false;
+  return hasOptOut(lines, i, "submit-feedback-ok:");
 }
 
 /**

@@ -36,6 +36,8 @@
 //
 // Deliberately a text scan, in the same family as scan-src-capped-reads.ts.
 
+import { hasOptOut } from "./opt-out.ts";
+
 export interface TestDataCountFinding {
   file: string;
   line: number;
@@ -59,7 +61,6 @@ const FROM_RE = new RegExp(`\\.from\\(\\s*["'\`](${POPULATION_TABLES.join("|")})
 const AGGREGATE_RE = /count:\s*["'`]exact|head:\s*true|\.length\b|\.filter\(|\.reduce\(/;
 /** A bounded, already-chosen set rather than a population. */
 const PRIMARY_KEY_RE = /\.(?:eq|in)\(\s*["'`]id["'`]/;
-const OPT_OUT = /\/\/\s*test-data-ok:/;
 
 /** How far past the `.from(` to read the rest of the chain and its use. */
 const CHAIN_LINES = 14;
@@ -71,14 +72,7 @@ export function inReportedCountScope(path: string): boolean {
 }
 
 function optedOut(lines: string[], index: number): boolean {
-  if (OPT_OUT.test(lines[index] ?? "")) return true;
-  for (let i = index - 1; i >= 0; i -= 1) {
-    const line = (lines[i] ?? "").trim();
-    if (line === "") continue;
-    if (!line.startsWith("//")) return false;
-    if (OPT_OUT.test(line)) return true;
-  }
-  return false;
+  return hasOptOut(lines, index, "test-data-ok:");
 }
 
 export function scanTestDataCounts(source: string, file = "<source>"): TestDataCountFinding[] {

@@ -24,6 +24,7 @@ import { join } from "node:path";
 import { assert, eq, finish } from "./lib/harness.ts";
 import { stripComments } from "./lib/strip-comments.ts";
 import { ADMIN_NAV, adminNavHrefs } from "@/lib/admin/nav.ts";
+import { readTextOptOut } from "./lib/opt-out.ts";
 
 const ADMIN_DIR = "src/app/admin";
 const HEADER = "src/components/AppHeader.tsx";
@@ -37,7 +38,11 @@ const HEADER = "src/components/AppHeader.tsx";
  * is the guard being decoration while reading as enforcement. The control below
  * caught exactly that.
  */
-const EXEMPT = /\/\/[^\S\n]*nav-ok:[^\S\n]*(\S[^\n]*)/;
+/** The file scoped exemption, read through the one shared reader (#2200). */
+const navExemption = (text: string): string | null => {
+  const found = readTextOptOut(text, "nav-ok:");
+  return found.present && found.reasoned ? found.reason : null;
+};
 
 function pages(dir: string): string[] {
   const out: string[] = [];
@@ -97,7 +102,7 @@ const exempted: [string, string][] = [];
 for (const file of all) {
   const route = routeFor(file);
   if (reachable.has(route)) continue;
-  const reason = readFileSync(file, "utf8").match(EXEMPT)?.[1]?.trim();
+  const reason = navExemption(readFileSync(file, "utf8"));
   if (reason) exempted.push([route, reason]);
   else unreachable.push(`${route} (${file})`);
 }
@@ -178,16 +183,16 @@ assert(
   const planted = "/admin/nobody-links-here";
   eq(reachable.has(planted), false, "an unlinked admin route is not reachable");
   eq(
-    EXEMPT.test("export default function Orphan() {}"),
+    navExemption("export default function Orphan() {}") !== null,
     false,
     "and with no nav-ok reason it is reported rather than excused",
   );
 
   // 2. an exemption with no REASON does not excuse anything, or every future
   //    orphan gets a bare `// nav-ok:` and the guard is decoration.
-  eq(EXEMPT.test("// nav-ok:\nexport default function X() {}"), false, "a bare nav-ok excuses nothing");
+  eq(navExemption("// nav-ok:\nexport default function X() {}"), null, "a bare nav-ok excuses nothing");
   eq(
-    EXEMPT.exec("// nav-ok: a row opens this\nexport default function X() {}")?.[1],
+    navExemption("// nav-ok: a row opens this\nexport default function X() {}"),
     "a row opens this",
     "a nav-ok with a reason is accepted, and the reason is captured",
   );

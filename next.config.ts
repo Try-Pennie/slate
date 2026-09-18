@@ -43,6 +43,16 @@ const buildCommit = buildCommitFrom(
   readFileSync(join(import.meta.dirname, "src", "lib", "build-info.ts"), "utf8"),
 );
 const nextConfig: NextConfig = {
+  // #2201: `next dev` otherwise rewrites AGENTS.md on every start, re-adding a
+  // managed agent-rules block whose wording carries a character the repo's style
+  // gate refuses. The push is then blocked over a file nobody edited, which reads
+  // as a change somebody made and is hunted for as one; it cost three restores in
+  // one session on 2026-09-10. The advice the block carries is kept, in Slate's
+  // own words, at the top of AGENTS.md, and
+  // `scripts/test-agent-rules-generation.ts` holds this setting against Next's
+  // OWN installed generator, so if that wording is ever cleaned up the guard says
+  // so rather than standing unexplained.
+  agentRules: false,
   // Changes on every deploy, so a page loaded from an earlier one is recognised
   // rather than failing with an unexplained 404 on its next save (#1994).
   deploymentId: deploymentIdFor(buildCommit),

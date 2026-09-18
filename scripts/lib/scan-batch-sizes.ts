@@ -28,6 +28,8 @@
 // Deliberately a text scan, not a parser: lightweight and dependency-free, in the
 // same family as scan-src-capped-reads.ts and scan-swallowed-error-reads.ts.
 
+import { hasOptOut } from "./opt-out.ts";
+
 export interface BatchSizeFinding {
   file: string;
   line: number;
@@ -43,23 +45,14 @@ const STRIDE_RE = /\bfor\s*\([^)]*;\s*\w+\s*(?:\+=|=\s*\w+\s*\+)\s*(\d+)\s*\)/;
 const SLICE_RE = /\.slice\(\s*\w+\s*,\s*\w+\s*\+\s*(\d+)\s*\)/;
 /** An `.in("col", ...)` filter: the thing whose size the URL actually bounds. */
 const IN_FILTER_RE = /\.in\(\s*["'`]/;
-const OPT_OUT = /\/\/\s*batch-ok:/;
 
 /** How far below a stride to look for the `.in(` it feeds. A chunked read or
  *  write is a handful of lines; beyond that the two are unrelated. */
 const LOOKAHEAD_LINES = 14;
 
+/** The line itself or the comment block above it, read by the shared reader. */
 function optedOut(lines: string[], index: number): boolean {
-  if (OPT_OUT.test(lines[index] ?? "")) return true;
-  // Walk up through a contiguous `//` comment block, the same shape the sibling
-  // guards accept, so a multi-line justification counts.
-  for (let i = index - 1; i >= 0; i -= 1) {
-    const line = (lines[i] ?? "").trim();
-    if (line === "") continue;
-    if (!line.startsWith("//")) return false;
-    if (OPT_OUT.test(line)) return true;
-  }
-  return false;
+  return hasOptOut(lines, index, "batch-ok:");
 }
 
 export function scanBatchSizes(source: string, file = "<source>"): BatchSizeFinding[] {

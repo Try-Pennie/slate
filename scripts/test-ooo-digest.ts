@@ -159,6 +159,14 @@ finish();
       .map((r) => r.id)
       .join(", ")})`,
   );
+  // #2235: the overlap count is read with the filter's INPUT asserted in the same
+  // breath. Two empty lists overlap in nothing, so a routing step that produced
+  // no blocks at all would satisfy the zero below while proving nothing: nothing
+  // matched and everything passed are the same number (L98).
+  assert(
+    routedIds.length > 0 && unroutedIds.length > 0,
+    `both nudge lists carry something to compare (routed ${routedIds.length}, unrouted ${unroutedIds.length})`,
+  );
   assert(
     routedIds.filter((id) => unroutedIds.includes(id)).length === 0,
     "and no request is nudged twice",

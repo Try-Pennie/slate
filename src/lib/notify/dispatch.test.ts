@@ -35,6 +35,8 @@ const del = vi.hoisted(() => vi.fn());
 // #1134: lets a test make every read error, to prove the bulk firing read fails
 // closed rather than inventing an answer.
 const failReads = vi.hoisted(() => ({ value: false }));
+// #2542: the per key cooldown read, which fails toward SENDING.
+const failCooldownRead = vi.hoisted(() => ({ value: false }));
 // The bulk delete behind settleAlertsSilently: the batch sizes it was asked for
 // (the ids ride in the URL, so an unchunked 60-key delete is the PR#1251 defect),
 // plus a switch to make the delete itself fail.
@@ -45,9 +47,13 @@ vi.mock("@/lib/supabase/admin", () => ({
     from: (_table: string) => ({
       select: () => ({
         eq: (_col: string, key: string) => ({
-          maybeSingle: async () => ({
-            data: rows.has(key) ? { last_sent_at: rows.get(key) } : null,
-          }),
+          // #2542: a switch for the COOLDOWN read failing, so the `// error-ok:`
+          // on it is proved rather than asserted. supabase-js resolves a refused
+          // statement as `{ data: null, error }`, which is what this returns.
+          maybeSingle: async () =>
+            failCooldownRead.value
+              ? { data: null, error: { message: "statement timeout" } }
+              : { data: rows.has(key) ? { last_sent_at: rows.get(key) } : null, error: null },
         }),
         // The bulk firing-marker read (#1134).
         in: async (_col: string, keys: string[]) =>
@@ -488,5 +494,39 @@ describe("off the Workers runtime, a write dispatcher does nothing (#1537)", () 
   it("leaves READS alone, so a laptop can still inspect alert state", async () => {
     rows.set(firingKey("some_key"), new Date().toISOString());
     await expect(isAlertFiring("some_key")).resolves.toBe(true);
+  });
+});
+
+// #2542: the cooldown read carries an `// error-ok:` saying that an empty result
+// reads as "never sent", which SENDS. That is the fail safe side, and it had
+// never been asserted: this file sat outside the swallowed-read guard's hand
+// written directory list, so nothing had asked what a refused `alert_state` read
+// does. A lost cooldown costs a duplicate page; a swallowed one MUTES the alert.
+describe("the cooldown read failing (#2542)", () => {
+  beforeEach(() => {
+    failCooldownRead.value = false;
+  });
+  afterEach(() => {
+    failCooldownRead.value = false;
+  });
+
+  it("sends anyway when the cooldown row cannot be read", async () => {
+    rows.set("muted_key", new Date().toISOString());
+    failCooldownRead.value = true;
+
+    await sendThrottledAlert("muted_key", 60 * 60_000, "something is wrong");
+
+    expect(slack.postSlack).toHaveBeenCalled();
+  });
+
+  // The CONTROL, so the case above cannot pass by this path sending on
+  // everything: the same key, the same fresh stamp, a read that WORKS, and the
+  // cooldown holds.
+  it("CONTROL: a readable cooldown row inside the window still suppresses", async () => {
+    rows.set("muted_key", new Date().toISOString());
+
+    await sendThrottledAlert("muted_key", 60 * 60_000, "something is wrong");
+
+    expect(slack.postSlack).not.toHaveBeenCalled();
   });
 });

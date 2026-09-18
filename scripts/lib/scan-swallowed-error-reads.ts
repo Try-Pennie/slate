@@ -1,8 +1,9 @@
-// Static detector for the #315 guard: a swallowed-error Supabase list read in
-// the availability / booking / google-sync / routing paths (the scanned dirs
-// live in scripts/test-swallowed-error-reads.ts; #865 widened them to sync +
-// routing). See that file for the why and the fixtures that prove this actually
-// catches the bad pattern.
+// Static detector for the #315 guard: a swallowed-error Supabase list read.
+//
+// The SURFACE is decided in scripts/test-swallowed-error-reads.ts, and since
+// #2542 it is all of `src/` minus a named exclusion list rather than a hand
+// written set of directories. See that file for the why, the exclusions and the
+// fixtures that prove this actually catches the bad pattern.
 //
 // The bug class (#277): an availability-critical read destructured
 // `const { data } = await db.from("t").select(...)` and IGNORED `error`. When
@@ -138,6 +139,8 @@
 // full parser: lightweight, dependency free, with an escape hatch that keeps it
 // from false flagging the legitimately null tolerant reads.
 
+import { hasOptOutAtOffset } from "./opt-out.ts";
+
 export interface SwallowedReadFinding {
   file: string;
   line: number;
@@ -208,15 +211,7 @@ function hasOptOut(source: string, destructureIndex: number): boolean {
  * read can never exempt a write.
  */
 export function hasCommentOptOut(source: string, index: number, token: string): boolean {
-  const pattern = new RegExp(`//\\s*${token}`, "i");
-  const lines = source.slice(0, index).split("\n");
-  if (pattern.test(lines[lines.length - 1] ?? "")) return true;
-  for (let i = lines.length - 2; i >= 0; i--) {
-    const trimmed = lines[i].trim();
-    if (!trimmed.startsWith("//")) break;
-    if (pattern.test(trimmed)) return true;
-  }
-  return false;
+  return hasOptOutAtOffset(source, index, `${token}:`);
 }
 
 /**

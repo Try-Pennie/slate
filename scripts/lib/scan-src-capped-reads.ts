@@ -24,6 +24,8 @@
 // full parser: lightweight, dependency-free, with escape hatches that keep it
 // from false-flagging the legitimately-narrow lookups.
 
+import { hasOptOutAtOffset } from "./opt-out.ts";
+
 export interface SrcCappedReadFinding {
   file: string;
   line: number;
@@ -106,14 +108,7 @@ function nthNewline(source: string, from: number, n: number): number {
  * sibling scan-capped-reads.ts.
  */
 function hasOptOut(source: string, fromIndex: number): boolean {
-  const lines = source.slice(0, fromIndex).split("\n");
-  if (/\/\/\s*cap-safe/i.test(lines[lines.length - 1] ?? "")) return true;
-  for (let i = lines.length - 2; i >= 0; i--) {
-    const trimmed = lines[i].trim();
-    if (!trimmed.startsWith("//")) break;
-    if (/\/\/\s*cap-safe/i.test(trimmed)) return true;
-  }
-  return false;
+  return hasOptOutAtOffset(source, fromIndex, "cap-safe:");
 }
 
 /**

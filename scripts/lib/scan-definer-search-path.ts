@@ -25,6 +25,8 @@
 // escape hatch for the rare deployment-specific exception.
 
 /** An unqualified call to an extension function the pinned path cannot reach. */
+import { hasOptOut as sharedHasOptOut } from "./opt-out.ts";
+
 export interface DefinerSearchPathFinding {
   file: string;
   /** 1-indexed line of the offending call. */
@@ -102,7 +104,6 @@ const HOME_SCHEMA: Map<string, string> = new Map(
 );
 
 /** Opt-out for a call the pinned path genuinely can reach in this deployment. */
-const OPT_OUT = /(?:--|\/\/)\s*search-path-ok:/i;
 
 /**
  * Blanks out `--` line comments and `/* *\/` block comments so a mentioned-in-prose
@@ -263,12 +264,5 @@ export function scanDefinerSearchPath(sql: string, file: string): DefinerSearchP
 
 /** True when `search-path-ok:` sits on the line or in the comment block above it. */
 function hasOptOut(rawLines: string[], index: number): boolean {
-  if (OPT_OUT.test(rawLines[index])) return true;
-  for (let i = index - 1; i >= 0; i--) {
-    const t = rawLines[i].trim();
-    if (t === "") continue;
-    if (!t.startsWith("--") && !t.startsWith("//")) return false;
-    if (OPT_OUT.test(t)) return true;
-  }
-  return false;
+  return sharedHasOptOut(rawLines, index, "search-path-ok:", { syntax: ["sql"] });
 }
