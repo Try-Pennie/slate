@@ -33,10 +33,20 @@ assert(
   "a module that was imported is not the entry point, so importing an alerter in a test runs nothing",
 );
 assert(!isEntryPoint(import.meta.url, [process.execPath]), "no script argument at all is not the entry point");
-assert(
-  !isEntryPoint(import.meta.url, [process.execPath, join(SCRIPTS_DIR, "does-not-exist.ts")]),
-  "a script path that does not exist is not the entry point rather than a thrown error",
-);
+{
+  // Not swallowed into "not the entry point": that answer would make a real entry
+  // point silently do nothing, and the idiom this replaces threw here too (L11).
+  let threw: unknown = null;
+  try {
+    isEntryPoint(import.meta.url, [process.execPath, join(SCRIPTS_DIR, "does-not-exist.ts")]);
+  } catch (err) {
+    threw = err;
+  }
+  assert(
+    threw instanceof Error && (threw as NodeJS.ErrnoException).code === "ENOENT",
+    "a script path that cannot be resolved throws its own ENOENT rather than reading as an import",
+  );
+}
 
 // --- runAlerter: hands main a poster and the env, and exits with main's code -----
 type Exit = { code: number | null; errors: string[]; calls: number };

@@ -19,17 +19,15 @@ export type SlackPost = ReturnType<typeof makeSlackPoster>;
 
 /**
  * Is this module the file node was asked to run, rather than an import? Both sides are
- * resolved through the filesystem so a symlinked checkout compares equal to itself. A
- * script path that does not exist is simply not the entry point.
+ * resolved through the filesystem so a symlinked checkout compares equal to itself. No
+ * script argument at all (a REPL, `node -e`) is not the entry point; a script path that
+ * cannot be resolved THROWS, as the idiom this replaces did, because answering "not the
+ * entry point" there would make a real entry point silently do nothing (L11).
  */
 export function isEntryPoint(moduleUrl: string, argv: readonly string[] = process.argv): boolean {
   const script = argv[1];
   if (!script) return false;
-  try {
-    return realpathSync(script) === realpathSync(fileURLToPath(moduleUrl));
-  } catch {
-    return false;
-  }
+  return realpathSync(script) === realpathSync(fileURLToPath(moduleUrl));
 }
 
 export type AlerterMain = (post: SlackPost, env: NodeJS.ProcessEnv) => Promise<number>;
