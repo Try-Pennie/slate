@@ -1,4 +1,5 @@
 import { explainEmptyWindow, type EmptyWindowInputs } from "@/lib/availability/empty-reason";
+import type { AlertResolve, ThrottledNotify } from "./alert-deps";
 
 /**
  * Watching whether the booker can still say WHY a week is empty (#1420).
@@ -113,10 +114,10 @@ export async function runEmptyReasonCheck(deps: {
   /** True once the blind state has persisted for enough consecutive ticks. */
   streak: () => Promise<boolean>;
   clearStreak: () => Promise<void>;
-  notify: (key: string, cooldownMs: number, text: string) => Promise<void>;
+  notify: ThrottledNotify;
   /** REQUIRED, so `tsc` enumerates every construction site rather than letting a
    *  caller wire a condition with no way to end it (#1151, #1400). */
-  resolve: (key: string, text: string) => Promise<boolean>;
+  resolve: AlertResolve;
   cooldownMs: number;
   log?: (msg: string) => void;
 }): Promise<EmptyReasonVerdict> {

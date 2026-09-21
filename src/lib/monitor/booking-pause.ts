@@ -51,6 +51,7 @@
  */
 import { describeGap } from "./health.ts";
 import { LOW_VOLUME_WINDOW_MINUTES } from "./booking-volume.ts";
+import type { AlertResolve, ThrottledNotify } from "./alert-deps";
 
 /** alert_state row key for the notice and its all clear. Lives with the feature so
  *  the cron and the settings screen refer to the one constant. */
@@ -215,10 +216,10 @@ export async function runBookingPauseCheck(deps: {
   /** Whether the org is open right now, or null when the week could not be read. */
   open: boolean | null;
   thresholdMs: number;
-  notify: (key: string, cooldownMs: number, text: string) => Promise<void>;
+  notify: ThrottledNotify;
   /** REQUIRED, so `tsc` enumerates every construction site rather than letting a
    *  caller wire a condition with no way to end it (#1151, #1400). */
-  resolve: (key: string, text: string) => Promise<boolean>;
+  resolve: AlertResolve;
   cooldownMs: number;
   log?: (msg: string) => void;
 }): Promise<BookingPauseVerdict> {

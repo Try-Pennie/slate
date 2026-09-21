@@ -46,7 +46,7 @@ import {
   roleLabel,
 } from "@/lib/auth/roles";
 import { roundUpToQuarterHour } from "@/lib/date/parse";
-import { SEED_START_TIME, SEED_END_TIME } from "@/lib/schedule-core";
+import { SEED_START_TIME, SEED_END_TIME, WEEKDAY_NAMES } from "@/lib/schedule-core";
 import {
   parseBusinessHoursForm,
   countBookingsOnWeekdays,
@@ -2102,8 +2102,6 @@ function readableMinutes(hhmm: string, fallback: string): number {
   return Number.isFinite(parsed) ? parsed : toMinutes(fallback);
 }
 
-const DAY_NAMES = ["", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
-
 export type BusinessHoursFormState = {
   error: string | null;
   /**
@@ -2291,7 +2289,7 @@ export async function setBusinessHours(
       parsed.newlyClosed,
     );
     if (affected > 0) {
-      const days = parsed.newlyClosed.map((d) => DAY_NAMES[d]).join(" and ");
+      const days = parsed.newlyClosed.map((d) => WEEKDAY_NAMES[d]).join(" and ");
       const appts = affected === 1 ? "1 appointment" : `${affected} appointments`;
       return {
         error: null,

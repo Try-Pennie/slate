@@ -32,6 +32,7 @@
  */
 import type { CoverageReadout } from "../booking/business-hours-coverage.ts";
 import { minutesToTime, weekdayPhrase } from "../schedule-core.ts";
+import type { AlertResolve, ThrottledNotify } from "./alert-deps";
 
 /** alert_state row key for the page and its all-clear. Lives with the feature so
  *  the cron and the settings screen refer to the one constant. */
@@ -285,10 +286,10 @@ export async function runRosterCoverageCheck(deps: {
   coverage: CoverageReadout;
   /** False until go-live: measure and log, but send nothing. */
   armed: boolean;
-  notify: (key: string, cooldownMs: number, text: string) => Promise<void>;
+  notify: ThrottledNotify;
   /** REQUIRED, so `tsc` enumerates every construction site rather than letting a
    *  caller wire a condition with no way to end it (#1151, #1400). */
-  resolve: (key: string, text: string) => Promise<boolean>;
+  resolve: AlertResolve;
   cooldownMs: number;
   log?: (msg: string) => void;
 }): Promise<RosterCoverageVerdict> {

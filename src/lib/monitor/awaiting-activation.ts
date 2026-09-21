@@ -29,6 +29,7 @@
  */
 import { parseStampMs } from "@/lib/date/stamp";
 import { isRoutable } from "@/lib/routing/staffing-depth";
+import type { AlertResolve, ThrottledNotify } from "./alert-deps";
 
 /** alert_state row key for the page and its all clear. */
 export const AWAITING_ACTIVATION_KEY = "agents_awaiting_activation";
@@ -214,10 +215,10 @@ export interface AwaitingActivationDeps {
   load: () => Promise<AwaitingActivationRow[]>;
   /** False until somebody has watched a few ordinary days: measure and log, send nothing. */
   armed: boolean;
-  notify: (key: string, cooldownMs: number, text: string) => Promise<void>;
+  notify: ThrottledNotify;
   /** REQUIRED, so `tsc` enumerates every construction site rather than letting a
    *  caller wire a condition with no way to end it (#1151, #1400). */
-  resolve: (key: string, text: string) => Promise<boolean>;
+  resolve: AlertResolve;
   cooldownMs: number;
   /** Passed in so the grace boundary is drivable and the copy is deterministic. */
   nowMs: number;

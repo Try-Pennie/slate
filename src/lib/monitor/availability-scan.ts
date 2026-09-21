@@ -27,6 +27,7 @@ import {
 import { selfHealDataAnomalies, type SelfHealResult } from "./anomaly-selfheal.ts";
 import { verifyAnomalies, type AnomalyVerifyResult } from "./anomaly-verify.ts";
 import { mapWithConcurrency } from "../google/sync-pace.ts";
+import type { AlertResolve, ThrottledNotify } from "./alert-deps";
 
 /** Quiet info: a dead-end because agents are booked solid. Full calendars are a
  *  good outcome, not an incident, so this whispers on a long cooldown. */
@@ -80,9 +81,9 @@ export interface AvailabilityScanDeps {
     cachedSlots: (code: string) => Promise<number | null>;
     wait: (ms: number) => Promise<void>;
   };
-  notify: (key: string, cooldownMs: number, text: string) => Promise<void>;
-  info: (key: string, cooldownMs: number, text: string) => Promise<void>;
-  resolve: (key: string, text: string) => Promise<boolean>;
+  notify: ThrottledNotify;
+  info: ThrottledNotify;
+  resolve: AlertResolve;
   cooldownMs: { dataAnomaly: number; bookedSolid: number; fallbackCovered: number };
   log: (fields: Record<string, unknown>) => void;
 }

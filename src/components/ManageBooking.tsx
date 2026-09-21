@@ -12,7 +12,7 @@ import {
 import { SelectField } from "@/components/ui/SelectField";
 import { validateReason, type ReasonOption } from "@/lib/booking/core";
 import ReasonPicker from "@/components/ReasonPicker";
-import { AlertIcon } from "@/components/icons";
+import { AlertIcon, ClockIcon, GlobeIcon, XIcon } from "@/components/icons";
 import { BookerStrip } from "@/components/BookerStrip";
 import { SlotTimes, SLOT_TIMES_CLASSES } from "@/components/SlotTimes";
 import { useSlotPicker } from "@/components/use-slot-picker";
@@ -69,13 +69,6 @@ interface ManageBookingProps {
   theme?: "light" | "dark";
 }
 
-function XIcon() {
-  return (
-    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
-      <path d="M6 6l12 12M18 6L6 18" strokeLinecap="round" />
-    </svg>
-  );
-}
 
 /**
  * US order everywhere: "Monday, August 17", never "17 August" (#1336).
@@ -103,23 +96,7 @@ function initialsOf(name: string): string {
   return (parts[0][0] + parts[1][0]).toUpperCase();
 }
 
-function ClockIcon() {
-  return (
-    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
-      <circle cx="12" cy="12" r="9" />
-      <path d="M12 7v5l3 2" strokeLinecap="round" />
-    </svg>
-  );
-}
 
-function GlobeIcon() {
-  return (
-    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
-      <circle cx="12" cy="12" r="9" />
-      <path d="M3 12h18M12 3a14 14 0 010 18M12 3a14 14 0 000 18" />
-    </svg>
-  );
-}
 
 export default function ManageBooking({
   token,
@@ -385,13 +362,13 @@ export default function ManageBooking({
               <div className="mt-4 space-y-2 text-sm text-fg">
                 <div className="flex items-center gap-2">
                   <span className="text-fg-muted">
-                    <ClockIcon />
+                    <ClockIcon width={15} height={15} />
                   </span>
                   {durationMin} minutes
                 </div>
                 <div className="flex items-center gap-2">
                   <span className="text-fg-muted">
-                    <GlobeIcon />
+                    <GlobeIcon width={15} height={15} />
                   </span>
                   <label htmlFor="manage-tz" className="sr-only">
                     Timezone
@@ -470,7 +447,7 @@ export default function ManageBooking({
                       disabled={busy || !cancelReasonValid}
                       className="inline-flex min-h-[44px] items-center justify-center gap-2 rounded-lg bg-[var(--error)] px-5 text-sm font-semibold text-white transition-opacity hover:opacity-90 disabled:opacity-60"
                     >
-                      <XIcon />
+                      <XIcon width={15} height={15} />
                       {busy ? CANCEL_COPY.confirming : CANCEL_COPY.confirm}
                     </button>
                     <button

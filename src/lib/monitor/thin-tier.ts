@@ -3,6 +3,7 @@ import {
   type DebtTierDepth,
   type TierDepth,
 } from "@/lib/routing/staffing-depth";
+import type { ThrottledNotify } from "./alert-deps";
 
 // alert_state row key for the throttle; lives with the feature so the cron and
 // the settings screen refer to the one constant.
@@ -86,7 +87,7 @@ export function formatThinTierNotice(tiers: DebtTierDepth[]): string {
  */
 export async function runThinTierStaffingCheck(deps: {
   loadDepths: () => Promise<TierDepth[]>;
-  notify: (key: string, cooldownMs: number, text: string) => Promise<void>;
+  notify: ThrottledNotify;
   cooldownMs: number;
   log?: (msg: string) => void;
 }): Promise<number> {

@@ -26,8 +26,11 @@
  * branch node-natively; the Google and DB work is injected by the caller.
  */
 
+import type { AlertResolve, ThrottledNotify } from "./alert-deps";
+
 /** alert_state key PREFIX. The code appends the bucket, so a second drifting
  *  bucket is not silenced by the first one's cooldown. */
+
 export const AVAILABILITY_TRUTH_ALERT_KEY = "availability_drift";
 
 /**
@@ -455,8 +458,8 @@ export async function runAvailabilityTruthCheck(deps: {
   settleSilently: (codes: string[]) => Promise<void>;
   armed: boolean;
   cooldownMs: number;
-  notify: (key: string, cooldownMs: number, text: string) => Promise<void>;
-  resolve: (key: string, text: string) => Promise<boolean>;
+  notify: ThrottledNotify;
+  resolve: AlertResolve;
   log?: (fields: Record<string, string | number | boolean | null | undefined>) => void;
   onError?: (context: "notify" | "resolve" | "mark" | "settle", err: unknown) => void;
 }): Promise<TruthResult> {

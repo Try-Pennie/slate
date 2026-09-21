@@ -94,7 +94,9 @@ const MINUTES_IN_DAY = 1440;
 /** A window longer than this is corrupt data, not an absence. Refuse it. */
 const MAX_ABSENCE_DAYS = 400;
 
-const DAY_NAMES = [
+/** cal.com's weekday convention, NOT Luxon's: zero based and Sunday first, so this is
+ *  deliberately not `WEEKDAY_NAMES` (`src/lib/schedule-core.ts`), which is 1 = Monday. */
+const CALCOM_DAY_NAMES = [
   "Sunday",
   "Monday",
   "Tuesday",
@@ -127,7 +129,7 @@ function workingHoursFor(
   // Luxon weekday 1=Mon..7=Sun -> Cal.com Sunday=0 numbering.
   const luxonWeekday = DateTime.fromISO(localDate, { zone }).weekday;
   const calcomDay = luxonWeekday % 7;
-  const dayName = DAY_NAMES[calcomDay];
+  const dayName = CALCOM_DAY_NAMES[calcomDay];
   for (const rule of availability) {
     if (!rule.days || !rule.startTime || !rule.endTime) continue;
     if (rule.days.some((d) => d === calcomDay || d === dayName)) {

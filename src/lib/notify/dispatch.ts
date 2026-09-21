@@ -7,6 +7,7 @@ import { parseStampMs } from "@/lib/date/stamp";
 import { defaultInfoChannel } from "@/lib/notify/channels";
 import { log } from "@/lib/log";
 import { isWorkersRuntime, workersRuntimeMarker } from "@/lib/platform/runtime";
+import type { AlertResolve, ThrottledNotify } from "@/lib/monitor/alert-deps";
 
 /**
  * Post a Slack message at most once per cooldown for a given key, using the
@@ -372,3 +373,16 @@ export async function sendThrottledInfo(
   if (!channel) return;
   await sendThrottledAlert(key, cooldownMs, text, channel);
 }
+
+/**
+ * The seam every check declares (`src/lib/monitor/alert-deps.ts`, #2572) must fit the
+ * functions above, or the first wiring site that hands one over by reference would be
+ * the only place to say so, and only about itself. Type only: `Fits` collapses to
+ * `never` when a function stops fitting, and `true` is not assignable to `never`.
+ * It lives here rather than beside the seam because naming `typeof sendThrottledAlert`
+ * anywhere else reads to the alert recovery coverage guard as a wiring site.
+ */
+type Fits<Fn, Seam> = Fn extends Seam ? true : never;
+export const dispatcherFitsSeams: Fits<typeof sendThrottledAlert, ThrottledNotify> &
+  Fits<typeof sendThrottledInfo, ThrottledNotify> &
+  Fits<typeof resolveAlert, AlertResolve> = true;

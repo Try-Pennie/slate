@@ -8,6 +8,7 @@ import {
   formatHandoffUndeliveredAlert,
   formatHandoffUndeliveredRecovery,
 } from "@/lib/handoffs/copy";
+import type { AlertResolve, ThrottledNotify } from "@/lib/monitor/alert-deps";
 
 /**
  * The monitor lane step that delivers and settles booking handoffs (#2367).
@@ -144,8 +145,8 @@ export interface HandoffCheckDeps {
   bookingUrl: (bookingId: string) => string;
   /** The alert settings page, absolute, where the handoff channel is set. */
   settingsUrl: string;
-  notify: (key: string, cooldownMs: number, text: string) => Promise<void>;
-  clearAlert: (key: string, text: string) => Promise<unknown>;
+  notify: ThrottledNotify;
+  clearAlert: AlertResolve<unknown>;
   cooldownMs: { channelUnset: number; undelivered: number };
   log?: (fields: Record<string, string | number | boolean>) => void;
   /** Something failed and was contained: a read, a write, a post's bookkeeping. */

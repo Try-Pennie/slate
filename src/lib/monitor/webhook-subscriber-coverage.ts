@@ -22,6 +22,8 @@
  * is subscribed, which is the blindness the whole class is about (L11, L90).
  */
 
+import type { AlertResolve, ThrottledNotify } from "./alert-deps";
+
 /** The columns this check needs off an ACTIVE endpoint row. */
 export interface SubscriberEndpoint {
   url: string;
@@ -146,10 +148,10 @@ export async function runWebhookSubscriberCheck(deps: {
   events: string[];
   loadEndpoints: () => Promise<SubscriberEndpoint[] | null>;
   unsubscribedReason: (event: string) => string | null;
-  notify: (key: string, cooldownMs: number, text: string) => Promise<void>;
+  notify: ThrottledNotify;
   // Promise<unknown>: resolveAlert reports whether it actually settled anything,
   // and this check does not branch on that, so the dep accepts either shape.
-  resolve: (key: string, text: string) => Promise<unknown>;
+  resolve: AlertResolve<unknown>;
   cooldownMs: number;
   log?: (msg: string) => void;
 }): Promise<SubscriberCoverage> {

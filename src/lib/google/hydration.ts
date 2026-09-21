@@ -19,6 +19,7 @@ import {
 } from "@/lib/google/sync-coalesce";
 import { parseStampMs } from "@/lib/date/stamp";
 import { MAX_ONBOARDS_PER_TICK } from "@/lib/google/sync-pace";
+import type { AlertResolve, ThrottledNotify } from "@/lib/monitor/alert-deps";
 
 /** Ticks a day at the lane's every-fifteen-minutes trigger. Written in words rather than
  *  as the cron expression because a slash-star inside a block comment closes it. Its own
@@ -257,8 +258,8 @@ export async function runHydrationTickCheck(deps: {
   /** True once the all-failed streak has reached its threshold. */
   recordStreak: () => Promise<boolean>;
   clearStreak: () => Promise<unknown>;
-  notify: (key: string, cooldownMs: number, text: string) => Promise<void>;
-  resolve: (key: string, text: string) => Promise<unknown>;
+  notify: ThrottledNotify;
+  resolve: AlertResolve<unknown>;
   cooldownMs: number;
   consecutiveTicks: number;
 }): Promise<HydrationTickVerdict> {

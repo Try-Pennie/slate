@@ -35,8 +35,7 @@
 // API returned app log rows normally on 2026-08-17, with the line in `source.message`.
 // This tool still counts via `calculations`, which also gives it the per-bucket series
 // the freshness rule reads.
-import { fileURLToPath } from "node:url";
-import { realpathSync } from "node:fs";
+import { isEntryPoint } from "./lib/run-alerter.ts";
 
 /** The Worker whose logs we read, and the account it lives in. */
 const SERVICE = "slate";
@@ -475,6 +474,6 @@ async function main(): Promise<void> {
   process.exit(exitCodeFor(j));
 }
 
-if (realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))) {
+if (isEntryPoint(import.meta.url)) {
   await main();
 }

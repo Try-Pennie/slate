@@ -22,7 +22,7 @@
  */
 
 import { DateTime, IANAZone } from "luxon";
-import { uniformRules } from "./schedule-core";
+import { WEEKDAY_NAMES, uniformRules } from "./schedule-core";
 import { CURATED_ZONES } from "./booking/timezones";
 
 export interface ScheduleRule {
@@ -108,10 +108,6 @@ export function offeredEquivalentZone(timezone: string, year: number): string | 
 
 const isWholeNumber = (n: number): boolean => Number.isInteger(n);
 
-/** The name a refusal calls a weekday, so "Friday ends before it starts" reads as
- *  an instruction rather than as an index. */
-const DAY_NAMES = ["", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
-
 /**
  * Plan the replacement from a window PER DAY (#1308).
  *
@@ -173,7 +169,7 @@ export function planScheduleReplacement(
     if (!isWholeNumber(weekday) || weekday < 1 || weekday > 7) {
       return { ok: false, error: "Those days could not be read. Please choose them again." };
     }
-    const name = DAY_NAMES[weekday];
+    const name = WEEKDAY_NAMES[weekday];
     if (!isWholeNumber(start) || !isWholeNumber(end)) {
       return { ok: false, error: `${name}'s times could not be read. Please pick a start and end time again.` };
     }
@@ -205,7 +201,7 @@ export function planScheduleReplacement(
       if (windows[i].start_minute < windows[i - 1].end_minute) {
         return {
           ok: false,
-          error: `${DAY_NAMES[weekday]}'s windows overlap each other. Please give each one its own part of the day.`,
+          error: `${WEEKDAY_NAMES[weekday]}'s windows overlap each other. Please give each one its own part of the day.`,
         };
       }
     }

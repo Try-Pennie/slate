@@ -29,8 +29,11 @@
  * the caller from booking-failure-rate-store.ts.
  */
 
+import type { AlertResolve, ThrottledNotify } from "./alert-deps";
+
 /** alert_state row key for the page and its all-clear. One constant, so the two
  *  can never drift onto different keys and leave a page that cannot be cleared. */
+
 export const FAILURE_RATE_ALERT_KEY = "booking_failure_rate";
 
 /** One tick's reading of the CUMULATIVE totals for the current ET day. */
@@ -384,8 +387,8 @@ export async function runBookingFailureRateCheck(deps: {
   thresholds: RateThresholds;
   armed: boolean;
   cooldownMs: number;
-  notify: (key: string, cooldownMs: number, text: string) => Promise<void>;
-  resolve: (key: string, text: string) => Promise<boolean>;
+  notify: ThrottledNotify;
+  resolve: AlertResolve;
   /** Structurally the log helper's field shape (primitives only), spelled out
    *  rather than imported so this module keeps no `@/` dependency. */
   log?: (fields: Record<string, string | number | boolean | null | undefined>) => void;

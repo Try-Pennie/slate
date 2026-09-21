@@ -33,7 +33,10 @@
  *   exposed    - measured, and something else is. This pages.
  */
 
+import type { AlertResolve, ThrottledNotify } from "./alert-deps";
+
 /** alert_state key for the condition. */
+
 export const DEFINER_GRANTS_KEY = "definer_grants_to_web_roles";
 
 /** The two roles PostgREST serves a request as. Nothing else is a web role. */
@@ -209,8 +212,8 @@ export function formatDefinerGrantsClearedAlert(
  */
 export async function runDefinerGrantsCheck(deps: {
   read: () => Promise<DefinerFunctionRow[] | null>;
-  notify: (key: string, cooldownMs: number, text: string) => Promise<void>;
-  resolve: (key: string, text: string) => Promise<unknown>;
+  notify: ThrottledNotify;
+  resolve: AlertResolve<unknown>;
   cooldownMs: number;
   log?: (msg: string) => void;
 }): Promise<DefinerGrantsHealth> {

@@ -7,14 +7,13 @@
 // the Action never goes green while a bypassed push sits unreviewed. Reuses the
 // app's Slack notifier rather than a second implementation, exactly like
 // scripts/notify-deploy-failure.ts.
-import { fileURLToPath } from "node:url";
-import { realpathSync, appendFileSync } from "node:fs";
+import { appendFileSync } from "node:fs";
 // #1524: a poster with no dependencies. The app's own notifier reaches Slack through the
 // tunable-channel lookup, which reaches Supabase, so importing it made this guard need a
 // full `pnpm install` purely to send one message. On 2026-08-17 a 429 downloading
 // pnpm/action-setup meant it never ran at all. The WORDING is still shared
 // (buildViolationMessage below), so nothing about the copy is duplicated (L41).
-import { makeSlackPoster } from "./lib/slack-post.ts";
+import { runAlerter } from "./lib/run-alerter.ts";
 import {
   classifyPush,
   buildViolationMessage,
@@ -146,36 +145,28 @@ export async function run(
   };
 }
 
-const isMain =
-  !!process.argv[1] &&
-  realpathSync(process.argv[1]) === fileURLToPath(import.meta.url);
-
-if (isMain) {
-  run(
-    makeSlackPoster({ token: process.env.SLACK_BOT_TOKEN ?? "" }),
-    process.env,
-  ).then((res) => {
-    if (res.ok) {
-      console.log(`main-push-guard: ${res.reason}`);
-      process.exit(0);
-    }
-    if (!res.alerted) {
-      console.error(
-        `::error title=Slack alert not sent::main-push-guard could not post the violation alert (${res.reason}). Check SLACK_BOT_TOKEN and SLACK_ALERTS_CHANNEL.`,
-      );
-    }
-    // The two failures never read the same: one is a commit to review, the other is
-    // a check to re-run, and telling someone to revert over a GitHub blip is advice
-    // that cannot fix the state they are in.
-    if (res.unverified) {
-      console.error(
-        `::error title=main-push-guard could not check this push::${res.reason}. Re-run this job; main is unguarded for this commit, not proven bad.`,
-      );
-    } else {
-      console.error(
-        `::error title=Illegitimate push to main::${res.reason}. See the job log; revert if unintended.`,
-      );
-    }
-    process.exit(1);
-  });
-}
+runAlerter(import.meta.url, async (post, env) => {
+  const res = await run(post, env);
+  if (res.ok) {
+    console.log(`main-push-guard: ${res.reason}`);
+    return 0;
+  }
+  if (!res.alerted) {
+    console.error(
+      `::error title=Slack alert not sent::main-push-guard could not post the violation alert (${res.reason}). Check SLACK_BOT_TOKEN and SLACK_ALERTS_CHANNEL.`,
+    );
+  }
+  // The two failures never read the same: one is a commit to review, the other is
+  // a check to re-run, and telling someone to revert over a GitHub blip is advice
+  // that cannot fix the state they are in.
+  if (res.unverified) {
+    console.error(
+      `::error title=main-push-guard could not check this push::${res.reason}. Re-run this job; main is unguarded for this commit, not proven bad.`,
+    );
+  } else {
+    console.error(
+      `::error title=Illegitimate push to main::${res.reason}. See the job log; revert if unintended.`,
+    );
+  }
+  return 1;
+});

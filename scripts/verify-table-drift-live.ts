@@ -18,7 +18,7 @@
 // is read so it can never be confused with a finding.
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { loadEnvFiles } from "./smoke-env.ts";
+import { requireSupabaseCredentials } from "./lib/supabase-credentials.ts";
 import { parseDeclaredTables } from "./lib/parse-migration-constraints.ts";
 import {
   TABLE_DRIFT_EXIT,
@@ -27,15 +27,9 @@ import {
   tablesFromRootDocument,
 } from "./lib/table-drift.ts";
 
-loadEnvFiles([".env.local", ".dev.vars"]);
-const url = process.env.NEXT_PUBLIC_SUPABASE_URL?.trim();
-const key = process.env.SUPABASE_SECRET_KEY?.trim();
-if (!url || !key) {
-  console.error(
-    "FAILED (not-configured): SUPABASE_SECRET_KEY and NEXT_PUBLIC_SUPABASE_URL are needed here; nothing was read",
-  );
-  process.exit(1);
-}
+const creds = requireSupabaseCredentials();
+if (!creds) process.exit(1);
+const { url, key } = creds;
 
 const MIGRATIONS = join(process.cwd(), "supabase/migrations");
 

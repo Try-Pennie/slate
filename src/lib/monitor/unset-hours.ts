@@ -33,6 +33,7 @@
 // alert silently.
 import { parseStampMs } from "@/lib/date/stamp";
 import type { OrgDefaults } from "@/lib/schedule-core";
+import type { AlertResolve, ThrottledNotify } from "./alert-deps";
 
 export const AGENTS_ON_UNSET_HOURS_KEY = "agents_on_unset_hours";
 
@@ -192,8 +193,8 @@ export function formatUnsetHoursRecovery(): string {
  */
 export interface UnsetHoursDeps {
   load: () => Promise<UnsetHoursInput>;
-  notify: (key: string, cooldownMs: number, text: string) => Promise<void>;
-  resolve: (key: string, text: string) => Promise<boolean>;
+  notify: ThrottledNotify;
+  resolve: AlertResolve;
   cooldownMs: number;
   /** Passed in so the grace boundary is drivable and the copy is deterministic. */
   nowMs: number;
