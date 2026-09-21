@@ -60,4 +60,5 @@ availability-weighting is unnecessary).
   filter still constrains who can be picked); the model *targets* equal share.
 - Multi-tier agents (common here) get a fair share in each pool they serve, so their
   total may exceed a single-tier agent's — accepted by design.
-- Implementation tracked in issue #305.
+- Implemented and live: #305 closed on 2026-07-02 after the ranker,
+  `scripts/test-bucket-share.ts` and the fairness report (#422) had shipped.

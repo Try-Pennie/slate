@@ -105,4 +105,5 @@ descriptor) above the event title, which leaks routing internals to leads.
 ## Rollout
 
 - PR2 branches on PR1 (`feat/booker-layout-strip` off `feat/precompute-availability`);
-  rebase onto main once #256 merges. Default `'strip'`; the org can flip to `'month'`.
+  PR1 (#256) merged on 2026-06-19 and PR2 followed the same day as #262. Default
+  `'strip'`; the org can flip to `'month'`.

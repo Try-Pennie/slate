@@ -67,7 +67,7 @@ export async function AppHeader({
   const r = role ?? "";
   const consoleHidden = consoleHiddenFor(role);
   // Approval queue: managers and up. The console: same, but held back until the
-  // launch flag flips (so effectively super admins only for now).
+  // launch flag flips, so today it is super admins only; #2102 decides when it opens.
   const showTimeOff = isRole(r) && atLeast(r, "manager");
   const showAdmin = !consoleHidden && isRole(r) && canManageAgents(r);
   // Persistent banner so an impersonating admin always knows + can get out, plus

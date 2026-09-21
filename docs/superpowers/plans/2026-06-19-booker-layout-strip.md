@@ -15,7 +15,7 @@
 - Embed contract (`slate-embed-contract`): keep `slate:resize` height postMessage + `slate:escape`; `/api/availability` response unchanged.
 - Accessibility WCAG 2.1 AA+: full keyboard nav, visible sky focus ring, 44px targets.
 - Migrations use UNQUALIFIED table names (`test-migrations` parses `[a-z_]+` after `create/alter table`). Run the FULL `pnpm test` before pushing (it includes `test-migrations`); the pre-push gate ignores `scripts/test-*.ts`, so push with `SKIP_TEST_CHECK=1`.
-- Branch `feat/booker-layout-strip` is stacked on `feat/precompute-availability` (PR1 #256); rebase onto main once #256 merges. Commits read as the author's own work (no AI attribution).
+- Branch `feat/booker-layout-strip` is stacked on `feat/precompute-availability` (PR1 #256, merged 2026-06-19); this branch was rebased onto main after that and merged the same day as PR #262. Commits read as the author's own work (no AI attribution).
 - Weekday convention Luxon (1=Mon..7=Sun). Server uses `supabaseAdmin`.
 
 ## File Structure
@@ -184,7 +184,7 @@ git commit -m "Read org booker_layout in /book and pass it to the Booker"
 
 For `'strip'`, render it in a 2-column grid (`md:grid-cols-[260px_1fr]`) instead of the 3-column month grid: the strip sits above the times list in the right region. (Keep the 3-column grid for `'month'`.) Gate the grid class on `layout`.
 
-- [ ] **Step 4: Visual verify (deferred to Task 6).** Build + lint now:
+- [ ] **Step 4: Visual verify (done in Task 6).** Build + lint now:
 
 Run: `pnpm build && pnpm lint`
 Expected: green.

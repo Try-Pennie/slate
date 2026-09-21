@@ -51,7 +51,7 @@ export const WEBHOOK_EVENTS = Object.keys(EVENT_PRESENCE) as WebhookEvent[];
  *
  * This is the escape hatch, in the shape the repo already uses for `// cap-safe:`
  * and `// error-ok:`: not a ban, a requirement to say why. An entry means "we know
- * this reaches nobody and that is the intended state for now", so both the build
+ * this reaches nobody, and the issue named here is what changes that", so both the build
  * guard and the monitor check stay quiet about it. Delete the entry in the change
  * that subscribes the event.
  *

@@ -43,7 +43,7 @@ enough to answer what HAPPENED (every state change a booking went through is a d
 row) and not enough to answer WHY at the level a log line would (which agent's calendar
 read failed, what Google actually returned, which code path a request took).
 
-Accepted, for now, with the trade stated: a Logpush job shipping error-level lines to R2
+Accepted, with the trade stated: a Logpush job shipping error-level lines to R2
 would extend it indefinitely and costs both money and a new place holding customer data
 for longer, which the PII inventory would have to account for (`docs/pii.md` names the
 request URL as carrying contact data, so a longer-lived log copy is a longer-lived PII

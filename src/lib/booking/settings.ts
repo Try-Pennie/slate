@@ -18,9 +18,14 @@ import { parseStampMs } from "@/lib/date/stamp";
  * and offered. Widening it therefore cannot let anyone book something they could
  * not book before.
  *
- * The cap is 7 for now; 14 is deferred pending a 200-agent load-soak, because
- * per-bucket recompute cost is ~super-linear in the window and the recompute lane
- * is tuned for a small one. The search allowance is small for the same reason.
+ * The cap is 7 (HORIZON_MAX, mirrored by the check constraint in migration 0087),
+ * because per-bucket recompute cost is ~super-linear in the window and the
+ * recompute lane is tuned for a small one. A 14 day cap was once held back behind
+ * the 200-agent load soak; that soak ran and passed on 2026-07-08 (#440) and the
+ * cap stayed at 7: the recompute lane has since been measured at 100 to 120
+ * percent of its budget on the hot roster (#2022), and on 2026-09-15 Dan chose to
+ * keep the offered window at four days rather than widen it (#2360). The search
+ * allowance is small for the same reason.
  */
 export const HORIZON_DEFAULT = 4;
 export const HORIZON_MIN = 1;

@@ -257,4 +257,4 @@ gh pr create --title "Edge-cache availability slots for blazing-fast booker load
 - **Hit-ability:** hour-normalized key + read-time `now`-filter means all requests in an hour share one entry while each response still respects the exact current time and min-notice.
 - **Fail-open:** every KV call is wrapped; on any KV error the path computes directly, so the cache can never break availability.
 - **Type consistency:** `getCachedBucketSlots` returns the same `BucketSlots` shape as `getBucketSlots`; the route's response is byte-for-byte the same fields.
-- **Open follow-up:** Hyperdrive (separate plan) speeds the cache-miss compute and every other DB page; this plan only covers the availability read hot path.
+- **Scope note:** this plan covers only the availability read hot path. Hyperdrive was named here as a separate plan for the cache-miss compute and every other DB page; the precompute work that came next (#256, plan `2026-06-19-precompute-availability-implementation.md`) measured the path as compute bound rather than connection bound and judged Hyperdrive unnecessary, so no plan or issue for it exists.

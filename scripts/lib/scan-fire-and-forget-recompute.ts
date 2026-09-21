@@ -9,7 +9,7 @@
 //
 // It deliberately targets ONLY `recomputeBucketsForAgent`. The every-booking
 // `invalidateSlots` → `recomputeBucketSlotsForToday(...)` float (a DIFFERENT
-// function) is knowingly left floating for now: it is also reused by the outbox
+// function) is deliberately left floating: it is also reused by the outbox
 // cron drain, where after() would be a shared-lane budget regression, and it is
 // cron-backstopped. So this guard must not flag that one.
 
