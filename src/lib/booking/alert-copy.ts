@@ -83,24 +83,29 @@ const MAX_NAMED_REFUSED_EVENTS = 3;
  */
 export function pendingDeletionRefusedAlert(refused: RefusedDeletionForAlert[]): string {
   const count = refused.length;
+  // Every word about ACCOUNTS counts distinct calendars, never deletions: a departed
+  // agent queues one deletion per cancelled meeting, so counting rows would tell the
+  // reader to fix "the accounts below" and re-authenticate "each account" over a
+  // single named calendar, sending them hunting for a second one that is not there.
+  const accounts = distinctCalendars(refused);
   const head =
     `Stopped retrying ${count} calendar event ${count === 1 ? "deletion" : "deletions"} because ` +
     `Google has refused the calendar for good. The cancelled ` +
-    `${count === 1 ? "meeting is still on the calendar" : "meetings are still on their calendars"} ` +
-    `and may keep sending reminders until a person fixes the ${count === 1 ? "account" : "accounts"} below.`;
+    `${count === 1 ? "meeting is" : "meetings are"} still on ${accounts === 1 ? "the calendar" : "their calendars"} ` +
+    `and may keep sending reminders until a person fixes the ${accounts === 1 ? "account" : "accounts"} below.`;
   const provisioning = refused.filter((r) => r.kind === "not-provisioned");
   const gone = refused.filter((r) => r.kind !== "not-provisioned");
   const parts = [head];
   if (provisioning.length > 0) {
     parts.push(
-      `Never given Google Calendar: a Workspace admin has to give ${provisioning.length === 1 ? "this account" : "these accounts"} ` +
+      `Never given Google Calendar: a Workspace admin has to give ${distinctCalendars(provisioning) === 1 ? "this account" : "these accounts"} ` +
         `Calendar, and retrying can never fix it. ${refusedCalendarLines(provisioning)}`,
     );
   }
   if (gone.length > 0) {
     parts.push(
       `Account gone (removed from the Workspace, or delegation revoked): re-authenticate ` +
-        `${gone.length === 1 ? "the account" : "each account"} or take the agent out of the pool. ${refusedCalendarLines(gone)}`,
+        `${distinctCalendars(gone) === 1 ? "the account" : "each account"} or take ${distinctCalendars(gone) === 1 ? "the agent" : "each agent"} out of the pool. ${refusedCalendarLines(gone)}`,
     );
   }
   parts.push(
@@ -111,6 +116,11 @@ export function pendingDeletionRefusedAlert(refused: RefusedDeletionForAlert[]):
 }
 
 /** "a@x.com (event ids evt-1, evt-2 and 3 more); b@x.com (event id evt-9)". */
+/** How many distinct calendars (accounts) a set of refused deletions belongs to. */
+function distinctCalendars(rows: RefusedDeletionForAlert[]): number {
+  return new Set(rows.map((r) => r.calendarEmail)).size;
+}
+
 function refusedCalendarLines(rows: RefusedDeletionForAlert[]): string {
   const byCalendar = new Map<string, string[]>();
   for (const r of rows) {
