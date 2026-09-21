@@ -5,7 +5,7 @@
 // external_id (the bot's stable per-person id). Normalizes (trims, defaults
 // prefill) so the booking layer gets clean input.
 // Run: node --experimental-strip-types scripts/test-booking-api-request.ts
-import { parseDirectBookingRequest, parseLookupQuery, parseCancelQuery, parseListQuery, encodeCursor, decodeCursor } from "../src/lib/booking/api-request.ts";
+import { parseDirectBookingRequest, parseLookupQuery, parseCancelQuery, parseCancelBody, parseListQuery, encodeCursor, decodeCursor } from "../src/lib/booking/api-request.ts";
 import { CANCEL_REASONS } from "../src/lib/booking/core.ts";
 import { assert, finish } from "./lib/harness.ts";
 
@@ -217,6 +217,40 @@ assert(cqReason.ok && cqReason.value.reason?.code === "no_longer_interested",
   "cancel: valid reason code accepted");
 const cqBadReason = parseCancelQuery(new URLSearchParams("bookingId=bk-7&externalId=ext-1&reason=not_a_reason"), CANCEL_REASONS);
 assert(!cqBadReason.ok && cqBadReason.status === 400, "cancel: invalid reason = 400");
+
+// --- parseCancelBody (#2591): the POST form, because a Regal journey cannot send DELETE ---
+const cbOk = parseCancelBody({ bookingId: " bk-7 ", salesforceId: "sf-9" }, CANCEL_REASONS);
+assert(cbOk.ok && cbOk.value.bookingId === "bk-7" && cbOk.value.salesforceId === "sf-9" &&
+  cbOk.value.externalId === null && cbOk.value.reason === null,
+  "cancel body: bookingId + salesforceId valid and trimmed, reason defaults null");
+for (const [label, body] of [
+  ["null (unparseable JSON)", null],
+  ["an array", ["bk-7"]],
+  ["a string", "bk-7"],
+] as const) {
+  const r = parseCancelBody(body, CANCEL_REASONS);
+  assert(!r.ok && r.status === 400 && r.error === "body must be a JSON object",
+    `cancel body: ${label} = 400 naming the body, not a field`);
+}
+const cbNoBooking = parseCancelBody({ externalId: "ext-1" }, CANCEL_REASONS);
+assert(!cbNoBooking.ok && cbNoBooking.error === "bookingId is required", "cancel body: missing bookingId = 400");
+const cbNoId = parseCancelBody({ bookingId: "bk-7" }, CANCEL_REASONS);
+assert(!cbNoId.ok && cbNoId.error === "externalId or salesforceId is required", "cancel body: missing both ids = 400");
+// A non-string id must read as ABSENT, never be stringified into something that matches.
+const cbNumericId = parseCancelBody({ bookingId: "bk-7", externalId: 12345 }, CANCEL_REASONS);
+assert(!cbNumericId.ok && cbNumericId.error === "externalId or salesforceId is required",
+  "cancel body: a numeric externalId is not an id");
+const cbReason = parseCancelBody({ bookingId: "bk-7", externalId: "ext-1", reason: "no_longer_interested" }, CANCEL_REASONS);
+assert(cbReason.ok && cbReason.value.reason?.code === "no_longer_interested", "cancel body: valid reason code accepted");
+const cbBadReason = parseCancelBody({ bookingId: "bk-7", externalId: "ext-1", reason: "not_a_reason" }, CANCEL_REASONS);
+assert(!cbBadReason.ok && cbBadReason.status === 400, "cancel body: invalid reason = 400");
+// One rule, two carriers: the same fields must get the same verdict either way.
+{
+  const q = parseCancelQuery(new URLSearchParams("bookingId=bk-7&externalId=ext-1&reason=other&reasonDetail=moved+away"), CANCEL_REASONS);
+  const b = parseCancelBody({ bookingId: "bk-7", externalId: "ext-1", reason: "other", reasonDetail: "moved away" }, CANCEL_REASONS);
+  assert(q.ok && b.ok && JSON.stringify(q.value) === JSON.stringify(b.value),
+    "cancel: the query form and the body form parse the same fields to the same value");
+}
 
 // --- list query parser (#392) ---
 assert(decodeCursor(encodeCursor(150)) === 150, "cursor round-trips an offset");

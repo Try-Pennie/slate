@@ -49,6 +49,7 @@ So the policy is:
   - [POST /api/bookings (create, rebook, dry run)](#post-apibookings)
   - [GET /api/bookings (lookup and list)](#get-apibookings)
   - [DELETE /api/bookings (cancel)](#delete-apibookings)
+  - [POST /api/bookings/cancel (the same cancel, for a caller that cannot send DELETE)](#post-apibookingscancel)
 - [GET /api/availability (public cached read)](#get-apiavailability)
 - [GET /api/availability/next (the next open days)](#get-apiavailabilitynext)
 - [POST /api/routing (public routing resolve)](#post-apirouting)
@@ -74,7 +75,7 @@ names which one it requires.
 
 | Auth model | Header | Backing secret(s) | Used by |
 |---|---|---|---|
-| Booking API key | `Authorization: Bearer <key>` | `BOOKING_API_KEY`, `BOOKING_API_KEY_2` | `POST/GET/DELETE /api/bookings`, and (for hidden test buckets only) `GET /api/availability` |
+| Booking API key | `Authorization: Bearer <key>` | `BOOKING_API_KEY`, `BOOKING_API_KEY_2` | `POST/GET/DELETE /api/bookings`, `POST /api/bookings/cancel`, and (for hidden test buckets only) `GET /api/availability` |
 | Reassign API key | `Authorization: Bearer <key>` | `REASSIGN_API_KEY` | `POST /api/bookings/reassign` |
 | Offboarding API key | `Authorization: Bearer <key>` | `OFFBOARDING_API_KEY` | `POST /api/users/lifecycle`, `POST /api/users/deactivate`, `POST /api/users/reactivate` |
 | Bookable API key | `Authorization: Bearer <key>` | `BOOKABLE_API_KEY` | `POST /api/users/bookable` |
@@ -288,6 +289,33 @@ DELETE /api/bookings?bookingId=<uuid>&externalId=<id>
   Kept apart from both of the above because the instruction differs: the booking
   is untouched and still active, so this is neither "already gone" nor a fault to
   escalate, and a retry can succeed.
+
+### POST /api/bookings/cancel
+
+The same cancel, with the fields in a JSON body (#2591). It exists because some
+callers cannot send `DELETE`: a Regal journey's webhook step offers GET, POST, PUT
+and PATCH only. Source: `src/app/api/bookings/cancel/route.ts`.
+
+```jsonc
+POST /api/bookings/cancel
+Authorization: Bearer <BOOKING_API_KEY>
+
+{
+  "bookingId": "<uuid>",          // required
+  "salesforceId": "00Q…",         // a strong id is required: this or externalId
+  "externalId": "…",
+  "reason": "no_longer_interested", // optional, as on DELETE
+  "reasonDetail": "…"             // only with the `other` code
+}
+```
+
+Auth, rate limits, ownership check, side effects and every outcome are those of
+`DELETE /api/bookings` above, because both verbs run ONE handler
+(`respondToDirectCancel`, `src/lib/booking/direct-cancel-http.ts`) and differ only in
+where the fields are read from. Two things only a body can get wrong: a body that is
+not a JSON object answers `400 { "code": "VALIDATION", "error": "body must be a JSON
+object" }`, and only a STRING counts as a value, so a numeric id reads as absent
+rather than being stringified into something that might match.
 
 > There is no separate reschedule endpoint on this API. To move a booking,
 > re-submit `POST /api/bookings` with the same `externalId` and a new `start`

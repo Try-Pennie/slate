@@ -42,6 +42,10 @@ const FILES = [
   // a lead away was invisible to every counter Slate has, and the one that told them
   // a call was cancelled while it stood was invisible too.
   "src/app/api/bookings/[token]/cancel/route.ts",
+  // #2591. The key authed cancel moved here when it gained a POST form, so the 400 it
+  // answers (api_query_invalid) left the route file above. Listed so the annotation is
+  // still checked where the refusal now lives, rather than exempt by having moved.
+  "src/lib/booking/direct-cancel-http.ts",
 ];
 
 /** Source with comments kept (the annotations live in them) and with them

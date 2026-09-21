@@ -2,22 +2,18 @@ import { stampSeenIp } from "@/lib/loadtest-echo";
 import { NextResponse, type NextRequest } from "next/server";
 import { authorizeBookingApi } from "@/lib/booking/route-auth";
 import { parseDirectBookingRequest, parseLookupQuery, parseCancelQuery, parseListQuery, LIST_ONLY_PARAMS } from "@/lib/booking/api-request";
-import { loadReasonOptions } from "@/lib/booking/reason-options";
+import { respondToDirectCancel, apiErrorBody, mapLookupError } from "@/lib/booking/direct-cancel-http";
 import {
   bookViaApi,
   previewBooking,
   lookupPersonBookings,
   getPersonBookingById,
-  cancelDirectBooking,
   listBookings,
   SlotUnavailableError,
   VerifyUnavailableError,
   NoEligibleAgentsError,
   UnknownBucketError,
-  BookingNotFoundError,
 } from "@/lib/booking/service";
-import { isBookingWriteFailure } from "@/lib/booking/gated-write";
-import { GENERIC_ERROR_MESSAGE, reportInternalError } from "@/lib/api/errors";
 import { DIRECT_BOOKING_API_READ_HOURLY_RATE_RULES } from "@/lib/rate-limit-core";
 import { log } from "@/lib/log";
 import { recordApiOutcome } from "@/lib/monitor/record-api-outcome";
@@ -308,70 +304,11 @@ async function handleGet(req: NextRequest) {
  * only if the booking is owned and active, else 404 NOT_FOUND.
  */
 export async function DELETE(req: NextRequest) {
-  const authd = await authorizeBookingApi(req);
-  if (!authd.ok) return authd.response;
-
-  const reasonOptions = await loadReasonOptions();
-  const parsed = parseCancelQuery(req.nextUrl.searchParams, reasonOptions.cancel.all);
-  if (!parsed.ok) {
-    // refusal: api_query_invalid
-    return NextResponse.json({ error: parsed.error, code: "VALIDATION" }, { status: 400 });
-  }
-  const { bookingId, externalId, salesforceId, reason } = parsed.value;
-
-  try {
-    const booking = await cancelDirectBooking({
-      bookingId,
-      identity: { externalId, salesforceId },
-      reason,
-    });
-    return NextResponse.json({ outcome: "cancelled", booking });
-  } catch (err) {
-    const { httpStatus, code } = mapLookupError(err);
-    return NextResponse.json(await apiErrorBody(err, code, "cancel", "Cancel failed"), {
-      status: httpStatus,
-    });
-  }
-}
-
-/**
- * Body for a mapped error. A typed code keeps its own intended, safe message
- * (validation text, "no eligible agents", "slot taken") that the bot acts on;
- * an unexpected INTERNAL returns the generic message and logs the real detail
- * server-side so table names / Google error text never leak to the client
- * (#707, sibling of #598). The machine-readable `code` is always preserved.
- *
- * An INTERNAL here goes through the SAME chokepoint as every other unexpected
- * fault (`reportInternalError`, #802), so the bot API alerts too. It used to
- * only `console.error`, which meant the one caller that is a machine, and so has
- * nobody watching its responses, was also the one whose faults nobody heard.
- */
-async function apiErrorBody(
-  err: unknown,
-  code: string,
-  context: string,
-  fallback: string,
-): Promise<{ error: string; code: string }> {
-  if (code === "INTERNAL") {
-    await reportInternalError(err, `bookings-api/${context}`);
-    return { error: GENERIC_ERROR_MESSAGE, code };
-  }
-  return { error: err instanceof Error ? err.message : fallback, code };
-}
-
-/** Error→code map for the lookup/cancel paths (#386): a missing/unowned booking
- *  is NOT_FOUND; anything else is an unexpected INTERNAL. */
-function mapLookupError(err: unknown): {
-  httpStatus: number;
-  code: "NOT_FOUND" | "WRITE_FAILED" | "INTERNAL";
-} {
-  if (err instanceof BookingNotFoundError) return { httpStatus: 404, code: "NOT_FOUND" };
-  // #2373: the cancel claim did not RUN, so the booking still stands. A bot reads
-  // INTERNAL as an unexpected fault to escalate and 404 as "already gone", and both
-  // are wrong here: nothing happened and a retry really can succeed. Its own code,
-  // because the instruction differs from every other ending on this path.
-  if (isBookingWriteFailure(err)) return { httpStatus: 503, code: "WRITE_FAILED" };
-  return { httpStatus: 500, code: "INTERNAL" };
+  // One handler with POST /api/bookings/cancel (#2591), which exists because a Regal
+  // journey cannot send DELETE. Only where the fields are read from differs.
+  return respondToDirectCancel(req, (allowedCancel) =>
+    parseCancelQuery(req.nextUrl.searchParams, allowedCancel),
+  );
 }
 
 /**
