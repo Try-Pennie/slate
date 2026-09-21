@@ -19,9 +19,7 @@
 // Only the HTTP call is local: the wording still lives in one place here, so no copy
 // is duplicated anywhere (L41). scripts/test-dependency-free-scripts.ts walks this
 // file's transitive imports and fails on any edge that leaves scripts/.
-import { fileURLToPath } from "node:url";
-import { realpathSync } from "node:fs";
-import { makeSlackPoster } from "./lib/slack-post.ts";
+import { runAlerter } from "./lib/run-alerter.ts";
 
 export interface DeployFailureContext {
   workflowName: string;
@@ -77,22 +75,14 @@ export async function run(
     : { ok: false, reason: res.error ?? "unknown-error" };
 }
 
-const isMain =
-  !!process.argv[1] &&
-  realpathSync(process.argv[1]) === fileURLToPath(import.meta.url);
-
-if (isMain) {
-  run(
-    makeSlackPoster({ token: process.env.SLACK_BOT_TOKEN ?? "" }),
-    process.env,
-  ).then((res) => {
-    if (!res.ok) {
-      console.error(
-        `::error title=Deploy-failure alert not sent::Could not post the Slack deploy-failure alert (${res.reason}). Check SLACK_BOT_TOKEN and SLACK_ALERTS_CHANNEL in the repo Actions settings.`,
-      );
-      process.exit(1);
-    }
-    console.log("Posted deploy-failure alert to Slack.");
-    process.exit(0);
-  });
-}
+runAlerter(import.meta.url, async (post, env) => {
+  const res = await run(post, env);
+  if (!res.ok) {
+    console.error(
+      `::error title=Deploy-failure alert not sent::Could not post the Slack deploy-failure alert (${res.reason}). Check SLACK_BOT_TOKEN and SLACK_ALERTS_CHANNEL in the repo Actions settings.`,
+    );
+    return 1;
+  }
+  console.log("Posted deploy-failure alert to Slack.");
+  return 0;
+});

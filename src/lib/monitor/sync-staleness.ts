@@ -1,4 +1,5 @@
 import { parseStampMs } from "@/lib/date/stamp";
+import type { AlertResolve, ThrottledNotify } from "./alert-deps";
 
 // alert_state row key for the throttle; lives with the feature so the cron and
 // the settings screen refer to the one constant.
@@ -247,13 +248,13 @@ export async function runSyncStalenessCheck(deps: {
   loadAgents: () => Promise<SyncAgentStaleness[]>;
   nowMs: number;
   thresholdMs?: number;
-  notify: (key: string, cooldownMs: number, text: string) => Promise<void>;
+  notify: ThrottledNotify;
   /**
    * The all-clear (#1400). REQUIRED, not optional, so `tsc` enumerates every
    * construction site rather than letting a caller quietly wire a page with no
    * way to end it, which is how this condition went three releases without one.
    */
-  resolve: (key: string, text: string) => Promise<boolean>;
+  resolve: AlertResolve;
   cooldownMs: number;
   log?: (msg: string) => void;
 }): Promise<StalenessResult> {

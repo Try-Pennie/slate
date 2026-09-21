@@ -11,9 +11,9 @@
 // needed (#1598). The DECISION and the wording are in `lib/clock-shift-report.ts`,
 // pinned offline; only the HTTP call and the file reading are here.
 import { fileURLToPath } from "node:url";
-import { existsSync, readFileSync, readdirSync, realpathSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
-import { makeSlackPoster } from "./lib/slack-post.ts";
+import { runAlerter } from "./lib/run-alerter.ts";
 import {
   decideClockShiftReport,
   expectedSuiteCount,
@@ -79,22 +79,18 @@ export async function run(
   };
 }
 
-const isMain =
-  !!process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url);
-
-if (isMain) {
+runAlerter(import.meta.url, async (post, env) => {
   const here = fileURLToPath(new URL(".", import.meta.url));
-  run(makeSlackPoster({ token: process.env.SLACK_BOT_TOKEN ?? "" }), process.env, {
+  const res = await run(post, env, {
     dir: process.env.CLOCK_SHIFT_LOG_DIR ?? "",
     scriptsDir: here,
-  }).then((res) => {
-    console.log(`clock shift: ${res.detail} (${res.reason})`);
-    // A finding and an undelivered message are both red, and the message says
-    // which: an unsent alert is not evidence that the suite is date independent.
-    if (!res.ok) {
-      console.error(`::error title=Shifted test run::${res.detail} (${res.reason})`);
-      process.exit(1);
-    }
-    process.exit(0);
   });
-}
+  console.log(`clock shift: ${res.detail} (${res.reason})`);
+  // A finding and an undelivered message are both red, and the message says
+  // which: an unsent alert is not evidence that the suite is date independent.
+  if (!res.ok) {
+    console.error(`::error title=Shifted test run::${res.detail} (${res.reason})`);
+    return 1;
+  }
+  return 0;
+});

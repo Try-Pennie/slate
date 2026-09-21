@@ -21,15 +21,10 @@
 // Exit codes are the judge's (scripts/lib/pool-slot-parity.ts), plus 1 for "no
 // credentials here", decided before anything is read so it can never be confused
 // with a finding.
-import { loadEnvFiles } from "./smoke-env.ts";
+import { requireSupabaseCredentials } from "./lib/supabase-credentials.ts";
 
-loadEnvFiles([".env.local", ".dev.vars"]);
-if (!process.env.SUPABASE_SECRET_KEY?.trim() || !process.env.NEXT_PUBLIC_SUPABASE_URL?.trim()) {
-  console.error(
-    "FAILED (not-configured): SUPABASE_SECRET_KEY and NEXT_PUBLIC_SUPABASE_URL are needed here; nothing was read",
-  );
-  process.exit(1);
-}
+const creds = requireSupabaseCredentials();
+if (!creds) process.exit(1);
 
 const { listPoolBuckets } = await import("@/lib/availability/precompute");
 const { groupByPool } = await import("@/lib/availability/pool-key");

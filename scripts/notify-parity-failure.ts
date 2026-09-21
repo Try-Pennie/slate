@@ -13,9 +13,7 @@
 //
 // Fails loud: a Slack post that errors, or Slack being unconfigured, exits non-zero
 // so the alert job goes visibly red rather than pretending it warned anyone.
-import { fileURLToPath } from "node:url";
-import { realpathSync } from "node:fs";
-import { makeSlackPoster } from "./lib/slack-post.ts";
+import { runAlerter } from "./lib/run-alerter.ts";
 
 export type PostFn = (msg: {
   text: string;
@@ -61,18 +59,14 @@ export async function run(
   return res.ok ? { ok: true, reason: "posted" } : { ok: false, reason: res.error ?? "unknown-error" };
 }
 
-const isMain =
-  !!process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url);
-
-if (isMain) {
-  run(makeSlackPoster({ token: process.env.SLACK_BOT_TOKEN ?? "" }), process.env).then((res) => {
-    if (!res.ok) {
-      console.error(
-        `::error title=Parity alert not sent::Could not post the Slack parity-failure alert (${res.reason}). Check SLACK_BOT_TOKEN and SLACK_ALERTS_CHANNEL in the repo Actions settings.`,
-      );
-      process.exit(1);
-    }
-    console.log("Posted parity-failure alert to Slack.");
-    process.exit(0);
-  });
-}
+runAlerter(import.meta.url, async (post, env) => {
+  const res = await run(post, env);
+  if (!res.ok) {
+    console.error(
+      `::error title=Parity alert not sent::Could not post the Slack parity-failure alert (${res.reason}). Check SLACK_BOT_TOKEN and SLACK_ALERTS_CHANNEL in the repo Actions settings.`,
+    );
+    return 1;
+  }
+  console.log("Posted parity-failure alert to Slack.");
+  return 0;
+});

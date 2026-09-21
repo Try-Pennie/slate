@@ -7,6 +7,7 @@
  * Slack) lives in the cron route.
  */
 import { DateTime } from "luxon";
+import type { AlertResolve, ThrottledNotify } from "./alert-deps";
 
 /** A working-hours window for one weekday (1=Mon..7=Sun), minutes from local
  *  midnight. Structurally matches availability/compute.ts's WorkingRule. */
@@ -287,8 +288,8 @@ export async function reportAvailabilityHealth(deps: {
   cooldownMs: number;
   /** Buckets the lane self-healed this tick, named in the page. */
   healed: string[];
-  notify: (key: string, cooldownMs: number, text: string) => Promise<void>;
-  resolve: (key: string, text: string) => Promise<boolean>;
+  notify: ThrottledNotify;
+  resolve: AlertResolve;
 }): Promise<{ verdict: AvailabilityVerdict; cleared: boolean }> {
   const verdict = availabilityAlertVerdict(deps.cause, deps.scanTruncated);
   if (verdict === "alerting") {

@@ -8,6 +8,7 @@
  */
 import { DateTime } from "luxon";
 import { windowOnDate, type BusinessHoursException } from "../booking/business-hours.ts";
+import type { ThrottledNotify } from "./alert-deps";
 
 /**
  * When the org is open, in the shape the org's own hours are stored in (#1298).
@@ -126,10 +127,10 @@ export async function runLowVolumeCheck(deps: {
   floors: { floor30: number; floor120: number };
   armed: boolean;
   cooldownMs: number;
-  notify: (key: string, cooldownMs: number, text: string) => Promise<void>;
+  notify: ThrottledNotify;
   /** Page for a count that could not be read TWICE (#1288). Its own key, because
    *  a broken query is not a booking drought. */
-  notifyCountUnreadable: (key: string, cooldownMs: number, text: string) => Promise<void>;
+  notifyCountUnreadable: ThrottledNotify;
   /**
    * Clear every page this tick MEASURED to be over, in one go (#1390).
    *

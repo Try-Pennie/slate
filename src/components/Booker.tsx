@@ -4,7 +4,7 @@ import { DateTime } from "luxon";
 import { formatClockTime, formatLongDate } from "@/lib/date/parse";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { ArrowRightIcon } from "@/components/icons";
+import { AlertIcon, ArrowRightIcon, ClockIcon, GlobeIcon, PhoneOutlineIcon } from "@/components/icons";
 import { BookerButton } from "@/components/BookerButton";
 import type { BookerButtonVariant } from "@/components/booker-button";
 import { BookerStrip, BookerStripSkeleton } from "@/components/BookerStrip";
@@ -302,38 +302,6 @@ const PALETTE = {
   },
 };
 
-function ClockIcon() {
-  return (
-    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
-      <circle cx="12" cy="12" r="9" />
-      <path d="M12 7v5l3 2" strokeLinecap="round" />
-    </svg>
-  );
-}
-function PhoneIcon() {
-  return (
-    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
-      <path d="M5 4h3l2 5-2 1a12 12 0 005 5l1-2 5 2v3a2 2 0 01-2 2A16 16 0 013 6a2 2 0 012-2z" strokeLinejoin="round" />
-    </svg>
-  );
-}
-function AlertIcon() {
-  return (
-    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
-      <circle cx="12" cy="12" r="9" />
-      <path d="M12 7.5v5.5" strokeLinecap="round" />
-      <path d="M12 16.5h.01" strokeLinecap="round" />
-    </svg>
-  );
-}
-function GlobeIcon() {
-  return (
-    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
-      <circle cx="12" cy="12" r="9" />
-      <path d="M3 12h18M12 3a14 14 0 010 18M12 3a14 14 0 000 18" />
-    </svg>
-  );
-}
 
 /** Sentinel <option> value: picking it reveals the full-list search (#219). */
 
@@ -1091,7 +1059,7 @@ export default function Booker({
                   className="mt-4 flex items-start gap-2 text-sm text-[var(--error)]"
                 >
                   <span className="mt-0.5 shrink-0">
-                    <AlertIcon />
+                    <AlertIcon width={15} height={15} />
                   </span>
                   {error}
                 </p>
@@ -1124,7 +1092,7 @@ export default function Booker({
                   {error && (
                     <p role="alert" className="mt-4 flex items-start gap-2 text-sm text-[var(--error)]">
                       <span className="mt-0.5 shrink-0">
-                        <AlertIcon />
+                        <AlertIcon width={15} height={15} />
                       </span>
                       {error}
                     </p>
@@ -1421,7 +1389,7 @@ export default function Booker({
         className="flex items-start gap-2 text-sm text-[var(--error)]"
       >
         <span className="mt-0.5 shrink-0">
-          <AlertIcon />
+          <AlertIcon width={15} height={15} />
         </span>
         {error}
       </p>
@@ -1618,7 +1586,7 @@ export default function Booker({
     >
       <div className="flex min-w-0 items-center gap-1.5">
         <span className={c.faint}>
-          <GlobeIcon />
+          <GlobeIcon width={15} height={15} />
         </span>
         <label htmlFor="booker-tz" className="sr-only">
           Timezone
@@ -1851,7 +1819,7 @@ export default function Booker({
       <div className={`mt-5 space-y-2 text-sm ${c.body}`}>
         <div className="flex items-center gap-2">
           <span className={c.faint}>
-            <ClockIcon />
+            <ClockIcon width={15} height={15} />
           </span>
           {meta ? `${meta.eventType.durationMin}m` : ""}
         </div>
@@ -1885,7 +1853,7 @@ export default function Booker({
         {attendee.phone && !selectedSlot && (
           <div className="flex items-start gap-2">
             <span className={`mt-0.5 shrink-0 ${c.faint}`}>
-              <PhoneIcon />
+              <PhoneOutlineIcon width={15} height={15} />
             </span>
             <span>
               {DETAILS_COPY.yourNumber}{" "}
@@ -1895,7 +1863,7 @@ export default function Booker({
         )}
         <div className="flex items-center gap-2">
           <span className={c.faint}>
-            <GlobeIcon />
+            <GlobeIcon width={15} height={15} />
           </span>
           {zone.replace(/_/g, " ")}
         </div>

@@ -19,9 +19,8 @@
 // Fails loud: a Slack post that errors, or Slack being unconfigured while there is
 // something to say, exits non-zero so the job goes visibly red rather than
 // pretending it warned anyone.
-import { fileURLToPath } from "node:url";
-import { realpathSync, readFileSync, appendFileSync } from "node:fs";
-import { makeSlackPoster } from "./lib/slack-post.ts";
+import { readFileSync, appendFileSync } from "node:fs";
+import { runAlerter } from "./lib/run-alerter.ts";
 import { decideReplayReport, type ReplaySummaryFile } from "./lib/router-replay-report.ts";
 
 export type PostFn = (msg: {
@@ -76,26 +75,22 @@ export async function run(
   };
 }
 
-const isMain =
-  !!process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url);
-
-if (isMain) {
-  run(makeSlackPoster({ token: process.env.SLACK_BOT_TOKEN ?? "" }), process.env).then((res) => {
-    // Written whatever happened to the Slack post: whether the detector CONCLUDED
-    // is a fact about the replay, and losing it because Slack was misconfigured
-    // would leave the heartbeat unstamped for a reason that has nothing to do with
-    // the replay (L53, two checks must never share one status).
-    const out = process.env.GITHUB_OUTPUT;
-    if (out) appendFileSync(out, `concluded=${res.concluded ? "1" : "0"}\n`, "utf8");
-    if (!res.ok) {
-      console.error(
-        `::error title=Replay alert not sent::Could not post the Slack router-replay alert ` +
-          `(${res.reason}). Check SLACK_BOT_TOKEN and SLACK_ALERTS_CHANNEL in the repo Actions ` +
-          `settings.`,
-      );
-      process.exit(1);
-    }
-    console.log(`router replay: ${res.reason}; concluded=${res.concluded}`);
-    process.exit(0);
-  });
-}
+runAlerter(import.meta.url, async (post, env) => {
+  const res = await run(post, env);
+  // Written whatever happened to the Slack post: whether the detector CONCLUDED
+  // is a fact about the replay, and losing it because Slack was misconfigured
+  // would leave the heartbeat unstamped for a reason that has nothing to do with
+  // the replay (L53, two checks must never share one status).
+  const out = process.env.GITHUB_OUTPUT;
+  if (out) appendFileSync(out, `concluded=${res.concluded ? "1" : "0"}\n`, "utf8");
+  if (!res.ok) {
+    console.error(
+      `::error title=Replay alert not sent::Could not post the Slack router-replay alert ` +
+        `(${res.reason}). Check SLACK_BOT_TOKEN and SLACK_ALERTS_CHANNEL in the repo Actions ` +
+        `settings.`,
+    );
+    return 1;
+  }
+  console.log(`router replay: ${res.reason}; concluded=${res.concluded}`);
+  return 0;
+});

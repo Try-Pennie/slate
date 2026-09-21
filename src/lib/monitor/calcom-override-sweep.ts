@@ -4,6 +4,7 @@ import {
   OUTCOME_OK_PREFIX,
   OUTCOME_SKIPPED_PREFIX,
 } from "@/lib/calcom/outcomes";
+import type { AlertResolve } from "./alert-deps";
 
 /**
  * Retry a cal.com availability override that failed, and page when an absence is
@@ -286,8 +287,8 @@ export async function runCalcomOverrideSweep(deps: {
   nowMs: number;
   loadCandidates: () => Promise<OverrideCandidate[] | null>;
   retry: (requestId: string) => Promise<string>;
-  alert: (key: string, text: string) => Promise<void>;
-  resolve: (key: string, text: string) => Promise<boolean>;
+  alert: AlertResolve<void>;
+  resolve: AlertResolve;
   max?: number;
   log?: (msg: string) => void;
 }): Promise<SweepResult> {

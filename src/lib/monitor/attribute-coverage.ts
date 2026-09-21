@@ -1,4 +1,5 @@
 import type { Attributes } from "@/lib/db/types";
+import type { ThrottledNotify } from "./alert-deps";
 
 // alert_state row key for the throttle; lives with the feature so the cron and
 // the settings screen refer to the one constant.
@@ -78,7 +79,7 @@ export function formatAttributeGapNotice(agents: UnroutableAgent[]): string {
  */
 export async function runAttributeCoverageCheck(deps: {
   loadUnroutableAgents: () => Promise<UnroutableAgent[]>;
-  notify: (key: string, cooldownMs: number, text: string) => Promise<void>;
+  notify: ThrottledNotify;
   cooldownMs: number;
   log?: (msg: string) => void;
 }): Promise<{ unroutable: number }> {

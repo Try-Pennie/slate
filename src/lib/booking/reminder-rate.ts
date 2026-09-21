@@ -6,6 +6,7 @@ import {
   type RateVerdict,
   type RateWindowState,
 } from "@/lib/monitor/booking-failure-rate";
+import type { AlertResolve, ThrottledNotify } from "@/lib/monitor/alert-deps";
 
 /**
  * A wave of reminder emails that did not go out, as distinct from one (#2496).
@@ -250,8 +251,8 @@ export async function runReminderFailureRateCheck(deps: {
    *  window" stay distinct outcomes rather than both arriving as an empty one. */
   loadState: () => Promise<RateWindowState | null>;
   saveState: (state: RateWindowState) => Promise<void>;
-  notify: (key: string, cooldownMs: number, text: string) => Promise<void>;
-  resolve: (key: string, text: string) => Promise<boolean>;
+  notify: ThrottledNotify;
+  resolve: AlertResolve;
   /** Structurally the log helper's field shape, spelled out rather than imported so
    *  this module keeps no dependency on the logger. */
   log?: (fields: Record<string, string | number | boolean | null | undefined>) => void;

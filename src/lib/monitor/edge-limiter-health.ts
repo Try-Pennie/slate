@@ -28,7 +28,10 @@
  * time this module ran anywhere but production.
  */
 
+import type { AlertResolve, ThrottledNotify } from "./alert-deps";
+
 /** alert_state key for the condition. One key: the causes differ, the state does not. */
+
 export const EDGE_LIMITER_KEY = "edge_limiter_unusable";
 
 /** What one tick actually observed. Assembled by the caller, judged purely below. */
@@ -297,10 +300,10 @@ export function formatEdgeLimiterRecovery(): string {
 export async function runEdgeLimiterCheck(deps: {
   expected: readonly string[];
   read: () => Promise<EdgeLimiterReading>;
-  notify: (key: string, cooldownMs: number, text: string) => Promise<void>;
+  notify: ThrottledNotify;
   // Promise<unknown>: resolveAlert reports whether it settled anything and this check
   // does not branch on that, so the dep accepts either shape.
-  resolve: (key: string, text: string) => Promise<unknown>;
+  resolve: AlertResolve<unknown>;
   cooldownMs: number;
   log?: (msg: string) => void;
 }): Promise<EdgeLimiterHealth> {

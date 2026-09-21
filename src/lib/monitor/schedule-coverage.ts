@@ -1,4 +1,5 @@
 import { log } from "@/lib/log";
+import type { ThrottledNotify } from "./alert-deps";
 
 // alert_state row key for the throttle; lives with the feature so the cron and
 // the settings screen refer to the one constant.
@@ -90,7 +91,7 @@ export function formatScheduleGapNotice(agents: ScheduleLessAgent[]): string {
 export async function runScheduleCoverageCheck(deps: {
   loadMissingAgents: () => Promise<ScheduleLessAgent[]>;
   heal: (orgIds: string[]) => Promise<void>;
-  notify: (key: string, cooldownMs: number, text: string) => Promise<void>;
+  notify: ThrottledNotify;
   cooldownMs: number;
   log?: (msg: string) => void;
 }): Promise<{ missingBefore: number; healed: number; stillMissing: number }> {

@@ -21,6 +21,7 @@
  */
 
 import { supabaseAdmin } from "@/lib/supabase/admin";
+import type { AlertResolve, ThrottledNotify } from "./alert-deps";
 
 // alert_state row key for the throttle; one constant shared by the cron and the
 // settings screen.
@@ -191,10 +192,10 @@ export function formatMigrationDriftRecovery(shippedVersion: string): string {
 export async function runMigrationDriftCheck(deps: {
   shippedVersion: string;
   readAppliedVersions: () => Promise<string[] | null>;
-  notify: (key: string, cooldownMs: number, text: string) => Promise<void>;
+  notify: ThrottledNotify;
   /** Announce that an outstanding lag page has cleared. A no-op unless one was
    *  actually delivered, so it is safe to call on every healthy tick. */
-  resolve: (key: string, text: string) => Promise<boolean>;
+  resolve: AlertResolve;
   cooldownMs: number;
   log?: (msg: string, status: MigrationDriftStatus, applied: string[] | null) => void;
 }): Promise<MigrationDriftStatus> {

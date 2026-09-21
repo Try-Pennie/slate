@@ -11,9 +11,9 @@ import {
   usableScheduleUserIds,
   type ScheduleLessAgent,
 } from "@/lib/monitor/schedule-coverage";
+import type { ThrottledNotify as NotifyFn } from "@/lib/monitor/alert-deps";
 
 type HealFn = (orgIds: string[]) => Promise<void>;
-type NotifyFn = (key: string, cooldownMs: number, text: string) => Promise<void>;
 type LoadFn = () => Promise<ScheduleLessAgent[]>;
 
 const agent = (id: string, over: Partial<ScheduleLessAgent> = {}): ScheduleLessAgent => ({

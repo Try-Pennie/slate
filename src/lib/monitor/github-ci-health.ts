@@ -66,6 +66,7 @@
  * part that talks to GitHub, and it is the part the tests replace.
  */
 import { parseStampMs } from "@/lib/date/stamp";
+import type { AlertResolve, ThrottledNotify } from "./alert-deps";
 
 /** The repo whose runs are read. Same repo the canary gap filler dispatches into. */
 export const CI_REPO = "Try-Pennie/slate";
@@ -468,8 +469,8 @@ export interface CiHealthDeps {
   readRuns: (token: string) => Promise<WorkflowRunSummary[] | null>;
   readJobs: (token: string, runId: number) => Promise<WorkflowJobSummary[] | null>;
   cooldownMs: { deploy: number; refusal: number };
-  notify: (key: string, cooldownMs: number, text: string) => Promise<unknown>;
-  resolve: (key: string, text: string) => Promise<unknown>;
+  notify: ThrottledNotify<unknown>;
+  resolve: AlertResolve<unknown>;
   log?: (msg: string, fields: Record<string, unknown>) => void;
   onError?: (msg: string, err?: unknown) => void;
   graceMs?: number;

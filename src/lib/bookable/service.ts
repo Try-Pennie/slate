@@ -17,6 +17,7 @@ import {
   bookableTimedOutAlert,
 } from "@/lib/notify/misc-alert-copy";
 import { isDefinitiveFailure } from "@/lib/google/sync-health";
+import type { ThrottledNotify } from "@/lib/monitor/alert-deps";
 
 /**
  * Keyed per agent (`bookable_blocked:<userId>`) so a single agent stuck with a
@@ -69,7 +70,7 @@ export interface BookableDeps {
   /** Live Google reachability probe (injected in tests). */
   checkReachable: (email: string) => Promise<Reachability>;
   /** Throttled named alert (injected in tests). */
-  notify: (key: string, cooldownMs: number, text: string) => Promise<void>;
+  notify: ThrottledNotify;
   /** Pool-exit cleanup on deactivation: stop watches + prune busy_blocks (#239/#248). */
   cleanupOnPoolExit: (userId: string) => Promise<void>;
   /**

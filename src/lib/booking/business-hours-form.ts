@@ -1,4 +1,5 @@
 import { DateTime } from "luxon";
+import { WEEKDAY_NAMES } from "../schedule-core";
 
 /**
  * Parse and validate the business-hours editor's form (#1297). Pure, no `@/`
@@ -50,7 +51,6 @@ export interface BusinessHoursFormResult {
  */
 export const CLOSED_DAY_FALLBACK = { start_minute: 8 * 60, end_minute: 20 * 60 };
 
-const DAY_NAMES = ["", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
 const WEEKDAYS = [1, 2, 3, 4, 5, 6, 7];
 const DAY_END_MINUTE = 1440;
 
@@ -79,7 +79,7 @@ export function parseBusinessHoursForm(
   const wasOpen = new Set(opts.currentlyOpen ?? []);
 
   for (const weekday of WEEKDAYS) {
-    const day = DAY_NAMES[weekday];
+    const day = WEEKDAY_NAMES[weekday];
     // An unchecked box posts nothing at all, which is how a day is closed.
     const isOpen = (form[`bh_open_${weekday}`] ?? "") !== "";
     const start = parseTime(form[`bh_start_${weekday}`]);
