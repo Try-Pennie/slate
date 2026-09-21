@@ -51,6 +51,7 @@ import { formatOwnerReassignNotice } from "./owner-notice-copy.ts";
 import { bookingDetailHref } from "./detail.ts";
 import { SLACK_NOT_CONFIGURED } from "../notify/slack.ts";
 import { isDefinitiveFailure, reachabilityFromError } from "../google/reachability-classify.ts";
+import type { FailureKind } from "../google/sync-health.ts";
 import { encodeCursor, type ListQuery } from "./api-request.ts";
 import { webhookDedupeKey } from "../webhooks/dedupe.ts";
 import { runOutboxSteps, type OutboxHandlers } from "./outbox.ts";
@@ -442,14 +443,14 @@ export class BookingNotChangeableError extends Error {
  *  the agent's calendar and that must leave a trace.
  *
  *  #2561 made `deleteEvent` throw a typed `GoogleHttpError`, so the failure here
- *  is now CLASSIFIABLE through `reachabilityFromError`. It is deliberately not
- *  branched on: a definitive failure (an account that is gone, or was never given
- *  Calendar) still belongs in the queue, because the queue row is the only record
- *  that an event is orphaned on a calendar nobody can reach, and dropping it would
- *  trade a retry nobody can satisfy for a silence nobody can see. What SHOULD
- *  change is how the drain below ends such a row, and that needs its own alert
- *  wording rather than riding on copy that says "failed N+ times". That change is
- *  #2577. */
+ *  is CLASSIFIABLE through `reachabilityFromError`. It is deliberately not branched
+ *  on: a definitive failure (an account that is gone, or was never given Calendar)
+ *  still belongs in the queue, because the queue row is the only record that an
+ *  event is orphaned on a calendar nobody can reach, and dropping it would trade a
+ *  retry nobody can satisfy for a silence nobody can see. The drain
+ *  (`processPendingEventDeletions`) is where the classification is read: it ends
+ *  such a row on its first pass and pages with copy naming the person who has to
+ *  fix the account (#2577). */
 export async function deleteEventBestEffort(
   deps: BookingDeps,
   email: string,
@@ -1146,42 +1147,68 @@ export const PENDING_DELETION_ALERT_AFTER = 5;
  *  diagnosable via last_error, and already alerted at PENDING_DELETION_ALERT_AFTER). */
 export const PENDING_DELETION_GIVE_UP_AT = 50;
 
+/** A queued deletion the drain has stopped retrying because Google refused the
+ *  calendar for good (#2577). `kind` is the classification the refusal was ended
+ *  on; the copy treats anything that is not `not-provisioned` as an account that is
+ *  gone, matching #916's conservative default for an unclassified kind. */
+export interface RefusedEventDeletion {
+  row: PendingEventDeletion;
+  kind: FailureKind;
+}
+
 /**
  * Drain a batch of the deletion retry queue (#401): re-attempt each delete;
- * remove on success (404/410 already-gone counts as success); on failure bump
- * the attempt count and report rows that crossed the alert threshold. Pure —
- * the caller (sync lane) sends the throttled alert for `stuck`.
+ * remove on success (404/410 already-gone counts as success); on a TRANSIENT
+ * failure bump the attempt count and report rows that crossed the alert threshold
+ * as `stuck`. Pure: the caller (self-heal lane) sends the throttled alerts.
  *
- * Every failure is retried the same way, including one `reachabilityFromError`
- * would now call definitive (#2561). That is a known cost, not an oversight: a
- * calendar that is gone or was never provisioned is retried until
- * PENDING_DELETION_GIVE_UP_AT, and the page it raises at
- * PENDING_DELETION_ALERT_AFTER reads as a stuck retry rather than as an account a
- * Workspace admin has to fix. Ending such a row early means new alert copy and a
- * catalog entry for it, so it is a change of its own rather than part of typing
- * the error: #2577.
+ * A failure `isDefinitiveFailure` (never a literal `kind === "gone"`, see AGENTS.md
+ * "Three ways a Google calendar can fail, not two") ends the row on THIS pass
+ * (#2577): its attempts are written straight to PENDING_DELETION_GIVE_UP_AT, which
+ * `loadPendingEventDeletions` excludes, so the delete is never retried, and the
+ * row is reported in `refused` with its kind rather than in `stuck`. The row STAYS
+ * in the table: it is the only record that an event is orphaned on a calendar
+ * nobody can reach, and `last_error` names the kind so the record says why. It is
+ * not `stuck`, because that alert's copy sends the reader to check Google API
+ * health, and no amount of health fixes an account that was never given Calendar.
+ * A refused row still counts in `failed`: the saturation reporter reads
+ * deleted + failed as the size of the page this pass loaded (#888).
  */
 export async function processPendingEventDeletions(
   deps: BookingDeps,
   limit: number,
-): Promise<{ deleted: number; failed: number; stuck: PendingEventDeletion[] }> {
+): Promise<{
+  deleted: number;
+  failed: number;
+  stuck: PendingEventDeletion[];
+  refused: RefusedEventDeletion[];
+}> {
   const rows = await deps.loadPendingEventDeletions(limit);
   let deleted = 0;
   let failed = 0;
   const stuck: PendingEventDeletion[] = [];
+  const refused: RefusedEventDeletion[] = [];
   for (const row of rows) {
     try {
       await deps.deleteEvent(row.calendar_email, row.gcal_event_id);
       await deps.removePendingEventDeletion(row.id);
       deleted++;
     } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      const kind = reachabilityFromError(err);
+      if (isDefinitiveFailure(kind)) {
+        await deps.bumpPendingEventDeletion(row.id, PENDING_DELETION_GIVE_UP_AT, `${kind}: ${message}`);
+        failed++;
+        refused.push({ row, kind });
+        continue;
+      }
       const attempts = row.attempts + 1;
-      await deps.bumpPendingEventDeletion(row.id, attempts, err instanceof Error ? err.message : String(err));
+      await deps.bumpPendingEventDeletion(row.id, attempts, message);
       failed++;
       if (attempts >= PENDING_DELETION_ALERT_AFTER) stuck.push(row);
     }
   }
-  return { deleted, failed, stuck };
+  return { deleted, failed, stuck, refused };
 }
 
 /**

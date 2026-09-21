@@ -504,6 +504,11 @@ export const ALERT_CATALOG: AlertEntry[] = [
     why: "Specific calendar events outlived their booking; each is resolved by hand, not by a state flipping back.",
   },
   {
+    key: "pending_event_deletions_refused",
+    kind: "incident",
+    why: "The drain has STOPPED retrying the named deletions because Google refused the calendar for good (gone, or never given Calendar), so nothing observes them again: the rows sit at the give-up count and only a person re-authenticating, removing or provisioning the account changes anything. Distinct from pending_event_deletions, whose stuck rows are still being retried and whose remedy is API health (#2577).",
+  },
+  {
     key: "reconcile_busy_blocks",
     kind: "incident",
     why: "The sweep already fixed the rows it names; the alert reports work done, not a fault still running.",

@@ -10,6 +10,7 @@
  * describe something that already happened to a specific booking, so they name
  * the consequence and where to look, and never promise that anything will retry.
  */
+import type { FailureKind } from "@/lib/google/sync-health";
 
 /** A cached busy_blocks write that did not land, per operation. */
 export function busyBlockWriteThroughAlert(
@@ -57,6 +58,75 @@ export function pendingDeletionRecovery(): string {
     "The calendar event deletions that kept failing have gone through. No deletion is " +
     "stuck retrying, so no cancelled meeting should still be sending reminders. No action is needed."
   );
+}
+
+/** One queued deletion the drain stopped retrying (#2577), as the copy needs it. */
+export interface RefusedDeletionForAlert {
+  calendarEmail: string;
+  eventId: string;
+  kind: FailureKind;
+}
+
+/** How many event ids to name per calendar before summarizing the rest. */
+const MAX_NAMED_REFUSED_EVENTS = 3;
+
+/**
+ * Calendar deletions the drain has STOPPED retrying because Google refused the
+ * calendar for good (#2577). Distinct from `pendingDeletionAlert`, whose reader is
+ * told to check Google API health and wait: no amount of health fixes these, so
+ * the copy names the person who has to act, per kind. A never provisioned account
+ * is a Workspace admin ticking a box; a gone account is a credential or membership
+ * repair. An unclassified kind is treated as gone, matching #916's default.
+ *
+ * Calendar emails are staff addresses, not lead data, so they are named: the
+ * reader has to know WHOSE account to fix. Event ids are capped per calendar.
+ */
+export function pendingDeletionRefusedAlert(refused: RefusedDeletionForAlert[]): string {
+  const count = refused.length;
+  const head =
+    `Stopped retrying ${count} calendar event ${count === 1 ? "deletion" : "deletions"} because ` +
+    `Google has refused the calendar for good. The cancelled ` +
+    `${count === 1 ? "meeting is still on the calendar" : "meetings are still on their calendars"} ` +
+    `and may keep sending reminders until a person fixes the ${count === 1 ? "account" : "accounts"} below.`;
+  const provisioning = refused.filter((r) => r.kind === "not-provisioned");
+  const gone = refused.filter((r) => r.kind !== "not-provisioned");
+  const parts = [head];
+  if (provisioning.length > 0) {
+    parts.push(
+      `Never given Google Calendar: a Workspace admin has to give ${provisioning.length === 1 ? "this account" : "these accounts"} ` +
+        `Calendar, and retrying can never fix it. ${refusedCalendarLines(provisioning)}`,
+    );
+  }
+  if (gone.length > 0) {
+    parts.push(
+      `Account gone (removed from the Workspace, or delegation revoked): re-authenticate ` +
+        `${gone.length === 1 ? "the account" : "each account"} or take the agent out of the pool. ${refusedCalendarLines(gone)}`,
+    );
+  }
+  parts.push(
+    `${count === 1 ? "The row stays" : "Each row stays"} in pending_event_deletions at the give-up count ` +
+      `as the record of the orphaned event.`,
+  );
+  return parts.join(" ");
+}
+
+/** "a@x.com (event ids evt-1, evt-2 and 3 more); b@x.com (event id evt-9)". */
+function refusedCalendarLines(rows: RefusedDeletionForAlert[]): string {
+  const byCalendar = new Map<string, string[]>();
+  for (const r of rows) {
+    const ids = byCalendar.get(r.calendarEmail) ?? [];
+    ids.push(r.eventId);
+    byCalendar.set(r.calendarEmail, ids);
+  }
+  return [...byCalendar.entries()]
+    .map(([email, ids]) => {
+      const named = ids.slice(0, MAX_NAMED_REFUSED_EVENTS).join(", ");
+      const rest = ids.length - MAX_NAMED_REFUSED_EVENTS;
+      const label = ids.length === 1 ? "event id" : "event ids";
+      return `${email} (${label} ${named}${rest > 0 ? ` and ${rest} more` : ""})`;
+    })
+    .join("; ")
+    .concat(".");
 }
 
 /** Calendar events that outlived the booking they were created for. */

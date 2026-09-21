@@ -289,6 +289,7 @@ import {
   outboxHandoffRecovery,
   pendingDeletionAlert,
   pendingDeletionRecovery,
+  pendingDeletionRefusedAlert,
   reassignIntentDroppedAlert,
   reconcileFreedAlert,
   reconcileRecreatedAlert,
@@ -2400,6 +2401,27 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     state: "the queue drained",
     channel: "recovery",
     text: pendingDeletionRecovery(),
+  },
+  {
+    key: "pending_event_deletions_refused",
+    state: "one deletion ended, the account never given Calendar",
+    channel: "alert",
+    text: pendingDeletionRefusedAlert([
+      { calendarEmail: "new.hire@trypennie.com", eventId: "evt_4c1", kind: "not-provisioned" },
+    ]),
+  },
+  {
+    key: "pending_event_deletions_refused",
+    state: "several deletions ended across both kinds, one calendar over the id cap",
+    channel: "alert",
+    text: pendingDeletionRefusedAlert([
+      { calendarEmail: "new.hire@trypennie.com", eventId: "evt_4c1", kind: "not-provisioned" },
+      { calendarEmail: "left.agent@trypennie.com", eventId: "evt_4d2", kind: "gone" },
+      { calendarEmail: "left.agent@trypennie.com", eventId: "evt_4d3", kind: "gone" },
+      { calendarEmail: "left.agent@trypennie.com", eventId: "evt_4d4", kind: "gone" },
+      { calendarEmail: "left.agent@trypennie.com", eventId: "evt_4d5", kind: "gone" },
+      { calendarEmail: "revoked@trypennie.com", eventId: "evt_4e6", kind: "gone" },
+    ]),
   },
   {
     key: "creation_orphan_events",
