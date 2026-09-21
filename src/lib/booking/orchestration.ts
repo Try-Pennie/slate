@@ -448,7 +448,8 @@ export class BookingNotChangeableError extends Error {
  *  that an event is orphaned on a calendar nobody can reach, and dropping it would
  *  trade a retry nobody can satisfy for a silence nobody can see. What SHOULD
  *  change is how the drain below ends such a row, and that needs its own alert
- *  wording rather than riding on copy that says "failed N+ times". */
+ *  wording rather than riding on copy that says "failed N+ times". That change is
+ *  #2577. */
 export async function deleteEventBestEffort(
   deps: BookingDeps,
   email: string,
@@ -1158,7 +1159,7 @@ export const PENDING_DELETION_GIVE_UP_AT = 50;
  * PENDING_DELETION_ALERT_AFTER reads as a stuck retry rather than as an account a
  * Workspace admin has to fix. Ending such a row early means new alert copy and a
  * catalog entry for it, so it is a change of its own rather than part of typing
- * the error.
+ * the error: #2577.
  */
 export async function processPendingEventDeletions(
   deps: BookingDeps,
