@@ -22,6 +22,14 @@
 #      #489 TS2307 that was green locally, red in CI) is now caught here (#490).
 #      Override with SKIP_PREPUSH_CHECKS=1.
 #
+#   2b. Bundle weight (#2571). Once the Cloudflare build has finished, the
+#      gzipped client chunks it left in the isolated tree are weighed by the
+#      shared measurer (~/.claude/hooks/lib/bundle-budget.py) against the same
+#      record the global check-bundle-budget.sh hook keeps, and growth past 3%
+#      AND 10 KB refuses the push. Overrides, by the global guard's names:
+#      ACCEPT_BUNDLE_GROWTH=1 (record the new total) and
+#      SKIP_BUNDLE_BUDGET_CHECK=1 (do not weigh this push).
+#
 # Enabled via `git config core.hooksPath .githooks` (the package.json "prepare"
 # script sets this on install). No-ops the merge guard when gh is missing.
 #
@@ -224,5 +232,112 @@ if ! wait "$build_pid"; then
   exit 1
 fi
 build_pid=""
+
+# --- 2b. Bundle weight (#2571) ----------------------------------------------
+#
+# The global pre-push guard (~/.claude/hooks/check-bundle-budget.sh) weighs the
+# client bundle from the build output in the CHECKOUT, and this gate never builds
+# there: the build above happened in $tree, so the checkout's build is always
+# older than the commit being pushed and that guard reports "stale, nothing
+# judged" on every Slate push. It is inert here while reading as installed. So the
+# same measurer is called HERE, against the tree that was just built, with the
+# SAME record file (same state directory default, same --remote key), so the two
+# hooks can never hold two budgets for one repository.
+#
+# It runs after the build's wait and so sits on the critical path, about a second
+# or two per push (a few dozen chunks gzipped once each). That is deliberate: it needs the
+# FINISHED build, so it cannot overlap the build the way lint and the tests do,
+# and it must run before the EXIT trap removes $tree.
+#
+# Every way of not weighing PRINTS that it did not weigh (L98): a silent stand
+# down would be indistinguishable from a pass. A machine without the shared
+# config (no measurer file) is a skip rather than a refusal, because a refusal
+# there has no owner who can satisfy it. python3 absent is the same skip here; the
+# global guard refuses that case by name (L490) on any machine that has it, and
+# runs before this hook does, so this branch is only reached where neither is
+# wired. Anything the measurer itself cannot judge, it says so in its own words
+# and exits 0, which is passed through.
+bundle_budget_check() {
+  if [ "${SKIP_BUNDLE_BUDGET_CHECK:-}" = "1" ]; then
+    echo "bundle-budget: SKIP_BUNDLE_BUDGET_CHECK=1, so this push's client bundle was not weighed and nothing was recorded." >&2
+    return 0
+  fi
+  local measurer="$HOME/.claude/hooks/lib/bundle-budget.py"
+  if [ ! -f "$measurer" ]; then
+    echo "bundle-budget: not weighed. The shared measurer is not on this machine ($measurer is absent, so the global claude-config hooks are not installed here); the client bundle was NOT judged and nothing was recorded." >&2
+    return 0
+  fi
+  if ! command -v python3 >/dev/null 2>&1; then
+    echo "bundle-budget: not weighed. python3 is not on PATH and the measurer runs under it; the client bundle was NOT judged and nothing was recorded." >&2
+    return 0
+  fi
+
+  # Keyed by the remote, never the path, exactly as the global guard keys it: a
+  # worktree and its checkout are one repository with one bundle. Read from the
+  # main checkout's git dir; the isolated tree shares its remotes.
+  local remote head_time state_dir accept out rc
+  # parse-ok: fails SAFE and says so. An unreadable remote becomes the empty
+  # string, which the branch below turns into a printed "not weighed" skip rather
+  # than a budget keyed on nothing; the push goes on, and the line says it was
+  # not judged.
+  remote="$(git -C "$root" remote get-url origin 2>/dev/null || echo '')"
+  if [ -z "$remote" ]; then
+    echo "bundle-budget: not weighed. This repository has no origin remote to key a budget on, so the client bundle was NOT judged." >&2
+    return 0
+  fi
+  # The pushed commit's time, so the freshness check inside the measurer compares
+  # the build just made against the commit it was made from. The build is always
+  # newer here, which is the whole reason this step exists.
+  # parse-ok: fails SAFE and says so. An unreadable time becomes the empty
+  # string, which the case below refuses to weigh against (a guessed time could
+  # read a fresh build as stale) and reports as a printed "not weighed" skip.
+  head_time="$(git show -s --format=%ct "$pushed_sha" 2>/dev/null || echo '')"
+  case "$head_time" in
+    ''|*[!0-9]*)
+      echo "bundle-budget: not weighed. Could not read the pushed commit's time, so whether the build is fresh is unknown and the client bundle was NOT judged." >&2
+      return 0 ;;
+  esac
+  state_dir="${BUNDLE_BUDGET_STATE_DIR:-$HOME/.claude/state/bundle-budget}"
+  # A flag word rather than an array: the Mac's bash 3.2 rejects an empty array
+  # expansion under set -u.
+  accept=""
+  [ "${ACCEPT_BUNDLE_GROWTH:-}" = "1" ] && accept="--accept"
+
+  echo "▶ pre-push: weighing the client bundle the build left in the isolated tree." >&2
+  # `out="$(cmd)"; rc=$?` would die on the assignment under set -e before rc is
+  # read (L612), so the status is taken from the failing branch of `||`.
+  rc=0
+  out="$(python3 "$measurer" --repo "$tree" --head-time "$head_time" \
+    --remote "$remote" --state-dir "$state_dir" $accept 2>&1)" || rc=$?
+
+  case "$rc" in
+    0)
+      # A first record, a pass within the margin, a lowered record, an accepted
+      # growth, or a skip said in the measurer's own words. One line each.
+      [ -n "$out" ] && printf '%s\n' "$out" >&2
+      return 0 ;;
+    2)
+      {
+        echo ""
+        printf '%s\n' "$out"
+        echo ""
+        echo "Find what joined the client bundle (a dependency imported from a client component or"
+        echo "the embed is the usual cause) and keep it off the hot path, then push again."
+        echo "OVERRIDE: if the growth is intended, record the new total and push with:"
+        echo "    ACCEPT_BUNDLE_GROWTH=1 git push ..."
+        echo "To push without judging the bundle at all this once (nothing is recorded):"
+        echo "    SKIP_BUNDLE_BUDGET_CHECK=1 git push ..."
+        echo "BEFORE overriding you MUST explain to the user, in plain non-technical language, WHY"
+        echo "the growth is acceptable here, so they can judge whether it makes sense. Never"
+        echo "override silently."
+        echo ""
+      } >&2
+      exit 1 ;;
+    *)
+      echo "bundle-budget: the measurer could not run (exit $rc), so the client bundle was not judged. It said: ${out:-nothing}" >&2
+      return 0 ;;
+  esac
+}
+bundle_budget_check
 
 exit 0
