@@ -160,9 +160,15 @@ that the budget is small.
 ## Google cannot be reached for an agent
 
 Keys: `sync_failures`, `watch_lapse`, `bookable_blocked:*`, `bookable_unverified:*`,
-`verify_on_book_outage`, `verify_on_book_calendars_read`, `hydration_all_failing`.
+`verify_on_book_outage`, `verify_on_book_calendars_read`, `hydration_all_failing`,
+`pending_event_deletions_refused`.
 
-**What fired it.** A calendar read failed, repeatedly, for one agent or for many.
+**What fired it.** A calendar read failed, repeatedly, for one agent or for many. Or,
+for `pending_event_deletions_refused` (#2577), a queued calendar event DELETE was
+refused with a definitive status, so the drain stopped retrying it on that pass: the
+row sits in `pending_event_deletions` at the give-up count with `last_error` naming the
+kind, and the cancelled meeting is still on that agent's calendar until the account
+below is fixed and the event removed by hand.
 
 **The branch that decides everything** is the failure's classification, and the alert
 carries it (`gone`, `not-provisioned`, `transient`):

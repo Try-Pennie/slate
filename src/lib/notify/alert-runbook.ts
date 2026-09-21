@@ -119,6 +119,9 @@ const FAMILY_BY_KEY: Record<string, AlertFamily> = {
   watch_lapse: "google-cannot-be-reached-for-an-agent",
   bookable_blocked: "google-cannot-be-reached-for-an-agent",
   bookable_unverified: "google-cannot-be-reached-for-an-agent",
+  // #2577: the deletion drain ended rows because Google refused the calendar for
+  // good; the remedy is the gone or not-provisioned branch of the same procedure.
+  pending_event_deletions_refused: "google-cannot-be-reached-for-an-agent",
   verify_on_book_outage: "google-cannot-be-reached-for-an-agent",
   verify_on_book_calendars_read: "google-cannot-be-reached-for-an-agent",
 

@@ -140,6 +140,7 @@ import {
   outboxHandoffRecovery,
   pendingDeletionAlert,
   pendingDeletionRecovery,
+  pendingDeletionRefusedAlert,
   reassignIntentDroppedAlert,
   reconcileFreedAlert,
   reconcileRecreatedAlert,
@@ -2803,6 +2804,11 @@ export function getBookingAdvisorName(
 
 const PENDING_DELETION_ALERT_KEY = "pending_event_deletions";
 const PENDING_DELETION_ALERT_COOLDOWN_MS = 30 * 60 * 1000;
+/** #2577: rows the drain stopped retrying because Google refused the calendar for
+ *  good. An INCIDENT (the retrying is over; there is no state to clear), on its own
+ *  key because its remedy is a person fixing an account, not API health. */
+const PENDING_DELETION_REFUSED_ALERT_KEY = "pending_event_deletions_refused";
+const PENDING_DELETION_REFUSED_ALERT_COOLDOWN_MS = 30 * 60 * 1000;
 
 /** #401: drain the deletion retry queue and alert if any deletion is stuck. */
 export async function processPendingEventDeletions(limit: number) {
@@ -2810,6 +2816,23 @@ export async function processPendingEventDeletions(limit: number) {
   // failed worklist read aborts the tick and announces no recovery, for this sweep
   // and its two siblings below.
   const res = await orchestration.processPendingEventDeletions(realDeps(), limit);
+  if (res.refused.length > 0) {
+    // #2577: ended on this pass, never retried again, so the copy names who has to
+    // fix each account. Kept apart from `stuck` below in both directions: a refused
+    // row never feeds the stuck page, and never holds its recovery back.
+    const refusedText = pendingDeletionRefusedAlert(
+      res.refused.map((r) => ({
+        calendarEmail: r.row.calendar_email,
+        eventId: String(r.row.gcal_event_id),
+        kind: r.kind,
+      })),
+    );
+    await sendThrottledAlert(
+      PENDING_DELETION_REFUSED_ALERT_KEY,
+      PENDING_DELETION_REFUSED_ALERT_COOLDOWN_MS,
+      refusedText,
+    ).catch(() => {});
+  }
   if (res.stuck.length > 0) {
     await sendThrottledAlert(
       PENDING_DELETION_ALERT_KEY,
