@@ -37,7 +37,8 @@ assert(
 );
 
 // The policy must NOT itself carry a content CSP that could break app scripts;
-// only frame-ancestors is set (a full content-CSP is a separate effort).
+// only frame-ancestors is set (the script policy is served report only from
+// `src/lib/csp.ts`, #2565; enforcing it is #2575).
 assert(
   !/script-src|default-src/.test(SECURITY_HEADERS["Content-Security-Policy"] ?? ""),
   "CSP is frame-ancestors only (no script/default-src that could break the app)",

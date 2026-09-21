@@ -44,8 +44,9 @@ create unique index pending_event_deletions_uniq
 - `booking_id` nullable + `on delete set null` — the rollback site has no row,
   and a booking row may be purged independently.
 - Migration numbering: this branch (off `origin/main`) uses **0044**. The parked
-  #392 branch also created a 0044 — whichever merges second must renumber to 0045
-  (tracked in the #392 ledger/memory).
+  #392 branch also created a 0044; it merged second (PR #406) and renumbered to
+  0045, so the tree holds `0044_pending_event_deletions.sql` and
+  `0045_bookings_list_indexes.sql`.
 - Server-only table; RLS default-deny (no client access needed). Add the standard
   `set_updated_at` trigger if the table is expected to be UPDATEd (it is — on
   retry).

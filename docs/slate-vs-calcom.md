@@ -9,9 +9,13 @@ build of the precomputed availability work (PR #256 and the validation spike
 that preceded it, June 2026). Where a number comes from that work it is labelled
 with its source. A fresh production benchmark was **not** re-run at the time this
 document was written, so before any figure is quoted outside the company it
-should be re-measured against production (issue #246 tracks turning the one-off
-spike into a committed, repeatable benchmark; until that lands nothing automated
-protects these numbers from regression).
+should be re-measured against production. No repeatable wall-clock benchmark was
+ever committed: #246 asked for one and was closed as superseded on 2026-07-22,
+because a timing threshold is a flaky check by construction. What protects these
+numbers from regression is the deterministic hot path guard from #240
+(`slot-cache.test.ts` asserts a warm read never recomputes, and
+`scripts/test-availability-hot-path.ts` fails if the route slips onto a live
+compute path); roster scale was covered by the 200 agent load soak (#440).
 
 ---
 
@@ -150,10 +154,12 @@ infrastructure was added.
   real measurements from the June 2026 work, sourced as above. They are **not**
   freshly re-measured as of this document's writing.
 - Before quoting any of these outside the company, **re-run the benchmark against
-  current production**. Issue #246 tracks committing a repeatable cold plus warm
-  benchmark (against a Cal.com baseline) so this stops being a one off spike;
-  until it lands, no automated test guards the win and a regression to per request
-  compute would pass every current test (noted in #246 and #240).
+  current production**. A committed cold plus warm benchmark against a Cal.com
+  baseline was asked for in #246 and never built: it closed as superseded on
+  2026-07-22, since a wall-clock budget is a flaky check and would duplicate the
+  `scripts/loadtest/` harness. The win is guarded deterministically instead
+  (#240): a regression to per request compute fails
+  `scripts/test-availability-hot-path.ts` rather than a timing threshold.
 - Treat any figure not labelled with a source above as **unverified**.
 
 ---

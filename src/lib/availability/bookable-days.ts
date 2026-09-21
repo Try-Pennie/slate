@@ -19,8 +19,9 @@
  * ## The cost, which is why the search is bounded
  *
  * Per-bucket recompute is roughly super-linear in the window (`booking/settings.ts`
- * records this as the reason a 14 day horizon was deferred pending a 200 agent load
- * soak). An unbounded walk would let one long closure blow up the recompute lane,
+ * records this as the reason the cap is 7 and a 14 day horizon was never adopted,
+ * even after the 200 agent load soak passed, #440). An unbounded walk would let one
+ * long closure blow up the recompute lane,
  * which four every-minute lanes share. So the allowance is a few days: enough to
  * clear a weekend, not enough to clear a fortnight's shutdown. Across a closure
  * longer than that the honest answer is fewer days, not a bigger bill.
@@ -45,7 +46,8 @@ import { DateTime } from "luxon";
  * answer is fewer days rather than a bigger bill on every pass forever.
  *
  * Do not raise this without re-measuring. `booking/settings.ts` records that a 14
- * day horizon was already deferred pending a 200 agent load soak for this reason.
+ * day horizon was never adopted for this reason, even after the 200 agent load soak
+ * passed (#440), and that the offered window stays at four days (#2360).
  */
 export const MAX_CLOSED_RUN_DAYS = 2;
 

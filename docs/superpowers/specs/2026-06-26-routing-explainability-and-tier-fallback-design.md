@@ -61,7 +61,7 @@ A new **persisted** table (working name `routing_decisions`), written on every
 real routing decision (not previews). It must answer "why this agent, and why
 not the others" indefinitely.
 
-Recorded per decision (final field list deferred to the plan):
+Recorded per decision (the plan, `2026-06-26-routing-explainability.md`, holds the final field list):
 - Raw XBC received + resolved bucket code + resolved criteria.
 - The candidate pool, each agent with an **include/exclude reason**: not on
   team (criteria miss), not bookable, deactivated, OOO/busy, daily-cap hit, no
@@ -183,7 +183,9 @@ on it. Out of scope here — this build only *emits* the stamp.
    deep cascade is near-impossible under normal load and therefore a strong
    anomaly signal.
 3. ~~Regal handoff~~ — **resolved 2026-06-26:** separate Regal-side task,
-   tracked in #492. Out of scope for this build (Slate only stamps the signal).
+   done under #492 (closed 2026-07-16: PR #776 stamps `slateTierFallback` on every
+   Regal event and Dan gated the Regal journey on it). Out of scope for this build
+   (Slate only stamps the signal).
 4. ~~`routing_decisions` retention~~ — **resolved 2026-06-26:** time-boxed
    prune, delete whole rows older than **12 months** (scheduled cleanup, e.g.
    the existing cron). Anything older than a year is not worth investigating.
