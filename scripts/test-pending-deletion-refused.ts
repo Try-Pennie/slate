@@ -220,6 +220,27 @@ function queue(rows: PendingEventDeletion[], failWith: (email: string) => unknow
   assert(gone.includes("event ids evt-2, evt-3"), `copy: one calendar's events are grouped, got "${gone}"`);
   eq(gone.split("left@x.com").length - 1, 1, "copy: a calendar with several events is named once");
 
+  // Plurals about ACCOUNTS follow the number of distinct calendars, never the
+  // number of deletions: one departed agent queues one deletion per cancelled
+  // meeting, so "fix the accounts below" over a single named calendar sends the
+  // reader hunting for a second account that is not there.
+  assert(gone.includes("fixes the account below"), `copy: one calendar, several deletions, is one account, got "${gone}"`);
+  assert(/re-authenticate the account/i.test(gone), `copy: one gone calendar says the account, got "${gone}"`);
+  assert(!/accounts/.test(gone), `copy: one calendar never reads as accounts, got "${gone}"`);
+
+  const twoGone = pendingDeletionRefusedAlert([
+    { calendarEmail: "left@x.com", eventId: "evt-2", kind: "gone" },
+    { calendarEmail: "revoked@x.com", eventId: "evt-3", kind: "gone" },
+  ]);
+  assert(twoGone.includes("fixes the accounts below"), `copy: two calendars are two accounts, got "${twoGone}"`);
+  assert(/re-authenticate each account/i.test(twoGone), `copy: two gone calendars say each account, got "${twoGone}"`);
+
+  const twoProvisioning = pendingDeletionRefusedAlert([
+    { calendarEmail: "a@x.com", eventId: "evt-4", kind: "not-provisioned" },
+    { calendarEmail: "a@x.com", eventId: "evt-5", kind: "not-provisioned" },
+  ]);
+  assert(twoProvisioning.includes("give this account"), `copy: one unprovisioned calendar is this account, got "${twoProvisioning}"`);
+
   const both = pendingDeletionRefusedAlert([
     { calendarEmail: "new-hire@x.com", eventId: "evt-1", kind: "not-provisioned" },
     { calendarEmail: "left@x.com", eventId: "evt-2", kind: "gone" },
@@ -236,7 +257,7 @@ function queue(rows: PendingEventDeletion[], failWith: (email: string) => unknow
   );
   assert(many.includes("and 3 more"), `copy: caps the event ids named per calendar, got "${many}"`);
   assert(!many.includes("evt-5"), "copy: the capped ids are not all listed");
-  for (const text of [one, gone, both, many]) {
+  for (const text of [one, gone, both, many, twoGone, twoProvisioning]) {
     assert(!/undefined|NaN|\[object Object\]/.test(text), "copy: nothing leaks");
     assert(!new RegExp("[\\u2013\\u2014]").test(text), "copy: no dashes as punctuation");
   }
