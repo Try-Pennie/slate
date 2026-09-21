@@ -185,20 +185,46 @@ export function parseCancelQuery(
   params: URLSearchParams,
   allowedCancel: ReasonOption[],
 ): CancelParseResult {
-  const bookingId = (params.get("bookingId") ?? "").trim();
+  return parseCancelFields((name) => params.get(name), allowedCancel);
+}
+
+/**
+ * The same cancel, carried in a JSON body (#2591, POST /api/bookings/cancel), for a
+ * caller that cannot send DELETE: a Regal journey's webhook step offers GET, POST,
+ * PUT and PATCH only. Only a string counts as a value. A number or an object in an
+ * id field reads as ABSENT rather than being stringified into something that might
+ * match a booking.
+ */
+export function parseCancelBody(body: unknown, allowedCancel: ReasonOption[]): CancelParseResult {
+  if (typeof body !== "object" || body === null || Array.isArray(body)) {
+    return { ok: false, status: 400, error: "body must be a JSON object" };
+  }
+  const fields = body as Record<string, unknown>;
+  return parseCancelFields((name) => {
+    const v = fields[name];
+    return typeof v === "string" ? v : null;
+  }, allowedCancel);
+}
+
+/** The one rule both carriers share, so the query form and the body form cannot drift. */
+function parseCancelFields(
+  read: (name: "bookingId" | "externalId" | "salesforceId" | "reason" | "reasonDetail") => string | null,
+  allowedCancel: ReasonOption[],
+): CancelParseResult {
+  const bookingId = (read("bookingId") ?? "").trim();
   if (!bookingId) {
     return { ok: false, status: 400, error: "bookingId is required" };
   }
-  const externalId = (params.get("externalId") ?? "").trim() || null;
-  const salesforceId = (params.get("salesforceId") ?? "").trim() || null;
+  const externalId = (read("externalId") ?? "").trim() || null;
+  const salesforceId = (read("salesforceId") ?? "").trim() || null;
   if (!externalId && !salesforceId) {
     return { ok: false, status: 400, error: "externalId or salesforceId is required" };
   }
 
   let reason: ValidatedReason | null = null;
-  const reasonCode = (params.get("reason") ?? "").trim();
+  const reasonCode = (read("reason") ?? "").trim();
   if (reasonCode) {
-    const v = validateReason({ code: reasonCode, detail: params.get("reasonDetail") }, allowedCancel);
+    const v = validateReason({ code: reasonCode, detail: read("reasonDetail") }, allowedCancel);
     if (!v.ok) return { ok: false, status: 400, error: v.error };
     reason = v.reason;
   }
