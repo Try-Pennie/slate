@@ -6,7 +6,7 @@ import { DateTime } from "luxon";
 import ManageBooking from "@/components/ManageBooking";
 import { RESCHEDULE_REASONS, CANCEL_REASONS } from "@/lib/booking/core";
 import { NEAREST_TIMES_COPY } from "@/lib/booking/booker-copy";
-import { RESCHEDULE_COPY, movedNote } from "@/lib/booking/manage-copy";
+import { RESCHEDULE_COPY, LIVE_COPY, DONE_COPY, movedNote } from "@/lib/booking/manage-copy";
 
 // Regression coverage for the booker hardening (#168): cancel must use an
 // in-DOM confirm (not native confirm()) and surface a failed POST instead of
@@ -515,16 +515,31 @@ describe("ManageBooking", () => {
         .toUTC()
         .toISO()!;
 
-    it("computes the countdown from the booking time rather than a fixed value", () => {
+    it("heads the page with the booking's state, not with facts it states below", () => {
+      // REPLACES the countdown heading (#2601). Dan, 2026-09-22, on "Tony, in
+      // three days": "i hate this". It was built from the advisor and the date,
+      // both of which the page already carries, so it was a duplication rather
+      // than only a wording (L605).
       mockFetch({});
-      const { unmount } = render(
-        <ManageBooking {...baseProps} startsAt={inDays(0)} />,
-      );
-      expect(screen.getByRole("heading", { level: 2 }).textContent).toBe("Aisha, today");
+      render(<ManageBooking {...baseProps} startsAt={inDays(3)} />);
+
+      expect(screen.getByRole("heading", { level: 1 }).textContent).toBe(LIVE_COPY.heading);
+      expect(screen.queryByText(/in three days/)).toBeNull();
+    });
+
+    it("spells the booking's own time, with the year, from the time it currently holds", () => {
+      // What the countdown test was really protecting: the page reads the
+      // booking's CURRENT time, so a reschedule moves it. With the year, like
+      // every other readback of a committed time (#2205, #2579, L118).
+      mockFetch({});
+      const { unmount } = render(<ManageBooking {...baseProps} startsAt={inDays(0)} />);
+      const today = DateTime.now().setZone(DISPLAY_ZONE);
+      expect(screen.getByText(new RegExp(String(today.year)))).toBeTruthy();
       unmount();
 
       render(<ManageBooking {...baseProps} startsAt={inDays(3)} />);
-      expect(screen.getByRole("heading", { level: 2 }).textContent).toBe("Aisha, in three days");
+      const then = DateTime.now().setZone(DISPLAY_ZONE).plus({ days: 3 });
+      expect(screen.getByText(new RegExp(then.toFormat("MMMM d")))).toBeTruthy();
     });
 
     // Coverage reassignment and bulk reassign both move a booking, so the name is
@@ -534,8 +549,49 @@ describe("ManageBooking", () => {
       mockFetch({});
       render(<ManageBooking {...baseProps} startsAt={inDays(2)} advisorName="Bea Cover" />);
       expect(screen.getByText("Bea Cover")).toBeTruthy();
-      expect(screen.getByRole("heading", { level: 2 }).textContent).toMatch(/^Bea, /);
       expect(screen.queryByText("Aisha Bello")).toBeNull();
+    });
+
+    it("states what, when and who as labelled rows", () => {
+      mockFetch({});
+      render(<ManageBooking {...baseProps} />);
+
+      expect(screen.getByText(LIVE_COPY.whatLabel)).toBeTruthy();
+      expect(screen.getByText(LIVE_COPY.whenLabel)).toBeTruthy();
+      expect(screen.getByText(LIVE_COPY.youLabel)).toBeTruthy();
+      expect(screen.getByText(baseProps.eventName)).toBeTruthy();
+      expect(screen.getByText(baseProps.attendeeEmail)).toBeTruthy();
+    });
+
+    it("keeps what and when on a booking that is over, rather than dropping them", () => {
+      // Caught by LOOKING at the render rather than by a test: the first cut had
+      // these rows on the live state only, so a cancelled page said it was
+      // cancelled and nothing else. The prior design deliberately kept the time
+      // on screen, and the reader opened the page to check exactly that.
+      mockFetch({});
+      render(<ManageBooking {...baseProps} status="cancelled" />);
+
+      expect(screen.getByText(LIVE_COPY.whatLabel)).toBeTruthy();
+      expect(screen.getByText(LIVE_COPY.whenLabel)).toBeTruthy();
+      expect(screen.getByText(baseProps.eventName)).toBeTruthy();
+    });
+
+    it("marks the booking as booked only while it IS booked", () => {
+      mockFetch({});
+      const live = render(<ManageBooking {...baseProps} />);
+      // The tick sits on the advisor's face. A tick over a cancelled call would
+      // contradict the heading directly under it.
+      expect(live.container.querySelectorAll("svg").length).toBeGreaterThan(0);
+      const liveMark = live.container.querySelector(".rounded-full.border-2");
+      expect(liveMark).not.toBeNull();
+      live.unmount();
+
+      const dead = render(<ManageBooking {...baseProps} status="cancelled" />);
+      expect(dead.container.querySelector(".rounded-full.border-2")).toBeNull();
+      dead.unmount();
+
+      const over = render(<ManageBooking {...baseProps} status="completed" />);
+      expect(over.container.querySelector(".rounded-full.border-2")).toBeNull();
     });
 
     it("shows the advisor's photo when there is one", () => {
@@ -582,14 +638,17 @@ describe("ManageBooking", () => {
       render(
         <ManageBooking {...baseProps} startsAt={inDays(2)} advisorName={null} advisorRole={null} />,
       );
-      // No placeholder standing in for the missing name, and no stray comma left
-      // behind in the heading where it would have gone.
-      // "Your advisor will call you at ..." is the intended impersonal line and is
-      // asserted below; what must never appear is a stand-in for the NAME.
+      // No placeholder standing in for the missing name. "Your advisor will call
+      // you at ..." is the intended impersonal line and is asserted below; what
+      // must never appear is a stand-in for the NAME.
       expect(screen.queryByText(/\b(unknown|not set|unassigned|n\/a|tbc|advisor name)\b/i)).toBeNull();
-      const heading = screen.getByRole("heading", { level: 2 }).textContent ?? "";
-      expect(heading.startsWith(",")).toBe(false);
-      expect(heading).toMatch(/^(today|tomorrow|in \w+ days)$/);
+      // The heading says the state, which is knowable whoever the advisor is, so
+      // it can no longer be a half sentence with the name missing out of it.
+      expect(screen.getByRole("heading", { level: 1 }).textContent).toBe(LIVE_COPY.heading);
+      // And the face goes with the name: an initials circle with nothing in it is
+      // worse than no circle.
+      expect(document.querySelector("img")).toBeNull();
+      expect(screen.queryByText(baseProps.advisorRole)).toBeNull();
       // The rest of the page still works: the phone line never names anybody.
       expect(screen.getByText(/Your advisor will call you at/)).toBeTruthy();
     });
@@ -629,10 +688,13 @@ describe("ManageBooking", () => {
 
     it("marks the time cancelled rather than dropping it, and offers a way back", () => {
       mockFetch({});
-      const { container } = render(<ManageBooking {...baseProps} status="cancelled" />);
-      const hero = container.querySelector("[data-hero-time]");
-      expect(hero?.className).toContain("line-through");
+      render(<ManageBooking {...baseProps} status="cancelled" />);
+      // The time is still ON the page rather than dropped, and marked in words
+      // beside it: colour is never the only carrier of a state (L20).
       expect(screen.getByText("Cancelled")).toBeTruthy();
+      expect(screen.getByRole("heading", { level: 1 }).textContent).toBe(
+        DONE_COPY.cancelledHeading,
+      );
       expect(screen.getByRole("link", { name: /book a new time/i })).toBeTruthy();
     });
 

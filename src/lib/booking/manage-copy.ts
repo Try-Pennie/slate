@@ -59,9 +59,29 @@ export const NOT_FOUND_COPY = {
 // --- the live booking ---------------------------------------------------------
 
 export const LIVE_COPY = {
-  /** Used when neither the advisor's first name nor a countdown can be built, so
-   *  the heading is never empty and never a half sentence. */
-  headingFallback: "Your call",
+  /**
+   * The heading (#2601).
+   *
+   * It says the booking's STATE. What it replaced was built from the advisor's
+   * first name and a countdown ("Tony, in three days"), which Dan objected to on
+   * 2026-09-22 and which was made entirely of two facts the page already carries,
+   * the advisor and the date, so it was a duplication rather than only a wording
+   * somebody disliked (L605).
+   *
+   * It needs no fallback, unlike the pair it replaces: a state is always known,
+   * where a name and a countdown each had a way of being unresolvable.
+   */
+  heading: "Your call is booked",
+  /** The labels on the detail rows. Named here rather than inline so the preview
+   *  can show them and so they cannot drift from the order they render in.
+   *
+   *  The third is "You" rather than "Who": the advisor is named in the header, so
+   *  a row labelled Who whose only value is the lead answers a question the page
+   *  has already half answered somewhere else, and reads as though somebody is
+   *  missing from it. */
+  whatLabel: "What",
+  whenLabel: "When",
+  youLabel: "You",
   /** No pronoun: see the header. */
   changeYourPlans: "If your plans change, you can move it or cancel it.",
   reschedule: "Reschedule",
@@ -89,10 +109,13 @@ export function advisorWillCall(phone: string | null): string {
   return `Your advisor will call you at ${phone ?? "the number you gave us"}.`;
 }
 
-/** The heading: the advisor's first name and the countdown, whichever resolved.
- *  The name is DROPPED when unresolvable rather than replaced with a placeholder. */
-export function liveHeading(advisorFirstName: string | null, countdown: string | null): string {
-  return [advisorFirstName, countdown].filter(Boolean).join(", ") || LIVE_COPY.headingFallback;
+/**
+ * When the call is, spelled the way every other readback of a committed time on
+ * this product spells it: with the year (#2205, L118). The manage page was the
+ * one surface still leaving it off (#2579), which this closes.
+ */
+export function callWhen(longDay: string, time: string, durationMin: number): string {
+  return `${longDay} at ${time} (${durationMin} minutes)`;
 }
 
 // --- correcting the number ----------------------------------------------------
