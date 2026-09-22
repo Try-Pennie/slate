@@ -13,6 +13,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 const service = vi.hoisted(() => ({
   getBookingByToken: vi.fn(),
   getBookingAdvisorName: vi.fn(async () => null as string | null),
+  getBookingAdvisorPhoto: vi.fn(async () => null as string | null),
 }));
 const loadReasonOptions = vi.hoisted(() =>
   vi.fn(async () => ({
@@ -74,6 +75,9 @@ describe("manage page advisor wiring (#1338)", () => {
   it("resolves the advisor from the booking's CURRENT assignee", async () => {
     await renderPage();
     expect(service.getBookingAdvisorName).toHaveBeenCalledWith("user-current");
+    // #2600: the face and the name must come from the SAME assignee, or a
+    // reassigned booking shows one advisor's photo above another's name.
+    expect(service.getBookingAdvisorPhoto).toHaveBeenCalledWith("user-current");
   });
 
   it("hands the page the live name, never the name stamped on the booking", async () => {
@@ -112,5 +116,6 @@ describe("manage page advisor wiring (#1338)", () => {
     service.getBookingByToken.mockResolvedValue(null);
     await renderPage();
     expect(service.getBookingAdvisorName).not.toHaveBeenCalled();
+    expect(service.getBookingAdvisorPhoto).not.toHaveBeenCalled();
   });
 });

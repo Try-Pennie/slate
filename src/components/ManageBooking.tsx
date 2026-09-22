@@ -62,6 +62,14 @@ interface ManageBookingProps {
    *  reassignment and bulk reassign both move a booking, so a stale or borrowed
    *  name would promise a lead one person and send another (L75). */
   advisorName: string | null;
+  /**
+   * The advisor's Workspace photo (#2600), resolved live server side beside the
+   * name. Null for every way it can be unavailable, and there are several that a
+   * lead has no reason to tell apart: no assignee, no address on file, a refused
+   * directory, and an agent who simply has no photo. All of them draw the
+   * initials circle, which is a correct picture rather than an empty frame.
+   */
+  advisorPhotoUrl?: string | null;
   /** The advisor's lead-facing title, shown under the name. Null hides the line. */
   advisorRole: string | null;
   /** Active reschedule/cancel reason options, resolved from the store server-side
@@ -112,6 +120,7 @@ export default function ManageBooking({
   attendeePhone,
   attendeeEmail,
   advisorName,
+  advisorPhotoUrl,
   advisorRole,
   rescheduleReasons,
   cancelReasons,
@@ -187,6 +196,9 @@ export default function ManageBooking({
    * matches the booker's own move flow rather than differing from it for no
    * reason anybody chose.
    */
+  /** The photo was served and the browser could not draw it. Server side this is
+   *  unknowable, so it is the client's own fallback to the initials. */
+  const [photoBroken, setPhotoBroken] = useState(false);
   const [selectedIso, setSelectedIso] = useState<string | null>(null);
   /** What `validateReason` refused on the last attempt at each action. */
   const [reschedReasonError, setReschedReasonError] = useState<string | null>(null);
@@ -437,12 +449,30 @@ export default function ManageBooking({
             <div className="order-2 px-6 pb-5 pt-5 md:order-none md:col-start-1 md:row-start-3 md:border-r md:border-border">
               {advisorName && (
                 <div className="flex items-center gap-3 border-t border-border pt-5">
-                  <span
-                    className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[var(--bg-alt)] text-[11px] font-semibold text-fg"
-                    aria-hidden="true"
-                  >
-                    {initialsOf(advisorName)}
-                  </span>
+                  {/* The photo when there is one, and the initials behind every
+                      way there is not. `photoBroken` is the case a server render
+                      cannot see: the URL was good when the page was built and the
+                      browser could not fetch it, which without this leaves a
+                      broken image icon where a face should be. */}
+                  {advisorPhotoUrl && !photoBroken ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img
+                      src={advisorPhotoUrl}
+                      alt=""
+                      aria-hidden="true"
+                      width={32}
+                      height={32}
+                      onError={() => setPhotoBroken(true)}
+                      className="h-8 w-8 shrink-0 rounded-full object-cover"
+                    />
+                  ) : (
+                    <span
+                      className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[var(--bg-alt)] text-[11px] font-semibold text-fg"
+                      aria-hidden="true"
+                    >
+                      {initialsOf(advisorName)}
+                    </span>
+                  )}
                   <span>
                     <span className="block text-sm font-semibold text-fg">{advisorName}</span>
                     {advisorRole && (

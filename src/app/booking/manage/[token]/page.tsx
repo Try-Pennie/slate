@@ -2,7 +2,11 @@ import ManageBooking from "@/components/ManageBooking";
 import ManageNotFound from "@/components/ManageNotFound";
 import StandaloneTheme from "@/components/StandaloneTheme";
 import LegalFooter from "@/components/LegalFooter";
-import { getBookingByToken, getBookingAdvisorName } from "@/lib/booking/service";
+import {
+  getBookingByToken,
+  getBookingAdvisorName,
+  getBookingAdvisorPhoto,
+} from "@/lib/booking/service";
 import { loadReasonOptions } from "@/lib/booking/reason-options";
 
 export const dynamic = "force-dynamic";
@@ -41,6 +45,12 @@ export default async function ManagePage({
   const advisorName = found
     ? await getBookingAdvisorName(found.booking.assigned_user_id ?? null)
     : null;
+  // #2600: read live beside the name, for the same reason. Null on every way it
+  // can be unavailable, and the component draws the initials circle then, so
+  // this can never hold the page up or leave an empty frame.
+  const advisorPhotoUrl = found
+    ? await getBookingAdvisorPhoto(found.booking.assigned_user_id ?? null)
+    : null;
 
   // #706: paint the theme at the document root so dark renders don't leave a
   // beige gutter behind the content card. Always standalone (never embedded).
@@ -67,6 +77,7 @@ export default async function ManagePage({
         attendeePhone={found.booking.attendee_phone ?? null}
         attendeeEmail={found.booking.attendee_email ?? null}
         advisorName={advisorName}
+        advisorPhotoUrl={advisorPhotoUrl}
         advisorRole={ADVISOR_ROLE}
         rescheduleReasons={reasonOptions.reschedule.active}
         cancelReasons={reasonOptions.cancel.active}
