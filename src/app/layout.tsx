@@ -4,6 +4,9 @@ import "./globals.css";
 import { themeBootScript, DEFAULT_THEME_PREFERENCE, resolveTheme } from "@/lib/theme/boot";
 
 export const metadata: Metadata = {
+  // og:image has to be an absolute URL, and with no base Next fills in
+  // localhost, so a pasted link would unfurl with no picture at all.
+  metadataBase: new URL("https://slate.trypennie.app"),
   title: "Slate",
   description: "Scheduling and booking for Pennie.",
 };
