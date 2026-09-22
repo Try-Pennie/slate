@@ -137,6 +137,14 @@ if (outboxActionAdd) {
     "#759: the swap is told WHICH intent row to stamp, rather than assuming the event id matches",
   );
 
+  // #2617: a reassign hands the same call to another advisor, so the swap must not
+  // write status at all. Stamping 'rescheduled' counted every owner hand-back as the
+  // lead moving their call, on every surface that reads status.
+  assert(
+    !/\bstatus\s*=/i.test(fn),
+    "#2617: reassign_booking_swap leaves the booking status as it found it",
+  );
+
   // #789: the 6-arg overload 0069 had to leave behind (the deployed code still called
   // it mid-rollout) must not outlive that rollout. It still WORKS, and it silently does
   // NOT stamp the intent, so any caller that reached it again would quietly reinstate

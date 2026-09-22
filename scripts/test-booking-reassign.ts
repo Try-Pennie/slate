@@ -25,6 +25,25 @@ import {
 const { assert, finish } = createAsserter();
 
 async function run() {
+  // --- #2617: a reassign leaves the status alone ---------------------------
+  // "rescheduled" is read everywhere as "the lead moved their call". A reassign
+  // hands the SAME call to another advisor and the lead never touched it, so the
+  // status must come out exactly as it went in, in both directions: a confirmed
+  // booking stays confirmed, and one the lead really did move stays rescheduled.
+  for (const before of ["confirmed", "rescheduled"] as const) {
+    const ctx = { booking: makeBooking({ status: before, reschedule_seq: before === "rescheduled" ? 2 : 0 }), bucket, eventType };
+    const owner = { id: "b", name: "Owner B", email: "b@x.com", bookable: true } as unknown as User;
+    const { deps } = makeDeps({ bookingById: ctx, agentByEmail: owner });
+    const res = await reassignBooking("bk1", "b@x.com", SYS, deps);
+    assert(res.booking.status === before, `#2617: a reassign of a ${before} booking returns it still ${before}`);
+    assert(ctx.booking.status === before, `#2617: and the stored row is still ${before} after the swap`);
+    assert(
+      ctx.booking.reschedule_seq === (before === "rescheduled" ? 2 : 0),
+      `#2617: a reassign of a ${before} booking does not move reschedule_seq`,
+    );
+    assert(res.booking.assigned_user_id === "b", `#2617: while the ${before} booking does move to the new advisor`);
+  }
+
   // --- reassign: force a booking onto an owning agent (double-book allowed) ---
   {
     const ctx = { booking: makeBooking({}), bucket, eventType }; // assigned to "a"@a@x.com
