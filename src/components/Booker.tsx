@@ -1656,7 +1656,21 @@ export default function Booker({
   const timesPanel = (
     <section className={`flex flex-col p-6 ${selectedSlot ? "" : "max-h-[420px]"}`}>
       {selectedSlot ? (
-        <div className="space-y-3">
+        /* The step ARRIVES rather than appearing in the same frame the times
+           left (Dan, 2026-09-22: "clicking the time (like 8am) felt bad. it
+           jumped immediately to the next page. I like the speed but it was
+           jarring"). Nothing is delayed: the animation is on the incoming
+           content, which is interactive from its first frame, so the speed he
+           liked is untouched and only the eye gets something to follow.
+
+           `pn-confirm-enter` rather than a transition invented here, so the
+           booker keeps one vocabulary of motion, and because that keyframe is
+           already opacity and transform ONLY: the embed's ResizeObserver posts
+           scrollHeight, and anything animating height jitters the iframe. The
+           global reduced-motion guard collapses it to the final frame, which is
+           the resting state, so somebody who asked for less motion gets the
+           content instantly. */
+        <div className="pn-confirm-enter space-y-3">
           <button
             onClick={() => setSelectedSlot(null)}
             aria-label="Back to time selection"

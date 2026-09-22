@@ -2340,6 +2340,31 @@ const plainFetch = () =>
   vi.fn(async () => ({ ok: true, json: async () => availability }) as Response) as unknown as typeof fetch;
 
 describe("the booker details step", () => {
+  it("brings the details step in with the product's own entrance, not a jump", async () => {
+    // Dan, 2026-09-22: "clicking the time (like 8am) felt bad. it jumped
+    // immediately to the next page. I like the speed but it was jarring." The
+    // step swapped in the same frame, so there was nothing for the eye to
+    // follow. It is the SHARED entrance rather than one invented here, which is
+    // what keeps the booker to one vocabulary of motion, and it is opacity and
+    // transform only because the embed posts scrollHeight and a height
+    // animation jitters the iframe.
+    global.fetch = vi.fn(async () => ({ ok: true, json: async () => availability })) as never;
+    const { container } = render(<Booker {...baseProps} />);
+    await act(async () => {});
+
+    await userEvent.click(await dayChip());
+    // Nothing is entering yet: the times list is where the lead already was.
+    expect(container.querySelector(".pn-confirm-enter")).toBeNull();
+
+    await userEvent.click(await screen.findByRole("button", { name: /^\d{1,2}:\d{2}/ }));
+
+    const step = container.querySelector(".pn-confirm-enter");
+    expect(step).not.toBeNull();
+    // On the step that arrived, not on the panel around it, or the chrome that
+    // stayed put would animate too and the swap would read as a whole redraw.
+    expect(step!.querySelector("#booker-firstName")).not.toBeNull();
+  });
+
   // #2208: somebody the landing link already identifies is not asked to retype
   // what Slate holds. The server resolves it (`landingAttendee`); what matters
   // here is that it arrives in fields the lead can READ and CHANGE, so an
