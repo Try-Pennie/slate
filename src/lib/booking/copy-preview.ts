@@ -68,9 +68,9 @@ import {
   MANAGE_PHONE_NOT_FOUND,
   PHONE_COPY,
   advisorWillCall,
+  callWhen,
   doneBody,
   doneHeading,
-  liveHeading,
   movedNote,
   phoneSaved,
 } from "@/lib/booking/manage-copy";
@@ -430,9 +430,11 @@ export function bookerCopyScreens(): CopyScreen[] {
         "Someone arriving from the confirmation email. It must answer who is calling " +
         "and on what number without guessing a pronoun for the advisor.",
       lines: [
-        { state: "the advisor and the countdown both resolved", text: liveHeading("Priya", "in 2 days") },
-        { state: "only the countdown resolved", text: liveHeading(null, "in 2 days") },
-        { state: "neither resolved", text: liveHeading(null, null) },
+        { state: "the heading, which says the state rather than the advisor and the date", text: LIVE_COPY.heading },
+        { state: "what the call is", text: LIVE_COPY.whatLabel },
+        { state: "when it is", text: LIVE_COPY.whenLabel },
+        { state: "and when, spelled with the year like every other readback", text: callWhen(DAY_FULL, TIME, 20) },
+        { state: "the lead's own row", text: LIVE_COPY.youLabel },
         { state: "the number we hold", text: advisorWillCall(PHONE) },
         { state: "no number on the booking", text: advisorWillCall(null) },
         { state: "what they can still do", text: LIVE_COPY.changeYourPlans },

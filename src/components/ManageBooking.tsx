@@ -12,7 +12,7 @@ import {
 import { SelectField } from "@/components/ui/SelectField";
 import { validateReason, type ReasonOption } from "@/lib/booking/core";
 import ReasonPicker from "@/components/ReasonPicker";
-import { AlertIcon, ClockIcon, GlobeIcon, XIcon } from "@/components/icons";
+import { AlertIcon, CheckIcon, GlobeIcon, XIcon } from "@/components/icons";
 import { BookerStrip } from "@/components/BookerStrip";
 import { SlotTimes, SLOT_TIMES_CLASSES } from "@/components/SlotTimes";
 import { useSlotPicker } from "@/components/use-slot-picker";
@@ -26,7 +26,6 @@ import { formatSlotTime } from "@/lib/booking/slot-label";
 import { moveToTime } from "@/lib/booking/booker-copy";
 import { BobbingDots } from "@/components/BobbingDots";
 import { usePhoneCaret } from "@/lib/usePhoneCaret";
-import { countdownPhrase, advisorFirstName } from "@/lib/booking/countdown";
 import { UnsavedGuard } from "@/components/ui/UnsavedGuard";
 import {
   BEFORE_COPY,
@@ -36,9 +35,9 @@ import {
   RESCHEDULE_COPY,
   PHONE_COPY,
   advisorWillCall,
+  callWhen,
   doneBody,
   doneHeading,
-  liveHeading,
   movedNote,
   phoneSaved as phoneSaved_,
 } from "@/lib/booking/manage-copy";
@@ -90,7 +89,11 @@ interface ManageBookingProps {
  * fact the other way round (#2221).
  */
 function longDay(iso: string, timeZone: string) {
-  return formatLongDate(DateTime.fromISO(iso, { zone: timeZone })) ?? "";
+  // WITH the year (#2579): every other readback of a committed time on this
+  // product spells it that way, and this page was the one surface leaving it
+  // off, so the same call read two different ways depending which screen you
+  // were on (L118).
+  return formatLongDate(DateTime.fromISO(iso, { zone: timeZone }), { year: true }) ?? "";
 }
 
 /** Time alone, e.g. "10:00am". Lowercase meridiem to match the booker. */
@@ -135,9 +138,6 @@ export default function ManageBooking({
   const [timeZone, setTimeZone] = useState(resolveZone(detectedZone).id);
   const selectOptions = useMemo(() => timezoneOptions(), []);
   const [start, setStart] = useState(startsAt);
-  // Pinned at mount, refreshed when a reschedule lands, so the countdown below is
-  // a pure function of (start, nowMs) rather than of the wall clock mid-render.
-  const [nowMs, setNowMs] = useState(() => Date.now());
   const [status, setStatus] = useState(initialStatus);
   const [rescheduling, setRescheduling] = useState(false);
   // #2215: set ONLY by a move made on this page, and never derived from the
@@ -218,10 +218,6 @@ export default function ManageBooking({
   const done = status === "cancelled" || status === "completed";
   const longDayOf = (iso: string) => longDay(iso, timeZone);
   const timeOf = (iso: string) => timeOnly(iso, timeZone);
-  // Derived from the booking's CURRENT time, so a reschedule moves it. The clock
-  // is read once per mount (and again when a reschedule lands) rather than during
-  // render, which would be an impure read React can re-run unpredictably.
-  const countdown = countdownPhrase(start, nowMs, timeZone);
 
   /** Leave the reschedule panel without moving anything, clearing the reason and
    *  the chosen day so reopening it starts clean. */
@@ -284,7 +280,6 @@ export default function ManageBooking({
       );
       if (ok) {
         setStart(data.startsAt ?? newStart);
-        setNowMs(Date.now());
         // Kept in step with the row the server just wrote. Nothing on this page
         // is shown because of it any more (#2215): what the move says for itself
         // hangs off `moved` below, which only this line can set.
@@ -372,12 +367,14 @@ export default function ManageBooking({
     }
   }
 
-  // The card is sized to its content (about 740px), not to the booker's width:
-  // at the booker's width this column carried ~415px of content and 300px of
-  // nothing. `min-h-dvh bg-bg` keeps the beige gutter behind it.
+  // One column, about 560px (#2601). It was a 740px two column grid whose left
+  // rail carried the event, the time and the advisor while the right carried
+  // everything a lead could DO. Chosen from a rendered comparison of four whole
+  // page options rather than described: Dan picked the booking detail shape
+  // cal.com uses. `min-h-dvh bg-bg` keeps the beige gutter behind it.
   return (
     <div data-theme={theme} className="min-h-dvh bg-bg p-6 text-fg">
-      <div className="mx-auto max-w-[740px]">
+      <div className="mx-auto max-w-[560px]">
         {/* #2215 removed the banner that used to sit here. It was gated on
             `status === "rescheduled"`, which a reschedule writes onto the row
             permanently, so it was a moment rendered from a persistent state:
@@ -386,111 +383,132 @@ export default function ManageBooking({
             here was still on its way. What #1336 put it there for now lives
             beside the actions, driven by the move itself. */}
         <div className="overflow-hidden rounded-2xl border border-border bg-surface shadow-xs">
-          {/* One grid, five blocks. Narrow width has its OWN order (#1338): most
-              people open this from a calendar reminder on a phone, so the time
-              comes first, then the advisor and the actions, then the event
-              detail. Stacking the desktop columns would put the event
-              description between the time and the actions. */}
-          <div className="flex flex-col md:grid md:grid-cols-[300px_1fr]">
-            {/* --- Event identity --- */}
-            <div className="order-4 border-t border-border px-6 py-5 md:order-none md:col-start-1 md:row-start-1 md:border-t-0 md:border-r md:pb-0">
-              <div
-                className="mb-4 flex h-9 w-9 items-center justify-center rounded-full bg-pennie-sky-soft text-xs font-semibold text-fg dark:bg-accent/20"
-                aria-hidden="true"
-              >
-                PE
-              </div>
-              <h1 className="text-base font-semibold leading-snug text-fg">{eventName}</h1>
-            </div>
-
-            {/* --- When --- */}
-            <div className="order-1 px-6 pt-5 md:order-none md:col-start-1 md:row-start-2 md:border-r md:border-border md:pt-4">
-              <p className="text-sm text-fg-muted">{longDayOf(start)}</p>
-              <p
-                data-hero-time
-                className={`mt-0.5 text-[26px] font-semibold leading-tight tabular-nums text-fg ${
-                  status === "cancelled" ? "line-through decoration-2" : ""
-                }`}
-              >
-                {timeOf(start)}
-              </p>
-              {status === "cancelled" && (
-                <p className="mt-1 text-sm font-semibold text-[var(--error)]">Cancelled</p>
-              )}
-              <div className="mt-4 space-y-2 text-sm text-fg">
-                <div className="flex items-center gap-2">
-                  <span className="text-fg-muted">
-                    <ClockIcon width={15} height={15} />
-                  </span>
-                  {durationMin} minutes
-                </div>
-                <div className="flex items-center gap-2">
-                  <span className="text-fg-muted">
-                    <GlobeIcon width={15} height={15} />
-                  </span>
-                  <label htmlFor="manage-tz" className="sr-only">
-                    Timezone
-                  </label>
-                  <SelectField
-                    id="manage-tz"
-                    ariaLabel="Timezone"
-                    value={timeZone}
-                    onChange={setTimeZone}
-                    className="max-w-full"
-                    options={selectOptions.map((o) => ({ value: o.id, label: o.label }))}
-                  />
-                </div>
-              </div>
-            </div>
-
-            {/* --- The advisor. Dropped entirely when unresolvable (L75): a
-                    booking can be reassigned, so no name is better than the
-                    wrong one. --- */}
-            <div className="order-2 px-6 pb-5 pt-5 md:order-none md:col-start-1 md:row-start-3 md:border-r md:border-border">
+          {/* One column, in reading order: who and what state it is in, then the
+              detail, then what a lead can do about it. There is no narrow layout
+              to order separately any more, which is what the two column grid
+              needed five `order-*` rules for. */}
+          <div>
+            {/* --- Who it is with, and what state it is in --- */}
+            <div className="px-6 pb-6 pt-8 text-center">
+              {/* The advisor's face leads, and is dropped entirely when the
+                  advisor cannot be resolved (L75): a booking can be reassigned,
+                  so no face is better than the wrong one. */}
               {advisorName && (
-                <div className="flex items-center gap-3 border-t border-border pt-5">
-                  {/* The photo when there is one, and the initials behind every
-                      way there is not. `photoBroken` is the case a server render
-                      cannot see: the URL was good when the page was built and the
-                      browser could not fetch it, which without this leaves a
-                      broken image icon where a face should be. */}
+                <div className="relative mx-auto mb-4 inline-flex">
                   {advisorPhotoUrl && !photoBroken ? (
                     // eslint-disable-next-line @next/next/no-img-element
                     <img
                       src={advisorPhotoUrl}
                       alt=""
                       aria-hidden="true"
-                      width={32}
-                      height={32}
+                      width={72}
+                      height={72}
                       onError={() => setPhotoBroken(true)}
-                      className="h-8 w-8 shrink-0 rounded-full object-cover"
+                      className="h-18 w-18 rounded-full object-cover"
+                      style={{ width: 72, height: 72 }}
                     />
                   ) : (
                     <span
-                      className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[var(--bg-alt)] text-[11px] font-semibold text-fg"
+                      className="flex items-center justify-center rounded-full bg-[var(--bg-alt)] text-xl font-semibold text-fg"
+                      style={{ width: 72, height: 72 }}
                       aria-hidden="true"
                     >
                       {initialsOf(advisorName)}
                     </span>
                   )}
-                  <span>
-                    <span className="block text-sm font-semibold text-fg">{advisorName}</span>
-                    {advisorRole && (
-                      <span className="block text-xs text-fg-muted">{advisorRole}</span>
-                    )}
-                  </span>
+                  {/* The booked mark, and ONLY while it is booked: a tick over a
+                      cancelled call would contradict the heading under it. Green
+                      rather than sky, because sky is the action colour and this
+                      is not an action; it is also the one mark sky cannot carry
+                      at this size and still pass contrast. */}
+                  {!done && (
+                    <span
+                      className="absolute -bottom-0.5 -right-0.5 flex h-[22px] w-[22px] items-center justify-center rounded-full border-2 border-surface bg-[var(--pennie-green-mark)]"
+                      aria-hidden="true"
+                    >
+                      <CheckIcon width={12} height={12} className="text-white" />
+                    </span>
+                  )}
                 </div>
               )}
+              <h1 className="text-[22px] font-semibold leading-tight text-fg">
+                {done ? doneHeading(status) : LIVE_COPY.heading}
+              </h1>
+              {advisorName && (
+                <p className="mt-1.5 text-sm">
+                  <span className="block font-semibold text-fg">{advisorName}</span>
+                  {advisorRole && <span className="block text-fg-muted">{advisorRole}</span>}
+                </p>
+              )}
             </div>
+            <hr className="border-0 border-t border-border" />
 
-            {/* --- What you are doing --- */}
-            <div className="order-3 px-6 py-5 md:order-none md:col-start-2 md:row-start-1 md:row-span-2">
+            {/* --- What the booking IS. Shown in every state that is not a
+                    panel, because a cancelled call still has a what and a when,
+                    and a page that says only "this is cancelled" has dropped the
+                    thing the reader came to check. --- */}
+            {!rescheduling && !confirmingCancel && (
+              <>
+                <div className="px-6 py-5">
+                {/* The detail, as labelled rows. Each fact appears ONCE
+                    across the whole page (L605), which is what the heading this
+                    replaced did not manage: it was the advisor and the date,
+                    both already here. So the advisor is named in the header and
+                    not again below, and the number lives with the control that
+                    changes it and nowhere else. */}
+                <dl className="grid grid-cols-[64px_1fr] gap-x-5 gap-y-4 text-sm">
+                  <dt className="text-fg-muted">{LIVE_COPY.whatLabel}</dt>
+                  <dd className="text-fg">{eventName}</dd>
+
+                  <dt className="text-fg-muted">{LIVE_COPY.whenLabel}</dt>
+                  <dd className="text-fg">
+                    <span className="tabular-nums">
+                      {callWhen(longDayOf(start), timeOf(start), durationMin)}
+                    </span>
+                    {status === "cancelled" && (
+                      <span className="ml-2 font-semibold text-[var(--error)]">Cancelled</span>
+                    )}
+                    {/* The zone stays a control rather than a label: a lead
+                        reading this on a phone in another state needs to move
+                        the whole page into their own time, not just read ours. */}
+                    <span className="mt-2 flex items-center gap-2">
+                      <span className="text-fg-muted">
+                        <GlobeIcon />
+                      </span>
+                      <label htmlFor="manage-tz" className="sr-only">
+                        Timezone
+                      </label>
+                      <SelectField
+                        id="manage-tz"
+                        ariaLabel="Timezone"
+                        value={timeZone}
+                        onChange={setTimeZone}
+                        className="max-w-full"
+                        options={selectOptions.map((o) => ({ value: o.id, label: o.label }))}
+                      />
+                    </span>
+                  </dd>
+
+                  {attendeeEmail && (
+                    <>
+                      <dt className="text-fg-muted">{LIVE_COPY.youLabel}</dt>
+                      <dd className="text-fg">{attendeeEmail}</dd>
+                    </>
+                  )}
+                </dl>
+                </div>
+                <hr className="border-0 border-t border-border" />
+              </>
+            )}
+
+            {/* --- What you can do about it --- */}
+            <div className="px-6 py-5">
               {done ? (
                 <>
-                  <h2 className="text-base font-semibold text-fg">
-                    {doneHeading(status)}
-                  </h2>
-                  <p className="mt-2 text-sm text-fg-muted">
+                  {/* No heading here: the header above already says which of the
+                      two states this is, and saying it twice is exactly the
+                      duplication this page was rebuilt to remove (L605). */}
+                  <p className="text-sm text-fg-muted">
                     {doneBody(status)}
                   </p>
                   <a
@@ -647,10 +665,7 @@ export default function ManageBooking({
                   {/* Computed at render, so it tracks a reschedule. The advisor's
                       first name is dropped when unresolvable rather than
                       replaced. */}
-                  <h2 className="text-base font-semibold text-fg">
-                    {liveHeading(advisorFirstName(advisorName), countdown)}
-                  </h2>
-                  <p className="mt-2 text-sm text-fg-muted">
+                  <p className="mt-5 text-sm text-fg">
                     {/* No pronoun for the advisor anywhere on this page: nothing
                         on the agent record says how a person wants to be referred
                         to, and a guess misgenders a colleague in front of a
