@@ -538,6 +538,45 @@ describe("ManageBooking", () => {
       expect(screen.queryByText("Aisha Bello")).toBeNull();
     });
 
+    it("shows the advisor's photo when there is one", () => {
+      mockFetch({});
+      const { container } = render(
+        <ManageBooking {...baseProps} advisorPhotoUrl="https://lh3.googleusercontent.com/a/x=s96-c" />,
+      );
+
+      const img = container.querySelector('img[src^="https://lh3.googleusercontent.com"]');
+      expect(img).not.toBeNull();
+      // Decorative: the name is right beside it, so a screen reader announcing
+      // the face as well would say the same fact twice.
+      expect(img!.getAttribute("alt")).toBe("");
+      expect(screen.getByText("Aisha Bello")).toBeTruthy();
+    });
+
+    it("draws the initials when there is no photo", () => {
+      mockFetch({});
+      render(<ManageBooking {...baseProps} advisorPhotoUrl={null} />);
+
+      // Every way a photo can be missing lands here, and none of them is a state
+      // a lead should be able to tell from another: no assignee, no address on
+      // file, a refused directory, or an agent who has never set one.
+      expect(screen.getByText("AB")).toBeTruthy();
+      expect(document.querySelector("img")).toBeNull();
+    });
+
+    it("falls back to the initials when the photo will not load", () => {
+      mockFetch({});
+      const { container } = render(
+        <ManageBooking {...baseProps} advisorPhotoUrl="https://lh3.googleusercontent.com/a/gone=s96-c" />,
+      );
+
+      // The case a server render cannot see: the URL was good when the page was
+      // built and the browser could not fetch it. Without this the lead gets a
+      // broken image icon where a face should be.
+      fireEvent.error(container.querySelector("img")!);
+      expect(screen.getByText("AB")).toBeTruthy();
+      expect(container.querySelector("img")).toBeNull();
+    });
+
     it("renders no name at all when the advisor cannot be resolved", () => {
       mockFetch({});
       render(

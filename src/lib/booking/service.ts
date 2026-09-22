@@ -443,6 +443,7 @@ export {
 import { log } from "@/lib/log";
 import { recordConsecutiveStreak, clearFailureStreak } from "@/lib/notify/streak";
 import { resolveAdvisorName, type AdvisorNameReader } from "@/lib/booking/advisor-name";
+import { resolveAdvisorPhoto, type AdvisorPhotoReader } from "@/lib/booking/advisor-photo";
 export type { BookingResult, CreateBookingInput };
 export type { ExistingCall } from "@/lib/booking/orchestration";
 export type { BookingActor } from "@/lib/booking/core";
@@ -2798,6 +2799,18 @@ export function getBookingAdvisorName(
 ): Promise<string | null> {
   return resolveAdvisorName(
     supabaseAdmin() as unknown as AdvisorNameReader,
+    assignedUserId,
+  );
+}
+
+/** The advisor's Workspace photo (#2600), resolved live beside the name and for
+ *  the same reason: a booking can be reassigned, so a stamped one would show a
+ *  lead the face of somebody who is no longer taking their call. */
+export function getBookingAdvisorPhoto(
+  assignedUserId: string | null,
+): Promise<string | null> {
+  return resolveAdvisorPhoto(
+    supabaseAdmin() as unknown as AdvisorPhotoReader,
     assignedUserId,
   );
 }
