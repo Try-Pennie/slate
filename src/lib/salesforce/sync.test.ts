@@ -960,6 +960,29 @@ expect(bookable.applyBookableByUserId).toHaveBeenCalledWith("u1", true);
     expect(result.bookableFlipped).toEqual([]);
   });
 
+  it("counts Sales agents who are not bookable with no recorded reason (#2621)", async () => {
+    // The transition rule never reaches a row that was already on Sales when it
+    // shipped, and the state also describes a deliberate hold, so it is counted
+    // every run rather than acted on (L389, L636). A Redistribute mark is a
+    // recorded reason, and a pending flip is already reported as pending.
+    store.config.existing = [
+      { id: "u1", email: "missed@x.com", attributes: { role: "Sales", debt_team: ["low"] }, bookable: false, deactivated_at: null, bookable_pending_since: null },
+      { id: "u2", email: "tagged@x.com", attributes: { role: "Sales", debt_team: ["low"], redistribute: "Y" }, bookable: false, deactivated_at: null, bookable_pending_since: null },
+      { id: "u3", email: "fine@x.com", attributes: { role: "Sales", debt_team: ["low"] }, bookable: true, deactivated_at: null, bookable_pending_since: null },
+    ];
+    sfRoster([
+      { Email: "missed@x.com", Name: "Missed", Profile: { Name: "Sales" } },
+      { Email: "tagged@x.com", Name: "Tagged", Profile: { Name: "Sales" } },
+      { Email: "fine@x.com", Name: "Fine", Profile: { Name: "Sales" } },
+    ]);
+
+    const result = await syncSalesforceAgents();
+
+    expect(result.salesNotBookableUnexplained).toBe(1);
+    // Counted, never flipped: flipping would overturn a hold somebody chose.
+    expect(bookable.applyBookableByUserId).not.toHaveBeenCalled();
+  });
+
     it("writes no debt team or backend service of its own, and leaves the ones Twilio wrote alone", async () => {
     // #2152. The Salesforce checkboxes still decide WHO is in scope, and no longer
     // decide what anybody's tiers are: a run that kept writing them would strip

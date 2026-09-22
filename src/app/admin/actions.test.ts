@@ -102,6 +102,7 @@ const syncOutcome = (over: Record<string, unknown> = {}, twilio: unknown = twili
     inserted: 0,
     deactivated: 0,
     createdUntiered: 0,
+    salesNotBookableUnexplained: 0,
     bookableFlipped: [],
     bookablePending: [],
     bookableDeferredToNextRun: [],
@@ -1170,6 +1171,17 @@ describe("syncSalesforceNow (#491, #2071)", () => {
     }
     expect(redirected).toContain("/admin/agents?sync_error=");
     expect(redirected).toContain("already running");
+  });
+
+  it("says how many Sales agents are not bookable with no recorded reason (#2621)", async () => {
+    rosterSync.runRosterSync.mockResolvedValueOnce(syncOutcome({ salesNotBookableUnexplained: 2 }));
+    let redirected = "";
+    try {
+      await syncSalesforceNow();
+    } catch (e) {
+      redirected = decodeURIComponent(String((e as Error).message));
+    }
+    expect(redirected).toContain("2 agents on the Sales profile are not bookable and nothing records why");
   });
 
   // #2071: the three onboarding facts the presser is usually asking about.

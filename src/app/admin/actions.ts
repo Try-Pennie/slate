@@ -406,6 +406,11 @@ export async function syncSalesforceNow(): Promise<void> {
       r.createdUntiered
         ? `${plural(r.createdUntiered, "new hire")} added not yet bookable (not on the Sales profile yet)`
         : null,
+      // #2621: a state only a person can settle, said every run so it cannot sit
+      // silent the way three missed hires did for up to eighteen days.
+      r.salesNotBookableUnexplained
+        ? `${plural(r.salesNotBookableUnexplained, "agent")} on the Sales profile ${r.salesNotBookableUnexplained === 1 ? "is" : "are"} not bookable and nothing records why`
+        : null,
       r.bookableFlipped.length
         ? `${plural(r.bookableFlipped.length, "agent")} made bookable from a first debt team or the Sales profile`
         : null,

@@ -20,6 +20,7 @@ import {
   qualifiesForBooking,
   tieredButNotOnSales,
   planOnboardingFlip,
+  onSalesWithNoRecordedHold,
 } from "@/lib/salesforce/onboarding";
 import { assert, eq, finish } from "./lib/harness.ts";
 
@@ -126,6 +127,23 @@ const live = { bookable: false, deactivated: false, pending: false };
   const a = planOnboardingFlip({ prev: chatter, next: salesLow, ...live });
   const b = planOnboardingFlip({ prev: chatter, next: salesLow, ...live });
   eq(JSON.stringify(a), JSON.stringify(b), "the plan is a pure function of its inputs");
+}
+
+// ---- #2621: on Sales, not bookable, and nothing on record says why ----------
+// The transition rule cannot see a row that was already on Sales when it
+// shipped, and "on Sales and not bookable" is also a deliberate hold, so the sync
+// COUNTS the rows whose hold has no recorded reason rather than flipping them.
+{
+  const sales = { role: "Sales", debt_team: ["low"] };
+  const held = { bookable: false, deactivated: false, pending: false, markedRedistribute: false };
+  assert(onSalesWithNoRecordedHold({ attributes: sales, ...held }), "on Sales, not bookable, no reason: counted");
+  assert(onSalesWithNoRecordedHold({ attributes: { role: "Sales" }, ...held }), "a Sales row with no tier yet is counted too");
+  assert(!onSalesWithNoRecordedHold({ attributes: sales, ...held, bookable: true }), "a bookable agent is not counted");
+  assert(!onSalesWithNoRecordedHold({ attributes: sales, ...held, deactivated: true }), "somebody who left is not counted");
+  assert(!onSalesWithNoRecordedHold({ attributes: sales, ...held, pending: true }), "a pending flip is already reported as pending");
+  assert(!onSalesWithNoRecordedHold({ attributes: sales, ...held, markedRedistribute: true }), "the Redistribute mark IS a recorded reason");
+  assert(!onSalesWithNoRecordedHold({ attributes: { role: "Chatter Free User", debt_team: ["low"] }, ...held }), "off Sales is the tieredNotOnSales count, not this one");
+  assert(!onSalesWithNoRecordedHold({ attributes: null, ...held }), "no attributes is no profile");
 }
 
 finish();
