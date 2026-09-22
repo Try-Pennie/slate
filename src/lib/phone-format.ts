@@ -130,23 +130,22 @@ function formatPhoneNumberAsTyped(value: string): string {
  * the wrong one for a sentence, so the manage page printed "will call you at
  * +16317937858" to essentially every lead who opened it.
  *
- * Only a whole US number with no extension is reformatted. Anything else is shown
- * EXACTLY as stored, trimmed, because the typing formatter caps at ten digits: a
- * foreign or overlong number run through it becomes a different and equally
- * plausible American one, printed after "will call you at", which is worse than
- * the raw form. The server refuses those on every write path today (`isUsPhone`,
- * #1356), so this is the rule for older rows rather than a live path.
+ * EVERY number is put in US form, the same way the field formats it as it is
+ * typed (#2619). Dan, 2026-09-22: "force us format. we should only be getting us
+ * format anyway". Every write path refuses a non-US number (`isUsPhone`, #1356),
+ * and on 2026-09-22 all 2,561 stored numbers were US shaped, so the rest of this
+ * paragraph describes rows that did not exist when it was written. The known
+ * cost: the typing formatter keeps the first ten digits, so a foreign number
+ * would read as a US one nobody will ring (`+44 20 7946 0958` becomes
+ * `(442) 079-4609`), and an extension is dropped, as it is on every other
+ * surface (#1425).
  *
  * Returns null for a blank number, so the caller's own fallback applies instead
  * of a sentence ending in a gap.
  */
 export function formatPhoneForDisplay(value: string | null): string | null {
-  const trimmed = value?.trim() ?? "";
-  if (trimmed === "") return null;
-  if (isUsPhone(trimmed) && !splitPhoneExtension(trimmed).hasExtensionMarker) {
-    return formatPhoneAsTyped(trimmed);
-  }
-  return trimmed;
+  const formatted = formatPhoneAsTyped(value ?? "");
+  return formatted === "" ? null : formatted;
 }
 
 /**
