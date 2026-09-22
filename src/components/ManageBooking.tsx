@@ -21,6 +21,10 @@ import { rescheduleOffersAlternatives } from "@/lib/booking/nearest-slots";
 import { postJson, REQUEST_TIMEOUT_MS } from "@/lib/http";
 import { useStalledAfter } from "@/lib/useStalledAfter";
 import { formatSlotTime } from "@/lib/booking/slot-label";
+// The booker's own sentence for this button, not a second copy of it: both
+// surfaces move a call to a named time and must say it the same way (L41).
+import { moveToTime } from "@/lib/booking/booker-copy";
+import { BobbingDots } from "@/components/BobbingDots";
 import { usePhoneCaret } from "@/lib/usePhoneCaret";
 import { countdownPhrase, advisorFirstName } from "@/lib/booking/countdown";
 import { UnsavedGuard } from "@/components/ui/UnsavedGuard";
@@ -175,14 +179,26 @@ export default function ManageBooking({
   const [reschedDetail, setReschedDetail] = useState("");
   const [cancelReason, setCancelReason] = useState("");
   const [cancelDetail, setCancelDetail] = useState("");
-  const reschedReasonValid = validateReason(
+  /**
+   * The time the lead has TAPPED, which is not the time they have committed to
+   * (Dan, 2026-09-22). A tap on this panel used to move the call outright, which
+   * is why the reason had to be enforced before the tap: there was no later
+   * moment to enforce it at. A tap selects now, so there is one, and the panel
+   * matches the booker's own move flow rather than differing from it for no
+   * reason anybody chose.
+   */
+  const [selectedIso, setSelectedIso] = useState<string | null>(null);
+  /** What `validateReason` refused on the last attempt at each action. */
+  const [reschedReasonError, setReschedReasonError] = useState<string | null>(null);
+  const [cancelReasonError, setCancelReasonError] = useState<string | null>(null);
+  const reschedReasonCheck = validateReason(
     { code: reschedReason, detail: reschedDetail },
     rescheduleReasons,
-  ).ok;
-  const cancelReasonValid = validateReason(
+  );
+  const cancelReasonCheck = validateReason(
     { code: cancelReason, detail: cancelDetail },
     cancelReasons,
-  ).ok;
+  );
 
   // A cancelled OR completed booking is terminal: neither may be rescheduled or
   // cancelled, so both drop the live actions. Only `cancelled` gets the struck
@@ -201,8 +217,38 @@ export default function ManageBooking({
     setRescheduling(false);
     setReschedReason("");
     setReschedDetail("");
+    setSelectedIso(null);
+    setReschedReasonError(null);
     picker.selectDay(null);
     setError(null);
+  }
+
+  /**
+   * Commit the move. The reason is checked HERE rather than by switching the
+   * control off, so the one thing that can explain the refusal is the thing the
+   * lead just pressed (L109). Focus goes to the group, because a message alone
+   * can be off screen on a phone and a screen reader would never reach it.
+   */
+  function commitReschedule() {
+    if (!selectedIso) return;
+    if (!reschedReasonCheck.ok) {
+      setReschedReasonError(reschedReasonCheck.error);
+      document.getElementById(`reschedule-reason-${reschedReason || rescheduleReasons[0]?.code}`)?.focus();
+      return;
+    }
+    setReschedReasonError(null);
+    void reschedule(selectedIso);
+  }
+
+  /** The same rule on the cancel confirm, for the same reason. */
+  function commitCancel() {
+    if (!cancelReasonCheck.ok) {
+      setCancelReasonError(cancelReasonCheck.error);
+      document.getElementById(`cancel-reason-${cancelReason || cancelReasons[0]?.code}`)?.focus();
+      return;
+    }
+    setCancelReasonError(null);
+    void cancel();
   }
 
   async function reschedule(newStart: string) {
@@ -436,15 +482,16 @@ export default function ManageBooking({
                       options={cancelReasons}
                       code={cancelReason}
                       detail={cancelDetail}
-                      onCode={setCancelReason}
-                      onDetail={setCancelDetail}
+                      onCode={(c) => { setCancelReason(c); setCancelReasonError(null); }}
+                      onDetail={(d) => { setCancelDetail(d); setCancelReasonError(null); }}
                       idPrefix="cancel-reason"
+                      error={cancelReasonError}
                     />
                   </div>
                   <div className="mt-4 flex flex-wrap gap-3">
                     <button
-                      onClick={cancel}
-                      disabled={busy || !cancelReasonValid}
+                      onClick={commitCancel}
+                      disabled={busy}
                       className="inline-flex min-h-[44px] items-center justify-center gap-2 rounded-lg bg-[var(--error)] px-5 text-sm font-semibold text-white transition-opacity hover:opacity-90 disabled:opacity-60"
                     >
                       <XIcon width={15} height={15} />
@@ -471,16 +518,13 @@ export default function ManageBooking({
                       options={rescheduleReasons}
                       code={reschedReason}
                       detail={reschedDetail}
-                      onCode={setReschedReason}
-                      onDetail={setReschedDetail}
+                      onCode={(c) => { setReschedReason(c); setReschedReasonError(null); }}
+                      onDetail={(d) => { setReschedDetail(d); setReschedReasonError(null); }}
                       idPrefix="reschedule-reason"
+                      error={reschedReasonError}
                     />
                   </div>
-                  <p className="mb-3 text-sm font-semibold text-fg">
-                    {reschedReasonValid
-                      ? RESCHEDULE_COPY.pickReady
-                      : RESCHEDULE_COPY.pickBlocked}
-                  </p>
+                  <p className="mb-3 text-sm font-semibold text-fg">{RESCHEDULE_COPY.pickReady}</p>
                   {/* The same day strip and times panel the booker runs on
                       (#1336), so a lead moving a call meets the surface they
                       booked on. No time renders until a day is chosen. */}
@@ -504,19 +548,47 @@ export default function ManageBooking({
                     renderSlot={(iso) => (
                       <button
                         key={iso}
-                        disabled={busy || !reschedReasonValid}
+                        disabled={busy}
                         aria-busy={pendingIso === iso}
-                        onClick={() => reschedule(iso)}
+                        // Selected, not activated: the commit below is what moves
+                        // the call. `aria-pressed` is what tells a screen reader
+                        // which of these the lead is holding, since the chosen one
+                        // is otherwise only a colour (L20).
+                        aria-pressed={selectedIso === iso}
+                        onClick={() => setSelectedIso(iso)}
                         className={`min-h-11 rounded-md border px-2 py-2 text-sm tabular-nums transition-colors disabled:opacity-60 ${
                           pendingIso === iso
                             ? "border-fg/45 bg-[var(--bg-alt)] text-fg-muted"
-                            : "border-border bg-surface text-fg hover:border-fg/45"
+                            : selectedIso === iso
+                              ? "border-fg/45 bg-pennie-sky-soft text-fg dark:bg-accent/20"
+                              : "border-border bg-surface text-fg hover:border-fg/45"
                         }`}
                       >
                         {pendingIso === iso ? RESCHEDULE_COPY.moving : formatSlotTime(iso, timeZone)}
                       </button>
                     )}
                   />
+                  {/* Only once there is a time to name. A commit that asks for
+                      nothing is a control with no job (L187 is the opposite case,
+                      and this is the same reasoning): until a time is tapped the
+                      only thing to do here is tap one. */}
+                  {selectedIso && (
+                    <button
+                      onClick={commitReschedule}
+                      disabled={busy}
+                      className="pn-btn pn-btn--primary mt-4 inline-flex min-h-[44px] w-full items-center justify-center gap-2 rounded-lg px-5 text-sm disabled:opacity-60"
+                    >
+                      {busy && <BobbingDots tone="current" />}
+                      {busy
+                        ? RESCHEDULE_COPY.moving
+                        : /* The booker's own short form for this button, built the
+                             same way, so the one sentence both surfaces put on a
+                             move control reads identically on each (L118). */
+                          moveToTime(
+                            `${DateTime.fromISO(selectedIso).setZone(timeZone).toFormat("ccc, LLL d")} at ${formatSlotTime(selectedIso, timeZone)}`,
+                          )}
+                    </button>
+                  )}
                   {/* The only way back out while the panel is open (#1336).
                       Cancel booking is hidden, so an irreversible action is not
                       sitting beside the times a lead is reading. */}

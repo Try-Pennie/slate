@@ -896,9 +896,14 @@ describe("Booker refuses a second booking (#1337)", () => {
     // be undone" about no call in particular.
     expect(document.body.textContent).toContain("This gives up your call on");
 
-    // A reason is mandatory, exactly as it is on the manage page (#326).
+    // A reason is mandatory, exactly as it is on the manage page (#326), and
+    // since #2605 the refusal is said rather than expressed as a dead button.
     const confirm = screen.getByRole("button", { name: BOOKER_CANCEL_COPY.confirm });
-    expect((confirm as HTMLButtonElement).disabled).toBe(true);
+    expect((confirm as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(confirm);
+    expect(screen.getByText("Please choose a reason.")).toBeTruthy();
+    expect(calls).toHaveLength(0);
+
     fireEvent.click(screen.getAllByRole("radio")[0]);
     fireEvent.click(screen.getByRole("button", { name: BOOKER_CANCEL_COPY.confirm }));
 
@@ -1012,11 +1017,22 @@ describe("Booker refuses a second booking (#1337)", () => {
     await fillAndConfirm();
     await screen.findByText("You already have a call booked");
 
+    // REVERSED DELIBERATELY (#2605). The reason is still mandatory and nothing is
+    // sent without one; the refusal is now SPOKEN by the control the lead pressed
+    // rather than expressed by switching that control off, which is the one thing
+    // that could have explained it (L109).
     const move = () => screen.getByRole("button", { name: /^move my call/i }) as HTMLButtonElement;
-    expect(move().disabled).toBe(true);
+    expect(move().disabled).toBe(false);
+
+    await userEvent.click(move());
+    expect(await screen.findByText("Please choose a reason.")).toBeTruthy();
+    expect(
+      (fetchMock as unknown as ReturnType<typeof vi.fn>).mock.calls.some(([u]) =>
+        String(u).includes("/reschedule"),
+      ),
+    ).toBe(false);
 
     await userEvent.click(screen.getByRole("radio", { name: /schedule conflict/i }));
-    expect(move().disabled).toBe(false);
     await userEvent.click(move());
 
     // The move goes through the lead reschedule endpoint the emailed manage link
@@ -1678,6 +1694,46 @@ describe("Booker closure state (#1329, #1339)", () => {
     expect(await screen.findByText(/Our next available days, from /)).toBeTruthy();
     expect(await dayChip()).toBeTruthy();
     expect(screen.queryByRole("button", { name: "See our next available days" })).toBeNull();
+  });
+
+  it("shows the same working cue every other button on this surface shows, while it looks", async () => {
+    // #2604 put the cue inside BookerButton so a call site cannot omit it. This
+    // one hand rolled its own beside the button instead, which worked only
+    // because this variant is not filled: the dots it drew carried the accent,
+    // and a primary button IS the accent, so the day anyone changed this
+    // button's variant the cue would have disappeared into it.
+    let release: (r: Response) => void = () => {};
+    global.fetch = vi.fn(async (url: RequestInfo | URL) => {
+      if (String(url).includes("/next")) {
+        return new Promise<Response>((resolve) => {
+          release = resolve;
+        });
+      }
+      return {
+        ok: true,
+        json: async () => ({
+          ...availability,
+          slots: [],
+          emptyBecause: { kind: "closed", reopensOn: "2026-08-17" },
+        }),
+      } as Response;
+    }) as unknown as typeof fetch;
+    render(<Booker {...baseProps} />);
+
+    const button = await screen.findByRole("button", { name: "See our next available days" });
+    expect(button.querySelector("[data-bob-dots]")).toBeNull();
+
+    await userEvent.click(button);
+
+    const looking = screen.getByRole("button", { name: /looking/i });
+    // Inside the button, from the shared mechanism, alongside the word that
+    // carries it for anyone who cannot see the dots.
+    expect(looking.querySelector("[data-bob-dots]")).not.toBeNull();
+    expect(looking.textContent).toContain(NEXT_DAYS_COPY.looking);
+
+    await act(async () => {
+      release({ ok: true, json: async () => ({ slots: [far().toISOString()] }) } as Response);
+    });
   });
 
   it("still shows no time until one of the revealed days is picked", async () => {

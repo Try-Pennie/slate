@@ -33,7 +33,6 @@ import {
 } from "@/lib/booking/next-days-reply";
 import { getJson, postJson, REQUEST_TIMEOUT_MS } from "@/lib/http";
 import { useStalledAfter } from "@/lib/useStalledAfter";
-import { BobbingDots } from "@/components/BobbingDots";
 import { ConfirmationMark } from "@/components/ConfirmationMark";
 import { messageLines } from "@/lib/booking/slot-picker";
 import {
@@ -698,10 +697,18 @@ export default function Booker({
     }
   }
 
-  const cancelReasonValid = validateReason(
+  /**
+   * Kept whole rather than reduced to `.ok`, because the refusal is SAID now
+   * rather than expressed by switching the button off (#2605, L109). The
+   * sentence is `validateReason`'s own, which the server answers with too, so
+   * one omission cannot be described two ways (L41).
+   */
+  const cancelReasonCheck = validateReason(
     { code: cancelReason, detail: cancelDetail },
     cancelReasons,
-  ).ok;
+  );
+  const [cancelReasonError, setCancelReasonError] = useState<string | null>(null);
+  const [moveReasonError, setMoveReasonError] = useState<string | null>(null);
 
   /**
    * Cancel the call this lead already has (#2167), through the same lead cancel
@@ -734,10 +741,33 @@ export default function Booker({
     }
   }
 
-  const moveReasonValid = validateReason(
+  const moveReasonCheck = validateReason(
     { code: moveReason, detail: moveDetail },
     rescheduleReasons,
-  ).ok;
+  );
+
+  /** Commit the move, saying what is missing rather than sitting there dead. */
+  function commitMove() {
+    if (!selectedSlot) return;
+    if (!moveReasonCheck.ok) {
+      setMoveReasonError(moveReasonCheck.error);
+      document.getElementById(`booker-move-reason-${moveReason || rescheduleReasons[0]?.code}`)?.focus();
+      return;
+    }
+    setMoveReasonError(null);
+    void moveExistingCall();
+  }
+
+  /** The same rule on the cancel confirm. */
+  function commitCancelExisting() {
+    if (!cancelReasonCheck.ok) {
+      setCancelReasonError(cancelReasonCheck.error);
+      document.getElementById(`booker-cancel-reason-${cancelReason || cancelReasons[0]?.code}`)?.focus();
+      return;
+    }
+    setCancelReasonError(null);
+    void cancelExistingCall();
+  }
 
   /** Move the call this lead already has into the slot they just picked (#1337).
    *  Goes through the same lead reschedule endpoint their emailed manage link
@@ -1044,9 +1074,10 @@ export default function Booker({
                   options={rescheduleReasons}
                   code={moveReason}
                   detail={moveDetail}
-                  onCode={setMoveReason}
-                  onDetail={setMoveDetail}
+                  onCode={(c) => { setMoveReason(c); setMoveReasonError(null); }}
+                  onDetail={(d) => { setMoveDetail(d); setMoveReasonError(null); }}
                   idPrefix="booker-move-reason"
+                  error={moveReasonError}
                 />
               </div>
               )}
@@ -1085,9 +1116,10 @@ export default function Booker({
                       options={cancelReasons}
                       code={cancelReason}
                       detail={cancelDetail}
-                      onCode={setCancelReason}
-                      onDetail={setCancelDetail}
+                      onCode={(c) => { setCancelReason(c); setCancelReasonError(null); }}
+                      onDetail={(d) => { setCancelDetail(d); setCancelReasonError(null); }}
                       idPrefix="booker-cancel-reason"
+                      error={cancelReasonError}
                     />
                   </div>
                   {error && (
@@ -1102,8 +1134,8 @@ export default function Booker({
                     <BookerButton
                       palette={c}
                       variant="danger"
-                      onClick={() => void cancelExistingCall()}
-                      disabled={submitting || !cancelReasonValid}
+                      onClick={commitCancelExisting}
+                      disabled={submitting}
                       busy={submitting}
                     >
                       {submitting ? BOOKER_CANCEL_COPY.confirming : BOOKER_CANCEL_COPY.confirm}
@@ -1148,8 +1180,8 @@ export default function Booker({
                     <BookerButton
                       palette={c}
                       variant={panelActionVariant}
-                      onClick={() => void moveExistingCall()}
-                      disabled={submitting || !moveReasonValid || !selectedSlot}
+                      onClick={commitMove}
+                      disabled={submitting || !selectedSlot}
                       busy={submitting}
                       style={panelActionStyle}
                       {...panelPrimaryProps(panelActionIsPrimary)}
@@ -1530,15 +1562,16 @@ export default function Booker({
             size="sm"
             onClick={() => void revealNextDays()}
             disabled={loadingNext}
+            busy={loadingNext}
           >
             {loadingNext ? (
-              // Dots AND the word. The dots are what reads as working from the
-              // corner of an eye; the word is what reaches anyone who cannot see
-              // them, and the dots are aria-hidden so it is not announced twice.
-              <span className="inline-flex items-center gap-2">
-                <BobbingDots />
-                {NEXT_DAYS_COPY.looking}
-              </span>
+              // The word alone here: the dots are the button's own `busy`, which
+              // is where every other working cue on this surface comes from since
+              // #2604. Hand rolling them beside it left one site on the old
+              // convention, and it would have gone invisible the day this button
+              // became primary, because those dots carried the accent and a
+              // primary button is FILLED with it.
+              NEXT_DAYS_COPY.looking
             ) : nextFailure !== null ? (
               NEXT_DAYS_COPY.retry
             ) : (

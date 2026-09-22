@@ -65,6 +65,13 @@ async function pickDay() {
   await userEvent.click(await dayChip());
 }
 
+/** Tap a time and then commit it. A tap only SELECTS since #2605, so every test
+ *  that used to move a call with one click needs the second one. */
+async function moveTo(slot: HTMLElement) {
+  await userEvent.click(slot);
+  await userEvent.click(screen.getByRole("button", { name: /^move my call to/i }));
+}
+
 /** Parse the JSON body the component POSTed to a path containing `match`. */
 function bodyFor(fn: ReturnType<typeof mockFetch>, match: string): Record<string, unknown> {
   const call = fn.mock.calls.find(([u]) => String(u).includes(match));
@@ -89,19 +96,33 @@ describe("ManageBooking", () => {
     expect(bodyFor(fn, "/cancel").reason).toBe("booked_by_mistake");
   });
 
-  it("requires a reason before cancelling (button disabled until chosen)", async () => {
-    mockFetch({ cancel: { ok: true } });
+  it("says a reason is required rather than sitting there dead, and still refuses to send", async () => {
+    // REVERSED DELIBERATELY (Dan, 2026-09-22). The reason is still mandatory and
+    // nothing is sent without one; what changed is that the refusal is SPOKEN.
+    // A predicate that disables the only control able to explain itself means the
+    // refusal is never said at all, and the lead is left pressing a dead button
+    // (L109). The sentence is `validateReason`'s own, which is the same one the
+    // server answers with, so the two cannot drift (L41).
+    const fn = mockFetch({ cancel: { ok: true } });
     render(<ManageBooking {...baseProps} />);
 
     await userEvent.click(screen.getByRole("button", { name: /cancel booking/i }));
     const yesCancel = () => screen.getByRole("button", { name: /yes, cancel/i }) as HTMLButtonElement;
-    expect(yesCancel().disabled).toBe(true);
-
-    // Choosing "Other" still requires the free-text detail before it enables.
-    await userEvent.click(screen.getByRole("radio", { name: /^other/i }));
-    expect(yesCancel().disabled).toBe(true);
-    await userEvent.type(screen.getByRole("textbox", { name: /tell us more/i }), "moving abroad");
     expect(yesCancel().disabled).toBe(false);
+
+    await userEvent.click(yesCancel());
+    expect(await screen.findByText("Please choose a reason.")).toBeTruthy();
+    expect(fn.mock.calls.some(([u]) => String(u).includes("/cancel"))).toBe(false);
+
+    // "Other" needs its detail, and says which of the two is missing.
+    await userEvent.click(screen.getByRole("radio", { name: /^other/i }));
+    await userEvent.click(yesCancel());
+    expect(await screen.findByText("Please tell us a bit more.")).toBeTruthy();
+    expect(fn.mock.calls.some(([u]) => String(u).includes("/cancel"))).toBe(false);
+
+    await userEvent.type(screen.getByRole("textbox", { name: /tell us more/i }), "moving abroad");
+    await userEvent.click(yesCancel());
+    await waitFor(() => expect(bodyFor(fn, "/cancel").reason).toBe("other"));
   });
 
   it("surfaces an error when the cancel POST fails (no silent failure)", async () => {
@@ -138,8 +159,7 @@ describe("ManageBooking", () => {
     // A reason is mandatory before a slot can be picked.
     await userEvent.click(screen.getByRole("radio", { name: /schedule conflict/i }));
     await pickDay();
-    const slot = await screen.findByRole("button", { name: /:\d{2}/ });
-    await userEvent.click(slot);
+    await moveTo(await screen.findByRole("button", { name: /^\d{1,2}:\d{2}/ }));
 
     expect(await screen.findByText("That time was just taken.")).toBeTruthy();
   });
@@ -162,8 +182,7 @@ describe("ManageBooking", () => {
     await userEvent.click(screen.getByRole("button", { name: /^reschedule$/i }));
     await userEvent.click(screen.getByRole("radio", { name: /schedule conflict/i }));
     await pickDay();
-    const slot = await screen.findByRole("button", { name: /:\d{2}/ });
-    await userEvent.click(slot);
+    await moveTo(await screen.findByRole("button", { name: /^\d{1,2}:\d{2}/ }));
 
     expect(
       await screen.findByText("This booking was just changed. Refresh and try again."),
@@ -172,7 +191,14 @@ describe("ManageBooking", () => {
     expect(heroTime()).toBe(headerTimeBefore);
   });
 
-  it("requires a reason before a reschedule slot can be picked, and sends it", async () => {
+  it("lets a time be picked with no reason set, and moves nothing until the lead commits", async () => {
+    // REVERSED DELIBERATELY (Dan, 2026-09-22): "i couldn't click a time without
+    // selecting a reason. feels bad to be able to select a date and no time.
+    // let's let them choose a time and just tell them the reason is required if
+    // they try to submit without it."
+    //
+    // The tap used to BE the submit, which is why the reason had to be enforced
+    // before it: there was no later moment. A tap selects now, so there is one.
     const fn = mockFetch({
       availability: { ok: true, body: { slots: ["2026-06-21T15:00:00.000Z"] } },
       reschedule: { ok: true, body: { startsAt: "2026-06-21T15:00:00.000Z" } },
@@ -181,16 +207,37 @@ describe("ManageBooking", () => {
 
     await userEvent.click(screen.getByRole("button", { name: /^reschedule$/i }));
     await pickDay();
-    // Slots are visible but disabled until a reason is chosen.
-    const slot = (await screen.findByRole("button", { name: /:\d{2}/ })) as HTMLButtonElement;
-    expect(slot.disabled).toBe(true);
 
-    await userEvent.click(screen.getByRole("radio", { name: /found a better time/i }));
+    const slot = (await screen.findByRole("button", { name: /^\d{1,2}:\d{2}/ })) as HTMLButtonElement;
     expect(slot.disabled).toBe(false);
     await userEvent.click(slot);
 
+    // A tap is not a commitment: nothing has been sent.
+    expect(fn.mock.calls.some(([u]) => String(u).includes("/reschedule"))).toBe(false);
+    expect(slot.getAttribute("aria-pressed")).toBe("true");
+
+    // The commit names the time, so what is about to happen is on the control.
+    const move = () => screen.getByRole("button", { name: /^move my call to/i }) as HTMLButtonElement;
+    await userEvent.click(move());
+    expect(await screen.findByText("Please choose a reason.")).toBeTruthy();
+    expect(fn.mock.calls.some(([u]) => String(u).includes("/reschedule"))).toBe(false);
+
+    await userEvent.click(screen.getByRole("radio", { name: /found a better time/i }));
+    await userEvent.click(move());
+
     await waitFor(() => expect(bodyFor(fn, "/reschedule").reason).toBe("found_better_time"));
     expect(bodyFor(fn, "/reschedule").start).toBe("2026-06-21T15:00:00.000Z");
+  });
+
+  it("offers no commit until a time is picked, so the control never asks for nothing", async () => {
+    mockFetch({ availability: { ok: true, body: { slots: ["2026-06-21T15:00:00.000Z"] } } });
+    render(<ManageBooking {...baseProps} />);
+
+    await userEvent.click(screen.getByRole("button", { name: /^reschedule$/i }));
+    await pickDay();
+    await screen.findByRole("button", { name: /^\d{1,2}:\d{2}/ });
+
+    expect(screen.queryByRole("button", { name: /^move my call to/i })).toBeNull();
   });
 
   // #625: a network rejection (flaky mobile) must not freeze the button in its
@@ -226,12 +273,12 @@ describe("ManageBooking", () => {
     await userEvent.click(screen.getByRole("button", { name: /^reschedule$/i }));
     await userEvent.click(screen.getByRole("radio", { name: /schedule conflict/i }));
     await pickDay();
-    const slot = (await screen.findByRole("button", { name: /:\d{2}/ })) as HTMLButtonElement;
-    await userEvent.click(slot);
+    const slot = (await screen.findByRole("button", { name: /^\d{1,2}:\d{2}/ })) as HTMLButtonElement;
+    await moveTo(slot);
 
     expect(await screen.findByText(/could not reschedule/i)).toBeTruthy();
     // Slot buttons re-enable (not stuck disabled / on "Moving…") so the user can retry.
-    const slotAfter = screen.getByRole("button", { name: /:\d{2}/ }) as HTMLButtonElement;
+    const slotAfter = screen.getByRole("button", { name: /^\d{1,2}:\d{2}/ }) as HTMLButtonElement;
     expect(slotAfter.disabled).toBe(false);
     expect(calls).toBeGreaterThan(1);
   });
@@ -275,7 +322,7 @@ describe("ManageBooking", () => {
 
     await userEvent.click(screen.getByRole("button", { name: /try again/i }));
     await pickDay();
-    expect(await screen.findByRole("button", { name: /:\d{2}/ })).toBeTruthy();
+    expect(await screen.findByRole("button", { name: /^\d{1,2}:\d{2}/ })).toBeTruthy();
   });
 
   it("shows an error when the availability fetch rejects at the network layer", async () => {
@@ -355,10 +402,11 @@ describe("ManageBooking", () => {
     fireEvent.click(screen.getByRole("button", { name: /^reschedule$/i }));
     fireEvent.click(await screen.findByRole("radio", { name: /schedule conflict/i }));
     fireEvent.click(await dayChip());
-    const slot = await screen.findByRole("button", { name: /:\d{2}/ });
+    const slot = await screen.findByRole("button", { name: /^\d{1,2}:\d{2}/ });
+    fireEvent.click(slot);
 
     vi.useFakeTimers();
-    fireEvent.click(slot);
+    fireEvent.click(screen.getByRole("button", { name: /^move my call to/i }));
     await act(async () => { await Promise.resolve(); });
 
     expect(screen.queryByText(/still working/i)).toBeNull();
@@ -413,13 +461,13 @@ describe("ManageBooking", () => {
     await waitFor(() =>
       expect(screen.getAllByRole("button", { name: /^(MON|TUE|SUN)/ })).toHaveLength(2),
     );
-    expect(screen.queryAllByRole("button", { name: /:\d{2}/ })).toHaveLength(0);
+    expect(screen.queryAllByRole("button", { name: /^\d{1,2}:\d{2}/ })).toHaveLength(0);
     expect(
       screen.getAllByText("Pick a day above to see the times available.").length,
     ).toBeGreaterThan(0);
 
     await pickDay();
-    expect(screen.getAllByRole("button", { name: /:\d{2}/ })).toHaveLength(1);
+    expect(screen.getAllByRole("button", { name: /^\d{1,2}:\d{2}/ })).toHaveLength(1);
   });
 
   // #1336: cancelling must not sit beside the times a lead is reading, so while
@@ -580,7 +628,7 @@ describe("ManageBooking", () => {
       await userEvent.click(screen.getByRole("button", { name: /^reschedule$/i }));
       await userEvent.click(screen.getByRole("radio", { name: /schedule conflict/i }));
       await pickDay();
-      await userEvent.click(await screen.findByRole("button", { name: /:\d{2}/ }));
+      await moveTo(await screen.findByRole("button", { name: /^\d{1,2}:\d{2}/ }));
 
       // The two facts the card beneath cannot show: a fresh invite is coming, and
       // the time they were holding is gone. The new time itself is the hero above,
@@ -612,7 +660,7 @@ describe("ManageBooking", () => {
       await userEvent.click(screen.getByRole("button", { name: /^reschedule$/i }));
       await userEvent.click(screen.getByRole("radio", { name: /schedule conflict/i }));
       await pickDay();
-      await userEvent.click(await screen.findByRole("button", { name: /:\d{2}/ }));
+      await moveTo(await screen.findByRole("button", { name: /^\d{1,2}:\d{2}/ }));
       expect(await screen.findByText(RESCHEDULE_COPY.moved)).toBeTruthy();
 
       await userEvent.click(screen.getByRole("button", { name: /^reschedule$/i }));
@@ -689,8 +737,8 @@ describe("the soonest times still open, under a refused move (#1549)", () => {
     await userEvent.click(screen.getByRole("button", { name: /^reschedule$/i }));
     await userEvent.click(screen.getByRole("radio", { name: /schedule conflict/i }));
     await pickDay();
-    const times = await screen.findAllByRole("button", { name: /:\d{2}/ });
-    await userEvent.click(times[0]);
+    const times = await screen.findAllByRole("button", { name: /^\d{1,2}:\d{2}/ });
+    await moveTo(times[0]);
     return { fn, container: view.container };
   }
 

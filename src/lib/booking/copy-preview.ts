@@ -75,7 +75,25 @@ import {
   phoneSaved,
 } from "@/lib/booking/manage-copy";
 import { DateTime } from "luxon";
-import { eventDescription, eventSummary } from "@/lib/booking/core";
+import {
+  eventDescription,
+  eventSummary,
+  validateReason,
+  RESCHEDULE_REASONS,
+  type ReasonInput,
+} from "@/lib/booking/core";
+
+/**
+ * What a lead is told when they commit without a reason (#2605).
+ *
+ * Called rather than quoted, because it is `validateReason`'s own sentence and
+ * the server answers with the same one: a copy here would be a second wording
+ * for one rule, which is exactly what this preview exists to prevent (L41).
+ */
+function reasonRefusal(input: ReasonInput): string {
+  const checked = validateReason(input, RESCHEDULE_REASONS);
+  return checked.ok ? "" : checked.error;
+}
 import { formatSlotTime } from "@/lib/booking/slot-label";
 import { REASSIGN_INVITE_DESCRIPTION } from "@/lib/booking/orchestration";
 import { reminderBody, reminderSubject } from "@/lib/booking/reminder";
@@ -473,8 +491,19 @@ export function bookerCopyScreens(): CopyScreen[] {
         "surface they booked on, and what the move says for itself once it lands.",
       lines: [
         { state: "why they are moving it", text: RESCHEDULE_COPY.reasonLegend },
-        { state: "a reason is set, so the times are live", text: RESCHEDULE_COPY.pickReady },
-        { state: "no reason yet, so they are not", text: RESCHEDULE_COPY.pickBlocked },
+        { state: "the heading over the times", text: RESCHEDULE_COPY.pickReady },
+        { state: "the commit, naming the time chosen", text: moveToTime(`${DAY_SHORT} at ${TIME}`) },
+        // #2605: said by the commit when the reason is missing, rather than the
+        // control sitting there dead. It is `validateReason`'s own sentence, the
+        // same one the server answers with, so there is one wording for one rule.
+        {
+          state: "pressed with no reason chosen",
+          text: reasonRefusal({ code: "", detail: "" }),
+        },
+        {
+          state: "pressed on Other with nothing typed",
+          text: reasonRefusal({ code: "other", detail: "" }),
+        },
         { state: "the time they pressed", text: RESCHEDULE_COPY.moving },
         { state: "nothing is offered", text: RESCHEDULE_COPY.noTimes },
         { state: "the way out", text: RESCHEDULE_COPY.keepCurrent },
