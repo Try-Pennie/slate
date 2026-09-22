@@ -1,134 +1,52 @@
-// Repo invariant (#315): guard against reintroducing a swallowed-error Supabase
-// read in the availability / booking paths.
+// Repo invariant (#315): a Supabase read whose `error` nobody consults.
 //
-// The bug class (#277): `const { data } = await db.from("t").select(...)` that
-// ignores `error`. On a query failure `data` is null, the availability pool
-// collapses to empty, and the booker silently shows NO times. #277 routed the
-// availability-critical reads through `unwrap` (which throws on a real error);
-// nothing stopped a NEW ignore-the-error read from creeping back in. This scans
-// src/lib/availability/*, src/lib/booking/*, src/lib/google/*, src/lib/routing/*
-// and src/lib/salesforce/* (#865 widened it to the sync + routing paths where
-// #315 and #834 found risky reads; #963 added salesforce, where the roster sync
-// treated a read error as an empty roster) and fails if any awaited select is
-// destructured for `data` without also consulting `error` (and without the
-// documented `// error-ok:` opt-out for a deliberately null-tolerant read).
+// THE CLASS. supabase-js resolves a refused query as `{ data: null, error }`, so
+// a read that destructures only `data` turns a failure into an empty answer, and
+// an empty answer is routinely indistinguishable from a real one: no times, no
+// agents, no booking for this lead, nothing to clean, nobody failing. Every
+// instance this has had was a screen or a decision reading that emptiness as a
+// fact. The class, and the question that decides whether a given read is safe,
+// are written up once in AGENTS.md ("Swallowed-error reads"); the incidents
+// behind each widening are in their issues (#277, #1134, #1152, #1629, #1641,
+// #2373, #2383, #2511, #2542), not here.
 //
-// #1629 widened it in BOTH directions at once, because widening either alone
-// would have fixed nothing:
+// THE SURFACE IS DERIVED: everything under `src/`, minus the named exclusions in
+// EXCLUDED below, each carrying its reason. It is derived rather than
+// listed because a directory list grown one incident at a time leaves everything
+// not yet on it exempt from the check meant to catch it (L96), and nine
+// widenings did not make that stop happening: when the list finally went, eight
+// live reads were sitting outside it that the SHIPPED scanner flagged at once.
 //
-//   - the SHAPE. The scanner only saw `const { data } = await ...`. The two sites
-//     #1629 is about are written as `const [aRes, bRes] = await Promise.all([...])`
-//     followed by `(aRes.data ?? [])`, which produces no such destructure. One of
-//     them, `staffing-depth-load.ts`, has been INSIDE the scanned paths since #865
-//     with four swallowed reads in it, and this guard reported clean over it every
-//     single run. A guard blind to the shape reads exactly like a clean tree.
-//   - the PATHS, now including the whole `src/app/admin` tree. That surface is
-//     where the empty answer is most convincing ("no agents", "no buckets",
-//     "nobody is in this pool", "nothing was ever sent to Regal" are all
-//     legitimate readings, several of them alarming), and several of those panels
-//     sit beside a control that writes back what they show.
+// WHAT IS FLAGGED, five shapes. Four are reads whose `error` is never consulted:
+// the named destructure, the result object bound whole and read later as
+// `res.data`, the inline `(await ...).data` that never gets a name, and a loop
+// over an awaited `Promise.all` wave reading each element's `.data`. The fifth is
+// the GATED WRITE, an update narrowed by the state it expects and returning what
+// it transitioned (`update(...).eq(...).in("status", ACTIVE).select("id")`),
+// whose caller reads `data.length > 0` as "I won the race": a refused statement
+// has length zero, so a write that never ran reports as one that lost.
 //
-// #1647 and #1648 widened the PATHS again, and each carries its own revert
-// control, because a widened path list and a path list that reaches nothing
-// produce the same clean tree (L98):
+// WHAT IS COMPLIANT: `unwrap` (or a paginating helper), binding `error` and
+// checking it, a write with no `.select(`, or the `// error-ok:` opt-out naming
+// what the empty result degrades TO. A gated write's remedy is NOT `unwrap`,
+// which would throw on every ordinary lost race: it is the shared classifier in
+// `src/lib/booking/gated-write.ts`, and the failure message says so.
 //
-//   - #1647, `src/app/me` recursively: the agent's own page reads the schedule
-//     and its rules, renders them as a form, and REPLACES every rule on save, so
-//     an unreadable read draws a plausible week that is not theirs over hours one
-//     press is about to destroy;
-//   - #1648, `src/lib/provision.ts`, ONE FILE rather than a directory, since
-//     src/lib is not scanned wholesale. It ran read then insert three times on
-//     the LOGIN path with every read swallowed, so a transient failure created a
-//     second organization or a duplicate users row.
-//
-// Both controls assert an EXACT finding count, so a scanner that flagged
-// everything could not satisfy them.
-//
-// #1641 added the two shapes where the result never gets a NAME at all: the
-// inline `(await ...).data`, and a loop over an awaited `Promise.all` wave
-// reading each element's `.data`. The second is the weak-match booking lookup,
-// where an unreadable query resolved to an empty candidate list, which is not
-// "no failure" but the specific answer "this lead has no call booked", so the
-// dedupe gate passed and a SECOND booking was created for someone who already
-// had one. Both were invisible to every earlier shape for the same reason, which
-// is why they are guarded together.
-//
-// Widening the paths flagged 22 further reads across the admin tree. They were
-// triaged one at a time, not blanket-annotated: nineteen turned out to be the
-// "empty is indistinguishable from an answer" class and now `unwrap` (three of
-// them were fail-open authorization or write-branch decisions), and three are
-// genuinely safe degrades carrying an `// error-ok:` that names the safe path.
-//
-// #2511 and #2383 are ONE widening, deliberately made together, because fixing
-// either alone would have left the other reading as covered. The guard had grown
-// one directory per incident (#865, #963, #1036, #1629, #1647, #1648, #1674), so
-// what was not yet on the list was exempt from the check meant to catch it (L96),
-// and the two surfaces left off it are the two where an empty answer is least
-// distinguishable from a healthy one:
-//
-//   - src/lib/monitor (#2511). A detector that scores a failed query as "nothing
-//     found" reports health it never measured. #1134 (a recovery notice posted
-//     off a query that never ran) and #1152 (three worklist reads whose zero read
-//     as "under the cap" and cleared a streak that would have paged) were both
-//     this class, both here, and both found by hand. The tree is clean today, and
-//     a clean tree is what a path list reaching nothing also produces, so the
-//     control below reverts the real tier-staffing roster read.
-//   - src/app/api/cron (#2383). Two daily digests read a failed query as an empty
-//     day. Neither lane gets a second attempt: the approvals window is yesterday
-//     relative to the clock, so a day it drops falls out of every later run.
-//
-// Five reads were flagged, four of them time off lanes, and every one turned out
-// to be the "empty is indistinguishable from an answer" class rather than a safe
-// degrade, so all five were fixed and none annotated.
-//
-// #2373 widened the SHAPE again, to the GATED WRITE: an update narrowed by the
-// state it expects to find, returning the rows it transitioned
-// (`update(...).eq(...).in("status", ACTIVE).select("id")`). That was EXEMPT by
-// design, on the stated grounds that a write is "a different concern", and the
-// exemption was the defect. Such a write's caller reads `data.length > 0` as "I
-// won the race"; supabase-js resolves a refused statement as
-// `{ data: null, error }`, whose length is zero, so a write that NEVER RAN was
-// reported as having lost. `claimCancellation` sat inside this scanned tree the
-// whole time and the guard reported clean over it on every run, which is what an
-// exemption and a clean tree have in common (L98). It reached a customer: the
-// cancel route answered `{ ok: true }` and the lead read "Your call is cancelled"
-// while the booking, the Google invite and the advisor's slot all stood.
-//
-// The remedy for one of these is NOT `unwrap`, which would turn every ordinary
-// lost race into a throw. It is the shared classifier in
-// `src/lib/booking/gated-write.ts`, which separates the two, and the failure
-// message names it rather than the read's remedy. The same widening also made
-// the builder resolution follow MORE THAN ONE hop, because `commitReschedule` is
-// built over three lines and a single hop stopped at a definition carrying no
-// `.from(`.
-//
-// #2542 ended the directory list. The surface is DERIVED (everything under
-// `src/`, minus a named exclusion carrying its reason), because a list grown one
-// incident at a time leaves everything not yet on it exempt from the check meant
-// to catch it, and nine widenings had not made that stop happening. Eight live
-// reads sat outside the list with the SHIPPED scanner flagging every one. Two are
-// worth naming: the booker's own `is_test` refusal read a FAILED `buckets` query
-// as "not a test bucket", so an unreadable table renders the public booker for a
-// SMOKE code; and `ensureDefaultSchedules` read a failed `availability_schedules`
-// query as "every agent is uncovered" and would refill a week somebody
-// personalised on /me. Both `unwrap` now. Four more were genuine safe degrades
-// and carry an `// error-ok:` naming what the empty result degrades TO.
-//
-// Its named BLOCKER is fixed in the same change: the opt-out reader could not see
-// a marker inside a ternary, so `AppHeader.tsx:123` (a deliberate, reasoned
-// `// error-ok:` written after the `?`) would have been a false positive the day
-// the surface widened. That is now the one shared reader, #2200.
-//
-// The boundary with scripts/test-unchecked-writes.ts is exact: a write with no
+// THE BOUNDARY with scripts/test-unchecked-writes.ts is exact: a write with no
 // `.select(` has a result that goes nowhere, which is that guard's class; a write
 // WITH one has a result somebody consumes and believes, which is this one's.
 //
+// THE CONTROLS ARE THE POINT. A scanner blind to a shape, a path list that
+// reaches nothing, and a genuinely clean tree all produce the same empty result
+// (L98), so this file runs the detector against fixtures for each shape, against
+// the real tree (which must be clean), and against MUTATIONS of real files whose
+// findings it counts exactly: strip `booking/service.ts`'s opt-outs, revert
+// `staffing-depth-load.ts`'s four unwraps, and revert the tier-staffing roster
+// read. A scanner that flagged everything could not satisfy an exact count.
+//
 // The scan logic lives in scripts/lib/scan-swallowed-error-reads.ts so it is
-// unit-testable. This file exercises it against fixtures (a positive control that
-// proves the detector actually flags the bad pattern, so it can't rot into a
-// no-op), against the real source tree (must be clean), and against a mutation of
-// the real booking/service.ts with its `// error-ok:` opt-outs stripped (which
-// MUST be caught, proving the guard verifies something against real reads).
+// unit-testable, and the opt-out reader is the one shared one (#2200), which can
+// see a marker written inside a ternary.
 // Run: node --experimental-strip-types scripts/test-swallowed-error-reads.ts
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
