@@ -1899,13 +1899,16 @@ export default function Booker({
             the only place a prefilled lead can read back what Slate holds, which
             prefilling made the ordinary case rather than a rarity. */}
         {attendee.phone && !selectedSlot && (
-          <div className="flex items-start gap-2">
-            <span className={`mt-0.5 shrink-0 ${c.faint}`}>
+          // Label and number each on their own line, the number never broken at its
+          // hyphen, and the icon centred on the pair: the panel is too narrow for
+          // both on one line, and wrapping mid number left "7858" on its own.
+          <div className="flex items-center gap-2">
+            <span className={`shrink-0 ${c.faint}`}>
               <PhoneOutlineIcon width={15} height={15} />
             </span>
             <span>
               {DETAILS_COPY.yourNumber}{" "}
-              <span className="tabular-nums">{attendee.phone}</span>
+              <span className="block whitespace-nowrap tabular-nums">{attendee.phone}</span>
             </span>
           </div>
         )}

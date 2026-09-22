@@ -1,0 +1,50 @@
+// The picture a pasted Slate link unfurls with.
+//
+// A link to the booker or the manage page pasted into Slack or a text used to
+// unfurl with a grey "no image" placeholder, because nothing set og:image. The
+// fix is Next's file convention (`src/app/opengraph-image.png`), and it has two
+// ways to ship broken that no other test sees:
+//
+//   - the image is the wrong shape. Slack and iMessage crop a card to about
+//     1.91:1, so anything else is cut into.
+//   - `metadataBase` is missing from the root layout. og:image must be an
+//     absolute URL, and without a base Next fills in localhost, which every
+//     crawler then fails to fetch: the same grey placeholder, on a page whose
+//     markup looks correct.
+//
+// Run: node --experimental-strip-types scripts/test-share-image.ts
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+import { assert, eq, finish } from "./lib/harness.ts";
+
+const root = join(import.meta.dirname, "..");
+const IMAGE = "src/app/opengraph-image.png";
+const ALT = "src/app/opengraph-image.alt.txt";
+const LAYOUT = "src/app/layout.tsx";
+
+/** Width and height from a PNG's IHDR chunk, or null for anything that is not a PNG. */
+function pngSize(buf: Buffer): { width: number; height: number } | null {
+  const sig = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  if (buf.length < 24 || !buf.subarray(0, 8).equals(sig)) return null;
+  if (buf.subarray(12, 16).toString("ascii") !== "IHDR") return null;
+  return { width: buf.readUInt32BE(16), height: buf.readUInt32BE(20) };
+}
+
+// Positive control: the reader must be able to say no.
+eq(pngSize(Buffer.from("not a png at all, just some text")), null, "pngSize refuses a non PNG");
+
+assert(existsSync(join(root, IMAGE)), `${IMAGE} exists`);
+const size = pngSize(readFileSync(join(root, IMAGE)));
+eq(size, { width: 1200, height: 630 }, `${IMAGE} is 1200x630, the shape link cards crop to`);
+
+assert(existsSync(join(root, ALT)), `${ALT} exists`);
+const alt = existsSync(join(root, ALT)) ? readFileSync(join(root, ALT), "utf8").trim() : "";
+assert(alt.length > 0, `${ALT} says what the image shows`);
+
+const layout = readFileSync(join(root, LAYOUT), "utf8");
+assert(
+  /metadataBase:\s*new URL\(\s*"https:\/\/slate\.trypennie\.app"\s*\)/.test(layout),
+  `${LAYOUT} sets metadataBase to the production origin, or og:image resolves to localhost`,
+);
+
+finish();

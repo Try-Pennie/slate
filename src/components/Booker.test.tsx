@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { BOOKING_ERROR_COPY, NEAREST_TIMES_COPY } from "@/lib/booking/booker-copy";
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import Booker from "@/components/Booker";
 import {
@@ -1380,6 +1380,13 @@ describe("Booker phone handling (#1332, #1333)", () => {
     // A BARE number in a row of facts would reintroduce exactly that.
     expect(panel!.textContent).toContain("Your number:");
     expect(panel!.textContent).toContain("(215) 555-0100");
+    // The label and the number each take their own line, and the number never
+    // breaks at its hyphen: in the 260px panel it used to wrap as "793-" / "7858".
+    // The icon is centred on the pair rather than pinned to the first line.
+    const number = within(panel as HTMLElement).getByText("(215) 555-0100");
+    expect(number.className).toMatch(/\bblock\b/);
+    expect(number.className).toMatch(/\bwhitespace-nowrap\b/);
+    expect(number.closest("div")!.className).toMatch(/\bitems-center\b/);
     expect(panel!.textContent).not.toMatch(/attendee phone/i);
     // And it makes no claim about the call itself, in either direction: the agent
     // is not chosen until confirm, so the panel cannot honestly say anything about
