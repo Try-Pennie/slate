@@ -162,10 +162,16 @@ export const CANCEL_COPY = {
 
 export const RESCHEDULE_COPY = {
   reasonLegend: "Why are you rescheduling?",
-  /** The heading over the day strip, which changes with whether a reason is set,
-   *  so the lead is never left guessing why the times will not respond. */
+  /**
+   * The heading over the day strip.
+   *
+   * It used to be a pair, swapping to "Choose a reason above, then pick a new
+   * time" while the times were dead. Nothing is dead now: a tap selects and the
+   * commit below asks for the reason, so the second sentence described a state
+   * the panel no longer has and is gone rather than left reading as a considered
+   * alternative (L29, #2605).
+   */
   pickReady: "Pick a new time",
-  pickBlocked: "Choose a reason above, then pick a new time",
   /** On the slot being submitted, so the pressed time is the one that says it. */
   moving: "Moving…",
   /** The only way back out while the panel is open (#1336). */

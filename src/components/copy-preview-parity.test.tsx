@@ -331,7 +331,10 @@ describe("the preview shows what the manage page actually renders (#1343)", () =
     fireEvent.click(screen.getByRole("button", { name: /^reschedule$/i }));
     fireEvent.click(screen.getByRole("radio", { name: /schedule conflict/i }));
     fireEvent.click((await screen.findAllByRole("button", { name: /^(MON|TUE|WED|THU|FRI|SAT|SUN|TODAY)/ }))[0]);
-    fireEvent.click((await screen.findAllByRole("button", { name: /:\d{2}/ }))[0]);
+    // A tap selects and the commit moves (#2605), so both presses are needed to
+    // reach the state this reads the copy off.
+    fireEvent.click((await screen.findAllByRole("button", { name: /^\d{1,2}:\d{2}/ }))[0]);
+    fireEvent.click(screen.getByRole("button", { name: /^move my call to/i }));
 
     await screen.findAllByTestId("nearest-time");
     expect(pageText()).toContain(NEAREST_TIMES_COPY.heading);
@@ -357,7 +360,10 @@ describe("the preview shows what the manage page actually renders (#1343)", () =
     fireEvent.click(screen.getByRole("button", { name: LIVE_COPY.reschedule }));
     fireEvent.click(screen.getByRole("radio", { name: /schedule conflict/i }));
     fireEvent.click((await screen.findAllByRole("button", { name: /^(MON|TUE|WED|THU|FRI|SAT|SUN|TODAY)/ }))[0]);
-    fireEvent.click((await screen.findAllByRole("button", { name: /:\d{2}/ }))[0]);
+    // A tap selects and the commit moves (#2605), so both presses are needed to
+    // reach the state this reads the copy off.
+    fireEvent.click((await screen.findAllByRole("button", { name: /^\d{1,2}:\d{2}/ }))[0]);
+    fireEvent.click(screen.getByRole("button", { name: /^move my call to/i }));
     await act(async () => {});
 
     expect(await screen.findByText(RESCHEDULE_COPY.moved)).toBeTruthy();
