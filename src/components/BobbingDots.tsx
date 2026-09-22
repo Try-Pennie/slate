@@ -32,15 +32,23 @@
  * for a distracted reader, or three bobbing dots inside a nav link, where they
  * cannot sit next to a label at that size. Two cues, one per audience, and no more
  * than that: a third one is the thing both docstrings exist to prevent.
+ *
+ * `tone` is the one thing a call site chooses, and it exists because the cue moved
+ * INSIDE a button (#2604). On the panel the dots carry the accent explicitly, which
+ * is the look they shipped with. On the primary button the accent is the FILL, so
+ * accent dots there would be invisible: `current` takes the label's own colour, so
+ * the cue cannot disappear into whatever it is sitting on.
  */
-export function BobbingDots() {
+export function BobbingDots({ tone = "accent" }: { tone?: "accent" | "current" } = {}) {
   return (
     <span data-bob-dots aria-hidden="true" className="flex items-end gap-1.5">
       {[0, 1, 2].map((i) => (
         <span
           key={i}
           data-bob-dot
-          className="pn-bob h-2 w-2 rounded-full bg-accent motion-reduce:animate-none"
+          className={`pn-bob h-2 w-2 rounded-full motion-reduce:animate-none ${
+            tone === "current" ? "bg-current" : "bg-accent"
+          }`}
         />
       ))}
     </span>

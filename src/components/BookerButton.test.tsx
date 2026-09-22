@@ -125,4 +125,44 @@ describe("BookerButton", () => {
     );
     expect(screen.getByRole("button").getAttribute("type")).toBe(null);
   });
+
+  it("shows a moving cue while it is working, on the button the lead just pressed", () => {
+    render(
+      <BookerButton palette={palette} variant="primary" busy>
+        Booking your call…
+      </BookerButton>,
+    );
+
+    // Every time taking action has to keep three states visibly apart: started,
+    // still alive, and failed. A label swap alone is one picture that does not
+    // change again, so a lead cannot tell a request in flight from one that died
+    // (Dan, 2026-09-22: "the loading felt stuck after I submitted my time. it
+    // wasn't stuck, it worked, but it didn't feel like it was moving").
+    expect(document.querySelector("[data-bob-dots]")).not.toBeNull();
+  });
+
+  it("carries no cue when it is not working, so the box does not move on every render", () => {
+    render(
+      <BookerButton palette={palette} variant="primary">
+        Confirm booking
+      </BookerButton>,
+    );
+
+    expect(document.querySelector("[data-bob-dots]")).toBeNull();
+  });
+
+  it("draws the cue in the button's own text colour, never the accent", () => {
+    render(
+      <BookerButton palette={palette} variant="primary" busy>
+        Booking your call…
+      </BookerButton>,
+    );
+
+    // The primary button is FILLED with the accent, so accent dots on it are
+    // invisible. They take `currentColor`, which is the label's colour on every
+    // variant, so the cue can never disappear into its own button.
+    const dot = document.querySelector("[data-bob-dot]");
+    expect(dot!.className).toContain("bg-current");
+    expect(dot!.className).not.toContain("bg-accent");
+  });
 });
