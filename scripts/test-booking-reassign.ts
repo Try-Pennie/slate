@@ -21,6 +21,7 @@ import {
   RR,
   SYS,
 } from "./lib/booking-fakes.ts";
+import { reminderDue } from "../src/lib/booking/reminder.ts";
 
 const { assert, finish } = createAsserter();
 
@@ -517,46 +518,39 @@ async function run() {
     );
   }
 
-  // --- a reassign invalidates the 24 hour reminder (#2500) --------------------
+  // --- a reassign never sends a second reminder (#2630) ---------------------
   //
-  // The stored record is the START a reminder went out about, so a booking that
-  // MOVES earns a fresh one by construction. A reassign at the SAME start does not
-  // move, so the record still matches and no second reminder is sent: the lead is
-  // left holding a message naming the advisor who is no longer taking the call,
-  // from a mailbox that is no longer watching for their reply.
-  //
-  // The reminder is a property of the appointment, and WHO is calling is part of the
-  // appointment, so the record is cleared where the advisor changes.
+  // Dan, 2026-09-22: a booking reminded at once (the call was inside the window)
+  // was handed to the lead's owner 26 seconds later, and a second reminder arrived
+  // from the new advisor: "two reminder emails for one call from two different
+  // people". His decision is never resend. The reassign invite already tells the
+  // lead who is calling, so the record of the reminder SURVIVES a reassign, and the
+  // reminder job's own due check must say nothing more is owed. A real reschedule
+  // still earns a fresh one, because the record is compared against the start.
   {
-    const ctx = { booking: makeBooking({}), bucket, eventType };
+    const startsAt = makeBooking({}).starts_at;
+    const ctx = { booking: makeBooking({ reminder_sent_for: startsAt }), bucket, eventType };
     const owner = { id: "b", name: "Owner B", email: "b@x.com", bookable: true } as unknown as User;
-    const { deps, calls } = makeDeps({ bookingById: ctx, agentByEmail: owner });
-    await reassignBooking("bk1", "b@x.com", SYS, deps);
-    assert(
-      calls.clearedReminderRecords.length === 1 && calls.clearedReminderRecords[0] === "bk1",
-      "reassign: the reminder record is cleared, so the lead hears from the new advisor",
-    );
-  }
-
-  // --- and the clear cannot cost the lead their reassign ----------------------
-  //
-  // It is a write AFTER the durable anchor has committed, so a failure of it leaves
-  // exactly the pre-#2500 behaviour (a reminder naming the previous advisor) rather
-  // than an unreassigned booking. Throwing here would abandon the calendar cleanup
-  // and the webhooks for a message that is a nicety beside them.
-  {
-    const ctx = { booking: makeBooking({}), bucket, eventType };
-    const owner = { id: "b", name: "Owner B", email: "b@x.com", bookable: true } as unknown as User;
-    const { deps, calls } = makeDeps({
-      bookingById: ctx,
-      agentByEmail: owner,
-      clearReminderRecordThrows: true,
-    });
+    const { deps } = makeDeps({ bookingById: ctx, agentByEmail: owner });
     const res = await reassignBooking("bk1", "b@x.com", SYS, deps);
-    assert(res.booking.agent_email === "b@x.com", "reassign: still completes when the clear fails");
+    assert(res.booking.agent_email === "b@x.com", "#2630: the reassign itself completes");
+    assert(ctx.booking.reminder_sent_for === startsAt, "#2630: the reminder record survives the reassign");
+    const startsAtMs = Date.parse(startsAt);
+    const due = reminderDue(
+      {
+        status: ctx.booking.status,
+        startsAtMs,
+        reminderSentForMs: ctx.booking.reminder_sent_for ? Date.parse(ctx.booking.reminder_sent_for) : null,
+      },
+      startsAtMs - 60 * 60 * 1000,
+    );
+    assert(!due, "#2630: an hour before the call, the reminder job owes this lead nothing more");
+    // The control that keeps the check above honest: the same booking MOVED to a new
+    // start is owed a reminder, so a due check that always said no cannot pass (L159).
+    const movedStartMs = startsAtMs + 30 * 60 * 1000;
     assert(
-      calls.webhooks.some((w) => w.event === "booking.reassigned"),
-      "reassign: and the reassign webhook still fires",
+      reminderDue({ status: ctx.booking.status, startsAtMs: movedStartMs, reminderSentForMs: startsAtMs }, movedStartMs - 60 * 60 * 1000),
+      "#2630: while a booking moved to a new time is still owed one",
     );
   }
 

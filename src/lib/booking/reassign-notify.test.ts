@@ -117,7 +117,6 @@ function makeDeps(): BookingDeps {
     }),
     insertBusyBlocks: noop,
     moveBusyBlock: noop,
-    clearReminderRecord: noop,
     reassignSwap: async () => ({ prevGcalEventId: "old-evt", prevAgentEmail: "old@x.com", updated: true }),
     deleteBusyBlocksForBooking: noop,
     deleteGcalMirrorBlock: noop,
