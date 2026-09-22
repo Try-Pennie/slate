@@ -1120,20 +1120,6 @@ export function realDeps(deferSend?: WebhookSendScheduler): BookingDeps {
       }
     },
 
-    clearReminderRecord: async (bookingId) => {
-      // #2500. One column, unconditionally: a reassign is the one change that moves
-      // WHO is calling without moving WHEN, so the record of "a reminder went out
-      // about this start" has to be forgotten by hand. Writing null over null for a
-      // booking that was never reminded is the normal case and costs nothing.
-      const { error } = await supabaseAdmin()
-        .from("bookings")
-        .update({ reminder_sent_for: null })
-        .eq("id", bookingId);
-      if (error) {
-        throw new Error(`reminder record clear failed for booking ${bookingId}: ${error.message}`);
-      }
-    },
-
     reassignSwap: async ({
       bookingId,
       userId,

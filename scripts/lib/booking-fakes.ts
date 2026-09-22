@@ -157,8 +157,6 @@ export interface FakeOpts {
   pending?: PendingEventDeletion[]; // loadPendingEventDeletions result (#401)
   reassignSwapTerminal?: boolean; // reassign_booking_swap returns updated=false (#449)
   reassignSwapThrows?: boolean; // reassign_booking_swap rejects (rpc/network error) (#449)
-  /** clearReminderRecord rejects: the reassign must still complete (#2500). */
-  clearReminderRecordThrows?: boolean;
   // Per-agent calendar busy intervals the single-agent free check sees (#523):
   // models a reschedule overlapping the booking's OWN still-present event.
   busyByEmail?: Map<string, { start: string; end: string }[]>;
@@ -325,8 +323,6 @@ export function makeDeps(opts: FakeOpts) {
       gcalClientId: string;
       prevGcal: string | null;
     }[],
-    /** Bookings whose 24 hour reminder record was invalidated by a reassign (#2500). */
-    clearedReminderRecords: [] as string[],
     webhooks: [] as {
       event: string;
       reason: unknown;
@@ -700,10 +696,6 @@ export function makeDeps(opts: FakeOpts) {
     },
     moveBusyBlock: async (userId, startIso, endIso, bookingId) => {
       calls.moveBusyBlock.push({ userId, startIso, endIso, bookingId });
-    },
-    clearReminderRecord: async (bookingId) => {
-      if (opts.clearReminderRecordThrows) throw new Error("reminder record clear failed");
-      calls.clearedReminderRecords.push(bookingId);
     },
     reassignSwap: async ({
       bookingId,
