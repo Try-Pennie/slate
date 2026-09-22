@@ -26,6 +26,7 @@ import { formatSlotTime } from "@/lib/booking/slot-label";
 import { moveToTime } from "@/lib/booking/booker-copy";
 import { BobbingDots } from "@/components/BobbingDots";
 import { usePhoneCaret } from "@/lib/usePhoneCaret";
+import { formatPhoneForDisplay } from "@/lib/phone-format";
 import { UnsavedGuard } from "@/components/ui/UnsavedGuard";
 import {
   BEFORE_COPY,
@@ -170,7 +171,7 @@ export default function ManageBooking({
   // read from the prop) so a successful save is reflected without a reload.
   const [phone, setPhone] = useState(attendeePhone);
   const [editingPhone, setEditingPhone] = useState(false);
-  const [phoneDraft, setPhoneDraft] = useState(attendeePhone ?? "");
+  const [phoneDraft, setPhoneDraft] = useState(formatPhoneForDisplay(attendeePhone) ?? "");
   const [phoneError, setPhoneError] = useState<string | null>(null);
   // The booker's own as-you-type formatter AND its caret handling, through one
   // hook (#2162), so an impossible number cannot be typed in either place and
@@ -746,7 +747,10 @@ export default function ManageBooking({
                         type="button"
                         onClick={() => {
                           setEditingPhone(true);
-                          setPhoneDraft(phone ?? "");
+                          // Seeded in the form a lead types, not the stored
+                          // `+1XXXXXXXXXX` (#2616), so a small correction starts
+                          // from the number they recognise.
+                          setPhoneDraft(formatPhoneForDisplay(phone) ?? "");
                           setPhoneError(null);
                           setPhoneSaved(false);
                         }}

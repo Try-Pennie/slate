@@ -20,6 +20,7 @@
  */
 import {
   formatPhoneAsTyped,
+  formatPhoneForDisplay,
   isUsPhone,
   prefillPhone,
   splitPhoneExtension,
@@ -265,5 +266,24 @@ eq(isUsPhone("215-555-0100 x123"), true, "the number itself is callable, extensi
 eq(isUsPhone("+44 20 7946 0958 x12"), false, "and an extension never makes a foreign one callable");
 eq(isUsPhone("215555 x12"), false, "nor completes an unfinished one");
 
+
+// ---------------------------------------------------- reading a STORED number (#2616)
+// Every booking stores `+1XXXXXXXXXX`, so this is the shape a lead reads back on
+// the manage page. The four shapes that reach it all read the same way.
+eq(formatPhoneForDisplay("+16317937858"), "(631) 793-7858", "the stored form reads as a person writes it");
+eq(formatPhoneForDisplay("6317937858"), "(631) 793-7858", "ten bare digits too");
+eq(formatPhoneForDisplay("(631) 793-7858"), "(631) 793-7858", "an already formatted one is unchanged");
+eq(formatPhoneForDisplay("+1 631 793 7858"), "(631) 793-7858", "and a spaced one");
+
+// Anything that is not a whole US number is shown EXACTLY as stored. The typing
+// formatter caps at ten digits, so running it over a foreign number would print a
+// different, plausible American one after "will call you at", which is worse than
+// printing the stored form.
+eq(formatPhoneForDisplay("+44 20 7946 0958"), "+44 20 7946 0958", "a foreign number is shown as stored, never truncated");
+eq(formatPhoneForDisplay("215555"), "215555", "an unfinished one is shown as stored, never given a half bracket");
+eq(formatPhoneForDisplay("215-555-0100 x12"), "215-555-0100 x12", "an extension is kept rather than silently dropped");
+eq(formatPhoneForDisplay("  +16317937858 "), "(631) 793-7858", "surrounding space does not stop the formatting");
+eq(formatPhoneForDisplay("  "), null, "a blank number is no number, so the caller's fallback applies");
+eq(formatPhoneForDisplay(null), null, "and so is a missing one");
 
 finish();

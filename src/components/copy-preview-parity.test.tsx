@@ -428,6 +428,18 @@ describe("the preview shows what the manage page actually renders (#1343)", () =
     expect(pageText()).toContain(advisorWillCall(manageProps.attendeePhone));
   });
 
+  it("formats the number as STORED for reading, in the sentence and the edit field (#2616)", async () => {
+    // Essentially every booking stores this shape, so it is the one to render.
+    render(<ManageBooking {...manageProps} attendeePhone="+16317937858" />);
+    await act(async () => {});
+
+    expect(pageText()).toContain("Your advisor will call you at (631) 793-7858.");
+    expect(pageText()).not.toContain("+16317937858");
+    fireEvent.click(screen.getByRole("button", { name: PHONE_COPY.trigger }));
+    const field = (await screen.findByLabelText(PHONE_COPY.heading)) as HTMLInputElement;
+    expect(field.value).toBe("(631) 793-7858");
+  });
+
   it("shows the STORED number after a save that committed", async () => {
     global.fetch = vi.fn(async (url: RequestInfo | URL) => {
       if (String(url).includes("/phone")) {

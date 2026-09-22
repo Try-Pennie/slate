@@ -124,6 +124,32 @@ function formatPhoneNumberAsTyped(value: string): string {
 }
 
 /**
+ * A STORED number, as a person should read it (#2616).
+ *
+ * Every booking stores `+1XXXXXXXXXX`, which is the right form for a dialler and
+ * the wrong one for a sentence, so the manage page printed "will call you at
+ * +16317937858" to essentially every lead who opened it.
+ *
+ * Only a whole US number with no extension is reformatted. Anything else is shown
+ * EXACTLY as stored, trimmed, because the typing formatter caps at ten digits: a
+ * foreign or overlong number run through it becomes a different and equally
+ * plausible American one, printed after "will call you at", which is worse than
+ * the raw form. The server refuses those on every write path today (`isUsPhone`,
+ * #1356), so this is the rule for older rows rather than a live path.
+ *
+ * Returns null for a blank number, so the caller's own fallback applies instead
+ * of a sentence ending in a gap.
+ */
+export function formatPhoneForDisplay(value: string | null): string | null {
+  const trimmed = value?.trim() ?? "";
+  if (trimmed === "") return null;
+  if (isUsPhone(trimmed) && !splitPhoneExtension(trimmed).hasExtensionMarker) {
+    return formatPhoneAsTyped(trimmed);
+  }
+  return trimmed;
+}
+
+/**
  * Where the caret goes after the field has reformatted itself (#2162).
  *
  * A controlled input whose value is rewritten on every keystroke drops the caret
