@@ -4,7 +4,7 @@ import { DateTime } from "luxon";
 import { formatClockTime, formatLongDate } from "@/lib/date/parse";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { AlertIcon, ArrowRightIcon, ClockIcon, GlobeIcon, PhoneOutlineIcon } from "@/components/icons";
+import { AlertIcon, ArrowRightIcon, ClockIcon, GlobeIcon, PennieMark, PhoneOutlineIcon } from "@/components/icons";
 import { BookerButton } from "@/components/BookerButton";
 import type { BookerButtonVariant } from "@/components/booker-button";
 import { BookerStrip, BookerStripSkeleton } from "@/components/BookerStrip";
@@ -229,14 +229,6 @@ interface AvailabilityResponse {
     | { kind: "unstaffed" }
     | { kind: "busy" }
     | null;
-}
-
-/** Avatar initials from the org name: "Pennie" -> "PE", "Acme Co" -> "AC". */
-function initials(name: string): string {
-  const parts = name.trim().split(/\s+/).filter(Boolean);
-  if (parts.length === 0) return "•";
-  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
-  return (parts[0][0] + parts[1][0]).toUpperCase();
 }
 
 /**
@@ -1849,11 +1841,16 @@ export default function Booker({
 
   const eventPanel = (
     <aside className={`border-b p-6 ${c.border} md:border-b-0 md:border-r`}>
+      {/* #2629: the Pennie mark, where the first build drew the organisation's
+          initials ("PE"), which meant nothing to a lead. Same slot and size, so
+          nothing else on the card moves. Named for the organisation only once its
+          name has loaded; until then it is decoration. */}
       <div
-        className={`mb-4 flex h-9 w-9 items-center justify-center rounded-full text-xs font-semibold ${c.avatar}`}
+        data-org-mark
+        className={`mb-4 flex h-9 w-9 items-center justify-center rounded-full ${c.avatar}`}
         style={confirmStyle}
       >
-        {meta ? initials(meta.orgName) : ""}
+        <PennieMark label={meta?.orgName || undefined} width={16} height={18} />
       </div>
       <h1 className={`mt-1 text-xl font-semibold leading-snug ${c.title}`}>
         {meta?.eventType.name ?? "Book a call"}
