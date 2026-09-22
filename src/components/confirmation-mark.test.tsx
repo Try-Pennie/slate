@@ -22,7 +22,11 @@ import { CONFIRMATION_MARK } from "@/lib/booking/confirmation-mark";
 
 /** What the real player was handed, so a test can drive its two outcomes. */
 const stub = vi.hoisted(() => ({
-  props: null as null | { onEnded: () => void; onFailed: () => void },
+  props: null as null | {
+    onDrawing: () => void;
+    onEnded: () => void;
+    onFailed: () => void;
+  },
   mounts: 0,
 }));
 
@@ -31,7 +35,11 @@ const stub = vi.hoisted(() => ({
 // dynamic import in ConfirmationMark is typechecked, so `tsc` fails if this and
 // the real module ever disagree about what is exported.
 vi.mock("@/components/ConfirmationMarkPlayer", () => ({
-  ConfirmationMarkPlayer: (props: { onEnded: () => void; onFailed: () => void }) => {
+  ConfirmationMarkPlayer: (props: {
+    onDrawing: () => void;
+    onEnded: () => void;
+    onFailed: () => void;
+  }) => {
     stub.props = props;
     stub.mounts += 1;
     return <canvas data-testid="mark-player" aria-hidden="true" />;
@@ -85,19 +93,54 @@ describe("confirmation mark (#2163, #2560)", () => {
     expect(screen.queryByTestId("mark-player")).toBeNull();
   });
 
-  it("keeps the still underneath while the player draws", async () => {
+  it("keeps the still until the player has actually painted, so nothing flashes empty", async () => {
     render(<ConfirmationMark />);
     await playerArrives();
 
+    // Mounted is not drawing. The player still has a wasm and 65 frames to
+    // fetch, and hiding the still the moment the component appears would leave
+    // an empty panel for exactly as long as that takes.
     expect(screen.getByTestId("mark-player")).not.toBeNull();
-    // Underneath, not instead of. That is what makes the ending a reveal rather
-    // than a swap, and it means nothing can flash empty in between.
+    expect(still()).not.toBeNull();
+  });
+
+  it("hides the still once the player is really drawing, because both layers are transparent", async () => {
+    render(<ConfirmationMark />);
+    await playerArrives();
+    act(() => stub.props!.onDrawing());
+
+    // THIS ASSERTION IS THE REVERSE OF THE ONE THIS FILE SHIPPED WITH, and the
+    // reversal is the point (#2163 -> #2560). While the mark was an opaque
+    // `<video>` on its own cream ground, a still underneath was invisible until
+    // the video faded, so "always in the tree" cost nothing and bought every
+    // fallback. #2560 made the animation a TRANSPARENT canvas and carried that
+    // structure over, so the premise that made it free was gone: the still was
+    // painted through the animation for the whole 2.167 seconds. Measured on the
+    // shipping assets, the still's coin draws 101px wide and the animation's
+    // draws 62px, so it never came close to covering it (L204).
+    expect(screen.getByTestId("mark-player")).not.toBeNull();
+    expect(still()).toBeNull();
+  });
+
+  it("brings the still back when the player dies after it has started drawing", async () => {
+    render(<ConfirmationMark />);
+    await playerArrives();
+    act(() => stub.props!.onDrawing());
+    expect(still()).toBeNull();
+
+    // Only reachable now that the still is hidden while drawing: a render error
+    // part way through used to land on a canvas with a coin already behind it.
+    // With the still gone it would leave an empty panel, so the failure path has
+    // to put it back rather than only unmounting the player.
+    act(() => stub.props!.onFailed());
+    expect(screen.queryByTestId("mark-player")).toBeNull();
     expect(still()).not.toBeNull();
   });
 
   it("gives way to the still coin when it ends, rather than resting on its own last frame", async () => {
     render(<ConfirmationMark />);
     await playerArrives();
+    act(() => stub.props!.onDrawing());
 
     expect(screen.getByTestId("confirmation-mark-layer").className).toContain("opacity-100");
 

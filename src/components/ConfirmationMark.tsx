@@ -27,6 +27,7 @@ function motionOnServer(): boolean {
 }
 
 type Player = ComponentType<{
+  onDrawing: () => void;
   onEnded: () => void;
   onFailed: () => void;
 }>;
@@ -55,16 +56,29 @@ async function loadPlayer(): Promise<Player> {
  * at full speed for somebody who has asked their system for less motion, with a
  * rule that reads as covering all motion sitting directly above it.
  *
- * **The still is ALWAYS in the tree, underneath.** That is what makes the ending
- * a reveal rather than a swap, and it is the whole answer to every way the player
- * can be absent: a chunk that never arrives, a wasm that will not load, an
- * animation that will not fetch, and a lead who asked for less motion all leave
- * the same correct picture rather than an empty panel.
+ * **The still stands behind every state EXCEPT the one where the canvas is
+ * really painting.** It is the whole answer to every way the player can be
+ * absent: a chunk that never arrives, a wasm that will not load, an animation
+ * that will not fetch, a render that dies part way, and a lead who asked for
+ * less motion all leave the same correct picture rather than an empty panel.
+ *
+ * It is hidden for the one state in between, and that is the #2560 regression
+ * Dan reported on 2026-09-22: "the checkmark video played over the still image.
+ * so I saw the video and the image at the same time". While the mark was an
+ * opaque `<video>` on its own cream ground, leaving the still underneath cost
+ * nothing, because the video covered it. The dotLottie canvas is TRANSPARENT and
+ * the structure was carried over with the premise that made it free (L204).
+ * Measured on the shipping assets: the animation's mark draws 62px wide in this
+ * 144px box and the still's draws 101px, so it never came close to covering it
+ * and both were on screen together for the whole 2.167 seconds.
+ *
+ * The hide waits for a PAINTED FRAME rather than for the player to mount, so the
+ * panel cannot flash empty while the wasm and the 65 frames are still arriving.
  */
 export function ConfirmationMark() {
   const playable = useSyncExternalStore(subscribe, prefersMotion, motionOnServer);
   const [player, setPlayer] = useState<Player | null>(null);
-  const [phase, setPhase] = useState<"playing" | "ended" | "failed">("playing");
+  const [phase, setPhase] = useState<"loading" | "drawing" | "ended" | "failed">("loading");
 
   useEffect(() => {
     if (!playable) return;
@@ -89,19 +103,24 @@ export function ConfirmationMark() {
   }, [playable]);
 
   const Player = player;
+  // The one state the still gets out of the way for. Everything else, including
+  // the settle after the animation completes, is the still's.
+  const drawing = phase === "drawing";
 
   return (
     <div className="mx-auto flex max-w-72 items-center justify-center px-6 py-5">
       <div className="relative h-36 w-36">
-        {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img
-          src={CONFIRMATION_MARK.still}
-          alt=""
-          aria-hidden="true"
-          width={CONFIRMATION_MARK.size}
-          height={CONFIRMATION_MARK.size}
-          className="absolute inset-0 h-36 w-36 object-contain"
-        />
+        {!drawing && (
+          /* eslint-disable-next-line @next/next/no-img-element */
+          <img
+            src={CONFIRMATION_MARK.still}
+            alt=""
+            aria-hidden="true"
+            width={CONFIRMATION_MARK.size}
+            height={CONFIRMATION_MARK.size}
+            className="absolute inset-0 h-36 w-36 object-contain"
+          />
+        )}
         {playable && Player && phase !== "failed" ? (
           // The positioning and the fade are on a layer THIS component owns.
           // DotLottieReact renders a wrapper of its own and puts `className` on
@@ -116,7 +135,15 @@ export function ConfirmationMark() {
               phase === "ended" ? "opacity-0" : "opacity-100"
             }`}
           >
-            <Player onEnded={() => setPhase("ended")} onFailed={() => setPhase("failed")} />
+            <Player
+              // `render` fires on every frame, and once more on the last one,
+              // which can land AFTER `complete`. Advancing only out of
+              // `loading` makes both harmless: the first frame moves it on and
+              // nothing later drags it back out of `ended`.
+              onDrawing={() => setPhase((p) => (p === "loading" ? "drawing" : p))}
+              onEnded={() => setPhase("ended")}
+              onFailed={() => setPhase("failed")}
+            />
           </div>
         ) : null}
       </div>
