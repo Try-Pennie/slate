@@ -275,13 +275,13 @@ eq(formatPhoneForDisplay("6317937858"), "(631) 793-7858", "ten bare digits too")
 eq(formatPhoneForDisplay("(631) 793-7858"), "(631) 793-7858", "an already formatted one is unchanged");
 eq(formatPhoneForDisplay("+1 631 793 7858"), "(631) 793-7858", "and a spaced one");
 
-// Anything that is not a whole US number is shown EXACTLY as stored. The typing
-// formatter caps at ten digits, so running it over a foreign number would print a
-// different, plausible American one after "will call you at", which is worse than
-// printing the stored form.
-eq(formatPhoneForDisplay("+44 20 7946 0958"), "+44 20 7946 0958", "a foreign number is shown as stored, never truncated");
-eq(formatPhoneForDisplay("215555"), "215555", "an unfinished one is shown as stored, never given a half bracket");
-eq(formatPhoneForDisplay("215-555-0100 x12"), "215-555-0100 x12", "an extension is kept rather than silently dropped");
+// Every number is shown in US form (#2619, Dan: "force us format. we should only
+// be getting us format anyway"). Every write path refuses a non-US number, and on
+// 2026-09-22 all 2,561 stored numbers were US shaped, so this decides only what an
+// older row outside that set would read as.
+eq(formatPhoneForDisplay("+44 20 7946 0958"), "(442) 079-4609", "a foreign number is forced into US form");
+eq(formatPhoneForDisplay("215555"), "(215) 555", "an unfinished one reads in US form too");
+eq(formatPhoneForDisplay("215-555-0100 x12"), "(215) 555-0100", "an extension is dropped, as everywhere else (#1425)");
 eq(formatPhoneForDisplay("  +16317937858 "), "(631) 793-7858", "surrounding space does not stop the formatting");
 eq(formatPhoneForDisplay("  "), null, "a blank number is no number, so the caller's fallback applies");
 eq(formatPhoneForDisplay(null), null, "and so is a missing one");

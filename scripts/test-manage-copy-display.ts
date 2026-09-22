@@ -36,8 +36,8 @@ eq(
 );
 eq(
   advisorWillCall("+44 20 7946 0958"),
-  "Your advisor will call you at +44 20 7946 0958.",
-  "a number the formatter cannot read as US is shown as stored, not truncated",
+  "Your advisor will call you at (442) 079-4609.",
+  "every number reads in US form, a foreign one included (#2619)",
 );
 
 for (const [key, text] of Object.entries(DONE_COPY)) {
