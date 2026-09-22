@@ -102,6 +102,7 @@ describe("manage page advisor wiring (#1338)", () => {
     });
     const props = await renderPage();
     expect(service.getBookingAdvisorName).toHaveBeenCalledWith(null);
+    expect(service.getBookingAdvisorPhoto).toHaveBeenCalledWith(null);
     expect(props?.advisorName).toBe("Aisha Bello");
   });
 

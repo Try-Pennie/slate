@@ -196,10 +196,10 @@ export default function ManageBooking({
    * matches the booker's own move flow rather than differing from it for no
    * reason anybody chose.
    */
+  const [selectedIso, setSelectedIso] = useState<string | null>(null);
   /** The photo was served and the browser could not draw it. Server side this is
    *  unknowable, so it is the client's own fallback to the initials. */
   const [photoBroken, setPhotoBroken] = useState(false);
-  const [selectedIso, setSelectedIso] = useState<string | null>(null);
   /** What `validateReason` refused on the last attempt at each action. */
   const [reschedReasonError, setReschedReasonError] = useState<string | null>(null);
   const [cancelReasonError, setCancelReasonError] = useState<string | null>(null);
