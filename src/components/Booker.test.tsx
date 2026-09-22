@@ -148,7 +148,7 @@ describe("Booker confirm", () => {
     expect(await screen.findByText("You're all set")).toBeTruthy();
   });
 
-  it("shows a 'still working' state while the confirm hangs, then a retryable error at the timeout", async () => {
+  it("moves from the first moment, says 'still working' at 10s, and becomes a retryable error at the timeout", async () => {
     vi.useFakeTimers();
     // Availability resolves; the POST only settles when its AbortSignal fires —
     // a wedged request the 20s timeout must convert into an error.
@@ -175,14 +175,28 @@ describe("Booker confirm", () => {
     fireEvent.click(screen.getByRole("button", { name: /confirm booking/i }));
     await act(async () => { await Promise.resolve(); }); // submit starts, watchdog arms
 
+    // The three states a time taking action has to keep apart, in order. STARTED
+    // is the one this shipped without: the label swapped and nothing moved for a
+    // full ten seconds, so a lead could not tell a request in flight from one
+    // that had died (Dan, 2026-09-22: "the loading felt stuck after I submitted
+    // my time. it wasn't stuck, it worked, but it didn't feel like it was
+    // moving"). Asserted on the real booker rather than only on the button,
+    // because the button cannot show a cue the call site never asks it for
+    // (L718).
+    expect(document.querySelector("[data-bob-dots]")).not.toBeNull();
     expect(screen.queryByText(/still working/i)).toBeNull();
     await act(async () => { vi.advanceTimersByTime(10000); });
     expect(screen.getByText(/still working/i)).toBeTruthy();
+    // Still alive is IN ADDITION to working, not instead of it.
+    expect(document.querySelector("[data-bob-dots]")).not.toBeNull();
 
     await act(async () => { await vi.advanceTimersByTimeAsync(10000); }); // trip 20s abort
     expect(screen.getByText(/something went wrong/i)).toBeTruthy();
     const confirm = screen.getByRole("button", { name: /confirm booking/i }) as HTMLButtonElement;
     expect(confirm.disabled).toBe(false);
+    // And FAILED stops claiming to be working, or the error and the cue would
+    // contradict each other on the same screen.
+    expect(document.querySelector("[data-bob-dots]")).toBeNull();
     vi.useRealTimers();
   });
 

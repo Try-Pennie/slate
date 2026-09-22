@@ -991,6 +991,7 @@ export default function Booker({
                         variant="primary"
                         type="submit"
                         disabled={savingCallPhone}
+                        busy={savingCallPhone}
                         style={confirmStyle}
                         data-testid="panel-primary"
                       >
@@ -1103,6 +1104,7 @@ export default function Booker({
                       variant="danger"
                       onClick={() => void cancelExistingCall()}
                       disabled={submitting || !cancelReasonValid}
+                      busy={submitting}
                     >
                       {submitting ? BOOKER_CANCEL_COPY.confirming : BOOKER_CANCEL_COPY.confirm}
                     </BookerButton>
@@ -1148,6 +1150,7 @@ export default function Booker({
                       variant={panelActionVariant}
                       onClick={() => void moveExistingCall()}
                       disabled={submitting || !moveReasonValid || !selectedSlot}
+                      busy={submitting}
                       style={panelActionStyle}
                       {...panelPrimaryProps(panelActionIsPrimary)}
                     >
@@ -1735,6 +1738,7 @@ export default function Booker({
             size="lg"
             onClick={submit}
             disabled={submitting}
+            busy={submitting}
             style={confirmStyle}
             className="group w-full gap-2 active:translate-y-px"
           >
