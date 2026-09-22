@@ -45,6 +45,7 @@ import {
   planOnboardingFlip,
   qualifiesForBooking,
   tieredButNotOnSales,
+  onSalesWithNoRecordedHold,
   type FlipReason,
 } from "@/lib/salesforce/onboarding";
 import { applyBookableByUserId, type BookableResult } from "@/lib/bookable/service";
@@ -53,6 +54,7 @@ import {
   type ActivationAllowance,
 } from "@/lib/bookable/activation-allowance";
 import { recordAudit } from "@/lib/audit";
+import { isMarkedRedistribute } from "@/lib/twilio/roster-plan";
 import { unwrap } from "@/lib/db/result";
 import { log } from "@/lib/log";
 import type { Attributes, Role, User } from "@/lib/db/types";
@@ -296,6 +298,13 @@ export interface SyncResult {
    * is waiting (L636).
    */
   tieredNotOnSales: number;
+  /**
+   * Rows on the Sales profile that are not bookable, not pending, not deactivated
+   * and not marked Redistribute, so nothing records why they are held (#2621).
+   * Counted, never flipped: the same state is a deliberate hold, and only a person
+   * can tell the two apart.
+   */
+  salesNotBookableUnexplained: number;
   /** Emails made bookable this run because Salesforce moved them to Sales or gave
    *  them a first debt team, through the same gated service the admin toggle uses. */
   bookableFlipped: string[];
@@ -512,6 +521,7 @@ export async function syncSalesforceAgents(over: Partial<SyncDeps> = {}): Promis
   const nowIso = deps.nowIso();
   let createdUntiered = 0;
   let tieredNotOnSales = 0;
+  let salesNotBookableUnexplained = 0;
 
   const inserts: Partial<User>[] = [];
   // Existing-agent field refreshes as upsert rows keyed on the id PK. `org_id`
@@ -550,6 +560,20 @@ export async function syncSalesforceAgents(over: Partial<SyncDeps> = {}): Promis
       // Read from the MERGED row, because the tiers come from Twilio now.
       const merged = mergeSfAttributes(current.attributes, attributes);
       if (tieredButNotOnSales(merged)) tieredNotOnSales += 1;
+      // #2621: judged AFTER this run's plan, so a row this run is about to flip
+      // (and mark pending) is not also reported as unexplained.
+      if (
+        plan.action === "none" &&
+        onSalesWithNoRecordedHold({
+          attributes: merged,
+          bookable: current.bookable === true,
+          deactivated: current.deactivated_at != null,
+          pending: current.bookable_pending_since != null,
+          markedRedistribute: isMarkedRedistribute(merged),
+        })
+      ) {
+        salesNotBookableUnexplained += 1;
+      }
       const row: Partial<User> = {
         id: current.id,
         org_id: org.id,
@@ -1179,6 +1203,7 @@ export async function syncSalesforceAgents(over: Partial<SyncDeps> = {}): Promis
     deactivationsRefusedAmbiguous: reapPlan.refused.length,
     createdUntiered,
     tieredNotOnSales,
+    salesNotBookableUnexplained,
     bookableFlipped,
     bookablePending,
     bookableDeferredToNextRun,

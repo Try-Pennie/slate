@@ -77,6 +77,34 @@ export function tieredButNotOnSales(attrs: Attributes | null | undefined): boole
   return Array.isArray(tiers) && tiers.length > 0;
 }
 
+/**
+ * Whether this row is on Sales, not bookable, and nothing on record says why
+ * (#2621).
+ *
+ * The flip below fires on a TRANSITION, which is what keeps it from overturning a
+ * hold somebody chose (L60). Its blind spot is every row that was ALREADY on Sales
+ * and not bookable when it shipped on 2026-09-08: they never see a transition, so
+ * no activation is ever attempted (L389). Three hires sat in that state for up to
+ * eighteen days while cal.com routed them leads, and were found only by the parity
+ * sweep.
+ *
+ * The same state is also a deliberate hold, so it is COUNTED every run rather than
+ * acted on (L636). A reason on record takes a row out of the count: a pending flip
+ * is already reported as pending, and a Redistribute mark says Slate took them out
+ * of the pool because of the Twilio tag. What is left is the set a person has to
+ * settle, one way or the other.
+ */
+export function onSalesWithNoRecordedHold(input: {
+  attributes: Attributes | null | undefined;
+  bookable: boolean;
+  deactivated: boolean;
+  pending: boolean;
+  markedRedistribute: boolean;
+}): boolean {
+  if (input.bookable || input.deactivated || input.pending || input.markedRedistribute) return false;
+  return qualifiesForBooking(input.attributes);
+}
+
 export type FlipReason = "sales-profile" | "retry";
 
 export interface OnboardingInput {
