@@ -42,15 +42,20 @@ export default async function ManagePage({
   // the booking was made: coverage reassignment and bulk reassign both move a
   // booking, so a stamped name would promise a lead one person and send another.
   // Null renders no name at all rather than substituting anything (L75).
-  const advisorName = found
-    ? await getBookingAdvisorName(found.booking.assigned_user_id ?? null)
-    : null;
-  // #2600: read live beside the name, for the same reason. Null on every way it
-  // can be unavailable, and the component draws the initials circle then, so
-  // this can never hold the page up or leave an empty frame.
-  const advisorPhotoUrl = found
-    ? await getBookingAdvisorPhoto(found.booking.assigned_user_id ?? null)
-    : null;
+  //
+  // The photo is read live BESIDE the name (#2600) for the same reason, and
+  // TOGETHER with it rather than after it: they are two independent reads keyed
+  // on the same assignee, so awaiting them in turn spent two round trips to
+  // answer one question, on a page a customer is waiting for. Null on every way
+  // the photo can be unavailable, and the component draws the initials circle
+  // then, so it can never hold the page up or leave an empty frame.
+  const assignedUserId = found?.booking.assigned_user_id ?? null;
+  const [advisorName, advisorPhotoUrl] = found
+    ? await Promise.all([
+        getBookingAdvisorName(assignedUserId),
+        getBookingAdvisorPhoto(assignedUserId),
+      ])
+    : [null, null];
 
   // #706: paint the theme at the document root so dark renders don't leave a
   // beige gutter behind the content card. Always standalone (never embedded).
