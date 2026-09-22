@@ -19,6 +19,8 @@
  * No `@/` imports, so scripts can drive it node-natively.
  */
 
+import { formatPhoneForDisplay } from "../phone-format.ts";
+
 // --- the link resolved to no booking ------------------------------------------
 
 /**
@@ -106,7 +108,9 @@ export const LIVE_COPY = {
  * cannot call you" is a different screen from "this might be wrong" (L10).
  */
 export function advisorWillCall(phone: string | null): string {
-  return `Your advisor will call you at ${phone ?? "the number you gave us"}.`;
+  // Formatted HERE rather than at each call site (#2616), so a caller handing over
+  // the stored `+1XXXXXXXXXX` still produces a sentence written for a person.
+  return `Your advisor will call you at ${formatPhoneForDisplay(phone) ?? "the number you gave us"}.`;
 }
 
 /**
@@ -155,7 +159,7 @@ export const MANAGE_PHONE_NOT_CHANGEABLE =
 
 /** The confirmation, naming the number that is now stored rather than the one typed. */
 export function phoneSaved(phone: string): string {
-  return `Saved. Your advisor will call you at ${phone}.`;
+  return `Saved. Your advisor will call you at ${formatPhoneForDisplay(phone) ?? phone}.`;
 }
 
 // --- before the call ----------------------------------------------------------
@@ -231,14 +235,18 @@ export function movedNote(attendeeEmail: string | null): string {
 // made and may want to reverse, the other is a call that took place. Offering
 // "grab a new time" to somebody whose call just happened reads as though we did
 // not notice it happened.
+//
+// Neither names "the same team" (#2615): a team is Slate's word for a routing
+// pool, no lead has ever been shown one, and the pool is resolved fresh at
+// booking time, so the phrase was a promise about machinery the reader cannot see.
 
 export const DONE_COPY = {
   cancelledHeading: "This booking is cancelled",
   happenedHeading: "This call has happened",
   cancelledBody:
-    "Changed your mind? You can grab a new time with the same team whenever you are ready.",
+    "Changed your mind? You can grab a new time whenever you are ready.",
   happenedBody:
-    "Need to talk again? You can book another time with the same team whenever you are ready.",
+    "Need to talk again? You can book another time whenever you are ready.",
   bookAgain: "Book a new time",
 } as const;
 

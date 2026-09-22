@@ -685,6 +685,12 @@ export function eventSummary(eventTypeName: string, attendeeName: string | null)
  * The Google event description, shown on the lead's calendar invite: phone
  * (when present) plus the self-serve manage link - the invite is the lead's
  * only email, so the reschedule/cancel link must ride along (#64).
+ *
+ * The phone is written AS STORED (`+1XXXXXXXXXX`), deliberately unlike the
+ * manage page, which formats it for reading (#2616). This line is read by the
+ * advisor, who taps it to dial, and the E.164 form is the one a dialler hands off
+ * most reliably; the manage page's sentence is read by the lead. The two differ on
+ * purpose, so do not "fix" this one to match.
  */
 export function eventDescription(
   phone: string | null,
