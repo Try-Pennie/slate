@@ -12,3 +12,4 @@ export { ClockIcon } from "./ClockIcon";
 export { GlobeIcon } from "./GlobeIcon";
 export { XIcon } from "./XIcon";
 export { PhoneOutlineIcon } from "./PhoneOutlineIcon";
+export { PennieMark } from "./PennieMark";
