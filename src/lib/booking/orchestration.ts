@@ -4197,7 +4197,8 @@ export async function reassignBooking(
     agent_name: agent.name,
     agent_email: agent.email,
     gcal_event_id: newEventId,
-    status: "rescheduled" as const,
+    // The status is left as it was (#2617): the swap no longer writes it, because
+    // a reassign hands the same call to another advisor and the lead did nothing.
     allow_double_book: true,
     // Best-effort local view of the trace for the returned object (the swap owns
     // the authoritative append server-side, #519; this value is not surfaced to

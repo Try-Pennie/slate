@@ -750,7 +750,7 @@ export function makeDeps(opts: FakeOpts) {
         agent_name: agentName,
         agent_email: agentEmail,
         gcal_event_id: gcalEventId,
-        status: "rescheduled",
+        // No status write, as in the real RPC (#2617).
         allow_double_book: true,
         routing_trace: newRoutingTrace,
       });
