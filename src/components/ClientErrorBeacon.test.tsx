@@ -115,3 +115,25 @@ describe("ClientErrorBeacon", () => {
     expect(container.innerHTML).toBe("");
   });
 });
+
+// #2641: an origin mismatch is two bare origins, never free text, so the contact
+// scrub must not touch it: a preview host carrying seven digits would otherwise be
+// rewritten and the server could no longer read the pair.
+describe("postClientReport and the origin mismatch report", () => {
+  it("sends the pair exactly as built, digits and all", async () => {
+    const { postClientReport } = await import("./ClientErrorBeacon");
+    const sent = vi.fn(async (_url: RequestInfo | URL, _init?: RequestInit) => new Response(null, { status: 204 }));
+    global.fetch = sent as unknown as typeof fetch;
+    const message = "declared https://trypennie.com, framed by https://pr-1234567.preview.example";
+    postClientReport({ kind: "origin_mismatch", message, page: "/book/411" });
+    expect(JSON.parse(String(sent.mock.calls[0][1]?.body)).message).toBe(message);
+  });
+
+  it("still scrubs every other kind", async () => {
+    const { postClientReport } = await import("./ClientErrorBeacon");
+    const sent = vi.fn(async (_url: RequestInfo | URL, _init?: RequestInit) => new Response(null, { status: 204 }));
+    global.fetch = sent as unknown as typeof fetch;
+    postClientReport({ kind: "error", message: "failed for 2155550100", page: "/book/411" });
+    expect(JSON.parse(String(sent.mock.calls[0][1]?.body)).message).not.toContain("2155550100");
+  });
+});
