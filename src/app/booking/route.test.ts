@@ -27,6 +27,10 @@ const service = vi.hoisted(() => {
   class ExistingCallCheckUnavailableError extends Error {}
   return {
     createBooking: vi.fn(),
+    bookingDetailExtras: vi.fn((_booking: unknown) => ({
+      contact: { name: "Kris", email: "k@x.com", phone: "+12035615295" },
+      calendarLinks: { google: "g", outlook: "o", office365: "m", ics: "i" },
+    })),
     // Mirrors DuplicateWarning in src/lib/booking/orchestration.ts: a weak
     // one-signal identity match arrives as the bare `disclose: false` (#1340).
     findDuplicateBookingWarning: vi.fn(
@@ -299,6 +303,22 @@ describe("POST /booking (embed) error mapping", () => {
     const res = await post(VALID_BODY);
     expect(res.status).toBe(200);
     expect(await res.json()).toMatchObject({ id: "bk-1" });
+  });
+
+  // #2643: the Booker posts this response to the host page, so the host learns the
+  // add to calendar links however it ends the booking. The contact is deliberately
+  // NOT here: this answer travels to the host as a browser message, the host already
+  // holds the lead's contact, and trypennie reads it server side through the lookup.
+  it("carries the calendar links, and not the lead's contact", async () => {
+    service.createBooking.mockResolvedValue({
+      booking: { id: "bk-1", starts_at: "2026-07-01T15:00:00.000Z", ends_at: "2026-07-01T15:30:00.000Z" },
+      manageUrl: "https://slate.test/booking/manage/tok",
+    });
+    const res = await post(VALID_BODY);
+    const body = await res.json();
+    expect(body.calendarLinks).toEqual({ google: "g", outlook: "o", office365: "m", ics: "i" });
+    expect(body).not.toHaveProperty("contact");
+    expect(service.bookingDetailExtras.mock.calls.at(-1)?.[0]).toMatchObject({ id: "bk-1" });
   });
 
   it("passes the lead's other active booking through as duplicateWarning (#626)", async () => {

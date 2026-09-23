@@ -12,6 +12,7 @@ import {
   nearestSlots,
   lookupPersonBookings,
   getPersonBookingById,
+  bookingIcs,
   cancelDirectBooking,
   listBookings,
   processPendingEventDeletions,
@@ -570,6 +571,54 @@ async function run() {
       );
     } catch (e) { threwOwner = e instanceof BookingNotFoundError; }
     assert(threwOwner, "get-by-id wrong owner → BookingNotFoundError");
+  }
+
+  // --- #2643: the by id lookup carries what the booking confirmed page renders ---
+  // The lead's contact (the Client rows and the text reminder card) and the four
+  // add to calendar links. Safe to return here because this lookup already
+  // requires a STRONG id (externalId / salesforceId) matching the booking.
+  {
+    const bk = makeBooking({ id: "bkC", external_id: "ext-1", status: "confirmed", manage_token: "tokC", agent_name: "Dana Lee" });
+    const { deps } = makeDeps({ bookingById: { booking: bk, bucket, eventType } });
+    const view = await getPersonBookingById(
+      { bookingId: "bkC", identity: { externalId: "ext-1", salesforceId: null }, status: null },
+      deps,
+    );
+    assert(
+      view.contact.name === "Kris" && view.contact.email === "k@x.com" && view.contact.phone === "+12035615295",
+      "the lookup returns the lead's own contact as stored",
+    );
+    assert(view.calendarLinks !== null, "an active booking carries calendar links");
+    assert(
+      view.calendarLinks?.ics === "https://slate.test/api/bookings/tokC/ics",
+      "the ICS link is served by the manage token, so a browser can open it with no API key",
+    );
+    assert(
+      new URL(view.calendarLinks!.google).searchParams.get("dates") === "20260608T130000Z/20260608T133000Z",
+      "the Google link carries the booking's own time",
+    );
+    assert(view.calendarLinks!.google.includes("Dana"), "and names the advisor");
+  }
+  {
+    // A cancelled call must not be offered as something to add to a calendar.
+    const bk = makeBooking({ id: "bkD", external_id: "ext-1", status: "cancelled" });
+    const { deps } = makeDeps({ bookingById: { booking: bk, bucket, eventType } });
+    const view = await getPersonBookingById(
+      { bookingId: "bkD", identity: { externalId: "ext-1", salesforceId: null }, status: null },
+      deps,
+    );
+    assert(view.calendarLinks === null, "a cancelled booking carries no calendar links");
+    assert(view.contact.name === "Kris", "but still carries the contact, which the page shows either way");
+  }
+  {
+    // The ICS the manage token serves describes the SAME call the links do.
+    const bk = makeBooking({ id: "bkI", manage_token: "tokI", agent_name: "Dana Lee", reschedule_seq: 3 });
+    const ics = bookingIcs(bk, "https://slate.test", "2026-09-23T12:00:00.000Z").replace(/\r\n /g, "");
+    assert(ics.includes("UID:bkI@slate.trypennie.app"), "the ICS is keyed on the booking");
+    assert(ics.includes("DTSTART:20260608T130000Z") && ics.includes("DTEND:20260608T133000Z"), "at the booking's own time");
+    assert(ics.includes("SEQUENCE:3"), "and carries the reschedule count");
+    assert(ics.includes("URL:https://slate.test/booking/manage/tokI"), "and links back to the manage page");
+    assert(ics.includes("Dana Lee"), "and names the advisor");
   }
   {
     const { deps } = makeDeps({ bookingById: null });

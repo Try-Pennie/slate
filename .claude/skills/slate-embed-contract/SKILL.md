@@ -91,7 +91,19 @@ Do not refactor the `Cal` queue / param / message plumbing while restyling.
 4. **postMessage contract** (Booker <-> widget.js):
    - `slate:resize { height }` - Booker posts `scrollHeight`; widget sets iframe height
    - `slate:bookingSuccessful { data }` - widget re-emits the cal-style
-     `bookingSuccessful` host event
+     `bookingSuccessful` host event. `data` is `{ booking, salesforceId }`, where
+     `booking` is the Booker's confirm response: `id`, `startsAt`, `endsAt`,
+     `manageUrl`, `duplicateWarning` and `calendarLinks` (#2643). The lead's contact
+     is deliberately NOT in it: the host already holds it, and a browser message is
+     the wrong channel for more personal data.
+   - **The host ends the booking by redirecting, not Slate** (Dan, 2026-09-23).
+     trypennie navigates the whole window to
+     `/my-offers/result/booking-confirmed?bookingId=<data.booking.id>&submissionId=<id>`
+     on this message, the way cal.com's `successRedirectUrl` does today, and that
+     page reads the booking server side through the key authed by id lookup
+     (`docs/booking-api.md` section 3), which carries the contact and the calendar
+     links. So `data.booking.id` is load bearing: renaming or dropping it breaks
+     the confirmation page for every Slate booking.
    - If a loading state needs a new signal, **ADD** `slate:ready` -- do NOT rename
      or drop the existing two.
 

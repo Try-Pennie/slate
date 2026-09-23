@@ -397,6 +397,25 @@ export function inviteOnItsWay(email: string): string {
   return `A calendar invite is on its way to ${email || "your email"}.`;
 }
 
+/**
+ * The entry a lead adds to their OWN calendar (#2643): the Google, Outlook and
+ * Office 365 links and the ICS file all read these. Written from the lead's side,
+ * unlike the invite on the advisor's calendar, which names the lead. The advisor
+ * is named when we hold the name, because a call from a named person is harder
+ * to ignore than one from an unknown number.
+ */
+export const CALENDAR_COPY = {
+  title: (agentName: string | null): string =>
+    agentName ? `Pennie call with ${agentName}` : "Pennie call with your loan advisor",
+  /** What the ICS link answers when there is no call to add (#2643). */
+  // Pennie sends no confirmation email (#64, #2364), so the recovery names the
+  // calendar invitation the advisor sent, which is where the details really are.
+  icsNotFound: "We couldn't find that call. The calendar invitation your advisor sent has its details.",
+  icsCancelled: "This call was cancelled, so there is nothing to add to your calendar.",
+  description: (manageUrl: string): string =>
+    `Your Pennie loan advisor will call you at this time.\nReschedule or cancel: ${manageUrl}`,
+} as const;
+
 /** What assistive tech hears on the confirmation (#633). */
 export function confirmedAnnouncement(day: string, time: string, zoneLabel: string): string {
   return `Booked. ${day} at ${time} ${zoneLabel}. A calendar invite is on its way.`;

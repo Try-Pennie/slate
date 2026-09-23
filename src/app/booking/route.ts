@@ -2,6 +2,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import { z } from "zod";
 import {
   createBooking,
+  bookingDetailExtras,
   findDuplicateBookingWarning,
   ExistingCallError,
   ExistingCallCheckUnavailableError,
@@ -261,6 +262,11 @@ async function handlePost(req: NextRequest) {
       endsAt: booking.ends_at,
       manageUrl,
       duplicateWarning,
+      // #2643: the add to calendar links, from the one builder the booking lookup
+      // uses. The Booker posts this response to the host page, so the host learns
+      // them however it ends the booking. The lead's contact is deliberately left
+      // off: this travels as a browser message to a host that already holds it.
+      calendarLinks: bookingDetailExtras(booking).calendarLinks,
     });
   } catch (err) {
     // The lead already has an active call, so nothing was created (#1337). Refund

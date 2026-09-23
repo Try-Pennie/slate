@@ -36,6 +36,9 @@ const service = vi.hoisted(() => {
     bookViaApi: vi.fn(),
     previewBooking: vi.fn(),
     listBookings: vi.fn(),
+    getPersonBookingById: vi.fn(),
+    lookupPersonBookings: vi.fn(),
+    bookingDetailExtras: vi.fn(),
     SlotUnavailableError,
     VerifyUnavailableError,
     NoEligibleAgentsError,
@@ -620,5 +623,90 @@ describe("POST /api/bookings: the bucket the lead actually landed in (#1515)", (
 
     expect(body.bucket.code).toBeNull();
     expect(body.bucket.requestedCode).toBe("411");
+  });
+});
+
+// #2643: trypennie's booking confirmed page renders the lead's contact and four add
+// to calendar links. They ride on the confirm response too, so a caller learns them
+// whether it fetches the booking afterwards or not, and from ONE builder.
+describe("POST /api/bookings confirmation extras (#2643)", () => {
+  const EXTRAS = {
+    contact: { name: "Kris", email: "k@x.com", phone: "+12035615295" },
+    calendarLinks: { google: "g", outlook: "o", office365: "m", ics: "i" },
+  };
+  beforeEach(() => {
+    env.bookingApiKeyPrimary.mockReturnValue("real-secret");
+    env.bookingApiKeySecondary.mockReturnValue("");
+    rateLimit.allowRequest.mockResolvedValue(true);
+    rateLimit.bookingApiWriteWithinLimit.mockResolvedValue(true);
+    rateLimit.bookingApiIpWithinLimit.mockResolvedValue(true);
+    service.bookingDetailExtras.mockReset();
+    service.bookingDetailExtras.mockReturnValue(EXTRAS);
+  });
+
+  it("carries the contact and calendar links on every outcome that booked this caller's lead", async () => {
+    for (const outcome of ["created", "rescheduled", "deduped"]) {
+      service.bookViaApi.mockResolvedValue(result(outcome));
+      const res = await post("Bearer real-secret", VALID_BODY);
+      const body = await res.json();
+      expect(body.booking).toMatchObject({ id: "bk-1", ...EXTRAS });
+    }
+    // Built from the booking the response names, not from the request.
+    expect(service.bookingDetailExtras.mock.calls[0][0]).toMatchObject({ id: "bk-1" });
+  });
+
+  it("carries NEITHER on confirm_required, where the booking may be somebody else's (#1340)", async () => {
+    service.bookViaApi.mockResolvedValue(result("confirm_required"));
+    const res = await post("Bearer real-secret", VALID_BODY);
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body.booking).not.toHaveProperty("contact");
+    expect(body.booking).not.toHaveProperty("calendarLinks");
+    expect(service.bookingDetailExtras).not.toHaveBeenCalled();
+  });
+});
+
+// #2645 asked for every booking API request to be attributable to its caller. A
+// successful lookup wrote no line at all, so the first time a partner calls, only a
+// log line saying WHICH key it presented can show its key was set correctly.
+describe("GET /api/bookings lookup attribution (#2643, #2645)", () => {
+  beforeEach(() => {
+    env.bookingApiKeyPrimary.mockReturnValue("real-secret");
+    env.bookingApiKeySecondary.mockReturnValue("");
+    rateLimit.allowRequest.mockResolvedValue(true);
+    rateLimit.bookingApiReadWithinLimit.mockResolvedValue(true);
+    service.getPersonBookingById.mockReset();
+    service.getPersonBookingById.mockResolvedValue({ id: "bk-1" });
+    service.lookupPersonBookings.mockReset();
+    service.lookupPersonBookings.mockResolvedValue([]);
+  });
+
+  function lookup(query: string) {
+    return GET(new Request(`http://localhost/api/bookings?${query}`, { headers: { authorization: "Bearer real-secret" } }) as never);
+  }
+
+  it("logs the caller on a by id lookup, at a queryable level", async () => {
+    const info = vi.spyOn(console, "info").mockImplementation(() => {});
+    const res = await lookup("externalId=00Q1&bookingId=bk-1");
+    expect(res.status).toBe(200);
+    expect(info).toHaveBeenCalledWith(expect.stringContaining('msg="lookup"'));
+    expect(info).toHaveBeenCalledWith(expect.stringContaining('key="shared:primary"'));
+    expect(info).toHaveBeenCalledWith(expect.stringContaining('mode="by_id"'));
+    info.mockRestore();
+  });
+
+  it("logs the caller on a list page too", async () => {
+    const info = vi.spyOn(console, "info").mockImplementation(() => {});
+    service.listBookings.mockResolvedValue({ items: [], nextCursor: null });
+    await lookup("status=confirmed");
+    expect(info).toHaveBeenCalledWith(expect.stringContaining('mode="list"'));
+    info.mockRestore();
+  });
+
+  it("logs the caller on a per person lookup too", async () => {
+    const info = vi.spyOn(console, "info").mockImplementation(() => {});
+    await lookup("externalId=00Q1");
+    expect(info).toHaveBeenCalledWith(expect.stringContaining('mode="person"'));
+    info.mockRestore();
   });
 });

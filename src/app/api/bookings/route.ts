@@ -9,6 +9,7 @@ import {
   lookupPersonBookings,
   getPersonBookingById,
   listBookings,
+  bookingDetailExtras,
   SlotUnavailableError,
   VerifyUnavailableError,
   NoEligibleAgentsError,
@@ -123,6 +124,11 @@ async function handlePost(req: NextRequest) {
         status: result.booking.status,
         agent: { name: result.booking.agent_name, email: result.booking.agent_email },
         manageUrl: result.manageUrl,
+        // #2643: the lead's contact and the add to calendar links, from the same
+        // builder the by id lookup uses. Withheld on confirm_required, where the
+        // booking named is the one a WEAK match found and may belong to somebody
+        // else (#1340): that answer must not hand over another person's phone.
+        ...(result.outcome === "confirm_required" ? {} : bookingDetailExtras(result.booking)),
       },
       // #1515: WHICH TEAM OWNS THE LEAD. The caller is the system of record for
       // that, and until now had to infer it from the agent, which breaks the
@@ -231,6 +237,7 @@ async function handleGet(req: NextRequest) {
       // refusal: api_query_invalid
       return NextResponse.json({ error: parsed.error, code: "VALIDATION" }, { status: 400 });
     }
+    log.info("booking-api", { msg: "lookup", key: authd.keyId, mode: "list" });
     // #1675: an unreadable page is refused, never answered as an empty one. The
     // caller pages this endpoint, so `bookings: []` with a null cursor is the
     // answer "that is everything" and it moves its watermark past bookings
@@ -284,6 +291,10 @@ async function handleGet(req: NextRequest) {
     return NextResponse.json({ error: parsed.error, code: "VALIDATION" }, { status: 400 });
   }
   const { externalId, salesforceId, bookingId, status } = parsed.value;
+  // #2645: a successful read names its caller, so the first call from a newly
+  // keyed partner shows which key it presented. Refusals are logged by the
+  // authorizer; this is the success half.
+  log.info("booking-api", { msg: "lookup", key: authd.keyId, mode: bookingId ? "by_id" : "person" });
   try {
     if (bookingId) {
       const booking = await getPersonBookingById({ bookingId, identity: { externalId, salesforceId }, status });

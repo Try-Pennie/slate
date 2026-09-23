@@ -2770,6 +2770,17 @@ export function getBookingByToken(token: string): Promise<BookingContext | null>
   return orchestration.getBookingByToken(token, realDeps());
 }
 
+/** The lead's contact and add to calendar links for one booking (#2643), on this
+ *  deployment's own base URL. */
+export function bookingDetailExtras(b: Booking) {
+  return orchestration.bookingDetailExtras(b, appUrl());
+}
+
+/** The ICS file for one booking (#2643), stamped with the moment it was made. */
+export function bookingIcs(b: Booking, stampIso: string): string {
+  return orchestration.bookingIcs(b, appUrl(), stampIso);
+}
+
 /**
  * The name of the advisor a booking is currently with, for the manage page
  * (#1338), or null when it cannot be resolved.
