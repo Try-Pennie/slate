@@ -659,7 +659,7 @@ export default function Booker({
         if (embedded) {
           postToParent({
             type: "slate:bookingSuccessful",
-            data: { booking: data, salesforceId },
+            data: { booking: data, salesforceId, outcome: "created" },
           });
         }
       } else if (status === 409 && data.existingCall) {
@@ -819,7 +819,10 @@ export default function Booker({
     setError(null);
     try {
       const { ok, status, data } = await postJson<{
+        id?: string;
         startsAt?: string;
+        endsAt?: string;
+        manageUrl?: string;
         error?: string;
         reason?: string;
         contactChanged?: { name: boolean; email: boolean; phone: boolean };
@@ -851,6 +854,17 @@ export default function Booker({
           manageUrl: null,
           contactChanged: data.contactChanged ?? null,
         });
+        // #2644: the same message a fresh booking posts, so a host that ends the
+        // booking by redirecting on it (trypennie does, to its booking confirmed
+        // page, looked up by data.booking.id) ends a moved call the same way.
+        // `outcome` lets a host tell the two apart if it wants to; one that does
+        // not gets one event either way.
+        if (embedded) {
+          postToParent({
+            type: "slate:bookingSuccessful",
+            data: { booking: data, salesforceId, outcome: "rescheduled" },
+          });
+        }
         return;
       }
       // Nobody was holding that slot during the decision, so it can go. Say so

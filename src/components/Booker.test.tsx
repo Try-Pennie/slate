@@ -1241,6 +1241,87 @@ describe("Booker embed postMessage origin (#593)", () => {
     postSpy.mockRestore();
   });
 
+  // #2644: the host ends a Slate booking by redirecting the whole window to its own
+  // booking confirmed page on this message. A lead who MOVES the call they already
+  // have experiences that as the same action, so the move must post the same
+  // message, carrying the booking id the page looks the booking up by.
+  const successMessages = (spy: { mock: { calls: unknown[][] } }) =>
+    spy.mock.calls.filter((c) => (c[0] as { type?: string })?.type === "slate:bookingSuccessful");
+
+  it("posts the fresh booking's success with its id and outcome created", async () => {
+    global.fetch = vi.fn(async (url: RequestInfo | URL) => {
+      if (String(url).includes("/api/availability")) return { ok: true, json: async () => availability } as Response;
+      return { ok: true, status: 200, json: async () => ({ id: "bk-new", startsAt: slotIso, manageUrl: "https://slate.test/booking/manage/t" }) } as Response;
+    }) as unknown as typeof fetch;
+    const postSpy = vi.spyOn(window.parent, "postMessage");
+    render(<Booker {...baseProps} embedded parentOrigin="https://host.test" />);
+    await fillAndConfirm();
+    await screen.findByText("You're all set");
+    const [msg] = successMessages(postSpy);
+    expect(msg?.[0]).toMatchObject({ data: { booking: { id: "bk-new" }, outcome: "created" } });
+    postSpy.mockRestore();
+  });
+
+  function moveInEmbed(reschedule: Record<string, unknown>, embedded = true) {
+    global.fetch = vi.fn(async (url: RequestInfo | URL) => {
+      const u = String(url);
+      if (u.includes("/api/availability")) return { ok: true, json: async () => availability } as Response;
+      if (u.includes("/reschedule")) return { ok: true, status: 200, json: async () => reschedule } as Response;
+      throw new Error(`unexpected request ${u}`);
+    }) as unknown as typeof fetch;
+    render(
+      <Booker
+        {...baseProps}
+        embedded={embedded}
+        parentOrigin="https://host.test"
+        salesforceId="003xx"
+        landingCall={{ disclose: true, startsAt: slotIso, advisorName: null, manageToken: "tok-old", mayCancel: true, phone: null }}
+      />,
+    );
+  }
+
+  async function moveTheCall() {
+    await screen.findByText("You already have a call booked");
+    fireEvent.click(screen.getByRole("button", { name: MOVE_COPY.pickAnotherTime }));
+    await pickFirstDay();
+    await userEvent.click(await screen.findByRole("button", { name: /:\d{2}/ }));
+    await screen.findByText(MOVE_COPY.reasonLegend);
+    fireEvent.click(screen.getAllByRole("radio")[0]);
+    fireEvent.click(screen.getByRole("button", { name: /^Move my call to/ }));
+  }
+
+  it("posts the same success message when the lead moves the call they already have", async () => {
+    const moved = {
+      id: "bk-old",
+      startsAt: slotIso,
+      endsAt: slotIso,
+      manageUrl: "https://slate.test/booking/manage/tok-old",
+      calendarLinks: { google: "g", outlook: "o", office365: "m", ics: "i" },
+    };
+    const postSpy = vi.spyOn(window.parent, "postMessage");
+    moveInEmbed(moved);
+    await moveTheCall();
+    await waitFor(() => expect(successMessages(postSpy)).toHaveLength(1));
+    const [msg] = successMessages(postSpy);
+    expect(msg![1]).toBe("https://host.test");
+    // The whole move response as `booking`, exactly as the fresh path posts its
+    // confirm response, so the host reads data.booking.id either way.
+    expect(msg![0]).toEqual({
+      type: "slate:bookingSuccessful",
+      data: { booking: moved, salesforceId: "003xx", outcome: "rescheduled" },
+    });
+    postSpy.mockRestore();
+  });
+
+  it("posts nothing for a move outside an embed", async () => {
+    const postSpy = vi.spyOn(window.parent, "postMessage");
+    moveInEmbed({ id: "bk-old", startsAt: slotIso }, false);
+    await moveTheCall();
+    await screen.findByText("You're all set");
+    expect(successMessages(postSpy)).toHaveLength(0);
+    postSpy.mockRestore();
+  });
+
   it("does NOT broadcast bookingSuccessful when the parent origin is unknown", async () => {
     global.fetch = availabilityOnlyFetch();
     const postSpy = vi.spyOn(window.parent, "postMessage");

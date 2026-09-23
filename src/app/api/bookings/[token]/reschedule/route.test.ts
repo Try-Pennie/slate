@@ -34,6 +34,10 @@ const service = vi.hoisted(() => {
   return {
     ContactRefusedError,
     rescheduleBooking: vi.fn(),
+    bookingDetailExtras: vi.fn((_booking: unknown) => ({
+      contact: { name: "Kris", email: "k@x.com", phone: "+12035615295" },
+      calendarLinks: { google: "g", outlook: "o", office365: "m", ics: "i" },
+    })),
     RescheduleConflictError,
     SlotUnavailableError,
     VerifyUnavailableError,
@@ -168,6 +172,23 @@ describe("POST /bookings/[token]/reschedule", () => {
     const res = await POST(req({ start: "2026-07-01T15:00:00.000Z", reason: "schedule_conflict" }), params);
     expect(res.status).toBe(200);
     expect((await res.json()).startsAt).toBe("2026-07-01T15:00:00.000Z");
+  });
+
+  // #2644: the Booker posts this response to the host as the moved call's success
+  // message, so it carries what a fresh booking's does: the id the host's booking
+  // confirmed page looks the call up by, and the add to calendar links at the NEW
+  // time. The contact stays off it, as it does on the fresh booking's (#2643).
+  it("returns the id and the calendar links for the moved call, and not the contact", async () => {
+    service.rescheduleBooking.mockResolvedValueOnce({
+      booking: { id: "bk1", starts_at: "2026-07-01T15:00:00.000Z", ends_at: "2026-07-01T15:30:00.000Z" },
+      manageUrl: "https://slate.test/booking/manage/tok1",
+    });
+    const res = await POST(req({ start: "2026-07-01T15:00:00.000Z", reason: "schedule_conflict" }), params);
+    const body = await res.json();
+    expect(body.id).toBe("bk1");
+    expect(body.calendarLinks).toEqual({ google: "g", outlook: "o", office365: "m", ics: "i" });
+    expect(body).not.toHaveProperty("contact");
+    expect(service.bookingDetailExtras.mock.calls.at(-1)?.[0]).toMatchObject({ id: "bk1" });
   });
 
   // #2164: a lead who comes back and types different details is correcting them,

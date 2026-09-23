@@ -27,6 +27,7 @@ const service = vi.hoisted(() => {
   class ContactRefusedError extends Error {}
   return {
     rescheduleBooking: vi.fn(),
+    bookingDetailExtras: vi.fn((_booking: unknown) => ({ contact: { name: null, email: null, phone: null }, calendarLinks: null })),
     ContactRefusedError,
     RescheduleConflictError,
     SlotUnavailableError,

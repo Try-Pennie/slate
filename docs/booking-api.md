@@ -363,7 +363,9 @@ two fields below.
 - **`calendarLinks` is `null` on a cancelled booking**: there is nothing to add.
 
 This is what trypennie's booking confirmed page reads for a Slate booking: the
-widget's `bookingSuccessful` event carries the booking id, the page redirects to
+widget's `bookingSuccessful` event carries the booking id (for a fresh booking
+and for a lead moving the call they already have, told apart by `data.outcome`,
+`created` or `rescheduled`, #2644), the page redirects to
 `/my-offers/result/booking-confirmed?bookingId=<id>&submissionId=<id>`, and that
 page fetches this lookup server side with its own key.
 
