@@ -681,6 +681,16 @@ export const ALERT_CATALOG: AlertEntry[] = [
 
   // --- Info: never needed action, so never announces recovery ---------------
   {
+    key: "embed_origin_mismatch",
+    kind: "info",
+    why:
+      "An embedding host declared a different origin from the one that framed the " +
+      "booker (#2641), so the browser drops the resize and the success message on that " +
+      "page. Bookings still complete inside the embed, so nobody is woken, and the fix " +
+      "is on the host's side. There is no all-clear worth sending: a correctly " +
+      "configured host sends no report at all, and absence of reports is the healthy state.",
+  },
+  {
     key: "beyond_overflow_rate",
     kind: "info",
     why:

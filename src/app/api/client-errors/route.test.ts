@@ -35,7 +35,10 @@ const countBoundaryCatch = vi.hoisted(() =>
 const clientIp = vi.hoisted(() => vi.fn(() => "1.2.3.4"));
 
 vi.mock("@/lib/api/errors", () => ({ reportInternalError }));
-vi.mock("@/lib/notify/dispatch", () => ({ sendThrottledAlert }));
+const sendThrottledInfo = vi.hoisted(() =>
+  vi.fn(async (_key: string, _cooldownMs: number, _text: string) => {}),
+);
+vi.mock("@/lib/notify/dispatch", () => ({ sendThrottledAlert, sendThrottledInfo }));
 vi.mock("@/lib/api/boundary-count", () => ({
   countBoundaryCatch,
   BOUNDARY_WINDOW_MS: 30 * 60_000,
@@ -232,5 +235,63 @@ describe("POST /api/client-errors", () => {
       { kind: "address", ip: "1.2.3.4", policy: CLIENT_ERROR_ADDRESS_POLICY },
       expect.any(Array),
     );
+  });
+});
+
+// #2641: a host that declared a different origin from the one that framed the
+// Booker loses the resize and the success message for every lead, with nothing
+// logged by the browser. The page reports the pair; this is what the server does
+// with it. It is NOT an internal error, and must not be worded as one (L11).
+describe("POST /api/client-errors origin mismatch (#2641)", () => {
+  const MISMATCH = {
+    kind: "origin_mismatch",
+    message: "declared https://trypennie.com, framed by https://www.trypennie.com",
+    page: "/book/411",
+  };
+
+  it("sends one throttled info message naming both origins, and no internal error", async () => {
+    const res = await post(MISMATCH);
+    expect(res.status).toBe(204);
+    expect(reportInternalError).not.toHaveBeenCalled();
+    expect(sendThrottledAlert).not.toHaveBeenCalled();
+    expect(sendThrottledInfo).toHaveBeenCalledTimes(1);
+    const [key, cooldown, text] = sendThrottledInfo.mock.calls[0];
+    // One fixed key, so a public endpoint cannot mint a key per forged pair.
+    expect(key).toBe("embed_origin_mismatch");
+    expect(cooldown).toBeGreaterThan(0);
+    expect(text).toContain("https://trypennie.com");
+    expect(text).toContain("https://www.trypennie.com");
+  });
+
+  it("drops a report whose message is not exactly two origins, so free text never reaches Slack", async () => {
+    const res = await post({ ...MISMATCH, message: "declared https://a.test, framed by <!channel> https://b.test" });
+    expect(res.status).toBe(204);
+    expect(sendThrottledInfo).not.toHaveBeenCalled();
+    expect(reportInternalError).not.toHaveBeenCalled();
+  });
+
+  it("still answers 204 when Slack cannot be reached, and logs that it could not tell anybody", async () => {
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    sendThrottledInfo.mockRejectedValueOnce(new Error("slack 503"));
+    const res = await post(MISMATCH);
+    expect(res.status).toBe(204);
+    expect(logged).toHaveBeenCalledWith(expect.stringContaining("origin mismatch info failed"), expect.anything());
+    // The mismatch itself was logged before the send was attempted, so the pair is
+    // on the record even when the message is not.
+    logged.mockRestore();
+  });
+
+  it("logs the pair on every report, whether or not the message is sent", async () => {
+    const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
+    await post(MISMATCH);
+    expect(warned).toHaveBeenCalledWith(expect.stringContaining('msg="embed origin mismatch"'));
+    expect(warned).toHaveBeenCalledWith(expect.stringContaining('framed_by="https://www.trypennie.com"'));
+    warned.mockRestore();
+  });
+
+  it("is still refused by the rate limiter first", async () => {
+    allowRequest.mockResolvedValue(false);
+    await post(MISMATCH);
+    expect(sendThrottledInfo).not.toHaveBeenCalled();
   });
 });

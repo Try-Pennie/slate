@@ -108,6 +108,12 @@ Do not refactor the `Cal` queue / param / message plumbing while restyling.
      (`docs/booking-api.md` section 3), which carries the contact and the calendar
      links. So `data.booking.id` is load bearing: renaming or dropping it breaks
      the confirmation page for every Slate booking.
+   - **A wrong `parentOrigin` fails silently in the browser**, so the Booker checks
+     it (#2641): when the declared origin differs from `document.referrer`'s origin,
+     it reports the two origins once per load through `/api/client-errors`, which
+     logs them (`tag=client-errors msg="embed origin mismatch"`) and says so in the
+     info channel at most daily. There is deliberately no allow list: a preview or
+     staging host must keep working. A host should pass `window.location.origin`.
    - If a loading state needs a new signal, **ADD** `slate:ready` -- do NOT rename
      or drop the existing two.
 

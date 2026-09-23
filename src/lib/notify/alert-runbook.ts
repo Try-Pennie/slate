@@ -176,6 +176,9 @@ const FAMILY_BY_KEY: Record<string, AlertFamily> = {
   // remedy to send anybody to and the count exists to put the number on the record.
   // The procedure is now "read it and carry on", which is this family's whole text.
   beyond_overflow_rate: "something-was-measured-and-is-only-worth-knowing",
+  // #2641: a host misconfiguration Slate cannot fix, worth passing on and never
+  // worth waking for, because bookings still complete inside the embed.
+  embed_origin_mismatch: "something-was-measured-and-is-only-worth-knowing",
 
   // The roster or the routing inputs disagree with Salesforce, or with themselves.
   agent_sync_failures: "the-roster-or-routing-data-is-wrong",

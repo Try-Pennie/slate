@@ -285,3 +285,19 @@ export function unknownReasonCodeNotice(rawCode: string): string {
     `recorded owner_reassignment instead. Check the caller's reason mapping.`
   );
 }
+
+/**
+ * An embedding host named the wrong origin for itself (#2641). Info, not a page:
+ * bookings still complete inside the embed, but on that host the booking box keeps
+ * its fallback height and the host's success redirect never fires, so it is worth
+ * fixing today and not worth waking anybody for.
+ */
+export function embedOriginMismatchAlert(declared: string, framedBy: string): string {
+  return (
+    `A page embedding the booker at ${framedBy} tells it to report to ${declared}. ` +
+    `The browser drops every message sent to the wrong address, so on that page the ` +
+    `booking box does not resize and the host never hears that a booking was made. ` +
+    `The host should pass its own address as parentOrigin (window.location.origin). ` +
+    `Every report is logged: tag=client-errors msg="embed origin mismatch".`
+  );
+}

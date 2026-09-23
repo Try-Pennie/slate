@@ -72,7 +72,12 @@ import {
   resolveZone,
 } from "@/lib/booking/timezones";
 import { SelectField } from "@/components/ui/SelectField";
-import { embedParentOrigin } from "@/lib/embed/parent-origin";
+import {
+  embedParentOrigin,
+  originMismatchMessage,
+  parentOriginMismatch,
+} from "@/lib/embed/parent-origin";
+import { postClientReport } from "@/components/ClientErrorBeacon";
 import ReasonPicker from "@/components/ReasonPicker";
 import { validateReason, type ReasonOption } from "@/lib/booking/core";
 
@@ -565,6 +570,28 @@ export default function Booker({
     },
     [parentTargetOrigin],
   );
+
+  // #2641: the browser drops a post whose target is not the real parent, with no
+  // error on either side, so a host that declared the wrong origin (www, a preview
+  // deploy, staging) loses the resize and the success message silently. Report
+  // the two ORIGINS once per load, never the referrer's path, which can carry a
+  // lead's details. The server logs every report and mentions it in Slack daily.
+  const mismatchReported = useRef(false);
+  useEffect(() => {
+    if (!embedded || mismatchReported.current) return;
+    const mismatch = parentOriginMismatch(
+      parentOrigin,
+      typeof document !== "undefined" ? document.referrer : null,
+    );
+    if (!mismatch) return;
+    mismatchReported.current = true;
+    postClientReport({
+      kind: "origin_mismatch",
+      message: originMismatchMessage(mismatch),
+      page: `/book/${bucketCode}`,
+      bucketCode,
+    });
+  }, [embedded, parentOrigin, bucketCode]);
 
   // Tell the embedding page our height so the iframe resizes with no scroll.
   useEffect(() => {

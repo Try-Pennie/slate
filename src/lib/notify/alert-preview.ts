@@ -160,6 +160,7 @@ import {
   bookableTimedOutAlert,
   externalDoubleBookAlert,
   boundaryCatchAlert,
+  embedOriginMismatchAlert,
   internalErrorAlert,
   misrouteAlert,
   oooApprovalsDigestAlert,
@@ -2819,6 +2820,9 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
   // gets up, and the three are the three different things Slate can know: how
   // many, that a break is repeating but the figure is missing, and that the
   // counter itself could not answer.
+  // #2641: an embedding host that named the wrong origin for itself.
+  { key: "embed_origin_mismatch", state: "a host declared another origin", channel: "info",
+    text: embedOriginMismatchAlert("https://trypennie.com", "https://www.trypennie.com") },
   { key: "boundary_error:*", state: "a page showed its error screen, counted", channel: "alert",
     text: boundaryCatchAlert("/admin", "digest 3847221905", {
       count: 11, measured: true, windowMinutes: 30 }) },
