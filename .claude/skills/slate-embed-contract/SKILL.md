@@ -91,9 +91,13 @@ Do not refactor the `Cal` queue / param / message plumbing while restyling.
 4. **postMessage contract** (Booker <-> widget.js):
    - `slate:resize { height }` - Booker posts `scrollHeight`; widget sets iframe height
    - `slate:bookingSuccessful { data }` - widget re-emits the cal-style
-     `bookingSuccessful` host event. `data` is `{ booking, salesforceId }`, where
-     `booking` is the Booker's confirm response: `id`, `startsAt`, `endsAt`,
-     `manageUrl`, `duplicateWarning` and `calendarLinks` (#2643). The lead's contact
+     `bookingSuccessful` host event. `data` is `{ booking, salesforceId, outcome }`,
+     where `booking` is the Booker's confirm response: `id`, `startsAt`, `endsAt`,
+     `manageUrl`, `duplicateWarning` and `calendarLinks` (#2643). It is posted for a
+     fresh booking (`outcome: "created"`) AND for a lead moving the call they
+     already have (`outcome: "rescheduled"`, whose `booking` is the reschedule
+     response, same fields bar `duplicateWarning`), so a host that redirects on it
+     ends both the same way (#2644). The lead's contact
      is deliberately NOT in it: the host already holds it, and a browser message is
      the wrong channel for more personal data.
    - **The host ends the booking by redirecting, not Slate** (Dan, 2026-09-23).

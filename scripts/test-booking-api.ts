@@ -13,6 +13,7 @@ import {
   lookupPersonBookings,
   getPersonBookingById,
   bookingIcs,
+  bookingDetailExtras,
   cancelDirectBooking,
   listBookings,
   processPendingEventDeletions,
@@ -619,6 +620,18 @@ async function run() {
     assert(ics.includes("SEQUENCE:3"), "and carries the reschedule count");
     assert(ics.includes("URL:https://slate.test/booking/manage/tokI"), "and links back to the manage page");
     assert(ics.includes("Dana Lee"), "and names the advisor");
+  }
+  {
+    // The links are built AFTER a booking or a move has committed, so a failure to
+    // build them must never throw: a route would fall into its error branch and tell
+    // the lead a call that exists did not happen (#2644, L12). They degrade to null.
+    const bk = makeBooking({ id: "bkU", starts_at: "not a time", status: "confirmed" });
+    let threw = false;
+    let extras: ReturnType<typeof bookingDetailExtras> | null = null;
+    try { extras = bookingDetailExtras(bk, "https://slate.test"); } catch { threw = true; }
+    assert(!threw, "an unreadable stored time does not throw out of the builder");
+    assert(extras?.calendarLinks === null, "it degrades to no calendar links");
+    assert(extras?.contact.name === "Kris", "and the contact is still returned");
   }
   {
     const { deps } = makeDeps({ bookingById: null });

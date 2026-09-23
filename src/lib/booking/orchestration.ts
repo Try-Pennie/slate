@@ -3393,7 +3393,8 @@ export interface ApiBookingView {
  */
 export interface ApiBookingDetail extends ApiBookingView {
   contact: { name: string | null; email: string | null; phone: string | null };
-  /** Null on a cancelled call: there is nothing to add to a calendar. */
+  /** Null on a cancelled call, where there is nothing to add, and on the rare row
+   *  whose stored time cannot be read (logged), which must not fail the answer. */
   calendarLinks: CalendarLinks | null;
 }
 
@@ -3426,12 +3427,21 @@ export function bookingDetailExtras(
   appBaseUrl: string,
 ): Pick<ApiBookingDetail, "contact" | "calendarLinks"> {
   const manage = manageUrl({ appBaseUrl: () => appBaseUrl }, b.manage_token);
+  let links: CalendarLinks | null = null;
+  if (b.status !== "cancelled") {
+    // Every caller builds these AFTER a booking or a move has committed, so this
+    // must never throw: the route would fall into its error branch and tell the
+    // lead a call that exists did not happen (#2644, L12). An unreadable stored
+    // time degrades to no links, and the log says which booking.
+    try {
+      links = calendarLinks(leadCalendarEvent(b, manage), icsUrl(appBaseUrl, b.manage_token));
+    } catch (err) {
+      log.error("booking", { msg: "calendar links could not be built", booking_id: b.id }, err);
+    }
+  }
   return {
     contact: { name: b.attendee_name, email: b.attendee_email, phone: b.attendee_phone },
-    calendarLinks:
-      b.status === "cancelled"
-        ? null
-        : calendarLinks(leadCalendarEvent(b, manage), icsUrl(appBaseUrl, b.manage_token)),
+    calendarLinks: links,
   };
 }
 

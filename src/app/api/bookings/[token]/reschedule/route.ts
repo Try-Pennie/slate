@@ -2,6 +2,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import { z } from "zod";
 import {
   rescheduleBooking,
+  bookingDetailExtras,
   SlotUnavailableError,
   RescheduleConflictError,
   VerifyUnavailableError,
@@ -131,6 +132,10 @@ async function handlePost(
       // entirely when nothing moved, rather than sent as three falses, because the
       // caller's question is "was there anything to tell them".
       ...(contactChanged ? { contactChanged } : {}),
+      // #2644: the add to calendar links at the NEW time, from the one builder,
+      // so the moved call's success message to the host carries what a fresh
+      // booking's does. The contact stays off it, as on the fresh one (#2643).
+      calendarLinks: bookingDetailExtras(booking).calendarLinks,
     });
   } catch (err) {
     // #2164: the details they typed were refused, and nothing moved. A 400 with
