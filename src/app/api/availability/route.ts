@@ -6,8 +6,8 @@ import { NextResponse, type NextRequest } from "next/server";
 import { getBucketSlotsWithFallback } from "@/lib/availability/slot-cache";
 import { filterSlotsFromNow } from "@/lib/availability/compute";
 import { availabilityWithinLimit, clientIp } from "@/lib/rate-limit";
-import { parseApiKeys, authenticateBearer } from "@/lib/booking/api-auth";
-import { bookingApiKeyPrimary, bookingApiKeySecondary } from "@/lib/env";
+import { authenticateBearer, CANARY_CALLERS } from "@/lib/booking/api-auth";
+import { configuredBookingApiKeys } from "@/lib/booking/api-keys";
 import { internalErrorResponse } from "@/lib/api/errors";
 import { explainEmptyWindow, type EmptyReason } from "@/lib/availability/empty-reason";
 import { loadBusinessHoursCached } from "@/lib/booking/business-hours-load";
@@ -59,7 +59,8 @@ async function handle(req: NextRequest) {
   // parse the bearer against env keys) and gate the test bucket BEFORE the tier
   // cascade, so an unauthorized hidden bucket 404s doing the same single resolve
   // an unknown code does (no timing signal that it exists, #601).
-  const keys = parseApiKeys(bookingApiKeyPrimary(), bookingApiKeySecondary());
+  // #2645: the canary's own key (and the legacy shared pair) only, never a partner's.
+  const keys = configuredBookingApiKeys(CANARY_CALLERS);
   const authorizedForTest = authenticateBearer(
     req.headers.get("authorization"),
     keys,

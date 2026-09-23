@@ -5,10 +5,14 @@
  * builds the key set with `parseApiKeys`, and gates every request through
  * `authenticateBearer`.
  *
- * Two keys (primary + secondary) are accepted at once so the secret can be
- * rotated with zero downtime: add the new secret as the secondary, point the
- * caller at it, then retire the old primary. Each authenticated call reports the
- * matched key's LABEL (never the secret) so logs can attribute traffic per key.
+ * #2645: one key per CALLER. Each caller in `BOOKING_API_CALLERS` holds its own
+ * secret, and each has two slots (primary + secondary) so its secret rotates with
+ * zero downtime: add the new secret as the secondary, point the caller at it, then
+ * retire the old primary. `shared` is the original pair, which Regal and the
+ * canary held together before the split; it stays accepted so nothing breaks
+ * before the named keys are handed out. Each authenticated call reports the
+ * matched CALLER and slot (labels, never the secret), so the rate ceiling and the
+ * logs can say who made a request rather than which of two shared slots it used.
  *
  * The constant-time comparison + `Bearer` parsing live in the shared
  * `bearer-auth` module (#594) so this rotation-aware layer and the single-secret
@@ -16,14 +20,51 @@
  */
 import { bearerToken, timingSafeEqual } from "@/lib/bearer-auth";
 
+/**
+ * Every system that holds a booking API key (#2645). Named callers come first so
+ * that, if two callers were ever handed the same value by mistake, the request is
+ * attributed to the named one rather than to the legacy pair.
+ */
+export const BOOKING_API_CALLERS = ["regal", "trypennie", "canary", "shared"] as const;
+export type BookingApiCaller = (typeof BOOKING_API_CALLERS)[number];
+export type NamedBookingApiCaller = Exclude<BookingApiCaller, "shared">;
+
+/**
+ * Who may call the smoke endpoints. They can stamp the canary's own heartbeat and
+ * reach the hidden test buckets, so a partner key there could keep a dead canary
+ * looking alive. `shared` stays until the canary has moved to its own key.
+ */
+export const CANARY_CALLERS: readonly BookingApiCaller[] = ["canary", "shared"];
+
+export type KeySlot = "primary" | "secondary";
+
+/**
+ * The environment variable holding one caller's slot. `shared` keeps the names
+ * the Worker has always had; every other caller is suffixed, so the whole set
+ * follows one rule and `scripts/test-booking-api-auth.ts` can hold `env.ts` to it.
+ */
+export function bookingApiKeyEnvName(caller: BookingApiCaller, slot: KeySlot): string {
+  const base = caller === "shared" ? "BOOKING_API_KEY" : `BOOKING_API_KEY_${caller.toUpperCase()}`;
+  return slot === "primary" ? base : `${base}_2`;
+}
+
 export interface ApiKey {
-  /** Stable label for logs — "primary" or "secondary". Never the secret. */
-  id: "primary" | "secondary";
+  caller: BookingApiCaller;
+  slot: KeySlot;
+  /** Stable label for logs, `<caller>:<slot>`. Never the secret. */
+  id: `${BookingApiCaller}:${KeySlot}`;
   secret: string;
 }
 
+/** One caller's two configured slots, as read from the environment. */
+export interface CallerSecrets {
+  caller: BookingApiCaller;
+  primary: string;
+  secondary: string;
+}
+
 export type AuthResult =
-  | { ok: true; keyId: ApiKey["id"] }
+  | { ok: true; keyId: ApiKey["id"]; caller: BookingApiCaller }
   /**
    * `tokenPresent` (#1450) separates two things a 401 cannot: a caller that sent
    * a Bearer token which is not one of ours, and a request that carried no usable
@@ -130,13 +171,19 @@ export function authRefusalCounting(
 }
 
 /**
- * Build the labeled key set from the two env slots, skipping any that are unset
- * or blank. A whitespace-only value is treated as unset — never a usable secret.
+ * Build the labelled key set from each caller's two slots, skipping any that are
+ * unset or blank. A whitespace-only value is treated as unset, never a usable
+ * secret. Named callers are ordered before `shared` whatever order they arrive in.
  */
-export function parseApiKeys(primary: string, secondary: string): ApiKey[] {
+export function parseApiKeys(callers: readonly CallerSecrets[]): ApiKey[] {
+  const rank = (c: BookingApiCaller) => BOOKING_API_CALLERS.indexOf(c);
   const keys: ApiKey[] = [];
-  if (primary.trim()) keys.push({ id: "primary", secret: primary });
-  if (secondary.trim()) keys.push({ id: "secondary", secret: secondary });
+  for (const entry of [...callers].sort((a, b) => rank(a.caller) - rank(b.caller))) {
+    for (const slot of ["primary", "secondary"] as const) {
+      const secret = entry[slot];
+      if (secret.trim()) keys.push({ caller: entry.caller, slot, id: `${entry.caller}:${slot}`, secret });
+    }
+  }
   return keys;
 }
 
@@ -144,7 +191,7 @@ export function parseApiKeys(primary: string, secondary: string): ApiKey[] {
  * Verify a Bearer Authorization header against the configured keys. Fails CLOSED
  * with 503 when NO key is configured (the endpoint is effectively disabled),
  * distinct from 401 for a present-but-wrong credential. On success, reports which
- * key matched.
+ * caller and slot matched.
  */
 export function authenticateBearer(
   header: string | null,
@@ -158,7 +205,7 @@ export function authenticateBearer(
   if (token !== null) {
     for (const key of keys) {
       if (timingSafeEqual(token, key.secret)) {
-        return { ok: true, keyId: key.id };
+        return { ok: true, keyId: key.id, caller: key.caller };
       }
     }
   }

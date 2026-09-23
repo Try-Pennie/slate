@@ -114,7 +114,7 @@ import { assert, eq, finish } from "./lib/harness.ts";
   eq(refusalReasonForStatus(401), "bad_credential", "401 is a wrong or rotated key");
   eq(refusalReasonForStatus(503), "not_configured", "503 is an endpoint with no key at all");
 
-  const noKeys = authenticateBearer("Bearer whatever", parseApiKeys("", ""));
+  const noKeys = authenticateBearer("Bearer whatever", parseApiKeys([{ caller: "shared", primary: "", secondary: "" }]));
   assert(!noKeys.ok, "no configured key refuses");
   eq(
     refusalReasonForStatus(noKeys.ok ? 200 : noKeys.status),
@@ -122,7 +122,7 @@ import { assert, eq, finish } from "./lib/harness.ts";
     "and the real authenticator's own status maps to not_configured",
   );
 
-  const wrong = authenticateBearer("Bearer nope", parseApiKeys("realsecret", ""));
+  const wrong = authenticateBearer("Bearer nope", parseApiKeys([{ caller: "shared", primary: "realsecret", secondary: "" }]));
   assert(!wrong.ok, "a wrong key refuses");
   eq(
     refusalReasonForStatus(wrong.ok ? 200 : wrong.status),
@@ -130,7 +130,7 @@ import { assert, eq, finish } from "./lib/harness.ts";
     "and maps to bad_credential rather than being guessed at the call site",
   );
 
-  const right = authenticateBearer("Bearer realsecret", parseApiKeys("realsecret", ""));
+  const right = authenticateBearer("Bearer realsecret", parseApiKeys([{ caller: "shared", primary: "realsecret", secondary: "" }]));
   assert(right.ok, "the matching key still authenticates");
 }
 

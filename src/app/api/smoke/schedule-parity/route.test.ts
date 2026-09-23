@@ -13,6 +13,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 const env = vi.hoisted(() => ({
   bookingApiKeyPrimary: vi.fn(() => ""),
   bookingApiKeySecondary: vi.fn(() => ""),
+  bookingApiKeyFor: vi.fn((_caller: string, _slot: string) => ""),
 }));
 const dispatch = vi.hoisted(() => ({
   sendThrottledAlert: vi.fn(async () => {}),

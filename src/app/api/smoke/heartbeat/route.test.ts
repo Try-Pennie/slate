@@ -9,6 +9,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 const env = vi.hoisted(() => ({
   bookingApiKeyPrimary: vi.fn(() => ""),
   bookingApiKeySecondary: vi.fn(() => ""),
+  bookingApiKeyFor: vi.fn((_caller: string, _slot: string) => ""),
 }));
 const heartbeat = vi.hoisted(() => ({ recordHeartbeat: vi.fn(async () => {}) }));
 
@@ -29,7 +30,33 @@ beforeEach(() => {
   vi.clearAllMocks();
   env.bookingApiKeyPrimary.mockReturnValue("");
   env.bookingApiKeySecondary.mockReturnValue("");
+  env.bookingApiKeyFor.mockReturnValue("");
   heartbeat.recordHeartbeat.mockResolvedValue(undefined);
+});
+
+// #2645: this endpoint keeps the canary's heartbeat fresh, so it takes only the
+// canary's own key (and the legacy shared pair). A partner key that could stamp it
+// would keep a dead canary looking alive.
+describe("POST /api/smoke/heartbeat caller scope (#2645)", () => {
+  beforeEach(() => {
+    env.bookingApiKeyFor.mockImplementation((caller: string, slot: string) =>
+      slot === "primary" ? `${caller}-secret` : "",
+    );
+  });
+
+  it("stamps on the canary's own key", async () => {
+    const res = await post("Bearer canary-secret");
+    expect(res.status).toBe(200);
+    expect(heartbeat.recordHeartbeat).toHaveBeenCalledWith("smoke-canary");
+  });
+
+  it("refuses a partner's key and stamps nothing", async () => {
+    for (const partner of ["regal", "trypennie"]) {
+      const res = await post(`Bearer ${partner}-secret`);
+      expect(res.status).toBe(401);
+    }
+    expect(heartbeat.recordHeartbeat).not.toHaveBeenCalled();
+  });
 });
 
 describe("POST /api/smoke/heartbeat (#525)", () => {

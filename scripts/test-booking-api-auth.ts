@@ -1,68 +1,137 @@
 // Auth for the direct booking API (#355, milestone #2). Pure/IO-free so it runs
 // under `node --experimental-strip-types` with no Next/Supabase/Google in scope.
-// Two valid keys (primary + secondary) so the key can be rotated with zero
-// downtime, and every authenticated call reports WHICH key it matched (a label,
-// never the secret) for caller attribution.
+//
+// #2645: one key per CALLER. Regal, trypennie and the smoke canary each hold their
+// own secret (with its own two slot rotation), and the original pair stays as the
+// `shared` caller so nothing breaks before the named keys are handed out. Every
+// authenticated call reports WHICH caller and slot it matched (labels, never the
+// secret), which is what lets the rate ceiling and the logs name a caller.
 // Run: node --experimental-strip-types scripts/test-booking-api-auth.ts
-import { parseApiKeys, authenticateBearer } from "../src/lib/booking/api-auth.ts";
-import { assert, finish } from "./lib/harness.ts";
+import { readdirSync, readFileSync, statSync } from "node:fs";
+import { join } from "node:path";
+import {
+  BOOKING_API_CALLERS,
+  CANARY_CALLERS,
+  bookingApiKeyEnvName,
+  parseApiKeys,
+  authenticateBearer,
+} from "../src/lib/booking/api-auth.ts";
+import { assert, eq, finish } from "./lib/harness.ts";
 
-// --- parseApiKeys: build the labeled key set from the two env slots ---
+const none = { primary: "", secondary: "" };
+
+// --- the caller vocabulary ------------------------------------------------------
 {
-  const both = parseApiKeys("primary-secret", "secondary-secret");
-  assert(both.length === 2, "two configured secrets -> two keys");
-  assert(both[0].id === "primary" && both[0].secret === "primary-secret", "first key labeled 'primary'");
-  assert(both[1].id === "secondary" && both[1].secret === "secondary-secret", "second key labeled 'secondary'");
-
-  const onlyPrimary = parseApiKeys("primary-secret", "");
-  assert(onlyPrimary.length === 1 && onlyPrimary[0].id === "primary", "empty secondary is skipped");
-
-  const onlySecondary = parseApiKeys("", "secondary-secret");
-  assert(
-    onlySecondary.length === 1 && onlySecondary[0].id === "secondary",
-    "a lone secondary still works (mid-rotation, primary already retired)",
+  eq(
+    [...BOOKING_API_CALLERS].sort().join(","),
+    "canary,regal,shared,trypennie",
+    "the four callers the booking API knows",
   );
-
-  assert(parseApiKeys("", "").length === 0, "no secrets -> no keys");
-  assert(parseApiKeys("  ", "").length === 0, "whitespace-only secret is not a key");
+  // CANARY_CALLERS gates the smoke endpoints, which can stamp the canary's own
+  // heartbeat: a partner key there could keep a dead canary looking alive.
+  eq([...CANARY_CALLERS].sort().join(","), "canary,shared", "only the canary (and the legacy pair) may call the smoke endpoints");
 }
 
-// --- authenticateBearer: unconfigured endpoint fails CLOSED with 503 ---
+// --- env names are derived from the caller, one rule for all of them -------------
+{
+  eq(bookingApiKeyEnvName("shared", "primary"), "BOOKING_API_KEY", "shared primary keeps its original name");
+  eq(bookingApiKeyEnvName("shared", "secondary"), "BOOKING_API_KEY_2", "shared secondary keeps its original name");
+  eq(bookingApiKeyEnvName("regal", "primary"), "BOOKING_API_KEY_REGAL", "a named caller's primary");
+  eq(bookingApiKeyEnvName("trypennie", "secondary"), "BOOKING_API_KEY_TRYPENNIE_2", "a named caller's rotation slot");
+}
+
+// --- parseApiKeys: build the labelled key set from each caller's two slots -------
+{
+  const keys = parseApiKeys([
+    { caller: "shared", primary: "shared-secret", secondary: "" },
+    { caller: "regal", primary: "regal-old", secondary: "regal-new" },
+    { caller: "trypennie", ...none },
+  ]);
+  eq(
+    keys.map((k) => k.id).join(","),
+    "regal:primary,regal:secondary,shared:primary",
+    "configured slots only, named callers before the shared pair",
+  );
+  const regal = keys.find((k) => k.id === "regal:secondary");
+  assert(regal?.caller === "regal" && regal.slot === "secondary" && regal.secret === "regal-new", "a key carries its caller and slot");
+
+  eq(parseApiKeys([{ caller: "canary", primary: "  ", secondary: "" }]).length, 0, "whitespace-only secret is not a key");
+  eq(parseApiKeys([]).length, 0, "no callers -> no keys");
+}
+
+// --- authenticateBearer: unconfigured endpoint fails CLOSED with 503 ---------------
 {
   const res = authenticateBearer("Bearer anything", []);
   assert(res.ok === false && res.status === 503, "no keys configured -> 503 (not 401)");
 }
 
-const keys = parseApiKeys("primary-secret", "secondary-secret");
+const keys = parseApiKeys([
+  { caller: "shared", primary: "shared-secret", secondary: "shared-next" },
+  { caller: "regal", primary: "regal-secret", secondary: "" },
+  { caller: "trypennie", primary: "trypennie-secret", secondary: "trypennie-next" },
+  { caller: "canary", ...none },
+]);
 
-// --- either valid key authenticates, and reports which one ---
+// --- each caller's key authenticates AS that caller ---------------------------------
 {
-  const p = authenticateBearer("Bearer primary-secret", keys);
-  assert(p.ok === true && p.keyId === "primary", "valid primary key -> ok, keyId 'primary'");
+  const r = authenticateBearer("Bearer regal-secret", keys);
+  assert(r.ok === true && r.caller === "regal" && r.keyId === "regal:primary", "Regal's key names Regal");
 
-  const s = authenticateBearer("Bearer secondary-secret", keys);
-  assert(s.ok === true && s.keyId === "secondary", "valid secondary key -> ok, keyId 'secondary'");
+  const t = authenticateBearer("Bearer trypennie-next", keys);
+  assert(t.ok === true && t.caller === "trypennie" && t.keyId === "trypennie:secondary", "a rotation slot names its caller");
+
+  const s = authenticateBearer("Bearer shared-secret", keys);
+  assert(s.ok === true && s.caller === "shared" && s.keyId === "shared:primary", "the legacy pair still authenticates, as shared");
 }
 
-// --- bad / missing / malformed credentials -> 401 ---
+// --- bad / missing / malformed credentials -> 401 ------------------------------------
 {
-  assert(authenticateBearer("Bearer wrong-secret", keys).ok === false, "wrong secret -> not ok");
   const wrong = authenticateBearer("Bearer wrong-secret", keys);
-  assert(wrong.ok === false && wrong.status === 401, "wrong secret -> 401");
+  assert(wrong.ok === false && wrong.status === 401 && wrong.tokenPresent === true, "wrong secret -> 401, token present");
 
-  assert(authenticateBearer(null, keys).ok === false, "missing Authorization header -> not ok");
-  assert(authenticateBearer("primary-secret", keys).ok === false, "missing 'Bearer ' scheme -> not ok");
+  const missing = authenticateBearer(null, keys);
+  assert(missing.ok === false && missing.status === 401 && missing.tokenPresent === false, "missing header -> 401, no token");
+  assert(authenticateBearer("regal-secret", keys).ok === false, "missing 'Bearer ' scheme -> not ok");
   assert(authenticateBearer("Bearer ", keys).ok === false, "empty bearer token -> not ok");
-  assert(authenticateBearer("Basic primary-secret", keys).ok === false, "wrong auth scheme -> not ok");
+  assert(authenticateBearer("Basic regal-secret", keys).ok === false, "wrong auth scheme -> not ok");
+  // An unset slot is skipped, so an empty token can never match it.
+  assert(authenticateBearer("Bearer ", parseApiKeys([{ caller: "regal", primary: "x", secondary: "" }])).ok === false, "empty token never matches an unset slot");
 }
 
-// --- a configured-but-empty secret must never be a usable credential ---
+// --- the env reads are literal, one per caller and slot (#2645) ----------------------
+//
+// The deploy runbook guard (scripts/test-deploy-env-coverage.ts) only sees an env
+// var read by a LITERAL name, in both directions, so a name built at runtime would
+// leave every new secret undocumented and every documented one "read by nothing".
+// So each derived name must appear as a literal read in env.ts.
 {
-  const onlyPrimary = parseApiKeys("primary-secret", "");
-  assert(
-    authenticateBearer("Bearer ", onlyPrimary).ok === false,
-    "empty token never matches even when a real key is configured",
-  );
+  const envTs = readFileSync("src/lib/env.ts", "utf8");
+  for (const caller of BOOKING_API_CALLERS) {
+    for (const slot of ["primary", "secondary"] as const) {
+      const name = bookingApiKeyEnvName(caller, slot);
+      assert(envTs.includes(`process.env.${name} `), `src/lib/env.ts reads ${name} by its literal name`);
+    }
+  }
+}
+
+// --- and ONLY env.ts reads them, so the key set is built in one place (L613) ----------
+//
+// Positive control first: the scan must find the reads that DO exist, or a scan
+// reading nothing would pass the check below on an empty set (L98).
+{
+  const hits: string[] = [];
+  const walk = (dir: string): void => {
+    for (const entry of readdirSync(dir)) {
+      const p = join(dir, entry);
+      if (statSync(p).isDirectory()) walk(p);
+      else if (/\.(ts|tsx)$/.test(p) && !/\.test\.(ts|tsx)$/.test(p)) {
+        if (/process\.env\.BOOKING_API_KEY/.test(readFileSync(p, "utf8"))) hits.push(p);
+      }
+    }
+  };
+  walk("src");
+  assert(hits.includes(join("src", "lib", "env.ts")), "the scan finds env.ts's own reads (positive control)");
+  eq(hits.filter((p) => p !== join("src", "lib", "env.ts")).join(", "), "", "no other src file reads a booking API key from the environment");
 }
 
 finish();

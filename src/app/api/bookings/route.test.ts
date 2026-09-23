@@ -11,6 +11,7 @@ import { rateLimitKey, BOOKING_API_IP_LIMITER, type CallerKey } from "@/lib/rate
 const env = vi.hoisted(() => ({
   bookingApiKeyPrimary: vi.fn(() => ""),
   bookingApiKeySecondary: vi.fn(() => ""),
+  bookingApiKeyFor: vi.fn((_caller: string, _slot: string) => ""),
 }));
 const rateLimit = vi.hoisted(() => ({
   allowRequest: vi.fn(async (_caller: unknown, _rules: unknown) => true),
@@ -156,15 +157,15 @@ describe("POST /api/bookings (auth skeleton)", () => {
     expect(res.status).toBe(429);
   });
 
-  it("rate-limits on the matched key id, in its own bucket", async () => {
+  it("rate-limits on the matched key's CALLER, in its own bucket (#2645)", async () => {
     env.bookingApiKeyPrimary.mockReturnValue("real-secret");
     await post("Bearer real-secret");
     expect(rateLimit.allowRequest).toHaveBeenCalledWith(
-      { kind: "opaque", key: "key:primary" },
+      { kind: "opaque", key: "key:shared" },
       DIRECT_BOOKING_API_HOURLY_RATE_RULES,
     );
-    // The per-minute burst window runs at the edge (#961), keyed on the key id.
-    expect(rateLimit.bookingApiWriteWithinLimit).toHaveBeenCalledWith("primary");
+    // The per-minute burst window runs at the edge (#961), keyed on the caller.
+    expect(rateLimit.bookingApiWriteWithinLimit).toHaveBeenCalledWith("shared");
   });
 
   // #961: the per-minute window is the edge limiter now. A block there must 429
@@ -175,7 +176,7 @@ describe("POST /api/bookings (auth skeleton)", () => {
     const res = await post("Bearer real-secret", VALID_BODY);
     expect(res.status).toBe(429);
     expect(rateLimit.allowRequest).not.toHaveBeenCalledWith(
-      { kind: "opaque", key: "key:primary" },
+      { kind: "opaque", key: "key:shared" },
       DIRECT_BOOKING_API_HOURLY_RATE_RULES,
     );
     expect(service.bookViaApi).not.toHaveBeenCalled();
@@ -325,7 +326,7 @@ describe("POST /api/bookings (auth skeleton)", () => {
     // found by filtering tag=booking-api rather than guessing at a substring.
     expect(info).toHaveBeenCalledWith(expect.stringContaining("tag=booking-api"));
     expect(info).toHaveBeenCalledWith(expect.stringContaining('msg="authenticated request"'));
-    expect(info).toHaveBeenCalledWith(expect.stringContaining('key="primary"'));
+    expect(info).toHaveBeenCalledWith(expect.stringContaining('key="shared:primary"'));
     expect(log).not.toHaveBeenCalled();
   });
 
@@ -344,7 +345,7 @@ describe("POST /api/bookings (auth skeleton)", () => {
     expect(outcome).toContain("tag=booking-api");
     expect(outcome).toContain('outcome="confirm_required"');
     expect(outcome).toContain('bucket="411"');
-    expect(outcome).toContain('key="primary"');
+    expect(outcome).toContain('key="shared:primary"');
     expect(outcome).toContain("status=409");
   });
 
@@ -449,15 +450,15 @@ describe("GET /api/bookings (list mode + lookup mode)", () => {
   it("GET (read) draws from the separate read rate ceiling, not the write one", async () => {
     await authedGet("http://localhost/api/bookings?status=confirmed");
     expect(rateLimit.allowRequest).toHaveBeenCalledWith(
-      { kind: "opaque", key: "key:primary" },
+      { kind: "opaque", key: "key:shared" },
       DIRECT_BOOKING_API_READ_HOURLY_RATE_RULES,
     );
     expect(rateLimit.allowRequest).not.toHaveBeenCalledWith(
-      { kind: "opaque", key: "key:primary" },
+      { kind: "opaque", key: "key:shared" },
       DIRECT_BOOKING_API_HOURLY_RATE_RULES,
     );
     // And its edge per-minute window is the READ binding, not the write one (#961).
-    expect(rateLimit.bookingApiReadWithinLimit).toHaveBeenCalledWith("primary");
+    expect(rateLimit.bookingApiReadWithinLimit).toHaveBeenCalledWith("shared");
     expect(rateLimit.bookingApiWriteWithinLimit).not.toHaveBeenCalled();
   });
 });
@@ -492,7 +493,7 @@ describe("GET rate limiting (#597)", () => {
     );
 
     expect(rateLimit.allowRequest).toHaveBeenCalledWith(
-      { kind: "opaque", key: "key:primary" },
+      { kind: "opaque", key: "key:shared" },
       DIRECT_BOOKING_API_READ_HOURLY_RATE_RULES,
     );
     const keys = rateLimit.allowRequest.mock.calls.map(([c]) => rateLimitKey(c as CallerKey));

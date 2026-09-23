@@ -22,6 +22,7 @@ const rateLimit = vi.hoisted(() => ({
 const env = vi.hoisted(() => ({
   bookingApiKeyPrimary: () => "smoke-key",
   bookingApiKeySecondary: () => "",
+  bookingApiKeyFor: vi.fn((_caller: string, _slot: string) => ""),
 }));
 
 vi.mock("@/lib/availability/slot-cache", () => cache);

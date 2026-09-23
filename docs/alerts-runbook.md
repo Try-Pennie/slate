@@ -379,7 +379,7 @@ their own keys.
   in `src/lib/rate-limit-core.ts`.
 - `booking_api_credential` has two causes and they are different repairs. A rejected key
   is a stale or rotated secret at the CALLER, so compare the key it holds against the
-  Worker's. A missing key is our own deployment: `BOOKING_API_KEY` is not set, so every
+  Worker's (one key per caller since #2645, so check that caller's own). A missing key is our own deployment: no booking API key is set, so every
   call is refused, and the fix is a secret plus a redeploy. The alert says which one.
 - `booking_api_list_read` means the bookings table could not be read for the list
   endpoint. The caller is refused and retries the same cursor, so nothing is lost, but

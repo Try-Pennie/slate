@@ -296,7 +296,7 @@ const reading = (
     topCodes: [{ code: "API_KEY_REJECTED", count: 29 }],
   });
   assert(
-    rotated.includes("BOOKING_API_KEY was rotated"),
+    rotated.includes("the shared BOOKING_API_KEY) was rotated") && rotated.includes("BOOKING_API_KEY_REGAL"),
     "a rejected-key wave says to check whether the key was rotated without the caller being updated",
   );
   assert(
@@ -313,7 +313,7 @@ const reading = (
     topCodes: [{ code: "API_NOT_CONFIGURED", count: 18 }],
   });
   assert(
-    unset.includes("BOOKING_API_KEY secret on the deployed Worker"),
+    unset.includes("BOOKING_API_KEY_REGAL, _TRYPENNIE, _CANARY) on the deployed Worker"),
     "an unconfigured endpoint points at the secret on the Worker, which is where that repair is",
   );
   assert(

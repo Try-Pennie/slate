@@ -13,6 +13,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 const env = vi.hoisted(() => ({
   bookingApiKeyPrimary: vi.fn(() => "real-secret"),
   bookingApiKeySecondary: vi.fn(() => ""),
+  bookingApiKeyFor: vi.fn((_caller: string, _slot: string) => ""),
 }));
 const rateLimit = vi.hoisted(() => ({
   allowRequest: vi.fn(async (_caller: unknown, _rules: unknown) => true),
