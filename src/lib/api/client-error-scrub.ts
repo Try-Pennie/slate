@@ -115,6 +115,14 @@ function field(raw: unknown, limit: number): string | null {
   return scrubContactData(trimmed).slice(0, limit);
 }
 
+/** Trim and cap one string field WITHOUT scrubbing it, for a value built by the page
+ *  whose route rebuilds it from a strict parse. Null for nothing usable. */
+function rawField(raw: unknown, limit: number): string | null {
+  if (typeof raw !== "string") return null;
+  const trimmed = raw.trim();
+  return trimmed === "" ? null : trimmed.slice(0, limit);
+}
+
 /** A line or column number, or null. A non integer is DROPPED rather than
  *  coerced: reporting `NaN` or `0` as a real position is a small lie that costs
  *  a reader time at exactly the wrong moment. */
@@ -136,7 +144,12 @@ export function normalizeClientError(body: unknown): ClientErrorReport | null {
   const kind = KINDS.find((k) => k === b.kind);
   if (!kind) return null;
 
-  const message = field(b.message, FIELD_LIMITS.message);
+  // An origin mismatch is NOT scrubbed (#2641): the scrub rewrites any run of seven
+  // or more digits, which a preview host's name routinely carries, and the route
+  // rebuilds the pair only from what parses as two bare origins, so free text can
+  // never pass through it. Every other kind is scrubbed as before.
+  const message =
+    kind === "origin_mismatch" ? rawField(b.message, FIELD_LIMITS.message) : field(b.message, FIELD_LIMITS.message);
   if (!message) return null;
 
   const page = field(b.page, FIELD_LIMITS.page);

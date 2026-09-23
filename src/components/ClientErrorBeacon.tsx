@@ -43,7 +43,13 @@ export function postClientReport(body: Record<string, unknown> & { message: stri
     keepalive: true,
     body: JSON.stringify({
       ...body,
-      message: scrubContactData(body.message).slice(0, FIELD_LIMITS.message),
+      // An origin mismatch is two bare origins the page built itself, never free
+      // text, and the scrub would rewrite a preview host's digit run so the server
+      // could no longer read the pair (#2641). Every other kind is scrubbed.
+      message: (body.kind === "origin_mismatch" ? body.message : scrubContactData(body.message)).slice(
+        0,
+        FIELD_LIMITS.message,
+      ),
     }),
     // swallow-ok: this is the one place swallowing is correct. A rejected
     // post is itself an unhandled rejection, which the beacon's listener hears,

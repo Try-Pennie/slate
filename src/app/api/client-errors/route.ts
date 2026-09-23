@@ -90,7 +90,13 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   // cannot mint a throttle row per forged pair.
   if (report.kind === "origin_mismatch") {
     const pair = parseOriginMismatchMessage(report.message);
-    if (!pair) return done();
+    if (!pair) {
+      // Said, never silent: a report the parser refuses is either forged or a
+      // format this route no longer reads, and the second is a Slate fault. The
+      // posted text is never logged, because anybody can post it.
+      log.warn("client-errors", { msg: "unreadable origin mismatch report", page: report.page });
+      return done();
+    }
     log.warn("client-errors", {
       msg: "embed origin mismatch",
       declared: pair.declared,

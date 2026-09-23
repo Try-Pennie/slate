@@ -289,6 +289,26 @@ describe("POST /api/client-errors origin mismatch (#2641)", () => {
     warned.mockRestore();
   });
 
+  // The contact data scrub rewrites any run of seven or more digits, and preview
+  // and staging hosts routinely carry one. The report is two bare origins, never
+  // free text, so it must reach the parser as sent, or the host this feature
+  // exists for is the one whose report is dropped.
+  it("keeps a preview host whose name carries a long run of digits", async () => {
+    await post({ ...MISMATCH, message: "declared https://trypennie.com, framed by https://pr-1234567.preview.example" });
+    expect(sendThrottledInfo).toHaveBeenCalledTimes(1);
+    expect(sendThrottledInfo.mock.calls[0][2]).toContain("https://pr-1234567.preview.example");
+  });
+
+  it("logs a report it could not read as two origins, rather than dropping it in silence", async () => {
+    const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
+    await post({ ...MISMATCH, message: "declared https://a.test, framed by <!channel> https://b.test" });
+    expect(sendThrottledInfo).not.toHaveBeenCalled();
+    expect(warned).toHaveBeenCalledWith(expect.stringContaining('msg="unreadable origin mismatch report"'));
+    // Never the posted text itself: the endpoint is public.
+    expect(warned).not.toHaveBeenCalledWith(expect.stringContaining("<!channel>"));
+    warned.mockRestore();
+  });
+
   it("is still refused by the rate limiter first", async () => {
     allowRequest.mockResolvedValue(false);
     await post(MISMATCH);
