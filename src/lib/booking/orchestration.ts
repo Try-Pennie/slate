@@ -58,6 +58,7 @@ import { runOutboxSteps, type OutboxHandlers } from "./outbox.ts";
 import type { OutboxWriteOutcome } from "./outbox-lease.ts";
 import { DRAIN_ALERT_AFTER } from "./drain-backoff.ts";
 import { buildRoutingTraceExtras } from "../routing/explain.ts";
+import { calendarLinks, icsDocument, icsUrl, leadCalendarEvent, type CalendarLinks } from "./calendar-links.ts";
 import { resolveBucketPool } from "../availability/service.ts";
 import type { RecordRoutingDecisionInput } from "../routing/record.ts";
 import { tierKeyOf } from "../routing/tiers.ts";
@@ -3378,6 +3379,24 @@ export interface ApiBookingView {
   manageUrl: string;
 }
 
+/**
+ * ONE booking, as the booking confirmed page renders it (#2643): the lookup view
+ * plus the lead's own contact (the Client rows and the text reminder card) and the
+ * add to calendar links.
+ *
+ * Only ever built for a caller who named the booking by a STRONG id, so it can
+ * never hand one person's phone to another (#1340): the by id lookup requires
+ * the externalId or salesforceId to match, and the confirm response is built for
+ * the booking that caller just made or silently moved. It is deliberately NOT on
+ * the cross person list, where a leaked key would otherwise read everybody's
+ * contact in pages.
+ */
+export interface ApiBookingDetail extends ApiBookingView {
+  contact: { name: string | null; email: string | null; phone: string | null };
+  /** Null on a cancelled call: there is nothing to add to a calendar. */
+  calendarLinks: CalendarLinks | null;
+}
+
 /** A list row: the lookup view plus its bucket code (#392). */
 export interface ApiBookingListItem extends ApiBookingView {
   bucketCode: string | null;
@@ -3394,6 +3413,37 @@ function toApiBookingView(b: Booking, deps: BookingDeps): ApiBookingView {
     agent: { name: b.agent_name, email: b.agent_email },
     manageUrl: manageUrl(deps, b.manage_token),
   };
+}
+
+/**
+ * The two fields `ApiBookingDetail` adds, built once for every surface that
+ * carries them (the by id lookup, the key authed confirm response, and the
+ * Booker's own confirm response), so the three cannot describe one call three
+ * ways (L41). Pure: the base URL is handed in.
+ */
+export function bookingDetailExtras(
+  b: Booking,
+  appBaseUrl: string,
+): Pick<ApiBookingDetail, "contact" | "calendarLinks"> {
+  const manage = manageUrl({ appBaseUrl: () => appBaseUrl }, b.manage_token);
+  return {
+    contact: { name: b.attendee_name, email: b.attendee_email, phone: b.attendee_phone },
+    calendarLinks:
+      b.status === "cancelled"
+        ? null
+        : calendarLinks(leadCalendarEvent(b, manage), icsUrl(appBaseUrl, b.manage_token)),
+  };
+}
+
+/** The ICS file for one booking, served by its manage token (#2643). Built from the
+ *  same event the calendar links are, so the file and the links agree. */
+export function bookingIcs(b: Booking, appBaseUrl: string, stampIso: string): string {
+  const manage = manageUrl({ appBaseUrl: () => appBaseUrl }, b.manage_token);
+  return icsDocument(leadCalendarEvent(b, manage), stampIso);
+}
+
+function toApiBookingDetail(b: Booking, deps: BookingDeps): ApiBookingDetail {
+  return { ...toApiBookingView(b, deps), ...bookingDetailExtras(b, deps.appBaseUrl()) };
 }
 
 /**
@@ -3460,7 +3510,7 @@ export async function getPersonBookingById(
     status: BookingStatus | null;
   },
   deps: BookingDeps,
-): Promise<ApiBookingView> {
+): Promise<ApiBookingDetail> {
   const ctx = await deps.loadBookingById(input.bookingId);
   if (!ctx || !bookingBelongsToPerson(ctx.booking, input.identity)) {
     throw new BookingNotFoundError();
@@ -3468,7 +3518,7 @@ export async function getPersonBookingById(
   if (input.status && ctx.booking.status !== input.status) {
     throw new BookingNotFoundError();
   }
-  return toApiBookingView(ctx.booking, deps);
+  return toApiBookingDetail(ctx.booking, deps);
 }
 
 /** Cancel ONE booking by id for the cancel API (#386). Requires the booking to

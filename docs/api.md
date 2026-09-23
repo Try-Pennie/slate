@@ -83,7 +83,7 @@ names which one it requires.
 | Google channel token | `X-Goog-Channel-Token` header | `GOOGLE_CHANNEL_TOKEN` | `POST /api/google/push` |
 | Slack signature | `X-Slack-Signature` + `X-Slack-Request-Timestamp` | Slack signing secret | `POST /api/slack/interactions` |
 | Supabase session (staff) | session cookie | Supabase Auth | every `/api/admin/*` route |
-| Manage token | in the URL path | per-booking `manage_token` | `POST /api/bookings/[token]/cancel`, `POST /api/bookings/[token]/reschedule`, `POST /api/bookings/[token]/phone` |
+| Manage token | in the URL path | per-booking `manage_token` | `POST /api/bookings/[token]/cancel`, `POST /api/bookings/[token]/reschedule`, `POST /api/bookings/[token]/phone`, `GET /api/bookings/[token]/ics` |
 | Smoke key | `Authorization: Bearer <key>` | `BOOKING_API_KEY_CANARY` (or the legacy shared `BOOKING_API_KEY`); a partner's key is refused | `GET /api/smoke/version`, `POST /api/smoke/heartbeat`, `POST /api/smoke/burst-counter`, `POST /api/smoke/schedule-parity` |
 | None (public) | n/a | n/a | `GET /api/availability`, `GET /api/availability/next`, `POST /api/routing`, `POST /api/client-errors`, `POST /api/csp-report`, `GET /api/health`, `GET /api/health/availability`, `GET /api/auth/callback` |
 
@@ -811,6 +811,7 @@ URL; there is no header credential. Intended for humans, not machine callers.
 | `POST /api/bookings/[token]/cancel` | `{ reason, reasonDetail? }` (reason mandatory, #326) | `200 { "ok": true }` | `400` invalid or missing reason; `409` meeting already completed so not cancellable (#618) |
 | `POST /api/bookings/[token]/reschedule` | `{ start, reason, reasonDetail? }` (start a parseable ISO instant, reason mandatory) | `200 { booking, manageUrl }` | `400` invalid start or reason; `409` slot taken or concurrent-change conflict; `503` verify unavailable |
 | `POST /api/bookings/[token]/phone` | `{ phone }` (#1341) | `200 { ok: true, phone }`, carrying the number as STORED, not as typed | `400` a number we cannot call, or a payload over the size ceiling |
+| `GET /api/bookings/[token]/ics` | none (#2643) | `200` a `text/calendar` download (`pennie-call.ics`), built at request time and never cached | `404` unknown token; `410` a cancelled call, with a sentence saying so |
 
 The phone edit is authorised by the same manage token, deliberately: it is a
 scoped edit of ONE field on a booking that token already governs, not a new
@@ -822,8 +823,9 @@ The in-place reschedule enforces the booker's full slot rules (daily cap, buffer
 notice, working hours, #539) and can decline with a `409` when the new time is not
 bookable for the current agent.
 
-All three of these routes (cancel, reschedule, and the `POST
-/api/bookings/[token]/phone` number correction) are throttled per client address at
+All four of these routes (cancel, reschedule, the `POST
+/api/bookings/[token]/phone` number correction, and the `GET
+/api/bookings/[token]/ics` calendar file) are throttled per client address at
 20 requests a minute, at the edge, and answer `429` above it (#1046). That is far
 above moving one appointment; it exists so a caller guessing manage tokens cannot
 buy unmetered database round trips. It fails OPEN, so a limiter fault never stops a

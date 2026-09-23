@@ -200,7 +200,9 @@ silently moving the wrong person (shared household phone, recycled id).
     "endsAt": "2026-07-01T15:30:00.000Z",
     "status": "confirmed",
     "agent": { "name": "…", "email": "…" },
-    "manageUrl": "https://…/booking/manage/<token>"
+    "manageUrl": "https://…/booking/manage/<token>",
+    "contact": { "name": "…", "email": "…", "phone": "+1…" },
+    "calendarLinks": { "google": "…", "outlook": "…", "office365": "…", "ics": "…" }
   },
   "bucket": {
     "code": "421",
@@ -210,6 +212,14 @@ silently moving the wrong person (shared household phone, recycled id).
   }
 }
 ```
+
+#### `contact` and `calendarLinks` (#2643)
+
+The lead's own contact as stored, and four add to calendar links, the same
+fields the by id lookup (section 3) returns and from the same builder. Both are
+**left out on `confirm_required`**, because the booking named there is one a
+weak match found and may belong to somebody else (#1340). See section 3 for what
+each link is.
 
 #### `bucket`: which team owns the lead (#1515)
 
@@ -309,7 +319,8 @@ GET /api/bookings?externalId=<id>&bookingId=<id>&status=confirmed  # assert stat
   `completed`. Returns the booking only if it is in that status, else `404`.
 
 Response (list): `{ "bookings": [ <booking>, ... ] }` — empty array if none.
-Response (by id): `{ "booking": <booking> }`.
+Response (by id): `{ "booking": <booking detail> }`, which is `<booking>` plus the
+two fields below.
 
 ```jsonc
 // <booking>
@@ -324,6 +335,37 @@ Response (by id): `{ "booking": <booking> }`.
   "manageUrl": "https://…/booking/manage/<token>"
 }
 ```
+
+```jsonc
+// <booking detail>: the by id answer, and the confirm response's booking (#2643)
+{
+  // ...every <booking> field above, plus:
+  "contact": { "name": "Dana Lee", "email": "dana@example.com", "phone": "+12155550100" },
+  "calendarLinks": {
+    "google":    "https://calendar.google.com/calendar/render?action=TEMPLATE&…",
+    "outlook":   "https://outlook.live.com/calendar/0/action/compose?rru=addevent&…",
+    "office365": "https://outlook.office.com/calendar/0/action/compose?rru=addevent&…",
+    "ics":       "https://slate.trypennie.app/api/bookings/<manage token>/ics"
+  }
+}
+```
+
+- **`contact`** is the lead's name, email and phone as Slate stores them (phone in
+  `+1…` form). It is returned only here, where the caller has already named the
+  booking by a strong id, so it can never hand one person's phone to another
+  (#1340). It is deliberately not on the list response.
+- **`calendarLinks`** are the four add to calendar buttons. The first three open
+  the provider's own new event form, prefilled. **`ics` is a plain link a browser
+  can open with no API key**: it is served by the booking's manage token, it is
+  built when it is clicked (so a call that moved since downloads at its new
+  time), and it answers `410` for a cancelled call. The entry is titled "Pennie
+  call with {advisor}" and its description carries the manage link.
+- **`calendarLinks` is `null` on a cancelled booking**: there is nothing to add.
+
+This is what trypennie's booking confirmed page reads for a Slate booking: the
+widget's `bookingSuccessful` event carries the booking id, the page redirects to
+`/my-offers/result/booking-confirmed?bookingId=<id>&submissionId=<id>`, and that
+page fetches this lookup server side with its own key.
 
 By-id not found / not owned / status mismatch → `404 { "code": "NOT_FOUND" }`.
 
