@@ -1322,6 +1322,55 @@ describe("Booker embed postMessage origin (#593)", () => {
     postSpy.mockRestore();
   });
 
+  // #2641: the browser drops a post whose target is not the real parent, with no
+  // error anywhere, so a host that declares the wrong origin loses the resize and
+  // the success message silently. The Booker reports the pair once per load.
+  describe("a host whose declared origin is not the one that framed it (#2641)", () => {
+    function withReferrer(referrer: string) {
+      Object.defineProperty(document, "referrer", { value: referrer, configurable: true });
+    }
+    afterEach(() => withReferrer(""));
+
+    const reports = (spy: ReturnType<typeof vi.fn>) =>
+      spy.mock.calls
+        .filter((c) => String(c[0]).includes("/api/client-errors"))
+        .map((c) => JSON.parse(String((c[1] as RequestInit).body)));
+
+    it("reports the two origins once, and never the referrer's path", async () => {
+      withReferrer("https://www.trypennie.com/booking/a04xx?email=k%40x.com");
+      const fetchSpy = availabilityOnlyFetch() as unknown as ReturnType<typeof vi.fn>;
+      global.fetch = fetchSpy as unknown as typeof fetch;
+      render(<Booker {...baseProps} embedded parentOrigin="https://trypennie.com" />);
+      await dayChip();
+      await waitFor(() => expect(reports(fetchSpy)).toHaveLength(1));
+      const [report] = reports(fetchSpy);
+      expect(report).toMatchObject({
+        kind: "origin_mismatch",
+        message: "declared https://trypennie.com, framed by https://www.trypennie.com",
+      });
+      expect(JSON.stringify(report)).not.toContain("a04xx");
+      expect(JSON.stringify(report)).not.toContain("email");
+    });
+
+    it("reports nothing when the host declared its own origin", async () => {
+      withReferrer("https://trypennie.com/booking/a04xx");
+      const fetchSpy = availabilityOnlyFetch() as unknown as ReturnType<typeof vi.fn>;
+      global.fetch = fetchSpy as unknown as typeof fetch;
+      render(<Booker {...baseProps} embedded parentOrigin="https://trypennie.com" />);
+      await dayChip();
+      expect(reports(fetchSpy)).toHaveLength(0);
+    });
+
+    it("reports nothing outside an embed", async () => {
+      withReferrer("https://www.trypennie.com/");
+      const fetchSpy = availabilityOnlyFetch() as unknown as ReturnType<typeof vi.fn>;
+      global.fetch = fetchSpy as unknown as typeof fetch;
+      render(<Booker {...baseProps} parentOrigin="https://trypennie.com" />);
+      await dayChip();
+      expect(reports(fetchSpy)).toHaveLength(0);
+    });
+  });
+
   it("does NOT broadcast bookingSuccessful when the parent origin is unknown", async () => {
     global.fetch = availabilityOnlyFetch();
     const postSpy = vi.spyOn(window.parent, "postMessage");

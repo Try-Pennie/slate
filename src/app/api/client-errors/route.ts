@@ -1,8 +1,9 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { reportInternalError } from "@/lib/api/errors";
 import { log } from "@/lib/log";
-import { sendThrottledAlert } from "@/lib/notify/dispatch";
-import { boundaryCatchAlert } from "@/lib/notify/misc-alert-copy";
+import { sendThrottledAlert, sendThrottledInfo } from "@/lib/notify/dispatch";
+import { boundaryCatchAlert, embedOriginMismatchAlert } from "@/lib/notify/misc-alert-copy";
+import { parseOriginMismatchMessage } from "@/lib/embed/parent-origin";
 import { shortErrorReason } from "@/lib/notify/error-text";
 import { countBoundaryCatch, BOUNDARY_WINDOW_MS } from "@/lib/api/boundary-count";
 
@@ -19,6 +20,13 @@ import { countBoundaryCatch, BOUNDARY_WINDOW_MS } from "@/lib/api/boundary-count
  * in length so a break lasting past the window pages again on the same cadence.
  */
 const BOUNDARY_ERROR_COOLDOWN_MS = BOUNDARY_WINDOW_MS;
+
+/**
+ * How often a misconfigured embedding host is mentioned in Slack (#2641). Every
+ * lead on that host reports it, so once a day is the whole signal; every report is
+ * still logged with its pair.
+ */
+const ORIGIN_MISMATCH_COOLDOWN_MS = 24 * 60 * 60_000;
 import { allowRequest, clientIp, CLIENT_ERROR_RATE_RULES } from "@/lib/rate-limit";
 import { CLIENT_ERROR_ADDRESS_POLICY } from "@/lib/rate-limit-core";
 import {
@@ -75,6 +83,30 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   const body = await req.json().catch(() => null);
   const report = normalizeClientError(body);
   if (!report) return done();
+
+  // #2641: not an error, and never worded as one (L11). The pair is REBUILT from
+  // what parses as two origins, and anything else is dropped, because this endpoint
+  // is public and whatever it forwards reaches Slack. One fixed key, so a stranger
+  // cannot mint a throttle row per forged pair.
+  if (report.kind === "origin_mismatch") {
+    const pair = parseOriginMismatchMessage(report.message);
+    if (!pair) return done();
+    log.warn("client-errors", {
+      msg: "embed origin mismatch",
+      declared: pair.declared,
+      framed_by: pair.framedBy,
+      page: report.page,
+    });
+    // alert-key: embed_origin_mismatch
+    await sendThrottledInfo(
+      "embed_origin_mismatch",
+      ORIGIN_MISMATCH_COOLDOWN_MS,
+      embedOriginMismatchAlert(pair.declared, pair.framedBy),
+    ).catch((alertErr: unknown) => {
+      log.error("client-errors", { msg: "origin mismatch info failed" }, alertErr);
+    });
+    return done();
+  }
 
   // The alert carries a short, bounded reason; the full report goes to the log,
   // which Cloudflare keeps complete (#1133: the alert is read on a phone, the

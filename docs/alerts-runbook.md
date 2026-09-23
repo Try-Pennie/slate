@@ -443,7 +443,18 @@ check it by hand afterwards.
 
 Keys: `rate_limit_blocked:*`, `ooo_agent_dm`, `ooo_approvals_digest`,
 `ooo-digest-unreachable:*`, `ooo-digest-unrouted-unreachable`, `ooo_undo`,
-`beyond_overflow_rate`.
+`beyond_overflow_rate`, `embed_origin_mismatch`.
+
+**`embed_origin_mismatch` is the one here with a job attached, and the job is not
+ours** (#2641). A page embedding the booker told it to report to one address while
+the browser says a different one framed it, typically `www.` against the bare
+domain, or a preview or staging deploy with the production address typed in. The
+browser drops every message sent to the wrong address, so on that page the booking
+box keeps its fallback height and the host's success redirect never fires. Bookings
+still complete inside the box, which is why it is info. The fix is on the host:
+pass `window.location.origin` as `parentOrigin`. Every report is in the Worker logs
+with its pair (`tag=client-errors msg="embed origin mismatch"`), and the message is
+sent at most once a day however many leads meet it.
 
 **`beyond_overflow_rate` is the one here that names a consequence** (#2228). It is
 the daily count of Beyond leads taken by an Achieve agent because no Beyond agent

@@ -28,6 +28,32 @@ import { scrubContactData, FIELD_LIMITS } from "@/lib/api/client-error-scrub";
  *  and the next thousand messages add nothing a human would act on differently. */
 export const MAX_REPORTS_PER_PAGE = 5;
 
+/**
+ * Send one report to the beacon endpoint. The one place a page posts a report, so
+ * the Booker's origin mismatch (#2641) and the error listeners below cannot drift
+ * into two ways of sending (L41). Contact data is scrubbed from the message here
+ * too, whoever calls it.
+ */
+export function postClientReport(body: Record<string, unknown> & { message: string }): void {
+  void fetch("/api/client-errors", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    // keepalive so a report survives the customer navigating away from the
+    // page that just broke, which is exactly what they tend to do.
+    keepalive: true,
+    body: JSON.stringify({
+      ...body,
+      message: scrubContactData(body.message).slice(0, FIELD_LIMITS.message),
+    }),
+    // swallow-ok: this is the one place swallowing is correct. A rejected
+    // post is itself an unhandled rejection, which the beacon's listener hears,
+    // which posts again: the beacon would feed on its own failure. There is
+    // also nowhere to report it TO (reporting is the thing that just broke),
+    // and the customer must never see a monitoring failure. The endpoint's
+    // own health is covered server side, not from the page that failed.
+  }).catch(() => {});
+}
+
 interface Props {
   /** The surface, used to key the alert. */
   page: string;
@@ -46,25 +72,7 @@ export function ClientErrorBeacon({ page, bucketCode }: Props): null {
       seen.add(message);
       sent++;
 
-      void fetch("/api/client-errors", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        // keepalive so a report survives the customer navigating away from the
-        // page that just broke, which is exactly what they tend to do.
-        keepalive: true,
-        body: JSON.stringify({
-          ...body,
-          message: scrubContactData(message).slice(0, FIELD_LIMITS.message),
-          page,
-          bucketCode: bucketCode ?? null,
-        }),
-        // swallow-ok: this is the one place swallowing is correct. A rejected
-        // post is itself an unhandled rejection, which the listener below hears,
-        // which posts again: the beacon would feed on its own failure. There is
-        // also nowhere to report it TO (reporting is the thing that just broke),
-        // and the customer must never see a monitoring failure. The endpoint's
-        // own health is covered server side, not from the page that failed.
-      }).catch(() => {});
+      postClientReport({ ...body, message, page, bucketCode: bucketCode ?? null });
     };
 
     const onError = (e: ErrorEvent): void => {

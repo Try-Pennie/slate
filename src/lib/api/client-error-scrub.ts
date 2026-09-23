@@ -87,7 +87,7 @@ export function scrubContactData(text: string): string {
  * screen and tells nobody, so one stray fault and a deploy that broke a page for
  * everybody arrive on the same path and look identical (L77).
  */
-export type ClientErrorKind = "error" | "unhandledrejection" | "boundary";
+export type ClientErrorKind = "error" | "unhandledrejection" | "boundary" | "origin_mismatch";
 
 export interface ClientErrorReport {
   kind: ClientErrorKind;
@@ -100,7 +100,12 @@ export interface ClientErrorReport {
   col: number | null;
 }
 
-const KINDS: ClientErrorKind[] = ["error", "unhandledrejection", "boundary"];
+/**
+ * `origin_mismatch` is not an error at all (#2641): the embedding host declared a
+ * different origin from the one that framed the Booker, so the browser drops every
+ * message the Booker posts it. The page reports it once per load.
+ */
+const KINDS: ClientErrorKind[] = ["error", "unhandledrejection", "boundary", "origin_mismatch"];
 
 /** Trim, scrub, and cap one string field. Returns null for nothing usable. */
 function field(raw: unknown, limit: number): string | null {
