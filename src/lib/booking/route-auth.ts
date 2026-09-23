@@ -1,11 +1,12 @@
 import { stampSeenIp, stampRefusedBy } from "@/lib/loadtest-echo";
 import { NextResponse, type NextRequest } from "next/server";
-import { bookingApiKeyPrimary, bookingApiKeySecondary } from "@/lib/env";
+import { configuredBookingApiKeys } from "@/lib/booking/api-keys";
 import {
+  type ApiKey,
   type AuthRefusalReason,
+  type BookingApiCaller,
   authRefusalCounting,
   authenticateBearer,
-  parseApiKeys,
   refusalReasonForStatus,
 } from "@/lib/booking/api-auth";
 import { recordApiOutcome } from "@/lib/monitor/record-api-outcome";
@@ -26,7 +27,8 @@ import {
 import type { RateLimitRule } from "@/lib/rate-limit-core";
 
 export type AuthOutcome =
-  | { ok: true; keyId: "primary" | "secondary" }
+  /** #2645: `caller` is who the key belongs to, `keyId` which of its slots. */
+  | { ok: true; keyId: ApiKey["id"]; caller: BookingApiCaller }
   /**
    * #1429: the refusal now says WHICH one it was. A rotated key (the integration
    * cannot book at all) and a rate ceiling trip (one caller going too fast) sat
@@ -52,7 +54,7 @@ function refuse(
   readPath: boolean,
   /** The request's headers, so the refusal can echo the address it was keyed on. */
   headers: Headers,
-  keyId?: "primary" | "secondary",
+  keyId?: ApiKey["id"],
   /** Whether a Bearer token was actually SENT (#1450). Only meaningful for a
    *  credential refusal, and only on the write path. */
   tokenPresent = false,
@@ -147,8 +149,7 @@ export async function authorizeBookingApi(
   hourlyIpRules: RateLimitRule[] | null = DIRECT_BOOKING_API_IP_HOURLY_RATE_RULES,
   readPath = false,
 ): Promise<AuthOutcome> {
-  const keys = parseApiKeys(bookingApiKeyPrimary(), bookingApiKeySecondary());
-  const auth = authenticateBearer(req.headers.get("authorization"), keys);
+  const auth = authenticateBearer(req.headers.get("authorization"), configuredBookingApiKeys());
   if (!auth.ok) {
     // The reason is DERIVED from the status the authenticator already decided, so
     // the classification and the response cannot disagree (L53).
@@ -163,11 +164,14 @@ export async function authorizeBookingApi(
     );
   }
   const keyBudget = "Rate limit exceeded for this API key.";
-  // Per-key: edge per-minute burst window first (no DB round-trip), then the hourly cap.
+  // Per CALLER (#2645): edge per-minute burst window first (no DB round-trip), then
+  // the hourly cap. Keyed on who the key belongs to, not which slot matched, so a
+  // caller mid rotation does not get two budgets and one partner cannot spend
+  // another's.
   const keyEdgeOk = readPath
-    ? await bookingApiReadWithinLimit(auth.keyId)
-    : await bookingApiWriteWithinLimit(auth.keyId);
-  if (!keyEdgeOk || !(await allowRequest({ kind: "opaque", key: `key:${auth.keyId}` }, hourlyKeyRules))) {
+    ? await bookingApiReadWithinLimit(auth.caller)
+    : await bookingApiWriteWithinLimit(auth.caller);
+  if (!keyEdgeOk || !(await allowRequest({ kind: "opaque", key: `key:${auth.caller}` }, hourlyKeyRules))) {
     return refuse("throttled_key", keyBudget, 429, readPath, req.headers, auth.keyId);
   }
   // #597: a coarse per-IP backstop on top of the per-key ceiling, in its own counter.
@@ -191,5 +195,5 @@ export async function authorizeBookingApi(
       );
     }
   }
-  return { ok: true, keyId: auth.keyId };
+  return { ok: true, keyId: auth.keyId, caller: auth.caller };
 }

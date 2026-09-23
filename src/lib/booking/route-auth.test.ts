@@ -12,6 +12,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 const env = vi.hoisted(() => ({
   bookingApiKeyPrimary: vi.fn(() => "goodsecret"),
   bookingApiKeySecondary: vi.fn(() => ""),
+  bookingApiKeyFor: vi.fn((_caller: string, _slot: string) => ""),
 }));
 const rateLimit = vi.hoisted(() => ({
   allowRequest: vi.fn(async (_caller: unknown, _rules: unknown) => true),
@@ -56,6 +57,7 @@ describe("authorizeBookingApi refusal reasons (#1429)", () => {
     vi.clearAllMocks();
     env.bookingApiKeyPrimary.mockReturnValue("goodsecret");
     env.bookingApiKeySecondary.mockReturnValue("");
+    env.bookingApiKeyFor.mockReturnValue("");
     rateLimit.allowRequest.mockResolvedValue(true);
     rateLimit.bookingApiWriteWithinLimit.mockResolvedValue(true);
     rateLimit.bookingApiReadWithinLimit.mockResolvedValue(true);
@@ -175,5 +177,59 @@ describe("authorizeBookingApi refusal reasons (#1429)", () => {
   it("records the refusal exactly once, so a retry of the same call cannot double count", async () => {
     await authorizeBookingApi(req("Bearer stalekey"));
     expect(recordedCodes()).toHaveLength(1);
+  });
+});
+
+// #2645: the ceiling and the logs name the CALLER, not the slot. Before the split
+// every system shared one key, so "per key" meant per everyone.
+describe("authorizeBookingApi caller attribution (#2645)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    env.bookingApiKeyPrimary.mockReturnValue("sharedsecret");
+    env.bookingApiKeySecondary.mockReturnValue("");
+    env.bookingApiKeyFor.mockImplementation((caller: string, slot: string) =>
+      caller === "trypennie" ? (slot === "primary" ? "trypennie-old" : "trypennie-new") : caller === "regal" && slot === "primary" ? "regalsecret" : "",
+    );
+    rateLimit.allowRequest.mockResolvedValue(true);
+    rateLimit.bookingApiWriteWithinLimit.mockResolvedValue(true);
+    rateLimit.bookingApiReadWithinLimit.mockResolvedValue(true);
+    rateLimit.bookingApiIpWithinLimit.mockResolvedValue(true);
+  });
+
+  /** Every per key budget the authorizer spent, edge and hourly, as one list. */
+  function budgetsSpent() {
+    return [
+      ...rateLimit.bookingApiWriteWithinLimit.mock.calls.map((c) => `edge:${c[0]}`),
+      ...rateLimit.allowRequest.mock.calls
+        .map((c) => (c[0] as { kind: string; key?: string }))
+        .filter((c) => c.kind === "opaque")
+        .map((c) => `hourly:${c.key}`),
+    ];
+  }
+
+  it("reports which caller a key belongs to", async () => {
+    const out = await authorizeBookingApi(req("Bearer regalsecret"));
+    expect(out.ok).toBe(true);
+    if (!out.ok) return;
+    expect(out.caller).toBe("regal");
+    expect(out.keyId).toBe("regal:primary");
+  });
+
+  it("charges both of one caller's rotation slots to ONE budget", async () => {
+    await authorizeBookingApi(req("Bearer trypennie-old"));
+    await authorizeBookingApi(req("Bearer trypennie-new"));
+    // Per slot would give a caller mid rotation twice its ceiling.
+    expect(budgetsSpent().sort()).toEqual(["edge:trypennie", "edge:trypennie", "hourly:key:trypennie", "hourly:key:trypennie"]);
+  });
+
+  it("gives each caller its own budget, so one partner cannot spend another's", async () => {
+    await authorizeBookingApi(req("Bearer regalsecret"));
+    await authorizeBookingApi(req("Bearer sharedsecret"));
+    expect(budgetsSpent().sort()).toEqual(["edge:regal", "edge:shared", "hourly:key:regal", "hourly:key:shared"]);
+  });
+
+  it("still accepts the legacy shared pair, as the shared caller", async () => {
+    const out = await authorizeBookingApi(req("Bearer sharedsecret"));
+    expect(out.ok && out.caller).toBe("shared");
   });
 });

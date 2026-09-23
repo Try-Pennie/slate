@@ -75,7 +75,7 @@ names which one it requires.
 
 | Auth model | Header | Backing secret(s) | Used by |
 |---|---|---|---|
-| Booking API key | `Authorization: Bearer <key>` | `BOOKING_API_KEY`, `BOOKING_API_KEY_2` | `POST/GET/DELETE /api/bookings`, `POST /api/bookings/cancel`, and (for hidden test buckets only) `GET /api/availability` |
+| Booking API key | `Authorization: Bearer <key>` | one per caller, each with a `_2` slot: `BOOKING_API_KEY_REGAL`, `BOOKING_API_KEY_TRYPENNIE`, `BOOKING_API_KEY_CANARY`, plus the legacy shared `BOOKING_API_KEY` (#2645; see `docs/booking-api.md` section 2) | `POST/GET/DELETE /api/bookings`, `POST /api/bookings/cancel`, and (for hidden test buckets only) `GET /api/availability` |
 | Reassign API key | `Authorization: Bearer <key>` | `REASSIGN_API_KEY` | `POST /api/bookings/reassign` |
 | Offboarding API key | `Authorization: Bearer <key>` | `OFFBOARDING_API_KEY` | `POST /api/users/lifecycle`, `POST /api/users/deactivate`, `POST /api/users/reactivate` |
 | Bookable API key | `Authorization: Bearer <key>` | `BOOKABLE_API_KEY` | `POST /api/users/bookable` |
@@ -84,7 +84,7 @@ names which one it requires.
 | Slack signature | `X-Slack-Signature` + `X-Slack-Request-Timestamp` | Slack signing secret | `POST /api/slack/interactions` |
 | Supabase session (staff) | session cookie | Supabase Auth | every `/api/admin/*` route |
 | Manage token | in the URL path | per-booking `manage_token` | `POST /api/bookings/[token]/cancel`, `POST /api/bookings/[token]/reschedule`, `POST /api/bookings/[token]/phone` |
-| Smoke key | `Authorization: Bearer <key>` | `BOOKING_API_KEY` | `GET /api/smoke/version`, `POST /api/smoke/heartbeat`, `POST /api/smoke/burst-counter`, `POST /api/smoke/schedule-parity` |
+| Smoke key | `Authorization: Bearer <key>` | `BOOKING_API_KEY_CANARY` (or the legacy shared `BOOKING_API_KEY`); a partner's key is refused | `GET /api/smoke/version`, `POST /api/smoke/heartbeat`, `POST /api/smoke/burst-counter`, `POST /api/smoke/schedule-parity` |
 | None (public) | n/a | n/a | `GET /api/availability`, `GET /api/availability/next`, `POST /api/routing`, `POST /api/client-errors`, `POST /api/csp-report`, `GET /api/health`, `GET /api/health/availability`, `GET /api/auth/callback` |
 
 Every Bearer credential is compared in constant time (`src/lib/bearer-auth.ts`).
@@ -940,8 +940,11 @@ answer `503` when no booking API key is configured.
 
 | Variable | Gates | Behavior when unset |
 |---|---|---|
-| `BOOKING_API_KEY` | Booking API (primary key) | `503` on `/api/bookings` (endpoint disabled) |
-| `BOOKING_API_KEY_2` | Booking API (secondary, for zero-downtime rotation) | Ignored; primary still works |
+| `BOOKING_API_KEY` | Booking API, the legacy shared key, accepted alongside the per caller keys until retired | With every booking key unset, `503` on `/api/bookings` |
+| `BOOKING_API_KEY_2` | The shared key's rotation slot | Ignored; primary still works |
+| `BOOKING_API_KEY_REGAL`, `_2` | Regal's own booking key (#2645) | Regal must use the shared key |
+| `BOOKING_API_KEY_TRYPENNIE`, `_2` | trypennie's own booking key | trypennie must use the shared key |
+| `BOOKING_API_KEY_CANARY`, `_2` | The smoke canary's own key, the only named key the smoke endpoints accept | The canary must use the shared key |
 | `REASSIGN_API_KEY` | `POST /api/bookings/reassign` | `503` |
 | `DUPLICATE_CANCEL_API_KEY` | `POST /api/bookings/cancel-duplicate` | `503` |
 | `OFFBOARDING_API_KEY` | `/api/users/lifecycle`, `/api/users/deactivate`, `/api/users/reactivate` | `503` |

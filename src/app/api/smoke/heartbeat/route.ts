@@ -1,6 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
-import { bookingApiKeyPrimary, bookingApiKeySecondary } from "@/lib/env";
-import { parseApiKeys, authenticateBearer } from "@/lib/booking/api-auth";
+import { authenticateBearer, CANARY_CALLERS } from "@/lib/booking/api-auth";
+import { configuredBookingApiKeys } from "@/lib/booking/api-keys";
 import { recordHeartbeat } from "@/lib/monitor/heartbeat";
 
 export const dynamic = "force-dynamic";
@@ -54,7 +54,8 @@ const CANARY_HEARTBEAT_LANES = new Set([
 ]);
 
 export async function POST(req: NextRequest) {
-  const keys = parseApiKeys(bookingApiKeyPrimary(), bookingApiKeySecondary());
+  // #2645: the canary's own key (and the legacy shared pair) only, never a partner's.
+  const keys = configuredBookingApiKeys(CANARY_CALLERS);
   const auth = authenticateBearer(req.headers.get("authorization"), keys);
   if (!auth.ok) {
     return NextResponse.json({ error: auth.error }, { status: auth.status });

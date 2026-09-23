@@ -11,6 +11,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 const env = vi.hoisted(() => ({
   bookingApiKeyPrimary: vi.fn(() => ""),
   bookingApiKeySecondary: vi.fn(() => ""),
+  bookingApiKeyFor: vi.fn((_caller: string, _slot: string) => ""),
 }));
 vi.mock("@/lib/env", () => env);
 vi.mock("@/lib/build-info", () => ({ BUILD_COMMIT: "abc1234" }));

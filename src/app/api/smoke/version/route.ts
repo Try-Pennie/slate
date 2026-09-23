@@ -1,6 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
-import { bookingApiKeyPrimary, bookingApiKeySecondary } from "@/lib/env";
-import { parseApiKeys, authenticateBearer } from "@/lib/booking/api-auth";
+import { authenticateBearer, CANARY_CALLERS } from "@/lib/booking/api-auth";
+import { configuredBookingApiKeys } from "@/lib/booking/api-keys";
 import { BUILD_COMMIT } from "@/lib/build-info";
 import { isLoadtest } from "@/lib/loadtest-guard";
 import { productionSecretsPresent } from "@/lib/loadtest-secrets";
@@ -28,7 +28,8 @@ export const dynamic = "force-dynamic";
  * liveness signal and must stay minimal and safe to expose.
  */
 export async function GET(req: NextRequest) {
-  const keys = parseApiKeys(bookingApiKeyPrimary(), bookingApiKeySecondary());
+  // #2645: the canary's own key (and the legacy shared pair) only, never a partner's.
+  const keys = configuredBookingApiKeys(CANARY_CALLERS);
   const auth = authenticateBearer(req.headers.get("authorization"), keys);
   if (!auth.ok) {
     return NextResponse.json({ error: auth.error }, { status: auth.status });

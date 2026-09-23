@@ -75,8 +75,14 @@ wrangler secret put REASSIGN_API_KEY        # optional; bearer for the reassign 
 wrangler secret put DUPLICATE_CANCEL_API_KEY # optional; bearer for the duplicate-cancel API (#2369). Empty = POST /api/bookings/cancel-duplicate returns 503.
 wrangler secret put OFFBOARDING_API_KEY     # optional; bearer for deactivate/reactivate. Empty = offboarding endpoints return 503.
 wrangler secret put BOOKABLE_API_KEY        # optional; bearer for the bookable-toggle API. Empty = POST /api/users/bookable returns 503.
-wrangler secret put BOOKING_API_KEY         # optional; bearer for the direct booking API. Empty (both) = POST /api/bookings returns 503.
-# wrangler secret put BOOKING_API_KEY_2     # optional 2nd booking key; set only when rotating (both accepted at once).
+wrangler secret put BOOKING_API_KEY         # optional; the SHARED booking API key (#2645), held by every caller before each had its own. Retire it once all three below are set and handed out. Every booking key empty = POST /api/bookings returns 503.
+# wrangler secret put BOOKING_API_KEY_2     # optional 2nd shared key; set only when rotating (both accepted at once).
+wrangler secret put BOOKING_API_KEY_REGAL   # optional; Regal's own booking API key (its journeys cancel through it). Logs and the rate ceiling name the caller "regal".
+# wrangler secret put BOOKING_API_KEY_REGAL_2   # optional; Regal's rotation slot, set only when rotating.
+wrangler secret put BOOKING_API_KEY_TRYPENNIE # optional; trypennie's own booking API key (the booking confirmed page's lookup, #2643).
+# wrangler secret put BOOKING_API_KEY_TRYPENNIE_2 # optional; trypennie's rotation slot, set only when rotating.
+wrangler secret put BOOKING_API_KEY_CANARY  # optional; the smoke canary's own key. The ONLY named key the smoke endpoints accept, so the GitHub repo secret BOOKING_API_KEY should hold this value.
+# wrangler secret put BOOKING_API_KEY_CANARY_2  # optional; the canary's rotation slot, set only when rotating.
 wrangler secret put GITHUB_CANARY_TOKEN     # optional; fine-grained GitHub token (Actions read/write on Try-Pennie/slate) so the monitor lane can re-fire the smoke-canary workflow when GitHub drops a scheduled run. Empty = gap-filler is a no-op (GitHub's schedule alone runs the canary).
 wrangler secret put SNOWFLAKE_PRIVATE_KEY   # optional; RSA private key (PKCS#8 PEM) for the Snowflake archival mirror export lane. Empty = the export lane is a safe no-op (logs "not configured" and skips). See docs/snowflake-setup.md.
 ```
