@@ -32,6 +32,7 @@ const with_ = (over: Partial<SetupReadiness>): SetupReadiness => ({ ...ALL_SETUP
   assert(g.lowVolume.run, "a healthy tick runs the low-volume alarm");
   assert(g.calendarWindow.run, "a healthy tick runs the calendar window coverage check");
   assert(g.busyDrift.run, "a healthy tick runs the busy drift sampler");
+  assert(g.belowLeadTier.run, "a healthy tick runs the below lead tier check");
 }
 
 // --- each read, alone, gates exactly the checks that depend on it --------------
@@ -54,8 +55,12 @@ const with_ = (over: Partial<SetupReadiness>): SetupReadiness => ({ ...ALL_SETUP
      *  it judges against and the filter the offered times are counted through)
      *  and the cached slot rows (which ARE the reading). */
     tiers: boolean;
+    /** #2593: the below lead tier check reads each booked pool's tier off the
+     *  shared bucket list, and the list is also what says which buckets are real,
+     *  so an unreadable one must skip it rather than compare against nothing. */
+    below?: boolean;
   }[] = [
-    { name: "buckets", scan: false, truth: true, volume: true, window: true, drift: true, tiers: true },
+    { name: "buckets", scan: false, truth: true, volume: true, window: true, drift: true, tiers: true, below: false },
     { name: "slotHealth", scan: false, truth: true, volume: true, window: true, drift: true, tiers: false },
     // #1298: the volume alarm asks whether the org is open before deciding a quiet
     // half hour is worth mentioning, and it asks the org's REAL hours now rather
@@ -78,6 +83,8 @@ const with_ = (over: Partial<SetupReadiness>): SetupReadiness => ({ ...ALL_SETUP
     eq(g.calendarWindow.run, c.window, `${c.name} unreadable: calendar window check runs = ${c.window}`);
     eq(g.busyDrift.run, c.drift, `${c.name} unreadable: busy drift sampler runs = ${c.drift}`);
     eq(g.tierStaffing.run, c.tiers, `${c.name} unreadable: debt tier alarm runs = ${c.tiers}`);
+    const below = c.below ?? true;
+    eq(g.belowLeadTier.run, below, `${c.name} unreadable: below lead tier check runs = ${below}`);
   }
 }
 

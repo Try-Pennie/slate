@@ -456,6 +456,14 @@ export const VERDICT_STALE_BOUNDS_MS: Record<string, number> = {
   // so editing the cron or the timeout without revisiting this fails the build, and it
   // also refuses a bound with days of slack in it.
   "verdict:kill-switch": 52 * 60 * MIN,
+  // The booking below the lead's Salesforce tier check (#2593). It concludes on
+  // every 5 minute tick that compares at least one upcoming booking, and once
+  // real leads book there is always one: calls are booked days ahead, so Friday
+  // night still holds Monday's. Its only legitimate silence is a roster with no
+  // upcoming real booking at all, which is the dark roster before cutover and is
+  // what its park is for. A day is a maintenance window over a Salesforce outage,
+  // not a measure of the cadence.
+  "verdict:below-lead-tier": 24 * 60 * MIN,
 };
 
 /**

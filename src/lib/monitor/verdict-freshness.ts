@@ -29,6 +29,7 @@ import type { TruthResult } from "@/lib/monitor/availability-truth";
 import type { FailureRateResult } from "@/lib/monitor/booking-failure-rate";
 import type { LowVolumeResult } from "@/lib/monitor/booking-volume";
 import type { OooProtectionResult } from "@/lib/monitor/ooo-protection";
+import type { BelowLeadTierResult } from "@/lib/monitor/below-lead-tier";
 import { SHIPPED_FAILURE_RATE_THRESHOLDS } from "@/lib/monitor/failure-rate-thresholds";
 
 /**
@@ -98,6 +99,14 @@ export const BURST_COUNTER_VERDICT_LANE = "verdict:burst-counter";
  * rather than being re-derived here from a code number.
  */
 export const KILL_SWITCH_VERDICT_LANE = "verdict:kill-switch";
+/**
+ * The booking below the lead's Salesforce tier check (#2593).
+ *
+ * Silent on a healthy day AND on a broken one, like the tier staffing alarm: two
+ * bookings in twelve hundred is the incident rate, so almost every tick finds
+ * nothing, and a Salesforce read that stopped working would find nothing too.
+ */
+export const BELOW_LEAD_TIER_VERDICT_LANE = "verdict:below-lead-tier";
 
 export type DetectorVerdictLane =
   | typeof TIER_STAFFING_VERDICT_LANE
@@ -108,7 +117,8 @@ export type DetectorVerdictLane =
   | typeof TWILIO_ROSTER_VERDICT_LANE
   | typeof LANE_WATCHDOG_VERDICT_LANE
   | typeof BURST_COUNTER_VERDICT_LANE
-  | typeof KILL_SWITCH_VERDICT_LANE;
+  | typeof KILL_SWITCH_VERDICT_LANE
+  | typeof BELOW_LEAD_TIER_VERDICT_LANE;
 
 /**
  * Did this availability truth tick compare real calendars and decide?
@@ -172,6 +182,20 @@ export function tierStaffingReachedVerdict(
   result: { measuredAny: boolean } | null,
 ): boolean {
   return result?.measuredAny === true;
+}
+
+/**
+ * Did the below-tier check COMPARE at least one booking this tick? (#2593)
+ *
+ * `compared > 0` and nothing less. A run where either read failed is
+ * `unreadable`; a run that read both sides and could judge nobody (no upcoming
+ * real bookings, or only bookings whose lead has no readable XBC) measured
+ * nothing either, and stamping it would let a detector that has never once held
+ * a lead's tier against a pool read as one that keeps finding them in agreement
+ * (L98). A null result is a step that skipped or threw.
+ */
+export function belowLeadTierReachedVerdict(result: BelowLeadTierResult | null): boolean {
+  return result?.status === "measured" && result.compared > 0;
 }
 
 /**
@@ -298,6 +322,19 @@ export const PARKED_VERDICT_DETECTORS: Partial<Record<DetectorVerdictLane, Parke
     // the window it is in says nothing about whether it can judge today. Restating
     // it is what went stale when #2484 moved the window from one hour to four.
     unparkWithinMs: SHIPPED_FAILURE_RATE_THRESHOLDS.windowMs,
+  },
+  // #2593. Measured 2026-09-24: no upcoming active booking in a real bucket, and
+  // no Slate booking has ever carried a real Salesforce Lead id, so there is
+  // nothing to compare and the watch would page "never concluded" every day for
+  // a reason nobody can act on (L111, L36). The first real booking unparks it,
+  // and the un-park page is what says so.
+  [BELOW_LEAD_TIER_VERDICT_LANE]: {
+    reason:
+      "no real lead has an upcoming booking in Slate yet, so there is no booking to hold against the lead's Salesforce tier. It can only conclude once real leads are booking, from the Low pilot page or at cutover",
+    issue: 2696,
+    // Two monitor ticks. A real roster keeps an upcoming booking in view on every
+    // tick, so a verdict this fresh means real bookings are in Slate now.
+    unparkWithinMs: 10 * 60_000,
   },
 };
 

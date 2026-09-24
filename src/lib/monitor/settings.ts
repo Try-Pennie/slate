@@ -46,6 +46,7 @@ export const ALERT_KEYS = [
   "schedule_parity_drift",
   "agents_on_unset_hours",
   "agents_awaiting_activation",
+  "booking_below_lead_tier",
   "handoff_channel_unset",
   "handoff_undelivered",
   "main_not_deployed",
@@ -201,6 +202,12 @@ export const ALERT_FIELDS: {
     urgency: "alert",
     label: "Agents waiting to become bookable",
     help: "Somebody the roster counts as working has sat outside the booking pool for more than four hours, so no lead is ever offered their diary. The first four hours are silent, because the hourly roster sync retries on its own and an ordinary Google blip clears inside them. It ends when the activation succeeds or somebody decides either way.",
+  },
+  {
+    key: "booking_below_lead_tier",
+    urgency: "alert",
+    label: "A lead booked with a team below their tier",
+    help: "An upcoming call is with a team below the tier Salesforce gives the lead today, for example an Ultra High lead booked with the Low team. It is checked every 5 minutes against the lead's current score, so a lead scored higher after booking is caught too. Each call pages on its own, and ends when the call moves to the right team, the score comes down, or the call is cancelled.",
   },
   {
     key: "ooo_calcom_unprotected",
@@ -374,6 +381,12 @@ export const MONITOR_DEFAULTS = {
     // than minutes, and a cooldown shorter than the grace would repeat the same
     // names before anything could have changed.
     agents_awaiting_activation: 6 * 60 * 60_000,
+    // Below the lead's tier (#2593), per booking. Six hours: the repair is a person
+    // reassigning one call, and calls are usually booked a day or more ahead, so a
+    // reminder inside the same working day is worth its noise while a repeat every
+    // tick would not be. Each booking has its own key, so a second booking pages at
+    // once however recently the first did.
+    booking_below_lead_tier: 6 * 60 * 60_000,
     // Routing dead zone (#327): unchanged from the constant this replaced. A bucket
     // with nobody stays wrong until someone is staffed onto it, so it repeats while
     // it lasts, six-hourly. Tunable since a deliberately dark roster (#1272) turned
@@ -639,6 +652,21 @@ export function resolveAwaitingActivationArmed(
   return resolveArmed(config?.awaiting_activation_armed);
 }
 
+/**
+ * Below-lead-tier ARMED switch (#2593): store > disarmed, same shape as its
+ * siblings above.
+ *
+ * Disarmed for the observe-first reason (L56), and for a sharper one: no real
+ * lead has an upcoming booking in Slate yet, so nobody has seen a single ordinary
+ * day of this check. It measures and logs every tick either way, and #2696 arms
+ * it before cutover (L65).
+ */
+export function resolveBelowLeadTierArmed(
+  config: Pick<MonitorAlertConfig, "below_lead_tier_armed"> | null,
+): boolean {
+  return resolveArmed(config?.below_lead_tier_armed);
+}
+
 // Sane bounds so a fat-finger can't silently mute an alert for a week.
 const COOLDOWN_MIN_MIN = 1;
 const COOLDOWN_MIN_MAX = 7 * 24 * 60; // one week in minutes
@@ -662,6 +690,8 @@ export interface MonitorSettingsFormInput {
   rosterCoverageArmed: string;
   /** Raw value of the arm-awaiting-activation checkbox (#2318), same encoding. */
   awaitingActivationArmed: string;
+  /** Raw value of the arm-below-lead-tier checkbox (#2593), same encoding. */
+  belowLeadTierArmed: string;
 }
 
 export interface MonitorSettingsPayload {
@@ -677,6 +707,7 @@ export interface MonitorSettingsPayload {
     availability_drift_armed: boolean;
     roster_coverage_armed: boolean;
     awaiting_activation_armed: boolean;
+    below_lead_tier_armed: boolean;
   };
   errors: string[];
 }
@@ -735,6 +766,7 @@ export function parseMonitorSettingsForm(input: MonitorSettingsFormInput): Monit
       availability_drift_armed: checked(input.availabilityDriftArmed),
       roster_coverage_armed: checked(input.rosterCoverageArmed),
       awaiting_activation_armed: checked(input.awaitingActivationArmed),
+      below_lead_tier_armed: checked(input.belowLeadTierArmed),
     },
     errors,
   };
@@ -759,6 +791,8 @@ export interface ResolvedMonitorSettings {
   rosterCoverageArmed: boolean;
   /** #2318: is the "waiting to become bookable" page armed (store > disarmed)? */
   awaitingActivationArmed: boolean;
+  /** #2593: is the "booked below the lead's tier" page armed (store > disarmed)? */
+  belowLeadTierArmed: boolean;
 }
 
 /**
@@ -778,6 +812,7 @@ export async function loadMonitorSettings(): Promise<ResolvedMonitorSettings> {
         | "availability_drift_armed"
         | "roster_coverage_armed"
         | "awaiting_activation_armed"
+        | "below_lead_tier_armed"
       >
     | null = null;
   try {
@@ -787,7 +822,7 @@ export async function loadMonitorSettings(): Promise<ResolvedMonitorSettings> {
       db
         .from("monitor_alert_config")
         .select(
-          "floor_30, floor_120, low_volume_armed, failure_rate_armed, availability_drift_armed, roster_coverage_armed, awaiting_activation_armed",
+          "floor_30, floor_120, low_volume_armed, failure_rate_armed, availability_drift_armed, roster_coverage_armed, awaiting_activation_armed, below_lead_tier_armed",
         )
         .eq("id", 1)
         .maybeSingle(),
@@ -805,6 +840,7 @@ export async function loadMonitorSettings(): Promise<ResolvedMonitorSettings> {
         | "availability_drift_armed"
         | "roster_coverage_armed"
         | "awaiting_activation_armed"
+        | "below_lead_tier_armed"
       >;
     }
   } catch {
@@ -821,6 +857,7 @@ export async function loadMonitorSettings(): Promise<ResolvedMonitorSettings> {
     availabilityDriftArmed: resolveAvailabilityDriftArmed(config),
     rosterCoverageArmed: resolveRosterCoverageArmed(config),
     awaitingActivationArmed: resolveAwaitingActivationArmed(config),
+    belowLeadTierArmed: resolveBelowLeadTierArmed(config),
   };
 }
 

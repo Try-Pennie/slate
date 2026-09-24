@@ -98,6 +98,7 @@ export function monitorSetupGates(readiness: SetupReadiness): {
   calendarWindow: SetupGate;
   busyDrift: SetupGate;
   tierStaffing: SetupGate;
+  belowLeadTier: SetupGate;
 } {
   return {
     // The scan compares every bucket's cached slot count against a live recompute,
@@ -153,5 +154,10 @@ export function monitorSetupGates(readiness: SetupReadiness): {
     // but which is not worth a run: skipping says the same thing once, in the
     // lane's own words, instead of five times.
     tierStaffing: gate(readiness, ["businessHours", "slotHealth"]),
+    // #2593: holds each upcoming booking's pool tier against the lead's Salesforce
+    // tier. The bucket list is where a pool's tier comes from AND which buckets are
+    // real rather than the smoke canary's, so it must skip without it: with no
+    // list every booking would be unmeasurable, which reads as a quiet day.
+    belowLeadTier: gate(readiness, ["buckets"]),
   };
 }

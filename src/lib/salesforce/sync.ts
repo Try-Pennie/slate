@@ -1,7 +1,7 @@
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { normalizeEmail } from "@/lib/auth/email";
 import { ensureDefaultOrg } from "@/lib/provision";
-import { sfClientId, sfClientSecret, sfInstanceUrl } from "@/lib/env";
+import { querySoqlAll, sfToken } from "@/lib/salesforce/rest";
 import { mergeSfAttributes } from "@/lib/salesforce/attributes";
 import {
   BACKEND_VALUES,
@@ -39,7 +39,6 @@ import {
   type SfIdCandidate,
   type SlateRosterRow,
 } from "@/lib/salesforce/user-id-link";
-import { fetchSfWithRetry } from "@/lib/salesforce/retry";
 import {
   agentProfileSoql,
   planOnboardingFlip,
@@ -124,43 +123,9 @@ interface SfUser {
   AchieveBackendServicer__c?: boolean;
 }
 
-async function sfToken(): Promise<{ token: string; instanceUrl: string }> {
-  const res = await fetchSfWithRetry(`${sfInstanceUrl()}/services/oauth2/token`, {
-    method: "POST",
-    headers: { "content-type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      grant_type: "client_credentials",
-      client_id: sfClientId(),
-      client_secret: sfClientSecret(),
-    }),
-  });
-  if (!res.ok) throw new Error(`SF token failed: ${res.status} ${await res.text()}`);
-  const data = (await res.json()) as { access_token: string; instance_url: string };
-  return { token: data.access_token, instanceUrl: data.instance_url };
-}
-
-async function queryAll(
-  instanceUrl: string,
-  token: string,
-  soql: string,
-): Promise<SfUser[]> {
-  const records: SfUser[] = [];
-  let url = `${instanceUrl}/services/data/v60.0/query?q=${encodeURIComponent(soql)}`;
-  for (;;) {
-    const res = await fetchSfWithRetry(url, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-    if (!res.ok) throw new Error(`SF query failed: ${res.status} ${await res.text()}`);
-    const data = (await res.json()) as {
-      records: SfUser[];
-      done: boolean;
-      nextRecordsUrl?: string;
-    };
-    records.push(...data.records);
-    if (data.done || !data.nextRecordsUrl) break;
-    url = `${instanceUrl}${data.nextRecordsUrl}`;
-  }
-  return records;
+/** The shared paginated query, typed to this file's record shape (#2593). */
+function queryAll(instanceUrl: string, token: string, soql: string): Promise<SfUser[]> {
+  return querySoqlAll<SfUser>(instanceUrl, token, soql);
 }
 
 /**
