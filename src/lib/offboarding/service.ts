@@ -3,7 +3,7 @@ import { unwrap } from "@/lib/db/result";
 import { log } from "@/lib/log";
 import { startBulkReassign } from "@/lib/booking/service";
 import { planLifecycleChange, type LifecycleAction } from "@/lib/offboarding/plan";
-import { deactivationPatch, reactivationPatch } from "@/lib/offboarding/lifecycle-write";
+import { writeRoutableState } from "@/lib/bookable/routable-write";
 import { planOffboardingCoverageSweep } from "@/lib/offboarding/coverage-trigger";
 import {
   revokeSupabaseSessions,
@@ -281,21 +281,25 @@ async function writeLifecycle(
   // records when they actually left rather than whenever the last retry happened,
   // and the coverage sweep keyed on that stamp cannot be enqueued twice under two
   // different keys.
+  //
+  // #2085: the write itself is `writeRoutableState`, the one helper that owns
+  // every write to `bookable` and `deactivated_at`, because a departure is one of
+  // the changes Regal has to hear about (the trait telling it whether Slate can
+  // route to this person) and the helper sends that from inside the write. It
+  // throws on a refused write, which is what this function has always done.
   const stampIso = new Date().toISOString();
-  const patch = plan.deactivate ? deactivationPatch(stampIso) : reactivationPatch();
-  const q = supabaseAdmin().from("users").update(patch).eq("id", user!.id);
-  const { data, error } = await (plan.deactivate
-    ? q.is("deactivated_at", null)
-    : q.not("deactivated_at", "is", null)
-  )
-    .select("deactivated_at")
-    .maybeSingle();
-  if (error) {
-    throw new Error(
-      `offboarding ${action} failed for user ${user!.id}: ${error.message}`,
+  let written;
+  try {
+    written = await writeRoutableState(
+      plan.deactivate
+        ? { kind: "depart", userIds: [user!.id], stampIso }
+        : { kind: "return", userId: user!.id },
     );
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    throw new Error(`offboarding ${action} failed for user ${user!.id}: ${detail}`);
   }
-  const changed = (data as { deactivated_at: string | null } | null) !== null;
+  const changed = written.length > 0;
   if (!changed) {
     // Somebody else got there first, between the read and the write. The desired
     // end state holds either way, so this is the same no-op a sequential retry

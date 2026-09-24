@@ -20,7 +20,7 @@ import {
   type SfManagerCandidate,
 } from "@/lib/salesforce/manager-link";
 import { planReap } from "@/lib/salesforce/reap";
-import { deactivateUsersByIds } from "@/lib/offboarding/lifecycle-write";
+import { deactivateUsersByIds } from "@/lib/bookable/routable-write";
 import {
   presenceFromRecords,
   readSalesforceStanding,

@@ -48,7 +48,24 @@ vi.mock("@/lib/supabase/admin", () => ({
   }),
 }));
 
-import { applyBookableByEmail, applyBookableByUserId, writeBookable } from "./service";
+// #2085: the flip itself lives in routable-write.ts, which owns every write to
+// bookable and deactivated_at and is driven against a real filtering store in
+// routable-write.test.ts. Here it is the seam: a recorder that writes into the same
+// arrays and refuses the same way, so these tests stay about what the SERVICE decides
+// to write, not about the write.
+vi.mock("@/lib/bookable/routable-write", () => ({
+  writeBookable: async (id: string, bookable: boolean) => {
+    if (nextWriteError) {
+      const err = nextWriteError;
+      nextWriteError = null;
+      throw new Error(`bookable write for ${id} failed: ${err.message}`);
+    }
+    updates.push({ id, bookable });
+    patches.push({ id, patch: { bookable, bookable_pending_since: null } });
+  },
+}));
+
+import { applyBookableByEmail, applyBookableByUserId } from "./service";
 import {
   ACTIVATION_BUDGET_MS,
   MAX_ACTIVATIONS_PER_RUN,
@@ -221,30 +238,6 @@ describe("pool-exit cleanup on deactivation", () => {
   });
 });
 
-// #2071: the Salesforce sync plans a flip when a hire gains a first debt team, and
-// remembers a refusal in users.bookable_pending_since so the next hour can tell it
-// from a manager somebody deliberately held out of the pool. ANY explicit bookable
-// write answers that question, whether the sync finally succeeded or a person
-// decided either way, so the one write that flips the flag also settles the mark.
-// Without this, a person switching a hire off by hand would be overridden an hour
-// later by a sync still retrying the decision they had just made.
-describe("writeBookable settles the sync's pending mark (#2071)", () => {
-  beforeEach(() => {
-    updates.length = 0;
-    patches.length = 0;
-  });
-
-  it("clears bookable_pending_since in the same write when switching ON", async () => {
-    await writeBookable("u1", true);
-    expect(patches).toEqual([{ id: "u1", patch: { bookable: true, bookable_pending_since: null } }]);
-  });
-
-  it("clears it when switching OFF too, so a human hold stops the retry", async () => {
-    await writeBookable("u1", false);
-    expect(patches).toEqual([{ id: "u1", patch: { bookable: false, bookable_pending_since: null } }]);
-  });
-});
-
 describe("onboarding on the way INTO the pool (#2302)", () => {
   beforeEach(() => {
     updates.length = 0;
@@ -403,30 +396,6 @@ describe("onboarding on the way INTO the pool (#2302)", () => {
 });
 
 
-// #2482: the one write that flips bookable used to discard its result. supabase-js
-// resolves `{ error }` rather than throwing, so a refused update ran to completion
-// and every caller recorded the flip as done: the agent stays out of the pool while
-// the roster sync counts them activated and the admin page says saved. That is the
-// shape #2381 and #2481 are about, arriving through the write they all share.
-describe("a refused bookable write is not a completed one (#2482)", () => {
-  it("throws rather than reporting a flip that did not happen", async () => {
-    nextWriteError = { message: "permission denied for table users" };
-    await expect(writeBookable("u1", true)).rejects.toThrow(/permission denied/);
-  });
-
-  it("names the user, so a failure in a sweep says which one", async () => {
-    nextWriteError = { message: "deadlock detected" };
-    await expect(writeBookable("u-42", false)).rejects.toThrow(/u-42/);
-  });
-
-  // CONTROL: without this the two above are satisfied by a function that always
-  // throws, which would take the whole roster out of the pool (L159).
-  it("CONTROL: a write that lands still returns, and writes the flip", async () => {
-    nextWriteError = null;
-    await expect(writeBookable("u2", true)).resolves.toBeUndefined();
-    expect(updates.at(-1)).toEqual({ id: "u2", bookable: true });
-  });
-});
 
 // #2317: the activation gate makes several Google calls before it writes, and
 // none of them carried a deadline. A wait with no deadline cannot fail, only

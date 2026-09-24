@@ -148,6 +148,7 @@ const FAMILY_BY_KEY: Record<string, AlertFamily> = {
   reschedule_lock_outage: "a-booking-side-effect-did-not-complete",
   stale_phone_invite: "a-booking-side-effect-did-not-complete",
   webhook_dead: "a-booking-side-effect-did-not-complete",
+  bookable_trait_unrecorded: "a-booking-side-effect-did-not-complete",
   webhook_event_no_subscriber: "a-booking-side-effect-did-not-complete",
   handoff_channel_unset: "a-booking-side-effect-did-not-complete",
   handoff_undelivered: "a-booking-side-effect-did-not-complete",

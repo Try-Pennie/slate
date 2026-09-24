@@ -54,7 +54,7 @@ function migrationDefaultEvents(): { events: string[]; file: string } | null {
 
 // --- the code's own list is complete ---
 {
-  // WEBHOOK_EVENTS is derived from a `Record<WebhookEvent, true>`, so tsc already
+  // WEBHOOK_EVENTS is derived from a map keyed on the union, so tsc already
   // fails when a union member is missing from it. Asserted here anyway, because
   // that guarantee is invisible at this level and a future refactor to a plain
   // array would silently drop it.

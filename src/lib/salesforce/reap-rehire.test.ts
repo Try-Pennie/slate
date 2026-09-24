@@ -68,7 +68,12 @@ const store = vi.hoisted(() => {
   function makeDb() {
     return {
       from(table: string) {
-        const state: { op?: string; payload?: unknown; filters: Filter[] } = { filters: [] };
+        // `returning` is a `.select()` chained AFTER a write, which PostgREST answers
+        // with the rows the write changed (#2085: the routable write reads what it
+        // wrote from the same statement).
+        const state: { op?: string; payload?: unknown; filters: Filter[]; returning?: boolean } = {
+          filters: [],
+        };
         const rowsNow = () => [...users.values()].filter((r) => matches(r, state.filters));
 
         function applyWrite(): { data: unknown; error: unknown } {
@@ -89,13 +94,15 @@ const store = vi.hoisted(() => {
             return { data: null, error: { message: "permission denied for table users" } };
           }
           const hit = rowsNow();
-          for (const row of hit) users.set(String(row.id), { ...row, ...patch });
-          return { data: hit.length ? { deactivated_at: patch.deactivated_at ?? null } : null, error: null };
+          const written = hit.map((row) => ({ ...row, ...patch }));
+          for (const row of written) users.set(String(row.id), row);
+          return { data: written, error: null };
         }
 
         const builder = {
           select(_cols: string) {
             if (state.op === undefined) state.op = "select";
+            else state.returning = true;
             return builder;
           },
           upsert(payload: unknown) {
@@ -134,7 +141,9 @@ const store = vi.hoisted(() => {
               const hit = rowsNow();
               return { data: hit[0] ?? null, error: null };
             }
-            return applyWrite();
+            const written = applyWrite();
+            const rows = written.data as unknown[] | null;
+            return { data: rows?.[0] ?? null, error: written.error };
           },
           then(
             resolve: (v: { data: unknown; error: unknown }) => unknown,
@@ -166,6 +175,11 @@ const bookable = vi.hoisted(() => ({
 }));
 vi.mock("@/lib/bookable/service", () => bookable);
 vi.mock("@/lib/audit", () => ({ recordAudit: vi.fn(async () => {}) }));
+// #2085: both writes here now record Regal's bookable trait. What reaches Regal is
+// pinned in src/lib/bookable/routable-write.test.ts and emit.test.ts; this file is
+// about the state the two writes leave each other, so the delivery is a recorder.
+const emitted = vi.hoisted(() => ({ emitWebhook: vi.fn(async () => {}) }));
+vi.mock("@/lib/webhooks/emit", () => emitted);
 vi.mock("@/lib/booking/service", () => ({ startBulkReassign: vi.fn() }));
 
 const sessions = vi.hoisted(() => ({

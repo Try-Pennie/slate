@@ -198,7 +198,7 @@ Keys: `outbox_drain_stuck`, `outbox_all_handed_off`, `reservation_drain_stuck`,
 `reconcile_missing_busy_blocks`, `creation_orphan_events`, `external_double_book:*`,
 `reassign_intent_dropped`, `reschedule_pin_dropped`, `reschedule_lock_outage`,
 `stale_phone_invite:*`, `webhook_dead:*`, `webhook_event_no_subscriber`,
-`handoff_channel_unset`, `handoff_undelivered`.
+`handoff_channel_unset`, `handoff_undelivered`, `bookable_trait_unrecorded:*`.
 
 **What fired it.** A booking exists and something that should have followed it did not:
 a calendar invite, a busy block, a webhook to Regal. **A real customer is affected**,
@@ -227,6 +227,12 @@ which is what makes this family different from the ones above.
   cause is almost always the same as `handoff_undelivered`, since it posts to the same
   channel: the Slate app is not in it. A BLANK handoff channel does not reach here at
   all, because the step records that in the log and completes rather than retrying.
+
+- For `bookable_trait_unrecorded:*` (#2085): an agent's bookable state changed and the
+  delivery telling Regal was never recorded, so nothing retries it and **no customer is
+  affected yet**. The change itself is saved. Run `pnpm backfill:bookable-trait` to send
+  every agent's current value again (a re-run always sends); the Worker log line under
+  `tag=bookable-trait` carries the underlying error.
 
 **Fix or escalate.** The outbox retries with backoff and gives up at a cap, so a row
 past the cap needs the underlying cause fixed and then a re-drain. An orphaned calendar

@@ -160,9 +160,18 @@ eq(caught[0]?.file, REAP, "and is blamed on the reap, not on the owning module")
 const ownerSource = readFileSync(join(ROOT, OWNER), "utf8");
 assert(
   /export function deactivationPatch\(/.test(ownerSource) &&
-    /export function reactivationPatch\(/.test(ownerSource) &&
-    /export async function deactivateUsersByIds\(/.test(ownerSource),
-  "the owning module still exports both patches and the bulk write",
+    /export function reactivationPatch\(/.test(ownerSource),
+  "the owning module still exports both patches",
+);
+// #2085: the bulk write moved beside every other write to these columns, in the
+// module that sends Regal the bookable trait from inside the write. It must still
+// apply THIS module's patch, or the rule above would be decided in two places.
+const writer = readFileSync(join(ROOT, "src/lib/bookable/routable-write.ts"), "utf8");
+assert(
+  /export async function deactivateUsersByIds\(/.test(writer) &&
+    /\.update\(deactivationPatch\(/.test(writer) &&
+    /\.update\(reactivationPatch\(\)\)/.test(writer),
+  "the routable writer exports the bulk write and applies the shared patches",
 );
 // BOTH directions, asserted separately: a departure that left the flag is the
 // original defect, and a return that left it is #2386's own half.

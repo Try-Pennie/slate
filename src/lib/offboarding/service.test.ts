@@ -49,41 +49,38 @@ vi.mock("@/lib/supabase/admin", () => ({
           };
         },
       }),
-      update: (patch: { deactivated_at: string | null; bookable?: boolean }) => {
-        const record: (typeof updates)[number] = {
-          col: "",
-          val: "",
-          patch,
-          filters: [],
-        };
-        const chain = {
-          eq: (col: string, val: string) => {
-            record.col = col;
-            record.val = val;
-            return chain;
-          },
-          is: (col: string, val: unknown) => {
-            record.filters.push([col, `is ${String(val)}`]);
-            return chain;
-          },
-          not: (col: string, op: string, val: unknown) => {
-            record.filters.push([col, `not ${op} ${String(val)}`]);
-            return chain;
-          },
-          select: () => ({
-            maybeSingle: async () => {
-              updates.push(record);
-              if (updateError) return { data: null, error: updateError };
-              if (updateMatchesNothing) return { data: null, error: null };
-              return { data: { deactivated_at: record.patch.deactivated_at }, error: null };
-            },
-          }),
-        };
-        return chain;
-      },
     }),
   }),
 }));
+
+// #2085: the lifecycle write goes through `writeRoutableState`, the one helper that
+// owns every write to bookable and deactivated_at (driven against a filtering
+// store in src/lib/bookable/routable-write.test.ts). Here it is the seam: a
+// recorder that captures the SAME patch and compare and swap filter the helper
+// applies, and answers with the rows it changed, nothing when the swap is lost,
+// or a throw when the write is refused.
+vi.mock("@/lib/bookable/routable-write", async () => {
+  const { deactivationPatch, reactivationPatch } = await vi.importActual<
+    typeof import("@/lib/offboarding/lifecycle-write")
+  >("@/lib/offboarding/lifecycle-write");
+  return {
+    writeRoutableState: async (
+      w: { kind: "depart"; userIds: string[]; stampIso: string } | { kind: "return"; userId: string },
+    ) => {
+      const id = w.kind === "depart" ? w.userIds[0] : w.userId;
+      const patch = w.kind === "depart" ? deactivationPatch(w.stampIso) : reactivationPatch();
+      updates.push({
+        col: "id",
+        val: id,
+        patch,
+        filters: [["deactivated_at", w.kind === "depart" ? "is null" : "not is null"]],
+      });
+      if (updateError) throw new Error(`write refused: ${updateError.message}`);
+      if (updateMatchesNothing) return [];
+      return [{ id, deactivated_at: patch.deactivated_at, bookable: false }];
+    },
+  };
+});
 
 const booking = vi.hoisted(() => ({ startBulkReassign: vi.fn() }));
 vi.mock("@/lib/booking/service", () => booking);

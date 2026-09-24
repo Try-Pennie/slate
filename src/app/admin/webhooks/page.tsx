@@ -318,8 +318,8 @@ export default async function WebhooksPage({
         )}
         <p className={`mb-3 text-xs text-fg-muted ${proseCls}`}>
           {deliveriesUnreadable
-            ? "Resend re-fires one delivery immediately. Test bucket bookings are recorded as “not sent”: they never reach a downstream system, so they cannot be resent."
-            : `The last ${deliveries.length} delivery attempts. Resend re-fires one immediately. Test bucket bookings are recorded as “not sent”: they never reach a downstream system, so they cannot be resent.`}
+            ? "Resend re-fires one delivery immediately. Test bucket bookings and test agents are recorded as “not sent”: they never reach a downstream system, so they cannot be resent."
+            : `The last ${deliveries.length} delivery attempts. Resend re-fires one immediately. Test bucket bookings and test agents are recorded as “not sent”: they never reach a downstream system, so they cannot be resent.`}
         </p>
         <SaveForm
           name="webhook-replay"
