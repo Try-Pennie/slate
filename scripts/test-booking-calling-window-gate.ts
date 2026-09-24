@@ -12,6 +12,7 @@ import {
   createBooking,
   rescheduleBooking,
   bookViaApi,
+  previewBooking,
   OutsideCallingWindowError,
 } from "../src/lib/booking/orchestration.ts";
 import {
@@ -54,6 +55,36 @@ async function run() {
       calls.createEvent.length === 0 && calls.reservations.length === 0 && calls.moveBusyBlock.length === 0,
       "create: a refused start writes no event, reservation or busy block",
     );
+  }
+
+  // --- the dry run answers what the real call would (L686) ---
+  {
+    // A create the real call refuses must not preview as "created".
+    const { deps, calls } = makeDeps({ candidates: ["a"], freeEmails: new Set(["a@x.com"]) });
+    const err = await refused(() =>
+      previewBooking({ ...input, startIso: HNL_0759, timezone: "Pacific/Honolulu" }, deps),
+    );
+    assert(err instanceof OutsideCallingWindowError, "preview: a create outside the window is refused like the real one");
+    assert(calls.createEvent.length === 0, "preview: still writes nothing");
+  }
+  {
+    // A rebook the real call would turn into a refused reschedule.
+    const existing = makeBooking({ salesforce_id: "sf1", external_id: "ext1" });
+    const { deps } = makeDeps({
+      existing: { booking: existing, bucket, eventType },
+      candidates: ["a"],
+      freeEmails: new Set(["a@x.com"]),
+      personBookings: [existing],
+    });
+    const err = await refused(() =>
+      previewBooking({ ...input, externalId: "ext1", startIso: HNL_0759, timezone: "Pacific/Honolulu" }, deps),
+    );
+    assert(err instanceof OutsideCallingWindowError, "preview: a rebook outside the window is refused like the real one");
+  }
+  {
+    const { deps } = makeDeps({ candidates: ["a"], freeEmails: new Set(["a@x.com"]) });
+    const res = await previewBooking({ ...input, startIso: HNL_0800, timezone: "Pacific/Honolulu" }, deps);
+    assert(res.outcome === "created", "preview: 08:00 in the lead's zone still previews as created");
   }
 
   // --- a retry of a booking that already exists returns it, not a refusal ---

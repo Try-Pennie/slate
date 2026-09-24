@@ -3199,6 +3199,14 @@ export async function previewBooking(
   deps: BookingDeps,
 ): Promise<ApiBookingPreview> {
   const decision = await resolvePersonDecision(input, deps);
+  // #2310, L686: the dry run runs the same calling-window judge the real call
+  // does, on exactly the arms where the real call runs it: a create, and a rebook
+  // that becomes a reschedule (judged in the request's zone there too). A dedupe
+  // keeps the instant the lead already holds, and confirm_required books
+  // nothing, so neither is judged by the real call and neither is here.
+  if (decision.action === "create" || decision.action === "reschedule") {
+    assertWithinLeadCallingWindow(input.startIso, input.timezone);
+  }
   if (decision.action === "create") {
     const resolved = await deps.resolveBucketByCode(input.bucketCode);
     if (!resolved) throw new UnknownBucketError();
