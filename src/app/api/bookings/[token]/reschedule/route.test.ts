@@ -61,6 +61,7 @@ import { POST } from "./route";
 // classification rather than on how an error happens to be worded.
 import { BookingWriteFailedError } from "@/lib/booking/gated-write";
 import { BOOKING_ERROR_COPY } from "@/lib/booking/booker-copy";
+import { PARTNER_KEYS } from "@/lib/booking/partner-keys";
 
 function req(body: unknown): Parameters<typeof POST>[0] {
   return {
@@ -445,5 +446,34 @@ describe("reschedule answers are never stored (#2561)", () => {
     const res = await POST(req(VALID), params);
     expect(res.status).toBe(500);
     expect(noStore(res)).toBe("no-store");
+  });
+});
+
+// #2659: the moved call's success message carries the same partner join keys a
+// fresh booking's does, read off the booking that moved (whose prefill came from
+// the page it was first booked on), so a host ends both outcomes the same way.
+describe("POST /api/bookings/[token]/reschedule partner join keys (#2659)", () => {
+  it("carries submissionId and regalProfileId from the moved booking's prefill", async () => {
+    service.rescheduleBooking.mockResolvedValueOnce({
+      booking: {
+        id: "bk1",
+        starts_at: "2026-07-01T15:00:00.000Z",
+        ends_at: "2026-07-01T15:30:00.000Z",
+        prefill: { [PARTNER_KEYS.submissionId]: "a0G5x00000AbCdEQAU", [PARTNER_KEYS.regalProfileId]: "rp_01HZY3" },
+      },
+      manageUrl: "https://slate.test/booking/manage/tok1",
+    });
+    const res = await POST(req({ start: "2026-07-01T15:00:00.000Z", reason: "schedule_conflict" }), params);
+    expect(await res.json()).toMatchObject({ submissionId: "a0G5x00000AbCdEQAU", regalProfileId: "rp_01HZY3" });
+  });
+
+  it("answers null for each key the original page did not pass", async () => {
+    service.rescheduleBooking.mockResolvedValueOnce({
+      booking: { id: "bk1", starts_at: "2026-07-01T15:00:00.000Z", ends_at: "2026-07-01T15:30:00.000Z", prefill: {} },
+      manageUrl: "https://slate.test/booking/manage/tok1",
+    });
+    const body = await (await POST(req({ start: "2026-07-01T15:00:00.000Z", reason: "schedule_conflict" }), params)).json();
+    expect(body.submissionId).toBeNull();
+    expect(body.regalProfileId).toBeNull();
   });
 });

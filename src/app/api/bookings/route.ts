@@ -18,6 +18,7 @@ import {
 import { DIRECT_BOOKING_API_READ_HOURLY_RATE_RULES } from "@/lib/rate-limit-core";
 import { log } from "@/lib/log";
 import { recordApiOutcome } from "@/lib/monitor/record-api-outcome";
+import { partnerKeysFrom } from "@/lib/booking/partner-keys";
 
 export const dynamic = "force-dynamic";
 
@@ -129,6 +130,13 @@ async function handlePost(req: NextRequest) {
         // booking named is the one a WEAK match found and may belong to somebody
         // else (#1340): that answer must not hand over another person's phone.
         ...(result.outcome === "confirm_required" ? {} : bookingDetailExtras(result.booking)),
+        // #2659: the partner join keys off the booking's OWN prefill (on a
+        // deduped or rescheduled outcome that is the booking the lead already
+        // held, whose keys are the ones the warehouse joins on), null when the
+        // page passed none. Withheld on confirm_required for the same reason
+        // as the extras above: an identifier that joins to another person's
+        // submission is theirs.
+        ...(result.outcome === "confirm_required" ? {} : partnerKeysFrom(result.booking.prefill)),
       },
       // #1515: WHICH TEAM OWNS THE LEAD. The caller is the system of record for
       // that, and until now had to infer it from the agent, which breaks the

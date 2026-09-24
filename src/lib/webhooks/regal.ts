@@ -1,6 +1,7 @@
 import { DateTime } from "luxon";
 import type { WebhookEvent } from "@/lib/db/types";
 import type { BookingEventPayload } from "@/lib/webhooks/types";
+import { partnerKeysFrom } from "@/lib/booking/partner-keys";
 
 /**
  * Builds the Regal event payload directly (replacing the Cal.com -> Regal
@@ -176,6 +177,18 @@ export function buildRegalEvent(
 
   if (first) regal.traits.firstName = first;
   if (last) regal.traits.lastName = last;
+
+  // #2659: the two join keys the landing page put on the booking URL, under the
+  // GTM/GA4 tagging spec's OWN names (snake case, not camel cased to match the
+  // rest of this object: the spec chose them and the warehouse joins on them).
+  // Set only when the page had a value. The spec is explicit that the key is
+  // LEFT OUT otherwise: never an empty string, never a null key, because either
+  // reads as a value to a join. On every event, since every event is a join
+  // point. `partnerKeysFrom` tolerates a stored payload with no prefill at all,
+  // which an admin resend or the dead letter replay can rebuild from.
+  const partner = partnerKeysFrom(p.prefill);
+  if (partner.submissionId !== null) regal.properties.sfdc_submission_id = partner.submissionId;
+  if (partner.regalProfileId !== null) regal.properties.regal_profile_id = partner.regalProfileId;
 
   if (p.attendee.phone) {
     regal.traits.phones = {

@@ -16,6 +16,7 @@ import { isBookingWriteFailure } from "@/lib/booking/gated-write";
 import { recordApiOutcome } from "@/lib/monitor/record-api-outcome";
 import { internalErrorResponse, reportInternalError } from "@/lib/api/errors";
 import { noStore } from "@/lib/api/no-store";
+import { partnerKeysFrom } from "@/lib/booking/partner-keys";
 import { INPUT_LIMITS } from "@/lib/booking/input-limits";
 import { manageWithinLimit } from "@/lib/rate-limit";
 // From the pure core rather than the re-export, so a test can stub the limiter without
@@ -141,6 +142,10 @@ async function handlePost(
       // so the moved call's success message to the host carries what a fresh
       // booking's does. The contact stays off it, as on the fresh one (#2643).
       calendarLinks: bookingDetailExtras(booking).calendarLinks,
+      // #2659: the partner join keys, off the booking that moved (its prefill
+      // came from the page it was first booked on), so the host's success
+      // message for a moved call carries what a fresh booking's does.
+      ...partnerKeysFrom(booking.prefill),
     });
   } catch (err) {
     // #2164: the details they typed were refused, and nothing moved. A 400 with

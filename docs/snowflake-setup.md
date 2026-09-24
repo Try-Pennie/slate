@@ -123,6 +123,30 @@ column the DDL does not create. What none of that covers is a **from-scratch**
 run against an empty account, which has happened exactly once and cannot be
 rehearsed without a second Snowflake account.
 
+### Reading the partner join keys out of `prefill` (#2659)
+
+`bookings.prefill` is a VARIANT holding every query param the landing page put on
+the booking URL. Two of them are the join keys Pennie's GTM/GA4 tagging spec asks
+for, and they live inside that JSON rather than as columns of their own, so
+nothing about the mirror changed to carry them:
+
+<!-- runbook-reference: two column expressions to paste into a SELECT over the
+     bookings mirror, not a statement to run on its own. The VARIANT path syntax
+     is Snowflake's own; there is no local Snowflake access to execute it from
+     (one Snowsight paste, or the deployed reconcile lane, are the only ways). -->
+
+```sql
+nullif(trim(prefill:submissionId::string), '')    as sfdc_submission_id,  -- the lead's submission
+nullif(trim(prefill:regalProfileId::string), '')  as regal_profile_id     -- the Regal contact, when the page had one
+```
+
+The path is case exact (`submissionId`, `regalProfileId`, the spelling the URL
+carries). A key the page did not pass is absent from the JSON and reads as NULL.
+The `nullif(trim(...))` is deliberate: Slate's own readers treat an empty or
+blank value as absent, but `/book` stores the URL value as it arrived, so a page
+that sent `submissionId=` leaves an empty string in the JSON, and a join on it
+would match nothing while reading as a value.
+
 ## Step 3: Register the public key on the service user
 
 Print the public key body as a single line (no header/footer, no line breaks):

@@ -87,13 +87,22 @@ Do not refactor the `Cal` queue / param / message plumbing while restyling.
 3. **URL params** built by `bookingUrl` and read by `/book/page.tsx`:
    `xbc` (bucket / routing key), `external_id` (-> salesforceId), prefill keys,
    `embed=1`, `theme`, `brand`. Keep forwarding `theme`/`brand`/`embed=1`.
+   Two prefill keys are load bearing (#2659): **`submissionId`** (the lead's
+   Salesforce submission) and **`regalProfileId`** (the Regal contact). A host
+   page passes each when it has it, under exactly that spelling, and leaves it
+   off otherwise. `/book` keeps them in `prefill`, so they ride into the booking,
+   every webhook (Regal receives `sfdc_submission_id` / `regal_profile_id`) and
+   the warehouse, and they come back on `booking` below. trypennie passes
+   `submissionId` on the inline iframe URL today.
 
 4. **postMessage contract** (Booker <-> widget.js):
    - `slate:resize { height }` - Booker posts `scrollHeight`; widget sets iframe height
    - `slate:bookingSuccessful { data }` - widget re-emits the cal-style
      `bookingSuccessful` host event. `data` is `{ booking, salesforceId, outcome }`,
      where `booking` is the Booker's confirm response: `id`, `startsAt`, `endsAt`,
-     `manageUrl`, `duplicateWarning` and `calendarLinks` (#2643). It is posted for a
+     `manageUrl`, `duplicateWarning`, `calendarLinks` (#2643), and the partner
+     join keys `submissionId` and `regalProfileId` (#2659, `null` when the URL
+     carried none). It is posted for a
      fresh booking (`outcome: "created"`) AND for a lead moving the call they
      already have (`outcome: "rescheduled"`, whose `booking` is the reschedule
      response, same fields bar `duplicateWarning`), so a host that redirects on it
@@ -300,7 +309,17 @@ Almost none of this exists today. Add it to `widget.js` (the iframe handles its 
 - **Layout shift on the host** -- the overlay is `position:fixed`; keep it that way (never `absolute`/inline) so it never shifts host layout. The only shift risk is the iframe height jumping on `slate:resize`; keep `min-height` and `transition:height .15s ease`.
 - **Style leakage** -- inline styles avoid leaking *out*, but host `!important` / inherited `font`/`color` can bleed *in*. Strongest fix: wrap the chrome in a (closed) **Shadow DOM** host on `document.body`. If Shadow DOM is out of scope this pass, minimum acceptable is to explicitly reset inheritable props (`font-family`, `font-size`, `line-height`, `color`, `letter-spacing`, `text-align`, `box-sizing`, `margin`/`padding`) on every injected node -- especially the close `<button>`.
 - **Do not refactor the `Cal` queue / param / message plumbing while restyling** -- visual scope only; a regression breaks the trypennie drop-in.
-- **postMessage uses `"*"` origin, unchecked `e.origin`** -- leave for the security/hardening pass; do not entangle with visual work.
+- **postMessage is origin bound on both ends; do not loosen it while restyling** (#593, #2641, #2674).
+  The Booker posts only to the origin `embedParentOrigin` resolves (the host's
+  `parentOrigin`, falling back to `document.referrer`'s origin) and SKIPS the post
+  when neither yields a real origin, never `"*"`, because `slate:bookingSuccessful`
+  carries lead data. `widget.js` accepts a message only when
+  `e.source === activeIframe.contentWindow`, on every branch, the lifecycle
+  messages included (#2658). A host passing the wrong `parentOrigin` sees nothing
+  in the browser, which is why the Booker reports a mismatch through
+  `/api/client-errors` (see the postMessage contract above). This pitfall used to
+  say the origin was `"*"` and unchecked, left for a hardening pass; that pass
+  shipped in #593, so do not plan it again.
 
 ---
 
@@ -336,7 +355,7 @@ transitions.
 
 - `public/widget.js` -- `openModal` chrome, `bookingUrl` theming handoff, message listener, delegated trigger.
 - `public/embed-example.html` -- the cal loader snippet + `data-cal-link` trigger Slate must stay compatible with.
-- `src/app/book/page.tsx` -- reads `embed`/`theme`/`brand`/`xbc`/`external_id`; theme default to flip to light.
+- `src/app/book/page.tsx` -- reads `embed`/`theme`/`brand`/`xbc`/`external_id`, keeps every other param (`submissionId`, `regalProfileId`, ...) in `prefill`; theme default to flip to light.
 - `src/components/Booker.tsx` -- `PALETTE` light/dark, `brandColor` inline overrides, `slate:resize` ResizeObserver, `slate:bookingSuccessful`, `embedded` flag, confirmation screen.
 - DISCOVERY: `.claude/orchestration-slate-brand-redesign/DISCOVERY.md` (D14/D15/D16).
 - Research: `.claude/orchestration-slate-brand-redesign/research/embed-css-isolation.md`.
