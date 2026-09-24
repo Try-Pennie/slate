@@ -171,6 +171,7 @@ function makeDeps(): BookingDeps {
     loadBookingContext: async () => null,
     loadBookingById: async () => ({ booking, bucket, eventType }),
     findActiveBookingsForPerson: async () => [] as Booking[],
+    findActiveBookingsByStrongIds: async () => [] as Booking[],
     queryBookings: async () => ({ rows: [] as Booking[], buckets: [] as Bucket[] }),
     getAgentByEmail: async () => targetAgent,
     loadPastBookingsToComplete: async () => [],

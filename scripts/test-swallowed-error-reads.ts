@@ -744,6 +744,27 @@ assert(
   `the result-loop finding names the loop variable it is about (got ${loopFindings[0].binding})`,
 );
 
+// The lookup API's own wave (#2657) is the same shape one function down, with its
+// own context string, so the regex above cannot reach it. A failed read there is
+// the 404 the booking confirmed page was getting, so it gets its own control.
+const strongIdReverted = serviceSrc.replace(
+  /const rows = unwrap\(r, "strong id booking lookup"\) as Booking\[\] \| null;\n(\s*)for \(const row of rows \?\? \[\]\)/,
+  "const rows = r.data as Booking[] | null;\n$1for (const row of rows ?? [])",
+);
+assert(
+  strongIdReverted !== serviceSrc,
+  "the strong id revert control actually changed service.ts (else it proves nothing)",
+);
+const strongIdFindings = scanSwallowedErrorReads(strongIdReverted, servicePath);
+assert(
+  strongIdFindings.length === 1 &&
+    strongIdFindings[0].shape === "result-loop" &&
+    strongIdFindings[0].binding === "r.data",
+  `positive control: the reverted strong id lookup is caught as result-loop (got ${JSON.stringify(
+    strongIdFindings.map((f) => [f.shape, f.binding]),
+  )})`,
+);
+
 const inlineReverted = serviceSrc.replace(
   /\(\(unwrap\(\n(\s*)await supabaseAdmin\(\)\.from\("buckets"\)\.select\("\*"\)\.in\("id", bucketIds\),\n\s*"queryBookings bucket join",\n\s*\) \?\? \[\]\) as Bucket\[\]\)/,
   '((await supabaseAdmin().from("buckets").select("*").in("id", bucketIds)).data ?? []) as Bucket[]',

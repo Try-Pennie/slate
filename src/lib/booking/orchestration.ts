@@ -36,11 +36,15 @@ import {
 import {
   findPersonMatch,
   decidePersonBooking,
-  bookingBelongsToPerson,
   type PersonIdentity,
   type PersonMatch,
   type MatchStrength,
 } from "./person-dedupe.ts";
+import {
+  bookingMatchesLookupIds,
+  lookupStrongIds,
+  type LookupIdentity,
+} from "./lookup-identity.ts";
 import {
   isOwnerAlertReassign,
   ownerAlertBody,
@@ -1064,6 +1068,15 @@ export interface BookingDeps {
    * rows; `findPersonMatch` then grades each candidate's confidence.
    */
   findActiveBookingsForPerson(identity: PersonIdentity): Promise<Booking[]>;
+  /**
+   * Active bookings whose `external_id` OR `salesforce_id` is any of `ids`, for
+   * the lookup API (#2657). Separate from the dedupe fetch above on purpose: that
+   * one matches each id to its own column, and an embed booking holds the lead's
+   * id in `salesforce_id` only, so a caller sending it as `externalId` could
+   * never find it there. `lookupStrongIds` builds the set; the result is judged
+   * again by `bookingMatchesLookupIds` before anything is returned.
+   */
+  findActiveBookingsByStrongIds(ids: readonly string[]): Promise<Booking[]>;
   /**
    * The display name of the agent a booking is assigned to, read LIVE (#1337,
    * #1338). Null when the id is null or resolves to nothing, so a caller shows
@@ -3500,29 +3513,38 @@ export async function listBookings(
   return { items, nextCursor };
 }
 
-/** List a person's ACTIVE bookings for the lookup API (#386). Strong-id only:
- *  the identity passed in carries no email/phone, so every match is strong. */
+/** List a person's ACTIVE bookings for the lookup API (#386). Strong id only,
+ *  and each supplied id may sit in EITHER id column (#2657): a booking made
+ *  through the embed holds the lead's id in `salesforce_id` alone, and the
+ *  caller cannot know which route made it. A blank identity fetches nothing and
+ *  lists nothing, and every fetched row is judged again so a fetch that over
+ *  read cannot disclose another lead's booking. */
 export async function lookupPersonBookings(
-  identity: PersonIdentity,
+  identity: LookupIdentity,
   deps: BookingDeps,
 ): Promise<ApiBookingView[]> {
-  const bookings = await deps.findActiveBookingsForPerson(identity);
-  return bookings.map((b) => toApiBookingView(b, deps));
+  const ids = lookupStrongIds(identity);
+  if (ids.length === 0) return [];
+  const bookings = await deps.findActiveBookingsByStrongIds(ids);
+  return bookings
+    .filter((b) => bookingMatchesLookupIds(b, ids))
+    .map((b) => toApiBookingView(b, deps));
 }
 
 /** Read ONE booking by id for the lookup API (#386), at any status (so the bot
  *  can poll a cancelled/completed one). Throws BookingNotFoundError if missing,
- *  not owned by the caller, or (when `status` is set) not in that status. */
+ *  not owned by the caller, or (when `status` is set) not in that status.
+ *  Ownership is a supplied strong id matching either id column (#2657). */
 export async function getPersonBookingById(
   input: {
     bookingId: string;
-    identity: Pick<PersonIdentity, "externalId" | "salesforceId">;
+    identity: LookupIdentity;
     status: BookingStatus | null;
   },
   deps: BookingDeps,
 ): Promise<ApiBookingDetail> {
   const ctx = await deps.loadBookingById(input.bookingId);
-  if (!ctx || !bookingBelongsToPerson(ctx.booking, input.identity)) {
+  if (!ctx || !bookingMatchesLookupIds(ctx.booking, lookupStrongIds(input.identity))) {
     throw new BookingNotFoundError();
   }
   if (input.status && ctx.booking.status !== input.status) {
@@ -3534,17 +3556,20 @@ export async function getPersonBookingById(
 /** Cancel ONE booking by id for the cancel API (#386). Requires the booking to
  *  exist, be owned by the caller (strong id), and be active; else
  *  BookingNotFoundError. Reuses the standard cancel path (gcal delete, busy-block
- *  clear, history row, booking.cancelled webhook), stamped initiator=customer. */
+ *  clear, history row, booking.cancelled webhook), stamped initiator=customer.
+ *  Ownership is the SAME question the by id lookup asks, so it is resolved the
+ *  same way: a supplied strong id matching either id column (#2657), or a caller
+ *  who can read an embed booking by externalId gets 404 cancelling it. */
 export async function cancelDirectBooking(
   input: {
     bookingId: string;
-    identity: Pick<PersonIdentity, "externalId" | "salesforceId">;
+    identity: LookupIdentity;
     reason: ValidatedReason;
   },
   deps: BookingDeps,
 ): Promise<ApiBookingView> {
   const ctx = await deps.loadBookingById(input.bookingId);
-  if (!ctx || !bookingBelongsToPerson(ctx.booking, input.identity)) {
+  if (!ctx || !bookingMatchesLookupIds(ctx.booking, lookupStrongIds(input.identity))) {
     throw new BookingNotFoundError();
   }
   if (!CANCELLABLE_STATUSES.includes(ctx.booking.status)) {

@@ -91,21 +91,6 @@ export function findPersonMatch(
 }
 
 /**
- * Does `booking` belong to the person, judged by a STRONG id only (external_id
- * or salesforce_id)? Used by the #386 lookup-by-id / cancel paths: a key-authed
- * caller may only read or cancel a booking it can prove ownership of by id, so a
- * shared email/phone can never reach another person's appointment.
- */
-export function bookingBelongsToPerson(
-  booking: Booking,
-  identity: Pick<PersonIdentity, "externalId" | "salesforceId">,
-): boolean {
-  if (identity.externalId && booking.external_id === identity.externalId) return true;
-  if (identity.salesforceId && booking.salesforce_id === identity.salesforceId) return true;
-  return false;
-}
-
-/**
  * Decide what to do with an incoming booking given the person's best existing
  * match. `confirmReschedule` = the bot already asked the lead, so a weak match
  * may move too.

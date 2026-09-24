@@ -28,7 +28,10 @@ const from = vi.hoisted(() => vi.fn());
 
 vi.mock("@/lib/supabase/admin", () => ({ supabaseAdmin: () => ({ from }) }));
 
-import { findActiveBookingsForPerson } from "@/lib/booking/service";
+import {
+  findActiveBookingsForPerson,
+  findActiveBookingsByStrongIds,
+} from "@/lib/booking/service";
 
 function booking(id: string): Record<string, unknown> {
   return {
@@ -161,6 +164,54 @@ describe("findActiveBookingsForPerson (the weak-match booking lookup)", () => {
       phone: null,
     });
     expect(rows).toEqual([]);
+    expect(from).not.toHaveBeenCalled();
+  });
+});
+
+// #2657: the lookup API's own fetch. A supplied id may sit in EITHER id column
+// (an embed booking holds the lead id in salesforce_id only), so every id is
+// read against both, as plain equality reads rather than one `.or(...)` filter
+// whose text a caller supplied value would become part of.
+describe("findActiveBookingsByStrongIds (the lookup API's fetch)", () => {
+  beforeEach(() => {
+    queriedColumns.length = 0;
+    resultByColumn.clear();
+    from.mockReset();
+    from.mockImplementation(() => builder());
+  });
+
+  it("reads every id against BOTH id columns, one equality read each", async () => {
+    await findActiveBookingsByStrongIds(["00Q-lead", "sf-other"]);
+    expect(queriedColumns.map((c) => c.join()).sort()).toEqual([
+      "external_id",
+      "external_id",
+      "salesforce_id",
+      "salesforce_id",
+    ]);
+  });
+
+  it("returns a booking found on either column, once", async () => {
+    resultByColumn.set("external_id", { data: [booking("bk-api")], error: null });
+    resultByColumn.set("salesforce_id", {
+      data: [booking("bk-api"), booking("bk-embed")],
+      error: null,
+    });
+    const rows = await findActiveBookingsByStrongIds(["00Q-lead"]);
+    expect(rows.map((b) => b.id).sort()).toEqual(["bk-api", "bk-embed"]);
+  });
+
+  it("throws when the salesforce_id read errors, rather than reading as no call", async () => {
+    // The embed booking lives ONLY on this column, so a swallowed failure here
+    // is precisely the 404 the booking confirmed page was getting.
+    resultByColumn.set("external_id", { data: [], error: null });
+    resultByColumn.set("salesforce_id", { data: null, error: { message: "statement timeout" } });
+    await expect(findActiveBookingsByStrongIds(["00Q-lead"])).rejects.toThrow(
+      /statement timeout/,
+    );
+  });
+
+  it("reads nothing for an empty id set", async () => {
+    expect(await findActiveBookingsByStrongIds([])).toEqual([]);
     expect(from).not.toHaveBeenCalled();
   });
 });
