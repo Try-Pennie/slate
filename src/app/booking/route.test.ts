@@ -330,6 +330,30 @@ describe("POST /booking (embed) error mapping", () => {
     expect(service.bookingDetailExtras.mock.calls.at(-1)?.[0]).toMatchObject({ id: "bk-1" });
   });
 
+  // #2165: the confirmation screen names who will call. Read off the booking that
+  // was just made, so it is the advisor the call is with at this moment, and null
+  // (never a placeholder) when the booking carries no name.
+  it("names the advisor the new booking is with, and null when it holds none", async () => {
+    service.createBooking.mockResolvedValue({
+      booking: {
+        id: "bk-1",
+        starts_at: "2026-07-01T15:00:00.000Z",
+        ends_at: "2026-07-01T15:30:00.000Z",
+        agent_name: "Aisha Bello",
+      },
+      manageUrl: "https://slate.test/booking/manage/tok",
+    });
+    expect((await (await post(VALID_BODY)).json()).advisorName).toBe("Aisha Bello");
+
+    service.createBooking.mockResolvedValue({
+      booking: { id: "bk-1", starts_at: "2026-07-01T15:00:00.000Z", ends_at: "2026-07-01T15:30:00.000Z", agent_name: null },
+      manageUrl: "https://slate.test/booking/manage/tok",
+    });
+    const body = await (await post(VALID_BODY)).json();
+    expect(body).toHaveProperty("advisorName");
+    expect(body.advisorName).toBeNull();
+  });
+
   it("passes the lead's other active booking through as duplicateWarning (#626)", async () => {
     service.createBooking.mockResolvedValue({
       booking: { id: "bk-2", starts_at: "2026-07-01T15:00:00.000Z", ends_at: "2026-07-01T15:30:00.000Z" },

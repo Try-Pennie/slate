@@ -5,8 +5,9 @@ import { CALENDAR_COPY } from "./booker-copy.ts";
  *
  * The one builder behind every place a lead can save their call: the booking
  * lookup trypennie's booking confirmed page reads, the confirm response, and the
- * ICS file served by the manage token. Slate's own confirmation screen (#2165) is
- * meant to read it too. Pure: the clock is handed in, so the ICS is deterministic.
+ * ICS file served by the manage token, and Slate's own confirmation screen and
+ * manage page (#2165, through `AddToCalendar`). Pure: the clock is handed in, so
+ * the ICS is deterministic.
  */
 
 /** The call as it goes on the lead's calendar. Times are UTC ISO instants. */

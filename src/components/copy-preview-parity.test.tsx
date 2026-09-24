@@ -27,6 +27,8 @@ import ManageNotFound from "@/components/ManageNotFound";
 import { formatSlotTime } from "@/lib/booking/slot-label";
 import { RESCHEDULE_REASONS, CANCEL_REASONS } from "@/lib/booking/core";
 import {
+  ADD_TO_CALENDAR_COPY,
+  confirmedAdvisor,
   CONFIRMED_COPY,
   DETAILS_COPY,
   chosenWhen,
@@ -242,7 +244,12 @@ describe("the preview shows what the booker actually renders (#1343)", () => {
       return {
         ok: true,
         status: 200,
-        json: async () => ({ startsAt: slotIso, manageUrl: "https://slate.example/manage/tok1" }),
+        json: async () => ({
+          startsAt: slotIso,
+          manageUrl: "https://slate.example/manage/tok1",
+          advisorName: "Aisha Bello",
+          calendarLinks: { google: "g", outlook: "o", office365: "m", ics: "i" },
+        }),
       } as Response;
     }) as unknown as typeof fetch;
 
@@ -258,6 +265,9 @@ describe("the preview shows what the booker actually renders (#1343)", () => {
 
     expect(await screen.findByText(CONFIRMED_COPY.heading)).toBeTruthy();
     expect(pageText()).toContain(CONFIRMED_COPY.manageLink);
+    // #2165: who will call, and the add to calendar group, in the builder's words.
+    expect(pageText()).toContain(confirmedAdvisor("Aisha Bello"));
+    for (const words of Object.values(ADD_TO_CALENDAR_COPY)) expect(pageText()).toContain(words);
     // #2205: the when-line is the other place a lead reads a committed time back,
     // so it is asserted against the SAME builder and the SAME full date the
     // details step commits with, rather than against a copy of the words.
@@ -344,6 +354,7 @@ describe("the preview shows what the manage page actually renders (#1343)", () =
     attendeeEmail: "dana@example.com",
     advisorName: "Aisha Bello",
     advisorRole: "Senior Loan Advisor",
+    calendarLinks: { google: "g", outlook: "o", office365: "m", ics: "i" },
   };
 
   beforeEach(() => {
@@ -376,6 +387,8 @@ describe("the preview shows what the manage page actually renders (#1343)", () =
     // compared through the builder rather than as a literal.
     expect(pageText()).toContain(advisorWillCall(manageProps.attendeePhone));
     expect(pageText()).toContain(LIVE_COPY.changeYourPlans);
+    // #2165: the same group the confirmation draws, in the same words.
+    for (const words of Object.values(ADD_TO_CALENDAR_COPY)) expect(pageText()).toContain(words);
     expect(pageText()).toContain(BEFORE_COPY.heading);
     expect(pageText()).toContain(BEFORE_COPY.body);
     expect(screen.getByRole("button", { name: LIVE_COPY.cancel })).toBeTruthy();

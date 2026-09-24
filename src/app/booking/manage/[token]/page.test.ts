@@ -14,6 +14,10 @@ const service = vi.hoisted(() => ({
   getBookingByToken: vi.fn(),
   getBookingAdvisorName: vi.fn(async () => null as string | null),
   getBookingAdvisorPhoto: vi.fn(async () => null as string | null),
+  bookingDetailExtras: vi.fn((_booking: unknown) => ({
+    contact: { name: "Dana", email: "dana@example.com", phone: "+12155550100" },
+    calendarLinks: { google: "g", outlook: "o", office365: "m", ics: "i" } as Record<string, string> | null,
+  })),
 }));
 const loadReasonOptions = vi.hoisted(() =>
   vi.fn(async () => ({
@@ -111,6 +115,23 @@ describe("manage page advisor wiring (#1338)", () => {
     expect(props?.durationMin).toBe(20);
     expect(props?.attendeePhone).toBe("+12155550100");
     expect(props?.attendeeEmail).toBe("dana@example.com");
+  });
+
+  // #2165: the add to calendar links come from the one builder the confirm and the
+  // booking lookup use, built from THIS booking, never a second copy on the page.
+  it("hands the page the booking's calendar links from the shared builder", async () => {
+    const props = await renderPage();
+    expect(service.bookingDetailExtras.mock.calls.at(-1)?.[0]).toMatchObject({ id: "bk1" });
+    expect(props?.calendarLinks).toEqual({ google: "g", outlook: "o", office365: "m", ics: "i" });
+  });
+
+  it("passes null through when the builder has no links for this booking", async () => {
+    service.bookingDetailExtras.mockReturnValueOnce({
+      contact: { name: "Dana", email: "dana@example.com", phone: "+12155550100" },
+      calendarLinks: null,
+    });
+    const props = await renderPage();
+    expect(props?.calendarLinks).toBeNull();
   });
 
   it("does not look up an advisor for a token that resolves to nothing", async () => {

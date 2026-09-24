@@ -3,6 +3,7 @@ import ManageNotFound from "@/components/ManageNotFound";
 import StandaloneTheme from "@/components/StandaloneTheme";
 import LegalFooter from "@/components/LegalFooter";
 import {
+  bookingDetailExtras,
   getBookingByToken,
   getBookingAdvisorName,
   getBookingAdvisorPhoto,
@@ -89,6 +90,9 @@ export default async function ManagePage({
         theme={theme}
         // #2660: read off the booking's own bucket, the one place the flag lives.
         isTest={found.bucket.is_test}
+        // #2165: the add to calendar links, from the one builder the confirm and
+        // the booking lookup use (#2643). Null on a cancelled call.
+        calendarLinks={bookingDetailExtras(found.booking).calendarLinks}
       />
       {/* #1041: this page is never embedded, so it never inherits a host page's
           policies. */}
