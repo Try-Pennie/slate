@@ -2466,16 +2466,19 @@ export async function cancelBooking(
   token: string,
   reason: ValidatedReason,
   initiator: BookingEventInitiator,
-): Promise<boolean> {
-  // True when THIS call made the transition; false when it lost the claim to a
-  // concurrent cancel or completion, which is idempotent and fine (only the direct
-  // API maps it to 404, #398).
+): Promise<orchestration.CancelOutcome> {
+  // `claimed` is true when THIS call made the transition; false when it lost the
+  // claim to a concurrent cancel or completion, which is idempotent and fine (only
+  // the direct API maps it to 404, #398).
   //
   // #2373: the flag used to be DISCARDED here, and that was only safe while false
   // meant one thing. It no longer does: a write that never ran throws
   // BookingWriteFailedError instead, so false is now exactly "somebody else got
   // there first" and is worth reporting rather than swallowing.
-  return orchestration.cancelBooking(token, reason, initiator, realDeps(deferWebhookSend));
+  //
+  // #2658: and WHICH booking, on both outcomes, so the manage cancel route can
+  // answer the embedded booker with the call it just gave up.
+  return orchestration.cancelBookingWithDetail(token, reason, initiator, realDeps(deferWebhookSend));
 }
 
 /**

@@ -38,14 +38,45 @@ function req(body: unknown): Parameters<typeof POST>[0] {
 }
 const params = { params: Promise.resolve({ token: "tok1" }) };
 
+/** What the booking layer answers (#2658): whether THIS call made the transition,
+ *  and which booking it was about either way. */
+const outcome = (claimed: boolean) => ({
+  claimed,
+  booking: { id: "bk1", startsAt: "2026-07-01T15:00:00.000Z", endsAt: "2026-07-01T15:30:00.000Z" },
+});
+
 beforeEach(() => vi.clearAllMocks());
 
 describe("POST /bookings/[token]/cancel", () => {
   it("cancels on success", async () => {
-    service.cancelBooking.mockResolvedValueOnce(true);
+    service.cancelBooking.mockResolvedValueOnce(outcome(true));
     const res = await POST(req({ reason: "schedule_conflict" }), params);
     expect(res.status).toBe(200);
     expect((await res.json()).ok).toBe(true);
+  });
+
+  // #2658: the embedded booker announces the cancel to its host page as cal.com's
+  // `bookingCancelled`, which names the booking and its bounds, so the answer
+  // carries them. Never the contact: this reaches the lead's browser and, from
+  // there, a host page.
+  it("names the cancelled booking and its bounds, and nothing about the lead", async () => {
+    service.cancelBooking.mockResolvedValueOnce(outcome(true));
+    const res = await POST(req({ reason: "schedule_conflict" }), params);
+    const body = await res.json();
+    expect(body.booking).toEqual({
+      id: "bk1",
+      startsAt: "2026-07-01T15:00:00.000Z",
+      endsAt: "2026-07-01T15:30:00.000Z",
+    });
+    expect(JSON.stringify(body)).not.toMatch(/attendee|email|phone|name/);
+  });
+
+  it("names the booking on a cancel that lost the race too, since the call is off either way", async () => {
+    service.cancelBooking.mockResolvedValueOnce(outcome(false));
+    const res = await POST(req({ reason: "schedule_conflict" }), params);
+    const body = await res.json();
+    expect(body.ok).toBe(true);
+    expect(body.booking.id).toBe("bk1");
   });
 
   // #2373. The two causes below are driven TOGETHER, because the defect was that one
@@ -77,7 +108,7 @@ describe("POST /bookings/[token]/cancel", () => {
     // Somebody else cancelled it first, so the lead's booking really is cancelled and
     // saying otherwise would be the opposite lie. It is counted apart, so a spike in
     // races is visible rather than filed as an ordinary cancel.
-    service.cancelBooking.mockResolvedValueOnce(false);
+    service.cancelBooking.mockResolvedValueOnce(outcome(false));
     const res = await POST(req({ reason: "schedule_conflict" }), params);
 
     expect(res.status).toBe(200);
@@ -93,7 +124,7 @@ describe("POST /bookings/[token]/cancel", () => {
   it("counts a cancel this call actually made as a cancel (#2373)", async () => {
     // The denominator. Counting only the refusals would inflate the very share the
     // failure-rate window pages on.
-    service.cancelBooking.mockResolvedValueOnce(true);
+    service.cancelBooking.mockResolvedValueOnce(outcome(true));
     await POST(req({ reason: "schedule_conflict" }), params);
     expect(recordApiOutcome).toHaveBeenCalledWith("cancelled", "", null, expect.anything());
   });
@@ -137,7 +168,7 @@ describe("POST /bookings/[token]/cancel", () => {
 describe("manage cancel is throttled per address (#1046)", () => {
   it("429s a refused address before touching the booking layer", async () => {
     rateLimit.manageWithinLimit.mockResolvedValueOnce(false);
-    service.cancelBooking.mockResolvedValueOnce(true);
+    service.cancelBooking.mockResolvedValueOnce(outcome(true));
     const res = await POST(req({ reason: "schedule_conflict" }), params);
 
     expect(res.status).toBe(429);
@@ -148,7 +179,7 @@ describe("manage cancel is throttled per address (#1046)", () => {
     // The positive control: a throttle that refused everything would pass the test
     // above while taking the manage link away from every customer.
     rateLimit.manageWithinLimit.mockResolvedValueOnce(true);
-    service.cancelBooking.mockResolvedValueOnce(true);
+    service.cancelBooking.mockResolvedValueOnce(outcome(true));
     const res = await POST(req({ reason: "schedule_conflict" }), params);
     expect(res.status).not.toBe(429);
   });
@@ -173,7 +204,7 @@ describe("cancel answers are never stored (#2561)", () => {
   beforeEach(() => service.cancelBooking.mockReset());
 
   it("on a successful cancel", async () => {
-    service.cancelBooking.mockResolvedValueOnce(true);
+    service.cancelBooking.mockResolvedValueOnce(outcome(true));
     expect(noStore(await POST(req({ reason: "schedule_conflict" }), params))).toBe("no-store");
   });
 

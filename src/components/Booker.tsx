@@ -10,6 +10,11 @@ import type { BookerButtonVariant } from "@/components/booker-button";
 import { BookerStrip, BookerStripSkeleton } from "@/components/BookerStrip";
 import { SlotTimes } from "@/components/SlotTimes";
 import { useSlotPicker } from "@/components/use-slot-picker";
+import {
+  EMBED_MESSAGE,
+  LINK_FAILED,
+  type BookingCancelledDetail,
+} from "@/lib/embed/lifecycle-events";
 import { rescheduleOffersAlternatives } from "@/lib/booking/nearest-slots";
 import { NearestTimesPanel } from "@/components/NearestTimes";
 import {
@@ -629,6 +634,45 @@ export default function Booker({
     return () => document.removeEventListener("keydown", onKeydown);
   }, [embedded, postToParent]);
 
+  // #2658: the lifecycle the host page's GA4 funnel is built on, announced as
+  // cal.com's booker announces it so the host's one listener needs no Slate
+  // branch. Three messages, each once per frame load, each through postToParent
+  // (the known parent origin, never "*"), none carrying the lead's contact:
+  //
+  // - bookerViewed on the first render, saying whether times were ALREADY loaded
+  //   at that moment. They almost never are (the availability is fetched), and
+  //   that is the point: a viewed with slotsLoaded false and no ready after it is
+  //   the "lead saw an empty calendar" failure the spec exists to catch.
+  // - bookerReady the first time the availability answers with at least one time.
+  //   An answer with none is deliberately silent here.
+  // - linkFailed when the availability read fails, once per failure: a retry that
+  //   fails again is a second failure and says so.
+  const timesLoaded = !loading && picker.view.kind !== "failed" && picker.slots.length > 0;
+  const availabilityFailed = picker.view.kind === "failed";
+  const viewedPosted = useRef(false);
+  const readyPosted = useRef(false);
+  const failedPosted = useRef(false);
+  useEffect(() => {
+    if (!embedded || viewedPosted.current) return;
+    viewedPosted.current = true;
+    postToParent({ type: EMBED_MESSAGE.bookerViewed, data: { slotsLoaded: timesLoaded } });
+  }, [embedded, postToParent, timesLoaded]);
+  useEffect(() => {
+    if (!embedded || !timesLoaded || readyPosted.current) return;
+    readyPosted.current = true;
+    postToParent({ type: EMBED_MESSAGE.bookerReady, data: { slotsLoaded: true } });
+  }, [embedded, postToParent, timesLoaded]);
+  useEffect(() => {
+    if (!embedded) return;
+    if (!availabilityFailed) {
+      failedPosted.current = false;
+      return;
+    }
+    if (failedPosted.current) return;
+    failedPosted.current = true;
+    postToParent({ type: EMBED_MESSAGE.linkFailed, data: LINK_FAILED.availabilityFailed });
+  }, [embedded, postToParent, availabilityFailed]);
+
   function fmtTime(iso: string) {
     const dt = DateTime.fromISO(iso).setZone(zone);
     // The 12 hour spelling comes from the shared formatter (#1765); the 24 hour
@@ -750,7 +794,10 @@ export default function Booker({
     setSubmitting(true);
     setError(null);
     try {
-      const { ok, data } = await postJson<{ error?: string }>(
+      const { ok, data } = await postJson<{
+        error?: string;
+        booking?: { id: string; startsAt: string; endsAt: string };
+      }>(
         `/api/bookings/${encodeURIComponent(existingCall.manageToken)}/cancel`,
         { reason: cancelReason, reasonDetail: cancelDetail || undefined },
         { timeoutMs: REQUEST_TIMEOUT_MS },
@@ -761,6 +808,22 @@ export default function Booker({
         setCancelled(true);
         setExistingCall(null);
         setConfirmingCancel(false);
+        // #2658: and told to the host page, as cal.com's `bookingCancelled`, so
+        // its funnel records the cancel. The booking is named from the server's
+        // answer; what it did not answer is null rather than guessed, and the
+        // start is the one this panel has been showing all along. The reason is
+        // the CODE the lead chose, a vocabulary value, never their own words.
+        if (embedded) {
+          const detail: BookingCancelledDetail = {
+            booking: {
+              uid: data.booking?.id ?? null,
+              startTime: data.booking?.startsAt ?? existingCall.startsAt,
+              endTime: data.booking?.endsAt ?? null,
+              cancellationReason: cancelReason,
+            },
+          };
+          postToParent({ type: EMBED_MESSAGE.bookingCancelled, data: detail });
+        }
         return;
       }
       setError(data.error ?? BOOKER_CANCEL_COPY.failed);

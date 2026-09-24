@@ -114,8 +114,42 @@ Do not refactor the `Cal` queue / param / message plumbing while restyling.
      logs them (`tag=client-errors msg="embed origin mismatch"`) and says so in the
      info channel at most daily. There is deliberately no allow list: a preview or
      staging host must keep working. A host should pass `window.location.origin`.
-   - If a loading state needs a new signal, **ADD** `slate:ready` -- do NOT rename
-     or drop the existing two.
+   - If a loading state needs a new signal, **ADD** a message; do NOT rename or
+     drop an existing one.
+   - **The booker lifecycle (#2658).** Pennie's GA4 tagging spec instruments
+     cal.com's booker one event per stage, through `Cal.ns.<ns>("on", ...)`, so
+     `widget.js` announces the same stages under cal.com's names. Each is a raw
+     `slate:*` message the Booker posts (through `postToParent`, known origin
+     only, no lead contact), re-emitted by the widget under the cal.com name. The
+     names live in `src/lib/embed/lifecycle-events.ts`; the mapping is pinned by
+     `src/components/widget-embed.test.ts` driving the real file.
+
+     | widget event (`on` action) | raw message | when | `detail.data` |
+     |---|---|---|---|
+     | `navigatedToBooker` | widget only | a `data-cal-link` trigger is clicked, before the modal opens | `{}` |
+     | `bookerViewed` | `slate:bookerViewed` | first render of the Booker in this frame load | `{ slotsLoaded }` |
+     | `bookerReady` | `slate:bookerReady` | the availability answered with at least one time, once per frame load | `{ slotsLoaded: true }` |
+     | `bookerReopened` | widget only | the modal is opened again on the same page | `{}` |
+     | `bookerReloaded` | widget only | the modal iframe fires `load` a second or later time | `{}` |
+     | `linkFailed` | `slate:linkFailed`, and widget only for the modal's own load failure | the availability read failed (`availability_failed`), the page boundary caught a crash (`booker_crashed`), or the modal's iframe never loaded (`load_timeout`, `load_error`) | `{ code, msg }` |
+     | `bookingSuccessfulV2` | derived from `slate:bookingSuccessful` with `outcome: "created"` | a fresh booking | `{ uid, startTime, endTime, status: "confirmed", isTest }` |
+     | `rescheduleBookingSuccessfulV2` | derived from `outcome: "rescheduled"` | a lead moved the call they already had | same shape |
+     | `bookingCancelled` | `slate:bookingCancelled` | the in embed cancel (`cancelExistingCall`) succeeded | `{ booking: { uid, startTime, endTime, cancellationReason } }` |
+     | `bookingSuccessful` | `slate:bookingSuccessful` | UNCHANGED, fresh and moved alike | `{ booking, salesforceId, outcome }` |
+     | `*` | | every event above, `detail.type` set | |
+
+     **Which one a host should use.** A host records a booking from
+     `bookingSuccessfulV2` OR from `bookingSuccessful`, never both: they announce
+     the same booking and would double count it. A host written against
+     `bookingSuccessful` keeps working (trypennie's redirect is built on it,
+     #2643); a host built to the spec listens to the V2 pair. A moved call is
+     `rescheduleBookingSuccessfulV2` and is never announced as
+     `bookingSuccessfulV2`. A host that frames `/book` in its own iframe listens
+     for the raw `slate:*` names directly.
+
+     **A cancel from the manage page has no host event.** The link in the invite
+     opens Slate's own page outside any host, so nothing can announce it to a
+     host; that is true on cal.com too. Only the in embed cancel announces.
 
 5. **`widget.js` stays vanilla / dependency-free.** Single IIFE served as plain
    `/widget.js`, no build step (~6KB). Do NOT import React, Tailwind, `globals.css`,

@@ -26,6 +26,7 @@ import { DateTime } from "luxon";
 import { messageLines } from "@/lib/booking/slot-picker";
 import { CANCEL_REASONS, RESCHEDULE_REASONS } from "@/lib/booking/core";
 import { CONFIRMATION_MARK } from "@/lib/booking/confirmation-mark";
+import { EMBED_MESSAGE, LINK_FAILED } from "@/lib/embed/lifecycle-events";
 
 // The confirmation mark's dotLottie player, stood down for this file (#2560).
 // It is a wasm runtime: jsdom has no IntersectionObserver for it to observe with
@@ -1394,6 +1395,201 @@ describe("Booker embed postMessage origin (#593)", () => {
 // a loaded-but-empty month must say so honestly; and the calendar must stop
 // paging once a loaded month comes back empty (the cache-limited horizon), so a
 // lead can never walk off into months that will never have slots.
+// #2658: the booker lifecycle the host's GA4 funnel is built on. Each stage is a
+// `slate:*` message to the known parent origin, and widget.js re-emits it under
+// cal.com's name. What matters here is WHEN each is posted, that each is posted
+// ONCE, and that none of them carries the lead's contact.
+describe("Booker lifecycle messages (#2658)", () => {
+  const HOST = "https://host.test";
+  const endIso = new Date(Date.parse(slotIso) + 30 * 60 * 1000).toISOString();
+  const ofType = (spy: { mock: { calls: unknown[][] } }, type: string) =>
+    spy.mock.calls.filter((c) => (c[0] as { type?: string })?.type === type);
+  const slateMessages = (spy: { mock: { calls: unknown[][] } }) =>
+    spy.mock.calls.filter((c) => String((c[0] as { type?: string })?.type ?? "").startsWith("slate:"));
+  const availabilityWith = (slots: string[]) =>
+    vi.fn(async (url: RequestInfo | URL) => {
+      if (String(url).includes("/api/availability")) {
+        return { ok: true, json: async () => ({ ...availability, slots }) } as Response;
+      }
+      return { ok: true, status: 200, json: async () => ({ id: "bk-new", startsAt: slotIso, endsAt: endIso }) } as Response;
+    }) as unknown as typeof fetch;
+  /** Let every pending promise and effect settle, so an absence is measured
+   *  after the thing that could have produced it had its chance. */
+  const settle = async () => {
+    for (let i = 0; i < 5; i++) await act(async () => { await Promise.resolve(); });
+  };
+
+  it("posts bookerViewed once, with slotsLoaded false while the times are still loading, then bookerReady once when they arrive", async () => {
+    global.fetch = availabilityWith([slotIso]);
+    const postSpy = vi.spyOn(window.parent, "postMessage");
+    render(<Booker {...baseProps} embedded parentOrigin={HOST} />);
+    await dayChip();
+    await settle();
+
+    const viewed = ofType(postSpy, EMBED_MESSAGE.bookerViewed);
+    expect(viewed).toHaveLength(1);
+    expect(viewed[0]![0]).toEqual({ type: EMBED_MESSAGE.bookerViewed, data: { slotsLoaded: false } });
+    expect(viewed[0]![1]).toBe(HOST);
+
+    const ready = ofType(postSpy, EMBED_MESSAGE.bookerReady);
+    expect(ready).toHaveLength(1);
+    expect(ready[0]![0]).toEqual({ type: EMBED_MESSAGE.bookerReady, data: { slotsLoaded: true } });
+    expect(ready[0]![1]).toBe(HOST);
+    // Viewed before ready: the funnel reads them in that order.
+    const firstIndexOf = (type: string) =>
+      postSpy.mock.calls.findIndex((c) => (c[0] as { type?: string })?.type === type);
+    expect(firstIndexOf(EMBED_MESSAGE.bookerViewed)).toBeLessThan(firstIndexOf(EMBED_MESSAGE.bookerReady));
+    postSpy.mockRestore();
+  });
+
+  it("posts bookerViewed and never bookerReady when the availability holds no times, which is the empty calendar signal", async () => {
+    let answered = false;
+    const fetchSpy = availabilityWith([]);
+    global.fetch = (async (...args: Parameters<typeof fetch>) => {
+      const res = await fetchSpy(...args);
+      answered = true;
+      return res;
+    }) as typeof fetch;
+    const postSpy = vi.spyOn(window.parent, "postMessage");
+    render(<Booker {...baseProps} embedded parentOrigin={HOST} />);
+    await waitFor(() => expect(answered).toBe(true));
+    await settle();
+
+    expect(ofType(postSpy, EMBED_MESSAGE.bookerViewed)).toHaveLength(1);
+    expect(ofType(postSpy, EMBED_MESSAGE.bookerReady)).toHaveLength(0);
+    postSpy.mockRestore();
+  });
+
+  it("posts linkFailed with availability_failed once when the times cannot be loaded, and again only when a retry fails again", async () => {
+    global.fetch = vi.fn(async (url: RequestInfo | URL) => {
+      if (String(url).includes("/api/availability")) {
+        return { ok: false, status: 500, json: async () => ({}) } as Response;
+      }
+      throw new Error(`unexpected request ${String(url)}`);
+    }) as unknown as typeof fetch;
+    const postSpy = vi.spyOn(window.parent, "postMessage");
+    render(<Booker {...baseProps} embedded parentOrigin={HOST} />);
+    await screen.findByText("Could not load available times.");
+    await settle();
+
+    const failed = ofType(postSpy, EMBED_MESSAGE.linkFailed);
+    expect(failed).toHaveLength(1);
+    expect(failed[0]![0]).toEqual({ type: EMBED_MESSAGE.linkFailed, data: LINK_FAILED.availabilityFailed });
+    expect(failed[0]![1]).toBe(HOST);
+    expect(ofType(postSpy, EMBED_MESSAGE.bookerReady)).toHaveLength(0);
+
+    await userEvent.click(screen.getByRole("button", { name: /try again/i }));
+    await waitFor(() => expect(ofType(postSpy, EMBED_MESSAGE.linkFailed)).toHaveLength(2));
+    postSpy.mockRestore();
+  });
+
+  it("posts bookingCancelled to the parent origin after a successful in embed cancel, carrying no contact", async () => {
+    global.fetch = vi.fn(async (url: RequestInfo | URL) => {
+      const u = String(url);
+      if (u.includes("/api/availability")) return { ok: true, json: async () => availability } as Response;
+      if (u.includes("/cancel")) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ ok: true, booking: { id: "bk-old", startsAt: slotIso, endsAt: endIso } }),
+        } as Response;
+      }
+      throw new Error(`unexpected request ${u}`);
+    }) as unknown as typeof fetch;
+    const postSpy = vi.spyOn(window.parent, "postMessage");
+    render(
+      <Booker
+        {...baseProps}
+        embedded
+        parentOrigin={HOST}
+        salesforceId="003xx"
+        attendee={{ name: "Dana Lead", email: "dana@example.com", phone: "+12035615295" }}
+        landingCall={{ disclose: true, startsAt: slotIso, advisorName: null, manageToken: "tok-old", mayCancel: true, phone: "+12035615295" }}
+      />,
+    );
+    await screen.findByText("You already have a call booked");
+    fireEvent.click(screen.getByRole("button", { name: BOOKER_CANCEL_COPY.start }));
+    fireEvent.click(screen.getAllByRole("radio")[0]);
+    fireEvent.click(screen.getByRole("button", { name: BOOKER_CANCEL_COPY.confirm }));
+    await screen.findByText(BOOKER_CANCEL_COPY.doneHeading);
+
+    const cancelled = ofType(postSpy, EMBED_MESSAGE.bookingCancelled);
+    expect(cancelled).toHaveLength(1);
+    expect(cancelled[0]![1]).toBe(HOST);
+    expect(cancelled[0]![0]).toEqual({
+      type: EMBED_MESSAGE.bookingCancelled,
+      data: {
+        booking: { uid: "bk-old", startTime: slotIso, endTime: endIso, cancellationReason: CANCEL_REASONS[0].code },
+      },
+    });
+    for (const call of postSpy.mock.calls) {
+      const text = JSON.stringify(call[0]);
+      expect(text).not.toContain("Dana");
+      expect(text).not.toContain("dana@example.com");
+      expect(text).not.toContain("5615295");
+    }
+    postSpy.mockRestore();
+  });
+
+  it("posts no bookingCancelled when the cancel does not land", async () => {
+    global.fetch = vi.fn(async (url: RequestInfo | URL) => {
+      const u = String(url);
+      if (u.includes("/api/availability")) return { ok: true, json: async () => availability } as Response;
+      return { ok: false, status: 500, json: async () => ({ error: "Could not cancel" }) } as Response;
+    }) as unknown as typeof fetch;
+    const postSpy = vi.spyOn(window.parent, "postMessage");
+    render(
+      <Booker
+        {...baseProps}
+        embedded
+        parentOrigin={HOST}
+        salesforceId="003xx"
+        landingCall={{ disclose: true, startsAt: slotIso, advisorName: null, manageToken: "tok-old", mayCancel: true, phone: null }}
+      />,
+    );
+    await screen.findByText("You already have a call booked");
+    fireEvent.click(screen.getByRole("button", { name: BOOKER_CANCEL_COPY.start }));
+    fireEvent.click(screen.getAllByRole("radio")[0]);
+    fireEvent.click(screen.getByRole("button", { name: BOOKER_CANCEL_COPY.confirm }));
+    expect(await screen.findByRole("alert")).toBeTruthy();
+    await settle();
+    expect(ofType(postSpy, EMBED_MESSAGE.bookingCancelled)).toHaveLength(0);
+    postSpy.mockRestore();
+  });
+
+  it("carries the lead's name, email or phone in no message across a whole booking", async () => {
+    global.fetch = availabilityWith([slotIso]);
+    const postSpy = vi.spyOn(window.parent, "postMessage");
+    render(<Booker {...baseProps} embedded parentOrigin={HOST} />);
+    await fillAndConfirm();
+    await screen.findByText("You're all set");
+    await settle();
+
+    // The whole lifecycle happened: the control that this test measured something.
+    expect(ofType(postSpy, EMBED_MESSAGE.bookerViewed)).toHaveLength(1);
+    expect(ofType(postSpy, EMBED_MESSAGE.bookerReady)).toHaveLength(1);
+    expect(ofType(postSpy, EMBED_MESSAGE.bookingSuccessful)).toHaveLength(1);
+    expect(slateMessages(postSpy).every((c) => c[1] === HOST)).toBe(true);
+    for (const call of postSpy.mock.calls) {
+      const text = JSON.stringify(call[0]);
+      expect(text).not.toContain("Dana");
+      expect(text).not.toContain("dana@example.com");
+      expect(text).not.toContain("5615295");
+    }
+    postSpy.mockRestore();
+  });
+
+  it("posts none of the lifecycle messages outside an embed", async () => {
+    global.fetch = availabilityWith([slotIso]);
+    const postSpy = vi.spyOn(window.parent, "postMessage");
+    render(<Booker {...baseProps} parentOrigin={HOST} />);
+    await dayChip();
+    await settle();
+    expect(slateMessages(postSpy)).toHaveLength(0);
+    postSpy.mockRestore();
+  });
+});
+
 describe("Booker availability states (#215)", () => {
   it("shows the load-error notice with a working retry when availability fails to load", async () => {
     let calls = 0;

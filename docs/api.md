@@ -808,8 +808,8 @@ URL; there is no header credential. Intended for humans, not machine callers.
 
 | Method + path | Body | Success | Notable errors |
 |---|---|---|---|
-| `POST /api/bookings/[token]/cancel` | `{ reason, reasonDetail? }` (reason mandatory, #326) | `200 { "ok": true }` | `400` invalid or missing reason; `409` meeting already completed so not cancellable (#618) |
-| `POST /api/bookings/[token]/reschedule` | `{ start, reason, reasonDetail? }` (start a parseable ISO instant, reason mandatory) | `200 { id, startsAt, endsAt, manageUrl, calendarLinks, contactChanged? }`: the same fields the Booker's own confirm returns, because both are posted to the host as its success message (#2644) | `400` invalid start or reason; `409` slot taken or concurrent-change conflict; `503` verify unavailable |
+| `POST /api/bookings/[token]/cancel` | `{ reason, reasonDetail? }` (reason mandatory, #326) | `200 { "ok": true, "booking": { id, startsAt, endsAt } }`: which call was given up, so the embedded booker can announce the cancel to its host page (#2658); id and times only, never the contact | `400` invalid or missing reason; `409` meeting already completed so not cancellable (#618) |
+| `POST /api/bookings/[token]/reschedule` | `{ start, reason, reasonDetail? }` (start a parseable ISO instant, reason mandatory) | `200 { id, startsAt, endsAt, manageUrl, calendarLinks, isTest, contactChanged? }`: the same fields the Booker's own confirm returns, because both are posted to the host as its success message (#2644, `isTest` since #2658) | `400` invalid start or reason; `409` slot taken or concurrent-change conflict; `503` verify unavailable |
 | `POST /api/bookings/[token]/phone` | `{ phone }` (#1341) | `200 { ok: true, phone }`, carrying the number as STORED, not as typed | `400` a number we cannot call, or a payload over the size ceiling |
 | `GET /api/bookings/[token]/ics` | none (#2643) | `200` a `text/calendar` download (`pennie-call.ics`), built at request time and never cached | `404` unknown token; `410` a cancelled call, with a sentence saying so |
 

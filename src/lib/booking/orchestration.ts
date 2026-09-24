@@ -559,6 +559,15 @@ export interface BookingResult {
    * cannot check (L608).
    */
   contactChanged?: ContactChange | null;
+  /**
+   * Whether the booking sits on a test bucket, read off the bucket the context
+   * load joined (#2658). Set on the RESCHEDULE path, where the route answers the
+   * embedded booker directly and the booker announces the moved call to its host
+   * in the same shape as a fresh booking, `isTest` included. The create path does
+   * not set it: its route already resolved the flag from the bucket code before
+   * calling in (#2660).
+   */
+  isTest?: boolean;
 }
 
 /**
@@ -3719,7 +3728,7 @@ export async function rescheduleBooking(
     // its own target, so its live lease is never clobbered, and there is no
     // read->delete window for such a re-pin to slip into.
     await deps.releaseRescheduleIfTarget(booking.id, startIso);
-    return { booking, manageUrl: manageUrl(deps, token), contactChanged };
+    return { booking, manageUrl: manageUrl(deps, token), contactChanged, isTest: ctx.bucket.is_test };
   }
 
   // Idempotency guard 2 — claim the per-booking lease (#439). The discriminated
@@ -3728,7 +3737,7 @@ export async function rescheduleBooking(
   // fresh-after-abandon) enters the try/finally, so the release rule holds.
   const claim = await deps.claimReschedule(booking.id, startIso);
   if (claim.outcome === "idempotent" || claim.outcome === "noop") {
-    return { booking, manageUrl: manageUrl(deps, token), contactChanged };
+    return { booking, manageUrl: manageUrl(deps, token), contactChanged, isTest: ctx.bucket.is_test };
   }
   if (claim.outcome === "conflict") {
     throw new RescheduleConflictError();
@@ -3738,7 +3747,7 @@ export async function rescheduleBooking(
     const result = await applyReschedule(
       deps, token, ctx, startIso, endIso, reason, initiator, claim, nowMs, actor,
     );
-    return { ...result, contactChanged };
+    return { ...result, contactChanged, isTest: ctx.bucket.is_test };
   } finally {
     await deps.releaseReschedule(booking.id);
   }
@@ -4394,6 +4403,20 @@ export async function reassignBooking(
   return { booking: updated, manageUrl: manageUrl(deps, booking.manage_token), overCap };
 }
 
+/**
+ * What a cancel by token answers (#2658): whether THIS call made the transition,
+ * and which booking it was about either way.
+ *
+ * The booking is named on BOTH outcomes because the embedded booker announces the
+ * cancel to its host page as cal.com's `bookingCancelled`, which carries the
+ * booking's id and bounds, and the host's funnel is about the call being off,
+ * which is true whether this request or a concurrent one got there first.
+ */
+export interface CancelOutcome {
+  claimed: boolean;
+  booking: { id: string; startsAt: string; endsAt: string };
+}
+
 /** Cancel a booking by token. Returns true if THIS call transitioned the row
  *  to cancelled, false if it no-op'd an already-cancelled row (idempotent
  *  re-submit, or the losing side of a concurrent double-cancel). Callers that
@@ -4405,9 +4428,22 @@ export async function cancelBooking(
   deps: BookingDeps,
   actor?: BookingActor,
 ): Promise<boolean> {
+  return (await cancelBookingWithDetail(token, reason, initiator, deps, actor)).claimed;
+}
+
+/** The cancel itself. `cancelBooking` above is this with the booking left off,
+ *  for the callers that only ever asked whether they made the transition. */
+export async function cancelBookingWithDetail(
+  token: string,
+  reason: ValidatedReason,
+  initiator: BookingEventInitiator,
+  deps: BookingDeps,
+  actor?: BookingActor,
+): Promise<CancelOutcome> {
   const ctx = await deps.loadBookingContext(token);
   if (!ctx) throw new Error("Booking not found");
   const { booking } = ctx;
+  const named = { id: booking.id, startsAt: booking.starts_at, endsAt: booking.ends_at };
   if (booking.status === "cancelled") {
     // Already cancelled (re-submit). Ensure the reason was recorded — a first
     // attempt that flipped the status but died before recording it would lose
@@ -4429,7 +4465,7 @@ export async function cancelBooking(
         }),
       );
     }
-    return false;
+    return { claimed: false, booking: named };
   }
 
   // A completed meeting can't be flipped back to cancelled (#618). That would
@@ -4446,7 +4482,7 @@ export async function cancelBooking(
   // so the side effects below run once and the loser returns false (404 for the
   // non-idempotent direct API). A failed gcal delete still enqueues (#401), so
   // flipping status first never strands an event.
-  if (!(await deps.claimCancellation(booking.id))) return false;
+  if (!(await deps.claimCancellation(booking.id))) return { claimed: false, booking: named };
 
   // Record the cancel's intent durably, then deliver every side effect through
   // the idempotent outbox executor (#429 P3). The row is enqueued right after the
@@ -4504,7 +4540,7 @@ export async function cancelBooking(
       await deps.releaseOutboxLease(outboxId, lease);
     }
   }
-  return true;
+  return { claimed: true, booking: named };
 }
 
 /** Cron sweep: mark finished bookings complete and emit booking.completed. */

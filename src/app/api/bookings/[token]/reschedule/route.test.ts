@@ -191,6 +191,28 @@ describe("POST /bookings/[token]/reschedule", () => {
     expect(service.bookingDetailExtras.mock.calls.at(-1)?.[0]).toMatchObject({ id: "bk1" });
   });
 
+  // #2658: the moved call is announced to the host as rescheduleBookingSuccessfulV2
+  // in the same shape as a fresh booking's event, `isTest` included, so a moved
+  // test call is never reported as a real one. The flag is read off the booking's
+  // own bucket by the booking layer, never off the caller (#2660).
+  it("carries isTest for the moved call, read off its bucket", async () => {
+    service.rescheduleBooking.mockResolvedValueOnce({
+      booking: { id: "bk1", starts_at: "2026-07-01T15:00:00.000Z", ends_at: "2026-07-01T15:30:00.000Z" },
+      manageUrl: "https://slate.test/booking/manage/tok1",
+      isTest: true,
+    });
+    const res = await POST(req({ start: "2026-07-01T15:00:00.000Z", reason: "schedule_conflict" }), params);
+    expect((await res.json()).isTest).toBe(true);
+
+    service.rescheduleBooking.mockResolvedValueOnce({
+      booking: { id: "bk1", starts_at: "2026-07-01T15:00:00.000Z", ends_at: "2026-07-01T15:30:00.000Z" },
+      manageUrl: "https://slate.test/booking/manage/tok1",
+      isTest: false,
+    });
+    const real = await POST(req({ start: "2026-07-01T15:00:00.000Z", reason: "schedule_conflict" }), params);
+    expect((await real.json()).isTest).toBe(false);
+  });
+
   // #2164: a lead who comes back and types different details is correcting them,
   // and the move is where that correction has to land.
   it("hands the details the lead typed to the booking layer", async () => {
