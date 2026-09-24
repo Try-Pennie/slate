@@ -160,6 +160,7 @@ export default async function BookingDetailPage({
           <AdminBookingActions
             bookingId={booking.id}
             bucketCode={view.bucketCode}
+            leadTimeZone={booking.timezone}
             status={booking.status}
             currentAgentId={booking.assigned_user_id}
             reasonOptions={actionReasons}

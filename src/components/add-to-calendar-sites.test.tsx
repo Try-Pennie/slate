@@ -14,6 +14,15 @@
 //   because links at the old time would put the wrong meeting on a calendar, and
 //   drops them once the call is cancelled.
 import { describe, it, expect, vi, beforeEach } from "vitest";
+
+// #2310: the booker and the manage page offer a time only inside the lead's
+// calling window, judged in the DEVICE zone. These fixtures' times are ordinary
+// Eastern daytime, so which are offered would otherwise depend on the machine
+// running the suite. Pinned here, never inherited (L504).
+vi.mock("@/lib/booking/timezones", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/booking/timezones")>()),
+  deviceTimeZone: () => "America/New_York",
+}));
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import Booker from "@/components/Booker";
 import ManageBooking from "@/components/ManageBooking";
@@ -27,13 +36,10 @@ import {
   confirmedAdvisor,
 } from "@/lib/booking/booker-copy";
 import { CANCEL_COPY, LIVE_COPY } from "@/lib/booking/manage-copy";
+import { bookerSlotIso } from "@/components/booker-test-slot";
 
-const slotIso = (() => {
-  const d = new Date();
-  d.setDate(d.getDate() + 2);
-  d.setHours(15, 0, 0, 0);
-  return d.toISOString();
-})();
+// 15:00 in the pinned zone two days out, never `setHours` on a machine Date (#2310).
+const slotIso = bookerSlotIso(2, 15, "America/New_York");
 
 const availability = {
   bucket: { code: "411" },

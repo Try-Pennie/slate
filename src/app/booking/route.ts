@@ -10,6 +10,7 @@ import {
   VerifyUnavailableError,
   NoEligibleAgentsError,
   UnknownBucketError,
+  OutsideCallingWindowError,
 } from "@/lib/booking/service";
 import { isPublicTestBucket } from "@/lib/embed/public-test-bucket";
 import { validateAttendee } from "@/lib/attendee";
@@ -343,6 +344,22 @@ async function handlePost(req: NextRequest) {
       recordApiOutcome("error", parsed.data.bucketCode, "slot_unavailable", { by: "bucket", code: parsed.data.bucketCode });
       // refusal: slot_unavailable
       return NextResponse.json({ error: err.message }, { status: 409 });
+    }
+    // #2310: the start is outside the lead's calling window (08:00 to 20:00 in
+    // the zone the booker sent). The booker only offers times inside it, so this
+    // is a page left open across a zone change, a stale embed, or a hand made
+    // request. Its own code and sentence, never the slot-taken 409: the time is
+    // not taken, and "that time was just taken" would send the lead to retry the
+    // same refusal. Refunded, because another time books, the way a lost race is.
+    // Counted: a wave means the client filter and the server rule disagree.
+    if (err instanceof OutsideCallingWindowError) {
+      await refundAll();
+      recordApiOutcome("error", parsed.data.bucketCode, "outside_calling_window", { by: "bucket", code: parsed.data.bucketCode });
+      // refusal: outside_calling_window
+      return NextResponse.json(
+        { error: BOOKING_ERROR_COPY.outsideCallingHours, code: "OUTSIDE_CALLING_WINDOW" },
+        { status: 422 },
+      );
     }
     // An empty/misconfigured pool ALSO surfaces as "no times" (409) to the consumer
     // (the API route #358 distinguishes them), but it is a config problem, not a

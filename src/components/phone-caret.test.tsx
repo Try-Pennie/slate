@@ -12,9 +12,11 @@ import userEvent from "@testing-library/user-event";
 import Booker from "@/components/Booker";
 import ManageBooking from "@/components/ManageBooking";
 import { PHONE_COPY } from "@/lib/booking/manage-copy";
+import { bookerSlotIso } from "@/components/booker-test-slot";
 import { CANCEL_REASONS, RESCHEDULE_REASONS } from "@/lib/booking/core";
 
-const slotIso = new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString();
+// A fixed daytime hour in the booker's zone (#2310): see booker-test-slot.ts.
+const slotIso = bookerSlotIso(3);
 const availability = {
   bucket: { code: "411" },
   orgName: "Pennie",

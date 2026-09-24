@@ -9,6 +9,7 @@ import {
   RescheduleLockUnavailableError,
   NoEligibleAgentsError,
   ContactRefusedError,
+  OutsideCallingWindowError,
 } from "@/lib/booking/service";
 import { validateReason } from "@/lib/booking/core";
 import { loadReasonOptions } from "@/lib/booking/reason-options";
@@ -18,6 +19,8 @@ import { internalErrorResponse, reportInternalError } from "@/lib/api/errors";
 import { noStore } from "@/lib/api/no-store";
 import { partnerKeysFrom } from "@/lib/booking/partner-keys";
 import { INPUT_LIMITS } from "@/lib/booking/input-limits";
+import { timezoneSchema } from "@/lib/booking/input-schema";
+import { BOOKING_ERROR_COPY } from "@/lib/booking/booker-copy";
 import { manageWithinLimit } from "@/lib/rate-limit";
 // From the pure core rather than the re-export, so a test can stub the limiter without
 // also having to hand back a working clientIp.
@@ -52,6 +55,14 @@ const schema = z.object({
       phone: z.string().max(INPUT_LIMITS.contact).optional(),
     })
     .optional(),
+  /**
+   * #2310: the zone the page showed the new time in, which is the lead's clock
+   * the calling window is judged in. Optional, because a page cached from before
+   * this shipped will not send it; then the zone the booking was MADE in is
+   * judged instead, which is the lead's own and never a free pass. The same cap
+   * as the booker's field, so a long value is refused before it is read.
+   */
+  timezone: timezoneSchema.optional(),
 });
 
 /**
@@ -111,6 +122,7 @@ async function handlePost(
       reason.reason,
       "customer",
       parsed.data.attendee,
+      parsed.data.timezone,
     );
     // A lead moving their own call is a booking ATTEMPT, and its refusals below are
     // counted (#1318). The success has to be counted with them or the share stops being
@@ -159,6 +171,19 @@ async function handlePost(
       recordApiOutcome("error", "", "reschedule_contact_refused", { by: "manageToken", token });
       // refusal: reschedule_contact_refused
       return NextResponse.json({ error: err.message }, { status: 400 });
+    }
+    // #2310: the new time starts outside the lead's calling window. Not a 409:
+    // nothing is taken and the booking did not move under them, so neither of
+    // those answers (or the alternatives panel a 409 opens) would be true. The
+    // page only offers times inside the window, so a wave of these means the
+    // page and the rule disagree, which is why it is counted.
+    if (err instanceof OutsideCallingWindowError) {
+      recordApiOutcome("error", "", "reschedule_outside_calling_window", { by: "manageToken", token });
+      // refusal: reschedule_outside_calling_window
+      return NextResponse.json(
+        { error: BOOKING_ERROR_COPY.outsideCallingHours, reason: "reschedule_outside_calling_window" },
+        { status: 422 },
+      );
     }
     // Outage (couldn't verify), not a full slot — retryable (#319).
     if (err instanceof VerifyUnavailableError) {

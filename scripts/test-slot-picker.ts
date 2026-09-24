@@ -19,7 +19,7 @@
  *    it is visible rather than silently absent.
  */
 import { DateTime } from "luxon";
-import { dayChips, daysWithSlots, slotPickerView, messageLines } from "../src/lib/booking/slot-picker.ts";
+import { dayChips, daysWithSlots, slotPickerView, messageLines, pickerSlots } from "../src/lib/booking/slot-picker.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
 const ZONE = "America/New_York";
@@ -132,7 +132,7 @@ const TODAY = DateTime.fromISO("2026-08-13", { zone: ZONE });
 
 // -------------------------------------------------------------- the view
 
-const base = { loading: false, failed: false, days: ["2026-08-14"], selectedDay: null, slotsForDay: [] };
+const base = { loading: false, failed: false, days: ["2026-08-14"], selectedDay: null, slotsForDay: [], outsideForDay: 0 };
 
 {
   eq(slotPickerView({ ...base, loading: true }).kind, "loading", "loading wins");
@@ -190,6 +190,70 @@ const base = { loading: false, failed: false, days: ["2026-08-14"], selectedDay:
     slotsForDay: [],
   });
   eq(view.kind, "pick-a-day", "a stale selection returns the lead to the strip");
+}
+
+// ------------------------------------------- the lead's calling window (#2310)
+
+{
+  // Honolulu lead, Eastern agents. Sep 24: 09:00 and 14:00 Eastern are 03:00
+  // and 08:00 in Honolulu. Sep 25: 09:00 Eastern only, which is 03:00 there.
+  const HNL = "Pacific/Honolulu";
+  const slots = [
+    "2026-09-24T13:00:00Z",
+    "2026-09-24T18:00:00Z",
+    "2026-09-25T13:00:00Z",
+  ];
+  const split = pickerSlots(slots, HNL, HNL);
+  eq(split.days, ["2026-09-24", "2026-09-25"], "a day whose times are all outside the window is still drawn");
+  eq(split.offered, ["2026-09-24T18:00:00Z"], "only the in window time is offered");
+  eq(split.offeredByDay.get("2026-09-24"), ["2026-09-24T18:00:00Z"], "the day keeps its one offerable time");
+  eq(split.offeredByDay.has("2026-09-25"), false, "the all outside day offers nothing");
+  eq(split.outsideByDay.get("2026-09-25"), ["2026-09-25T13:00:00Z"], "and knows it had a time set aside");
+
+  // The admin panel groups in the admin's zone and filters in the LEAD's.
+  const admin = pickerSlots(slots, "America/New_York", HNL);
+  eq(admin.offered, ["2026-09-24T18:00:00Z"], "the admin panel filters in the lead's zone, not its own");
+
+  // A New York lead is offered all three from the same list.
+  eq(pickerSlots(slots, "America/New_York", "America/New_York").offered.length, 3, "a New York lead sees every time");
+
+  // The view says why, and it is a different state from a day whose times went.
+  eq(
+    slotPickerView({
+      loading: false,
+      failed: false,
+      days: split.days,
+      selectedDay: "2026-09-25",
+      slotsForDay: [],
+      outsideForDay: 1,
+    }),
+    { kind: "outside-calling-hours", day: "2026-09-25" },
+    "a day with only outside times says so rather than reading as empty",
+  );
+  eq(
+    slotPickerView({
+      loading: false,
+      failed: false,
+      days: split.days,
+      selectedDay: "2026-09-25",
+      slotsForDay: [],
+      outsideForDay: 0,
+    }).kind,
+    "day-empty",
+    "a day whose times simply went is still day-empty",
+  );
+  eq(
+    slotPickerView({
+      loading: false,
+      failed: false,
+      days: split.days,
+      selectedDay: "2026-09-24",
+      slotsForDay: ["2026-09-24T18:00:00Z"],
+      outsideForDay: 1,
+    }).kind,
+    "times",
+    "a day with any offerable time shows its times",
+  );
 }
 
 // ------------------------------------------------------- message lines

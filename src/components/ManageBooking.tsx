@@ -176,6 +176,7 @@ export default function ManageBooking({
   const picker = useSlotPicker({
     url: rescheduling ? `/api/availability?bucket=${encodeURIComponent(bucketCode)}` : null,
     zone: timeZone,
+    leadZone: timeZone,
   });
   const [busy, setBusy] = useState(false);
   // Still-alive cue if a cancel/reschedule POST hasn't returned by ~10s; the
@@ -298,6 +299,9 @@ export default function ManageBooking({
           start: newStart,
           reason: reschedReason,
           reasonDetail: reschedDetail || undefined,
+          // #2310: the zone this page is showing times in, which is the lead's
+          // clock the server judges the calling window in.
+          timezone: timeZone,
         },
         { timeoutMs: REQUEST_TIMEOUT_MS },
       );
@@ -615,6 +619,7 @@ export default function ManageBooking({
                   <SlotTimes
                     view={picker.view}
                     timeZone={timeZone}
+                    reader={{ kind: "lead" }}
                     onRetry={picker.retry}
                     classes={SLOT_TIMES_CLASSES.panel}
                     noDaysNode={

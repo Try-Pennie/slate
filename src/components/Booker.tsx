@@ -78,6 +78,7 @@ import {
   timezoneOptions,
   resolveZone,
 } from "@/lib/booking/timezones";
+import { withinLeadCallingWindow } from "@/lib/booking/lead-calling-window";
 import { SelectField } from "@/components/ui/SelectField";
 import {
   embedParentOrigin,
@@ -568,7 +569,7 @@ export default function Booker({
   // (#629), the day grouping in the viewer's zone, the chosen day and the
   // loading / failed / empty states, so the booker and the reschedule surfaces
   // cannot drift apart again. No day is chosen until the lead chooses one.
-  const picker = useSlotPicker({ url: availabilityUrl, zone, slotsOverride: nextDaySlots });
+  const picker = useSlotPicker({ url: availabilityUrl, zone, leadZone: zone, slotsOverride: nextDaySlots });
   const meta = picker.payload as AvailabilityResponse | null;
   /**
    * The time a request was just refused for, or null (#1319, #1549). Set only on a 409 race,
@@ -959,6 +960,8 @@ export default function Booker({
           start: selectedSlot,
           reason: moveReason,
           reasonDetail: moveDetail || undefined,
+          // #2310: the zone the lead picked this time in, judged by the server.
+          timezone: zone,
           // #2164: the details on this visit, which are routinely a CORRECTION of
           // the ones the call was booked with. The server writes whichever of them
           // actually moved and rewrites the invite; sending them unchanged costs
@@ -1792,7 +1795,14 @@ export default function Booker({
           id="booker-tz"
           ariaLabel="Timezone"
           value={zone}
-          onChange={setZone}
+          onChange={(next) => {
+            setZone(next);
+            // #2310: a time chosen under the old zone may be outside the lead's
+            // calling window under the new one. The list re-filters on its own;
+            // the choice has to be let go here, or Confirm would post a time
+            // the list no longer offers.
+            if (selectedSlot && !withinLeadCallingWindow(selectedSlot, next)) setSelectedSlot(null);
+          }}
           className="max-w-full"
           options={selectOptions.map((o) => ({ value: o.id, label: o.label }))}
         />
@@ -1979,6 +1989,7 @@ export default function Booker({
             <SlotTimes
               view={picker.view}
               timeZone={zone}
+              reader={{ kind: "lead" }}
               onRetry={picker.retry}
               classes={{
                 muted: `text-sm ${c.faint}`,

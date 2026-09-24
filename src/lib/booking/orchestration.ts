@@ -75,6 +75,7 @@ import {
   MANAGE_PHONE_NOT_FOUND,
 } from "./manage-copy.ts";
 import { validateAttendee } from "../attendee.ts";
+import { leadCallingZone, withinLeadCallingWindow } from "./lead-calling-window.ts";
 import { shortErrorReason } from "../notify/error-text.ts";
 import { log } from "@/lib/log";
 import {
@@ -272,6 +273,53 @@ export class DailyCapExceededError extends Error {
     this.name = "DailyCapExceededError";
     this.agentEmail = agentEmail;
     this.day = day;
+  }
+}
+
+/**
+ * Thrown when a call would START outside the lead's calling window, 08:00 to
+ * 20:00 in the lead's own zone (#2310). Regal's quiet hours journey cancels such
+ * a call and files a Rebook Request, so Slate refuses it rather than book a call
+ * that will not be made.
+ *
+ * Its own class rather than a SlotUnavailableError: the time is not taken, it is
+ * one this lead may not be called at, and a retry at the same time can never
+ * succeed. The caller recovers by picking another time, which is why every route
+ * answers it as a distinct refusal the lead can act on.
+ *
+ * Thrown BEFORE anything is written (no reservation, no event, no lease, no
+ * contact correction), so a refusal leaves no half done change behind.
+ */
+export class OutsideCallingWindowError extends Error {
+  /** The zone the start was judged in, after the fallback (`leadCallingZone`). */
+  readonly zone: string;
+  constructor(zone: string) {
+    super(`That time is outside the lead's calling window in ${zone}.`);
+    this.name = "OutsideCallingWindowError";
+    this.zone = zone;
+  }
+}
+
+/**
+ * The fourth gate (#2310), called wherever a call's time is chosen or moved.
+ * `zone` is the lead's zone as the caller knows it; `leadCallingZone` decides
+ * what a missing or unreadable one is judged in, so this never waves one through.
+ */
+function assertWithinLeadCallingWindow(startIso: string, zone: string | null | undefined): void {
+  if (!withinLeadCallingWindow(startIso, zone)) {
+    throw new OutsideCallingWindowError(leadCallingZone(zone));
+  }
+}
+
+/**
+ * The two refusals a reschedule answers before anything about the new time: no
+ * such booking, and a booking that is over. One helper so the calling-window
+ * pre-check and the main path cannot word or order them differently (#2310).
+ */
+function assertReschedulable(ctx: BookingContext | null): asserts ctx is BookingContext {
+  if (!ctx) throw new Error("Booking not found");
+  if (ctx.booking.status === "cancelled" || ctx.booking.status === "completed") {
+    throw new Error("This booking can no longer be changed");
   }
 }
 
@@ -2472,6 +2520,15 @@ export async function createBooking(
     }
   }
 
+  // #2310: the lead's calling window, judged in the zone the booker was using.
+  // AFTER the idempotency fast path, so a retry of a booking that already exists
+  // (one made before this gate shipped, or across the deploy boundary) returns
+  // it rather than being refused; BEFORE every write, so a refused time leaves
+  // nothing behind. The in-flight resume below sits after this: a reservation
+  // for an outside start can only predate the gate, and the reservation drain
+  // completes it on its own, so refusing the retry loses nothing.
+  assertWithinLeadCallingWindow(input.startIso, input.timezone);
+
   const resolved = await profile.time("resolve-bucket", () =>
     deps.resolveBucketByCode(input.bucketCode),
   );
@@ -3142,6 +3199,14 @@ export async function previewBooking(
   deps: BookingDeps,
 ): Promise<ApiBookingPreview> {
   const decision = await resolvePersonDecision(input, deps);
+  // #2310, L686: the dry run runs the same calling-window judge the real call
+  // does, on exactly the arms where the real call runs it: a create, and a rebook
+  // that becomes a reschedule (judged in the request's zone there too). A dedupe
+  // keeps the instant the lead already holds, and confirm_required books
+  // nothing, so neither is judged by the real call and neither is here.
+  if (decision.action === "create" || decision.action === "reschedule") {
+    assertWithinLeadCallingWindow(input.startIso, input.timezone);
+  }
   if (decision.action === "create") {
     const resolved = await deps.resolveBucketByCode(input.bucketCode);
     if (!resolved) throw new UnknownBucketError();
@@ -3414,6 +3479,12 @@ export async function bookViaApi(
         API_REBOOK_REASON,
         "system",
         deps,
+        undefined,
+        undefined,
+        undefined,
+        // #2310: judged in the zone the caller sent with this request, the
+        // same zone its create arm is judged in.
+        { leadZone: input.timezone },
       );
       return {
         outcome: "rescheduled",
@@ -3690,7 +3761,41 @@ export async function rescheduleBooking(
    * anything: the manage link's own reschedule, the admin move, the API.
    */
   contact?: { name?: string; email?: string; phone?: string },
+  /**
+   * #2310: the zone the lead is looking at the new time in, when the caller
+   * knows it: the manage page and the booker's move panel send the zone they
+   * are showing, and the direct API sends the zone on its request. Undefined for
+   * an admin move, where the screen's zone is the ADMIN's, so the booking's own
+   * zone (the one the lead booked in) is the lead's clock instead.
+   */
+  opts?: { leadZone?: string | null },
 ): Promise<BookingResult> {
+  // #2310: a zone the caller supplied is judged BEFORE the contact write below,
+  // so a refused move never leaves the lead's details rewritten behind it. One
+  // exception needs the row: a "move" onto the instant the booking already holds
+  // is a no-op, not a move, and a call booked before this gate existed may sit
+  // outside the window. So only an outside start pays a read here, to tell the
+  // two apart. With no zone supplied, the booking's own zone is the lead's clock
+  // and it is judged after the load below.
+  const suppliedZone = opts?.leadZone ?? null;
+  // A contact correction is a WRITE that must not land behind a refused move, so
+  // it is judged here too even with no zone supplied (a page cached from before
+  // this shipped): then the booking's own zone is the lead's clock. Only an
+  // outside start, or a move that carries details, pays the extra read.
+  const suppliedOutside = suppliedZone !== null && !withinLeadCallingWindow(newStartIso, suppliedZone);
+  if (suppliedOutside || (suppliedZone === null && contact)) {
+    const held = await deps.loadBookingContext(token);
+    // A missing or finished booking is refused for THAT reason, by the same
+    // helper the main path uses, before the window is judged (L11): "outside
+    // calling hours" about a booking that does not exist sends the reader to
+    // pick another time, which can never help.
+    assertReschedulable(held);
+    const zone = suppliedZone ?? held.booking.timezone;
+    const sameInstant = Date.parse(held.booking.starts_at) === Date.parse(newStartIso);
+    if (!sameInstant && !withinLeadCallingWindow(newStartIso, zone)) {
+      throw new OutsideCallingWindowError(leadCallingZone(zone));
+    }
+  }
   // Applied first, so everything below reads the details the lead just gave. A
   // refusal here stops the move: writing them is the point of having been given
   // them, and moving the call while silently dropping them is the one outcome
@@ -3704,11 +3809,8 @@ export async function rescheduleBooking(
   // #538: fold the in-place guard's working-hours read into the context load so
   // it costs no extra round-trip on the hot reschedule path.
   const ctx = await deps.loadBookingContext(token, { withWorkingHours: true });
-  if (!ctx) throw new Error("Booking not found");
+  assertReschedulable(ctx);
   const { booking, eventType } = ctx;
-  if (booking.status === "cancelled" || booking.status === "completed") {
-    throw new Error("This booking can no longer be changed");
-  }
 
   const { startIso, endIso } = bookingWindow(
     newStartIso,
@@ -3748,6 +3850,12 @@ export async function rescheduleBooking(
     await deps.releaseRescheduleIfTarget(booking.id, startIso);
     return { booking, manageUrl: manageUrl(deps, token), contactChanged, isTest: ctx.bucket.is_test };
   }
+
+  // #2310: with no zone supplied (an admin move), the lead's clock is the zone
+  // the booking was made in. Judged after guard 1, so a no-op onto the time the
+  // booking already holds is never refused, and before the lease, so a refusal
+  // claims nothing.
+  if (suppliedZone === null) assertWithinLeadCallingWindow(startIso, booking.timezone);
 
   // Idempotency guard 2 — claim the per-booking lease (#439). The discriminated
   // outcome drives everything: a non-holder (idempotent/noop/conflict) returns or

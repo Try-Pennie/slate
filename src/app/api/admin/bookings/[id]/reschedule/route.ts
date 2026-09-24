@@ -9,7 +9,9 @@ import {
   VerifyUnavailableError,
   RescheduleLockUnavailableError,
   NoEligibleAgentsError,
+  OutsideCallingWindowError,
 } from "@/lib/booking/service";
+import { callingWindowLabel } from "@/lib/booking/lead-calling-window";
 import { validateReason } from "@/lib/booking/core";
 import { loadReasonOptions } from "@/lib/booking/reason-options";
 import { internalErrorResponse } from "@/lib/api/errors";
@@ -63,6 +65,19 @@ export async function POST(
       status: booking.status,
     });
   } catch (err) {
+    // #2310: the new time is outside the LEAD's calling window, judged in the
+    // zone the booking was made in (not the admin's own). Named, so a manager
+    // moving a Honolulu lead's call knows why 9am Eastern was refused.
+    if (err instanceof OutsideCallingWindowError) {
+      const { from, to } = callingWindowLabel();
+      return NextResponse.json(
+        {
+          error: `That time is outside the lead's calling hours, ${from} to ${to} in ${err.zone}. Pick another time.`,
+          code: "OUTSIDE_CALLING_WINDOW",
+        },
+        { status: 422 },
+      );
+    }
     if (err instanceof VerifyUnavailableError) {
       return NextResponse.json({ error: err.message }, { status: 503 });
     }

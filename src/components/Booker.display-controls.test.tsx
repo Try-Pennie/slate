@@ -16,8 +16,19 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import Booker from "@/components/Booker";
 import { CANCEL_REASONS, RESCHEDULE_REASONS } from "@/lib/booking/core";
+import { bookerSlotIso } from "@/components/booker-test-slot";
 
-const slotIso = new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString();
+// The device zone is pinned (L504): the zone switch below must move to a zone
+// the fixture is NOT already in, which a Pacific machine would defeat, and the
+// lead's calling window (#2310) is judged in it.
+vi.mock("@/lib/booking/timezones", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/booking/timezones")>()),
+  deviceTimeZone: () => "America/New_York",
+}));
+
+// Noon Eastern: inside the calling window in Eastern AND in Pacific (09:00),
+// the zone the test switches to, at whatever hour the suite runs.
+const slotIso = bookerSlotIso(3, 12, "America/New_York");
 
 const availability = {
   bucket: { code: "411" },

@@ -88,6 +88,7 @@ function announcement(
   view: SlotPickerView,
   dayLabel: (day: string) => string,
   working: boolean,
+  outsideHours: (day: string) => string,
 ): string {
   switch (view.kind) {
     case "loading":
@@ -100,6 +101,8 @@ function announcement(
       return COPY.pickADay;
     case "day-empty":
       return COPY.dayEmpty(dayLabel(view.day));
+    case "outside-calling-hours":
+      return outsideHours(dayLabel(view.day));
     case "times":
       return timesAvailableAnnouncement(view.slots.length, dayLabel(view.day));
   }
@@ -112,6 +115,7 @@ export function SlotTimes({
   renderSlot,
   classes,
   noDaysNode,
+  reader,
 }: {
   view: SlotPickerView;
   /** The viewer's zone: day headings and the announcement are read in it. */
@@ -122,16 +126,26 @@ export function SlotTimes({
   classes: SlotTimesClasses;
   /** The fully empty message, which differs per surface (see #1328/#1339). */
   noDaysNode: ReactNode;
+  /**
+   * Who is reading, for the one sentence that depends on it (#2310, L659): the
+   * lead's calling hours are "your time" to a lead, and the LEAD's named zone to
+   * staff on the admin panel. Required, so every surface decides it.
+   */
+  reader: { kind: "lead" } | { kind: "staff"; leadZone: string };
 }) {
   // A day is a bare YYYY-MM-DD keyed in `timeZone`. Reading it back at noon UTC
   // keeps the label on that calendar day for every zone, east or west.
   const dayLabel = (day: string) => formatSlotDay(`${day}T12:00:00.000Z`, timeZone);
   const working = useStalledAfter(view.kind === "loading", WORKING_SIGNAL_AFTER_MS);
+  const outsideHours = (day: string) =>
+    reader.kind === "staff"
+      ? COPY.outsideCallingHoursForStaff(day, reader.leadZone)
+      : COPY.outsideCallingHours(day);
 
   return (
     <>
       <span role="status" aria-live="polite" className="sr-only">
-        {announcement(view, dayLabel, working)}
+        {announcement(view, dayLabel, working, outsideHours)}
       </span>
       {view.kind === "loading" ? (
         // The height is reserved either way, so the dots arriving after the grace
@@ -171,6 +185,13 @@ export function SlotTimes({
       ) : view.kind === "day-empty" ? (
         <div className="flex flex-col items-center justify-center py-6 text-center">
           <PanelMessage text={COPY.dayEmpty(dayLabel(view.day))} className={classes.muted} />
+        </div>
+      ) : view.kind === "outside-calling-hours" ? (
+        <div className="flex flex-col items-center justify-center py-6 text-center">
+          <PanelMessage
+            text={outsideHours(dayLabel(view.day))}
+            className={classes.muted}
+          />
         </div>
       ) : (
         <div className="space-y-3">

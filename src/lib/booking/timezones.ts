@@ -36,7 +36,9 @@ export const CURATED_ZONES: readonly TimezoneOption[] = [
   { id: "Pacific/Honolulu", label: "Hawaii (Honolulu)" },
 ];
 
-const FALLBACK_ZONE = "America/New_York";
+/** The zone a device or stored zone outside the list resolves to. Also the zone
+ *  the lead's calling window judges an unreadable zone in (#2310). */
+export const FALLBACK_ZONE = "America/New_York";
 
 /**
  * The device's resolved IANA timezone (e.g. "America/New_York"), or the fallback
@@ -47,6 +49,15 @@ export function deviceTimeZone(): string {
   return typeof Intl !== "undefined"
     ? Intl.DateTimeFormat().resolvedOptions().timeZone
     : FALLBACK_ZONE;
+}
+
+/**
+ * A zone as a person reads it: the picker's own label for a listed zone
+ * ("Hawaii (Honolulu)"), else the humanised city, so a stored zone outside the
+ * list still reads as a place rather than an IANA id (#2310).
+ */
+export function zoneLabel(id: string): string {
+  return CURATED_ZONES.find((z) => z.id === id)?.label ?? humanizeZone(id);
 }
 
 /** "Australia/Sydney" -> "Sydney"; "UTC" -> "UTC". */

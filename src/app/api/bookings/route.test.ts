@@ -32,7 +32,9 @@ const service = vi.hoisted(() => {
   class VerifyUnavailableError extends Error {}
   class NoEligibleAgentsError extends Error {}
   class UnknownBucketError extends Error {}
+  class OutsideCallingWindowError extends Error {}
   return {
+    OutsideCallingWindowError,
     bookViaApi: vi.fn(),
     previewBooking: vi.fn(),
     listBookings: vi.fn(),
@@ -248,6 +250,14 @@ describe("POST /api/bookings (auth skeleton)", () => {
     expect(await res.json()).toMatchObject({ dryRun: true, outcome: "created", wouldAssign: { email: "a@x.com" } });
   });
 
+  it("answers a dry run outside the calling window with the same code a real call gets (#2310)", async () => {
+    env.bookingApiKeyPrimary.mockReturnValue("real-secret");
+    service.previewBooking.mockRejectedValueOnce(new service.OutsideCallingWindowError("outside"));
+    const res = await post("Bearer real-secret", { ...VALID_BODY, dryRun: true });
+    expect(res.status).toBe(422);
+    expect(await res.json()).toMatchObject({ code: "OUTSIDE_CALLING_WINDOW" });
+  });
+
   it("returns 200 with the booking on a created/deduped/rescheduled outcome", async () => {
     env.bookingApiKeyPrimary.mockReturnValue("real-secret");
     for (const outcome of ["created", "deduped", "rescheduled"]) {
@@ -276,6 +286,8 @@ describe("POST /api/bookings (auth skeleton)", () => {
       [new service.NoEligibleAgentsError("empty"), 409, "NO_ELIGIBLE_AGENTS"],
       [new service.SlotUnavailableError("taken"), 409, "SLOT_TAKEN"],
       [new service.VerifyUnavailableError("outage"), 503, "VERIFY_UNAVAILABLE"],
+      // #2310: a start outside the lead's calling window: pick another time.
+      [new service.OutsideCallingWindowError("outside"), 422, "OUTSIDE_CALLING_WINDOW"],
       [new Error("boom"), 500, "INTERNAL"],
     ];
     for (const [err, status, code] of cases) {

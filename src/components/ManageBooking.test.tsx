@@ -1,5 +1,16 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+
+// #2310: the manage page offers a time only inside the lead's calling window,
+// judged in the DEVICE zone. These fixtures' times are ordinary Eastern daytime,
+// so which of them are offered would otherwise depend on the machine running the
+// suite (CI runs in UTC). The zone is pinned here, never inherited (L504); the
+// window's own behaviour across zones is tested in
+// scripts/test-lead-calling-window.ts and use-slot-picker.test.tsx.
+vi.mock("@/lib/booking/timezones", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/booking/timezones")>()),
+  deviceTimeZone: () => "America/New_York",
+}));
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { DateTime } from "luxon";

@@ -51,6 +51,12 @@ business hours, then the agent's working hours, then their calendar. The org win
 is applied at READ time as well, so narrowing the hours lands on the next request
 rather than the next recompute.
 
+A fourth gate belongs to the LEAD, not the availability (#2310): a call may only start
+from 08:00 to before 20:00 in the lead's own zone. It is judged in that zone, never
+intersected with the org or agent windows, and it is not in the shared cache, because
+every lead reads the same cached list. The shared slot picker filters what it shows,
+and the booking layer refuses an outside start at confirm and on every reschedule.
+
 ## Keeping the cache fresh, and the lanes that do it
 
 Three writers keep `busy_blocks` and `bucket_slots` current, and they are layered on
