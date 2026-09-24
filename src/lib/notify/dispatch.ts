@@ -80,6 +80,14 @@ export async function sendThrottledAlert(
   text: string,
   channel?: string,
 ): Promise<void> {
+  // Refused BEFORE anything is posted (2026-09-24). A missing cooldown compares
+  // as "due", so the page went out and only then did the stamp throw on
+  // `new Date(NaN)`, leaving no record and re-sending on every tick. Throwing
+  // here lands in the caller's failure boundary, which pages once, on its own
+  // cooldown, with this sentence as the reason.
+  if (!Number.isFinite(cooldownMs) || cooldownMs <= 0) {
+    throw new Error(`${key} has no usable cooldown (${String(cooldownMs)}), so it was not sent`);
+  }
   if (!mayWriteAlerts(key, "page")) return;
   if (!slackConfigured()) return;
   const db = supabaseAdmin();

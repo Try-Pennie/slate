@@ -19,6 +19,23 @@ import { ALERT_CATALOG } from "@/lib/notify/alert-catalog";
 // so alerting never breaks. No DB here — the DB read is a thin wrapper elsewhere.
 
 describe("alert keys", () => {
+  it("resolves a real cooldown for every alert that has a default (2026-09-24)", () => {
+    // `catchall_rate` had a default here and no place in ALERT_KEYS, so the
+    // resolver never visited it and its cooldown came back undefined. The page
+    // then repeated every tick. Enumerated from the DEFAULTS, not from
+    // ALERT_KEYS, because ALERT_KEYS is the list that was wrong.
+    const resolved = resolveCooldownMs([]);
+    for (const [key, ms] of Object.entries(MONITOR_DEFAULTS.cooldownMs)) {
+      expect(resolved[key as keyof typeof resolved], key).toBe(ms);
+      expect(Number.isFinite(ms) && ms > 0, key).toBe(true);
+    }
+    expect(resolved.catchall_rate).toBe(60 * 60_000);
+  });
+
+  it("offers every alert key on the settings screen", () => {
+    expect(ALERT_FIELDS.map((f) => f.key)).toContain("catchall_rate");
+  });
+
   it("includes the migration-lag page and defaults it to an hourly repeat (#516)", () => {
     expect(ALERT_KEYS).toContain("migration_version_lag");
     // It stays broken until a human applies the migration, and a dormant schema

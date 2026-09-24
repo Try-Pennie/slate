@@ -9,42 +9,15 @@ import type { MonitorAlertConfig, MonitorSettings } from "@/lib/db/types";
  * `loadMonitorSettings` is a thin, error-safe DB wrapper around them.
  */
 
-export type MonitorAlertKey =
-  | "availability_data_anomaly"
-  | "availability_booked_solid"
-  | "fallback_covered_availability"
-  | "low_booking_volume"
-  | "thin_tier_staffing"
-  | "agents_without_schedule"
-  | "agents_without_routing"
-  | "migration_version_lag"
-  | "sync_staleness"
-  | "inactive_agent_bookings"
-  | "coverage_needs_human"
-  | "ooo_coverage_gap"
-  | "ooo_calcom_unprotected"
-  | "empty_tier"
-  | "booking_failure_rate"
-  | "catchall_rate"
-  | "availability_drift"
-  | "booker_empty_reason"
-  | "roster_coverage_gap"
-  | "ooo_protection_lost"
-  | "webhook_event_no_subscriber"
-  | "edge_limiter_unusable"
-  | "definer_grants_to_web_roles"
-  | "hydration_all_failing"
-  | "calendar_window_uncovered"
-  | "schedule_parity_drift"
-  | "agents_on_unset_hours"
-  | "agents_awaiting_activation"
-  | "handoff_channel_unset"
-  | "handoff_undelivered"
-  | "main_not_deployed"
-  | "ci_runs_refused"
-  | "public_booking_stopped";
-
-export const ALERT_KEYS: MonitorAlertKey[] = [
+/**
+ * Every monitor alert key, and the ONLY list of them: `MonitorAlertKey` is derived
+ * from it rather than written beside it. Until 2026-09-24 they were two lists, and
+ * `catchall_rate` reached the type without reaching this array, so the cooldown
+ * resolver never visited it, its cooldown came back undefined, and its page went
+ * out on every five minute tick. With one list, a key missing here is not a key at
+ * all, and `tsc` fails every default, field and call site that names it.
+ */
+export const ALERT_KEYS = [
   "availability_data_anomaly",
   "availability_booked_solid",
   "fallback_covered_availability",
@@ -60,6 +33,7 @@ export const ALERT_KEYS: MonitorAlertKey[] = [
   "ooo_calcom_unprotected",
   "empty_tier",
   "booking_failure_rate",
+  "catchall_rate",
   "availability_drift",
   "booker_empty_reason",
   "roster_coverage_gap",
@@ -77,7 +51,9 @@ export const ALERT_KEYS: MonitorAlertKey[] = [
   "main_not_deployed",
   "ci_runs_refused",
   "public_booking_stopped",
-];
+] as const;
+
+export type MonitorAlertKey = (typeof ALERT_KEYS)[number];
 
 /**
  * The admin settings screen's cooldown fields, one per alert key. Kept beside
@@ -243,6 +219,12 @@ export const ALERT_FIELDS: {
     urgency: "page",
     label: "Customers failing to book",
     help: "The share of booking attempts that fail over a rolling window crosses the threshold, so a wave of customers being turned away is caught as it happens rather than by complaints.",
+  },
+  {
+    key: "catchall_rate",
+    urgency: "page",
+    label: "Leads booked with no routing code",
+    help: "Too many of the last day's bookings arrived without a usable routing code and went to the Low pool, so a lead whose real tier was higher may be with the wrong team.",
   },
   {
     key: "booker_empty_reason",
