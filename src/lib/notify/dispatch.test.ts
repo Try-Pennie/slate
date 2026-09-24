@@ -204,6 +204,21 @@ describe("sendThrottledAlert delivery-aware cooldown (#1035)", () => {
     await sendThrottledAlert("k3", COOLDOWN, "hello");
     expect(slack.postSlack).toHaveBeenCalledTimes(1);
   });
+
+  // 2026-09-24: `catchall_rate` was missing from ALERT_KEYS, so its cooldown
+  // resolved to undefined. With no cooldown the check said "send", Slack got the
+  // page, and only THEN did the stamp throw "Invalid time value", so nothing was
+  // recorded and every 5 minute tick sent it again. The refusal has to come
+  // before the post, or the page repeats forever while the step reports failing.
+  for (const bad of [undefined, Number.NaN, 0, -1, Number.POSITIVE_INFINITY]) {
+    it(`refuses a cooldown of ${String(bad)} by name, before posting anything`, async () => {
+      await expect(
+        sendThrottledAlert("k4", bad as unknown as number, "hello"),
+      ).rejects.toThrow(/k4 has no usable cooldown/);
+      expect(slack.postSlack).not.toHaveBeenCalled();
+      expect(upsert).not.toHaveBeenCalled();
+    });
+  }
 });
 
 // #1133: an actionable page must say when it clears. Silence is indistinguishable
