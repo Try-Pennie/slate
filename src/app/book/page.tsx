@@ -1,8 +1,7 @@
 import Booker from "@/components/Booker";
 import StandaloneBookerShell from "@/components/StandaloneBookerShell";
 import { ClientErrorBeacon } from "@/components/ClientErrorBeacon";
-import { supabaseAdmin } from "@/lib/supabase/admin";
-import { unwrap } from "@/lib/db/result";
+import { loadLandingBucketIsTest } from "@/lib/booking/landing-bucket";
 import { loadBookingHorizonDays } from "@/lib/booking/settings";
 import { loadReasonOptions } from "@/lib/booking/reason-options";
 import { resolveRequestedCode } from "@/lib/routing/catchall";
@@ -42,29 +41,15 @@ export default async function BookEntry({
   const resolved = resolveRequestedCode(requestedCode);
   const bucketCode = resolved.code;
 
-  // #2542: `unwrap`, not a swallowed read. `bucketRow?.is_test` reads a FAILED
-  // query as "not a test bucket", so an unreadable `buckets` table renders the
-  // public booker for a SMOKE code (#396) instead of refusing it. A real read
-  // error is a broken deploy and belongs on the screen as one.
-  const bucketRow = unwrap(
-    await supabaseAdmin()
-      .from("buckets")
-      .select("org_id, is_test")
-      .eq("code", bucketCode)
-      .maybeSingle(),
-    "book page bucket",
-  );
-  // A synthetic test bucket (#396) has no public booking page — treat its code
-  // like a misconfigured link rather than rendering an (empty) Booker for it.
-  if (bucketRow?.is_test) {
-    return (
-      <main className="flex min-h-dvh items-center justify-center bg-bg p-8">
-        <p className="max-w-md text-sm text-fg-muted">
-          This booking link is not available.
-        </p>
-      </main>
-    );
-  }
+  // #2660: the PUBLIC test bucket passes through the resolver above, and this is
+  // where the booker learns it is drawing a test booking, so every screen it
+  // reaches carries the test line. The refusal that used to sit here (a sentence
+  // saying the link was unavailable) is gone with its branch: after the resolver
+  // change no reachable code produces a HIDDEN test bucket on this page, since a
+  // non XBC code is rescued to the Low pool and an XBC code is a real bucket, so
+  // the branch was dead code guarded by a fixture production never produced (L29,
+  // L84). A hidden bucket is still refused, at the confirm (#2667).
+  const isTest = await loadLandingBucketIsTest(bucketCode);
   const horizonDays = await loadBookingHorizonDays();
   // #1337: when a lead already has a call, the booker offers to MOVE it, and a
   // reschedule records a mandatory reason (Dan, 2026-08-07: ask the lead), so the
@@ -82,8 +67,11 @@ export default async function BookEntry({
   // `externalId` here would query a different column from the one the booking is
   // eventually written with, and the two checks would disagree about the same lead.
   const externalId = first(sp, "external_id") || null;
+  // Asked in the WORLD of the bucket being landed on (#2660): a tester who pastes
+  // a real lead's id into a test link is never shown that lead's call, and a real
+  // lead never meets a tester's.
   const landingCall = externalId
-    ? await existingCallForLanding({ salesforceId: externalId })
+    ? await existingCallForLanding({ salesforceId: externalId }, { isTest })
     : null;
 
   const phone =
@@ -104,6 +92,7 @@ export default async function BookEntry({
   const attendee = await landingAttendee(
     { salesforceId: externalId },
     { name: first(sp, "name"), email: first(sp, "email"), phone },
+    { isTest },
   );
 
   return (
@@ -123,6 +112,7 @@ export default async function BookEntry({
         theme={theme}
         brandColor={first(sp, "brand") || (embedded ? DEFAULT_BRAND_COLOR : undefined)}
         parentOrigin={first(sp, "parentOrigin") || undefined}
+        isTest={isTest}
         horizonDays={horizonDays}
         rescheduleReasons={reasonOptions.reschedule.active}
         cancelReasons={reasonOptions.cancel.active}

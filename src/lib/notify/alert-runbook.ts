@@ -179,6 +179,9 @@ const FAMILY_BY_KEY: Record<string, AlertFamily> = {
   // #2641: a host misconfiguration Slate cannot fix, worth passing on and never
   // worth waking for, because bookings still complete inside the embed.
   embed_origin_mismatch: "something-was-measured-and-is-only-worth-knowing",
+  // #2660: a partner's own page throwing while on the public test bucket. Theirs
+  // to fix, and the booking it stopped was a test one.
+  client_error_test_bucket: "something-was-measured-and-is-only-worth-knowing",
 
   // The roster or the routing inputs disagree with Salesforce, or with themselves.
   agent_sync_failures: "the-roster-or-routing-data-is-wrong",

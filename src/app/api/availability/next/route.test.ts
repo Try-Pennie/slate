@@ -43,7 +43,10 @@ vi.mock("@/lib/notify/dispatch", () => ({ sendThrottledAlert: vi.fn(async () => 
 vi.mock("@/lib/log", () => ({ log: { error: vi.fn(), warn: vi.fn(), info: vi.fn() } }));
 
 import { NextRequest } from "next/server";
+import { PUBLIC_TEST_BUCKET_CODES } from "@/lib/embed/public-test-bucket";
 import { GET } from "./route";
+
+const PUBLIC_TEST = PUBLIC_TEST_BUCKET_CODES[0];
 
 const EVENT_TYPE = { name: "Call", description: null, duration_min: 20, min_notice_min: 0 };
 
@@ -141,6 +144,26 @@ describe("GET /api/availability/next (#1329, #1339)", () => {
 
     expect(res.status).toBe(404);
     expect(await res.json()).toEqual({ error: "Unknown bucket" });
+  });
+
+  // #2660: the PUBLIC test bucket counts as existing here, so a partner's tester
+  // who lands during a closure can press the button like a lead can. The hidden
+  // buckets keep the 404 above: the two are told apart by the code, in the one
+  // module that lists them, never by a flag a caller could set.
+  it("counts the public test bucket as existing, offering its days past a closure", async () => {
+    const day = new Date(Date.now() + 20 * 86_400_000);
+    day.setHours(14, 0, 0, 0);
+    service.getBucketSlots.mockImplementation(async (_c: string, from: string, to: string) => ({
+      bucket: { code: PUBLIC_TEST, is_test: true },
+      eventType: EVENT_TYPE,
+      orgName: "Pennie",
+      slots: [day.toISOString()].filter(
+        (s) => Date.parse(s) >= Date.parse(from) && Date.parse(s) <= Date.parse(to),
+      ),
+    }));
+    const res = await get(`?bucket=${PUBLIC_TEST}`);
+    expect(res.status).toBe(200);
+    expect((await res.json()).slots).toEqual([day.toISOString()]);
   });
 
   it("returns the generic 500 when the compute throws", async () => {

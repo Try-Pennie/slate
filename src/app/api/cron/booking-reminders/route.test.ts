@@ -25,6 +25,9 @@ const state = vi.hoisted(() => ({
   pages: [] as Row[][],
   /** Every `.range(from, to)` the bookings read asked for. */
   ranges: [] as [number, number][],
+  /** Every equality filter and projection the worklist read carried (#2660). */
+  worklistFilters: [] as [string, unknown][],
+  worklistSelects: [] as string[],
   bookingsReadError: null as { message: string } | null,
   claimed: [] as string[],
   /** The stored reminder rate window, or null for a first run. */
@@ -52,7 +55,11 @@ const admin = vi.hoisted(() => {
     const b: Record<string, unknown> = {};
     const self = () => b as never;
     Object.assign(b, {
-      select: () => self(),
+      select: (projection: string) => {
+        // The worklist read only: the claim is an update that also selects.
+        if (mode === "select" && table === "bookings") state.worklistSelects.push(projection);
+        return self();
+      },
       in: () => self(),
       gt: () => self(),
       lte: () => self(),
@@ -60,6 +67,7 @@ const admin = vi.hoisted(() => {
       is: () => self(),
       eq: (col: string, value: unknown) => {
         if (mode === "update" && col === "id") updateId = String(value);
+        if (mode === "select" && table === "bookings") state.worklistFilters.push([col, value]);
         return self();
       },
       update: () => {
@@ -143,6 +151,8 @@ beforeEach(() => {
   vi.clearAllMocks();
   state.pages = [];
   state.ranges = [];
+  state.worklistFilters = [];
+  state.worklistSelects = [];
   state.bookingsReadError = null;
   state.claimed = [];
   state.rateRow = null;
@@ -165,6 +175,20 @@ describe("GET /api/cron/booking-reminders", () => {
     expect(res.status).toBe(401);
     expect(state.ranges).toEqual([]);
     expect(heartbeat.recordHeartbeat).not.toHaveBeenCalled();
+  });
+
+  // #396 / #2660: test bookings are kept out through the BUCKET, which is where
+  // the flag lives. The canary books a real row every six hours against a real
+  // inbox, and a partner's test booking on the public test bucket carries the
+  // tester's own address, so a reminder to either would be a live email nobody
+  // asked for. Pinned by name here, since a filter on a select string is exactly
+  // the kind of line that goes missing in a refactor with nothing to say so.
+  it("excludes test bookings through the bucket join", async () => {
+    state.pages = [[due(1)]];
+    await GET(req());
+    expect(state.worklistSelects.length).toBeGreaterThan(0);
+    for (const s of state.worklistSelects) expect(s).toContain("buckets!inner(is_test)");
+    expect(state.worklistFilters).toContainEqual(["buckets.is_test", false]);
   });
 
   // #2500 (1). THE regression this file exists for: a lead sitting past the first

@@ -43,12 +43,21 @@ const service = vi.hoisted(() => {
       this.name = "BookingNotChangeableError";
     }
   }
+  // #2660: a test booking may not move onto a real agent, nor a real one onto a
+  // test agent.
+  class ReassignAcrossWorldsError extends Error {
+    constructor() {
+      super("A test booking can only move to a test agent, and a real booking to a real agent.");
+      this.name = "ReassignAcrossWorldsError";
+    }
+  }
   return {
     adminReassignBooking: vi.fn(),
     DailyCapExceededError,
     BookingNotFoundError,
     AgentNotAvailableError,
     BookingNotChangeableError,
+    ReassignAcrossWorldsError,
   };
 });
 
@@ -118,6 +127,17 @@ describe("POST /admin/bookings/[id]/reassign", () => {
     const body = await res.json();
     expect(body.code).toBe("DAILY_CAP_EXCEEDED");
     expect(body.agentEmail).toBe("b@x.com");
+  });
+
+  // #2660: the refusal is a genuine conflict (retrying changes nothing), so it is
+  // a 409 with its own code, and the message is the service's own sentence.
+  it("maps a move across worlds to a 409 with its own code", async () => {
+    service.adminReassignBooking.mockRejectedValueOnce(new service.ReassignAcrossWorldsError());
+    const res = await POST(req({ agentEmail: "b@x.com", reason: "owner_reassignment" }), params);
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body.code).toBe("ACROSS_WORLDS");
+    expect(body.error).toMatch(/test booking/i);
   });
 
   it("returns 403 when the caller is not manager+ (denial branch, #606)", async () => {

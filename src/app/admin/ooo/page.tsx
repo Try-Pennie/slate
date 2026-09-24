@@ -319,7 +319,12 @@ export default async function OooQueuePage({
     const { data, error } = await db
       // cap-safe: active bookings for the few agents with pending time off, within their requested dates.
       .from("bookings")
-      .select("*")
+      // #2660: through the bucket join, keeping test bookings out. A test agent
+      // never asks for time off through Slate, so nothing here changes today; it
+      // is pinned so the clash panel can never count a stranger's test call as a
+      // meeting somebody has to cover.
+      .select("*, buckets!inner(is_test)")
+      .eq("buckets.is_test", false)
       .eq("org_id", me.org_id)
       .in("status", ["confirmed", "rescheduled"])
       .in("assigned_user_id", [...new Set(pending.map((r) => r.user_id))])

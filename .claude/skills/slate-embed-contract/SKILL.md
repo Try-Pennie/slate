@@ -125,6 +125,65 @@ Do not refactor the `Cal` queue / param / message plumbing while restyling.
 
 ---
 
+## Testing the embed from any host page (#2660)
+
+Slate has no staging deployment, so a partner testing the embed from THEIR staging
+site used to have one path: book a real advisor, with a real invite, a real text
+from Regal, and a cancel by hand afterwards. The public test bucket is the safe
+path. Open the embed exactly as a real page does, with the bucket code `PARTNER`:
+
+```html
+<button data-cal-link="router?form=review&xbc=PARTNER" data-cal-namespace="review">Book a call</button>
+```
+
+or `/book?xbc=PARTNER&embed=1&parentOrigin=<your origin>` directly. Every host
+page may use it and no key is needed (Dan, 2026-09-24: any origin for now;
+restricting it to approved host origins is #2666, which also records the exposure
+this accepts).
+
+**What it proves, and only this:** the embed contract. Times are offered, the
+booking confirms, the host receives `slate:bookingSuccessful`, the redirect lands,
+the confirmed page reads the booking back through the by id lookup, and the
+tester receives a real Google Calendar invite. **What it never does:** reach Regal
+(no webhook fires, no text is sent), touch Salesforce, or land on a real advisor.
+The call is placed on `smoketest@trypennie.com`, the calendar the canary books,
+under the event type "Partner test call". "No Regal" is a statement about SLATE's
+webhook and Salesforce writes; it says nothing about the host's own
+`bookingSuccessful` handler, pixels or backend calls, which run wherever the host
+page points them.
+
+What a tester will see:
+
+- **Every screen says it is a test**: a mint band reading "This is a test
+  booking. It reaches a test calendar only and sends no texts." on the booker,
+  the confirmation, the panel for a call they already have, and the manage page;
+  the invite's description opens with the same sentence; the admin's booking
+  lookup and detail carry a "Test" mark beside it. The confirm response, the
+  `slate:bookingSuccessful` payload's `booking` and the by id lookup all carry
+  `isTest: true`, so a host can label its own confirmed page.
+- **A second attempt with the same address** inside the first call's window is
+  shown the existing call panel for the TEST booking (Move or Cancel), exactly as
+  a lead would be. Test bookings and real bookings live in separate worlds: a
+  tester who pastes a real lead's id is never shown that lead's call, and a test
+  booking under an address never blocks the real lead who owns it.
+- **The caps apply**: 3 confirms a minute and 10 an hour per address, 5 an hour
+  per contact, and 8 partner test calls a day on the test calendar. On trypennie's
+  own host page the results page hides the embed for 14 days after any booking in
+  that browser (its `useBookingRedirect`), so a second run there needs a fresh
+  browser profile.
+- **No reminder email** is sent for a test booking, and no text.
+- **Cancel through the manage link** in the invite when done; nothing cleans up
+  automatically, a test booking lives out its time.
+- A real lead's own `xbc` (three digits) can never reach the bucket, and a typo
+  near the code is rescued to the Low pool like any unreadable code; only the
+  exact, upper case `PARTNER` is served.
+
+**Before the seed has run, `PARTNER` answers the same 404 as a typo** and the
+booker says it could not load times. The rollout order in `DEPLOY.md` avoids that;
+`scripts/seed-smoke-test.ts` run without `APPLY=1` measures whether it is served.
+
+---
+
 ## brandColor behavior (D14)
 
 KEEP the override knob (preserves cal.com parity). The embed **explicitly passes

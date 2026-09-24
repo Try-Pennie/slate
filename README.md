@@ -146,6 +146,12 @@ silently did not.
 </script>
 ```
 
+To test the embed end to end from any host page without booking a real advisor,
+use `xbc=PARTNER` (#2660): a public test bucket on the smoke test agent's
+calendar, marked as a test on every screen, with no webhook and no text. What a
+tester will see is in the `slate-embed-contract` skill; seeding it is in
+`DEPLOY.md`, beside the canary's hidden `SMOKE` buckets.
+
 ## Layout
 
 ```

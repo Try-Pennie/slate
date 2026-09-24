@@ -3,6 +3,7 @@ import StandaloneBookerShell from "@/components/StandaloneBookerShell";
 import { loadBookingHorizonDays } from "@/lib/booking/settings";
 import { loadReasonOptions } from "@/lib/booking/reason-options";
 import { resolveRequestedCode } from "@/lib/routing/catchall";
+import { loadLandingBucketIsTest } from "@/lib/booking/landing-bucket";
 import { existingCallForLanding, landingAttendee } from "@/lib/booking/service";
 import { DEFAULT_BRAND_COLOR } from "@/lib/brand-label";
 
@@ -41,6 +42,10 @@ export default async function BookingPage({
   const resolved = resolveRequestedCode(requestedCode);
   const bucketCode = resolved.code;
 
+  // #2660: the same question `/book` asks of the same helper, so a test booking
+  // reached by this route carries the test line too (L659).
+  const isTest = await loadLandingBucketIsTest(bucketCode);
+
   const phone =
     first(sp, "phone") ||
     first(sp, "attendeePhoneNumber") ||
@@ -63,7 +68,7 @@ export default async function BookingPage({
   // time and one filled form too late and read as the product having forgotten
   // them. It never throws: a check that could not run shows the ordinary picker,
   // and the confirm still refuses at the end of it.
-  const landingCall = await existingCallForLanding({ salesforceId: id });
+  const landingCall = await existingCallForLanding({ salesforceId: id }, { isTest });
   // #2208: the same id that recognises them fills the form they would otherwise
   // retype. The pilot link carries none of the three in its query string, so
   // before this every recognised lead typed out a name, an email and a number
@@ -73,6 +78,7 @@ export default async function BookingPage({
   const attendee = await landingAttendee(
     { salesforceId: id },
     { name: first(sp, "name"), email: first(sp, "email"), phone },
+    { isTest },
   );
 
   return (
@@ -86,6 +92,7 @@ export default async function BookingPage({
         embedded={embedded}
         theme={theme}
         brandColor={first(sp, "brand") || (embedded ? DEFAULT_BRAND_COLOR : undefined)}
+        isTest={isTest}
         horizonDays={horizonDays}
         rescheduleReasons={reasonOptions.reschedule.active}
         cancelReasons={reasonOptions.cancel.active}

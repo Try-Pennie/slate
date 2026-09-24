@@ -37,12 +37,22 @@ const service = vi.hoisted(() => {
       this.name = "BookingNotChangeableError";
     }
   }
+  // #2660: a booking never crosses worlds. Present on the mock so the route's
+  // error map can be reached; the mapping itself is pinned in the admin route's
+  // suite, which drives the same mapper.
+  class ReassignAcrossWorldsError extends Error {
+    constructor() {
+      super("A test booking can only move to a test agent, and a real booking to a real agent.");
+      this.name = "ReassignAcrossWorldsError";
+    }
+  }
   return {
     reassignBooking: vi.fn(),
     DailyCapExceededError,
     BookingNotFoundError,
     AgentNotAvailableError,
     BookingNotChangeableError,
+    ReassignAcrossWorldsError,
   };
 });
 

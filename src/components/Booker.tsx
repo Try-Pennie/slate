@@ -32,6 +32,7 @@ import {
   type NextDaysFailure,
 } from "@/lib/booking/next-days-reply";
 import { getJson, postJson, REQUEST_TIMEOUT_MS } from "@/lib/http";
+import { TestModeBand } from "@/components/TestModeBand";
 import { useStalledAfter } from "@/lib/useStalledAfter";
 import { ConfirmationMark } from "@/components/ConfirmationMark";
 import { messageLines } from "@/lib/booking/slot-picker";
@@ -188,6 +189,13 @@ interface BookerProps {
   /** Host page origin (from widget.js), used as the postMessage target so the
    *  booking-success payload is never broadcast to "*" (#593). */
   parentOrigin?: string;
+  /**
+   * The bucket is a TEST bucket (#2660): the booking lands on a test calendar,
+   * sends no text and reaches no downstream system. Established by the page
+   * from the bucket row, and drawn on EVERY screen this component can show, so
+   * neither a tester nor a stray lead can mistake it for a real booking (L678).
+   */
+  isTest?: boolean;
   /** Active reschedule reason options, resolved from the store server-side
    *  (#346), for the Move offered when a lead already has a call (#1337). A
    *  reschedule records a mandatory reason and the lead is asked for it here
@@ -312,6 +320,7 @@ export default function Booker({
   theme = "light",
   brandColor,
   parentOrigin,
+  isTest = false,
   horizonDays,
   rescheduleReasons,
   cancelReasons,
@@ -959,6 +968,13 @@ export default function Booker({
     isPrimary ? { "data-testid": "panel-primary" } : {};
 
   const shell = `mx-auto max-w-4xl overflow-hidden rounded-xl shadow-xs ${c.shell}`;
+  // #2660: the test line, on EVERY screen this component can show. Each screen
+  // below is its own root, so the band is placed in each rather than around a
+  // shared frame this component does not have; a screen without it would read as
+  // nothing to warn about (L678), and the confirmation is the one a stray lead
+  // reads last. Null on a real booking, so nothing is drawn rather than an empty
+  // band.
+  const testBand = isTest ? <TestModeBand /> : null;
 
   // #1337: declined because this person already has an active call. Nothing was
   // created. No policy voice: the rule is not explained (that makes the panel
@@ -976,6 +992,7 @@ export default function Booker({
       : null;
     return (
       <div ref={rootRef} data-theme={theme} className={shell}>
+        {testBand}
         <div className="mx-auto max-w-md p-8">
           <h2 className={`text-xl font-semibold ${c.title}`}>
             You already have a call booked
@@ -1284,6 +1301,7 @@ export default function Booker({
   if (cancelled) {
     return (
       <div ref={rootRef} data-theme={theme} className={shell}>
+        {testBand}
         <div className="mx-auto max-w-md p-8 text-center">
           <h2 className={`text-xl font-semibold ${c.title}`}>
             {BOOKER_CANCEL_COPY.doneHeading}
@@ -1325,6 +1343,7 @@ export default function Booker({
         : confirmed.manageUrl;
     return (
       <div ref={rootRef} data-theme={theme} className={shell}>
+        {testBand}
         {/* Entrance animates opacity/transform only: a height animation would
             jitter the embed iframe via the ResizeObserver above. #637: the embed
             gets the same branded coins illustration as the standalone page (one
@@ -1965,6 +1984,7 @@ export default function Booker({
 
   return (
     <div ref={rootRef} data-theme={theme} className={shell}>
+        {testBand}
       <div className="grid grid-cols-1 md:grid-cols-[260px_1fr]">
         {eventPanel}
         <div className="flex flex-col">

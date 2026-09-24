@@ -4,6 +4,7 @@ import {
   BookingNotFoundError,
   AgentNotAvailableError,
   BookingNotChangeableError,
+  ReassignAcrossWorldsError,
 } from "@/lib/booking/service";
 import { internalErrorResponse, reportInternalError } from "@/lib/api/errors";
 import {
@@ -86,6 +87,12 @@ export async function mapReassignError(
   // a transient fault (#717).
   if (err instanceof BookingNotChangeableError) {
     return NextResponse.json({ error: err.message }, { status: 409 });
+  }
+  // A move across worlds (#2660): a test booking onto a real agent or the
+  // reverse. A genuine conflict (retrying changes nothing), with its own code so
+  // a caller can tell it from a terminal booking.
+  if (err instanceof ReassignAcrossWorldsError) {
+    return NextResponse.json({ error: err.message, code: "ACROSS_WORLDS" }, { status: 409 });
   }
   return internalErrorResponse(err, context);
 }

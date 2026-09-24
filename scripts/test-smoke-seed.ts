@@ -5,18 +5,41 @@
 // every bucket must carry the agent as a member. Deterministic ids make the
 // seed idempotent (upsert-on-id) so re-running never duplicates rows.
 // Run: node --experimental-strip-types scripts/test-smoke-seed.ts
-import { buildSmokeSeed } from "./smoke-seed.ts";
-import { assert, finish } from "./lib/harness.ts";
+import {
+  buildSmokeSeed,
+  PUBLIC_TEST_DAILY_CAP,
+  PUBLIC_TEST_EVENT_TYPE_NAME,
+} from "./smoke-seed.ts";
+import { assert, eq, finish } from "./lib/harness.ts";
 import { SEED_START_MINUTE, SEED_END_MINUTE } from "../src/lib/schedule-core.ts";
+import {
+  HIDDEN_TEST_BUCKET_CODES,
+  PUBLIC_TEST_BUCKET_CODES,
+} from "../src/lib/embed/public-test-bucket.ts";
+
+/** The org's own event type, which the public test bucket's is modelled on. */
+const template = {
+  description: "Twenty minutes with a senior advisor.",
+  regal_type: "call",
+  duration_min: 20,
+  buffer_before_min: 0,
+  buffer_after_min: 5,
+  min_notice_min: 120,
+  slot_interval_min: 10,
+};
 
 const params = {
   orgId: "org-smoke",
   eventTypeId: "evt-smoke",
+  eventTypeTemplate: template,
   agentEmail: "smoketest@trypennie.com",
-  bucketCodes: ["SMOKE", "SMOKE2"],
+  bucketCodes: [...HIDDEN_TEST_BUCKET_CODES],
+  publicBucketCodes: [...PUBLIC_TEST_BUCKET_CODES],
   reassignTargetEmail: "smoketest2@trypennie.com",
 };
 const seed = buildSmokeSeed(params);
+const PUBLIC = PUBLIC_TEST_BUCKET_CODES[0];
+const HIDDEN = [...HIDDEN_TEST_BUCKET_CODES];
 
 // --- Agent ---
 assert(seed.user.email === "smoketest@trypennie.com", "agent email is the smoketest mailbox");
@@ -56,10 +79,11 @@ assert(
 );
 
 // --- Buckets (isolated, empty-criteria, round-robin) ---
-assert(seed.buckets.length === 2, "one bucket per requested code");
-assert(
-  seed.buckets.map((b) => b.code).join(",") === "SMOKE,SMOKE2",
-  "buckets carry the requested codes",
+assert(seed.buckets.length === 3, "one bucket per requested code, hidden and public alike");
+eq(
+  seed.buckets.map((b) => b.code).join(","),
+  [...HIDDEN, PUBLIC].join(","),
+  "buckets carry the hidden codes and then the public one, each read from the shared constant",
 );
 assert(
   seed.buckets.every((b) => Object.keys(b.criteria).length === 0),
@@ -70,9 +94,44 @@ assert(
   "buckets are round-robin",
 );
 assert(
-  seed.buckets.every((b) => b.event_type_id === "evt-smoke" && b.org_id === "org-smoke"),
-  "buckets reference the org's event type",
+  seed.buckets.filter((b) => HIDDEN.includes(b.code)).every((b) => b.event_type_id === "evt-smoke"),
+  "the hidden buckets keep the org's event type",
 );
+assert(
+  seed.buckets.every((b) => b.org_id === "org-smoke"),
+  "every bucket is in the target org",
+);
+
+// --- The public test bucket's OWN event type (#2660) ---
+// A partner can book it from any host page, so it carries a daily cap of its
+// own: a flood of test bookings must not fill the smoke agent's horizon and
+// starve the canary of free slots. Everything else is copied from the org's
+// event type, so the test booker reads like the real one.
+{
+  const publicBucket = seed.buckets.find((b) => b.code === PUBLIC);
+  assert(!!publicBucket, "the public test bucket is built");
+  assert(publicBucket?.is_test === true, "and it is flagged is_test, which is what keeps it off Regal");
+  eq(seed.eventTypes.length, 1, "one event type row is built, for the public test bucket");
+  const et = seed.eventTypes[0]!;
+  eq(publicBucket?.event_type_id, et.id, "the public test bucket points at its own event type");
+  assert(et.id !== "evt-smoke", "which is not the org's event type");
+  eq(et.name, PUBLIC_TEST_EVENT_TYPE_NAME, "its name says it is a test, so the invite title does too");
+  assert(/\btest\b/i.test(et.name), "and the word test is in that name");
+  eq(et.daily_cap, PUBLIC_TEST_DAILY_CAP, "it carries the public test cap");
+  assert(PUBLIC_TEST_DAILY_CAP >= 1 && PUBLIC_TEST_DAILY_CAP <= 12, "the cap is a small number of calls a day");
+  eq(et.duration_min, template.duration_min, "same duration as the org's event type");
+  eq(et.min_notice_min, template.min_notice_min, "same notice");
+  eq(et.slot_interval_min, template.slot_interval_min, "same slot interval");
+  eq(et.buffer_before_min, template.buffer_before_min, "same buffer before");
+  eq(et.buffer_after_min, template.buffer_after_min, "same buffer after");
+  eq(et.description, template.description, "same description, so the booker's panel reads the same");
+  eq(et.regal_type, template.regal_type, "same regal type");
+  eq(et.org_id, "org-smoke", "in the target org");
+  assert(
+    /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-8[0-9a-f]{3}-[0-9a-f]{12}$/.test(et.id),
+    "its id is a deterministic v4 shaped uuid, so a re-run upserts in place",
+  );
+}
 assert(
   seed.buckets.every((b) => b.is_test === true),
   "buckets are flagged is_test (hidden from public availability/book, unbookable by real leads)",
@@ -81,14 +140,18 @@ assert(
 // --- Membership: the primary agent is in EVERY bucket; the reassign target is
 // a bookable fallback in the FIRST bucket (SMOKE) only (#464). ---
 assert(
-  seed.members.filter((m) => m.user_id === seed.user.id).length === 2,
-  "primary agent is a member of both buckets",
+  seed.members.filter((m) => m.user_id === seed.user.id).length === 3,
+  "primary agent is a member of all three buckets",
 );
 assert(
-  ["SMOKE", "SMOKE2"].every((code) =>
+  [...HIDDEN, PUBLIC].every((code) =>
     seed.members.some((m) => m.bucketCode === code && m.user_id === seed.user.id),
   ),
-  "the primary agent is a member of every bucket",
+  "the primary agent is a member of every bucket, the public one included",
+);
+assert(
+  seed.members.filter((m) => m.bucketCode === PUBLIC).length === 1,
+  "the public test bucket is served by the primary agent ONLY, so the canary's fallback agent is never a partner's advisor",
 );
 
 // --- Reassign target (#450) + SMOKE fallback agent (#464): a SECOND bookable
@@ -120,8 +183,8 @@ if (target) {
   // SMOKE2 stays single-agent.
   const targetMemberships = seed.members.filter((m) => m.user_id === target.id);
   assert(
-    targetMemberships.length === 1 && targetMemberships[0].bucketCode === "SMOKE",
-    "reassign target is a member of SMOKE only (a bookable fallback), not SMOKE2",
+    targetMemberships.length === 1 && targetMemberships[0].bucketCode === HIDDEN[0],
+    "reassign target is a member of the first hidden bucket only (a bookable fallback), not the second and not the public one",
   );
 }
 
@@ -143,5 +206,6 @@ assert(
   "schedule ids are deterministic across runs",
 );
 assert(again.reassignTarget?.id === seed.reassignTarget?.id, "reassign target id is deterministic across runs");
+assert(again.eventTypes[0]?.id === seed.eventTypes[0]?.id, "the public test event type id is deterministic across runs");
 
 finish();

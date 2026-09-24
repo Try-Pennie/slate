@@ -39,6 +39,7 @@ import {
   closedUntil,
   MOVE_COPY,
   movedContactNote,
+  TEST_MODE_COPY,
 } from "@/lib/booking/booker-copy";
 import {
   BEFORE_COPY,
@@ -127,6 +128,69 @@ describe("the preview shows what the booker actually renders (#1343)", () => {
   // to live inline in the component, so the preview could not show them and nobody
   // read the one instruction on it until a lead followed it to an inbox with no
   // such email in it.
+  // #2660: the test line is drawn on EVERY screen the booker can show, in the
+  // treatment reserved for it, and on none of them when the booking is real.
+  // Three screens are driven here: the picker, the confirmation, and the panel
+  // for a lead who already has a call. A band on one screen and not the next is
+  // the fault L678 names: the screen without it reads as nothing to warn about.
+  it("draws the test line on the picker, the confirmation and the existing call panel, only in test mode", async () => {
+    global.fetch = vi.fn(async (url: RequestInfo | URL) => {
+      if (String(url).includes("/api/availability")) {
+        return { ok: true, json: async () => availability } as Response;
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ startsAt: slotIso, manageUrl: "https://slate.example/manage/tok1", isTest: true }),
+      } as Response;
+    }) as unknown as typeof fetch;
+
+    const { unmount } = render(<Booker {...bookerProps} isTest />);
+    await act(async () => {});
+    expect(screen.getAllByTestId("test-mode-band")).toHaveLength(1);
+    expect(pageText()).toContain(TEST_MODE_COPY.line);
+
+    fireEvent.click(screen.getByRole("button", { name: /^(TODAY|MON|TUE|WED|THU|FRI|SAT|SUN)/ }));
+    fireEvent.click(screen.getByRole("button", { name: /:\d{2}/ }));
+    expect(screen.getAllByTestId("test-mode-band")).toHaveLength(1);
+    fireEvent.change(screen.getByLabelText(DETAILS_COPY.fields.firstName), { target: { value: "Pat" } });
+    fireEvent.change(screen.getByLabelText(DETAILS_COPY.fields.lastName), { target: { value: "Tester" } });
+    fireEvent.change(screen.getByLabelText("Email"), { target: { value: "pat@agency.example" } });
+    fireEvent.change(screen.getByLabelText("Phone"), { target: { value: "(203) 561-5295" } });
+    fireEvent.click(screen.getByRole("button", { name: DETAILS_COPY.confirm }));
+    expect(await screen.findByText(CONFIRMED_COPY.heading)).toBeTruthy();
+    expect(screen.getAllByTestId("test-mode-band")).toHaveLength(1);
+    expect(pageText()).toContain(TEST_MODE_COPY.line);
+    unmount();
+
+    // The existing call panel, reached on landing.
+    render(
+      <Booker
+        {...bookerProps}
+        isTest
+        landingCall={{
+          disclose: true,
+          startsAt: slotIso,
+          advisorName: null,
+          manageToken: "tok-existing",
+          mayCancel: true,
+          phone: "(215) 555-0100",
+        }}
+      />,
+    );
+    await act(async () => {});
+    expect(screen.getAllByTestId("test-mode-band")).toHaveLength(1);
+    expect(pageText()).toContain(TEST_MODE_COPY.line);
+  });
+
+  it("draws no test line at all on a real booking", async () => {
+    global.fetch = okFetch();
+    render(<Booker {...bookerProps} />);
+    await act(async () => {});
+    expect(screen.queryByTestId("test-mode-band")).toBeNull();
+    expect(pageText()).not.toContain(TEST_MODE_COPY.line);
+  });
+
   it("uses the builder's words on the booking-not-found screen", () => {
     render(<ManageNotFound theme="light" />);
     for (const line of [NOT_FOUND_COPY.heading, NOT_FOUND_COPY.causes, NOT_FOUND_COPY.recovery]) {
@@ -286,6 +350,22 @@ describe("the preview shows what the manage page actually renders (#1343)", () =
     global.fetch = vi.fn(async () =>
       ({ ok: true, json: async () => ({ slots: [] }) }) as Response,
     ) as unknown as typeof fetch;
+  });
+
+  // #2660: the manage page is the one screen a tester keeps a link to, and the
+  // one a stray lead would come back to from the invite, so it carries the same
+  // line the booker does, and none of it for a real booking.
+  it("draws the test line on a test booking's manage page, and not on a real one", async () => {
+    const { unmount } = render(<ManageBooking {...manageProps} isTest />);
+    await act(async () => {});
+    expect(screen.getAllByTestId("test-mode-band")).toHaveLength(1);
+    expect(pageText()).toContain(TEST_MODE_COPY.line);
+    unmount();
+
+    render(<ManageBooking {...manageProps} />);
+    await act(async () => {});
+    expect(screen.queryByTestId("test-mode-band")).toBeNull();
+    expect(pageText()).not.toContain(TEST_MODE_COPY.line);
   });
 
   it("uses the builder's words for the live booking", async () => {

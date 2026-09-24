@@ -32,7 +32,13 @@ import {
   type CodeResolution,
 } from "@/lib/routing/catchall";
 import { bucketSpecForXbc, seederOwnsCode } from "@/lib/xbc";
+import {
+  HIDDEN_TEST_BUCKET_CODES,
+  PUBLIC_TEST_BUCKET_CODES,
+} from "@/lib/embed/public-test-bucket";
 import { assert, eq, finish } from "./lib/harness.ts";
+
+const PUBLIC_TEST = PUBLIC_TEST_BUCKET_CODES[0];
 
 // --- the catch-all target has to be real ----------------------------------------
 {
@@ -100,6 +106,48 @@ import { assert, eq, finish } from "./lib/harness.ts";
   }
 }
 
+// --- the public test bucket survives resolution (#2660) ----------------------------
+{
+  // The code is not an XBC, so without this branch it was rescued to the Low
+  // pool BEFORE the page ever read the bucket row: a partner opening the embed
+  // with the test code was shown the live Low booker and booked a real advisor
+  // (red team finding 1). The exemption lives in this ONE resolver, which the
+  // page and the booking service both call, rather than on the page.
+  const r = resolveRequestedCode(PUBLIC_TEST);
+  eq(r.kind, "valid", "the public test code passes through as itself");
+  eq(r.code, PUBLIC_TEST, "and keeps its own code");
+  const padded = resolveRequestedCode(`  ${PUBLIC_TEST}  `);
+  eq(padded.kind, "valid", "a padded spelling is trimmed like any other code");
+  eq(padded.code, PUBLIC_TEST, "and resolves to the same bucket");
+  eq(
+    resolveRequestedCode(PUBLIC_TEST.toLowerCase()).kind,
+    "catchall",
+    "a lower case spelling is not the test bucket and is rescued like any other unreadable code",
+  );
+  eq(
+    resolveRequestedCode(`${PUBLIC_TEST}2`).kind,
+    "catchall",
+    "a near miss is rescued, never served",
+  );
+  // The HIDDEN test buckets are NOT let through. The page cannot know is_test
+  // without a read, and answering the canary's code differently from a near miss
+  // would tell a stranger it exists, which is what #601 keeps hidden on the API.
+  // They keep going to the catch-all Low pool exactly as they did before.
+  for (const hidden of HIDDEN_TEST_BUCKET_CODES) {
+    const h = resolveRequestedCode(hidden);
+    eq(h.kind, "catchall", `the hidden test code ${hidden} is still rescued to the Low pool`);
+    eq(h.code, CATCHALL_CODE, `${hidden} lands on the Low pool like any unreadable code`);
+    const near = resolveRequestedCode(`${hidden}Y`);
+    eq(near.kind, "catchall", `and its near miss ${hidden}Y resolves the same way, so the two are indistinguishable`);
+  }
+  // Never counted as a rescue: a partner testing the embed is not a lead whose
+  // routing input went missing, and the catch-all rate alert must not page on
+  // a test.
+  const rec = catchallRecord(PUBLIC_TEST, PUBLIC_TEST);
+  eq(rec.catchallApplied, false, "a test booking is never recorded as a catch-all rescue");
+  eq(rec.requestedCode, PUBLIC_TEST, "though what arrived is still recorded");
+}
+
 // --- what gets recorded ------------------------------------------------------------
 {
   // The raw value travels VERBATIM, because it is the only evidence of what the
@@ -142,6 +190,14 @@ import { assert, eq, finish } from "./lib/harness.ts";
   for (const r of all) {
     assert(bucketSpecForXbc(r.code) !== null, `every resolution yields a routable code (${r.code})`);
   }
+  // The one exception is stated rather than left implicit: the public test code
+  // (#2660) is routable by its seeded bucket row, not by the XBC matrix, so it is
+  // the one valid resolution `bucketSpecForXbc` does not know.
+  const test = resolveRequestedCode(PUBLIC_TEST);
+  assert(
+    test.kind === "valid" && bucketSpecForXbc(test.code) === null,
+    "the public test code is the one valid resolution outside the XBC matrix, routable by its seeded row",
+  );
 }
 
 // --- what actually gets written against a booking ------------------------------------

@@ -122,7 +122,7 @@ import type {
   ReschedulePin,
   RescheduleClaim,
 } from "@/lib/booking/orchestration";
-import type { PersonIdentity } from "@/lib/booking/person-dedupe";
+import type { PersonIdentity, PersonWorld } from "@/lib/booking/person-dedupe";
 import { toE164 } from "@/lib/phone";
 import { escapeLike } from "@/lib/sql-like";
 import { noEligibleAgentsAlert } from "@/lib/availability/bucket-coverage";
@@ -438,6 +438,7 @@ export {
   BookingNotFoundError,
   BookingNotCancellableError,
   AgentNotAvailableError,
+  ReassignAcrossWorldsError,
   BookingNotChangeableError,
 } from "@/lib/booking/orchestration";
 import { log } from "@/lib/log";
@@ -557,13 +558,29 @@ export async function agentActiveBookingStartsMs(
  * Which bookings MATCH is decided downstream by `findPersonMatch`; this only
  * decides which rows are fetched, and #1641 changed neither the four signals nor
  * their filters.
+ *
+ * **Scoped to ONE world (#2660).** Every query joins the booking's bucket and
+ * keeps only the rows whose `is_test` equals the world the caller is in, the
+ * same `buckets!inner(is_test)` shape the reminders lane and the volume alarm
+ * use. A test booking (the canary's, or a partner's on the public test bucket)
+ * and a real booking are never the same person's calls: without this a tester
+ * who typed a real lead's id was shown that lead's name, number and a Cancel on
+ * their real call, and a test booking under an address refused the real lead
+ * who owns it. The canary's cross bucket dedupe (SMOKE against SMOKE2, both
+ * test) still sees both, because both are in the test world.
  */
 export async function findActiveBookingsForPerson(
   identity: PersonIdentity,
+  world: PersonWorld,
 ): Promise<Booking[]> {
   const active = ["confirmed", "rescheduled"] as const;
   const base = () =>
-    supabaseAdmin().from("bookings").select("*").in("status", active).limit(20);
+    supabaseAdmin()
+      .from("bookings")
+      .select("*, buckets!inner(is_test)")
+      .eq("buckets.is_test", world.isTest)
+      .in("status", active)
+      .limit(20);
   const queries: PromiseLike<DbResult<unknown>>[] = [];
   if (identity.externalId)
     queries.push(base().eq("external_id", identity.externalId));
@@ -583,9 +600,16 @@ export async function findActiveBookingsForPerson(
   const byId = new Map<string, Booking>();
   for (const r of results) {
     const rows = unwrap(r, "person booking lookup") as Booking[] | null;
-    for (const row of rows ?? []) byId.set(row.id, row);
+    for (const row of rows ?? []) byId.set(row.id, withoutJoinedBucket(row));
   }
   return [...byId.values()];
+}
+
+/** The joined bucket did its work in the world filter; the callers grade a
+ *  Booking, so it does not ride along (#2660). */
+function withoutJoinedBucket(row: Booking): Booking {
+  const { buckets: _joined, ...booking } = row as Booking & { buckets?: unknown };
+  return booking as Booking;
 }
 
 /**
@@ -607,23 +631,37 @@ export async function findActiveBookingsForPerson(
  */
 export async function findActiveBookingsByStrongIds(
   ids: readonly string[],
-): Promise<Booking[]> {
+): Promise<orchestration.BookingWithWorld[]> {
   if (ids.length === 0) return [];
   const active = ["confirmed", "rescheduled"] as const;
+  // The bucket's flag rides along (#2660), so the lookup view can say whether a
+  // booking is a test one without a second read. Deliberately NOT filtered by
+  // world: a key holder asked for one person's bookings by a strong id, and a
+  // partner's key reading its own test booking is the whole point.
   const base = () =>
-    supabaseAdmin().from("bookings").select("*").in("status", active).limit(20);
+    supabaseAdmin()
+      .from("bookings")
+      .select("*, buckets!inner(is_test)")
+      .in("status", active)
+      .limit(20);
   const queries: PromiseLike<DbResult<unknown>>[] = [];
   for (const id of ids) {
     queries.push(base().eq("external_id", id));
     queries.push(base().eq("salesforce_id", id));
   }
   const results = await Promise.all(queries);
-  const byId = new Map<string, Booking>();
+  const byId = new Map<string, orchestration.BookingWithWorld>();
   for (const r of results) {
     const rows = unwrap(r, "strong id booking lookup") as Booking[] | null;
-    for (const row of rows ?? []) byId.set(row.id, row);
+    for (const row of rows ?? []) byId.set(row.id, withWorld(row));
   }
   return [...byId.values()];
+}
+
+/** The joined bucket's flag lifted onto the row as `isTest` (#2660). */
+function withWorld(row: Booking): orchestration.BookingWithWorld {
+  const { buckets, ...booking } = row as Booking & { buckets?: { is_test?: boolean } | null };
+  return { ...(booking as Booking), isTest: buckets?.is_test === true };
 }
 
 export async function loadActiveUpcomingBookings(
@@ -2142,6 +2180,8 @@ export async function findDuplicateBookingWarning(input: {
   excludeBookingId: string;
   salesforceId: string | null;
   attendee: { email?: string; phone?: string };
+  /** The world the booking was just made in (#2660). */
+  isTest: boolean;
 }): Promise<orchestration.DuplicateWarning | null> {
   try {
     return await orchestration.findDuplicateWarning(input, realDeps());
@@ -2181,10 +2221,14 @@ export async function findDuplicateBookingWarning(input: {
  * refuses at the end of it: the gate is unmoved, so failing open costs a notice
  * arriving late rather than a duplicate booking.
  */
-export async function existingCallForLanding(identity: {
-  salesforceId?: string | null;
-  externalId?: string | null;
-}): Promise<orchestration.ExistingCall | null> {
+export async function existingCallForLanding(
+  identity: {
+    salesforceId?: string | null;
+    externalId?: string | null;
+  },
+  /** The world of the bucket being landed on (#2660). */
+  world: PersonWorld,
+): Promise<orchestration.ExistingCall | null> {
   try {
     return await orchestration.findExistingCallForIdentity(
       {
@@ -2194,6 +2238,7 @@ export async function existingCallForLanding(identity: {
         phone: null,
       },
       realDeps(),
+      world,
     );
   } catch (err) {
     log.warn("booking", { msg: "landing existing-call check failed, showing the picker" }, err);
@@ -2225,16 +2270,22 @@ const KNOWN_CONTACT_ROWS = 5;
  * LOGGED rather than swallowed, so a lookup that has stopped working is visible
  * instead of looking like a roster nobody has any details for.
  */
-export async function knownContactForLanding(identity: {
-  salesforceId?: string | null;
-}): Promise<KnownContact | null> {
+export async function knownContactForLanding(
+  identity: {
+    salesforceId?: string | null;
+  },
+  /** The world of the bucket being landed on (#2660): a tester who pastes a real
+   *  lead's id into a test link is never handed that lead's name and number. */
+  world: PersonWorld,
+): Promise<KnownContact | null> {
   const salesforceId = identity.salesforceId?.trim();
   if (!salesforceId) return null;
   try {
     const rows = unwrap(
       await supabaseAdmin()
         .from("bookings")
-        .select("id, created_at, attendee_name, attendee_email, attendee_phone")
+        .select("id, created_at, attendee_name, attendee_email, attendee_phone, buckets!inner(is_test)")
+        .eq("buckets.is_test", world.isTest)
         .eq("salesforce_id", salesforceId)
         .order("created_at", { ascending: false })
         .order("id", { ascending: false })
@@ -2267,10 +2318,12 @@ export async function knownContactForLanding(identity: {
 export async function landingAttendee(
   identity: { salesforceId?: string | null },
   link: LinkAttendee,
+  /** The world of the bucket being landed on (#2660). */
+  world: PersonWorld,
 ): Promise<LinkAttendee> {
   const complete = link.name.trim() && link.email.trim() && link.phone.trim();
   if (complete) return attendeeForLanding(link, null);
-  return attendeeForLanding(link, await knownContactForLanding(identity));
+  return attendeeForLanding(link, await knownContactForLanding(identity, world));
 }
 
 /** The lead's own details on a booking (#2164), for a caller that is not moving it. */

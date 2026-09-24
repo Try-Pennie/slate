@@ -2,8 +2,13 @@ import { NextResponse, type NextRequest } from "next/server";
 import { reportInternalError } from "@/lib/api/errors";
 import { log } from "@/lib/log";
 import { sendThrottledAlert, sendThrottledInfo } from "@/lib/notify/dispatch";
-import { boundaryCatchAlert, embedOriginMismatchAlert } from "@/lib/notify/misc-alert-copy";
+import {
+  boundaryCatchAlert,
+  embedOriginMismatchAlert,
+  testBucketClientErrorInfo,
+} from "@/lib/notify/misc-alert-copy";
 import { parseOriginMismatchMessage } from "@/lib/embed/parent-origin";
+import { resolveTestTraffic } from "@/lib/monitor/test-traffic";
 import { shortErrorReason } from "@/lib/notify/error-text";
 import { countBoundaryCatch, BOUNDARY_WINDOW_MS } from "@/lib/api/boundary-count";
 
@@ -27,6 +32,14 @@ const BOUNDARY_ERROR_COOLDOWN_MS = BOUNDARY_WINDOW_MS;
  * still logged with its pair.
  */
 const ORIGIN_MISMATCH_COOLDOWN_MS = 24 * 60 * 60_000;
+
+/**
+ * How often a TEST bucket's client errors are mentioned in Slack (#2660). A
+ * partner's staging page is the population most likely to throw, and its errors
+ * are theirs to fix, so once a day is the whole signal; every report is still
+ * logged in full.
+ */
+const TEST_BUCKET_ERROR_COOLDOWN_MS = 24 * 60 * 60_000;
 import { allowRequest, clientIp, CLIENT_ERROR_RATE_RULES } from "@/lib/rate-limit";
 import { CLIENT_ERROR_ADDRESS_POLICY } from "@/lib/rate-limit-core";
 import {
@@ -122,6 +135,25 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     `${report.kind} on ${report.page}: ${report.message}${where ? ` (${where})` : ""}`,
   );
   err.stack = report.stack ?? undefined;
+
+  // #2660: an error on a TEST bucket is a partner's staging page throwing, which
+  // is theirs to fix and never a customer who could not book. Resolved the way
+  // the outcome tally resolves it, off `buckets.is_test` on the server (a caller
+  // settable marker would let anybody mute a real wave), and a marker that
+  // cannot be read counts as REAL, so the pager is never muted by a failed read.
+  // The full report still goes to the log; Slack gets one whisper a day.
+  if (report.bucketCode && (await resolveTestTraffic({ by: "bucket", code: report.bucketCode }))) {
+    log.warn("client-errors", { msg: "client error on a test bucket", page: report.page, bucket: report.bucketCode }, err);
+    // alert-key: client_error_test_bucket
+    await sendThrottledInfo(
+      "client_error_test_bucket",
+      TEST_BUCKET_ERROR_COOLDOWN_MS,
+      testBucketClientErrorInfo(report.page, report.bucketCode),
+    ).catch((alertErr: unknown) => {
+      log.error("client-errors", { msg: "test bucket info failed" }, alertErr);
+    });
+    return done();
+  }
 
   // #1974: a BOUNDARY catch is a different event from an unexpected 500 and gets
   // its own sentence. `reportInternalError`'s copy ends "the caller got a

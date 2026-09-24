@@ -87,6 +87,8 @@ export default async function ManagePage({
         rescheduleReasons={reasonOptions.reschedule.active}
         cancelReasons={reasonOptions.cancel.active}
         theme={theme}
+        // #2660: read off the booking's own bucket, the one place the flag lives.
+        isTest={found.bucket.is_test}
       />
       {/* #1041: this page is never embedded, so it never inherits a host page's
           policies. */}

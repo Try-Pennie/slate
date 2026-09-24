@@ -32,12 +32,18 @@ const booking = (over: Partial<Booking>): Booking =>
     ...over,
   }) as unknown as Booking;
 
+/** The world each lookup was asked in (#2660), recorded by the fake. */
+const askedWorlds: { isTest: boolean }[] = [];
+
 function makeDeps(candidates: Booking[]): Pick<
   BookingDeps,
   "findActiveBookingsForPerson" | "appBaseUrl"
 > {
   return {
-    findActiveBookingsForPerson: async () => candidates,
+    findActiveBookingsForPerson: async (_identity, world) => {
+      askedWorlds.push(world);
+      return candidates;
+    },
     appBaseUrl: () => "https://slate.test",
   };
 }
@@ -46,9 +52,20 @@ const input = {
   excludeBookingId: "b-new",
   salesforceId: null as string | null,
   attendee: { email: "lead@example.com", phone: undefined as string | undefined },
+  isTest: false,
 };
 
 describe("findDuplicateWarning", () => {
+  // #2660: the warning is asked in the world the booking was made in, so a
+  // tester's confirmation never names a real lead's call and a lead's never
+  // names a test one.
+  it("asks the lookup in the world it was told, both ways", async () => {
+    askedWorlds.length = 0;
+    await findDuplicateWarning({ ...input, isTest: true }, makeDeps([]) as BookingDeps);
+    await findDuplicateWarning({ ...input, isTest: false }, makeDeps([]) as BookingDeps);
+    expect(askedWorlds).toEqual([{ isTest: true }, { isTest: false }]);
+  });
+
   it("returns null when the only active booking is the just-created one", async () => {
     const deps = makeDeps([booking({ id: "b-new" })]);
     const warning = await findDuplicateWarning(input, deps as BookingDeps);

@@ -6,6 +6,7 @@ import { AsyncListStates, useFetchList } from "@/components/AsyncList";
 import { formatSlotDay, formatSlotTime } from "@/lib/booking/slot-label";
 import { bookingDetailHref } from "@/lib/booking/detail";
 import { SEARCH_LIMIT, type BookingSearchRow } from "@/lib/booking/search";
+import { TestMark } from "@/components/TestModeBand";
 
 /** The whole roster is Eastern (matches the server-side history formatting). */
 const ROSTER_ZONE = "America/New_York";
@@ -85,6 +86,11 @@ export default function BookingLookup() {
                     href={bookingDetailHref(b.id)}
                     className="flex flex-wrap items-baseline gap-x-2 rounded-md px-1 py-2 text-sm hover:bg-fg/5"
                   >
+                    {/* #2660: a booking on the public test bucket is a stranger's
+                        test. It stays findable (a manager cancelling one is how the
+                        issue's own evidence was gathered) and is marked, in the one
+                        treatment reserved for that, so it is never read as a lead. */}
+                    {b.isTest && <TestMark />}
                     <span className="font-semibold text-fg">
                       {b.attendeeName || b.attendeeEmail || b.attendeePhone || "(no name)"}
                     </span>

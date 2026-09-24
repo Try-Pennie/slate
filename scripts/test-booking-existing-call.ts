@@ -115,6 +115,31 @@ async function attemptUnavailable(
 }
 
 async function run() {
+  // --- #2660: the gate is asked in the WORLD of the bucket being booked ---
+  // A test booking under an address must never refuse the real lead who owns it,
+  // and a tester must never be refused because a real lead shares their address.
+  // The world is the bucket's own flag, read after the bucket resolves, never a
+  // guess from the caller's permission to book test buckets.
+  {
+    const real = makeDeps({ candidates: ["a"], freeEmails: new Set(["a@x.com"]) });
+    await createBooking(bookerInput, real.deps);
+    assert(
+      real.calls.personWorlds.length === 1 && real.calls.personWorlds[0]?.isTest === false,
+      "a confirm on a real bucket asks the person gate in the real world",
+    );
+
+    const test = makeDeps({
+      candidates: ["a"],
+      freeEmails: new Set(["a@x.com"]),
+      testBucket: true,
+    });
+    await createBooking({ ...bookerInput, allowTestBuckets: true }, test.deps);
+    assert(
+      test.calls.personWorlds.length === 1 && test.calls.personWorlds[0]?.isTest === true,
+      "a confirm on the public test bucket asks the person gate in the test world",
+    );
+  }
+
   // --- Any single signal declines the second booking ---
   {
     // Salesforce id only: a strong match, so the call may be named.

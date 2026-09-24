@@ -1,5 +1,6 @@
 "use client";
 
+import { TestModeBand } from "@/components/TestModeBand";
 import { useMemo, useState } from "react";
 import { DateTime } from "luxon";
 import { formatLongDate } from "@/lib/date/parse";
@@ -79,6 +80,12 @@ interface ManageBookingProps {
   cancelReasons: ReasonOption[];
   /** Presentational only; scopes the Pennie tokens via data-theme. */
   theme?: "light" | "dark";
+  /**
+   * The booking is on a TEST bucket (#2660). This is the one screen a tester
+   * keeps a link to and the one a stray lead comes back to from the invite, so
+   * it carries the same test line the booker does, in the reserved treatment.
+   */
+  isTest?: boolean;
 }
 
 
@@ -129,6 +136,7 @@ export default function ManageBooking({
   rescheduleReasons,
   cancelReasons,
   theme = "light",
+  isTest = false,
 }: ManageBookingProps) {
   const detectedZone = useMemo(() => deviceTimeZone(), []);
   // #1849: a fixed US list. A lead whose browser reports a non US zone is shown
@@ -384,6 +392,8 @@ export default function ManageBooking({
             here was still on its way. What #1336 put it there for now lives
             beside the actions, driven by the move itself. */}
         <div className="overflow-hidden rounded-2xl border border-border bg-surface shadow-xs">
+          {/* #2660: the test line, first, on a test booking's page. */}
+          {isTest && <TestModeBand />}
           {/* One column, in reading order: who and what state it is in, then the
               detail, then what a lead can do about it. There is no narrow layout
               to order separately any more, which is what the two column grid

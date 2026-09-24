@@ -681,6 +681,15 @@ export const ALERT_CATALOG: AlertEntry[] = [
 
   // --- Info: never needed action, so never announces recovery ---------------
   {
+    key: "client_error_test_bucket",
+    kind: "info",
+    why:
+      "A partner's page threw while on the public test bucket (#2660). The booking it " +
+      "stopped was a test one and the page is the partner's to fix, so nobody is woken; the " +
+      "full report is in the log. There is no all-clear worth sending: a working staging " +
+      "page sends no report at all, and absence of reports is the healthy state.",
+  },
+  {
     key: "embed_origin_mismatch",
     kind: "info",
     why:

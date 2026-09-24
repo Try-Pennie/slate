@@ -49,6 +49,28 @@ async function run() {
     const res = await bookViaApi(apiInput, deps);
     assert(res.outcome === "created", "bookViaApi: no match -> created");
     assert(calls.createEvent.length === 1, "bookViaApi create: a calendar event was created");
+    // #2660: the person decision reads in the world of the bucket being booked,
+    // so the canary's SMOKE bookings dedupe against SMOKE2's (both test) and never
+    // against a real lead's.
+    assert(
+      calls.personWorlds.every((w) => w.isTest === false),
+      "bookViaApi on a real bucket asks the person decision in the real world",
+    );
+  }
+  {
+    const apiInput: ApiBookingInput = {
+      ...input,
+      externalId: "ext-canary",
+      confirmReschedule: false,
+      allowTestBuckets: true,
+    };
+    const { deps, calls } = makeDeps({ personBookings: [], testBucket: true });
+    const res = await bookViaApi(apiInput, deps);
+    assert(res.outcome === "created", "bookViaApi on a test bucket with permission -> created");
+    assert(
+      calls.personWorlds.length >= 1 && calls.personWorlds.every((w) => w.isTest === true),
+      "bookViaApi on a test bucket asks the person decision in the test world",
+    );
   }
 
   // --- bookViaApi: same person, SAME slot -> dedupe (no new booking) ---
@@ -539,6 +561,15 @@ async function run() {
     assert(views.length === 1 && views[0].id === "bkL", "lookup returns one view");
     assert(views[0].manageUrl === "https://slate.test/booking/manage/tok1", "lookup view has manageUrl");
     assert(views[0].externalId === "ext-1" && views[0].status === "confirmed", "lookup view fields mapped");
+    // #2660: the view says which WORLD the booking is in, so a host's confirmed
+    // page can label a test booking. Read off the bucket at the fetch.
+    assert(views[0].isTest === false, "lookup view says a real booking is real");
+  }
+  {
+    const bk = makeBooking({ id: "bkT", external_id: "ext-t" });
+    const { deps } = makeDeps({ personBookings: [bk], testBucket: true });
+    const views = await lookupPersonBookings({ externalId: "ext-t", salesforceId: null }, deps);
+    assert(views.length === 1 && views[0].isTest === true, "lookup view says a test booking is a test");
   }
 
   // --- getPersonBookingById (#386) ---
@@ -551,6 +582,19 @@ async function run() {
       deps,
     );
     assert(view.id === "bkG" && view.status === "cancelled", "get-by-id returns any status when no filter");
+    assert(view.isTest === false, "get-by-id says a real booking is real (#2660)");
+  }
+  {
+    // #2660: the by id view reads the world off the booking's own bucket, which
+    // is what trypennie's confirmed page reads to label a test booking.
+    const bk = makeBooking({ id: "bkT", external_id: "ext-t" });
+    const ctx = { booking: bk, bucket: { ...bucket, is_test: true } as Bucket, eventType };
+    const { deps } = makeDeps({ bookingById: ctx });
+    const view = await getPersonBookingById(
+      { bookingId: "bkT", identity: { externalId: "ext-t", salesforceId: null }, status: null },
+      deps,
+    );
+    assert(view.isTest === true, "get-by-id says a test booking is a test");
 
     let threw = false;
     try {
@@ -743,9 +787,21 @@ async function run() {
     );
     assert(res.items.length === 2 && res.items[0].id === "L1", "list returns the rows as views");
     assert(res.items[0].bucketCode === "411", "list item carries bucketCode from the buckets join");
+    assert(res.items[0].isTest === false, "list item carries the world from the same join (#2660)");
     assert(res.nextCursor !== null, "full page (rows == limit) sets a nextCursor");
     assert((calls.queryBookings[0] as { orderBy: string }).orderBy === "starts_at",
       "default order is starts_at");
+  }
+  {
+    const testBucket = { ...bucket, id: "bkt-t", code: "TESTX", is_test: true } as Bucket;
+    const b1 = makeBooking({ id: "LT", bucket_id: "bkt-t" });
+    const { deps } = makeDeps({ listResult: { rows: [b1], buckets: [testBucket] } });
+    const res = await listBookings(
+      { status: null, afterStart: null, beforeEnd: null, updatedSince: null,
+        bucketCode: null, agentEmail: null, limit: 50, offset: 0 },
+      deps,
+    );
+    assert(res.items[0].isTest === true, "a list item on a test bucket says so (#2660)");
   }
   {
     const b1 = makeBooking({ id: "L3", bucket_id: "bkt1" });

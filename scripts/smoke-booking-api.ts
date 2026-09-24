@@ -76,6 +76,8 @@
 import { envOr, loadEnvFiles } from "./smoke-env.ts";
 import { evaluateSlotAvailability, slots } from "./smoke-lib.ts";
 import { sweepQuietly } from "./lib/smoke-event-cleanup.ts";
+import { judgePublicTestBucketRead, publicTestBucketUrl } from "./lib/public-test-bucket-check.ts";
+import { PUBLIC_TEST_BUCKET_CODES } from "../src/lib/embed/public-test-bucket.ts";
 import { bookFirstFreeSlot } from "./lib/smoke-book-retry.ts";
 import { chooseCrossBucketSlot } from "./lib/smoke-cross-bucket-slot.ts";
 import {
@@ -420,6 +422,24 @@ function reserveSlot(plan: SlotPlan, label: string): string | undefined {
 function recordBooked(plan: SlotPlan, body: { booking?: { startsAt?: string } } | undefined): void {
   const landed = body?.booking?.startsAt;
   if (landed) plan.record(landed);
+}
+
+// --- The public test bucket answers with no key (#2660) ---
+// The exact request a partner's booker makes, on every tick, because nothing
+// else watches this bucket: every monitor skips is_test on purpose, so a row
+// deleted by hand or a recompute that stopped publishing it would otherwise be
+// found by the next partner reporting "no times". A read, so it runs on the dry
+// tick as well as the full pass. The verdict rules are pinned offline in
+// scripts/test-public-test-bucket-check.ts.
+async function checkPublicTestBucket() {
+  for (const code of PUBLIC_TEST_BUCKET_CODES) {
+    // Deliberately NO authorization header: a browser cannot send one, and the
+    // point is that the bucket is served without it.
+    const res = await fetch(publicTestBucketUrl(BASE, code));
+    const body: unknown = await res.json().catch(() => null);
+    const verdict = judgePublicTestBucketRead({ status: res.status, body }, code);
+    check(verdict.outcome === "served", `public test bucket ${code} is served with no key: ${verdict.reason}`);
+  }
 }
 
 // --- Scenario 0: dry run — validate routing with ZERO side effects ---
@@ -774,6 +794,7 @@ async function main() {
   // it is side-effect-free.
   await checkHttpsRedirect();
   await checkStaticAssetTransport();
+  await checkPublicTestBucket();
 
   // Gate on real availability before booking anything. Zero slots means the
   // isolated test agent is misconfigured, so the run would exercise NOTHING;

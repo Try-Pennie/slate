@@ -42,17 +42,30 @@ function booking(id: string): Record<string, unknown> {
   };
 }
 
+/** The WORLD each query was scoped to (#2660): the `buckets.is_test` value it
+ *  carried, in call order, kept apart from the identity columns above. */
+const queriedWorlds: unknown[][] = [];
+/** The projection each query asked for, so the bucket join can be asserted. */
+const selects: string[] = [];
+
 /** A chainable, thenable Supabase-shaped query builder. */
 function builder(): Record<string, unknown> {
   const columns: string[] = [];
+  const worlds: unknown[] = [];
   queriedColumns.push(columns);
+  queriedWorlds.push(worlds);
   const q: Record<string, unknown> = {};
-  for (const method of ["select", "in", "limit", "order"]) {
+  for (const method of ["in", "limit", "order"]) {
     q[method] = () => q;
   }
+  q.select = (projection: string) => {
+    selects.push(projection);
+    return q;
+  };
   for (const method of ["eq", "ilike"]) {
-    q[method] = (column: string) => {
-      columns.push(column);
+    q[method] = (column: string, value: unknown) => {
+      if (column === "buckets.is_test") worlds.push(value);
+      else columns.push(column);
       return q;
     };
   }
@@ -66,9 +79,48 @@ function builder(): Record<string, unknown> {
 describe("findActiveBookingsForPerson (the weak-match booking lookup)", () => {
   beforeEach(() => {
     queriedColumns.length = 0;
+    queriedWorlds.length = 0;
+    selects.length = 0;
     resultByColumn.clear();
     from.mockReset();
     from.mockImplementation(() => builder());
+  });
+
+  // #2660: a test booking and a real booking live in different WORLDS, and the
+  // person reads are scoped to one of them. Without this a tester who typed a
+  // real lead's id into a test link was shown that lead's name, number and a
+  // Cancel on their real call, and a test booking under an address later REFUSED
+  // the real lead using it (red team finding 2). Both directions, one fixture.
+  describe("reads in one world (#2660)", () => {
+    it("joins the bucket and asks only for bookings in the TEST world when landing on a test bucket", async () => {
+      await findActiveBookingsForPerson(
+        { externalId: "ext-1", salesforceId: null, email: "lead@example.com", phone: null },
+        { isTest: true },
+      );
+      expect(queriedWorlds).toEqual([[true], [true]]);
+      for (const s of selects) expect(s).toContain("buckets!inner(is_test)");
+    });
+
+    it("asks only for REAL bookings when landing on a real bucket", async () => {
+      await findActiveBookingsForPerson(
+        { externalId: "ext-1", salesforceId: "sf-1", email: null, phone: "215 555 0100" },
+        { isTest: false },
+      );
+      expect(queriedWorlds).toEqual([[false], [false], [false]]);
+    });
+
+    it("hands back plain booking rows, without the joined bucket riding along", async () => {
+      resultByColumn.set("external_id", {
+        data: [{ ...booking("bk-1"), buckets: { is_test: true } }],
+        error: null,
+      });
+      const rows = await findActiveBookingsForPerson(
+        { externalId: "ext-1", salesforceId: null, email: null, phone: null },
+        { isTest: true },
+      );
+      expect(rows.map((b) => b.id)).toEqual(["bk-1"]);
+      expect(rows[0]).not.toHaveProperty("buckets");
+    });
   });
 
   it("finds and dedupes the lead's active bookings when every query reads", async () => {
@@ -83,7 +135,7 @@ describe("findActiveBookingsForPerson (the weak-match booking lookup)", () => {
       salesforceId: "sf-1",
       email: null,
       phone: null,
-    });
+    }, { isTest: false });
 
     // bk-1 is returned by both queries and must appear once.
     expect(rows.map((b) => b.id).sort()).toEqual(["bk-1", "bk-2"]);
@@ -95,7 +147,7 @@ describe("findActiveBookingsForPerson (the weak-match booking lookup)", () => {
       salesforceId: "sf-1",
       email: "Lead@Example.com",
       phone: "215 555 0100",
-    });
+    }, { isTest: false });
     expect(queriedColumns.flat().sort()).toEqual([
       "attendee_email",
       "attendee_phone",
@@ -117,7 +169,7 @@ describe("findActiveBookingsForPerson (the weak-match booking lookup)", () => {
         salesforceId: "sf-1",
         email: null,
         phone: null,
-      }),
+      }, { isTest: false }),
     ).rejects.toThrow(/read failed \[person booking lookup\]/);
   });
 
@@ -137,7 +189,7 @@ describe("findActiveBookingsForPerson (the weak-match booking lookup)", () => {
         salesforceId: null,
         email: null,
         phone: "215 555 0100",
-      }),
+      }, { isTest: false }),
     ).rejects.toThrow(/statement timeout/);
   });
 
@@ -152,7 +204,7 @@ describe("findActiveBookingsForPerson (the weak-match booking lookup)", () => {
       salesforceId: null,
       email: null,
       phone: null,
-    });
+    }, { isTest: false });
     expect(rows).toEqual([]);
   });
 
@@ -162,7 +214,7 @@ describe("findActiveBookingsForPerson (the weak-match booking lookup)", () => {
       salesforceId: null,
       email: null,
       phone: null,
-    });
+    }, { isTest: false });
     expect(rows).toEqual([]);
     expect(from).not.toHaveBeenCalled();
   });

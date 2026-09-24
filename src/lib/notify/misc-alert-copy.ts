@@ -292,6 +292,20 @@ export function unknownReasonCodeNotice(rawCode: string): string {
  * its fallback height and the host's success redirect never fires, so it is worth
  * fixing today and not worth waking anybody for.
  */
+/**
+ * A partner's page threw while on a TEST bucket (#2660). Info, not a page: the
+ * booking the error stopped was a test one, the page is the partner's to fix, and
+ * every report is in the log. Names the page and the bucket, never the error,
+ * because anybody can post to this route and whatever it forwards reaches Slack.
+ */
+export function testBucketClientErrorInfo(page: string, bucketCode: string): string {
+  return (
+    `A page under ${page} reported a client error while on the ${bucketCode} test bucket. ` +
+    `That is a partner testing the embed, not a lead who could not book, so nobody is paged. ` +
+    `Every report is logged: tag=client-errors msg="client error on a test bucket".`
+  );
+}
+
 export function embedOriginMismatchAlert(declared: string, framedBy: string): string {
   return (
     `A page embedding the booker at ${framedBy} tells it to report to ${declared}. ` +

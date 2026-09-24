@@ -24,6 +24,22 @@ export interface PersonIdentity {
   phone: string | null;
 }
 
+/**
+ * Which WORLD a person read is asked in (#2660): the test one, or the real one.
+ *
+ * A booking on a test bucket (the canary's, or the public test bucket a partner
+ * books from their own site) and a booking on a real bucket are not the same
+ * person's calls even when the identity matches: a tester who types a real lead's
+ * id must never be shown that lead's call, and a test booking under an address
+ * must never refuse the real lead who owns it. So every read that grades a
+ * person is scoped to the world of the bucket in play, never left to the
+ * identity alone. `bookings` has no flag of its own; the world is the bucket's
+ * `is_test`, joined at the read.
+ */
+export interface PersonWorld {
+  isTest: boolean;
+}
+
 export type MatchStrength = "strong" | "medium" | "weak";
 
 export interface PersonMatch {

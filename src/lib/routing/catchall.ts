@@ -21,6 +21,7 @@
  * upstream cause can be chased rather than absorbed silently.
  */
 import { bucketSpecForXbc } from "@/lib/xbc";
+import { isPublicTestBucket } from "@/lib/embed/public-test-bucket";
 
 /**
  * The pool an unroutable lead lands in: Low, with no backend and no legal
@@ -40,7 +41,8 @@ export const CATCHALL_CODE = "100";
 export type CatchallReason = "absent" | "unreadable";
 
 export type CodeResolution =
-  /** The lead carried a code Slate routes. */
+  /** The lead carried a code Slate routes: one of the sixty, or the public test
+   *  bucket (#2660), which is routable by its seeded row rather than the matrix. */
   | { kind: "valid"; code: string }
   /** The lead carried nothing usable and was sent to the Low pool. */
   | {
@@ -68,6 +70,18 @@ export function resolveRequestedCode(raw: string | null | undefined): CodeResolu
   const trimmed = requested.trim();
   if (trimmed === "") {
     return { kind: "catchall", code: CATCHALL_CODE, reason: "absent", requested };
+  }
+  // The PUBLIC test bucket (#2660) is not an XBC, so without this it was rescued
+  // to the Low pool before the page ever read its row, and a partner testing the
+  // embed booked a real advisor. It is let through HERE, in the one judge the page
+  // and the booking service share, rather than on the page: a special case on the
+  // page would be the second implementation this function exists to prevent. The
+  // HIDDEN test buckets are deliberately not here: the resolver cannot know
+  // `is_test` without a read, and answering the canary's code differently from a
+  // near miss would tell a stranger it exists (#601). They keep going to the Low
+  // pool, and the confirm refuses them (#2667).
+  if (isPublicTestBucket(trimmed)) {
+    return { kind: "valid", code: trimmed };
   }
   // Judged by whether the code actually resolves to a bucket spec, not by a second
   // copy of the code shape. The shape lives in `bucketSpecForXbc`, and a regex

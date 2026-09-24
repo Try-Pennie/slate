@@ -6,8 +6,10 @@
 import {
   reassignBooking,
   rescheduleBooking,
+  ReassignAcrossWorldsError,
 } from "../src/lib/booking/orchestration.ts";
 import type {
+  Bucket,
   EventType,
   User,
 } from "../src/lib/db/types.ts";
@@ -297,6 +299,58 @@ async function run() {
       calls.webhooks[0].previousAgentEmail === "a@x.com",
       "reassign(admin): the payload names the advisor the call moved away from",
     );
+  }
+
+  // --- #2660: a booking never crosses WORLDS. ---
+  // A test booking (the canary's, or a stranger's on the public test bucket)
+  // moved onto a real agent puts a test call on a real calendar, which is the
+  // outcome the whole feature exists to prevent; a real lead moved onto a test
+  // agent is booked with a mailbox nobody answers. Every reassign path shares
+  // this function, so the refusal covers the admin control, the machine owner
+  // path and the coverage sweep at once.
+  {
+    const testBucket = { ...bucket, id: "bkt-test", code: "TESTX", is_test: true } as unknown as Bucket;
+    const realAgent = { id: "b", name: "Owner B", email: "b@x.com", bookable: true, is_test: false } as unknown as User;
+    const testAgent = { id: "t", name: "Test Agent", email: "t@x.com", bookable: true, is_test: true } as unknown as User;
+
+    {
+      const { deps, calls } = makeDeps({
+        bookingById: { booking: makeBooking({}), bucket: testBucket, eventType },
+        agentByEmail: realAgent,
+      });
+      let err: unknown;
+      try {
+        await reassignBooking("bk1", "b@x.com", SYS, deps, { allowNonBookable: true, initiator: "admin" });
+      } catch (e) {
+        err = e;
+      }
+      assert(err instanceof ReassignAcrossWorldsError, "a TEST booking is refused a move onto a REAL agent");
+      assert(calls.createEvent.length === 0, "and no event was created on the real agent's calendar");
+    }
+    {
+      const { deps, calls } = makeDeps({
+        bookingById: { booking: makeBooking({}), bucket, eventType },
+        agentByEmail: testAgent,
+      });
+      let err: unknown;
+      try {
+        await reassignBooking("bk1", "t@x.com", SYS, deps);
+      } catch (e) {
+        err = e;
+      }
+      assert(err instanceof ReassignAcrossWorldsError, "a REAL booking is refused a move onto a TEST agent");
+      assert(calls.createEvent.length === 0, "and no event was created on the test agent's calendar");
+    }
+    {
+      // The control: the canary's own reassign scenario moves a test booking onto
+      // the second test agent, and that must keep working.
+      const { deps } = makeDeps({
+        bookingById: { booking: makeBooking({}), bucket: testBucket, eventType },
+        agentByEmail: testAgent,
+      });
+      const res = await reassignBooking("bk1", "t@x.com", SYS, deps);
+      assert(res.booking.assigned_user_id === "t", "a test booking still moves onto a test agent");
+    }
   }
 
   // --- #546: manager may reassign to an agent OUTSIDE the bookable pool only

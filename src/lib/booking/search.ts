@@ -58,6 +58,9 @@ export interface BookingSearchInput {
   starts_at: string;
   assigned_user_id: string | null;
   status: string;
+  /** Whether the booking's bucket is a test bucket (#2660), read off the joined
+   *  bucket: `bookings` carries no flag of its own. */
+  is_test: boolean;
 }
 
 /** A compact result row the lookup list renders (each carries the History toggle). */
@@ -70,6 +73,21 @@ export interface BookingSearchRow {
   startsAt: string;
   agentName: string;
   status: string;
+  /** A booking on a test bucket (#2660): a tester's, never a lead's. Shown, and
+   *  marked, so it is never read as a customer. */
+  isTest: boolean;
+}
+
+/** What the joined read hands back per row, before the flag is lifted out. */
+type JoinedRow = Omit<BookingSearchInput, "is_test"> & { buckets: { is_test: boolean } | null };
+
+/** The projection every bookings read here asks for: the row plus its bucket's
+ *  flag, through the same inner join the monitors use. */
+const SEARCH_SELECT =
+  "id,attendee_name,attendee_email,attendee_phone,starts_at,assigned_user_id,status,buckets!inner(is_test)";
+
+function liftFlag(rows: JoinedRow[] | null): BookingSearchInput[] {
+  return (rows ?? []).map(({ buckets, ...row }) => ({ ...row, is_test: buckets?.is_test === true }));
 }
 
 /** Map booking rows to result rows, resolving the assigned agent's name. */
@@ -86,6 +104,7 @@ export function buildSearchRows(
     startsAt: b.starts_at,
     agentName: b.assigned_user_id ? nameOf(b.assigned_user_id) : "Unassigned",
     status: b.status,
+    isTest: b.is_test,
   }));
 }
 
@@ -99,16 +118,16 @@ export interface BookingSearchDeps {
 
 const defaultDeps: BookingSearchDeps = {
   async byId(id, orgId) {
-    return unwrap(
-      await supabaseAdmin()
-        .from("bookings")
-        .select(
-          "id,attendee_name,attendee_email,attendee_phone,starts_at,assigned_user_id,status",
-        )
-        .eq("org_id", orgId)
-        .eq("id", id),
-      "booking-search by id",
-    ) as BookingSearchInput[];
+    return liftFlag(
+      unwrap(
+        await supabaseAdmin()
+          .from("bookings")
+          .select(SEARCH_SELECT)
+          .eq("org_id", orgId)
+          .eq("id", id),
+        "booking-search by id",
+      ) as JoinedRow[] | null,
+    );
   },
   async byText(q, orgId, limit) {
     const pattern = textSearchPattern(q);
@@ -120,9 +139,7 @@ const defaultDeps: BookingSearchDeps = {
       TEXT_SEARCH_COLUMNS.map((column) =>
         supabaseAdmin()
           .from("bookings")
-          .select(
-            "id,attendee_name,attendee_email,attendee_phone,starts_at,assigned_user_id,status",
-          )
+          .select(SEARCH_SELECT)
           .eq("org_id", orgId)
           .ilike(column, pattern)
           .order("starts_at", { ascending: false })
@@ -131,9 +148,9 @@ const defaultDeps: BookingSearchDeps = {
     );
     const byId = new Map<string, BookingSearchInput>();
     for (const r of results) {
-      const rows = unwrap(r, "booking-search by text") as BookingSearchInput[] | null;
+      const rows = liftFlag(unwrap(r, "booking-search by text") as JoinedRow[] | null);
       // A booking matching on two columns arrives twice; the map keeps one.
-      for (const row of rows ?? []) byId.set(row.id, row);
+      for (const row of rows) byId.set(row.id, row);
     }
     return [...byId.values()]
       .sort((a, b) => compareStringsDesc(a.starts_at, b.starts_at))

@@ -21,6 +21,11 @@ The moving parts:
   the reschedule-stickiness scenario (#523) needs.
 - **`SMOKE` and `SMOKE2` buckets**: the isolated buckets those agents serve. The
   smoke test defaults to them, so a run never touches the live fleet.
+- **The `PARTNER` bucket** (#2660): a third isolated bucket on `smoketest@` alone,
+  served on the PUBLIC paths with no key, so a partner can test the embed from
+  their own site. It has its own event type ("Partner test call", capped at 8 a
+  day so a flood of tests cannot starve the canary of free slots). The codes are
+  read from `src/lib/embed/public-test-bucket.ts`, never typed into the seed.
 
 ## Preconditions
 
@@ -43,8 +48,15 @@ The moving parts:
    reassign scenario. This is the one genuinely manual, one-time step; the rest is
    scripted.
 
-2. **Preview the seed (writes nothing).** From the repo root, run the seed in its
-   default dry-run mode and read the planned rows:
+2. **Preview the seed (writes nothing), and read what it measured.** From the
+   repo root, run the seed in its default dry-run mode. It prints the planned rows
+   and then MEASURES every test bucket in the live project (#2660), exiting 0
+   only when each exists, is flagged `is_test`, has a member and has published
+   slots; otherwise it exits on the state's own code (2 no row, 3 no member, 4
+   not published yet, 5 not flagged, 6 nothing judged) and says what to do. On a
+   fresh project this first run exits 2, which is the measurement working. Run it
+   a few minutes past the hour or half hour: the APPLY step below rewrites the
+   smoke agents' working hours in place, and the canary fires at :00 and :30.
 
    <!-- runbook-verified: 2026-08-03 (bfff44b0) run against the live project; printed the
         planned agents, schedules, rules, buckets and members and wrote nothing, as the
@@ -125,7 +137,12 @@ The moving parts:
 so a booking regression is caught without anyone remembering to run it:
 
 - **Every ~30 min**: the side-effect-free dry-run tick (`SMOKE_DRY_RUN_ONLY=1`) as
-  a fast health check against the live fleet.
+  a fast health check against the live fleet. Since #2660 it also reads
+  `GET /api/availability?bucket=PARTNER` with NO key, the exact request a
+  partner's booker makes, and fails when the public test bucket does not answer
+  by name: every other monitor skips `is_test` buckets on purpose, so this is the
+  only thing that notices it going dark before a partner does. The verdict rules
+  are in `scripts/lib/public-test-bucket-check.ts`.
 - **Every 6h**: the full strict pass (`SMOKE_STRICT=1`, plus
   `scripts/smoke-reschedule.ts`). It sets `SMOKE_SKIP_EVENT_CLEANUP=1` because the
   runner has no Google service-account creds; the API-driven cancels still tear

@@ -11,6 +11,7 @@ import {
   selectReassignTarget,
 } from "../src/lib/booking/core.ts";
 import type { Booking, Bucket, EventType } from "../src/lib/db/types.ts";
+import { TEST_MODE_COPY } from "../src/lib/booking/booker-copy.ts";
 import { assert, finish } from "./lib/harness.ts";
 
 // --- bookingWindow ---
@@ -293,6 +294,22 @@ assert(
   "no phone -> still carries the manage link",
 );
 assert(!desc.includes(" - ") && !desc.includes("\u2014"), "lead-facing copy has no dashes");
+// #2660: a TEST booking's invite opens with the test line, so the calendar event
+// says what it is without being opened, and a real booking's is untouched.
+{
+  const testDesc = eventDescription("+12035615295", "https://x/m/t", { isTest: true });
+  assert(testDesc.startsWith(`${TEST_MODE_COPY.line}\n`), "a test booking's invite opens with the test line");
+  assert(
+    testDesc.endsWith("Booked via Pennie. Phone: +12035615295\nReschedule or cancel: https://x/m/t"),
+    "and still carries the phone and the manage link after it",
+  );
+  assert(
+    eventDescription("+12035615295", "https://x/m/t", { isTest: false }) ===
+      eventDescription("+12035615295", "https://x/m/t"),
+    "a real booking's invite is unchanged",
+  );
+  assert(!desc.includes(TEST_MODE_COPY.line), "and never carries the test line");
+}
 
 // --- joinBookingContexts (#164: in-memory join replaces the per-booking N+1) ---
 {
