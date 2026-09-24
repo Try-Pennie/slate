@@ -30,7 +30,7 @@ import {
   type CalcomSchedule,
   type SlateRule,
   type SlateSchedule,
-} from "./calcom-schedule-import.ts";
+} from "@/lib/calcom/schedule-import";
 
 /** Luxon's convention, which is Slate's: 1 = Monday .. 7 = Sunday. Named rather
  *  than numbered wherever a person reads the output: nobody acts on "day 6". */

@@ -33,7 +33,7 @@ import {
   type CalcomSide,
   type ScheduleVerdict,
 } from "./lib/schedule-parity.ts";
-import type { SlateSchedule } from "./lib/calcom-schedule-import.ts";
+import type { SlateSchedule } from "@/lib/calcom/schedule-import";
 import { assert, eq, finish } from "./lib/harness.ts";
 
 /** Mon to Fri 08:00 to 17:00 Eastern: the seeded week the whole roster carried

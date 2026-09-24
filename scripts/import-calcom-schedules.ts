@@ -54,14 +54,16 @@ loadEnvFiles([".env.local", ".dev.vars"]);
 
 const { supabaseAdmin } = await import("@/lib/supabase/admin");
 const { unwrap } = await import("@/lib/db/result");
-const { planScheduleReplacement } = await import("@/lib/schedule-replacement");
-const { mapCalcomSchedule, diffSchedule, skipKindForStatus, paceMs, hoursOverwriteRefusal } = await import(
-  "./lib/calcom-schedule-import.ts"
-);
+// The mapping and the write this shares with the activation gate (#2627), which
+// imports ONE agent's week the moment they become bookable. One reading of a cal.com
+// week, so the daily sweep and the gate cannot disagree about what somebody works.
+const { planImportedWeek, pickDefaultSchedule, diffSchedule, skipKindForStatus, paceMs, hoursOverwriteRefusal } =
+  await import("@/lib/calcom/schedule-import");
+const { writeImportedWeek } = await import("@/lib/calcom/import-write");
 // The reads this shares with `pnpm verify:calcom-parity`. One definition of "who
 // is a bookable agent", because two would drift and the command would then report
 // agreement about a roster this never wrote to.
-const { makeCalGet, pickDefaultSchedule, emailIndex, loadBookableRoster } = await import(
+const { makeCalGet, emailIndex, loadBookableRoster } = await import(
   "./lib/calcom-roster.ts"
 );
 
@@ -214,22 +216,11 @@ for (const agent of agents) {
     skipped.push({ email: agent.email, why: `cal.com read threw: ${String(err).slice(0, 80)}`, kind: "transient" });
     continue;
   }
-  const mapped = mapCalcomSchedule(calSchedule as never);
-  if (!mapped.ok) {
-    skipped.push({ email: agent.email, why: mapped.why, kind: "permanent" });
-    continue;
-  }
-  // Split shifts come across whole (#1782). Slate held one window per weekday until
-  // then, so a day with two was left out and the agent was offered nothing on it;
-  // `planScheduleReplacement` now refuses only windows that OVERLAP each other, and
-  // names the day when it does.
-  if (mapped.rules.length === 0) {
-    skipped.push({ email: agent.email, why: "the schedule has no usable days", kind: "permanent" });
-    continue;
-  }
-  const plan = planScheduleReplacement(mapped.rules, mapped.timezone);
+  // The mapping, the empty check and Slate's validator, in the one function the
+  // activation gate uses too (#2627). Split shifts come across whole (#1782).
+  const plan = planImportedWeek(calSchedule);
   if (!plan.ok) {
-    skipped.push({ email: agent.email, why: `Slate will not accept this week: ${plan.error}`, kind: "permanent" });
+    skipped.push({ email: agent.email, why: plan.why, kind: "permanent" });
     continue;
   }
   const currentRules = agent.rules;
@@ -309,36 +300,17 @@ if (!apply) {
 }
 
 // --- write --------------------------------------------------------------------
-// Rules FIRST, then the timezone, and both verified by reading back. A run that
-// dies between them leaves an agent with new hours in their old zone, which the
-// next run repairs, because the diff still reports them as changed.
+// The zone and the rules in ONE transaction, through the write the activation gate
+// uses too (#2627). This used to write the rules and then the zone as two
+// statements, so a run that died between them left new hours read in the old zone.
 let wrote = 0;
 const writtenEmails: string[] = [];
 const writeFailures: { email: string; why: string }[] = [];
 for (const c of changes) {
   try {
-    const { data, error } = await db.rpc("replace_availability_rules", {
-      p_schedule_id: c.scheduleId,
-      p_rules: c.plan.rules,
-      p_source: "calcom-import",
-    });
-    if (error) throw new Error(`rules: ${error.message}`);
-    // Judge on the count the database reports, never on the absence of an error: a
-    // write that landed a different number of rules is a silently wrong week.
-    const written = typeof data === "number" ? data : Number.NaN;
-    if (written !== c.plan.rules.length) {
-      throw new Error(`rules: asked for ${c.plan.rules.length}, database recorded ${Number.isFinite(written) ? written : "an unreadable count"}`);
-    }
-    const tz = await db
-      .from("availability_schedules")
-      .update({ timezone: c.plan.timezone })
-      .eq("id", c.scheduleId)
-      .select("id, timezone");
-    if (tz.error) throw new Error(`timezone: ${tz.error.message}`);
-    const back = (tz.data ?? []) as { timezone: string }[];
-    if (back.length !== 1 || back[0].timezone !== c.plan.timezone) {
-      throw new Error(`timezone: read back ${back.length === 1 ? back[0].timezone : `${back.length} rows`}`);
-    }
+    // Throws on a refused write and on a count it did not ask for, so reaching the
+    // next line is the verified write, never merely the absence of an error.
+    await writeImportedWeek(db, c.userId, c.plan);
     wrote++;
     writtenEmails.push(c.email);
     console.log(`wrote ${c.email}`);
