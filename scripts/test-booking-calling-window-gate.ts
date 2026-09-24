@@ -128,6 +128,38 @@ async function run() {
     assert(calls.claimReschedule === 0, "admin reschedule: refused before the lease");
   }
 
+  // --- admin IN-PLACE reschedule (the same agent is free, so the event would be
+  //     moved in place): 07:30 in the booking's zone is refused, nothing written.
+  //     The positive control first: the same fixture at 10:00 really does take
+  //     the in-place branch, so the refusal below is not a reassign path's. ---
+  {
+    const ctx = { booking: makeBooking({ timezone: "America/New_York" }), bucket, eventType };
+    const { deps, calls } = makeDeps({ existing: ctx, freeEmails: new Set(["a@x.com"]) });
+    await rescheduleBooking("tok1", "2026-06-09T14:00:00.000Z", RR, "admin", deps, NOW);
+    assert(
+      calls.updateEventTime.length === 1 && calls.createEvent.length === 0,
+      "control: an admin move to 10:00 New York takes the in-place branch",
+    );
+  }
+  {
+    const ctx = { booking: makeBooking({ timezone: "America/New_York" }), bucket, eventType };
+    const { deps, calls } = makeDeps({ existing: ctx, freeEmails: new Set(["a@x.com"]) });
+    // 2026-06-09T11:30Z is 07:30 EDT.
+    const err = await refused(() =>
+      rescheduleBooking("tok1", "2026-06-09T11:30:00.000Z", RR, "admin", deps, NOW),
+    );
+    assert(err instanceof OutsideCallingWindowError, "admin in-place reschedule to 07:30 is refused");
+    assert(
+      calls.claimReschedule === 0 &&
+        calls.updateEventTime.length === 0 &&
+        calls.createEvent.length === 0 &&
+        calls.moveBusyBlock.length === 0 &&
+        calls.bookingEvents.length === 0 &&
+        calls.webhooks.length === 0,
+      "admin in-place reschedule to 07:30: no lease, event move, busy block, history row or webhook",
+    );
+  }
+
   // --- a no-op reschedule onto the time it already has is not re-judged ---
   {
     // A call booked before the gate existed can sit outside the window; a
