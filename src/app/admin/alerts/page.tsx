@@ -18,6 +18,7 @@ import {
   resolveAvailabilityDriftArmed,
   resolveRosterCoverageArmed,
   resolveAwaitingActivationArmed,
+  resolveBelowLeadTierArmed,
   envLowVolumeArmed,
 } from "@/lib/monitor/settings";
 import { SubmitButton } from "@/components/ui/SubmitButton";
@@ -67,6 +68,7 @@ export default async function AlertSettingsPage({
   const availabilityDriftArmed = resolveAvailabilityDriftArmed(config);
   const rosterCoverageArmed = resolveRosterCoverageArmed(config);
   const awaitingActivationArmed = resolveAwaitingActivationArmed(config);
+  const belowLeadTierArmed = resolveBelowLeadTierArmed(config);
 
   const storedByKey = new Map(rows.map((r) => [r.key, r.cooldown_min]));
   // #1289: every alarm currently quieter than its coded default. Read through the
@@ -425,6 +427,25 @@ export default async function AlertSettingsPage({
             than four hours, and a follow up once nobody is. Leave this off until
             somebody has watched a few ordinary days, so the alert is turned on
             against numbers a person has seen.
+          </p>
+          <label className="mt-4 flex items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              name="below_lead_tier_armed"
+              value="on"
+              defaultChecked={belowLeadTierArmed}
+              className="h-4 w-4"
+            />
+            Send a Slack alert when a lead is booked with a team below their tier
+          </label>
+          <p className="mt-1 text-xs text-fg-muted">
+            Off: Slate still holds every upcoming call against the tier Salesforce
+            gives the lead today, every 5 minutes, and records what it finds in the
+            logs, but nobody is notified. On: Slack gets an alert for each call that
+            is with a lower team than the lead&apos;s tier, and a follow up once it
+            is moved, the score comes down, or the call is cancelled. Turn this on
+            before cutover: it replaces the cal.com Slack workflow that stops working
+            then.
           </p>
         </section>
 

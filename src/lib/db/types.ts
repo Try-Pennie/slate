@@ -267,6 +267,8 @@ export interface MonitorAlertConfig {
   availability_drift_armed: boolean | null;
   /** #2318: is the "waiting to become bookable" page armed? Null = disarmed. */
   awaiting_activation_armed: boolean | null;
+  /** #2593: is the "booked below the lead's tier" page armed? Null = disarmed. */
+  below_lead_tier_armed: boolean | null;
   /** #1454: UI arm/disarm for the roster-coverage page. Null = unset (fall
    *  through to the disarmed default, which here is about the roster being dark
    *  before cutover rather than about calibration: see migration 0102). */

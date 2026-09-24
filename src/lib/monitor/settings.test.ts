@@ -8,6 +8,7 @@ import {
   resolveFloors,
   resolveLowVolumeArmed,
   resolveFailureRateArmed,
+  resolveBelowLeadTierArmed,
   parseMonitorSettingsForm,
   type MonitorSettingsFormInput,
 } from "./settings";
@@ -262,6 +263,7 @@ describe("parseMonitorSettingsForm low_volume_armed", () => {
     availabilityDriftArmed: "",
     rosterCoverageArmed: "",
     awaitingActivationArmed: "",
+    belowLeadTierArmed: "",
   };
 
   it("parses a checked toggle as armed=true", () => {
@@ -271,5 +273,23 @@ describe("parseMonitorSettingsForm low_volume_armed", () => {
 
   it("parses an absent/blank toggle as an explicit armed=false (saving disarms)", () => {
     expect(parseMonitorSettingsForm({ ...base, lowVolumeArmed: "" }).config.low_volume_armed).toBe(false);
+  });
+  // #2593: the below-tier page's own switch, parsed on its own field so arming one
+  // alert can never arm another.
+  it("parses the below-lead-tier toggle on its own field", () => {
+    expect(parseMonitorSettingsForm({ ...base, belowLeadTierArmed: "on" }).config.below_lead_tier_armed).toBe(true);
+    expect(parseMonitorSettingsForm({ ...base, belowLeadTierArmed: "" }).config.below_lead_tier_armed).toBe(false);
+    expect(parseMonitorSettingsForm({ ...base, belowLeadTierArmed: "on" }).config.awaiting_activation_armed).toBe(false);
+  });
+
+  it("resolves the below-lead-tier switch DISARMED when unset", () => {
+    expect(resolveBelowLeadTierArmed(null)).toBe(false);
+    expect(resolveBelowLeadTierArmed({ below_lead_tier_armed: null })).toBe(false);
+    expect(resolveBelowLeadTierArmed({ below_lead_tier_armed: true })).toBe(true);
+  });
+
+  it("gives the below-lead-tier family a real cooldown, so it can never page every tick", () => {
+    expect(ALERT_KEYS).toContain("booking_below_lead_tier");
+    expect(MONITOR_DEFAULTS.cooldownMs.booking_below_lead_tier).toBeGreaterThan(0);
   });
 });

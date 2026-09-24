@@ -7,6 +7,7 @@ import {
   resolveAlert,
   resolveRecovered,
   settleAlertsSilently,
+  firingFamilyMembers,
 } from "@/lib/notify/dispatch";
 import { eligibleAgentIdsCached } from "@/lib/availability/eligible-cache";
 import { getBucketSlots } from "@/lib/availability/service";
@@ -114,6 +115,8 @@ import {
   AVAILABILITY_TRUTH_VERDICT_LANE,
   TIER_STAFFING_VERDICT_LANE,
   tierStaffingReachedVerdict,
+  BELOW_LEAD_TIER_VERDICT_LANE,
+  belowLeadTierReachedVerdict,
   FAILURE_RATE_VERDICT_LANE,
   LOW_VOLUME_VERDICT_LANE,
   OOO_PROTECTION_VERDICT_LANE,
@@ -250,6 +253,13 @@ import {
   runAwaitingActivationCheck,
   type AwaitingActivationRow,
 } from "@/lib/monitor/awaiting-activation";
+import { runBelowLeadTierCheck, BELOW_LEAD_TIER_KEY, type BelowLeadTierResult } from "@/lib/monitor/below-lead-tier";
+import {
+  loadUpcomingBookingsInBuckets,
+  loadCatchallByBooking,
+} from "@/lib/monitor/below-lead-tier-store";
+import { readLeadXbcs, type LeadXbcRecord } from "@/lib/salesforce/lead-xbc";
+import { querySoqlAll, sfToken } from "@/lib/salesforce/rest";
 import type { OrgDefaults } from "@/lib/schedule-core";
 
 export const dynamic = "force-dynamic";
@@ -1466,6 +1476,83 @@ export async function GET(req: NextRequest) {
       }),
     );
 
+    // --- A booking below the lead's Salesforce tier (#2593): an Ultra High lead
+    // booked with the Low team. A rate cannot see it (two bookings in twelve
+    // hundred was the incident), and the cal.com Slack workflow that covers it
+    // today stops at cutover. Every upcoming real booking's pool tier is held
+    // against the lead's CURRENT XBC__c, so a lead re-scored after booking is
+    // caught by the same comparison.
+    //
+    // Cost on this lane: nothing at all while no real booking is upcoming (no
+    // Salesforce call is made for an empty set). Otherwise one bookings read, one
+    // token exchange and one SOQL query per ~450 distinct leads, since the lead
+    // ids are batched into one IN list per URI budget. At a cutover roster of a
+    // few thousand upcoming calls that is about 2 to 8 Salesforce calls every
+    // five minutes, against a daily API allowance measured in the hundreds of
+    // thousands, and this lane has its own invocation rather than the one the
+    // four minute lanes share.
+    //
+    // Gated on the shared bucket list, which says both each pool's tier and which
+    // buckets are real. Disarmed until somebody has watched it on real traffic
+    // (migration 0136); it measures and logs either way, and a failed read on
+    // either side clears nothing and stamps no verdict. ---
+    const belowLeadTier = await steps.run<BelowLeadTierResult | null>("below_lead_tier", null, async () => {
+      if (!gates.belowLeadTier.run) return null;
+      const realBuckets = buckets!.filter((b) => !b.is_test);
+      let session: Promise<{ token: string; instanceUrl: string }> | null = null;
+      return runBelowLeadTierCheck({
+        loadBookings: () =>
+          loadUpcomingBookingsInBuckets(
+            db,
+            // in-chunk-ok: the real buckets are the routing matrix, sixty codes at the
+            // design target, about 2,300 bytes of uuids against the 10,000 budget.
+            realBuckets.map((b) => b.id),
+            new Date(now).toISOString(),
+          ),
+        buckets: realBuckets,
+        readLeadXbcs: (ids) =>
+          readLeadXbcs(ids, async (soql) => {
+            // One token per tick, fetched only once there is something to ask.
+            session ??= sfToken();
+            const { token, instanceUrl } = await session;
+            return querySoqlAll<LeadXbcRecord>(instanceUrl, token, soql);
+          }),
+        loadCatchall: (ids) => loadCatchallByBooking(db, ids),
+        listFiring: async () => new Set(await firingFamilyMembers(BELOW_LEAD_TIER_KEY)),
+        bookingUrl: (id) => `${appUrl()}${bookingDetailHref(id)}`,
+        armed: settings.belowLeadTierArmed,
+        // alert-key: booking_below_lead_tier:*
+        // alert-text-ok: our own copy from below-lead-tier.ts, built from measured
+        // tiers and the booking row; no error text can reach it.
+        notify: (key, ms, text) => sendThrottledAlert(key, ms, text),
+        // alert-key: booking_below_lead_tier:*
+        // all-clear-proof: scripts/test-below-lead-tier.ts - a failed bookings read,
+        // a failed Salesforce read and a failed firing read each clear NOTHING, and
+        // a paged booking that became unmeasurable keeps its page.
+        resolve: (key, text) => resolveAlert(key, text),
+        cooldownMs: settings.cooldownMs.booking_below_lead_tier,
+      }).then((result) => {
+        if (result.status === "unreadable") {
+          log.warn("monitor", { msg: "below lead tier unreadable", stage: result.stage, error: result.error });
+        } else {
+          log.info("monitor", {
+            msg: "below lead tier",
+            compared: result.compared,
+            below: result.below.length,
+            paged: result.paged,
+            cleared: result.cleared,
+            ...Object.fromEntries(
+              Object.entries(result.unmeasured).map(([k, v]) => [`unmeasured_${k.replace(/-/g, "_")}`, v]),
+            ),
+          });
+        }
+        return result;
+      });
+    });
+    if (!gates.belowLeadTier.run) {
+      log.warn("monitor", { msg: "below lead tier skipped", why: gates.belowLeadTier.why });
+    }
+
     // --- Routing-attribute coverage (#226): a bookable agent with no routing
     // attributes matches no bucket criteria, so unless someone added them as a
     // manual member they are never routed a booking. There is no self-heal
@@ -2541,6 +2628,12 @@ export async function GET(req: NextRequest) {
       recordDetectorVerdict(
         TIER_STAFFING_VERDICT_LANE,
         tierStaffingReachedVerdict(tierStaffing),
+      ),
+      // #2593: stamped only when at least one booking was COMPARED. Parked until
+      // real leads book (verdict-freshness.ts), and the first real booking unparks it.
+      recordDetectorVerdict(
+        BELOW_LEAD_TIER_VERDICT_LANE,
+        belowLeadTierReachedVerdict(belowLeadTier),
       ),
     ]).catch((err) =>
       // recordHeartbeat already swallows its own DB errors, so reaching here means

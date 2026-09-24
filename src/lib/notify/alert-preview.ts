@@ -54,6 +54,11 @@ import {
 import { ACTIVATION_BUDGET_MS } from "@/lib/bookable/activation-allowance";
 import { formatUnsetHoursAlert, formatUnsetHoursRecovery } from "@/lib/monitor/unset-hours";
 import {
+  formatBelowLeadTierAlert,
+  formatBelowLeadTierRecovery,
+  type BelowFinding,
+} from "@/lib/monitor/below-lead-tier";
+import {
   formatAwaitingActivationAlert,
   formatAwaitingActivationRecovery,
 } from "@/lib/monitor/awaiting-activation";
@@ -399,6 +404,24 @@ const AGENT_MANY: FailingAgent[] = [
 // parse-ok: a hard-coded valid ISO literal in a fixture, not a stored stamp; if it
 // ever failed to parse the preview output would be visibly broken, not silently healthy.
 const NOW_MS = Date.parse("2026-07-29T12:00:00.000Z");
+
+/** #2593: one booking below its lead's tier, the 2026-09-21 incident's shape. */
+const PREVIEW_BELOW_TIER: BelowFinding = {
+  kind: "below",
+  booking: {
+    id: "5b0c7a8e-2f41-4d7e-9a61-0c3f1e2d4b5a",
+    bucket_id: "b-100",
+    starts_at: "2026-07-30T18:30:00.000Z",
+    salesforce_id: "00QUi00000zhEUPMA2",
+    external_id: null,
+    agent_name: "Dana Whitfield",
+    agent_email: "dana.whitfield@trypennie.com",
+  },
+  bucket: { id: "b-100", code: "100", name: "Low | None | No Legal Param", criteria: { debt_team: "low" } },
+  pool: { rank: 1, label: "Low" },
+  lead: { kind: "tier", rank: 5, key: "ultra_high", label: "Ultra High", code: "512" },
+};
+const PREVIEW_BELOW_TIER_URL = "https://slate.trypennie.app/admin/bookings/5b0c7a8e-2f41-4d7e-9a61-0c3f1e2d4b5a";
 
 /**
  * One rendered Beyond overflow report (#2228).
@@ -747,6 +770,45 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     state: "bookings completing again",
     channel: "recovery",
     text: formatFailureRateAllClear({ attempts: 90, failures: 2, pct: 2, windowMinutes: 60 }),
+  },
+  // #2593. The 2026-09-21 incident's shape: an Ultra High lead (XBC 512) with a
+  // Low only agent. One state per catch-all reading, because each sends the reader
+  // to a different upstream place, and both all clears.
+  {
+    key: "booking_below_lead_tier:*",
+    state: "the catch-all chose the Low pool for an Ultra High lead",
+    channel: "alert",
+    text: formatBelowLeadTierAlert(PREVIEW_BELOW_TIER, true, PREVIEW_BELOW_TIER_URL),
+  },
+  {
+    key: "booking_below_lead_tier:*",
+    state: "routed on its own code, and the lead was scored higher since",
+    channel: "alert",
+    text: formatBelowLeadTierAlert(PREVIEW_BELOW_TIER, false, PREVIEW_BELOW_TIER_URL),
+  },
+  {
+    key: "booking_below_lead_tier:*",
+    state: "no routing record for the booking",
+    channel: "alert",
+    text: formatBelowLeadTierAlert(PREVIEW_BELOW_TIER, null, PREVIEW_BELOW_TIER_URL),
+  },
+  {
+    key: "booking_below_lead_tier:*",
+    state: "the routing record could not be read",
+    channel: "alert",
+    text: formatBelowLeadTierAlert(PREVIEW_BELOW_TIER, "unreadable", PREVIEW_BELOW_TIER_URL),
+  },
+  {
+    key: "booking_below_lead_tier:*",
+    state: "the call is now with a team that works the tier",
+    channel: "recovery",
+    text: formatBelowLeadTierRecovery("5b0c7a8e-2f41-4d7e-9a61-0c3f1e2d4b5a", "agrees", PREVIEW_BELOW_TIER_URL),
+  },
+  {
+    key: "booking_below_lead_tier:*",
+    state: "the call was cancelled or its time passed",
+    channel: "recovery",
+    text: formatBelowLeadTierRecovery("5b0c7a8e-2f41-4d7e-9a61-0c3f1e2d4b5a", "gone", PREVIEW_BELOW_TIER_URL),
   },
   {
     key: "empty_tier:*",

@@ -83,6 +83,14 @@ traffic fed checks (which are properly silent from Friday evening to Monday
 morning). A blind detector re-pages daily rather than hourly, since before
 cutover it can legitimately stay blind for days.
 
+The family has grown since those three, and the list of lanes and bounds is
+`VERDICT_STALE_BOUNDS_MS` in `src/lib/monitor/health.ts` rather than this
+paragraph. The newest is `verdict:below-lead-tier` (#2593), the check holding
+each upcoming booking's pool tier against the lead's current Salesforce
+`XBC__c`. It stamps only when it COMPARED at least one booking, and it ships
+parked in `PARKED_VERDICT_DETECTORS` because on 2026-09-24 no real lead had an
+upcoming booking in Slate, so there was nothing to compare.
+
 # Proving the burst counter answers (`pnpm verify:burst-counter`)
 
 The same shape as the truth probe above, on the burst ceiling (#1564).

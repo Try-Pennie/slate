@@ -23,6 +23,7 @@ import {
   TWILIO_ROSTER_VERDICT_LANE,
   LANE_WATCHDOG_VERDICT_LANE,
   TIER_STAFFING_VERDICT_LANE,
+  BELOW_LEAD_TIER_VERDICT_LANE,
   BURST_COUNTER_VERDICT_LANE,
   KILL_SWITCH_VERDICT_LANE,
   type DetectorVerdictLane,
@@ -58,6 +59,7 @@ const STAMP: Record<WorkerStampedVerdictLane, () => Promise<void>> = {
   [TWILIO_ROSTER_VERDICT_LANE]: () => recordHeartbeat("verdict:twilio-roster"),
   [LANE_WATCHDOG_VERDICT_LANE]: () => recordHeartbeat("verdict:lane-watchdog"),
   [TIER_STAFFING_VERDICT_LANE]: () => recordHeartbeat("verdict:tier-staffing"),
+  [BELOW_LEAD_TIER_VERDICT_LANE]: () => recordHeartbeat("verdict:below-lead-tier"),
 };
 
 /**

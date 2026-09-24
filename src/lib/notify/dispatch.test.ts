@@ -55,6 +55,17 @@ vi.mock("@/lib/supabase/admin", () => ({
               ? { data: null, error: { message: "statement timeout" } }
               : { data: rows.has(key) ? { last_sent_at: rows.get(key) } : null, error: null },
         }),
+        // The family read (#2593): a LIKE over the firing markers, bounded.
+        like: (_col: string, pattern: string) => ({
+          limit: async () => {
+            if (failReads.value) return { data: null, error: { message: "read timeout" } };
+            const prefix = pattern.replace(/%$/, "").replace(/\\_/g, "_");
+            return {
+              data: [...rows.keys()].filter((k) => k.startsWith(prefix)).map((key) => ({ key })),
+              error: null,
+            };
+          },
+        }),
         // The bulk firing-marker read (#1134).
         in: async (_col: string, keys: string[]) =>
           failReads.value
@@ -93,6 +104,7 @@ import {
   resolveAlert,
   isAlertFiring,
   firingAlertKeys,
+  firingFamilyMembers,
   firingKey,
   settleAlertsSilently,
 } from "./dispatch";
@@ -351,6 +363,33 @@ describe("resolveAlert recovery notice (#1133)", () => {
       failReads.value = true;
       const firing = await firingAlertKeys(["cron_lane_stale:sync"]);
       expect(firing.size).toBe(0);
+    });
+  });
+
+  // #2593: a per booking family whose members cannot be enumerated from anywhere
+  // else, because a cancelled booking drops out of every read that would name it.
+  describe("firingFamilyMembers", () => {
+    it("returns the member ids of a family that is firing, and nothing from its neighbours", async () => {
+      slack.postSlack.mockResolvedValue({ ok: true });
+      await sendThrottledAlert("booking_below_lead_tier:bk-1", COOLDOWN, "below");
+      await sendThrottledAlert("booking_below_lead_tier:bk-2", COOLDOWN, "below");
+      await sendThrottledAlert("booking_below_lead_tierX:bk-3", COOLDOWN, "a lookalike family");
+      await sendThrottledAlert("sync_failures", COOLDOWN, "broken");
+
+      const members = await firingFamilyMembers("booking_below_lead_tier");
+      expect(members.sort()).toEqual(["bk-1", "bk-2"]);
+    });
+
+    it("forgets a member once it is resolved", async () => {
+      slack.postSlack.mockResolvedValue({ ok: true });
+      await sendThrottledAlert("booking_below_lead_tier:bk-1", COOLDOWN, "below");
+      await resolveAlert("booking_below_lead_tier:bk-1", "fine now");
+      expect(await firingFamilyMembers("booking_below_lead_tier")).toEqual([]);
+    });
+
+    it("THROWS when the read fails, so a caller can never clear off a list it did not get", async () => {
+      failReads.value = true;
+      await expect(firingFamilyMembers("booking_below_lead_tier")).rejects.toThrow(/alert_state/);
     });
   });
 

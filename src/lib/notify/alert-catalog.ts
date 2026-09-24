@@ -410,6 +410,15 @@ export const ALERT_CATALOG: AlertEntry[] = [
     why: "An endpoint is dead-lettering every delivery; a delivery that succeeds ends it.",
   },
   {
+    key: "booking_below_lead_tier:*",
+    kind: "condition",
+    why:
+      "One upcoming call is with a team below the tier Salesforce gives the lead " +
+      "today; it ends when the call moves to a team that works the tier, the score " +
+      "comes down, or the call is cancelled or its time passes, and the monitor " +
+      "re-measures every booking every tick (#2593).",
+  },
+  {
     key: "empty_tier:*",
     kind: "condition",
     why: "A debt tier is offering no booking time inside the next open business day, and stays that way until somebody is staffed onto it or its agents free up; the monitor re-measures every tick.",

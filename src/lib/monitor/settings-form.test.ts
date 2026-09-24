@@ -23,6 +23,7 @@ const blank = {
   availabilityDriftArmed: "",
   rosterCoverageArmed: "",
   awaitingActivationArmed: "",
+  belowLeadTierArmed: "",
 };
 
 describe("parseMonitorSettingsForm", () => {
@@ -42,6 +43,7 @@ describe("parseMonitorSettingsForm", () => {
       availability_drift_armed: false,
       roster_coverage_armed: false,
       awaiting_activation_armed: false,
+      below_lead_tier_armed: false,
     });
   });
 

@@ -224,6 +224,38 @@ export async function existingAlertStateKeys(keys: string[]): Promise<Set<string
 }
 
 /**
+ * The members of a `family:*` alert that have an outstanding page, in one read
+ * (#2593). Answers the part after `family:`, never a marker key.
+ *
+ * For a family keyed by something that can VANISH, a booking that is cancelled
+ * or whose time passes: once it drops out of the read that found it, nothing else
+ * can name it, so its page would never clear. The markers themselves are the only
+ * record of who was paged.
+ *
+ * THROWS on a read error, unlike its siblings above. Its one caller treats a
+ * throw as "clear nothing this tick", which is the same safe outcome, and an
+ * exception cannot be mistaken for a family with nobody firing.
+ */
+export async function firingFamilyMembers(family: string): Promise<string[]> {
+  const prefix = firingKey(`${family}:`);
+  // `_` is a LIKE wildcard, and alert keys are full of them, so it is escaped;
+  // the startsWith below is the real filter either way.
+  const pattern = `${prefix.replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
+  // cap-safe: alert_state is roster bounded (SAFE_TABLES), and a family with
+  // more open pages than this is an incident the pages themselves are reporting.
+  const { data, error } = await supabaseAdmin()
+    .from("alert_state")
+    .select("key")
+    .like("key", pattern)
+    .limit(1000);
+  if (error) throw new Error(`alert_state family read failed for ${family}: ${error.message}`);
+  return ((data ?? []) as { key: string }[])
+    .map((r) => r.key)
+    .filter((k) => k.startsWith(prefix))
+    .map((k) => k.slice(prefix.length));
+}
+
+/**
  * Clear several conditions at once, at the cost of ONE read on the healthy tick
  * (#1151).
  *
