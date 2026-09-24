@@ -56,6 +56,25 @@ async function run() {
     );
   }
 
+  // --- a retry of a booking that already exists returns it, not a refusal ---
+  {
+    // A booking made before this gate shipped (or across the deploy boundary) at
+    // 07:59 Honolulu. Its double-click retry carries the same idempotency key;
+    // the replay must answer with the stored booking, and write nothing.
+    const stored = makeBooking({ id: "bk-stored", starts_at: HNL_0759, timezone: "Pacific/Honolulu" });
+    const { deps, calls } = makeDeps({
+      candidates: ["a"],
+      freeEmails: new Set(["a@x.com"]),
+      existingByKey: stored,
+    });
+    const res = await createBooking({ ...input, startIso: HNL_0759, timezone: "Pacific/Honolulu" }, deps);
+    assert(res.booking.id === "bk-stored", "create: an idempotent replay returns the stored booking");
+    assert(
+      calls.createEvent.length === 0 && calls.reservations.length === 0,
+      "create: an idempotent replay writes nothing",
+    );
+  }
+
   // --- create: 08:00 in the lead's zone goes through ---
   {
     const { deps } = makeDeps({ candidates: ["a"], freeEmails: new Set(["a@x.com"]) });

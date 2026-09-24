@@ -2488,11 +2488,6 @@ export async function createBooking(
    * With the flag unset it never reads the clock at all, so a production confirm
    * pays nothing rather than paying a little and discarding it.
    */
-  // #2310: the lead's calling window, judged in the zone the booker was using.
-  // First, before any read or write: it needs nothing but the request, and a
-  // refused time must leave nothing behind.
-  assertWithinLeadCallingWindow(input.startIso, input.timezone);
-
   const profile = makeConfirmProfile({
     enabled: isLoadtest(),
     now: () => Date.now(),
@@ -2524,6 +2519,15 @@ export async function createBooking(
       return { booking: existing, manageUrl: manageUrl(deps, existing.manage_token) };
     }
   }
+
+  // #2310: the lead's calling window, judged in the zone the booker was using.
+  // AFTER the idempotency fast path, so a retry of a booking that already exists
+  // (one made before this gate shipped, or across the deploy boundary) returns
+  // it rather than being refused; BEFORE every write, so a refused time leaves
+  // nothing behind. The in-flight resume below sits after this: a reservation
+  // for an outside start can only predate the gate, and the reservation drain
+  // completes it on its own, so refusing the retry loses nothing.
+  assertWithinLeadCallingWindow(input.startIso, input.timezone);
 
   const resolved = await profile.time("resolve-bucket", () =>
     deps.resolveBucketByCode(input.bucketCode),
