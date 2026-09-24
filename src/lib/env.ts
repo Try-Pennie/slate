@@ -122,6 +122,14 @@ export const offboardingApiKey = (): string => process.env.OFFBOARDING_API_KEY ?
 // of) the booking pool. Empty = endpoint disabled (503).
 export const bookableApiKey = (): string => process.env.BOOKABLE_API_KEY ?? "";
 
+// Bearer key Regal's reporting webhook carries on POST /api/regal/calls (#2090), the
+// inbound call feed the "calling while not routable" detector reads. Its OWN secret,
+// deliberately NOT `webhook_endpoints.auth_header` (the key Slate sends Regal): that
+// one leaves Slate on every outbound delivery, and sharing it would couple the two
+// rotations so rotating either takes both directions down. Empty = endpoint refuses
+// every post with a 503 naming this variable.
+export const regalInboundKey = (): string => process.env.REGAL_INBOUND_KEY ?? "";
+
 // Bearer keys for the direct booking API (POST /api/bookings), called by
 // the external AI auto-booker (#355). TWO slots so the secret rotates with zero
 // downtime: add the new key as _2, point the caller at it, then retire the old

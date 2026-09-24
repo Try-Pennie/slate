@@ -13,6 +13,7 @@ import type {
   BookingEvent,
   BookingHandoff,
   OwnerAlertEvent,
+  RegalCallEvent,
   BookingOutbox,
   BookingReservation,
   BookingApiOutcomeDaily,
@@ -130,6 +131,7 @@ export interface Database {
       reassign_intents: Table<ReassignIntent>;
       booking_handoffs: Table<BookingHandoff>;
       owner_alert_events: Table<OwnerAlertEvent>;
+      regal_call_events: Table<RegalCallEvent>;
       bucket_slots: Table<BucketSlotsRow>;
       pending_event_deletions: Table<PendingEventDeletion>;
       booking_outbox: Table<BookingOutbox>;
