@@ -20,8 +20,20 @@ beforeAll(() => {
   new Function(widgetSrc)();
 });
 
+/** The overlay currently on screen; a hidden one carries aria-hidden="true". */
+const SHOWN_OVERLAY = '.slate-widget-overlay:not([aria-hidden="true"])';
+const shownOverlay = () => document.querySelector<HTMLElement>(SHOWN_OVERLAY);
+const shownIframe = () =>
+  document.querySelector<HTMLIFrameElement>(`${SHOWN_OVERLAY} iframe`);
+
 afterEach(() => {
   vi.useRealTimers();
+  // Close whatever is still open before wiping the body (#2678): a frame is kept
+  // hidden across close and reopen now, so an open modal left behind would keep
+  // its document keydown listener and its scroll lock into the next test.
+  document
+    .querySelectorAll<HTMLButtonElement>(`${SHOWN_OVERLAY} button[aria-label="Close"]`)
+    .forEach((b) => b.click());
   document.body.innerHTML = "";
 });
 
@@ -445,5 +457,197 @@ describe("widget.js booker lifecycle events (#2658)", () => {
     iframe.dispatchEvent(new Event("error"));
     expect(eventsOf(failed)).toHaveLength(1);
     expect((eventsOf(failed)[0].data as { code: string }).code).toBe("load_error");
+  });
+});
+
+// #2678: one frame per namespace, kept across close and reopen the way cal.com
+// keeps its pre-rendered modal. hide() hides the overlay instead of removing it,
+// so a reopen for the same link shows the SAME iframe: the Booker inside keeps
+// its chosen day, time and typed details, and bookerViewed / bookerReady fire
+// once per page load instead of once per open. #2677 rides along: the open is
+// counted after it succeeded, never before a call that can throw.
+describe("widget.js keeps the modal frame across close and reopen (#2678, #2677)", () => {
+  function clickTrigger(ns: string, link = "router?xbc=411"): HTMLButtonElement {
+    const trigger = document.createElement("button");
+    trigger.setAttribute("data-cal-link", link);
+    trigger.setAttribute("data-cal-namespace", ns);
+    document.body.appendChild(trigger);
+    trigger.click();
+    return trigger;
+  }
+  const closeShown = () =>
+    (document.querySelector(`${SHOWN_OVERLAY} button[aria-label="Close"]`) as HTMLButtonElement).click();
+  const overlayOf = (iframe: HTMLIFrameElement) =>
+    iframe.closest(".slate-widget-overlay") as HTMLElement;
+
+  it("reopening the same link shows the same iframe and announces only navigatedToBooker and bookerReopened", () => {
+    const navigated = calOn("navigatedToBooker");
+    const viewed = calOn("bookerViewed");
+    const ready = calOn("bookerReady");
+    const reopened = calOn("bookerReopened");
+    const reloaded = calOn("bookerReloaded");
+    const ns = freshNs();
+
+    clickTrigger(ns);
+    const first = shownIframe()!;
+    first.dispatchEvent(new Event("load"));
+    fromActiveFrame(first, { type: EMBED_MESSAGE.bookerViewed, data: { slotsLoaded: false } });
+    fromActiveFrame(first, { type: EMBED_MESSAGE.bookerReady, data: { slotsLoaded: true } });
+    closeShown();
+    clickTrigger(ns);
+
+    // The very same element, not a new one built from the same link.
+    expect(shownIframe()).toBe(first);
+    expect(document.querySelectorAll("iframe")).toHaveLength(1);
+    expect(navigated).toHaveBeenCalledTimes(2);
+    expect(reopened).toHaveBeenCalledTimes(1);
+    expect(viewed).toHaveBeenCalledTimes(1);
+    expect(ready).toHaveBeenCalledTimes(1);
+    // A reopen is not a reload: the frame loaded once.
+    expect(reloaded).not.toHaveBeenCalled();
+  });
+
+  it("hides the overlay with aria-hidden and returns focus to the trigger on close, and shows it again on reopen", () => {
+    const ns = freshNs();
+    const trigger = clickTrigger(ns);
+    const overlay = shownOverlay()!;
+    expect(overlay.getAttribute("aria-hidden")).toBeNull();
+    expect(overlay.style.display).not.toBe("none");
+
+    closeShown();
+    expect(overlay.isConnected).toBe(true); // kept, not removed
+    expect(overlay.style.display).toBe("none");
+    expect(overlay.getAttribute("aria-hidden")).toBe("true");
+    expect(document.activeElement).toBe(trigger);
+    expect(document.body.style.overflow).toBe("");
+
+    clickTrigger(ns);
+    expect(shownOverlay()).toBe(overlay);
+    expect(overlay.getAttribute("aria-hidden")).toBeNull();
+    expect(overlay.style.display).not.toBe("none");
+    expect(document.body.style.overflow).toBe("hidden");
+    expect(document.activeElement).toBe(overlay.querySelector('button[aria-label="Close"]'));
+  });
+
+  it("builds a new frame when the link changes for the same namespace and drops the old one", () => {
+    const ns = freshNs();
+    clickTrigger(ns, "router?xbc=411");
+    const first = shownIframe()!;
+    closeShown();
+    clickTrigger(ns, "router?xbc=412");
+    const second = shownIframe()!;
+    expect(second).not.toBe(first);
+    expect(second.getAttribute("src")).toMatch(/xbc=412/);
+    expect(first.isConnected).toBe(false);
+    expect(document.querySelectorAll("iframe")).toHaveLength(1);
+  });
+
+  it("builds a second frame for a second namespace and keeps the first one hidden", () => {
+    const a = freshNs();
+    const b = freshNs();
+    clickTrigger(a);
+    const first = shownIframe()!;
+    closeShown();
+    clickTrigger(b);
+    const second = shownIframe()!;
+    expect(second).not.toBe(first);
+    expect(document.querySelectorAll("iframe")).toHaveLength(2);
+    expect(overlayOf(first).getAttribute("aria-hidden")).toBe("true");
+    expect(overlayOf(second).getAttribute("aria-hidden")).toBeNull();
+  });
+
+  it("ignores Escape and slate:escape while the frame is hidden, and success from a hidden frame", () => {
+    const success = calOn("bookingSuccessful");
+    const ns = freshNs();
+    const trigger = clickTrigger(ns);
+    const iframe = shownIframe()!;
+    const overlay = overlayOf(iframe);
+    closeShown();
+
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    fromActiveFrame(iframe, { type: "slate:escape" });
+    fromActiveFrame(iframe, { type: EMBED_MESSAGE.bookingSuccessful, data: { outcome: "created", booking: {} } });
+
+    expect(overlay.style.display).toBe("none");
+    expect(overlay.getAttribute("aria-hidden")).toBe("true");
+    expect(document.activeElement).toBe(trigger);
+    expect(success).not.toHaveBeenCalled();
+    // And it still reopens afterwards.
+    clickTrigger(ns);
+    expect(shownIframe()).toBe(iframe);
+  });
+
+  it("applies slate:resize from a hidden frame and re-emits a lifecycle message that arrives while hidden", () => {
+    const ready = calOn("bookerReady");
+    const ns = freshNs();
+    clickTrigger(ns);
+    const iframe = shownIframe()!;
+    closeShown();
+
+    fromActiveFrame(iframe, { type: "slate:resize", height: 720 });
+    expect(iframe.style.height).toBe("720px");
+
+    // The availability answered after the lead closed: the frame IS ready, and
+    // it will never say so again, so the stage is announced now.
+    fromActiveFrame(iframe, { type: EMBED_MESSAGE.bookerReady, data: { slotsLoaded: true } });
+    expect(ready).toHaveBeenCalledTimes(1);
+  });
+
+  it("starts no load timer on the reopen of a loaded frame", () => {
+    vi.useFakeTimers();
+    const failed = calOn("linkFailed");
+    const ns = freshNs();
+    clickTrigger(ns);
+    shownIframe()!.dispatchEvent(new Event("load"));
+    closeShown();
+    clickTrigger(ns);
+    vi.advanceTimersByTime(30000);
+    expect(failed).not.toHaveBeenCalled();
+    expect(retryBtn()).toBeUndefined();
+  });
+
+  it("re-arms the load timer on the reopen of a frame that never loaded", () => {
+    vi.useFakeTimers();
+    const failed = calOn("linkFailed");
+    const ns = freshNs();
+    clickTrigger(ns);
+    vi.advanceTimersByTime(5000);
+    closeShown(); // closing during the load stops the clock
+    vi.advanceTimersByTime(30000);
+    expect(failed).not.toHaveBeenCalled();
+    clickTrigger(ns);
+    vi.advanceTimersByTime(12000);
+    expect(failed).toHaveBeenCalledTimes(1);
+    expect(retryBtn()).toBeTruthy();
+  });
+
+  it("never announces bookerReopened for the first open that succeeds after one that threw (#2677)", () => {
+    vi.stubGlobal("navigator", { ...navigator, sendBeacon: vi.fn(() => true) });
+    const navigated = calOn("navigatedToBooker");
+    const reopened = calOn("bookerReopened");
+    const ns = freshNs();
+
+    const original = document.createElement.bind(document);
+    vi.spyOn(document, "createElement").mockImplementation(((tag: string) => {
+      if (tag === "iframe") throw new Error("iframe blocked by host CSP");
+      return original(tag);
+    }) as typeof document.createElement);
+    try {
+      clickTrigger(ns);
+    } finally {
+      vi.mocked(document.createElement).mockRestore();
+    }
+    expect(shownIframe()).toBeNull();
+
+    clickTrigger(ns);
+    expect(shownIframe()).toBeTruthy();
+    expect(navigated).toHaveBeenCalledTimes(2);
+    expect(reopened).not.toHaveBeenCalled();
+
+    // Two successful opens still announce it exactly once.
+    closeShown();
+    clickTrigger(ns);
+    expect(reopened).toHaveBeenCalledTimes(1);
+    vi.unstubAllGlobals();
   });
 });
