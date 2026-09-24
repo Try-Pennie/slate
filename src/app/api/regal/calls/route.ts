@@ -73,7 +73,13 @@ export async function POST(req: NextRequest) {
   after(async () => {
     try {
       const outcome = await recordRegalCall(recordable);
-      log.info("regal-calls", { msg: "recorded", reason: outcome.reason, duplicate: outcome.duplicate });
+      // A redelivery is logged as a duplicate and nothing else: the stored row keeps
+      // the first delivery's reason, so this delivery's classification is not news.
+      if (outcome.status === "duplicate") {
+        log.info("regal-calls", { msg: "duplicate", event_id: outcome.eventId });
+      } else {
+        log.info("regal-calls", { msg: "recorded", reason: outcome.reason });
+      }
     } catch (err) {
       // Regal will not redeliver, so a lost write is lost: say so where somebody
       // looking for missing events will search.

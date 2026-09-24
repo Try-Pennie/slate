@@ -192,10 +192,18 @@ function fakeStore(users: Record<string, string>) {
 const fakeStoreLookups: string[] = [];
 
 const store = fakeStore({ "jane.agent@trypennie.com": "user-1" });
+/** The reason an outcome was recorded under, or "duplicate" when nothing new was. */
+const reasonOf2 = (o: Awaited<ReturnType<typeof processRegalCall>>): string =>
+  o.status === "recorded" ? o.reason : "duplicate";
+
 const first = await processRegalCall(body(), store.deps);
-eq(first, { reason: "candidate", duplicate: false }, "a Slate user's call is a candidate");
+eq(first, { status: "recorded", reason: "candidate" }, "a Slate user's call is a candidate");
 const again = await processRegalCall(body(), store.deps);
-eq(again, { reason: "candidate", duplicate: true }, "the same eventId again is reported as a duplicate");
+eq(
+  again,
+  { status: "duplicate", eventId: "0123456789abcdef0123456789abcdef" },
+  "the same eventId again is a DUPLICATE outcome, carrying no freshly computed reason",
+);
 eq(store.rows.length, 1, "the same eventId twice produces ONE record");
 eq(
   Object.keys(store.rows[0]).sort(),
@@ -212,7 +220,7 @@ const nobody = await processRegalCall(
   body({ eventId: "ffffffffffffffffffffffffffffffff" }, { agent_email: "new.hire@trypennie.com" }),
   store.deps,
 );
-eq(nobody.reason, "no_slate_user", "an address on our domain with no Slate row is counted, not stored as a candidate");
+eq(reasonOf2(nobody), "no_slate_user", "an address on our domain with no Slate row is counted, not stored as a candidate");
 const nobodyRow = store.rows.find((r) => r.event_id === "ffffffffffffffffffffffffffffffff");
 eq(nobodyRow ? nobodyRow.agent_email : "no row", null, "a non candidate row carries no email");
 
@@ -220,17 +228,32 @@ const ai = await processRegalCall(
   body({ eventId: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }, { is_ai_agent: true, agent_email: "bot@regal.ai" }),
   store.deps,
 );
-eq(ai.reason, "ai_agent", "a dropped event is still recorded under its reason");
+eq(reasonOf2(ai), "ai_agent", "a dropped event is still recorded under its reason");
 assert(!fakeStoreLookups.includes("bot@regal.ai"), "a dropped event never costs a user lookup");
 
 const broken1 = await processRegalCall(null, store.deps);
 const broken2 = await processRegalCall(null, store.deps);
-eq([broken1.reason, broken2.reason], ["body_unreadable", "body_unreadable"], "an unreadable body is counted");
+eq([reasonOf2(broken1), reasonOf2(broken2)], ["body_unreadable", "body_unreadable"], "an unreadable body is counted");
 eq(
   store.rows.filter((r) => r.reason === "body_unreadable").length,
   2,
   "two unreadable bodies are two records: with no event id there is nothing to dedupe on",
 );
+
+// A redelivery whose classification would now DIFFER from the stored row: the
+// person was created in Slate between the two deliveries. The stored row keeps
+// no_slate_user (the constraint ignored the second insert), so the outcome must
+// say duplicate rather than report a candidate that was never recorded.
+{
+  const later = fakeStore({});
+  const evt = body({ eventId: "dddddddddddddddddddddddddddddddd" }, { agent_email: "late.hire@trypennie.com" });
+  const firstTime = await processRegalCall(evt, later.deps);
+  eq(reasonOf2(firstTime), "no_slate_user", "first delivery: no Slate user yet");
+  const hired = { ...later.deps, findUserId: async () => "user-late" };
+  const redelivered = await processRegalCall(evt, hired);
+  eq(redelivered.status, "duplicate", "the redelivery is a duplicate, not a candidate");
+  eq(later.rows.map((r) => r.reason), ["no_slate_user"], "and the stored row is unchanged");
+}
 
 // --- 5. a failed store throws ------------------------------------------------
 

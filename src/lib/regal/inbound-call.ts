@@ -196,34 +196,39 @@ export interface RegalCallStore {
   insert: (row: RegalCallRow) => Promise<"inserted" | "duplicate">;
 }
 
-export interface RegalCallOutcome {
-  reason: RegalCallReason;
-  /** The event id was already recorded, so nothing new was written. */
-  duplicate: boolean;
+/**
+ * What happened to one received body.
+ *
+ * A DUPLICATE carries no reason on purpose. The unique event_id made the database
+ * ignore the second insert, so the row keeps whatever the FIRST delivery was
+ * classified as; the reason this delivery would have been given can differ (the
+ * person may have been added to Slate in between), and reporting it would describe
+ * a row that was never written.
+ */
+export type RegalCallOutcome =
+  | { status: "recorded"; reason: RegalCallReason }
+  | { status: "duplicate"; eventId: string };
+
+async function record(store: RegalCallStore, row: RegalCallRow): Promise<RegalCallOutcome> {
+  const written = await store.insert(row);
+  if (written === "duplicate" && row.event_id !== null) return { status: "duplicate", eventId: row.event_id };
+  return { status: "recorded", reason: row.reason };
 }
 
 /** Classify, resolve, record. Throws when the store does; the route logs it. */
 export async function processRegalCall(body: unknown, store: RegalCallStore): Promise<RegalCallOutcome> {
   const c = classifyRegalCall(body);
   if (c.kind === "dropped") {
-    const written = await store.insert({ event_id: c.eventId, reason: c.reason, agent_email: null, occurred_at: null });
-    return { reason: c.reason, duplicate: written === "duplicate" };
+    return record(store, { event_id: c.eventId, reason: c.reason, agent_email: null, occurred_at: null });
   }
   const userId = await store.findUserId(c.agentEmail);
   if (userId === null) {
-    const written = await store.insert({
-      event_id: c.eventId,
-      reason: "no_slate_user",
-      agent_email: null,
-      occurred_at: null,
-    });
-    return { reason: "no_slate_user", duplicate: written === "duplicate" };
+    return record(store, { event_id: c.eventId, reason: "no_slate_user", agent_email: null, occurred_at: null });
   }
-  const written = await store.insert({
+  return record(store, {
     event_id: c.eventId,
     reason: "candidate",
     agent_email: c.agentEmail,
     occurred_at: new Date(c.occurredAtMs).toISOString(),
   });
-  return { reason: "candidate", duplicate: written === "duplicate" };
 }

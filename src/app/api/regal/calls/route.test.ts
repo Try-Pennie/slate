@@ -16,12 +16,14 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 const env = vi.hoisted(() => ({ regalInboundKey: vi.fn(() => "inbound-secret") }));
 vi.mock("@/lib/env", () => env);
 
-const recorded = vi.hoisted(() => ({ bodies: [] as unknown[], fail: false }));
+const recorded = vi.hoisted(() => ({ bodies: [] as unknown[], fail: false, duplicate: false }));
 vi.mock("@/lib/regal/call-store", () => ({
   recordRegalCall: vi.fn(async (body: unknown) => {
     recorded.bodies.push(body);
     if (recorded.fail) throw new Error("insert refused");
-    return { reason: "candidate", duplicate: false };
+    return recorded.duplicate
+      ? { status: "duplicate", eventId: "e1" }
+      : { status: "recorded", reason: "candidate" };
   }),
 }));
 
@@ -39,7 +41,8 @@ vi.mock("next/server", async (importOriginal) => {
 });
 
 const logError = vi.hoisted(() => vi.fn());
-vi.mock("@/lib/log", () => ({ log: { error: logError, warn: vi.fn(), info: vi.fn() } }));
+const logInfo = vi.hoisted(() => vi.fn());
+vi.mock("@/lib/log", () => ({ log: { error: logError, warn: vi.fn(), info: logInfo } }));
 
 import { POST } from "./route";
 
@@ -61,6 +64,8 @@ describe("POST /api/regal/calls", () => {
     env.regalInboundKey.mockReturnValue("inbound-secret");
     recorded.bodies.length = 0;
     recorded.fail = false;
+    recorded.duplicate = false;
+    logInfo.mockReset();
     deferred.jobs.length = 0;
     logError.mockReset();
   });
@@ -128,6 +133,14 @@ describe("POST /api/regal/calls", () => {
     expect((await POST(req as never)).status).toBe(413);
     await drain();
     expect(recorded.bodies).toEqual([null]);
+  });
+
+  it("logs a redelivery as a duplicate, never as a fresh classification", async () => {
+    recorded.duplicate = true;
+    await post(BODY);
+    await drain();
+    expect(logInfo).toHaveBeenCalledWith("regal-calls", { msg: "duplicate", event_id: "e1" });
+    expect(JSON.stringify(logInfo.mock.calls)).not.toContain("reason");
   });
 
   it("logs a failed recording loudly rather than swallowing it", async () => {
