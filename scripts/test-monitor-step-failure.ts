@@ -268,6 +268,19 @@ const tick = (...steps: { name: string; ok: boolean }[]) => steps;
     [],
     "an ordinary check gates nothing, so its page never claims to have taken others down",
   );
+  // Every gated check is named in words, never by its raw key (#2593 shipped
+  // `belowLeadTier` and #2505 `tierStaffing` with no name, so an unreadable
+  // bucket list or week paged the camelCase key). `tsc` enforces the map's keys;
+  // this asserts what reaches the page.
+  for (const step of Object.keys(SETUP_STEP_READS)) {
+    for (const name of checksGatedByStep(step)) {
+      assert(/^the [a-z]/.test(name) && !/[a-z][A-Z]/.test(name), `${step} names ${name} in words, not as a gate key`);
+    }
+  }
+  assert(
+    checksGatedByStep("setup_buckets").includes("the booking below the lead's Salesforce tier check"),
+    "an unreadable bucket list says it took the below lead tier check down",
+  );
   for (const step of Object.keys(SETUP_STEP_READS)) {
     assert(
       checksGatedByStep(step).length > 0,

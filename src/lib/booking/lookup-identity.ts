@@ -41,8 +41,19 @@ export type LookupIdentity = Pick<PersonIdentity, "externalId" | "salesforceId">
  * an empty set matches no booking, so a blank can never match a blank column.
  */
 export function lookupStrongIds(identity: LookupIdentity): string[] {
+  return strongIdsOf([identity.externalId, identity.salesforceId]);
+}
+
+/**
+ * The one rule for what counts as a strong id: trimmed, with null, empty and
+ * whitespace dropped, duplicates kept once, in the order given. A blank column is
+ * never an id, so it can neither match a blank nor hide a real id beside it (a
+ * `??` chain does the second: it falls through only on null, so a stored "" in
+ * the first column masks the second).
+ */
+export function strongIdsOf(values: readonly (string | null | undefined)[]): string[] {
   const ids = new Set<string>();
-  for (const raw of [identity.externalId, identity.salesforceId]) {
+  for (const raw of values) {
     const id = (raw ?? "").trim();
     if (id.length > 0) ids.add(id);
   }
