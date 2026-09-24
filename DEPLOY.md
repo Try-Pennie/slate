@@ -190,8 +190,7 @@ slots, `PARTNER` answers the same 404 a typo does:
    at :00 and :30 and the seed rewrites the smoke agents' working hours in
    place), write the rows:
 
-   <!-- runbook-unverified: writes the seed rows to the live project, so it was not run
-        for verification; the row shapes it writes are pinned by scripts/test-smoke-seed.ts. -->
+   <!-- runbook-verified: 2026-09-24 (a117b686) run against the live project a few minutes past the half hour, once the 16:00Z canary tick had completed; exit 0, printed Done with smoketest@ seeded into SMOKE, SMOKE2 and PARTNER; the keyless availability read for PARTNER answered 200 with 175 times and SMOKE still 404. -->
 
    ```
    APPLY=1 node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/seed-smoke-test.ts
@@ -199,9 +198,7 @@ slots, `PARTNER` answers the same 404 a typo does:
 
 3. Wait one recompute cycle (about a minute), then MEASURE rather than assume:
 
-   <!-- runbook-unverified: reads the live project through .env.local, which the change that
-        added the measurement was built without; its verdicts and exit codes are pinned by
-        scripts/test-smoke-seed-readiness.ts. -->
+   <!-- runbook-verified: 2026-09-24 (bfff44b0) run against the live project after the #2660 merge: before the seed it measured SMOKE and SMOKE2 ready and PARTNER no-bucket and exited non zero writing nothing; one recompute cycle after APPLY=1 it reported all three ready (PARTNER slots published 16:04:37Z) and exited 0. -->
 
    ```
    node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/seed-smoke-test.ts

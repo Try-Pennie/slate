@@ -58,9 +58,7 @@ The moving parts:
    a few minutes past the hour or half hour: the APPLY step below rewrites the
    smoke agents' working hours in place, and the canary fires at :00 and :30.
 
-   <!-- runbook-verified: 2026-08-03 (bfff44b0) run against the live project; printed the
-        planned agents, schedules, rules, buckets and members and wrote nothing, as the
-        default dry-run mode promises. -->
+   <!-- runbook-verified: 2026-09-24 (bfff44b0) run against the live project after the #2660 merge: before the seed it measured SMOKE and SMOKE2 ready and PARTNER no-bucket and exited non zero writing nothing; one recompute cycle after APPLY=1 it reported all three ready (PARTNER slots published 16:04:37Z) and exited 0. -->
 
    ```
    node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/seed-smoke-test.ts
@@ -70,9 +68,7 @@ The moving parts:
    rules, buckets, and members to the project in `.env.local`. It is idempotent,
    so re-running only refreshes the rows in place:
 
-   <!-- runbook-unverified: writes the seed rows to the live project, so it was not run
-        for verification. It is the same script and code path as the dry run above, which
-        was, differing only in the APPLY flag. -->
+   <!-- runbook-verified: 2026-09-24 (a117b686) run against the live project a few minutes past the half hour, once the 16:00Z canary tick had completed; exit 0, printed Done with smoketest@ seeded into SMOKE, SMOKE2 and PARTNER; the keyless availability read for PARTNER answered 200 with 175 times and SMOKE still 404. -->
 
    ```
    APPLY=1 node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/seed-smoke-test.ts
