@@ -26,6 +26,13 @@ and which data we deliberately keep forever and why.
 The attendee's meeting also exists as an event on the **assigned agent's Google
 Calendar** (`bookings.gcal_event_id`). That copy is addressed in §4.
 
+**Staff data, not in the table above on purpose.** `regal_call_events.agent_email`
+(#2090) is the work address of the Pennie employee who placed a call in Regal, the
+same value `users.email` already holds. It is not lead PII, so it is not a row above,
+not in the erasure path and not mirrored to Snowflake. The inbound Regal body it is
+read from does carry lead contact data and a call summary, and none of that is ever
+written: see [pii.md](./pii.md) §3.
+
 ## 2. Retention windows (confirmed 2026-07-29)
 
 | Data | Window | Mechanism |
@@ -35,6 +42,7 @@ Calendar** (`bookings.gcal_event_id`). That copy is addressed in §4.
 | Delivered `booking_outbox` rows | 30 days | delete, `/api/cron/prune-bookings-pii` (#1071) |
 | `routing_decisions` | 12 months | delete, `/api/cron/prune-routing` (existing) |
 | `booking_events.reason_detail` | on an erasure request, not on a timer | redact in place via `erase_booking_pii` through the §5 sentinel (shipped, migration 0092) |
+| `regal_call_events` (staff data: an agent email on candidate rows, no lead data) | 3 days after receipt | delete, `/api/cron/prune-regal-calls` (#2090) |
 
 **A window above does not propagate to the Snowflake mirror by itself.** Redacting
 or blanking a row in place sets the flag that freezes it from re-export

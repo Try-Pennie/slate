@@ -91,6 +91,10 @@ export const CRON_ROUTES: Record<string, string | string[]> = {
     // never whether a contact column holds anything, so a row this sweep has
     // already cleared still verifies as archived.
     "/api/cron/prune-warehouse-pii",
+    // #2090: the inbound Regal call feed, a few days of events kept and the rest
+    // deleted in one statement. Here with its siblings rather than on the
+    // every-minute trigger for the reason given above.
+    "/api/cron/prune-regal-calls",
   ],
   // Calendar hydration rotation (#1261): re-bootstrap a slice of the calendars every 15
   // minutes, sized from the live count so every calendar is refreshed at least once a day.

@@ -564,6 +564,7 @@ meant to hold back run unannounced.
 | `prune-routing` | runs | deletes only this branch's own rows |
 | `prune-webhook-payloads` | runs | deletes only this branch's own rows |
 | `prune-busy-blocks` | runs | deletes only this branch's own rows |
+| `prune-regal-calls` | runs | deletes only this branch's own rows |
 | `agents` | **held back** | reads Salesforce and would rewrite the roster the seed just built |
 | `bulk-reassign` | **held back** | makes real Google reassignments |
 | `monitor` | **held back** | pages Slack about a synthetic org |

@@ -1,0 +1,114 @@
+import { describe, it, expect, vi, beforeEach } from "vitest";
+
+// #2090: Regal's reporting webhook posts every completed call here. Three things
+// this route owes the sender and the detector behind it:
+//
+//  - auth through the one shared constant time verifier, refused BY NAME with a
+//    503 when the secret is unset rather than accepting unauthenticated posts, and
+//    a 401 on a wrong key, with nothing recorded for either;
+//  - an answer inside Regal's five second budget: Regal drops an event it has no
+//    reply to and does not retry, so the work goes into after() and the reply
+//    never waits on the database;
+//  - an unreadable body is refused without throwing (a 500 reads as retriable to
+//    most senders) and is still COUNTED, because a feed whose bodies stopped being
+//    readable must not look like a quiet one.
+
+const env = vi.hoisted(() => ({ regalInboundKey: vi.fn(() => "inbound-secret") }));
+vi.mock("@/lib/env", () => env);
+
+const recorded = vi.hoisted(() => ({ bodies: [] as unknown[], fail: false }));
+vi.mock("@/lib/regal/call-store", () => ({
+  recordRegalCall: vi.fn(async (body: unknown) => {
+    recorded.bodies.push(body);
+    if (recorded.fail) throw new Error("insert refused");
+    return { reason: "candidate", duplicate: false };
+  }),
+}));
+
+// after() is captured rather than run, so a test can prove the reply went out
+// BEFORE any recording work happened, then run the deferred work itself.
+const deferred = vi.hoisted(() => ({ jobs: [] as (() => unknown)[] }));
+vi.mock("next/server", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("next/server")>();
+  return {
+    ...actual,
+    after: vi.fn((cb: () => unknown) => {
+      deferred.jobs.push(cb);
+    }),
+  };
+});
+
+const logError = vi.hoisted(() => vi.fn());
+vi.mock("@/lib/log", () => ({ log: { error: logError, warn: vi.fn(), info: vi.fn() } }));
+
+import { POST } from "./route";
+
+function post(body: string, auth: string | null = "Bearer inbound-secret") {
+  const headers = new Headers({ "content-type": "application/json" });
+  if (auth !== null) headers.set("authorization", auth);
+  return POST(new Request("http://localhost/api/regal/calls", { method: "POST", headers, body }) as never);
+}
+
+const BODY = JSON.stringify({ name: "call.completed", eventId: "e1", properties: {} });
+
+async function drain() {
+  const jobs = deferred.jobs.splice(0);
+  for (const job of jobs) await job();
+}
+
+describe("POST /api/regal/calls", () => {
+  beforeEach(() => {
+    env.regalInboundKey.mockReturnValue("inbound-secret");
+    recorded.bodies.length = 0;
+    recorded.fail = false;
+    deferred.jobs.length = 0;
+    logError.mockReset();
+  });
+
+  it("refuses by name with 503 when the secret is unset, and records nothing", async () => {
+    env.regalInboundKey.mockReturnValue("");
+    const res = await post(BODY);
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: "regal call feed not configured: REGAL_INBOUND_KEY is unset" });
+    expect(deferred.jobs).toHaveLength(0);
+  });
+
+  it("refuses a wrong, missing or malformed key with 401, and records nothing", async () => {
+    expect((await post(BODY, "Bearer wrong")).status).toBe(401);
+    expect((await post(BODY, null)).status).toBe(401);
+    expect((await post(BODY, "inbound-secret")).status).toBe(401);
+    expect(deferred.jobs).toHaveLength(0);
+  });
+
+  it("answers before recording, then records the parsed body in after()", async () => {
+    const res = await post(BODY);
+    expect(res.status).toBe(200);
+    expect(recorded.bodies).toHaveLength(0);
+    expect(deferred.jobs).toHaveLength(1);
+    await drain();
+    expect(recorded.bodies).toEqual([JSON.parse(BODY)]);
+  });
+
+  it("refuses an unreadable body with 400 without throwing, and still counts it", async () => {
+    const res = await post("{not json");
+    expect(res.status).toBe(400);
+    await drain();
+    expect(recorded.bodies).toEqual([null]);
+  });
+
+  it("refuses an oversized body as unreadable rather than parsing it", async () => {
+    const huge = JSON.stringify({ name: "call.completed", pad: "x".repeat(300_000) });
+    const res = await post(huge);
+    expect(res.status).toBe(413);
+    await drain();
+    expect(recorded.bodies).toEqual([null]);
+  });
+
+  it("logs a failed recording loudly rather than swallowing it", async () => {
+    recorded.fail = true;
+    expect((await post(BODY)).status).toBe(200);
+    await drain();
+    expect(logError).toHaveBeenCalledTimes(1);
+    expect(logError.mock.calls[0][0]).toBe("regal-calls");
+  });
+});

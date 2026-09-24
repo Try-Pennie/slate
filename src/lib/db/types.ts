@@ -414,6 +414,20 @@ export interface BookingHandoff {
  * Carries no lead data by design, which is what keeps it outside the erasure
  * function and the Snowflake mirror (migration 0126).
  */
+/** #2090: one received Regal `call.completed` event, under the one reason it was
+ *  kept or dropped. Holds no lead data; the agent email is staff data and is set
+ *  only on a candidate row. The reason vocabulary is `REGAL_CALL_REASONS`
+ *  (src/lib/regal/inbound-call.ts), held equal to the migration's CHECK. */
+export interface RegalCallEvent {
+  id: string;
+  /** Regal's top level eventId; unique. Null when the body carried none. */
+  event_id: string | null;
+  reason: string;
+  agent_email: string | null;
+  occurred_at: string | null;
+  received_at: string;
+}
+
 export interface OwnerAlertEvent {
   id: string;
   booking_id: string;

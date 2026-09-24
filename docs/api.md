@@ -58,6 +58,7 @@ So the policy is:
 - [Offboarding lifecycle (key-authed)](#offboarding-lifecycle-key-authed)
 - [Bookable toggle (key-authed)](#bookable-toggle-key-authed)
 - [GET /api/bookings/bookable (key-authed validate-only check)](#get-apibookingsbookable)
+- [POST /api/regal/calls (key-authed inbound call feed)](#post-apiregalcalls)
 - [Webhooks emitted to Regal and Cadence](#webhooks-emitted-to-regal-and-cadence)
 - [Customer self-serve manage routes (token-authed)](#customer-self-serve-manage-routes-token-authed)
 - [Admin routes (session-authed, internal)](#admin-routes-session-authed-internal)
@@ -79,6 +80,7 @@ names which one it requires.
 | Reassign API key | `Authorization: Bearer <key>` | `REASSIGN_API_KEY` | `POST /api/bookings/reassign` |
 | Offboarding API key | `Authorization: Bearer <key>` | `OFFBOARDING_API_KEY` | `POST /api/users/lifecycle`, `POST /api/users/deactivate`, `POST /api/users/reactivate` |
 | Bookable API key | `Authorization: Bearer <key>` | `BOOKABLE_API_KEY` | `POST /api/users/bookable` |
+| Regal inbound key | `Authorization: Bearer <key>` | `REGAL_INBOUND_KEY` | `POST /api/regal/calls` |
 | Cron secret | `Authorization: Bearer <secret>` | `CRON_SECRET` | every `GET /api/cron/*` lane |
 | Google channel token | `X-Goog-Channel-Token` header | `GOOGLE_CHANNEL_TOKEN` | `POST /api/google/push` |
 | Slack signature | `X-Slack-Signature` + `X-Slack-Request-Timestamp` | Slack signing secret | `POST /api/slack/interactions` |
@@ -705,6 +707,37 @@ to book race as `/api/availability`: handle `SLOT_TAKEN` on the confirm.
 
 ---
 
+## POST /api/regal/calls
+
+Source: `src/app/api/regal/calls/route.ts` (#2090), over
+`src/lib/regal/inbound-call.ts`. Regal's reporting webhook posts every completed
+call here, configured in Regal under Settings > Integrations and narrowed to the
+`call.completed` event. It feeds the detector that notices somebody placing calls
+in Regal while Slate will not route bookings to them.
+
+**Auth:** `Authorization: Bearer <REGAL_INBOUND_KEY>`, its own secret and
+deliberately not the key Slate sends Regal. Wrong or missing key: `401`. No key
+configured: `503` naming the variable. Nothing is recorded for either.
+
+**Response:** `200 { "received": true }` for a readable body; `400` for a body
+that is not JSON and `413` for one over 64 KB, each with
+`{ "received": true, "readable": false }`. The reply never waits on the database:
+Regal gives a delivery five seconds and does not retry, so the recording runs in
+`after()`.
+
+**What is kept.** Every authenticated post becomes ONE row in `regal_call_events`,
+keyed on the top level `eventId` (unique, so a redelivery is harmless), under the
+one reason it was kept or dropped: `candidate` (a human agent on our domain who is a
+Slate user), `not_call_completed`, `ai_agent`, `agent_email_null`, `foreign_domain`,
+`no_slate_user`, or one of five unreadable reasons that mean Regal changed the
+payload (`body_unreadable`, `event_id_unreadable`, `ai_flag_unreadable`,
+`agent_email_unreadable`, `timestamp_unreadable`). Only a candidate row stores the
+agent's email and the call's instant (`properties.completed_at`, else
+`originalTimestamp`, both unix seconds). Nothing about the lead is ever stored. Rows
+older than three days are deleted by `prune-regal-calls`.
+
+---
+
 ## Webhooks emitted to Regal and Cadence
 
 Slate is the sender for these. Every booking lifecycle change funnels through one
@@ -920,6 +953,7 @@ cost matters; see `docs/cloudflare-platform-notes.md`.
 | `GET /api/cron/ooo-digest` | The daily 7am ET time-off digest, and the record of whether it landed. |
 | `GET /api/cron/prune-routing` | Ages out routing decision rows past their retention window. |
 | `GET /api/cron/prune-busy-blocks` | Deletes cached busy blocks whose end is far enough in the past to be unreachable (#1252). |
+| `GET /api/cron/prune-regal-calls` | Deletes inbound Regal call events received more than three days ago (#2090). |
 | `GET /api/cron/prune-bookings-pii` | Redacts consumer contact data on bookings past the 24 month window (#1071). |
 | `GET /api/cron/prune-webhook-payloads` | Blanks `webhook_deliveries.payload`, which carries attendee PII, once a delivery is settled (#1073). |
 | `GET /api/cron/prune-warehouse-pii` | The warehouse half of the same 24 month booking PII window (#1180). |
@@ -957,6 +991,7 @@ answer `503` when no booking API key is configured.
 | `DUPLICATE_CANCEL_API_KEY` | `POST /api/bookings/cancel-duplicate` | `503` |
 | `OFFBOARDING_API_KEY` | `/api/users/lifecycle`, `/api/users/deactivate`, `/api/users/reactivate` | `503` |
 | `BOOKABLE_API_KEY` | `POST /api/users/bookable` | `503` |
+| `REGAL_INBOUND_KEY` | `POST /api/regal/calls` | `503` naming the variable |
 | `CRON_SECRET` | every `/api/cron/*` lane | required env; lane returns `401` without a matching Bearer |
 | `GOOGLE_CHANNEL_TOKEN` | `POST /api/google/push` | required env; `403` on token mismatch |
 

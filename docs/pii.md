@@ -127,6 +127,22 @@ their data is erased still has it held there.
 payload and `last_response` may echo it back. Both are in Supabase, in scope for
 retention, and covered by §1 of the retention doc.
 
+**What comes back the other way, and why it is not a seventh holder (#2090).**
+Regal also POSTS to Slate: its reporting webhook sends every completed call to
+`POST /api/regal/calls`, and that body carries the lead's phone, email and
+Salesforce lead id (`traits`, `userId`, `properties.contact_phone`) plus an AI
+written summary of what was said (`properties.notes`). **None of it is stored.**
+`src/lib/regal/inbound-call.ts` reads three things out of the body and drops the
+rest at the edge: Regal's `eventId`, the call's instant, and the acting AGENT's
+email. `regal_call_events` holds only those, the agent email only on the rows about
+a Slate user, and deletes everything after three days (`prune-regal-calls`). The
+agent email is **staff data, not lead PII**: it is a Pennie employee's work address,
+already held on `users.email`, so this feed adds nothing to the lead inventory above,
+nothing to the erasure path, and nothing to the Snowflake mirror (the table is not
+mirrored). Decided by Dan on 2026-09-08; widening what is kept (#324 wants the
+disposition keyed to a booking, which means lead linkage) is a separate decision with
+its own privacy review, never a drift.
+
 ---
 
 ## 4. Snowflake (archival mirror)

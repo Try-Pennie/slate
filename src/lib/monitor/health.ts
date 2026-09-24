@@ -281,6 +281,8 @@ export const RETENTION_STALE_BOUNDS_MS: Record<string, number> = {
   // #1180. Same daily cadence and the same reasoning as its siblings: one missed
   // or failing run pages, and cron jitter never causes it.
   "prune-warehouse-pii": 28 * 60 * MIN,
+  // #2090. Same daily cadence and the same reasoning as its siblings.
+  "prune-regal-calls": 28 * 60 * MIN,
 };
 
 /**
