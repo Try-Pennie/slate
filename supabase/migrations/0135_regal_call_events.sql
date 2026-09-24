@@ -65,14 +65,10 @@ create table regal_call_events (
   )
 );
 
--- The counters and retention both window on arrival.
+-- Every reader windows on ARRIVAL: the detector ("what came in since I last
+-- looked"), the per reason counts and retention. Arrival, not the call's own
+-- instant, so a window never depends on a field Regal may have sent badly.
 create index regal_call_events_received_at_idx on regal_call_events (received_at);
-
--- The detector reads recent candidates only; a partial index keeps that read off
--- the dropped traffic, which is most of the table.
-create index regal_call_events_candidate_occurred_idx
-  on regal_call_events (occurred_at)
-  where reason = 'candidate';
 
 -- Server reads and writes through the secret key client only; no client access.
 alter table regal_call_events enable row level security;
