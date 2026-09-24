@@ -1,5 +1,6 @@
 import { rosterNameResolver, type HistoryRosterUser, type NameResolver } from "./event-display.ts";
 import type { Booking, Role, RoutingTrace } from "../db/types.ts";
+import { bookingSourceLabel } from "./booking-source.ts";
 
 /** The booking fields the detail view reads (a subset of Booking). */
 export type BookingDetailInput = Pick<
@@ -13,6 +14,7 @@ export type BookingDetailInput = Pick<
   | "original_starts_at"
   | "assigned_user_id"
   | "routing_trace"
+  | "source"
 >;
 
 export interface BookingDetailTraceView {
@@ -46,6 +48,8 @@ export interface BookingDetailView {
   rescheduledFrom: string | null;
   agentName: string;
   bucketCode: string | null;
+  /** Where the booking came from, with its legacy cal.com event type (#2072). */
+  source: string;
   trace: BookingDetailTraceView | null;
 }
 
@@ -107,6 +111,9 @@ export function bookingDetailView(
     rescheduledFrom: rescheduled ? b.original_starts_at : null,
     agentName: b.assigned_user_id ? nameOf(b.assigned_user_id) : "Unassigned",
     bucketCode: b.routing_trace?.bucket_code ?? null,
+    // A row read before the migration lands has no field at all: the same fact
+    // as null, a booking made before sources were recorded.
+    source: bookingSourceLabel(b.source ?? null),
     trace: b.routing_trace ? traceView(b.routing_trace, nameOf) : null,
   };
 }

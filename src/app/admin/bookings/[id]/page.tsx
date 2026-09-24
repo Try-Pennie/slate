@@ -144,6 +144,7 @@ export default async function BookingDetailPage({
             )}
             <Fact label="Agent" value={view.agentName} />
             <Fact label="Bucket" value={view.bucketCode} />
+            <Fact label="Source" value={view.source} />
           </dl>
         </section>
 

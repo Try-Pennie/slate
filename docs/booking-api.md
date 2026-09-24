@@ -172,6 +172,14 @@ below) as `submissionId` and `regalProfileId`, `null` when absent, and reach Reg
 as `properties.sfdc_submission_id` and `properties.regal_profile_id`, left out of
 the event entirely when absent.
 
+#### `prefill.source` records where the booking came from (#2072)
+
+`source` inside `prefill` names the page the lead is booking from, from the
+vocabulary in the README's URL contract (for example `"prefill": { "source":
+"offerhub" }`). It is read on the server: an absent or blank value is recorded as
+`not-given`, and a value outside the vocabulary is still booked and recorded as
+`unrecognised`, so a caller that sends none is never refused for it.
+
 ### One active appointment per person (dedupe + auto-reschedule)
 
 Before creating, the API looks the person up across **active** bookings — by

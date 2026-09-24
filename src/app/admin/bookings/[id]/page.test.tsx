@@ -209,3 +209,33 @@ describe("the detail page marks a test booking (#2660)", () => {
     expect(document.querySelector(".pn-test-mode-mark")).toBeNull();
   });
 });
+
+// #2072: the admin booking page is one of the two places the source is read back
+// (the other is the warehouse), so the fact has to reach the rendered page, not
+// only the view model.
+describe("the detail page shows where the booking came from (#2072)", () => {
+  const asManager = () =>
+    auth.currentUser.mockResolvedValueOnce({
+      id: "m1",
+      role: "manager",
+      org_id: "o1",
+      email: "m@trypennie.com",
+    });
+
+  it("names the page and the cal.com event type it replaces", async () => {
+    asManager();
+    dbState.booking = { ...bookingRow(), source: "offerhub" };
+    dbState.roster = [{ id: "u1", name: "Aria Agent", email: "aria@trypennie.com" }];
+    render(await BookingDetailPage(props));
+    expect(screen.getByText("Source")).toBeTruthy();
+    expect(screen.getByText("/offerhub, cal.com event type call")).toBeTruthy();
+  });
+
+  it("says a booking older than the field predates sources, rather than showing it as unset", async () => {
+    asManager();
+    dbState.booking = bookingRow();
+    dbState.roster = [];
+    render(await BookingDetailPage(props));
+    expect(screen.getByText("Booked before sources were recorded")).toBeTruthy();
+  });
+});

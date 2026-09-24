@@ -105,7 +105,12 @@ CREATE TABLE IF NOT EXISTS bookings (
   reschedule_seq      NUMBER,
   created_at          TIMESTAMP_TZ,
   updated_at          TIMESTAMP_TZ,
-  exported_at         TIMESTAMP_NTZ
+  exported_at         TIMESTAMP_NTZ,
+  -- #2072: the page the lead booked from (see src/lib/booking/booking-source.ts).
+  -- Null for a booking made before sources were recorded. The legacy cal.com event
+  -- type is derived from it in code, so a report grouping by the old names joins on
+  -- SOURCE_DETAILS rather than on a stored copy.
+  source              VARCHAR
 )
 CLUSTER BY (created_at);
 
@@ -216,6 +221,11 @@ ALTER TABLE IF EXISTS booking_outbox      ADD COLUMN IF NOT EXISTS exported_at T
 ALTER TABLE IF EXISTS booking_events      ADD COLUMN IF NOT EXISTS exported_at TIMESTAMP_NTZ;
 ALTER TABLE IF EXISTS audit_log           ADD COLUMN IF NOT EXISTS exported_at TIMESTAMP_NTZ;
 ALTER TABLE IF EXISTS routing_decisions   ADD COLUMN IF NOT EXISTS exported_at TIMESTAMP_NTZ;
+
+-- #2072: the booking source. The export MERGE writes it on every bookings row, so a
+-- warehouse without it fails every bookings export: run this BEFORE the change
+-- that exports it deploys.
+ALTER TABLE IF EXISTS bookings            ADD COLUMN IF NOT EXISTS source VARCHAR;
 
 -- ----------------------------------------------------------------------------
 -- Grants on the mirror tables: SELECT + INSERT + UPDATE only. No DELETE.
