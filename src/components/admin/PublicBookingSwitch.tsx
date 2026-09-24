@@ -1,3 +1,5 @@
+"use client";
+
 import { setPublicBookingPaused } from "@/app/admin/actions";
 import { ConfirmAction } from "@/components/ui/ConfirmAction";
 import { SaveForm, holdsAView } from "@/components/ui/SaveForm";
@@ -33,6 +35,13 @@ import { btnCls, btnDangerCls } from "@/components/ui/styles";
  * an expiry, is deliberately NOT taken here: a kill switch that lifted itself would
  * start taking bookings again in the middle of the incident it was thrown for,
  * which is worse than being forgotten. Visibility is the half that helps.
+ *
+ * ## Why this is client code
+ *
+ * It calls `holdsAView()` from `SaveForm.tsx`, a `"use client"` module. Rendered as
+ * a server component that call threw on every request and took the whole Hours
+ * page down with it, kill switch included (#2690).
+ * `scripts/test-client-boundary-calls.ts` fails the build on the next such call.
  */
 export function PublicBookingSwitch({ paused }: { paused: boolean | null }) {
   if (paused === null) {
