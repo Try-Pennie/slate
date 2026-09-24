@@ -619,6 +619,7 @@ export default function ManageBooking({
                   <SlotTimes
                     view={picker.view}
                     timeZone={timeZone}
+                    reader={{ kind: "lead" }}
                     onRetry={picker.retry}
                     classes={SLOT_TIMES_CLASSES.panel}
                     noDaysNode={

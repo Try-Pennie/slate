@@ -287,6 +287,7 @@ export default function AdminBookingActions({
           <SlotTimes
             view={picker.view}
             timeZone={adminZone}
+            reader={{ kind: "staff", leadZone: leadTimeZone }}
             onRetry={picker.retry}
             classes={SLOT_TIMES_CLASSES.panel}
             noDaysNode={<p className="text-xs text-fg-muted">No open times.</p>}

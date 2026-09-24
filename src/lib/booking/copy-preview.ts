@@ -169,6 +169,12 @@ export function bookerCopyScreens(): CopyScreen[] {
           state: "a chosen day whose times are all outside the lead's calling hours",
           text: PICKER_COPY.outsideCallingHours(DAY),
         },
+        // The same state on the ADMIN reschedule panel, where the reader is staff
+        // and the clock is the lead's (L659): it names the lead's zone.
+        {
+          state: "the same, read by staff on the admin panel for a Hawaii lead",
+          text: PICKER_COPY.outsideCallingHoursForStaff(DAY, "Pacific/Honolulu"),
+        },
         {
           state: "a day's times settled",
           text: timesAvailableAnnouncement(6, DAY),

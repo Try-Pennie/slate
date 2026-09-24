@@ -51,6 +51,15 @@ export function deviceTimeZone(): string {
     : FALLBACK_ZONE;
 }
 
+/**
+ * A zone as a person reads it: the picker's own label for a listed zone
+ * ("Hawaii (Honolulu)"), else the humanised city, so a stored zone outside the
+ * list still reads as a place rather than an IANA id (#2310).
+ */
+export function zoneLabel(id: string): string {
+  return CURATED_ZONES.find((z) => z.id === id)?.label ?? humanizeZone(id);
+}
+
 /** "Australia/Sydney" -> "Sydney"; "UTC" -> "UTC". */
 export function humanizeZone(id: string): string {
   const segment = id.split("/").pop() ?? id;

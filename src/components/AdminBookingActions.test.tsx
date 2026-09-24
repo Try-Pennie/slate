@@ -8,6 +8,16 @@ import {
   CANCEL_REASONS,
   REASSIGN_REASONS,
 } from "@/lib/booking/core";
+import { PICKER_COPY } from "@/lib/booking/booker-copy";
+import { messageLines } from "@/lib/booking/slot-picker";
+
+// The admin panel shows days in the DEVICE zone and judges the lead's calling
+// window in the booking's zone (#2310). Pinned, never inherited from the machine
+// (L504), so a day heading reads the same on every machine.
+vi.mock("@/lib/booking/timezones", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/booking/timezones")>()),
+  deviceTimeZone: () => "America/New_York",
+}));
 
 // #326 admin reschedule/cancel: a reason is mandatory (server + UI), recorded
 // with initiator='admin'. These cover the UI gating + that the reason is sent.
@@ -542,6 +552,35 @@ describe("AdminBookingActions", () => {
     await pickDay();
     const status = await screen.findByRole("status");
     await waitFor(() => expect(status.textContent).toMatch(/1 time available on/i));
+  });
+});
+
+// #2310, L659: the shared picker's quiet hours sentence says "your time" to a
+// lead. On this panel the reader is staff and the clock is the LEAD's, so the
+// sentence must name the lead's zone and never address the reader's own hours.
+describe("the lead's calling hours on the admin panel (#2310)", () => {
+  it("names the lead's zone, not the reader's, when a day's times are all outside it", async () => {
+    // 15:00Z is 05:00 in Honolulu: the only time that day is outside the window.
+    mockFetch();
+    render(
+      <AdminBookingActions
+        bookingId="bk1"
+        bucketCode="411"
+        leadTimeZone="Pacific/Honolulu"
+        status="confirmed"
+        reasonOptions={TEST_REASON_OPTIONS}
+      />,
+    );
+    await userEvent.click(screen.getByRole("button", { name: /^reschedule$/i }));
+    await pickDay();
+
+    const expected = PICKER_COPY.outsideCallingHoursForStaff("Sun, Jun 21", "Pacific/Honolulu");
+    for (const line of messageLines(expected)) {
+      expect(screen.getAllByText(line).length).toBeGreaterThan(0);
+    }
+    expect(expected).toContain("Hawaii (Honolulu)");
+    expect(document.body.textContent).not.toContain("your time");
+    expect(screen.queryAllByRole("button", { name: /:\d{2}/ })).toHaveLength(0);
   });
 });
 

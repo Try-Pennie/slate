@@ -1989,6 +1989,7 @@ export default function Booker({
             <SlotTimes
               view={picker.view}
               timeZone={zone}
+              reader={{ kind: "lead" }}
               onRetry={picker.retry}
               classes={{
                 muted: `text-sm ${c.faint}`,

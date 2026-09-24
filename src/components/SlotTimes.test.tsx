@@ -19,6 +19,7 @@ const visible = (text: string) =>
 
 const base = {
   timeZone: ZONE,
+  reader: { kind: "lead" } as const,
   onRetry: vi.fn(),
   renderSlot: (iso: string) => (
     <button key={iso} type="button">
