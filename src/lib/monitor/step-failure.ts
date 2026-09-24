@@ -124,14 +124,21 @@ export const SETUP_STEP_READS: Record<string, keyof SetupReadiness> = {
   setup_horizon: "horizonDays",
 };
 
-/** Reader-facing names for the gated checks, so the page is a sentence. */
-const GATE_NAMES: Record<string, string> = {
+/**
+ * Reader-facing names for the gated checks, so the page is a sentence.
+ *
+ * Keyed on the gates `monitorSetupGates` actually returns, so a new gate with no
+ * name here fails `tsc` rather than reaching a page as its raw camelCase key.
+ */
+const GATE_NAMES: Record<keyof ReturnType<typeof monitorSetupGates>, string> = {
   availabilityScan: "the availability scan",
   availabilityTruth: "the availability drift probe",
   lowVolume: "the low booking volume alarm",
   rosterCoverage: "the roster coverage check",
   calendarWindow: "the calendar hydration check",
   busyDrift: "the busy drift sampler",
+  tierStaffing: "the debt tier staffing alarm",
+  belowLeadTier: "the booking below the lead's Salesforce tier check",
 };
 
 /**
@@ -149,7 +156,7 @@ export function checksGatedByStep(step: string): string[] {
   const gates = monitorSetupGates({ ...ALL_SETUP_READ, [read]: false });
   return Object.entries(gates)
     .filter(([, gate]) => !gate.run)
-    .map(([name]) => GATE_NAMES[name] ?? name);
+    .map(([name]) => GATE_NAMES[name as keyof typeof GATE_NAMES]);
 }
 
 /** "a, b and c", or "a and b", or "a". */

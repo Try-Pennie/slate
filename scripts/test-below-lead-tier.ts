@@ -87,6 +87,11 @@ function booking(over: Partial<UpcomingBooking> = {}): UpcomingBooking {
   eq(leadIdOf(booking({ salesforce_id: null, external_id: LEAD_B })), LEAD_B, "the API writes the lead id to external_id");
   eq(leadIdOf(booking({ salesforce_id: LEAD_A, external_id: LEAD_B })), LEAD_A, "salesforce_id wins when both are set");
   eq(leadIdOf(booking({ salesforce_id: null, external_id: null })), null, "neither set: no lead id");
+  // A blank salesforce_id is not an id, so it must not hide a real external_id:
+  // `??` falls through only on null, which would score this booking no-lead-id.
+  eq(leadIdOf(booking({ salesforce_id: "", external_id: LEAD_B })), LEAD_B, "an empty salesforce_id falls through to external_id");
+  eq(leadIdOf(booking({ salesforce_id: "   ", external_id: LEAD_B })), LEAD_B, "a whitespace salesforce_id falls through to external_id");
+  eq(leadIdOf(booking({ salesforce_id: "  ", external_id: " " })), null, "two blanks: no lead id");
   eq(leadIdKey(LEAD_A), leadIdKey(LEAD_A.slice(0, 15)), "15 and 18 character spellings of one id share a key");
 }
 
