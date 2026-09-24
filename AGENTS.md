@@ -735,6 +735,7 @@ one's bound, are in `docs/verify-commands.md`.
 |---|---|
 | `verify:availability-truth` | the times Slate is OFFERING are really free on the live calendars, asked of Google rather than of `busy_blocks` |
 | `verify:ooo-protection` | an approved time off is really BLOCKING the agent, read as the event itself plus free/busy, because busy periods merge |
+| `verify:pool-entry` | the activation gate's calendar reads work against real Google both ways: a readable agent hydrates every calendar, an unlicensed account is refused as not provisioned |
 | `verify:burst-counter` | the `BURST_LIMITER` object is not merely bound but answers AND counts, which the monitor lane deliberately cannot ask |
 | `verify:kill-switch` | the booking kill switch really refuses on the deployed Worker, the one gate here that fails CLOSED |
 | `verify:calcom-parity` | Slate and cal.com hold the same roster and the same week per agent, which is invisible from inside Slate alone |
