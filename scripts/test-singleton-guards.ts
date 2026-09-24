@@ -68,7 +68,7 @@ const SINGLETON_INVARIANTS: {
   { table: "monitor_alert_config", cols: "id", issue: "0060", why: "single global config row (id pinned to 1)" },
   { table: "booking_settings", cols: "id", issue: "#1015/0086", why: "single direct-booking config row (id pinned to 1)" },
   { table: "owner_alert_events", cols: "booking_id", issue: "#2371/0126", why: "one LIVE advisor alert per booking [partial: removed_at is null]; removed rows stay as the history of who held the call" },
-  { table: "regal_call_events", cols: "event_id", issue: "#2090/0135", why: "one row per Regal eventId, so a redelivered event is never recorded or counted twice" },
+  { table: "regal_call_events", cols: "event_id", issue: "#2090/0137", why: "one row per Regal eventId, so a redelivered event is never recorded or counted twice" },
 ];
 
 for (const inv of SINGLETON_INVARIANTS) {

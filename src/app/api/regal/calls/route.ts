@@ -45,10 +45,17 @@ export async function POST(req: NextRequest) {
     return new NextResponse("unauthorized", { status: 401 });
   }
 
-  const text = await req.text().catch(() => null);
+  // A body that DECLARES itself oversized is refused before a byte of it is read,
+  // so a broken sender cannot make the Worker buffer it. The declared length is
+  // only a claim, so what arrives is measured again below: a missing header, or
+  // one that lies, still cannot get a large body parsed.
+  const declared = Number(req.headers.get("content-length") ?? "");
+  const oversizedByHeader = Number.isFinite(declared) && declared > MAX_BODY_CHARS;
+  const text = oversizedByHeader ? null : await req.text().catch(() => null);
   let body: unknown = null;
   let status = 200;
-  if (text === null) status = 400;
+  if (oversizedByHeader) status = 413;
+  else if (text === null) status = 400;
   else if (text.length > MAX_BODY_CHARS) status = 413;
   else {
     try {

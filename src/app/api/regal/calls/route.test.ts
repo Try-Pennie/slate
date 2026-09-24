@@ -104,6 +104,32 @@ describe("POST /api/regal/calls", () => {
     expect(recorded.bodies).toEqual([null]);
   });
 
+  it("refuses a body that DECLARES itself oversized before reading any of it", async () => {
+    // A request double, because the fact under test is that the body is never
+    // buffered: `text` must not be called at all.
+    const text = vi.fn(async () => "{}");
+    const req = {
+      headers: new Headers({ authorization: "Bearer inbound-secret", "content-length": String(10 * 1024 * 1024) }),
+      text,
+    };
+    const res = await POST(req as never);
+    expect(res.status).toBe(413);
+    expect(text).not.toHaveBeenCalled();
+    await drain();
+    expect(recorded.bodies).toEqual([null]);
+  });
+
+  it("still measures what arrived when the declared length is missing or lies", async () => {
+    const huge = JSON.stringify({ name: "call.completed", pad: "x".repeat(300_000) });
+    const req = {
+      headers: new Headers({ authorization: "Bearer inbound-secret", "content-length": "10" }),
+      text: vi.fn(async () => huge),
+    };
+    expect((await POST(req as never)).status).toBe(413);
+    await drain();
+    expect(recorded.bodies).toEqual([null]);
+  });
+
   it("logs a failed recording loudly rather than swallowing it", async () => {
     recorded.fail = true;
     expect((await post(BODY)).status).toBe(200);
