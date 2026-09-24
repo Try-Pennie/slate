@@ -264,6 +264,7 @@ describe("parseMonitorSettingsForm low_volume_armed", () => {
     rosterCoverageArmed: "",
     awaitingActivationArmed: "",
     belowLeadTierArmed: "",
+    regalCallsArmed: "",
   };
 
   it("parses a checked toggle as armed=true", () => {

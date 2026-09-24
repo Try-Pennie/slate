@@ -49,6 +49,12 @@ const FAMILY_BY_KEY: Record<string, AlertFamily> = {
   // establish is the same thing, which of the scheduled work is not happening.
   monitor_step_failing: "a-lane-or-schedule-has-gone-quiet",
   sync_staleness: "a-lane-or-schedule-has-gone-quiet",
+  // #2090. A feed rather than a lane, and the same first question: is the thing
+  // that should be producing still producing, here Regal's reporting webhook.
+  regal_calls_quiet: "a-lane-or-schedule-has-gone-quiet",
+  // #2090. Events arrive and the edge cannot read them, so the detector behind it
+  // judges nobody: a guard that has quietly stopped covering anything.
+  regal_calls_unreadable: "a-limit-or-a-guard-is-not-working",
   // #2544. The same family one level in, for the same reason `monitor_step_failing`
   // is here: the lane is running and one JOB on it has stopped producing, so what
   // the reader has to establish is which of the scheduled work is not happening.
@@ -210,6 +216,10 @@ const FAMILY_BY_KEY: Record<string, AlertFamily> = {
   // to establish is the same one, whether the person is really meant to be taking
   // calls and what the roster says about them.
   agents_awaiting_activation: "the-roster-or-routing-data-is-wrong",
+  // #2090. The finding is about a roster row (somebody working who is not in the
+  // pool), and the first question is the same one: is this person meant to be
+  // taking calls, and what does the roster say about them.
+  regal_call_unroutable: "the-roster-or-routing-data-is-wrong",
   salesforce_user_id_conflicts: "the-roster-or-routing-data-is-wrong",
   salesforce_manager_ambiguous: "the-roster-or-routing-data-is-wrong",
   salesforce_roster_divergence: "the-roster-or-routing-data-is-wrong",

@@ -26,6 +26,7 @@ import {
   BELOW_LEAD_TIER_VERDICT_LANE,
   BURST_COUNTER_VERDICT_LANE,
   KILL_SWITCH_VERDICT_LANE,
+  REGAL_CALLS_VERDICT_LANE,
   type DetectorVerdictLane,
 } from "@/lib/monitor/verdict-freshness";
 
@@ -60,6 +61,7 @@ const STAMP: Record<WorkerStampedVerdictLane, () => Promise<void>> = {
   [LANE_WATCHDOG_VERDICT_LANE]: () => recordHeartbeat("verdict:lane-watchdog"),
   [TIER_STAFFING_VERDICT_LANE]: () => recordHeartbeat("verdict:tier-staffing"),
   [BELOW_LEAD_TIER_VERDICT_LANE]: () => recordHeartbeat("verdict:below-lead-tier"),
+  [REGAL_CALLS_VERDICT_LANE]: () => recordHeartbeat("verdict:regal-calls"),
 };
 
 /**

@@ -24,6 +24,7 @@ const blank = {
   rosterCoverageArmed: "",
   awaitingActivationArmed: "",
   belowLeadTierArmed: "",
+  regalCallsArmed: "",
 };
 
 describe("parseMonitorSettingsForm", () => {
@@ -44,6 +45,7 @@ describe("parseMonitorSettingsForm", () => {
       roster_coverage_armed: false,
       awaiting_activation_armed: false,
       below_lead_tier_armed: false,
+      regal_calls_armed: false,
     });
   });
 

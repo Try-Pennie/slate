@@ -280,6 +280,28 @@ export const ALERT_CATALOG: AlertEntry[] = [
       "same daily sweep sees it (#1753).",
   },
   {
+    key: "regal_call_unroutable:*",
+    kind: "condition",
+    why:
+      "Somebody Slate routes no bookings to is placing calls in Regal; it ends when they are " +
+      "routable again (a recovery) or are added to the ignore list or change role (a suppression, " +
+      "worded as one), and the monitor lane sees either on its next pass (#2090).",
+  },
+  {
+    key: "regal_calls_quiet",
+    kind: "condition",
+    why:
+      "No call by a Slate user reached Slate from Regal across a whole business day; it ends when " +
+      "one arrives, and the monitor lane counts the feed every pass (#2090).",
+  },
+  {
+    key: "regal_calls_unreadable",
+    kind: "condition",
+    why:
+      "Regal is posting call events Slate cannot read; it ends after a day of readable events, " +
+      "and the monitor lane counts the feed every pass (#2090).",
+  },
+  {
     key: "agents_awaiting_activation",
     kind: "condition",
     why:

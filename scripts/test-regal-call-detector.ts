@@ -1,0 +1,303 @@
+// Somebody placing calls in Regal while Slate will not route to them (#2090). Run:
+//   node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/test-regal-call-detector.ts
+//
+// This file pins:
+//   1. the pure decision: routable, exempt by role, exempt by the ignore list, a
+//      test user, somebody no longer in Slate, and EVERY combination of those, with
+//      each reason distinct in the output rather than folded into one "skipped";
+//   2. the role exemption derived from the Role union (a sixth role is a build
+//      failure, pinned by the type test beside the module and asserted here against
+//      the union's own text);
+//   3. the detector FIRING on a planted violation and staying quiet on an ignored
+//      one (L1: a guard is real only once it has been seen to fail);
+//   4. the failure path: an unreadable read reports unmeasured, stamps no verdict,
+//      pages nothing and clears nothing;
+//   5. the two endings of a page, which must not share wording (L11): became
+//      routable is a recovery, being added to the ignore list is a suppression.
+import { readFileSync } from "node:fs";
+import {
+  judgeRegalCallers,
+  settleRegalCallAlerts,
+  runRegalCallCheck,
+  regalCallAlertKey,
+  formatRegalCallAlert,
+  formatRegalCallEnding,
+  REGAL_ROLE_EXEMPT,
+  REGAL_CALL_WINDOW_MS,
+  REGAL_CALL_ALERT_PREFIX,
+  type RegalCaller,
+  type RegalCandidate,
+  type RegalIgnore,
+  type RegalExemption,
+} from "@/lib/monitor/regal-calls";
+import { regalCallsReachedVerdict } from "@/lib/monitor/verdict-freshness";
+import { assert, eq, finish } from "./lib/harness.ts";
+
+const NOW = Date.UTC(2026, 8, 24, 15, 0, 0); // 11:00 ET
+const MIN = 60_000;
+
+function user(over: Partial<RegalCaller> = {}): RegalCaller {
+  return {
+    id: "u-jane",
+    name: "Jane Agent",
+    email: "jane@trypennie.com",
+    role: "agent",
+    bookable: false,
+    deactivated_at: null,
+    is_test: false,
+    ...over,
+  };
+}
+function call(email: string, minutesAgo = 3): RegalCandidate {
+  return { agent_email: email, occurred_at: new Date(NOW - minutesAgo * MIN).toISOString() };
+}
+
+// --- 1. the decision --------------------------------------------------------
+
+{
+  const [v] = judgeRegalCallers([call("jane@trypennie.com")], [user()], []);
+  eq(v.exemptions, [], "an agent who is not bookable and placed a call is flagged");
+  eq(v.axis, "not-bookable", "the page names the axis: the bookable switch is off");
+  eq(v.calls, 1, "one call counted");
+}
+{
+  const [v] = judgeRegalCallers(
+    [call("jane@trypennie.com")],
+    [user({ bookable: true, deactivated_at: "2026-09-01T00:00:00Z" })],
+    [],
+  );
+  eq(v.axis, "deactivated", "a deactivated agent is named as deactivated, whatever the bookable flag says");
+  eq(v.exemptions, [], "a departed employee still placing calls is the finding, not noise");
+}
+
+// Every combination of the four exemptions, each asserted present exactly when
+// its condition holds, so no reason is ever folded into another.
+const combos: { routable: boolean; role: boolean; test: boolean; ignored: boolean }[] = [];
+for (let i = 0; i < 16; i++) {
+  combos.push({ routable: !!(i & 1), role: !!(i & 2), test: !!(i & 4), ignored: !!(i & 8) });
+}
+for (const c of combos) {
+  const u = user({ bookable: c.routable, role: c.role ? "manager" : "agent", is_test: c.test });
+  const ignores: RegalIgnore[] = c.ignored ? [{ user_id: u.id, reason: "works the dialer only" }] : [];
+  const [v] = judgeRegalCallers([call(u.email)], [u], ignores);
+  const expected: RegalExemption[] = [];
+  if (c.routable) expected.push("routable");
+  if (c.role) expected.push("role");
+  if (c.test) expected.push("test");
+  if (c.ignored) expected.push("ignored");
+  const label = JSON.stringify(c);
+  eq(v.exemptions, expected, `exemptions for ${label} are exactly the ones that hold`);
+  eq(v.exemptions.length === 0, !c.routable && !c.role && !c.test && !c.ignored, `flagged only with none, ${label}`);
+}
+{
+  const [v] = judgeRegalCallers([call("left@trypennie.com")], [user()], []);
+  eq(v.exemptions, ["not-in-slate"], "an address with no Slate user now is its own reason, never a page");
+  eq(v.user, null, "and carries no user");
+}
+{
+  const verdicts = judgeRegalCallers(
+    [call("jane@trypennie.com", 20), call("jane@trypennie.com", 2), call("JANE@trypennie.com", 5)],
+    [user()],
+    [],
+  );
+  eq(verdicts.length, 1, "several calls from one person are one verdict, matched case insensitively");
+  eq(verdicts[0].calls, 3, "and count every call");
+  eq(verdicts[0].lastCallMs, NOW - 2 * MIN, "the latest call is the one the page names");
+}
+
+// --- 2. the role table is the Role union -------------------------------------
+
+const typesSrc = readFileSync("src/lib/db/types.ts", "utf8");
+const roleUnion = /export type Role\s*=\s*([^;]+);/.exec(typesSrc)?.[1] ?? "";
+const roles = [...roleUnion.matchAll(/"([a-z_]+)"/g)].map((m) => m[1]).sort();
+assert(roles.length >= 5, `read the Role union (${roles.join(", ")})`);
+eq(Object.keys(REGAL_ROLE_EXEMPT).sort(), roles, "the exemption table has exactly one entry per Role");
+eq(
+  Object.entries(REGAL_ROLE_EXEMPT)
+    .filter(([, exempt]) => !exempt)
+    .map(([r]) => r),
+  ["agent"],
+  "every role but agent is exempt (team_lead confirmed by Dan, 2026-09-08)",
+);
+assert(
+  readFileSync("src/lib/monitor/regal-calls.type-test.ts", "utf8").includes("@ts-expect-error"),
+  "the type test that makes a sixth role a build failure is in place",
+);
+
+// --- 3 and 4. the runner ------------------------------------------------------
+
+interface Sent {
+  key: string;
+  cooldownMs: number;
+  text: string;
+}
+function harness(over: Partial<Parameters<typeof runRegalCallCheck>[0]> = {}) {
+  const pages: Sent[] = [];
+  const resolved: { key: string; text: string }[] = [];
+  let since = "";
+  const deps: Parameters<typeof runRegalCallCheck>[0] = {
+    loadCandidates: async (sinceIso) => {
+      since = sinceIso;
+      return [call("jane@trypennie.com")];
+    },
+    loadUsers: async () => [user()],
+    loadIgnores: async () => [],
+    loadFiringUserIds: async () => [],
+    armed: true,
+    notify: async (key, cooldownMs, text) => {
+      pages.push({ key, cooldownMs, text });
+    },
+    resolve: async (key, text) => {
+      resolved.push({ key, text });
+      return true;
+    },
+    cooldownMs: 24 * 60 * MIN,
+    nowMs: NOW,
+    ...over,
+  };
+  return { deps, pages, resolved, since: () => since };
+}
+
+{
+  const h = harness();
+  const r = await runRegalCallCheck(h.deps);
+  eq(r.status, "checked", "a planted violation is judged");
+  eq(h.pages.length, 1, "the detector FIRES on a planted violation");
+  eq(h.pages[0].key, regalCallAlertKey("u-jane"), "one page per agent, keyed on the user id");
+  eq(h.pages[0].key.startsWith(`${REGAL_CALL_ALERT_PREFIX}:`), true, "under the family prefix");
+  eq(h.pages[0].cooldownMs, 24 * 60 * MIN, "on the configured cooldown (24 hours by default)");
+  assert(h.pages[0].text.includes("Jane Agent"), "the page names the person");
+  eq(h.since(), new Date(NOW - REGAL_CALL_WINDOW_MS).toISOString(), "it reads the recent window on arrival");
+  assert(regalCallsReachedVerdict(r), "a judged call is a verdict");
+}
+{
+  const h = harness({ loadIgnores: async () => [{ user_id: "u-jane", reason: "dialer only" }] });
+  const r = await runRegalCallCheck(h.deps);
+  eq(h.pages.length, 0, "the detector stays quiet on an ignored agent");
+  eq(r.status, "checked", "and still reached a verdict: it judged a real call");
+  assert(regalCallsReachedVerdict(r), "an ignored caller is still a measured verdict");
+}
+{
+  const h = harness({ armed: false });
+  const r = await runRegalCallCheck(h.deps);
+  eq(h.pages.length, 0, "disarmed: no page");
+  eq(r.status === "checked" ? r.paged : null, false, "and says it did not page, so observed is never read as sent");
+  eq(r.status === "checked" ? r.flagged.length : -1, 1, "while still measuring who it would have named");
+}
+{
+  const h = harness({ loadCandidates: async () => [] });
+  const r = await runRegalCallCheck(h.deps);
+  eq(r.status, "no-calls", "zero candidate events is its own outcome");
+  assert(!regalCallsReachedVerdict(r), "and is NOT a verdict: a feed nobody posts to reads exactly like this");
+}
+for (const which of ["loadCandidates", "loadUsers", "loadIgnores", "loadFiringUserIds"] as const) {
+  const h = harness({
+    [which]: async () => {
+      throw new Error(`${which} refused`);
+    },
+    loadFiringUserIds: which === "loadFiringUserIds"
+      ? async () => {
+          throw new Error("loadFiringUserIds refused");
+        }
+      : async () => ["u-jane"],
+    loadUsers: which === "loadUsers"
+      ? async () => {
+          throw new Error("loadUsers refused");
+        }
+      : async () => [user({ bookable: true })],
+  });
+  const r = await runRegalCallCheck(h.deps);
+  eq(r.status, "unreadable", `a failed ${which} reports unmeasured`);
+  assert(!regalCallsReachedVerdict(r), `a failed ${which} stamps no verdict`);
+  eq(h.pages.length, 0, `a failed ${which} pages nobody`);
+  eq(h.resolved.length, 0, `a failed ${which} clears nothing, even with a routable agent paged`);
+}
+{
+  // A notify that throws must not take the tick down or skip the next agent.
+  const pages: string[] = [];
+  const h = harness({
+    loadCandidates: async () => [call("jane@trypennie.com"), call("sam@trypennie.com")],
+    loadUsers: async () => [user(), user({ id: "u-sam", name: "Sam", email: "sam@trypennie.com" })],
+    notify: async (key) => {
+      pages.push(key);
+      if (key.endsWith("u-jane")) throw new Error("slack down");
+    },
+  });
+  const r = await runRegalCallCheck(h.deps);
+  eq(r.status, "checked", "a failed send does not fail the check");
+  eq(pages.sort(), [regalCallAlertKey("u-jane"), regalCallAlertKey("u-sam")], "every flagged agent is still tried");
+}
+
+// --- 5. the endings ------------------------------------------------------------
+
+{
+  const users = [
+    user({ id: "u-back", name: "Back", email: "back@trypennie.com", bookable: true }),
+    user({ id: "u-ignored", name: "Ignored", email: "ign@trypennie.com" }),
+    user({ id: "u-promoted", name: "Promoted", email: "pro@trypennie.com", role: "team_lead" }),
+    user({ id: "u-test", name: "Test", email: "t@trypennie.com", is_test: true }),
+    user({ id: "u-still", name: "Still", email: "still@trypennie.com" }),
+  ];
+  const ignores: RegalIgnore[] = [{ user_id: "u-ignored", reason: "dialer only" }];
+  const endings = settleRegalCallAlerts(
+    ["u-back", "u-ignored", "u-promoted", "u-test", "u-still", "u-gone"],
+    users,
+    ignores,
+  );
+  const byId = new Map(endings.map((e) => [e.userId, e.ending]));
+  eq(byId.get("u-back"), "routable", "bookable again is the recovery");
+  eq(byId.get("u-ignored"), "ignored", "added to the ignore list is the suppression");
+  eq(byId.get("u-promoted"), "exempt-role", "a role change is its own ending");
+  eq(byId.get("u-test"), "exempt-test", "becoming a test user is its own ending");
+  eq(byId.get("u-gone"), "gone", "a user who no longer exists ends the page rather than hanging it");
+  assert(!byId.has("u-still"), "somebody still not routable and not exempt keeps their page open");
+
+  const texts = endings.map((e) => e.text);
+  eq(new Set(texts.map((t) => t.split(" ").slice(-12).join(" "))).size, texts.length, "no two endings share wording");
+  const recovery = endings.find((e) => e.ending === "routable")!.text;
+  const suppression = endings.find((e) => e.ending === "ignored")!.text;
+  assert(!/not a fix|suppress/i.test(recovery), "the recovery does not call itself a suppression");
+  assert(/not a fix/i.test(suppression), "the suppression says it is not a fix");
+  assert(suppression.includes("dialer only"), "the suppression quotes the reason it was given");
+  assert(/still/i.test(suppression), "the suppression says Slate still does not route to them");
+}
+{
+  const h = harness({
+    loadCandidates: async () => [],
+    loadFiringUserIds: async () => ["u-jane", "u-sam"],
+    loadUsers: async () => [
+      user({ bookable: true }),
+      user({ id: "u-sam", name: "Sam", email: "sam@trypennie.com" }),
+    ],
+  });
+  await runRegalCallCheck(h.deps);
+  eq(h.resolved.map((r) => r.key), [regalCallAlertKey("u-jane")], "a measured tick settles the routable page even with no calls, and only that one");
+}
+{
+  const h = harness({
+    armed: false,
+    loadFiringUserIds: async () => ["u-jane"],
+    loadUsers: async () => [user({ bookable: true })],
+  });
+  await runRegalCallCheck(h.deps);
+  eq(h.resolved.length, 0, "a disarmed tick clears nothing: silence chosen by a switch is not a measurement");
+}
+
+// --- copy ------------------------------------------------------------------------
+
+{
+  const [v] = judgeRegalCallers([call("jane@trypennie.com", 18)], [user()], []);
+  const text = formatRegalCallAlert(v);
+  assert(!/^Slate/.test(text), "the page does not open with the word Slate");
+  assert(text.includes("jane@trypennie.com"), "the page carries the address");
+  assert(text.includes("10:42"), "the call time is rendered in the org's zone");
+  assert(/bookable/i.test(text), "the not bookable axis names the switch");
+  assert(/ignore list/i.test(text), "the page names both remedies, the ignore list among them");
+  const [d] = judgeRegalCallers([call("jane@trypennie.com")], [user({ deactivated_at: "2026-09-01T00:00:00Z" })], []);
+  assert(/deactivated/i.test(formatRegalCallAlert(d)), "the deactivated axis says so");
+  assert(formatRegalCallAlert(d) !== formatRegalCallAlert(v), "the two axes read differently");
+  const gone = formatRegalCallEnding({ userId: "u-x", ending: "gone", user: null, ignoreReason: null });
+  assert(!/undefined|null/.test(gone), "an ending with no user renders no placeholder");
+}
+
+finish();
