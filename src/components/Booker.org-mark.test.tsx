@@ -14,8 +14,10 @@ import { readFileSync } from "node:fs";
 import { render, screen } from "@testing-library/react";
 import Booker from "@/components/Booker";
 import { CANCEL_REASONS, RESCHEDULE_REASONS } from "@/lib/booking/core";
+import { bookerSlotIso } from "@/components/booker-test-slot";
 
-const slotIso = new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString();
+// A fixed daytime hour in the booker's zone (#2310): see booker-test-slot.ts.
+const slotIso = bookerSlotIso(3);
 
 const baseProps = {
   bucketCode: "411",

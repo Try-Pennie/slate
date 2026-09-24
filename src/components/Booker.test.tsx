@@ -23,6 +23,7 @@ import {
 } from "@/lib/booking/booker-copy";
 import { PHONE_COPY, advisorWillCall } from "@/lib/booking/manage-copy";
 import { DateTime } from "luxon";
+import { bookerSlotIso } from "@/components/booker-test-slot";
 import { messageLines } from "@/lib/booking/slot-picker";
 import { CANCEL_REASONS, RESCHEDULE_REASONS } from "@/lib/booking/core";
 import { CONFIRMATION_MARK } from "@/lib/booking/confirmation-mark";
@@ -57,7 +58,9 @@ vi.mock("@/components/ConfirmationMark", async (original) => ({
 // the 20s timeout; and a success that finds the lead already has another active
 // booking must warn them on the confirmation screen.
 
-const slotIso = new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString();
+// A fixed daytime hour in the booker's zone, never "now + 3 days" at whatever
+// time the suite runs: the lead's calling window (#2310) hides anything else.
+const slotIso = bookerSlotIso(3);
 
 const availability = {
   bucket: { code: "411" },
@@ -2008,12 +2011,13 @@ describe("Booker empty-state honesty (#1328)", () => {
 // offers the way through, and the longer search runs only when the button is
 // pressed so the cost falls on the few who arrive during a shutdown.
 describe("Booker closure state (#1329, #1339)", () => {
-  const far = () => {
-    const d = new Date();
-    d.setDate(d.getDate() + 20);
-    d.setHours(10, 0, 0, 0);
-    return d;
-  };
+  // 10:00 twenty days out, in the zone the BOOKER shows (#2310), never the
+  // machine's. `setHours` on a Date used the machine zone, so under TZ=UTC the
+  // slot was 10:00 UTC while the booker, falling back to Eastern, read it as
+  // 06:00: outside the lead's calling window, filtered out, and the test failed
+  // only in CI. Built from the booker's own zone resolution, the time is inside
+  // 08:00 to 20:00 whatever zone the machine is in.
+  const far = () => new Date(bookerSlotIso(20, 10));
 
   /** Empty near window with a closure reason; /next answers as told. */
   function closedWith(next: { ok: boolean; slots?: string[] }) {
@@ -2350,11 +2354,10 @@ describe("Booker closure state (#1329, #1339)", () => {
       // #1336's rule, and the far side of a closure is the tempting place to break
       // it: the lead has already asked once, so it feels like they asked for times.
       // They asked for DAYS.
-      const far = new Date();
-      far.setDate(far.getDate() + 20);
-      far.setHours(10, 0, 0, 0);
-      const alsoFar = new Date(far);
-      alsoFar.setHours(14, 0, 0, 0);
+      // In the booker's own zone, never the machine's (#2310, L504): see `far`
+      // in the describe above for what setHours on a machine Date did.
+      const far = new Date(bookerSlotIso(20, 10));
+      const alsoFar = new Date(bookerSlotIso(20, 14));
 
       global.fetch = vi.fn(async (url: RequestInfo | URL) => {
         if (String(url).includes("/api/availability/next")) {
