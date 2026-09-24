@@ -7,7 +7,7 @@
  *
  *   Cal("init", "<namespace>", { origin });   // per-namespace origin
  *   Cal.ns["<ns>"]("ui", { ... });             // accepted (Slate styles itself)
- *   Cal.ns["<ns>"]("prerender", { ... });      // no-op (Slate is cache-first)
+ *   Cal.ns["<ns>"]("prerender", { ... });      // accepted, no-op (see below)
  *   Cal("on", { action: "bookingSuccessful", callback });
  *   window.Cal.config.forwardQueryParams = true;
  *   <button data-cal-link="router?form=…" data-cal-namespace="review"
@@ -36,6 +36,18 @@
  * A host records a booking from bookingSuccessfulV2 OR from bookingSuccessful,
  * never both: they announce the same booking. No event carries the lead's
  * contact.
+ *
+ * The modal frame is built on the FIRST open and kept across close and reopen
+ * (#2678), the way cal.com keeps its modal: closing hides the overlay, and the
+ * next click on a trigger with the same namespace and the same booking URL shows
+ * the same iframe again, so the Booker inside keeps its chosen day, time and
+ * typed details, and bookerViewed / bookerReady fire once per page load rather
+ * than once per open. One frame is kept per namespace: a trigger whose booking
+ * URL differs (another xbc, other params) replaces that namespace's frame, and a
+ * second namespace gets a frame of its own. `prerender` stays a no-op: Slate
+ * does NOT build the frame at page load as cal.com's pre-render does, it warms
+ * the availability read instead (#251), and the frame is built on the first
+ * click.
  */
 (function () {
   "use strict";
@@ -85,6 +97,10 @@
 
   var namespaces = {}; // ns -> { origin, ui }
   var listeners = {}; // action -> [callback]
+  // The frame currently ON SCREEN, and how to hide it. Null while no modal is
+  // shown, including while frames sit hidden between opens (#2678): only the
+  // visible frame may announce a booking or close the modal. A hidden frame's
+  // resize and lifecycle messages are matched through `frames` instead.
   var activeIframe = null;
   var activeModalHide = null;
 
@@ -231,15 +247,49 @@
     document.head.appendChild(style);
   }
 
+  // One frame per namespace, kept across close and reopen (#2678). A frame is
+  // { url, overlay, iframe, show, hide, destroy }; `url` is the booking URL it
+  // was built for, so a trigger carrying a different link replaces it.
+  var frames = {};
+
+  function frameFor(source) {
+    if (!source) return null;
+    var keys = Object.keys(frames);
+    for (var i = 0; i < keys.length; i++) {
+      var f = frames[keys[i]];
+      if (f.iframe.contentWindow === source) return f;
+    }
+    return null;
+  }
+
   function openModal(link, ns, trigger) {
+    var url = bookingUrl(link, ns);
+    var frame = frames[ns];
+    // A different booking URL is a different booker, so the old frame goes (one
+    // per namespace bounds the memory a page can hold). A frame the host page
+    // has torn out of the DOM is gone too, whatever it thinks it is.
+    if (frame && (frame.url !== url || !document.body.contains(frame.overlay))) {
+      frame.destroy();
+      frame = null;
+    }
+    if (!frame) {
+      frame = buildFrame(url);
+      frames[ns] = frame;
+    }
+    frame.show(trigger);
+  }
+
+  function buildFrame(bookUrl) {
     ensureChromeStyle();
     var reduceMotion =
       window.matchMedia &&
       window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
+    // Built hidden; show() is what puts it on screen.
     var overlay = document.createElement("div");
+    overlay.className = "slate-widget-overlay";
     overlay.style.cssText =
-      "position:fixed;inset:0;z-index:2147483647;display:flex;" +
+      "position:fixed;inset:0;z-index:2147483647;display:none;" +
       "align-items:center;justify-content:center;background:rgba(29,33,47,0.55)";
 
     var modal = document.createElement("div");
@@ -294,7 +344,10 @@
     // than an indefinite spinner on this first-impression surface.
     var LOAD_TIMEOUT_MS = 12000;
     var loadTimer = null;
-    var bookUrl = bookingUrl(link, ns);
+    // "loading" until the iframe's first load, then "loaded"; "failed" while the
+    // error and its retry are up. The timer runs only while "loading" and only
+    // while the modal is shown, so a reopen of a loaded frame starts no clock.
+    var loadState = "loading";
 
     var loader = document.createElement("div");
     loader.className = "slate-widget-loader";
@@ -354,6 +407,7 @@
         retry.style.boxShadow = "";
       });
       retry.addEventListener("click", function () {
+        loadState = "loading";
         renderLoading();
         armLoadTimer();
         iframe.src = bookUrl; // force a fresh load attempt
@@ -378,16 +432,24 @@
       if (loadTimer) clearTimeout(loadTimer);
       loadTimer = setTimeout(function () {
         loadTimer = null;
+        loadState = "failed";
         renderError();
         emit("linkFailed", LOAD_FAILED.timeout);
       }, LOAD_TIMEOUT_MS);
     }
 
+    function stopLoadTimer() {
+      if (loadTimer) {
+        clearTimeout(loadTimer);
+        loadTimer = null;
+      }
+    }
+
     renderLoading();
-    armLoadTimer();
 
     // Loads of THIS iframe. The second and later announce `bookerReloaded`: a
-    // retry after a failed load, or a reload from inside the frame.
+    // retry after a failed load, or a reload from inside the frame. A close and
+    // reopen is not a load, since the frame is kept (#2678).
     var loads = 0;
 
     var iframe = document.createElement("iframe");
@@ -398,16 +460,16 @@
     iframe.setAttribute("title", COPY.frameTitle);
     iframe.allow = "fullscreen";
     iframe.addEventListener("load", function () {
-      if (loadTimer) {
-        clearTimeout(loadTimer);
-        loadTimer = null;
-      }
+      stopLoadTimer();
+      loadState = "loaded";
       if (loader.parentNode) loader.parentNode.removeChild(loader);
       iframe.style.opacity = "1";
       loads++;
       if (loads > 1) emit("bookerReloaded", {});
     });
     iframe.addEventListener("error", function () {
+      stopLoadTimer();
+      loadState = "failed";
       renderError();
       emit("linkFailed", LOAD_FAILED.error);
     });
@@ -422,16 +484,25 @@
       close.focus();
     });
 
-    var prevOverflow = document.body.style.overflow;
+    var prevOverflow = "";
     var inerted = [];
+    var visible = false;
+    // The element focus returns to on close: whichever trigger opened the modal
+    // this time, since two buttons can share one namespace and link.
+    var trigger = null;
 
+    // Hide, never remove (#2678): the overlay stays in the DOM, off screen and
+    // out of the accessibility tree, so the next show() finds the Booker exactly
+    // where the lead left it. Idempotent, because a hidden frame's own close
+    // button and a stale Escape can both still reach it.
     function hide() {
-      if (loadTimer) {
-        clearTimeout(loadTimer);
-        loadTimer = null;
-      }
+      if (!visible) return;
+      visible = false;
+      stopLoadTimer();
       document.removeEventListener("keydown", onKeydown, true);
-      overlay.remove();
+      overlay.style.display = "none";
+      overlay.setAttribute("aria-hidden", "true");
+      if (typeof overlay.inert === "boolean") overlay.inert = true;
       document.body.style.overflow = prevOverflow;
       inerted.forEach(function (el) {
         if (typeof el.inert === "boolean") el.inert = false;
@@ -447,6 +518,51 @@
           /* trigger may have left the DOM; closing still succeeds */
         }
       }
+    }
+
+    function show(openedBy) {
+      trigger = openedBy;
+      if (visible) {
+        close.focus();
+        return;
+      }
+      // Only one modal is on screen at a time, whichever namespace owns it.
+      if (activeModalHide && activeModalHide !== hide) activeModalHide();
+      visible = true;
+      overlay.style.display = "flex";
+      overlay.removeAttribute("aria-hidden");
+      if (typeof overlay.inert === "boolean") overlay.inert = false;
+
+      // Scroll lock + background inert while the dialog is open.
+      prevOverflow = document.body.style.overflow;
+      document.body.style.overflow = "hidden";
+      Array.prototype.forEach.call(document.body.children, function (child) {
+        if (child === overlay) return;
+        if (typeof child.inert === "boolean") {
+          if (!child.inert) {
+            child.inert = true;
+            inerted.push(child);
+          }
+        } else if (!child.hasAttribute("aria-hidden")) {
+          child.setAttribute("aria-hidden", "true");
+          inerted.push(child);
+        }
+      });
+
+      document.addEventListener("keydown", onKeydown, true);
+      // The 12s clock runs against the FIRST load only: a frame that already
+      // loaded needs none, and a close mid-load stopped it, so a reopen of a
+      // frame still loading starts it again rather than spinning forever.
+      if (loadState === "loading" && !loadTimer) armLoadTimer();
+
+      activeIframe = iframe;
+      activeModalHide = hide;
+      close.focus();
+    }
+
+    function destroy() {
+      hide();
+      if (overlay.parentNode) overlay.parentNode.removeChild(overlay);
     }
 
     function onKeydown(e) {
@@ -482,26 +598,11 @@
     modal.appendChild(loader);
     modal.appendChild(sentinel);
     overlay.appendChild(modal);
+    overlay.setAttribute("aria-hidden", "true");
+    if (typeof overlay.inert === "boolean") overlay.inert = true;
     document.body.appendChild(overlay);
 
-    // Scroll lock + background inert while the dialog is open.
-    document.body.style.overflow = "hidden";
-    Array.prototype.forEach.call(document.body.children, function (child) {
-      if (child === overlay) return;
-      if (typeof child.inert === "boolean") {
-        if (!child.inert) {
-          child.inert = true;
-          inerted.push(child);
-        }
-      } else if (!child.hasAttribute("aria-hidden")) {
-        child.setAttribute("aria-hidden", "true");
-        inerted.push(child);
-      }
-    });
-
-    activeIframe = iframe;
-    activeModalHide = hide;
-    close.focus();
+    return { url: bookUrl, overlay: overlay, iframe: iframe, show: show, hide: hide, destroy: destroy };
   }
 
   // --- error beacon (#1368) --------------------------------------------------
@@ -540,9 +641,12 @@
     }
   }
 
-  // How many times each namespace's modal has been opened on this page (#2658).
+  // How many times each namespace's modal has been OPENED on this page (#2658).
   // The second and later opens announce `bookerReopened`, which is the spec's
-  // "came back to the booker" signal.
+  // "came back to the booker" signal. Counted after the open returned (#2677):
+  // counted before it, a first click that threw (an iframe the host's CSP
+  // blocked) left the count at one, and the first click that worked read as a
+  // reopen of a booker nobody had seen.
   var opens = {};
 
   // Delegated so dynamically-added triggers work too.
@@ -554,8 +658,8 @@
     try {
       // Before the modal exists, as cal.com does: this is the click, not the view.
       emit("navigatedToBooker", {});
-      opens[ns] = (opens[ns] || 0) + 1;
       openModal(el.getAttribute("data-cal-link") || "", ns, el);
+      opens[ns] = (opens[ns] || 0) + 1;
       if (opens[ns] > 1) emit("bookerReopened", {});
     } catch (err) {
       // Report and swallow: a throw here would otherwise surface as an error in
@@ -667,37 +771,29 @@
 
   window.addEventListener("message", function (e) {
     var d = e.data || {};
-    if (
-      d.type === "slate:resize" &&
-      typeof d.height === "number" &&
-      activeIframe &&
-      e.source === activeIframe.contentWindow
-    ) {
-      // Only the active booking iframe may resize us — a nested/malicious frame
-      // on the host page must not be able to oscillate it (#593; parity with the
-      // success/escape source checks below).
-      activeIframe.style.height = d.height + "px";
+    // Every branch here checks the SOURCE (#593): a nested or malicious frame on
+    // the host page must not be able to resize the modal, spoof the host's
+    // conversion callback, announce a stage or close the dialog. Two kinds of
+    // check (#2678): a booking and an escape are taken from the frame ON SCREEN
+    // only (`activeIframe`); a resize and a lifecycle stage are taken from any
+    // frame this file built, hidden ones included, because they are facts about
+    // that frame load. A hidden frame's height must be right when it is shown
+    // again, and a bookerReady that arrives after a fast close will never be
+    // posted again, so it is announced when it arrives.
+    var frame = frameFor(e.source);
+    if (d.type === "slate:resize" && typeof d.height === "number" && frame) {
+      frame.iframe.style.height = d.height + "px";
     } else if (
       d.type === "slate:bookingSuccessful" &&
       activeIframe &&
       e.source === activeIframe.contentWindow
     ) {
-      // Only the active booking iframe may fire success — a nested/malicious
-      // frame on the host page must not be able to spoof the host's
-      // conversion/redirect callback (parity with the slate:escape check).
       // The original event stays byte for byte for the hosts written against it
       // (#2643); the V2 event is derived beside it, never instead of it.
       emit("bookingSuccessful", d.data);
       var v2 = V2_BY_OUTCOME[d.data && d.data.outcome];
       if (v2) emit(v2, v2Payload(d.data));
-    } else if (
-      LIFECYCLE[d.type] &&
-      activeIframe &&
-      e.source === activeIframe.contentWindow
-    ) {
-      // The same source check as every branch here: a frame on the host page
-      // that is not the booker must not be able to announce a cancel or a
-      // failure on its behalf.
+    } else if (LIFECYCLE[d.type] && frame) {
       emit(LIFECYCLE[d.type], d.data);
     } else if (
       d.type === "slate:escape" &&

@@ -74,7 +74,10 @@ Do not refactor the `Cal` queue / param / message plumbing while restyling.
 1. **`Cal()` global API shape** (`widget.js` global + `ns` handlers):
    - `Cal("init", "<ns>", { origin })` - origin per namespace
    - `Cal.ns["<ns>"]("ui", { theme, brandColor, layout, ... })`
-   - `Cal.ns["<ns>"]("prerender", ...)` - accepted, no-op (Slate is cache-first)
+   - `Cal.ns["<ns>"]("prerender", ...)` - accepted, no-op. Slate does NOT build
+     the frame at page load the way cal.com's pre-render does; it warms the
+     availability read instead (#251), and the frame is built on the first click
+     and then KEPT (see "One frame per namespace" below).
    - `Cal("on", { action: "bookingSuccessful", callback })`
    - `window.Cal.config.forwardQueryParams = true`
    - The loader stub queues commands before `widget.js` loads; keep draining
@@ -135,11 +138,11 @@ Do not refactor the `Cal` queue / param / message plumbing while restyling.
 
      | widget event (`on` action) | raw message | when | `detail.data` |
      |---|---|---|---|
-     | `navigatedToBooker` | widget only | a `data-cal-link` trigger is clicked, before the modal opens | `{}` |
-     | `bookerViewed` | `slate:bookerViewed` | first render of the Booker in this frame load | `{ slotsLoaded }` |
+     | `navigatedToBooker` | widget only | a `data-cal-link` trigger is clicked, before the modal opens or reopens | `{}` |
+     | `bookerViewed` | `slate:bookerViewed` | first render of the Booker in this frame load, so once per page load for one link (#2678) | `{ slotsLoaded }` |
      | `bookerReady` | `slate:bookerReady` | the availability answered with at least one time, once per frame load | `{ slotsLoaded: true }` |
-     | `bookerReopened` | widget only | the modal is opened again on the same page | `{}` |
-     | `bookerReloaded` | widget only | the modal iframe fires `load` a second or later time | `{}` |
+     | `bookerReopened` | widget only | the modal is opened again on the same page, after the open succeeded (#2677) | `{}` |
+     | `bookerReloaded` | widget only | the modal iframe fires `load` a second or later time: a retry, or a reload inside the frame, never a close and reopen | `{}` |
      | `linkFailed` | `slate:linkFailed`, and widget only for the modal's own load failure | the availability read failed (`availability_failed`), the page boundary caught a crash (`booker_crashed`), or the modal's iframe never loaded (`load_timeout`, `load_error`) | `{ code, msg }` |
      | `bookingSuccessfulV2` | derived from `slate:bookingSuccessful` with `outcome: "created"` | a fresh booking | `{ uid, startTime, endTime, status: "confirmed", isTest }` |
      | `rescheduleBookingSuccessfulV2` | derived from `outcome: "rescheduled"` | a lead moved the call they already had | same shape |
@@ -159,6 +162,34 @@ Do not refactor the `Cal` queue / param / message plumbing while restyling.
      **A cancel from the manage page has no host event.** The link in the invite
      opens Slate's own page outside any host, so nothing can announce it to a
      host; that is true on cal.com too. Only the in embed cancel announces.
+
+     **One frame per namespace, kept across close and reopen (#2678).** The
+     modal is built on the first click and never removed: closing it (the X,
+     the scrim, Escape, `slate:escape`) hides the overlay (`display:none`,
+     `aria-hidden="true"`, `inert` where the browser has it) and returns focus
+     to the trigger. The next click on a trigger with the same namespace and
+     the same booking URL shows the same overlay and the same iframe, so the
+     Booker keeps its chosen day, time and typed details, and the host sees
+     `navigatedToBooker` then `bookerReopened` and nothing else: `bookerViewed`
+     and `bookerReady` fire once per page load, which is what the GA4 spec's
+     `view_booker` once per visit rule needs. A trigger whose booking URL differs
+     (another `xbc`, other params) REPLACES that namespace's frame, so one frame
+     is held per namespace however often a page rewrites its link; a second
+     namespace gets a frame of its own, and only one overlay is on screen at a
+     time. The 12 second load timeout runs against the first load only: a loaded
+     frame gets no clock on reopen, and a frame closed mid-load has its clock
+     started again when it is shown. `bookerReloaded` needs a real second `load`
+     of one iframe, which a close and reopen is not.
+
+     While a frame is hidden, `activeIframe` is null (it names the frame ON
+     SCREEN, and nothing is), so a booking or an escape from a hidden frame is
+     ignored. A `slate:resize` from a hidden frame still sets that frame's
+     height, and a lifecycle message that arrives while hidden (a `bookerReady`
+     after a fast close) is still announced, because both are facts about that
+     frame load and neither will be posted again. Every one of those is matched
+     against the frames the widget itself built; a message from any other window
+     is dropped on every branch. `src/components/widget-embed.test.ts` pins all
+     of it against the real file.
 
 5. **`widget.js` stays vanilla / dependency-free.** Single IIFE served as plain
    `/widget.js`, no build step (~6KB). Do NOT import React, Tailwind, `globals.css`,
@@ -276,16 +307,21 @@ change inside `/book`, not a contract change -- the param plumbing is untouched.
 
 ---
 
-## Modal a11y to ADD (host-side chrome)
+## Modal a11y (host-side chrome)
 
-Almost none of this exists today. Add it to `widget.js` (the iframe handles its own
-*internal* focus; the host side just needs to manage the modal shell).
+All of this is in `widget.js` now; keep every item when touching the chrome (the
+iframe handles its own *internal* focus; the host side manages the modal shell).
 
 - `role="dialog"` + `aria-modal="true"` + `aria-label` (e.g. "Book a call") on the modal.
 - **Focus trap**: move focus into the modal on open; Tab cycles between the close
   button and the iframe, never escaping to the host page behind the scrim.
-- **Focus restore**: store the trigger element (`el` from the delegated click) before
-  opening; restore focus to it on close.
+- **Focus restore**: store the trigger element (`el` from the delegated click) on
+  every open, not only the first, since two buttons can share one namespace and
+  link and the frame is kept between them (#2678); restore focus to it on close.
+- **A hidden frame is out of the tree**: the kept overlay carries
+  `aria-hidden="true"` and `inert` (where supported) on top of `display:none`
+  while closed, and loses all three when shown, so a screen reader never lands
+  in a booker nobody opened and Tab never reaches its iframe.
 - **Escape to close** (`keydown`). Click-on-overlay-to-close already exists.
 - **Scroll lock**: set `document.body.style.overflow = 'hidden'` on open, restore on close.
 - **Background inert**: `inert` (or `aria-hidden="true"`) on the rest of `document.body`
@@ -337,6 +373,9 @@ Use Playwright MCP against `pnpm dev`:
    in the console).
 5. Modal a11y: Tab cycles within the modal, Escape closes, focus returns to the
    trigger, background scroll is locked, close target >= 44px.
+   Then close and click the trigger again: the same iframe comes back with the
+   day and time still chosen, and the host's `*` listener shows exactly
+   `navigatedToBooker` and `bookerReopened` for the reopen (#2678).
 6. Booker inside in light + dark + with a `brand` color; embed default renders light.
 7. Mobile full-screen at 375px (`100dvh`); branded loading state visible mid-boot
    (throttle network).

@@ -75,6 +75,16 @@
           console.log("Booking complete:", e.detail.data);
         },
       });
+      // The booker lifecycle, one line per stage, the way the GA4 listener sees
+      // it. Open, close and open again: the reopen logs navigatedToBooker and
+      // bookerReopened only, because the frame is kept and the Booker inside is
+      // where you left it (#2678).
+      Cal("on", {
+        action: "*",
+        callback: function (e) {
+          console.log("Booker lifecycle:", e.detail.type, e.detail.data);
+        },
+      });
 
       // For the trypennie drop-in, links are `router?form=<UUID>` and the page
       // query (xbc, external_id, name, ...) is forwarded by setting
