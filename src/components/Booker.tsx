@@ -39,7 +39,7 @@ import {
 import { getJson, postJson, REQUEST_TIMEOUT_MS } from "@/lib/http";
 import { TestModeBand } from "@/components/TestModeBand";
 import { useStalledAfter } from "@/lib/useStalledAfter";
-import { ConfirmationMark } from "@/components/ConfirmationMark";
+import { ConfirmationMark, preloadConfirmationMark } from "@/components/ConfirmationMark";
 import { messageLines } from "@/lib/booking/slot-picker";
 import {
   BOOKING_ERROR_COPY,
@@ -515,6 +515,13 @@ export default function Booker({
   // user has to re-traverse the calendar to reach the form.
   useEffect(() => {
     if (selectedSlot) document.getElementById("booker-firstName")?.focus();
+  }, [selectedSlot]);
+
+  // #2636: the confirmation animation starts loading while the lead types their
+  // details, so it is usually ready on the confirmation screen. Not before a
+  // time is picked, because a lead only browsing days never sees it.
+  useEffect(() => {
+    if (selectedSlot) preloadConfirmationMark();
   }, [selectedSlot]);
 
   // #1339: the button that revealed the far-side days is gone once they are on

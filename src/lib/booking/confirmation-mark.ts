@@ -74,4 +74,14 @@ export const CONFIRMATION_MARK = {
    *  Long enough to read as a settle rather than a glitch, short enough not to be
    *  a second animation. */
   settleMs: 260,
+  /**
+   * How long the confirmation screen holds the spot empty waiting for the
+   * animation's first frame (#2636). Past it the still coin goes up and the
+   * animation is dropped for this booking, because showing the coin and then
+   * swapping it for the drawing is what read as broken. Short enough that an
+   * empty spot beside the heading reads as the page arriving, not as a missing
+   * picture; the early load in `preloadConfirmationMark` is what makes the
+   * drawing usually ready inside it.
+   */
+  holdMs: 500,
 } as const;

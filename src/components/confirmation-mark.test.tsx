@@ -15,9 +15,9 @@
 // review and in any test that only checks the canvas is present. The still coin
 // is what stands behind all three, so it is asserted before the player, with the
 // player, and after the player has gone.
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { act, render, screen } from "@testing-library/react";
-import { ConfirmationMark } from "@/components/ConfirmationMark";
+import { ConfirmationMark, preloadConfirmationMark } from "@/components/ConfirmationMark";
 import { CONFIRMATION_MARK } from "@/lib/booking/confirmation-mark";
 
 /** What the real player was handed, so a test can drive its two outcomes. */
@@ -80,46 +80,101 @@ beforeEach(() => {
   stub.props = null;
   stub.mounts = 0;
   withReducedMotion(false);
+  // The hold is a real timer in the component, so the clock is SET here rather
+  // than waited on: every test decides exactly when the hold runs out.
+  vi.useFakeTimers();
 });
 
-describe("confirmation mark (#2163, #2560)", () => {
-  it("shows the still coin before the player has arrived", () => {
-    render(<ConfirmationMark />);
+afterEach(() => {
+  vi.useRealTimers();
+  vi.unstubAllGlobals();
+});
 
-    // The first paint is the still ALONE: the player is a separate chunk that is
-    // still being fetched, and a lead on a slow connection must not be looking
-    // at an empty panel while that happens.
-    expect(still()).not.toBeNull();
-    expect(screen.queryByTestId("mark-player")).toBeNull();
+/** Run the hold out without the player having painted. */
+function holdRunsOut() {
+  act(() => {
+    vi.advanceTimersByTime(CONFIRMATION_MARK.holdMs);
   });
+}
 
-  it("keeps the still until the player has actually painted, so nothing flashes empty", async () => {
+describe("confirmation mark (#2163, #2560, #2636)", () => {
+  // Dan, on his phone in Low Power Mode, 2026-09-24: the coin showed, was
+  // swapped for the tick drawing, then came back, and "it looked broken". The
+  // still used to stand behind the LOADING state too, so a slow load put a
+  // coin on screen, took it away for the drawing, and brought it back. The rule
+  // now: a lead sees the drawing (settling on the coin) OR the coin, never
+  // coin, drawing, coin.
+
+  it("holds the spot empty while the animation loads, rather than showing a coin it will take away", async () => {
     render(<ConfirmationMark />);
     await playerArrives();
 
-    // Mounted is not drawing. The player still has a wasm and 65 frames to
-    // fetch, and hiding the still the moment the component appears would leave
-    // an empty panel for exactly as long as that takes.
     expect(screen.getByTestId("mark-player")).not.toBeNull();
-    expect(still()).not.toBeNull();
+    expect(still()).toBeNull();
   });
 
-  it("hides the still once the player is really drawing, because both layers are transparent", async () => {
+  it("keeps the space reserved during the hold, so the screen does not jump when the mark arrives", () => {
+    render(<ConfirmationMark />);
+
+    const box = screen.getByTestId("confirmation-mark-box");
+    expect(box.className).toContain("h-36");
+    expect(box.className).toContain("w-36");
+  });
+
+  it("plays the drawing when it paints inside the hold, with no coin behind it", async () => {
     render(<ConfirmationMark />);
     await playerArrives();
     act(() => stub.props!.onDrawing());
 
-    // THIS ASSERTION IS THE REVERSE OF THE ONE THIS FILE SHIPPED WITH, and the
-    // reversal is the point (#2163 -> #2560). While the mark was an opaque
-    // `<video>` on its own cream ground, a still underneath was invisible until
-    // the video faded, so "always in the tree" cost nothing and bought every
-    // fallback. #2560 made the animation a TRANSPARENT canvas and carried that
-    // structure over, so the premise that made it free was gone: the still was
-    // painted through the animation for the whole 2.167 seconds. Measured on the
-    // shipping assets, the still's coin draws 101px wide and the animation's
-    // draws 62px, so it never came close to covering it (L204).
+    // Both layers are transparent (#2560), so a coin behind the drawing shows
+    // through it; the drawing is on screen alone.
     expect(screen.getByTestId("mark-player")).not.toBeNull();
     expect(still()).toBeNull();
+
+    // Painting in time means the hold running out changes nothing.
+    holdRunsOut();
+    expect(still()).toBeNull();
+    expect(screen.getByTestId("mark-player")).not.toBeNull();
+  });
+
+  it("settles on the still coin when the drawing ends, rather than resting on its own last frame", async () => {
+    render(<ConfirmationMark />);
+    await playerArrives();
+    act(() => stub.props!.onDrawing());
+    expect(screen.getByTestId("confirmation-mark-layer").className).toContain("opacity-100");
+
+    act(() => stub.props!.onEnded());
+    const layer = screen.getByTestId("confirmation-mark-layer");
+    expect(layer.className).toContain("opacity-0");
+    // The fade is on a layer this component owns, because the player library
+    // drops a `style` prop whenever a className is set.
+    expect(layer.getAttribute("style")).toContain(`${CONFIRMATION_MARK.settleMs}ms`);
+    expect(still()).not.toBeNull();
+  });
+
+  it("shows the still coin, and never the drawing, when the hold runs out first", async () => {
+    render(<ConfirmationMark />);
+    await playerArrives();
+    const late = stub.props!;
+
+    holdRunsOut();
+    expect(still()).not.toBeNull();
+    expect(screen.queryByTestId("mark-player")).toBeNull();
+
+    // A first frame arriving after the coin is up must not take it away again:
+    // that is exactly the coin, drawing, coin sequence Dan saw.
+    act(() => late.onDrawing());
+    expect(still()).not.toBeNull();
+    expect(screen.queryByTestId("mark-player")).toBeNull();
+  });
+
+  it("shows the still coin straight away when the player cannot start, without waiting out the hold", async () => {
+    render(<ConfirmationMark />);
+    await playerArrives();
+
+    act(() => stub.props!.onFailed());
+    expect(screen.queryByTestId("mark-player")).toBeNull();
+    expect(still()).not.toBeNull();
   });
 
   it("brings the still back when the player dies after it has started drawing", async () => {
@@ -128,57 +183,19 @@ describe("confirmation mark (#2163, #2560)", () => {
     act(() => stub.props!.onDrawing());
     expect(still()).toBeNull();
 
-    // Only reachable now that the still is hidden while drawing: a render error
-    // part way through used to land on a canvas with a coin already behind it.
-    // With the still gone it would leave an empty panel, so the failure path has
-    // to put it back rather than only unmounting the player.
     act(() => stub.props!.onFailed());
     expect(screen.queryByTestId("mark-player")).toBeNull();
     expect(still()).not.toBeNull();
   });
 
-  it("gives way to the still coin when it ends, rather than resting on its own last frame", async () => {
-    render(<ConfirmationMark />);
-    await playerArrives();
-    act(() => stub.props!.onDrawing());
-
-    expect(screen.getByTestId("confirmation-mark-layer").className).toContain("opacity-100");
-
-    // The animation resolves to a small pale flat tick, which is a weak thing to
-    // leave on screen and is a DIFFERENT picture from the one a reduced motion
-    // lead sees. Every lead ends up looking at the same mark.
-    act(() => stub.props!.onEnded());
-    const layer = screen.getByTestId("confirmation-mark-layer");
-    expect(layer.className).toContain("opacity-0");
-    // The fade is on a layer this component owns, because the player library
-    // drops a `style` prop whenever a className is set, so a duration handed to
-    // it would silently never apply.
-    expect(layer.getAttribute("style")).toContain(`${CONFIRMATION_MARK.settleMs}ms`);
-    expect(still()).not.toBeNull();
-  });
-
-  it("leaves the still, and nothing else, when the player cannot start", async () => {
-    render(<ConfirmationMark />);
-    await playerArrives();
-
-    // A wasm that will not load, or an animation that will not fetch. The canvas
-    // goes away entirely rather than sitting there transparent: an element that
-    // will never draw is one more thing that can go wrong on top of the still.
-    act(() => stub.props!.onFailed());
-    expect(screen.queryByTestId("mark-player")).toBeNull();
-    expect(still()).not.toBeNull();
-  });
-
-  it("never mounts the player for a lead who asked for less motion", async () => {
+  it("shows the still coin at once, and never mounts the player, for a lead who asked for less motion", async () => {
     withReducedMotion(true);
     render(<ConfirmationMark />);
     await playerArrives();
 
     // The CSS guard in globals.css reaches animation-duration and
     // transition-duration, and a canvas painting itself frame by frame is
-    // neither, so this branch is the only thing standing between that lead and a
-    // full speed animation. Not mounted at all, so the chunk is never fetched
-    // either.
+    // neither. No hold either: there is nothing to wait for.
     expect(stub.mounts).toBe(0);
     expect(screen.queryByTestId("mark-player")).toBeNull();
     expect(still()).not.toBeNull();
@@ -187,23 +204,53 @@ describe("confirmation mark (#2163, #2560)", () => {
   it("is decorative in the accessibility tree, because the words carry the news", async () => {
     render(<ConfirmationMark />);
     await playerArrives();
+    act(() => stub.props!.onDrawing());
+    act(() => stub.props!.onEnded());
 
     const marks = [still(), screen.getByTestId("confirmation-mark-layer")];
     for (const mark of marks) {
-      // The heading, the recap and the live region already say a booking was
-      // made. A described graphic here would make a screen reader say it twice,
-      // and BOTH layers are in the tree at once, so both have to be silent.
       expect(mark!.getAttribute("aria-hidden")).toBe("true");
     }
   });
 
   it("names one size for the still, so the embed's height does not jump as it loads", () => {
+    withReducedMotion(true);
     render(<ConfirmationMark />);
 
-    // The host sizes the iframe from the Booker's own resize message, so an
-    // element that arrives with no intrinsic size and then gets one posts two
-    // different heights and the frame visibly jumps.
     expect(still()!.getAttribute("width")).toBe(String(CONFIRMATION_MARK.size));
     expect(still()!.getAttribute("height")).toBe(String(CONFIRMATION_MARK.size));
+  });
+});
+
+describe("loading the animation early (#2636)", () => {
+  it("fetches the player's wasm and the animation once, however often it is asked", () => {
+    const fetchSpy = vi.fn().mockResolvedValue(new Response(""));
+    vi.stubGlobal("fetch", fetchSpy);
+
+    preloadConfirmationMark();
+    preloadConfirmationMark();
+
+    const urls = fetchSpy.mock.calls.map((c) => String(c[0])).sort();
+    expect(urls).toEqual([CONFIRMATION_MARK.animation, CONFIRMATION_MARK.wasm].sort());
+  });
+
+  it("does not throw when a warm fetch fails, because the confirmation screen has its own fallback", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new TypeError("offline")));
+
+    expect(() => preloadConfirmationMark({ force: true })).not.toThrow();
+    // Let the rejections settle: an unhandled one would fail the run.
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+  });
+
+  it("fetches nothing for a lead who asked for less motion, since they will only ever see the still", () => {
+    withReducedMotion(true);
+    const fetchSpy = vi.fn().mockResolvedValue(new Response(""));
+    vi.stubGlobal("fetch", fetchSpy);
+
+    preloadConfirmationMark({ force: true });
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 });
