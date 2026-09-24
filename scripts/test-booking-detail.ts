@@ -7,11 +7,9 @@ import {
   type BookingDetailPageDeps,
 } from "../src/lib/booking/detail.ts";
 import { rosterNameResolver } from "../src/lib/booking/event-display.ts";
-import { formatSlotDay, formatSlotTime } from "../src/lib/booking/slot-label.ts";
 import type { Booking } from "../src/lib/db/types.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
-const TZ = "America/New_York";
 const nameOf = rosterNameResolver([
   { id: "u1", name: "Jamie Smith", email: "jamie@x.co" },
   { id: "u2", name: null, email: "ana@x.co" },
@@ -35,17 +33,16 @@ const base: BookingDetailInput = {
   },
 };
 
-const v = bookingDetailView(base, nameOf, TZ);
+const v = bookingDetailView(base, nameOf);
 eq(v.attendee, "Jane Doe", "attendee name preferred");
 eq(v.email, "jane@acme.co", "email passed through");
 eq(v.status, "confirmed", "status passed through");
 eq(v.agentName, "Jamie Smith", "assigned agent resolved");
 eq(v.bucketCode, "DBT-01", "bucket code from routing_trace");
-eq(
-  v.when,
-  `${formatSlotDay(base.starts_at, TZ)}, ${formatSlotTime(base.starts_at, TZ)}`,
-  "start formatted in ET",
-);
+// #1916: instants, not strings formatted in Eastern. The page renders them in
+// the viewer's zone, labelled, through ViewerTime.
+eq(v.startsAt, base.starts_at, "start carried as the instant");
+eq(v.endsAt, base.ends_at, "end carried as the instant");
 eq(v.rescheduledFrom, null, "no original time -> not rescheduled");
 assert(v.trace !== null, "trace present");
 // #1943: WHO was considered, not how many. The ids were on the page already and
@@ -69,7 +66,6 @@ eq(
       routing_trace: { ...base.routing_trace!, considered: ["u1", "nobody-here"] },
     },
     nameOf,
-    TZ,
   );
   eq(
     missing.trace!.considered.join(", "),
@@ -86,14 +82,14 @@ eq(v.trace!.reassignments.length, 0, "no reassignments");
 
 // Attendee fallback when name is null.
 eq(
-  bookingDetailView({ ...base, attendee_name: null }, nameOf, TZ).attendee,
+  bookingDetailView({ ...base, attendee_name: null }, nameOf).attendee,
   "jane@acme.co",
   "attendee falls back to email",
 );
 
 // Unassigned agent.
 eq(
-  bookingDetailView({ ...base, assigned_user_id: null }, nameOf, TZ).agentName,
+  bookingDetailView({ ...base, assigned_user_id: null }, nameOf).agentName,
   "Unassigned",
   "null agent -> Unassigned",
 );
@@ -102,12 +98,11 @@ eq(
 const resched = bookingDetailView(
   { ...base, original_starts_at: "2026-07-01T18:00:00Z" },
   nameOf,
-  TZ,
 );
 eq(
   resched.rescheduledFrom,
-  `${formatSlotDay("2026-07-01T18:00:00Z", TZ)}, ${formatSlotTime("2026-07-01T18:00:00Z", TZ)}`,
-  "rescheduledFrom is the original start, formatted",
+  "2026-07-01T18:00:00Z",
+  "rescheduledFrom is the original start instant",
 );
 
 // Reassignment trace resolves names.
@@ -121,7 +116,6 @@ const withReassign = bookingDetailView(
     },
   },
   nameOf,
-  TZ,
 );
 eq(withReassign.trace!.fallbackApplied, true, "fallback true surfaced");
 eq(withReassign.trace!.reassignments.length, 1, "one reassignment");
@@ -129,7 +123,7 @@ eq(withReassign.trace!.reassignments[0].from, "Jamie Smith", "reassignment from 
 eq(withReassign.trace!.reassignments[0].to, "ana@x.co", "reassignment to name (email fallback)");
 
 // Null routing trace -> null trace, null bucket.
-const noTrace = bookingDetailView({ ...base, routing_trace: null }, nameOf, TZ);
+const noTrace = bookingDetailView({ ...base, routing_trace: null }, nameOf);
 eq(noTrace.trace, null, "no routing_trace -> null trace");
 eq(noTrace.bucketCode, null, "no routing_trace -> null bucket");
 
@@ -151,7 +145,6 @@ function deps(over: Partial<BookingDetailPageDeps>): BookingDetailPageDeps {
     oooOnly: () => false,
     getBooking: async () => fullBooking,
     getRoster: async () => [{ id: "u1", name: "Jamie Smith", email: "jamie@x.co" }],
-    timeZone: TZ,
     ...over,
   };
 }

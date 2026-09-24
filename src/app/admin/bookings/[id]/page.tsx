@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import { redirect, notFound } from "next/navigation";
 import { currentUser } from "@/lib/auth";
 import { canManageAgents } from "@/lib/auth/roles";
@@ -8,6 +9,7 @@ import { cardCls } from "@/components/ui/styles";
 import AdminBookingActions from "@/components/AdminBookingActions";
 import { TestMark } from "@/components/TestModeBand";
 import BookingHistory from "@/components/BookingHistory";
+import ViewerTime from "@/components/ViewerTime";
 import { bookingIsActionable, loadBookingDetail } from "@/lib/booking/detail";
 import { loadReasonOptions } from "@/lib/booking/reason-options";
 import type { BookingEventView, HistoryRosterUser } from "@/lib/booking/event-display";
@@ -132,9 +134,14 @@ export default async function BookingDetailPage({
           <dl className="mt-4 grid grid-cols-1 gap-x-6 gap-y-2 text-sm sm:grid-cols-2">
             <Fact label="Email" value={view.email} />
             <Fact label="Phone" value={view.phone} />
-            <Fact label="When" value={view.when} />
-            <Fact label="Ends" value={view.ends} />
-            {view.rescheduledFrom && <Fact label="Originally" value={view.rescheduledFrom} />}
+            {/* #1916: the viewer's zone, labelled. The view carries instants
+                because this page renders on the server, which cannot know who
+                is reading. */}
+            <Fact label="When" value={<ViewerTime iso={view.startsAt} />} />
+            <Fact label="Ends" value={<ViewerTime iso={view.endsAt} />} />
+            {view.rescheduledFrom && (
+              <Fact label="Originally" value={<ViewerTime iso={view.rescheduledFrom} />} />
+            )}
             <Fact label="Agent" value={view.agentName} />
             <Fact label="Bucket" value={view.bucketCode} />
           </dl>
@@ -203,7 +210,7 @@ export default async function BookingDetailPage({
   );
 }
 
-function Fact({ label, value }: { label: string; value: string | null }) {
+function Fact({ label, value }: { label: string; value: ReactNode }) {
   return (
     <div className="flex flex-col">
       <dt className="text-xs text-fg-muted">{label}</dt>

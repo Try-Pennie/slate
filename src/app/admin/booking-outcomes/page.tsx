@@ -7,6 +7,7 @@ import { supabaseAdmin } from "@/lib/supabase/admin";
 import {
   normalizeMix,
   excludedTestTrafficNote,
+  OUTCOME_DAY_ZONE,
   type OutcomeMix,
   type RawMix,
 } from "@/lib/monitor/booking-api-outcome";
@@ -15,11 +16,13 @@ import { AdminPageHeader } from "@/components/admin/AdminPageHeader";
 
 export const dynamic = "force-dynamic";
 
-const ROSTER_ZONE = "America/New_York";
-
 // Module scope so the DateTime.now() call doesn't trip react-hooks/purity in render.
+// The window starts on the day boundary the tally rows are KEYED by (#1916), read
+// from the module that writes them, so the two cannot disagree about which day a
+// call landed on. This page shows no booking time, so there is no viewer zone to
+// render in.
 function sinceIso(days: number): string {
-  return DateTime.now().setZone(ROSTER_ZONE).minus({ days }).toISODate() ?? "";
+  return DateTime.now().setZone(OUTCOME_DAY_ZONE).minus({ days }).toISODate() ?? "";
 }
 
 const OUTCOME_LABEL: Record<string, string> = {

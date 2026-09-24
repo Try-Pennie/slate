@@ -1,9 +1,5 @@
-import { formatSlotDay, formatSlotTime } from "./slot-label.ts";
 import { rosterNameResolver, type HistoryRosterUser, type NameResolver } from "./event-display.ts";
 import type { Booking, Role, RoutingTrace } from "../db/types.ts";
-
-/** The whole roster is Eastern (matches the history/lookup formatting). */
-const ROSTER_ZONE = "America/New_York";
 
 /** The booking fields the detail view reads (a subset of Booking). */
 export type BookingDetailInput = Pick<
@@ -39,10 +35,14 @@ export interface BookingDetailView {
   email: string | null;
   phone: string | null;
   status: string;
-  /** Start formatted in the roster zone, e.g. "Fri, Jul 3, 2:00 PM". */
-  when: string;
-  ends: string;
-  /** The pre-reschedule start (formatted), or null if never rescheduled. */
+  /**
+   * The start and end INSTANTS (#1916). Not formatted here: this runs on the
+   * server, which cannot know who is reading, so the page renders them in the
+   * viewer's zone, labelled, through `ViewerTime`.
+   */
+  startsAt: string;
+  endsAt: string;
+  /** The pre-reschedule start instant, or null if never rescheduled. */
   rescheduledFrom: string | null;
   agentName: string;
   bucketCode: string | null;
@@ -74,10 +74,6 @@ export function bookingDetailHref(bookingId: string): string {
   return `/admin/bookings/${encodeURIComponent(bookingId)}`;
 }
 
-function fmt(iso: string, tz: string): string {
-  return `${formatSlotDay(iso, tz)}, ${formatSlotTime(iso, tz)}`;
-}
-
 function traceView(t: RoutingTrace, nameOf: NameResolver): BookingDetailTraceView {
   return {
     considered: t.considered.map(nameOf),
@@ -98,7 +94,6 @@ function traceView(t: RoutingTrace, nameOf: NameResolver): BookingDetailTraceVie
 export function bookingDetailView(
   b: BookingDetailInput,
   nameOf: NameResolver,
-  timeZone: string,
 ): BookingDetailView {
   const rescheduled =
     b.original_starts_at != null && b.original_starts_at !== b.starts_at;
@@ -107,9 +102,9 @@ export function bookingDetailView(
     email: b.attendee_email,
     phone: b.attendee_phone,
     status: b.status,
-    when: fmt(b.starts_at, timeZone),
-    ends: fmt(b.ends_at, timeZone),
-    rescheduledFrom: rescheduled ? fmt(b.original_starts_at!, timeZone) : null,
+    startsAt: b.starts_at,
+    endsAt: b.ends_at,
+    rescheduledFrom: rescheduled ? b.original_starts_at : null,
     agentName: b.assigned_user_id ? nameOf(b.assigned_user_id) : "Unassigned",
     bucketCode: b.routing_trace?.bucket_code ?? null,
     trace: b.routing_trace ? traceView(b.routing_trace, nameOf) : null,
@@ -132,7 +127,6 @@ export interface BookingDetailPageDeps {
   oooOnly: (role: Role) => boolean;
   getBooking: (id: string, orgId: string) => Promise<Booking | null>;
   getRoster: (orgId: string) => Promise<HistoryRosterUser[]>;
-  timeZone?: string;
 }
 
 /**
@@ -149,10 +143,6 @@ export async function loadBookingDetail(
   const booking = await deps.getBooking(id, deps.orgId);
   if (!booking) return { kind: "notfound" };
   const roster = await deps.getRoster(deps.orgId);
-  const view = bookingDetailView(
-    booking,
-    rosterNameResolver(roster),
-    deps.timeZone ?? ROSTER_ZONE,
-  );
+  const view = bookingDetailView(booking, rosterNameResolver(roster));
   return { kind: "ok", booking, view };
 }

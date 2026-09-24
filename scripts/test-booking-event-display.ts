@@ -5,7 +5,6 @@ import {
   toBookingEventView,
   buildHistoryViews,
 } from "../src/lib/booking/event-display.ts";
-import { formatSlotDay, formatSlotTime } from "../src/lib/booking/slot-label.ts";
 import {
   RESCHEDULE_REASONS,
   CANCEL_REASONS,
@@ -15,8 +14,6 @@ import {
 } from "../src/lib/booking/core.ts";
 import type { BookingEvent } from "../src/lib/db/types.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
-
-const TZ = "America/New_York";
 
 // #346: history label rendering resolves a code against the live option set
 // (passed in), so a renamed/custom code shows the admin's exact current label.
@@ -162,14 +159,19 @@ const reschedule: BookingEvent = {
   to_starts_at: "2026-07-05T18:00:00Z",
   lead_time_minutes: 2880,
 };
-const rv = toBookingEventView(reschedule, nameOf, TZ, OPTS);
+const rv = toBookingEventView(reschedule, nameOf, OPTS);
 eq(rv.actionLabel, "Rescheduled", "reschedule -> actionLabel Rescheduled");
 eq(rv.who, "Dan Wright (admin)", "reschedule who");
 eq(rv.reason, "Schedule conflict", "reschedule reason label");
 eq(rv.lead, "2 days before the time it was booked for then", "reschedule lead names its anchor");
-const expectFrom = `${formatSlotDay("2026-07-03T18:00:00Z", TZ)}, ${formatSlotTime("2026-07-03T18:00:00Z", TZ)}`;
-const expectTo = `${formatSlotDay("2026-07-05T18:00:00Z", TZ)}, ${formatSlotTime("2026-07-05T18:00:00Z", TZ)}`;
-eq(rv.timeChange, `${expectFrom} → ${expectTo}`, "reschedule timeChange from -> to");
+// #1916: the INSTANTS, not a string formatted in a zone the server guessed. The
+// server cannot know who is reading, so the client renders them in the viewer's
+// zone, labelled (ViewerTime).
+eq(
+  rv.timeChange,
+  { from: "2026-07-03T18:00:00Z", to: "2026-07-05T18:00:00Z" },
+  "reschedule timeChange carries the from and to instants",
+);
 eq(rv.agentChange, null, "reschedule with no agent change -> null");
 
 const reassign: BookingEvent = {
@@ -181,7 +183,7 @@ const reassign: BookingEvent = {
   from_agent_user_id: "u2",
   to_agent_user_id: "u1",
 };
-const av = toBookingEventView(reassign, nameOf, TZ, OPTS);
+const av = toBookingEventView(reassign, nameOf, OPTS);
 eq(av.actionLabel, "Reassigned", "reassign -> actionLabel Reassigned");
 eq(av.agentChange, "Jo Lee → Dan Wright", "reassign agentChange from -> to (names)");
 eq(av.timeChange, null, "reassign with no time change -> null");
@@ -195,7 +197,7 @@ const cancel: BookingEvent = {
   reason_code: "no_longer_interested",
   lead_time_minutes: -240,
 };
-const cv = toBookingEventView(cancel, nameOf, TZ, OPTS);
+const cv = toBookingEventView(cancel, nameOf, OPTS);
 eq(cv.actionLabel, "Cancelled", "cancel -> actionLabel Cancelled");
 eq(cv.who, "Customer", "cancel who = Customer");
 eq(cv.lead, "4 hours after the time it was booked for then", "cancel lead names its anchor");
@@ -225,7 +227,7 @@ const newer: BookingEvent = {
   reason_code: "no_longer_interested",
   created_at: "2026-07-04T09:00:00Z",
 };
-const views = buildHistoryViews([older, newer], roster, TZ, OPTS);
+const views = buildHistoryViews([older, newer], roster, OPTS);
 eq(views.length, 2, "buildHistoryViews returns one view per event");
 eq(views[0].id, "new", "newest event first");
 eq(views[1].id, "old", "older event last");
@@ -242,9 +244,9 @@ const unknown: BookingEvent = {
   to_agent_user_id: "u1",
   created_at: "2026-07-05T09:00:00Z",
 };
-const uv = buildHistoryViews([unknown], roster, TZ, OPTS);
+const uv = buildHistoryViews([unknown], roster, OPTS);
 eq(uv[0].agentChange, "Unknown user → Dan Wright", "id absent from roster -> 'Unknown user'");
 
-eq(buildHistoryViews([], roster, TZ, OPTS).length, 0, "no events -> empty list");
+eq(buildHistoryViews([], roster, OPTS).length, 0, "no events -> empty list");
 
 finish();

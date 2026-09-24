@@ -1,6 +1,10 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen } from "@testing-library/react";
+
+// The viewer's zone is set, never inherited from the machine running the suite (L504).
+vi.mock("@/lib/booking/timezones", () => ({ deviceTimeZone: () => "America/Phoenix" }));
+
 import BookingHistory from "@/components/BookingHistory";
 import type { BookingEventView } from "@/lib/booking/event-display";
 
@@ -87,6 +91,28 @@ describe("BookingHistory (#1943)", () => {
     for (const stamp of stamps) expect(stamp).toMatch(/\d+:\d{2}:\d{2}/);
     // Different seconds render differently, or showing them buys nothing.
     expect(stamps[0]).not.toBe(stamps[1]);
+  });
+
+  // #1916: every time on the panel is in the viewer's zone and says which, the
+  // recorded stamp and both ends of a time move alike.
+  it("renders every time in the viewer's zone, labelled", () => {
+    render(
+      <BookingHistory
+        events={[
+          {
+            ...EVENTS[0],
+            action: "rescheduled",
+            actionLabel: "Rescheduled",
+            at: "2026-07-04T13:00:05Z",
+            timeChange: { from: "2026-07-03T18:00:00Z", to: "2026-07-05T18:00:00Z" },
+            agentChange: null,
+          },
+        ]}
+      />,
+    );
+    expect(screen.getByText("Sat, Jul 4, 6:00:05am MST")).toBeTruthy();
+    expect(screen.getByText("Fri, Jul 3, 11:00am MST")).toBeTruthy();
+    expect(screen.getByText("Sun, Jul 5, 11:00am MST")).toBeTruthy();
   });
 
   // The left rule is ONE continuous line on the list, not a segment per entry
