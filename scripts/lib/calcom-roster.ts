@@ -10,7 +10,10 @@
 // arguments, so `scripts/test-calcom-roster.ts` drives it with no network and no
 // real clock.
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { retryDelayMs } from "./calcom-schedule-import.ts";
+import { retryDelayMs, CAL_SCHEDULES_API_VERSION } from "@/lib/calcom/schedule-import";
+// `pickDefaultSchedule` moved to `src/lib/calcom/schedule-import.ts` (#2627), because
+// the activation path in the Worker now reads a default schedule too and one choice
+// of "which schedule" must serve both.
 
 /**
  * Slate's `unwrap`, passed in rather than imported.
@@ -31,7 +34,7 @@ const CAL_API = "https://api.cal.com/v2";
  * the last time a cal.com capability was assumed rather than measured the probe
  * built on it shipped structurally unable to run (#1754).
  */
-export const CAL_SCHEDULES_API_VERSION = "2024-09-04";
+export { CAL_SCHEDULES_API_VERSION };
 /** `GET /bookings/{uid}`, measured live 2026-09-11. */
 export const CAL_BOOKINGS_API_VERSION = "2024-08-13";
 
@@ -92,37 +95,6 @@ export function makeCalGet(opts: {
       await sleep(wait);
     }
   };
-}
-
-export type DefaultSchedule =
-  | { kind: "schedule"; schedule: unknown }
-  /** The account exists and owns no schedule. A real state, not a fault. */
-  | { kind: "none" }
-  /** The payload is not the shape the contract promises. Kept apart from `none`
-   *  because it means the API changed under us rather than that an agent has
-   *  nothing set, and those send two different people to do two different things. */
-  | { kind: "unreadable"; why: string };
-
-/**
- * Which of a user's schedules is the one their bookings are actually taken
- * against.
- *
- * cal.com returns every schedule a user owns. Comparing Slate against a holiday
- * cover week nobody books through would report drift that does not exist, so the
- * DEFAULT is taken. A lone schedule with no flag is still taken: cal.com does not
- * always set it, and refusing those would strand a real slice of this roster.
- */
-export function pickDefaultSchedule(payload: unknown): DefaultSchedule {
-  if (payload === null || typeof payload !== "object") {
-    return { kind: "unreadable", why: "the schedules payload is not an object" };
-  }
-  const data = (payload as { data?: unknown }).data;
-  if (!Array.isArray(data)) {
-    return { kind: "unreadable", why: "the schedules payload carries no list of schedules" };
-  }
-  if (data.length === 0) return { kind: "none" };
-  const chosen = (data as { isDefault?: unknown }[]).find((s) => s?.isDefault === true) ?? data[0];
-  return { kind: "schedule", schedule: chosen };
 }
 
 /**

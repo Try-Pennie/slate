@@ -592,7 +592,7 @@ passes and leaves the report making a claim instead of taking a reading. It also
 pages about drift that the apply has already fixed.
 
 **What the lane will not write is the whole safety of it.**
-`hoursOverwriteRefusal` (`scripts/lib/calcom-schedule-import.ts`) refuses any
+`hoursOverwriteRefusal` (`src/lib/calcom/schedule-import.ts`) refuses any
 schedule whose `availability_schedules.hours_source` is `agent`, and refuses a
 source it does not recognise, so a writer added later defaults to leaving people's
 hours alone. cal.com is the authority for these values ONLY while it is the system
@@ -608,6 +608,16 @@ loophole, it is the roster: measured 2026-09-10, **79 of 90 bookable agents carr
 no stamp at all**, because migration 0117 shipped six days after the import that
 wrote them. Refusing those would leave the lane inert for 88 percent of the roster
 while the daily page went on naming exactly the agents it would not fix (L662).
+
+**The activation gate imports one agent's week too (#2627)**, the moment the
+calendar gate admits them and before the bookable write
+(`src/lib/bookable/activation-hours.ts`), through the same `planImportedWeek` and
+`writeImportedWeek` this lane uses. Its rule is STRICTER than this one: it replaces
+only a week `isUnsetHours` calls the seed (stamped `seed`, or unstamped and still
+shaped exactly like the org default, zone included), so an admin who set somebody's
+hours and then pressed Activate does not watch them change in the same click. Every
+cal.com failure leaves the seeded week, logs its own `reason`, and activates anyway;
+this daily run is the repair for anything it could not bring across.
 
 A difference the lane refuses to correct gets its OWN verdict,
 `hours-set-by-agent`, classified `standing` so it is counted and named and never

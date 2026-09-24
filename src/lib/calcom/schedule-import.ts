@@ -2,6 +2,13 @@
 // Pure: no network, no clock, no database, so every refusal is driven offline by
 // `scripts/test-calcom-schedule-import.ts`.
 //
+// It lives in `src/` rather than beside the importer script (#2627) because it has
+// TWO callers now: `pnpm import:calcom-schedules`, which sweeps the roster daily,
+// and the activation gate in the Worker, which imports ONE agent's week the moment
+// they become bookable (`src/lib/bookable/activation-hours.ts`). Both reach the
+// mapping through `planImportedWeek` below, so there is one reading of a cal.com
+// week and the two cannot come to disagree about what somebody works.
+//
 // WHY THIS EXISTS. Slate holds one seeded window for the entire roster (Mon to Fri,
 // 08:00 to 17:00, `America/New_York` for all 117 rows) and nobody has ever edited
 // it. cal.com holds what the agents have actually been maintaining. Measured
@@ -17,6 +24,16 @@
 // came to claim a timezone three quarters of it does not have, so a mapping that
 // quietly fell back would recreate the defect it exists to fix.
 import { DateTime } from "luxon";
+import { planScheduleReplacement } from "@/lib/schedule-replacement";
+import type { HoursSource } from "@/lib/monitor/unset-hours";
+
+/**
+ * The cal.com API version the schedules endpoint answers under, measured live
+ * (2024-08-13 answers 404 for it). Here rather than beside the script's reader
+ * because the activation gate sends it too (#2627), and one version for one
+ * endpoint is what keeps the two readings of a schedule the same shape.
+ */
+export const CAL_SCHEDULES_API_VERSION = "2024-09-04";
 
 /** Luxon's convention, which is Slate's: 1 = Monday .. 7 = Sunday. */
 const WEEKDAY: Record<string, number> = {
@@ -145,11 +162,8 @@ export function diffSchedule(
   return { changed: reasons.length > 0, reasons };
 }
 
-/**
- * Who last wrote a Slate week (`availability_schedules.hours_source`, migration
- * 0117). `null` means the row was written before the stamp existed.
- */
-export type HoursSource = "seed" | "agent" | "admin" | "calcom-import";
+/** Who last wrote a Slate week, re-exported from the one place it is declared. */
+export type { HoursSource };
 
 /** The refusal for an agent's own week, in one place so the importer, the parity
  *  comparison and the tests all say the same thing about the same person (L41). */
@@ -261,4 +275,62 @@ export function paceMs(raw: string | undefined): number {
   const n = Number(raw);
   if (!Number.isFinite(n) || n < 0) return DEFAULT_PACE_MS;
   return n;
+}
+
+export type DefaultSchedule =
+  | { kind: "schedule"; schedule: unknown }
+  /** The account exists and owns no schedule. A real state, not a fault. */
+  | { kind: "none" }
+  /** The payload is not the shape the contract promises. Kept apart from `none`
+   *  because it means the API changed under us rather than that an agent has
+   *  nothing set, and those send two different people to do two different things. */
+  | { kind: "unreadable"; why: string };
+
+/**
+ * Which of a user's schedules is the one their bookings are actually taken
+ * against.
+ *
+ * cal.com returns every schedule a user owns. Comparing Slate against a holiday
+ * cover week nobody books through would report drift that does not exist, so the
+ * DEFAULT is taken. A lone schedule with no flag is still taken: cal.com does not
+ * always set it, and refusing those would strand a real slice of this roster.
+ */
+export function pickDefaultSchedule(payload: unknown): DefaultSchedule {
+  if (payload === null || typeof payload !== "object") {
+    return { kind: "unreadable", why: "the schedules payload is not an object" };
+  }
+  const data = (payload as { data?: unknown }).data;
+  if (!Array.isArray(data)) {
+    return { kind: "unreadable", why: "the schedules payload carries no list of schedules" };
+  }
+  if (data.length === 0) return { kind: "none" };
+  const chosen = (data as { isDefault?: unknown }[]).find((s) => s?.isDefault === true) ?? data[0];
+  return { kind: "schedule", schedule: chosen };
+}
+
+/**
+ * A cal.com schedule turned into the week Slate would write, or the reason it
+ * cannot be.
+ *
+ * THE ONE READING of a cal.com week (#2627): the importer's roster sweep and the
+ * activation gate both call this, and neither maps a schedule any other way. It is
+ * the mapping, then the empty check, then Slate's own validator
+ * (`planScheduleReplacement`, the one every hours editor goes through), in the
+ * order the importer has always applied them.
+ */
+export type PlannedWeek =
+  | { ok: true; timezone: string; rules: SlateRule[] }
+  | { ok: false; why: string };
+
+export function planImportedWeek(calSchedule: unknown): PlannedWeek {
+  const mapped = mapCalcomSchedule((calSchedule ?? {}) as CalcomSchedule);
+  if (!mapped.ok) return { ok: false, why: mapped.why };
+  // Split shifts come across whole (#1782). Slate held one window per weekday until
+  // then, so a day with two was left out and the agent was offered nothing on it;
+  // `planScheduleReplacement` now refuses only windows that OVERLAP each other, and
+  // names the day when it does.
+  if (mapped.rules.length === 0) return { ok: false, why: "the schedule has no usable days" };
+  const plan = planScheduleReplacement(mapped.rules, mapped.timezone);
+  if (!plan.ok) return { ok: false, why: `Slate will not accept this week: ${plan.error}` };
+  return { ok: true, timezone: plan.timezone, rules: plan.rules };
 }

@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import type { Reachability } from "@/lib/google/reachability-classify";
 import type { PoolEntryResult } from "@/lib/google/pool-entry";
+import type { ActivationHoursOutcome } from "./activation-hours";
 
 // #281 + #913: the bookable-toggle service. Making an agent bookable when Slate
 // can't reach their Google calendar must BLOCK the flip (the agent never enters
@@ -87,11 +88,20 @@ function deps(...outcomes: Reachability[]) {
       watch: "renewed" as PoolEntryResult["watch"],
       outOfBudget: false,
     })),
+    // #2627: the cal.com week import that follows an admitted calendar. It records
+    // when it ran relative to the bookable write, so the ORDER can be asserted.
+    importHours: vi.fn(async (_user: { id: string; email: string }, _remainingMs: () => number): Promise<ActivationHoursOutcome> => {
+      importedBeforeWrite.push(updates.length === 0);
+      return { kind: "imported" as const, timezone: "America/Los_Angeles", rules: 5, changes: [] };
+    }),
     // #2317: the gate's deadline is measured against this, never the real clock,
     // so every test in this file runs inside its budget unless it says otherwise.
     now: () => 1_000_000,
   };
 }
+
+/** For each import call, whether the bookable write had NOT yet happened. */
+const importedBeforeWrite: boolean[] = [];
 
 describe("applyBookableByEmail", () => {
   beforeEach(() => {
@@ -396,6 +406,87 @@ describe("onboarding on the way INTO the pool (#2302)", () => {
 });
 
 
+
+// #2627: a hire used to enter the pool on the seeded Eastern week and wait up to a
+// day for the importer. Once the calendar is admitted, the gate imports their
+// cal.com week, BEFORE the bookable write so they enter on the right hours, and
+// nothing the import meets can stop the activation.
+describe("importing cal.com hours on activation (#2627)", () => {
+  beforeEach(() => {
+    updates.length = 0;
+    patches.length = 0;
+    importedBeforeWrite.length = 0;
+    currentUser = null;
+  });
+
+  it("imports after the calendar is admitted and before the bookable write", async () => {
+    currentUser = { id: "u1", bookable: false, email: "nshort@trypennie.com" };
+    const d = deps("reachable");
+    const res = await applyBookableByUserId("u1", true, d);
+    expect(res.status).toBe("applied");
+    expect(d.importHours).toHaveBeenCalledTimes(1);
+    expect(d.importHours.mock.calls[0][0]).toEqual({ id: "u1", email: "nshort@trypennie.com" });
+    expect(d.onboardIntoPool).toHaveBeenCalled();
+    expect(importedBeforeWrite).toEqual([true]);
+    expect(updates).toEqual([{ id: "u1", bookable: true }]);
+  });
+
+  it("hands the import what is LEFT of the gate's own budget", async () => {
+    currentUser = { id: "u1", bookable: false, email: "nshort@trypennie.com" };
+    const d = deps("reachable");
+    await applyBookableByUserId("u1", true, d);
+    const remaining = d.importHours.mock.calls[0][1];
+    // The fake clock stands still, so all of the budget is left.
+    expect(remaining()).toBe(ACTIVATION_BUDGET_MS);
+  });
+
+  it("a skipped import (cal.com failed) still activates", async () => {
+    currentUser = { id: "u1", bookable: false, email: "nshort@trypennie.com" };
+    const d = deps("reachable");
+    d.importHours = vi.fn(async () => ({
+      kind: "skipped" as const,
+      reason: "calcom-rate-limited" as const,
+      detail: "rate-limited",
+    }));
+    const res = await applyBookableByUserId("u1", true, d);
+    expect(res.status).toBe("applied");
+    expect(updates).toEqual([{ id: "u1", bookable: true }]);
+  });
+
+  it("an import that THROWS still activates: it is contained at the call site", async () => {
+    // The import promises never to throw, and this does not rely on the promise:
+    // containment in the collaborator is lost the day somebody injects another one.
+    currentUser = { id: "u1", bookable: false, email: "nshort@trypennie.com" };
+    const d = deps("reachable");
+    d.importHours = vi.fn(async () => {
+      throw new Error("cal.com exploded");
+    });
+    const res = await applyBookableByUserId("u1", true, d);
+    expect(res.status).toBe("applied");
+    expect(updates).toEqual([{ id: "u1", bookable: true }]);
+  });
+
+  it("does not import when the gate refuses, on the way out, or on a noop", async () => {
+    currentUser = { id: "u1", bookable: false, email: "gone@trypennie.com" };
+    const blocked = deps("gone");
+    await applyBookableByUserId("u1", true, blocked);
+    expect(blocked.importHours).not.toHaveBeenCalled();
+
+    const unread = deps("reachable");
+    unread.onboardIntoPool = vi.fn(async () => ({ calendars: 1, hydrated: 0, failed: 1, watch: "renewed" as PoolEntryResult["watch"], outOfBudget: false }));
+    await applyBookableByUserId("u1", true, unread);
+    expect(unread.importHours).not.toHaveBeenCalled();
+
+    currentUser = { id: "u1", bookable: true, email: "leaving@trypennie.com" };
+    const leaving = deps("reachable");
+    await applyBookableByUserId("u1", false, leaving);
+    expect(leaving.importHours).not.toHaveBeenCalled();
+
+    const already = deps("reachable");
+    await applyBookableByUserId("u1", true, already);
+    expect(already.importHours).not.toHaveBeenCalled();
+  });
+});
 
 // #2317: the activation gate makes several Google calls before it writes, and
 // none of them carried a deadline. A wait with no deadline cannot fail, only

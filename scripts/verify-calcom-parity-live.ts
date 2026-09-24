@@ -76,8 +76,8 @@ loadEnvFiles([".env.local", ".dev.vars"]);
 
 const { supabaseAdmin } = await import("@/lib/supabase/admin");
 const { unwrap } = await import("@/lib/db/result");
-const { paceMs, skipKindForStatus } = await import("./lib/calcom-schedule-import.ts");
-const { makeCalGet, pickDefaultSchedule, emailIndex, loadBookableRoster, readEventTypeId } = await import(
+const { paceMs, skipKindForStatus, pickDefaultSchedule } = await import("@/lib/calcom/schedule-import");
+const { makeCalGet, emailIndex, loadBookableRoster, readEventTypeId } = await import(
   "./lib/calcom-roster.ts"
 );
 const { compareAgentSchedule, reclassifyAgentOwnedHours, VERDICT_RANK } = await import(

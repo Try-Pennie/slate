@@ -8,6 +8,11 @@ import { cleanupOnPoolExit } from "@/lib/google/sync";
 import { onboardIntoPool, type PoolEntryOptions, type PoolEntryResult } from "@/lib/google/pool-entry";
 import { ACTIVATION_BUDGET_MS } from "@/lib/bookable/activation-allowance";
 import { poolEntryRefusal } from "@/lib/bookable/pool-entry-verdict";
+import {
+  defaultActivationHoursDeps,
+  importHoursOnActivation,
+  type ActivationHoursOutcome,
+} from "@/lib/bookable/activation-hours";
 import { withinBudget } from "@/lib/google/sync-pace";
 import { log } from "@/lib/log";
 import {
@@ -86,6 +91,17 @@ export interface BookableDeps {
    */
   onboardIntoPool: (userId: string, opts: Required<PoolEntryOptions>) => Promise<PoolEntryResult>;
   /**
+   * Import the agent's cal.com week once the calendar is admitted (#2627), so a hire
+   * enters the pool on their real hours rather than the seeded Eastern week. Only a
+   * seeded week is replaced, and nothing it meets may stop the activation: it
+   * returns an outcome, and the call site contains a throw regardless.
+   *
+   * `remainingMs` is what is LEFT of this gate's deadline, so the import and the
+   * calendar reads before it spend one budget between them. REQUIRED, like the
+   * others, so `tsc` names every construction site.
+   */
+  importHours: (user: { id: string; email: string }, remainingMs: () => number) => Promise<ActivationHoursOutcome>;
+  /**
    * The clock the gate's deadline is measured against (#2317).
    *
    * REQUIRED, so `tsc` enumerates every construction site rather than letting one
@@ -113,6 +129,7 @@ export const defaultBookableDeps: BookableDeps = {
   // it. The self-heal reconcile backstop retries any leftover watch/blocks.
   cleanupOnPoolExit: (userId) => cleanupOnPoolExit(userId).then(() => {}),
   onboardIntoPool: (userId, opts) => onboardIntoPool(userId, undefined, opts),
+  importHours: (user, remainingMs) => importHoursOnActivation(user, defaultActivationHoursDeps(remainingMs)),
   now: () => Date.now(),
 };
 
@@ -385,6 +402,18 @@ async function applyBookableToRow(
       // sync retries this next hour, which is the same recovery path every other
       // arm of the gate already uses.
       return { status: "blocked", userId: user!.id, reason };
+    }
+
+    // Admitted. Bring their real week across from cal.com BEFORE the write (#2627),
+    // so they enter the pool on it rather than on the seeded Eastern default for up
+    // to a day. Only a seeded week is replaced, and the outcome is logged inside
+    // with its own reason. Contained HERE as well as inside, because nothing this
+    // meets may refuse an activation the calendar gate has just admitted: the daily
+    // importer is the repair for a week this could not bring across.
+    try {
+      await deps.importHours({ id: user!.id, email: user!.email }, () => deadlineMs - deps.now());
+    } catch (err) {
+      log.error("bookable-api", { msg: "calcom hours import threw on activation", user_id: user!.id }, err);
     }
   }
 

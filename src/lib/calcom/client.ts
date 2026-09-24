@@ -8,6 +8,7 @@ import {
   type CalcomAvailabilityRule,
   type DateOverride,
 } from "@/lib/calcom/overrides";
+import { CAL_SCHEDULES_API_VERSION, pickDefaultSchedule } from "@/lib/calcom/schedule-import";
 
 /**
  * Minimal Cal.com v2 org-API client for the OOO dual-write during the cutover
@@ -306,3 +307,90 @@ export const removeOooOverrides = (
   endIso: string,
   otherApproved: AbsenceWindow[],
 ): Promise<string> => applyOoo("remove", agentEmail, startIso, endIso, otherApproved);
+
+/**
+ * What one agent's cal.com schedule read came back as (#2627). Every way it can fail
+ * to produce a schedule is its own kind, because the activation gate logs each by
+ * name and each sends a different person to do a different thing (L11).
+ */
+export type ScheduleForImportRead =
+  | { kind: "schedule"; schedule: unknown }
+  /** No key or org in this deployment. cal.com is being wound down, so this is a
+   *  deliberate state, the same one the OOO dual write treats as a skip. */
+  | { kind: "not-configured" }
+  /** Refused under the load test environment (#2335): the roster is synthetic. */
+  | { kind: "loadtest" }
+  /** cal.com answered and holds nobody at this address. */
+  | { kind: "no-account" }
+  /** The account exists and owns no schedule. */
+  | { kind: "no-schedule" }
+  /** A 429 on either call. Never retried here: the daily importer is the retry. */
+  | { kind: "rate-limited" }
+  /** Any other non-2xx, named. */
+  | { kind: "refused"; status: number }
+  /** The fetch threw: a timeout, DNS, a dropped socket. */
+  | { kind: "unreachable"; detail: string }
+  /** A 2xx whose body is not what the contract promises. */
+  | { kind: "unreadable"; why: string };
+
+/**
+ * Read ONE agent's default cal.com schedule, for the activation gate (#2627).
+ *
+ * Bounded on purpose, because it runs on the request path of the admin toggle and
+ * inside the hourly roster lane's shared invocation: at most TWO calls, each carrying
+ * its own deadline, and no retry at all. The daily importer, which paces itself and
+ * climbs a retry ladder, is what repairs a read this one could not make, so a retry
+ * here would only spend the activation's budget on a chance the importer takes anyway.
+ *
+ * The lookup is by `emails[]`, the one the OOO dual write has made daily for months,
+ * rather than the importer's whole org listing, which is one read of every user to
+ * find one. Both were measured live on 2026-09-24 under the importer's API version:
+ * a known address answers one user, an unknown one an empty list. The schedule
+ * choice is the importer's own `pickDefaultSchedule`.
+ *
+ * NEVER throws. Every outcome is a value, so the caller can activate regardless.
+ */
+export async function readScheduleForImport(
+  email: string,
+  timeoutMs: number,
+): Promise<ScheduleForImportRead> {
+  if (!calcomConfigured()) return { kind: "not-configured" };
+  // Asked before the choke point as well, so a load test is its own settled answer
+  // rather than a throw read as an unreachable cal.com.
+  if (isLoadtest()) return { kind: "loadtest" };
+  const init = (): RequestInit => ({
+    headers: { "cal-api-version": CAL_SCHEDULES_API_VERSION },
+    signal: AbortSignal.timeout(timeoutMs),
+  });
+  try {
+    const lookup = await calcomFetch(
+      `/organizations/${calcomOrgId()}/users?emails[]=${encodeURIComponent(email)}`,
+      init(),
+    );
+    if (lookup.status === 429) return { kind: "rate-limited" };
+    if (lookup.status < 200 || lookup.status >= 300) return { kind: "refused", status: lookup.status };
+    if (!Array.isArray(lookup.data)) {
+      return { kind: "unreadable", why: "the user lookup did not answer a list" };
+    }
+    if (lookup.data.length === 0) return { kind: "no-account" };
+    const user = lookup.data[0] as { id?: unknown; email?: unknown };
+    // Identity is CONFIRMED rather than assumed from the filter (L75): a lookup that
+    // ignored the filter would otherwise import the first listed person's week.
+    if (typeof user?.email !== "string" || user.email.toLowerCase() !== email.trim().toLowerCase()) {
+      return { kind: "unreadable", why: "the user lookup answered a different address" };
+    }
+    if (typeof user.id !== "number") {
+      return { kind: "unreadable", why: "the cal.com user carries no numeric id" };
+    }
+
+    const scheds = await calcomFetch(`/organizations/${calcomOrgId()}/users/${user.id}/schedules`, init());
+    if (scheds.status === 429) return { kind: "rate-limited" };
+    if (scheds.status < 200 || scheds.status >= 300) return { kind: "refused", status: scheds.status };
+    const picked = pickDefaultSchedule({ data: scheds.data });
+    if (picked.kind === "none") return { kind: "no-schedule" };
+    if (picked.kind === "unreadable") return { kind: "unreadable", why: picked.why };
+    return { kind: "schedule", schedule: picked.schedule };
+  } catch (err) {
+    return { kind: "unreachable", detail: err instanceof Error ? err.message : String(err) };
+  }
+}

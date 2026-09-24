@@ -23,7 +23,7 @@ import {
   paceMs,
   hoursOverwriteRefusal,
   AGENT_OWNS_HOURS,
-} from "./lib/calcom-schedule-import.ts";
+} from "@/lib/calcom/schedule-import";
 import { planScheduleReplacement } from "@/lib/schedule-replacement";
 import { assert, eq, finish } from "./lib/harness.ts";
 

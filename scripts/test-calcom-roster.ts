@@ -14,13 +14,13 @@
 // 103 agents. The ladder is driven here with an injected clock, so the retry
 // behaviour is proved without a test that waits (L524, L290).
 import {
-  pickDefaultSchedule,
   emailIndex,
   makeCalGet,
   readEventTypeId,
   CAL_SCHEDULES_API_VERSION,
   CAL_BOOKINGS_API_VERSION,
 } from "./lib/calcom-roster.ts";
+import { pickDefaultSchedule } from "@/lib/calcom/schedule-import";
 import { assert, eq, finish } from "./lib/harness.ts";
 
 // --- which of a user's schedules is the one Slate compares against -------------
