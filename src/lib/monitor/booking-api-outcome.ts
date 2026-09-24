@@ -13,9 +13,17 @@
 
 import { DateTime } from "luxon";
 
-/** The whole roster runs in one zone; the tally buckets a call into its ET day,
- *  matching the daily-cap convention (#832) so day boundaries agree app-wide. */
-const ROSTER_ZONE = "America/New_York";
+/**
+ * The zone whose calendar day the tally is KEYED by: a call is counted on its
+ * Eastern day, matching the daily cap convention (#832), so day boundaries agree
+ * app wide.
+ *
+ * This is a bookkeeping boundary, not a claim about where anybody works: the
+ * roster spans seven zones (#1739). Exported so the admin panel asks for "since
+ * N days ago" on the SAME day boundary the rows were written on, rather than
+ * holding a second copy of the zone (#1916).
+ */
+export const OUTCOME_DAY_ZONE = "America/New_York";
 
 /** The API outcomes, in the order the panel renders them (happy path first). */
 export const OUTCOME_ORDER = [
@@ -107,7 +115,7 @@ export interface TallyInput {
    * `reschedule_conflict` and drop its successes.
    */
   isTest: boolean;
-  /** The call time (epoch ms), bucketed into the roster's ET calendar day. */
+  /** The call time (epoch ms), bucketed into its OUTCOME_DAY_ZONE calendar day. */
   atMs: number;
 }
 
@@ -122,7 +130,7 @@ export interface TallyInput {
  * shipped once (#1220).
  */
 export function outcomeTallyArgs(input: TallyInput): TallyArgs {
-  const day = DateTime.fromMillis(input.atMs, { zone: ROSTER_ZONE }).toISODate() ?? "";
+  const day = DateTime.fromMillis(input.atMs, { zone: OUTCOME_DAY_ZONE }).toISODate() ?? "";
   return {
     p_day: day,
     p_outcome: input.outcome,

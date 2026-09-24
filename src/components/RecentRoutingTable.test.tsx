@@ -1,11 +1,12 @@
 // @vitest-environment jsdom
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
-import {
-  RecentRoutingTable,
-  formatRoutingWhen,
-  type RecentRoutingRow,
-} from "@/components/RecentRoutingTable";
+
+// The viewer's zone is the one input the When column reads from the world, so the
+// test sets it rather than inheriting the machine's (L504).
+vi.mock("@/lib/booking/timezones", () => ({ deviceTimeZone: () => "America/Phoenix" }));
+
+import { RecentRoutingTable, type RecentRoutingRow } from "@/components/RecentRoutingTable";
 
 // #905: the recent-routing table extracted from the ~1300-line admin page so it
 // can be unit-tested (the #900 row-to-detail-page link couldn't be, forcing a
@@ -34,15 +35,13 @@ const row: RecentRoutingRow = {
   },
 };
 
-describe("formatRoutingWhen", () => {
-  it("renders the time in Eastern, not the machine/UTC zone", () => {
-    // 6:00 PM UTC on Jul 3 2026 is 2:00 PM Eastern (UTC-4). Pinning the zone
-    // makes this deterministic regardless of where the test runs (prod is UTC).
-    const out = formatRoutingWhen("2026-07-03T18:00:00Z");
-    expect(out).toMatch(/Jul 3/);
-    expect(out).toMatch(/2:00/);
-    expect(out).toMatch(/PM/);
-    expect(out).not.toMatch(/6:00/);
+describe("the When column (#1916)", () => {
+  it("renders the time in the viewer's zone, with the zone on screen", () => {
+    // 18:00 UTC on Jul 3 2026 is 11:00 in Phoenix. It used to be 2:00 PM with no
+    // label, in Eastern, on the premise that the whole roster was Eastern.
+    render(<RecentRoutingTable rows={[row]} users={users} />);
+    expect(screen.getByText("Fri, Jul 3, 11:00am MST")).toBeTruthy();
+    expect(document.body.textContent).not.toMatch(/2:00/);
   });
 });
 

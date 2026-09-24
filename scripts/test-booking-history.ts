@@ -46,7 +46,6 @@ function deps(over: Partial<BookingHistoryDeps>): BookingHistoryDeps {
     events: async () => [],
     users: async () => [],
     reasonOptions: async () => CODED_DEFAULTS,
-    timeZone: "America/New_York",
     ...over,
   };
 }

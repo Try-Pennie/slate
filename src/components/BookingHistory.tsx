@@ -1,27 +1,5 @@
-import { formatSlotDay, formatSlotTime } from "@/lib/booking/slot-label";
 import type { BookingEventView } from "@/lib/booking/event-display";
-
-/** The whole roster is Eastern (matches the server-side history formatting). */
-const ROSTER_ZONE = "America/New_York";
-
-/**
- * "Fri, Jul 3, 10:03:41 AM" for the moment the event was recorded.
- *
- * SECONDS, because without them three events cannot be ordered by eye (#1943).
- * A run of reschedules genuinely lands inside one minute, and the list then
- * shows the same stamp three times with no way to tell the sequence or check
- * that the order on screen is the real one.
- */
-function formatRecordedAt(iso: string): string {
-  const seconds = new Date(iso).getSeconds();
-  const withSeconds = Number.isFinite(seconds)
-    ? `:${String(seconds).padStart(2, "0")}`
-    : "";
-  const time = formatSlotTime(iso, ROSTER_ZONE);
-  // The seconds go beside the minutes rather than at the end, so the stamp still
-  // reads as one time: "10:03:41 AM", not "10:03 AM:41".
-  return `${formatSlotDay(iso, ROSTER_ZONE)}, ${time.replace(/(\d+:\d+)/, `$1${withSeconds}`)}`;
-}
+import ViewerTime from "@/components/ViewerTime";
 
 /**
  * Per-booking reschedule, cancel and reassign history (#561).
@@ -70,11 +48,20 @@ export default function BookingHistory({ events }: { events: BookingEventView[] 
           <li key={e.id} className="text-xs">
             <div className="flex flex-wrap items-baseline gap-x-2">
               <span className="font-semibold text-fg">{e.actionLabel}</span>
-              <span className="text-fg-muted tabular-nums">{formatRecordedAt(e.at)}</span>
+              {/* SECONDS, because without them three events cannot be ordered
+                  by eye (#1943): a run of reschedules genuinely lands inside one
+                  minute. In the viewer's zone, labelled (#1916). */}
+              <span className="text-fg-muted tabular-nums">
+                <ViewerTime iso={e.at} seconds />
+              </span>
             </div>
             <div className="text-fg-muted">{e.who}</div>
             <div className="mt-0.5 text-fg">{e.reason}</div>
-            {e.timeChange && <div className="mt-0.5 text-fg-muted">{e.timeChange}</div>}
+            {e.timeChange && (
+              <div className="mt-0.5 text-fg-muted tabular-nums">
+                <ViewerTime iso={e.timeChange.from} /> &rarr; <ViewerTime iso={e.timeChange.to} />
+              </div>
+            )}
             {e.agentChange && <div className="mt-0.5 text-fg-muted">{e.agentChange}</div>}
             {e.lead && <div className="mt-0.5 text-fg-muted">{e.lead}</div>}
           </li>

@@ -1,5 +1,4 @@
 import { type ReasonAction, type ReasonOption } from "./core.ts";
-import { formatSlotDay, formatSlotTime } from "./slot-label.ts";
 import type { BookingEvent, BookingEventAction } from "../db/types.ts";
 
 /** Resolves a user id to a display name (roster lookup on the server, #561). */
@@ -111,8 +110,14 @@ export interface BookingEventView {
   actionLabel: string;
   who: string;
   reason: string;
-  /** "Fri, Jul 3, 2:00 PM → Sun, Jul 5, 2:00 PM" for a time move; null otherwise. */
-  timeChange: string | null;
+  /**
+   * The start instants either side of a time move; null otherwise.
+   *
+   * Instants, not a formatted string (#1916): this is built on the server, which
+   * cannot know the viewer's zone, so the panel renders each one in the reader's
+   * zone, labelled, through `ViewerTime`.
+   */
+  timeChange: { from: string; to: string } | null;
   /** "Jo Lee → Dan Wright" for an agent change; null otherwise. */
   agentChange: string | null;
   /** "2 days before" / "4 hours after"; null when no lead time recorded. */
@@ -145,32 +150,26 @@ export function rosterNameResolver(roster: HistoryRosterUser[]): NameResolver {
 export function buildHistoryViews(
   events: BookingEvent[],
   roster: HistoryRosterUser[],
-  timeZone: string,
   reasonOptions: ReasonOptionsByAction,
 ): BookingEventView[] {
   const nameOf = rosterNameResolver(roster);
   return [...events]
     .sort((a, b) => b.created_at.localeCompare(a.created_at))
-    .map((e) => toBookingEventView(e, nameOf, timeZone, reasonOptions));
-}
-
-function formatAppt(iso: string, timeZone: string): string {
-  return `${formatSlotDay(iso, timeZone)}, ${formatSlotTime(iso, timeZone)}`;
+    .map((e) => toBookingEventView(e, nameOf, reasonOptions));
 }
 
 /**
  * Map one append-only booking_events row into the panel's view model, resolving
- * user ids to names and formatting all times in the given zone. Pure.
+ * user ids to names. Times stay instants for the client to render. Pure.
  */
 export function toBookingEventView(
   e: BookingEvent,
   nameOf: NameResolver,
-  timeZone: string,
   reasonOptions: ReasonOptionsByAction,
 ): BookingEventView {
   const timeChange =
     e.from_starts_at && e.to_starts_at
-      ? `${formatAppt(e.from_starts_at, timeZone)} → ${formatAppt(e.to_starts_at, timeZone)}`
+      ? { from: e.from_starts_at, to: e.to_starts_at }
       : null;
   const agentChange =
     e.from_agent_user_id &&

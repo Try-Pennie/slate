@@ -3,20 +3,13 @@
 import { useState, type FormEvent } from "react";
 
 import { AsyncListStates, useFetchList } from "@/components/AsyncList";
-import { formatSlotDay, formatSlotTime } from "@/lib/booking/slot-label";
 import { bookingDetailHref } from "@/lib/booking/detail";
 import { SEARCH_LIMIT, type BookingSearchRow } from "@/lib/booking/search";
 import { TestMark } from "@/components/TestModeBand";
-
-/** The whole roster is Eastern (matches the server-side history formatting). */
-const ROSTER_ZONE = "America/New_York";
+import ViewerTime from "@/components/ViewerTime";
 
 const extractBookings = (json: unknown): BookingSearchRow[] =>
   (json as { bookings?: BookingSearchRow[] } | null)?.bookings ?? [];
-
-function formatWhen(iso: string): string {
-  return `${formatSlotDay(iso, ROSTER_ZONE)}, ${formatSlotTime(iso, ROSTER_ZONE)}`;
-}
 
 /**
  * Look up ANY booking and view its history (#901), for bookings older than the
@@ -94,7 +87,9 @@ export default function BookingLookup() {
                     <span className="font-semibold text-fg">
                       {b.attendeeName || b.attendeeEmail || b.attendeePhone || "(no name)"}
                     </span>
-                    <span className="text-fg-muted tabular-nums">{formatWhen(b.startsAt)}</span>
+                    <span className="text-fg-muted tabular-nums">
+                      <ViewerTime iso={b.startsAt} />
+                    </span>
                     <span className="text-fg-muted">{b.agentName}</span>
                     <span className="capitalize text-fg-muted">{b.status}</span>
                   </a>

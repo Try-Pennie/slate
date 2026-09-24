@@ -1,4 +1,5 @@
 import { bookingDetailHref } from "@/lib/booking/detail";
+import ViewerTime from "@/components/ViewerTime";
 import type { Booking, RoutingTrace } from "@/lib/db/types";
 
 /** One recent booking + how it routed (the admin trace viewer's row). */
@@ -14,18 +15,6 @@ export type RecentRoutingRow = Pick<
 > & { routing_trace: RoutingTrace | null };
 
 type RosterUser = { id: string; name: string | null; email: string };
-
-/** The whole roster is Eastern, so the "When" column renders in that zone to
- *  match the history, lookup, and detail surfaces (not the server's UTC clock). */
-export function formatRoutingWhen(iso: string): string {
-  return new Date(iso).toLocaleString("en-US", {
-    timeZone: "America/New_York",
-    month: "short",
-    day: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
-  });
-}
 
 /**
  * The admin "Recent routing" table (#905), extracted from the admin page so it
@@ -90,7 +79,9 @@ export function RecentRoutingTable({
             return (
               <tr key={b.id} className="border-t border-border align-top">
                 <td className="whitespace-nowrap py-1.5 pr-3 text-fg-muted tabular-nums">
-                  {formatRoutingWhen(b.starts_at)}
+                  {/* #1916: the viewer's zone, labelled, like every other
+                      booking time on a staff surface. */}
+                  <ViewerTime iso={b.starts_at} />
                 </td>
                 <td className="py-1.5 pr-3">{lead}</td>
                 <td className="py-1.5 pr-3 text-fg-muted">{t?.bucket_code ?? "?"}</td>
