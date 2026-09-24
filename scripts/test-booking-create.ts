@@ -535,6 +535,49 @@ async function run() {
     assert(calls.createEvent.length === 0, "create-outage: no calendar event written");
   }
 
+  // --- #2072: the booking records where it came from ---
+  // Read on the SERVER from the prefill every route already sends, so the public
+  // booker and the direct booking API are covered by the one create path.
+  const sourceOf = async (prefill: Record<string, string>) => {
+    const { deps, calls } = makeDeps({ candidates: ["a"], freeEmails: new Set(["a@x.com"]) });
+    const warned: string[] = [];
+    const realWarn = console.warn;
+    console.warn = (...args: unknown[]) => {
+      warned.push(args.map(String).join(" "));
+    };
+    try {
+      await createBooking({ ...input, prefill }, deps);
+    } finally {
+      console.warn = realWarn;
+    }
+    return { row: calls.insertBooking.at(-1), warned };
+  };
+  {
+    const { row, warned } = await sourceOf({ xbc: "411", source: "offerhub" });
+    assert(row?.source === "offerhub", "create: a known page source is written onto the booking row");
+    assert(!warned.some((l) => l.includes("tag=booking-source")), "create: a known source logs nothing");
+  }
+  {
+    const { row, warned } = await sourceOf({ xbc: "411" });
+    assert(row?.source === "not-given", "create: a link with no source records not-given, never null or empty");
+    assert(!warned.some((l) => l.includes("tag=booking-source")), "create: an absent source is not a warning");
+  }
+  {
+    const { row, warned } = await sourceOf({ xbc: "411", source: "offer-hub" });
+    assert(
+      row?.source === "unrecognised",
+      "create: an unknown source is recorded as unrecognised, not folded into not-given, and the booking is still made",
+    );
+    assert(
+      warned.some((l) => l.includes("tag=booking-source") && l.includes("offer-hub")),
+      "create: the raw unrecognised value is logged so the broken link can be found",
+    );
+    assert(
+      row?.prefill != null && (row.prefill as Record<string, string>).source === "offer-hub",
+      "create: the raw value stays in prefill, untouched",
+    );
+  }
+
 }
 
 await run();

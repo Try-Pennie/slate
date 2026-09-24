@@ -84,7 +84,7 @@ trigger drives sync, recompute, outbox, and self-heal. Every endpoint requires
 ## URL contract (Cal.com parity)
 
 ```
-/booking/{salesforceId}?xbc={bucketCode}&name=&email=&phone=&attendeePhoneNumber=&smsReminderNumber=&loanPurpose=&loanRequest=&estimatedPmt=&active=&submissionId=&regalProfileId=
+/booking/{salesforceId}?xbc={bucketCode}&name=&email=&phone=&attendeePhoneNumber=&smsReminderNumber=&loanPurpose=&loanRequest=&estimatedPmt=&active=&submissionId=&regalProfileId=&source=
 ```
 
 - `{salesforceId}` — opaque, stored and echoed in webhooks (no Salesforce calls).
@@ -94,6 +94,31 @@ trigger drives sync, recompute, outbox, and self-heal. Every endpoint requires
   leave it off otherwise. They ride in `prefill`, come back on every booking view
   and in the `bookingSuccessful` payload as `submissionId` / `regalProfileId`, and
   reach Regal as `sfdc_submission_id` / `regal_profile_id`.
+- `source` (#2072): the page the lead is booking from, one of the values below.
+  cal.com told these apart by which event type took the booking; Slate books them
+  all through one flow, so the page says where it is instead. The booking records
+  it in `bookings.source` (and the Snowflake mirror), and the admin booking page
+  shows it with the cal.com event type it replaces. A link with no `source` is
+  recorded as `not-given`, and one naming a value not in this list is still booked
+  and recorded as `unrecognised`, with the raw value logged under
+  `tag=booking-source` so the link can be found and fixed. The same key works on
+  `/book` and through `widget.js` (put it on the `data-cal-link` query string).
+
+  | `source` | page | cal.com event type |
+  |---|---|---|
+  | `my-offers-result` | `/my-offers/result` | review |
+  | `booking` | `/booking`, not eligible for the AI agent | review |
+  | `booking-agent-eligible` | `/booking`, eligible for the AI agent | connect |
+  | `booking-portal` | `/booking/portal` | call |
+  | `offerhub` | `/offerhub` | call |
+  | `rml-portal` | `/rml/portal` | income |
+  | `email-booking` | the email booking link | terms |
+  | `guided-app` | guided application completion | apply |
+  | `agent-direct` | an advisor's direct link | meet |
+
+  The list and the mapping live in `src/lib/booking/booking-source.ts`, and
+  `scripts/test-booking-source.ts` holds this table, the code and the database
+  constraint to one another.
 - Everything else prefills the form and is forwarded in the webhook payload.
 
 ## Programmatic booking

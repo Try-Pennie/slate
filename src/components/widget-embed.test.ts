@@ -651,3 +651,17 @@ describe("widget.js keeps the modal frame across close and reopen (#2678, #2677)
     vi.unstubAllGlobals();
   });
 });
+
+describe("widget.js forwards the booking source (#2072)", () => {
+  it("carries source from the trigger's link onto the booker URL, where /book copies it into prefill", () => {
+    const trigger = document.createElement("button");
+    trigger.setAttribute("data-cal-link", "router?xbc=411&source=offerhub");
+    trigger.setAttribute("data-cal-namespace", "source-2072");
+    document.body.appendChild(trigger);
+    trigger.click();
+    const src = new URL(shownIframe()!.getAttribute("src")!);
+    expect(src.pathname).toBe("/book");
+    expect(src.searchParams.get("source")).toBe("offerhub");
+    expect(src.searchParams.get("xbc")).toBe("411");
+  });
+});

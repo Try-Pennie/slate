@@ -60,6 +60,11 @@ export const MIRROR_TABLES: TableSpec[] = [
       v("attendee_email"), v("attendee_phone"), json("prefill"), v("gcal_event_id"), v("manage_token"),
       v("idempotency_key"), v("external_id"), json("routing_trace"), b("allow_double_book"),
       n("reschedule_seq"), ts("created_at"), ts("updated_at"),
+      // #2072: the page the lead booked from. Added after the table was
+      // provisioned, so the warehouse gets it from the self-heal ALTER in
+      // docs/snowflake-setup.sql, which must run BEFORE this deploys or every
+      // bookings MERGE fails on an unknown column.
+      v("source"),
     ],
   },
   {

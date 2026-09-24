@@ -31,9 +31,36 @@ const base: BookingDetailInput = {
     chosen_user_id: "u1",
     fallback_applied: false,
   },
+  source: "offerhub",
 };
 
 const v = bookingDetailView(base, nameOf);
+
+// #2072: where the booking came from, with the cal.com event type it would have
+// been booked into, so an admin can read either name. The three non page states
+// each say their own thing: a booking older than the field, a link with no
+// source, and a link naming a page Slate does not know are three different facts.
+eq(v.source, "/offerhub, cal.com event type call", "a page source shows the page and its legacy event type");
+eq(
+  bookingDetailView({ ...base, source: "booking-agent-eligible" }, nameOf).source,
+  "/booking, eligible for the AI agent, cal.com event type connect",
+  "the AI agent eligible booking page reads as connect",
+);
+eq(
+  bookingDetailView({ ...base, source: "not-given" }, nameOf).source,
+  "No source on the link",
+  "not-given says the link carried none, with no event type",
+);
+eq(
+  bookingDetailView({ ...base, source: "unrecognised" }, nameOf).source,
+  "A source Slate does not know",
+  "unrecognised is its own statement, distinct from not-given",
+);
+eq(
+  bookingDetailView({ ...base, source: null }, nameOf).source,
+  "Booked before sources were recorded",
+  "a null source is a booking older than the field, not a link without one",
+);
 eq(v.attendee, "Jane Doe", "attendee name preferred");
 eq(v.email, "jane@acme.co", "email passed through");
 eq(v.status, "confirmed", "status passed through");

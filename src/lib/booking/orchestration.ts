@@ -78,6 +78,7 @@ import { validateAttendee } from "../attendee.ts";
 import { leadCallingZone, withinLeadCallingWindow } from "./lead-calling-window.ts";
 import { shortErrorReason } from "../notify/error-text.ts";
 import { log } from "@/lib/log";
+import { readBookingSource } from "./booking-source.ts";
 import {
   makeConfirmProfile,
   confirmProfileLine,
@@ -2646,6 +2647,19 @@ export async function createBooking(
   const phone = toE164(input.attendee.phone);
   const manageToken = deps.newManageToken();
   const gcalClientId = await deterministicEventId(idempotencyKey, userId);
+  // #2072: where the lead booked from, read off the link on the SERVER. An
+  // unknown value is recorded as `unrecognised` and the booking goes ahead: a
+  // broken link must never cost a lead. The raw value is logged so the link can
+  // be found and fixed, and stays in prefill; the column holds only the
+  // vocabulary.
+  const sourceReading = readBookingSource(input.prefill);
+  if (sourceReading.unrecognisedRaw !== null) {
+    log.warn("booking-source", {
+      msg: "unrecognised source on the booking link",
+      raw: sourceReading.unrecognisedRaw,
+      bucket_code: input.bucketCode,
+    });
+  }
 
   const bookingInsert: BookingInsert = {
     org_id: bookedBucket.org_id,
@@ -2669,6 +2683,7 @@ export async function createBooking(
     manage_token: manageToken,
     idempotency_key: idempotencyKey,
     external_id: input.externalId ?? null,
+    source: sourceReading.source,
     routing_trace: {
       bucket_code: bookedBucket.code,
       bucket_id: bookedBucket.id,

@@ -3,6 +3,8 @@
  * (Swap for `supabase gen types typescript` output once a project is linked.)
  */
 
+import type { BookingSource } from "../booking/booking-source.ts";
+
 export type Role = "super_admin" | "admin" | "team_lead" | "manager" | "agent";
 export type BusySource = "slate" | "gcal";
 export type OooStatus = "pending" | "approved" | "rejected" | "cancelled";
@@ -562,6 +564,13 @@ export interface Booking {
   external_id: string | null;
   routing_trace: RoutingTrace | null;
   /**
+   * Where the booking came from (#2072): the page named by the link's `source`,
+   * or `not-given` (the link carried none) or `unrecognised` (it named a page
+   * Slate does not know). NULL for a booking made before sources were recorded,
+   * which is a different fact from `not-given`. See booking-source.ts.
+   */
+  source: BookingSource | null;
+  /**
    * The appointment START a 24 hour reminder email has been sent about (#2359).
    *
    * A TIMESTAMP rather than a flag, so a booking that moves earns a fresh reminder
@@ -831,6 +840,8 @@ export type BookingInsert = {
   idempotency_key: string | null;
   external_id: string | null;
   routing_trace: RoutingTrace;
+  /** #2072: always written by createBooking, read off the link on the server. */
+  source: BookingSource;
 };
 
 /** The calendar-event input, captured in a reservation so a resume re-creates
