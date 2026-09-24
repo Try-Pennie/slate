@@ -535,10 +535,7 @@ async function run() {
   {
     const bk = makeBooking({ id: "bkL", external_id: "ext-1", salesforce_id: "sf-9" });
     const { deps } = makeDeps({ personBookings: [bk] });
-    const views = await lookupPersonBookings(
-      { externalId: "ext-1", salesforceId: null, email: null, phone: null },
-      deps,
-    );
+    const views = await lookupPersonBookings({ externalId: "ext-1", salesforceId: null }, deps);
     assert(views.length === 1 && views[0].id === "bkL", "lookup returns one view");
     assert(views[0].manageUrl === "https://slate.test/booking/manage/tok1", "lookup view has manageUrl");
     assert(views[0].externalId === "ext-1" && views[0].status === "confirmed", "lookup view fields mapped");

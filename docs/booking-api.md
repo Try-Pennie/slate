@@ -312,7 +312,12 @@ GET /api/bookings?externalId=<id>&bookingId=<id>&status=confirmed  # assert stat
 ```
 
 - `externalId` (required) — the lead's stable id (the Salesforce id). Optionally
-  pass `salesforceId` too; resolution is by **strong id only**.
+  pass `salesforceId` too; resolution is by **strong id only**. **Each id you
+  supply matches a booking whose `external_id` OR `salesforce_id` equals it**
+  (#2657): a booking made through the embed stores the lead id in
+  `salesforce_id` only, one made through `POST /api/bookings` stores whichever
+  ids you sent, and you cannot tell which route made it, so `externalId=<lead id>`
+  finds either. A different lead's id still gets a `404` or an empty list.
 - `bookingId` (optional) — return just that booking. Without it, returns the
   person's **active** bookings (`confirmed`/`rescheduled`).
 - `status` (optional, by-id only) — `confirmed` | `rescheduled` | `cancelled` |

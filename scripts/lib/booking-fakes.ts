@@ -26,6 +26,7 @@ import type {
   RoutingTrace,
 } from "../../src/lib/db/types.ts";
 import { deterministicEventId, EventGone } from "../../src/lib/booking/core.ts";
+import type { PersonIdentity } from "../../src/lib/booking/person-dedupe.ts";
 import { GoogleHttpError } from "../../src/lib/google/http-error.ts";
 import type { OwnerAlertEventBody } from "../../src/lib/booking/owner-alert.ts";
 
@@ -368,6 +369,11 @@ export function makeDeps(opts: FakeOpts) {
     recordRoutingDecision: [] as RecordRoutingDecisionInput[],
     roundRobinPreview: [] as (boolean | undefined)[],
     queryBookings: [] as unknown[],
+    // #2657: which fetch a path used, and what it asked for. The lookup API asks
+    // by strong id against either column; the dedupe path asks by identity, column
+    // to column, and a suite can prove neither reached for the other's fetch.
+    findActiveBookingsForPerson: [] as PersonIdentity[],
+    findActiveBookingsByStrongIds: [] as string[][],
     removePendingEventDeletion: [] as string[],
     bumpPendingEventDeletion: [] as { id: string; attempts: number }[],
     reassignIntents: [] as { bookingId: string; gcalClientId: string; pinnedAgentEmail: string }[],
@@ -938,7 +944,15 @@ export function makeDeps(opts: FakeOpts) {
       calls.reservationBumps.push({ id, attempts, lastError });
     },
     deleteExpiredReservations: async () => {},
-    findActiveBookingsForPerson: async () => {
+    findActiveBookingsForPerson: async (identity) => {
+      calls.findActiveBookingsForPerson.push(identity);
+      if (opts.personBookingsThrows) throw new Error("bookings read down");
+      return opts.personBookings ?? [];
+    },
+    // Hands back the same candidate pile UNFILTERED, so a suite proves the lookup
+    // judges what it was given rather than trusting the fetch (#2657).
+    findActiveBookingsByStrongIds: async (ids) => {
+      calls.findActiveBookingsByStrongIds.push([...ids]);
       if (opts.personBookingsThrows) throw new Error("bookings read down");
       return opts.personBookings ?? [];
     },

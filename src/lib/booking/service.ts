@@ -588,6 +588,44 @@ export async function findActiveBookingsForPerson(
   return [...byId.values()];
 }
 
+/**
+ * Every ACTIVE booking whose `external_id` OR `salesforce_id` is any of `ids`,
+ * for the lookup API (#2657). One equality read per id per column, merged by
+ * booking id, rather than a single `.or(...)` filter: a lookup id is caller
+ * supplied text, and PostgREST parses an `or` filter as an expression, so the
+ * value would become part of the filter's syntax. An `.eq` sends it as a plain
+ * value. The columns are the two the dedupe fetch above already reads, so the
+ * same indexes serve it (`scripts/test-person-lookup-indexes.ts`).
+ *
+ * Each result is unwrapped on its own for the reason given above (#1641): a
+ * failed read here would arrive at the caller as "this lead has no call", which
+ * is the answer the booking confirmed page renders as not found. The wave is
+ * written out here rather than shared with the function above on purpose: the
+ * swallowed read guard sees an awaited query wave and its loop in one place, and
+ * a helper taking the results as a parameter would put a future `r.data` revert
+ * out of its reach (`scripts/test-swallowed-error-reads.ts` reverts both waves).
+ */
+export async function findActiveBookingsByStrongIds(
+  ids: readonly string[],
+): Promise<Booking[]> {
+  if (ids.length === 0) return [];
+  const active = ["confirmed", "rescheduled"] as const;
+  const base = () =>
+    supabaseAdmin().from("bookings").select("*").in("status", active).limit(20);
+  const queries: PromiseLike<DbResult<unknown>>[] = [];
+  for (const id of ids) {
+    queries.push(base().eq("external_id", id));
+    queries.push(base().eq("salesforce_id", id));
+  }
+  const results = await Promise.all(queries);
+  const byId = new Map<string, Booking>();
+  for (const r of results) {
+    const rows = unwrap(r, "strong id booking lookup") as Booking[] | null;
+    for (const row of rows ?? []) byId.set(row.id, row);
+  }
+  return [...byId.values()];
+}
+
 export async function loadActiveUpcomingBookings(
   limit: number,
   offset = 0,
@@ -1868,6 +1906,7 @@ export function realDeps(deferSend?: WebhookSendScheduler): BookingDeps {
     },
 
     findActiveBookingsForPerson,
+    findActiveBookingsByStrongIds,
 
     loadBookingById: async (bookingId) => {
       const db = supabaseAdmin();
@@ -2322,16 +2361,13 @@ export async function checkBookable(input: {
 /** Default reason stamped on an API cancel when the bot supplies none (#386). */
 const API_CANCEL_REASON: ValidatedReason = { code: "api_cancellation", detail: null };
 
-/** Lookup API (#386): a person's active bookings by strong id (email/phone null
- *  so only strong matches surface). */
+/** Lookup API (#386): a person's active bookings by strong id, each id matching
+ *  either id column (#2657). */
 export function lookupPersonBookings(identity: {
   externalId: string;
   salesforceId: string | null;
 }): Promise<orchestration.ApiBookingView[]> {
-  return orchestration.lookupPersonBookings(
-    { externalId: identity.externalId, salesforceId: identity.salesforceId, email: null, phone: null },
-    realDeps(),
-  );
+  return orchestration.lookupPersonBookings(identity, realDeps());
 }
 
 /** Lookup API (#386): one booking by id (any status, or asserted `status`). */
