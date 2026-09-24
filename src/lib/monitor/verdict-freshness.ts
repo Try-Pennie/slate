@@ -30,6 +30,7 @@ import type { FailureRateResult } from "@/lib/monitor/booking-failure-rate";
 import type { LowVolumeResult } from "@/lib/monitor/booking-volume";
 import type { OooProtectionResult } from "@/lib/monitor/ooo-protection";
 import type { BelowLeadTierResult } from "@/lib/monitor/below-lead-tier";
+import type { RegalCallResult } from "@/lib/monitor/regal-calls";
 import { SHIPPED_FAILURE_RATE_THRESHOLDS } from "@/lib/monitor/failure-rate-thresholds";
 
 /**
@@ -108,6 +109,17 @@ export const KILL_SWITCH_VERDICT_LANE = "verdict:kill-switch";
  */
 export const BELOW_LEAD_TIER_VERDICT_LANE = "verdict:below-lead-tier";
 
+/**
+ * The Regal call detector (#2090): somebody placing calls in Regal while Slate
+ * will not route to them.
+ *
+ * It needs this stamp for the reason the whole family exists: "nobody in that
+ * state" and "no calls reached Slate at all" are the same silence. Before Regal's
+ * reporting webhook is pointed at Slate it is the second, every tick, which is why
+ * it is PARKED below against the issue that arms it.
+ */
+export const REGAL_CALLS_VERDICT_LANE = "verdict:regal-calls";
+
 export type DetectorVerdictLane =
   | typeof TIER_STAFFING_VERDICT_LANE
   | typeof AVAILABILITY_TRUTH_VERDICT_LANE
@@ -118,7 +130,8 @@ export type DetectorVerdictLane =
   | typeof LANE_WATCHDOG_VERDICT_LANE
   | typeof BURST_COUNTER_VERDICT_LANE
   | typeof KILL_SWITCH_VERDICT_LANE
-  | typeof BELOW_LEAD_TIER_VERDICT_LANE;
+  | typeof BELOW_LEAD_TIER_VERDICT_LANE
+  | typeof REGAL_CALLS_VERDICT_LANE;
 
 /**
  * Did this availability truth tick compare real calendars and decide?
@@ -196,6 +209,19 @@ export function tierStaffingReachedVerdict(
  */
 export function belowLeadTierReachedVerdict(result: BelowLeadTierResult | null): boolean {
   return result?.status === "measured" && result.compared > 0;
+}
+
+/**
+ * Did the Regal call detector judge a real call this tick? (#2090)
+ *
+ * Only `checked`, which means every read succeeded AND at least one call from a
+ * Slate user arrived in the window. `no-calls` is excluded because a feed nobody
+ * posts to produces exactly it, and `unreadable` because it measured nothing. A
+ * tick whose only callers were exempt IS a verdict: it read a real call and
+ * decided about it.
+ */
+export function regalCallsReachedVerdict(result: RegalCallResult | null): boolean {
+  return result?.status === "checked";
 }
 
 /**
@@ -335,6 +361,21 @@ export const PARKED_VERDICT_DETECTORS: Partial<Record<DetectorVerdictLane, Parke
     // Two monitor ticks. A real roster keeps an upcoming booking in view on every
     // tick, so a verdict this fresh means real bookings are in Slate now.
     unparkWithinMs: 10 * 60_000,
+  },
+  // #2090. Blind until Regal's reporting webhook is pointed at Slate, which is a
+  // step in Regal's own console that nothing in this repo can take or see. Until
+  // then every tick is `no-calls` and the verdict watch would page "never
+  // concluded" daily about a missing configuration, naming nothing anybody in
+  // Slate can do that morning (L111, L36). The un-park page is the useful part:
+  // the first judged call is the arrival of the traffic this was waiting for, and
+  // the reminder to arm it.
+  [REGAL_CALLS_VERDICT_LANE]: {
+    reason:
+      "Regal's reporting webhook is not yet pointed at Slate, so no call from a Slate user has arrived to judge; it concludes on the first one",
+    issue: 2695,
+    // An hour of ordinary weekday traffic carries hundreds of human calls, so a
+    // verdict older than that says nothing about whether the feed is flowing NOW.
+    unparkWithinMs: 60 * 60_000,
   },
 };
 

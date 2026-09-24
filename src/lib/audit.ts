@@ -63,6 +63,11 @@ export const AUDIT_ACTIONS = [
   // The warehouse half of a data-subject erasure (#1128). Its Supabase half is
   // audited by the erase_booking_pii function itself, as `pii.erasure`.
   "pii.warehouse_purge",
+  // #2090: the Regal call ignore list SUPPRESSES an alert about a named person, so
+  // adding or removing somebody is a permission exercised, and the trail is where
+  // "who decided this person's calls are not reported, and why" is answered.
+  "regal.ignore_added",
+  "regal.ignore_removed",
 ] as const;
 
 export type AuditAction = (typeof AUDIT_ACTIONS)[number];

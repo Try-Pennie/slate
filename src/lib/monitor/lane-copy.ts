@@ -19,6 +19,7 @@ import {
   TWILIO_ROSTER_VERDICT_LANE,
   LANE_WATCHDOG_VERDICT_LANE,
   TIER_STAFFING_VERDICT_LANE,
+  REGAL_CALLS_VERDICT_LANE,
   BURST_COUNTER_VERDICT_LANE,
   KILL_SWITCH_VERDICT_LANE,
   BELOW_LEAD_TIER_VERDICT_LANE,
@@ -232,6 +233,11 @@ const VERDICT_SUBJECT: Record<string, { what: string; cost: string; look: string
     what: "the check watching for bookings drying up",
     cost: "a funnel that has stopped delivering leads would look like an ordinary quiet day",
     look: 'the Worker logs for msg="booking volume" and whether the tick is landing inside business hours',
+  },
+  [REGAL_CALLS_VERDICT_LANE]: {
+    what: "the check asking whether anybody Slate routes no bookings to is placing calls in Regal",
+    cost: "somebody could be working the phones while Slate offers leads none of their time, and the pool would read as an ordinary quiet day",
+    look: 'the Worker logs for msg="regal calls" under tag=monitor, and whether rows are arriving in regal_call_events at all',
   },
   [TIER_STAFFING_VERDICT_LANE]: {
     what: "the check asking whether each debt tier is offering a lead any booking time before the end of the next working day",

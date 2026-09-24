@@ -9,6 +9,19 @@ import {
   settleAlertsSilently,
   firingFamilyMembers,
 } from "@/lib/notify/dispatch";
+import {
+  runRegalCallCheck,
+  REGAL_CALL_ALERT_PREFIX,
+  type RegalCaller,
+  type RegalCandidate,
+  type RegalIgnore,
+} from "@/lib/monitor/regal-calls";
+import {
+  runRegalFeedQuietCheck,
+  runRegalFeedUnreadableCheck,
+  countsFromRows,
+  type RegalReasonCounts,
+} from "@/lib/monitor/regal-call-feed";
 import { eligibleAgentIdsCached } from "@/lib/availability/eligible-cache";
 import { getBucketSlots } from "@/lib/availability/service";
 import { loadAllWorkingHours } from "@/lib/availability/working-hours-load";
@@ -117,6 +130,8 @@ import {
   tierStaffingReachedVerdict,
   BELOW_LEAD_TIER_VERDICT_LANE,
   belowLeadTierReachedVerdict,
+  REGAL_CALLS_VERDICT_LANE,
+  regalCallsReachedVerdict,
   FAILURE_RATE_VERDICT_LANE,
   LOW_VOLUME_VERDICT_LANE,
   OOO_PROTECTION_VERDICT_LANE,
@@ -1553,6 +1568,125 @@ export async function GET(req: NextRequest) {
       log.warn("monitor", { msg: "below lead tier skipped", why: gates.belowLeadTier.why });
     }
 
+    // --- Calling in Regal while Slate will not route to them (#2090). Regal posts
+    // every completed call to /api/regal/calls, and the edge keeps a row per event
+    // under the reason it was kept or dropped. This reads the last half hour of
+    // CANDIDATE calls (a human on our domain who is a Slate user), the roster, the
+    // ignore list and the pages already open in the family, and pages once per
+    // agent per cooldown for anybody not routable and not exempt. Every read is in
+    // this boundary and consumes no shared setup state, so it is not gated. A read
+    // that fails measures nothing, pages nobody and clears nothing.
+    //
+    // Disarmed until #2695 (migration 0138): it measures and logs every tick. ---
+    const loadRegalCounts = async (sinceIso: string): Promise<RegalReasonCounts> =>
+      countsFromRows(
+        unwrap(
+          await db.rpc("regal_call_reason_counts", { p_since: sinceIso }),
+          "monitor regal call reason counts",
+        ) ?? [],
+      );
+    const regalCalls = await steps.run("regal_calls", null, () =>
+      runRegalCallCheck({
+        loadCandidates: (sinceIso) =>
+          selectAllPages<RegalCandidate>("monitor regal call candidates", (from, to) =>
+            db
+              .from("regal_call_events")
+              .select("agent_email, occurred_at")
+              .eq("reason", "candidate")
+              .gte("received_at", sinceIso)
+              .order("received_at", { ascending: true })
+              .range(from, to),
+          ),
+        loadUsers: () =>
+          selectAllPages<RegalCaller>("monitor regal call roster", (from, to) =>
+            db
+              .from("users")
+              .select("id, name, email, role, bookable, deactivated_at, is_test")
+              .order("id", { ascending: true })
+              .range(from, to),
+          ),
+        loadIgnores: () =>
+          selectAllPages<RegalIgnore>("monitor regal call ignore list", (from, to) =>
+            db.from("regal_call_ignores").select("user_id, reason").order("user_id").range(from, to),
+          ),
+        loadFiringUserIds: () => firingFamilyMembers(REGAL_CALL_ALERT_PREFIX),
+        armed: settings.regalCallsArmed,
+        // alert-key: regal_call_unroutable:*
+        // alert-text-ok: our own copy from regal-calls.ts, built from roster fields and a
+        // formatted time; no error text can reach it.
+        notify: (key, ms, text) => sendThrottledAlert(key, ms, text),
+        // alert-key: regal_call_unroutable:*
+        // all-clear-proof: scripts/test-regal-call-detector.ts pins that a failed read of
+        // the events, the roster, the ignore list or the open pages clears nothing, and that
+        // a disarmed tick clears nothing.
+        resolve: (key, text) => resolveAlert(key, text),
+        cooldownMs: settings.cooldownMs.regal_call_unroutable,
+        nowMs: now,
+      }),
+    );
+    if (regalCalls) {
+      log.info("monitor", {
+        msg: "regal calls",
+        status: regalCalls.status,
+        ...(regalCalls.status === "checked"
+          ? {
+              callers: regalCalls.callers,
+              flagged: regalCalls.flagged.length,
+              flagged_emails: regalCalls.flagged.map((v) => v.email).join(","),
+              exempt: JSON.stringify(regalCalls.exempt),
+              paged: regalCalls.paged,
+            }
+          : {}),
+        ...(regalCalls.status === "unreadable" ? { error: regalCalls.error } : {}),
+        ...(regalCalls.status !== "unreadable" ? { settled: regalCalls.settled.join(",") } : {}),
+      });
+    }
+
+    // --- The Regal feed itself (#2090): did anything from a Slate user arrive
+    // during the last whole business day, and did anything arrive that the edge
+    // could not read. Two conditions, each in its own boundary, each from one
+    // per reason count, and each silent in both directions when that count cannot
+    // be read. The quiet one needs the org's week to know which day was the last
+    // whole one, so it is gated on it; the unreadable one is not. Same switch as
+    // the detector above. ---
+    const regalQuiet = await steps.run("regal_calls_quiet", null, async () =>
+      !gates.regalCallsQuiet.run || !businessHours
+        ? null
+        : runRegalFeedQuietCheck({
+            hours: { zone: businessHours.zone, rules: businessHours.rules, exceptions: businessHours.exceptions },
+            loadCounts: loadRegalCounts,
+            armed: settings.regalCallsArmed,
+            // alert-key: regal_calls_quiet
+            notify: (key, ms, text) => sendThrottledAlert(key, ms, text),
+            // alert-key: regal_calls_quiet
+            // all-clear-proof: scripts/test-regal-call-feed.ts pins that unreadable counts and
+            // a disarmed tick clear nothing, and that only a measured call from a Slate user does.
+            resolve: (key, text) => resolveAlert(key, text),
+            cooldownMs: settings.cooldownMs.regal_calls_quiet,
+            nowMs: now,
+          }),
+    );
+    if (!gates.regalCallsQuiet.run) {
+      log.warn("monitor", { msg: "regal calls quiet check skipped", why: gates.regalCallsQuiet.why });
+    } else if (regalQuiet) {
+      log.info("monitor", { msg: "regal calls quiet", status: regalQuiet.status });
+    }
+    const regalUnreadable = await steps.run("regal_calls_unreadable", null, () =>
+      runRegalFeedUnreadableCheck({
+        loadCounts: loadRegalCounts,
+        armed: settings.regalCallsArmed,
+        // alert-key: regal_calls_unreadable
+        notify: (key, ms, text) => sendThrottledAlert(key, ms, text),
+        // alert-key: regal_calls_unreadable
+        // all-clear-proof: scripts/test-regal-call-feed.ts pins that unreadable counts and
+        // a disarmed tick clear nothing, and that only a measured clean day does.
+        resolve: (key, text) => resolveAlert(key, text),
+        cooldownMs: settings.cooldownMs.regal_calls_unreadable,
+        nowMs: now,
+      }),
+    );
+    if (regalUnreadable) log.info("monitor", { msg: "regal calls unreadable", status: regalUnreadable.status });
+
     // --- Routing-attribute coverage (#226): a bookable agent with no routing
     // attributes matches no bucket criteria, so unless someone added them as a
     // manual member they are never routed a booking. There is no self-heal
@@ -2635,6 +2769,9 @@ export async function GET(req: NextRequest) {
         BELOW_LEAD_TIER_VERDICT_LANE,
         belowLeadTierReachedVerdict(belowLeadTier),
       ),
+      // #2090: "nobody calling while not routable" and "no call reached Slate"
+      // are the same silence, so only a tick that judged a real call stamps.
+      recordDetectorVerdict(REGAL_CALLS_VERDICT_LANE, regalCallsReachedVerdict(regalCalls)),
     ]).catch((err) =>
       // recordHeartbeat already swallows its own DB errors, so reaching here means
       // something unexpected. It must not fail the monitor tick, but a stamp that

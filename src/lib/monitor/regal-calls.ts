@@ -1,0 +1,358 @@
+/**
+ * Somebody placing calls in Regal while Slate will not route bookings to them
+ * (#2090).
+ *
+ * That state means the routing pool is silently a person short: the roster thinks
+ * somebody is working, Slate is not offering them, and the only symptom is thinner
+ * availability that reads as an ordinary quiet day. #2085 is the prevention (Slate
+ * tells Regal who is bookable); this is the detection, and it is independent of it
+ * in the way that matters (L345): it reads Regal's own call events rather than the
+ * trait Slate sent, so it does not fall silent exactly when #2085 fails.
+ *
+ * WHO IS FLAGGED: a caller in the recent window who is a Slate user, is not
+ * routable (`isRoutable`, the one shipped definition, the same one #2085 uses), and
+ * carries none of four exemptions, each reported under its own name:
+ *
+ *   routable   Slate routes to them, which is healthy.
+ *   role       any role but `agent`, derived from the Role union below.
+ *   test       a test user.
+ *   ignored    on the admin managed ignore list, with a reason.
+ *
+ * plus `not-in-slate` for an address that resolved at the edge and has no user now.
+ *
+ * FIRST EVENT, NOT A STREAK, and the opposite of what #1215 chose, for a reason
+ * worth keeping: agents cannot change their own bookable status. Every
+ * `bookable = false` is somebody's decision (an admin, the Bearer keyed roster
+ * API, or the Salesforce sync, which only ever flips somebody ON), so a call from
+ * that person is anomalous from the first one. One page per agent per cooldown
+ * (24 hours by default, tunable on /admin/alerts), and the `alert_state` row is the
+ * record of who was paged and when.
+ *
+ * A CONDITION, so it ends, and two of its endings must never share wording (L11):
+ * becoming routable is a recovery; being added to the ignore list is a
+ * SUPPRESSION, which still closes the page so it does not hang, and says that
+ * nothing was fixed.
+ *
+ * Pure apart from the injected reads and the dispatcher, so the node suite drives
+ * every branch (scripts/test-regal-call-detector.ts).
+ */
+import { DateTime } from "luxon";
+import { normalizeEmail } from "@/lib/auth/email";
+import { formatClockTime } from "@/lib/date/parse";
+import { BUSINESS_ZONE } from "@/lib/booking/business-hours";
+import { isRoutable } from "@/lib/routing/staffing-depth";
+import type { Role } from "@/lib/db/types";
+import type { AlertResolve, ThrottledNotify } from "./alert-deps";
+
+/** The alert_state family: `regal_call_unroutable:<user id>`. */
+export const REGAL_CALL_ALERT_PREFIX = "regal_call_unroutable";
+
+export const regalCallAlertKey = (userId: string): string => `${REGAL_CALL_ALERT_PREFIX}:${userId}`;
+
+/**
+ * How far back each tick reads, on ARRIVAL. The lane runs every five minutes, so
+ * this is six ticks: a late tick, or a couple of failed ones, still sees every call
+ * that arrived since the last one that read. Rereading the same call is free, since
+ * the per agent cooldown is what decides whether a page goes out.
+ *
+ * It is deliberately short rather than a day. The window is "calls placed while
+ * the person is NOT routable", and nothing records when somebody's bookable flag
+ * changed, so a long window would page about a call made before an admin switched
+ * the person off.
+ */
+export const REGAL_CALL_WINDOW_MS = 30 * 60_000;
+
+/**
+ * Which roles are exempt, as a table over the Role union rather than the
+ * `role !== "agent"` it amounts to today. The difference only shows the day a
+ * sixth role is added: the comparison would silently exempt it, and this makes
+ * `tsc` refuse the build until somebody decides (L113). `regal-calls.type-test.ts`
+ * holds that property.
+ *
+ * `team_lead` confirmed exempt by Dan on 2026-09-08: they are among the people
+ * correctly not bookable in Slate, and leaving them in would page on them daily.
+ * The cost, stated: somebody with a non agent role who genuinely should be taking
+ * bookings is silently exempt.
+ */
+export const REGAL_ROLE_EXEMPT: Record<Role, boolean> = {
+  super_admin: true,
+  admin: true,
+  manager: true,
+  team_lead: true,
+  agent: false,
+};
+
+/** The columns this check needs off a `users` row. */
+export interface RegalCaller {
+  id: string;
+  name: string | null;
+  email: string;
+  role: Role;
+  bookable: boolean;
+  deactivated_at: string | null;
+  is_test: boolean;
+}
+
+/** One candidate row from `regal_call_events`. */
+export interface RegalCandidate {
+  agent_email: string;
+  occurred_at: string | null;
+}
+
+/** One entry on the ignore list. */
+export interface RegalIgnore {
+  user_id: string;
+  reason: string;
+}
+
+export type RegalExemption = "routable" | "role" | "test" | "ignored" | "not-in-slate";
+
+export interface RegalCallerVerdict {
+  email: string;
+  user: RegalCaller | null;
+  calls: number;
+  /** The latest call's instant; null when none of its instants could be read. */
+  lastCallMs: number | null;
+  /** Every exemption that holds. Flagged exactly when this is empty. */
+  exemptions: RegalExemption[];
+  /** Why Slate will not route to them, or null when it will. */
+  axis: "deactivated" | "not-bookable" | null;
+}
+
+function instantMs(iso: string | null): number | null {
+  if (!iso) return null;
+  const ms = DateTime.fromISO(iso).toMillis();
+  return Number.isFinite(ms) ? ms : null;
+}
+
+/** Group the window's calls by person and decide each one. */
+export function judgeRegalCallers(
+  candidates: RegalCandidate[],
+  users: RegalCaller[],
+  ignores: RegalIgnore[],
+): RegalCallerVerdict[] {
+  const byEmail = new Map(users.map((u) => [normalizeEmail(u.email), u]));
+  const ignored = new Set(ignores.map((i) => i.user_id));
+  const grouped = new Map<string, { calls: number; lastCallMs: number | null }>();
+  for (const c of candidates) {
+    const email = normalizeEmail(c.agent_email);
+    const g = grouped.get(email) ?? { calls: 0, lastCallMs: null };
+    g.calls += 1;
+    const ms = instantMs(c.occurred_at);
+    if (ms !== null && (g.lastCallMs === null || ms > g.lastCallMs)) g.lastCallMs = ms;
+    grouped.set(email, g);
+  }
+
+  const out: RegalCallerVerdict[] = [];
+  for (const [email, g] of grouped) {
+    const u = byEmail.get(email) ?? null;
+    if (!u) {
+      out.push({ email, user: null, ...g, exemptions: ["not-in-slate"], axis: null });
+      continue;
+    }
+    const exemptions: RegalExemption[] = [];
+    const routable = isRoutable(u);
+    if (routable) exemptions.push("routable");
+    if (REGAL_ROLE_EXEMPT[u.role] === true) exemptions.push("role");
+    if (u.is_test) exemptions.push("test");
+    if (ignored.has(u.id)) exemptions.push("ignored");
+    const axis = routable ? null : u.deactivated_at !== null ? "deactivated" : "not-bookable";
+    out.push({ email, user: u, ...g, exemptions, axis });
+  }
+  return out.sort((a, b) => a.email.localeCompare(b.email));
+}
+
+// ---------------------------------------------------------------- endings
+
+export type RegalCallEnding = "routable" | "ignored" | "exempt-role" | "exempt-test" | "gone";
+
+export interface RegalCallSettlement {
+  userId: string;
+  ending: RegalCallEnding;
+  user: RegalCaller | null;
+  ignoreReason: string | null;
+  text: string;
+}
+
+/**
+ * Which open pages have ENDED, and how. A page whose person is still not routable
+ * and carries no exemption is left open, whether or not they called this tick:
+ * the condition is the state, and the call is only how it was noticed.
+ *
+ * Routable is checked first, because a person who is both bookable again and on
+ * the list has been FIXED, and the recovery is the more useful thing to say.
+ */
+export function settleRegalCallAlerts(
+  firingUserIds: string[],
+  users: RegalCaller[],
+  ignores: RegalIgnore[],
+): RegalCallSettlement[] {
+  const byId = new Map(users.map((u) => [u.id, u]));
+  const reasonById = new Map(ignores.map((i) => [i.user_id, i.reason]));
+  const out: RegalCallSettlement[] = [];
+  for (const userId of firingUserIds) {
+    const u = byId.get(userId) ?? null;
+    let ending: RegalCallEnding | null = null;
+    if (!u) ending = "gone";
+    else if (isRoutable(u)) ending = "routable";
+    else if (reasonById.has(u.id)) ending = "ignored";
+    else if (REGAL_ROLE_EXEMPT[u.role] === true) ending = "exempt-role";
+    else if (u.is_test) ending = "exempt-test";
+    if (ending === null) continue;
+    const settlement = { userId, ending, user: u, ignoreReason: u ? (reasonById.get(u.id) ?? null) : null };
+    out.push({ ...settlement, text: formatRegalCallEnding(settlement) });
+  }
+  return out;
+}
+
+// ------------------------------------------------------------------- copy
+
+function who(u: RegalCaller | null, email: string): string {
+  const name = u?.name?.trim();
+  return name ? `${name} (${email})` : email;
+}
+
+function callTime(ms: number | null): string {
+  const time = ms === null ? null : formatClockTime(DateTime.fromMillis(ms, { zone: BUSINESS_ZONE }));
+  if (time === null) return "in the last half hour, at a time Regal did not send readably";
+  return `at ${time} ET`;
+}
+
+/**
+ * The page. What it costs, who, which of the two axes, and both remedies, because
+ * which one is right is somebody's decision rather than ours to assume.
+ */
+export function formatRegalCallAlert(v: RegalCallerVerdict): string {
+  const person = who(v.user, v.email);
+  const calls =
+    v.calls === 1
+      ? `a call in Regal ${callTime(v.lastCallMs)}`
+      : `${v.calls} calls in Regal, the last ${callTime(v.lastCallMs)}`;
+  if (v.axis === "deactivated") {
+    return (
+      `${person} placed ${calls}, and is deactivated in Slate, ` +
+      `so no booking is routed to them. If they have left, their Regal seat is still live and should be ` +
+      `shut off. If they are back, reactivate them under admin > agents. If neither is right, add them to ` +
+      `the Regal call ignore list under admin > alerts with the reason.`
+    );
+  }
+  return (
+    `${person} placed ${calls}, while their bookable switch ` +
+    `is off in Slate, so the routing pool is a person short while they work. If they should be taking ` +
+    `bookings, turn bookable on under admin > agents. If they should not, add them to the Regal call ` +
+    `ignore list under admin > alerts with the reason.`
+  );
+}
+
+/** How a page ended. Five distinct sentences, never one "resolved" (L11). */
+export function formatRegalCallEnding(s: Omit<RegalCallSettlement, "text">): string {
+  const person = s.user ? who(s.user, s.user.email) : "The person this alert named";
+  switch (s.ending) {
+    case "routable":
+      return `${person} is routable again, so Slate is offering bookings to them while they take calls in Regal.`;
+    case "ignored":
+      return (
+        `${person} was added to the Regal call ignore list ("${s.ignoreReason ?? ""}"), so their calls ` +
+        `are no longer reported. This is a suppression, not a fix: Slate still routes no bookings to them.`
+      );
+    case "exempt-role":
+      return (
+        `${person} now has a role other than agent, so their calls in Regal are no longer reported. ` +
+        `Slate still routes no bookings to them, which is expected for that role.`
+      );
+    case "exempt-test":
+      return (
+        `${person} is now marked as a test user, so their calls in Regal are no longer reported. ` +
+        `Slate still routes no bookings to them.`
+      );
+    case "gone":
+      return `The person this alert named (user ${s.userId}) is no longer in Slate, so there is nobody left to report on.`;
+  }
+}
+
+// ----------------------------------------------------------------- runner
+
+export type RegalCallResult =
+  /** A read failed: nothing measured, nothing paged, nothing cleared. */
+  | { status: "unreadable"; error: string }
+  /** Measured, and no candidate call arrived in the window. NOT a verdict: a feed
+   *  nobody posts to reads exactly like this. */
+  | { status: "no-calls"; settled: RegalCallEnding[] }
+  /** Measured: at least one real call judged. `paged` is false while disarmed. */
+  | {
+      status: "checked";
+      callers: number;
+      flagged: RegalCallerVerdict[];
+      exempt: Record<RegalExemption, number>;
+      paged: boolean;
+      settled: RegalCallEnding[];
+    };
+
+export interface RegalCallDeps {
+  /** Candidate rows received at or after `sinceIso`. THROWS on a read error. */
+  loadCandidates: (sinceIso: string) => Promise<RegalCandidate[]>;
+  /** The whole roster (roster bounded). THROWS on a read error. */
+  loadUsers: () => Promise<RegalCaller[]>;
+  /** The ignore list. THROWS on a read error: an empty list is "nobody ignored". */
+  loadIgnores: () => Promise<RegalIgnore[]>;
+  /** User ids with an open page in this family. THROWS on a read error. */
+  loadFiringUserIds: () => Promise<string[]>;
+  /** False until #2695: measure and log, send and clear nothing. */
+  armed: boolean;
+  notify: ThrottledNotify;
+  /** REQUIRED, so a caller cannot wire a condition with no way to end it (#1151). */
+  resolve: AlertResolve<unknown>;
+  cooldownMs: number;
+  nowMs: number;
+}
+
+/**
+ * The monitor lane step. Every read happens before anything is sent or cleared, so
+ * a read that fails leaves the tick unmeasured with nothing half done. A notify or
+ * resolve that fails is swallowed per agent: a flaky Slack must not skip the next
+ * agent or fail the tick, and the cooldown and firing markers make the next tick
+ * retry it.
+ */
+export async function runRegalCallCheck(deps: RegalCallDeps): Promise<RegalCallResult> {
+  const sinceIso = new Date(deps.nowMs - REGAL_CALL_WINDOW_MS).toISOString();
+  let candidates: RegalCandidate[];
+  let users: RegalCaller[];
+  let ignores: RegalIgnore[];
+  let firing: string[];
+  try {
+    [candidates, users, ignores, firing] = await Promise.all([
+      deps.loadCandidates(sinceIso),
+      deps.loadUsers(),
+      deps.loadIgnores(),
+      deps.loadFiringUserIds(),
+    ]);
+  } catch (err) {
+    return { status: "unreadable", error: err instanceof Error ? err.message : String(err) };
+  }
+
+  // Endings first, from the measured state, so a person paged and since made
+  // bookable is told about before anything new is sent. Disarmed clears nothing:
+  // silence chosen by a switch is not a measurement of health.
+  const settlements = settleRegalCallAlerts(firing, users, ignores);
+  if (deps.armed) {
+    for (const s of settlements) {
+      await deps.resolve(regalCallAlertKey(s.userId), s.text).catch(() => {});
+    }
+  }
+  const settled = settlements.map((s) => s.ending);
+
+  if (candidates.length === 0) return { status: "no-calls", settled };
+
+  const verdicts = judgeRegalCallers(candidates, users, ignores);
+  const flagged = verdicts.filter((v) => v.exemptions.length === 0);
+  const exempt: Record<RegalExemption, number> = { routable: 0, role: 0, test: 0, ignored: 0, "not-in-slate": 0 };
+  for (const v of verdicts) for (const e of v.exemptions) exempt[e] += 1;
+
+  if (deps.armed) {
+    for (const v of flagged) {
+      if (!v.user) continue;
+      await deps.notify(regalCallAlertKey(v.user.id), deps.cooldownMs, formatRegalCallAlert(v)).catch(() => {});
+    }
+  }
+  return { status: "checked", callers: verdicts.length, flagged, exempt, paged: deps.armed, settled };
+}

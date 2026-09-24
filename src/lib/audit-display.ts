@@ -53,6 +53,8 @@ const ACTION_LABEL: Record<string, string> = {
   "org.business_hours_exception": "set a specific date Pennie is open or closed",
   "org.business_hours_exception_removed": "removed a specific open or closed date",
   "pii.warehouse_purge": "purged contact data from the warehouse",
+  "regal.ignore_added": "stopped reporting a person's Regal calls",
+  "regal.ignore_removed": "started reporting a person's Regal calls again",
 };
 
 /** The action as a readable phrase, falling back to the raw key so an

@@ -57,6 +57,8 @@ export const SAVE_OUTCOMES = [
   "bucket-updated",
   "event-type-created",
   "org-default-hours",
+  "regal-ignore-added",
+  "regal-ignore-removed",
   "webhook-endpoint",
   "working-hours",
 ] as const;
@@ -87,6 +89,10 @@ export const SAVE_OUTCOME_COPY: Record<Exclude<SaveOutcome, DynamicOutcome>, str
   "bucket-updated": "Bucket saved.",
   "event-type-created": "Event type created.",
   "org-default-hours": "Default hours for a new agent saved.",
+  // #2090. Each names what now happens, because the one thing the reader needs
+  // confirmed is which way the list moved.
+  "regal-ignore-added": "Added to the ignore list. Their calls in Regal are no longer reported.",
+  "regal-ignore-removed": "Removed from the ignore list. Their calls in Regal are reported again.",
   // #2384: the endpoint save used to revalidate the Overview and say nothing at
   // all, so a successful save and a refused one drew the same screen: the form
   // redrawn with whatever was stored before the press.

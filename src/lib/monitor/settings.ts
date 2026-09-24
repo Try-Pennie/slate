@@ -47,6 +47,9 @@ export const ALERT_KEYS = [
   "agents_on_unset_hours",
   "agents_awaiting_activation",
   "booking_below_lead_tier",
+  "regal_call_unroutable",
+  "regal_calls_quiet",
+  "regal_calls_unreadable",
   "handoff_channel_unset",
   "handoff_undelivered",
   "main_not_deployed",
@@ -208,6 +211,24 @@ export const ALERT_FIELDS: {
     urgency: "alert",
     label: "A lead booked with a team below their tier",
     help: "An upcoming call is with a team below the tier Salesforce gives the lead today, for example an Ultra High lead booked with the Low team. It is checked every 5 minutes against the lead's current score, so a lead scored higher after booking is caught too. Each call pages on its own, and ends when the call moves to the right team, the score comes down, or the call is cancelled.",
+  },
+  {
+    key: "regal_call_unroutable",
+    urgency: "alert",
+    label: "Agent calling in Regal while not bookable",
+    help: "Somebody Slate routes no bookings to (their bookable switch is off, or they are deactivated) has placed a call in Regal, so the routing pool is a person short while they work. One message per person per cooldown. It ends when they are bookable again, or when they are added to the ignore list below, which is a suppression rather than a fix.",
+  },
+  {
+    key: "regal_calls_quiet",
+    urgency: "alert",
+    label: "No call from Regal all business day",
+    help: "Not one call by a Slate user reached Slate from Regal across the whole of the last business day, so the check above had nothing to judge. Either nobody worked the phones or Regal stopped posting. It ends when the next call from a Slate user arrives.",
+  },
+  {
+    key: "regal_calls_unreadable",
+    urgency: "alert",
+    label: "Regal call events Slate cannot read",
+    help: "Regal posted call events in the last day that were missing a field Slate needs, so they were invisible to the check above. Usually means Regal changed what it sends. It ends after a whole day of readable events.",
   },
   {
     key: "ooo_calcom_unprotected",
@@ -387,6 +408,20 @@ export const MONITOR_DEFAULTS = {
     // tick would not be. Each booking has its own key, so a second booking pages at
     // once however recently the first did.
     booking_below_lead_tier: 6 * 60 * 60_000,
+    // Calling in Regal while not bookable (#2090): one page per agent per day,
+    // decided by Dan on 2026-09-08. The repair is a person deciding about a
+    // person, which does not happen inside an hour, and a day is also the rhythm
+    // of the condition itself: an agent working a shift they are not bookable for
+    // calls all day long.
+    regal_call_unroutable: 24 * 60 * 60_000,
+    // No call from a Slate user all business day (#2090). It is judged after the
+    // day has closed, so it can only change once a day: anything shorter repeats
+    // a sentence about a day that has not changed.
+    regal_calls_quiet: 24 * 60 * 60_000,
+    // Unreadable Regal events (#2090). Six hours: a changed payload blinds the
+    // detector for every call until somebody updates the edge, which is worth
+    // repeating within a working day, and it clears on a day of readable traffic.
+    regal_calls_unreadable: 6 * 60 * 60_000,
     // Routing dead zone (#327): unchanged from the constant this replaced. A bucket
     // with nobody stays wrong until someone is staffed onto it, so it repeats while
     // it lasts, six-hourly. Tunable since a deliberately dark roster (#1272) turned
@@ -667,6 +702,22 @@ export function resolveBelowLeadTierArmed(
   return resolveArmed(config?.below_lead_tier_armed);
 }
 
+/**
+ * Regal call alerts ARMED switch (#2090): store > disarmed, same shape again, and
+ * ONE switch for the three Regal call alerts (calling while not bookable, a quiet
+ * business day, unreadable events), because all three become meaningful on the
+ * same day: when Regal's reporting webhook is pointed at Slate. Before that the
+ * quiet alarm would page every evening about a configuration nobody has done.
+ *
+ * Disarmed for the observe first reason (L56): nobody can say from a desk how many
+ * people are calling while not bookable on an ordinary day, and if it is dozens the
+ * role rule or the ignore list is wrong. The checks measure and log throughout, and
+ * #2695 arms them.
+ */
+export function resolveRegalCallsArmed(config: Pick<MonitorAlertConfig, "regal_calls_armed"> | null): boolean {
+  return resolveArmed(config?.regal_calls_armed);
+}
+
 // Sane bounds so a fat-finger can't silently mute an alert for a week.
 const COOLDOWN_MIN_MIN = 1;
 const COOLDOWN_MIN_MAX = 7 * 24 * 60; // one week in minutes
@@ -692,6 +743,8 @@ export interface MonitorSettingsFormInput {
   awaitingActivationArmed: string;
   /** Raw value of the arm-below-lead-tier checkbox (#2593), same encoding. */
   belowLeadTierArmed: string;
+  /** Raw value of the arm-Regal-calls checkbox (#2090), same encoding. */
+  regalCallsArmed: string;
 }
 
 export interface MonitorSettingsPayload {
@@ -708,6 +761,7 @@ export interface MonitorSettingsPayload {
     roster_coverage_armed: boolean;
     awaiting_activation_armed: boolean;
     below_lead_tier_armed: boolean;
+    regal_calls_armed: boolean;
   };
   errors: string[];
 }
@@ -767,6 +821,7 @@ export function parseMonitorSettingsForm(input: MonitorSettingsFormInput): Monit
       roster_coverage_armed: checked(input.rosterCoverageArmed),
       awaiting_activation_armed: checked(input.awaitingActivationArmed),
       below_lead_tier_armed: checked(input.belowLeadTierArmed),
+      regal_calls_armed: checked(input.regalCallsArmed),
     },
     errors,
   };
@@ -793,6 +848,8 @@ export interface ResolvedMonitorSettings {
   awaitingActivationArmed: boolean;
   /** #2593: is the "booked below the lead's tier" page armed (store > disarmed)? */
   belowLeadTierArmed: boolean;
+  /** #2090: are the three Regal call alerts armed (store > disarmed)? */
+  regalCallsArmed: boolean;
 }
 
 /**
@@ -813,6 +870,7 @@ export async function loadMonitorSettings(): Promise<ResolvedMonitorSettings> {
         | "roster_coverage_armed"
         | "awaiting_activation_armed"
         | "below_lead_tier_armed"
+        | "regal_calls_armed"
       >
     | null = null;
   try {
@@ -822,7 +880,7 @@ export async function loadMonitorSettings(): Promise<ResolvedMonitorSettings> {
       db
         .from("monitor_alert_config")
         .select(
-          "floor_30, floor_120, low_volume_armed, failure_rate_armed, availability_drift_armed, roster_coverage_armed, awaiting_activation_armed, below_lead_tier_armed",
+          "floor_30, floor_120, low_volume_armed, failure_rate_armed, availability_drift_armed, roster_coverage_armed, awaiting_activation_armed, below_lead_tier_armed, regal_calls_armed",
         )
         .eq("id", 1)
         .maybeSingle(),
@@ -841,6 +899,7 @@ export async function loadMonitorSettings(): Promise<ResolvedMonitorSettings> {
         | "roster_coverage_armed"
         | "awaiting_activation_armed"
         | "below_lead_tier_armed"
+        | "regal_calls_armed"
       >;
     }
   } catch {
@@ -858,6 +917,7 @@ export async function loadMonitorSettings(): Promise<ResolvedMonitorSettings> {
     rosterCoverageArmed: resolveRosterCoverageArmed(config),
     awaitingActivationArmed: resolveAwaitingActivationArmed(config),
     belowLeadTierArmed: resolveBelowLeadTierArmed(config),
+    regalCallsArmed: resolveRegalCallsArmed(config),
   };
 }
 

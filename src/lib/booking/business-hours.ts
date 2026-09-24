@@ -176,6 +176,42 @@ export function nextOpenDayEndMs(
 }
 
 /**
+ * The most recent business day that has fully CLOSED, or null when the org had no
+ * open day inside `lookbackDays` (#2090).
+ *
+ * What the Regal feed's quiet alarm judges: "no call from a Slate user all business
+ * day" has to be a whole day, or it pages at 8:05 every morning about a day that
+ * has barely started. Mid Thursday that is Wednesday; after Thursday's close it is
+ * Thursday; on Monday morning after a shut Sunday it is Saturday.
+ *
+ * Closed days, a holiday exception included, are skipped by asking
+ * `windowOnDate`, the single judge of whether the org is open on a date, so no
+ * second copy of the weekly rules is consulted (L107). Wall clock arithmetic, as in
+ * `nextOpenDayEndMs`, so a DST transition day keeps its real open and close.
+ */
+export function lastClosedBusinessDay(
+  hours: { zone: string; rules: BusinessWindow[]; exceptions: BusinessHoursException[] },
+  nowMs: number,
+  lookbackDays = 14,
+): { isoDate: string; openMs: number; closeMs: number } | null {
+  const today = DateTime.fromMillis(nowMs, { zone: hours.zone }).startOf("day");
+  const at = (day: DateTime, minute: number): number =>
+    minute >= DAY_END_MINUTE
+      ? day.plus({ days: 1 }).startOf("day").toMillis()
+      : day.set({ hour: Math.floor(minute / 60), minute: minute % 60, second: 0, millisecond: 0 }).toMillis();
+  for (let i = 0; i <= lookbackDays; i++) {
+    const day = today.minus({ days: i });
+    const isoDate = day.toISODate() ?? "";
+    const window = windowOnDate(hours, isoDate, day.weekday);
+    if (!window) continue;
+    const closeMs = at(day, window.end_minute);
+    if (closeMs > nowMs) continue;
+    return { isoDate, openMs: at(day, window.start_minute), closeMs };
+  }
+  return null;
+}
+
+/**
  * Validate the stored exceptions, dropping nothing silently.
  *
  * Returns the rows to use plus the ones that could not be read, so a caller can

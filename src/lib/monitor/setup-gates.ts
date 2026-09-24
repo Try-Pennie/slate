@@ -99,6 +99,7 @@ export function monitorSetupGates(readiness: SetupReadiness): {
   busyDrift: SetupGate;
   tierStaffing: SetupGate;
   belowLeadTier: SetupGate;
+  regalCallsQuiet: SetupGate;
 } {
   return {
     // The scan compares every bucket's cached slot count against a live recompute,
@@ -159,5 +160,12 @@ export function monitorSetupGates(readiness: SetupReadiness): {
     // real rather than the smoke canary's, so it must skip without it: with no
     // list every booking would be unmeasurable, which reads as a quiet day.
     belowLeadTier: gate(readiness, ["buckets"]),
+    // #2090: "no call from a Slate user across a whole business day" needs the
+    // org's week to know which day was the last whole one, and a closed Sunday or
+    // a holiday must be skipped rather than judged. So it skips on an unreadable
+    // week rather than guess: guessing open pages about a Sunday nobody worked,
+    // and guessing shut silences a genuinely dead Monday. The Regal call detector
+    // and the unreadable event alarm read the feed alone and are not gated.
+    regalCallsQuiet: gate(readiness, ["businessHours"]),
   };
 }
