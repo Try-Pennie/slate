@@ -14,11 +14,14 @@ const ZONE = "America/New_York";
 function Harness({
   url,
   slotsOverride = null,
+  zone = ZONE,
 }: {
   url: string | null;
   slotsOverride?: string[] | null;
+  /** The lead's zone, used as both the viewer's and the lead's, as on the booker. */
+  zone?: string;
 }) {
-  const picker = useSlotPicker({ url, zone: ZONE, slotsOverride });
+  const picker = useSlotPicker({ url, zone, leadZone: zone, slotsOverride });
   return (
     <div>
       <p data-testid="kind">{picker.view.kind}</p>
@@ -204,6 +207,36 @@ describe("useSlotPicker", () => {
       );
       // The days are on screen, so a stale failure must not still be claimed.
       expect(screen.getByTestId("kind").textContent).toBe("pick-a-day");
+    });
+  });
+
+  // #2310: the lead's calling window, applied here once for every surface.
+  describe("the lead's calling window", () => {
+    it("re-filters the offered times when the lead changes zone, and says why a day has none", async () => {
+      global.fetch = vi.fn(async () => okResponse(SLOTS)) as unknown as typeof fetch;
+
+      const { rerender } = render(<Harness url="/api/availability?bucket=411" />);
+      await act(async () => {});
+      await act(async () => {
+        screen.getByRole("button", { name: "2026-08-14" }).click();
+      });
+      // New York: 09:00 and 14:00 are both inside 08:00 to 20:00.
+      expect(screen.getByTestId("slots").textContent).toBe(
+        "2026-08-14T13:00:00.000Z,2026-08-14T18:00:00.000Z",
+      );
+
+      // Honolulu: the same instants are 03:00 and 08:00, so only 08:00 stays.
+      rerender(<Harness url="/api/availability?bucket=411" zone="Pacific/Honolulu" />);
+      expect(screen.getByTestId("kind").textContent).toBe("times");
+      expect(screen.getByTestId("slots").textContent).toBe("2026-08-14T18:00:00.000Z");
+
+      // Aug 15 has only a 03:00 Honolulu time: the day is still offered, and
+      // choosing it says why rather than reading as empty.
+      expect(screen.getByTestId("days").textContent).toBe("2026-08-14,2026-08-15");
+      await act(async () => {
+        screen.getByRole("button", { name: "2026-08-15" }).click();
+      });
+      expect(screen.getByTestId("kind").textContent).toBe("outside-calling-hours");
     });
   });
 });

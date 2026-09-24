@@ -35,12 +35,20 @@ const extractAgents = (json: unknown): ReassignAgent[] =>
 export default function AdminBookingActions({
   bookingId,
   bucketCode,
+  leadTimeZone,
   status,
   currentAgentId,
   reasonOptions: options,
 }: {
   bookingId: string;
   bucketCode: string | null;
+  /**
+   * The zone the lead booked in (#2310). The picker judges the lead's calling
+   * window in it, never in the admin's own zone: moving a Honolulu lead's call
+   * to 9am Eastern would dial them at 3am, and the server refuses that move
+   * anyway, so offering it would only lead to a refusal.
+   */
+  leadTimeZone: string;
   status: string;
   /** The booking's current agent, excluded from the reassign picker (#546). */
   currentAgentId?: string | null;
@@ -70,6 +78,7 @@ export default function AdminBookingActions({
         ? `/api/availability?bucket=${encodeURIComponent(bucketCode)}`
         : null,
     zone: adminZone,
+    leadZone: leadTimeZone,
   });
   // The reassign agent list keeps the shared fetch+state hook (#627): loading and
   // error stay distinct from empty, so the panel never shows "no agents" while its

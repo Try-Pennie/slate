@@ -108,6 +108,19 @@ describe("SlotTimes", () => {
     expect(screen.queryAllByRole("button")).toHaveLength(0);
   });
 
+  it("says why a day with times offers none, instead of reading as fully booked (#2310)", () => {
+    render(<SlotTimes {...base} view={{ kind: "outside-calling-hours", day: "2026-08-15" }} />);
+
+    expect(
+      visible(
+        "We only call between 8 AM and 8 PM your time, and the times left on Sat, Aug 15 are all outside those hours.",
+      ),
+    ).toHaveLength(1);
+    expect(visible("Pick another day above.")).toHaveLength(1);
+    expect(visible("Nothing left on Sat, Aug 15.")).toHaveLength(0);
+    expect(screen.queryAllByRole("button")).toHaveLength(0);
+  });
+
   it("hands the fully empty case to the surface's own message", () => {
     render(<SlotTimes {...base} view={{ kind: "no-days" }} />);
     expect(screen.getByText("Nothing bookable at all.")).toBeTruthy();

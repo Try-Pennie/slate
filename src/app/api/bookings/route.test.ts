@@ -32,7 +32,9 @@ const service = vi.hoisted(() => {
   class VerifyUnavailableError extends Error {}
   class NoEligibleAgentsError extends Error {}
   class UnknownBucketError extends Error {}
+  class OutsideCallingWindowError extends Error {}
   return {
+    OutsideCallingWindowError,
     bookViaApi: vi.fn(),
     previewBooking: vi.fn(),
     listBookings: vi.fn(),
@@ -276,6 +278,8 @@ describe("POST /api/bookings (auth skeleton)", () => {
       [new service.NoEligibleAgentsError("empty"), 409, "NO_ELIGIBLE_AGENTS"],
       [new service.SlotUnavailableError("taken"), 409, "SLOT_TAKEN"],
       [new service.VerifyUnavailableError("outage"), 503, "VERIFY_UNAVAILABLE"],
+      // #2310: a start outside the lead's calling window: pick another time.
+      [new service.OutsideCallingWindowError("outside"), 422, "OUTSIDE_CALLING_WINDOW"],
       [new Error("boom"), 500, "INTERNAL"],
     ];
     for (const [err, status, code] of cases) {

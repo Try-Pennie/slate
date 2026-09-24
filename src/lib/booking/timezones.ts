@@ -36,7 +36,9 @@ export const CURATED_ZONES: readonly TimezoneOption[] = [
   { id: "Pacific/Honolulu", label: "Hawaii (Honolulu)" },
 ];
 
-const FALLBACK_ZONE = "America/New_York";
+/** The zone a device or stored zone outside the list resolves to. Also the zone
+ *  the lead's calling window judges an unreadable zone in (#2310). */
+export const FALLBACK_ZONE = "America/New_York";
 
 /**
  * The device's resolved IANA timezone (e.g. "America/New_York"), or the fallback

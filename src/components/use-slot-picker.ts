@@ -4,7 +4,7 @@ import { useMemo, useState } from "react";
 
 import { useFetchList } from "@/components/AsyncList";
 import {
-  slotsByViewerDay,
+  pickerSlots,
   slotPickerView,
   type SlotPickerView,
 } from "@/lib/booking/slot-picker";
@@ -59,6 +59,7 @@ export interface SlotPicker {
 export function useSlotPicker({
   url,
   zone,
+  leadZone,
   slotsOverride = null,
 }: {
   /** The availability URL, or null to load nothing (an unopened panel, or a
@@ -68,6 +69,12 @@ export function useSlotPicker({
   /** The viewer's zone. Days are grouped in it, so a late-evening slot lands on
    *  the day they see it on. */
   zone: string;
+  /**
+   * The LEAD's zone, which the calling window (#2310) is judged in. The same as
+   * `zone` on the booker and the manage page; the booking's own zone on the
+   * admin panel, whose viewer is staff. Required, so every surface decides it.
+   */
+  leadZone: string;
   /**
    * Slots to show INSTEAD of the fetched ones, for a caller that obtained them
    * elsewhere: the far side of a closure comes from `/api/availability/next`
@@ -96,17 +103,29 @@ export function useSlotPicker({
   const loading = overridden ? false : fetching;
   const failed = overridden ? false : error;
 
-  const slotsByDay = useMemo(() => slotsByViewerDay(slots, zone), [slots, zone]);
-
-  const days = useMemo(() => [...slotsByDay.keys()], [slotsByDay]);
+  // #2310: split by the lead's calling window HERE, once, for every surface. A
+  // change of either zone re-derives it, so a lead switching zone sees the list
+  // re-filtered on the same render.
+  const split = useMemo(() => pickerSlots(slots, zone, leadZone), [slots, zone, leadZone]);
 
   const view = slotPickerView({
     loading,
     failed,
-    days,
+    days: split.days,
     selectedDay,
-    slotsForDay: selectedDay ? (slotsByDay.get(selectedDay) ?? []) : [],
+    slotsForDay: selectedDay ? (split.offeredByDay.get(selectedDay) ?? []) : [],
+    outsideForDay: selectedDay ? (split.outsideByDay.get(selectedDay)?.length ?? 0) : 0,
   });
 
-  return { view, days, slots, selectedDay, selectDay: setSelectedDay, retry, payload };
+  // `slots` is the OFFERABLE list, so "the soonest thing still free" (#1319) can
+  // never suggest a time the lead's window refuses.
+  return {
+    view,
+    days: split.days,
+    slots: split.offered,
+    selectedDay,
+    selectDay: setSelectedDay,
+    retry,
+    payload,
+  };
 }

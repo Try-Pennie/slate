@@ -163,6 +163,12 @@ export function bookerCopyScreens(): CopyScreen[] {
         { state: "the load failed", text: PICKER_COPY.failed },
         { state: "days are offered and none is chosen yet", text: PICKER_COPY.pickADay },
         { state: "a chosen day whose times have all gone", text: PICKER_COPY.dayEmpty(DAY) },
+        // #2310: the day HAS times, all before 8 AM or from 8 PM on the lead's
+        // clock. Read beside the line above: this must not say nothing is left.
+        {
+          state: "a chosen day whose times are all outside the lead's calling hours",
+          text: PICKER_COPY.outsideCallingHours(DAY),
+        },
         {
           state: "a day's times settled",
           text: timesAvailableAnnouncement(6, DAY),
@@ -285,6 +291,12 @@ export function bookerCopyScreens(): CopyScreen[] {
         "where a generic failure would leave them staring at a working page.",
       lines: [
         { state: "somebody took the time while they typed", text: BOOKING_ERROR_COPY.slotTaken },
+        // #2310: the time is not taken, it is outside the lead's calling hours,
+        // so it must not borrow the line above.
+        {
+          state: "the time starts outside the lead's calling hours",
+          text: BOOKING_ERROR_COPY.outsideCallingHours,
+        },
         { state: "anything else", text: BOOKING_ERROR_COPY.generic },
         { state: "moving an existing call failed", text: BOOKING_ERROR_COPY.moveFailed },
         // #2297: the two refusals the kill switch produces. They share a status code

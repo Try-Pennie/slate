@@ -281,8 +281,17 @@ Every failure returns `{ "error": "<message>", "code": "<CODE>" }` (plus
 | `NO_ELIGIBLE_AGENTS` | 409 | Bucket has zero eligible agents | Config error (e.g. unsynced XBC) — stop, escalate. |
 | `SLOT_TAKEN` | 409 | The slot filled before booking | Re-query availability, pick another slot. |
 | `VERIFY_UNAVAILABLE` | 503 | Couldn't confirm calendars (transient) | Retry shortly. |
+| `OUTSIDE_CALLING_WINDOW` | 422 | The start is before 08:00 or at or after 20:00 in the request's `timezone`, the lead's calling window (#2310). Applies to a create and to the reschedule a rebook turns into. | Pick a time inside the window. The same time can never succeed, so do not retry it. |
 | `WRITE_FAILED` | 503 | The cancel statement did not run, so the booking still stands (DELETE only) | Retry shortly. Nothing changed, so a retry is safe. |
 | `INTERNAL` | 500 | Unexpected | Retry once; if it persists, escalate. |
+
+**The lead's calling window (#2310).** A call may only START from 08:00 up to
+(not including) 20:00 in the lead's zone, which is the request's `timezone`; an
+unreadable zone is judged in `America/New_York`, never skipped. `GET
+/api/availability` is served from a shared cache and is NOT filtered by anybody's
+zone, so a caller offering times to a lead must drop the ones outside the window
+itself, as the Booker does. The Booker's keyless `POST /booking` refuses the same
+way, with `422 OUTSIDE_CALLING_WINDOW` and a sentence for the lead.
 
 `UNKNOWN_BUCKET` / `NO_ELIGIBLE_AGENTS` are deliberately distinct from
 `SLOT_TAKEN` so a misconfigured bucket makes you **stop and escalate** instead of

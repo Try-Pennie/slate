@@ -435,6 +435,7 @@ export {
   NoEligibleAgentsError,
   DailyCapExceededError,
   UnknownBucketError,
+  OutsideCallingWindowError,
   BookingNotFoundError,
   BookingNotCancellableError,
   AgentNotAvailableError,
@@ -2144,10 +2145,12 @@ async function rescheduleWithLog(
   initiator: BookingEventInitiator,
   actor?: BookingActor,
   contact?: { name?: string; email?: string; phone?: string },
+  leadZone?: string | null,
 ): Promise<BookingResult> {
   try {
     const res = await orchestration.rescheduleBooking(
       token, newStartIso, reason, initiator, realDeps(deferWebhookSend), Date.now(), actor, contact,
+      { leadZone },
     );
     logRescheduleSuccess(res.booking.id, initiator, res.rescheduleDecline);
     return res;
@@ -2456,9 +2459,12 @@ export function rescheduleBooking(
   initiator: BookingEventInitiator,
   /** The lead's own details, when they typed them on the way here (#2164). */
   contact?: { name?: string; email?: string; phone?: string },
+  /** #2310: the zone the lead is viewing the new time in; absent means the
+   *  booking's own zone is judged instead. */
+  leadZone?: string | null,
 ): Promise<BookingResult> {
   return alertOnBookingFailure(() =>
-    rescheduleWithLog(token, newStartIso, reason, initiator, undefined, contact),
+    rescheduleWithLog(token, newStartIso, reason, initiator, undefined, contact, leadZone),
   );
 }
 

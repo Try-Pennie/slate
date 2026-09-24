@@ -270,6 +270,18 @@ export const REFUSAL_CATALOG: RefusalPath[] = [
       "indistinguishable without a count.",
   },
   {
+    id: "outside_calling_window",
+    surface: "embed booker",
+    outcome: "422 OUTSIDE_CALLING_WINDOW, told we only call between 8 AM and 8 PM their time",
+    counting: { kind: "error", code: "outside_calling_window" },
+    rateSignal: { kind: "covered" },
+    why:
+      "The start is outside the lead's calling window in the zone the booker sent (#2310), which " +
+      "Regal's quiet hours journey would cancel. The booker offers only times inside it, so one is " +
+      "a stale page or a hand made request; a wave means the client filter and the server rule " +
+      "disagree and leads are being refused at the last step, which is what the share is for.",
+  },
+  {
     id: "no_eligible_agents",
     surface: "embed booker",
     outcome: "409, told there are no times",
@@ -347,6 +359,18 @@ export const REFUSAL_CATALOG: RefusalPath[] = [
     codeFrom: "mapped",
     rateSignal: { kind: "covered-and-pages", alertKey: "verify_on_book_outage" },
     why: "The API-side twin of verify_unavailable, and it pages on the first one for the same reason.",
+  },
+  {
+    id: "api_outside_calling_window",
+    surface: "booking API",
+    outcome: "422 OUTSIDE_CALLING_WINDOW, telling the caller to pick another time",
+    counting: { kind: "error", code: "OUTSIDE_CALLING_WINDOW" },
+    codeFrom: "mapped",
+    rateSignal: { kind: "covered" },
+    why:
+      "The API-side twin of outside_calling_window (#2310), judged in the zone the caller sent. A " +
+      "caller that keeps sending such times is refusing every lead it books, which is a share worth " +
+      "seeing rather than one stray call.",
   },
   {
     id: "api_internal",
@@ -525,6 +549,17 @@ export const REFUSAL_CATALOG: RefusalPath[] = [
     why:
       "The target time has no free agent (#484). At volume it is the same staffing dead end the " +
       "booker pages for, reached by a lead who already has an appointment.",
+  },
+  {
+    id: "reschedule_outside_calling_window",
+    surface: "manage page",
+    outcome: "422, told we only call between 8 AM and 8 PM their time and to pick another time",
+    counting: { kind: "error", code: "reschedule_outside_calling_window" },
+    rateSignal: { kind: "covered" },
+    why:
+      "The new time starts outside the lead's calling window (#2310). The page offers only times " +
+      "inside it, so one is a page left open across a zone change; a wave means the page's filter " +
+      "and the server's rule disagree and every lead moving a call is being refused.",
   },
   {
     id: "reschedule_contact_refused",

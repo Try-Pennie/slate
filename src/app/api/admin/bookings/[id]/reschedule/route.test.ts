@@ -32,8 +32,16 @@ const service = vi.hoisted(() => {
       this.name = "NoEligibleAgentsError";
     }
   }
+  class OutsideCallingWindowError extends Error {
+    zone: string;
+    constructor(zone: string) {
+      super("outside the calling window");
+      this.zone = zone;
+    }
+  }
   return {
     adminRescheduleBooking: vi.fn(),
+    OutsideCallingWindowError,
     RescheduleConflictError,
     SlotUnavailableError,
     VerifyUnavailableError,
@@ -157,5 +165,18 @@ describe("admin reschedule refuses a cross-origin request (#1046)", () => {
     // above while breaking the whole surface.
     const res = await POST(req({ start: "2026-07-01T15:00:00.000Z", reason: "schedule_conflict" }), params);
     expect(res.status).not.toBe(403);
+  });
+});
+
+describe("the lead's calling window on an admin move (#2310)", () => {
+  it("refuses with 422 and names the lead's zone, so staff know why", async () => {
+    service.adminRescheduleBooking.mockRejectedValueOnce(new service.OutsideCallingWindowError("Pacific/Honolulu"));
+    const res = await POST(req({ start: "2026-07-01T13:00:00.000Z", reason: "schedule_conflict" }), params);
+    expect(res.status).toBe(422);
+    const body = await res.json();
+    expect(body.code).toBe("OUTSIDE_CALLING_WINDOW");
+    expect(body.error).toContain("8 AM");
+    expect(body.error).toContain("8 PM");
+    expect(body.error).toContain("Pacific/Honolulu");
   });
 });

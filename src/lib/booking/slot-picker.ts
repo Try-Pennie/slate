@@ -12,6 +12,7 @@
  * can run `scripts/test-slot-picker.ts` against it with no module mocking).
  */
 import { DateTime } from "luxon";
+import { splitByLeadCallingWindow } from "./lead-calling-window.ts";
 
 /** One day the picker is offering, ready to draw as a chip. */
 export interface DayChip {
@@ -77,6 +78,45 @@ export function slotsByViewerDay(slots: string[], zone: string): Map<string, str
   return new Map([...map.entries()].sort(([a], [b]) => a.localeCompare(b)));
 }
 
+/**
+ * The served times, split by the lead's calling window (#2310), and grouped for
+ * the strip. The ONE place a picker surface applies the window, so the booker
+ * and both reschedule panels cannot filter three different ways.
+ *
+ * Two zones on purpose. Days are grouped in the VIEWER's zone (what the strip
+ * shows); the window is judged in the LEAD's zone. On the booker and the manage
+ * page those are the same zone. On the admin panel the viewer is staff and the
+ * lead is the person on the booking, and judging the window in the admin's own
+ * zone is exactly the mistake this gate exists to prevent.
+ *
+ * A day stays on the strip when it has ANY served time, including one whose
+ * every time is outside the window, so choosing it can say why rather than the
+ * day silently vanishing or reading as fully booked.
+ *
+ * The availability response itself is never filtered per zone: it is served
+ * from a shared cache, and a per zone variant would split that cache seven ways.
+ * The server refuses an outside start at confirm, so this is the convenience and
+ * the refusal is the rule.
+ */
+export function pickerSlots(
+  slots: string[],
+  viewerZone: string,
+  leadZone: string,
+): {
+  days: string[];
+  offered: string[];
+  offeredByDay: Map<string, string[]>;
+  outsideByDay: Map<string, string[]>;
+} {
+  const { offered, outside } = splitByLeadCallingWindow(slots, leadZone);
+  const offeredByDay = slotsByViewerDay(offered, viewerZone);
+  const outsideByDay = slotsByViewerDay(outside, viewerZone);
+  const days = [...new Set([...offeredByDay.keys(), ...outsideByDay.keys()])].sort((a, b) =>
+    a.localeCompare(b),
+  );
+  return { days, offered, offeredByDay, outsideByDay };
+}
+
 /** The distinct days that have at least one slot, ascending. */
 export function daysWithSlots(slots: string[], zone: string): string[] {
   return [...slotsByViewerDay(slots, zone).keys()];
@@ -96,6 +136,10 @@ export type SlotPickerView =
   | { kind: "pick-a-day" }
   /** A chosen day whose times have all gone. Names the day so the copy can. */
   | { kind: "day-empty"; day: string }
+  /** A chosen day that has free times, every one of them outside the lead's
+   *  calling window (#2310). Its own state, because "nothing left" would be
+   *  untrue: the times exist, and we will not call the lead at them. */
+  | { kind: "outside-calling-hours"; day: string }
   | { kind: "times"; day: string; slots: string[] };
 
 /**
@@ -114,15 +158,20 @@ export function slotPickerView(input: {
   /** Days being offered, ascending, as `daysWithSlots` returns them. */
   days: string[];
   selectedDay: string | null;
-  /** The selected day's slots. Empty when nothing is selected. */
+  /** The selected day's OFFERABLE slots. Empty when nothing is selected. */
   slotsForDay: string[];
+  /** How many of the selected day's served times fall outside the lead's
+   *  calling window (#2310). Required, so every caller decides it. */
+  outsideForDay: number;
 }): SlotPickerView {
   if (input.loading) return { kind: "loading" };
   if (input.failed) return { kind: "failed" };
   if (input.days.length === 0) return { kind: "no-days" };
   const day = input.selectedDay;
   if (!day || !input.days.includes(day)) return { kind: "pick-a-day" };
-  if (input.slotsForDay.length === 0) return { kind: "day-empty", day };
+  if (input.slotsForDay.length === 0) {
+    return input.outsideForDay > 0 ? { kind: "outside-calling-hours", day } : { kind: "day-empty", day };
+  }
   return { kind: "times", day, slots: input.slotsForDay };
 }
 

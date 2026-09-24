@@ -31,8 +31,17 @@ const service = vi.hoisted(() => {
       this.name = "ContactRefusedError";
     }
   }
+  // #2310: a new time outside the lead's calling window in the zone they sent.
+  class OutsideCallingWindowError extends Error {
+    zone: string;
+    constructor(zone: string) {
+      super("outside the calling window");
+      this.zone = zone;
+    }
+  }
   return {
     ContactRefusedError,
+    OutsideCallingWindowError,
     rescheduleBooking: vi.fn(),
     bookingDetailExtras: vi.fn((_booking: unknown) => ({
       contact: { name: "Kris", email: "k@x.com", phone: "+12035615295" },
@@ -156,6 +165,34 @@ describe("POST /bookings/[token]/reschedule", () => {
     );
   });
 
+  it("refuses a new time outside the lead's calling window with its own reason and sentence (#2310)", async () => {
+    service.rescheduleBooking.mockRejectedValueOnce(new service.OutsideCallingWindowError("Pacific/Honolulu"));
+    const res = await POST(
+      req({ start: "2026-07-01T15:00:00.000Z", reason: "schedule_conflict", timezone: "Pacific/Honolulu" }),
+      params,
+    );
+    expect(res.status).toBe(422);
+    const body = await res.json();
+    expect(body.reason).toBe("reschedule_outside_calling_window");
+    expect(body.error).toBe(BOOKING_ERROR_COPY.outsideCallingHours);
+    expect(recordApiOutcome).toHaveBeenCalledWith("error", "", "reschedule_outside_calling_window", {
+      by: "manageToken",
+      token: "tok1",
+    });
+  });
+
+  it("hands the zone the page is showing to the booking layer (#2310)", async () => {
+    service.rescheduleBooking.mockResolvedValueOnce({
+      booking: { id: "bk1", starts_at: "2026-07-01T15:00:00.000Z", ends_at: "2026-07-01T15:30:00.000Z" },
+      manageUrl: "https://slate.test/booking/manage/tok1",
+    });
+    await POST(
+      req({ start: "2026-07-01T15:00:00.000Z", reason: "schedule_conflict", timezone: "Pacific/Honolulu" }),
+      params,
+    );
+    expect(service.rescheduleBooking.mock.calls[0][5]).toBe("Pacific/Honolulu");
+  });
+
   it("maps RescheduleLockUnavailableError to a retriable 503 (not a generic 500) (#479)", async () => {
     // A fail-closed lock claim (transient DB error) is safe to retry, so it must
     // read as 503 like a verify outage, not a hard 500.
@@ -256,6 +293,9 @@ describe("POST /bookings/[token]/reschedule", () => {
       expect.anything(),
       "customer",
       { name: "Dana", email: "new@example.com", phone: "2155559999" },
+      // #2310: no zone on this request, so the booking layer judges the zone
+      // the booking was made in.
+      undefined,
     );
     // Said back, so the screen can tell the lead what else this move changed.
     expect((await res.json()).contactChanged).toEqual({ name: false, email: true, phone: true });

@@ -28,8 +28,17 @@ const service = vi.hoisted(() => {
   // #2667: a bucket code that resolves to nothing, or to a hidden test bucket.
   // The route must map it to a client refusal rather than the internal error path.
   class UnknownBucketError extends Error {}
+  // #2310: a start outside the lead's calling window in the zone they sent.
+  class OutsideCallingWindowError extends Error {
+    zone: string;
+    constructor(zone: string) {
+      super("outside the calling window");
+      this.zone = zone;
+    }
+  }
   return {
     UnknownBucketError,
+    OutsideCallingWindowError,
     createBooking: vi.fn(),
     bookingDetailExtras: vi.fn((_booking: unknown) => ({
       contact: { name: "Kris", email: "k@x.com", phone: "+12035615295" },
@@ -223,6 +232,31 @@ describe("POST /booking (embed) error mapping", () => {
     expect(keysRefunded).toContain("203.0.113.1");
     expect(keysRefunded).toContain("email:dana@example.com");
     expect(keysRefunded).toContain("phone:2155550100");
+  });
+
+  it("refuses a start outside the lead's calling window with its own code and the builder's sentence (#2310)", async () => {
+    service.createBooking.mockRejectedValueOnce(new service.OutsideCallingWindowError("Pacific/Honolulu"));
+    const res = await post({ ...VALID_BODY, timezone: "Pacific/Honolulu" });
+    expect(res.status).toBe(422);
+    const body = await res.json();
+    expect(body.code).toBe("OUTSIDE_CALLING_WINDOW");
+    expect(body.error).toBe(BOOKING_ERROR_COPY.outsideCallingHours);
+    // Not the lead's fault in the budget sense: another time will book, so the
+    // attempt is handed back like a lost race.
+    expect(rateLimit.refundRequest).toHaveBeenCalledTimes(3);
+    expect(recordApiOutcome).toHaveBeenCalledWith("error", "411", "outside_calling_window", {
+      by: "bucket",
+      code: "411",
+    });
+  });
+
+  it("passes the zone the booker sent through to the booking (#2310)", async () => {
+    service.createBooking.mockResolvedValueOnce({
+      booking: { id: "b1", starts_at: VALID_BODY.start, ends_at: VALID_BODY.start, prefill: {} },
+      manageUrl: "u",
+    });
+    await post({ ...VALID_BODY, timezone: "Pacific/Honolulu" });
+    expect(service.createBooking.mock.calls[0][0].timezone).toBe("Pacific/Honolulu");
   });
 
   it("does NOT refund on an empty/misconfigured-pool 409 (NoEligibleAgents), which is not a retryable slot race (#1089)", async () => {

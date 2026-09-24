@@ -25,10 +25,12 @@ const service = vi.hoisted(() => {
   class RescheduleLockUnavailableError extends Error {}
   class NoEligibleAgentsError extends Error {}
   class ContactRefusedError extends Error {}
+  class OutsideCallingWindowError extends Error {}
   return {
     rescheduleBooking: vi.fn(),
     bookingDetailExtras: vi.fn((_booking: unknown) => ({ contact: { name: null, email: null, phone: null }, calendarLinks: null })),
     ContactRefusedError,
+    OutsideCallingWindowError,
     RescheduleConflictError,
     SlotUnavailableError,
     VerifyUnavailableError,

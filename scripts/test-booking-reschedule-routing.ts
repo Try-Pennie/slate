@@ -5,6 +5,7 @@
 // Run: node --experimental-strip-types scripts/test-booking-reschedule-routing.ts
 import {
   rescheduleBooking,
+  OutsideCallingWindowError,
   OUTBOX_HANDLERS,
   rescheduleOutboxSteps,
 } from "../src/lib/booking/orchestration.ts";
@@ -424,7 +425,11 @@ async function run() {
   // agent B is offered, so an ungated guard would keep the booking on A in place and
   // the reassignment is the proof the guard fired. ---
   {
-    const ctx = { booking: makeBooking({}), bucket, eventType };
+    // #2310: the LEAD is in Honolulu, where 01:00Z is 15:00, so their own calling
+    // window passes and this case still isolates the ORG's day. With an Eastern
+    // lead the calling window would refuse 21:00 first and the org gate would
+    // never be reached.
+    const ctx = { booking: makeBooking({ timezone: "Pacific/Honolulu" }), bucket, eventType };
     const rescheduled = {
       booking: {
         ...ctx.booking,
@@ -471,7 +476,10 @@ async function run() {
   //     so there is nobody to reroute to and the reschedule fails rather than parking
   //     a meeting outside the org's day. ---
   {
-    const ctx = { booking: makeBooking({}), bucket, eventType };
+    // #2310: a Honolulu lead (01:00Z is 15:00 there), so the refusal below comes
+    // from the ORG's day and not from the lead's calling window, which would
+    // otherwise satisfy a bare "it threw" on its own.
+    const ctx = { booking: makeBooking({ timezone: "Pacific/Honolulu" }), bucket, eventType };
     const { deps, calls } = makeDeps({
       existing: ctx,
       bookingById: ctx,
@@ -485,12 +493,18 @@ async function run() {
         rules: [{ weekday: 1, start_minute: 8 * 60, end_minute: 20 * 60 }], exceptions: [] },
     });
     let threw = false;
+    let thrown: unknown = null;
     try {
       await rescheduleBooking("tok1", "2026-06-09T01:00:00.000Z", RR, "customer", deps, NOW);
-    } catch {
+    } catch (err) {
       threw = true;
+      thrown = err;
     }
     assert(threw, "reschedule(org closed, empty pool): refuses rather than booking outside the org's day");
+    assert(
+      !(thrown instanceof OutsideCallingWindowError),
+      "reschedule(org closed, empty pool): the refusal is the org's day, not the lead's calling window",
+    );
     assert(
       calls.updateEventTime.length === 0 && calls.createEvent.length === 0,
       "reschedule(org closed, empty pool): nothing is moved or created",

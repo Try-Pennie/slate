@@ -28,6 +28,7 @@
 import { DateTime } from "luxon";
 import type { PhonePrefillDrop } from "../phone-format.ts";
 import { formatLongDate } from "../date/parse.ts";
+import { callingWindowLabel } from "./lead-calling-window.ts";
 
 /**
  * US order everywhere: "Monday, August 17", never "17 August" (#1336).
@@ -50,6 +51,17 @@ export const PICKER_COPY = {
   loading: "Finding the days you can book.",
   failed: "Could not load available times. Check your connection.",
   dayEmpty: (day: string) => `Nothing left on ${day}. Pick another day above.`,
+  /**
+   * #2310: the day has free times, and every one of them starts before 8 AM or
+   * at 8 PM or later on the lead's own clock, so none can be offered. Said
+   * rather than drawn as an empty day, which would read as fully booked. The
+   * hours come from the rule's own constant, so the sentence cannot name a
+   * window the gate does not enforce.
+   */
+  outsideCallingHours: (day: string) => {
+    const { from, to } = callingWindowLabel();
+    return `We only call between ${from} and ${to} your time, and the times left on ${day} are all outside those hours. Pick another day above.`;
+  },
 } as const;
 
 /** What assistive tech hears when a day's times settle (#633). */
@@ -308,6 +320,16 @@ export const BOOKING_ERROR_COPY = {
    *  two instructions for one action. The sentence still says plainly what happened, because
    *  the alternatives must be added to the explanation rather than replace it (L10). */
   slotTaken: "That time was just taken.",
+  /**
+   * #2310: the server refused a start outside the lead's calling window. The
+   * booker only offers times inside it, so this is reached by a page that sat
+   * open across a zone change or a stale embed; it says what the rule is and
+   * what to do, and the same sentence answers on the booker and on a move.
+   */
+  outsideCallingHours: (() => {
+    const { from, to } = callingWindowLabel();
+    return `We only call between ${from} and ${to} your time. Please pick another time.`;
+  })(),
   generic: "Something went wrong. Please try again.",
   moveFailed: "Could not move your call. Please try again.",
   /** #2297: bookings are deliberately held.

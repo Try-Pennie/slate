@@ -100,6 +100,8 @@ function announcement(
       return COPY.pickADay;
     case "day-empty":
       return COPY.dayEmpty(dayLabel(view.day));
+    case "outside-calling-hours":
+      return COPY.outsideCallingHours(dayLabel(view.day));
     case "times":
       return timesAvailableAnnouncement(view.slots.length, dayLabel(view.day));
   }
@@ -171,6 +173,13 @@ export function SlotTimes({
       ) : view.kind === "day-empty" ? (
         <div className="flex flex-col items-center justify-center py-6 text-center">
           <PanelMessage text={COPY.dayEmpty(dayLabel(view.day))} className={classes.muted} />
+        </div>
+      ) : view.kind === "outside-calling-hours" ? (
+        <div className="flex flex-col items-center justify-center py-6 text-center">
+          <PanelMessage
+            text={COPY.outsideCallingHours(dayLabel(view.day))}
+            className={classes.muted}
+          />
         </div>
       ) : (
         <div className="space-y-3">

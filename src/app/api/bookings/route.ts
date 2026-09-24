@@ -14,6 +14,7 @@ import {
   VerifyUnavailableError,
   NoEligibleAgentsError,
   UnknownBucketError,
+  OutsideCallingWindowError,
 } from "@/lib/booking/service";
 import { DIRECT_BOOKING_API_READ_HOURLY_RATE_RULES } from "@/lib/rate-limit-core";
 import { log } from "@/lib/log";
@@ -335,10 +336,19 @@ export async function DELETE(req: NextRequest) {
  * outcome without parsing prose: a config error (UNKNOWN_BUCKET /
  * NO_ELIGIBLE_AGENTS) means stop retrying and escalate; SLOT_TAKEN means pick
  * another slot; VERIFY_UNAVAILABLE is transient (retry); INTERNAL is unexpected.
+ * OUTSIDE_CALLING_WINDOW (#2310) means the start is before 08:00 or at or after
+ * 20:00 in the request's `timezone`: retrying the same time can never succeed,
+ * another time can.
  */
 function mapBookingError(err: unknown): {
   status: number;
-  code: "UNKNOWN_BUCKET" | "NO_ELIGIBLE_AGENTS" | "SLOT_TAKEN" | "VERIFY_UNAVAILABLE" | "INTERNAL";
+  code:
+    | "UNKNOWN_BUCKET"
+    | "NO_ELIGIBLE_AGENTS"
+    | "SLOT_TAKEN"
+    | "VERIFY_UNAVAILABLE"
+    | "OUTSIDE_CALLING_WINDOW"
+    | "INTERNAL";
 } {
   // Each branch names its decision (#1318). The caller records every one of these as an
   // error outcome under the same code, so the failure-rate window sees all five.
@@ -350,6 +360,8 @@ function mapBookingError(err: unknown): {
   if (err instanceof SlotUnavailableError) return { status: 409, code: "SLOT_TAKEN" };
   // refusal: api_verify_unavailable
   if (err instanceof VerifyUnavailableError) return { status: 503, code: "VERIFY_UNAVAILABLE" };
+  // refusal: api_outside_calling_window
+  if (err instanceof OutsideCallingWindowError) return { status: 422, code: "OUTSIDE_CALLING_WINDOW" };
   // refusal: api_internal
   return { status: 500, code: "INTERNAL" };
 }

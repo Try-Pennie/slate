@@ -23,7 +23,7 @@ v4 · Luxon. Package manager: pnpm.
   live Google call on the hot path is verify-on-book at confirm time
   (`src/lib/booking/service.ts`): it checks the round-robin candidates in batched
   waves (one Google call per wave, #167) and takes the first actually-free agent.
-- **A bookable time passes three gates, in one shared predicate.**
+- **A bookable time passes three availability gates, in one shared predicate.**
   `bookableSlotReason` (`src/lib/availability/compute.ts`) is the only judge: the
   ORG's business hours (#1295), then the AGENT's working hours, then their
   calendar. The org window comes from `business_hours` via `loadBusinessHours`,
@@ -46,6 +46,15 @@ v4 · Luxon. Package manager: pnpm.
   makes it fail.
   `businessHours` is REQUIRED on `SlotRules` / `SlotComputeInput` so `tsc`
   enumerates every construction site.
+- **A fourth gate is the LEAD's calling window** (#2310): a call may only start
+  from 08:00 to before 20:00 in the lead's zone (the booker's zone, or the
+  booking's own on an admin move), because Regal's quiet hours journey cancels
+  anything else. It is judged in the lead's zone, separately from the org and
+  agent windows and never intersected with them, by one predicate
+  (`src/lib/booking/lead-calling-window.ts`). It is NOT in
+  `bookableSlotReason` or the slot cache, which is shared by every lead: the
+  shared picker (`pickerSlots`) filters the served list, and `createBooking` /
+  `rescheduleBooking` refuse with `OutsideCallingWindowError` before any write.
 - **The org window is ALSO applied at read time** (#1296), because a slot computed
   under a wider window can still be sitting in the slot cache after a narrowing.
   `resolveBucketSlots` filters every tier (cache hit, stored row, cold compute)
