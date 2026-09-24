@@ -311,6 +311,18 @@ function assertWithinLeadCallingWindow(startIso: string, zone: string | null | u
   }
 }
 
+/**
+ * The two refusals a reschedule answers before anything about the new time: no
+ * such booking, and a booking that is over. One helper so the calling-window
+ * pre-check and the main path cannot word or order them differently (#2310).
+ */
+function assertReschedulable(ctx: BookingContext | null): asserts ctx is BookingContext {
+  if (!ctx) throw new Error("Booking not found");
+  if (ctx.booking.status === "cancelled" || ctx.booking.status === "completed") {
+    throw new Error("This booking can no longer be changed");
+  }
+}
+
 /** Thrown when the bucket code resolves to no bucket/event type (#358). */
 export class UnknownBucketError extends Error {
   constructor() {
@@ -3756,7 +3768,12 @@ export async function rescheduleBooking(
   const suppliedZone = opts?.leadZone ?? null;
   if (suppliedZone !== null && !withinLeadCallingWindow(newStartIso, suppliedZone)) {
     const held = await deps.loadBookingContext(token);
-    const sameInstant = held !== null && Date.parse(held.booking.starts_at) === Date.parse(newStartIso);
+    // A missing or finished booking is refused for THAT reason, by the same
+    // helper the main path uses, before the window is judged (L11): "outside
+    // calling hours" about a booking that does not exist sends the reader to
+    // pick another time, which can never help.
+    assertReschedulable(held);
+    const sameInstant = Date.parse(held.booking.starts_at) === Date.parse(newStartIso);
     if (!sameInstant) throw new OutsideCallingWindowError(leadCallingZone(suppliedZone));
   }
   // Applied first, so everything below reads the details the lead just gave. A
@@ -3772,11 +3789,8 @@ export async function rescheduleBooking(
   // #538: fold the in-place guard's working-hours read into the context load so
   // it costs no extra round-trip on the hot reschedule path.
   const ctx = await deps.loadBookingContext(token, { withWorkingHours: true });
-  if (!ctx) throw new Error("Booking not found");
+  assertReschedulable(ctx);
   const { booking, eventType } = ctx;
-  if (booking.status === "cancelled" || booking.status === "completed") {
-    throw new Error("This booking can no longer be changed");
-  }
 
   const { startIso, endIso } = bookingWindow(
     newStartIso,

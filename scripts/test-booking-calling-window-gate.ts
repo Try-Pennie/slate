@@ -160,6 +160,43 @@ async function run() {
     );
   }
 
+  // --- distinct causes keep their own refusal (L11): the calling-window
+  //     pre-check must not answer for a booking that does not exist, or one
+  //     that can no longer be changed. Both reach the pre-check here, because
+  //     the zone is supplied and 07:59 Honolulu is outside the window. ---
+  {
+    const { deps, calls } = makeDeps({ freeEmails: new Set(["a@x.com"]) });
+    const err = await refused(() =>
+      rescheduleBooking("nope", HNL_0759, RR, "customer", deps, NOW, undefined, undefined, {
+        leadZone: "Pacific/Honolulu",
+      }),
+    );
+    assert(
+      err instanceof Error && !(err instanceof OutsideCallingWindowError) && err.message === "Booking not found",
+      "an unknown token is refused as not found, not as outside calling hours",
+    );
+    assert(calls.claimReschedule === 0, "an unknown token claims nothing");
+  }
+  for (const status of ["cancelled", "completed"] as const) {
+    const ctx = { booking: makeBooking({ status }), bucket, eventType };
+    const { deps, calls } = makeDeps({ existing: ctx, freeEmails: new Set(["a@x.com"]) });
+    const err = await refused(() =>
+      rescheduleBooking("tok1", HNL_0759, RR, "customer", deps, NOW, undefined, { phone: "+12035550100" }, {
+        leadZone: "Pacific/Honolulu",
+      }),
+    );
+    assert(
+      err instanceof Error &&
+        !(err instanceof OutsideCallingWindowError) &&
+        err.message === "This booking can no longer be changed",
+      `a ${status} booking is refused as unchangeable, not as outside calling hours`,
+    );
+    assert(
+      calls.claimReschedule === 0 && calls.updateBookingContact.length === 0,
+      `a ${status} booking: no lease and no contact write`,
+    );
+  }
+
   // --- a no-op reschedule onto the time it already has is not re-judged ---
   {
     // A call booked before the gate existed can sit outside the window; a
