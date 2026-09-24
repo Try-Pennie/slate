@@ -340,6 +340,20 @@ export const BOOKING_ERROR_COPY = {
    */
   writeFailed:
     "Something went wrong on our side, so nothing changed. Please try again in a moment.",
+  /**
+   * #2667: the link's booking code names no bucket, or names one the public may
+   * not book. It used to fall through to "Something went wrong on our end", a
+   * server fault sentence for a client's bad link (L11), and paged on the internal
+   * error key for a request anybody can send as often as they like.
+   *
+   * It names the LINK, because that is the thing that is wrong, and it says what
+   * did not happen. It offers no action, because there is none the lead can take
+   * here: the link came from a page Pennie does not control, and telling them to
+   * try again would send them to the same refusal (L111). One sentence for an
+   * unknown code and a hidden test bucket alike, so the wording can never say a
+   * hidden bucket exists (#601).
+   */
+  unknownBucket: "This booking link is not valid, so no call was booked.",
 } as const;
 
 /**
@@ -579,6 +593,25 @@ export function movedContactNote(changed: {
       : `${parts.slice(0, -1).join(", ")} and ${parts[parts.length - 1]}`;
   return `We have updated your ${list} for this call.`;
 }
+
+// --- test mode (#2660) ---------------------------------------------------------
+//
+// The public test bucket lets a partner walk the embed end to end from their own
+// site without booking a real advisor. The booking is real everywhere a tester can
+// see (a time is held, an invite arrives) and reaches nothing downstream, so every
+// surface it touches has to SAY so, or a tester cannot tell it from a real booking
+// and a stray lead is told a call is coming that never will (L678). One sentence,
+// drawn on the booker, the existing call panel, the manage page, the invite and
+// the admin's search and detail, in the one treatment reserved for it.
+
+export const TEST_MODE_COPY = {
+  /** The word on the mark beside a test booking, wherever it is listed. */
+  label: "Test",
+  /** The whole sentence, on every screen a tester or a stray lead reads. It names
+   *  what happens (a test calendar) and what does not (a text), which is the
+   *  domain, not the interface (L604). */
+  line: "This is a test booking. It reaches a test calendar only and sends no texts.",
+} as const;
 
 // --- the honeypot (#1033) -----------------------------------------------------
 // Read only by a bot, and by a screen reader that ignores aria-hidden containers.

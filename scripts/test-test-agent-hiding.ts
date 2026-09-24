@@ -28,13 +28,41 @@ for (const page of [
   );
 }
 
-// Public /book page: a test bucket code must NOT render a Booker — it resolves
-// is_test and short-circuits to an unavailable message.
-const book = read("src/app/book/page.tsx");
-assert(/is_test/.test(book), "book page resolves the bucket's is_test flag");
-assert(
-  /bucketRow\?\.is_test/.test(book),
-  "book page short-circuits when the bucket is a test bucket",
-);
+// The two public landing pages (#2660): each resolves whether the bucket is a
+// test bucket through the ONE shared helper and hands the answer to the Booker,
+// so the test line is drawn on every screen it reaches. The old short circuit
+// ("This booking link is not available") is gone with its branch: after the
+// resolver learned the public test code no reachable code produces a hidden
+// test bucket on these pages, and a hidden one is refused at the confirm.
+for (const page of ["src/app/book/page.tsx", "src/app/booking/[id]/page.tsx"]) {
+  const src = read(page);
+  assert(
+    /loadLandingBucketIsTest\(/.test(src),
+    `${page} resolves the bucket's test flag through the shared landing helper`,
+  );
+  assert(/isTest=\{isTest\}/.test(src), `${page} hands the Booker the test flag`);
+  // The MARKUP of the old refusal, not the phrase: a comment recording what was
+  // deleted is not the branch coming back.
+  assert(
+    !/not available\.\s*<\/p>/.test(src),
+    `${page} no longer short-circuits a test bucket to an unavailable message`,
+  );
+}
+
+// Admin booking surfaces that READ bookings (#2660). A stranger's booking on the
+// public test bucket is a real row, so the pages that aggregate bookings keep it
+// out through the bucket join (bookings has no flag of its own), while the
+// lookup and the detail page show it MARKED (pinned by their own vitest suites).
+for (const page of ["src/app/admin/routing/page.tsx", "src/app/admin/ooo/page.tsx"]) {
+  const src = read(page);
+  assert(
+    /buckets!inner\(is_test\)/.test(src),
+    `${page} joins the bucket on its bookings read`,
+  );
+  assert(
+    /\.eq\(\s*["']buckets\.is_test["']\s*,\s*false\s*\)/.test(src),
+    `${page} keeps test bookings out of its bookings read`,
+  );
+}
 
 finish();

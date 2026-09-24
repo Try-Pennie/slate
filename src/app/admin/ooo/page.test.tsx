@@ -33,6 +33,10 @@ const dbState = vi.hoisted(() => ({
    *  finding no clash. An empty result here is the absence of a WARNING, and a
    *  manager reads absence of a warning as "this clashes with nothing". */
   bookingsError: false,
+  /** What the overlap read asked for (#2660): its projection and its equality
+   *  filters, in call order. */
+  bookingsSelects: [] as string[],
+  bookingsFilters: [] as [string, unknown][],
   /** Which ooo_requests read this is: the page runs pending, then history. Reset
    *  per test, or a later test's pending read serves the (empty) history and every
    *  absence assertion passes on a blank page. */
@@ -41,8 +45,16 @@ const dbState = vi.hoisted(() => ({
 const from = vi.hoisted(() =>
   vi.fn((table: string) => {
     const q: Record<string, unknown> = {
-      select: () => q,
-      eq: () => q,
+      // #2660: the bookings read's projection and equality filters are recorded,
+      // so a test can see the bucket join that keeps test bookings out.
+      select: (projection: string) => {
+        if (table === "bookings") dbState.bookingsSelects.push(projection);
+        return q;
+      },
+      eq: (col: string, value: unknown) => {
+        if (table === "bookings") dbState.bookingsFilters.push([col, value]);
+        return q;
+      },
       in: () => q,
       gte: () => q,
       lte: () => q,
@@ -486,6 +498,8 @@ describe("the clash warning's could-not-check state (#1649)", () => {
     dbState.history = [];
     dbState.bookings = [];
     dbState.bookingsError = false;
+    dbState.bookingsSelects = [];
+    dbState.bookingsFilters = [];
     dbState.pending = [requestRow()];
     dbState.users = [
       { id: "u-agent", name: "Aria Agent", email: "aria@trypennie.com", role: "agent", manager_id: null },
@@ -496,6 +510,21 @@ describe("the clash warning's could-not-check state (#1649)", () => {
       org_id: "o1",
       email: "lead@trypennie.com",
     });
+  });
+
+  // #2660: a stranger's booking on the public test bucket is a real row on the
+  // smoke test agent, so the clash read keeps test bookings out through the
+  // bucket join (`bookings` has no flag of its own). Pinned on the read itself:
+  // a test agent never asks for time off through Slate, so no fixture could show
+  // the difference in what is drawn, and a filter on a select is exactly the line
+  // that goes missing in a refactor with nothing to say so.
+  it("keeps test bookings out of the clash read through the bucket join", async () => {
+    dbState.bookingsError = false;
+    render(await OooQueuePage(props));
+    expect(screen.getByText(/Vacation/i)).toBeTruthy();
+    expect(dbState.bookingsSelects.length).toBeGreaterThan(0);
+    for (const s of dbState.bookingsSelects) expect(s).toContain("buckets!inner(is_test)");
+    expect(dbState.bookingsFilters).toContainEqual(["buckets.is_test", false]);
   });
 
   it("says the clash check could not run, rather than showing a queue with no clashes", async () => {

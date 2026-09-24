@@ -117,6 +117,13 @@
   /* Error semantics (S1) */
   --error:              var(--pennie-rose);
 
+  /* The test mode marker's pair (#2660), declared with the palette so the
+     contrast guard reads it beside every other measured pairing. The rules that
+     paint it sit at the end of this file, beside the impersonation marker's. */
+  --test-mode-bg:       var(--pennie-mint);
+  --test-mode-fg:       var(--pennie-graphite);
+  --test-mode-edge:     6px;
+
   /* Focus (S3): decorative sky glow + theme-aware contrast-carrying line */
   --focus-ring:         rgba(130, 208, 255, 0.45); /* decorative sky glow */
   /* #1768: brand blue on ordinary light surfaces (4.56:1 on beige, 4.55:1 on the
@@ -853,6 +860,67 @@ html {
 }
 .pn-impersonation-exit:hover {
   background: rgba(52, 52, 52, 0.1);
+}
+
+/* ---------------------------------------------------------------------------
+   The test mode marker (#2660).
+
+   A mint band carrying one sentence, at the top of every screen that shows a
+   TEST booking (the booker, the manage page), and a mint mark beside one wherever
+   bookings are listed (the admin lookup, the booking detail). It is the one
+   functional use of mint in the product, named in the Test Mode Rule in
+   DESIGN.md, exactly as the impersonation marker above is the one functional use
+   of yellow: a surface saying "this is not real" has to look like nothing else
+   in Slate, or it reads as chrome.
+
+   NO PER THEME OVERRIDE, deliberately, for the reason the hazard stripe has none:
+   graphite on mint is 8.36:1 whatever page sits behind it, so one paint is
+   correct in both themes, and `scripts/test-contrast.ts` measures the pair. The
+   graphite edge on the band is what keeps it a BAND against a white card, where
+   mint alone is 1.49:1 as a surface.
+   --------------------------------------------------------------------------- */
+.pn-test-mode {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 8px 12px;
+  border-left: var(--test-mode-edge) solid var(--test-mode-fg);
+  background: var(--test-mode-bg);
+  color: var(--test-mode-fg);
+  font-size: var(--fs-small);
+  line-height: 1.35;
+}
+.pn-test-mode-glyph {
+  flex: none;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--test-mode-fg);
+  color: var(--test-mode-bg);
+  font-size: 11px;
+  font-weight: var(--fw-semibold);
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  line-height: 16px;
+}
+.pn-test-mode-say {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+/* The mark: the glyph alone, for a row. Same paint, so the word means the same
+   thing wherever it is read. */
+.pn-test-mode-mark {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--test-mode-bg);
+  color: var(--test-mode-fg);
+  border: 1.2px solid var(--test-mode-fg);
+  font-size: 11px;
+  font-weight: var(--fw-semibold);
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  line-height: 16px;
+  vertical-align: middle;
 }
 
 /* IM6: the page insets itself by what the strip MEASURED. The height varies with

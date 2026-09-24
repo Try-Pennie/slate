@@ -112,6 +112,28 @@ atLeast(rose, beige, 4.5, "error rose-on-beige"); // 4.77
 atLeast(blue, beige, 4.5, "blue text-on-beige (only passing blue on light)"); // 4.56
 atLeast(blue, white, 4.5, "blue text-on-white"); // 4.91
 
+// --- #2660: the test mode marker, DESIGN.md's Test Mode Rule -----------------
+//
+// One paint in both themes, deliberately, like the hazard stripe: the sentence
+// is graphite on mint, which does not depend on the page behind it. What DOES
+// depend on the page is whether the band reads as a band at all, and that is
+// carried by a different edge in each theme: the graphite edge against a light
+// card, and the mint fill itself against a dark one. Both halves measured, and
+// the pair asserted in both themes, so a token edit cannot leave the tester's
+// sentence unreadable on the embed's dark theme.
+for (const [theme, read] of [
+  ["light", r],
+  ["dark", rDark],
+] as [string, (n: string) => RGB][]) {
+  atLeast(read("--test-mode-fg"), read("--test-mode-bg"), 4.5, `test mode sentence on its band (${theme})`);
+  const edge = ratio(read("--test-mode-fg"), read("--surface"));
+  const fill = ratio(read("--test-mode-bg"), read("--surface"));
+  assert(
+    Math.max(edge, fill) + 1e-9 >= 3,
+    `the test mode band is told from the card behind it (${theme}): edge ${edge.toFixed(2)}:1, fill ${fill.toFixed(2)}:1, one of them >= 3`,
+  );
+}
+
 // --- D17 / #1768: the focus ring, on EVERY surface it can be drawn on -------
 //
 // One recipe, but the ring COLOUR is chosen by the surface rather than by the

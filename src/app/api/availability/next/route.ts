@@ -11,6 +11,7 @@ import { loadBusinessHoursCached } from "@/lib/booking/business-hours-load";
 import { loadBookingHorizonDays } from "@/lib/booking/settings";
 import { availabilityWithinLimit, clientIp } from "@/lib/rate-limit";
 import { internalErrorResponse } from "@/lib/api/errors";
+import { isPublicTestBucket } from "@/lib/embed/public-test-bucket";
 import { DateTime } from "luxon";
 
 export const dynamic = "force-dynamic";
@@ -84,8 +85,11 @@ async function handle(req: NextRequest) {
         bucketExists = false;
         return [];
       }
-      if (res.bucket.is_test) {
-        // This path is lead-facing only; the smoke test uses /api/availability.
+      // A HIDDEN test bucket does not exist to this path, which is lead facing
+      // only (the smoke test uses /api/availability). The PUBLIC test bucket
+      // (#2660) does exist, so a tester arriving during a closure can look
+      // further ahead like a lead can; the two are told apart by the code alone.
+      if (res.bucket.is_test && !isPublicTestBucket(code)) {
         bucketExists = false;
         return [];
       }

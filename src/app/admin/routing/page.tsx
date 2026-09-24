@@ -29,12 +29,19 @@ export default async function RecentRoutingPage() {
     // name it. The `is_test` filter belongs where a test agent must not be
     // CHOSEN (a picker, the pool), not where one has to be named.
     db.from("users").select("*").eq("org_id", me.org_id),
+    // #2660: test bookings are kept OUT of this read through the bucket join,
+    // which is where the flag lives (`bookings` has none of its own). A stranger's
+    // booking on the public test bucket is not a routing decision worth reading,
+    // and before cutover the canary's would otherwise be the whole table. The
+    // roster above still includes the test agents (#1914), because the name map
+    // and this read must agree about who exists, and that holds either way.
     db
       .from("bookings")
       .select(
-        "id, attendee_name, attendee_email, attendee_phone, starts_at, assigned_user_id, status, routing_trace",
+        "id, attendee_name, attendee_email, attendee_phone, starts_at, assigned_user_id, status, routing_trace, buckets!inner(is_test)",
       )
       .eq("org_id", me.org_id)
+      .eq("buckets.is_test", false)
       .order("created_at", { ascending: false })
       .limit(25),
   ]);

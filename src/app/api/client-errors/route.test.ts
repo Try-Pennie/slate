@@ -48,8 +48,16 @@ vi.mock("@/lib/rate-limit", () => ({
   clientIp,
   CLIENT_ERROR_RATE_RULES: [{ prefix: "clienterr:h", windowSeconds: 3600, max: 60 }],
 }));
+// #2660: whether the reported bucket is a test bucket, answered by the one
+// module the outcome tally already asks (only the server decides, off
+// `buckets.is_test`). Real unless a case says otherwise.
+const resolveTestTraffic = vi.hoisted(() => vi.fn(async (): Promise<boolean> => false));
+vi.mock("@/lib/monitor/test-traffic", () => ({ resolveTestTraffic }));
 
 import { POST } from "./route";
+import { PUBLIC_TEST_BUCKET_CODES } from "@/lib/embed/public-test-bucket";
+
+const PUBLIC_TEST = PUBLIC_TEST_BUCKET_CODES[0];
 
 const post = (body: unknown) =>
   POST({
@@ -68,6 +76,48 @@ beforeEach(() => {
   vi.clearAllMocks();
   allowRequest.mockResolvedValue(true);
   countBoundaryCatch.mockResolvedValue({ repeated: true, count: 5, measured: true });
+  resolveTestTraffic.mockResolvedValue(false);
+});
+
+// #2660: a partner's staging page is the population most likely to throw (an old
+// browser, a host policy blocking a chunk), and with any origin admitted the
+// volume is theirs to choose. Every monitor resolves test-ness through the
+// bucket; this route did not, so each of those would have paged about a customer
+// who could not book. A test bucket's errors go to the log and the info channel,
+// never to the pager; a real bucket's path is untouched (both in one fixture).
+describe("a client error on a test bucket (#2660)", () => {
+  it("whispers on the info channel and never pages, for a boundary catch", async () => {
+    resolveTestTraffic.mockResolvedValueOnce(true);
+    const res = await post({ kind: "boundary", message: "digest 1", page: "/book", bucketCode: PUBLIC_TEST });
+    expect(res.status).toBe(204);
+    expect(resolveTestTraffic).toHaveBeenCalledWith({ by: "bucket", code: PUBLIC_TEST });
+    expect(sendThrottledInfo).toHaveBeenCalledTimes(1);
+    expect(sendThrottledInfo.mock.calls[0]![0]).toBe("client_error_test_bucket");
+    expect(sendThrottledInfo.mock.calls[0]![2]).toContain(PUBLIC_TEST);
+    expect(sendThrottledAlert).not.toHaveBeenCalled();
+    expect(reportInternalError).not.toHaveBeenCalled();
+    expect(countBoundaryCatch).not.toHaveBeenCalled();
+  });
+
+  it("whispers and never pages, for an ordinary client error too", async () => {
+    resolveTestTraffic.mockResolvedValueOnce(true);
+    await post({ ...REPORT, bucketCode: PUBLIC_TEST });
+    expect(sendThrottledInfo).toHaveBeenCalledTimes(1);
+    expect(reportInternalError).not.toHaveBeenCalled();
+  });
+
+  it("CONTROL: a real bucket's error still pages the way it always did", async () => {
+    await post({ ...REPORT, bucketCode: "411" });
+    expect(resolveTestTraffic).toHaveBeenCalledWith({ by: "bucket", code: "411" });
+    expect(reportInternalError).toHaveBeenCalledOnce();
+    expect(sendThrottledInfo).not.toHaveBeenCalled();
+  });
+
+  it("does not ask about a report that names no bucket, and pages it as real", async () => {
+    await post({ ...REPORT, bucketCode: null });
+    expect(resolveTestTraffic).not.toHaveBeenCalled();
+    expect(reportInternalError).toHaveBeenCalledOnce();
+  });
 });
 
 // #1974: a page whose error boundary caught something reports through here too,

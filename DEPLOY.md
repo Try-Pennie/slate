@@ -177,6 +177,48 @@ it fails the job, and a failed job on a push to `main` posts a Slack alert
 canary notices, up to 30 minutes" into "broken and someone is told in about a
 minute".
 
+### The test buckets are seeded by hand, after the deploy (#396, #2660)
+
+Deploys create no rows. The canary's hidden `SMOKE` and `SMOKE2` buckets and the
+PUBLIC `PARTNER` bucket a partner tests the embed with (#2660) all come from
+`scripts/seed-smoke-test.ts`, run from a checkout holding `.env.local`. The order
+matters, because until the seed has run and the recompute has published its
+slots, `PARTNER` answers the same 404 a typo does:
+
+1. Merge and deploy as usual.
+2. **A few minutes past the hour or half hour**, never on one (the canary fires
+   at :00 and :30 and the seed rewrites the smoke agents' working hours in
+   place), write the rows:
+
+   <!-- runbook-unverified: writes the seed rows to the live project, so it was not run
+        for verification; the row shapes it writes are pinned by scripts/test-smoke-seed.ts. -->
+
+   ```
+   APPLY=1 node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/seed-smoke-test.ts
+   ```
+
+3. Wait one recompute cycle (about a minute), then MEASURE rather than assume:
+
+   <!-- runbook-unverified: reads the live project through .env.local, which the change that
+        added the measurement was built without; its verdicts and exit codes are pinned by
+        scripts/test-smoke-seed-readiness.ts. -->
+
+   ```
+   node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/seed-smoke-test.ts
+   ```
+
+   It writes nothing and exits 0 only when every test bucket exists, is flagged
+   `is_test`, has a member and has published slots. Any other state exits on its
+   own code (2 no row, 3 no member, 4 not published yet, 5 not flagged) and says
+   what to do. From then on the canary's 30 minute tick reads
+   `GET /api/availability?bucket=PARTNER` with no key and pages if it stops being
+   served.
+
+4. Make one booking through the embed from a host page with a test address, and
+   confirm the redirect, the confirmed page, the invite, the "Test" mark in the
+   admin lookup, and that `webhook_deliveries` reads suppressed for it. Only then
+   tell the partner it is ready.
+
 ### Deploying by hand, verified (#1190)
 
 `pnpm cf:deploy` on its own skips both steps, so the live site reports commit `dev`

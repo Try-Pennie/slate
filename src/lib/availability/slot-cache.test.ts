@@ -13,6 +13,9 @@ vi.mock("@/lib/availability/precompute-core", () => ({
 import { getBucketSlotsWithFallback } from "./slot-cache";
 import type { BucketSlots } from "./service";
 import type { Bucket, EventType } from "@/lib/db/types";
+import { PUBLIC_TEST_BUCKET_CODES } from "@/lib/embed/public-test-bucket";
+
+const PUBLIC_TEST = PUBLIC_TEST_BUCKET_CODES[0];
 
 const sharedEventType = {
   id: "et1",
@@ -121,6 +124,46 @@ describe("getBucketSlotsWithFallback", () => {
     expect(result!.routing.rungs_dropped).toBe(3);
     expect(result!.routing.requested_code).toBe("511");
     expect(result!.routing.effective_code).toBe("211");
+  });
+
+  // #2660: the public test bucket is served when the route authorises it, and a
+  // REAL code can never reach it through the display cascade. Both directions
+  // in one fixture (L159): the same ladder that never asks for the test code DOES
+  // cascade to a real lower rung, so the negative is not satisfied by a fixture
+  // that could never cascade at all.
+  it("serves the public test bucket when the route has authorised the test code", async () => {
+    mockResolveBucketSlots.mockImplementation(async (code: string) =>
+      code === PUBLIC_TEST ? makeBucketSlots(PUBLIC_TEST, [SLOT], /* isTest */ true) : null,
+    );
+
+    const result = await getBucketSlotsWithFallback(PUBLIC_TEST, FROM_ISO, /* authorizedForTest */ true);
+
+    expect(result).not.toBeNull();
+    expect(result!.bucket.code).toBe(PUBLIC_TEST);
+    expect(result!.slots).toEqual([SLOT]);
+    expect(result!.routing.tier_fallback).toBe(false);
+    expect(mockResolveBucketSlots).toHaveBeenCalledTimes(1);
+  });
+
+  it("never asks for the public test bucket while cascading a real code, and still cascades to a real rung", async () => {
+    const asked: string[] = [];
+    mockResolveBucketSlots.mockImplementation(async (code: string) => {
+      asked.push(code);
+      if (code === "411") return makeBucketSlots("411", []);
+      if (code === "311") return makeBucketSlots("311", []);
+      if (code === "211") return makeBucketSlots("211", [SLOT]);
+      if (code === PUBLIC_TEST) return makeBucketSlots(PUBLIC_TEST, [SLOT], /* isTest */ true);
+      return null;
+    });
+
+    const result = await getBucketSlotsWithFallback("411", FROM_ISO, /* authorizedForTest */ true);
+
+    // The positive control: the ladder is live and found the real rung.
+    expect(result!.bucket.code).toBe("211");
+    expect(result!.routing.rungs_dropped).toBe(2);
+    // The negative: the test bucket sits on no ladder, so it was never even read,
+    // and that holds even for a caller authorised to see it.
+    expect(asked).not.toContain(PUBLIC_TEST);
   });
 
   it("hides an unauthorized test bucket like an unknown code, without running the cascade (#601)", async () => {

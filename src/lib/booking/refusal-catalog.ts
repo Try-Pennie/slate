@@ -281,6 +281,25 @@ export const REFUSAL_CATALOG: RefusalPath[] = [
       "sixty separate per-bucket pages.",
   },
   {
+    id: "unknown_bucket",
+    surface: "embed booker",
+    outcome: "422 UNKNOWN_BUCKET, told the booking link is not valid",
+    counting: { kind: "error", code: "unknown_bucket" },
+    rateSignal: { kind: "covered" },
+    why:
+      "The code names no bucket, or names a hidden test bucket the public may not book " +
+      "(#2667). It used to fall through to the internal error path, so a lead read a server " +
+      "fault sentence for their own bad link and internal_error:booking paged on a request " +
+      "anybody can send as often as they like (L498). Counted as an error by bucket, the way " +
+      "invalid_request is: one is a stray link, a WAVE is an embed or a landing page sending " +
+      "a code Slate does not serve, and every lead arriving through it is turned away. Bot " +
+      "noise posting made up codes is accepted in that denominator on purpose, because it is " +
+      "bounded by the same caps as every other attempt and the wave from a real embed is the " +
+      "case worth seeing. The hidden test bucket case (#396) is NOT told apart from an " +
+      "unknown code in the response, only in the log, since the response must never say a " +
+      "hidden bucket exists (#601).",
+  },
+  {
     id: "internal",
     surface: "embed booker",
     outcome: "500, a generic failure",

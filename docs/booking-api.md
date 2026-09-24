@@ -293,6 +293,18 @@ injects a synthetic lead into Regal or Cadence, and never cancels one there eith
 This is a property of the bucket, not of the caller: flag a bucket `is_test` and
 nothing booked on it can reach a downstream system.
 
+### The public test bucket (#2660)
+
+One test bucket, `PARTNER`, is served on the PUBLIC paths with no key at all:
+`GET /api/availability?bucket=PARTNER`, `GET /api/availability/next`, the `/book`
+page and the Booker's own `POST /booking`. It is how a partner tests the embed
+from their own site without booking a real advisor. It is still `is_test`, so
+everything above holds: no webhook, no reminder, a test calendar. The
+`slate-embed-contract` skill has what a tester will see. The canary's hidden
+buckets stay hidden: to a keyless caller they answer the same 404 as a typo, and a
+hidden code posted to `POST /booking` gets the same `422 UNKNOWN_BUCKET` an unknown
+code gets (#2667).
+
 ### Idempotency
 
 Retrying with the same `externalId` + slot is safe: the same call dedupes to the
@@ -337,9 +349,19 @@ two fields below.
   "endsAt":   "2026-07-01T15:30:00.000Z",
   "status":   "confirmed",
   "agent":    { "name": "…", "email": "…" },
-  "manageUrl": "https://…/booking/manage/<token>"
+  "manageUrl": "https://…/booking/manage/<token>",
+  "isTest":   false
 }
 ```
+
+- **`isTest`** (#2660) is `true` for a booking on a test bucket: the public
+  `PARTNER` bucket a partner tests the embed with, or the canary's hidden ones. It
+  reached a test calendar and no downstream system (no webhook, no text). A host's
+  confirmed page reads it to label a test booking; the Booker's own confirm
+  response and the `slate:bookingSuccessful` payload carry the same field. A test
+  booking is readable and cancellable here with your own key, by the same strong
+  id, exactly like a real one: that is how the confirmed page is tested end to
+  end. Read off the booking's bucket on the server, never off the caller.
 
 ```jsonc
 // <booking detail>: the by id answer, and the confirm response's booking (#2643)
@@ -428,7 +450,8 @@ GET /api/bookings?agentEmail=agent@trypennie.com&limit=50
 ### `bucketCode` field
 
 Each item in the returned array includes a `bucketCode` field (the XBC bucket
-the booking belongs to) in addition to the standard booking fields.
+the booking belongs to) in addition to the standard booking fields, including
+`isTest` (#2660), read off the same joined bucket.
 
 ### 400 cases
 

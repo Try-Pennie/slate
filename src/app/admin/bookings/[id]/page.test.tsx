@@ -88,14 +88,18 @@ vi.mock("@/lib/booking/reason-options", () => ({
 }));
 
 import BookingDetailPage from "./page";
+import { TEST_MODE_COPY } from "@/lib/booking/booker-copy";
 
 const props = { params: Promise.resolve({ id: "b1" }) };
 const propsFor = (id: string) => ({ params: Promise.resolve({ id }) });
 
-const bookingRow = () => ({
+const bookingRow = (isTest = false) => ({
   id: "b1",
   org_id: "o1",
   bucket_code: "120",
+  // The joined bucket flag (#2660), as the page's `buckets!inner(is_test)` read
+  // hands it back.
+  buckets: { is_test: isTest },
   status: "confirmed",
   starts_at: "2026-09-10T14:00:00Z",
   ends_at: "2026-09-10T14:30:00Z",
@@ -171,5 +175,37 @@ describe("the reads behind the booking detail refuse rather than draw a blank (#
     render(await BookingDetailPage(props));
     expect(screen.getByText(/Lead Person/)).toBeTruthy();
     expect(notFound).not.toHaveBeenCalled();
+  });
+});
+
+// #2660: a booking on the public test bucket is a stranger's test, not a lead,
+// and this page carries the controls that would move it. It stays visible and is
+// MARKED, in the one treatment reserved for test mode, so nobody reads it as a
+// customer; a real booking carries no mark. Both in one fixture.
+describe("the detail page marks a test booking (#2660)", () => {
+  const asManager = () =>
+    auth.currentUser.mockResolvedValueOnce({
+      id: "m1",
+      role: "manager",
+      org_id: "o1",
+      email: "m@trypennie.com",
+    });
+
+  it("shows the test mark for a booking whose bucket is a test bucket", async () => {
+    asManager();
+    dbState.booking = bookingRow(true);
+    dbState.roster = [{ id: "u1", name: "Aria Agent", email: "aria@trypennie.com" }];
+    render(await BookingDetailPage(props));
+    const mark = document.querySelector(".pn-test-mode-mark");
+    expect(mark).toBeTruthy();
+    expect(mark?.textContent).toContain(TEST_MODE_COPY.label);
+  });
+
+  it("shows no mark for a real booking", async () => {
+    asManager();
+    dbState.booking = bookingRow(false);
+    dbState.roster = [{ id: "u1", name: "Aria Agent", email: "aria@trypennie.com" }];
+    render(await BookingDetailPage(props));
+    expect(document.querySelector(".pn-test-mode-mark")).toBeNull();
   });
 });

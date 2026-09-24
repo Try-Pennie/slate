@@ -72,7 +72,13 @@ assert(
   totalLines >= 50,
   `and their states (expected at least 50 lines, got ${totalLines})`,
 );
-for (const required of ["Booker: confirmed", "Manage: confirming a cancel"]) {
+for (const required of [
+  "Booker: confirmed",
+  "Manage: confirming a cancel",
+  // #2660: the test line every test booking surface carries, previewed as its
+  // own screen so a reader sees the sentence a tester and a stray lead will.
+  "Booker and manage: a test booking",
+]) {
   assert(
     screens.some((s) => s.screen === required),
     `"${required}" is previewed`,
@@ -92,6 +98,16 @@ for (const required of ["Calendar invite: the appointment", "Reminder email: the
   assert(
     allScreens.some((s) => s.screen === required),
     `"${required}" is previewed`,
+  );
+}
+// #2660: the invite for a TEST booking opens with the test line, so the tester's
+// own calendar says what the event is. Previewed as a state of the invite, and
+// the state is named so a reader can find it.
+{
+  const invite = allScreens.find((s) => s.screen === "Calendar invite: the appointment");
+  assert(
+    invite?.lines.some((l) => /test booking/i.test(l.state)) === true,
+    "the invite preview carries the state for a test booking",
   );
 }
 

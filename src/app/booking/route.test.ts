@@ -25,7 +25,11 @@ const service = vi.hoisted(() => {
   // failed). The route refuses with a retriable 503 rather than letting the read
   // failure read as "this lead has no call" and creating a duplicate.
   class ExistingCallCheckUnavailableError extends Error {}
+  // #2667: a bucket code that resolves to nothing, or to a hidden test bucket.
+  // The route must map it to a client refusal rather than the internal error path.
+  class UnknownBucketError extends Error {}
   return {
+    UnknownBucketError,
     createBooking: vi.fn(),
     bookingDetailExtras: vi.fn((_booking: unknown) => ({
       contact: { name: "Kris", email: "k@x.com", phone: "+12035615295" },
@@ -82,6 +86,10 @@ vi.mock("@/lib/monitor/record-api-outcome", () => ({ recordApiOutcome }));
 vi.mock("@/lib/booking/settings", () => bookingSettings);
 
 import { POST } from "./route";
+import { PUBLIC_TEST_BUCKET_CODES } from "@/lib/embed/public-test-bucket";
+import { BOOKING_ERROR_COPY } from "@/lib/booking/booker-copy";
+
+const PUBLIC_TEST = PUBLIC_TEST_BUCKET_CODES[0];
 
 const VALID_BODY = {
   bucketCode: "411",
@@ -424,6 +432,85 @@ describe("POST /booking (embed) error mapping", () => {
 // watching: one customer losing a race is ordinary contention, and fifty refused
 // in two hours is the cal.com failure of 2026-08-06, which nothing could tell
 // apart without a count.
+// #2660: the PUBLIC test bucket is bookable from the Booker with no key. The
+// route says so to the service through `allowTestBuckets`, exactly when the code
+// is the public test code and never otherwise, and it tells the host page the
+// booking is a test one so the host can label its own confirmed page.
+describe("POST /booking on the public test bucket (#2660)", () => {
+  beforeEach(() => {
+    service.createBooking.mockReset();
+    service.createBooking.mockResolvedValue({
+      booking: { id: "bk-t", starts_at: "2026-07-01T15:00:00.000Z", ends_at: "2026-07-01T15:30:00.000Z" },
+      manageUrl: "https://slate.test/booking/manage/tok",
+    });
+    service.findDuplicateBookingWarning.mockReset();
+    service.findDuplicateBookingWarning.mockResolvedValue(null);
+  });
+
+  it("lets the service book the public test bucket, and says the booking is a test", async () => {
+    const res = await post({ ...VALID_BODY, bucketCode: PUBLIC_TEST });
+    expect(res.status).toBe(200);
+    expect((service.createBooking.mock.calls[0] as unknown[])[0]).toMatchObject({
+      bucketCode: PUBLIC_TEST,
+      allowTestBuckets: true,
+    });
+    expect(await res.json()).toMatchObject({ id: "bk-t", isTest: true });
+    // The duplicate warning is asked in the TEST world too, so a real lead's call
+    // is never named on a tester's confirmation (#2660, L342).
+    expect((service.findDuplicateBookingWarning.mock.calls[0] as unknown[])[0]).toMatchObject({ isTest: true });
+  });
+
+  it("never lets a real code book a test bucket, and says the booking is real", async () => {
+    const res = await post(VALID_BODY);
+    expect(res.status).toBe(200);
+    expect((service.createBooking.mock.calls[0] as unknown[])[0]).toMatchObject({
+      bucketCode: VALID_BODY.bucketCode,
+      allowTestBuckets: false,
+    });
+    expect(await res.json()).toMatchObject({ id: "bk-t", isTest: false });
+    expect((service.findDuplicateBookingWarning.mock.calls[0] as unknown[])[0]).toMatchObject({ isTest: false });
+  });
+});
+
+// #2667: a code that resolves to no bucket, or to a HIDDEN test bucket, used to
+// fall through to the internal error path: a lead read "something went wrong on
+// our end" for their own bad link, and `internal_error:booking` paged on a
+// request anybody on the internet can send as often as they like (L498). It is a
+// client refusal now, with the same body for both causes so the response can
+// never say a hidden bucket exists (#601), and it is counted rather than paged.
+describe("POST /booking on an unknown or hidden bucket (#2667)", () => {
+  beforeEach(() => {
+    recordApiOutcome.mockClear();
+    service.createBooking.mockReset();
+    service.createBooking.mockRejectedValue(new service.UnknownBucketError("Unknown booking bucket"));
+  });
+
+  it("refuses with the booker's own sentence, never the internal error", async () => {
+    const res = await post({ ...VALID_BODY, bucketCode: "999" });
+    expect(res.status).toBe(422);
+    const body = await res.json();
+    expect(body).toEqual({ error: BOOKING_ERROR_COPY.unknownBucket, code: "UNKNOWN_BUCKET" });
+    expect(body.error).not.toMatch(/on our end|our side/);
+    const outcomes = recordApiOutcome.mock.calls.map((c) => [c[0], c[1], c[2]]);
+    expect(outcomes).toEqual([["error", "999", "unknown_bucket"]]);
+  });
+
+  it("answers a hidden test bucket byte for byte like an unknown code", async () => {
+    const unknown = await post({ ...VALID_BODY, bucketCode: "999" });
+    const hidden = await post({ ...VALID_BODY, bucketCode: "SMOKE" });
+    expect(hidden.status).toBe(unknown.status);
+    expect(await hidden.text()).toBe(await unknown.text());
+    // The service was told it may NOT book a test bucket for either: the route
+    // never guesses, it relays the constant's answer.
+    for (const call of service.createBooking.mock.calls as unknown[][]) {
+      expect(call[0]).toMatchObject({ allowTestBuckets: false });
+    }
+    const codes = recordApiOutcome.mock.calls.map((c) => c[2]);
+    expect(codes).toEqual(["unknown_bucket", "unknown_bucket"]);
+    expect(codes).not.toContain("internal");
+  });
+});
+
 describe("POST /booking outcome tally (#1313)", () => {
   beforeEach(() => recordApiOutcome.mockClear());
   const outcomes = () => recordApiOutcome.mock.calls.map((c) => [c[0], c[2]]);

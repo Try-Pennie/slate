@@ -6,6 +6,7 @@ import { supabaseAdmin } from "@/lib/supabase/admin";
 import { unwrap } from "@/lib/db/result";
 import { cardCls } from "@/components/ui/styles";
 import AdminBookingActions from "@/components/AdminBookingActions";
+import { TestMark } from "@/components/TestModeBand";
 import BookingHistory from "@/components/BookingHistory";
 import { bookingIsActionable, loadBookingDetail } from "@/lib/booking/detail";
 import { loadReasonOptions } from "@/lib/booking/reason-options";
@@ -52,11 +53,15 @@ export default async function BookingDetailPage({
     // admin looking up a booking that it does not exist. On the surface somebody
     // opens because they suspect a booking went missing, that is the one answer
     // that must be true when it is given.
+    // #2660: the bucket's flag rides along on the row (`bookings` carries none of
+    // its own), read in the same query and lifted off below, so a stranger's test
+    // booking on the public test bucket is marked on the one page that carries
+    // the controls to move it.
     async getBooking(bookingId, orgId) {
       const data = unwrap(
         await db
           .from("bookings")
-          .select("*")
+          .select("*, buckets!inner(is_test)")
           .eq("id", bookingId)
           .eq("org_id", orgId)
           .maybeSingle(),
@@ -85,6 +90,8 @@ export default async function BookingDetailPage({
   if (result.kind === "ooo") redirect("/admin/ooo");
   if (result.kind === "notfound") notFound();
   const { booking, view } = result;
+  // #2660: the joined flag, off the row the read above returned.
+  const isTest = (booking as Booking & { buckets?: { is_test?: boolean } | null }).buckets?.is_test === true;
 
   // #1943: the history, read HERE. It was a client fetch behind a toggle, and
   // taking the toggle away honestly meant taking the fetch with it. `null` is
@@ -116,7 +123,10 @@ export default async function BookingDetailPage({
 
         <section className={cardCls}>
           <div className="flex flex-wrap items-baseline justify-between gap-2">
-            <h1 className="text-lg font-semibold">{view.attendee}</h1>
+            <h1 className="flex flex-wrap items-center gap-2 text-lg font-semibold">
+              {isTest && <TestMark />}
+              {view.attendee}
+            </h1>
             <span className="capitalize text-sm text-fg-muted">{view.status}</span>
           </div>
           <dl className="mt-4 grid grid-cols-1 gap-x-6 gap-y-2 text-sm sm:grid-cols-2">

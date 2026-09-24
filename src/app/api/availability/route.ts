@@ -8,6 +8,7 @@ import { filterSlotsFromNow } from "@/lib/availability/compute";
 import { availabilityWithinLimit, clientIp } from "@/lib/rate-limit";
 import { authenticateBearer, CANARY_CALLERS } from "@/lib/booking/api-auth";
 import { configuredBookingApiKeys } from "@/lib/booking/api-keys";
+import { isPublicTestBucket } from "@/lib/embed/public-test-bucket";
 import { internalErrorResponse } from "@/lib/api/errors";
 import { explainEmptyWindow, type EmptyReason } from "@/lib/availability/empty-reason";
 import { loadBusinessHoursCached } from "@/lib/booking/business-hours-load";
@@ -60,11 +61,12 @@ async function handle(req: NextRequest) {
   // cascade, so an unauthorized hidden bucket 404s doing the same single resolve
   // an unknown code does (no timing signal that it exists, #601).
   // #2645: the canary's own key (and the legacy shared pair) only, never a partner's.
+  // #2660: OR the code is the PUBLIC test bucket, which any host page may read with
+  // no key at all. A pure string check, so the hidden buckets' single resolve
+  // timing is unchanged, and the test code can never authorise any other code.
   const keys = configuredBookingApiKeys(CANARY_CALLERS);
-  const authorizedForTest = authenticateBearer(
-    req.headers.get("authorization"),
-    keys,
-  ).ok;
+  const authorizedForTest =
+    authenticateBearer(req.headers.get("authorization"), keys).ok || isPublicTestBucket(code);
 
   const result = await getBucketSlotsWithFallback(code, from, authorizedForTest);
   if (!result) {

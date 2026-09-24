@@ -73,7 +73,10 @@ vi.mock("@/lib/booking/settings", () => settings);
 
 import { NextRequest } from "next/server";
 import { GENERIC_ERROR_MESSAGE } from "@/lib/api/errors";
+import { PUBLIC_TEST_BUCKET_CODES } from "@/lib/embed/public-test-bucket";
 import { GET } from "./route";
+
+const PUBLIC_TEST = PUBLIC_TEST_BUCKET_CODES[0];
 
 function slotsFor(isTest: boolean) {
   return {
@@ -133,6 +136,29 @@ describe("GET /api/availability test-bucket hiding (#396)", () => {
     cache.getBucketSlotsWithFallback.mockResolvedValue(slotsFor(false));
     const res = await get("411");
     expect(res.status).toBe(200);
+  });
+
+  // #2660: the PUBLIC test bucket is served with NO key. It is how a partner
+  // tests the embed from their own site without booking a real advisor, and a
+  // browser cannot send a bearer, so the code itself is the authorisation. The
+  // hidden canary buckets are untouched: the case above this block still 404s.
+  it("serves the public test bucket to an unauthenticated caller", async () => {
+    cache.getBucketSlotsWithFallback.mockResolvedValue({
+      ...slotsFor(true),
+      bucket: { code: PUBLIC_TEST, is_test: true },
+      routing: { ...slotsFor(true).routing, requested_code: PUBLIC_TEST, effective_code: PUBLIC_TEST },
+    });
+    const res = await get(PUBLIC_TEST);
+    expect(res.status).toBe(200);
+    expect((await res.json()).bucket).toEqual({ code: PUBLIC_TEST });
+    expect(cache.getBucketSlotsWithFallback).toHaveBeenCalledWith(PUBLIC_TEST, expect.any(String), true);
+  });
+
+  it("does not let the public test code authorise a hidden one: a near miss is still hidden", async () => {
+    cache.getBucketSlotsWithFallback.mockResolvedValue(null);
+    const res = await get(`${PUBLIC_TEST}2`);
+    expect(res.status).toBe(404);
+    expect(cache.getBucketSlotsWithFallback).toHaveBeenCalledWith(`${PUBLIC_TEST}2`, expect.any(String), false);
   });
 
   it("never exposes the routing block in the public response (#259)", async () => {

@@ -100,7 +100,14 @@ function builder(): Record<string, unknown> {
     matched = matched.filter((r) => values.includes(String(r[column as keyof Row] ?? "")));
     return q;
   };
-  q.eq = (column: string, value: string) => {
+  q.eq = (column: string, value: string | boolean) => {
+    // #2660: the lookup joins the booking's bucket and asks for one world. Every
+    // row here is a real booking, so the join filter matches when the real world
+    // is asked for and nothing when the test world is.
+    if (column === "buckets.is_test") {
+      matched = matched.filter((r) => ((r as { is_test?: boolean }).is_test ?? false) === value);
+      return q;
+    }
     matched = matched.filter((r) => r[column as keyof Row] === value);
     return q;
   };
@@ -160,7 +167,7 @@ describe("a phone corrected on the manage page (#2390)", () => {
         salesforceId: null,
         email: null,
         phone: typed,
-      });
+      }, { isTest: false });
 
       expect(found.map((b) => b.id)).toEqual(["bk-1"]);
     });
@@ -183,7 +190,7 @@ describe("a phone corrected on the manage page (#2390)", () => {
       salesforceId: null,
       email: null,
       phone: "215-555-9999",
-    });
+    }, { isTest: false });
 
     expect(found.map((b) => b.id)).toEqual(["bk-1"]);
   });
@@ -218,7 +225,7 @@ describe("a phone corrected on the manage page (#2390)", () => {
       salesforceId: null,
       email: null,
       phone: "2155559999",
-    });
+    }, { isTest: false });
 
     expect(found.map((b) => b.id)).toEqual(["bk-1"]);
   });

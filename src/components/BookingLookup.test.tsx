@@ -4,6 +4,7 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import BookingLookup from "@/components/BookingLookup";
 import { SEARCH_LIMIT, type BookingSearchRow } from "@/lib/booking/search";
+import { TEST_MODE_COPY } from "@/lib/booking/booker-copy";
 
 // #901: look up ANY booking (not just the recent 25) and view its history. The
 // search fetches on submit, shows distinct loading/error/empty states, and each
@@ -18,6 +19,7 @@ const ROWS: BookingSearchRow[] = [
     startsAt: "2026-07-02T18:00:00Z",
     agentName: "Jamie Smith",
     status: "confirmed",
+    isTest: false,
   },
 ];
 
@@ -47,6 +49,27 @@ describe("BookingLookup", () => {
     const link = (await screen.findByRole("link", { name: /jane doe/i })) as HTMLAnchorElement;
     expect(link.getAttribute("href")).toBe("/admin/bookings/b1");
     expect(screen.getByText(/Jamie Smith/)).toBeTruthy();
+  });
+
+  // #2660: a booking on the public test bucket is a stranger's test, not a lead.
+  // It stays findable (a manager cancelling one is how the issue's own evidence
+  // was gathered) and is MARKED, in the one treatment reserved for test mode, so
+  // it is never read as a customer. A real row carries no mark at all.
+  it("marks a test booking, and only a test booking", async () => {
+    const rows: BookingSearchRow[] = [
+      ROWS[0]!,
+      { ...ROWS[0]!, id: "b2", attendeeName: "Pat Tester", isTest: true },
+    ];
+    mockFetch(() => ({ ok: true, json: async () => ({ bookings: rows }) }) as Response);
+    render(<BookingLookup />);
+    await userEvent.type(screen.getByRole("searchbox"), "acme");
+    await userEvent.click(screen.getByRole("button", { name: /^search$/i }));
+    const testRow = (await screen.findByRole("link", { name: /pat tester/i })) as HTMLAnchorElement;
+    const realRow = screen.getByRole("link", { name: /jane doe/i }) as HTMLAnchorElement;
+    expect(testRow.textContent).toContain(TEST_MODE_COPY.label);
+    expect(realRow.textContent).not.toContain(TEST_MODE_COPY.label);
+    expect(testRow.querySelector(".pn-test-mode-mark")).toBeTruthy();
+    expect(realRow.querySelector(".pn-test-mode-mark")).toBeNull();
   });
 
   it("shows an empty message when nothing matches", async () => {

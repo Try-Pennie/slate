@@ -23,6 +23,7 @@
  * the fixture should be the state that embarrasses it.
  */
 import { ALERT_CATALOG, type AlertKind } from "@/lib/notify/alert-catalog";
+import { PUBLIC_TEST_BUCKET_CODES } from "@/lib/embed/public-test-bucket";
 import { noEligibleAgentsAlert } from "@/lib/availability/bucket-coverage";
 import {
   tierUnstaffedMessage,
@@ -161,6 +162,7 @@ import {
   externalDoubleBookAlert,
   boundaryCatchAlert,
   embedOriginMismatchAlert,
+  testBucketClientErrorInfo,
   internalErrorAlert,
   misrouteAlert,
   oooApprovalsDigestAlert,
@@ -2823,6 +2825,9 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
   // #2641: an embedding host that named the wrong origin for itself.
   { key: "embed_origin_mismatch", state: "a host declared another origin", channel: "info",
     text: embedOriginMismatchAlert("https://trypennie.com", "https://www.trypennie.com") },
+  // #2660: a partner's page threw while on the public test bucket.
+  { key: "client_error_test_bucket", state: "a page on a test bucket reported an error", channel: "info",
+    text: testBucketClientErrorInfo("/book", PUBLIC_TEST_BUCKET_CODES[0]) },
   { key: "boundary_error:*", state: "a page showed its error screen, counted", channel: "alert",
     text: boundaryCatchAlert("/admin", "digest 3847221905", {
       count: 11, measured: true, windowMinutes: 30 }) },

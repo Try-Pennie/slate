@@ -21,6 +21,9 @@ import { createAsserter, makeDeps, makeBooking } from "./lib/booking-fakes.ts";
 
 const { assert, finish } = createAsserter();
 
+/** The landing pages ask in the world of the bucket they draw; these cases are all real (#2660). */
+const REAL_WORLD = { isTest: false };
+
 const SF_ID = "003xx000004TmiQAAS";
 const EMAIL = "dana@example.com";
 const PHONE = "(215) 555-0100";
@@ -39,12 +42,37 @@ function world(bookingOverrides: Partial<ReturnType<typeof makeBooking>> = {}) {
 }
 
 async function run() {
+  // --- #2660: the same grader, asked in the TEST world, carries that world to
+  // the read, so a tester who pastes a real lead's id is never shown that lead's
+  // call. The filtering itself is the database's (pinned in
+  // person-lookup.test.ts); what this pins is that the world the page names is
+  // the world the read is asked in.
+  {
+    const { deps, calls } = makeDeps({ personBookings: [] });
+    await findExistingCallForIdentity(
+      { salesforceId: SF_ID, externalId: null, email: null, phone: null },
+      deps,
+      { isTest: true },
+    );
+    assert(
+      calls.personWorlds.length === 1 && calls.personWorlds[0]?.isTest === true,
+      "a landing on a test bucket asks the lookup in the test world",
+    );
+  }
+
   // --- the id in the path is enough, and it discloses --------------------------
   {
-    const { deps } = world();
+    const { deps, calls } = world();
     const call = await findExistingCallForIdentity(
       { salesforceId: SF_ID, externalId: null, email: null, phone: null },
       deps,
+      REAL_WORLD,
+    );
+    // #2660: the read is scoped to the world the caller named, and nothing here
+    // decides that for itself.
+    assert(
+      calls.personWorlds.length === 1 && calls.personWorlds[0]?.isTest === false,
+      "the lookup is asked in the world the landing page named (real)",
     );
     assert(call !== null, "a lead whose id matches an active call is recognised on landing");
     assert(call?.disclose === true, "and the id is a strong match, so the call is named");
@@ -73,11 +101,13 @@ async function run() {
     const byExternal = await findExistingCallForIdentity(
       { salesforceId: null, externalId: "ext-9", email: null, phone: null },
       deps,
+      REAL_WORLD,
     );
     assert(byExternal !== null, "a booking carrying an external id is recognised by it");
     const byWrongField = await findExistingCallForIdentity(
       { salesforceId: "ext-9", externalId: null, email: null, phone: null },
       deps,
+      REAL_WORLD,
     );
     assert(
       byWrongField === null,
@@ -91,6 +121,7 @@ async function run() {
     const call = await findExistingCallForIdentity(
       { salesforceId: "003-somebody-else", externalId: null, email: null, phone: null },
       deps,
+      REAL_WORLD,
     );
     assert(call === null, "a different id matches nothing, so the ordinary picker is shown");
   }
@@ -104,6 +135,7 @@ async function run() {
     const call = await findExistingCallForIdentity(
       { salesforceId: null, externalId: null, email: null, phone: null },
       deps,
+      REAL_WORLD,
     );
     assert(call === null, "an empty identity recognises nobody at all");
   }
@@ -115,6 +147,7 @@ async function run() {
     const call = await findExistingCallForIdentity(
       { salesforceId: SF_ID, externalId: null, email: null, phone: null },
       deps,
+      REAL_WORLD,
     );
     assert(call === null, "no active call means no notice");
   }
@@ -131,6 +164,7 @@ async function run() {
       await findExistingCallForIdentity(
         { salesforceId: SF_ID, externalId: null, email: null, phone: null },
         deps,
+        REAL_WORLD,
       );
     } catch (err) {
       thrown = err;
@@ -153,6 +187,7 @@ async function run() {
     const call = await findExistingCallForIdentity(
       { salesforceId: SF_ID, externalId: null, email: null, phone: null },
       deps,
+      REAL_WORLD,
     );
     assert(
       call?.disclose === true && call.phone === PHONE,
@@ -168,6 +203,7 @@ async function run() {
     const call = await findExistingCallForIdentity(
       { salesforceId: SF_ID, externalId: null, email: null, phone: null },
       deps,
+      REAL_WORLD,
     );
     assert(
       call?.disclose === true && call.phone === null,
@@ -183,6 +219,7 @@ async function run() {
     const call = await findExistingCallForIdentity(
       { salesforceId: SF_ID, externalId: null, email: null, phone: null },
       deps,
+      REAL_WORLD,
     );
     assert(
       call?.disclose === true && call.phone === null,

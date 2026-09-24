@@ -20,6 +20,7 @@ import {
   type CalEvent,
   type CalendarClient,
 } from "./lib/smoke-event-cleanup.ts";
+import { PUBLIC_TEST_EVENT_TYPE_NAME } from "./smoke-seed.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
 // Fixed reference clock so the test never touches Date.now().
@@ -63,6 +64,38 @@ assert(
 assert(
   !isStaleSmokeEvent(timed({ id: "d", summary: "Team standup" }), NOW),
   "past unmarked (real) event is never swept",
+);
+
+// #2660: a partner's test booking lands on the same mailbox under the public
+// test bucket's own event type, with the tester's real address as the attendee,
+// so neither existing marker sees it. The title carries the event type name,
+// which is the marker.
+assert(
+  isStaleSmokeEvent(
+    timed({
+      id: "p",
+      summary: `${PUBLIC_TEST_EVENT_TYPE_NAME} with Jane Partner`,
+      attendees: [{ email: "jane@agency.example" }],
+    }),
+    NOW,
+  ),
+  "a past partner test call, with a stranger's address and no smoke alias, is a stale orphan",
+);
+assert(
+  !isStaleSmokeEvent(
+    timed({
+      id: "q",
+      summary: `${PUBLIC_TEST_EVENT_TYPE_NAME} with Jane Partner`,
+      start: { dateTime: FUTURE_START },
+      end: { dateTime: FUTURE_END },
+    }),
+    NOW,
+  ),
+  "a partner test call still to come is never swept: the tester may be about to join it",
+);
+assert(
+  !isStaleSmokeEvent(timed({ id: "r", summary: "Partner review with the agency" }), NOW),
+  "a real meeting that merely mentions a partner is not the test event type and is kept",
 );
 
 assert(

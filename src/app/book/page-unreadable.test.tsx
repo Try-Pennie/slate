@@ -74,32 +74,27 @@ describe("/book on an unreadable bucket read (#2542)", () => {
     await expect(BookEntry(params)).rejects.toThrow(/permission denied for table buckets/);
   });
 
-  it("CONTROL: a readable TEST bucket is still refused, in its own words", async () => {
-    admin.supabaseAdmin.mockReturnValue(
-      dbAnswering({ data: { org_id: "o1", is_test: true }, error: null }),
-    );
-
-    const el = (await BookEntry(params)) as { props: unknown };
-    expect(JSON.stringify(el)).toContain("This booking link is not available.");
-  });
-
+  // #2660 deleted the refusal this file used to assert on ("This booking link is
+  // not available"): after the resolver change no reachable code produces a
+  // hidden test bucket here, so the branch was dead and the test that pinned it
+  // defended a screen production never drew (L29, L84). What the read decides now
+  // is whether the booker is in TEST MODE, which `page.test.tsx` pins. The two
+  // controls below keep this suite honest about the ordinary and the empty read.
   it("CONTROL: a readable ordinary bucket still renders the booker", async () => {
     admin.supabaseAdmin.mockReturnValue(
       dbAnswering({ data: { org_id: "o1", is_test: false }, error: null }),
     );
 
-    const el = (await BookEntry(params)) as { props: unknown };
-    expect(JSON.stringify(el)).not.toContain("This booking link is not available.");
+    await expect(BookEntry(params)).resolves.toBeTruthy();
   });
 
   // A bucket code nothing matches is a NOT FOUND, not a failure: `unwrap` passes
   // a null row with a null error straight through, and the booker routes an
-  // unknown code rather than refusing it (#1908). Without this the three above
+  // unknown code rather than refusing it (#1908). Without this the case above
   // would be satisfied by a page that treated every empty answer as an error.
   it("CONTROL: a bucket code that matches no row still renders the booker", async () => {
     admin.supabaseAdmin.mockReturnValue(dbAnswering({ data: null, error: null }));
 
-    const el = (await BookEntry(params)) as { props: unknown };
-    expect(JSON.stringify(el)).not.toContain("This booking link is not available.");
+    await expect(BookEntry(params)).resolves.toBeTruthy();
   });
 });

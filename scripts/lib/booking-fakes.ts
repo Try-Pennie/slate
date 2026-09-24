@@ -26,7 +26,7 @@ import type {
   RoutingTrace,
 } from "../../src/lib/db/types.ts";
 import { deterministicEventId, EventGone } from "../../src/lib/booking/core.ts";
-import type { PersonIdentity } from "../../src/lib/booking/person-dedupe.ts";
+import type { PersonIdentity, PersonWorld } from "../../src/lib/booking/person-dedupe.ts";
 import { GoogleHttpError } from "../../src/lib/google/http-error.ts";
 import type { OwnerAlertEventBody } from "../../src/lib/booking/owner-alert.ts";
 
@@ -49,7 +49,10 @@ export function createAsserter() {
   };
   return { assert, finish };
 }
-export const bucket = { id: "bkt1", org_id: "org1", code: "411" } as unknown as Bucket;
+// `is_test: false` as the column really is (NOT NULL, default false, #396): the
+// person gate reads the world off it (#2660), so a fixture missing the field would
+// ask in a world that is neither.
+export const bucket = { id: "bkt1", org_id: "org1", code: "411", is_test: false } as unknown as Bucket;
 export const eventType = {
   id: "et1",
   name: "Senior Loan Advisor Call",
@@ -373,6 +376,8 @@ export function makeDeps(opts: FakeOpts) {
     // by strong id against either column; the dedupe path asks by identity, column
     // to column, and a suite can prove neither reached for the other's fetch.
     findActiveBookingsForPerson: [] as PersonIdentity[],
+    /** The WORLD each person lookup was asked in (#2660), beside the identity. */
+    personWorlds: [] as PersonWorld[],
     findActiveBookingsByStrongIds: [] as string[][],
     removePendingEventDeletion: [] as string[],
     bumpPendingEventDeletion: [] as { id: string; attempts: number }[],
@@ -944,8 +949,9 @@ export function makeDeps(opts: FakeOpts) {
       calls.reservationBumps.push({ id, attempts, lastError });
     },
     deleteExpiredReservations: async () => {},
-    findActiveBookingsForPerson: async (identity) => {
+    findActiveBookingsForPerson: async (identity, world) => {
       calls.findActiveBookingsForPerson.push(identity);
+      calls.personWorlds.push(world);
       if (opts.personBookingsThrows) throw new Error("bookings read down");
       return opts.personBookings ?? [];
     },
@@ -954,7 +960,9 @@ export function makeDeps(opts: FakeOpts) {
     findActiveBookingsByStrongIds: async (ids) => {
       calls.findActiveBookingsByStrongIds.push([...ids]);
       if (opts.personBookingsThrows) throw new Error("bookings read down");
-      return opts.personBookings ?? [];
+      // Each row carries its world (#2660): the fixture's bucket is the test
+      // bucket exactly when `testBucket` is set.
+      return (opts.personBookings ?? []).map((b) => ({ ...b, isTest: opts.testBucket === true }));
     },
     loadAgentDisplayName: async (userId: string | null) => {
       if (opts.agentNameThrows) throw new Error("users read down");

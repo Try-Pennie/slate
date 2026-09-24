@@ -169,7 +169,10 @@ async function run() {
   // new event as surely as it covered the old one.
   {
     const ctx = { booking: makeBooking({}), bucket: testBucket, eventType };
-    const owner = { id: "b", name: "Owner B", email: "b@x.com", bookable: true } as unknown as User;
+    // A TEST agent, as the canary's reassign target really is: a test booking
+    // never moves onto a real agent (#2660), so the fixture says which world the
+    // target is in rather than leaving the flag off.
+    const owner = { id: "b", name: "Owner B", email: "b@x.com", bookable: true, is_test: true } as unknown as User;
     const { deps, calls } = makeDeps({ bookingById: ctx, agentByEmail: owner });
     await reassignBooking("bk1", "b@x.com", SYS, deps);
     assert(

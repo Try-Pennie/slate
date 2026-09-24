@@ -57,6 +57,7 @@ import {
   phoneEchoLine,
   timesAvailableAnnouncement,
   NEAREST_TIMES_COPY,
+  TEST_MODE_COPY,
 } from "@/lib/booking/booker-copy";
 import {
   BEFORE_COPY,
@@ -299,6 +300,27 @@ export function bookerCopyScreens(): CopyScreen[] {
           state: "the cancel or the move did not run at all, so nothing changed",
           text: BOOKING_ERROR_COPY.writeFailed,
         },
+        // #2667: the link's code names no bucket, or one the public may not book.
+        // Read it beside `generic` above: this one names the link and claims no
+        // fault of ours, where that one used to answer for it.
+        {
+          state: "the booking link's code names no bucket the public can book",
+          text: BOOKING_ERROR_COPY.unknownBucket,
+        },
+      ],
+    },
+    {
+      screen: "Booker and manage: a test booking",
+      purpose:
+        "The public test bucket (#2660) lets a partner walk the embed end to end " +
+        "without booking a real advisor. Every surface a test booking reaches says so " +
+        "in this one sentence, in the treatment reserved for it: the booker on every " +
+        "screen, the panel for a call they already have, the manage page, the invite, " +
+        "and the mark beside the booking in the admin. Read it as the tester will, and " +
+        "as a lead who landed on a test page by mistake would.",
+      lines: [
+        { state: "the mark beside a test booking", text: TEST_MODE_COPY.label },
+        { state: "the sentence on every screen", text: TEST_MODE_COPY.line },
       ],
     },
     {
@@ -582,6 +604,12 @@ export function inviteCopyScreens(): CopyScreen[] {
         {
           state: "and with no number on the booking",
           text: eventDescription(null, manageUrl),
+        },
+        // #2660: a TEST booking's invite opens with the test line, so the event
+        // on the tester's calendar says what it is without being opened.
+        {
+          state: "the body of a test booking, which opens with the test line",
+          text: eventDescription(PHONE, manageUrl, { isTest: true }),
         },
       ],
     },

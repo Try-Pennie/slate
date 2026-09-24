@@ -133,6 +133,32 @@ describe("textSearchPattern", () => {
   });
 });
 
+// #2660: a stranger's booking on the public test bucket is searchable here like
+// any lead's (decision: visible, marked, rather than hidden), so each row says
+// which world it is in, read off the bucket through the same inner join the
+// monitors use. `bookings` has no flag of its own.
+describe("booking lookup marks test bookings (#2660)", () => {
+  it("joins the bucket on every bookings read, text and id alike", async () => {
+    await searchBookings("org-1", "jane");
+    await searchBookings("org-1", "9b2e5c7a-1c1d-4f0e-9a1e-2f3c4d5e6f70");
+    const bookingQueries = state.queries.filter((q) => q.table === "bookings");
+    expect(bookingQueries.length).toBe(4);
+    for (const q of bookingQueries) expect(q.select).toContain("buckets!inner(is_test)");
+  });
+
+  it("carries the bucket's flag onto each row, true for a test bucket and false for a real one", async () => {
+    state.rowsByColumn.set("attendee_email", [
+      { ...booking("b-test", "2026-07-02T18:00:00Z"), buckets: { is_test: true } },
+      { ...booking("b-real", "2026-07-01T18:00:00Z"), buckets: { is_test: false } },
+    ]);
+    const { rows } = await searchBookings("org-1", "jane");
+    expect(rows.map((r) => [r.id, r.isTest])).toEqual([
+      ["b-test", true],
+      ["b-real", false],
+    ]);
+  });
+});
+
 describe("booking lookup text search query shape", () => {
   it("never builds a PostgREST or() filter string from the query", async () => {
     await searchBookings("org-1", "Doe, Jane");

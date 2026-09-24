@@ -9,7 +9,9 @@ import {
   SlotUnavailableError,
   VerifyUnavailableError,
   NoEligibleAgentsError,
+  UnknownBucketError,
 } from "@/lib/booking/service";
+import { isPublicTestBucket } from "@/lib/embed/public-test-bucket";
 import { validateAttendee } from "@/lib/attendee";
 import { HONEYPOT_FIELD, honeypotTripped } from "@/lib/booking/honeypot";
 import {
@@ -223,12 +225,22 @@ async function handlePost(req: NextRequest) {
     }
   };
 
+  // #2660: whether this confirm is a TEST booking, decided by the one constant
+  // that establishes the mode (L319). It is what lets the service book the public
+  // test bucket, and it is what the response tells the host page. Exact on this
+  // route: a hidden test bucket is refused below before anything is created, and
+  // a real code can never cascade into a test bucket (the ladder is XBC only), so
+  // a booking made here is a test one exactly when the code is the public test
+  // code. Never read from the client's body beyond the code itself.
+  const isTest = isPublicTestBucket(parsed.data.bucketCode);
+
   try {
     const { booking, manageUrl } = await createBooking({
       // One call per person, enforced here and only here (#1337): the direct
       // booking API owns its own richer decision and must keep creating on a
       // cross-bucket rebook (#364).
       refuseIfPersonHasCall: true,
+      allowTestBuckets: isTest,
       bucketCode: parsed.data.bucketCode,
       requestedCode: parsed.data.requestedCode,
       startIso: parsed.data.start,
@@ -253,6 +265,9 @@ async function handlePost(req: NextRequest) {
         email: parsed.data.attendee.email?.trim(),
         phone: parsed.data.attendee.phone?.trim(),
       },
+      // The same world the booking was made in (#2660): a tester's confirmation
+      // never names a real lead's call, and a real lead's never names a test one.
+      isTest,
     });
 
     recordApiOutcome("created", parsed.data.bucketCode, null, { by: "bucket", code: parsed.data.bucketCode });
@@ -262,6 +277,10 @@ async function handlePost(req: NextRequest) {
       endsAt: booking.ends_at,
       manageUrl,
       duplicateWarning,
+      // #2660: the Booker posts this response to the host page, so a host can
+      // label its own confirmed page as a test booking. The same field the by id
+      // lookup carries, so both routes to the confirmed page say one thing.
+      isTest,
       // #2643: the add to calendar links, from the one builder the booking lookup
       // uses. The Booker posts this response to the host page, so the host learns
       // them however it ends the booking. The lead's contact is deliberately left
@@ -322,6 +341,20 @@ async function handlePost(req: NextRequest) {
       recordApiOutcome("error", parsed.data.bucketCode, "no_eligible_agents", { by: "bucket", code: parsed.data.bucketCode });
       // refusal: no_eligible_agents
       return NextResponse.json({ error: err.message }, { status: 409 });
+    }
+    // The code names no bucket, or names a HIDDEN test bucket (#2667). A client
+    // refusal, not a fault of ours: the same 422 UNKNOWN_BUCKET the key authed API
+    // answers, with the booker's own sentence, and ONE body for both causes so the
+    // response can never say a hidden bucket exists (#601). Counted like
+    // invalid_request, because a wave of these is an embed sending a code Slate
+    // does not serve; not refunded, because a retry cannot help.
+    if (err instanceof UnknownBucketError) {
+      recordApiOutcome("error", parsed.data.bucketCode, "unknown_bucket", { by: "bucket", code: parsed.data.bucketCode });
+      // refusal: unknown_bucket
+      return NextResponse.json(
+        { error: BOOKING_ERROR_COPY.unknownBucket, code: "UNKNOWN_BUCKET" },
+        { status: 422 },
+      );
     }
     recordApiOutcome("error", parsed.data.bucketCode, "internal", { by: "bucket", code: parsed.data.bucketCode });
     // refusal: internal

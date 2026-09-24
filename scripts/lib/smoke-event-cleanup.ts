@@ -12,6 +12,7 @@
 // from the I/O so it is unit-testable without any Google access.
 
 import { getDelegatedToken } from "@/lib/google/dwd";
+import { PUBLIC_TEST_EVENT_TYPE_NAME } from "../smoke-seed.ts";
 
 /** Minimal shape of a Google Calendar event, with the fields the filter needs. */
 export interface CalEvent {
@@ -29,9 +30,18 @@ export interface CalEvent {
 // is a signal a genuine calendar event would never carry.
 const SMOKE_SUMMARY = /\bsmoke test\b/i;
 const SMOKE_ATTENDEE = /^smoketest\d*\+[^@]*@/i;
+// #2660: a partner's test booking is `<public test event type> with <tester>` on
+// the same mailbox, with the tester's own address as attendee, so neither marker
+// above sees it and a cancelled one would sit on the calendar for ever. The event
+// type name is read from the seed rather than restated, so the two cannot drift.
+const PUBLIC_TEST_SUMMARY = new RegExp(
+  `\\b${PUBLIC_TEST_EVENT_TYPE_NAME.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`,
+  "i",
+);
 
 function hasSmokeMarker(ev: CalEvent): boolean {
   if (SMOKE_SUMMARY.test(ev.summary ?? "")) return true;
+  if (PUBLIC_TEST_SUMMARY.test(ev.summary ?? "")) return true;
   return (ev.attendees ?? []).some((a) => a.email != null && SMOKE_ATTENDEE.test(a.email));
 }
 

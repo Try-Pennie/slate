@@ -37,6 +37,7 @@ import {
   findPersonMatch,
   decidePersonBooking,
   type PersonIdentity,
+  type PersonWorld,
   type PersonMatch,
   type MatchStrength,
 } from "./person-dedupe.ts";
@@ -428,6 +429,24 @@ export class AgentNotAvailableError extends Error {
   }
 }
 
+/**
+ * Thrown when a reassign would move a booking across WORLDS (#2660): a test
+ * booking onto a real agent, or a real booking onto a test agent.
+ *
+ * The first puts a stranger's test call on a real advisor's calendar, which is
+ * the outcome the public test bucket exists to prevent; the second books a real
+ * lead with a mailbox nobody answers. Every reassign path (the admin control,
+ * the machine owner path, the coverage sweep) shares `reassignBooking`, so the
+ * refusal is made there once. A genuine conflict rather than bad input: the
+ * request was well formed and retrying it changes nothing.
+ */
+export class ReassignAcrossWorldsError extends Error {
+  constructor() {
+    super("A test booking can only move to a test agent, and a real booking to a real agent.");
+    this.name = "ReassignAcrossWorldsError";
+  }
+}
+
 /** Thrown when a booking is (or becomes, concurrently) terminal so it can no
  *  longer be reassigned/changed (#621). A genuine conflict → 409, distinct from
  *  a transient outage so a machine caller stops retrying rather than looping. */
@@ -607,6 +626,10 @@ export type BookingUpdate = {
   routing_trace?: RoutingTrace | null;
   reschedule_seq?: number;
 };
+
+/** A booking row plus the WORLD its bucket is in (#2660), for a read that has
+ *  no bucket beside it to ask. */
+export type BookingWithWorld = Booking & { isTest: boolean };
 
 export interface BookingContext {
   booking: Booking;
@@ -1067,7 +1090,8 @@ export interface BookingDeps {
    * external_id / salesforce_id / attendee email / attendee phone across active
    * rows; `findPersonMatch` then grades each candidate's confidence.
    */
-  findActiveBookingsForPerson(identity: PersonIdentity): Promise<Booking[]>;
+  /** Scoped to one WORLD (#2660): the test bookings or the real ones, never both. */
+  findActiveBookingsForPerson(identity: PersonIdentity, world: PersonWorld): Promise<Booking[]>;
   /**
    * Active bookings whose `external_id` OR `salesforce_id` is any of `ids`, for
    * the lookup API (#2657). Separate from the dedupe fetch above on purpose: that
@@ -1076,7 +1100,9 @@ export interface BookingDeps {
    * never find it there. `lookupStrongIds` builds the set; the result is judged
    * again by `bookingMatchesLookupIds` before anything is returned.
    */
-  findActiveBookingsByStrongIds(ids: readonly string[]): Promise<Booking[]>;
+  /** Each row carries its bucket's world (#2660), read at the fetch, so the
+   *  lookup view can say whether a booking is a test one. */
+  findActiveBookingsByStrongIds(ids: readonly string[]): Promise<BookingWithWorld[]>;
   /**
    * The display name of the agent a booking is assigned to, read LIVE (#1337,
    * #1338). Null when the id is null or resolves to nothing, so a caller shows
@@ -2265,6 +2291,8 @@ export async function findDuplicateWarning(
     excludeBookingId: string;
     salesforceId: string | null;
     attendee: { email?: string; phone?: string };
+    /** The world the booking was just made in (#2660). */
+    isTest: boolean;
   },
   deps: Pick<BookingDeps, "findActiveBookingsForPerson" | "appBaseUrl">,
 ): Promise<DuplicateWarning | null> {
@@ -2275,7 +2303,7 @@ export async function findDuplicateWarning(
     phone: input.attendee.phone ?? null,
   };
   const candidates = (
-    await deps.findActiveBookingsForPerson(identity)
+    await deps.findActiveBookingsForPerson(identity, { isTest: input.isTest })
   ).filter((b) => b.id !== input.excludeBookingId);
   const match = findPersonMatch(identity, candidates);
   if (!match) return null;
@@ -2310,6 +2338,7 @@ const RESERVATION_DRAIN_CONCURRENCY = 6;
 async function findExistingCall(
   input: CreateBookingInput,
   deps: BookingDeps,
+  world: PersonWorld,
 ): Promise<ExistingCall | null> {
   return findExistingCallForIdentity(
     {
@@ -2319,6 +2348,7 @@ async function findExistingCall(
       phone: input.attendee.phone ?? null,
     },
     deps,
+    world,
   );
 }
 
@@ -2338,10 +2368,13 @@ async function findExistingCall(
 export async function findExistingCallForIdentity(
   identity: PersonIdentity,
   deps: BookingDeps,
+  /** The world of the bucket in play (#2660), named by the caller: the landing
+   *  page from the row it read, the confirm from the bucket it resolved. */
+  world: PersonWorld,
 ): Promise<ExistingCall | null> {
   let match: PersonMatch | null;
   try {
-    match = findPersonMatch(identity, await deps.findActiveBookingsForPerson(identity));
+    match = findPersonMatch(identity, await deps.findActiveBookingsForPerson(identity, world));
   } catch (err) {
     // The full read error goes here and only here; the lead sees the error's own
     // one-sentence message (src/lib/api/errors.ts convention).
@@ -2421,26 +2454,32 @@ export async function createBooking(
     }
   }
 
-  // One call per person, ENFORCED (#1337), not reported after the fact. Runs
-  // AFTER the idempotency fast path above on purpose: a double-click's second
-  // request would otherwise find the booking its own first request just made and
-  // decline it, turning a successful confirm into "you already have a call".
-  if (input.refuseIfPersonHasCall) {
-    const existingCall = await profile.time("person-gate", () => findExistingCall(input, deps));
-    if (existingCall) throw new ExistingCallError(existingCall);
-  }
-
   const resolved = await profile.time("resolve-bucket", () =>
     deps.resolveBucketByCode(input.bucketCode),
   );
   if (!resolved) throw new UnknownBucketError();
   const { bucket, eventType } = resolved;
 
-  // A synthetic test bucket (#396) is unbookable on the public path: only the
-  // key-authed direct booking API sets allowTestBuckets. To a real lead it must
-  // look like the bucket doesn't exist (same error as an unknown code — no hint
-  // that a hidden bucket is there).
+  // A synthetic test bucket (#396) is unbookable on the public path unless the
+  // caller may book one: the key-authed direct booking API always may, and the
+  // Booker's confirm may for the PUBLIC test bucket alone (#2660). To a real lead
+  // a hidden one must look like the bucket doesn't exist (same error as an
+  // unknown code, no hint that a hidden bucket is there).
   if (bucket.is_test && !input.allowTestBuckets) throw new UnknownBucketError();
+
+  // One call per person, ENFORCED (#1337), not reported after the fact. Runs
+  // AFTER the idempotency fast path above on purpose: a double-click's second
+  // request would otherwise find the booking its own first request just made and
+  // decline it, turning a successful confirm into "you already have a call". And
+  // after the bucket resolves (#2660), because the gate is asked in that bucket's
+  // WORLD: a test booking under an address must never refuse the real lead who
+  // owns it, and a tester must never be refused because a lead shares theirs.
+  if (input.refuseIfPersonHasCall) {
+    const existingCall = await profile.time("person-gate", () =>
+      findExistingCall(input, deps, { isTest: bucket.is_test }),
+    );
+    if (existingCall) throw new ExistingCallError(existingCall);
+  }
 
   // Every booking gets the reservation-backed crash-safe create (#666). A keyless
   // (anonymous) booking has no stable key to pin a re-submit by, so it gets a
@@ -2573,7 +2612,7 @@ export async function createBooking(
   };
   const event: ReservationPayload["event"] = {
     summary: eventSummary(bookedEventType.name, input.attendee.name ?? null),
-    description: eventDescription(phone, manageUrl(deps, manageToken)),
+    description: eventDescription(phone, manageUrl(deps, manageToken), { isTest: bookedBucket.is_test }),
     start: startIso,
     end: endIso,
     timezone: input.timezone,
@@ -3055,7 +3094,17 @@ async function resolvePersonDecision(
     email: input.attendee.email ?? null,
     phone: input.attendee.phone ?? null,
   };
-  const candidates = await deps.findActiveBookingsForPerson(identity);
+  // The decision is graded in the WORLD of the bucket being booked (#2660), so
+  // the bucket has to resolve first. The canary's SMOKE booking then dedupes
+  // against its SMOKE2 one (both test) and never against a real lead's, and a
+  // real lead's never against a test booking. An unknown or hidden bucket is
+  // refused here rather than one step later, which is the same 422 either way.
+  const resolved = await deps.resolveBucketByCode(input.bucketCode);
+  if (!resolved) throw new UnknownBucketError();
+  if (resolved.bucket.is_test && !input.allowTestBuckets) throw new UnknownBucketError();
+  const candidates = await deps.findActiveBookingsForPerson(identity, {
+    isTest: resolved.bucket.is_test,
+  });
   const match = findPersonMatch(identity, candidates);
   return decidePersonBooking({
     startIso: input.startIso,
@@ -3390,6 +3439,13 @@ export interface ApiBookingView {
   status: BookingStatus;
   agent: { name: string | null; email: string | null };
   manageUrl: string;
+  /**
+   * The booking is on a TEST bucket (#2660): it reached a test calendar and no
+   * downstream system. Carried on every view so a host's confirmed page, which
+   * reads the by id lookup, can label a partner's test booking as one. Read off
+   * the booking's bucket at the fetch, never off the caller.
+   */
+  isTest: boolean;
 }
 
 /**
@@ -3416,7 +3472,7 @@ export interface ApiBookingListItem extends ApiBookingView {
   bucketCode: string | null;
 }
 
-function toApiBookingView(b: Booking, deps: BookingDeps): ApiBookingView {
+function toApiBookingView(b: Booking, deps: BookingDeps, isTest: boolean): ApiBookingView {
   return {
     id: b.id,
     externalId: b.external_id,
@@ -3426,6 +3482,7 @@ function toApiBookingView(b: Booking, deps: BookingDeps): ApiBookingView {
     status: b.status,
     agent: { name: b.agent_name, email: b.agent_email },
     manageUrl: manageUrl(deps, b.manage_token),
+    isTest,
   };
 }
 
@@ -3465,8 +3522,8 @@ export function bookingIcs(b: Booking, appBaseUrl: string, stampIso: string): st
   return icsDocument(leadCalendarEvent(b, manage), stampIso);
 }
 
-function toApiBookingDetail(b: Booking, deps: BookingDeps): ApiBookingDetail {
-  return { ...toApiBookingView(b, deps), ...bookingDetailExtras(b, deps.appBaseUrl()) };
+function toApiBookingDetail(b: Booking, deps: BookingDeps, isTest: boolean): ApiBookingDetail {
+  return { ...toApiBookingView(b, deps, isTest), ...bookingDetailExtras(b, deps.appBaseUrl()) };
 }
 
 /**
@@ -3504,10 +3561,10 @@ export async function listBookings(
     orderBy: query.updatedSince ? "updated_at" : "starts_at",
   });
 
-  const codeById = new Map(buckets.map((b) => [b.id, b.code]));
+  const byBucketId = new Map(buckets.map((b) => [b.id, b]));
   const items: ApiBookingListItem[] = rows.map((b) => ({
-    ...toApiBookingView(b, deps),
-    bucketCode: codeById.get(b.bucket_id) ?? null,
+    ...toApiBookingView(b, deps, byBucketId.get(b.bucket_id)?.is_test === true),
+    bucketCode: byBucketId.get(b.bucket_id)?.code ?? null,
   }));
   const nextCursor = rows.length === query.limit ? encodeCursor(query.offset + query.limit) : null;
   return { items, nextCursor };
@@ -3528,7 +3585,7 @@ export async function lookupPersonBookings(
   const bookings = await deps.findActiveBookingsByStrongIds(ids);
   return bookings
     .filter((b) => bookingMatchesLookupIds(b, ids))
-    .map((b) => toApiBookingView(b, deps));
+    .map((b) => toApiBookingView(b, deps, b.isTest));
 }
 
 /** Read ONE booking by id for the lookup API (#386), at any status (so the bot
@@ -3550,7 +3607,7 @@ export async function getPersonBookingById(
   if (input.status && ctx.booking.status !== input.status) {
     throw new BookingNotFoundError();
   }
-  return toApiBookingDetail(ctx.booking, deps);
+  return toApiBookingDetail(ctx.booking, deps, ctx.bucket.is_test);
 }
 
 /** Cancel ONE booking by id for the cancel API (#386). Requires the booking to
@@ -3580,7 +3637,7 @@ export async function cancelDirectBooking(
   // this call is the loser and must 404 rather than report a second success.
   const transitioned = await cancelBooking(ctx.booking.manage_token, input.reason, "customer", deps);
   if (!transitioned) throw new BookingNotFoundError();
-  return toApiBookingView({ ...ctx.booking, status: "cancelled" }, deps);
+  return toApiBookingView({ ...ctx.booking, status: "cancelled" }, deps, ctx.bucket.is_test);
 }
 
 export async function rescheduleBooking(
@@ -3845,6 +3902,19 @@ async function applyReschedule(
     await deps.writeReschedulePin(booking.id, pin);
   }
 
+  // The event either branch below may have to CREATE, built once: the in place
+  // branch creates it only when the PATCH target is gone, the reassign branch
+  // always does, and the two must describe the same call the same way.
+  const movedEvent = {
+    summary: eventSummary(eventType.name, booking.attendee_name),
+    description: eventDescription(booking.attendee_phone, manageUrl(deps, token), { isTest: bucket.is_test }),
+    start: startIso,
+    end: endIso,
+    timezone: booking.timezone,
+    attendeeEmail: booking.attendee_email ?? undefined,
+    attendeeName: booking.attendee_name ?? undefined,
+  };
+
   // Execute the pinned branch.
   let newGcalEventId = booking.gcal_event_id;
   if (pin.branch === "in_place") {
@@ -3861,15 +3931,7 @@ async function applyReschedule(
       if (!(err instanceof EventGone)) throw err;
       newGcalEventId = await deps.createEvent(
         pin.pinned_agent_email,
-        {
-          summary: eventSummary(eventType.name, booking.attendee_name),
-          description: eventDescription(booking.attendee_phone, manageUrl(deps, token)),
-          start: startIso,
-          end: endIso,
-          timezone: booking.timezone,
-          attendeeEmail: booking.attendee_email ?? undefined,
-          attendeeName: booking.attendee_name ?? undefined,
-        },
+        movedEvent,
         await deterministicEventId(`reschedule-recreate:${booking.id}:${pin.reschedule_seq}`, pin.pinned_user_id),
       );
     }
@@ -3881,19 +3943,7 @@ async function applyReschedule(
     // fails. On a generic create failure, delete the new event and let the pinned
     // id 409-re-create it on resume (mirrors completeReservation ~996).
     try {
-      newGcalEventId = await deps.createEvent(
-        pin.pinned_agent_email,
-        {
-          summary: eventSummary(eventType.name, booking.attendee_name),
-          description: eventDescription(booking.attendee_phone, manageUrl(deps, token)),
-          start: startIso,
-          end: endIso,
-          timezone: booking.timezone,
-          attendeeEmail: booking.attendee_email ?? undefined,
-          attendeeName: booking.attendee_name ?? undefined,
-        },
-        pin.gcal_client_id,
-      );
+      newGcalEventId = await deps.createEvent(pin.pinned_agent_email, movedEvent, pin.gcal_client_id);
     } catch (err) {
       await deleteEventBestEffort(deps, pin.pinned_agent_email, pin.gcal_client_id, booking.id);
       throw err;
@@ -4090,6 +4140,14 @@ export async function reassignBooking(
   const agent = await deps.getAgentByEmail(agentEmail);
   if (!agent || !agent.email || (!agent.bookable && !allowNonBookable)) {
     throw new AgentNotAvailableError();
+  }
+  // A booking and its advisor are in the same WORLD (#2660): a test booking
+  // moves only between test agents (the canary's own reassign scenario), and a
+  // real booking never lands on one. Judged on the BUCKET's flag and the agent's,
+  // the two places the flag lives, so the admin picker excluding test agents is
+  // not the only thing standing between a stranger's test and a real calendar.
+  if (Boolean(bucket.is_test) !== Boolean(agent.is_test)) {
+    throw new ReassignAcrossWorldsError();
   }
   if (agent.id === booking.assigned_user_id) {
     return { booking, manageUrl: manageUrl(deps, booking.manage_token), overCap: false };
@@ -4668,7 +4726,7 @@ export async function updateBookingContact(
 
   const found = await deps.loadBookingContext(token);
   if (!found) return { ok: false, error: MANAGE_PHONE_NOT_FOUND };
-  const { booking, eventType } = found;
+  const { booking, bucket, eventType } = found;
   // A call that has happened or been called off has no details left to correct,
   // and offering one would say we had not noticed. The page already hides the
   // control in those states; this is the same rule on the server, because a
@@ -4724,7 +4782,9 @@ export async function updateBookingContact(
       await deps.updateEventContact(booking.agent_email, booking.gcal_event_id, {
         // Each field is sent only when it moved, so the PATCH says exactly what
         // changed and `sendUpdates` is decided by whether the invitee did.
-        ...(changed.phone ? { description: eventDescription(stored, manageUrl(deps, token)) } : {}),
+        ...(changed.phone
+          ? { description: eventDescription(stored, manageUrl(deps, token), { isTest: bucket.is_test }) }
+          : {}),
         ...(changed.name ? { summary: eventSummary(eventType.name, nextName ?? null) } : {}),
         ...(changed.email ? { attendeeEmail: nextEmail ?? undefined, attendeeName: nextName ?? undefined } : {}),
       });

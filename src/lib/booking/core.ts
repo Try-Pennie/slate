@@ -7,6 +7,7 @@ import type {
   EventType,
 } from "@/lib/db/types";
 import { log } from "@/lib/log";
+import { TEST_MODE_COPY } from "@/lib/booking/booker-copy";
 
 /**
  * Pure, side-effect-free cores of the booking flow, split out from
@@ -695,10 +696,18 @@ export function eventSummary(eventTypeName: string, attendeeName: string | null)
 export function eventDescription(
   phone: string | null,
   manageUrl: string,
+  /**
+   * A TEST booking's invite opens with the test line (#2660), so the event on
+   * the tester's own calendar, and on the smoke agent's, says what it is without
+   * being opened. The same sentence every other test surface carries, from the
+   * one builder, never restated here (L41).
+   */
+  opts: { isTest: boolean } = { isTest: false },
 ): string {
   const lines = ["Booked via Pennie."];
   if (phone) lines[0] = `Booked via Pennie. Phone: ${phone}`;
   lines.push(`Reschedule or cancel: ${manageUrl}`);
+  if (opts.isTest) lines.unshift(TEST_MODE_COPY.line);
   return lines.join("\n");
 }
 

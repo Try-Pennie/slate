@@ -10,13 +10,53 @@
 // fairness data. Ids are deterministic so re-seeding upserts in place.
 import { SEED_START_MINUTE, SEED_END_MINUTE } from "../src/lib/schedule-core.ts";
 
+/**
+ * The public test bucket's event type (#2660): its name, which becomes the
+ * invite's title ("<name> with <lead>"), so a calendar reader sees it is a test
+ * without opening it; and the orphan sweep (`lib/smoke-event-cleanup.ts`) matches
+ * it, so a cancelled partner test cannot clutter the smoke agent's calendar for
+ * ever.
+ */
+export const PUBLIC_TEST_EVENT_TYPE_NAME = "Partner test call";
+
+/**
+ * How many partner test calls the smoke agent takes a day (#2660).
+ *
+ * The public test bucket shares smoketest@ with the canary, and anyone who knows
+ * the code can book it. Without a cap of its own it would inherit the org's
+ * (unlimited), and one enthusiastic tester could fill the horizon: the canary's
+ * cross bucket scenario then finds no free slot and pages about a booking outage
+ * nobody has. Eight is a working day of tests and leaves the rest of the day to
+ * the canary.
+ */
+export const PUBLIC_TEST_DAILY_CAP = 8;
+
+/** The org event type fields the public test one copies, so the test booker reads
+ *  like the real one: same length, same notice, same interval, same words. */
+export interface EventTypeTemplate {
+  description: string | null;
+  regal_type: string;
+  duration_min: number;
+  buffer_before_min: number;
+  buffer_after_min: number;
+  min_notice_min: number;
+  slot_interval_min: number;
+}
+
 export interface SmokeSeedParams {
   orgId: string;
+  /** The org's event type, which the HIDDEN buckets use. */
   eventTypeId: string;
+  /** That event type's settings, which the public test bucket's own copies. */
+  eventTypeTemplate: EventTypeTemplate;
   /** The smoke mailbox; also the calendar-event organizer (must be a real Workspace user). */
   agentEmail: string;
-  /** Isolated bucket codes the agent serves, e.g. ["SMOKE", "SMOKE2"]. */
+  /** The HIDDEN bucket codes the agent serves (the canary's), from
+   *  `HIDDEN_TEST_BUCKET_CODES`. Never a hand spelled list. */
   bucketCodes: string[];
+  /** The PUBLIC test bucket codes (#2660), from `PUBLIC_TEST_BUCKET_CODES`. Each
+   *  gets the public event type and the primary agent alone. */
+  publicBucketCodes: string[];
   /**
    * Optional SECOND bookable test agent — the explicit target of the reassign
    * smoke scenario (#450) AND a bookable fallback member of the FIRST bucket
@@ -69,8 +109,17 @@ export interface SmokeSeedMember {
   bucketCode: string;
   user_id: string;
 }
+/** The public test bucket's own event type row (#2660), upserted on its id. */
+export interface SmokeSeedEventType extends EventTypeTemplate {
+  id: string;
+  org_id: string;
+  name: string;
+  daily_cap: number;
+}
 export interface SmokeSeed {
   user: SmokeSeedUser;
+  /** Event type rows to upsert BEFORE the buckets that reference them. */
+  eventTypes: SmokeSeedEventType[];
   /** One schedule per seeded agent (primary + reassign target when present). */
   schedules: SmokeSeedSchedule[];
   /** Working-hours rules across ALL seeded schedules, keyed by schedule_id. */
@@ -92,6 +141,9 @@ const REASSIGN_TARGET_ID = "c0000000-0000-4000-8000-000000000002";
 // The reassign target's own schedule (#464): it's now a bookable SMOKE member, so
 // it needs working hours for round-robin to offer it.
 const REASSIGN_TARGET_SCHEDULE_ID = "d0000000-0000-4000-8000-000000000002";
+// The public test bucket's event type (#2660), its own row so it can carry a
+// daily cap the org's does not, keyed like the rest so a re-run upserts in place.
+const PUBLIC_TEST_EVENT_TYPE_ID = "e0000000-0000-4000-8000-000000000001";
 
 /**
  * Mon-Fri working-hours rules for one schedule, on the SAME seeded day the real
@@ -127,18 +179,43 @@ export function buildSmokeSeed(p: SmokeSeedParams): SmokeSeed {
   // slots for the smoke test to book.
   const schedule: SmokeSeedSchedule = { id: SCHEDULE_ID, user_id: user.id, timezone };
 
-  const buckets: SmokeSeedBucket[] = p.bucketCodes.map((code) => ({
+  const publicEventType: SmokeSeedEventType = {
+    id: PUBLIC_TEST_EVENT_TYPE_ID,
     org_id: p.orgId,
-    code,
-    name: `Smoke Test (${code})`,
-    event_type_id: p.eventTypeId,
-    assignment: "round_robin",
-    criteria: {},
-    is_test: true,
-  }));
+    name: PUBLIC_TEST_EVENT_TYPE_NAME,
+    daily_cap: PUBLIC_TEST_DAILY_CAP,
+    ...p.eventTypeTemplate,
+  };
 
-  const members: SmokeSeedMember[] = p.bucketCodes.map((bucketCode) => ({
-    bucketCode,
+  const buckets: SmokeSeedBucket[] = [
+    ...p.bucketCodes.map(
+      (code): SmokeSeedBucket => ({
+        org_id: p.orgId,
+        code,
+        name: `Smoke Test (${code})`,
+        event_type_id: p.eventTypeId,
+        assignment: "round_robin",
+        criteria: {},
+        is_test: true,
+      }),
+    ),
+    // The public test bucket (#2660): the same isolation (is_test, empty
+    // criteria, the smoke agent alone) on its own capped event type.
+    ...p.publicBucketCodes.map(
+      (code): SmokeSeedBucket => ({
+        org_id: p.orgId,
+        code,
+        name: `Partner Test (${code})`,
+        event_type_id: publicEventType.id,
+        assignment: "round_robin",
+        criteria: {},
+        is_test: true,
+      }),
+    ),
+  ];
+
+  const members: SmokeSeedMember[] = buckets.map((b) => ({
+    bucketCode: b.code,
     user_id: user.id,
   }));
 
@@ -172,9 +249,18 @@ export function buildSmokeSeed(p: SmokeSeedParams): SmokeSeed {
     };
     schedules.push(targetSchedule);
     rules.push(...weekdayRules(targetSchedule.id));
-    // A bookable fallback in the first bucket (SMOKE) only.
+    // A bookable fallback in the first HIDDEN bucket (SMOKE) only. Never the
+    // public one: a partner's test call must land on the one agent the docs name.
     members.push({ bucketCode: p.bucketCodes[0], user_id: reassignTarget.id });
   }
 
-  return { user, schedules, rules, buckets, members, reassignTarget };
+  return {
+    user,
+    eventTypes: p.publicBucketCodes.length > 0 ? [publicEventType] : [],
+    schedules,
+    rules,
+    buckets,
+    members,
+    reassignTarget,
+  };
 }
