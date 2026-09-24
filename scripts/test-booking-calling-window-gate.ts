@@ -197,6 +197,22 @@ async function run() {
     );
   }
 
+  // --- a page cached from before #2310 sends the lead's typed details but NO
+  //     zone. The booking's own zone judges it, and the refusal must land before
+  //     the contact write, or the details are saved behind a move that failed. ---
+  {
+    const ctx = { booking: makeBooking({ timezone: "Pacific/Honolulu" }), bucket, eventType };
+    const { deps, calls } = makeDeps({ existing: ctx, freeEmails: new Set(["a@x.com"]) });
+    const err = await refused(() =>
+      rescheduleBooking("tok1", HNL_0759, RR, "customer", deps, NOW, undefined, { phone: "+12035550100" }),
+    );
+    assert(err instanceof OutsideCallingWindowError, "no zone plus a contact correction: refused in the booking's zone");
+    assert(
+      calls.updateBookingContact.length === 0 && calls.claimReschedule === 0,
+      "no zone plus a contact correction: the details are not saved and nothing is claimed",
+    );
+  }
+
   // --- a no-op reschedule onto the time it already has is not re-judged ---
   {
     // A call booked before the gate existed can sit outside the window; a

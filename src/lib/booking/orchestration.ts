@@ -3766,15 +3766,23 @@ export async function rescheduleBooking(
   // two apart. With no zone supplied, the booking's own zone is the lead's clock
   // and it is judged after the load below.
   const suppliedZone = opts?.leadZone ?? null;
-  if (suppliedZone !== null && !withinLeadCallingWindow(newStartIso, suppliedZone)) {
+  // A contact correction is a WRITE that must not land behind a refused move, so
+  // it is judged here too even with no zone supplied (a page cached from before
+  // this shipped): then the booking's own zone is the lead's clock. Only an
+  // outside start, or a move that carries details, pays the extra read.
+  const suppliedOutside = suppliedZone !== null && !withinLeadCallingWindow(newStartIso, suppliedZone);
+  if (suppliedOutside || (suppliedZone === null && contact)) {
     const held = await deps.loadBookingContext(token);
     // A missing or finished booking is refused for THAT reason, by the same
     // helper the main path uses, before the window is judged (L11): "outside
     // calling hours" about a booking that does not exist sends the reader to
     // pick another time, which can never help.
     assertReschedulable(held);
+    const zone = suppliedZone ?? held.booking.timezone;
     const sameInstant = Date.parse(held.booking.starts_at) === Date.parse(newStartIso);
-    if (!sameInstant) throw new OutsideCallingWindowError(leadCallingZone(suppliedZone));
+    if (!sameInstant && !withinLeadCallingWindow(newStartIso, zone)) {
+      throw new OutsideCallingWindowError(leadCallingZone(zone));
+    }
   }
   // Applied first, so everything below reads the details the lead just gave. A
   // refusal here stops the move: writing them is the point of having been given
