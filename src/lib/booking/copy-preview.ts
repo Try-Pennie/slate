@@ -617,13 +617,13 @@ export function inviteCopyScreens(): CopyScreen[] {
       screen: "Add to calendar: the lead's own entry",
       purpose:
         "What the four add to calendar buttons on the booking confirmed page put on " +
-        "the lead's calendar (#2643), and what the ICS link says when there is no " +
-        "call to add. Written from the lead's side, naming the advisor who will call.",
+        "the lead's calendar (#2643), and what the ICS link says for a token we do " +
+        "not know (a cancelled call is sent to its manage page instead, #2648). " +
+        "Written from the lead's side, naming the advisor who will call.",
       lines: [
         { state: "the title", text: CALENDAR_COPY.title("Dana Lee") },
         { state: "the title when we hold no advisor name", text: CALENDAR_COPY.title(null) },
         { state: "the body", text: CALENDAR_COPY.description(manageUrl) },
-        { state: "the ICS link for a cancelled call", text: CALENDAR_COPY.icsCancelled },
         { state: "the ICS link for a token we do not know", text: CALENDAR_COPY.icsNotFound },
       ],
     },

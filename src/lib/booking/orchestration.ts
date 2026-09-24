@@ -1621,7 +1621,7 @@ function webhookPayload(
       phone: booking.attendee_phone,
     },
     prefill: booking.prefill,
-    manage_url: `${deps.appBaseUrl()}/booking/manage/${booking.manage_token}`,
+    manage_url: manageUrl(deps, booking.manage_token),
     reason,
     previous_agent_email: previousAgentEmail,
     routing: routingMetaFromTrace(booking.routing_trace),
@@ -2242,8 +2242,16 @@ export const OUTBOX_HANDLERS: OutboxHandlers = {
   },
 };
 
+/** The lead's manage page for one booking, on the given base URL. The one place
+ *  that path is spelled, so the webhook, the confirm response, the calendar entry
+ *  and the ICS link's redirect for a cancelled call (#2648) all send a lead to the
+ *  same page. */
+export function manageUrlFor(appBaseUrl: string, token: string): string {
+  return `${appBaseUrl}/booking/manage/${token}`;
+}
+
 function manageUrl(deps: Pick<BookingDeps, "appBaseUrl">, token: string): string {
-  return `${deps.appBaseUrl()}/booking/manage/${token}`;
+  return manageUrlFor(deps.appBaseUrl(), token);
 }
 
 /**

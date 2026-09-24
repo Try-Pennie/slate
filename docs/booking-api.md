@@ -419,7 +419,8 @@ two fields below.
   the provider's own new event form, prefilled. **`ics` is a plain link a browser
   can open with no API key**: it is served by the booking's manage token, it is
   built when it is clicked (so a call that moved since downloads at its new
-  time), and it answers `410` for a cancelled call. The entry is titled "Pennie
+  time), and a cancelled call's link redirects (`303`) to that booking's manage
+  page, which shows it as cancelled (#2648). The entry is titled "Pennie
   call with {advisor}" and its description carries the manage link.
 - **`calendarLinks` is `null` on a cancelled booking**: there is nothing to add.
 
