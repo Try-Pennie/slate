@@ -397,6 +397,14 @@ export const ALERT_CATALOG: AlertEntry[] = [
     why: "One correction's invite patch failed and nothing re-reads that event, so there is no healthy state to observe; the booking itself is already correct.",
   },
   {
+    key: "bookable_trait_unrecorded:*",
+    kind: "incident",
+    why:
+      "One agent's change of bookable state was saved and the delivery that tells Regal was never " +
+      "recorded, so nothing retries it; there is no healthy state to observe, because the next " +
+      "change to that agent records its own trait and the backfill repairs this one (#2085).",
+  },
+  {
     key: "webhook_dead:*",
     kind: "condition",
     why: "An endpoint is dead-lettering every delivery; a delivery that succeeds ends it.",

@@ -1,6 +1,9 @@
 import { DateTime } from "luxon";
-import type { WebhookEvent } from "@/lib/db/types";
-import type { BookingEventPayload } from "@/lib/webhooks/types";
+import type {
+  AgentBookablePayload,
+  BookingEventPayload,
+  BookingWebhookEvent,
+} from "@/lib/webhooks/types";
 import { partnerKeysFrom } from "@/lib/booking/partner-keys";
 
 /**
@@ -10,7 +13,10 @@ import { partnerKeysFrom } from "@/lib/booking/partner-keys";
  * 'Slate Booking …' event names and `eventSource: 'slate'`.
  */
 
-const EVENT_NAMES: Record<WebhookEvent, string> = {
+// Keyed on the BOOKING events only (#2085). An agent trait carries no event name
+// at all (Dan confirmed the traits only body on 2026-09-08), so widening this to
+// every WebhookEvent would demand a name nothing sends.
+const EVENT_NAMES: Record<BookingWebhookEvent, string> = {
   "booking.created": "Slate Booking Created",
   "booking.rescheduled": "Slate Booking Rescheduled",
   "booking.cancelled": "Slate Booking Cancelled",
@@ -110,7 +116,7 @@ interface RegalEvent {
 }
 
 export function buildRegalEvent(
-  event: WebhookEvent,
+  event: BookingWebhookEvent,
   p: BookingEventPayload,
 ): RegalEvent {
   const tz = p.timezone;
@@ -235,4 +241,23 @@ export function buildRegalEvent(
   }
 
   return regal;
+}
+
+/** The body Regal receives for an agent trait (#2085). */
+export interface RegalTraitsBody {
+  userId: string;
+  traits: { slateBookable: boolean };
+}
+
+/**
+ * The traits only body for `agent.bookable_changed`, exactly
+ * `{"userId": <email>, "traits": {"slateBookable": <bool>}}`.
+ *
+ * No `name`, no `properties`, no `eventSource`: every other delivery to this URL
+ * is an event, and this one is a profile update, which is the shape Dan confirmed
+ * on 2026-09-08. Built from the payload a send has just resolved, never from what
+ * was recorded, so it states the agent's state at the moment of that send.
+ */
+export function buildRegalTraits(p: AgentBookablePayload): RegalTraitsBody {
+  return { userId: p.email, traits: { slateBookable: p.slate_bookable } };
 }

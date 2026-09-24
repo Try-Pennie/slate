@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { buildRegalEvent } from "./regal";
 import type { BookingEventPayload, RoutingMeta } from "./types";
-import type { WebhookEvent } from "@/lib/db/types";
+import type { BookingWebhookEvent } from "@/lib/webhooks/types";
 import { PARTNER_KEYS } from "@/lib/booking/partner-keys";
 
 // #492: Slate deliberately drops a rung when the requested tier has nobody free, which
@@ -99,7 +99,7 @@ describe("buildRegalEvent routing properties (#492)", () => {
   // A reassign (booking.reassigned since #2368) can land the booking on a different
   // tier, and so can a reschedule, so the signal has to ride every event, not just
   // the create.
-  const EVENTS: WebhookEvent[] = [
+  const EVENTS: BookingWebhookEvent[] = [
     "booking.created",
     "booking.rescheduled",
     "booking.cancelled",
@@ -153,7 +153,7 @@ describe("buildRegalEvent partner join keys (#2659)", () => {
     expect(e.properties.regal_profile_id).toBe(PROFILE);
   });
 
-  const EVENTS: WebhookEvent[] = [
+  const EVENTS: BookingWebhookEvent[] = [
     "booking.created",
     "booking.rescheduled",
     "booking.cancelled",

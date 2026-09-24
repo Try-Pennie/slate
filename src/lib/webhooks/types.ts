@@ -2,6 +2,7 @@ import type {
   BookingStatus,
   BookingEventInitiator,
   RoutingTrace,
+  WebhookEvent,
 } from "@/lib/db/types";
 
 /** Routing/fallback summary on the booking event, so Regal can suppress its
@@ -67,3 +68,31 @@ export interface BookingEventPayload {
   previous_agent_email: string | null;
   routing: RoutingMeta;
 }
+
+/** The booking events, the family `buildRegalEvent` describes. */
+export type BookingWebhookEvent = Extract<WebhookEvent, `booking.${string}`>;
+
+/** The agent events (#2085), whose Regal body is a traits only update. */
+export type AgentWebhookEvent = Extract<WebhookEvent, `agent.${string}`>;
+
+/**
+ * What `agent.bookable_changed` stores on its delivery (#2085).
+ *
+ * `user_id` is the stable key a send reads the agent's CURRENT state by (see
+ * `payloadForSend`); `email` is who Regal is told about, and is what the body's
+ * `userId` carries. `slate_bookable` is the value this delivery states: recorded
+ * at the change, and rewritten on each send to what that send actually said.
+ */
+export interface AgentBookablePayload {
+  user_id: string;
+  email: string;
+  slate_bookable: boolean;
+}
+
+/** The payload a given event carries, so a caller cannot pair the wrong two. */
+export type WebhookPayloadFor<E extends WebhookEvent> = E extends BookingWebhookEvent
+  ? BookingEventPayload
+  : AgentBookablePayload;
+
+/** Any stored delivery payload, read back without knowing its event statically. */
+export type WebhookPayload = BookingEventPayload | AgentBookablePayload;

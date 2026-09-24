@@ -315,3 +315,22 @@ export function embedOriginMismatchAlert(declared: string, framedBy: string): st
     `Every report is logged: tag=client-errors msg="embed origin mismatch".`
   );
 }
+
+/**
+ * A change to whether Slate can route to an agent was written, and the trait
+ * telling Regal was never recorded (#2085).
+ *
+ * The delivery row is what the retry sweep and the dead letter alerting stand on,
+ * so a trait whose row was never written has neither: nothing retries it and
+ * nothing else will ever say so. The flip itself stands, which is why this is an
+ * incident about one agent rather than a refusal. The remedy is the backfill,
+ * which posts every agent's current value and is safe to run again.
+ */
+export function bookableTraitUnrecordedAlert(email: string, slateBookable: boolean): string {
+  return (
+    `Regal was not told that ${email} is now ${slateBookable ? "bookable" : "not bookable"} in Slate: ` +
+    `the change was saved, and recording the update for Regal failed, so nothing will retry it. ` +
+    `Run pnpm backfill:bookable-trait to send every agent's current state. ` +
+    `Diagnose via tag=bookable-trait in the Worker logs.`
+  );
+}

@@ -1,4 +1,5 @@
 import type { WebhookEvent } from "@/lib/db/types";
+import type { AgentWebhookEvent } from "./types.ts";
 
 /**
  * The webhook events Slate can emit, as VALUES, plus which of them are
@@ -29,21 +30,44 @@ import type { WebhookEvent } from "@/lib/db/types";
  */
 
 /**
- * Every event, keyed so the TYPE SYSTEM enforces completeness rather than a
- * reviewer noticing (L113): `Record<WebhookEvent, true>` fails `tsc` when a union
- * member is missing here, and equally when a key is not in the union. This is the
- * one place the list is written down.
+ * Which family an event belongs to (#2085). The family, not the endpoint's
+ * format, is what decides the SHAPE of a delivery: a booking event and an agent
+ * trait go to the same Regal endpoint with the same format and carry different
+ * bodies, so dispatching on format would be the wrong axis.
  */
-const EVENT_PRESENCE: Record<WebhookEvent, true> = {
-  "booking.created": true,
-  "booking.rescheduled": true,
-  "booking.cancelled": true,
-  "booking.reassigned": true,
-  "booking.completed": true,
+export type WebhookEventFamily = "booking" | "agent";
+
+/**
+ * Every event and its family, keyed so the TYPE SYSTEM enforces completeness
+ * rather than a reviewer noticing (L113): the mapped type fails `tsc` when a union
+ * member is missing here, when a key is not in the union, AND when a value does
+ * not match the event's own prefix, so the runtime family and the type level one
+ * (`BookingWebhookEvent`, `AgentWebhookEvent`) cannot disagree. This is the one
+ * place the list is written down.
+ */
+const EVENT_FAMILY: {
+  [E in WebhookEvent]: E extends `booking.${string}` ? "booking" : "agent";
+} = {
+  "booking.created": "booking",
+  "booking.rescheduled": "booking",
+  "booking.cancelled": "booking",
+  "booking.reassigned": "booking",
+  "booking.completed": "booking",
+  "agent.bookable_changed": "agent",
 };
 
 /** Every event Slate can emit. Order is the declaration order above. */
-export const WEBHOOK_EVENTS = Object.keys(EVENT_PRESENCE) as WebhookEvent[];
+export const WEBHOOK_EVENTS = Object.keys(EVENT_FAMILY) as WebhookEvent[];
+
+/** The family of one event. */
+export function webhookEventFamily(event: WebhookEvent): WebhookEventFamily {
+  return EVENT_FAMILY[event];
+}
+
+/** Narrowing form of the family, for the code that builds or refreshes a body. */
+export function isAgentEvent(event: WebhookEvent): event is AgentWebhookEvent {
+  return webhookEventFamily(event) === "agent";
+}
 
 /**
  * Events deliberately left unsubscribed, each with the reason and the issue that

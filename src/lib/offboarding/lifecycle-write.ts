@@ -32,15 +32,16 @@
  * reap kept its own `update({ deactivated_at })` for another six weeks and left every
  * leaver it processed carrying the flag. Sharing the patch alone would repeat that
  * (L370: sharing a rule's data while copying the code that applies it is not
- * consolidation), so the reap's whole write lives here too, and
+ * consolidation), so the reap's whole write uses these patches too (its query lives in
+ * `routable-write.ts` since #2085), and
  * `scripts/test-deactivation-write.ts` fails the build on a third copy appearing
  * anywhere in `src/` (L613).
  *
- * The two callers' QUERIES legitimately differ and stay with their callers: the
- * lifecycle service writes one row as a compare and swap and reads it back, the reap
- * writes a batch of ids. What may not differ is which columns a departure moves.
+ * The two callers' QUERIES legitimately differ: the lifecycle service writes one row
+ * as a compare and swap and reads it back, the reap writes a batch of ids. Both are
+ * now `writeRoutableState` in `src/lib/bookable/routable-write.ts` (#2085). What may
+ * not differ is which columns a departure moves, and that is decided here.
  */
-import { supabaseAdmin } from "@/lib/supabase/admin";
 
 /** The columns a departure moves. `stampIso` is when they left. */
 export function deactivationPatch(stampIso: string): {
@@ -55,37 +56,10 @@ export function reactivationPatch(): { deactivated_at: null; bookable: false } {
   return { deactivated_at: null, bookable: false };
 }
 
-/**
- * Depart a batch of users by id, for the hourly Salesforce reap.
- *
- * FAILS LOUD. The reap used to discard this statement's result, so a refused
- * deactivation reported `deactivated: N` and the lane reported a clean hour while
- * the leaver stayed in the roster (L12, L98). The run is idempotent and the reap
- * re-selects its candidates every hour, so throwing costs one retry and never a
- * lost departure.
- *
- * The `deactivated_at is null` filter is a compare and swap over the batch, matching
- * the single row write in `service.ts`: the candidate read and this write are two
- * statements, and somebody deactivated in the gap must keep the stamp that records
- * when they actually left rather than having it rewritten by this run.
- *
- * It deliberately does NOT revoke sessions or enqueue a coverage sweep. Those are
- * #2459 and #1678, which route the reap through the full lifecycle path and own the
- * per user cost that brings to a cron lane; this is only the write.
+/*
+ * The batch departure the hourly Salesforce reap uses, `deactivateUsersByIds`, lives
+ * in `src/lib/bookable/routable-write.ts` since #2085, beside the other writes to
+ * these two columns: a departure is a change Regal has to hear about, and that
+ * module sends it from inside the write. It still applies `deactivationPatch` from
+ * here, so which columns a departure moves is still decided in this file.
  */
-export async function deactivateUsersByIds(
-  userIds: string[],
-  stampIso: string,
-): Promise<void> {
-  if (!userIds.length) return;
-  const { error } = await supabaseAdmin()
-    .from("users")
-    .update(deactivationPatch(stampIso))
-    .in("id", userIds)
-    .is("deactivated_at", null);
-  if (error) {
-    throw new Error(
-      `reap deactivation failed for ${userIds.length} user(s): ${error.message}`,
-    );
-  }
-}

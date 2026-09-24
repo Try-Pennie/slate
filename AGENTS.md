@@ -1312,9 +1312,25 @@ that, because the copy never reached for the shared thing (L370).
 `const`. The escape hatch is `// lifecycle-write-ok: <why>` on, or in the `//`
 block above, the write, and it is refused when it carries no reason.
 
-The two callers' QUERIES legitimately differ and stay with them: the lifecycle
-service writes one row as a compare and swap and reads it back, the reap writes a
-batch of ids. What may not differ is which columns move.
+## Who writes those columns, and why Regal hears about it (#2085)
+
+Every write to `users.bookable` or `users.deactivated_at` goes through ONE
+helper, **`writeRoutableState`** in `src/lib/bookable/routable-write.ts`: the
+bookable flip (`writeBookable`), the lifecycle departure and return, and the
+reap's batch (`deactivateUsersByIds`). It reads the rows before, writes, reads
+what it wrote from the same statement, and for every row whose `isRoutable`
+value moved records an `agent.bookable_changed` delivery for Regal
+(`{"userId": <email>, "traits": {"slateBookable": <bool>}}`), suppressed for an
+`is_test` agent. Only on a change, so a reactivation and a flip on a departed row
+send nothing. The emit lives inside the write because a rule each writer must
+remember is enforced by nothing (L621): `scripts/test-routable-write-owner.ts`
+fails the build on any other `src/` or `worker/` writer of either column, with a
+`// routable-write-ok: <why>` hatch. SQL run by hand sends nothing;
+`pnpm backfill:bookable-trait` is the repair, and what gives Regal its starting state.
+
+A trait send states the agent's value AT THAT SEND (`payloadForSend`,
+`src/lib/webhooks/agent-trait.ts`), because retries and replays reorder, and a
+stale false retried after a newer true would otherwise win.
 
 # Adding a webhook event (#1459)
 
@@ -1336,10 +1352,11 @@ guarded, each blind where the other looks**:
   live Regal endpoint predates every event added from here on.
 
 So adding an event means three things, not one: the union in `src/lib/db/types.ts`,
-the map in `src/lib/webhooks/events.ts` (a `Record<WebhookEvent, true>`, so `tsc`
-names the omission), and a **`webhook_endpoints.events` update on the live row**.
-`src/lib/webhooks/regal.ts` also keys its label map on the union, so `tsc` catches
-that one too.
+the family map in `src/lib/webhooks/events.ts` (keyed on the union, so `tsc` names
+the omission), and a **`webhook_endpoints.events` update on the live row**. The
+FAMILY (`booking.*` or `agent.*`, #2085) decides the payload type and the Regal
+body, never the endpoint format: `regal.ts` keys its event names on the booking
+events only, since an agent trait carries no name.
 
 To ship an event deliberately unsubscribed, add it to `DELIBERATELY_UNSUBSCRIBED`
 (`src/lib/webhooks/events.ts`) with a reason **and the issue that will subscribe

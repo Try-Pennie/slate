@@ -23,7 +23,15 @@ export type WebhookEvent =
    * not happened.
    */
   | "booking.reassigned"
-  | "booking.completed";
+  | "booking.completed"
+  /**
+   * Whether Slate can route a lead to an agent changed (#2085). Not a booking at
+   * all, so its payload and its Regal body are a different family: a traits only
+   * body keyed on the agent's email, with no event name. Sent only when the
+   * DERIVED value (`isRoutable`: bookable and not deactivated) moves, from the one
+   * helper that owns both writes, `src/lib/bookable/routable-write.ts`.
+   */
+  | "agent.bookable_changed";
 export type DeliveryStatus = "pending" | "success" | "failed";
 
 export interface Organization {

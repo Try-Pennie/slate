@@ -8,7 +8,9 @@ import { shortFailureReason } from "@/lib/notify/error-text";
 import { summarizeWebhookReply } from "@/lib/webhooks/response-summary";
 import { log } from "@/lib/log";
 import { webhookDeadAlert, webhookDeadRecovery } from "@/lib/monitor/cron-alert-copy";
-import type { BookingEventPayload } from "@/lib/webhooks/types";
+import type { WebhookPayload, WebhookPayloadFor } from "@/lib/webhooks/types";
+import { isAgentEvent } from "@/lib/webhooks/events";
+import { payloadForSend, type CurrentRoutableRead } from "@/lib/webhooks/agent-trait";
 import type { WebhookEndpoint, WebhookEvent } from "@/lib/db/types";
 import { gatedWriteApplied } from "@/lib/booking/gated-write";
 
@@ -17,6 +19,24 @@ const DEAD_LETTER_COOLDOWN_MS = 30 * 60 * 1000;
 
 /** Stamped on a delivery that was recorded but deliberately never sent (#459). */
 const SUPPRESSED_RESPONSE = "suppressed: is_test bucket, external POST skipped (#459)";
+
+/** The same, for a smoke test AGENT's bookable trait (#2085, #396). */
+const SUPPRESSED_AGENT_RESPONSE = "suppressed: is_test agent, external POST skipped (#2085)";
+
+/**
+ * The agent's current routing state, for a trait send (#2085). Read by primary
+ * key, so at most one row; a refused read THROWS, which `payloadForSend` turns
+ * into a failed attempt rather than a guess.
+ */
+const readCurrentRoutable: CurrentRoutableRead = async (userId) => {
+  const { data, error } = await supabaseAdmin()
+    .from("users")
+    .select("bookable, deactivated_at")
+    .eq("id", userId)
+    .maybeSingle();
+  if (error) throw new Error(error.message);
+  return (data as { bookable: boolean; deactivated_at: string | null } | null) ?? null;
+};
 
 /**
  * Load-test short-circuit (#440): under SLATE_LOADTEST the delivery row is still
@@ -35,10 +55,17 @@ async function send(
   endpoint: WebhookEndpoint,
   deliveryId: string,
   event: WebhookEvent,
-  payload: BookingEventPayload,
+  recorded: WebhookPayload,
   attempt: number,
 ): Promise<void> {
   const db = supabaseAdmin();
+
+  // #2085: an agent trait states the agent's state AT THIS SEND, so a retry of an
+  // older delivery cannot put a stale value back into Regal (see agent-trait.ts).
+  // A booking payload comes back exactly as stored. A read that fails is a failed
+  // attempt, handled exactly like a refused build below.
+  const resolved = await payloadForSend(event, recorded, readCurrentRoutable);
+  const payload = resolved.ok ? resolved.payload : recorded;
 
   // #600: buildRequest REFUSES to build a Regal delivery with no API key, rather than
   // posting an unauthenticated event. That refusal must not escape into the booking path:
@@ -49,12 +76,18 @@ async function send(
   let body: string;
   let headers: Record<string, string>;
   let configError: string | null = null;
-  try {
-    ({ body, headers } = buildRequest(endpoint, deliveryId, event, payload));
-  } catch (err) {
+  if (!resolved.ok) {
     body = "";
     headers = {};
-    configError = String(err).slice(0, 1000);
+    configError = resolved.reason;
+  } else {
+    try {
+      ({ body, headers } = buildRequest(endpoint, deliveryId, event, payload));
+    } catch (err) {
+      body = "";
+      headers = {};
+      configError = String(err).slice(0, 1000);
+    }
   }
 
   let ok = false;
@@ -119,6 +152,13 @@ async function send(
       status: ok ? "success" : "failed",
       attempts: attempt,
       last_response: lastResponse,
+      // #2085: a trait's stored payload is rewritten to what this send actually
+      // stated, so the delivery log shows what Regal was told rather than what was
+      // true when the change was first recorded. Only when a request was built: a
+      // failed read or a refused build stated nothing, so the recorded value stays.
+      ...(isAgentEvent(event) && !configError
+        ? { payload: payload as unknown as Record<string, unknown> }
+        : {}),
     })
     .eq("id", deliveryId),
     "webhook delivery outcome",
@@ -189,10 +229,10 @@ export type WebhookSendScheduler = (work: () => Promise<void>) => void;
  * handed to the scheduler (Next after()) instead of awaited; when omitted the
  * send stays inline, unchanged.
  */
-export async function emitWebhook(
+export async function emitWebhook<E extends WebhookEvent>(
   orgId: string,
-  event: WebhookEvent,
-  payload: BookingEventPayload,
+  event: E,
+  payload: WebhookPayloadFor<E>,
   dedupeKey: string | null = null,
   suppressed = false,
   deferSend?: WebhookSendScheduler,
@@ -241,7 +281,11 @@ export async function emitWebhook(
           status: suppressed ? "success" : "pending",
           dedupe_key: dedupeKey,
           suppressed,
-          last_response: suppressed ? SUPPRESSED_RESPONSE : null,
+          last_response: suppressed
+            ? isAgentEvent(event)
+              ? SUPPRESSED_AGENT_RESPONSE
+              : SUPPRESSED_RESPONSE
+            : null,
         })
         .select("id")
         .single();
@@ -335,7 +379,7 @@ async function claimAndSend(
   endpoint: WebhookEndpoint,
   deliveryId: string,
   event: WebhookEvent,
-  payload: BookingEventPayload,
+  payload: WebhookPayload,
   currentAttempts: number,
 ): Promise<boolean> {
   if (!(await claimDeliveryAttempt(db, deliveryId, currentAttempts))) return false;
@@ -366,7 +410,7 @@ export async function retryFailedDeliveries(): Promise<number> {
     id: string;
     endpoint_id: string;
     event: WebhookEvent;
-    payload: BookingEventPayload;
+    payload: WebhookPayload;
     attempts: number;
     updated_at: string;
   }[]).filter((r) => isDueForRetry(r.attempts, parseStampMs(r.updated_at) ?? 0, now));
@@ -428,7 +472,7 @@ export async function resendDelivery(
     id: string;
     endpoint_id: string;
     event: WebhookEvent;
-    payload: BookingEventPayload;
+    payload: WebhookPayload;
     attempts: number;
     suppressed: boolean;
     payload_erased: boolean;
@@ -517,7 +561,7 @@ export async function replayDeadLetteredDeliveries(
     id: string;
     endpoint_id: string;
     event: WebhookEvent;
-    payload: BookingEventPayload;
+    payload: WebhookPayload;
     attempts: number;
     status: string;
   }[]) {

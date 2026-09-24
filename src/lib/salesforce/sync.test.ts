@@ -88,8 +88,9 @@ const store = vi.hoisted(() => {
     }
   }
 
-  function applyUpdate(payload: unknown, filters: [string, string, unknown][]) {
+  function applyUpdate(payload: unknown, filters: [string, string, unknown][]): Record<string, unknown>[] {
     const patch = payload as Record<string, unknown>;
+    const written: Record<string, unknown>[] = [];
     for (const [id, row] of users) {
       const matches = filters.every(([kind, col, val]) => {
         const current = col === "id" ? id : row[col];
@@ -101,8 +102,27 @@ const store = vi.hoisted(() => {
       // An UPDATE sets only the columns it names, on the rows it matched. That is
       // the difference from the bulk write above, and the reason the belief this
       // code rested on was true of one row and false of a batch.
-      if (matches) users.set(id, { ...row, ...patch });
+      if (matches) {
+        users.set(id, { ...row, ...patch });
+        written.push({ ...row, ...patch, id });
+      }
     }
+    return written;
+  }
+
+  /** The stored rows a read by these filters would return (id, in, is). */
+  function readUsers(filters: [string, string, unknown][]): Record<string, unknown>[] {
+    return [...users.entries()]
+      .filter(([id, row]) =>
+        filters.every(([kind, col, val]) => {
+          const current = col === "id" ? id : row[col];
+          if (kind === "eq") return current === val;
+          if (kind === "in") return Array.isArray(val) && val.includes(current);
+          if (kind === "is") return (current ?? null) === val;
+          return true;
+        }),
+      )
+      .map(([id, row]) => ({ ...row, id }));
   }
 
   function seedUsers(rows: Record<string, unknown>[]) {
@@ -120,9 +140,15 @@ const store = vi.hoisted(() => {
           select?: string;
           payload?: unknown;
           filters: [string, string, unknown][];
+          /** A `.select()` chained AFTER a write: PostgREST returns the written rows. */
+          returning?: boolean;
         } = { table, filters: [] };
         const builder = {
           select(cols: string) {
+            if (state.op === "update") {
+              state.returning = true;
+              return builder;
+            }
             state.op = "select";
             state.select = cols;
             return builder;
@@ -169,7 +195,10 @@ const store = vi.hoisted(() => {
             if (config.errorOn && state.op === config.errorOn) {
               result = { data: null, error: { message: `boom-${state.op}` } };
             } else if (state.op === "select") {
-              if (state.select?.includes("attributes")) result = { data: config.existing, error: null };
+              // #2085: the routable write's BEFORE read, by id, answered from the
+              // stored rows rather than a canned list, so its before and after agree.
+              if (state.select === "id, org_id, email, bookable, deactivated_at, is_test") result = { data: readUsers(state.filters), error: null };
+              else if (state.select?.includes("attributes")) result = { data: config.existing, error: null };
               else if (state.select?.includes("manager_id")) result = { data: config.afterInsert, error: null };
               else result = { data: config.reapable, error: null };
             }
@@ -178,7 +207,10 @@ const store = vi.hoisted(() => {
             // refusal would otherwise be reading a write the database never made.
             if (result.error === null && state.table === "users") {
               if (state.op === "upsert" || state.op === "insert") applyBulkWrite(state.op, state.payload);
-              else if (state.op === "update") applyUpdate(state.payload, state.filters);
+              else if (state.op === "update") {
+                const written = applyUpdate(state.payload, state.filters);
+                if (state.returning) result = { data: written, error: null };
+              }
             }
             return Promise.resolve(result).then(resolve, reject);
           },
@@ -190,6 +222,11 @@ const store = vi.hoisted(() => {
   return { calls, config, makeDb, users, seedUsers, payloadColumns, sfUsers: [] as unknown[], mgr: [] as unknown[] };
 });
 vi.mock("@/lib/supabase/admin", () => ({ supabaseAdmin: () => store.makeDb() }));
+// #2085: the reap's departure records Regal's bookable trait through the webhook
+// path. Delivery is pinned in routable-write.test.ts and emit.test.ts; here it is a
+// recorder, so a departure of a routable agent can be seen to owe one.
+const emitted = vi.hoisted(() => ({ emitWebhook: vi.fn(async () => {}) }));
+vi.mock("@/lib/webhooks/emit", () => emitted);
 
 // #2071: the sync now makes a hire bookable through the same gated service the
 // admin toggle uses. Mocked for the whole file, because the fixtures above have
@@ -1386,11 +1423,13 @@ describe("roster rows Salesforce no longer confirms (#1833)", () => {
     store.seedUsers([
       {
         id: "u-left",
+        org_id: "org1",
         email: "left@x.com",
         role: "agent",
         bookable: true,
         deactivated_at: null,
         auth_user_id: null,
+        is_test: false,
       },
     ]);
     store.config.reapable = [{ id: "u-left", email: "left@x.com" }];
@@ -1408,6 +1447,16 @@ describe("roster rows Salesforce no longer confirms (#1833)", () => {
     );
     // Read back as STATE, not only as a recorded payload.
     expect(store.users.get("u-left")).toMatchObject({ bookable: false });
+    // #2085: a routable agent departed by the reap owes Regal a false, recorded by
+    // the same write rather than by anything the reap had to remember.
+    expect(emitted.emitWebhook).toHaveBeenCalledWith(
+      "org1",
+      "agent.bookable_changed",
+      { user_id: "u-left", email: "left@x.com", slate_bookable: false },
+      null,
+      false,
+      expect.any(Function),
+    );
   });
 
   // The failure path. A refused write must never arrive anywhere as a departure

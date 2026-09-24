@@ -25,9 +25,16 @@ const state = vi.hoisted(() => ({
   // assumption about who wins (L70); this lets both actors read the same 0 and
   // makes exactly one of them win on the store's own arithmetic.
   cas: null as null | Map<string, number>,
+  // #2085: an agent trait send reads the agent's CURRENT state by id.
+  user: null as null | { bookable: boolean; deactivated_at: string | null },
+  userError: null as null | { message: string },
 }));
 
 function resolve(b: Record<string, unknown>, table: string) {
+  if (table === "users") {
+    if (state.userError) return { data: null, error: state.userError };
+    return { data: state.user, error: null };
+  }
   if (table === "webhook_endpoints") {
     if (state.endpointsError) return { data: null, error: state.endpointsError };
     return { data: b._single ? state.endpoints[0] : state.endpoints, error: null };
@@ -171,6 +178,8 @@ beforeEach(() => {
   state.endpointsError = null;
   state.updates = [];
   state.cas = null;
+  state.user = null;
+  state.userError = null;
   from.mockImplementation((table: string) => makeBuilder(table));
   fetchMock.mockResolvedValue(reply({ ok: true, status: 200, body: "ok" }));
   vi.stubGlobal("fetch", fetchMock);
@@ -773,5 +782,114 @@ describe("first send attempt claim (#2563)", () => {
 
     expect(a + b).toBe(1);
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+// #2085: `agent.bookable_changed` rides the SAME delivery path as the booking
+// events, so a trait Regal never received is recorded, retried and dead-lettered
+// rather than dropped. Three things differ, and each is pinned here: a test
+// agent's trait is recorded terminal and never sent, every send states the
+// agent's state AT THAT SEND (so a retried stale value cannot win), and a send
+// whose state cannot be read is a failed attempt rather than a blind POST.
+describe("agent bookable trait delivery (#2085)", () => {
+  const regalEndpoint = {
+    ...endpoint,
+    format: "regal",
+    auth_header: "regal-key",
+  };
+  const trait = { user_id: "u1", email: "agent@trypennie.com", slate_bookable: false };
+
+  it("records an is_test agent's trait as a terminal suppressed delivery and never POSTs it", async () => {
+    state.endpoints = [regalEndpoint];
+    await emitWebhook("o1", "agent.bookable_changed", trait, null, true);
+
+    expect(state.inserted).toHaveLength(1);
+    expect(state.inserted[0]).toMatchObject({
+      event: "agent.bookable_changed",
+      status: "success",
+      suppressed: true,
+    });
+    expect(String(state.inserted[0].last_response)).toMatch(/is_test agent/);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("posts the traits only body to the Regal endpoint with its key", async () => {
+    state.endpoints = [regalEndpoint];
+    state.user = { bookable: false, deactivated_at: null };
+    await emitWebhook("o1", "agent.bookable_changed", trait);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0] as [string, { body: string; headers: Record<string, string> }];
+    expect(url).toBe(endpoint.url);
+    expect(init.body).toBe(JSON.stringify({ userId: "agent@trypennie.com", traits: { slateBookable: false } }));
+    expect(init.headers.authorization).toBe("regal-key");
+    expect(statusWrite().status).toBe("success");
+  });
+
+  it("records a refused POST as failed, never done, and the retry sweep sends it again", async () => {
+    state.endpoints = [regalEndpoint];
+    state.user = { bookable: false, deactivated_at: null };
+    fetchMock.mockResolvedValueOnce(reply({ ok: false, status: 503, body: "unavailable" }));
+
+    await emitWebhook("o1", "agent.bookable_changed", trait);
+    expect(statusWrite()).toMatchObject({ status: "failed", attempts: 1 });
+
+    state.updates = [];
+    state.deliveries = [
+      {
+        id: "d-new",
+        endpoint_id: "ep1",
+        event: "agent.bookable_changed",
+        payload: trait,
+        attempts: 1,
+        updated_at: new Date(Date.now() - 30 * 60_000).toISOString(),
+      },
+    ];
+    const retried = await retryFailedDeliveries();
+    expect(retried).toBe(1);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(statusWrite()).toMatchObject({ status: "success", attempts: 2 });
+  });
+
+  it("a retry states the agent's CURRENT value, and the log is rewritten to what was sent", async () => {
+    // Recorded false; by the time the retry runs the agent is routable again. The
+    // retry must not put the stale false back into Regal.
+    state.endpoints = [regalEndpoint];
+    state.user = { bookable: true, deactivated_at: null };
+    state.deliveries = [
+      {
+        id: "d-old",
+        endpoint_id: "ep1",
+        event: "agent.bookable_changed",
+        payload: trait,
+        attempts: 2,
+        updated_at: new Date(Date.now() - 60 * 60_000).toISOString(),
+      },
+    ];
+    await retryFailedDeliveries();
+
+    const [, init] = fetchMock.mock.calls[0] as [string, { body: string }];
+    expect(JSON.parse(init.body).traits.slateBookable).toBe(true);
+    expect(statusWrite().payload).toEqual({ ...trait, slate_bookable: true });
+  });
+
+  it("a trait whose current state cannot be read is a failed attempt, not a blind POST", async () => {
+    state.endpoints = [regalEndpoint];
+    state.userError = { message: "connection reset" };
+    await emitWebhook("o1", "agent.bookable_changed", trait);
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    const w = statusWrite();
+    expect(w.status).toBe("failed");
+    expect(String(w.last_response)).toMatch(/connection reset/);
+    // Nothing was stated, so the recorded value stays.
+    expect("payload" in w).toBe(false);
+  });
+
+  it("a booking delivery reads no user row and keeps its stored payload", async () => {
+    const payload = { booking_id: "bk1", bucket_code: "411" } as unknown as BookingEventPayload;
+    await emitWebhook("o1", "booking.created", payload, "bk1");
+    expect(from.mock.calls.map((c) => c[0])).not.toContain("users");
+    expect("payload" in statusWrite()).toBe(false);
   });
 });
