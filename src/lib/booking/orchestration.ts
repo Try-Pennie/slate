@@ -36,7 +36,6 @@ import {
 import {
   findPersonMatch,
   decidePersonBooking,
-  bookingBelongsToPerson,
   type PersonIdentity,
   type PersonMatch,
   type MatchStrength,
@@ -3557,17 +3556,20 @@ export async function getPersonBookingById(
 /** Cancel ONE booking by id for the cancel API (#386). Requires the booking to
  *  exist, be owned by the caller (strong id), and be active; else
  *  BookingNotFoundError. Reuses the standard cancel path (gcal delete, busy-block
- *  clear, history row, booking.cancelled webhook), stamped initiator=customer. */
+ *  clear, history row, booking.cancelled webhook), stamped initiator=customer.
+ *  Ownership is the SAME question the by id lookup asks, so it is resolved the
+ *  same way: a supplied strong id matching either id column (#2657), or a caller
+ *  who can read an embed booking by externalId gets 404 cancelling it. */
 export async function cancelDirectBooking(
   input: {
     bookingId: string;
-    identity: Pick<PersonIdentity, "externalId" | "salesforceId">;
+    identity: LookupIdentity;
     reason: ValidatedReason;
   },
   deps: BookingDeps,
 ): Promise<ApiBookingView> {
   const ctx = await deps.loadBookingById(input.bookingId);
-  if (!ctx || !bookingBelongsToPerson(ctx.booking, input.identity)) {
+  if (!ctx || !bookingMatchesLookupIds(ctx.booking, lookupStrongIds(input.identity))) {
     throw new BookingNotFoundError();
   }
   if (!CANCELLABLE_STATUSES.includes(ctx.booking.status)) {

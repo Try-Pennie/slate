@@ -1,6 +1,8 @@
 /**
- * Identity resolution for the LOOKUP API (#2657): `GET /api/bookings?externalId=…`,
- * in its by id and its list mode.
+ * Identity resolution for the LOOKUP and CANCEL APIs (#2657):
+ * `GET /api/bookings?externalId=…` in its by id and its list mode, and the cancel
+ * behind `DELETE /api/bookings` and `POST /api/bookings/cancel`, which asks the
+ * same ownership question.
  *
  * A booking made through the embed (`/book?external_id=<lead id>`) is written with
  * the lead's id in `salesforce_id` and `external_id` null: the page maps the query
@@ -16,13 +18,14 @@
  * `salesforce_id` is X, and `salesforceId` likewise. A different lead's id still
  * matches nothing.
  *
- * Deliberately separate from `bookingBelongsToPerson` and
- * `findActiveBookingsForPerson` (`person-dedupe.ts`, `service.ts`), which the one
- * call per person dedupe (#357) also uses. That path asks whether an incoming
- * booking is the same person as an existing one and matches column to column; this
- * one asks whether a caller holding a lead's id may read that lead's booking. Two
- * questions, so two predicates (L342), and this change leaves the dedupe path's
- * fetch and grading untouched.
+ * Deliberately separate from `findPersonMatch` and `findActiveBookingsForPerson`
+ * (`person-dedupe.ts`, `service.ts`), which serve the one call per person dedupe
+ * (#357). That path asks whether an incoming booking is the same person as an
+ * existing one and matches column to column; this one asks whether a caller
+ * holding a lead's id may read or cancel that lead's booking. Two questions, so
+ * two predicates (L342), and this change leaves the dedupe path's fetch and
+ * grading untouched. It replaced `bookingBelongsToPerson`, the column to column
+ * ownership check the lookup and the cancel used until #2657.
  *
  * Pure (type only `@/` imports, erased at runtime) so it unit tests under
  * `node --experimental-strip-types`.

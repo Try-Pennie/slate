@@ -13,22 +13,21 @@
 // fixture here is built the way the embed writes it.
 //
 // Decided by Dan, 2026-09-24: a supplied strong id matches a booking whose
-// `external_id` OR `salesforce_id` equals it, in the by id mode and the list mode.
-// A different lead's id still gets a 404 or an empty list.
+// `external_id` OR `salesforce_id` equals it, in the by id mode, the list mode
+// and the cancel, which asks the same ownership question. A different lead's id
+// still gets a 404 or an empty list.
 //
-// Scoped to the lookup. The one call per person dedupe (#357) keeps its own
+// Scoped to those three. The one call per person dedupe (#357) keeps its own
 // column to column matching; the last block pins that this change did not touch it.
 import {
   bookViaApi,
+  cancelDirectBooking,
   lookupPersonBookings,
   getPersonBookingById,
   BookingNotFoundError,
   type ApiBookingInput,
 } from "../src/lib/booking/orchestration.ts";
-import {
-  bookingBelongsToPerson,
-  findPersonMatch,
-} from "../src/lib/booking/person-dedupe.ts";
+import { findPersonMatch } from "../src/lib/booking/person-dedupe.ts";
 import {
   createAsserter,
   makeDeps,
@@ -176,6 +175,55 @@ async function run() {
     assert(threw, "list: a failed bookings read throws rather than listing nothing");
   }
 
+  // --- Cancel: DELETE /api/bookings and POST /api/bookings/cancel ---
+  // The cancel asks the same ownership question the by id lookup does, so it
+  // resolves identity the same way: a caller who can READ an embed booking by
+  // externalId can cancel it by the same id (Dan, 2026-09-24).
+  const CANCEL = { code: "api_cancellation", detail: null } as const;
+  {
+    const ctx = { booking: embedBooking({ gcal_event_id: "g-embed" }), bucket, eventType };
+    const { deps, calls } = makeDeps({ bookingById: ctx, existing: ctx });
+    const view = await cancelDirectBooking(
+      { bookingId: "bk-embed", identity: { externalId: LEAD, salesforceId: null }, reason: CANCEL },
+      deps,
+    );
+    assert(view.status === "cancelled", "cancel: externalId alone cancels an embed booking");
+    assert(calls.deleteEvent.some((d) => d.id === "g-embed"), "cancel: and the calendar event really goes");
+  }
+  {
+    const ctx = { booking: apiBooking({ gcal_event_id: "g-api" }), bucket, eventType };
+    const { deps } = makeDeps({ bookingById: ctx, existing: ctx });
+    const view = await cancelDirectBooking(
+      { bookingId: "bk-api", identity: { externalId: null, salesforceId: LEAD }, reason: CANCEL },
+      deps,
+    );
+    assert(view.status === "cancelled", "cancel: salesforceId alone cancels a booking whose id sits in external_id");
+  }
+  {
+    const ctx = { booking: embedBooking({ gcal_event_id: "g-embed" }), bucket, eventType };
+    const { deps, calls } = makeDeps({ bookingById: ctx, existing: ctx });
+    assert(
+      await expectNotFound(() =>
+        cancelDirectBooking(
+          { bookingId: "bk-embed", identity: { externalId: STRANGER, salesforceId: null }, reason: CANCEL },
+          deps,
+        ),
+      ),
+      "cancel: a different lead's externalId is refused with not found",
+    );
+    assert(
+      await expectNotFound(() =>
+        cancelDirectBooking(
+          { bookingId: "bk-embed", identity: { externalId: null, salesforceId: null }, reason: CANCEL },
+          deps,
+        ),
+      ),
+      "cancel: no strong id at all is refused",
+    );
+    assert(calls.deleteEvent.length === 0, "cancel: a refused cancel leaves the calendar event alone");
+    assert(!calls.webhooks.some((w) => w.event === "booking.cancelled"), "cancel: and fires no booking.cancelled");
+  }
+
   // --- The dedupe path is NOT widened by this change ---
   // The one call per person gate (#357) still matches column to column: an API
   // caller sending only `externalId` does not see an embed booking as the same
@@ -185,7 +233,6 @@ async function run() {
   {
     const identity = { externalId: LEAD, salesforceId: null, email: null, phone: null };
     assert(findPersonMatch(identity, [embedBooking()]) === null, "dedupe: findPersonMatch still matches column to column");
-    assert(!bookingBelongsToPerson(embedBooking(), identity), "dedupe: bookingBelongsToPerson still matches column to column");
   }
   {
     const apiInput: ApiBookingInput = {

@@ -447,7 +447,10 @@ DELETE /api/bookings?externalId=<id>&bookingId=<uuid>
 ```
 
 - Requires **`bookingId`** and a strong id (`externalId` **or** `salesforceId`).
-  The booking must be owned by that person and currently active.
+  The booking must be owned by that person and currently active. Ownership is
+  judged the way section 3 judges it (#2657): each id you supply matches a
+  booking whose `external_id` OR `salesforce_id` equals it, so a booking you can
+  read by `externalId` you can cancel by the same id.
 - Optional `reason` (a `CANCEL_REASONS` code; `other` needs `reasonDetail`);
   defaults to `api_cancellation`. Recorded with initiator `customer`.
 
