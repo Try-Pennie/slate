@@ -182,8 +182,14 @@ export async function importHoursOnActivation(
     );
   }
 
-  // Each call gets at most half of what is left, so both together fit the budget.
-  const timeoutMs = Math.min(CALCOM_CALL_TIMEOUT_MS, Math.floor(budget / 2));
+  // Re-read, never reuse `budget`: the Slate reads above spent some of it, and a
+  // deadline derived from the opening reading would let the cal.com read outlive the
+  // bound. Each call gets at most half of what is left NOW, so both together fit.
+  const left = deps.remainingMs();
+  if (left < MIN_IMPORT_BUDGET_MS) {
+    return skip("out-of-budget", `${Math.max(0, Math.round(left))}ms left after reading the stored week`);
+  }
+  const timeoutMs = Math.min(CALCOM_CALL_TIMEOUT_MS, Math.floor(left / 2));
   const read = await deps.readCalcom(agent.email, timeoutMs);
   if (read.kind !== "schedule") return skip(CALCOM_REASON[read.kind], calcomDetail(read));
 

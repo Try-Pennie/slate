@@ -223,10 +223,27 @@ eq(seenReasons.size, failures.length, "no two cal.com failures share a reason");
 }
 {
   // Plenty before the read, nothing left after it: the write is not started.
-  const r = rig({ remainingMs: [30_000, 0] });
+  // Readings: at the start, just before the cal.com read, just before the write.
+  const r = rig({ remainingMs: [30_000, 30_000, 0] });
   const out = await importHoursOnActivation(AGENT, r.deps);
   eq(out.kind === "skipped" && out.reason, "out-of-budget", "a read that spent the budget does not go on to write");
   eq(r.writes.length, 0, "no write after the budget ran out");
+}
+{
+  // The Slate reads spend budget too: 30s at the start, 3s left once the schedule
+  // and org default have been read. The cal.com deadline must come from the 3s.
+  const r = rig({ remainingMs: [30_000, 3_000] });
+  await importHoursOnActivation(AGENT, r.deps);
+  eq(r.calcomCalls.length, 1, "control: cal.com is still asked with 3s left");
+  assert(r.calcomCalls[0].timeoutMs * 2 <= 3_000,
+    `the cal.com deadline is half of what is left AFTER the Slate reads (got ${r.calcomCalls[0].timeoutMs}ms against 3000ms left)`);
+}
+{
+  // And when the Slate reads spent nearly all of it, cal.com is not started at all.
+  const r = rig({ remainingMs: [30_000, 400] });
+  const out = await importHoursOnActivation(AGENT, r.deps);
+  eq(out.kind === "skipped" && out.reason, "out-of-budget", "too little left after the Slate reads: skipped before cal.com");
+  eq(r.calcomCalls.length, 0, "no cal.com call once the Slate reads have spent the budget");
 }
 {
   // The deadline is shared across both calls, so each gets at most half of what is left.
