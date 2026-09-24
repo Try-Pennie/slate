@@ -55,6 +55,7 @@ vi.mock("@/lib/booking/service", () => service);
 vi.mock("@/lib/monitor/record-api-outcome", () => monitor);
 
 import { POST, GET } from "./route";
+import { PARTNER_KEYS } from "@/lib/booking/partner-keys";
 import {
   DIRECT_BOOKING_API_HOURLY_RATE_RULES,
   DIRECT_BOOKING_API_READ_HOURLY_RATE_RULES,
@@ -708,5 +709,55 @@ describe("GET /api/bookings lookup attribution (#2643, #2645)", () => {
     await lookup("externalId=00Q1");
     expect(info).toHaveBeenCalledWith(expect.stringContaining('mode="person"'));
     info.mockRestore();
+  });
+});
+
+// #2659: the partner join keys a landing page put on the booking ride on the
+// confirm response, null when the booking has none, so a caller learns them
+// without a second read. Read off the BOOKING's own prefill, never the request:
+// on a `deduped` or `rescheduled` outcome the booking named is the one the lead
+// already held, and its keys are the ones the warehouse will join on.
+describe("POST /api/bookings partner join keys (#2659)", () => {
+  beforeEach(() => {
+    env.bookingApiKeyPrimary.mockReturnValue("real-secret");
+    env.bookingApiKeySecondary.mockReturnValue("");
+    rateLimit.allowRequest.mockResolvedValue(true);
+    rateLimit.bookingApiWriteWithinLimit.mockResolvedValue(true);
+    rateLimit.bookingApiIpWithinLimit.mockResolvedValue(true);
+  });
+
+  function withPrefill(outcome: string, prefill: Record<string, string> | undefined) {
+    const r = result(outcome);
+    return { ...r, booking: { ...r.booking, prefill } };
+  }
+
+  it("carries both from the booking's prefill on every outcome that booked this caller's lead", async () => {
+    for (const outcome of ["created", "rescheduled", "deduped"]) {
+      service.bookViaApi.mockResolvedValue(
+        withPrefill(outcome, { [PARTNER_KEYS.submissionId]: "a0G5x00000AbCdEQAU", [PARTNER_KEYS.regalProfileId]: "rp_01HZY3" }),
+      );
+      const res = await post("Bearer real-secret", VALID_BODY);
+      const body = await res.json();
+      expect(body.booking).toMatchObject({ submissionId: "a0G5x00000AbCdEQAU", regalProfileId: "rp_01HZY3" });
+    }
+  });
+
+  it("answers null, not a missing field, when the booking has neither", async () => {
+    service.bookViaApi.mockResolvedValue(withPrefill("created", { utm_source: "google" }));
+    const res = await post("Bearer real-secret", VALID_BODY);
+    const body = await res.json();
+    expect(body.booking.submissionId).toBeNull();
+    expect(body.booking.regalProfileId).toBeNull();
+  });
+
+  it("withholds them on confirm_required, where the booking may be somebody else's (#1340)", async () => {
+    service.bookViaApi.mockResolvedValue(
+      withPrefill("confirm_required", { [PARTNER_KEYS.submissionId]: "a0G5x00000AbCdEQAU" }),
+    );
+    const res = await post("Bearer real-secret", VALID_BODY);
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body.booking).not.toHaveProperty("submissionId");
+    expect(body.booking).not.toHaveProperty("regalProfileId");
   });
 });

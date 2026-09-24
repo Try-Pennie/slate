@@ -84,11 +84,16 @@ trigger drives sync, recompute, outbox, and self-heal. Every endpoint requires
 ## URL contract (Cal.com parity)
 
 ```
-/booking/{salesforceId}?xbc={bucketCode}&name=&email=&phone=&attendeePhoneNumber=&smsReminderNumber=&loanPurpose=&loanRequest=&estimatedPmt=&active=
+/booking/{salesforceId}?xbc={bucketCode}&name=&email=&phone=&attendeePhoneNumber=&smsReminderNumber=&loanPurpose=&loanRequest=&estimatedPmt=&active=&submissionId=&regalProfileId=
 ```
 
 - `{salesforceId}` — opaque, stored and echoed in webhooks (no Salesforce calls).
 - `xbc` — resolves to the bucket / round-robin pool.
+- `submissionId` and `regalProfileId` (#2659): the partner join keys, the lead's
+  Salesforce submission and the Regal contact. Pass each when the page has it and
+  leave it off otherwise. They ride in `prefill`, come back on every booking view
+  and in the `bookingSuccessful` payload as `submissionId` / `regalProfileId`, and
+  reach Regal as `sfdc_submission_id` / `regal_profile_id`.
 - Everything else prefills the form and is forwarded in the webhook payload.
 
 ## Programmatic booking

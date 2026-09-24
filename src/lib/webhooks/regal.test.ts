@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import { buildRegalEvent } from "./regal";
 import type { BookingEventPayload, RoutingMeta } from "./types";
 import type { WebhookEvent } from "@/lib/db/types";
+import { PARTNER_KEYS } from "@/lib/booking/partner-keys";
 
 // #492: Slate deliberately drops a rung when the requested tier has nobody free, which
 // from the outside is indistinguishable from a misroute, which is the exact thing Regal's
@@ -125,5 +126,90 @@ describe("buildRegalEvent routing properties (#492)", () => {
     expect(e.properties.slateTierFallback).toBe(false);
     expect(e.properties.slateEmptyPoolFallback).toBe(false);
     expect(e.properties.slateRungsDropped).toBe(0);
+  });
+});
+
+// #2659: the two join keys a landing page passes on the booking URL (Pennie's
+// GTM/GA4 tagging spec v2, section 3) ride into Regal under the spec's OWN names,
+// so the warehouse can tie a booking to a lead's submission and to a call
+// platform contact without leaning on GA4. The spec is explicit that a key is
+// LEFT OUT when the page has no value: never an empty string, never a null key,
+// and never a camel cased twin of the name the spec chose.
+describe("buildRegalEvent partner join keys (#2659)", () => {
+  const SUBMISSION = "a0G5x00000AbCdEQAU";
+  const PROFILE = "rp_01HZY3";
+  const withKeys = (prefill: Record<string, string>): BookingEventPayload => ({
+    ...payload(),
+    prefill,
+  });
+
+  it("carries both under the tagging spec's exact names", () => {
+    const e = buildRegalEvent(
+      "booking.created",
+      withKeys({ [PARTNER_KEYS.submissionId]: SUBMISSION, [PARTNER_KEYS.regalProfileId]: PROFILE }),
+    );
+
+    expect(e.properties.sfdc_submission_id).toBe(SUBMISSION);
+    expect(e.properties.regal_profile_id).toBe(PROFILE);
+  });
+
+  const EVENTS: WebhookEvent[] = [
+    "booking.created",
+    "booking.rescheduled",
+    "booking.cancelled",
+    "booking.reassigned",
+    "booking.completed",
+  ];
+  it.each(EVENTS)("carries them on %s, since every event is a join point", (event) => {
+    const e = buildRegalEvent(
+      event,
+      withKeys({ [PARTNER_KEYS.submissionId]: SUBMISSION, [PARTNER_KEYS.regalProfileId]: PROFILE }),
+    );
+
+    expect(e.properties.sfdc_submission_id).toBe(SUBMISSION);
+    expect(e.properties.regal_profile_id).toBe(PROFILE);
+  });
+
+  it("leaves a key out entirely when the page had no value, never a null key", () => {
+    const e = buildRegalEvent("booking.created", withKeys({ utm_source: "google" }));
+
+    expect(e.properties).not.toHaveProperty("sfdc_submission_id");
+    expect(e.properties).not.toHaveProperty("regal_profile_id");
+  });
+
+  it("carries the submission id alone when the page had no Regal profile", () => {
+    const e = buildRegalEvent("booking.created", withKeys({ [PARTNER_KEYS.submissionId]: SUBMISSION }));
+
+    expect(e.properties.sfdc_submission_id).toBe(SUBMISSION);
+    expect(e.properties).not.toHaveProperty("regal_profile_id");
+  });
+
+  it("treats an empty or blank value as absent, never sending an empty string", () => {
+    const e = buildRegalEvent(
+      "booking.created",
+      withKeys({ [PARTNER_KEYS.submissionId]: "", [PARTNER_KEYS.regalProfileId]: "   " }),
+    );
+
+    expect(e.properties).not.toHaveProperty("sfdc_submission_id");
+    expect(e.properties).not.toHaveProperty("regal_profile_id");
+  });
+
+  it("trims the value it does send, so a padded id still joins", () => {
+    const e = buildRegalEvent("booking.created", withKeys({ [PARTNER_KEYS.submissionId]: `  ${SUBMISSION} ` }));
+
+    expect(e.properties.sfdc_submission_id).toBe(SUBMISSION);
+  });
+
+  // Failure path: an admin resend and the dead letter replay rebuild the event
+  // from the STORED payload. A row with no prefill bag at all must replay, not
+  // crash, and simply carry no keys.
+  it("degrades instead of throwing when replaying a payload stored with no prefill", () => {
+    const legacy = payload();
+    delete (legacy as Partial<BookingEventPayload>).prefill;
+
+    const e = buildRegalEvent("booking.created", legacy);
+
+    expect(e.properties).not.toHaveProperty("sfdc_submission_id");
+    expect(e.properties).not.toHaveProperty("regal_profile_id");
   });
 });

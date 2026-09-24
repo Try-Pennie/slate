@@ -131,7 +131,8 @@ Create a booking, or (by re-submitting the same person) move an existing one.
   },
   "externalId": "00Q5x000001abcEAA",   // required, the lead's stable per-person id
   "salesforceId": "00Q5x000001abcEAA", // optional, defaults to externalId
-  "prefill": { "utm_source": "regal" },// optional, string map, forwarded in webhooks
+  "prefill": { "utm_source": "regal" },// optional, string map, forwarded in webhooks; the partner
+                                       //   join keys submissionId / regalProfileId ride here (#2659)
   "confirmReschedule": false,          // optional, allows a weak-match move (see below)
   "dryRun": false                      // optional, preview without side effects
 }
@@ -167,7 +168,8 @@ semantics.
     "endsAt": "2026-07-01T15:30:00.000Z",
     "status": "confirmed",
     "agent": { "name": "…", "email": "…" },
-    "manageUrl": "https://…/booking/manage/<token>"
+    "manageUrl": "https://…/booking/manage/<token>",
+    "submissionId": "…", "regalProfileId": null   // #2659: off the booking's prefill, withheld on confirm_required
   },
   // #1515: which team owns the lead. `code` is the bucket they are ACTUALLY in,
   // which a cross bucket rebook or a tier drop can move away from the one asked
@@ -262,7 +264,8 @@ The `<view>` shape (both modes):
   "id": "…", "externalId": "…", "salesforceId": "…",
   "startsAt": "…", "endsAt": "…", "status": "confirmed",
   "agent": { "name": "…", "email": "…" },
-  "manageUrl": "https://…/booking/manage/<token>"
+  "manageUrl": "https://…/booking/manage/<token>",
+  "submissionId": "…", "regalProfileId": null   // #2659: partner join keys, null when the page passed none
   // list items also carry: "bucketCode": "411"
 }
 ```
@@ -768,7 +771,10 @@ coverage move without reading the booking.
   unauthenticated event (#600). The `routing.tier_fallback` flag rides through as
   `properties.slateTierFallback` so Regal can suppress its "Non-Ultra High Team
   Booking Detected" alert on an intentional tier-drop (#492). A `booking.created`
-  sets voice, SMS, and email opt-in traits.
+  sets voice, SMS, and email opt-in traits. The partner join keys in `prefill`
+  ride through as `properties.sfdc_submission_id` and
+  `properties.regal_profile_id`, under the tagging spec's own names and left out
+  of the event entirely when absent (#2659).
 - `generic` (Cadence and any other subscriber): body `{ "event", "data" }` with
   headers `x-slate-event`, `x-slate-timestamp`, `x-slate-delivery-id`, and an
   HMAC `x-slate-signature` of `sha256=hex(hmac(secret, "<timestamp>.<body>"))`
@@ -809,7 +815,7 @@ URL; there is no header credential. Intended for humans, not machine callers.
 | Method + path | Body | Success | Notable errors |
 |---|---|---|---|
 | `POST /api/bookings/[token]/cancel` | `{ reason, reasonDetail? }` (reason mandatory, #326) | `200 { "ok": true, "booking": { id, startsAt, endsAt } }`: which call was given up, so the embedded booker can announce the cancel to its host page (#2658); id and times only, never the contact | `400` invalid or missing reason; `409` meeting already completed so not cancellable (#618) |
-| `POST /api/bookings/[token]/reschedule` | `{ start, reason, reasonDetail? }` (start a parseable ISO instant, reason mandatory) | `200 { id, startsAt, endsAt, manageUrl, calendarLinks, isTest, contactChanged? }`: the same fields the Booker's own confirm returns, because both are posted to the host as its success message (#2644, `isTest` since #2658) | `400` invalid start or reason; `409` slot taken or concurrent-change conflict; `503` verify unavailable |
+| `POST /api/bookings/[token]/reschedule` | `{ start, reason, reasonDetail? }` (start a parseable ISO instant, reason mandatory) | `200 { id, startsAt, endsAt, manageUrl, calendarLinks, isTest, submissionId, regalProfileId, contactChanged? }`: the same fields the Booker's own confirm returns, because both are posted to the host as its success message (#2644, `isTest` since #2658) | `400` invalid start or reason; `409` slot taken or concurrent-change conflict; `503` verify unavailable |
 | `POST /api/bookings/[token]/phone` | `{ phone }` (#1341) | `200 { ok: true, phone }`, carrying the number as STORED, not as typed | `400` a number we cannot call, or a payload over the size ceiling |
 | `GET /api/bookings/[token]/ics` | none (#2643) | `200` a `text/calendar` download (`pennie-call.ics`), built at request time and never cached | `404` unknown token; `410` a cancelled call, with a sentence saying so |
 

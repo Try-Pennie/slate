@@ -151,6 +151,27 @@ Validation is strict (returns `VALIDATION`): name + email + phone all required,
 `timezone` must be a real IANA zone, and `start` must carry a timezone offset (a
 bare local time is rejected, since it could book the wrong hour).
 
+#### `prefill` carries the partner join keys (#2659)
+
+Two keys inside `prefill` mean more than "forwarded": **`submissionId`**, the
+lead's Salesforce submission (`sfdc_submission_id` in Pennie's GTM/GA4 tagging
+spec), and **`regalProfileId`**, the Regal contact, when the page has one. They
+are how the warehouse ties a booking to a lead and to a call platform contact
+without leaning on GA4. They live INSIDE `prefill` rather than as top level
+fields because that is where the embed already puts them (`/book` keeps every
+URL param there), so there is one home and one reader. Send them there, under
+exactly that spelling:
+
+```jsonc
+"prefill": { "submissionId": "a0G5x00000AbCdEQAU", "regalProfileId": "rp_01HZY3" }
+```
+
+Leave a key out when the page has no value; an empty or blank value is read as
+absent. They come back on every view (sections 3 to 5, and the confirm response
+below) as `submissionId` and `regalProfileId`, `null` when absent, and reach Regal
+as `properties.sfdc_submission_id` and `properties.regal_profile_id`, left out of
+the event entirely when absent.
+
 ### One active appointment per person (dedupe + auto-reschedule)
 
 Before creating, the API looks the person up across **active** bookings — by
@@ -201,6 +222,8 @@ silently moving the wrong person (shared household phone, recycled id).
     "status": "confirmed",
     "agent": { "name": "…", "email": "…" },
     "manageUrl": "https://…/booking/manage/<token>",
+    "submissionId": "a0G5x00000AbCdEQAU",
+    "regalProfileId": null,
     "contact": { "name": "…", "email": "…", "phone": "+1…" },
     "calendarLinks": { "google": "…", "outlook": "…", "office365": "…", "ics": "…" }
   },
@@ -219,7 +242,10 @@ The lead's own contact as stored, and four add to calendar links, the same
 fields the by id lookup (section 3) returns and from the same builder. Both are
 **left out on `confirm_required`**, because the booking named there is one a
 weak match found and may belong to somebody else (#1340). See section 3 for what
-each link is.
+each link is. The partner join keys `submissionId` and `regalProfileId` (#2659)
+are withheld on `confirm_required` for the same reason, and carried on every
+other outcome off the booking the response names (on `deduped` and `rescheduled`
+that is the booking the lead already held).
 
 #### `bucket`: which team owns the lead (#1515)
 
@@ -350,7 +376,9 @@ two fields below.
   "status":   "confirmed",
   "agent":    { "name": "…", "email": "…" },
   "manageUrl": "https://…/booking/manage/<token>",
-  "isTest":   false
+  "isTest":   false,
+  "submissionId":   "a0G5x00000AbCdEQAU",
+  "regalProfileId": null
 }
 ```
 
@@ -362,6 +390,12 @@ two fields below.
   booking is readable and cancellable here with your own key, by the same strong
   id, exactly like a real one: that is how the confirmed page is tested end to
   end. Read off the booking's bucket on the server, never off the caller.
+- **`submissionId`** and **`regalProfileId`** (#2659) are the partner join keys
+  the landing page put on the booking URL (section 2), read off the booking's
+  own `prefill`, trimmed, and `null` when the page passed none or an empty
+  value. The field is always present, so a reader never has to tell "absent"
+  from "not yet supported". A host's confirmed page can carry them onward, and
+  the warehouse joins on the same values (`docs/snowflake-setup.md`).
 
 ```jsonc
 // <booking detail>: the by id answer, and the confirm response's booking (#2643)
@@ -451,7 +485,8 @@ GET /api/bookings?agentEmail=agent@trypennie.com&limit=50
 
 Each item in the returned array includes a `bucketCode` field (the XBC bucket
 the booking belongs to) in addition to the standard booking fields, including
-`isTest` (#2660), read off the same joined bucket.
+`isTest` (#2660), read off the same joined bucket, and the partner join keys
+`submissionId` and `regalProfileId` (#2659), off each booking's own `prefill`.
 
 ### 400 cases
 
@@ -477,7 +512,8 @@ DELETE /api/bookings?externalId=<id>&bookingId=<uuid>
 - Optional `reason` (a `CANCEL_REASONS` code; `other` needs `reasonDetail`);
   defaults to `api_cancellation`. Recorded with initiator `customer`.
 
-Success → `200 { "outcome": "cancelled", "booking": <booking> }`. Deletes the
+Success → `200 { "outcome": "cancelled", "booking": <booking> }`, the section 3
+shape with the partner join keys included (#2659). Deletes the
 Google event, frees the slot, and fires the `booking.cancelled` webhook.
 
 Not found / not owned / not active → `404 { "code": "NOT_FOUND" }` (a repeat

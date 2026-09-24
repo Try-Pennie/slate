@@ -54,6 +54,7 @@ import {
 } from "./owner-alert.ts";
 import { formatOwnerReassignNotice } from "./owner-notice-copy.ts";
 import { bookingDetailHref } from "./detail.ts";
+import { partnerKeysFrom, type PartnerKeys } from "./partner-keys.ts";
 import { SLACK_NOT_CONFIGURED } from "../notify/slack.ts";
 import { isDefinitiveFailure, reachabilityFromError } from "../google/reachability-classify.ts";
 import type { FailureKind } from "../google/sync-health.ts";
@@ -3438,8 +3439,16 @@ export interface ListFilter {
   orderBy: "starts_at" | "updated_at";
 }
 
-/** Outward-facing view of a booking for the lookup/cancel API (#386). */
-export interface ApiBookingView {
+/**
+ * Outward-facing view of a booking for the lookup/cancel API (#386).
+ *
+ * Extends `PartnerKeys` (#2659): `submissionId` and `regalProfileId`, the join
+ * keys the landing page put on the booking URL, read off the booking's own
+ * `prefill` through the one reader and null when the page passed none, so a
+ * caller can always read the field. On every view (lookup, by id, list,
+ * cancel) because the warehouse and the host's confirmed page join on them.
+ */
+export interface ApiBookingView extends PartnerKeys {
   id: string;
   externalId: string | null;
   salesforceId: string | null;
@@ -3492,6 +3501,7 @@ function toApiBookingView(b: Booking, deps: BookingDeps, isTest: boolean): ApiBo
     agent: { name: b.agent_name, email: b.agent_email },
     manageUrl: manageUrl(deps, b.manage_token),
     isTest,
+    ...partnerKeysFrom(b.prefill),
   };
 }
 

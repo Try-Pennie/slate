@@ -88,6 +88,7 @@ vi.mock("@/lib/booking/settings", () => bookingSettings);
 import { POST } from "./route";
 import { PUBLIC_TEST_BUCKET_CODES } from "@/lib/embed/public-test-bucket";
 import { BOOKING_ERROR_COPY } from "@/lib/booking/booker-copy";
+import { PARTNER_KEYS } from "@/lib/booking/partner-keys";
 
 const PUBLIC_TEST = PUBLIC_TEST_BUCKET_CODES[0];
 
@@ -735,5 +736,45 @@ describe("confirm answers are never stored (#2561)", () => {
     const res = await post(VALID_BODY);
     expect(res.status).toBe(500);
     expect(noStore(res)).toBe("no-store");
+  });
+});
+
+// #2659: the Booker posts this response to the host page as `slate:bookingSuccessful`,
+// so the host learns the two partner join keys it put on the URL back from the
+// booking that was actually made, and can carry them onto its own confirmed
+// page. Null when the page passed none, so the field is always there to read.
+describe("POST /booking partner join keys (#2659)", () => {
+  it("carries submissionId and regalProfileId from the booking's prefill", async () => {
+    service.createBooking.mockResolvedValue({
+      booking: {
+        id: "bk-pk",
+        starts_at: "2026-07-01T15:00:00.000Z",
+        ends_at: "2026-07-01T15:30:00.000Z",
+        prefill: { [PARTNER_KEYS.submissionId]: "a0G5x00000AbCdEQAU", [PARTNER_KEYS.regalProfileId]: "rp_01HZY3" },
+      },
+      manageUrl: "https://slate.test/booking/manage/tok",
+    });
+    const res = await post(VALID_BODY);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({
+      id: "bk-pk",
+      submissionId: "a0G5x00000AbCdEQAU",
+      regalProfileId: "rp_01HZY3",
+    });
+  });
+
+  it("answers null for each key the page did not pass", async () => {
+    service.createBooking.mockResolvedValue({
+      booking: {
+        id: "bk-pk",
+        starts_at: "2026-07-01T15:00:00.000Z",
+        ends_at: "2026-07-01T15:30:00.000Z",
+        prefill: { [PARTNER_KEYS.submissionId]: "a0G5x00000AbCdEQAU" },
+      },
+      manageUrl: "https://slate.test/booking/manage/tok",
+    });
+    const body = await (await post(VALID_BODY)).json();
+    expect(body.submissionId).toBe("a0G5x00000AbCdEQAU");
+    expect(body.regalProfileId).toBeNull();
   });
 });

@@ -41,6 +41,7 @@ import { internalErrorResponse } from "@/lib/api/errors";
 import { noStore } from "@/lib/api/no-store";
 import { recordApiOutcome } from "@/lib/monitor/record-api-outcome";
 import { log } from "@/lib/log";
+import { partnerKeysFrom } from "@/lib/booking/partner-keys";
 
 export const dynamic = "force-dynamic";
 
@@ -286,6 +287,11 @@ async function handlePost(req: NextRequest) {
       // them however it ends the booking. The lead's contact is deliberately left
       // off: this travels as a browser message to a host that already holds it.
       calendarLinks: bookingDetailExtras(booking).calendarLinks,
+      // #2659: the partner join keys the host put on the URL, read back off the
+      // booking that was actually made, so the host can carry them onto its own
+      // confirmed page. Null when the page passed none, so the field is always
+      // there to read.
+      ...partnerKeysFrom(booking.prefill),
     });
   } catch (err) {
     // The lead already has an active call, so nothing was created (#1337). Refund

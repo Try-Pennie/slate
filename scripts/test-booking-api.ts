@@ -38,6 +38,7 @@ import {
   NOW,
   CR,
 } from "./lib/booking-fakes.ts";
+import { PARTNER_KEYS } from "../src/lib/booking/partner-keys.ts";
 
 const { assert, finish } = createAsserter();
 
@@ -703,6 +704,66 @@ async function run() {
     const { deps, calls } = makeDeps({ existing: ctx });
     await cancelBooking("tok1", CR, "customer", deps, NOW);
     assert(calls.enqueueEventDeletion.length === 0, "cancel does NOT enqueue when deleteEvent succeeds");
+  }
+
+  // --- #2659: the partner join keys ride on EVERY view --------------------
+  // `submissionId` and `regalProfileId` are read off the booking's own prefill
+  // through one reader, on the lookup, the by id read, the list and the cancel,
+  // null when the page passed none, so a caller can always read the field. The
+  // lookup and list are what trypennie's confirmed page and the warehouse join
+  // on; the direct API's own confirm response is pinned in its route test.
+  {
+    const prefill = { xbc: "411", [PARTNER_KEYS.submissionId]: "a0G5x00000AbCdEQAU", [PARTNER_KEYS.regalProfileId]: "rp_01HZY3" };
+    const bk = makeBooking({ id: "bkP", external_id: "ext-1", prefill });
+    const { deps } = makeDeps({ personBookings: [bk], bookingById: { booking: bk, bucket, eventType } });
+
+    const views = await lookupPersonBookings({ externalId: "ext-1", salesforceId: null }, deps);
+    assert(views[0].submissionId === "a0G5x00000AbCdEQAU", "lookup view carries submissionId from prefill (#2659)");
+    assert(views[0].regalProfileId === "rp_01HZY3", "lookup view carries regalProfileId from prefill (#2659)");
+
+    const byId = await getPersonBookingById(
+      { bookingId: "bkP", identity: { externalId: "ext-1", salesforceId: null }, status: null },
+      deps,
+    );
+    assert(byId.submissionId === "a0G5x00000AbCdEQAU" && byId.regalProfileId === "rp_01HZY3", "by id view carries both keys (#2659)");
+  }
+  {
+    const prefill = { xbc: "411", [PARTNER_KEYS.submissionId]: " a0G5x00000AbCdEQAU ", [PARTNER_KEYS.regalProfileId]: "" };
+    const bk = makeBooking({ id: "bkQ", external_id: "ext-1", prefill });
+    const { deps } = makeDeps({ personBookings: [bk] });
+    const views = await lookupPersonBookings({ externalId: "ext-1", salesforceId: null }, deps);
+    assert(views[0].submissionId === "a0G5x00000AbCdEQAU", "a padded submission id is trimmed on the view (#2659)");
+    assert(views[0].regalProfileId === null, "an empty regal profile id reads as null, never an empty string (#2659)");
+  }
+  {
+    const bk = makeBooking({ id: "bkN", external_id: "ext-1", prefill: { utm_source: "google" } });
+    const { deps } = makeDeps({ personBookings: [bk] });
+    const views = await lookupPersonBookings({ externalId: "ext-1", salesforceId: null }, deps);
+    assert("submissionId" in views[0] && views[0].submissionId === null, "no submission id on the page: the field is present and null (#2659)");
+    assert("regalProfileId" in views[0] && views[0].regalProfileId === null, "no regal profile id on the page: the field is present and null (#2659)");
+  }
+  {
+    const prefill = { [PARTNER_KEYS.submissionId]: "a0G5x00000AbCdEQAU", [PARTNER_KEYS.regalProfileId]: "rp_01HZY3" };
+    const b1 = makeBooking({ id: "LP", bucket_id: "bkt1", prefill });
+    const { deps } = makeDeps({ listResult: { rows: [b1], buckets: [bucket] } });
+    const res = await listBookings(
+      { status: null, afterStart: null, beforeEnd: null, updatedSince: null,
+        bucketCode: null, agentEmail: null, limit: 10, offset: 0 },
+      deps,
+    );
+    assert(res.items[0].submissionId === "a0G5x00000AbCdEQAU" && res.items[0].regalProfileId === "rp_01HZY3", "list item carries both keys (#2659)");
+  }
+  {
+    const prefill = { [PARTNER_KEYS.submissionId]: "a0G5x00000AbCdEQAU" };
+    const bk = makeBooking({ id: "bkX", external_id: "ext-1", status: "confirmed", gcal_event_id: "g1", prefill });
+    const ctx = { booking: bk, bucket, eventType };
+    const { deps } = makeDeps({ bookingById: ctx, existing: ctx });
+    const view = await cancelDirectBooking(
+      { bookingId: "bkX", identity: { externalId: "ext-1", salesforceId: null }, reason: { code: "api_cancellation", detail: null } },
+      deps,
+    );
+    assert(view.status === "cancelled" && view.submissionId === "a0G5x00000AbCdEQAU", "the cancelled view still carries the submission id (#2659)");
+    assert(view.regalProfileId === null, "and null for the key the page never passed (#2659)");
   }
 
   // --- cancelDirectBooking (#386) ---

@@ -42,6 +42,7 @@ vi.mock("@/lib/booking/service", () => ({
 
 import BookEntry from "./page";
 import Booker from "@/components/Booker";
+import { PARTNER_KEYS, partnerKeysFrom } from "@/lib/booking/partner-keys";
 
 const PUBLIC_TEST = PUBLIC_TEST_BUCKET_CODES[0];
 
@@ -138,5 +139,44 @@ describe("/book on the public test bucket (#2660)", () => {
     const el = await BookEntry({ searchParams: Promise.resolve({ xbc: PUBLIC_TEST }) });
 
     expect(bookerElement(el)).toMatchObject({ bucketCode: PUBLIC_TEST, isTest: false });
+  });
+});
+
+// #2659: trypennie puts `submissionId=<submission.Id>` on the `/book` URL (its
+// `SlateCalendar.tsx`), and a page may add `regalProfileId`. The page keeps
+// every query param in `prefill`, so the keys ride into the booking, the
+// webhooks and the warehouse under the spelling the URL used. This pins that
+// the two names survive EXACTLY, because every reader downstream looks them up
+// by that spelling through one constant, and a page that started filtering
+// prefill to the fields it knows would drop them with nothing else failing.
+describe("/book keeps the partner join keys in prefill (#2659)", () => {
+  it("hands the Booker submissionId and regalProfileId under their exact spelling", async () => {
+    admin.supabaseAdmin.mockReturnValue(dbByCode({ "111": { org_id: "o1", is_test: false } }, []));
+
+    const el = await BookEntry({
+      searchParams: Promise.resolve({
+        xbc: "111",
+        [PARTNER_KEYS.submissionId]: "a0G5x00000AbCdEQAU",
+        [PARTNER_KEYS.regalProfileId]: "rp_01HZY3",
+      }),
+    });
+
+    const prefill = bookerElement(el).prefill as Record<string, string>;
+    expect(prefill[PARTNER_KEYS.submissionId]).toBe("a0G5x00000AbCdEQAU");
+    expect(prefill[PARTNER_KEYS.regalProfileId]).toBe("rp_01HZY3");
+    // And the one reader every consumer goes through gets them back out.
+    expect(partnerKeysFrom(prefill)).toEqual({
+      submissionId: "a0G5x00000AbCdEQAU",
+      regalProfileId: "rp_01HZY3",
+    });
+  });
+
+  it("CONTROL: a page with neither key hands the Booker a prefill both read as null", async () => {
+    admin.supabaseAdmin.mockReturnValue(dbByCode({ "111": { org_id: "o1", is_test: false } }, []));
+
+    const el = await BookEntry({ searchParams: Promise.resolve({ xbc: "111", utm_source: "google" }) });
+
+    const prefill = bookerElement(el).prefill as Record<string, string>;
+    expect(partnerKeysFrom(prefill)).toEqual({ submissionId: null, regalProfileId: null });
   });
 });
