@@ -39,6 +39,16 @@ vi.mock("@/components/ConfirmationMarkPlayer", () => ({
   ConfirmationMarkPlayer: () => null,
 }));
 
+// The early load of that player (#2636), watched rather than run: the mark itself
+// stays real, and what the early load fetches is covered beside the mark.
+const preload = vi.hoisted(() => ({ calls: 0 }));
+vi.mock("@/components/ConfirmationMark", async (original) => ({
+  ...(await original<typeof import("@/components/ConfirmationMark")>()),
+  preloadConfirmationMark: () => {
+    preload.calls += 1;
+  },
+}));
+
 // #625: the confirm POST must not freeze the button in "Booking your call…" if
 // the request rejects at the network layer (flaky mobile). It surfaces an error
 // and re-enables so the lead can retry.
@@ -95,6 +105,21 @@ async function fillAndConfirm() {
 beforeEach(() => vi.clearAllMocks());
 
 describe("Booker confirm", () => {
+  it("starts loading the confirmation animation once a time is picked, not before (#2636)", async () => {
+    global.fetch = vi.fn(async () => ({ ok: true, json: async () => availability }) as Response) as unknown as typeof fetch;
+    preload.calls = 0;
+
+    render(<Booker {...baseProps} />);
+    await pickFirstDay();
+    // A lead only looking at days never books, so they are not charged for it.
+    expect(preload.calls).toBe(0);
+
+    await userEvent.click(await screen.findByRole("button", { name: /:\d{2}/ }));
+    // Picked a time: the details form is a few seconds of typing, which is the
+    // head start the animation needs to be ready on the confirmation screen.
+    expect(preload.calls).toBeGreaterThan(0);
+  });
+
   it("surfaces an error and re-enables Confirm when the booking POST rejects at the network layer", async () => {
     global.fetch = vi.fn(async (url: RequestInfo | URL) => {
       if (String(url).includes("/api/availability")) {
@@ -294,12 +319,15 @@ describe("Booker confirm", () => {
     await fillAndConfirm();
 
     await screen.findByText("You're all set");
-    // The still coin is the layer that is always in the tree, whichever form the
-    // mark takes for this viewer (#2560: the animation draws over it, or a
-    // reduced motion lead gets it alone). What #637 forbids is the embed being
-    // fobbed off with something smaller than the standalone page shows.
-    const mark = document.querySelector(`img[src="${CONFIRMATION_MARK.still}"]`);
-    expect(mark).not.toBeNull();
+    // Every viewer ends on the still coin: after the animation settles, or once
+    // the hold runs out (#2636), or at once under reduced motion. The player is
+    // stood down in this file and never paints, so this is the hold running out.
+    // What #637 forbids is the embed being fobbed off with something smaller
+    // than the standalone page shows.
+    await waitFor(
+      () => expect(document.querySelector(`img[src="${CONFIRMATION_MARK.still}"]`)).not.toBeNull(),
+      { timeout: CONFIRMATION_MARK.holdMs + 1000 },
+    );
   });
 
   // #637: the confirmation offered no way back to the booking. It now links to
