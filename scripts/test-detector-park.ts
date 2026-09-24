@@ -43,6 +43,7 @@ import {
   LOW_VOLUME_VERDICT_LANE,
   OOO_PROTECTION_VERDICT_LANE,
   PARKED_VERDICT_DETECTORS,
+  REGAL_CALLS_VERDICT_LANE,
   parkedDetector,
   detectorParkState,
 } from "../src/lib/monitor/verdict-freshness.ts";
@@ -186,6 +187,10 @@ const FIXTURE_REGISTRY = {
   assert(
     !parkedDetector(OOO_PROTECTION_VERDICT_LANE),
     "the time off protection check concludes whenever the database is readable, so it stays armed",
+  );
+  assert(
+    !parkedDetector(REGAL_CALLS_VERDICT_LANE),
+    "Regal's reporting webhook has pointed at Slate since 2026-09-24 and human calls arrive every few seconds, so the Regal calls detector is armed (#2695)",
   );
 }
 

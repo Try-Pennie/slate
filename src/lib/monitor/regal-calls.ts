@@ -297,7 +297,7 @@ export interface RegalCallDeps {
   loadIgnores: () => Promise<RegalIgnore[]>;
   /** User ids with an open page in this family. THROWS on a read error. */
   loadFiringUserIds: () => Promise<string[]>;
-  /** False until #2695: measure and log, send and clear nothing. */
+  /** The `regal_calls_armed` setting (#2695). False: measure and log, send and clear nothing. */
   armed: boolean;
   notify: ThrottledNotify;
   /** REQUIRED, so a caller cannot wire a condition with no way to end it (#1151). */

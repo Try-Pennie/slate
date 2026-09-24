@@ -121,6 +121,9 @@ const healthy = () => ({
   // GitHub workflow like the line above and carrying the same 52h bound. A healthy
   // fleet has last night's run in it.
   "verdict:kill-switch": ago(24 * 60 * MIN),
+  // #2695: Regal has posted every completed call to Slate since 2026-09-24, so a
+  // healthy fleet judges one on almost every monitor tick.
+  "verdict:regal-calls": ago(10 * MIN),
   // `verdict:booking-failure-rate` is deliberately ABSENT, and that is the healthy
   // state rather than a gap in the fixture (#2499). The check cannot reach a
   // verdict before real Low leads book: the outcome mix read excludes test
@@ -335,6 +338,38 @@ describe("alertOnStaleLanes (#803)", () => {
       // The blind page, not the un-park page: it says the check is running and has
       // stopped answering, and it must not read as a fault in the lane itself.
       expect(String(call?.[2])).toMatch(/not reached a verdict/i);
+    });
+
+    // #2695: the Regal calls detector is watched now that Regal posts to Slate. A
+    // feed that stops arriving (the webhook switched off in Regal, the key rotated)
+    // leaves the detector with nothing to judge, which is silent on its own; this
+    // is the page that notices. Both directions: past its four day bound it pages
+    // as blind, and inside it the healthy fixture above stays silent.
+    it("pages the Regal calls detector once it stops concluding (#2695)", async () => {
+      heartbeat.readAllHeartbeatMs.mockResolvedValue({
+        ...healthy(),
+        "verdict:regal-calls": ago(5 * 24 * 60 * MIN),
+      });
+
+      const { stale } = await alertOnStaleLanes();
+
+      expect(stale.map((l) => l.lane)).toContain("verdict:regal-calls");
+      const call = dispatch.sendThrottledAlert.mock.calls.find(
+        (c) => c[0] === laneKey("verdict:regal-calls"),
+      );
+      expect(call).toBeDefined();
+      expect(String(call?.[2])).toMatch(/not reached a verdict/i);
+    });
+
+    it("stays silent on a Regal calls verdict inside its bound (#2695)", async () => {
+      heartbeat.readAllHeartbeatMs.mockResolvedValue({
+        ...healthy(),
+        "verdict:regal-calls": ago(3 * 24 * 60 * MIN),
+      });
+
+      const { stale } = await alertOnStaleLanes();
+
+      expect(stale.map((l) => l.lane)).not.toContain("verdict:regal-calls");
     });
 
     // The production consequence of merging #1831, in one assertion. The un-park

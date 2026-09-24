@@ -712,7 +712,7 @@ export function resolveBelowLeadTierArmed(
  * Disarmed for the observe first reason (L56): nobody can say from a desk how many
  * people are calling while not bookable on an ordinary day, and if it is dozens the
  * role rule or the ignore list is wrong. The checks measure and log throughout, and
- * #2695 arms them.
+ * #2695 armed them once Regal's webhook was live; the setting still switches them off.
  */
 export function resolveRegalCallsArmed(config: Pick<MonitorAlertConfig, "regal_calls_armed"> | null): boolean {
   return resolveArmed(config?.regal_calls_armed);

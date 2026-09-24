@@ -362,21 +362,6 @@ export const PARKED_VERDICT_DETECTORS: Partial<Record<DetectorVerdictLane, Parke
     // tick, so a verdict this fresh means real bookings are in Slate now.
     unparkWithinMs: 10 * 60_000,
   },
-  // #2090. Blind until Regal's reporting webhook is pointed at Slate, which is a
-  // step in Regal's own console that nothing in this repo can take or see. Until
-  // then every tick is `no-calls` and the verdict watch would page "never
-  // concluded" daily about a missing configuration, naming nothing anybody in
-  // Slate can do that morning (L111, L36). The un-park page is the useful part:
-  // the first judged call is the arrival of the traffic this was waiting for, and
-  // the reminder to arm it.
-  [REGAL_CALLS_VERDICT_LANE]: {
-    reason:
-      "Regal's reporting webhook is not yet pointed at Slate, so no call from a Slate user has arrived to judge; it concludes on the first one",
-    issue: 2695,
-    // An hour of ordinary weekday traffic carries hundreds of human calls, so a
-    // verdict older than that says nothing about whether the feed is flowing NOW.
-    unparkWithinMs: 60 * 60_000,
-  },
 };
 
 /**

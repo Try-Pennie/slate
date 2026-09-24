@@ -271,7 +271,7 @@ export interface MonitorAlertConfig {
   awaiting_activation_armed: boolean | null;
   /** #2593: is the "booked below the lead's tier" page armed? Null = disarmed. */
   below_lead_tier_armed: boolean | null;
-  /** #2090: are the Regal call alerts armed? Null = disarmed (#2695 arms them). */
+  /** #2090: are the Regal call alerts armed? Null = disarmed (set on /admin/alerts, #2695). */
   regal_calls_armed: boolean | null;
   /** #1454: UI arm/disarm for the roster-coverage page. Null = unset (fall
    *  through to the disarmed default, which here is about the roster being dark
