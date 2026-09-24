@@ -421,11 +421,11 @@ export function inviteOnItsWay(email: string): string {
 export const CALENDAR_COPY = {
   title: (agentName: string | null): string =>
     agentName ? `Pennie call with ${agentName}` : "Pennie call with your loan advisor",
-  /** What the ICS link answers when there is no call to add (#2643). */
+  /** What the ICS link answers for a token we do not know (#2643). A cancelled call
+   *  is sent to its manage page instead (#2648), so it needs no sentence here. */
   // Pennie sends no confirmation email (#64, #2364), so the recovery names the
   // calendar invitation the advisor sent, which is where the details really are.
   icsNotFound: "We couldn't find that call. The calendar invitation your advisor sent has its details.",
-  icsCancelled: "This call was cancelled, so there is nothing to add to your calendar.",
   description: (manageUrl: string): string =>
     `Your Pennie loan advisor will call you at this time.\nReschedule or cancel: ${manageUrl}`,
 } as const;

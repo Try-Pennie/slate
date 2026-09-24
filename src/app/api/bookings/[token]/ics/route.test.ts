@@ -9,6 +9,7 @@ import { CALENDAR_COPY } from "@/lib/booking/booker-copy";
 const service = vi.hoisted(() => ({
   getBookingByToken: vi.fn(),
   bookingIcs: vi.fn((_booking: unknown, _stampIso: string) => "BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n"),
+  bookingManageUrl: vi.fn((token: string) => `https://slate.example/booking/manage/${token}`),
 }));
 const errors = vi.hoisted(() => ({
   internalErrorResponse: vi.fn(async () => new Response("Something went wrong.", { status: 500 })),
@@ -52,11 +53,16 @@ describe("GET /api/bookings/[token]/ics (#2643)", () => {
     expect((await get()).status).toBe(200);
   });
 
-  it("answers a cancelled call with 410 and says so, rather than a file for a meeting that is off", async () => {
+  it("sends a cancelled call to its manage page, which already shows it as cancelled (#2648)", async () => {
     service.getBookingByToken.mockResolvedValue(ctx("cancelled"));
     const res = await get();
-    expect(res.status).toBe(410);
-    expect(await res.text()).toBe(CALENDAR_COPY.icsCancelled);
+    // 303, so the browser follows with a GET whatever method asked, and never caches
+    // the move: a call is cancelled once but the link lives in old emails for ever.
+    expect(res.status).toBe(303);
+    expect(res.headers.get("location")).toBe("https://slate.example/booking/manage/tok1");
+    expect(res.headers.get("cache-control")).toBe("no-store");
+    // The address comes from the shared builder, keyed on the token the lead holds.
+    expect(service.bookingManageUrl).toHaveBeenCalledWith("tok1");
     expect(service.bookingIcs).not.toHaveBeenCalled();
   });
 
@@ -65,6 +71,8 @@ describe("GET /api/bookings/[token]/ics (#2643)", () => {
     const res = await get("nope");
     expect(res.status).toBe(404);
     expect(await res.text()).toBe(CALENDAR_COPY.icsNotFound);
+    // No booking, so no manage page to send them to.
+    expect(service.bookingManageUrl).not.toHaveBeenCalled();
   });
 
   it("refuses before any read when the address is over its limit", async () => {

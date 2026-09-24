@@ -2868,6 +2868,11 @@ export function bookingDetailExtras(b: Booking) {
   return orchestration.bookingDetailExtras(b, appUrl());
 }
 
+/** The manage page for one booking's token, on this deployment's own base URL. */
+export function bookingManageUrl(token: string): string {
+  return orchestration.manageUrlFor(appUrl(), token);
+}
+
 /** The ICS file for one booking (#2643), stamped with the moment it was made. */
 export function bookingIcs(b: Booking, stampIso: string): string {
   return orchestration.bookingIcs(b, appUrl(), stampIso);

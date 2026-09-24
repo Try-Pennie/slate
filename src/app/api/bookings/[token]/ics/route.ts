@@ -1,5 +1,5 @@
 import type { NextRequest } from "next/server";
-import { bookingIcs, getBookingByToken } from "@/lib/booking/service";
+import { bookingIcs, bookingManageUrl, getBookingByToken } from "@/lib/booking/service";
 import { CALENDAR_COPY } from "@/lib/booking/booker-copy";
 import { internalErrorResponse } from "@/lib/api/errors";
 import { manageWithinLimit } from "@/lib/rate-limit";
@@ -19,8 +19,17 @@ export const dynamic = "force-dynamic";
  *
  * Built when it is asked for rather than when the booking was made, so a call that
  * has moved since downloads at its current time, and never cached for the same
- * reason. A cancelled call gets no file: adding a meeting that is off to somebody's
- * calendar is worse than telling them it is off.
+ * reason.
+ *
+ * A cancelled call gets no file, because adding a meeting that is off to somebody's
+ * calendar is worse than telling them it is off. It is sent to its manage page
+ * instead (#2648), which already says the call is cancelled and is where a lead
+ * books again. 303 so the browser follows with a GET, and no-store so a later
+ * state is never answered from a cached redirect.
+ *
+ * An unknown token keeps its 404 sentence: there is no booking, so there is no
+ * manage page to send anybody to, and redirecting to one would only swap this
+ * sentence for the manage page's own not found screen one hop later.
  */
 function text(body: string, status: number): Response {
   return new Response(body, {
@@ -47,8 +56,10 @@ export async function GET(
       return text(CALENDAR_COPY.icsNotFound, 404);
     }
     if (ctx.booking.status === "cancelled") {
-      // refusal: manage_ics_cancelled
-      return text(CALENDAR_COPY.icsCancelled, 410);
+      return new Response(null, {
+        status: 303,
+        headers: { location: bookingManageUrl(token), "cache-control": "no-store" },
+      });
     }
     return new Response(bookingIcs(ctx.booking, new Date().toISOString()), {
       status: 200,
