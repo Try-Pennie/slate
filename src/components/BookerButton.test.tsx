@@ -141,6 +141,24 @@ describe("BookerButton", () => {
     expect(document.querySelector("[data-bob-dots]")).not.toBeNull();
   });
 
+  it("spaces the cue from the words inside its own box, never through the button's gap (#2636)", () => {
+    render(
+      <BookerButton palette={palette} variant="primary" busy>
+        Booking your call…
+      </BookerButton>,
+    );
+
+    // Safari lays a button's children out inside an anonymous box of its own
+    // that does not carry the button's `gap`, so on Dan's iPhone the third dot
+    // sat against the "M" of "Moving your call…". The dots and the words share a
+    // span that carries the spacing, which every engine honours.
+    const dots = document.querySelector("[data-bob-dots]")!;
+    const box = dots.parentElement!;
+    expect(box.tagName).not.toBe("BUTTON");
+    expect(box.className).toMatch(/\bgap-2\b/);
+    expect(box.textContent).toContain("Booking your call…");
+  });
+
   it("carries no cue when it is not working, so the box does not move on every render", () => {
     render(
       <BookerButton palette={palette} variant="primary">

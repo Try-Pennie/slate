@@ -2,7 +2,7 @@
 
 import type { ButtonHTMLAttributes } from "react";
 
-import { BobbingDots } from "@/components/BobbingDots";
+import { BusyLabel } from "@/components/BusyLabel";
 import {
   bookerButtonClass,
   type BookerButtonPalette,
@@ -62,8 +62,7 @@ export function BookerButton({
           whatever its words, and so a label that wraps cannot push it out of
           sight. Hidden from assistive tech: the label already says what is
           happening, and a second announcement of the same fact is noise. */}
-      {busy && <BobbingDots tone="current" />}
-      {children}
+      {busy ? <BusyLabel>{children}</BusyLabel> : children}
     </button>
   );
 }

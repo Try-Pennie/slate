@@ -25,7 +25,7 @@ import { formatSlotTime } from "@/lib/booking/slot-label";
 // The booker's own sentence for this button, not a second copy of it: both
 // surfaces move a call to a named time and must say it the same way (L41).
 import { moveToTime } from "@/lib/booking/booker-copy";
-import { BobbingDots } from "@/components/BobbingDots";
+import { BusyLabel } from "@/components/BusyLabel";
 import { usePhoneCaret } from "@/lib/usePhoneCaret";
 import { formatPhoneForDisplay } from "@/lib/phone-format";
 import { UnsavedGuard } from "@/components/ui/UnsavedGuard";
@@ -637,9 +637,8 @@ export default function ManageBooking({
                       disabled={busy}
                       className="pn-btn pn-btn--primary mt-4 inline-flex min-h-[44px] w-full items-center justify-center gap-2 rounded-lg px-5 text-sm disabled:opacity-60"
                     >
-                      {busy && <BobbingDots tone="current" />}
                       {busy
-                        ? RESCHEDULE_COPY.moving
+                        ? <BusyLabel>{RESCHEDULE_COPY.moving}</BusyLabel>
                         : /* The booker's own short form for this button, built the
                              same way, so the one sentence both surfaces put on a
                              move control reads identically on each (L118). */
