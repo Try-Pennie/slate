@@ -68,7 +68,7 @@ async function handlePost(
   }
 
   try {
-    const claimed = await cancelBooking(token, reason.reason, "customer");
+    const { claimed, booking } = await cancelBooking(token, reason.reason, "customer");
     // #2373: the two ways this ends with the booking cancelled, counted apart.
     //
     // `claimed` is true when THIS request made the transition and false when a
@@ -86,7 +86,11 @@ async function handlePost(
       // refusal: cancel_lost_race
       recordApiOutcome("error", "", "cancel_lost_race", { by: "manageToken", token });
     }
-    return NextResponse.json({ ok: true });
+    // #2658: which call, so the embedded booker can announce the cancel to its
+    // host page as cal.com's `bookingCancelled` with the booking's id and bounds.
+    // Id and times only: this reaches the lead's browser and, from there, a host
+    // page, and the host already holds the contact.
+    return NextResponse.json({ ok: true, booking });
   } catch (err) {
     // The meeting already completed (#618): a friendly 4xx no-op, not a crash.
     if (err instanceof BookingNotCancellableError) {

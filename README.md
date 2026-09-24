@@ -137,14 +137,30 @@ silently did not.
 
 ## Embed
 
+`public/widget.js` is a drop in for cal.com's `embed.js`: the same loader
+snippet, the same `Cal()` API, the same `data-cal-link` trigger. Swapping a
+cal.com page to Slate is the script src plus the `origin` (`public/embed-example.html`
+is the working copy).
+
 ```html
-<div id="slate"></div>
-<script src="https://YOUR-SLATE/widget.js"></script>
 <script>
-  Slate.inline({ selector: "#slate", url: "https://YOUR-SLATE/booking/SF_ID?xbc=411" });
-  // or: Slate.popup({ url: "...", text: "Book a call" });
+  /* the standard cal.com loader snippet, pointed at Slate */
+  (function (C, A, L) { /* ... as in public/embed-example.html ... */ })(window, "https://YOUR-SLATE/widget.js", "init");
+  Cal("init", "review", { origin: "https://YOUR-SLATE" });
+  Cal.ns.review("on", { action: "bookingSuccessfulV2", callback: (e) => console.log(e.detail.data) });
 </script>
+<button data-cal-link="router?xbc=411&external_id=00Q..." data-cal-namespace="review">Book a call</button>
 ```
+
+The widget announces the booker lifecycle under cal.com's own event names
+(#2658), so a host's GTM listener needs no Slate branch: `navigatedToBooker`,
+`bookerViewed`, `bookerReady`, `bookerReopened`, `bookerReloaded`, `linkFailed`,
+`bookingSuccessfulV2`, `rescheduleBookingSuccessfulV2`, `bookingCancelled`, plus
+`*` for all of them and the original `bookingSuccessful`, kept unchanged. Record
+a booking from `bookingSuccessfulV2` or from `bookingSuccessful`, never both.
+No event carries the lead's contact. The full table, the raw `slate:*` messages
+behind each event and the payload shapes are in the `slate-embed-contract`
+skill, section 4.
 
 To test the embed end to end from any host page without booking a real advisor,
 use `xbc=PARTNER` (#2660): a public test bucket on the smoke test agent's

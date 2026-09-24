@@ -17,6 +17,25 @@
  * is read from `external_id`. `data-cal-link` clicks open a modal iframe at
  * `<origin>/book?…` carrying the link's own query plus, when
  * forwardQueryParams is set, the host page's query.
+ *
+ * `on` actions (#2658), under cal.com's own names so a host's GTM listener needs
+ * no Slate branch. Each callback receives `{ detail: { type, data } }`:
+ *
+ *   navigatedToBooker             a trigger was clicked, before the modal opens   {}
+ *   bookerViewed                  the booker first rendered in this frame load    { slotsLoaded }
+ *   bookerReady                   the availability answered with times            { slotsLoaded: true }
+ *   bookerReopened                the modal opened again on this page             {}
+ *   bookerReloaded                the modal iframe loaded a second time           {}
+ *   linkFailed                    the booker could not be used                    { code, msg }
+ *   bookingSuccessfulV2           a fresh booking                                 { uid, startTime, endTime, status, isTest }
+ *   rescheduleBookingSuccessfulV2 a lead moved the call they already had          same shape
+ *   bookingCancelled              the in embed cancel succeeded                   { booking: { uid, startTime, endTime, cancellationReason } }
+ *   bookingSuccessful             UNCHANGED: fresh and moved alike                { booking, salesforceId, outcome }
+ *   *                             every event above, with `detail.type` set
+ *
+ * A host records a booking from bookingSuccessfulV2 OR from bookingSuccessful,
+ * never both: they announce the same booking. No event carries the lead's
+ * contact.
  */
 (function () {
   "use strict";
@@ -80,7 +99,10 @@
   }
 
   function emit(action, payload) {
-    (listeners[action] || []).forEach(function (cb) {
+    // The named listeners, then the "*" wildcard (#2658): the tagging spec's QA
+    // listener subscribes to everything and reads `detail.type` to tell them apart.
+    var subscribers = (listeners[action] || []).concat(listeners["*"] || []);
+    subscribers.forEach(function (cb) {
       try {
         cb({ detail: { type: action, data: payload } });
       } catch {
@@ -342,16 +364,31 @@
       retry.focus();
     }
 
+    // The two ways the modal itself can fail to show a booker (#2658), announced
+    // as `linkFailed` beside the two the Booker reports from inside the frame.
+    // These sentences are read by an analyst in a GA4 report, never by a lead,
+    // which is why they sit outside the copy block above: the lead's own words
+    // for the same moment are `COPY.loadFailed`, on screen.
+    var LOAD_FAILED = {
+      timeout: { code: "load_timeout", msg: "The booking form did not load in time" },
+      error: { code: "load_error", msg: "The booking form could not be loaded" },
+    };
+
     function armLoadTimer() {
       if (loadTimer) clearTimeout(loadTimer);
       loadTimer = setTimeout(function () {
         loadTimer = null;
         renderError();
+        emit("linkFailed", LOAD_FAILED.timeout);
       }, LOAD_TIMEOUT_MS);
     }
 
     renderLoading();
     armLoadTimer();
+
+    // Loads of THIS iframe. The second and later announce `bookerReloaded`: a
+    // retry after a failed load, or a reload from inside the frame.
+    var loads = 0;
 
     var iframe = document.createElement("iframe");
     iframe.src = bookUrl;
@@ -367,9 +404,12 @@
       }
       if (loader.parentNode) loader.parentNode.removeChild(loader);
       iframe.style.opacity = "1";
+      loads++;
+      if (loads > 1) emit("bookerReloaded", {});
     });
     iframe.addEventListener("error", function () {
       renderError();
+      emit("linkFailed", LOAD_FAILED.error);
     });
 
     // Forward-tab sentinel: focus leaving the iframe's last element lands
@@ -500,6 +540,11 @@
     }
   }
 
+  // How many times each namespace's modal has been opened on this page (#2658).
+  // The second and later opens announce `bookerReopened`, which is the spec's
+  // "came back to the booker" signal.
+  var opens = {};
+
   // Delegated so dynamically-added triggers work too.
   document.addEventListener("click", function (e) {
     var el = e.target && e.target.closest && e.target.closest("[data-cal-link]");
@@ -507,7 +552,11 @@
     e.preventDefault();
     var ns = el.getAttribute("data-cal-namespace") || "";
     try {
+      // Before the modal exists, as cal.com does: this is the click, not the view.
+      emit("navigatedToBooker", {});
+      opens[ns] = (opens[ns] || 0) + 1;
       openModal(el.getAttribute("data-cal-link") || "", ns, el);
+      if (opens[ns] > 1) emit("bookerReopened", {});
     } catch (err) {
       // Report and swallow: a throw here would otherwise surface as an error in
       // the HOST page's console and leave the customer with a dead button.
@@ -586,6 +635,36 @@
     document.addEventListener("DOMContentLoaded", warmAllTriggers);
   }
 
+  // The Booker's own lifecycle messages and the cal.com event each becomes
+  // (#2658). The raw name is what a host framing /book itself listens for; the
+  // widget name is what a `Cal("on")` listener gets. Payloads pass through as
+  // posted: the Booker builds them, and it never puts the lead's contact in one.
+  var LIFECYCLE = {
+    "slate:bookerViewed": "bookerViewed",
+    "slate:bookerReady": "bookerReady",
+    "slate:linkFailed": "linkFailed",
+    "slate:bookingCancelled": "bookingCancelled",
+  };
+
+  // cal.com's V2 success shape, derived from the one success message the Booker
+  // has always posted. `outcome` says which of the two events it is; a value this
+  // file does not know derives NEITHER, because announcing a moved call as a
+  // booking is the misreport the split exists to prevent.
+  var V2_BY_OUTCOME = {
+    created: "bookingSuccessfulV2",
+    rescheduled: "rescheduleBookingSuccessfulV2",
+  };
+  function v2Payload(data) {
+    var b = (data && data.booking) || {};
+    return {
+      uid: b.id,
+      startTime: b.startsAt,
+      endTime: b.endsAt,
+      status: "confirmed",
+      isTest: b.isTest,
+    };
+  }
+
   window.addEventListener("message", function (e) {
     var d = e.data || {};
     if (
@@ -606,7 +685,20 @@
       // Only the active booking iframe may fire success — a nested/malicious
       // frame on the host page must not be able to spoof the host's
       // conversion/redirect callback (parity with the slate:escape check).
+      // The original event stays byte for byte for the hosts written against it
+      // (#2643); the V2 event is derived beside it, never instead of it.
       emit("bookingSuccessful", d.data);
+      var v2 = V2_BY_OUTCOME[d.data && d.data.outcome];
+      if (v2) emit(v2, v2Payload(d.data));
+    } else if (
+      LIFECYCLE[d.type] &&
+      activeIframe &&
+      e.source === activeIframe.contentWindow
+    ) {
+      // The same source check as every branch here: a frame on the host page
+      // that is not the booker must not be able to announce a cancel or a
+      // failure on its behalf.
+      emit(LIFECYCLE[d.type], d.data);
     } else if (
       d.type === "slate:escape" &&
       activeModalHide &&

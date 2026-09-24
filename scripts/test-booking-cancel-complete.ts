@@ -5,6 +5,7 @@
 // Run: node --experimental-strip-types scripts/test-booking-cancel-complete.ts
 import {
   cancelBooking,
+  cancelBookingWithDetail,
   completePastBookings,
   BookingNotCancellableError,
 } from "../src/lib/booking/orchestration.ts";
@@ -300,6 +301,36 @@ async function run() {
     );
   }
 
+  // --- #2658: the cancel answers with WHICH call it cancelled ---
+  // The embedded booker announces the cancel to its host page as cal.com's
+  // `bookingCancelled`, which names the booking and its bounds. The route reads
+  // them off this outcome rather than off a second query, and the boolean the
+  // older callers read is the same decision, so the two cannot disagree.
+  {
+    const ctx = { booking: makeBooking({}), bucket, eventType };
+    const { deps, calls } = makeDeps({ existing: ctx });
+    const outcome = await cancelBookingWithDetail("tok1", CR, "customer", deps);
+    assert(outcome.claimed === true, "detail: the first cancel claims the transition");
+    assert(
+      outcome.booking.id === "bk1" &&
+        outcome.booking.startsAt === "2026-06-08T13:00:00.000Z" &&
+        outcome.booking.endsAt === "2026-06-08T13:30:00.000Z",
+      "detail: names the cancelled booking and its bounds",
+    );
+    assert(calls.claimCancellation.length === 1, "detail: the same cancel ran underneath");
+
+    // The already cancelled row: claimed false, and STILL the booking, because the
+    // host's cancel_booking is about the call, not about who got there first.
+    const done = { booking: makeBooking({ status: "cancelled" }), bucket, eventType };
+    const { deps: d2 } = makeDeps({ existing: done });
+    const repeat = await cancelBookingWithDetail("tok1", CR, "customer", d2);
+    assert(repeat.claimed === false, "detail: a repeat cancel does not claim");
+    assert(repeat.booking.id === "bk1", "detail: a repeat cancel still names the booking");
+
+    // And the boolean wrapper reads the same decision.
+    const { deps: d3 } = makeDeps({ existing: { booking: makeBooking({}), bucket, eventType } });
+    assert((await cancelBooking("tok1", CR, "customer", d3)) === true, "detail: cancelBooking is the claimed flag");
+  }
 }
 
 await run();

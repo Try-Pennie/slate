@@ -104,7 +104,7 @@ async function handlePost(
   }
 
   try {
-    const { booking, manageUrl, contactChanged } = await rescheduleBooking(
+    const { booking, manageUrl, contactChanged, isTest } = await rescheduleBooking(
       token,
       parsed.data.start,
       reason.reason,
@@ -132,6 +132,11 @@ async function handlePost(
       // entirely when nothing moved, rather than sent as three falses, because the
       // caller's question is "was there anything to tell them".
       ...(contactChanged ? { contactChanged } : {}),
+      // #2658: the booker announces the moved call to its host in the same shape
+      // as a fresh booking (#2660 put the flag on the confirm response), so a
+      // moved test call is never reported to the host as a real one. Read off the
+      // booking's own bucket by the booking layer, never off the caller.
+      isTest: isTest === true,
       // #2644: the add to calendar links at the NEW time, from the one builder,
       // so the moved call's success message to the host carries what a fresh
       // booking's does. The contact stays off it, as on the fresh one (#2643).
