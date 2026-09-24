@@ -286,6 +286,91 @@ Google says for a revoked licence as well as for an account that never had one.
 Reading that as a provisioning ticket would have sent somebody to re-license a
 departed employee, and left the sweep red forever while they did not.
 
+# Proving the activation gate's calendar reads (`pnpm verify:pool-entry`)
+
+#2302 made the pool entry calendar read (`onboardIntoPool`,
+`src/lib/google/pool-entry.ts`) the second half of the activation gate in
+`src/lib/bookable/service.ts`, so a failure there REFUSES the flip. Every refusal
+path is driven by hand written fakes, and a fake agrees with our assumption about
+Google's interface by construction (L52). If the success path is broken in a way
+the fakes cannot show, no agent can be made bookable at all, and the first sign
+would be a new hire failing to activate with a page blaming their calendar
+(#2316).
+
+**Both directions, or it proves nothing** (L1). It runs the gate's two reads in
+the order the gate runs them, the reachability probe (`checkActivationGate`) and
+then `onboardIntoPool`, for two real accounts:
+
+- a READABLE agent must be admitted by the probe and come back with EVERY calendar
+  hydrated, judged by the same shipped predicate the gate uses
+  (`poolEntryRefusal`, `src/lib/bookable/pool-entry-verdict.ts`), plus a stricter
+  check that every calendar found was hydrated, so a gate that admits somebody
+  with a calendar nobody read is its own finding (exit 17);
+- an account with NO CALENDAR LICENCE (`403 notACalendarUser`) must be refused by
+  the probe AS `google_not_provisioned`. A refusal as gone is the right answer to
+  a different question and does not pass.
+
+```
+POOL_ENTRY_READABLE_EMAIL=someagent@trypennie.com \
+POOL_ENTRY_UNPROVISIONED_EMAIL=someleaver@trypennie.com \
+pnpm verify:pool-entry
+```
+
+Needs the Google service account creds and the Supabase secret key from
+`.env.local` / `.dev.vars`. It is deliberately not named `test-*.ts`.
+
+**What it writes, and why that is safe.** Nothing around the reads runs: no
+alert, no `bookable_pending_since` mark, no bookable write, so it never flips
+anybody. The probe only lists calendars. `onboardIntoPool` does write, so it is
+run ONLY for an agent who is already bookable and active (exits 5 and 6 refuse
+anybody else), where every write is a refresh the lanes make on their own
+schedule: a watch renewal only if one is already due (the watch lane), a
+re-bootstrap of the busy window (the hydration lane), and `last_synced_at` (the
+sync lane). For the unlicensed account the pool entry read is never run, exactly
+as the real gate never runs it once the probe refuses. A good unlicensed subject
+is a recently departed agent, whose licence is routinely revoked on the way out;
+Google answers the same 403 for a revoked licence as for one never given.
+
+**Only a proof in both directions passes, and every way of learning nothing exits
+on its own code.** When both directions fail, the readable one names the run,
+since it is the one whose breakage stops every activation; both lines are printed
+either way.
+
+| exit | what it met |
+|---|---|
+| 0 | both directions proved |
+| 1 | one or both emails not set; nothing was attempted |
+| 2 | both emails name the same account, which cannot prove both directions |
+| 3 | the Slate users table could not be read |
+| 4 | no Slate user has the readable email |
+| 5 | the readable agent is not bookable, so onboarding them is refused |
+| 6 | the readable agent has been deactivated |
+| 7 | no Slate user has the unprovisioned email |
+| 10 | the readable agent's account has no Calendar licence |
+| 11 | Google refused the readable agent's account outright (gone) |
+| 12 | the probe could not reach the readable agent twice running; run it again |
+| 13 | the pool entry read threw for the readable agent |
+| 14 | the pool entry read found no calendars for the readable agent |
+| 15 | a readable agent's calendar failed to hydrate |
+| 16 | the activation budget ran out before every calendar was attempted |
+| 17 | **the shipped gate admits a result with a calendar neither hydrated nor failed** |
+| 20 | **the probe REACHED the account named as unlicensed**, so the gate would let it through its first half |
+| 21 | the unlicensed account was refused as gone rather than as not provisioned |
+| 22 | the probe could not reach the unlicensed account twice running; run it again |
+
+Its decision logic is pinned offline by `scripts/test-pool-entry-live-control.ts`
+(`scripts/lib/pool-entry-live-check.ts`), which drives every outcome through hand
+written fixtures, asserts no two outcomes share an exit code or a message, and
+fails if a declared outcome is one no case can produce.
+
+**Re-run it after any change to `onboardIntoPool`, the reachability probe, the
+hydration path or the delegated identity.** As of 2026-09-24 it passes: the
+unlicensed direction on a departed agent (403, refused as
+`google_not_provisioned`), the readable direction on a bookable agent with a busy
+calendar (1 of 1 calendar hydrated to the horizon, watch current). Naming a
+licensed agent as the unlicensed one exits 20, which is the live half of the
+control.
+
 # Comparing Slate against cal.com (`pnpm verify:calcom-parity`)
 
 The fourth command in the family above, and the one that only makes sense while

@@ -7,6 +7,7 @@ import { sendThrottledAlert } from "@/lib/notify/dispatch";
 import { cleanupOnPoolExit } from "@/lib/google/sync";
 import { onboardIntoPool, type PoolEntryOptions, type PoolEntryResult } from "@/lib/google/pool-entry";
 import { ACTIVATION_BUDGET_MS } from "@/lib/bookable/activation-allowance";
+import { poolEntryRefusal } from "@/lib/bookable/pool-entry-verdict";
 import { withinBudget } from "@/lib/google/sync-pace";
 import { log } from "@/lib/log";
 import {
@@ -151,11 +152,15 @@ async function settleTransition(
  * definitive "gone" blocks at once, a "transient" is retried once (to ride out a
  * Google blip) and only then blocks. Returns null when the agent may go into the
  * pool (reachable), or a {reason, key, message} block otherwise.
+ *
+ * Exported for the live proof (`pnpm verify:pool-entry`, #2316), which asks this
+ * half of the gate about a real unlicensed account. It only READS: the alert is
+ * sent by the caller, never from here.
  */
-async function checkActivationGate(
+export async function checkActivationGate(
   email: string,
   userId: string,
-  deps: BookableDeps,
+  deps: Pick<BookableDeps, "checkReachable">,
 ): Promise<{ reason: BlockedReason; key: string; message: string } | null> {
   let kind = await deps.checkReachable(email);
   if (kind === "transient") kind = await deps.checkReachable(email); // one retry
@@ -370,16 +375,12 @@ async function applyBookableToRow(
     // whether their events actually reached the availability cache. Before the
     // write, because the answer decides whether there is a write at all.
     const entry = await readCalendarForPool(user!.id, deps, { withinBudget: inBudget });
-    if (entry === null || entry.hydrated === 0 || entry.failed > 0 || entry.outOfBudget) {
-      // WHICH refusal, when more than one is true at once (#2317). A MEASURED
-      // calendar failure outranks an exhausted budget: it names something a person
-      // can act on, and answering "try again in a minute" over a calendar Google
-      // has already refused would send them away from the only evidence there is.
-      // A throw ranks with the measured failures for the same reason it always
-      // has, which is that it is the least informative outcome and must not be the
-      // one that produces the most reassuring advice (L93).
-      const timedOut = entry !== null && entry.failed === 0 && entry.outOfBudget;
-      const reason: BlockedReason = timedOut ? "activation_timed_out" : "calendar_unhydrated";
+    // The decision, and which refusal wins when several hold, lives in ONE pure
+    // predicate so the live proof (#2316) judges Google's answer by the same rule.
+    const refusal = poolEntryRefusal(entry);
+    if (refusal !== null) {
+      const timedOut = refusal === "activation_timed_out";
+      const reason: BlockedReason = refusal;
       const message = timedOut
         ? bookableTimedOutAlert(user!.email, ACTIVATION_BUDGET_MS)
         : bookableUnhydratedAlert(user!.email, entry?.hydrated ?? 0, entry?.calendars ?? 0);
