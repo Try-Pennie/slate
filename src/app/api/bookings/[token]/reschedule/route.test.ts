@@ -192,6 +192,25 @@ describe("POST /bookings/[token]/reschedule", () => {
     expect(service.bookingDetailExtras.mock.calls.at(-1)?.[0]).toMatchObject({ id: "bk1" });
   });
 
+  // #2165: the confirmation after a move names who will call, which the move may
+  // have changed, so it is read off the booking the move returned.
+  it("names the advisor the moved call is now with, and null when it holds none", async () => {
+    service.rescheduleBooking.mockResolvedValueOnce({
+      booking: { id: "bk1", starts_at: "2026-07-01T15:00:00.000Z", ends_at: "2026-07-01T15:30:00.000Z", agent_name: "Sam Advisor" },
+      manageUrl: "https://slate.test/booking/manage/tok1",
+    });
+    const res = await POST(req({ start: "2026-07-01T15:00:00.000Z", reason: "schedule_conflict" }), params);
+    expect((await res.json()).advisorName).toBe("Sam Advisor");
+
+    service.rescheduleBooking.mockResolvedValueOnce({
+      booking: { id: "bk1", starts_at: "2026-07-01T15:00:00.000Z", ends_at: "2026-07-01T15:30:00.000Z" },
+      manageUrl: "https://slate.test/booking/manage/tok1",
+    });
+    const none = await (await POST(req({ start: "2026-07-01T15:00:00.000Z", reason: "schedule_conflict" }), params)).json();
+    expect(none).toHaveProperty("advisorName");
+    expect(none.advisorName).toBeNull();
+  });
+
   // #2658: the moved call is announced to the host as rescheduleBookingSuccessfulV2
   // in the same shape as a fresh booking's event, `isTest` included, so a moved
   // test call is never reported as a real one. The flag is read off the booking's

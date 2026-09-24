@@ -21,7 +21,9 @@
  * never that the day did.
  */
 import {
+  ADD_TO_CALENDAR_COPY,
   BOOKING_ERROR_COPY,
+  confirmedAdvisor,
   CONFIRMED_COPY,
   CALENDAR_COPY,
   DETAILS_COPY,
@@ -350,6 +352,10 @@ export function bookerCopyScreens(): CopyScreen[] {
       lines: [
         { state: "the heading", text: CONFIRMED_COPY.heading },
         { state: "when it is", text: confirmedWhen(DAY_FULL, TIME, ZONE_LABEL) },
+        // #2165: who will call, and the same sentence without a name, because the
+        // confirmation renders before anything guarantees the booking holds one.
+        { state: "who will call", text: confirmedAdvisor("Dana Lee") },
+        { state: "who will call, when we hold no advisor name", text: confirmedAdvisor(null) },
         { state: "the invite", text: inviteOnItsWay(EMAIL) },
         {
           state: "the invite, with no address to name",
@@ -359,6 +365,25 @@ export function bookerCopyScreens(): CopyScreen[] {
         {
           state: "what is announced",
           text: confirmedAnnouncement(DAY_FULL, TIME, ZONE_LABEL),
+          screenReaderOnly: true,
+        },
+      ],
+    },
+    {
+      screen: "Booker and manage: add it to your calendar",
+      purpose:
+        "The four buttons under the confirmation and on the manage page (#2165), one " +
+        "component at both sites. Not drawn for a cancelled call, nor for a weak match " +
+        "whose time is withheld (#1340).",
+      lines: [
+        { state: "the heading over the four", text: ADD_TO_CALENDAR_COPY.heading },
+        { state: "Google", text: ADD_TO_CALENDAR_COPY.google },
+        { state: "Outlook.com", text: ADD_TO_CALENDAR_COPY.outlook },
+        { state: "Office 365", text: ADD_TO_CALENDAR_COPY.office365 },
+        { state: "the ICS file, for Apple and every other calendar app", text: ADD_TO_CALENDAR_COPY.ics },
+        {
+          state: "after each of the three that open a new tab",
+          text: ADD_TO_CALENDAR_COPY.newTab,
           screenReaderOnly: true,
         },
       ],

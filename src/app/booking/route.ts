@@ -287,6 +287,10 @@ async function handlePost(req: NextRequest) {
       // them however it ends the booking. The lead's contact is deliberately left
       // off: this travels as a browser message to a host that already holds it.
       calendarLinks: bookingDetailExtras(booking).calendarLinks,
+      // #2165: who will call, for the Booker's own confirmation. Off the booking
+      // just written, so it is the advisor the call is with at this moment; null,
+      // never a placeholder, when the booking holds no name (L75).
+      advisorName: booking.agent_name ?? null,
       // #2659: the partner join keys the host put on the URL, read back off the
       // booking that was actually made, so the host can carry them onto its own
       // confirmed page. Null when the page passed none, so the field is always

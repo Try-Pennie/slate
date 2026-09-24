@@ -64,6 +64,7 @@ import {
   noAdvisorsAvailable,
   closedNoReopenDate,
   closedUntil,
+  confirmedAdvisor,
   confirmedAnnouncement,
   confirmedWhen,
   duplicateSetFor,
@@ -171,6 +172,8 @@ type DuplicateWarning =
  * erased, so no server module reaches the bundle.
  */
 import type { ExistingCall } from "@/lib/booking/orchestration";
+import type { CalendarLinks } from "@/lib/booking/calendar-links";
+import AddToCalendar from "@/components/AddToCalendar";
 import { MarkedLabel } from "@/components/ui/MarkedLabel";
 
 interface BookerProps {
@@ -494,6 +497,18 @@ export default function Booker({
     duplicateWarning?: DuplicateWarning | null;
     /** What a move ALSO changed, when the lead typed new details (#2164). */
     contactChanged?: { name: boolean; email: boolean; phone: boolean } | null;
+    /**
+     * Who will call, and the call's add to calendar links (#2165). Both are read
+     * off the SAME response that gave `start`, so they always describe the call
+     * this lead just made or moved, never the other booking a duplicate warning
+     * names. A weak match (#1340) never reaches this state at all: its panel
+     * withholds the time and the token, and the move that would confirm it is
+     * offered only on `disclose`, so the name and the links are withheld on the
+     * same predicate. Null links draw no group (a time the server could not read
+     * builds none); a null name draws the sentence without one.
+     */
+    advisorName: string | null;
+    calendarLinks: CalendarLinks | null;
   } | null>(null);
   // Three distinct states for the confirm (owner rule): started → this flips the
   // still-alive cue at ~10s → the postJson timeout converts a hang to error.
@@ -710,6 +725,8 @@ export default function Booker({
       const { ok, status, data } = await postJson<{
         startsAt?: string;
         manageUrl?: string;
+        advisorName?: string | null;
+        calendarLinks?: CalendarLinks | null;
         error?: string;
         fieldErrors?: AttendeeErrors;
         duplicateWarning?: DuplicateWarning | null;
@@ -742,6 +759,8 @@ export default function Booker({
           start: data.startsAt ?? selectedSlot,
           manageUrl: data.manageUrl ?? null,
           duplicateWarning: data.duplicateWarning ?? null,
+          advisorName: data.advisorName ?? null,
+          calendarLinks: data.calendarLinks ?? null,
         });
         if (embedded) {
           postToParent({
@@ -929,6 +948,8 @@ export default function Booker({
         startsAt?: string;
         endsAt?: string;
         manageUrl?: string;
+        advisorName?: string | null;
+        calendarLinks?: CalendarLinks | null;
         error?: string;
         reason?: string;
         contactChanged?: { name: boolean; email: boolean; phone: boolean };
@@ -959,6 +980,10 @@ export default function Booker({
           start: data.startsAt ?? selectedSlot,
           manageUrl: null,
           contactChanged: data.contactChanged ?? null,
+          // The move's own answer, at the NEW time and with whoever the move left
+          // the call with, rather than the panel's copy from before it moved.
+          advisorName: data.advisorName ?? null,
+          calendarLinks: data.calendarLinks ?? null,
         });
         // #2644: the same message a fresh booking posts, so a host that ends the
         // booking by redirecting on it (trypennie does, to its booking confirmed
@@ -1433,9 +1458,23 @@ export default function Booker({
                 with the markup only carrying the tabular figures (#1343). */}
             {confirmedWhen(confirmedDay, confirmedTime, zoneLabel)}
           </p>
+          {/* #2165: who will call, named when the booking holds a name. */}
+          <p className={`mt-1 text-sm ${c.muted}`}>
+            {confirmedAdvisor(confirmed.advisorName)}
+          </p>
           <p className={`mt-1 text-xs ${c.faint}`}>
             {inviteOnItsWay(attendee.email)}
           </p>
+          {/* #2165: save it now, while the lead is looking at it, rather than
+              whenever the invite reaches them. The shared group the manage page
+              draws too; left aligned inside a centred column so its heading sits
+              over its own buttons. */}
+          {confirmed.calendarLinks && (
+            <AddToCalendar
+              links={confirmed.calendarLinks}
+              className="mx-auto mt-6 max-w-md text-left"
+            />
+          )}
           {/* #2164: a move that also corrected the lead's own details says so.
               Silently applying half of what somebody asked for is the one outcome
               they cannot check. */}

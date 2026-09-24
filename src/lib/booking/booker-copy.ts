@@ -405,6 +405,37 @@ export function confirmedWhen(day: string, time: string, zoneLabel: string): str
   return `${chosenWhen(day, time)} (${zoneLabel})`;
 }
 
+/**
+ * Who will call (#2165). A call from a named person is harder to ignore than one
+ * from an unknown number, so the confirmation names them when the booking holds a
+ * name. When it holds none, the sentence still says a person will call, without
+ * inventing one: naming nobody is better than naming the wrong somebody (L75). No
+ * pronoun, because nothing on the agent record says how a person wants to be
+ * referred to.
+ */
+export function confirmedAdvisor(advisorName: string | null): string {
+  return advisorName
+    ? `Your loan advisor, ${advisorName}, will call you then.`
+    : "Your loan advisor will call you then.";
+}
+
+/**
+ * The add to calendar group (#2165), drawn on the Booker's confirmation and on the
+ * manage page by ONE component, so its words live once. The four links come from
+ * `calendarLinks` (#2643); these are only what the buttons are called.
+ */
+export const ADD_TO_CALENDAR_COPY = {
+  heading: "Add it to your calendar",
+  google: "Google",
+  outlook: "Outlook",
+  office365: "Office 365",
+  /** The ICS file, which Apple Calendar and most other calendar apps open. */
+  ics: "Apple or other",
+  /** Read after each of the three that open a new tab, and only by assistive
+   *  tech: a tab that opens unannounced reads as the page going nowhere. */
+  newTab: "(opens in a new tab)",
+} as const;
+
 /** Falls back to a phrase, never to an empty gap: "on its way to ." would read as
  *  a broken sentence rather than a missing address. */
 export function inviteOnItsWay(email: string): string {

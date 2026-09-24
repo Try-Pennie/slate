@@ -26,6 +26,8 @@ import { formatSlotTime } from "@/lib/booking/slot-label";
 // surfaces move a call to a named time and must say it the same way (L41).
 import { moveToTime } from "@/lib/booking/booker-copy";
 import { BusyLabel } from "@/components/BusyLabel";
+import AddToCalendar from "@/components/AddToCalendar";
+import type { CalendarLinks } from "@/lib/booking/calendar-links";
 import { usePhoneCaret } from "@/lib/usePhoneCaret";
 import { formatPhoneForDisplay } from "@/lib/phone-format";
 import { UnsavedGuard } from "@/components/ui/UnsavedGuard";
@@ -86,6 +88,12 @@ interface ManageBookingProps {
    * it carries the same test line the booker does, in the reserved treatment.
    */
   isTest?: boolean;
+  /**
+   * The add to calendar links for this booking (#2165), from the one builder
+   * (`bookingDetailExtras`, #2643). Null when there is nothing to add: a
+   * cancelled call, or a stored time the builder could not read.
+   */
+  calendarLinks?: CalendarLinks | null;
 }
 
 
@@ -137,6 +145,7 @@ export default function ManageBooking({
   cancelReasons,
   theme = "light",
   isTest = false,
+  calendarLinks: initialCalendarLinks = null,
 }: ManageBookingProps) {
   const detectedZone = useMemo(() => deviceTimeZone(), []);
   // #1849: a fixed US list. A lead whose browser reports a non US zone is shown
@@ -147,6 +156,10 @@ export default function ManageBooking({
   const [timeZone, setTimeZone] = useState(resolveZone(detectedZone).id);
   const selectOptions = useMemo(() => timezoneOptions(), []);
   const [start, setStart] = useState(startsAt);
+  // #2165: held in state because a move made on this page changes the time the
+  // links carry. The reschedule answer brings the new ones; links still at the
+  // old time would put the wrong meeting on the lead's calendar.
+  const [calendarLinks, setCalendarLinks] = useState<CalendarLinks | null>(initialCalendarLinks);
   const [status, setStatus] = useState(initialStatus);
   const [rescheduling, setRescheduling] = useState(false);
   // #2215: set ONLY by a move made on this page, and never derived from the
@@ -276,6 +289,7 @@ export default function ManageBooking({
     try {
       const { ok, status, data } = await postJson<{
         startsAt?: string;
+        calendarLinks?: CalendarLinks | null;
         error?: string;
         reason?: string;
       }>(
@@ -289,6 +303,8 @@ export default function ManageBooking({
       );
       if (ok) {
         setStart(data.startsAt ?? newStart);
+        // No links in the answer means none at the new time, never the old ones.
+        setCalendarLinks(data.calendarLinks ?? null);
         // Kept in step with the row the server just wrote. Nothing on this page
         // is shown because of it any more (#2215): what the move says for itself
         // hangs off `moved` below, which only this line can set.
@@ -847,6 +863,18 @@ export default function ManageBooking({
                 </div>
               )}
             </div>
+
+            {/* --- Add it to your calendar (#2165) --- the one thing cal.com's
+                manage screen offered that this one did not, and where a lead
+                coming back to the booking most wants it. After the actions, which
+                are what a lead returns to do most often, and before the advice,
+                which is read once. A cancelled or completed call has nothing to
+                add. */}
+            {!done && !rescheduling && !confirmingCancel && calendarLinks && (
+              <div className="border-t border-border px-6 py-5">
+                <AddToCalendar links={calendarLinks} />
+              </div>
+            )}
 
             {/* --- Before the call --- */}
             {!done && !rescheduling && !confirmingCancel && (
