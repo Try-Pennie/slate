@@ -5,7 +5,17 @@ import { currentUser } from "@/lib/auth";
 import { canEditOrgSettings } from "@/lib/auth/roles";
 import { consoleHiddenFor } from "@/lib/env";
 import { supabaseAdmin } from "@/lib/supabase/admin";
-import { setMonitorSettings } from "@/app/admin/actions";
+import { setMonitorSettings, addRegalCallIgnore, removeRegalCallIgnore } from "@/app/admin/actions";
+import { selectAllPages } from "@/lib/supabase/paginate";
+import { log } from "@/lib/log";
+import {
+  ignoreListRows,
+  ignorePickerOptions,
+  type IgnoreRosterUser,
+  type IgnoreRow,
+} from "@/lib/admin/regal-call-ignores";
+import { RegalCallIgnoreList, type RegalIgnoreRowView } from "@/components/admin/RegalCallIgnoreList";
+import { UnreadableNotice } from "@/components/ui/UnreadableNotice";
 import {
   ALERT_FIELDS as COOLDOWN_FIELDS,
   ALERT_URGENCY_ORDER,
@@ -19,6 +29,7 @@ import {
   resolveRosterCoverageArmed,
   resolveAwaitingActivationArmed,
   resolveBelowLeadTierArmed,
+  resolveRegalCallsArmed,
   envLowVolumeArmed,
 } from "@/lib/monitor/settings";
 import { SubmitButton } from "@/components/ui/SubmitButton";
@@ -69,6 +80,35 @@ export default async function AlertSettingsPage({
   const rosterCoverageArmed = resolveRosterCoverageArmed(config);
   const awaitingActivationArmed = resolveAwaitingActivationArmed(config);
   const belowLeadTierArmed = resolveBelowLeadTierArmed(config);
+  const regalCallsArmed = resolveRegalCallsArmed(config);
+
+  // #2090: the Regal call ignore list and the roster its picker offers. Both reads
+  // are paged, and a failure of either renders its own notice rather than an empty
+  // list: "nobody is ignored" is a claim about who gets reported, and a read that
+  // never ran must not make it (L10).
+  let regalIgnores: { rows: RegalIgnoreRowView[]; options: { value: string; label: string }[] } | null = null;
+  try {
+    const db = supabaseAdmin();
+    const [ignores, roster] = await Promise.all([
+      selectAllPages<IgnoreRow>("alerts page regal ignore list", (from, to) =>
+        db
+          .from("regal_call_ignores")
+          .select("user_id, reason, added_by, added_at")
+          .order("user_id", { ascending: true })
+          .range(from, to),
+      ),
+      selectAllPages<IgnoreRosterUser>("alerts page roster", (from, to) =>
+        db
+          .from("users")
+          .select("id, name, email, role, is_test, deactivated_at")
+          .order("id", { ascending: true })
+          .range(from, to),
+      ),
+    ]);
+    regalIgnores = { rows: ignoreListRows(ignores, roster), options: ignorePickerOptions(roster, ignores) };
+  } catch (err) {
+    log.error("admin-alerts", { msg: "regal ignore list unreadable" }, err instanceof Error ? err : undefined);
+  }
 
   const storedByKey = new Map(rows.map((r) => [r.key, r.cooldown_min]));
   // #1289: every alarm currently quieter than its coded default. Read through the
@@ -447,6 +487,24 @@ export default async function AlertSettingsPage({
             before cutover: it replaces the cal.com Slack workflow that stops working
             then.
           </p>
+          <label className="mt-4 flex items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              name="regal_calls_armed"
+              value="on"
+              defaultChecked={regalCallsArmed}
+              className="h-4 w-4"
+            />
+            Send a Slack alert when somebody not taking bookings is placing calls
+          </label>
+          <p className="mt-1 text-xs text-fg-muted">
+            Off: Slate still reads every call Regal reports, checks every 5 minutes who
+            placed one while their bookable switch is off or they are deactivated, and
+            records it in the logs, but nobody is notified. On: Slack gets one alert per
+            person a day, plus an alert when no call from a Slate user arrived all
+            business day or Regal sends calls Slate cannot read. Leave this off until
+            Regal is sending calls and somebody has watched a few ordinary days.
+          </p>
         </section>
 
         <section className={cardCls}>
@@ -529,6 +587,30 @@ export default async function AlertSettingsPage({
           </SubmitButton>
         </div>
       </SaveForm>
+
+      {/* #2090. Outside the settings form on purpose: each add and each removal is
+          its own action with its own confirmation, and a nested form is not valid
+          markup. */}
+      <section id="regal-ignores" className={cardCls}>
+        <h2 className="mb-1 text-sm font-semibold">People whose Regal calls are not reported</h2>
+        <p className={`mb-4 text-xs text-fg-muted ${proseCls}`}>
+          Managers, admins, team leads and test users are never reported for calling while
+          Slate routes no bookings to them, so only agents can be added here.
+        </p>
+        {regalIgnores ? (
+          <RegalCallIgnoreList
+            rows={regalIgnores.rows}
+            options={regalIgnores.options}
+            addAction={addRegalCallIgnore}
+            removeAction={removeRegalCallIgnore}
+          />
+        ) : (
+          <UnreadableNotice>
+            The ignore list could not be read, so this page cannot say who is on it. Nothing has
+            changed; reload to try again.
+          </UnreadableNotice>
+        )}
+      </section>
     </>
   );
 }

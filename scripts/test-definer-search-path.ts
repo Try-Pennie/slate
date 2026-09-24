@@ -264,6 +264,7 @@ const EXPECTED_PINNED = [
   "rate_limit_refund",
   "reason_usage_counts",
   "reassign_booking_swap",
+  "regal_call_reason_counts",
   // #1293: replaces a schedule's weekly rules in one transaction, so a failure
   // cannot leave an agent with no working hours (and therefore no availability).
   "replace_availability_rules",

@@ -269,6 +269,8 @@ export interface MonitorAlertConfig {
   awaiting_activation_armed: boolean | null;
   /** #2593: is the "booked below the lead's tier" page armed? Null = disarmed. */
   below_lead_tier_armed: boolean | null;
+  /** #2090: are the Regal call alerts armed? Null = disarmed (#2695 arms them). */
+  regal_calls_armed: boolean | null;
   /** #1454: UI arm/disarm for the roster-coverage page. Null = unset (fall
    *  through to the disarmed default, which here is about the roster being dark
    *  before cutover rather than about calibration: see migration 0102). */
@@ -443,6 +445,15 @@ export interface RegalCallEvent {
   agent_email: string | null;
   occurred_at: string | null;
   received_at: string;
+}
+
+/** #2090: one person whose Regal calls are not reported while Slate does not
+ *  route to them. Every entry carries its reason, who added it and when. */
+export interface RegalCallIgnore {
+  user_id: string;
+  reason: string;
+  added_by: string | null;
+  added_at: string;
 }
 
 /** Fixed-window rate-limit counter (#31); one row per key, reset in place. */

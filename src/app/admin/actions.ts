@@ -76,6 +76,7 @@ import { replayDeadLetteredDeliveries, resendDelivery } from "@/lib/webhooks/emi
 import { webhookUrlError } from "@/lib/webhooks/url";
 import { acquireLock } from "@/lib/locks";
 import { recordAudit, type AuditAction } from "@/lib/audit";
+import { parseIgnoreAdd, personLabel, type IgnoreRosterUser } from "@/lib/admin/regal-call-ignores";
 import { impersonationErrorUrl } from "@/lib/admin/imp-error-url";
 import { isActive } from "@/lib/active-user";
 import {
@@ -932,6 +933,7 @@ export async function setMonitorSettings(form: FormData): Promise<void> {
     availabilityDriftArmed: String(form.get("availability_drift_armed") ?? ""),
     awaitingActivationArmed: String(form.get("awaiting_activation_armed") ?? ""),
     belowLeadTierArmed: String(form.get("below_lead_tier_armed") ?? ""),
+    regalCallsArmed: String(form.get("regal_calls_armed") ?? ""),
     rosterCoverageArmed: String(form.get("roster_coverage_armed") ?? ""),
   });
 
@@ -2231,6 +2233,91 @@ export async function setBusinessHoursException(
   // Reported from the row that was actually written, never from what was posted,
   // so the notice can only ever describe a save that happened.
   return { error: null, ok: true, saved: { onDate: row.on_date, isOpen: row.is_open } };
+}
+
+/**
+ * Add somebody to the Regal call ignore list (#2090): their calls in Regal are no
+ * longer reported while Slate routes no bookings to them.
+ *
+ * Admin only, like every other alert setting on the page: it suppresses an alert
+ * about a named person, so it is a permission rather than a preference. Every rule
+ * the picker applied is re-checked here (an agent, not a test user, with a reason),
+ * because a posted form is not bound by the options it was drawn with. The write is
+ * checked and refused before the audit entry and the saved notice (#2379).
+ */
+export async function addRegalCallIgnore(form: FormData): Promise<void> {
+  const admin = await requireAdmin();
+  const userId = String(form.get("user_id") ?? "").trim();
+  const reason = String(form.get("reason") ?? "");
+  const db = supabaseAdmin();
+  const target = userId
+    ? (unwrap(
+        await db
+          .from("users")
+          .select("id, name, email, role, is_test, deactivated_at")
+          .eq("id", userId)
+          .maybeSingle(),
+        "regal ignore target",
+      ) as IgnoreRosterUser | null)
+    : null;
+  const parsed = parseIgnoreAdd({ userId, reason }, target);
+  if (!parsed.ok) redirect(`/admin/alerts${refusedQuery(parsed.error)}#regal-ignores`);
+
+  const { error } = await db
+    .from("regal_call_ignores")
+    .insert({ ...parsed.row, added_by: admin.id, added_at: new Date().toISOString() });
+  if (error) {
+    // The primary key is the user, so a second add of the same person is refused
+    // by the database rather than quietly replacing the reason somebody wrote.
+    const message =
+      error.code === "23505"
+        ? `${personLabel(target!)} is already on the ignore list.`
+        : writeRefused("The ignore list entry", error);
+    redirect(`/admin/alerts${refusedQuery(message)}#regal-ignores`);
+  }
+
+  await recordAudit({
+    orgId: admin.org_id,
+    actorId: admin.id,
+    action: "regal.ignore_added",
+    targetUserId: parsed.row.user_id,
+    details: { reason: parsed.row.reason },
+  });
+  revalidatePath("/admin/alerts");
+  redirect(`/admin/alerts${savedQuery("regal-ignore-added")}#regal-ignores`);
+}
+
+/**
+ * Take somebody off the Regal call ignore list (#2090), so their calls are
+ * reported again. Confirmed on the page first, with the consequence named, because
+ * the next call they place while not bookable pages.
+ */
+export async function removeRegalCallIgnore(form: FormData): Promise<void> {
+  const admin = await requireAdmin();
+  const userId = String(form.get("user_id") ?? "").trim();
+  if (!userId) redirect(`/admin/alerts${refusedQuery("Nobody was named to remove.")}#regal-ignores`);
+  const { data, error } = await supabaseAdmin()
+    .from("regal_call_ignores")
+    .delete()
+    .eq("user_id", userId)
+    .select("reason");
+  if (error) {
+    redirect(`/admin/alerts${refusedQuery(writeRefused("The ignore list removal", error))}#regal-ignores`);
+  }
+  // Nothing deleted means somebody else removed them first; the list redraws
+  // without them either way, so it says so rather than claiming this press did it.
+  if (!data || data.length === 0) {
+    redirect(`/admin/alerts${refusedQuery("They were no longer on the ignore list.")}#regal-ignores`);
+  }
+  await recordAudit({
+    orgId: admin.org_id,
+    actorId: admin.id,
+    action: "regal.ignore_removed",
+    targetUserId: userId,
+    details: { reason: (data[0] as { reason: string }).reason },
+  });
+  revalidatePath("/admin/alerts");
+  redirect(`/admin/alerts${savedQuery("regal-ignore-removed")}#regal-ignores`);
 }
 
 /** Drop a date exception, so that date goes back to following the weekly pattern. */

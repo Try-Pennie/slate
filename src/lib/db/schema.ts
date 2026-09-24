@@ -14,6 +14,7 @@ import type {
   BookingHandoff,
   OwnerAlertEvent,
   RegalCallEvent,
+  RegalCallIgnore,
   BookingOutbox,
   BookingReservation,
   BookingApiOutcomeDaily,
@@ -132,6 +133,7 @@ export interface Database {
       booking_handoffs: Table<BookingHandoff>;
       owner_alert_events: Table<OwnerAlertEvent>;
       regal_call_events: Table<RegalCallEvent>;
+      regal_call_ignores: Table<RegalCallIgnore>;
       bucket_slots: Table<BucketSlotsRow>;
       pending_event_deletions: Table<PendingEventDeletion>;
       booking_outbox: Table<BookingOutbox>;
@@ -186,6 +188,12 @@ export interface Database {
       applied_migration_versions: {
         Args: Record<string, never>;
         Returns: string[] | null;
+      };
+      /** #2090 (migration 0138): events received at or after `p_since`, per reason.
+       *  One row per reason at most, so eleven rows, far below PostgREST's cap. */
+      regal_call_reason_counts: {
+        Args: { p_since: string };
+        Returns: { reason: string; events: number }[];
       };
       /** #832: per-agent, per-local-day booking count for the daily cap. Returns a
        *  jsonb map "<user_id>|<YYYY-MM-DD>" -> count (a single row, so it never hits

@@ -63,6 +63,18 @@ import {
   formatAwaitingActivationRecovery,
 } from "@/lib/monitor/awaiting-activation";
 import {
+  judgeRegalCallers,
+  formatRegalCallAlert,
+  formatRegalCallEnding,
+  type RegalCaller,
+} from "@/lib/monitor/regal-calls";
+import {
+  formatRegalFeedQuietAlert,
+  formatRegalFeedQuietRecovery,
+  formatRegalFeedUnreadableAlert,
+  formatRegalFeedUnreadableRecovery,
+} from "@/lib/monitor/regal-call-feed";
+import {
   classifyParitySweep,
   buildScheduleParityAlert,
   buildScheduleParityAllClear,
@@ -422,6 +434,24 @@ const PREVIEW_BELOW_TIER: BelowFinding = {
   lead: { kind: "tier", rank: 5, key: "ultra_high", label: "Ultra High", code: "512" },
 };
 const PREVIEW_BELOW_TIER_URL = "https://slate.trypennie.app/admin/bookings/5b0c7a8e-2f41-4d7e-9a61-0c3f1e2d4b5a";
+
+/** #2090: an invented agent for the Regal call previews (L155). */
+const REGAL_PREVIEW_CALLER: RegalCaller = {
+  id: "u-ada",
+  name: "Ada Example",
+  email: "ada.example@trypennie.com",
+  role: "agent",
+  bookable: false,
+  deactivated_at: null,
+  is_test: false,
+};
+
+/** #2090: the last whole business day, the seeded 8am to 8pm ET. */
+const REGAL_PREVIEW_DAY = {
+  isoDate: "2026-07-28",
+  openMs: Date.UTC(2026, 6, 28, 12, 0, 0),
+  closeMs: Date.UTC(2026, 6, 29, 0, 0, 0),
+};
 
 /**
  * One rendered Beyond overflow report (#2228).
@@ -1585,6 +1615,106 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     state: "nobody past the grace",
     channel: "recovery",
     text: formatAwaitingActivationRecovery(),
+  },
+  // #2090. Invented people, never real agents (L155). The two axes read differently
+  // because the remedies do: a switch somebody turned off, or somebody who left.
+  {
+    key: "regal_call_unroutable:*",
+    state: "an agent whose bookable switch is off placed calls",
+    channel: "alert",
+    text: formatRegalCallAlert(
+      judgeRegalCallers(
+        [
+          { agent_email: "ada.example@trypennie.com", occurred_at: new Date(NOW_MS - 40 * 60_000).toISOString() },
+          { agent_email: "ada.example@trypennie.com", occurred_at: new Date(NOW_MS - 4 * 60_000).toISOString() },
+        ],
+        [REGAL_PREVIEW_CALLER],
+        [],
+      )[0],
+    ),
+  },
+  {
+    key: "regal_call_unroutable:*",
+    state: "a deactivated agent placed a call",
+    channel: "alert",
+    text: formatRegalCallAlert(
+      judgeRegalCallers(
+        [{ agent_email: "ada.example@trypennie.com", occurred_at: new Date(NOW_MS - 4 * 60_000).toISOString() }],
+        [{ ...REGAL_PREVIEW_CALLER, deactivated_at: "2026-07-20T00:00:00Z" }],
+        [],
+      )[0],
+    ),
+  },
+  {
+    key: "regal_call_unroutable:*",
+    state: "they are bookable again",
+    channel: "recovery",
+    text: formatRegalCallEnding({ userId: "u-ada", ending: "routable", user: REGAL_PREVIEW_CALLER, ignoreReason: null }),
+  },
+  {
+    // A suppression, not a recovery, and it must say so (L11).
+    key: "regal_call_unroutable:*",
+    state: "they were added to the ignore list",
+    channel: "recovery",
+    text: formatRegalCallEnding({
+      userId: "u-ada",
+      ending: "ignored",
+      user: REGAL_PREVIEW_CALLER,
+      ignoreReason: "works outbound campaigns only, never booked calls",
+    }),
+  },
+  {
+    key: "regal_call_unroutable:*",
+    state: "their role changed away from agent",
+    channel: "recovery",
+    text: formatRegalCallEnding({ userId: "u-ada", ending: "exempt-role", user: REGAL_PREVIEW_CALLER, ignoreReason: null }),
+  },
+  {
+    key: "regal_call_unroutable:*",
+    state: "they were marked as a test user",
+    channel: "recovery",
+    text: formatRegalCallEnding({ userId: "u-ada", ending: "exempt-test", user: REGAL_PREVIEW_CALLER, ignoreReason: null }),
+  },
+  {
+    key: "regal_call_unroutable:*",
+    state: "the user no longer exists",
+    channel: "recovery",
+    text: formatRegalCallEnding({ userId: "4b1e0c55-0000-4000-8000-000000000000", ending: "gone", user: null, ignoreReason: null }),
+  },
+  {
+    key: "regal_calls_quiet",
+    state: "nothing at all arrived",
+    channel: "alert",
+    text: formatRegalFeedQuietAlert(REGAL_PREVIEW_DAY, {}),
+  },
+  {
+    key: "regal_calls_quiet",
+    state: "plenty arrived and none from a Slate user",
+    channel: "alert",
+    text: formatRegalFeedQuietAlert(REGAL_PREVIEW_DAY, {
+      ai_agent: 4120,
+      agent_email_null: 1788,
+      no_slate_user: 3,
+      foreign_domain: 12,
+    }),
+  },
+  {
+    key: "regal_calls_quiet",
+    state: "calls from Slate users are arriving",
+    channel: "recovery",
+    text: formatRegalFeedQuietRecovery(212),
+  },
+  {
+    key: "regal_calls_unreadable",
+    state: "Regal changed a field",
+    channel: "alert",
+    text: formatRegalFeedUnreadableAlert({ candidate: 380, ai_agent: 2900, ai_flag_unreadable: 1411, timestamp_unreadable: 1 }),
+  },
+  {
+    key: "regal_calls_unreadable",
+    state: "a day of readable events",
+    channel: "recovery",
+    text: formatRegalFeedUnreadableRecovery(),
   },
   {
     // The fixture is the real 2026-09-07 sweep: 21 of 102 agents drifted in the five
