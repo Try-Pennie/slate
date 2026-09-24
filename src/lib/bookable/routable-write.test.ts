@@ -78,8 +78,10 @@ import {
   writeRoutableState,
   writeBookable,
   defaultRoutableWriteDeps,
+  BOOKABLE_TRAIT_UNRECORDED_COOLDOWN_MS,
   type RoutableWriteDeps,
 } from "./routable-write";
+import { bookableTraitUnrecordedAlert } from "@/lib/notify/misc-alert-copy";
 import type { TraitEmission } from "./routable-trait";
 
 const LEFT = "2026-09-20T12:00:00.000Z";
@@ -255,6 +257,13 @@ describe("a trait that could not be recorded", () => {
   it("does not fail the write that already committed, and pages per agent instead", async () => {
     seed({ bookable: true }, { bookable: true });
     const { d, notified } = deps();
+    const cooldowns: number[] = [];
+    const texts: string[] = [];
+    d.notify = async (key, cooldownMs, text) => {
+      notified.push(key);
+      cooldowns.push(cooldownMs);
+      texts.push(text);
+    };
     let calls = 0;
     d.emit = async (e) => {
       calls++;
@@ -267,6 +276,10 @@ describe("a trait that could not be recorded", () => {
     expect(written).toHaveLength(2);
     expect(calls).toBe(2);
     expect(notified).toEqual(["bookable_trait_unrecorded:u-1"]);
+    // Once a day per agent at most, and the text is the real copy builder's.
+    expect(cooldowns).toEqual([BOOKABLE_TRAIT_UNRECORDED_COOLDOWN_MS]);
+    expect(BOOKABLE_TRAIT_UNRECORDED_COOLDOWN_MS).toBe(24 * 60 * 60 * 1000);
+    expect(texts[0]).toBe(bookableTraitUnrecordedAlert("agent1@trypennie.com", false));
     expect(logged.error).toHaveBeenCalledWith(
       "bookable-trait",
       expect.objectContaining({ user_id: "u-1", slate_bookable: false }),

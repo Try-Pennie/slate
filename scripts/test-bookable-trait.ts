@@ -30,6 +30,8 @@ import { payloadForSend } from "../src/lib/webhooks/agent-trait.ts";
 import { webhookEventFamily } from "../src/lib/webhooks/events.ts";
 import type { AgentBookablePayload, BookingEventPayload } from "../src/lib/webhooks/types.ts";
 import type { WebhookEndpoint } from "../src/lib/db/types.ts";
+import { bookableTraitUnrecordedAlert } from "../src/lib/notify/misc-alert-copy.ts";
+import { ALERT_CATALOG } from "../src/lib/notify/alert-catalog.ts";
 
 function row(over: Partial<RoutableStateRow> = {}): RoutableStateRow {
   return {
@@ -269,6 +271,31 @@ const trait: AgentBookablePayload = {
   const b = await payloadForSend("booking.created", booking, current);
   assert(b.ok && b.payload === booking, "a booking payload is sent exactly as stored");
   eq(reads.length, 0, "  with no read");
+}
+
+// --- 4. the page for a trait that was never recorded ------------------------
+//
+// The one failure the delivery path cannot cover: the change was saved and its
+// delivery row was never written, so nothing retries it and the dead letter page
+// can never fire. It is an incident about one agent, and its copy must say which
+// agent, which way, that the change itself stands, and the one thing that repairs
+// it.
+
+{
+  const off = bookableTraitUnrecordedAlert("dana.whitfield@trypennie.com", false);
+  const on = bookableTraitUnrecordedAlert("ariel.nwosu@trypennie.com", true);
+  assert(off.includes("dana.whitfield@trypennie.com"), "unrecorded page: names the agent");
+  assert(/is now not bookable/.test(off), "unrecorded page: a false says not bookable");
+  assert(/is now bookable/.test(on) && !/not bookable/.test(on), "unrecorded page: a true says bookable, and only that");
+  assert(/was saved/.test(off), "unrecorded page: says the change itself stands");
+  assert(/nothing will retry it/.test(off), "unrecorded page: says why it needs a person");
+  assert(off.includes("pnpm backfill:bookable-trait"), "unrecorded page: names the repair");
+  assert(off.includes("tag=bookable-trait"), "unrecorded page: points at where the detail lives");
+  assert(!/^Slate\b/.test(off), "unrecorded page: does not open with the app's own name");
+  assert(!/[{}]/.test(off), "unrecorded page: carries no raw payload");
+
+  const entry = ALERT_CATALOG.find((e) => e.key === "bookable_trait_unrecorded:*");
+  eq(entry?.kind, "incident", "unrecorded page: classified an incident, so it never sends an all-clear");
 }
 
 finish();
