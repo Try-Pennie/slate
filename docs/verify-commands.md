@@ -554,6 +554,15 @@ was already not bookable when the tag appeared is never marked: measured 2026-09
 it covered 13 of the 22 tagged people, and using it would have reported the other 9
 as routable.
 
+Since #2724 the roster sync ALSO mirrors the tag itself, as
+`users.attributes.redistribute_tagged`, for every tagged worker whatever their
+bookable state (removed with the tag, left alone for a row Twilio holds no worker
+for). That is what the Regal call detector reads to exempt a Redistribute agent.
+This command still reads Twilio directly, because agreeing with a value the sync
+wrote would be the sync checking itself (L58). Measured 2026-09-25 before shipping:
+19 workers tagged, the mark covered 17, the mirrored tag covers all 19 and marks
+nobody untagged.
+
 **Exit 21 asks whether a bucket can match them, not whether they carry attributes**
 (#2094). The looser question paged daily on an agent whose only attribute was
 `{"role":"Sales"}`, which no bucket keys on. It is answered by calling the shipped

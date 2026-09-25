@@ -47,7 +47,12 @@
 // would hide a backlog rather than report one.
 import { fetchTwilioWorkers, TwilioReadError } from "@/lib/twilio/client";
 import { mergeWorkers, readWorker, type TwilioSide } from "@/lib/twilio/roster";
-import { planTwilioRoster, type TwilioChanges, type TwilioRosterRow } from "@/lib/twilio/roster-plan";
+import {
+  changesAnything,
+  planTwilioRoster,
+  type TwilioChanges,
+  type TwilioRosterRow,
+} from "@/lib/twilio/roster-plan";
 import { applyBookableByUserId, type BookableResult } from "@/lib/bookable/service";
 import {
   activationAllowance,
@@ -242,7 +247,7 @@ export async function syncTwilioRedistribute(deps: TwilioSyncDeps): Promise<Twil
   const backendChanged: string[] = [];
   const landed: Landed = { tiersChanged, backendChanged };
   const coverageSweeps: { email: string; bookings: number }[] = [];
-  const counters = { coverageSweepFailures: 0 };
+  const counters = { coverageSweepFailures: 0, heldWriteFailures: 0 };
 
   let flipFailures = 0;
   for (const flip of plan.flips) {
@@ -317,7 +322,7 @@ export async function syncTwilioRedistribute(deps: TwilioSyncDeps): Promise<Twil
     tiersChanged,
     backendChanged,
     withoutWorker: plan.withoutWorker,
-    attributeWriteFailures,
+    attributeWriteFailures: attributeWriteFailures + counters.heldWriteFailures,
     corruptAttributes,
     noEmail,
     unmappedTags,
@@ -349,6 +354,33 @@ function countLanded(email: string, changes: TwilioChanges, out: Landed): void {
   if (changes.backendServices.changed) out.backendChanged.push(email);
 }
 
+/**
+ * A reactivation that did not settle still owes the Twilio facts it carried, with
+ * the mark KEPT so the retry survives (#2724).
+ *
+ * Without this, a tag that came off stayed stored as present for as long as the
+ * activation gate kept refusing, and the Regal call detector went on exempting the
+ * person, which the issue names directly: the tag coming off ends the exemption.
+ * Nothing is written when nothing moved, which is the common case.
+ */
+async function writeHeld(
+  flip: ReturnType<typeof planTwilioRoster>["flips"][number],
+  deps: TwilioSyncDeps,
+  countLanded_: () => void,
+  counters: { heldWriteFailures: number },
+): Promise<void> {
+  if (!flip.heldAttributes || !changesAnything(flip.changes)) return;
+  // Its own boundary (L73): the refusal or deferral is already reported, so a
+  // throw here is an attribute write failure, never also a failed flip.
+  try {
+    await deps.writeAttributes({ userId: flip.userId, attributes: flip.heldAttributes });
+    countLanded_();
+  } catch (err) {
+    counters.heldWriteFailures++;
+    log.error("twilio-sync", { msg: "held attribute write failed, carrying on", user_id: flip.userId }, err);
+  }
+}
+
 /** One flip, both directions, with the two writes in the order the header explains. */
 async function runFlip(
   flip: ReturnType<typeof planTwilioRoster>["flips"][number],
@@ -360,7 +392,7 @@ async function runFlip(
     reactivationDeferred: string[];
     landed: Landed;
     coverageSweeps: { email: string; bookings: number }[];
-    counters: { coverageSweepFailures: number };
+    counters: { coverageSweepFailures: number; heldWriteFailures: number };
   },
 ): Promise<void> {
   // Counted where the write LANDS, never where it is planned, so a payload that
@@ -431,6 +463,7 @@ async function runFlip(
       msg: "reactivation left for the next run, this run's activation allowance is spent",
       user_id: flip.userId,
     });
+    await writeHeld(flip, deps, countLanded_, out.counters);
     return;
   }
 
@@ -443,6 +476,7 @@ async function runFlip(
       user_id: flip.userId,
       reason: result.reason,
     });
+    await writeHeld(flip, deps, countLanded_, out.counters);
     return;
   }
   if (result.status === "not_found") {

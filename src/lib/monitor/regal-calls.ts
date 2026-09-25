@@ -11,12 +11,21 @@
  *
  * WHO IS FLAGGED: a caller in the recent window who is a Slate user, is not
  * routable (`isRoutable`, the one shipped definition, the same one #2085 uses), and
- * carries none of four exemptions, each reported under its own name:
+ * carries none of five exemptions, each reported under its own name:
  *
- *   routable   Slate routes to them, which is healthy.
- *   role       any role but `agent`, derived from the Role union below.
- *   test       a test user.
- *   ignored    on the admin managed ignore list, with a reason.
+ *   routable      Slate routes to them, which is healthy.
+ *   role          any role but `agent`, derived from the Role union below.
+ *   test          a test user.
+ *   ignored       on the admin managed ignore list, with a reason.
+ *   redistribute  Twilio carries the `Redistribute` tag and their bookable switch
+ *                 is off (#2724). Those agents take calls in Regal and must not get
+ *                 booked calls (Dan, 2026-09-08 and 2026-09-25), so a call from one
+ *                 is the expected state. Read from `redistribute_tagged`, which the
+ *                 roster sync mirrors for EVERY tagged worker, never from Slate's own
+ *                 `redistribute` mark, which misses anybody already out of the pool
+ *                 when the tag appeared. It does NOT cover a deactivated agent: the
+ *                 tag explains a switch being off, not somebody having left, and the
+ *                 sync stops writing a deactivated row, so its value is frozen.
  *
  * plus `not-in-slate` for an address that resolved at the edge and has no user now.
  *
@@ -41,7 +50,8 @@ import { normalizeEmail } from "@/lib/auth/email";
 import { formatClockTime } from "@/lib/date/parse";
 import { BUSINESS_ZONE } from "@/lib/booking/business-hours";
 import { isRoutable } from "@/lib/routing/staffing-depth";
-import type { Role } from "@/lib/db/types";
+import { carriesRedistributeTag } from "@/lib/twilio/roster-plan";
+import type { Attributes, Role } from "@/lib/db/types";
 import type { AlertResolve, ThrottledNotify } from "./alert-deps";
 
 /** The alert_state family: `regal_call_unroutable:<user id>`. */
@@ -91,6 +101,16 @@ export interface RegalCaller {
   bookable: boolean;
   deactivated_at: string | null;
   is_test: boolean;
+  /** Read for `redistribute_tagged` (#2724). */
+  attributes: Attributes | null;
+}
+
+/**
+ * The redistribute exemption, in ONE place so the judgement and the ending cannot
+ * disagree: switched off (not deactivated) and tagged at the last roster sync.
+ */
+function redistributeExempt(u: RegalCaller): boolean {
+  return !isRoutable(u) && u.deactivated_at === null && carriesRedistributeTag(u.attributes);
 }
 
 /** One candidate row from `regal_call_events`. */
@@ -105,7 +125,7 @@ export interface RegalIgnore {
   reason: string;
 }
 
-export type RegalExemption = "routable" | "role" | "test" | "ignored" | "not-in-slate";
+export type RegalExemption = "routable" | "role" | "test" | "ignored" | "redistribute" | "not-in-slate";
 
 export interface RegalCallerVerdict {
   email: string;
@@ -156,6 +176,7 @@ export function judgeRegalCallers(
     if (REGAL_ROLE_EXEMPT[u.role] === true) exemptions.push("role");
     if (u.is_test) exemptions.push("test");
     if (ignored.has(u.id)) exemptions.push("ignored");
+    if (redistributeExempt(u)) exemptions.push("redistribute");
     const axis = routable ? null : u.deactivated_at !== null ? "deactivated" : "not-bookable";
     out.push({ email, user: u, ...g, exemptions, axis });
   }
@@ -164,7 +185,13 @@ export function judgeRegalCallers(
 
 // ---------------------------------------------------------------- endings
 
-export type RegalCallEnding = "routable" | "ignored" | "exempt-role" | "exempt-test" | "gone";
+export type RegalCallEnding =
+  | "routable"
+  | "ignored"
+  | "exempt-role"
+  | "exempt-test"
+  | "exempt-redistribute"
+  | "gone";
 
 export interface RegalCallSettlement {
   userId: string;
@@ -198,6 +225,7 @@ export function settleRegalCallAlerts(
     else if (reasonById.has(u.id)) ending = "ignored";
     else if (REGAL_ROLE_EXEMPT[u.role] === true) ending = "exempt-role";
     else if (u.is_test) ending = "exempt-test";
+    else if (redistributeExempt(u)) ending = "exempt-redistribute";
     if (ending === null) continue;
     const settlement = { userId, ending, user: u, ignoreReason: u ? (reasonById.get(u.id) ?? null) : null };
     out.push({ ...settlement, text: formatRegalCallEnding(settlement) });
@@ -239,12 +267,13 @@ export function formatRegalCallAlert(v: RegalCallerVerdict): string {
   return (
     `${person} placed ${calls}, while their bookable switch ` +
     `is off in Slate, so the routing pool is a person short while they work. If they should be taking ` +
-    `bookings, turn bookable on under admin > agents. If they should not, add them to the Regal call ` +
-    `ignore list under admin > alerts with the reason.`
+    `bookings, turn bookable on under admin > agents. If they should take calls but not bookings, tag ` +
+    `them Redistribute in Twilio and this stops within the hour. If neither fits, add them to the Regal ` +
+    `call ignore list under admin > alerts with the reason.`
   );
 }
 
-/** How a page ended. Five distinct sentences, never one "resolved" (L11). */
+/** How a page ended. Six distinct sentences, never one "resolved" (L11). */
 export function formatRegalCallEnding(s: Omit<RegalCallSettlement, "text">): string {
   const person = s.user ? who(s.user, s.user.email) : "The person this alert named";
   switch (s.ending) {
@@ -264,6 +293,12 @@ export function formatRegalCallEnding(s: Omit<RegalCallSettlement, "text">): str
       return (
         `${person} is now marked as a test user, so their calls in Regal are no longer reported. ` +
         `Slate still routes no bookings to them.`
+      );
+    case "exempt-redistribute":
+      return (
+        `${person} carries the Redistribute tag in Twilio, so their calls in Regal are no longer ` +
+        `reported. This is a suppression, not a recovery: Slate still routes no bookings to them, which ` +
+        `is what the tag asks for.`
       );
     case "gone":
       return `The person this alert named (user ${s.userId}) is no longer in Slate, so there is nobody left to report on.`;
@@ -345,7 +380,14 @@ export async function runRegalCallCheck(deps: RegalCallDeps): Promise<RegalCallR
 
   const verdicts = judgeRegalCallers(candidates, users, ignores);
   const flagged = verdicts.filter((v) => v.exemptions.length === 0);
-  const exempt: Record<RegalExemption, number> = { routable: 0, role: 0, test: 0, ignored: 0, "not-in-slate": 0 };
+  const exempt: Record<RegalExemption, number> = {
+    routable: 0,
+    role: 0,
+    test: 0,
+    ignored: 0,
+    redistribute: 0,
+    "not-in-slate": 0,
+  };
   for (const v of verdicts) for (const e of v.exemptions) exempt[e] += 1;
 
   if (deps.armed) {

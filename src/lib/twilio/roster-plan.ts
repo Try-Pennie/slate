@@ -51,6 +51,16 @@
 //  - The gap that leaves, somebody cal.com would route to and Slate will not, is
 //    not invisible: `pnpm verify:calcom-parity` reports it as exit 24, which is the
 //    command whose job that comparison is.
+//
+// THE MARK IS NOT THE TAG (#2724). Because the mark records only what Slate DID,
+// it misses everybody who was already out of the pool when the tag appeared
+// (measured 2026-09-10: 13 of 22 tagged people). A reader asking "does Twilio say
+// Redistribute about this person" (the Regal call detector) needs the tag itself, so
+// it is mirrored as its own fact, `redistribute_tagged`, exactly as the tiers are:
+// written for EVERY in scope worker whatever their bookable state, removed when the
+// tag comes off, and left alone for a row Twilio holds no worker for. The mark keeps
+// its one job, deciding who may be turned back on, and the two are never read for
+// each other's question.
 import type { Attributes } from "@/lib/db/types";
 import {
   REDISTRIBUTE_MARK,
@@ -96,11 +106,13 @@ export interface PlannedValue<T> {
 export interface TwilioChanges {
   debtTeams: PlannedValue<DebtTierValue[]>;
   backendServices: PlannedValue<BackendValue[]>;
+  /** Whether the worker carries the `Redistribute` tag (#2724). */
+  redistributeTagged: PlannedValue<boolean>;
 }
 
 /** True when this row's payload changes anything at all. */
-function changesAnything(c: TwilioChanges): boolean {
-  return c.debtTeams.changed || c.backendServices.changed;
+export function changesAnything(c: TwilioChanges): boolean {
+  return c.debtTeams.changed || c.backendServices.changed || c.redistributeTagged.changed;
 }
 
 export type RedistributeAction = "turn-off" | "turn-back-on";
@@ -120,6 +132,14 @@ export interface PlannedRedistribute {
    * same JSON column and two writes built from one base would drop each other.
    */
   attributes: Attributes;
+  /**
+   * For a `turn-back-on` only: what to write when the flip does NOT settle (refused
+   * by the activation gate, or deferred by the run's allowance). Every Twilio owned
+   * fact applied and the mark KEPT, so the retry survives while a tag that has come
+   * off stops reading as present (#2724). Null for a `turn-off`, whose payload is
+   * written before the flip and so always lands.
+   */
+  heldAttributes: Attributes | null;
   /** What Twilio says about them, and which of it moved. */
   changes: TwilioChanges;
   /**
@@ -185,6 +205,21 @@ export function isMarkedRedistribute(attributes: Attributes | null | undefined):
   return String(attributes?.redistribute ?? "") === REDISTRIBUTE_MARK;
 }
 
+/**
+ * The key mirroring whether Twilio carries the `Redistribute` tag (#2724). One
+ * spelling, read and written only through the two functions beside it (L370).
+ */
+export const REDISTRIBUTE_TAGGED_KEY = "redistribute_tagged";
+
+/**
+ * True when Twilio carried the `Redistribute` tag for this person at the last sync,
+ * whatever their bookable state. NOT the same question as `isMarkedRedistribute`,
+ * which is only the people Slate itself turned off.
+ */
+export function carriesRedistributeTag(attributes: Attributes | null | undefined): boolean {
+  return String(attributes?.[REDISTRIBUTE_TAGGED_KEY] ?? "") === REDISTRIBUTE_MARK;
+}
+
 function withMark(attributes: Attributes | null, markedAtIso: string): Attributes {
   return { ...(attributes ?? {}), redistribute: REDISTRIBUTE_MARK, redistribute_at: markedAtIso };
 }
@@ -244,7 +279,14 @@ function listAlreadyStored(attributes: Attributes | null | undefined, key: strin
 function planChanges(attributes: Attributes | null, worker: TwilioSide | null): TwilioChanges {
   const debtTeams = worker ? worker.debtTeams : storedList<DebtTierValue>(attributes, "debt_team");
   const backendServices = worker ? worker.backendServices : storedList<BackendValue>(attributes, "backend_service");
+  const storedTag = carriesRedistributeTag(attributes);
+  const tagged = worker ? worker.redistribute : storedTag;
+  // Compared against the RAW stored value rather than the reading of it, so a key
+  // holding anything but the one spelling is rewritten rather than kept as junk.
+  const rawTag = (attributes ?? {})[REDISTRIBUTE_TAGGED_KEY];
+  const tagAlreadyStored = tagged ? rawTag === REDISTRIBUTE_MARK : rawTag === undefined;
   return {
+    redistributeTagged: { value: tagged, changed: !tagAlreadyStored },
     debtTeams: { value: debtTeams, changed: !listAlreadyStored(attributes, "debt_team", debtTeams) },
     backendServices: {
       value: backendServices,
@@ -272,6 +314,8 @@ function withTwilioFacts(attributes: Attributes | null, changes: TwilioChanges):
   else delete next.debt_team;
   if (changes.backendServices.value.length > 0) next.backend_service = [...changes.backendServices.value];
   else delete next.backend_service;
+  if (changes.redistributeTagged.value) next[REDISTRIBUTE_TAGGED_KEY] = REDISTRIBUTE_MARK;
+  else delete next[REDISTRIBUTE_TAGGED_KEY];
   return next;
 }
 
@@ -322,6 +366,7 @@ export function planTwilioRoster(
           email,
           action: "turn-off",
           attributes: withMark(base, markedAtIso),
+          heldAttributes: null,
           changes,
           markedAtIso,
         });
@@ -339,6 +384,7 @@ export function planTwilioRoster(
           email,
           action: "turn-back-on",
           attributes: withoutMark(base),
+          heldAttributes: base,
           changes,
           markedAtIso: null,
         });

@@ -461,6 +461,7 @@ const REGAL_PREVIEW_CALLER: RegalCaller = {
   bookable: false,
   deactivated_at: null,
   is_test: false,
+  attributes: null,
 };
 
 /** #2090: the last whole business day, the seeded 8am to 8pm ET. */
@@ -1704,6 +1705,18 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     state: "they were marked as a test user",
     channel: "recovery",
     text: formatRegalCallEnding({ userId: "u-ada", ending: "exempt-test", user: REGAL_PREVIEW_CALLER, ignoreReason: null }),
+  },
+  {
+    // #2724: a suppression like the ignore list's, never recovery wording (L11).
+    key: "regal_call_unroutable:*",
+    state: "they carry the Redistribute tag in Twilio",
+    channel: "recovery",
+    text: formatRegalCallEnding({
+      userId: "u-ada",
+      ending: "exempt-redistribute",
+      user: REGAL_PREVIEW_CALLER,
+      ignoreReason: null,
+    }),
   },
   {
     key: "regal_call_unroutable:*",

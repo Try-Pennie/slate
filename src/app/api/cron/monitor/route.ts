@@ -1656,7 +1656,7 @@ export async function GET(req: NextRequest) {
           selectAllPages<RegalCaller>("monitor regal call roster", (from, to) =>
             db
               .from("users")
-              .select("id, name, email, role, bookable, deactivated_at, is_test")
+              .select("id, name, email, role, bookable, deactivated_at, is_test, attributes")
               .order("id", { ascending: true })
               .range(from, to),
           ),
