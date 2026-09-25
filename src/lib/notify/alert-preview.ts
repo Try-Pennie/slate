@@ -1001,6 +1001,22 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
   },
   {
     key: "booking_offsite_origin:*",
+    state: "declared an off site page while framed by the production site",
+    channel: "alert",
+    text: formatOffsiteOriginAlert(
+      {
+        ...PREVIEW_OFFSITE,
+        verdict: {
+          kind: "offsite",
+          declared: { kind: "offsite", origin: "http://localhost:3000" },
+          framedBy: { kind: "production", origin: "https://www.trypennie.com" },
+        },
+      },
+      PREVIEW_OFFSITE_URL,
+    ),
+  },
+  {
+    key: "booking_offsite_origin:*",
     state: "declared one off site page and framed by another",
     channel: "alert",
     text: formatOffsiteOriginAlert(

@@ -216,29 +216,33 @@ export interface OffsiteFinding {
   verdict: Extract<OriginVerdict, { kind: "offsite" }>;
 }
 
+/** One recorded origin as a phrase. Never echoes a value that did not parse. */
+function originPhrase(o: Exclude<BookingOrigin, { kind: "none" }>): string {
+  return o.kind === "unreadable" ? "an address Slate cannot read" : o.origin;
+}
+
 /**
- * Where the booking came from, in the page's words. Never echoes a value that did
- * not parse as an origin: that is whatever somebody put in a URL.
+ * Where the booking came from, in the page's words: EVERY recorded fact, whichever
+ * one is off site, so a reader sees the disagreement rather than half of it. Never
+ * echoes a value that did not parse as an origin: that is whatever somebody put in
+ * a URL.
  */
 function describeOrigins(v: OffsiteFinding["verdict"]): string {
   const { declared, framedBy } = v;
-  if (isOffsiteOrigin(declared)) {
-    const said = declared.kind === "offsite" ? declared.origin : "a host page whose address Slate cannot read";
-    if (framedBy.kind === "offsite" && (declared.kind !== "offsite" || framedBy.origin !== declared.origin)) {
-      return declared.kind === "offsite"
-        ? `the page said it was ${declared.origin}, and the browser says it was framed by ${framedBy.origin}`
-        : `the browser says it was framed by ${framedBy.origin}, and the address the page gave cannot be read`;
-    }
-    if (framedBy.kind === "unreadable") return `${said}, framed by a page whose address Slate cannot read`;
-    return said;
+  // One off site origin recorded both ways is one fact, named once.
+  if (declared.kind === "offsite" && framedBy.kind === "offsite" && declared.origin === framedBy.origin) {
+    return declared.origin;
   }
-  const framer =
-    framedBy.kind === "offsite"
-      ? `the browser says it was framed by ${framedBy.origin}`
-      : "it was framed by a page whose address Slate cannot read";
-  return declared.kind === "production"
-    ? `${framer}, although the page said it was ${declared.origin}`
-    : `${framer}, and the page did not say where it was`;
+  // Only the declared origin was recorded (the verdict is off site, so it is the
+  // off site one): the pre #2728 shape, named alone.
+  if (framedBy.kind === "none") {
+    if (declared.kind === "offsite") return declared.origin;
+    return "a host page whose address Slate cannot read";
+  }
+  const framed = `the browser says it was framed by ${originPhrase(framedBy)}`;
+  return declared.kind === "none"
+    ? `${framed}, and the page did not say where it was`
+    : `the page said it was ${originPhrase(declared)}, and ${framed}`;
 }
 
 /**

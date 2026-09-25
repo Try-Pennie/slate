@@ -330,6 +330,24 @@ assert(
   eq(sent[0].text.split("http://localhost:3000").length - 1, 1, "and names it once, not twice");
 }
 {
+  // The mirror of "declared production while framed off site": both facts named.
+  const { d, sent } = deps([booking({ prefill: { parentOrigin: "http://localhost:3000" }, referrer_origin: "https://www.trypennie.com" })]);
+  await runOffsiteOriginCheck(d);
+  eq(sent.length, 1, "declared off site while framed by production pages");
+  assert(
+    sent[0].text.includes("http://localhost:3000") && sent[0].text.includes("https://www.trypennie.com"),
+    `names both what the page said and the production framing: ${sent[0].text}`,
+  );
+}
+{
+  const { d, sent } = deps([booking({ prefill: { parentOrigin: "not a url" }, referrer_origin: "https://trypennie.com" })]);
+  await runOffsiteOriginCheck(d);
+  assert(
+    sent[0].text.includes("cannot read") && sent[0].text.includes("https://trypennie.com"),
+    `an unreadable declared origin still names the production framing: ${sent[0].text}`,
+  );
+}
+{
   const { d, sent } = deps([
     booking({ id: "bk-p", prefill: { parentOrigin: "https://www.trypennie.com" }, referrer_origin: "https://www.trypennie.com" }),
     booking({ id: "bk-f", prefill: { embed: "1" }, referrer_origin: "https://trypennie.com" }),

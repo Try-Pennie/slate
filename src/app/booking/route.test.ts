@@ -102,6 +102,7 @@ import { LeadCodeUnavailableError } from "@/lib/routing/lead-code";
 import { TEST_PASS_HEADER, TEST_PASS_REFUSAL_CODES } from "@/lib/embed/test-pass-header";
 import { TEST_PASS_TTL_MS, mintTestPass } from "@/lib/embed/test-pass";
 import { HIDDEN_TEST_BUCKET_CODES } from "@/lib/embed/public-test-bucket";
+import { REFERRER_ORIGIN_MAX_CHARS } from "@/lib/embed/referrer-origin";
 
 const PUBLIC_TEST = PUBLIC_TEST_BUCKET_CODES[0];
 // #2666: the public test bucket is booked only with the pass `/book` handed an
@@ -310,6 +311,16 @@ describe("POST /booking (embed) error mapping", () => {
 
     await post(VALID_BODY);
     expect(service.createBooking.mock.calls[2][0].referrerOrigin).toBeUndefined();
+
+    // Bounded like every sibling field: an oversized value is dropped at the edge,
+    // never handed on, and the lead still books.
+    const oversized = `https://partner.example/${"a".repeat(REFERRER_ORIGIN_MAX_CHARS)}`;
+    const big = await post({ ...VALID_BODY, referrerOrigin: oversized });
+    expect(big.status).toBe(200);
+    expect(service.createBooking.mock.calls[3][0].referrerOrigin).toBeUndefined();
+    const atCap = "https://p.example/".padEnd(REFERRER_ORIGIN_MAX_CHARS, "a");
+    await post({ ...VALID_BODY, referrerOrigin: atCap });
+    expect(service.createBooking.mock.calls[4][0].referrerOrigin).toBe(atCap);
   });
 
   it("does NOT refund on an empty/misconfigured-pool 409 (NoEligibleAgents), which is not a retryable slot race (#1089)", async () => {
