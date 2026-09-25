@@ -284,9 +284,13 @@ export async function runPageVolumeCheck(deps: {
   const unsourcedIn = (ms: number) => rows.filter((r) => isUnsourced(r.source) && inWindow(r, ms)).length;
   const sources = { unsourced: unsourcedIn(longMs), total: rows.filter((r) => inWindow(r, longMs)).length };
 
-  // The untagged bookings in each window (short, then long, as the windows below are
-  // built), left to excuse short pages with; spent as pages are excused.
-  const unsourcedPool = [unsourcedIn(shortMs), unsourcedIn(longMs)];
+  // The untagged bookings left to excuse short pages with, spent as pages are excused.
+  // Kept as BOOKINGS rather than one count per window (#2795): the short window sits
+  // inside the long one, so a recent booking is in both, and a count per window would
+  // let it excuse one page's 30 minute shortfall AND another page's 120 minute
+  // shortfall. So it is split by where each booking sits: `recent` is in both windows,
+  // `older` only in the long one, and a booking is spent on at most one page.
+  let unsourcedPool = { recent: unsourcedIn(shortMs), older: unsourcedIn(longMs) - unsourcedIn(shortMs) };
 
   const recovered: { key: string; text: string }[] = [];
   for (const { page, floors, measurable } of judged) {
@@ -311,9 +315,10 @@ export async function runPageVolumeCheck(deps: {
     // The untagged bookings are ONE pool, spent once across the pages in the list's
     // order: the same three bookings cannot be the missing three of two pages. A
     // shortfall the pool left cannot cover is a real one, and goes on to page.
-    const shortfall = windows.map((w) => Math.max(0, w.floor - w.count));
-    if (shortfall.every((d, i) => d <= unsourcedPool[i]!)) {
-      shortfall.forEach((d, i) => (unsourcedPool[i]! -= d));
+    const [short, long] = windows.map((w) => Math.max(0, w.floor - w.count));
+    const left = spendUnsourced(unsourcedPool, short!, long!);
+    if (left) {
+      unsourcedPool = left;
       pages.push({
         id: page.id,
         verdict: "source-unrecorded",
@@ -365,6 +370,30 @@ export async function runPageVolumeCheck(deps: {
   // NOTHING about that page; only a page measured at or above its floors does.
   if (recovered.length > 0) await deps.resolveRecovered(recovered).catch(() => {});
   return { status: "checked", armed: deps.armed, pages, sources };
+}
+
+/** The untagged bookings in the long window: `recent` also in the short one, `older` not. */
+export interface UnsourcedPool {
+  recent: number;
+  older: number;
+}
+
+/**
+ * Whether the untagged bookings left can make up one page's shortfall, and what is
+ * left if they can (#2795). A page short by `short` in the 30 minute window and by
+ * `long` in the 120 minute window needs `short` bookings from inside the 30 minutes,
+ * each of which also counts toward its 120 minute shortfall, and the rest of the long
+ * shortfall from anywhere in the two hours. That rest is taken from the older bookings
+ * first, so the recent ones, the only ones a 30 minute shortfall can use, stay for the
+ * pages after it. Null when the pool cannot cover the page.
+ */
+export function spendUnsourced(pool: UnsourcedPool, short: number, long: number): UnsourcedPool | null {
+  if (short > pool.recent) return null;
+  const rest = Math.max(0, long - short);
+  const fromOlder = Math.min(rest, pool.older);
+  const fromRecent = rest - fromOlder;
+  if (short + fromRecent > pool.recent) return null;
+  return { recent: pool.recent - short - fromRecent, older: pool.older - fromOlder };
 }
 
 /**

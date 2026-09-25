@@ -276,6 +276,51 @@ const HEALTHY_ROWS: SourceRow[] = [
   });
   await enough.run();
   eq(enough.calls.sent.length, 0, "control: a pool large enough for both short pages excuses both");
+  // #2795: the pool is BOOKINGS, not one count per window. The 30 minute window sits
+  // inside the 120, so one untagged booking 10 minutes old is in both, and it can be
+  // the missing booking of ONE page only: never one page's 30 minute shortfall and a
+  // different page's 120 minute shortfall at once (L11).
+  const acrossWindows = {
+    "income-verification": flat(1, 0),
+    "application-review-follow-up": flat(0, 0),
+    "application-review": flat(0, 1),
+  };
+  const across = harness({ baselines: acrossWindows, rows: [ago(10, "not-given")] });
+  const acrossOut = await across.run();
+  const acrossPages = acrossOut.status === "checked" ? acrossOut.pages : [];
+  eq(verdictOf(acrossPages, "income-verification").verdict, "source-unrecorded", "the page short in the 30 minute window takes the one untagged booking");
+  eq(verdictOf(acrossPages, "application-review").verdict, "low", "so the page short only in the 120 minute window cannot be excused by the same booking");
+  eq(across.calls.sent.map((s) => s.key), [pageVolumeAlertKey("application-review")], "and pages");
+  // Positive control in the same shape (L159): with only one page short, the one
+  // untagged booking still excuses it, in either window.
+  for (const [id, floors] of [
+    ["income-verification", flat(1, 0)],
+    ["application-review", flat(0, 1)],
+  ] as const) {
+    const alone = harness({
+      baselines: { "income-verification": flat(0, 0), "application-review-follow-up": flat(0, 0), "application-review": flat(0, 0), [id]: floors },
+      rows: [ago(10, "not-given")],
+    });
+    const aloneOut = await alone.run();
+    eq(verdictOf(aloneOut.status === "checked" ? aloneOut.pages : [], id).verdict, "source-unrecorded", `control: one untagged booking still excuses ${id} when it is the only page short`);
+    eq(alone.calls.sent.length, 0, `control: and nothing pages about ${id}`);
+  }
+  // A page short in BOTH windows by one needs only one booking inside the 30 minutes,
+  // because that booking counts in both windows. A second, older untagged booking is
+  // then left for another page's 120 minute shortfall.
+  const both = harness({
+    baselines: { "income-verification": flat(1, 1), "application-review-follow-up": flat(0, 0), "application-review": flat(0, 1) },
+    rows: [ago(10, "not-given"), ago(90, null)],
+  });
+  await both.run();
+  eq(both.calls.sent.length, 0, "one booking covers a page's shortfall in both windows, and an older one covers another page's 120 minutes");
+  // But the older booking cannot cover a 30 minute shortfall: it is outside that window.
+  const tooOld = harness({
+    baselines: { "income-verification": flat(0, 1), "application-review-follow-up": flat(0, 0), "application-review": flat(1, 0) },
+    rows: [ago(10, "not-given"), ago(90, null)],
+  });
+  await tooOld.run();
+  eq(tooOld.calls.sent.length, 0, "the 120 minute shortfall is covered by the older booking, leaving the recent one for the 30 minute shortfall");
   // An unrecognised source is a link that NAMED a page, so it is not an untagged booking.
   const odd = harness({ rows: [...HEALTHY_ROWS.filter((r) => r.source !== "offerhub"), ago(10, "unrecognised"), ago(20, "unrecognised")] });
   await odd.run();
