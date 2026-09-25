@@ -39,8 +39,14 @@ const sendThrottledInfo = vi.hoisted(() =>
   vi.fn(async (_key: string, _cooldownMs: number, _text: string) => {}),
 );
 vi.mock("@/lib/notify/dispatch", () => ({ sendThrottledAlert, sendThrottledInfo }));
+// #2755: the count of reports from pages Slate does not serve, mocked for the
+// same reason as the boundary count (its own behaviour is pinned beside it).
+const countUnrecognisedPageReport = vi.hoisted(() =>
+  vi.fn(async (): Promise<{ count: number | null; measured: boolean }> => ({ count: 3, measured: true })),
+);
 vi.mock("@/lib/api/boundary-count", () => ({
   countBoundaryCatch,
+  countUnrecognisedPageReport,
   BOUNDARY_WINDOW_MS: 30 * 60_000,
 }));
 vi.mock("@/lib/rate-limit", () => ({
@@ -76,7 +82,48 @@ beforeEach(() => {
   vi.clearAllMocks();
   allowRequest.mockResolvedValue(true);
   countBoundaryCatch.mockResolvedValue({ repeated: true, count: 5, measured: true });
+  countUnrecognisedPageReport.mockResolvedValue({ count: 3, measured: true });
   resolveTestTraffic.mockResolvedValue(false);
+});
+
+// #2755: the page path is text anybody can post, so the alert key must come from
+// Slate's own route list. Before this, every invented path minted its own key,
+// its own throttle bucket and its own alert_state rows, and the per key cooldown
+// bounded none of the total.
+describe("a report from a page Slate does not serve (#2755)", () => {
+  it("lands in other, and two invented paths share one key", async () => {
+    await post({ ...REPORT, page: "/wp-login.php" });
+    await post({ ...REPORT, page: "/xmlrpc/deep/path" });
+    expect(reportInternalError.mock.calls[0]![1]).toBe("client_error:other");
+    expect(reportInternalError.mock.calls[1]![1]).toBe("client_error:other");
+  });
+
+  it("is counted, and the count leads the alert detail so a storm reads as one line with its size", async () => {
+    countUnrecognisedPageReport.mockResolvedValueOnce({ count: 40, measured: true });
+    await post({ ...REPORT, page: "/wp-login.php" });
+    expect(countUnrecognisedPageReport).toHaveBeenCalledWith("client_error:other");
+    expect(String(reportInternalError.mock.calls[0]![0])).toMatch(/^Error: 40 reports from pages Slate does not serve/);
+  });
+
+  it("says it could not count rather than naming a figure", async () => {
+    countUnrecognisedPageReport.mockResolvedValueOnce({ count: null, measured: false });
+    await post({ ...REPORT, page: "/wp-login.php" });
+    expect(String(reportInternalError.mock.calls[0]![0])).toMatch(/could not count/);
+    expect(reportInternalError).toHaveBeenCalledOnce();
+  });
+
+  it("CONTROL: a real route keeps its own key and is not counted as invented", async () => {
+    await post({ ...REPORT, page: "/book/411" });
+    expect(reportInternalError.mock.calls[0]![1]).toBe("client_error:book");
+    expect(countUnrecognisedPageReport).not.toHaveBeenCalled();
+    expect(String(reportInternalError.mock.calls[0]![0])).not.toMatch(/does not serve/);
+  });
+
+  it("a boundary catch on an invented path is counted and keyed under boundary_error:other", async () => {
+    await post({ kind: "boundary", message: "digest 1", page: "/nope" });
+    expect(countBoundaryCatch).toHaveBeenCalledWith("boundary_error:other");
+    expect(sendThrottledAlert.mock.calls[0]![0]).toBe("boundary_error:other");
+  });
 });
 
 // #2660: a partner's staging page is the population most likely to throw (an old

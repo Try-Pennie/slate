@@ -210,6 +210,7 @@ import {
   retentionResumedText,
   retentionSkippedText,
   unknownReasonCodeNotice,
+  unrecognisedPageReports,
   watchLapseRecovery,
 } from "@/lib/notify/misc-alert-copy";
 import {
@@ -3235,6 +3236,14 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     text: misrouteAlert("bk_8f21c4", "411", "usr_22") },
   { key: "internal_error:*", state: "an unexpected 500", channel: "alert",
     text: internalErrorAlert("POST /api/bookings", "503 backendError") },
+  // #2755: every page Slate does not serve shares one key, so the size of the
+  // storm leads the detail. Two states: counted, and the counter unreadable.
+  { key: "internal_error:*", state: "browser reports from pages Slate does not serve, counted", channel: "alert",
+    text: internalErrorAlert("client_error:other",
+      `${unrecognisedPageReports({ count: 40, measured: true, windowMinutes: 30 })} error on /wp-login.php: Loading chunk 412 failed`) },
+  { key: "internal_error:*", state: "browser reports from pages Slate does not serve, uncounted", channel: "alert",
+    text: internalErrorAlert("client_error:other",
+      `${unrecognisedPageReports({ count: null, measured: false, windowMinutes: 30 })} error on /wp-login.php: Loading chunk 412 failed`) },
   // #1974: a page that failed to RENDER, which is a different event from a 500
   // and reads differently: nobody got a status code, somebody got a screen.
   // Three states, because the SCOPE sentence is what decides whether the reader

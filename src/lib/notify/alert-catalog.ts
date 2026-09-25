@@ -43,16 +43,19 @@ export type AlertKind = "condition" | "incident" | "info";
  *             (`src/lib/notify/alert-state-retention.ts` derives its list from here).
  *   bounded - something the roster or the code bounds: a bucket code, an agent or
  *             manager id, a lane, a tier, an endpoint, a rate limited area.
- *   caller  - text taken from a request (the first path segment of a page that
- *             reported an error). Sanitised, capped at 32 characters and rate
- *             limited, but NOT a fixed set, so it is named as what it is rather
- *             than filed under bounded.
+ *
+ * There is deliberately no third value for text taken from a request. There used
+ * to be (`caller`, for the page path a browser error report named), and it named
+ * a family whose keys any caller could mint without limit, one throttle bucket and
+ * one row pair per invented path (#2755). A suffix derived from a request must be
+ * MAPPED onto a fixed set first (`clientErrorSurface` is the worked example: the
+ * route list plus `other`), and is then bounded like any other.
  *
  * `alert_state` left the capped read guard's SAFE_TABLES because the first of
  * these made it a growth table while it was still listed as roster bounded.
  * `scripts/test-alert-state-retention.ts` fails a family that declares nothing.
  */
-export const ALERT_KEY_SUFFIXES = ["booking", "bounded", "caller"] as const;
+export const ALERT_KEY_SUFFIXES = ["booking", "bounded"] as const;
 export type AlertKeySuffix = (typeof ALERT_KEY_SUFFIXES)[number];
 
 export interface AlertEntry {
@@ -640,13 +643,16 @@ export const ALERT_CATALOG: AlertEntry[] = [
   {
     key: "internal_error:*",
     kind: "incident",
-    suffix: "caller",
+    // A server route's own context, or `client_error:<surface>` where the surface
+    // is Slate's route list plus `other` (#2755), never text from the request.
+    suffix: "bounded",
     why: "One request already returned a 500; there is no ongoing state, and the next request is unrelated.",
   },
   {
     key: "boundary_error:*",
     kind: "incident",
-    suffix: "caller",
+    // The surface, from Slate's route list plus `other` (#2755).
+    suffix: "bounded",
     why:
       "People already met the error screen on loads that have finished. There is no state that CLEARS: the next load " +
       "either renders or does not, and it reports for itself, counted against its own window. An all-clear here would " +
