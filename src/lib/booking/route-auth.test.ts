@@ -22,10 +22,12 @@ const rateLimit = vi.hoisted(() => ({
   clientIp: (headers: Headers) => headers.get("cf-connecting-ip")?.trim() ?? "unknown",
 }));
 const tally = vi.hoisted(() => ({ recordApiOutcome: vi.fn() }));
+const seen = vi.hoisted(() => ({ recordCallerSeen: vi.fn() }));
 
 vi.mock("@/lib/env", () => env);
 vi.mock("@/lib/rate-limit", () => rateLimit);
 vi.mock("@/lib/monitor/record-api-outcome", () => tally);
+vi.mock("@/lib/booking/record-caller-seen", () => seen);
 
 import { authorizeBookingApi } from "./route-auth";
 import { DIRECT_BOOKING_API_IP_HOURLY_RATE_RULES } from "@/lib/rate-limit-core";
@@ -231,5 +233,47 @@ describe("authorizeBookingApi caller attribution (#2645)", () => {
   it("still accepts the legacy shared pair, as the shared caller", async () => {
     const out = await authorizeBookingApi(req("Bearer sharedsecret"));
     expect(out.ok && out.caller).toBe("shared");
+  });
+});
+
+// #2717: the readiness gate asks whether trypennie's key has authenticated from
+// production, and the answer is only as real as the wiring that records it (L3). So
+// the real authorizer is driven and what reached the recorder is asserted: a success
+// names its caller, method and the request's own headers, and a refusal of any kind
+// records nothing, because a key that was refused has not been seen working.
+describe("authorizeBookingApi records who authenticated (#2717)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    env.bookingApiKeyPrimary.mockReturnValue("sharedsecret");
+    env.bookingApiKeySecondary.mockReturnValue("");
+    env.bookingApiKeyFor.mockImplementation((caller: string, slot: string) =>
+      caller === "trypennie" && slot === "primary" ? "trypenniesecret" : "",
+    );
+    rateLimit.allowRequest.mockResolvedValue(true);
+    rateLimit.bookingApiWriteWithinLimit.mockResolvedValue(true);
+    rateLimit.bookingApiReadWithinLimit.mockResolvedValue(true);
+    rateLimit.bookingApiIpWithinLimit.mockResolvedValue(true);
+  });
+
+  it("records the caller, method and headers of a success", async () => {
+    const r = req("Bearer trypenniesecret");
+    const out = await authorizeBookingApi(r, undefined, null, true);
+    expect(out.ok).toBe(true);
+    expect(seen.recordCallerSeen).toHaveBeenCalledTimes(1);
+    const [caller, method, headers] = seen.recordCallerSeen.mock.calls[0];
+    expect(caller).toBe("trypennie");
+    expect(method).toBe("POST");
+    expect(headers).toBe(r.headers);
+  });
+
+  it("records nothing for a refused key", async () => {
+    await authorizeBookingApi(req("Bearer stalekey"));
+    expect(seen.recordCallerSeen).not.toHaveBeenCalled();
+  });
+
+  it("records nothing for a good key the ceiling refused", async () => {
+    rateLimit.bookingApiWriteWithinLimit.mockResolvedValue(false);
+    await authorizeBookingApi(req("Bearer trypenniesecret"));
+    expect(seen.recordCallerSeen).not.toHaveBeenCalled();
   });
 });

@@ -760,7 +760,7 @@ one's bound, are in `docs/verify-commands.md`.
 | `verify:calcom-parity` | Slate and cal.com hold the same roster and the same week per agent, which is invisible from inside Slate alone |
 | `verify:twilio-parity` | Slate holds the routing facts Twilio is the source of truth for, and notices a `Redistribute` agent still bookable |
 | `verify:router-replay` | Slate's ladder agrees with cal.com's choices on real leads, the only measurement of routing that exists before cutover |
-| `verify:parallel-run-readiness` | the five preconditions of a trustworthy shadow run, each judged by the code that already owns it |
+| `verify:parallel-run-readiness` | the preconditions of a trustworthy shadow run, each judged by the code that already owns it, including trypennie's key seen from production (exit 13, #2717) |
 | `verify:pool-slot-parity` | the bucket codes sharing one availability pool really offer the same times |
 | `verify:table-drift` | production holds no table that no migration created |
 

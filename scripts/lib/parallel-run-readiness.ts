@@ -17,13 +17,23 @@
 // - every bookable agent has a calendar row, hydrated past the booking horizon
 //   (#1736: an agent flipped bookable holds no busy time until the lanes reach them,
 //   and looks free for every hour their week allows);
-// - no real bucket is empty, by the empty bucket alarm's own predicate.
+// - no real bucket is empty, by the empty bucket alarm's own predicate;
+// - trypennie's booking key has authenticated from their production site recently
+//   (#2717), because their confirmed page reads every booking with it and a key
+//   missing from their production environment sends every pilot lead to a not
+//   found page.
 //
 // Two rules carry it. Every way of learning nothing exits on its OWN code, because
 // "an alarm is muted", "cal.com has not been compared for two days" and "the bucket
 // read failed" send three different people three different places (L11). And a run
 // that measured nobody is never a pass (L98): zero bookable agents or zero real
 // buckets is the shape of a broken read, not a healthy morning.
+
+import {
+  judgePartnerKey,
+  PARTNER_KEY_MAX_AGE_DAYS,
+  type CallerSeenRow,
+} from "../../src/lib/booking/caller-seen.ts";
 
 export interface StretchedCooldown {
   key: string;
@@ -69,6 +79,12 @@ export interface ReadinessFacts {
    * week happened to equal the seed, which is why it was left out of the first cut.
    */
   unsetHours: string[] | null;
+  /**
+   * The partner whose key must be proven and every `api_caller_seen` row read for
+   * it (#2717). null = unreadable. Judged by `judgePartnerKey`, the same judge the
+   * admin console shows, so the gate and the page cannot disagree.
+   */
+  partnerKey: { caller: string; rows: CallerSeenRow[] } | null;
 }
 
 export type ReadinessFinding =
@@ -82,7 +98,8 @@ export type ReadinessFinding =
   | "parity-drifting"
   | "parity-stale"
   | "bookable-pending"
-  | "hours-unset";
+  | "hours-unset"
+  | "partner-key-unproven";
 
 /**
  * Worst FIRST. The reasoning for each rung:
@@ -107,6 +124,10 @@ export const READINESS_ORDER: readonly ReadinessFinding[] = [
   "bucket-empty",
   "calendar-missing",
   "calendar-uncovered",
+  // Below every finding that stops a lead being BOOKED, above everything else: the
+  // booking is made, and the lead lands on a not found page instead of their
+  // confirmation, which is the first thing they see from us.
+  "partner-key-unproven",
   "alarm-muted",
   "parity-drifting",
   "parity-stale",
@@ -134,6 +155,8 @@ export const READINESS_EXIT = {
   parityStale: 9,
   bookablePending: 10,
   hoursUnset: 11,
+  /** "trypennie key never seen from production" (#2717), in every one of its forms. */
+  partnerKeyUnproven: 13,
 } as const;
 
 const EXIT_FOR: Record<ReadinessFinding, number> = {
@@ -148,6 +171,7 @@ const EXIT_FOR: Record<ReadinessFinding, number> = {
   "parity-stale": READINESS_EXIT.parityStale,
   "bookable-pending": READINESS_EXIT.bookablePending,
   "hours-unset": READINESS_EXIT.hoursUnset,
+  "partner-key-unproven": READINESS_EXIT.partnerKeyUnproven,
 };
 
 export interface ReadinessJudgement {
@@ -234,6 +258,19 @@ export function judgeReadiness(f: ReadinessFacts): ReadinessJudgement {
     });
   }
 
+  let partnerProof: string | null = null;
+  if (f.partnerKey === null) unreadable.push("partner key sightings");
+  else {
+    // Passes on a recent production host OR a recent server call that named no
+    // host (Dan, 2026-09-25: trypennie's lookup is a server call). One exit for
+    // every way it fails, each in its own words (never seen, only localhost or a
+    // private address, only another host, or not recently): the fix is the same
+    // person asking the same partner, and the sentence says which question to ask.
+    const v = judgePartnerKey(f.partnerKey.caller, f.partnerKey.rows, f.nowMs, PARTNER_KEY_MAX_AGE_DAYS * 86_400_000);
+    if (v.status !== "proven") findings.push({ kind: "partner-key-unproven", detail: v.detail });
+    else partnerProof = v.detail;
+  }
+
   if (f.emptyBuckets === null) unreadable.push("buckets");
   else if (f.emptyBuckets.empty.length) {
     findings.push({
@@ -264,7 +301,7 @@ export function judgeReadiness(f: ReadinessFacts): ReadinessJudgement {
       ? `measured ${f.calendars.bookableAgents} bookable agents, ${f.emptyTiers.measuredTiers} debt tiers and ${f.emptyBuckets.realBuckets} real buckets`
       : "measured only part of the picture";
   if (findings.length === 0) {
-    return { exit: READINESS_EXIT.ready, findings, summary: `READY: ${measured}; no alarm muted, comparison fresh, nobody waiting, every calendar hydrated, every week set by somebody, every debt tier staffed, no empty bucket` };
+    return { exit: READINESS_EXIT.ready, findings, summary: `READY: ${measured}; no alarm muted, comparison fresh, nobody waiting, every calendar hydrated, every week set by somebody, every debt tier staffed, no empty bucket; ${partnerProof}` };
   }
   return {
     exit: EXIT_FOR[findings[0].kind],

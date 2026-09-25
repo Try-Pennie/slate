@@ -1176,14 +1176,45 @@ and is pinned offline by `scripts/test-parallel-run-readiness.ts`.
 | 0 | READY |
 | 1 | no Supabase credentials here; nothing was read |
 | 2 | a section could not be read, so nothing beneath it is vouched for |
-| 3 | zero bookable agents or zero real buckets: nothing was judged |
-| 4 | **a real bucket has nobody to route to** |
+| 3 | zero bookable agents, zero debt tiers or zero real buckets: nothing was judged |
+| 4 | **a debt tier has nobody assigned at all** |
+| 12 | **a real bucket has nobody to route to** |
 | 5 | **a bookable agent has no calendar row**, so they read as free all day |
 | 6 | a calendar is not hydrated to the booking horizon |
+| 13 | **trypennie key never seen from production** (see below) |
 | 7 | an alert cooldown is stretched above its default |
 | 8 | the cal.com comparison is reporting drift |
 | 9 | the cal.com comparison has not reached a verdict inside its 30 hour bound |
 | 10 | somebody is waiting to become bookable behind a refused activation |
+| 11 | a bookable agent is on working hours nobody set |
+
+The rows are in the order the run is judged, worst first, which is not the order of
+the numbers: a code names an outcome and the order decides which one names a run.
+The table was two outcomes and a renumbering behind the code until #2717, so the
+authority is `READINESS_EXIT` and `READINESS_ORDER` in the judge.
+
+**Exit 13, trypennie's key (#2717).** trypennie's confirmed page reads every Slate
+booking with its own key (#2645), so a key missing from their production
+environment ends every pilot booking on their not found page. The booking API's
+authorizer records, per caller and per host, the last successful request in
+`api_caller_seen` (migration 0140): written on a caller's first success from a
+host and refreshed at most once an hour per isolate, deferred past the response,
+so a booking pays nothing for it. The host is the request's `Origin`, else the
+origin of its `Referer`, never the path. The gate passes when, within
+`PARTNER_KEY_MAX_AGE_DAYS` (7), the key has authenticated from
+`https://trypennie.com` or `https://www.trypennie.com`, OR from a server call that
+named no host, and the READY line says which of the two it passed on. It fails,
+on one exit with its own sentence each, when the key never authenticated, was seen
+only from localhost or a private address, only from another host (a preview), or
+last from a passing kind longer ago than the bound.
+
+**Why a server call passes (Dan, 2026-09-25).** trypennie's lookup is a server to
+server call, which sends neither header, so demanding a named production host
+would keep the gate red against a working key. A browser on localhost or a preview
+names its host and still fails. What this accepts, deliberately: a trypennie
+developer calling with the production key from their own server satisfies it too.
+The same fact is shown on `/admin/booking-outcomes`, judged by the same function
+(`judgePartnerKey`, `src/lib/booking/caller-seen.ts`).
 
 A deliberately dropped check, so nobody adds it back by accident: a bookable agent
 sitting on the seeded default week is NOT reported. The seeded week is also a real

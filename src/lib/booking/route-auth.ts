@@ -10,6 +10,7 @@ import {
   refusalReasonForStatus,
 } from "@/lib/booking/api-auth";
 import { recordApiOutcome } from "@/lib/monitor/record-api-outcome";
+import { recordCallerSeen } from "@/lib/booking/record-caller-seen";
 import type { SelfInflictedRefusal } from "@/lib/monitor/booking-api-outcome";
 import { log } from "@/lib/log";
 import {
@@ -195,5 +196,9 @@ export async function authorizeBookingApi(
       );
     }
   }
+  // #2717: keep "this caller's key works, from this host" as a fact the readiness
+  // gate and the admin console can read. Deferred past the response and throttled to
+  // once an hour per caller and host, so a booking pays nothing for it.
+  recordCallerSeen(auth.caller, req.method, req.headers);
   return { ok: true, keyId: auth.keyId, caller: auth.caller };
 }
