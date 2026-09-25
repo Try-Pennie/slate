@@ -428,8 +428,8 @@ npm run monitors:sync:slate   # apply to production D1; refuses without SLATE_UP
    is empty only because its agents are all off does not page. Interval: 5 min.
    Because the verdict rides on the status code, noodge needs no body assertion.
 3. `GET /widget.js` expects `200`. The embed script; if it stops serving, every
-   landing page that embeds Slate loses its booker. (noodge asserts status, latency
-   and a JSON path, not a content type.)
+   landing page that embeds Slate loses its booker. This check is status only:
+   noodge cannot assert a content type, so it does not prove the body is JavaScript.
 4. `GET /login` expects `200`. Cheap catch for a broken deploy: it proves the
    Next.js page-rendering path serves (not just the API routes). The root `/`
    redirects to `/login` (a `307`), so point the check at `/login` directly rather
