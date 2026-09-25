@@ -424,7 +424,7 @@ export const VERDICT_STALE_BOUNDS_MS: Record<string, number> = {
   // checks, and for the same reason: it concludes only when a human agent's call
   // arrives, and the quietest stretch of an ordinary week (Saturday afternoon to
   // Monday morning, when Sunday carries about a fifth of a weekday's calls) is its
-  // longest legitimate silence. Parked until Regal is pointed at Slate (#2695).
+  // longest legitimate silence. Watched since Regal was pointed at Slate (#2695).
   "verdict:regal-calls": 4 * 24 * 60 * MIN,
   // The daily proof that the burst counter answers (#2392), and the only member of
   // this family stamped by a GitHub workflow rather than by the monitor lane, which

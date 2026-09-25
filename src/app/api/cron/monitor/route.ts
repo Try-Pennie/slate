@@ -1577,7 +1577,8 @@ export async function GET(req: NextRequest) {
     // this boundary and consumes no shared setup state, so it is not gated. A read
     // that fails measures nothing, pages nobody and clears nothing.
     //
-    // Disarmed until #2695 (migration 0138): it measures and logs every tick. ---
+    // Armed by the `regal_calls_armed` setting (#2695, migration 0138); while it
+    // is off it measures and logs every tick and sends nothing. ---
     const loadRegalCounts = async (sinceIso: string): Promise<RegalReasonCounts> =>
       countsFromRows(
         unwrap(
