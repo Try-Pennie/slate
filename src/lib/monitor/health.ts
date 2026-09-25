@@ -490,6 +490,35 @@ export const VERDICT_STALE_BOUNDS_MS: Record<string, number> = {
   // hours rather than the truth probe's day: the day there is five passes of a
   // bucket rotation this check does not have.
   "verdict:roster-coverage": 6 * 60 * MIN,
+  // The five below (#2798) are the gated checks the #1941 registry found
+  // swallowing a failed read. Every one runs on every 5 minute monitor tick and
+  // none has a time window, a traffic floor or a sample size of its own, so each
+  // concludes on every tick its read works, and its longest legitimate silence is
+  // a handful of ticks, not hours. Each bound is therefore the same six hour
+  // maintenance window as the roster coverage, time off protection and tier
+  // staffing checks above, for the same reason and so that bounds meaning the
+  // same thing stay one number. Per check, what could otherwise be a legitimate
+  // silence and why it is not one:
+  //
+  // The availability scan concludes on a tick that saw every bucket with no dead
+  // end, or that verified at least one dead end. A scan cut short by its deadline
+  // is the occasional busy tick, not a state that lasts; a run of them for six
+  // hours is the scan being blind, which is what this is for.
+  "verdict:availability-scan": 6 * 60 * MIN,
+  // The calendar window check concludes whenever the calendar rows read and at
+  // least one calendar is past its first run, which on a live roster is always.
+  "verdict:calendar-window": 6 * 60 * MIN,
+  // The off site origin check concludes on every tick the bookings read works,
+  // including ticks with no recent booking at all, so it needs no traffic.
+  "verdict:offsite-origin": 6 * 60 * MIN,
+  // Waiting to become bookable concludes on every tick the roster reads, and an
+  // empty queue is its ordinary answer.
+  "verdict:awaiting-activation": 6 * 60 * MIN,
+  // The Regal feed pair concludes whenever the reason count RPC answers for both,
+  // and a quiet day is itself a verdict, so a weekend with no calls does not make
+  // it silent the way it makes the Regal call detector silent. The one real gap
+  // is an org with no open day in two weeks, which the quiet check cannot judge.
+  "verdict:regal-call-feed": 6 * 60 * MIN,
 };
 
 /**

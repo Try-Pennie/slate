@@ -151,6 +151,7 @@ describe("runCalendarWindowCheck", () => {
       }),
     );
     expect(result.status).toBe("unreadable");
+    expect(result.judged).toBe(0);
     expect(sendThrottledAlert).not.toHaveBeenCalled();
     expect(resolveAlert).not.toHaveBeenCalled();
     expect(clearFailureStreak).not.toHaveBeenCalled();
@@ -252,6 +253,19 @@ describe("what the check says about a graced calendar (#2300)", () => {
     });
     expect(res.status).toBe("clear");
     expect(res.graced).toBe(1);
+    // #2798: the verdict lane stamps on calendars JUDGED, never on rows read.
+    expect(res.judged).toBe(1);
+  });
+
+  it("a clear pass that graced every calendar judged none (#2798)", async () => {
+    const res = await runCalendarWindowCheck({
+      loadRows: async () => [brandNew(3)],
+      horizonDays: HORIZON_DAYS,
+      nowIso: NOW_ISO,
+      cooldownMs: 1000,
+    });
+    expect(res.status).toBe("clear");
+    expect(res.judged).toBe(0);
   });
 
   it("the all-clear may not claim what the grace declined to measure", () => {

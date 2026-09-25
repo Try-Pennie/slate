@@ -11,6 +11,7 @@ import {
   type ScanBucket,
 } from "../src/lib/monitor/availability-scan.ts";
 import { DATA_ANOMALY_ALERT_KEY } from "../src/lib/monitor/availability-health.ts";
+import { availabilityScanReachedVerdict } from "../src/lib/monitor/verdict-freshness.ts";
 import { assert, finish } from "./lib/harness.ts";
 
 const NOW = Date.UTC(2026, 5, 23, 18, 0, 0); // a Tuesday 14:00 ET
@@ -435,6 +436,52 @@ function harness(config: {
   const res = await h.run();
   assert(res.cause.dataAnomaly[0] === "411", "an unreadable re-read keeps the anomaly (fails closed)");
   assert(h.notified[0]?.key === DATA_ANOMALY_ALERT_KEY, "so it still pages");
+}
+
+// --- #2798: which scans count as a MEASURED verdict ---------------------------------
+// The recompute that verifies a dead end swallows its own failure to null, so a
+// recompute failing on every tick leaves every finding unverified. That tick ran,
+// logged and paged about unverified buckets, and concluded nothing about any of
+// them, so it must not stamp the verdict lane. Driven through the real scan so the
+// predicate is judged against what the scan actually returns (L52).
+{
+  const healthy = await harness({ buckets: { "411": { slotCount: 5 } } }).run();
+  assert(availabilityScanReachedVerdict(healthy), "verdict: a complete scan with no dead end IS a verdict");
+
+  const anomaly = await harness({ buckets: { "411": { recompute: 4 } } }).run();
+  assert(availabilityScanReachedVerdict(anomaly), "verdict: a dead end the recompute confirmed IS a verdict");
+
+  const solid = await harness({ buckets: { "411": { recompute: 0 } } }).run();
+  assert(availabilityScanReachedVerdict(solid), "verdict: a dead end the recompute found booked solid IS a verdict");
+
+  const allNull = await harness({
+    buckets: { "411": { recompute: null }, "412": { recompute: null } },
+  }).run();
+  assert(allNull.cause.unverified.length === 2, "every recompute returning null leaves every dead end unverified");
+  assert(!availabilityScanReachedVerdict(allNull), "verdict: every recompute failing is NOT a verdict");
+
+  const allThrow = await harness({
+    buckets: { "411": { recomputeThrows: true }, "412": { recomputeThrows: true } },
+  }).run();
+  assert(allThrow.cause.unverified.length === 2, "every recompute throwing leaves every dead end unverified");
+  assert(!availabilityScanReachedVerdict(allThrow), "verdict: every recompute throwing is NOT a verdict");
+
+  const mixed = await harness({
+    buckets: { "411": { recompute: 4 }, "412": { recompute: null } },
+  }).run();
+  assert(
+    availabilityScanReachedVerdict(mixed),
+    "verdict: one dead end verified beside one unverified IS a verdict: the recompute answered",
+  );
+
+  const truncated = await harness({ buckets: { "411": { slotCount: 5 } }, deadlineMs: 0 }).run();
+  assert(truncated.truncated, "a scan out of budget reports truncated");
+  assert(!availabilityScanReachedVerdict(truncated), "verdict: a truncated scan with no finding is NOT a verdict");
+
+  const empty = await harness({ buckets: {} }).run();
+  assert(!availabilityScanReachedVerdict(empty), "verdict: a scan over zero buckets judged nothing (L98)");
+
+  assert(!availabilityScanReachedVerdict(null), "verdict: a skipped or thrown scan is NOT a verdict");
 }
 
 finish();

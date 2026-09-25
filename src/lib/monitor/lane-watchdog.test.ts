@@ -128,6 +128,13 @@ const healthy = () => ({
   // #1941: concludes on every tick the week and the roster are readable,
   // including a fully covered week.
   "verdict:roster-coverage": ago(5 * MIN),
+  // #2798: the five gated checks that swallowed a failed read. Each concludes on
+  // every monitor tick its read works, so a healthy fleet has a stamp minutes old.
+  "verdict:availability-scan": ago(5 * MIN),
+  "verdict:calendar-window": ago(5 * MIN),
+  "verdict:offsite-origin": ago(5 * MIN),
+  "verdict:awaiting-activation": ago(5 * MIN),
+  "verdict:regal-call-feed": ago(5 * MIN),
   // `verdict:booking-failure-rate` is deliberately ABSENT, and that is the healthy
   // state rather than a gap in the fixture (#2499). The check cannot reach a
   // verdict before real Low leads book: the outcome mix read excludes test

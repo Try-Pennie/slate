@@ -28,6 +28,11 @@ import {
   KILL_SWITCH_VERDICT_LANE,
   REGAL_CALLS_VERDICT_LANE,
   ROSTER_COVERAGE_VERDICT_LANE,
+  AVAILABILITY_SCAN_VERDICT_LANE,
+  CALENDAR_WINDOW_VERDICT_LANE,
+  OFFSITE_ORIGIN_VERDICT_LANE,
+  AWAITING_ACTIVATION_VERDICT_LANE,
+  REGAL_CALL_FEED_VERDICT_LANE,
   type DetectorVerdictLane,
 } from "@/lib/monitor/verdict-freshness";
 
@@ -64,6 +69,11 @@ const STAMP: Record<WorkerStampedVerdictLane, () => Promise<void>> = {
   [BELOW_LEAD_TIER_VERDICT_LANE]: () => recordHeartbeat("verdict:below-lead-tier"),
   [REGAL_CALLS_VERDICT_LANE]: () => recordHeartbeat("verdict:regal-calls"),
   [ROSTER_COVERAGE_VERDICT_LANE]: () => recordHeartbeat("verdict:roster-coverage"),
+  [AVAILABILITY_SCAN_VERDICT_LANE]: () => recordHeartbeat("verdict:availability-scan"),
+  [CALENDAR_WINDOW_VERDICT_LANE]: () => recordHeartbeat("verdict:calendar-window"),
+  [OFFSITE_ORIGIN_VERDICT_LANE]: () => recordHeartbeat("verdict:offsite-origin"),
+  [AWAITING_ACTIVATION_VERDICT_LANE]: () => recordHeartbeat("verdict:awaiting-activation"),
+  [REGAL_CALL_FEED_VERDICT_LANE]: () => recordHeartbeat("verdict:regal-call-feed"),
 };
 
 /**

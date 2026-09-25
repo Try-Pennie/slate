@@ -216,6 +216,12 @@ export interface CalendarWindowResult {
    * what it measured.
    */
   graced: number;
+  /**
+   * How many calendars this pass actually held against the horizon: the rows read,
+   * less the graced ones (#2798). A `clear` over zero judged calendars measured
+   * nothing, and the verdict lane must be able to tell it from a real one (L98).
+   */
+  judged: number;
 }
 
 /**
@@ -244,7 +250,7 @@ export async function runCalendarWindowCheck(deps: {
   } catch (err) {
     log.error("calendar-window", { msg: "coverage read failed" }, err);
     deps.logTick?.({ status: "unreadable" });
-    return { status: "unreadable", uncovered: 0, graced: 0 };
+    return { status: "unreadable", uncovered: 0, graced: 0, judged: 0 };
   }
 
   const { uncovered, graced } = judgeCalendarCoverage({
@@ -252,13 +258,14 @@ export async function runCalendarWindowCheck(deps: {
     horizonDays: deps.horizonDays,
     nowIso: deps.nowIso,
   });
+  const judged = rows.length - graced;
 
   if (uncovered.length === 0) {
     await clearFailureStreak(CALENDAR_WINDOW_KEY);
     // alert-key: calendar_window_uncovered
     await resolveAlert(CALENDAR_WINDOW_KEY, formatCalendarWindowRecovery(graced)).catch(() => {});
     deps.logTick?.({ status: "clear", calendars: rows.length, graced });
-    return { status: "clear", uncovered: 0, graced };
+    return { status: "clear", uncovered: 0, graced, judged };
   }
 
   const sustained = await recordConsecutiveStreak(
@@ -275,5 +282,5 @@ export async function runCalendarWindowCheck(deps: {
     ).catch(() => {});
   }
   deps.logTick?.({ status: "uncovered", uncovered: uncovered.length, sustained, graced });
-  return { status: "uncovered", uncovered: uncovered.length, graced };
+  return { status: "uncovered", uncovered: uncovered.length, graced, judged };
 }
