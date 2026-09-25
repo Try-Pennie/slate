@@ -27,6 +27,43 @@ The moving parts:
   day so a flood of tests cannot starve the canary of free slots). The codes are
   read from `src/lib/embed/public-test-bucket.ts`, never typed into the seed.
 
+## A test by hand books `PARTNER`, never a real bucket (#2760)
+
+Any live test that is not the canary (a partner trying the embed, somebody
+checking a fix on production, a booking made through the API or the admin) books
+`PARTNER`. It is the only test bucket reachable on the public paths, and because it
+is `is_test` nothing downstream or on the monitoring side mistakes it for a lead.
+
+A test on a real bucket code is not marked as a test anywhere, so the monitors read
+it as a real lead, and two of them are built to react to exactly that:
+
+- **The below tier check (#2737)** leaves a booking out only when its host page is
+  not the production site. A test booked from trypennie.com itself, or with no host
+  recorded at all (the standalone `/book` page, `POST /api/bookings`, an admin
+  booking), is compared against Salesforce like a lead. On 2026-09-25 one such test
+  was the verdict that un-parked the check and paged "real leads are booking in
+  Slate now".
+- **The failure rate watch (#2513)** counts every attempt on a real bucket. It
+  excludes test buckets only, so a test there is a sample of real traffic, and a
+  test that fails is a real failure to it.
+
+### The rare test that must reach a real advisor
+
+Some things can only be proved against a real pool (a live routing check, Regal's
+handling of a real booking). Then:
+
+1. **Use the bucket whose pool has the most advisors** (read it off `/admin/tiers`
+   on the day), never a one person pool. A test in a one person pool takes that
+   pool's only slot from every real lead for the length of the call; in a pool of
+   seventy nobody notices. On 2026-09-24 the largest was XBC 100.
+2. **Know what it costs the alarms before booking.** It is a real lead to both
+   checks above, so it can un-park either one and page. Booked from any host page
+   that is not the production site (localhost, a preview, a staging site) it also
+   pages `booking_offsite_origin` (#2715). The advisor's invite and the reminder
+   texts are live, because the bucket is real.
+3. **Cancel it as soon as it has proved its point**, from the manage link, so the
+   slot goes back to the pool and the reminder texts stop.
+
 ## Preconditions
 
 - `.env.local` at the repo root holds `NEXT_PUBLIC_SUPABASE_URL` and
