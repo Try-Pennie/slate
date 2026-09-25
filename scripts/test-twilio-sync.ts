@@ -98,7 +98,7 @@ function deps(
   eq(
     d.calls,
     [
-      `attrs:u1:{"redistribute":"Y","redistribute_at":"${NOW}"}`,
+      `attrs:u1:{"redistribute_tagged":"Y","redistribute":"Y","redistribute_at":"${NOW}"}`,
       `sweep:u1:${NOW}`,
       "flip:u1:false",
     ],
@@ -455,5 +455,49 @@ const backOn = {
   eq(r.reactivationDeferred.length, 0, "and nothing is deferred, because nothing was going in");
 }
 
+
+// --- #2724: a reactivation that does not settle still clears the tag ---------
+// The tag coming off must end the Regal call exemption even when the activation
+// gate keeps refusing, so the unsettled path writes the Twilio facts with the mark
+// KEPT, and only when something actually moved.
+{
+  const d = deps(
+    {
+      ...backOn,
+      loadRoster: async () => [
+        row({ bookable: false, attributes: { redistribute: "Y", debt_team: ["low"], redistribute_tagged: "Y" } }),
+      ],
+    },
+    (userId) => ({ status: "blocked", userId, reason: "google_unreachable" }),
+  );
+  const r = await syncTwilioRedistribute(d.deps);
+  eq(r.reactivationRefused, ["a@trypennie.com"], "the refusal is still reported");
+  eq(
+    d.calls,
+    ["flip:u1:true", 'attrs:u1:{"redistribute":"Y","debt_team":["low"]}'],
+    "and the tag is cleared with the mark kept, after the flip was asked",
+  );
+  eq(r.flipFailures, 0, "and nothing counts as a failed flip");
+}
+{
+  const shared = activationAllowance(0);
+  const d = deps({
+    ...backOn,
+    allowance: shared,
+    loadRoster: async () => [
+      row({ bookable: false, attributes: { redistribute: "Y", debt_team: ["low"], redistribute_tagged: "Y" } }),
+    ],
+  });
+  const r = await syncTwilioRedistribute(d.deps);
+  eq(r.reactivationDeferred, ["a@trypennie.com"], "a deferred reactivation is still reported");
+  eq(d.calls, ['attrs:u1:{"redistribute":"Y","debt_team":["low"]}'], "and still clears the tag without attempting the flip");
+}
+{
+  // A withheld agent who was ALREADY out of the pool: no flip, and the tag lands.
+  const d = deps({ loadRoster: async () => [row({ bookable: false })] });
+  const r = await syncTwilioRedistribute(d.deps);
+  eq(r.turnedOff.length, 0, "nobody is flipped");
+  eq(d.calls, ['attrs:u1:{"redistribute_tagged":"Y"}'], "and the tag is written for them anyway");
+}
 
 finish();

@@ -47,7 +47,12 @@
 // would hide a backlog rather than report one.
 import { fetchTwilioWorkers, TwilioReadError } from "@/lib/twilio/client";
 import { mergeWorkers, readWorker, type TwilioSide } from "@/lib/twilio/roster";
-import { planTwilioRoster, type TwilioChanges, type TwilioRosterRow } from "@/lib/twilio/roster-plan";
+import {
+  changesAnything,
+  planTwilioRoster,
+  type TwilioChanges,
+  type TwilioRosterRow,
+} from "@/lib/twilio/roster-plan";
 import { applyBookableByUserId, type BookableResult } from "@/lib/bookable/service";
 import {
   activationAllowance,
@@ -349,6 +354,25 @@ function countLanded(email: string, changes: TwilioChanges, out: Landed): void {
   if (changes.backendServices.changed) out.backendChanged.push(email);
 }
 
+/**
+ * A reactivation that did not settle still owes the Twilio facts it carried, with
+ * the mark KEPT so the retry survives (#2724).
+ *
+ * Without this, a tag that came off stayed stored as present for as long as the
+ * activation gate kept refusing, and the Regal call detector went on exempting the
+ * person, which the issue names directly: the tag coming off ends the exemption.
+ * Nothing is written when nothing moved, which is the common case.
+ */
+async function writeHeld(
+  flip: ReturnType<typeof planTwilioRoster>["flips"][number],
+  deps: TwilioSyncDeps,
+  countLanded_: () => void,
+): Promise<void> {
+  if (!flip.heldAttributes || !changesAnything(flip.changes)) return;
+  await deps.writeAttributes({ userId: flip.userId, attributes: flip.heldAttributes });
+  countLanded_();
+}
+
 /** One flip, both directions, with the two writes in the order the header explains. */
 async function runFlip(
   flip: ReturnType<typeof planTwilioRoster>["flips"][number],
@@ -431,6 +455,7 @@ async function runFlip(
       msg: "reactivation left for the next run, this run's activation allowance is spent",
       user_id: flip.userId,
     });
+    await writeHeld(flip, deps, countLanded_);
     return;
   }
 
@@ -443,6 +468,7 @@ async function runFlip(
       user_id: flip.userId,
       reason: result.reason,
     });
+    await writeHeld(flip, deps, countLanded_);
     return;
   }
   if (result.status === "not_found") {

@@ -14,6 +14,13 @@
 //      pages nothing and clears nothing;
 //   5. the two endings of a page, which must not share wording (L11): became
 //      routable is a recovery, being added to the ignore list is a suppression.
+//   6. #2724, the Redistribute exemption: a switched off agent Twilio tags
+//      Redistribute is exempt as `redistribute` and gets no page, the SAME agent
+//      without the tag is flagged (the positive control in the same fixture, L159),
+//      Slate's own `redistribute` mark alone does not exempt, a deactivated agent is
+//      not exempt, the tag coming off reopens the finding, a page already open
+//      closes with suppression wording, and a failed read of the tag's source
+//      (the roster) clears nothing and exempts nobody.
 import { readFileSync } from "node:fs";
 import {
   judgeRegalCallers,
@@ -45,6 +52,7 @@ function user(over: Partial<RegalCaller> = {}): RegalCaller {
     bookable: false,
     deactivated_at: null,
     is_test: false,
+    attributes: null,
     ...over,
   };
 }
@@ -298,6 +306,99 @@ for (const which of ["loadCandidates", "loadUsers", "loadIgnores", "loadFiringUs
   assert(formatRegalCallAlert(d) !== formatRegalCallAlert(v), "the two axes read differently");
   const gone = formatRegalCallEnding({ userId: "u-x", ending: "gone", user: null, ignoreReason: null });
   assert(!/undefined|null/.test(gone), "an ending with no user renders no placeholder");
+}
+
+// --- 6. Redistribute (#2724) ---------------------------------------------------
+
+const TAGGED = { redistribute_tagged: "Y" } as const;
+{
+  // The fixture that FIRES and the fixture that is exempt differ only in the tag, so
+  // an exemption that fired on anything else would fail the first assertion (L159).
+  const [flagged] = judgeRegalCallers([call("jane@trypennie.com")], [user()], []);
+  eq(flagged.exemptions, [], "positive control: the untagged, switched off agent is flagged");
+  const [v] = judgeRegalCallers([call("jane@trypennie.com")], [user({ attributes: { ...TAGGED } })], []);
+  eq(v.exemptions, ["redistribute"], "the same agent carrying the Redistribute tag is exempt, reported as redistribute");
+}
+{
+  const [v] = judgeRegalCallers(
+    [call("jane@trypennie.com")],
+    [user({ attributes: { redistribute: "Y", redistribute_at: "2026-09-10T00:00:00Z" } })],
+    [],
+  );
+  eq(v.exemptions, [], "Slate's own redistribute MARK alone does not exempt: the mirrored tag is the source");
+}
+{
+  const [v] = judgeRegalCallers([call("jane@trypennie.com")], [user({ attributes: { redistribute_tagged: "N" } })], []);
+  eq(v.exemptions, [], "only the one spelling of the tag exempts");
+}
+{
+  const [v] = judgeRegalCallers(
+    [call("jane@trypennie.com")],
+    [user({ deactivated_at: "2026-09-01T00:00:00Z", attributes: { ...TAGGED } })],
+    [],
+  );
+  eq(v.exemptions, [], "a deactivated agent is not exempt by the tag: it explains a switch, not a departure");
+}
+{
+  const [v] = judgeRegalCallers([call("jane@trypennie.com")], [user({ bookable: true, attributes: { ...TAGGED } })], []);
+  eq(v.exemptions, ["routable"], "a routable tagged agent is routable, not redistribute: the tag explains only a switch that is off");
+}
+{
+  const h = harness({ loadUsers: async () => [user({ attributes: { ...TAGGED } })] });
+  const r = await runRegalCallCheck(h.deps);
+  eq(h.pages.length, 0, "no page for a Redistribute agent placing calls");
+  eq(r.status === "checked" ? r.exempt.redistribute : -1, 1, "and the exemption is counted under its own name");
+  assert(regalCallsReachedVerdict(r), "a judged Redistribute caller is still a measured verdict");
+}
+{
+  // The tag comes off (the sync deletes `redistribute_tagged`) and the agent stays
+  // off in Slate: the next call pages again, and an open page is not closed.
+  const h = harness({ loadUsers: async () => [user({ attributes: {} })], loadFiringUserIds: async () => ["u-jane"] });
+  await runRegalCallCheck(h.deps);
+  eq(h.pages.map((p) => p.key), [regalCallAlertKey("u-jane")], "the tag coming off ends the exemption: the next call pages");
+  eq(h.resolved.length, 0, "and the open page stays open");
+}
+{
+  const h = harness({
+    loadCandidates: async () => [],
+    loadFiringUserIds: async () => ["u-jane"],
+    loadUsers: async () => [user({ attributes: { ...TAGGED } })],
+  });
+  await runRegalCallCheck(h.deps);
+  eq(h.resolved.length, 1, "an open page for an agent now tagged Redistribute is closed");
+  const text = h.resolved[0].text;
+  assert(/suppression, not a recovery/i.test(text), "with suppression wording, as the ignore list's ending has");
+  assert(/Redistribute/.test(text), "naming the tag as the reason");
+  assert(!/routable again/i.test(text), "and never recovery wording");
+  eq(
+    settleRegalCallAlerts(["u-jane"], [user({ attributes: { ...TAGGED } })], [])[0]?.ending,
+    "exempt-redistribute",
+    "the ending is its own, not folded into ignored",
+  );
+  const others = (["routable", "ignored", "exempt-role", "exempt-test", "gone"] as const).map((ending) =>
+    formatRegalCallEnding({ userId: "u-jane", ending, user: user(), ignoreReason: "dialer only" }),
+  );
+  assert(!others.includes(text), "and no other ending shares its sentence");
+}
+{
+  // A failed read of the tag's source. The tag lives on the roster row, so this is
+  // the roster read: nothing is cleared and nobody is exempted.
+  const h = harness({
+    loadFiringUserIds: async () => ["u-jane"],
+    loadUsers: async () => {
+      throw new Error("users refused");
+    },
+  });
+  const r = await runRegalCallCheck(h.deps);
+  eq(r.status, "unreadable", "a failed read of the tag's source is unmeasured");
+  eq(h.resolved.length, 0, "and clears nothing, not even a page for somebody who may be tagged");
+  eq(h.pages.length, 0, "and pages nobody");
+  assert(!("exempt" in r), "and reports no exemption count at all, so nobody reads as exempt");
+}
+{
+  const [v] = judgeRegalCallers([call("jane@trypennie.com")], [user()], []);
+  const text = formatRegalCallAlert(v);
+  assert(/Redistribute/.test(text), "the not bookable page names the third reason, the Redistribute tag");
 }
 
 finish();

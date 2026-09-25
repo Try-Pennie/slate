@@ -21,7 +21,12 @@
 // re-alerts every hour, and the four withheld agents who are already not bookable
 // (two of them with no calendar row) are never touched by this, because Slate did
 // not put them there.
-import { planTwilioRoster, isMarkedRedistribute, type TwilioRosterRow } from "@/lib/twilio/roster-plan";
+import {
+  planTwilioRoster,
+  isMarkedRedistribute,
+  carriesRedistributeTag,
+  type TwilioRosterRow,
+} from "@/lib/twilio/roster-plan";
 import { DEBT_TIER_VALUES } from "@/lib/routing/attribute-vocabulary";
 import {
   readWorker,
@@ -167,8 +172,8 @@ const twilio = (...sides: TwilioSide[]) => new Map(sides.map((s) => [s.email, s]
   const plan = planTwilioRoster([row()], twilio(side(["Redistribute"])), NOW);
   eq(
     plan.flips[0]?.attributes,
-    { redistribute: MARK, redistribute_at: NOW },
-    "turning somebody off writes the mark and its stamp",
+    { redistribute_tagged: MARK, redistribute: MARK, redistribute_at: NOW },
+    "turning somebody off writes the mark and its stamp, beside the mirrored tag",
   );
   const back = planTwilioRoster(
     [row({ bookable: false, attributes: { redistribute: MARK, debt_team: ["low"] } })],
@@ -361,7 +366,7 @@ const twilio = (...sides: TwilioSide[]) => new Map(sides.map((s) => [s.email, s]
   );
   eq(
     flip.flips[0]?.attributes,
-    { debt_team: ["medium"], redistribute: MARK, redistribute_at: NOW },
+    { debt_team: ["medium"], redistribute_tagged: MARK, redistribute: MARK, redistribute_at: NOW },
     "a flip's payload carries the tiers too, so the mark and the attributes are never two writes over one column",
   );
   eq(flip.attributeWrites.length, 0, "and the row is not in both lists");
@@ -396,6 +401,84 @@ const twilio = (...sides: TwilioSide[]) => new Map(sides.map((s) => [s.email, s]
     twilio(side(["Low Debt: 20k - 30k"], "a@trypennie.com"), side(["High Debt: 50k+"], "b@trypennie.com")),
   );
   eq(plan.flips.length, 0, "neither a new hire nor somebody already on Sales is flipped by a tier");
+}
+
+// --- #2724: the TAG is mirrored for everybody, separately from the mark ------
+// The mark records only who Slate itself turned off, so it misses anybody already
+// out of the pool when the tag appeared (13 of 22 on 2026-09-10). The Regal call
+// detector needs the tag itself, so it is mirrored like the tiers: written for every
+// in scope worker whatever their bookable state, removed with the tag, and left
+// alone for a row Twilio holds no worker for.
+
+{
+  const plan = planTwilioRoster([row({ bookable: false })], twilio(side(["Redistribute"])), NOW);
+  eq(plan.flips.length, 0, "an agent already out of the pool is still not flipped");
+  eq(plan.attributeWrites.length, 1, "but the tag is written for them");
+  const attrs = plan.attributeWrites[0]?.attributes;
+  assert(carriesRedistributeTag(attrs), "so a reader asking whether Twilio tags them gets yes");
+  assert(!isMarkedRedistribute(attrs), "and they are NOT marked, since Slate did not turn them off");
+  eq(plan.attributeWrites[0]?.changes.redistributeTagged.changed, true, "and the write says the tag moved");
+}
+{
+  const plan = planTwilioRoster(
+    [row({ bookable: false, attributes: { redistribute_tagged: MARK } })],
+    twilio(side(["Redistribute"])),
+    NOW,
+  );
+  eq(plan.attributeWrites.length, 0, "a tag already stored is not rewritten every hour");
+}
+{
+  const plan = planTwilioRoster(
+    [row({ bookable: false, attributes: { redistribute_tagged: MARK, debt_team: ["low"] } })],
+    twilio(side(["Low Debt: 20k - 30k"])),
+    NOW,
+  );
+  eq(plan.flips.length, 0, "an unmarked agent whose tag came off is still never flipped on");
+  eq(plan.attributeWrites.length, 1, "but the tag is removed");
+  assert(!carriesRedistributeTag(plan.attributeWrites[0]?.attributes), "so the exemption it grants ends with the tag");
+  assert(!("redistribute_tagged" in (plan.attributeWrites[0]?.attributes ?? {})), "the key is deleted, not written as N");
+}
+{
+  const plan = planTwilioRoster(
+    [row({ bookable: false, attributes: { redistribute_tagged: MARK } })],
+    twilio(side(["Low Debt: 20k - 30k"], "someone.else@trypennie.com")),
+    NOW,
+  );
+  eq(plan.attributeWrites.length, 0, "a row Twilio holds no worker for keeps its stored tag: silence is not removal (L214)");
+}
+{
+  const plan = planTwilioRoster(
+    [row({ bookable: false, attributes: { redistribute_tagged: "N" } })],
+    twilio(side(["Low Debt: 20k - 30k"])),
+    NOW,
+  );
+  assert(
+    !("redistribute_tagged" in (plan.attributeWrites[0]?.attributes ?? {})),
+    "a junk spelling of the tag is cleared rather than kept",
+  );
+}
+{
+  // Marked, and the tag has come off: the flip's own payload clears both, and what
+  // is written if the flip does NOT settle clears the tag while keeping the mark,
+  // so a refused reactivation keeps its retry without keeping the exemption.
+  const plan = planTwilioRoster(
+    [row({ bookable: false, attributes: { redistribute: MARK, redistribute_at: NOW, redistribute_tagged: MARK } })],
+    twilio(side(["Low Debt: 20k - 30k"])),
+    NOW,
+  );
+  const flip = plan.flips[0];
+  eq(flip?.action, "turn-back-on", "a marked agent whose tag came off is planned back in");
+  assert(!carriesRedistributeTag(flip?.attributes) && !isMarkedRedistribute(flip?.attributes), "the settled payload clears the tag and the mark");
+  assert(!carriesRedistributeTag(flip?.heldAttributes), "the unsettled payload clears the tag");
+  assert(isMarkedRedistribute(flip?.heldAttributes), "and keeps the mark, so the retry survives");
+}
+{
+  const plan = planTwilioRoster([row()], twilio(side(["Redistribute"])), NOW);
+  eq(plan.flips[0]?.heldAttributes, null, "a turn off has no unsettled payload: its write lands before the flip");
+}
+{
+  assert(!carriesRedistributeTag(null), "no attributes is not tagged");
+  assert(!carriesRedistributeTag({ redistribute: MARK }), "the MARK alone is not the tag: they answer different questions");
 }
 
 finish();

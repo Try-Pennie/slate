@@ -284,8 +284,9 @@ export const ALERT_CATALOG: AlertEntry[] = [
     kind: "condition",
     why:
       "Somebody Slate routes no bookings to is placing calls in Regal; it ends when they are " +
-      "routable again (a recovery) or are added to the ignore list or change role (a suppression, " +
-      "worded as one), and the monitor lane sees either on its next pass (#2090).",
+      "routable again (a recovery) or are added to the ignore list, change role, or carry the " +
+      "Redistribute tag in Twilio (a suppression, worded as one, #2724), and the monitor lane sees " +
+      "either on its next pass (#2090).",
   },
   {
     key: "regal_calls_quiet",
