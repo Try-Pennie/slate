@@ -5,7 +5,7 @@
  * calling these, instead of holding a second copy that would drift the first time
  * someone edited one and not the other (L41). The watchdog imports them back.
  *
- * Six lane families, six voices, deliberately: these lanes fail for different
+ * Seven lane families, seven voices, deliberately: these lanes fail for different
  * reasons and are recovered by different people doing different things, and
  * #1123 already had to unpick one shared message that pointed responders at the
  * wrong lane and lock.
@@ -560,5 +560,72 @@ export function verdictUnparkLapsedText(
     `Nothing was armed, and nothing needs to be: the verdict was too short lived to be the ` +
     `traffic the park is waiting for. ${unparkDestination(lane, registry)} is still where it goes back on. ` +
     `No action is needed.`
+  );
+}
+
+/**
+ * Which noodge check stamps which lane (#1228), with the name the check carries in
+ * noodge's dashboard, so the page sends the reader to the right row. The names are
+ * the ones the production rows carry and `monitors/slate.sql` in Try-Pennie/noodge
+ * keeps them at.
+ */
+const UPTIME_CHECK: Record<string, { path: string; name: string }> = {
+  "uptime:api-health": { path: "/api/health", name: "Slate: API health (DB + cron lanes)" },
+  "uptime:availability-canary": {
+    path: "/api/health/availability",
+    name: "Slate: Booker availability canary",
+  },
+};
+
+/**
+ * noodge's keyed check of a Slate endpoint has stopped reaching it (#1228).
+ *
+ * This message is sent BY the Worker, so Slate is up: the silence is on noodge's
+ * side, and what is at stake is that nothing outside Slate would notice if it went
+ * down. The reader is told to look at the check and at noodge, in that order,
+ * because those are the two things that can be wrong. The never-stamped case adds
+ * the third, a deployment with no key, which stamps nothing whatever noodge does.
+ */
+export function uptimeAlertText(lane: StaleLane): string {
+  const check = UPTIME_CHECK[lane.lane] ?? { path: lane.lane, name: lane.lane };
+  const bound = describeGap(lane.maxStaleMs);
+  const stake =
+    `Slate is up (this message comes from it), so the silence is on noodge's side, and ` +
+    `while it lasts nothing outside Slate would notice a dead Worker or a broken deploy.`;
+  const todo =
+    `Open noodge.trypennie.dev and check that "${check.name}" is still registered and ` +
+    `enabled, and that noodge itself is running (its scheduler health on the dashboard).`;
+  if (!Number.isFinite(lane.ageMs)) {
+    return (
+      `Noodge's check of ${check.path} has NEVER reached Slate with the heartbeat key ` +
+      `(expected at least once every ${bound}). ${stake} ${todo} If the check is missing, ` +
+      `run npm run monitors:sync:slate in the noodge repo. If it is there and running, ` +
+      `this deployment may have no UPTIME_HEARTBEAT_KEY set, and then it never stamps, ` +
+      `or noodge holds a different value.`
+    );
+  }
+  if (lane.unreadable) {
+    // Nothing was measured about noodge here, so the message says so rather than
+    // claiming a silence (L11). The stored row is the first thing to look at.
+    return (
+      `The heartbeat record for noodge's check of ${check.path} cannot be read, so whether ` +
+      `noodge is still checking is unknown and it is being treated as stale (expected at ` +
+      `least once every ${bound}). Look at the ${lane.lane} row in lane_heartbeats, then ${todo[0].toLowerCase()}${todo.slice(1)}`
+    );
+  }
+  return (
+    `Noodge's check of ${check.path} has not reached Slate for ${describeGap(lane.ageMs)} ` +
+    `(expected at least once every ${bound}). ${stake} ${todo} If Slate itself was down ` +
+    `in the last few minutes, noodge should already have alerted and this clears on its ` +
+    `next run.`
+  );
+}
+
+/** All-clear for noodge's keyed check (#1228). */
+export function uptimeRecoveryText(lane: string): string {
+  const check = UPTIME_CHECK[lane] ?? { path: lane, name: lane };
+  return (
+    `Noodge's check of ${check.path} is reaching Slate again, so the external uptime ` +
+    `monitor is watching it once more and the earlier page is cleared. No action is needed.`
   );
 }

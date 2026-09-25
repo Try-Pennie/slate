@@ -84,6 +84,9 @@ export const PRODUCTION_ONLY_SECRETS = [
   "BOOKING_API_KEY_CANARY",
   "BOOKING_API_KEY_CANARY_2",
   "GITHUB_CANARY_TOKEN",
+  // #1228: noodge's heartbeat key for the two health endpoints. The load run has no
+  // noodge polling it, so a load test Worker holding it was handed production's.
+  "UPTIME_HEARTBEAT_KEY",
   "SNOWFLAKE_PRIVATE_KEY",
   // #2666: signs the public test bucket's pass. Production's; the load run never
   // books the public test bucket, so without it the test path is simply off there.

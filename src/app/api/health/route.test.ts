@@ -19,17 +19,34 @@ vi.mock("@/lib/supabase/admin", () => ({
   }),
 }));
 
+// #1228: noodge stamps a heartbeat through this endpoint so a check that was
+// deleted, paused or stopped firing goes stale and pages. The stamp is mocked at
+// the heartbeat module so the test can see exactly which lane was stamped, and
+// can make the write fail.
+const heartbeat = vi.hoisted(() => ({ recordHeartbeat: vi.fn(async (_lane: string) => {}) }));
+vi.mock("@/lib/monitor/heartbeat", () => heartbeat);
+const log = vi.hoisted(() => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn() }));
+vi.mock("@/lib/log", () => ({ log }));
+
 import { GET } from "./route";
+
+const KEY = "uptime-heartbeat-test-key";
+const req = (authorization?: string) =>
+  new Request("https://slate.test/api/health", {
+    headers: authorization === undefined ? {} : { authorization },
+  });
 
 beforeEach(() => {
   vi.clearAllMocks();
   heartbeatRows.value = [];
+  process.env.UPTIME_HEARTBEAT_KEY = KEY;
+  heartbeat.recordHeartbeat.mockResolvedValue(undefined);
 });
 
 describe("/api/health alerting signal (#1035)", () => {
   it("reports alerting 'unconfigured' but stays 200 (paging off is not app-down)", async () => {
     slackConfigured.mockReturnValue(false);
-    const res = await GET();
+    const res = await GET(req());
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.alerting).toBe("unconfigured");
@@ -38,7 +55,7 @@ describe("/api/health alerting signal (#1035)", () => {
 
   it("reports alerting 'ok' when Slack is configured", async () => {
     slackConfigured.mockReturnValue(true);
-    const res = await GET();
+    const res = await GET(req());
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.alerting).toBe("ok");
@@ -52,7 +69,7 @@ describe("/api/health alerting signal (#1035)", () => {
 describe("/api/health on a corrupt heartbeat stamp (#1169)", () => {
   it("fails health (503) when a covered lane's stamp is unparseable", async () => {
     heartbeatRows.value = [{ lane: "sync", last_ran_at: "not-a-timestamp" }];
-    const res = await GET();
+    const res = await GET(req());
     expect(res.status).toBe(503);
     const body = await res.json();
     expect(body.reason).toBe("heartbeat_stale");
@@ -61,7 +78,58 @@ describe("/api/health on a corrupt heartbeat stamp (#1169)", () => {
 
   it("stays 200 when the same lane's stamp is fresh and parseable", async () => {
     heartbeatRows.value = [{ lane: "sync", last_ran_at: new Date().toISOString() }];
-    const res = await GET();
+    const res = await GET(req());
     expect(res.status).toBe(200);
+  });
+});
+
+// #1228: the uptime heartbeat. Both directions, because a stamp that anybody can
+// write proves nothing about noodge, and a health status that moves with the key
+// would turn a key problem into an outage page.
+describe("/api/health uptime heartbeat (#1228)", () => {
+  it("stamps uptime:api-health when the request carries the heartbeat key", async () => {
+    const res = await GET(req(`Bearer ${KEY}`));
+    expect(res.status).toBe(200);
+    expect(heartbeat.recordHeartbeat).toHaveBeenCalledTimes(1);
+    expect(heartbeat.recordHeartbeat).toHaveBeenCalledWith("uptime:api-health");
+  });
+
+  it("does not stamp without a key, and answers exactly as it would have", async () => {
+    const res = await GET(req());
+    expect(res.status).toBe(200);
+    expect((await res.json()).status).toBe("ok");
+    expect(heartbeat.recordHeartbeat).not.toHaveBeenCalled();
+  });
+
+  it("does not stamp on a wrong key, and still answers normally", async () => {
+    const res = await GET(req(`Bearer not-${KEY}`));
+    expect(res.status).toBe(200);
+    expect((await res.json()).status).toBe("ok");
+    expect(heartbeat.recordHeartbeat).not.toHaveBeenCalled();
+  });
+
+  it("never stamps when the deployment holds no key, whatever the caller sends", async () => {
+    process.env.UPTIME_HEARTBEAT_KEY = "";
+    for (const auth of [undefined, "Bearer ", `Bearer ${KEY}`]) {
+      const res = await GET(req(auth));
+      expect(res.status).toBe(200);
+    }
+    expect(heartbeat.recordHeartbeat).not.toHaveBeenCalled();
+  });
+
+  it("keeps the degraded status on a keyed request: the stamp does not decide health", async () => {
+    heartbeatRows.value = [{ lane: "sync", last_ran_at: "not-a-timestamp" }];
+    const res = await GET(req(`Bearer ${KEY}`));
+    expect(res.status).toBe(503);
+    expect(heartbeat.recordHeartbeat).toHaveBeenCalledWith("uptime:api-health");
+  });
+
+  it("answers normally when the stamp write fails, and logs the failure", async () => {
+    heartbeat.recordHeartbeat.mockRejectedValue(new Error("supabase unreachable"));
+    const res = await GET(req(`Bearer ${KEY}`));
+    expect(res.status).toBe(200);
+    expect((await res.json()).status).toBe("ok");
+    expect(log.error).toHaveBeenCalled();
+    expect(String(log.error.mock.calls[0]?.[0])).toBe("uptime-heartbeat");
   });
 });
