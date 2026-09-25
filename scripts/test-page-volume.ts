@@ -1,0 +1,360 @@
+// The per page low volume alarm (#2738). Run:
+//   node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/test-page-volume.ts
+//
+// Four things, in order:
+//   1. the pages are the measurement's pages and the booking source vocabulary's;
+//   2. the committed per page floors are what the committed measurement produces;
+//   3. the check itself, through hand written fakes: what it reads, what it pages,
+//      what it holds, and what it may clear;
+//   4. the REPLAY: the shipped check, armed, every 5 minutes over the real measured
+//      weeks, on the two held out weeks the per page fit never saw. The numbers it
+//      prints are the evidence the PR quotes, including where a page is unmeasured.
+import { readFileSync } from "node:fs";
+import { DateTime } from "luxon";
+import {
+  LOW_PAGES,
+  PAGE_SEEN_LOOKBACK_DAYS,
+  pageCoverage,
+  pagePlaces,
+  pageVolumeAlertKey,
+  runPageVolumeCheck,
+  type LowPageId,
+  type PageVerdict,
+  type SourceRow,
+} from "../src/lib/monitor/page-volume.ts";
+import { MEASURED_PAGE_BASELINES } from "../src/lib/monitor/page-volume-baseline.ts";
+import { MEASURED_VOLUME_BASELINE } from "../src/lib/monitor/volume-baseline.ts";
+import { fitFloorCells, type BookingSeries, type FloorCell, type VolumeBaseline } from "../src/lib/monitor/volume-floors.ts";
+import { PAGE_SOURCES } from "../src/lib/booking/booking-source.ts";
+import {
+  FLOOR_SCOPE,
+  OFFLINE_OPEN_WEEK,
+  pageBaselinesFromFixture,
+  pageScope,
+  renderPageBaselineModule,
+  scopedSeries,
+  type VolumeFixture,
+} from "./lib/volume-floor-scope.ts";
+import { headOf, replayLowVolume, replayPageVolume, withGap } from "./lib/volume-floor-replay.ts";
+import { assert, eq, finish } from "./lib/harness.ts";
+
+const ZONE = "America/New_York";
+const MIN = 60_000;
+const DAY = 24 * 60 * MIN;
+const COOLDOWN = 30 * MIN; // MONITOR_DEFAULTS.cooldownMs.low_booking_volume, which the page keys share
+const fixture = JSON.parse(readFileSync("scripts/fixtures/calcom-low-bookings.json", "utf8")) as VolumeFixture;
+
+// --- 1. the pages ---
+{
+  const forms = Object.keys(fixture.forms).sort();
+  eq(LOW_PAGES.map((p) => p.calcomForm).sort(), forms, "the pages are exactly the measurement's Low routing forms");
+  eq(FLOOR_SCOPE.forms, LOW_PAGES.map((p) => p.calcomForm), "the tier alarm's scope is derived from the same list");
+  const all = LOW_PAGES.flatMap((p) => [...p.sources]);
+  eq(new Set(all).size, all.length, "no source belongs to two pages, so a booking counts for one page only");
+  assert(all.every((s) => (PAGE_SOURCES as readonly string[]).includes(s)), "every source is in the #2072 vocabulary");
+  eq(new Set(LOW_PAGES.map((p) => p.id)).size, LOW_PAGES.length, "page ids are distinct, so each has its own alert key");
+  eq(pagePlaces(LOW_PAGES[0]!), "/booking/portal and /offerhub", "a page's places come from the source vocabulary's own names");
+}
+
+// --- 2. the committed per page floors are the committed measurement's ---
+{
+  const derived = pageBaselinesFromFixture(fixture);
+  assert(
+    renderPageBaselineModule(derived) === readFileSync("src/lib/monitor/page-volume-baseline.ts", "utf8"),
+    "src/lib/monitor/page-volume-baseline.ts is exactly what the committed measurement fits to (run REFIT=1 pnpm measure:volume-floors)",
+  );
+  assert(JSON.stringify(MEASURED_PAGE_BASELINES) === JSON.stringify(derived), "and the module evaluates to those baselines");
+  for (const page of LOW_PAGES) {
+    const b = MEASURED_PAGE_BASELINES[page.id];
+    assert(b.tierShare !== null && b.tierShare > 0 && b.tierShare < 1, `${page.id} records its share of the tier`);
+    assert(b.scope.includes(page.name), `${page.id}'s baseline names the page it was fitted to`);
+  }
+  const total = LOW_PAGES.reduce((s, p) => s + MEASURED_PAGE_BASELINES[p.id].bookings, 0);
+  eq(total, MEASURED_VOLUME_BASELINE.bookings, "the pages' bookings add up to the tier's");
+}
+
+// --- 2. coverage: a floor of 0 is declared, never read as coverage ---
+{
+  const lines = LOW_PAGES.map((p) => pageCoverage(p, MEASURED_PAGE_BASELINES[p.id], OFFLINE_OPEN_WEEK));
+  for (const c of lines) console.log(`coverage: ${c.text}`);
+  const followUp = lines[1]!;
+  eq(followUp.open, 72, "six open days of twelve hours");
+  assert(followUp.judged < followUp.open / 2, "the 16% page is unmeasured in most of its open week");
+  assert(/UNMEASURED/.test(followUp.text) && /53 are UNMEASURED/.test(followUp.text), "and it says so, with the count");
+  const zeros: VolumeBaseline = {
+    ...MEASURED_VOLUME_BASELINE,
+    cells: MEASURED_VOLUME_BASELINE.cells.map((d) => d.map((c) => ({ ...c, floor30: 0, floor120: 0 }))),
+  };
+  const none = pageCoverage(LOW_PAGES[1]!, zeros, OFFLINE_OPEN_WEEK);
+  assert(none.unmeasured && none.judged === 0, "a page no hour of which can breach is UNMEASURED as a whole");
+  assert(/UNMEASURED\. It carries too few bookings/.test(none.text), "in its own words, not as a quiet page");
+  // Only OPEN hours count: a floor of 0 at 3am is not a gap in coverage.
+  const allOpen = pageCoverage(LOW_PAGES[2]!, MEASURED_PAGE_BASELINES["application-review"], {
+    rules: [1, 2, 3, 4, 5, 6, 7].map((weekday) => ({ weekday, start_minute: 0, end_minute: 1440 })),
+  });
+  eq(allOpen.open, 168, "a week open around the clock counts every hour");
+  assert(allOpen.judged < allOpen.open, "and the night hours then read as unmeasured, as they are");
+}
+
+// --- 3. the check, through fakes ---
+const TUESDAY_2PM = DateTime.fromISO("2026-09-22T14:00", { zone: ZONE }).toMillis();
+const SUNDAY_2PM = DateTime.fromISO("2026-09-20T14:00", { zone: ZONE }).toMillis();
+
+/** A baseline with the same floors at every hour. */
+function flat(floor30: number, floor120: number): VolumeBaseline {
+  const cell: FloorCell = { floor30, floor120, typical120: Math.max(1, floor120 * 2) };
+  return { ...MEASURED_VOLUME_BASELINE, cells: Array.from({ length: 7 }, () => Array.from({ length: 24 }, () => ({ ...cell }))) };
+}
+
+function harness(opts: {
+  baselines?: Partial<Record<LowPageId, VolumeBaseline>>;
+  rows?: SourceRow[];
+  readThrows?: boolean;
+  seen?: boolean | "throws";
+  tierLow?: boolean | null;
+  armed?: boolean;
+  nowMs?: number;
+}) {
+  const calls = { reads: 0, seen: 0, sent: [] as { key: string; text: string }[], resolved: [] as { key: string; text: string }[] };
+  const baselines = {
+    "income-verification": flat(0, 2),
+    "application-review-follow-up": flat(0, 1),
+    "application-review": flat(1, 5),
+    ...opts.baselines,
+  } as Record<LowPageId, VolumeBaseline>;
+  const run = () =>
+    runPageVolumeCheck({
+      nowMs: opts.nowMs ?? TUESDAY_2PM,
+      businessHours: OFFLINE_OPEN_WEEK,
+      baselines,
+      readSources: async () => {
+        calls.reads++;
+        if (opts.readThrows) throw new Error("bookings read failed");
+        return opts.rows ?? [];
+      },
+      pageSeenSince: async () => {
+        calls.seen++;
+        if (opts.seen === "throws") throw new Error("lookup failed");
+        return opts.seen ?? true;
+      },
+      tierLow: opts.tierLow === undefined ? false : opts.tierLow,
+      armed: opts.armed ?? true,
+      cooldownMs: COOLDOWN,
+      notify: async (key, _ms, text) => {
+        calls.sent.push({ key, text });
+      },
+      resolveRecovered: async (recovered) => {
+        calls.resolved.push(...recovered);
+        return recovered.map((r) => r.key);
+      },
+    });
+  return { calls, run };
+}
+
+const ago = (min: number, source: string | null): SourceRow => ({ createdMs: TUESDAY_2PM - min * MIN, source });
+const verdictOf = (pages: PageVerdict[], id: LowPageId) => pages.find((p) => p.id === id)!;
+const HEALTHY_ROWS: SourceRow[] = [
+  ...[10, 40, 70].map((m) => ago(m, "offerhub")),
+  ...[20, 80].map((m) => ago(m, "booking-agent-eligible")),
+  ...[5, 15, 25, 50, 60, 90, 100].map((m) => ago(m, m % 2 ? "booking" : "my-offers-result")),
+];
+
+{
+  // Outside the org's hours nothing is read, nothing is paged and nothing is cleared.
+  const h = harness({ nowMs: SUNDAY_2PM });
+  const out = await h.run();
+  eq(out.status, "outside-hours", "Sunday is shut in the stored week");
+  eq(h.calls.reads, 0, "nothing is read outside business hours");
+  eq(h.calls.resolved.length, 0, "and nothing is cleared: a tick that measured nothing clears nothing");
+}
+{
+  // Every page healthy: one read for all three, every page's own key cleared, nothing paged.
+  const h = harness({ rows: HEALTHY_ROWS });
+  const out = await h.run();
+  eq(h.calls.reads, 1, "one read serves every page");
+  eq(h.calls.sent.length, 0, "healthy pages page nothing");
+  eq(h.calls.resolved.map((r) => r.key).sort(), LOW_PAGES.map((p) => pageVolumeAlertKey(p.id)).sort(), "each measured page clears its own key");
+  assert(out.status === "checked" && out.pages.every((p) => p.verdict === "healthy"), "every page judged healthy");
+  assert(/Completed Application Review page are back above the expected minimum: 3 in the last 30 min; 7 in the last 120 min/.test(h.calls.resolved.find((r) => r.key === pageVolumeAlertKey("application-review"))!.text), "the all-clear quotes the page's own measured counts");
+}
+{
+  // Rows from other sources, or with none, never count toward a page.
+  const h = harness({ rows: [...HEALTHY_ROWS.filter((r) => r.source !== "offerhub"), ago(10, "not-given"), ago(10, null), ago(10, "unrecognised"), ago(10, "rml-portal")] });
+  const out = await h.run();
+  const iv = verdictOf(out.status === "checked" ? out.pages : [], "income-verification");
+  assert(iv.verdict === "low" && iv.windows[1]!.count === 0, "untagged and other pages' bookings do not count for Income Verification");
+  eq(h.calls.sent.map((s) => s.key), [pageVolumeAlertKey("income-verification")], "only the quiet page pages, on its own key");
+  const text = h.calls.sent[0]!.text;
+  assert(text.includes("Income Verification Phone Call page (/booking/portal and /offerhub)"), "the page names the page and its URLs");
+  assert(text.includes("0 in the last 120 min (expected at least 2, measured for Tuesdays 2pm to 3pm)"), "and quotes the measured count against its floor and where the floor came from");
+  assert(text.includes("Low bookings overall are above their floor"), "and says the tier is fine, because the tier alarm measured that");
+  assert(!h.calls.resolved.some((r) => r.key === pageVolumeAlertKey("income-verification")), "a low page is not cleared");
+  eq(h.calls.resolved.length, 2, "the two healthy pages still clear");
+}
+{
+  // Rows at or after now, or before the long window, are outside every window.
+  const h = harness({ rows: [...HEALTHY_ROWS.filter((r) => r.source !== "offerhub"), { createdMs: TUESDAY_2PM, source: "offerhub" }, ago(121, "offerhub")] });
+  const out = await h.run();
+  assert(out.status === "checked" && verdictOf(out.pages, "income-verification").verdict === "low", "a booking at the tick or before the window counts for nothing");
+}
+{
+  // An hour a page cannot be judged in: no read at all when no page can be judged,
+  // UNMEASURED in the result, and never an all-clear off a floor of 0 (L543, L90).
+  const zeros = { "income-verification": flat(0, 0), "application-review-follow-up": flat(0, 0), "application-review": flat(0, 0) };
+  const h = harness({ baselines: zeros });
+  const out = await h.run();
+  eq(h.calls.reads, 0, "an hour no page can be judged in reads nothing");
+  assert(out.status === "checked" && out.pages.every((p) => p.verdict === "unmeasured-hour"), "every page reports unmeasured, not healthy");
+  eq(h.calls.resolved.length, 0, "and clears nothing: a floor of 0 measured nothing");
+  eq(h.calls.sent.length, 0, "and pages nothing");
+
+  const one = harness({ baselines: { "application-review-follow-up": flat(0, 0) }, rows: [] });
+  const out1 = await one.run();
+  const fu = out1.status === "checked" ? verdictOf(out1.pages, "application-review-follow-up") : null;
+  eq(fu?.verdict, "unmeasured-hour", "one unmeasured page among judged ones is still reported unmeasured");
+  assert(!one.calls.sent.some((s) => s.key === pageVolumeAlertKey("application-review-follow-up")), "it is never paged with zero bookings");
+  assert(!one.calls.resolved.some((r) => r.key === pageVolumeAlertKey("application-review-follow-up")), "and never cleared");
+}
+{
+  // Disarmed: judged and logged, never paged, and no lookup spent on it.
+  const h = harness({ rows: [], armed: false });
+  const out = await h.run();
+  eq(h.calls.sent.length, 0, "a disarmed alarm pages nothing");
+  eq(h.calls.seen, 0, "and asks nothing further");
+  assert(out.status === "checked" && out.pages.every((p) => p.verdict === "low" && p.action === "held-disarmed"), "every quiet page is held for the arming switch");
+}
+{
+  // The tier alarm already reports the same silence: one page, not four.
+  const h = harness({ rows: [], tierLow: true });
+  const out = await h.run();
+  eq(h.calls.sent.length, 0, "while the tier is low the pages hold");
+  assert(out.status === "checked" && out.pages.every((p) => p.verdict === "low" && p.action === "held-tier"), "and say why");
+  // Positive control in the SAME fixture (L159): the tier unjudged, the pages page.
+  const u = harness({ rows: [], tierLow: null });
+  await u.run();
+  eq(u.calls.sent.length, 3, "with the tier unjudged, every quiet page pages");
+  assert(u.calls.sent.every((s) => !s.text.includes("Low bookings overall")), "without claiming a tier reading nobody made");
+}
+{
+  // A page that has recorded nothing in the lookback is told apart from one that stopped.
+  const h = harness({ rows: [], seen: false });
+  const out = await h.run();
+  eq(h.calls.sent.length, 3, "every quiet page still pages");
+  const text = h.calls.sent[0]!.text;
+  assert(text.includes(`No booking in the last ${PAGE_SEEN_LOOKBACK_DAYS} days`), "saying nothing has been recorded from it");
+  assert(text.includes("source=booking-portal or source=offerhub"), "and naming the link parameter that tells pages apart");
+  assert(out.status === "checked" && out.pages.every((p) => p.verdict === "low" && p.action === "paged-unseen"), "recorded as an unseen page");
+  const t = harness({ rows: [], seen: "throws" });
+  await t.run();
+  assert(t.calls.sent.every((s) => s.text.startsWith("Bookings from the")), "a lookup that failed keeps the ordinary wording, which the counts support");
+}
+{
+  // A read that fails THROWS, so the lane's step boundary reports it; it never
+  // becomes every page at zero, and it clears nothing.
+  const h = harness({ readThrows: true });
+  let threw = "";
+  await h.run().catch((e: Error) => (threw = e.message));
+  eq(threw, "bookings read failed", "the read's own failure propagates");
+  eq(h.calls.sent.length, 0, "nothing is paged off a read that never came back");
+  eq(h.calls.resolved.length, 0, "and nothing is cleared");
+}
+
+// --- 4. the replay ---
+const series = Object.fromEntries(
+  LOW_PAGES.map((p) => [p.id, scopedSeries(fixture, pageScope(fixture, p))]),
+) as Record<LowPageId, BookingSeries>;
+const per = fixture.bucketMinutes * MIN;
+const n = series["application-review"].counts.length;
+const endMs = fixture.startMs + n * per;
+const holdoutFrom = endMs - 14 * DAY;
+const trainN = n - (14 * DAY) / per;
+const trained = Object.fromEntries(
+  LOW_PAGES.map((p) => [p.id, { ...MEASURED_PAGE_BASELINES[p.id], cells: fitFloorCells(headOf(series[p.id], trainN), ZONE) }]),
+) as Record<LowPageId, VolumeBaseline>;
+const fmt = (ms: number) => DateTime.fromMillis(ms, { zone: ZONE }).toFormat("ccc d LLL HH:mm");
+const replay = (s: Record<LowPageId, BookingSeries>, fromMs: number, toMs: number, baselines = trained) =>
+  replayPageVolume({ series: s, baselines, businessHours: OFFLINE_OPEN_WEEK, fromMs, toMs, tickMinutes: 5, cooldownMs: COOLDOWN });
+{
+  // HOLDOUT: fitted on the first seven weeks, replayed on the last two.
+  const holdout = await replay(series, holdoutFrom, endMs);
+  console.log(`replay: holdout ${fmt(holdoutFrom)} to ${fmt(endMs)}, ${holdout.checked} ticks judged, ${holdout.pages.length} pages`);
+  for (const p of holdout.pages) console.log(`replay:   ${p.key} at ${fmt(p.atMs)}`);
+  eq(holdout.checked, 12 * 144, "the holdout judged every open tick of two weeks, both Saturdays included");
+  assert(holdout.pages.length <= 2, `at most two pages across three pages in two real weeks (${holdout.pages.length})`);
+
+  // In sample, for the record: the committed floors over all nine weeks.
+  const inSample = await replay(series, fixture.startMs + 2 * 60 * MIN, endMs, MEASURED_PAGE_BASELINES);
+  console.log(`replay: all nine weeks with the committed floors, ${inSample.pages.length} pages`);
+  for (const p of inSample.pages) console.log(`replay:   ${p.key} at ${fmt(p.atMs)}`);
+  assert(inSample.pages.length <= 18, `at most about two pages a week across the three pages (${inSample.pages.length})`);
+}
+
+/** One page's series emptied inside [from, to), every other page left booking. */
+const oneBroken = (id: LowPageId, from: number, to: number) => ({ ...series, [id]: withGap(series[id], from, to) });
+const weekdays = (hour: number) => {
+  const out: number[] = [];
+  for (let d = 0; d < 14; d++) {
+    const day = DateTime.fromMillis(holdoutFrom, { zone: ZONE }).startOf("day").plus({ days: d + 1 });
+    const at = day.set({ hour }).toMillis();
+    if (day.weekday <= 5 && at + 180 * MIN <= endMs) out.push(at);
+  }
+  return out;
+};
+
+// ONE PAGE BREAKS, the others keep booking, for three hours from each start hour:
+// how many the per page alarm catches and how fast, beside the tier alarm on the
+// same outage. This is the table #2738 asked to be measured before anything else.
+const tierSeries = scopedSeries(fixture, FLOOR_SCOPE);
+const tierPolicy = {
+  baseline: { ...MEASURED_VOLUME_BASELINE, cells: fitFloorCells(headOf(tierSeries, trainN), ZONE) },
+  override30: null,
+  override120: null,
+};
+const caught: Record<string, { hits: number; of: number }> = {};
+for (const hour of [9, 10, 13, 16]) {
+  for (const page of LOW_PAGES) {
+    const delays: (number | null)[] = [];
+    const tierDelays: (number | null)[] = [];
+    let strays = 0;
+    for (const from of weekdays(hour)) {
+      const to = from + 180 * MIN;
+      const r = await replay(oneBroken(page.id, from, to), from, to);
+      const mine = r.pages.find((p) => p.key === pageVolumeAlertKey(page.id));
+      delays.push(mine ? (mine.atMs - from) / MIN : null);
+      strays += r.pages.filter((p) => p.key !== pageVolumeAlertKey(page.id)).length;
+      const tierGap = {
+        ...tierSeries,
+        counts: tierSeries.counts.map((c, i) => {
+          const at = tierSeries.startMs + i * per;
+          return at >= from && at < to ? c - series[page.id].counts[i]! : c;
+        }),
+      };
+      const t = await replayLowVolume({ series: tierGap, policy: tierPolicy, businessHours: OFFLINE_OPEN_WEEK, fromMs: from, toMs: to, tickMinutes: 5, cooldownMs: COOLDOWN });
+      tierDelays.push(t.pages[0] ? (t.pages[0].atMs - from) / MIN : null);
+    }
+    eq(strays, 0, `a ${page.id} outage from ${hour}:00 pages about that page only`);
+    const hits = delays.filter((d): d is number => d !== null);
+    const tierHits = tierDelays.filter((d): d is number => d !== null);
+    caught[`${page.id}@${hour}`] = { hits: hits.length, of: delays.length };
+    const med = (xs: number[]) => (xs.length ? [...xs].sort((a, b) => a - b)[Math.floor(xs.length / 2)] : "-");
+    console.log(
+      `replay: ${page.id} broken from ${hour}:00 for 3h: per page caught ${hits.length}/${delays.length} ` +
+        `(median ${med(hits)}m, worst ${hits.length ? Math.max(...hits) : "-"}m); tier alarm caught ${tierHits.length}/${tierDelays.length}`,
+    );
+  }
+}
+// What the per page alarm is FOR: the two pages the tier alarm cannot see at 1pm.
+eq(caught["income-verification@13"], { hits: 9, of: 9 }, "a broken Income Verification page is caught every afternoon");
+eq(caught["application-review@13"], { hits: 9, of: 9 }, "a broken Application Review page is caught every afternoon");
+eq(caught["application-review-follow-up@9"], { hits: 9, of: 9 }, "a broken Follow Up page is caught every morning, where it is measured");
+// And where it is NOT measured, the replay agrees with the declaration.
+assert(caught["application-review-follow-up@13"]!.hits <= 3, "a broken Follow Up page is mostly missed in the afternoon, where its floors are 0");
+
+// Control in the same shape (L159): the same afternoons with every page booking page nothing.
+{
+  let pages = 0;
+  for (const from of weekdays(13)) pages += (await replay(series, from, from + 180 * MIN)).pages.length;
+  eq(pages, 0, "the same afternoons with their real bookings page nothing");
+}
+
+finish();

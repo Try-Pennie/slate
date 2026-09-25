@@ -171,7 +171,9 @@ eq(
   // the guard would then be right to say nothing, so the control would pass for
   // the wrong reason and prove nothing.
   const sabotaged = real
-    .replace('"*, buckets!inner(is_test)"', '"*"')
+    // Every embed in the file, not only the count's: the per page reads (#2738)
+    // carry the same filter, and one left behind would keep `is_test` in the code.
+    .replace(/, buckets!inner\(is_test\)/g, "")
     .split("\n")
     .filter((line) => !line.includes('.eq("buckets.is_test"'))
     .join("\n");

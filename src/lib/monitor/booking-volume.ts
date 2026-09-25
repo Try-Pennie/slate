@@ -269,9 +269,8 @@ export function formatVolumeCountReadableNotice(): string {
  * and repeating that here would send them after a fault that is over.
  */
 export function formatLowVolumeRecoveryNotice(windows: VolumeWindow[]): string {
-  const lines = windows.map((w) => `${w.count} in the last ${w.label}`).join("; ");
   return (
-    `Booking volume is back above the expected minimum: ${lines}. Customers are ` +
+    `Booking volume is back above the expected minimum: ${describeCounts(windows)}. Customers are ` +
     `getting through again, so the earlier low volume page is cleared. No action is needed.`
   );
 }
@@ -279,6 +278,18 @@ export function formatLowVolumeRecoveryNotice(windows: VolumeWindow[]): string {
 /** Slack body for a low-volume breach. No em/en dashes (the copy lint forbids
  *  them in user-facing strings); colons/semicolons only. */
 export function formatLowVolumeAlert(breaches: VolumeWindow[]): string {
+  return (
+    `Booking volume is low: ${describeBreaches(breaches)} The booker may be down ` +
+    `(broken embed, empty availability, or sync wedged); check it.`
+  );
+}
+
+/**
+ * "0 in the last 30 min (expected at least 3); 4 in the last 120 min (expected at
+ * least 12). Both floors were measured for Tuesdays 2pm to 3pm.", ending in a full
+ * stop. Shared with the per page alarm (#2738), so the two say a breach the same way.
+ */
+export function describeBreaches(breaches: VolumeWindow[]): string {
   // Where the floors came from (#1956) is said ONCE when every breached window
   // shares it, rather than repeated inside each bracket (L605).
   const bases = new Set(breaches.map((b) => b.basis ?? ""));
@@ -290,8 +301,10 @@ export function formatLowVolumeAlert(breaches: VolumeWindow[]): string {
     })
     .join("; ");
   const provenance = shared ? ` Both floors were ${shared}.` : "";
-  return (
-    `Booking volume is low: ${lines}.${provenance} The booker may be down ` +
-    `(broken embed, empty availability, or sync wedged); check it.`
-  );
+  return `${lines}.${provenance}`;
+}
+
+/** "5 in the last 30 min; 18 in the last 120 min", with no closing stop. */
+export function describeCounts(windows: VolumeWindow[]): string {
+  return windows.map((w) => `${w.count} in the last ${w.label}`).join("; ");
 }

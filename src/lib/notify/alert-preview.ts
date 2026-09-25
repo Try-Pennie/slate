@@ -135,6 +135,12 @@ import {
   formatLowVolumeRecoveryNotice,
 } from "@/lib/monitor/booking-volume";
 import { judgedFloors, type FloorsNow } from "@/lib/monitor/volume-floors";
+import {
+  LOW_PAGES,
+  formatPageUnseenAlert,
+  formatPageVolumeAlert,
+  formatPageVolumeRecoveryNotice,
+} from "@/lib/monitor/page-volume";
 
 /** A Tuesday 2pm tick, measured, and the same tick with the long floor overridden (#1956). */
 const TUESDAY_2PM: FloorsNow = {
@@ -641,6 +647,51 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     text: formatLowVolumeRecoveryNotice([
       { label: "30 min", count: 5, floor: 3 },
       { label: "120 min", count: 18, floor: 12 },
+    ]),
+  },
+  {
+    // #2738. One page gone quiet while the tier is above its floor: the page names
+    // the page and its URLs, because the repair is on that page, not the booker.
+    key: "low_page_volume:*",
+    state: "one page has stopped booking and the tier is fine",
+    channel: "alert",
+    text: formatPageVolumeAlert(
+      LOW_PAGES[0]!,
+      [{ label: "120 min", count: 0, floor: 2, basis: MEASURED_TUESDAY_2PM.basis120 }],
+      true,
+    ),
+  },
+  {
+    // The tier alarm could not judge this tick, so the page claims nothing about it.
+    key: "low_page_volume:*",
+    state: "one page has stopped booking and the tier was not judged",
+    channel: "alert",
+    text: formatPageVolumeAlert(
+      LOW_PAGES[2]!,
+      [
+        { label: "30 min", count: 0, floor: 1, basis: MEASURED_TUESDAY_2PM.basis30 },
+        { label: "120 min", count: 1, floor: 5, basis: MEASURED_TUESDAY_2PM.basis120 },
+      ],
+      false,
+    ),
+  },
+  {
+    // Nothing recorded from the page all week: either it is not sending leads to
+    // Slate or its link carries no source, and the page cannot tell which.
+    key: "low_page_volume:*",
+    state: "the page has recorded no booking in the lookback",
+    channel: "alert",
+    text: formatPageUnseenAlert(LOW_PAGES[1]!, [
+      { label: "120 min", count: 0, floor: 1, basis: MEASURED_TUESDAY_2PM.basis120 },
+    ]),
+  },
+  {
+    key: "low_page_volume:*",
+    state: "the page is booking again",
+    channel: "recovery",
+    text: formatPageVolumeRecoveryNotice(LOW_PAGES[0]!, [
+      { label: "30 min", count: 1, floor: 0 },
+      { label: "120 min", count: 6, floor: 2 },
     ]),
   },
   {

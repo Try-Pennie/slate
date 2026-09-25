@@ -11,8 +11,10 @@
 //   scripts/fixtures/calcom-low-bookings.json   bookings per 5 minute bucket per page
 //                                               (counts only, nothing about any lead)
 //   src/lib/monitor/volume-baseline.ts          the fitted floors the monitor reads
-// scripts/test-volume-floors.ts re-derives the second from the first and fails when
-// they differ, and replays the armed alarm against the first.
+//   src/lib/monitor/page-volume-baseline.ts     the same fit per Low page (#2738)
+// scripts/test-volume-floors.ts and scripts/test-page-volume.ts re-derive the
+// floors from the measurement and fail when they differ, and replay the armed
+// alarms against it.
 //
 // WHAT COUNTS AS A BOOKING. A routing form response whose `routedToBookingUid` is
 // set, placed at the moment the response was recorded, which is within minutes of
@@ -34,13 +36,26 @@ import {
   FLOOR_SCOPE,
   buildFixture,
   baselineFromFixture,
+  pageBaselinesFromFixture,
   renderBaselineModule,
+  renderPageBaselineModule,
+  OFFLINE_OPEN_WEEK,
   type VolumeFixture,
 } from "./lib/volume-floor-scope.ts";
+import { LOW_PAGES, pageCoverage } from "../src/lib/monitor/page-volume.ts";
 import { SERIES_BUCKET_MINUTES, WEEKDAY_NAMES, type VolumeBaseline } from "../src/lib/monitor/volume-floors.ts";
 
 const FIXTURE_PATH = "scripts/fixtures/calcom-low-bookings.json";
 const BASELINE_PATH = "src/lib/monitor/volume-baseline.ts";
+const PAGE_BASELINE_PATH = "src/lib/monitor/page-volume-baseline.ts";
+
+/** Writes each page's floors and says, per page, how much of its week they can judge (#2738). */
+function writePages(fixture: VolumeFixture): void {
+  const pages = pageBaselinesFromFixture(fixture);
+  writeFileSync(PAGE_BASELINE_PATH, renderPageBaselineModule(pages));
+  console.log("\nPer page floors:");
+  for (const page of LOW_PAGES) console.log(`  ${pageCoverage(page, pages[page.id], OFFLINE_OPEN_WEEK).text}`);
+}
 
 function report(fixture: VolumeFixture, baseline: VolumeBaseline): void {
   for (const [name, counts] of Object.entries(fixture.forms)) {
@@ -64,6 +79,7 @@ if (process.env.REFIT === "1") {
   writeFileSync(BASELINE_PATH, renderBaselineModule(baseline));
   console.log(`Re-fitted from the measurement taken ${baseline.measuredOn}; nothing was read from cal.com.`);
   report(fixture, baseline);
+  writePages(fixture);
   process.exit(0);
 }
 
@@ -145,3 +161,4 @@ console.log(
   `Read ${read.rows.length} routing form responses over ${DAYS} days (${baseline.fromDate} to ${baseline.toDate}).`,
 );
 report(fixture, baseline);
+writePages(fixture);
