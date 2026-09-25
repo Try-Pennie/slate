@@ -41,6 +41,12 @@ const failCooldownRead = vi.hoisted(() => ({ value: false }));
 // (the ids ride in the URL, so an unchunked 60-key delete is the PR#1251 defect),
 // plus a switch to make the delete itself fail.
 const delIn = vi.hoisted(() => vi.fn());
+// #2756: every key list the bulk existence read was asked for, one entry per
+// request, so a test can assert each request's URL size rather than trusting a
+// fake that happily accepts any length. `failReadInCall` refuses exactly the Nth
+// request (1-based), which is the partial failure a chunked read can meet.
+const readIn = vi.hoisted(() => vi.fn());
+const failReadInCall = vi.hoisted(() => ({ value: 0 }));
 const failDeletes = vi.hoisted(() => ({ value: false }));
 vi.mock("@/lib/supabase/admin", () => ({
   supabaseAdmin: () => ({
@@ -80,10 +86,12 @@ vi.mock("@/lib/supabase/admin", () => ({
           };
         },
         // The bulk firing-marker read (#1134).
-        in: async (_col: string, keys: string[]) =>
-          failReads.value
+        in: async (_col: string, keys: string[]) => {
+          readIn(keys);
+          return failReads.value || readIn.mock.calls.length === failReadInCall.value
             ? { data: null, error: { message: "read timeout" } }
-            : { data: keys.filter((k) => rows.has(k)).map((key) => ({ key })), error: null },
+            : { data: keys.filter((k) => rows.has(k)).map((key) => ({ key })), error: null };
+        },
       }),
       upsert: async (row: { key: string; last_sent_at: string }) => {
         upsert(row);
@@ -117,6 +125,7 @@ import {
   resolveAlert,
   isAlertFiring,
   firingAlertKeys,
+  existingAlertStateKeys,
   firingFamilyMembers,
   firingKey,
   settleAlertsSilently,
@@ -129,6 +138,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   rows.clear();
   failReads.value = false;
+  failReadInCall.value = 0;
   failDeletes.value = false;
   isWorkersRuntime.mockReturnValue(true);
   process.env = { ...ENV };
@@ -376,6 +386,52 @@ describe("resolveAlert recovery notice (#1133)", () => {
       failReads.value = true;
       const firing = await firingAlertKeys(["cron_lane_stale:sync"]);
       expect(firing.size).toBe(0);
+    });
+  });
+
+  // #2756: the off site origin check asks about one key per recent booking, so the
+  // list grows with booking volume, and the keys ride in the request URL. One
+  // unchunked filter past PostgREST's URL ceiling is REFUSED, not truncated.
+  describe("existingAlertStateKeys", () => {
+    // A realistic key: the off site origin family keyed by a booking uuid. 400 of
+    // them is far past the measured refusal (about 14.9 KB for 400 bare uuids).
+    const bookingKey = (i: number) =>
+      `booking_offsite_origin:${i.toString(16).padStart(8, "0")}-0000-4000-8000-000000000000`;
+    const many = Array.from({ length: 400 }, (_, i) => bookingKey(i));
+
+    it("splits a long key list so no request exceeds the URL budget, and merges every chunk", async () => {
+      // Positive control on the premise: the whole list in one filter is over budget.
+      expect(idFilterBytes(many)).toBeGreaterThan(MAX_IN_FILTER_BYTES);
+      // Present keys at the start, the middle and the very end, so a merge that
+      // kept only the first or last chunk is caught.
+      for (const k of [many[0], many[200], many[399]]) rows.set(k, new Date().toISOString());
+
+      const present = await existingAlertStateKeys(many);
+
+      const requests = readIn.mock.calls.map(([batch]) => batch as string[]);
+      expect(requests.length).toBeGreaterThan(1);
+      for (const batch of requests) expect(idFilterBytes(batch)).toBeLessThanOrEqual(MAX_IN_FILTER_BYTES);
+      // Every key asked about exactly once, none dropped at a chunk boundary.
+      expect(requests.flat()).toEqual(many);
+      expect([...present].sort()).toEqual([many[0], many[200], many[399]].sort());
+    });
+
+    it("sends a short list as one request", async () => {
+      await existingAlertStateKeys(["a", "b"]);
+      expect(readIn).toHaveBeenCalledTimes(1);
+    });
+
+    it("throws when any one chunk is refused, rather than answering with the chunks that worked", async () => {
+      // The first chunk holds a present key, so a merge that skipped the failed
+      // chunk would return a plausible, non-empty, SHORT answer (L215).
+      rows.set(many[0], new Date().toISOString());
+      failReadInCall.value = 2;
+      await expect(existingAlertStateKeys(many)).rejects.toThrow(/read timeout/);
+    });
+
+    it("throws on a refused single request too, so the caller can say the read failed", async () => {
+      failReads.value = true;
+      await expect(existingAlertStateKeys(["cron_lane_stale:sync"])).rejects.toThrow(/read timeout/);
     });
   });
 
