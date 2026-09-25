@@ -33,6 +33,7 @@
 import { DateTime } from "luxon";
 import { LEARNING, learnFloors, underpin, type LearnedFloors, type SlateBookingRow } from "./volume-learning.ts";
 import type { VolumeBaseline } from "./volume-floors.ts";
+import { MEASURED_VOLUME_BASELINE } from "./volume-baseline.ts";
 import { parseStampMs } from "../date/stamp.ts";
 
 const HOUR_MS = 60 * 60_000;
@@ -259,8 +260,9 @@ export async function runVolumeRelearn(deps: {
 /** The name the ramp end form's refusals carry back, so the page draws them beside it. */
 export const RAMP_END_FORM = "volume-ramp-end";
 
-/** The earliest ramp end the form accepts: the cal.com measurement's own date. */
-export const EARLIEST_RAMP_END = "2026-09-25";
+/** The earliest ramp end the form accepts: the cal.com measurement's own date,
+ *  read from the measurement so a refit of the baseline moves it too. */
+export const EARLIEST_RAMP_END: string = MEASURED_VOLUME_BASELINE.measuredOn;
 
 /** EARLIEST_RAMP_END as a reader sees it ("Sep 25, 2026"), derived so the refusal
  *  can never name a different cutoff from the one it enforces. */

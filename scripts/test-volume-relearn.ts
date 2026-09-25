@@ -20,6 +20,7 @@ import {
   baselineInForce,
   parseRampEndForm,
   earliestRampEndLabel,
+  EARLIEST_RAMP_END,
   rampEndMs,
   readStoredLearning,
   runVolumeRelearn,
@@ -253,6 +254,7 @@ let fitted: StoredVolumeLearning | null = null;
   eq(blank.ok, false, "setting with no date is refused, never read as clearing");
   const early = parseRampEndForm({ intent: "set", rampEnd: "2026-09-01" });
   eq(early.ok, false, "a date before the cal.com measurement is refused");
+  eq(EARLIEST_RAMP_END, MEASURED_VOLUME_BASELINE.measuredOn, "the earliest ramp end is the measurement's own date");
   eq(earliestRampEndLabel(), "Sep 25, 2026", "the cutoff reads as the measurement's own date");
   assert(!early.ok && early.error.includes(earliestRampEndLabel()), "the refusal names the cutoff it enforces");
   const bogus = parseRampEndForm({ intent: "set", rampEnd: "2026-02-30" });
