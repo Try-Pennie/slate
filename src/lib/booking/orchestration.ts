@@ -92,6 +92,7 @@ import { routingMetaFromTrace } from "@/lib/webhooks/types";
 // emit module's runtime deps into the node-tested domain code.
 import type { WebhookSendScheduler } from "@/lib/webhooks/emit";
 import { catchallRecord } from "@/lib/routing/catchall";
+import { resolveRoutingCode, type LeadXbcReader, type RoutingCodeRecord } from "@/lib/routing/lead-code";
 import type {
   Booking,
   BookingEventAction,
@@ -708,6 +709,13 @@ export interface BookingContext {
 export interface BookingDeps {
   // availability / routing
   resolveBucketByCode(code: string): Promise<{ bucket: Bucket; eventType: EventType } | null>;
+  /**
+   * One lead's `XBC__c` from Salesforce (#2638), for a booker confirm whose link
+   * carried no code Slate can route. THROWS on a failed read, never answers null
+   * for a query that did not run: a null routes the lead to the catch-all, which
+   * is the misroute the read exists to prevent. See `src/lib/routing/lead-code.ts`.
+   */
+  readLeadXbc: LeadXbcReader;
   /** `preview` = a dry run (#380): route read-only, skipping the #321 shadow-study
    *  log + the unfair-ordering alert so previews don't pollute real-assignment data. */
   /**
@@ -2420,6 +2428,22 @@ async function findExistingCall(
 }
 
 /**
+ * The bucket code a booker confirm routes on (#2638), and the record of where it
+ * came from. A routable code on the link is left exactly as the caller posted it;
+ * anything else is decided by `resolveRoutingCode`, which asks Salesforce when the
+ * link names a lead and THROWS `LeadCodeUnavailableError` when that read fails.
+ */
+async function routeOnLeadCode(
+  input: CreateBookingInput,
+  deps: BookingDeps,
+): Promise<{ input: CreateBookingInput; codeSource: RoutingCodeRecord | undefined }> {
+  if (input.requestedCode === undefined) return { input, codeSource: undefined };
+  const routed = await resolveRoutingCode(input.requestedCode, input.salesforceId ?? null, deps.readLeadXbc);
+  if (routed.source === "link") return { input, codeSource: routed.record };
+  return { input: { ...input, bucketCode: routed.code }, codeSource: routed.record };
+}
+
+/**
  * The call this person already has, graded for disclosure, from an identity alone.
  *
  * Split out of the confirm path in #2166 so the BOOKER'S LANDING can ask the same
@@ -2474,9 +2498,18 @@ export async function findExistingCallForIdentity(
 }
 
 export async function createBooking(
-  input: CreateBookingInput,
+  requestedInput: CreateBookingInput,
   deps: BookingDeps,
 ): Promise<BookingResult> {
+  // #2638: a booker confirm whose link carried no routable code is routed on the
+  // lead's Salesforce XBC when the link names the lead, and on the catch-all only
+  // when Salesforce holds none. Decided HERE, on the server, before anything reads
+  // the bucket code (the idempotency key included), so the code the client posted
+  // for a rescued lead is never what decides their pool. Only the booker's confirm
+  // says what the link carried (`requestedCode`); the direct booking API names a
+  // bucket outright and is untouched. A failed Salesforce read throws
+  // `LeadCodeUnavailableError` before any write, and the route answers 503.
+  const { input, codeSource } = await routeOnLeadCode(requestedInput, deps);
   /**
    * Where this confirm's time went (#2321), under SLATE_LOADTEST only.
    *
@@ -2698,6 +2731,10 @@ export async function createBooking(
       requested_tier: tierKeyOf(input.bucketCode),
       booked_tier: tierKeyOf(bookedBucket.code),
       rungs_dropped: tier.rungsDropped,
+      // #2638: where the routed code came from, and when the catch-all applied,
+      // why Salesforce could not supply one. Absent when the caller did not say
+      // what the link carried (the direct booking API, an older embed).
+      ...(codeSource ? { code_source: codeSource } : {}),
     },
   };
   const event: ReservationPayload["event"] = {

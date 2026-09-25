@@ -4,7 +4,7 @@ import { ClientErrorBeacon } from "@/components/ClientErrorBeacon";
 import { loadLandingBucketIsTest } from "@/lib/booking/landing-bucket";
 import { loadBookingHorizonDays } from "@/lib/booking/settings";
 import { loadReasonOptions } from "@/lib/booking/reason-options";
-import { resolveRequestedCode } from "@/lib/routing/catchall";
+import { resolveLandingCode } from "@/lib/routing/landing-code";
 import { existingCallForLanding, landingAttendee } from "@/lib/booking/service";
 import { DEFAULT_BRAND_COLOR } from "@/lib/brand-label";
 
@@ -37,8 +37,14 @@ export default async function BookEntry({
   // 2 percent of all bookings today, so refusing them turns a working lead into a
   // dead end at cutover. The lead sees an ordinary booker: the routing is our
   // problem, not something they can act on.
+  //
+  // #2638: when the link carries no routable code but names the lead
+  // (`external_id`, the 00Q Lead id), the lead's own `XBC__c` is read from
+  // Salesforce and routed on, by the same resolver the confirm uses, so the times
+  // shown and the pool booked agree. A failed read throws to the error boundary,
+  // which offers a retry, rather than showing the catch-all's times.
   const requestedCode = first(sp, "xbc");
-  const resolved = resolveRequestedCode(requestedCode);
+  const resolved = await resolveLandingCode(requestedCode, first(sp, "external_id") || null);
   const bucketCode = resolved.code;
 
   // #2660: the PUBLIC test bucket passes through the resolver above, and this is

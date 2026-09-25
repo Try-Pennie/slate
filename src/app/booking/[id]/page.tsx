@@ -2,7 +2,7 @@ import Booker from "@/components/Booker";
 import StandaloneBookerShell from "@/components/StandaloneBookerShell";
 import { loadBookingHorizonDays } from "@/lib/booking/settings";
 import { loadReasonOptions } from "@/lib/booking/reason-options";
-import { resolveRequestedCode } from "@/lib/routing/catchall";
+import { resolveLandingCode } from "@/lib/routing/landing-code";
 import { loadLandingBucketIsTest } from "@/lib/booking/landing-bucket";
 import { existingCallForLanding, landingAttendee } from "@/lib/booking/service";
 import { DEFAULT_BRAND_COLOR } from "@/lib/brand-label";
@@ -38,8 +38,12 @@ export default async function BookingPage({
   // `/booking/{salesforceId}?xbc={code}`, so a lead whose Salesforce record has no
   // XBC arrives here with a blank code exactly as they do there, and refusing them
   // here would leave half the defect in place.
+  //
+  // #2638: the id in the path IS the lead's Salesforce id, so a blank code is
+  // rescued from the lead's own `XBC__c` before the catch-all is considered, by
+  // the resolver the confirm uses. A failed read throws to the error boundary.
   const requestedCode = first(sp, "xbc");
-  const resolved = resolveRequestedCode(requestedCode);
+  const resolved = await resolveLandingCode(requestedCode, id);
   const bucketCode = resolved.code;
 
   // #2660: the same question `/book` asks of the same helper, so a test booking

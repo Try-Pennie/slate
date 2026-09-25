@@ -141,6 +141,11 @@ export interface FakeOpts {
   alreadyCompleted?: Set<string>; // ids an overlapping tick already transitioned
   unverifiedEmails?: Set<string>; // emails verify-on-book couldn't check (outage)
   personBookings?: Booking[]; // findActiveBookingsForPerson result (#357)
+  /** #2638: what Salesforce holds as each lead's XBC__c. A key absent from the
+   *  table is a lead Salesforce did not return. */
+  leadXbc?: Record<string, string | null>;
+  /** #2638: the Salesforce read fails, which must refuse rather than route. */
+  leadXbcThrows?: boolean;
   /**
    * findActiveBookingsForPerson throws, which is what a failed bookings read now
    * does (#1641). The booker path fails CLOSED on it: the second booking is
@@ -290,6 +295,9 @@ export function makeDeps(opts: FakeOpts) {
      * write from a suppressed invite.
      */
     insertBooking: [] as Record<string, unknown>[],
+    /** #2638: every lead id Salesforce was asked about, and every code resolved. */
+    readLeadXbc: [] as string[],
+    resolveBucketByCode: [] as string[],
     deleteEvent: [] as { id: string }[],
     enqueueEventDeletion: [] as { email: string; eventId: string; bookingId: string | null }[],
     updateEventTime: [] as { id: string }[],
@@ -493,8 +501,14 @@ export function makeDeps(opts: FakeOpts) {
   };
   const deps: BookingDeps = {
     deferSend: opts.deferSend,
-    resolveBucketByCode: async () =>
-      opts.unknownBucket
+    readLeadXbc: async (leadId) => {
+      calls.readLeadXbc.push(leadId);
+      if (opts.leadXbcThrows) throw new Error("SF query failed: 503 unavailable");
+      const table = opts.leadXbc ?? {};
+      return Object.prototype.hasOwnProperty.call(table, leadId) ? table[leadId] : undefined;
+    },
+    resolveBucketByCode: async (code) =>
+      (calls.resolveBucketByCode.push(code), opts.unknownBucket)
         ? null
         : {
             bucket: opts.testBucket ? ({ ...bucket, is_test: true } as Bucket) : bucket,

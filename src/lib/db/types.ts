@@ -4,6 +4,7 @@
  */
 
 import type { BookingSource } from "../booking/booking-source.ts";
+import type { RoutingCodeRecord } from "../routing/lead-code.ts";
 
 export type Role = "super_admin" | "admin" | "team_lead" | "manager" | "agent";
 export type BusySource = "slate" | "gcal";
@@ -612,6 +613,10 @@ export interface RoutingTrace {
   requested_tier?: string | null;
   booked_tier?: string | null;
   rungs_dropped?: number;
+  /** Where the routed code came from (#2638): the link, the lead's Salesforce
+   *  XBC, or the catch-all with the reason Salesforce could not supply one.
+   *  Written only by the booker's confirm; absent means nobody said. */
+  code_source?: RoutingCodeRecord;
 }
 
 /** One routing decision, including attempts that produced no booking. */

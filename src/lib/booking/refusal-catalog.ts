@@ -232,6 +232,20 @@ export const REFUSAL_CATALOG: RefusalPath[] = [
       "not as a failure, because a busy day of returning leads must not read as an outage.",
   },
   {
+    id: "lead_code_unavailable",
+    surface: "embed booker",
+    outcome: "503, told it is temporary and to retry",
+    counting: { kind: "error", code: "lead_code_unavailable" },
+    rateSignal: { kind: "covered" },
+    why:
+      "The link carried no routable code and named a lead, and the lead's XBC could not be " +
+      "read from Salesforce (#2638). It refuses rather than routing to the catch-all, because " +
+      "sending a lead whose score could not be read to the Low pool is the misroute that read " +
+      "exists to prevent. Counted as an error so the failure-rate window names it: one is a " +
+      "blip a retry clears, a run of them is Salesforce unreachable on the booking path, and " +
+      "that surfaces through the share rather than as its own page.",
+  },
+  {
     id: "existing_call_unavailable",
     surface: "embed booker",
     outcome: "503, told it is temporary and to retry",

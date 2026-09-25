@@ -19,6 +19,11 @@
  * and nothing about the booking looks wrong. cal.com already makes that trade;
  * what Slate adds is that the guess is RECORDED, so the rate is countable and the
  * upstream cause can be chased rather than absorbed silently.
+ *
+ * Since #2638 the catch-all is the LAST resort on the booker: a link that names
+ * the lead is first rescued from the lead's own Salesforce `XBC__c`
+ * (`lead-code.ts`), and a Salesforce read that fails refuses rather than landing
+ * here. The pages and the confirm reach this through that resolver.
  */
 import { bucketSpecForXbc } from "@/lib/xbc";
 import { isPublicTestBucket } from "@/lib/embed/public-test-bucket";
