@@ -18,7 +18,7 @@ import { CATCHALL_CODE } from "../src/lib/routing/catchall.ts";
 import { PUBLIC_TEST_BUCKET_CODES } from "../src/lib/embed/public-test-bucket.ts";
 import { createBooking } from "../src/lib/booking/orchestration.ts";
 import { assert, finish } from "./lib/harness.ts";
-import { makeDeps, input } from "./lib/booking-fakes.ts";
+import { makeDeps, makeBooking, input } from "./lib/booking-fakes.ts";
 
 const LEAD = "00Q5e00000AbCdEEAU";
 
@@ -214,6 +214,62 @@ async function confirmPath() {
     const cs = traceOf(calls.insertBooking[0])?.code_source;
     assert(decided(calls)?.catchallApplied === true, "SF 012: the decision log records catchall_applied true");
     assert(cs?.source === "catchall" && cs.salesforce === "unreadable" && cs.salesforce_xbc === "012", "SF 012: with the reason");
+  }
+  // --- a retry of a successful confirm never depends on a second Salesforce call ---
+  // The idempotency key is built from what is stable across a retry (the RAW link
+  // code and the lead id), and the fast path runs BEFORE Salesforce is asked, so a
+  // Salesforce outage or a changed score between the confirm and its retry still
+  // returns the booking the first confirm made.
+  {
+    const first = makeDeps({ leadXbc: { [LEAD]: "512" } });
+    await createBooking(booker, first.deps);
+    const keyOf = (row: Record<string, unknown> | undefined) => row?.idempotency_key as string;
+    const key = keyOf(first.calls.insertBooking[0]);
+    const existing = makeBooking({ id: "bk-original", idempotency_key: key });
+
+    const down = makeDeps({ leadXbcThrows: true, existingByKey: existing });
+    const findKeys: string[] = [];
+    const inner = down.deps.findBookingByIdempotencyKey;
+    down.deps.findBookingByIdempotencyKey = async (k) => (findKeys.push(k), inner(k));
+    const retried = await createBooking(booker, down.deps);
+    assert(retried.booking.id === "bk-original", "retry with Salesforce DOWN returns the existing booking");
+    assert(findKeys[0] === key, "retry looks up the same key the first confirm stored");
+    assert(down.calls.readLeadXbc.length === 0, "and Salesforce is never asked on that retry");
+
+    const moved = makeDeps({ leadXbc: { [LEAD]: "612" }, existingByKey: existing });
+    const movedKeys: string[] = [];
+    const inner2 = moved.deps.findBookingByIdempotencyKey;
+    moved.deps.findBookingByIdempotencyKey = async (k) => (movedKeys.push(k), inner2(k));
+    const again = await createBooking(booker, moved.deps);
+    assert(
+      again.booking.id === "bk-original" && movedKeys[0] === key,
+      "Salesforce answering 612 on the retry after 512 still returns the original booking",
+    );
+  }
+  {
+    // A request carrying a routable link code keys EXACTLY as before this change,
+    // so a booking already in flight across the deploy still matches its retry.
+    const { deps, calls } = makeDeps({});
+    await createBooking({ ...booker, bucketCode: "211", requestedCode: "211" }, deps);
+    const expected = ["211", new Date(booker.startIso).toISOString(), "k@x.com", "+12035615295", LEAD].join("|");
+    assert(calls.insertBooking[0]?.idempotency_key === expected, "a routable link code keys on the bucket code as before");
+    const api = makeDeps({});
+    await createBooking({ ...input }, api.deps);
+    assert(
+      (api.calls.insertBooking[0]?.idempotency_key as string).startsWith("411|"),
+      "a caller that does not say what the link carried keys as before",
+    );
+  }
+  {
+    // First request with Salesforce down, and no booking yet: still refused.
+    const { deps, calls } = makeDeps({ leadXbcThrows: true });
+    let thrown: unknown = null;
+    try {
+      await createBooking(booker, deps);
+    } catch (e) {
+      thrown = e;
+    }
+    assert(thrown instanceof LeadCodeUnavailableError && calls.insertBooking.length === 0, "a first confirm with Salesforce down still refuses");
   }
   {
     // A routable link code is left alone, and the direct booking API (which never
