@@ -439,24 +439,58 @@ describe("the close control reads on the booker behind it, in both themes (#2748
     expect(close.style.position).toBe("sticky");
   });
 
-  // #2789: once pinned, booker content scrolls UNDER the control, so it carries
-  // the booker's own surface as a plate and the glyph never sits on text. At the
-  // top the plate is the colour of the corner behind it, so it is not seen.
+  // #2789: once pinned, booker content scrolls UNDER the control. Dan chose a
+  // transparent control over a solid plate (2026-09-25), so text shows through
+  // behind the X rather than being cut off by a square. So it paints no opaque
+  // background in any state, and its ink is judged against the booker surface
+  // it sits on in each theme.
   const globalsCss = readFileSync(resolve("src/app/globals.css"), "utf8");
   const darkSurface = /--surface:\s*(rgb\([^)]*\));\s*\/\*\s*cards float/.exec(globalsCss)?.[1];
   const white = /--pennie-white:\s*(rgb\([^)]*\));/.exec(globalsCss)?.[1];
-  const norm = (c: string | undefined) => (c ?? "").replace(/\s+/g, "");
+  const rgbOf = (c: string | undefined): [number, number, number] => {
+    const m = /rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/.exec(c ?? "");
+    if (!m) throw new Error(`not an rgb colour: ${c}`);
+    return [Number(m[1]), Number(m[2]), Number(m[3])];
+  };
+  const contrast = (a: [number, number, number], b: [number, number, number]) => {
+    const lin = (v: number) => {
+      const s = v / 255;
+      return s <= 0.04045 ? s / 12.92 : Math.pow((s + 0.055) / 1.055, 2.4);
+    };
+    const lum = ([r, g, b]: [number, number, number]) => 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b);
+    const [hi, lo] = [lum(a), lum(b)].sort((x, y) => y - x);
+    return (hi + 0.05) / (lo + 0.05);
+  };
+  const isTransparent = (c: string) => c === "" || c === "transparent" || /rgba\([^)]*,\s*0\)$/.test(c);
 
-  it("carries the light booker's surface as its plate, and the white chrome's while loading", () => {
-    expect(white).toBeDefined();
-    expect(norm(focusedClose("router?xbc=411").style.backgroundColor)).toBe(norm(white));
-    const loading = focusedClose("router?xbc=411&theme=dark", { loaded: false });
-    expect(norm(loading.style.backgroundColor)).toBe(norm(white));
+  it("paints no opaque background in either theme, loaded or loading", () => {
+    const controls = [
+      focusedClose("router?xbc=411"),
+      focusedClose("router?xbc=411&theme=dark"),
+      focusedClose("router?xbc=411&theme=dark", { loaded: false }),
+    ];
+    for (const close of controls) {
+      expect(isTransparent(close.style.backgroundColor)).toBe(true);
+      close.dispatchEvent(new FocusEvent("blur"));
+      expect(isTransparent(close.style.backgroundColor)).toBe(true);
+    }
   });
 
-  it("carries the dark booker's surface as its plate once that booker shows", () => {
-    expect(darkSurface).toBeDefined();
-    expect(norm(focusedClose("router?xbc=411&theme=dark").style.backgroundColor)).toBe(norm(darkSurface));
+  it("its glyph and focus ring meet contrast over the booker surface in both themes", () => {
+    const cases: Array<[string, string | undefined]> = [
+      ["router?xbc=411", white],
+      ["router?xbc=411&theme=dark", darkSurface],
+    ];
+    for (const [link, surface] of cases) {
+      const bg = rgbOf(surface);
+      const close = focusedClose(link);
+      // Focused: the glyph in its strong ink, and the ring the 3:1 focus line.
+      expect(contrast(rgbOf(close.style.color), bg)).toBeGreaterThanOrEqual(4.5);
+      expect(contrast(rgbOf(close.style.outline), bg)).toBeGreaterThanOrEqual(3);
+      // At rest the glyph is the muted ink, still held to text contrast.
+      close.dispatchEvent(new FocusEvent("blur"));
+      expect(contrast(rgbOf(close.style.color), bg)).toBeGreaterThanOrEqual(4.5);
+    }
   });
 
   it("while the frame loads it sits on the white chrome, so it keeps the graphite ink", () => {

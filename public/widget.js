@@ -438,7 +438,7 @@
     close.style.cssText =
       "position:sticky;top:12px;" +
       "margin-top:12px;margin-right:12px;margin-bottom:-56px;margin-left:auto;" +
-      "border:0;background:rgb(255,255,255);" +
+      "border:0;background:transparent;" +
       "width:44px;height:44px;display:flex;align-items:center;" +
       "justify-content:center;border-radius:12px;" +
       "font-size:24px;line-height:1;cursor:pointer;" +
@@ -453,18 +453,15 @@
     // `--pennie-beige` and the sky focus line D17 sets for navy; the light half
     // is the graphite recipe (the 3:1 line is the outline; the sky glow is
     // decorative in both). Once pinned, booker content scrolls UNDER the
-    // control (#2789), so it also carries a plate in the surface it sits on
-    // (the booker's `--surface` in each theme, the chrome's white while
-    // loading): the glyph never lands on text, and at the top the plate is the
-    // colour of the corner behind it, so it is not seen at all.
+    // control (#2789) and it stays transparent, by Dan's choice (2026-09-25):
+    // text shows through behind the X rather than being cut off by a square.
     var darkBooker = /[?&]theme=dark(?:&|$)/.test(bookUrl);
-    var CLOSE_ON_LIGHT = { rest: "rgb(106,106,112)", strong: "rgb(52,52,52)", ring: "rgb(52,52,52)", plate: "rgb(255,255,255)" };
-    var CLOSE_ON_DARK = { rest: "rgb(165,162,177)", strong: "rgb(249,246,240)", ring: "rgb(130,208,255)", plate: "rgb(38,37,43)" };
+    var CLOSE_ON_LIGHT = { rest: "rgb(106,106,112)", strong: "rgb(52,52,52)", ring: "rgb(52,52,52)" };
+    var CLOSE_ON_DARK = { rest: "rgb(165,162,177)", strong: "rgb(249,246,240)", ring: "rgb(130,208,255)" };
     var closeFocused = false;
     var closeHovered = false;
     function paintClose() {
       var ink = darkBooker && loadState === "loaded" ? CLOSE_ON_DARK : CLOSE_ON_LIGHT;
-      close.style.backgroundColor = ink.plate;
       close.style.color = closeFocused || closeHovered ? ink.strong : ink.rest;
       close.style.outline = closeFocused ? "2px solid " + ink.ring : "";
       close.style.outlineOffset = closeFocused ? "2px" : "";
