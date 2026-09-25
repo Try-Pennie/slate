@@ -32,6 +32,11 @@ import type { OooProtectionResult } from "@/lib/monitor/ooo-protection";
 import type { BelowLeadTierResult } from "@/lib/monitor/below-lead-tier";
 import type { RegalCallResult } from "@/lib/monitor/regal-calls";
 import type { RosterCoverageVerdict } from "@/lib/monitor/roster-coverage";
+import type { AvailabilityScanResult } from "@/lib/monitor/availability-scan";
+import type { CalendarWindowResult } from "@/lib/monitor/calendar-window-coverage";
+import type { OffsiteOriginResult } from "@/lib/monitor/offsite-origin";
+import type { AwaitingActivationResult } from "@/lib/monitor/awaiting-activation";
+import type { RegalFeedQuietResult, RegalFeedUnreadableResult } from "@/lib/monitor/regal-call-feed";
 import type { monitorSetupGates } from "@/lib/monitor/setup-gates";
 import { SHIPPED_FAILURE_RATE_THRESHOLDS } from "@/lib/monitor/failure-rate-thresholds";
 
@@ -132,6 +137,27 @@ export const REGAL_CALLS_VERDICT_LANE = "verdict:regal-calls";
  */
 export const ROSTER_COVERAGE_VERDICT_LANE = "verdict:roster-coverage";
 
+/**
+ * Five lanes for the gated checks the #1941 registry found swallowing a failed
+ * read (#2798). Each check answers a read that failed with a status of its own
+ * (`unreadable`, `unmeasured`, or a scan whose every verify came back null) that
+ * pages nothing and throws nothing, so `monitor_step_failing` cannot see it and
+ * a read broken for a week looked exactly like a quiet, healthy week.
+ *
+ * The two Regal feed checks share ONE lane, `verdict:regal-call-feed`, stamped
+ * only when BOTH concluded. They read the same RPC (`regal_call_reason_counts`)
+ * on the same tick, so the fault a lane exists for, that read failing over and
+ * over, takes both out at once, and two lanes would page twice about one broken
+ * read (L333). Requiring both keeps each one's own blindness visible: the quiet
+ * check can go unmeasured on its own (no whole business day to judge), and an OR
+ * would let the other check's verdicts hide that.
+ */
+export const AVAILABILITY_SCAN_VERDICT_LANE = "verdict:availability-scan";
+export const CALENDAR_WINDOW_VERDICT_LANE = "verdict:calendar-window";
+export const OFFSITE_ORIGIN_VERDICT_LANE = "verdict:offsite-origin";
+export const AWAITING_ACTIVATION_VERDICT_LANE = "verdict:awaiting-activation";
+export const REGAL_CALL_FEED_VERDICT_LANE = "verdict:regal-call-feed";
+
 export type DetectorVerdictLane =
   | typeof TIER_STAFFING_VERDICT_LANE
   | typeof AVAILABILITY_TRUTH_VERDICT_LANE
@@ -144,7 +170,12 @@ export type DetectorVerdictLane =
   | typeof KILL_SWITCH_VERDICT_LANE
   | typeof BELOW_LEAD_TIER_VERDICT_LANE
   | typeof REGAL_CALLS_VERDICT_LANE
-  | typeof ROSTER_COVERAGE_VERDICT_LANE;
+  | typeof ROSTER_COVERAGE_VERDICT_LANE
+  | typeof AVAILABILITY_SCAN_VERDICT_LANE
+  | typeof CALENDAR_WINDOW_VERDICT_LANE
+  | typeof OFFSITE_ORIGIN_VERDICT_LANE
+  | typeof AWAITING_ACTIVATION_VERDICT_LANE
+  | typeof REGAL_CALL_FEED_VERDICT_LANE;
 
 /**
  * Did this availability truth tick compare real calendars and decide?
@@ -255,6 +286,85 @@ export function regalCallsReachedVerdict(result: RegalCallResult | null): boolea
  */
 export function rosterCoverageReachedVerdict(result: RosterCoverageVerdict | null): boolean {
   return result?.status === "gaps" || result?.status === "covered";
+}
+
+/**
+ * Did the availability scan conclude anything about the buckets this tick? (#2798)
+ *
+ * The scan recomputes each dead end live to learn WHY it is empty, and that
+ * recompute swallows its own failure to null (`recomputeSlots(code).catch(() =>
+ * null)`), so a recompute failing on every tick leaves every dead end
+ * `unverified`. Those do page, as `availability_data_anomaly`, but the tick
+ * concluded nothing about any of them, and a scan that can never verify a dead
+ * end is not the detector anybody believes is running.
+ *
+ * So a tick stamps when it verified at least one dead end (the recompute
+ * answered, whether it found times or found the bucket booked solid), or when it
+ * saw every bucket and found no dead end at all. It does NOT stamp when every
+ * dead end came back unverified, when a scan cut short by its deadline found
+ * nothing (`availabilityAlertVerdict` calls that `unknown` for the same reason),
+ * or when it scanned zero buckets, which measured nothing (L98). Null is a step
+ * the setup gate refused or that threw.
+ */
+export function availabilityScanReachedVerdict(scan: AvailabilityScanResult | null): boolean {
+  if (!scan || scan.bucketsScanned === 0) return false;
+  if (scan.page.length > 0) return scan.cause.unverified.length < scan.page.length;
+  return !scan.truncated;
+}
+
+/**
+ * Did the calendar window check judge at least one calendar? (#2798)
+ *
+ * `uncovered` and `clear` both stamp, since "every calendar is hydrated to the
+ * booking horizon" is an answer. `unreadable` does not, and neither does a
+ * `clear` that judged nobody: an empty roster, or one where every calendar joined
+ * too recently to judge (#2300), reads as clear and measured nothing (L98).
+ */
+export function calendarWindowReachedVerdict(result: CalendarWindowResult | null): boolean {
+  if (!result) return false;
+  if (result.status === "uncovered") return true;
+  return result.status === "clear" && result.judged > 0;
+}
+
+/**
+ * Did the off site origin check read the recent bookings? (#2798)
+ *
+ * Like the time off protection check, a successful read answers the question
+ * outright, including when it finds no recent booking at all: nothing booked
+ * cannot have been booked from somewhere else. Before cutover that is the
+ * ordinary tick, and it is still a read that worked. Only `unreadable` and a
+ * refused or thrown step stamp nothing.
+ */
+export function offsiteOriginReachedVerdict(result: OffsiteOriginResult | null): boolean {
+  return result?.status === "checked";
+}
+
+/**
+ * Did the waiting to become bookable check read the roster? (#2798)
+ *
+ * `clear` is the ordinary answer, since the read selects only the rows carrying
+ * `bookable_pending_since` and nobody waiting is a finding. `waiting` stamps too,
+ * armed or not: the switch decides whether it pages, not whether it looked.
+ */
+export function awaitingActivationReachedVerdict(result: AwaitingActivationResult | null): boolean {
+  return result !== null && result.status !== "unreadable";
+}
+
+/**
+ * Did BOTH Regal feed checks read the reason counts and judge them? (#2798)
+ *
+ * One lane for the two, stamped only when both concluded (the lane's own comment
+ * says why one lane and not two). `quiet` is a verdict: a day with no call from a
+ * Slate user was measured, and that is what the quiet page is about.
+ * `unmeasured` is not, whether the RPC failed or there was no whole business day
+ * to judge.
+ */
+export function regalCallFeedReachedVerdict(
+  quiet: RegalFeedQuietResult | null,
+  unreadable: RegalFeedUnreadableResult | null,
+): boolean {
+  if (!quiet || !unreadable) return false;
+  return quiet.status !== "unmeasured" && unreadable.status !== "unmeasured";
 }
 
 /**
@@ -484,11 +594,6 @@ export type DetectorVerdictCoverage =
 
 export type MonitorGatedCheck = keyof ReturnType<typeof monitorSetupGates>;
 
-/** Found by the #1941 registry: each swallows a failed read into a status that
- *  pages nothing and throws nothing, so neither `monitor_step_failing` nor any
- *  lane sees it held. */
-const SWALLOWS_UNREADABLE = 2798;
-
 export const GATED_CHECK_VERDICT_COVERAGE: Record<MonitorGatedCheck, DetectorVerdictCoverage> = {
   availabilityTruth: { lane: AVAILABILITY_TRUTH_VERDICT_LANE },
   lowVolume: { lane: LOW_VOLUME_VERDICT_LANE },
@@ -502,34 +607,14 @@ export const GATED_CHECK_VERDICT_COVERAGE: Record<MonitorGatedCheck, DetectorVer
       "observe only: it logs drift for calibration and pages nobody, so going blind silences " +
       "no page, and the issue that activates it has to add a lane alongside the page",
   },
-  availabilityScan: {
-    pending:
-      "the recompute that verifies each bucket's probe swallows its own failure to null, so a " +
-      "recompute failing on every tick leaves every finding unverified and nothing pages",
-    issue: SWALLOWS_UNREADABLE,
-  },
-  calendarWindow: {
-    pending: "an unreadable calendar row read returns status unreadable, which pages nothing and throws nothing",
-    issue: SWALLOWS_UNREADABLE,
-  },
-  offsiteOrigin: {
-    pending: "an unreadable booking read returns status unreadable, which pages nothing and throws nothing",
-    issue: SWALLOWS_UNREADABLE,
-  },
-  awaitingActivation: {
-    pending: "an unreadable roster read returns status unreadable, which pages nothing and throws nothing",
-    issue: SWALLOWS_UNREADABLE,
-  },
-  regalCallsQuiet: {
-    pending:
-      "a failed reason count read returns status unmeasured through its own RPC, which the Regal " +
-      "call detector's lane does not read",
-    issue: SWALLOWS_UNREADABLE,
-  },
-  regalCallsUnreadable: {
-    pending:
-      "a failed reason count read returns status unmeasured through its own RPC, which the Regal " +
-      "call detector's lane does not read",
-    issue: SWALLOWS_UNREADABLE,
-  },
+  // #2798: the five below each swallowed a failed read into a status that pages
+  // nothing and throws nothing, so neither `monitor_step_failing` nor any lane saw
+  // it held. The predicates that decide each stamp are above.
+  availabilityScan: { lane: AVAILABILITY_SCAN_VERDICT_LANE },
+  calendarWindow: { lane: CALENDAR_WINDOW_VERDICT_LANE },
+  offsiteOrigin: { lane: OFFSITE_ORIGIN_VERDICT_LANE },
+  awaitingActivation: { lane: AWAITING_ACTIVATION_VERDICT_LANE },
+  // One lane for both: they read one RPC on one tick, so its failure is one fault.
+  regalCallsQuiet: { lane: REGAL_CALL_FEED_VERDICT_LANE },
+  regalCallsUnreadable: { lane: REGAL_CALL_FEED_VERDICT_LANE },
 };

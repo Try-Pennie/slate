@@ -105,6 +105,16 @@ bound is six hours: it concludes on every monitor tick the week and roster are
 readable, so the bound is a maintenance window over a failed read, the same
 arithmetic as `verdict:ooo-protection` and `verdict:tier-staffing`.
 
+Five more joined in #2798, one for each gated check the #1941 registry found
+answering a failed read with a status of its own that paged nothing:
+`verdict:availability-scan`, `verdict:calendar-window`, `verdict:offsite-origin`,
+`verdict:awaiting-activation` and `verdict:regal-call-feed`. The last is shared
+by the two Regal feed checks, which read one RPC on one tick, and is stamped only
+when BOTH concluded. The availability scan stamps when it verified at least one
+dead end or saw every bucket with none, never when every recompute came back null.
+Each bound is six hours, the same maintenance window as roster coverage, because
+each concludes on every tick its read works.
+
 **A new gated check cannot join the monitor lane unwatched** (#1941).
 `GATED_CHECK_VERDICT_COVERAGE` in `verdict-freshness.ts` is keyed on the checks
 `monitorSetupGates` returns, so `tsc` names a new gate with no entry, and

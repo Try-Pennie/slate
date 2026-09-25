@@ -149,6 +149,16 @@ import {
   regalCallsReachedVerdict,
   ROSTER_COVERAGE_VERDICT_LANE,
   rosterCoverageReachedVerdict,
+  AVAILABILITY_SCAN_VERDICT_LANE,
+  availabilityScanReachedVerdict,
+  CALENDAR_WINDOW_VERDICT_LANE,
+  calendarWindowReachedVerdict,
+  OFFSITE_ORIGIN_VERDICT_LANE,
+  offsiteOriginReachedVerdict,
+  AWAITING_ACTIVATION_VERDICT_LANE,
+  awaitingActivationReachedVerdict,
+  REGAL_CALL_FEED_VERDICT_LANE,
+  regalCallFeedReachedVerdict,
   FAILURE_RATE_VERDICT_LANE,
   LOW_VOLUME_VERDICT_LANE,
   OOO_PROTECTION_VERDICT_LANE,
@@ -1640,7 +1650,7 @@ export async function GET(req: NextRequest) {
     // measures and logs either way, and clears nothing on a read that failed. ---
     // #2773: its arming switch comes from the settings, so with none readable and
     // none known it stands down rather than run disarmed by default.
-    await steps.run("awaiting_activation", null, async () =>
+    const awaitingActivation = await steps.run("awaiting_activation", null, async () =>
       !gates.awaitingActivation.run
         ? null
         : runAwaitingActivationCheck({
@@ -1662,6 +1672,17 @@ export async function GET(req: NextRequest) {
         nowMs: Date.now(),
       }),
     );
+    // #2798: the line the verdict lane's page sends a reader to. An unreadable
+    // roster used to leave no trace here at all, which is how it read as quiet.
+    if (awaitingActivation) {
+      log.info("monitor", {
+        msg: "awaiting activation",
+        status: awaitingActivation.status,
+        ...(awaitingActivation.status === "unreadable" ? { error: awaitingActivation.error } : {}),
+        ...(awaitingActivation.status === "waiting" ? { waiting: awaitingActivation.agents.length } : {}),
+        ...(awaitingActivation.status === "clear" ? { measured: awaitingActivation.measured } : {}),
+      });
+    }
 
     // --- A booking below the lead's Salesforce tier (#2593): an Ultra High lead
     // booked with the Low team. A rate cannot see it (two bookings in twelve
@@ -1749,7 +1770,7 @@ export async function GET(req: NextRequest) {
     // unreadable rather than as zero off site. Once per booking: keys already
     // stamped in alert_state are skipped, and the cooldown outlasts the lookback.
     // Gated on the shared bucket list, which is what says which buckets are real. ---
-    await steps.run("offsite_origin", null, async () => {
+    const offsiteOrigin = await steps.run("offsite_origin", null, async () => {
       if (!gates.offsiteOrigin.run) {
         log.warn("monitor", { msg: "offsite origin skipped", why: gates.offsiteOrigin.why });
         return null;
@@ -1898,7 +1919,13 @@ export async function GET(req: NextRequest) {
     if (!gates.regalCallsQuiet.run) {
       log.warn("monitor", { msg: "regal calls quiet check skipped", why: gates.regalCallsQuiet.why });
     } else if (regalQuiet) {
-      log.info("monitor", { msg: "regal calls quiet", status: regalQuiet.status });
+      log.info("monitor", {
+        msg: "regal calls quiet",
+        status: regalQuiet.status,
+        // #2798: the reason is what tells a failed RPC from an org with no whole
+        // business day to judge, and the verdict lane's page sends a reader here.
+        ...(regalQuiet.status === "unmeasured" ? { why: regalQuiet.why } : {}),
+      });
     }
     const regalUnreadable = await steps.run("regal_calls_unreadable", null, async () =>
       !gates.regalCallsUnreadable.run
@@ -1916,7 +1943,13 @@ export async function GET(req: NextRequest) {
         nowMs: now,
       }),
     );
-    if (regalUnreadable) log.info("monitor", { msg: "regal calls unreadable", status: regalUnreadable.status });
+    if (regalUnreadable) {
+      log.info("monitor", {
+        msg: "regal calls unreadable",
+        status: regalUnreadable.status,
+        ...(regalUnreadable.status === "unmeasured" ? { why: regalUnreadable.why } : {}),
+      });
+    }
 
     // --- Routing-attribute coverage (#226): a bookable agent with no routing
     // attributes matches no bucket criteria, so unless someone added them as a
@@ -3008,6 +3041,20 @@ export async function GET(req: NextRequest) {
       recordDetectorVerdict(
         ROSTER_COVERAGE_VERDICT_LANE,
         rosterCoverageReachedVerdict(rosterCoverage),
+      ),
+      // #2798: five gated checks that answered a failed read with a status of
+      // their own, paging nothing and throwing nothing. Each stamps only on a
+      // measured answer; the Regal pair shares one lane because they read one RPC.
+      recordDetectorVerdict(AVAILABILITY_SCAN_VERDICT_LANE, availabilityScanReachedVerdict(scan)),
+      recordDetectorVerdict(CALENDAR_WINDOW_VERDICT_LANE, calendarWindowReachedVerdict(calendarWindow)),
+      recordDetectorVerdict(OFFSITE_ORIGIN_VERDICT_LANE, offsiteOriginReachedVerdict(offsiteOrigin)),
+      recordDetectorVerdict(
+        AWAITING_ACTIVATION_VERDICT_LANE,
+        awaitingActivationReachedVerdict(awaitingActivation),
+      ),
+      recordDetectorVerdict(
+        REGAL_CALL_FEED_VERDICT_LANE,
+        regalCallFeedReachedVerdict(regalQuiet, regalUnreadable),
       ),
     ]).catch((err) =>
       // recordHeartbeat already swallows its own DB errors, so reaching here means

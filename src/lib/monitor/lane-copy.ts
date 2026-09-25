@@ -24,6 +24,11 @@ import {
   KILL_SWITCH_VERDICT_LANE,
   BELOW_LEAD_TIER_VERDICT_LANE,
   ROSTER_COVERAGE_VERDICT_LANE,
+  AVAILABILITY_SCAN_VERDICT_LANE,
+  CALENDAR_WINDOW_VERDICT_LANE,
+  OFFSITE_ORIGIN_VERDICT_LANE,
+  AWAITING_ACTIVATION_VERDICT_LANE,
+  REGAL_CALL_FEED_VERDICT_LANE,
   parkedDetector,
 } from "@/lib/monitor/verdict-freshness";
 
@@ -254,6 +259,34 @@ const VERDICT_SUBJECT: Record<string, { what: string; cost: string; look: string
     what: "the check asking whether every hour the org advertises has a bookable agent rostered to cover it",
     cost: "the org could go on advertising hours nobody works, and a lead asking for one would be offered nothing with no page saying why",
     look: 'the Worker logs for tag=roster-coverage and the monitor cycle line for roster_coverage under failed=, and whether the business hours and the agents\' working hours can be read at all',
+  },
+  // #2798: the five gated checks that answered a failed read with a status of
+  // their own and paged nothing. Each `look` names the log line that carries the
+  // status, because that line is where "could not read" and "nothing wrong" part.
+  [AVAILABILITY_SCAN_VERDICT_LANE]: {
+    what: "the scan asking whether every bucket that should be offering times is offering them",
+    cost: "a bucket showing leads no times could go unexplained, because the scan can no longer tell a wedged cache from a booked solid week",
+    look: 'the Worker logs for msg="availability scan" under tag=monitor, and whether it reports truncated or every dead end unverified, which means the live recompute is failing',
+  },
+  [CALENDAR_WINDOW_VERDICT_LANE]: {
+    what: "the check asking whether every bookable agent's calendar has been read out to the end of the booking window",
+    cost: "an agent whose calendar stopped being read could be offered to leads over meetings Slate cannot see",
+    look: 'the Worker logs for msg="tick" under tag=calendar-window, and whether the calendar rows can be read at all',
+  },
+  [OFFSITE_ORIGIN_VERDICT_LANE]: {
+    what: "the check asking whether real bookings are arriving from a page that is not the production site",
+    cost: "bookings made from a test page or a copied embed would land on real agents' calendars with nobody told",
+    look: 'the Worker logs for msg="offsite origin unreadable" under tag=monitor, and whether recent bookings can be read at all',
+  },
+  [AWAITING_ACTIVATION_VERDICT_LANE]: {
+    what: "the check asking whether anybody the roster counts as working has been stuck waiting to become bookable",
+    cost: "a new hire whose activation keeps being refused would stay out of every pool with nothing saying why",
+    look: 'the Worker logs for msg="awaiting activation" under tag=monitor, and whether the users table can be read at all',
+  },
+  [REGAL_CALL_FEED_VERDICT_LANE]: {
+    what: "the pair of checks asking whether calls from Regal are reaching Slate and whether Slate can read them",
+    cost: "Regal could stop posting calls, or change what it sends, and the check for people calling while Slate does not route to them would go on judging nobody",
+    look: 'the Worker logs for msg="regal calls quiet" and msg="regal calls unreadable" under tag=monitor, and whether the regal_call_reason_counts RPC answers',
   },
   [OOO_PROTECTION_VERDICT_LANE]: {
     what: "the check asking whether approved time off is still blocking the hours it covers",

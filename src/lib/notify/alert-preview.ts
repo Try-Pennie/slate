@@ -2682,6 +2682,28 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
       unreadable: false,
     }),
   },
+  // #2798: the five gated checks that answered a failed read with a status of
+  // their own. Each gets its own page because each sends a reader to a different
+  // log line, and the whole point is that the page names what went blind.
+  ...(
+    [
+      ["verdict:availability-scan", "the availability scan has stopped concluding"],
+      ["verdict:calendar-window", "the calendar window check has stopped concluding"],
+      ["verdict:offsite-origin", "the off site origin check has stopped concluding"],
+      ["verdict:awaiting-activation", "the waiting to become bookable check has stopped concluding"],
+      ["verdict:regal-call-feed", "the Regal feed checks have stopped concluding"],
+    ] as const
+  ).map(([lane, state]) => ({
+    key: "cron_lane_stale:*",
+    state,
+    channel: "alert" as const,
+    text: verdictBlindAlertText({
+      lane,
+      ageMs: 7 * 60 * 60_000,
+      maxStaleMs: VERDICT_STALE_BOUNDS_MS[lane],
+      unreadable: false,
+    }),
+  })),
   // --- a contained monitor step that keeps failing (#2382) -------------------
   //
   // Two states, because the wider half of the fault is what a failed SETUP read
