@@ -20,37 +20,19 @@
 // and the response to a check that disagrees with itself is to stop reading it.
 //
 // Run: node --experimental-strip-types scripts/test-worker-typecheck.ts
-import { execFileSync } from "node:child_process";
-import { readFileSync, rmSync, writeFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { BREAKING_CODES, breakingErrors } from "./lib/scan-scripts-typecheck.ts";
+import { typecheckWithControl, unreadConfigFiles } from "./lib/typecheck-program.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
 const repoRoot = new URL("..", import.meta.url).pathname;
 const CONFIG = "tsconfig.worker.json";
+const CONTROL_SOURCE = "export const planted = thisNameIsNotDefinedAnywhere;\n";
 
-/** Spawned exactly twice: once for the verdict, once for the planted control. The
- *  worker tree is three files, so this costs a fraction of the scripts run. */
+/** Typechecked exactly once: the verdict and the planted control come from the
+ *  same run, so the control vouches for the run that produced the verdict (L70). */
 let tscRuns = 0;
-
-function runTsc(): string {
-  tscRuns++;
-  try {
-    execFileSync("npx", ["tsc", "-p", CONFIG, "--noEmit"], {
-      cwd: repoRoot,
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    return "";
-  } catch (err) {
-    const e = err as { stdout?: string; stderr?: string; code?: string };
-    // A missing npx must never read as "no errors found" (L98).
-    if (e.code === "ENOENT") {
-      throw new Error("could not run tsc (npx not found), so nothing was checked");
-    }
-    return `${e.stdout ?? ""}${e.stderr ?? ""}`;
-  }
-}
 
 const readSource = (file: string): string[] => {
   try {
@@ -60,8 +42,46 @@ const readSource = (file: string): string[] => {
   }
 };
 
+// --- one run, carrying its own control ------------------------------------------
+// A run that never looked at worker/ and a clean worker/ produce the same empty
+// error list (L1, L98). So the run carries a real undefined identifier and must
+// report it, as the class it claims to watch, AND must have read every file the
+// config names.
+//
+// The control is planted in a temp directory, never in worker/ (#2712): a file
+// written into the repo tree and removed again is one every concurrent suite
+// walking that tree can list and then fail to open.
+const run = typecheckWithControl(repoRoot, CONFIG, CONTROL_SOURCE);
+tscRuns++;
+const found = breakingErrors(run.output, (file) =>
+  file === run.controlFile ? CONTROL_SOURCE.split("\n") : readSource(file),
+);
+const control = found.filter((e) => e.file === run.controlFile);
+const breaking = found.filter((e) => e.file !== run.controlFile);
+
+assert(
+  control.length > 0 && control.every((e) => e.code === "TS2304"),
+  control.length === 0
+    ? "the planted undefined name was NOT caught, so this run's verdict below means nothing"
+    : control.every((e) => e.code === "TS2304")
+      ? "this run was PROVEN to report the class it watches: it caught the planted undefined name"
+      : `the control was found but not as TS2304 (got ${control.map((e) => e.code).join(", ")}), so the class this guard watches is not the class being reported`,
+);
+
+const entry = join(repoRoot, "worker", "index.ts");
+assert(
+  run.configFiles.includes(entry),
+  `${CONFIG} names the Worker entry, worker/index.ts (${run.configFiles.length} files)`,
+);
+const unread = unreadConfigFiles(run.configFiles, run.readFiles);
+assert(
+  unread.length === 0,
+  unread.length === 0
+    ? `the run read every one of the ${run.configFiles.length} files ${CONFIG} names`
+    : `the run never read ${unread.length} file(s) ${CONFIG} names: ${unread.join(", ")}`,
+);
+
 // --- the verdict --------------------------------------------------------------
-const breaking = breakingErrors(runTsc(), readSource);
 assert(
   breaking.length === 0,
   breaking.length === 0
@@ -78,30 +98,6 @@ assert(
   "TS2578 is deliberately not a breaking class: its verdict depends on whether .open-next exists",
 );
 
-// --- the planted control ------------------------------------------------------
-// A tsc run that never looked at worker/ and a clean worker/ produce the same empty
-// error list (L1, L98). So plant a real undefined identifier and require this exact
-// pipeline to catch it, as the class it claims to watch.
-{
-  const controlPath = join(repoRoot, "worker", "__typecheck-control.ts");
-  writeFileSync(controlPath, "export const planted = thisNameIsNotDefinedAnywhere;\n");
-  try {
-    const control = breakingErrors(runTsc(), readSource).filter((e) =>
-      e.file.includes("__typecheck-control"),
-    );
-    assert(
-      control.length > 0 && control.every((e) => e.code === "TS2304"),
-      control.length === 0
-        ? "the planted undefined name was NOT caught, so this run did not look at worker/ and the verdict above means nothing (check tsconfig.worker.json's include)"
-        : control.every((e) => e.code === "TS2304")
-          ? "this run was PROVEN to have read worker/: it caught the planted undefined name"
-          : `the control was found but not as TS2304 (got ${control.map((e) => e.code).join(", ")}), so the class this guard watches is not the class being reported`,
-    );
-  } finally {
-    rmSync(controlPath, { force: true });
-  }
-}
-
 // --- the config actually points at the Worker's own runtime -------------------
 {
   // Without the Workers types, `ExecutionContext` is an undefined name and the guard
@@ -117,6 +113,6 @@ assert(
   assert(main.startsWith("worker/"), `wrangler's main is inside the checked tree (${main})`);
 }
 
-eq(tscRuns, 2, "tsc ran twice: once for the verdict, once for the control");
+eq(tscRuns, 1, "the worker tree is typechecked once, and the control rides in that same run");
 
 finish();

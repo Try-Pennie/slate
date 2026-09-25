@@ -90,6 +90,7 @@ async function main() {
     assert(existsSync(join(both, "node_modules", "MARKER")), "self: leaves the existing node_modules intact");
   }
 
+  // tree-write-ok: `created` only ever holds makeCheckout's mkdtempSync(tmpdir()) dirs
   for (const d of created) rmSync(d, { recursive: true, force: true });
   finish();
 }
