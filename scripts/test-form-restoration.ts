@@ -20,7 +20,6 @@ import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { assert, finish } from "./lib/harness.ts";
 import {
-  commentAbove,
   formTags,
   formTagVerdict,
   restoreOffWinsOverSpread,
@@ -105,7 +104,6 @@ assert(files.length > 40, `the scanner found the app to judge (${files.length} f
 
   const far = `// form-restore-ok: about something else\nconst a = 1;\n<form onSubmit={x}>`;
   assert(formTagVerdict(far, formTags(far)[0]!) === null, "an opt out that is not directly above does not count");
-  assert(commentAbove(far, far.indexOf("<form")) === "", "and the comment reader stops at code");
 
   const prose = ` * Must live inside the \`<form>\`; a plain \`<form action={x}>\` is not this.\n// see <form>\n`;
   assert(formTags(prose).length === 0, "a form named in a comment is not judged as a form");

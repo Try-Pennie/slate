@@ -8,6 +8,8 @@
 // to check that a save took (L732). `autoComplete="off"` on the form is what
 // tells the browser not to.
 
+import { hasOptOutAtOffset } from "./opt-out.ts";
+
 /** One `<form ...>` opening tag in a file, with where it starts. */
 export type FormTag = { tag: string; index: number; line: number };
 
@@ -45,42 +47,15 @@ export const RESTORE_OFF = /\bautoComplete="off"/;
 
 /**
  * The escape hatch: `form-restore-ok: <reason>` in the comment directly above
- * the tag. The reason must begin with a WORD, so the comment's own punctuation
- * (a closing `*\/}`) cannot pass for one (L675).
+ * the tag, read through the shared reader so a marker with no reason is not an
+ * exemption and the comment forms agree with every other guard's (L675).
  */
-const OPT_OUT = /form-restore-ok:\s*[A-Za-z]/;
-
-/**
- * The comments directly above a tag: a run of `//` lines, or block comments
- * (`/* *\/` or JSX's `{/* *\/}`) walked back to where each one opens, so a
- * reason wrapped over several plain lines is still read whole.
- */
-export function commentAbove(src: string, index: number): string {
-  const lines = src.slice(0, index).split("\n");
-  lines.pop(); // the tag's own line, up to the tag
-  const kept: string[] = [];
-  let i = lines.length - 1;
-  while (i >= 0) {
-    const t = lines[i]!.trim();
-    if (t.startsWith("//")) {
-      kept.unshift(t);
-      i--;
-    } else if (/\*\/\}?$/.test(t)) {
-      // A block comment ends here: take lines up to the one that opens it.
-      let j = i;
-      while (j >= 0 && !/(\{\/\*|\/\*)/.test(lines[j]!)) j--;
-      if (j < 0) break;
-      kept.unshift(...lines.slice(j, i + 1).map((l) => l.trim()));
-      i = j - 1;
-    } else break;
-  }
-  return kept.join("\n");
-}
+export const OPT_OUT_TOKEN = "form-restore-ok:";
 
 /** Why a form tag is acceptable, or null when it is not. */
 export function formTagVerdict(src: string, t: FormTag): "restore-off" | "opted-out" | null {
   if (RESTORE_OFF.test(t.tag)) return "restore-off";
-  if (OPT_OUT.test(commentAbove(src, t.index))) return "opted-out";
+  if (hasOptOutAtOffset(src, t.index, OPT_OUT_TOKEN)) return "opted-out";
   return null;
 }
 
