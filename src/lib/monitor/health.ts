@@ -358,10 +358,16 @@ export const TIME_OFF_STALE_BOUNDS_MS: Record<string, number> = {
  *    cannot trip it, short enough to catch a probe that is simply not working.
  *  - `verdict:booking-failure-rate` needs a floor of booking attempts inside its
  *    rolling window before it will judge at all, and
- *    `verdict:low-booking-volume` only judges Mon to Fri 08:00 to 20:00 Eastern.
- *    Both are legitimately silent from Friday evening to Monday morning, about
- *    60 hours, and a public holiday Monday stretches that to about 84. 4 days
- *    clears both, so a weekend is never the cause.
+ *    `verdict:low-booking-volume` only judges while the org is open, by the
+ *    stored `business_hours` (Monday to SATURDAY since #1298; this used to say
+ *    Mon to Fri). Both are legitimately silent over the closed stretch of a
+ *    weekend, and a public holiday Monday stretches that to about 60 hours. 4
+ *    days clears both, so a weekend is never the cause.
+ *
+ *    A flat bound that clears a weekend cannot see ONE open day with no verdict,
+ *    so the volume alarm is ALSO judged in open business minutes on the monitor
+ *    lane itself (`volume-verdict-gap.ts`, #2049), which pages after one open
+ *    hour. This bound stays as the backstop that shares no hours predicate.
  *
  *    The floor and the window themselves are deliberately NOT quoted here. They
  *    live in `failure-rate-thresholds.ts`, fitted to real lead volume, and this

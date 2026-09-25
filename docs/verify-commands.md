@@ -79,9 +79,16 @@ They are judged by `VERDICT_STALE_BOUNDS_MS` with `neverIsStale` ON, because
 "has never once reached a verdict" is the exact state the family exists to
 notice. Bounds are set by each detector's longest LEGITIMATE silence: 24h for the
 truth probe (about five passes of the bucket rotation), 4 days for the two
-traffic fed checks (which are properly silent from Friday evening to Monday
-morning). A blind detector re-pages daily rather than hourly, since before
+traffic fed checks (which are properly silent over the closed part of a weekend
+and a holiday). A blind detector re-pages daily rather than hourly, since before
 cutover it can legitimately stay blind for days.
+
+A flat bound long enough to clear a weekend cannot see ONE open day without a
+verdict, so the low volume alarm is also judged in OPEN business minutes on the
+monitor lane (`src/lib/monitor/volume-verdict-gap.ts`, #2049): an hour of open
+time with no verdict pages `low_volume_verdict_gap`, and the next verdict clears
+it. #2049 itself was a misread weekday (the stamp it quoted was a Saturday), but
+nothing would have said so had the gap been real.
 
 The family has grown since those three, and the list of lanes and bounds is
 `VERDICT_STALE_BOUNDS_MS` in `src/lib/monitor/health.ts` rather than this

@@ -133,7 +133,9 @@ import {
   formatVolumeCountReadableNotice,
   formatLowVolumeAlert,
   formatLowVolumeRecoveryNotice,
+  formatVolumeVerdictGapRecoveryNotice,
 } from "@/lib/monitor/booking-volume";
+import { formatVolumeVerdictGapAlert } from "@/lib/monitor/volume-verdict-gap";
 import { judgedFloors, type FloorsNow } from "@/lib/monitor/volume-floors";
 import {
   LOW_PAGES,
@@ -722,6 +724,32 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     state: "the count reads again",
     channel: "recovery",
     text: formatVolumeCountReadableNotice(),
+  },
+  {
+    // #2049. Said in OPEN minutes, and the last verdict named with its weekday in
+    // the org's zone, because a wall clock age across a closed Sunday is what misled.
+    key: "low_volume_verdict_gap",
+    state: "an hour of open time with no verdict",
+    channel: "alert",
+    text: formatVolumeVerdictGapAlert(69, 1789775760000 /* 2026-09-18T23:56:00Z */, "America/New_York"),
+  },
+  {
+    key: "low_volume_verdict_gap",
+    state: "a whole open day with no verdict",
+    channel: "alert",
+    text: formatVolumeVerdictGapAlert(725, 1788652570000 /* 2026-09-05T23:56:10Z */, "America/New_York"),
+  },
+  {
+    key: "low_volume_verdict_gap",
+    state: "the last verdict cannot be read",
+    channel: "alert",
+    text: formatVolumeVerdictGapAlert(10080, 0, "America/New_York"),
+  },
+  {
+    key: "low_volume_verdict_gap",
+    state: "the alarm concludes again",
+    channel: "recovery",
+    text: formatVolumeVerdictGapRecoveryNotice(),
   },
   // #1442 / #1450 / #1709. Every state that reads differently, because each of
   // these names a DIFFERENT repair in a different place and the wrong one at 7am
