@@ -133,7 +133,9 @@ export function SaveForm({
    * reload themselves is a step they gain nothing from taking.
    */
   onStale?: "notice" | "reload";
-} & Omit<React.FormHTMLAttributes<HTMLFormElement>, "action" | "name">) {
+  // No `autoComplete`: the form always renders it OFF (#2718), so a call site
+  // passing one is refused by tsc rather than silently turning restoration on.
+} & Omit<React.FormHTMLAttributes<HTMLFormElement>, "action" | "name" | "autoComplete">) {
   const [stale, setStale] = useState(false);
   // Whether the cheap recovery has already been tried on THIS page load. A
   // reload makes the page current, so a second stale save in the same load can
@@ -206,7 +208,15 @@ export function SaveForm({
 
   return (
     <RestoreContext.Provider value={restoredContext}>
-      <form ref={formRef} action={run} className={className} {...rest}>
+      {/* #2718: `autoComplete="off"` stops the BROWSER putting back controls the
+          person changed and never saved. Safari and Firefox do it on a reload,
+          and every browser does it on back and forward, over the
+          `defaultChecked` / `defaultValue` the page drew from the stored value,
+          so an alarm nobody saved came back ticked on the very refresh Dan did
+          to check it (L732). A deliberate restore still happens, from the stash
+          above, and says so; a silent one reads as the stored truth. It comes
+          AFTER the spread so nothing a call site passes can turn it back on. */}
+      <form ref={formRef} action={run} className={className} {...rest} autoComplete="off">
         {/* #2076: by DEFAULT, not by opt in. Silent unless the form actually
             differs from what it rendered with, so a form holding only a button
             needs no exception written for it. */}

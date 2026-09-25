@@ -31,7 +31,7 @@ export function WebhookTestSend({
 
   return (
     <div className="space-y-3">
-      <form action={formAction} className="space-y-2">
+      <form action={formAction} className="space-y-2" autoComplete="off">
         {/* #2076: the address to test against is typed here and nowhere else. */}
         <UnsavedGuard what="the address you typed" formName="webhook-test-send" />
         <label className={labelCls} htmlFor="webhook-test-target">

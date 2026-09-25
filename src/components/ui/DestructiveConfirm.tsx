@@ -164,7 +164,7 @@ export function DestructiveConfirm({
   const shell = `pn-confirm-enter rounded-lg border border-[var(--error)] bg-[var(--field)] p-3 ${panelClassName}`.trim();
 
   return action ? (
-    <form action={action} className={shell}>
+    <form action={action} className={shell} autoComplete="off">
       {panel}
     </form>
   ) : (

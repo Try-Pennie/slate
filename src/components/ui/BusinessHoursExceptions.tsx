@@ -84,7 +84,7 @@ export function BusinessHoursExceptions({
                 </span>
               )}
               {e.note && <span className="text-sm text-fg-muted">{e.note}</span>}
-              <form action={removeAction} className="ml-auto">
+              <form action={removeAction} className="ml-auto" autoComplete="off">
                 <input type="hidden" name="on_date" value={e.on_date} />
                 <SubmitButton className={btnSecondaryCls} pendingLabel="Removing...">
                   Remove
@@ -95,7 +95,7 @@ export function BusinessHoursExceptions({
         </ul>
       )}
 
-      <form action={formAction} className="space-y-4">
+      <form action={formAction} className="space-y-4" autoComplete="off">
         {/* #1966: the ADD form. The per row remove forms below hold nothing
             typed, so they carry no guard. */}
         <UnsavedGuard what="changes to this date" formName="business-hours-exception" />

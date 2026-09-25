@@ -113,7 +113,7 @@ export function BusinessHoursForm({
   }));
 
   return (
-    <form action={formAction} className="space-y-5">
+    <form action={formAction} className="space-y-5" autoComplete="off">
       {/* #1966: a week here decides when Pennie is open to every lead. */}
       <UnsavedGuard what="changes to when Pennie is open" formName="business-hours" />
       {state.error && (

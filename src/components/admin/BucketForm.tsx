@@ -65,6 +65,7 @@ export function BucketForm({
   return (
     <form
       action={editing ? updateBucket : createBucket}
+      autoComplete="off"
       className="space-y-3 rounded-md border border-border p-3"
     >
       {/* #2076: a bucket's name, code and criteria are typed by hand and exist

@@ -135,6 +135,7 @@ export function RosterTable({
       <form
         method="GET"
         onSubmit={(e) => e.preventDefault()}
+        autoComplete="off"
         className="mb-4 flex flex-wrap items-center gap-2"
       >
         <input

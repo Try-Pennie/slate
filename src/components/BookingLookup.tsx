@@ -34,7 +34,7 @@ export default function BookingLookup() {
   return (
     <div>
       {/* unsaved-ok: a search box holds a view, not work (#2076). */}
-      <form onSubmit={onSubmit} className="flex gap-2">
+      <form onSubmit={onSubmit} className="flex gap-2" autoComplete="off">
         <input
           type="search"
           value={input}
