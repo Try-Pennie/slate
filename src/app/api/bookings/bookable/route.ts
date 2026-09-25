@@ -1,5 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { authorizeBookingApi } from "@/lib/booking/route-auth";
+import { mayBookTestBuckets } from "@/lib/booking/api-auth";
 import {
   BOOKABLE_CHECK_HOURLY_RATE_RULES,
   DIRECT_BOOKING_API_IP_HOURLY_RATE_RULES,
@@ -64,7 +65,10 @@ export async function GET(req: NextRequest) {
   }
 
   try {
-    const result = await checkBookable({ bucketCode, startIso, allowTestBuckets: false });
+    // #2669: the same caller rule as the booking write, so the canary can check its
+    // own bucket, anyone the public one, and a partner meets a typo's 422 on SMOKE.
+    const allowTestBuckets = mayBookTestBuckets(authd.caller, bucketCode);
+    const result = await checkBookable({ bucketCode, startIso, allowTestBuckets });
     log.info("bookable-check", {
       msg: "outcome",
       bucket: bucketCode,
