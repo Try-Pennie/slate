@@ -709,6 +709,22 @@ pre merge (browser CI). If you are tempted to add a Playwright CI job, read this
 section and #611 first: the decision is deliberate, and the compensating canary is
 the thing to keep healthy instead.
 
+# A live test books `PARTNER`, never a real bucket (#2760)
+
+There is no staging, so every hand run test booking lands on production. **Book the
+public test bucket `PARTNER` (#2660)**: it is `is_test`, so no webhook, no Regal
+text, a test calendar, and no monitor reads it as a lead. A test on a REAL bucket
+is a real lead to every monitor: the below tier check (#2737) excludes it only
+when its host page is not the production site, so one from trypennie.com or with
+no host (`/book`, the booking API, an admin booking) can un-park that check and
+page, and the failure rate watch (#2513) counts every attempt on a real bucket.
+
+**The rare test that must reach a real advisor** uses the bucket with the MOST
+advisors on `/admin/tiers`, never a one person pool, whose only slot it would take
+from real leads. What it costs: it is a real lead to both alarms above, it pages
+`booking_offsite_origin` (#2715) from a non-production host, and the advisor's
+invite and the reminder texts are live, so cancel it once it has proved its point. Detail is in `docs/smoke-test-runbook.md`.
+
 # The `pnpm verify:*` commands: proving a fail safe detector is not blind
 
 The hand run `verify:` commands all exist because of one shape. A detector built

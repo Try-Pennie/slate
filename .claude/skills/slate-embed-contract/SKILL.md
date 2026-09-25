@@ -300,6 +300,14 @@ What a tester will see:
 booker says it could not load times. The rollout order in `DEPLOY.md` avoids that;
 `scripts/seed-smoke-test.ts` run without `APPLY=1` measures whether it is served.
 
+**Never test on a real bucket code instead (#2760).** A test on a real code is a
+real lead to the monitors: from trypennie.com or with no host page it can un-park
+the below tier check and page (#2737), the failure rate watch counts it (#2513),
+and from any other host it pages `booking_offsite_origin`. When a test genuinely
+has to reach a real advisor, use the bucket with the most advisors, never a one
+person pool, and cancel it once done: `docs/smoke-test-runbook.md` has the rule
+and what it costs.
+
 ---
 
 ## brandColor behavior (D14)
