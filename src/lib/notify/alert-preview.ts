@@ -90,8 +90,11 @@ import {
   formatEmptyReasonRecovery,
 } from "@/lib/monitor/empty-reason-health";
 import {
-  formatRosterCoverageAlert,
-  formatRosterCoverageRecovery,
+  formatRosterCoverageLiveAlert,
+  formatRosterCoverageLiveRecovery,
+  formatRosterCoverageUpcomingAlert,
+  formatRosterCoverageUpcomingRecovery,
+  type DatedCoverageGap,
 } from "@/lib/monitor/roster-coverage";
 import { formatThinTierNotice } from "@/lib/monitor/thin-tier";
 import { formatScheduleGapNotice } from "@/lib/monitor/schedule-coverage";
@@ -529,6 +532,15 @@ function beyondOverflowReportPreview(overflowed: number, beyondBooked: number): 
     );
   }
   return beyondOverflowNoticeText(verdict, BEYOND_OVERFLOW_WINDOW_HOURS);
+}
+
+/** A roster coverage gap fixture (#1936). Data only: the words come from the
+ *  builders the previews call. Partial and mid day unless the fixture says not. */
+function coverageGap(
+  g: Pick<DatedCoverageGap, "dateIso" | "weekday" | "startMinute" | "endMinute" | "range"> &
+    Partial<Pick<DatedCoverageGap, "wholeDay" | "opensUncovered">>,
+): DatedCoverageGap {
+  return { wholeDay: false, opensUncovered: false, ...g };
 }
 
 export const ALERT_PREVIEWS: AlertPreview[] = [
@@ -1640,40 +1652,79 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     text: formatEmptyReasonRecovery(),
   },
   {
-    // The production shape as of 2026-08-13, which is the state this alert was
-    // built for: a whole uncovered Saturday plus a 17:00 to 20:00 tail on the five
-    // weekdays. Rendered so the day grouping can be READ: five separate weekday
-    // lines would push the uncovered Saturday off a phone notification.
+    // The live page (#1936) at its smallest: one day inside the booking horizon
+    // whose first hour nobody covers, the Saturday opening production still left
+    // uncovered when #1936 was built. It must
+    // carry the "opens with nobody on" emphasis, since a lead arriving at opening
+    // finds the business looking shut.
     key: "roster_coverage_gap",
-    state: "a whole advertised day and a weekday tail have nobody rostered",
+    state: "one day inside the horizon opens with nobody on",
     channel: "alert",
-    text: formatRosterCoverageAlert([
-      { weekday: 6, startMinute: 480, endMinute: 1200, wholeDay: true },
-      ...[1, 2, 3, 4, 5].map((weekday) => ({
-        weekday,
-        startMinute: 1020,
-        endMinute: 1200,
-        wholeDay: false,
-      })),
+    text: formatRosterCoverageLiveAlert([
+      coverageGap({ dateIso: "2026-09-26", weekday: 6, startMinute: 480, endMinute: 540, range: "live", opensUncovered: true }),
     ]),
   },
   {
-    // The partial case alone, because it must not read like the whole-day one:
-    // "we are thin after five" and "we say we are open and are shut" are different
-    // findings and the reader acts on them differently.
+    // Several findings at once: a whole uncovered day plus an evening tail on three
+    // dates. Grouped so the whole day comes first and the tail is stated once with
+    // its dates, which is what keeps the worst finding on a phone's first line.
     key: "roster_coverage_gap",
-    state: "only a weekday evening tail is uncovered",
+    state: "a whole day and an evening tail inside the horizon",
     channel: "alert",
-    text: formatRosterCoverageAlert([
-      { weekday: 1, startMinute: 1020, endMinute: 1200, wholeDay: false },
-      { weekday: 3, startMinute: 1020, endMinute: 1200, wholeDay: false },
+    text: formatRosterCoverageLiveAlert([
+      coverageGap({ dateIso: "2026-09-26", weekday: 6, startMinute: 480, endMinute: 1200, wholeDay: true, range: "live", opensUncovered: true }),
+      ...["2026-09-28", "2026-09-29", "2026-09-30"].map((dateIso, i) =>
+        coverageGap({ dateIso, weekday: i + 1, startMinute: 1020, endMinute: 1200, range: "live" }),
+      ),
     ]),
   },
   {
     key: "roster_coverage_gap",
-    state: "every advertised hour is covered again",
+    state: "the horizon is covered again and nothing further out is open",
     channel: "recovery",
-    text: formatRosterCoverageRecovery(),
+    text: formatRosterCoverageLiveRecovery(false),
+  },
+  {
+    // The live all-clear while the far notice still stands, so "covered" is never
+    // read as the week ahead being settled too.
+    key: "roster_coverage_gap",
+    state: "the horizon is covered again and a gap further out still stands",
+    channel: "recovery",
+    text: formatRosterCoverageLiveRecovery(true),
+  },
+  {
+    // The case #1936 was filed about: checked on a Saturday, next Saturday opens
+    // with nobody on. Nothing is broken yet, and the wording has to say so.
+    key: "roster_coverage_upcoming_gap",
+    state: "next Saturday opens with nobody on",
+    channel: "alert",
+    text: formatRosterCoverageUpcomingAlert([
+      coverageGap({ dateIso: "2026-10-03", weekday: 6, startMinute: 480, endMinute: 540, range: "upcoming", opensUncovered: true }),
+    ]),
+  },
+  {
+    key: "roster_coverage_upcoming_gap",
+    state: "a midday hour on several days past the horizon",
+    channel: "alert",
+    text: formatRosterCoverageUpcomingAlert(
+      ["2026-10-01", "2026-10-02", "2026-10-05"].map((dateIso, i) =>
+        coverageGap({ dateIso, weekday: [4, 5, 1][i], startMinute: 720, endMinute: 780, range: "upcoming" }),
+      ),
+    ),
+  },
+  {
+    key: "roster_coverage_upcoming_gap",
+    state: "the week past the horizon is covered and nothing nearer is open",
+    channel: "recovery",
+    text: formatRosterCoverageUpcomingRecovery(false),
+  },
+  {
+    // The far gap has slid inside the horizon: this key clears and the live one
+    // takes it over, so the all-clear must not read as the gap having been filled.
+    key: "roster_coverage_upcoming_gap",
+    state: "the week past the horizon is covered while a nearer gap still stands",
+    channel: "recovery",
+    text: formatRosterCoverageUpcomingRecovery(true),
   },
   // #2366: the kill switch left on. Three states, because the reader gets a
   // different amount of help in each and the difference is worth seeing side by side.

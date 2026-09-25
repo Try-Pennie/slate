@@ -8,7 +8,7 @@
  * like, so without this stamp a check that has stopped measuring reads exactly
  * like one that keeps finding the week covered (#1394).
  *
- * Every case below goes through the REAL `coverageForWeek` and the REAL
+ * Every case below goes through the REAL `coverageForRange` and the REAL
  * `runRosterCoverageCheck`, so the stamp is decided off the outcome the monitor
  * lane actually gets rather than off a hand built status.
  *
@@ -17,8 +17,9 @@
  */
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { coverageForWeek } from "../src/lib/booking/business-hours-coverage.ts";
+import { DateTime } from "luxon";
 import {
+  coverageForRange,
   runRosterCoverageCheck,
   type RosterCoverageVerdict,
 } from "../src/lib/monitor/roster-coverage.ts";
@@ -31,16 +32,19 @@ import { VERDICT_STALE_BOUNDS_MS } from "../src/lib/monitor/health.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
 const ZONE = "America/New_York";
-const WEEK_START = "2026-08-10";
 const HOUR = 60 * 60_000;
+/** Monday 2026-08-10 at 09:00 Eastern; with a four day horizon the live range is
+ *  Monday to Thursday and the upcoming one runs the following seven days. */
+const MONDAY_9AM = DateTime.fromISO("2026-08-10T09:00", { zone: ZONE }).toMillis();
 
 /** The org's advertised week as production stores it: 08:00 to 20:00, Mon to Sat. */
-const OPEN_WEEK = [1, 2, 3, 4, 5, 6, 7].map((weekday) => ({
+const OPEN_RULES = [1, 2, 3, 4, 5, 6].map((weekday) => ({
   weekday,
-  is_open: weekday !== 7,
   start_minute: 8 * 60,
   end_minute: 20 * 60,
 }));
+
+type Agents = Parameters<typeof coverageForRange>[0]["agents"];
 
 function agent(weekdays: number[], startMinute: number, endMinute: number) {
   return {
@@ -49,13 +53,24 @@ function agent(weekdays: number[], startMinute: number, endMinute: number) {
   };
 }
 
+/** The range the monitor lane judges (#1936). */
+function range(agents: Agents, horizonDays: number | null = 4) {
+  return coverageForRange({
+    hours: { zone: ZONE, rules: OPEN_RULES, exceptions: [] },
+    agents,
+    horizonDays,
+    nowMs: MONDAY_9AM,
+  });
+}
+
 /** One tick of the real check over a roster, armed, with sends recorded. */
 async function tick(
-  agents: Parameters<typeof coverageForWeek>[0]["agents"],
+  agents: Agents,
+  horizonDays: number | null = 4,
 ): Promise<{ result: RosterCoverageVerdict; sends: number }> {
   let sends = 0;
   const result = await runRosterCoverageCheck({
-    coverage: coverageForWeek({ businessHours: OPEN_WEEK, zone: ZONE, agents, weekStartIso: WEEK_START }),
+    coverage: range(agents, horizonDays),
     armed: true,
     notify: async () => {
       sends++;
@@ -65,7 +80,7 @@ async function tick(
       sends++;
       return true;
     },
-    cooldownMs: HOUR,
+    cooldownMs: { live: HOUR, upcoming: HOUR },
   });
   return { result, sends };
 }
@@ -79,6 +94,11 @@ async function tick(
     "a tick whose roster read failed stamps nothing",
   );
   eq(sends, 0, "and it neither pages nor clears, so the stamp is the only thing that could have told");
+  // #1936: the horizon now decides which gaps are live, so without it nothing is
+  // measured either.
+  const noHorizon = await tick([agent([1, 2, 3, 4, 5, 6], 8 * 60, 20 * 60)], null);
+  assert(!rosterCoverageReachedVerdict(noHorizon.result), "a tick with no horizon stamps nothing");
+  eq(noHorizon.sends, 0, "and sends nothing either way");
 }
 
 // --- a tick whose setup gate skipped it stamps NOTHING -------------------------
@@ -86,7 +106,7 @@ async function tick(
 // business hours never arrived), and it returns null when the step throws. Both
 // reach the predicate as null.
 {
-  for (const read of ["businessHours", "workingHours", "settings"] as const) {
+  for (const read of ["businessHours", "workingHours", "horizonDays", "settings"] as const) {
     const gate = monitorSetupGates({ ...ALL_SETUP_READ, [read]: false }).rosterCoverage;
     assert(!gate.run, `the gate refuses to run roster coverage without ${read}`);
   }
@@ -104,18 +124,23 @@ async function tick(
   // Disarmed is still a measurement: the switch decides whether it pages, not
   // whether it looked. Before #1456 this is the state every tick is in.
   const disarmed = await runRosterCoverageCheck({
-    coverage: coverageForWeek({
-      businessHours: OPEN_WEEK,
-      zone: ZONE,
-      agents: [agent([1, 2, 3, 4, 5], 8 * 60, 17 * 60)],
-      weekStartIso: WEEK_START,
-    }),
+    coverage: range([agent([1, 2, 3, 4, 5], 8 * 60, 17 * 60)]),
     armed: false,
     notify: async () => true,
     resolve: async () => true,
-    cooldownMs: HOUR,
+    cooldownMs: { live: HOUR, upcoming: HOUR },
   });
   assert(rosterCoverageReachedVerdict(disarmed), "a disarmed tick that measured gaps still stamps");
+  // #1936: a gap only PAST the horizon is still a measured verdict. Saturday is
+  // outside Monday's four day horizon and inside the week after it.
+  const farOnly = await tick([agent([1, 2, 3, 4, 5], 8 * 60, 20 * 60)]);
+  assert(
+    farOnly.result.status === "gaps" &&
+      farOnly.result.live.length === 0 &&
+      farOnly.result.upcoming.length > 0,
+    "a weekday roster checked on a Monday has gaps only past the horizon",
+  );
+  assert(rosterCoverageReachedVerdict(farOnly.result), "a tick whose only gaps are upcoming stamps");
 }
 
 // --- a tick finding full coverage stamps (an empty gap list IS a verdict) ------

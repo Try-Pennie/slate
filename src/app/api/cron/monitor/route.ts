@@ -51,7 +51,7 @@ import {
   type DriftInterval,
 } from "@/lib/monitor/busy-drift-sampler";
 import { readAgentBusyRange } from "@/lib/monitor/availability-truth-store";
-import { runRosterCoverageCheck } from "@/lib/monitor/roster-coverage";
+import { coverageForRange, runRosterCoverageCheck } from "@/lib/monitor/roster-coverage";
 import {
   runBookingPauseCheck,
   BOOKING_PAUSE_UNREADABLE,
@@ -68,11 +68,7 @@ import {
 } from "@/lib/monitor/tier-staffing";
 import { loadTierAgentCounts, tierReadings } from "@/lib/monitor/tier-staffing-load";
 import { closedExceptionDates, nextOpenDayEndMs } from "@/lib/booking/business-hours";
-import { coverageForWeek } from "@/lib/booking/business-hours-coverage";
-import {
-  loadCoverageAgents,
-  currentWeekStartIso,
-} from "@/lib/booking/business-hours-coverage-load";
+import { loadCoverageAgents } from "@/lib/booking/business-hours-coverage-load";
 import { loadBusinessHours, loadBusinessHoursExceptions, type BusinessHours } from "@/lib/booking/business-hours-load";
 import { tierLadder } from "@/lib/routing/tiers";
 import { bucketSpecForXbc } from "@/lib/xbc";
@@ -812,27 +808,30 @@ export async function GET(req: NextRequest) {
     // than degrading, and steps.run turns that into a failed step, so an unreadable
     // pool skips instead of reporting the whole week uncovered.
     //
-    // DISARMED until cutover: it counts bookable agents, and the roster is
-    // deliberately dark (#1272), so an armed check would page every tick from now
-    // to go-live. It still measures and logs. #1456 arms it. ---
+    // The range is today through the booking horizon plus a week (#1936), not the
+    // calendar week it happens to be: a Monday to Sunday window gave hours of
+    // warning on a Saturday and could never see the next Saturday at all. A gap a
+    // lead can reach now raises the live key; one past the horizon raises the
+    // upcoming key, which says there is still time. Each clears off its own range.
+    // Armed by `roster_coverage_armed` (#1456). ---
     const rosterCoverage = await steps.run("roster_coverage", null, async () => {
       if (!gates.rosterCoverage.run || !businessHours) return null;
       const agents = await loadCoverageAgents(db);
       return runRosterCoverageCheck({
-        coverage: coverageForWeek({
-          businessHours: businessHours.rules.map((r) => ({ ...r, is_open: true })),
-          zone: businessHours.zone,
-          agents,
-          weekStartIso: currentWeekStartIso(businessHours.zone),
-        }),
+        coverage: coverageForRange({ hours: businessHours, agents, horizonDays, nowMs: now }),
         armed: settings!.rosterCoverageArmed,
         // alert-key: roster_coverage_gap
+        // alert-key: roster_coverage_upcoming_gap
         notify: sendThrottledAlert,
         // alert-key: roster_coverage_gap
-        // all-clear-proof: scripts/test-roster-coverage-gap.ts - a tick that could
-        // not measure coverage neither pages nor clears.
+        // alert-key: roster_coverage_upcoming_gap
+        // all-clear-proof: scripts/test-roster-coverage-horizon.ts - a tick that could
+        // not read the roster, the hours or the horizon neither pages nor clears.
         resolve: resolveAlert,
-        cooldownMs: cooldownMs.roster_coverage_gap,
+        cooldownMs: {
+          live: cooldownMs.roster_coverage_gap,
+          upcoming: cooldownMs.roster_coverage_upcoming_gap,
+        },
         log: (m) => log.warn("roster-coverage", { msg: m }),
       });
     });

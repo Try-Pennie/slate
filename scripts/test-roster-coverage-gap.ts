@@ -21,16 +21,21 @@
  * Run: node --experimental-strip-types --import ./scripts/register-paths.mjs \
  *        scripts/test-roster-coverage-gap.ts
  */
+import { DateTime } from "luxon";
 import { coverageForWeek } from "../src/lib/booking/business-hours-coverage.ts";
 import {
   ROSTER_COVERAGE_KEY,
-  formatRosterCoverageAlert,
-  formatRosterCoverageRecovery,
+  ROSTER_COVERAGE_UPCOMING_KEY,
+  formatRosterCoverageLiveAlert,
+  formatRosterCoverageLiveRecovery,
+  formatRosterCoverageUpcomingRecovery,
   COVERAGE_UNCHECKED_WARNING,
+  coverageForRange,
   coverageGapPhrases,
   gapsFromCoverage,
   newlyUncoveredGaps,
   newlyUncoveredWarning,
+  rangeGaps,
   runRosterCoverageCheck,
 } from "../src/lib/monitor/roster-coverage.ts";
 import { ALERT_CATALOG } from "../src/lib/notify/alert-catalog.ts";
@@ -169,20 +174,52 @@ const PROD_GAPS = gapsFor([agent(ZONE, [1, 2, 3, 4, 5], 8 * 60, 17 * 60)]) ?? []
 
 // ------------------------------------------------- the copy a human reads
 
-{
-  const text = formatRosterCoverageAlert(PROD_GAPS);
+// The page is dated since #1936, so the production shape is driven through the
+// real range: checked Friday 2026-08-14 at 09:00 with a four day horizon, the live
+// days are Friday, Saturday, Monday and Tuesday (Sunday is shut).
+const FRIDAY_9AM = DateTime.fromISO("2026-08-14T09:00", { zone: ZONE }).toMillis();
+function liveGapsFor(agents: Parameters<typeof coverageForWeek>[0]["agents"]) {
+  const split = rangeGaps(
+    coverageForRange({
+      hours: {
+        zone: ZONE,
+        rules: OPEN_WEEK.filter((d) => d.is_open).map(({ weekday, start_minute, end_minute }) => ({
+          weekday,
+          start_minute,
+          end_minute,
+        })),
+        exceptions: [],
+      },
+      agents,
+      horizonDays: 4,
+      nowMs: FRIDAY_9AM,
+    }),
+  );
+  return split?.live ?? [];
+}
+const PROD_LIVE = liveGapsFor([agent(ZONE, [1, 2, 3, 4, 5], 8 * 60, 17 * 60)]);
 
-  // The five identical weekday tails are ONE line. Listing them separately is how
-  // the one fact worth having (a whole uncovered Saturday) gets pushed off the
-  // bottom of a phone notification.
+{
+  const text = formatRosterCoverageLiveAlert(PROD_LIVE);
+
+  // The identical weekday tails are ONE clause carrying their dates. Listing them
+  // separately is how the one fact worth having (a whole uncovered Saturday) gets
+  // pushed off the bottom of a phone notification.
   eq(
     (text.match(/17:00 to 20:00/g) ?? []).length,
     1,
-    "the five identical weekday tails are stated once, not five times",
+    "the identical weekday tails are stated once, not once per day",
   );
-  assert(text.includes("Monday to Friday"), `consecutive weekdays read as a range (${text})`);
-  assert(text.includes("Saturday"), "the whole uncovered day is named");
+  assert(
+    text.includes("Friday Aug 14") && text.includes("Tuesday Aug 18"),
+    `the tail names each date it falls on (${text})`,
+  );
+  assert(text.includes("all day Saturday Aug 15"), `the whole uncovered day is named (${text})`);
   assert(text.includes("08:00 to 20:00"), "Saturday's uncovered window is stated in full");
+  assert(
+    text.indexOf("Saturday") < text.indexOf("17:00"),
+    "the whole uncovered day comes before the tail, so it survives a truncated notification",
+  );
 
   // It must say what to DO, and both directions are legitimate: roster the hours,
   // or stop advertising them. A message naming only the first assumes an answer
@@ -200,17 +237,21 @@ const PROD_GAPS = gapsFor([agent(ZONE, [1, 2, 3, 4, 5], 8 * 60, 17 * 60)]) ?? []
 // A whole uncovered day and a tail are DIFFERENT findings and must not read the
 // same: one is "we say we are open and are shut", the other is "we are thin".
 {
-  const wholeDayOnly = formatRosterCoverageAlert(PROD_GAPS.filter((g) => g.wholeDay));
-  const tailOnly = formatRosterCoverageAlert(PROD_GAPS.filter((g) => !g.wholeDay));
+  const wholeDayOnly = formatRosterCoverageLiveAlert(PROD_LIVE.filter((g) => g.wholeDay));
+  const tailOnly = formatRosterCoverageLiveAlert(PROD_LIVE.filter((g) => !g.wholeDay));
   assert(wholeDayOnly !== tailOnly, "a whole uncovered day does not read like a partial tail");
   assert(!tailOnly.includes("Saturday"), "the tail message does not mention the covered day");
 }
 
-{
-  const text = formatRosterCoverageRecovery();
-  assert(text.length > 0, "the recovery notice renders");
+for (const text of [
+  formatRosterCoverageLiveRecovery(false),
+  formatRosterCoverageLiveRecovery(true),
+  formatRosterCoverageUpcomingRecovery(false),
+  formatRosterCoverageUpcomingRecovery(true),
+]) {
   assert(/no action/i.test(text), `the all-clear says no action is needed (${text})`);
   assert(!/[\u2014\u2013]/.test(text), "the recovery copy carries no dashes");
+  assert(!/^Slate\b/.test(text), "the recovery does not open with Slate's own name");
 }
 
 // ------------------------------------------------- it is a CONDITION
@@ -242,26 +283,30 @@ function spy() {
   };
 }
 
-const UNCOVERED = coverageForWeek({
-  businessHours: OPEN_WEEK,
-  zone: ZONE,
-  agents: [agent(ZONE, [1, 2, 3, 4, 5], 8 * 60, 17 * 60)],
-  weekStartIso: WEEK_START,
-});
-const COVERED = coverageForWeek({
-  businessHours: OPEN_WEEK,
-  zone: ZONE,
-  agents: [agent(ZONE, [1, 2, 3, 4, 5, 6], 8 * 60, 20 * 60)],
-  weekStartIso: WEEK_START,
-});
-const UNREADABLE = coverageForWeek({
-  businessHours: OPEN_WEEK,
-  zone: ZONE,
-  agents: null,
-  weekStartIso: WEEK_START,
-});
+/** The range the monitor lane judges (#1936), over the production week. */
+function rangeFor(agents: Parameters<typeof coverageForWeek>[0]["agents"]) {
+  return coverageForRange({
+    hours: {
+      zone: ZONE,
+      rules: OPEN_WEEK.filter((d) => d.is_open).map(({ weekday, start_minute, end_minute }) => ({
+        weekday,
+        start_minute,
+        end_minute,
+      })),
+      exceptions: [],
+    },
+    agents,
+    horizonDays: 4,
+    nowMs: FRIDAY_9AM,
+  });
+}
+const UNCOVERED = rangeFor([agent(ZONE, [1, 2, 3, 4, 5], 8 * 60, 17 * 60)]);
+const COVERED = rangeFor([agent(ZONE, [1, 2, 3, 4, 5, 6], 8 * 60, 20 * 60)]);
+const UNREADABLE = rangeFor(null);
+const COOLDOWNS = { live: 1000, upcoming: 1000 };
 
-// Armed, with a measured gap: it pages, and clears nothing.
+// Armed, with a measured gap: it pages, and clears nothing. The weekday tails sit
+// both inside the horizon and in the week past it, so each key raises once.
 {
   const s = spy();
   const verdict = await runRosterCoverageCheck({
@@ -269,11 +314,15 @@ const UNREADABLE = coverageForWeek({
     armed: true,
     notify: s.notify,
     resolve: s.resolve,
-    cooldownMs: 1000,
+    cooldownMs: COOLDOWNS,
   });
-  eq(verdict.status, "gaps", "an uncovered advertised week is reported as gaps");
-  eq(s.notified.length, 1, "it pages on the coverage key");
-  eq(s.resolved.length, 0, "a tick that found a gap sends no all-clear");
+  eq(verdict.status, "gaps", "an uncovered advertised range is reported as gaps");
+  eq(
+    s.notified.sort().join(","),
+    [ROSTER_COVERAGE_KEY, ROSTER_COVERAGE_UPCOMING_KEY].sort().join(","),
+    "it raises each key whose range holds a gap",
+  );
+  eq(s.resolved.length, 0, "a tick that found a gap in both ranges sends no all-clear");
 }
 
 // DISARMED, with the same gap: it still MEASURES, and sends nothing. This is the
@@ -286,7 +335,7 @@ const UNREADABLE = coverageForWeek({
     armed: false,
     notify: s.notify,
     resolve: s.resolve,
-    cooldownMs: 1000,
+    cooldownMs: COOLDOWNS,
   });
   eq(verdict.status, "gaps", "a disarmed check still reaches the measured verdict");
   assert(
@@ -306,11 +355,11 @@ const UNREADABLE = coverageForWeek({
     armed: true,
     notify: s.notify,
     resolve: s.resolve,
-    cooldownMs: 1000,
+    cooldownMs: COOLDOWNS,
   });
   eq(verdict.status, "covered", "a fully covered advertised week is reported as covered");
   eq(s.notified.length, 0, "a covered week pages nobody");
-  eq(s.resolved.length, 1, "a covered week clears any standing page");
+  eq(s.resolved.length, 2, "a covered range clears both keys, each off its own measured range");
 }
 
 // Disarmed and covered: it must not send an all-clear either. Silence chosen by a
@@ -323,7 +372,7 @@ const UNREADABLE = coverageForWeek({
     armed: false,
     notify: s.notify,
     resolve: s.resolve,
-    cooldownMs: 1000,
+    cooldownMs: COOLDOWNS,
   });
   eq(verdict.status, "covered", "a disarmed covered week still reaches a verdict");
   const { resolved } = s;
@@ -339,7 +388,7 @@ const UNREADABLE = coverageForWeek({
     armed: true,
     notify: s.notify,
     resolve: s.resolve,
-    cooldownMs: 1000,
+    cooldownMs: COOLDOWNS,
   });
   const { notified, resolved } = s;
   eq(verdict.status, "skipped", "an unreadable tick reaches no verdict");
@@ -357,7 +406,7 @@ const UNREADABLE = coverageForWeek({
     armed: true,
     notify: boom,
     resolve: boom as unknown as (key: string, text: string) => Promise<boolean>,
-    cooldownMs: 1000,
+    cooldownMs: COOLDOWNS,
   });
   eq(verdict.status, "gaps", "a notify failure still returns the measured verdict");
 }
@@ -437,9 +486,14 @@ const UNREADABLE = coverageForWeek({
     !/cannot|not allowed|refused/i.test(warning),
     "and never reads as a refusal: opening hours ahead of rostering them is legitimate (L54)",
   );
+  // The Slack page names DATES since #1936 (its range can hold two Saturdays), so
+  // it cannot carry the screen's weekday phrase whole; it must still state the
+  // stretch in the same clock words.
+  const stretch = phrases[0].split(" ").slice(0, 3).join(" ");
+  eq(stretch, "17:00 to 20:00", "the screen phrase opens with the uncovered stretch");
   assert(
-    formatRosterCoverageAlert(added!).includes(phrases[0]),
-    "and the Slack page is built from the very same phrase",
+    formatRosterCoverageLiveAlert(PROD_LIVE).includes(stretch),
+    "and the Slack page states that stretch in the same words",
   );
   assert(
     COVERAGE_UNCHECKED_WARNING.startsWith("Saved.") &&
