@@ -493,6 +493,26 @@ const backOn = {
   eq(d.calls, ['attrs:u1:{"redistribute":"Y","debt_team":["low"]}'], "and still clears the tag without attempting the flip");
 }
 {
+  // The held write has its own boundary (L73): a throw there is an attribute write
+  // failure, and must not also report the same agent as a failed flip.
+  const d = deps(
+    {
+      ...backOn,
+      loadRoster: async () => [
+        row({ bookable: false, attributes: { redistribute: "Y", debt_team: ["low"], redistribute_tagged: "Y" } }),
+      ],
+      writeAttributes: async () => {
+        throw new Error("database went away");
+      },
+    },
+    (userId) => ({ status: "blocked", userId, reason: "google_unreachable" }),
+  );
+  const r = await syncTwilioRedistribute(d.deps);
+  eq(r.reactivationRefused, ["a@trypennie.com"], "a refused reactivation whose held write throws is still reported as refused");
+  eq(r.flipFailures, 0, "and is not also counted as a failed flip");
+  eq(r.attributeWriteFailures, 1, "the held write is counted as the attribute write failure it is");
+}
+{
   // A withheld agent who was ALREADY out of the pool: no flip, and the tag lands.
   const d = deps({ loadRoster: async () => [row({ bookable: false })] });
   const r = await syncTwilioRedistribute(d.deps);

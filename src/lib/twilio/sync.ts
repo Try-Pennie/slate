@@ -247,7 +247,7 @@ export async function syncTwilioRedistribute(deps: TwilioSyncDeps): Promise<Twil
   const backendChanged: string[] = [];
   const landed: Landed = { tiersChanged, backendChanged };
   const coverageSweeps: { email: string; bookings: number }[] = [];
-  const counters = { coverageSweepFailures: 0 };
+  const counters = { coverageSweepFailures: 0, heldWriteFailures: 0 };
 
   let flipFailures = 0;
   for (const flip of plan.flips) {
@@ -322,7 +322,7 @@ export async function syncTwilioRedistribute(deps: TwilioSyncDeps): Promise<Twil
     tiersChanged,
     backendChanged,
     withoutWorker: plan.withoutWorker,
-    attributeWriteFailures,
+    attributeWriteFailures: attributeWriteFailures + counters.heldWriteFailures,
     corruptAttributes,
     noEmail,
     unmappedTags,
@@ -367,10 +367,18 @@ async function writeHeld(
   flip: ReturnType<typeof planTwilioRoster>["flips"][number],
   deps: TwilioSyncDeps,
   countLanded_: () => void,
+  counters: { heldWriteFailures: number },
 ): Promise<void> {
   if (!flip.heldAttributes || !changesAnything(flip.changes)) return;
-  await deps.writeAttributes({ userId: flip.userId, attributes: flip.heldAttributes });
-  countLanded_();
+  // Its own boundary (L73): the refusal or deferral is already reported, so a
+  // throw here is an attribute write failure, never also a failed flip.
+  try {
+    await deps.writeAttributes({ userId: flip.userId, attributes: flip.heldAttributes });
+    countLanded_();
+  } catch (err) {
+    counters.heldWriteFailures++;
+    log.error("twilio-sync", { msg: "held attribute write failed, carrying on", user_id: flip.userId }, err);
+  }
 }
 
 /** One flip, both directions, with the two writes in the order the header explains. */
@@ -384,7 +392,7 @@ async function runFlip(
     reactivationDeferred: string[];
     landed: Landed;
     coverageSweeps: { email: string; bookings: number }[];
-    counters: { coverageSweepFailures: number };
+    counters: { coverageSweepFailures: number; heldWriteFailures: number };
   },
 ): Promise<void> {
   // Counted where the write LANDS, never where it is planned, so a payload that
@@ -455,7 +463,7 @@ async function runFlip(
       msg: "reactivation left for the next run, this run's activation allowance is spent",
       user_id: flip.userId,
     });
-    await writeHeld(flip, deps, countLanded_);
+    await writeHeld(flip, deps, countLanded_, out.counters);
     return;
   }
 
@@ -468,7 +476,7 @@ async function runFlip(
       user_id: flip.userId,
       reason: result.reason,
     });
-    await writeHeld(flip, deps, countLanded_);
+    await writeHeld(flip, deps, countLanded_, out.counters);
     return;
   }
   if (result.status === "not_found") {
