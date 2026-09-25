@@ -6,6 +6,7 @@
 import type {
   AgentCalendar,
   AlertState,
+  ApiCallerSeen,
   AuditEntry,
   AvailabilityRule,
   AvailabilitySchedule,
@@ -156,6 +157,7 @@ export interface Database {
         ]
       >;
       lane_heartbeats: Table<LaneHeartbeat>;
+      api_caller_seen: Table<ApiCallerSeen>;
       selfheal_scan_cursor: Table<SelfhealScanCursor>;
       export_cursor: Table<ExportCursor>;
       bulk_reassign_jobs: Table<BulkReassignJob>;

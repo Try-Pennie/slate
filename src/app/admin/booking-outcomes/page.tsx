@@ -11,6 +11,9 @@ import {
   type OutcomeMix,
   type RawMix,
 } from "@/lib/monitor/booking-api-outcome";
+import { CALLER_HOST_KINDS, type CallerSeenRow } from "@/lib/booking/caller-seen";
+import { BOOKING_API_CALLERS } from "@/lib/booking/api-auth";
+import { CallerSightings } from "@/components/admin/CallerSightings";
 import { cardCls } from "@/components/ui/styles";
 import { AdminPageHeader } from "@/components/admin/AdminPageHeader";
 
@@ -87,6 +90,11 @@ function Window({ title, mix }: { title: string; mix: OutcomeMix }) {
   );
 }
 
+// Module scope for the same react-hooks/purity reason as sinceIso.
+function nowMs(): number {
+  return Date.now();
+}
+
 export default async function BookingOutcomesPage() {
   const me = await currentUser();
   if (!me) redirect("/login");
@@ -103,10 +111,19 @@ export default async function BookingOutcomesPage() {
   // p_include_test:false (#1616) so the panel measures the same population the
   // failure-rate page does. Passed explicitly, not left to the RPC's default, so
   // the decision is readable here rather than only in the database.
-  const [weekRes, monthRes] = await Promise.all([
+  const [weekRes, monthRes, seenRes] = await Promise.all([
     db.rpc("booking_api_outcome_mix", { p_since: sinceIso(7), p_include_test: false }),
     db.rpc("booking_api_outcome_mix", { p_since: sinceIso(30), p_include_test: false }),
+    // #2717: one row per (caller, host kind), so the limit is the whole key space.
+    db
+      .from("api_caller_seen")
+      .select("caller, host_kind, last_seen_at, method, origin")
+      .limit(BOOKING_API_CALLERS.length * CALLER_HOST_KINDS.length),
   ]);
+  // An unreadable table must not render as "never authenticated", which is the
+  // exact finding this panel exists to show (L10).
+  const seenError = seenRes.error?.message ?? null;
+  const seenRows = (seenRes.data ?? []) as CallerSeenRow[];
   // A read error must not read as "no traffic" (a false all-clear); surface it.
   const readError = weekRes.error?.message ?? monthRes.error?.message ?? null;
   const week = normalizeMix(weekRes.data as RawMix | null);
@@ -130,6 +147,14 @@ export default async function BookingOutcomesPage() {
 
         <Window title="Last 7 days" mix={week} />
         <Window title="Last 30 days" mix={month} />
+
+        {seenError ? (
+          <div role="alert" className="rounded-md border border-[var(--error)] px-5 py-4 text-sm text-error">
+            Could not read which keys have authenticated: {seenError}.
+          </div>
+        ) : (
+          <CallerSightings rows={seenRows} now={nowMs()} />
+        )}
 
       </>
     </>

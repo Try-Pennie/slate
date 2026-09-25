@@ -933,6 +933,11 @@ export type BookingReservationInsert = {
   payload: ReservationPayload;
 };
 
+/** Which host each booking API caller last authenticated from (#2717, migration
+ *  0140). One row per (caller, host_kind); the shape and its vocabulary live with
+ *  the code that writes and judges it. */
+export type { CallerSeenRow as ApiCallerSeen } from "@/lib/booking/caller-seen";
+
 /** Dead-man's switch heartbeat (#420): one row per cron lane, stamped each tick. */
 export interface LaneHeartbeat {
   lane: string;
