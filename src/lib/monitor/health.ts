@@ -474,6 +474,16 @@ export const VERDICT_STALE_BOUNDS_MS: Record<string, number> = {
   // what its park is for. A day is a maintenance window over a Salesforce outage,
   // not a measure of the cadence.
   "verdict:below-lead-tier": 24 * 60 * MIN,
+  // The roster coverage alarm (#1941). It runs on every 5 minute monitor tick
+  // with no time window of its own (not business hours, not traffic), and it
+  // concludes whenever the week and the roster are readable, including a week
+  // with no gap at all, because "every advertised hour is covered" is an answer.
+  // So its longest legitimate silence is zero ticks, and the bound is purely a
+  // maintenance window over a failed read. That is the same arithmetic as the
+  // time off protection and tier staffing checks above, so it takes their six
+  // hours rather than the truth probe's day: the day there is five passes of a
+  // bucket rotation this check does not have.
+  "verdict:roster-coverage": 6 * 60 * MIN,
 };
 
 /**

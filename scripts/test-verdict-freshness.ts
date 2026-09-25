@@ -31,6 +31,7 @@ import {
   BURST_COUNTER_VERDICT_LANE,
   KILL_SWITCH_VERDICT_LANE,
   BELOW_LEAD_TIER_VERDICT_LANE,
+  ROSTER_COVERAGE_VERDICT_LANE,
   laneWatchdogReachedVerdict,
   twilioRosterReachedVerdict,
   truthReachedVerdict,
@@ -190,6 +191,7 @@ const HOUR = 60 * 60_000;
         TIER_STAFFING_VERDICT_LANE,
         BELOW_LEAD_TIER_VERDICT_LANE,
         REGAL_CALLS_VERDICT_LANE,
+        ROSTER_COVERAGE_VERDICT_LANE,
       ]
         .sort()
         .join(","),

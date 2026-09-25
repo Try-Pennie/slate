@@ -27,6 +27,7 @@ import {
   BURST_COUNTER_VERDICT_LANE,
   KILL_SWITCH_VERDICT_LANE,
   REGAL_CALLS_VERDICT_LANE,
+  ROSTER_COVERAGE_VERDICT_LANE,
   type DetectorVerdictLane,
 } from "@/lib/monitor/verdict-freshness";
 
@@ -62,6 +63,7 @@ const STAMP: Record<WorkerStampedVerdictLane, () => Promise<void>> = {
   [TIER_STAFFING_VERDICT_LANE]: () => recordHeartbeat("verdict:tier-staffing"),
   [BELOW_LEAD_TIER_VERDICT_LANE]: () => recordHeartbeat("verdict:below-lead-tier"),
   [REGAL_CALLS_VERDICT_LANE]: () => recordHeartbeat("verdict:regal-calls"),
+  [ROSTER_COVERAGE_VERDICT_LANE]: () => recordHeartbeat("verdict:roster-coverage"),
 };
 
 /**

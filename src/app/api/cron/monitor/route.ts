@@ -143,6 +143,8 @@ import {
   belowLeadTierReachedVerdict,
   REGAL_CALLS_VERDICT_LANE,
   regalCallsReachedVerdict,
+  ROSTER_COVERAGE_VERDICT_LANE,
+  rosterCoverageReachedVerdict,
   FAILURE_RATE_VERDICT_LANE,
   LOW_VOLUME_VERDICT_LANE,
   OOO_PROTECTION_VERDICT_LANE,
@@ -2917,7 +2919,7 @@ export async function GET(req: NextRequest) {
     // Best-effort, and must never affect the monitor's own response.
     await recordHeartbeat("monitor").catch(() => {});
 
-    // The SECOND kind of stamp (#1394): proves these four detectors CONCLUDED
+    // The SECOND kind of stamp (#1394): proves these detectors CONCLUDED
     // something this tick, which the heartbeat above cannot tell you. The
     // availability truth probe passed that heartbeat every five minutes for its
     // whole life while never once comparing a real calendar (#1377).
@@ -2961,6 +2963,12 @@ export async function GET(req: NextRequest) {
       // #2090: "nobody calling while not routable" and "no call reached Slate"
       // are the same silence, so only a tick that judged a real call stamps.
       recordDetectorVerdict(REGAL_CALLS_VERDICT_LANE, regalCallsReachedVerdict(regalCalls)),
+      // #1941: a covered week is a verdict, an unreadable roster is not, and the
+      // two are equally silent once #1456 arms the page.
+      recordDetectorVerdict(
+        ROSTER_COVERAGE_VERDICT_LANE,
+        rosterCoverageReachedVerdict(rosterCoverage),
+      ),
     ]).catch((err) =>
       // recordHeartbeat already swallows its own DB errors, so reaching here means
       // something unexpected. It must not fail the monitor tick, but a stamp that

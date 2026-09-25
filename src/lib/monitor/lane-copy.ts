@@ -23,6 +23,7 @@ import {
   BURST_COUNTER_VERDICT_LANE,
   KILL_SWITCH_VERDICT_LANE,
   BELOW_LEAD_TIER_VERDICT_LANE,
+  ROSTER_COVERAGE_VERDICT_LANE,
   parkedDetector,
 } from "@/lib/monitor/verdict-freshness";
 
@@ -248,6 +249,11 @@ const VERDICT_SUBJECT: Record<string, { what: string; cost: string; look: string
     what: "the check holding each upcoming booking's team against the tier Salesforce gives the lead",
     cost: "an Ultra High lead booked with the Low team would keep that call with nobody told, which is the case the cal.com Slack workflow covered before cutover",
     look: 'the Worker logs for msg="below lead tier" under tag=monitor, and whether the Salesforce read is failing or there are simply no upcoming bookings with a lead id',
+  },
+  [ROSTER_COVERAGE_VERDICT_LANE]: {
+    what: "the check asking whether every hour the org advertises has a bookable agent rostered to cover it",
+    cost: "the org could go on advertising hours nobody works, and a lead asking for one would be offered nothing with no page saying why",
+    look: 'the Worker logs for tag=roster-coverage and the monitor cycle line for roster_coverage under failed=, and whether the business hours and the agents\' working hours can be read at all',
   },
   [OOO_PROTECTION_VERDICT_LANE]: {
     what: "the check asking whether approved time off is still blocking the hours it covers",
