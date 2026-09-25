@@ -20,6 +20,7 @@ import { DIRECT_BOOKING_API_READ_HOURLY_RATE_RULES } from "@/lib/rate-limit-core
 import { log } from "@/lib/log";
 import { recordApiOutcome } from "@/lib/monitor/record-api-outcome";
 import { partnerKeysFrom } from "@/lib/booking/partner-keys";
+import { mayBookTestBuckets } from "@/lib/booking/api-auth";
 
 export const dynamic = "force-dynamic";
 
@@ -79,6 +80,10 @@ async function handlePost(req: NextRequest) {
   }
 
   const v = parsed.value;
+  // #2669: the test bucket opt in follows the CALLER. The canary's hidden buckets
+  // (#396) only for the canary callers, the public one (#2660) for anyone; a partner
+  // naming SMOKE meets the same 422 UNKNOWN_BUCKET a typo does (#601).
+  const allowTestBuckets = mayBookTestBuckets(authd.caller, v.bucketCode);
 
   // Dry run (#380): report what WOULD happen, no calendar event / booking / webhook.
   if (v.dryRun) {
@@ -92,8 +97,7 @@ async function handlePost(req: NextRequest) {
         prefill: v.prefill,
         externalId: v.externalId,
         confirmReschedule: v.confirmReschedule,
-        // Key-authed path: may exercise the synthetic smoke-test buckets (#396).
-        allowTestBuckets: true,
+        allowTestBuckets,
       });
       return NextResponse.json(preview);
     } catch (err) {
@@ -112,8 +116,7 @@ async function handlePost(req: NextRequest) {
       prefill: v.prefill,
       externalId: v.externalId,
       confirmReschedule: v.confirmReschedule,
-      // Key-authed path: may exercise the synthetic smoke-test buckets (#396).
-      allowTestBuckets: true,
+      allowTestBuckets,
     });
 
     const body = {

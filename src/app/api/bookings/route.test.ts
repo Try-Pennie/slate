@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 // The pure half, deliberately NOT mocked: the route's key shape is what these assert on.
 import { rateLimitKey, BOOKING_API_IP_LIMITER, type CallerKey } from "@/lib/rate-limit-core";
 
@@ -58,6 +58,8 @@ vi.mock("@/lib/monitor/record-api-outcome", () => monitor);
 
 import { POST, GET } from "./route";
 import { PARTNER_KEYS } from "@/lib/booking/partner-keys";
+import { HIDDEN_TEST_BUCKET_CODES, PUBLIC_TEST_BUCKET_CODES } from "@/lib/embed/public-test-bucket";
+const PUBLIC_TEST = PUBLIC_TEST_BUCKET_CODES[0];
 import {
   DIRECT_BOOKING_API_HOURLY_RATE_RULES,
   DIRECT_BOOKING_API_READ_HOURLY_RATE_RULES,
@@ -771,5 +773,93 @@ describe("POST /api/bookings partner join keys (#2659)", () => {
     const body = await res.json();
     expect(body.booking).not.toHaveProperty("submissionId");
     expect(body.booking).not.toHaveProperty("regalProfileId");
+  });
+});
+
+// #2669: the test bucket opt in follows the CALLER. Since #2645 each partner holds
+// its own key, and a partner key could book the canary's hidden SMOKE buckets while
+// the availability route refused to let it read them. The service is mocked here, so
+// the fake below applies the service's own rule (a test bucket without the opt in is
+// the same UnknownBucketError an unknown code is), and what is asserted is the wiring:
+// which callers the route hands the opt in to, and that the refusal a partner meets
+// is byte identical to a typo's (#601).
+describe("POST /api/bookings: who may book a test bucket (#2669)", () => {
+  const TEST_CODES = new Set<string>([...HIDDEN_TEST_BUCKET_CODES, ...PUBLIC_TEST_BUCKET_CODES]);
+  type GateInput = { bucketCode: string; allowTestBuckets?: boolean };
+  const gate = async (input: GateInput) => {
+    if (input.bucketCode === "411") return result("created", { bucket_code: "411" });
+    if (TEST_CODES.has(input.bucketCode) && input.allowTestBuckets) {
+      return result("created", { bucket_code: input.bucketCode });
+    }
+    throw new service.UnknownBucketError("Unknown bucket");
+  };
+
+  beforeEach(() => {
+    env.bookingApiKeyPrimary.mockReturnValue("");
+    env.bookingApiKeySecondary.mockReturnValue("");
+    env.bookingApiKeyFor.mockImplementation((caller: string, slot: string) =>
+      slot === "primary" && (caller === "canary" || caller === "trypennie") ? `${caller}-secret` : "",
+    );
+    rateLimit.allowRequest.mockResolvedValue(true);
+    rateLimit.bookingApiWriteWithinLimit.mockResolvedValue(true);
+    rateLimit.bookingApiIpWithinLimit.mockResolvedValue(true);
+    service.bookViaApi.mockReset();
+    service.bookViaApi.mockImplementation(gate);
+    service.previewBooking.mockReset();
+    service.previewBooking.mockImplementation(async (input: GateInput) => {
+      await gate(input);
+      return { dryRun: true, outcome: "created", wouldAssign: null, existingBookingId: null };
+    });
+  });
+
+  afterEach(() => {
+    env.bookingApiKeyFor.mockReset();
+    env.bookingApiKeyFor.mockImplementation(() => "");
+  });
+
+  it("the canary's own key books the hidden SMOKE bucket", async () => {
+    const res = await post("Bearer canary-secret", { ...VALID_BODY, bucketCode: "SMOKE" });
+    expect(res.status).toBe(200);
+    expect(service.bookViaApi).toHaveBeenCalledWith(expect.objectContaining({ allowTestBuckets: true }));
+  });
+
+  it("the legacy shared pair still books SMOKE while the canary moves to its own key", async () => {
+    env.bookingApiKeyPrimary.mockReturnValue("shared-secret");
+    const res = await post("Bearer shared-secret", { ...VALID_BODY, bucketCode: "SMOKE" });
+    expect(res.status).toBe(200);
+  });
+
+  it("a partner key booking SMOKE gets the byte identical 422 an unknown code gets", async () => {
+    const hidden = await post("Bearer trypennie-secret", { ...VALID_BODY, bucketCode: "SMOKE" });
+    const unknown = await post("Bearer trypennie-secret", { ...VALID_BODY, bucketCode: "NOPE" });
+    expect(service.bookViaApi).toHaveBeenNthCalledWith(1, expect.objectContaining({ allowTestBuckets: false }));
+    expect(hidden.status).toBe(422);
+    expect(unknown.status).toBe(422);
+    expect(await hidden.text()).toBe(await unknown.text());
+    expect([...hidden.headers.entries()]).toEqual([...unknown.headers.entries()]);
+  });
+
+  it("a partner key's dry run cannot probe SMOKE either", async () => {
+    const hidden = await post("Bearer trypennie-secret", { ...VALID_BODY, bucketCode: "SMOKE", dryRun: true });
+    const unknown = await post("Bearer trypennie-secret", { ...VALID_BODY, bucketCode: "NOPE", dryRun: true });
+    expect(hidden.status).toBe(422);
+    expect(await hidden.text()).toBe(await unknown.text());
+    // Positive control: the canary's dry run does reach it, so the 422 above is the gate.
+    const canary = await post("Bearer canary-secret", { ...VALID_BODY, bucketCode: "SMOKE", dryRun: true });
+    expect(canary.status).toBe(200);
+  });
+
+  it("a partner key books the PUBLIC test bucket, which exists for partners", async () => {
+    const res = await post("Bearer trypennie-secret", { ...VALID_BODY, bucketCode: PUBLIC_TEST });
+    expect(res.status).toBe(200);
+    expect(service.bookViaApi).toHaveBeenCalledWith(
+      expect.objectContaining({ bucketCode: PUBLIC_TEST, allowTestBuckets: true }),
+    );
+  });
+
+  it("a partner key on a real code carries no test opt in", async () => {
+    const res = await post("Bearer trypennie-secret", VALID_BODY);
+    expect(res.status).toBe(200);
+    expect(service.bookViaApi).toHaveBeenCalledWith(expect.objectContaining({ allowTestBuckets: false }));
   });
 });

@@ -2597,8 +2597,9 @@ export async function createBooking(
   const { bucket, eventType } = resolved;
 
   // A synthetic test bucket (#396) is unbookable on the public path unless the
-  // caller may book one: the key-authed direct booking API always may, and the
-  // Booker's confirm may for the PUBLIC test bucket alone (#2660). To a real lead
+  // caller may book one: the key-authed direct booking API may when its caller is
+  // the canary (#2669, `mayBookTestBuckets`), and it and the Booker's confirm may
+  // for the PUBLIC test bucket (#2660). To a real lead
   // a hidden one must look like the bucket doesn't exist (same error as an
   // unknown code, no hint that a hidden bucket is there).
   if (bucket.is_test && !input.allowTestBuckets) throw new UnknownBucketError();
