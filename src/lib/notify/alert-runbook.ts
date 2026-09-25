@@ -228,6 +228,11 @@ const FAMILY_BY_KEY: Record<string, AlertFamily> = {
   // landed, so the first thing to establish is the same as for a misroute: which
   // of the two is right, and whether the call has to move.
   booking_below_lead_tier: "the-roster-or-routing-data-is-wrong",
+  // #2715. A booking landed on a real advisor from a page that is not the
+  // production site, usually a test from a partner's or a developer's machine.
+  // The first question is the same as a misroute's: is this booking where it
+  // belongs, and does it have to move or go.
+  booking_offsite_origin: "the-roster-or-routing-data-is-wrong",
   rr_ordering_degraded: "the-roster-or-routing-data-is-wrong",
   reassign_unknown_reason_code: "the-roster-or-routing-data-is-wrong",
   "reassign-unknown-reason-code": "the-roster-or-routing-data-is-wrong",

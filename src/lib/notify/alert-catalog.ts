@@ -578,6 +578,11 @@ export const ALERT_CATALOG: AlertEntry[] = [
     why: "Two specific bookings already overlap; a person reschedules one, and no code path observes that.",
   },
   {
+    key: "booking_offsite_origin:*",
+    kind: "incident",
+    why: "One real booking was already made from a host page that is not the production site, and its reminder texts and call task have already gone out. A person cancels it or confirms the lead is real; nothing turns an off site booking into an on site one, so there is no healthy state to announce (#2715).",
+  },
+  {
     key: "misroute:*",
     kind: "incident",
     why: "One booking already went to a non-matching agent; the booking cannot un-happen.",

@@ -99,6 +99,7 @@ export function monitorSetupGates(readiness: SetupReadiness): {
   busyDrift: SetupGate;
   tierStaffing: SetupGate;
   belowLeadTier: SetupGate;
+  offsiteOrigin: SetupGate;
   regalCallsQuiet: SetupGate;
 } {
   return {
@@ -160,6 +161,12 @@ export function monitorSetupGates(readiness: SetupReadiness): {
     // real rather than the smoke canary's, so it must skip without it: with no
     // list every booking would be unmeasurable, which reads as a quiet day.
     belowLeadTier: gate(readiness, ["buckets"]),
+    // #2715: a real bucket booking from a host page that is not the production
+    // site. The bucket list is what says which buckets are REAL, and the test ones
+    // are exactly where off site hosts belong, so it must skip without it: guessing
+    // every bucket real pages about every partner test, and guessing none real
+    // silences the check.
+    offsiteOrigin: gate(readiness, ["buckets"]),
     // #2090: "no call from a Slate user across a whole business day" needs the
     // org's week to know which day was the last whole one, and a closed Sunday or
     // a holiday must be skipped rather than judged. So it skips on an unreadable
