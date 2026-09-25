@@ -24,8 +24,9 @@
 //
 // It used to also write those rows a legal eligibility value of N, which was the
 // one place this planner acted on an absence rather than declining to. #2218
-// retired the attribute, so the absence case now writes nothing at all, which is
-// what it should always have been for a fact nobody said anything about.
+// retired the attribute, so the absence case now writes no fact about the person,
+// which is what it should always have been for a fact nobody said anything about.
+// The one thing it does write is a record of the absence itself (#2735, below).
 //
 // A `Redistribute` tag means the agent should not be taking booked calls (Dan,
 // 2026-09-08). It exists only in Twilio, so this is the only place Slate can learn
@@ -61,6 +62,18 @@
 // tag comes off, and left alone for a row Twilio holds no worker for. The mark keeps
 // its one job, deciding who may be turned back on, and the two are never read for
 // each other's question.
+//
+// A WORKER THAT DISAPPEARS IS RECORDED, NEVER ACTED ON (#2735). Keeping the stored
+// tag for a row Twilio holds no worker for is right for the routing facts, and
+// wrong for exactly one reader: the Regal call detector, whose exemption the tag
+// grants, would go on exempting somebody whose Twilio worker no longer exists, for
+// as long as it stays gone. Clearing the tag is not the answer, because the read
+// may simply be partial (L214). So the planner writes the one thing the read did
+// measure, `twilio_worker_missing_since`, the moment it first found no worker, and
+// deletes it the run the worker is back. Every stored value stays as it was; the
+// detector reads the stamp and stops trusting the tag. It is never written from an
+// EMPTY Twilio side, which the caller refuses and which would otherwise stamp the
+// whole roster at once.
 import type { Attributes } from "@/lib/db/types";
 import {
   REDISTRIBUTE_MARK,
@@ -106,13 +119,31 @@ export interface PlannedValue<T> {
 export interface TwilioChanges {
   debtTeams: PlannedValue<DebtTierValue[]>;
   backendServices: PlannedValue<BackendValue[]>;
-  /** Whether the worker carries the `Redistribute` tag (#2724). */
-  redistributeTagged: PlannedValue<boolean>;
+  /**
+   * Whether the worker carries the `Redistribute` tag (#2724), and whether the row
+   * READ as tagged before this run (#2735).
+   *
+   * `wasTagged` is carried because `changed` alone cannot tell a landing from a
+   * clearing from a junk spelling being tidied, and the run reports the first two
+   * by name while the third changes nothing a reader sees.
+   */
+  redistributeTagged: PlannedValue<boolean> & { wasTagged: boolean };
+  /**
+   * The moment the sync first found no Twilio worker for this row, or null while it
+   * has one (#2735). Only ever what the read measured: it never changes a stored
+   * routing fact, it records that the read could not vouch for them.
+   */
+  twilioWorkerMissingSince: PlannedValue<string | null>;
 }
 
 /** True when this row's payload changes anything at all. */
 export function changesAnything(c: TwilioChanges): boolean {
-  return c.debtTeams.changed || c.backendServices.changed || c.redistributeTagged.changed;
+  return (
+    c.debtTeams.changed ||
+    c.backendServices.changed ||
+    c.redistributeTagged.changed ||
+    c.twilioWorkerMissingSince.changed
+  );
 }
 
 export type RedistributeAction = "turn-off" | "turn-back-on";
@@ -187,9 +218,11 @@ export interface RedistributePlan {
   /**
    * Every in scope Slate row Twilio holds no worker for.
    *
-   * Nothing is WRITTEN for them: their tiers are left exactly as stored, because
-   * silence about somebody is not a source saying their values are gone, and
-   * emptying every pool they belong to on a partial read is not recoverable.
+   * No fact about them is written: their tiers and tag are left exactly as stored,
+   * because silence about somebody is not a source saying their values are gone,
+   * and emptying every pool they belong to on a partial read is not recoverable.
+   * The only write is the `twilio_worker_missing_since` stamp (#2735), which records
+   * the absence rather than acting on it.
    *
    * That makes the count the only visible sign of a PARTIAL Twilio read. A read that
    * returned no workers at all is refused by the caller, but one that returned
@@ -218,6 +251,34 @@ export const REDISTRIBUTE_TAGGED_KEY = "redistribute_tagged";
  */
 export function carriesRedistributeTag(attributes: Attributes | null | undefined): boolean {
   return String(attributes?.[REDISTRIBUTE_TAGGED_KEY] ?? "") === REDISTRIBUTE_MARK;
+}
+
+/**
+ * The key recording that the last sync found no Twilio worker for this person
+ * (#2735), holding the moment it FIRST found none. One spelling, read and written
+ * only through the functions beside it (L370).
+ */
+export const TWILIO_WORKER_MISSING_KEY = "twilio_worker_missing_since";
+
+/**
+ * True when the last roster sync found no Twilio worker for this person, so the
+ * Twilio facts stored for them (the `Redistribute` tag among them) are what Twilio
+ * said LAST, not what it says now.
+ *
+ * Any value under the key reads as missing, a malformed one included: the only
+ * reader is a detector deciding whether to trust an exemption, and an unreadable
+ * stamp must fail toward reporting rather than toward silence.
+ */
+export function twilioWorkerMissing(attributes: Attributes | null | undefined): boolean {
+  return attributes != null && TWILIO_WORKER_MISSING_KEY in attributes;
+}
+
+/** When the sync first found no worker, or null when there is no readable stamp. */
+export function twilioWorkerMissingSinceMs(attributes: Attributes | null | undefined): number | null {
+  const raw = attributes?.[TWILIO_WORKER_MISSING_KEY];
+  if (typeof raw !== "string" || raw.trim() === "") return null;
+  const ms = Date.parse(raw);
+  return Number.isFinite(ms) ? ms : null;
 }
 
 function withMark(attributes: Attributes | null, markedAtIso: string): Attributes {
@@ -276,7 +337,12 @@ function listAlreadyStored(attributes: Attributes | null | undefined, key: strin
  * A row Twilio holds no worker for keeps its stored tiers, so nothing is planned
  * for it at all (the header says why).
  */
-function planChanges(attributes: Attributes | null, worker: TwilioSide | null): TwilioChanges {
+function planChanges(
+  attributes: Attributes | null,
+  worker: TwilioSide | null,
+  stampMissing: boolean,
+  nowIso: string,
+): TwilioChanges {
   const debtTeams = worker ? worker.debtTeams : storedList<DebtTierValue>(attributes, "debt_team");
   const backendServices = worker ? worker.backendServices : storedList<BackendValue>(attributes, "backend_service");
   const storedTag = carriesRedistributeTag(attributes);
@@ -285,8 +351,16 @@ function planChanges(attributes: Attributes | null, worker: TwilioSide | null): 
   // holding anything but the one spelling is rewritten rather than kept as junk.
   const rawTag = (attributes ?? {})[REDISTRIBUTE_TAGGED_KEY];
   const tagAlreadyStored = tagged ? rawTag === REDISTRIBUTE_MARK : rawTag === undefined;
+  // The stamp is kept once written, so it says when the worker FIRST went missing,
+  // and is rewritten only when what is stored is not a readable instant.
+  const storedMissing =
+    twilioWorkerMissingSinceMs(attributes) !== null ? String(attributes?.[TWILIO_WORKER_MISSING_KEY]) : null;
+  const missingSince = !worker && stampMissing ? (storedMissing ?? nowIso) : null;
+  const missingAlreadyStored =
+    missingSince === null ? !twilioWorkerMissing(attributes) : storedMissing === missingSince;
   return {
-    redistributeTagged: { value: tagged, changed: !tagAlreadyStored },
+    redistributeTagged: { value: tagged, changed: !tagAlreadyStored, wasTagged: storedTag },
+    twilioWorkerMissingSince: { value: missingSince, changed: !missingAlreadyStored },
     debtTeams: { value: debtTeams, changed: !listAlreadyStored(attributes, "debt_team", debtTeams) },
     backendServices: {
       value: backendServices,
@@ -316,6 +390,9 @@ function withTwilioFacts(attributes: Attributes | null, changes: TwilioChanges):
   else delete next.backend_service;
   if (changes.redistributeTagged.value) next[REDISTRIBUTE_TAGGED_KEY] = REDISTRIBUTE_MARK;
   else delete next[REDISTRIBUTE_TAGGED_KEY];
+  if (changes.twilioWorkerMissingSince.value !== null) {
+    next[TWILIO_WORKER_MISSING_KEY] = changes.twilioWorkerMissingSince.value;
+  } else delete next[TWILIO_WORKER_MISSING_KEY];
   return next;
 }
 
@@ -343,6 +420,11 @@ export function planTwilioRoster(
   const attributeWrites: AttributeWrite[] = [];
   const markedWithNoWorker: string[] = [];
   const withoutWorker: string[] = [];
+  // An EMPTY Twilio side stamps nobody as missing (#2735). The caller refuses a read
+  // that returned no workers, but a read whose every worker was unreadable reaches
+  // here as an empty map, and stamping the whole roster on it would page on every
+  // Redistribute agent at once about a Twilio data fault that is reported elsewhere.
+  const stampMissing = twilioByEmail.size > 0;
 
   for (const row of rows) {
     if (row.deactivated || row.isTest) continue;
@@ -353,7 +435,7 @@ export function planTwilioRoster(
 
     // Every Twilio owned value first, so whatever payload this row ends up with
     // carries all of them and nothing is written over the same column twice.
-    const changes = planChanges(row.attributes, worker);
+    const changes = planChanges(row.attributes, worker, stampMissing, nowIso);
     const base = changesAnything(changes) ? withTwilioFacts(row.attributes, changes) : (row.attributes ?? {});
 
     if (worker?.redistribute) {

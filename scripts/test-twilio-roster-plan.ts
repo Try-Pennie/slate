@@ -25,6 +25,8 @@ import {
   planTwilioRoster,
   isMarkedRedistribute,
   carriesRedistributeTag,
+  twilioWorkerMissing,
+  TWILIO_WORKER_MISSING_KEY,
   type TwilioRosterRow,
 } from "@/lib/twilio/roster-plan";
 import { DEBT_TIER_VALUES } from "@/lib/routing/attribute-vocabulary";
@@ -324,8 +326,21 @@ const twilio = (...sides: TwilioSide[]) => new Map(sides.map((s) => [s.email, s]
     [row({ attributes: { debt_team: ["low"], backend_service: ["beyond"] } })],
     new Map(),
   );
-  eq(plan.attributeWrites.length, 0, "a row Twilio holds no worker for keeps its tiers, so nothing is written");
+  eq(plan.attributeWrites.length, 0, "an EMPTY Twilio side writes nothing at all, not even the missing worker stamp");
   eq(plan.withoutWorker, ["someone@trypennie.com"], "and is counted, because doing nothing is otherwise invisible");
+}
+{
+  // The same row against a Twilio side that answered for somebody else: the tiers
+  // are still kept, and the only write is the stamp recording the absence (#2735).
+  const plan = planTwilioRoster(
+    [row({ attributes: { debt_team: ["low"], backend_service: ["beyond"] } })],
+    twilio(side(["Med Debt: 30k - 50k"], "somebody-else@trypennie.com")),
+    NOW,
+  );
+  const attrs = plan.attributeWrites[0]?.attributes;
+  eq(attrs?.debt_team, ["low"], "a row Twilio holds no worker for keeps its tiers");
+  eq(attrs?.backend_service, ["beyond"], "and its backend service");
+  eq(plan.attributeWrites[0]?.changes.debtTeams.changed, false, "and nothing reports its tiers as changed");
 }
 
 {
@@ -444,7 +459,9 @@ const twilio = (...sides: TwilioSide[]) => new Map(sides.map((s) => [s.email, s]
     twilio(side(["Low Debt: 20k - 30k"], "someone.else@trypennie.com")),
     NOW,
   );
-  eq(plan.attributeWrites.length, 0, "a row Twilio holds no worker for keeps its stored tag: silence is not removal (L214)");
+  const attrs = plan.attributeWrites[0]?.attributes;
+  assert(carriesRedistributeTag(attrs), "a row Twilio holds no worker for keeps its stored tag: silence is not removal (L214)");
+  eq(plan.attributeWrites[0]?.changes.redistributeTagged.changed, false, "and the tag is not reported as moved");
 }
 {
   const plan = planTwilioRoster(
@@ -479,6 +496,85 @@ const twilio = (...sides: TwilioSide[]) => new Map(sides.map((s) => [s.email, s]
 {
   assert(!carriesRedistributeTag(null), "no attributes is not tagged");
   assert(!carriesRedistributeTag({ redistribute: MARK }), "the MARK alone is not the tag: they answer different questions");
+}
+
+// --- #2735: the absence is RECORDED, never acted on -----------------------------
+// A row whose Twilio worker disappears keeps every stored value (L214), including
+// `redistribute_tagged`, which silences the Regal call pager. So the sync records
+// that it found no worker, as a stamp of its own, and the detector reads that stamp
+// to stop trusting the tag. The stamp is the one thing written on an absence, and
+// it states only what the read measured.
+
+{
+  const plan = planTwilioRoster(
+    [row({ bookable: false, attributes: { redistribute_tagged: MARK } })],
+    twilio(side(["Low Debt: 20k - 30k"], "somebody-else@trypennie.com")),
+    NOW,
+  );
+  const attrs = plan.attributeWrites[0]?.attributes;
+  eq(attrs?.[TWILIO_WORKER_MISSING_KEY], NOW, "a row with no worker is stamped with the moment the sync found none");
+  assert(twilioWorkerMissing(attrs), "so a reader can tell the tag is no longer vouched for");
+  assert(carriesRedistributeTag(attrs), "while the tag itself is left exactly as stored");
+  eq(plan.attributeWrites[0]?.changes.twilioWorkerMissingSince.changed, true, "and the write says the stamp moved");
+}
+{
+  const plan = planTwilioRoster(
+    [row({ bookable: false, attributes: { redistribute_tagged: MARK, [TWILIO_WORKER_MISSING_KEY]: "2026-09-01T00:00:00.000Z" } })],
+    twilio(side(["Low Debt: 20k - 30k"], "somebody-else@trypennie.com")),
+    NOW,
+  );
+  eq(plan.attributeWrites.length, 0, "a stamp already stored is kept, not rewritten every hour, so it says when the worker FIRST went missing");
+}
+{
+  // An unreadable stamp still means missing to a reader (it fails toward paging),
+  // and the sync replaces it with a readable one rather than keeping junk.
+  assert(twilioWorkerMissing({ [TWILIO_WORKER_MISSING_KEY]: "not a date" }), "an unreadable stamp still reads as missing");
+  const plan = planTwilioRoster(
+    [row({ bookable: false, attributes: { [TWILIO_WORKER_MISSING_KEY]: "not a date" } })],
+    twilio(side(["Low Debt: 20k - 30k"], "somebody-else@trypennie.com")),
+    NOW,
+  );
+  eq(plan.attributeWrites[0]?.attributes[TWILIO_WORKER_MISSING_KEY], NOW, "and the sync rewrites it as a readable instant");
+}
+{
+  const plan = planTwilioRoster(
+    [row({ bookable: false, attributes: { redistribute_tagged: MARK, [TWILIO_WORKER_MISSING_KEY]: "2026-09-01T00:00:00.000Z" } })],
+    twilio(side(["Redistribute"])),
+    NOW,
+  );
+  const attrs = plan.attributeWrites[0]?.attributes;
+  assert(!twilioWorkerMissing(attrs), "the worker coming back removes the stamp");
+  assert(!(TWILIO_WORKER_MISSING_KEY in (attrs ?? {})), "as a deleted key, not an empty value");
+  assert(carriesRedistributeTag(attrs), "and the tag it carries is vouched for again");
+}
+{
+  // A flip only ever happens with a worker present, so its payload clears the stamp.
+  const plan = planTwilioRoster(
+    [row({ bookable: true, attributes: { [TWILIO_WORKER_MISSING_KEY]: "2026-09-01T00:00:00.000Z" } })],
+    twilio(side(["Redistribute"])),
+    NOW,
+  );
+  assert(!twilioWorkerMissing(plan.flips[0]?.attributes), "a flip's payload clears a stale missing worker stamp");
+}
+{
+  const plan = planTwilioRoster(
+    [row({ bookable: false, attributes: { redistribute_tagged: MARK } })],
+    new Map(),
+    NOW,
+  );
+  eq(plan.attributeWrites.length, 0, "an empty Twilio side stamps nobody: a read that found nothing is refused, not recorded as everybody missing");
+}
+{
+  const plan = planTwilioRoster(
+    [row({ isTest: true, bookable: false }), row({ id: "u2", email: "b@trypennie.com", deactivated: true, bookable: false })],
+    twilio(side(["Low Debt: 20k - 30k"], "somebody-else@trypennie.com")),
+    NOW,
+  );
+  eq(plan.attributeWrites.length, 0, "test and deactivated rows are out of scope, so they are never stamped");
+}
+{
+  assert(!twilioWorkerMissing(null), "no attributes is not missing");
+  assert(!twilioWorkerMissing({ redistribute_tagged: MARK }), "the tag alone says nothing about the worker");
 }
 
 finish();

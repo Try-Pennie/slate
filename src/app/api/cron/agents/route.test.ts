@@ -54,6 +54,8 @@ const twilio = vi.hoisted(() => ({
     coverageSweepFailures: 0,
     tiersChanged: [] as string[],
     backendChanged: [] as string[],
+    redistributeTagLanded: [] as string[],
+    redistributeTagCleared: [] as string[],
     withoutWorker: [] as string[],
     attributeWriteFailures: 0,
     corruptAttributes: 0,

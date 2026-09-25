@@ -481,6 +481,11 @@ const REGAL_PREVIEW_CALLER: RegalCaller = {
   attributes: null,
 };
 
+/** #2090: one call from the preview agent, four minutes ago. */
+const REGAL_PREVIEW_ONE_CALL = [
+  { agent_email: REGAL_PREVIEW_CALLER.email, occurred_at: new Date(NOW_MS - 4 * 60_000).toISOString() },
+];
+
 /** #2090: the last whole business day, the seeded 8am to 8pm ET. */
 const REGAL_PREVIEW_DAY = {
   isoDate: "2026-07-28",
@@ -1704,8 +1709,27 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     channel: "alert",
     text: formatRegalCallAlert(
       judgeRegalCallers(
-        [{ agent_email: "ada.example@trypennie.com", occurred_at: new Date(NOW_MS - 4 * 60_000).toISOString() }],
+        REGAL_PREVIEW_ONE_CALL,
         [{ ...REGAL_PREVIEW_CALLER, deactivated_at: "2026-07-20T00:00:00Z" }],
+        [],
+      )[0],
+    ),
+  },
+  {
+    // #2735: tagged Redistribute, and the roster sync found no Twilio worker for
+    // them, so the tag no longer exempts them and the page says why.
+    key: "regal_call_unroutable:*",
+    state: "a Redistribute agent whose Twilio worker is gone placed a call",
+    channel: "alert",
+    text: formatRegalCallAlert(
+      judgeRegalCallers(
+        REGAL_PREVIEW_ONE_CALL,
+        [
+          {
+            ...REGAL_PREVIEW_CALLER,
+            attributes: { redistribute_tagged: "Y", twilio_worker_missing_since: "2026-07-26T14:00:00.000Z" },
+          },
+        ],
         [],
       )[0],
     ),
