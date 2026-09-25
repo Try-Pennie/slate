@@ -1183,13 +1183,13 @@ and is pinned offline by `scripts/test-parallel-run-readiness.ts`.
 | 6 | a calendar is not hydrated to the booking horizon |
 | 13 | **trypennie key never seen from production** (see below) |
 | 7 | an alert cooldown is stretched above its default |
+| 14 | **low volume alarms armed** and a Low page has recorded no booking carrying its `source` in 7 days (see below) |
+| 15 | **low volume alarms armed** and a federal holiday in the next 90 days carries no business hours exception |
+| 16 | **low volume alarms armed** and no real booking in 7 days, so page sources are unmeasured |
 | 8 | the cal.com comparison is reporting drift |
 | 9 | the cal.com comparison has not reached a verdict inside its 30 hour bound |
 | 10 | somebody is waiting to become bookable behind a refused activation |
 | 11 | a bookable agent is on working hours nobody set |
-| 14 | **low volume alarms armed** and a Low page has recorded no booking carrying its `source` in 7 days (see below) |
-| 15 | **low volume alarms armed** and a federal holiday in the next 90 days carries no business hours exception |
-| 16 | **low volume alarms armed** and no real booking in 7 days, so page sources are unmeasured |
 
 The rows are in the order the run is judged, worst first, which is not the order of
 the numbers: a code names an outcome and the order decides which one names a run.
