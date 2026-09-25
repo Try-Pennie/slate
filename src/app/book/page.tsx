@@ -63,9 +63,9 @@ export default async function BookEntry({
   //
   // It is asked as `salesforceId`, which is the field the CONFIRM sends for this
   // same value (`Booker` takes `external_id` into its `salesforceId` prop and posts
-  // it under that name), so both ends grade the identical identity. Asking it as
-  // `externalId` here would query a different column from the one the booking is
-  // eventually written with, and the two checks would disagree about the same lead.
+  // it under that name), so both ends grade the identical identity. Since #2663 a
+  // strong id matches either id column, so this also recognises a booking an API
+  // caller made with only `externalId`.
   const externalId = first(sp, "external_id") || null;
   // Asked in the WORLD of the bucket being landed on (#2660): a tester who pastes
   // a real lead's id into a test link is never shown that lead's call, and a real

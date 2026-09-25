@@ -85,6 +85,56 @@ assert(
   );
 }
 
+// --- a strong id matches EITHER column (#2663) ---
+// An embed booking stores the lead id in salesforce_id with external_id null
+// (/book?external_id= becomes the Booker's salesforceId, #2166). A caller of
+// POST /api/bookings that sends only externalId must still be graded strong
+// against it, or the gate passes and a SECOND call is booked. Both directions,
+// plus an unrelated id and blanks, so a matcher hard wired to one answer fails.
+{
+  const LEAD = "00Q5f00000AbCdEFGH";
+  const embed = booking({ id: "embed", salesforce_id: LEAD, external_id: null, starts_at: SAME });
+  const api = booking({ id: "api", external_id: LEAD, salesforce_id: null, starts_at: SAME });
+
+  const byExternal = findPersonMatch(id({ externalId: LEAD }), [embed]);
+  assert(
+    byExternal?.booking.id === "embed" && byExternal.strength === "strong",
+    "externalId only matches an embed booking (salesforce_id set, external_id null) as strong",
+  );
+  assert(
+    decide(id({ externalId: LEAD }), DIFFERENT, [embed]).action === "reschedule",
+    "externalId only + embed booking + different time -> auto-reschedule, not a second call",
+  );
+  assert(
+    decide(id({ externalId: LEAD }), SAME, [embed]).action === "dedupe",
+    "externalId only + embed booking + same slot -> dedupe",
+  );
+
+  const bySalesforce = findPersonMatch(id({ salesforceId: LEAD }), [api]);
+  assert(
+    bySalesforce?.booking.id === "api" && bySalesforce.strength === "strong",
+    "salesforceId only matches a booking holding the id in external_id as strong",
+  );
+
+  assert(
+    findPersonMatch(id({ externalId: "00Q5f00000ZZZZZZZZ" }), [embed, api]) === null,
+    "an unrelated externalId matches neither column",
+  );
+  assert(
+    findPersonMatch(id({ salesforceId: "00Q5f00000ZZZZZZZZ" }), [embed, api]) === null,
+    "an unrelated salesforceId matches neither column",
+  );
+  assert(
+    findPersonMatch(
+      id({ externalId: "  ", salesforceId: "" }),
+      [booking({ external_id: "  ", salesforce_id: "" })],
+    ) === null,
+    "a blank id never matches a blank column",
+  );
+  const padded = findPersonMatch(id({ externalId: ` ${LEAD} ` }), [embed]);
+  assert(padded?.strength === "strong", "surrounding space on a supplied id does not defeat the match");
+}
+
 // --- medium match: both email AND phone (no ids) -> auto-reschedule ---
 {
   const embed = [booking({ attendee_email: "dana@example.com", attendee_phone: "+12155550100", starts_at: SAME })];

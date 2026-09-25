@@ -123,6 +123,7 @@ import type {
   RescheduleClaim,
 } from "@/lib/booking/orchestration";
 import type { PersonIdentity, PersonWorld } from "@/lib/booking/person-dedupe";
+import { personStrongIds } from "@/lib/booking/person-dedupe";
 import { toE164 } from "@/lib/phone";
 import { escapeLike } from "@/lib/sql-like";
 import { noEligibleAgentsAlert } from "@/lib/availability/bucket-coverage";
@@ -558,7 +559,9 @@ export async function agentActiveBookingStartsMs(
  *
  * Which bookings MATCH is decided downstream by `findPersonMatch`; this only
  * decides which rows are fetched, and #1641 changed neither the four signals nor
- * their filters.
+ * their filters. Since #2663 each strong id is read against BOTH id columns, the
+ * rule the lookup took in #2657, and the ids are the same set the grader uses
+ * (`personStrongIds`), so the fetch and the grade cannot disagree.
  *
  * **Scoped to ONE world (#2660).** Every query joins the booking's bucket and
  * keeps only the rows whose `is_test` equals the world the caller is in, the
@@ -583,10 +586,15 @@ export async function findActiveBookingsForPerson(
       .in("status", active)
       .limit(20);
   const queries: PromiseLike<DbResult<unknown>>[] = [];
-  if (identity.externalId)
-    queries.push(base().eq("external_id", identity.externalId));
-  if (identity.salesforceId)
-    queries.push(base().eq("salesforce_id", identity.salesforceId));
+  // A strong id is one value that may sit in EITHER column (#2663): an embed
+  // booking holds the lead id in salesforce_id with external_id null, so a
+  // caller sending only externalId must read salesforce_id too, or the grader
+  // never sees the row and a second call is booked. One plain equality read per
+  // id per column, for the reason given on findActiveBookingsByStrongIds.
+  for (const strongId of personStrongIds(identity)) {
+    queries.push(base().eq("external_id", strongId));
+    queries.push(base().eq("salesforce_id", strongId));
+  }
   const email = identity.email?.trim();
   // Escape LIKE metacharacters (#620): an email's `_`/`%` must not act as an
   // ilike wildcard, or a `john_doe@` address would also fetch `johnXdoe@` and

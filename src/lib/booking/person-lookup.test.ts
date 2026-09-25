@@ -48,6 +48,10 @@ const queriedWorlds: unknown[][] = [];
 /** The projection each query asked for, so the bucket join can be asserted. */
 const selects: string[] = [];
 
+/** Every identity filter as a column and the value it was given, so a test can
+ *  say WHICH id was read against which column (#2663). */
+const queriedPairs: [string, unknown][] = [];
+
 /** A chainable, thenable Supabase-shaped query builder. */
 function builder(): Record<string, unknown> {
   const columns: string[] = [];
@@ -65,7 +69,10 @@ function builder(): Record<string, unknown> {
   for (const method of ["eq", "ilike"]) {
     q[method] = (column: string, value: unknown) => {
       if (column === "buckets.is_test") worlds.push(value);
-      else columns.push(column);
+      else {
+        columns.push(column);
+        queriedPairs.push([column, value]);
+      }
       return q;
     };
   }
@@ -80,6 +87,7 @@ describe("findActiveBookingsForPerson (the weak-match booking lookup)", () => {
   beforeEach(() => {
     queriedColumns.length = 0;
     queriedWorlds.length = 0;
+    queriedPairs.length = 0;
     selects.length = 0;
     resultByColumn.clear();
     from.mockReset();
@@ -97,7 +105,7 @@ describe("findActiveBookingsForPerson (the weak-match booking lookup)", () => {
         { externalId: "ext-1", salesforceId: null, email: "lead@example.com", phone: null },
         { isTest: true },
       );
-      expect(queriedWorlds).toEqual([[true], [true]]);
+      expect(queriedWorlds).toEqual([[true], [true], [true]]);
       for (const s of selects) expect(s).toContain("buckets!inner(is_test)");
     });
 
@@ -106,7 +114,7 @@ describe("findActiveBookingsForPerson (the weak-match booking lookup)", () => {
         { externalId: "ext-1", salesforceId: "sf-1", email: null, phone: "215 555 0100" },
         { isTest: false },
       );
-      expect(queriedWorlds).toEqual([[false], [false], [false]]);
+      expect(queriedWorlds).toEqual([[false], [false], [false], [false], [false]]);
     });
 
     it("hands back plain booking rows, without the joined bucket riding along", async () => {
@@ -141,18 +149,54 @@ describe("findActiveBookingsForPerson (the weak-match booking lookup)", () => {
     expect(rows.map((b) => b.id).sort()).toEqual(["bk-1", "bk-2"]);
   });
 
-  it("issues a query per identity signal it was given", async () => {
+  it("issues a query per identity signal it was given, each strong id on both id columns", async () => {
     await findActiveBookingsForPerson({
       externalId: "ext-1",
       salesforceId: "sf-1",
       email: "Lead@Example.com",
       phone: "215 555 0100",
     }, { isTest: false });
-    expect(queriedColumns.flat().sort()).toEqual([
-      "attendee_email",
-      "attendee_phone",
-      "external_id",
-      "salesforce_id",
+    expect(queriedPairs.map(([c, v]) => `${c}=${String(v)}`).sort()).toEqual([
+      "attendee_email=Lead@Example.com",
+      "attendee_phone=+12155550100",
+      "external_id=ext-1",
+      "external_id=sf-1",
+      "salesforce_id=ext-1",
+      "salesforce_id=sf-1",
+    ]);
+  });
+
+  // #2663: an embed booking holds the lead id in salesforce_id with external_id
+  // null. A caller sending only externalId must FETCH that row, or the grader
+  // never sees it and a second call is booked. Both directions.
+  it("reads an externalId against salesforce_id too, so an embed booking is fetched", async () => {
+    resultByColumn.set("salesforce_id", { data: [booking("bk-embed")], error: null });
+    const rows = await findActiveBookingsForPerson(
+      { externalId: "00Q-lead", salesforceId: null, email: null, phone: null },
+      { isTest: false },
+    );
+    expect(queriedPairs).toContainEqual(["salesforce_id", "00Q-lead"]);
+    expect(rows.map((b) => b.id)).toEqual(["bk-embed"]);
+  });
+
+  it("reads a salesforceId against external_id too", async () => {
+    resultByColumn.set("external_id", { data: [booking("bk-api")], error: null });
+    const rows = await findActiveBookingsForPerson(
+      { externalId: null, salesforceId: "00Q-lead", email: null, phone: null },
+      { isTest: false },
+    );
+    expect(queriedPairs).toContainEqual(["external_id", "00Q-lead"]);
+    expect(rows.map((b) => b.id)).toEqual(["bk-api"]);
+  });
+
+  it("reads one id given in both fields once per column, not twice", async () => {
+    await findActiveBookingsForPerson(
+      { externalId: "00Q-lead", salesforceId: " 00Q-lead ", email: null, phone: null },
+      { isTest: false },
+    );
+    expect(queriedPairs.map(([c, v]) => `${c}=${String(v)}`).sort()).toEqual([
+      "external_id=00Q-lead",
+      "salesforce_id=00Q-lead",
     ]);
   });
 

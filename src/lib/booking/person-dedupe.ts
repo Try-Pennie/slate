@@ -5,7 +5,7 @@
  * `node --experimental-strip-types`; the service wires the lookup + actions.
  *
  * Match grading, and the locked rule it enforces:
- *  - strong  : external_id OR salesforce_id matches  -> auto-reschedule on a new time
+ *  - strong  : a supplied strong id sits in EITHER id column -> auto-reschedule on a new time
  *  - medium  : BOTH email AND phone match            -> auto-reschedule on a new time
  *  - weak    : only email OR only phone matches      -> NEVER auto-move; return the
  *              existing appointment for the bot to confirm (unless it passes
@@ -16,6 +16,7 @@
  */
 import type { Booking } from "@/lib/db/types";
 import { toE164 } from "../phone.ts";
+import { bookingMatchesLookupIds, strongIdsOf } from "./lookup-identity.ts";
 
 export interface PersonIdentity {
   externalId: string | null;
@@ -63,8 +64,11 @@ function matchStrength(
   identity: PersonIdentity,
   booking: Booking,
 ): MatchStrength | null {
-  if (identity.externalId && booking.external_id === identity.externalId) return "strong";
-  if (identity.salesforceId && booking.salesforce_id === identity.salesforceId) return "strong";
+  // A strong id is ONE value that may sit in EITHER column (#2663, the rule the
+  // lookup took in #2657). An embed booking stores the lead id in salesforce_id
+  // with external_id null, so a column to column match graded a caller sending
+  // only externalId as a stranger and booked them a second call.
+  if (bookingMatchesLookupIds(booking, personStrongIds(identity))) return "strong";
 
   const idEmail = normEmail(identity.email);
   const bkEmail = normEmail(booking.attendee_email);
@@ -77,6 +81,13 @@ function matchStrength(
   if (emailMatch && phoneMatch) return "medium";
   if (emailMatch || phoneMatch) return "weak";
   return null;
+}
+
+/** The strong ids a person read was given, as one set (trimmed, blanks dropped).
+ *  The fetch and the grader both use it, so they cannot disagree about which ids
+ *  were supplied. */
+export function personStrongIds(identity: PersonIdentity): string[] {
+  return strongIdsOf([identity.externalId, identity.salesforceId]);
 }
 
 const RANK: Record<MatchStrength, number> = { strong: 3, medium: 2, weak: 1 };
