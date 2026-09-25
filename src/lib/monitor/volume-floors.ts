@@ -215,6 +215,14 @@ export function fitFloorCells(series: BookingSeries, zone: string): FloorCell[][
   );
 }
 
+/**
+ * Cells from the rows a generated baseline module stores, one [floor30, floor120,
+ * typical120] triple per hour and one row per weekday from Monday (#2738).
+ */
+export function cellsFromRows(rows: [number, number, number][][]): FloorCell[][] {
+  return rows.map((day) => day.map(([floor30, floor120, typical120]) => ({ floor30, floor120, typical120 })));
+}
+
 /** Where the tick sits in the baseline's week, judged in the baseline's own zone. */
 export function cellAt(baseline: Pick<VolumeBaseline, "zone">, nowMs: number): { weekday: number; hour: number } {
   const dt = DateTime.fromMillis(nowMs, { zone: baseline.zone });

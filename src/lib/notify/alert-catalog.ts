@@ -385,6 +385,14 @@ export const ALERT_CATALOG: AlertEntry[] = [
       "the read succeeds again and the same lane sees it on the next tick.",
   },
   {
+    key: "low_page_volume:*",
+    kind: "condition",
+    why:
+      "One Low landing page has stopped booking while the others carry on (#2738); " +
+      "that page's bookings come back and the same lane re-measures it against the " +
+      "page's own floors every 5 minutes.",
+  },
+  {
     key: "booking_failure_rate",
     kind: "condition",
     why: "Customers are being turned away right now; it ends when bookings start completing again, and the monitor re-measures the window every 5 minutes.",

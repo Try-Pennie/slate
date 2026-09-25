@@ -92,6 +92,9 @@ const FAMILY_BY_KEY: Record<string, AlertFamily> = {
   booker_unstaffed: "the-booker-is-offering-nothing-or-too-little",
   no_eligible_agents: "the-booker-is-offering-nothing-or-too-little",
   low_booking_volume: "the-booker-is-offering-nothing-or-too-little",
+  // #2738. The same family as the tier alarm it sits beside: one page's customers
+  // are not getting through, and the procedure starts from what that page links to.
+  low_page_volume: "the-booker-is-offering-nothing-or-too-little",
   // #2366. The same family, and deliberately so: this is the one cause of an empty
   // booker that the family's own first check cannot see, because availability is
   // healthy and the refusal happens on the write. A reader who arrives here from the
