@@ -29,7 +29,7 @@
 //   MEASURE_PACE_MS  pacing between pages (default 550, measured in #2240)
 import { readFileSync, writeFileSync } from "node:fs";
 import { loadEnvFiles, envOr } from "./smoke-env.ts";
-import { readRoutingResponses, tierOf } from "./lib/calcom-routing-responses.ts";
+import { PACE_REFUSAL, paceMsOrNull, readRoutingResponses, tierOf } from "./lib/calcom-routing-responses.ts";
 import {
   FLOOR_SCOPE,
   buildFixture,
@@ -80,16 +80,14 @@ if (!KEY) {
 const ORG = envOr(process.env.CALCOM_ORG_ID, "19474");
 const DAYS = Number(envOr(process.env.MEASURE_DAYS, "63"));
 const ZONE = envOr(process.env.MEASURE_ZONE, "America/New_York");
-const PACE_MS = Number(envOr(process.env.MEASURE_PACE_MS, "550"));
+const PACE_MS = paceMsOrNull(envOr(process.env.MEASURE_PACE_MS, "550"));
 if (!Number.isInteger(DAYS) || DAYS < 14) {
   // Two weeks is two samples per weekday and hour, which is no distribution at all.
   console.error("FAILED (bad-input): MEASURE_DAYS must be a whole number of at least 14");
   process.exit(1);
 }
-if (!Number.isFinite(PACE_MS) || PACE_MS < 0) {
-  // An unreadable pace becomes NaN, which a timer reads as no wait at all, and the
-  // run then meets cal.com's rate limit on every page instead of refusing (L50).
-  console.error("FAILED (bad-input): MEASURE_PACE_MS must be a number of milliseconds, 0 or more");
+if (PACE_MS === null) {
+  console.error(PACE_REFUSAL);
   process.exit(1);
 }
 

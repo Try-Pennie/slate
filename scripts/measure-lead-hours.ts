@@ -40,11 +40,15 @@ if (!KEY) {
   process.exit(1);
 }
 
-const { readRoutingResponses } = await import("./lib/calcom-routing-responses.ts");
+const { PACE_REFUSAL, paceMsOrNull, readRoutingResponses } = await import("./lib/calcom-routing-responses.ts");
 
 const ORG = envOr(process.env.CALCOM_ORG_ID, "19474");
 const DAYS = Number(envOr(process.env.MEASURE_DAYS, "14"));
-const PACE_MS = Number(envOr(process.env.MEASURE_PACE_MS, "550"));
+const PACE_MS = paceMsOrNull(envOr(process.env.MEASURE_PACE_MS, "550"));
+if (PACE_MS === null) {
+  console.error(PACE_REFUSAL);
+  process.exit(1);
+}
 if (!Number.isFinite(DAYS) || DAYS <= 0) {
   console.error("FAILED (bad-input): MEASURE_DAYS must be a positive number");
   process.exit(1);

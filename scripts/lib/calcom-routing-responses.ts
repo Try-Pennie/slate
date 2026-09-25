@@ -89,6 +89,20 @@ export async function readRoutingResponses(opts: {
 }
 
 /** The debt tier digit of a code ("1" is Low), or null for anything unreadable. */
+/**
+ * The pause between cal.com pages, read from MEASURE_PACE_MS, or null when it
+ * cannot be read. Unguarded, a typo becomes NaN, which a timer reads as no wait at
+ * all, and the run meets cal.com's rate limit on every page instead of refusing
+ * (L50). One reader for both commands that page through this module.
+ */
+export function paceMsOrNull(raw: string): number | null {
+  const ms = Number(raw);
+  return Number.isFinite(ms) && ms >= 0 ? ms : null;
+}
+
+/** The refusal both commands print for an unreadable pace, so it reads the same. */
+export const PACE_REFUSAL = "FAILED (bad-input): MEASURE_PACE_MS must be a number of milliseconds, 0 or more";
+
 export function tierOf(code: string | null): string | null {
   return code && /^[1-5]/.test(code) ? code[0]! : null;
 }

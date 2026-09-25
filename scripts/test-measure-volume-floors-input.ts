@@ -1,5 +1,6 @@
-// #1956: `pnpm measure:volume-floors` refuses a setting it cannot read, by name,
-// before it asks cal.com for anything.
+// #1956: `pnpm measure:volume-floors` and its sibling `pnpm measure:lead-hours`,
+// which share the cal.com paging reader, refuse a setting they cannot read, by
+// name, before they ask cal.com for anything.
 //
 // An unreadable MEASURE_PACE_MS becomes NaN, which a timer reads as no wait at all,
 // so the run would meet cal.com's rate limit on every page rather than refusing
@@ -10,11 +11,18 @@ import { assert, finish } from "./lib/harness.ts";
 
 const NO_NETWORK = "data:text/javascript,globalThis.fetch=()=>{throw new Error('network refused in test')}";
 
-function run(env: Record<string, string>) {
+// The caller's own MEASURE_* settings are blanked, which each command reads as its
+// default, so an exported value on the machine running the suite cannot change what
+// a case means (L439). The key is a stand in: fetch is replaced, so it is never sent.
+function childEnv(extra: Record<string, string>): NodeJS.ProcessEnv {
+  return { ...process.env, CALCOM_API_KEY: "not-a-real-key", MEASURE_DAYS: "", MEASURE_PACE_MS: "", ...extra };
+}
+
+function run(env: Record<string, string>, script = "scripts/measure-volume-floors.ts") {
   const r = spawnSync(
     process.execPath,
-    ["--import", "./scripts/register-paths.mjs", "--import", NO_NETWORK, "scripts/measure-volume-floors.ts"],
-    { env: { PATH: process.env.PATH ?? "", CALCOM_API_KEY: "not-a-real-key", ...env }, encoding: "utf8" },
+    ["--import", "./scripts/register-paths.mjs", "--import", NO_NETWORK, script],
+    { env: childEnv(env), encoding: "utf8" as const },
   );
   return { status: r.status, err: `${r.stderr}${r.stdout}` };
 }
@@ -42,6 +50,17 @@ function run(env: Record<string, string>) {
   // that refuses everything.
   const r = run({ MEASURE_PACE_MS: "0" });
   assert(r.err.includes("network refused"), "a readable pace passes the guards and reaches for cal.com");
+}
+
+{
+  // The sibling reads the same pace into the same paging reader, so it refuses the
+  // same way (fix the class, L30).
+  const r = run({ MEASURE_PACE_MS: "abc" }, "scripts/measure-lead-hours.ts");
+  assert(r.status === 1, `measure:lead-hours exits 1 on an unreadable pace (got ${r.status})`);
+  assert(r.err.includes("FAILED (bad-input): MEASURE_PACE_MS"), "and names the pace");
+  assert(!r.err.includes("network refused"), "before any cal.com call");
+  const ok = run({ MEASURE_PACE_MS: "0" }, "scripts/measure-lead-hours.ts");
+  assert(ok.err.includes("network refused"), "and a readable pace still reaches for cal.com");
 }
 
 finish();
