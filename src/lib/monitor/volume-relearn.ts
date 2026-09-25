@@ -256,6 +256,9 @@ export async function runVolumeRelearn(deps: {
   return { status: "refit", learned: result.status, rowsRead: rows.length };
 }
 
+/** The name the ramp end form's refusals carry back, so the page draws them beside it. */
+export const RAMP_END_FORM = "volume-ramp-end";
+
 /** The earliest ramp end the form accepts: the cal.com measurement's own date. */
 export const EARLIEST_RAMP_END = "2026-09-25";
 

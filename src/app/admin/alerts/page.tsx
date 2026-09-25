@@ -36,7 +36,7 @@ import {
 } from "@/lib/monitor/settings";
 import { VolumeFloors } from "@/components/admin/VolumeFloors";
 import { VolumeLearning, type PageCoverageView } from "@/components/admin/VolumeLearning";
-import { EARLIEST_RAMP_END, baselineInForce, type BaselineInForce } from "@/lib/monitor/volume-relearn";
+import { EARLIEST_RAMP_END, RAMP_END_FORM, baselineInForce, type BaselineInForce } from "@/lib/monitor/volume-relearn";
 import { LEARNING } from "@/lib/monitor/volume-learning";
 import { learningStatusCopy } from "@/lib/monitor/volume-relearn-copy";
 import { MEASURED_VOLUME_BASELINE } from "@/lib/monitor/volume-baseline";
@@ -67,7 +67,7 @@ const LEARNING_OUTCOMES = new Set(["volume-ramp-end-set", "volume-ramp-end-clear
 export default async function AlertSettingsPage({
   searchParams,
 }: {
-  searchParams: Promise<{ ok?: string; error?: string }>;
+  searchParams: Promise<{ ok?: string; error?: string; form?: string }>;
 }) {
   const sp = await searchParams;
   const outcome = savedOutcome(sp.ok);
@@ -75,6 +75,14 @@ export default async function AlertSettingsPage({
   // #2739: the ramp end form sits lower on the page, and its confirmation is drawn
   // beside it, where the person pressed, rather than above the fold (L608).
   const savedHere = outcome !== null && LEARNING_OUTCOMES.has(outcome);
+  // Its refusals too, which carry the form's name because a refusal has no outcome.
+  const refusedHere = !!sp.error && sp.form === RAMP_END_FORM;
+  const learningNotice =
+    savedHere && saved ? (
+      <SettingsSaveNotice ok saved={saved} error={sp.error} />
+    ) : refusedHere ? (
+      <SettingsSaveNotice ok={false} error={sp.error} saved="" />
+    ) : undefined;
   const me = await currentUser();
   if (!me) redirect("/login");
   if (consoleHiddenFor(me.role)) redirect("/admin/ooo");
@@ -214,7 +222,7 @@ export default async function AlertSettingsPage({
           unrecognised value (a bookmarked `?ok=1` from before outcomes were
           named) shows nothing, rather than confirming a save nobody made. */}
       {saved && !savedHere && <SettingsSaveNotice ok saved={saved} error={sp.error} />}
-      {sp.error && !saved && <SettingsSaveNotice ok={false} error={sp.error} saved="" />}
+      {sp.error && !saved && !refusedHere && <SettingsSaveNotice ok={false} error={sp.error} saved="" />}
       {!armed && (
         <div className="rounded-md border border-border bg-[var(--bg-alt)] px-5 py-4 text-sm text-fg-muted">
           The low booking volume alarm is <strong>off</strong>: its floors below are measured
@@ -628,7 +636,7 @@ export default async function AlertSettingsPage({
           rampEndOn={config?.volume_ramp_end_on ?? null}
           detail={learning.detail}
           coverage={coverage}
-          notice={savedHere && saved ? <SettingsSaveNotice ok saved={saved} error={sp.error} /> : undefined}
+          notice={learningNotice}
           action={setVolumeRampEnd}
           earliest={EARLIEST_RAMP_END}
           minWeeks={LEARNING.minWeeks}
@@ -636,9 +644,14 @@ export default async function AlertSettingsPage({
       ) : (
         <section id="volume-learning" className={cardCls}>
           <h2 className="mb-1 text-sm font-semibold">Learning the floors from Slate&apos;s bookings</h2>
+          {/* The outcome of a press that just happened is still true when the read
+              back fails, so it is drawn here too, and the unreadable sentence then
+              does not claim nothing changed (L11). */}
+          {learningNotice}
           <UnreadableNotice>
-            The alert settings could not be read, so this page cannot say whether a ramp end is set
-            or which floors are in force. Nothing has changed; reload to try again.
+            {savedHere
+              ? "The alert settings could not be read back, so this page cannot show the ramp end now stored or which floors are in force. Reload to see them."
+              : "The alert settings could not be read, so this page cannot say whether a ramp end is set or which floors are in force. Nothing has changed; reload to try again."}
           </UnreadableNotice>
         </section>
       )}

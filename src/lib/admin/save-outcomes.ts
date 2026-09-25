@@ -196,4 +196,13 @@ export function refusedQuery(reason: string): string {
  * or a copied link, and the webhooks page's own two were invisible to the
  * stripper that only knew about `ok` and `error`.
  */
-export const OUTCOME_PARAMS = ["ok", "error", "resend", "replay"] as const;
+export const OUTCOME_PARAMS = ["ok", "error", "resend", "replay", "form"] as const;
+
+/**
+ * The `form` a refusal names when its page draws that form's refusal beside the
+ * form rather than at the top (#2739). A refusal carries no outcome name the way
+ * a save does, so without this the page cannot tell whose refusal it is.
+ */
+export function refusedFromQuery(reason: string, form: string): string {
+  return `${refusedQuery(reason)}&form=${encodeURIComponent(form)}`;
+}

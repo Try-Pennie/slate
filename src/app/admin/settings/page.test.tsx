@@ -402,6 +402,55 @@ describe("AlertSettings alert toggles", () => {
   });
 });
 
+// #2739: the ramp end form lives low on the page, so both of its outcomes are
+// drawn beside it, where the person pressed (L608), and a failed read back after
+// a save still shows what the save did rather than claiming nothing changed (L11).
+describe("AlertSettings ramp end outcomes (#2739)", () => {
+  const learningCard = () => document.getElementById("volume-learning")!;
+  const withParams = (sp: Record<string, string>) => ({ searchParams: Promise.resolve(sp) });
+
+  it("draws a refusal of the ramp end form beside it, not at the top", async () => {
+    auth.currentUser.mockResolvedValueOnce(ADMIN);
+    render(await AlertSettingsPage(withParams({ error: "Pick the day the ramp ended.", form: "volume-ramp-end" })));
+    expect(learningCard().textContent).toContain("Pick the day the ramp ended.");
+    // Once on the page, inside the card.
+    expect(screen.getAllByText("Pick the day the ramp ended.")).toHaveLength(1);
+  });
+
+  it("control: a refusal from another form stays at the top", async () => {
+    auth.currentUser.mockResolvedValueOnce(ADMIN);
+    render(await AlertSettingsPage(withParams({ error: "Cooldown (x) must be a whole number." })));
+    expect(screen.getByText("Cooldown (x) must be a whole number.")).toBeTruthy();
+    expect(learningCard().textContent).not.toContain("Cooldown (x)");
+  });
+
+  it("draws a saved ramp end beside the form", async () => {
+    auth.currentUser.mockResolvedValueOnce(ADMIN);
+    render(await AlertSettingsPage(withParams({ ok: "volume-ramp-end-set" })));
+    expect(learningCard().textContent).toContain("Ramp end saved.");
+    expect(screen.getAllByText(/Ramp end saved\./)).toHaveLength(1);
+  });
+
+  it("keeps the save's confirmation when the settings cannot be read back, and does not claim nothing changed", async () => {
+    auth.currentUser.mockResolvedValueOnce(ADMIN);
+    db.results.monitor_alert_config = { data: null, error: { message: "read timeout" } };
+    render(await AlertSettingsPage(withParams({ ok: "volume-ramp-end-cleared" })));
+    const card = learningCard().textContent!;
+    expect(card).toContain("Ramp end cleared.");
+    expect(card).toContain("could not be read back");
+    expect(card).not.toContain("Nothing has changed");
+  });
+
+  it("control: an unreadable read with no save says it cannot tell, and that nothing changed", async () => {
+    auth.currentUser.mockResolvedValueOnce(ADMIN);
+    db.results.monitor_alert_config = { data: null, error: { message: "read timeout" } };
+    render(await AlertSettingsPage(props));
+    const card = learningCard().textContent!;
+    expect(card).toContain("cannot say whether a ramp end is set");
+    expect(card).toContain("Nothing has changed");
+  });
+});
+
 // #1658: three reads feed the hours block, and until now one shared catch gave
 // them one shared outcome, `coverage = { ok: false }`. That outcome's own wording
 // blames the ROSTER, so a failed WEEK read drew seven unchecked weekdays (the

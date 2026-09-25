@@ -2,7 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
-import { refusedQuery, savedQuery } from "@/lib/admin/save-outcomes";
+import { refusedFromQuery, refusedQuery, savedQuery } from "@/lib/admin/save-outcomes";
 import { fetchSlackChannel } from "@/lib/notify/slack";
 import {
   channelCheckMessage,
@@ -84,7 +84,7 @@ import {
   ALERT_KEYS as MONITOR_ALERT_KEYS,
   type MonitorAlertKey,
 } from "@/lib/monitor/settings";
-import { parseRampEndForm } from "@/lib/monitor/volume-relearn";
+import { RAMP_END_FORM, parseRampEndForm } from "@/lib/monitor/volume-relearn";
 import {
   coerceReasonOptionsForm,
   parseReasonOptionsForm,
@@ -1057,7 +1057,7 @@ export async function setVolumeRampEnd(form: FormData): Promise<void> {
     intent: String(form.get("intent") ?? ""),
     rampEnd: String(form.get("ramp_end") ?? ""),
   });
-  if (!parsed.ok) redirect(`/admin/alerts${refusedQuery(parsed.error)}#volume-learning`);
+  if (!parsed.ok) redirect(`/admin/alerts${refusedFromQuery(parsed.error, RAMP_END_FORM)}#volume-learning`);
 
   const db = supabaseAdmin();
   const before = unwrap(
@@ -1079,7 +1079,7 @@ export async function setVolumeRampEnd(form: FormData): Promise<void> {
     { onConflict: "id" },
   );
   if (error) {
-    redirect(`/admin/alerts${refusedQuery(writeRefused("The ramp end", error))}#volume-learning`);
+    redirect(`/admin/alerts${refusedFromQuery(writeRefused("The ramp end", error), RAMP_END_FORM)}#volume-learning`);
   }
 
   await recordAudit({

@@ -808,7 +808,7 @@ describe("setVolumeRampEnd (#2739)", () => {
   });
 
   it("refuses a set press with no date, and writes nothing", async () => {
-    await expect(setVolumeRampEnd(form({ intent: "set", ramp_end: "" }))).rejects.toThrow(/\?error=.*#volume-learning/);
+    await expect(setVolumeRampEnd(form({ intent: "set", ramp_end: "" }))).rejects.toThrow(/\?error=.*&form=volume-ramp-end#volume-learning/);
     expect(upsert).not.toHaveBeenCalled();
     expect(recordAudit).not.toHaveBeenCalled();
   });
