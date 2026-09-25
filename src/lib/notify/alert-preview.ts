@@ -1653,7 +1653,8 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
   },
   {
     // The live page (#1936) at its smallest: one day inside the booking horizon
-    // whose first hour nobody covers, the 2026-09-15 production reading. It must
+    // whose first hour nobody covers, the Saturday opening production still left
+    // uncovered when #1936 was built. It must
     // carry the "opens with nobody on" emphasis, since a lead arriving at opening
     // finds the business looking shut.
     key: "roster_coverage_gap",
