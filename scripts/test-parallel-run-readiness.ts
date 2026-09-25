@@ -301,7 +301,11 @@ eq(
   // Unreadable: while armed it vouches for nothing; while disarmed it is reported, not gating.
   eq(judgeReadiness(healthy({ lowVolumeArming: armed({ holidays: null }) })).exit, READINESS_EXIT.unreadable, "armed and the holiday read failed is unreadable");
   eq(judgeReadiness(healthy({ lowVolumeArming: armed({ pageSources: null }) })).exit, READINESS_EXIT.unreadable, "armed and the source read failed is unreadable");
-  eq(judgeReadiness(healthy({ lowVolumeArming: disarmed({ armed: null }) })).exit, READINESS_EXIT.unreadable, "an unreadable switch is unreadable");
+  const unreadSwitch = judgeReadiness(healthy({ lowVolumeArming: disarmed({ armed: null }) }));
+  eq(unreadSwitch.exit, READINESS_EXIT.unreadable, "an unreadable switch is unreadable");
+  // It gates, so it must never be described as disarmed (L11).
+  assert(!/disarmed/.test(unreadSwitch.summary), `an unreadable switch is not called disarmed (got: ${unreadSwitch.summary})`);
+  assert(/could not be read/.test(unreadSwitch.summary), `and says the switch could not be read (got: ${unreadSwitch.summary})`);
   const offUnread = judgeReadiness(healthy({ lowVolumeArming: disarmed({ holidays: null }) }));
   eq(offUnread.exit, READINESS_EXIT.ready, "disarmed, a failed precondition read does not gate");
   assert(/could not read/.test(offUnread.summary) && /holiday/.test(offUnread.summary), `and says it could not read it (got: ${offUnread.summary})`);

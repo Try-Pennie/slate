@@ -399,7 +399,9 @@ export function judgeReadiness(f: ReadinessFacts): ReadinessJudgement {
       ? "the low volume switch is unset, so the deployment's BOOKING_VOLUME_ALERT_ARMED decides and they are judged as if armed"
       : arming.armed === "armed"
         ? "the low volume alarms are armed"
-        : "the low volume alarms are disarmed, so none of this changes the exit";
+        : arming.armed === null
+          ? "the low volume switch could not be read, so they are judged as if armed"
+          : "the low volume alarms are disarmed, so none of this changes the exit";
   const armingLine =
     advisories.length === 0 && !armingGates
       ? `\nBefore arming the low volume alarms (#1956, #2738): every Low page has recorded its source in the last ${arming.pageSources?.lookbackDays} days, every federal holiday in the next ${arming.holidays?.windowDays} days is decided (${arming.holidays?.checked} date(s))`
