@@ -28,6 +28,8 @@ import { messageLines } from "@/lib/booking/slot-picker";
 import { CANCEL_REASONS, RESCHEDULE_REASONS } from "@/lib/booking/core";
 import { CONFIRMATION_MARK } from "@/lib/booking/confirmation-mark";
 import { EMBED_MESSAGE, LINK_FAILED } from "@/lib/embed/lifecycle-events";
+import { REQUEST_TIMEOUT_MS } from "@/lib/http";
+import { NEXT_DAYS_TIMEOUT_MS } from "@/lib/availability/next-available";
 
 // The confirmation mark's dotLottie player, stood down for this file (#2560).
 // It is a wasm runtime: jsdom has no IntersectionObserver for it to observe with
@@ -2338,9 +2340,20 @@ describe("Booker closure state (#1329, #1339)", () => {
       // Announced, so it reaches somebody who is not watching the button.
       expect(alive.closest("[role=status]")).not.toBeNull();
 
+      // #2799: NOT at the shared 20s booker ceiling. The full walk for the biggest
+      // pool lands about there, so this one request waits for its own ceiling,
+      // derived from the server's worst case, and stays alive until then.
+      await act(async () => { await vi.advanceTimersByTimeAsync(REQUEST_TIMEOUT_MS - 10000); });
+      expect(screen.queryByText(/could not look further ahead/i)).toBeNull();
+      expect(screen.getByText(/still looking/i)).toBeTruthy();
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(NEXT_DAYS_TIMEOUT_MS - REQUEST_TIMEOUT_MS - 1);
+      });
+      expect(screen.queryByText(/could not look further ahead/i)).toBeNull();
+
       // The whole point of the ceiling: a hang BECOMES the failed state, with its
       // retry, instead of sitting on "Looking" forever.
-      await act(async () => { await vi.advanceTimersByTimeAsync(10000); });
+      await act(async () => { await vi.advanceTimersByTimeAsync(1); });
       expect(screen.getByText(/could not look further ahead/i)).toBeTruthy();
       const retry = screen.getByRole("button", { name: /try again/i }) as HTMLButtonElement;
       expect(retry.disabled).toBe(false);

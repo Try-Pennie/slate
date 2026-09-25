@@ -37,6 +37,7 @@ import {
   type NextDaysFailure,
 } from "@/lib/booking/next-days-reply";
 import { getJson, postJson, REQUEST_TIMEOUT_MS } from "@/lib/http";
+import { NEXT_DAYS_TIMEOUT_MS } from "@/lib/availability/next-available";
 import { testPassHeaders, testPassRefusalSentence } from "@/lib/embed/test-pass-header";
 import { TestModeBand } from "@/components/TestModeBand";
 import { useStalledAfter } from "@/lib/useStalledAfter";
@@ -1768,9 +1769,12 @@ export default function Booker({
     // calendar work per bookable agent), so a wedged request left "Looking" on
     // screen indefinitely with no way for a lead to tell it had died. The abort
     // arrives here as `ok: false`, which is already the failed screen below.
+    // #2799: its OWN ceiling rather than the shared 20s one, because the full walk
+    // for the biggest pool lands right about there. It is derived from the server
+    // walk's worst case, so re-measuring that walk moves this with it.
     const res = await getJson<unknown>(
       `/api/availability/next?bucket=${encodeURIComponent(bucketCode)}`,
-      { timeoutMs: REQUEST_TIMEOUT_MS, cache: "no-store", headers: testPassHeaders(testPass) },
+      { timeoutMs: NEXT_DAYS_TIMEOUT_MS, cache: "no-store", headers: testPassHeaders(testPass) },
     );
     // #2666: a refused test pass is neither "we could not look" nor "unreadable":
     // it has its own sentence (reload, or tell us), carried by the reply itself.

@@ -26,6 +26,7 @@ import {
   findNextAvailableSlots,
   PROBE_WINDOW_DAYS,
   MAX_LOOKAHEAD_DAYS,
+  NEXT_WINDOW_CONCURRENCY,
   type Probe,
 } from "../src/lib/availability/next-available.ts";
 import { DateTime } from "luxon";
@@ -113,8 +114,13 @@ const probes = probeWindows({ searchedThroughDay: "2026-08-16", zone: ZONE });
 
   eq(found.length, 5, "every slot on the found days comes back, not one per day");
   eq(found[0], "2026-08-17T13:00:00.000Z", "in time order");
-  // The whole point: it stopped after ONE compute rather than paying for 56 days.
-  eq(calls.length, 1, "the walk stops at the first window that answers");
+  // The whole point: it stopped after the first window rather than paying for 56
+  // days. Windows run `NEXT_WINDOW_CONCURRENCY` at a time (#2799), so the ones
+  // already in flight beside the answer are the only extra cost, and no more start.
+  assert(
+    calls.length <= NEXT_WINDOW_CONCURRENCY,
+    `the walk stops at the first window that answers (computed ${calls.length})`,
+  );
 }
 
 {
@@ -143,7 +149,10 @@ const probes = probeWindows({ searchedThroughDay: "2026-08-16", zone: ZONE });
   ]);
   const found = await findNextAvailableSlots({ probes, wantDays: 3, zone: ZONE, compute });
   eq(found.length, 3, "the three wanted days come back");
-  eq(calls.length, 3, "and the walk stops there rather than running to the cap");
+  assert(
+    calls.length <= 3 + NEXT_WINDOW_CONCURRENCY - 1,
+    `and the walk stops there rather than running to the cap (computed ${calls.length})`,
+  );
   assert(calls.length < probes.length, "so most of the lookahead is never paid for");
 }
 
