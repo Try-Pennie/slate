@@ -595,7 +595,12 @@ and `worker/` for the whole run** (#2733) and fails it naming each path written,
 but only in CI and the pre-push gate's isolated tree (`SLATE_TREE_TRIPWIRE=pre-push`),
 because in your own `pnpm test` your editor's saves would trip it. Its first line
 and summary say whether it was on; `SLATE_TREE_TRIPWIRE=on` arms it by hand.
-Rules and allowed paths: `scripts/lib/tree-write-tripwire.ts`.
+The vitest suites get the same watch from a global setup
+(`scripts/vitest-tree-tripwire.ts`, declared in `vitest.config.ts`, #2759), armed by
+the same rule; it cannot say WHICH vitest file wrote, only that one did. It costs
+about 60ms a run (the start and end probes), and
+`scripts/test-vitest-tree-tripwire.ts` plants a write through real vitest to prove it
+fails the run. Rules and allowed paths: `scripts/lib/tree-write-tripwire.ts`.
 
 **The escape hatch** is `// typecheck-ok: <why>` on, or in the `//` block
 directly above, the line, and it must carry a reason. The one use today is the

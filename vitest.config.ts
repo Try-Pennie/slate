@@ -38,6 +38,11 @@ export default defineConfig({
     pool: "forks",
     include: ["src/**/*.test.{ts,tsx}"],
     setupFiles: ["./vitest.setup.ts"],
+    // The runtime tree write tripwire's vitest arm (#2759): watches scripts/, src/
+    // and worker/ for the length of the run, armed only in CI and the pre-push
+    // gate. The rules are in scripts/lib/tree-write-tripwire.ts, and
+    // scripts/test-vitest-tree-tripwire.ts fails if this line goes.
+    globalSetup: ["./scripts/vitest-tree-tripwire.ts"],
   },
   esbuild: { jsx: "automatic" },
   resolve: {

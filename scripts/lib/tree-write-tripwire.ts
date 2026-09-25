@@ -24,11 +24,18 @@
 // A write that genuinely has to land in the tree gets an entry in
 // ALLOWED_TREE_WRITES with its reason, never a looser pattern.
 //
+// TWO ARMS, one library (#2759). scripts/run-tests.ts watches the node suites, and
+// scripts/vitest-tree-tripwire.ts, a global setup vitest.config.ts declares, watches
+// the vitest suites (`pnpm test` runs them after the node runner has exited, so the
+// runner's watch cannot cover them). Both decide with resolveTripwireMode, so the
+// two are armed and disarmed by one rule.
+//
 // WHAT IT CANNOT SEE, so a clean run is never read as more than it is (L400):
-// the vitest suites (`pnpm test` runs them after this runner has exited), and
-// writes anywhere outside scripts/, src/ and worker/.
+// writes anywhere outside scripts/, src/ and worker/, and, in the vitest arm, WHICH
+// vitest file made a write (the global setup runs in vitest's main process and is
+// told nothing about the files its workers are running).
 import { watch, writeFileSync, rmSync, type FSWatcher } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 
 export const TRIPWIRE_WATCHED_DIRS = ["scripts", "src", "worker"] as const;
 
@@ -67,6 +74,16 @@ export function resolveTripwireMode(env: Record<string, string | undefined>): Tr
       "this is neither CI nor the pre-push gate's isolated checkout, and your own edits would trip it. " +
       "Arm it with SLATE_TREE_TRIPWIRE=on when nothing else is writing",
   };
+}
+
+/**
+ * The root both arms watch: the repository, unless SLATE_TREE_TRIPWIRE_ROOT points
+ * elsewhere, which exists only so the tripwire's own tests can plant writes in a
+ * throwaway tree rather than in this one.
+ */
+export function tripwireWatchRoot(env: Record<string, string | undefined>, repoRoot: string): string {
+  const override = env.SLATE_TREE_TRIPWIRE_ROOT?.trim();
+  return override ? resolve(override) : repoRoot;
 }
 
 /** The file the tripwire writes to prove a watcher is live, at the top of a watched dir. */
