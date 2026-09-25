@@ -582,6 +582,14 @@ h1.pn-display {
   animation: pn-confirm-rise 360ms cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 
+/* #2766 (L231): inside the embed the booker's root fills the frame, and the
+   document behind it paints the SAME surface as that root, so no gap (a frame
+   briefly taller than the booker, an overscroll) can ever show a second colour
+   under the card. `data-embedded-booker` is set by StandaloneBookerShell. */
+html:has(main[data-embedded-booker]),
+html:has(main[data-embedded-booker]) body {
+  background: var(--surface);
+}
 /* In-page anchor jumps (edit/submit/cancel land on #time-off) glide instead of
    teleporting. The reduced-motion guard below resets this to auto. */
 html {

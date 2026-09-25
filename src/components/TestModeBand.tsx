@@ -20,9 +20,19 @@ import { TEST_MODE_COPY } from "@/lib/booking/booker-copy";
  * `role="note"`, not `status`: it is a standing fact about the screen, not an
  * update, so it is read in place and never announced on top of the content.
  */
-export function TestModeBand() {
+export function TestModeBand({ framed = false }: { framed?: boolean } = {}) {
+  // #2748: `framed` is the booker inside the widget's iframe, where the host's
+  // close control sits over the frame's top right corner. The band stops short of
+  // it (64px: the control's 12px inset, its 44px width and its 8px focus ring), so
+  // the control sits on the card rather than on the band and its ring never
+  // crosses the band's edge. `embed-one-size.test.tsx` derives the number from
+  // `public/widget.js`, so the two cannot drift apart.
   return (
-    <div className="pn-test-mode" role="note" data-testid="test-mode-band">
+    <div
+      className={framed ? "pn-test-mode me-16" : "pn-test-mode"}
+      role="note"
+      data-testid="test-mode-band"
+    >
       <span aria-hidden="true" className="pn-test-mode-glyph">
         {TEST_MODE_COPY.label}
       </span>

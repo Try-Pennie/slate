@@ -104,7 +104,9 @@ describe("StandaloneBookerShell theme at boot (#2730)", () => {
         <p>booker</p>
       </StandaloneBookerShell>,
     );
-    expect(html.startsWith("<main>")).toBe(true);
+    // No class, so no viewport height: only the marker the document background
+    // keys on (#2766).
+    expect(html.startsWith("<main data-embedded-booker=\"\">")).toBe(true);
     expect(html).not.toMatch(/dvh|<footer/);
   });
 });

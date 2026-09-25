@@ -329,7 +329,11 @@
       "@keyframes slate-spin{to{transform:rotate(360deg)}}" +
       "@media (max-width:640px){.slate-widget-modal{width:100%!important;" +
       "height:100vh!important;height:100dvh!important;max-height:none!important;" +
-      "border-radius:0!important;box-shadow:none!important}}" +
+      "border-radius:0!important;box-shadow:none!important}" +
+      // #2769: the full screen modal is one size, so the frame fills it and a
+      // short step centres inside the booker rather than leaving white beneath a
+      // dark one. A taller step still grows the frame and the modal scrolls.
+      ".slate-widget-modal iframe{min-height:100%!important}}" +
       "@media (prefers-reduced-motion:reduce){.slate-widget-modal," +
       ".slate-widget-modal *{animation:none!important;transition:none!important}}" +
       // Hostile-host defense: a class rule out-specifies a host
@@ -406,33 +410,54 @@
     var close = document.createElement("button");
     close.textContent = "×";
     close.setAttribute("aria-label", COPY.close);
+    // #2766: inside the box's padding, so the focus ring (a 2px outline 2px
+    // out, plus a 4px glow, 8px in all) stays inside the 16px rounded corner
+    // rather than being clipped by it. The booker leaves this corner empty in
+    // the embed (#2748): its test band and its clock row stop short of it, and
+    // `embed-one-size.test.tsx` holds the two sides against each other.
     close.style.cssText =
-      "position:absolute;top:2px;right:2px;border:0;background:transparent;" +
+      "position:absolute;top:12px;right:12px;border:0;background:transparent;" +
       "width:44px;height:44px;display:flex;align-items:center;" +
       "justify-content:center;border-radius:12px;" +
-      "font-size:24px;line-height:1;cursor:pointer;color:rgb(106,106,112);" +
+      "font-size:24px;line-height:1;cursor:pointer;" +
       "z-index:1;box-sizing:border-box;margin:0;padding:0;" +
       "letter-spacing:normal;text-align:center;font-family:'PP Mori'," +
       "-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif";
+    // #2748: the control is drawn over whatever is BEHIND it, which is the white
+    // chrome while the frame loads and the booker once it has, and a dark booker
+    // made the graphite glyph and ring all but invisible. So its ink follows the
+    // booker's theme once the booker is showing. Literals, because the host page
+    // has no Pennie tokens: the dark half mirrors `--pennie-muted-dark`,
+    // `--pennie-beige` and the sky focus line D17 sets for navy; the light half
+    // is the graphite recipe (the 3:1 line is the outline; the sky glow is
+    // decorative in both).
+    var darkBooker = /[?&]theme=dark(?:&|$)/.test(bookUrl);
+    var CLOSE_ON_LIGHT = { rest: "rgb(106,106,112)", strong: "rgb(52,52,52)", ring: "rgb(52,52,52)" };
+    var CLOSE_ON_DARK = { rest: "rgb(165,162,177)", strong: "rgb(249,246,240)", ring: "rgb(130,208,255)" };
+    var closeFocused = false;
+    var closeHovered = false;
+    function paintClose() {
+      var ink = darkBooker && loadState === "loaded" ? CLOSE_ON_DARK : CLOSE_ON_LIGHT;
+      close.style.color = closeFocused || closeHovered ? ink.strong : ink.rest;
+      close.style.outline = closeFocused ? "2px solid " + ink.ring : "";
+      close.style.outlineOffset = closeFocused ? "2px" : "";
+      close.style.boxShadow = closeFocused ? "0 0 0 4px rgba(130,208,255,0.45)" : "";
+    }
     close.addEventListener("mouseenter", function () {
-      close.style.color = "rgb(52,52,52)";
+      closeHovered = true;
+      paintClose();
     });
     close.addEventListener("mouseleave", function () {
-      close.style.color = "rgb(106,106,112)";
+      closeHovered = false;
+      paintClose();
     });
-    // Theme-aware focus recipe (literal: the modal chrome is always white) -
-    // graphite outline carries the 3:1 contrast; the sky glow is decorative.
     close.addEventListener("focus", function () {
-      close.style.outline = "2px solid rgb(52,52,52)";
-      close.style.outlineOffset = "2px";
-      close.style.boxShadow = "0 0 0 4px rgba(130,208,255,0.45)";
-      close.style.color = "rgb(52,52,52)";
+      closeFocused = true;
+      paintClose();
     });
     close.addEventListener("blur", function () {
-      close.style.outline = "";
-      close.style.outlineOffset = "";
-      close.style.boxShadow = "";
-      close.style.color = "rgb(106,106,112)";
+      closeFocused = false;
+      paintClose();
     });
 
     // Branded loading state on the white surface. It must NEVER spin forever:
@@ -544,6 +569,7 @@
     }
 
     renderLoading();
+    paintClose();
 
     // Loads of THIS iframe. The second and later announce `bookerReloaded`: a
     // retry after a failed load, or a reload from inside the frame. A close and
@@ -555,14 +581,17 @@
     // #2729: the floor sits under the two column booker's shortest loaded height
     // (about 447px, measured in the 896px modal). At 560 the frame outgrew a
     // booker that no longer stacks, and a strip of empty page showed beneath it.
+    // display:block, because an inline frame sits on a text baseline and left
+    // a 6px strip of the modal's white under a dark booker (#2766).
     iframe.style.cssText =
-      "width:100%;border:0;min-height:440px;opacity:0" +
+      "display:block;width:100%;border:0;min-height:440px;opacity:0" +
       (reduceMotion ? "" : ";transition:opacity .15s ease,height .15s ease");
     iframe.setAttribute("title", COPY.frameTitle);
     iframe.allow = "fullscreen";
     iframe.addEventListener("load", function () {
       stopLoadTimer();
       loadState = "loaded";
+      paintClose();
       if (loader.parentNode) loader.parentNode.removeChild(loader);
       iframe.style.opacity = "1";
       loads++;

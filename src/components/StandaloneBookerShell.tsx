@@ -19,6 +19,12 @@ import {
  * must be no viewport height (the host sizes the frame from the Booker's own
  * `slate:resize` message) and no second copy of Pennie's policies (the
  * trypennie.com page around it already carries them, #1041).
+ *
+ * #2769: the Booker's own root does take the frame's viewport height in the
+ * embed (`min-h-screen`), deliberately: the frame is sized from the TALLEST step
+ * the Booker has reported, and a shorter step fills that box rather than
+ * shrinking it. That is safe only because the height reported never goes down,
+ * so a root as tall as the frame cannot ratchet it; this wrapper still adds none.
  */
 export default function StandaloneBookerShell({
   embedded,
@@ -31,7 +37,9 @@ export default function StandaloneBookerShell({
 }) {
   if (embedded) {
     return (
-      <main>
+      // #2766: the marker the document background keys on (globals.css), so
+      // the page behind the booker paints the booker's own surface.
+      <main data-embedded-booker="">
         {/* #2730: the root layout boots the document from the STAFF theme
             cookie, which means nothing to a lead, so without this an embedded
             booker opened by anybody with a dark console preference painted
