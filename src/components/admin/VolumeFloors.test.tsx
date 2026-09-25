@@ -35,7 +35,14 @@ describe("VolumeFloors", () => {
     expect(line).toContain("Jul 24 to Sep 25");
     expect(line).toContain(MEASURED_VOLUME_BASELINE.bookings.toLocaleString("en-US"));
     expect(line).toContain(MEASURED_VOLUME_BASELINE.scope);
-    expect(line).toContain("50% of that tier's bookings");
+    // The whole tier is fitted, so there is no share of it to state.
+    expect(line).not.toContain("of that tier's bookings");
+  });
+
+  it("states the share when the floors are fitted to part of the tier", () => {
+    const part = { ...MEASURED_VOLUME_BASELINE, tierShare: 0.5 };
+    const { container } = renderFloors({ baseline: part, table: floorTable(part, WEEK) });
+    expect(container.querySelector("[data-floor-provenance]")!.textContent).toContain("50% of that tier's bookings");
   });
 
   it("tables the measured 2 hour floor per open day and hour, with no Sunday", () => {
@@ -56,8 +63,18 @@ describe("VolumeFloors", () => {
     expect(tue2pm.textContent).toBe(`${cell.floor120}, usually ${cell.typical120}`);
   });
 
-  it("says once that the 30 minute window never fires on this traffic, instead of a grid of zeros", () => {
+  it("tables the measured 30 minute floor when it fires at some hour", () => {
     const { container } = renderFloors();
+    expect(container.querySelector('[data-floor-table="30"]')).not.toBeNull();
+    expect(container.querySelector("[data-short-window-silent]")).toBeNull();
+  });
+
+  it("says once that the 30 minute window never fires, instead of a grid of zeros", () => {
+    const quiet = {
+      ...MEASURED_VOLUME_BASELINE,
+      cells: MEASURED_VOLUME_BASELINE.cells.map((day) => day.map((c) => ({ ...c, floor30: 0 }))),
+    };
+    const { container } = renderFloors({ baseline: quiet, table: floorTable(quiet, WEEK) });
     expect(container.querySelector('[data-floor-table="30"]')).toBeNull();
     expect(container.querySelector("[data-short-window-silent]")).not.toBeNull();
   });

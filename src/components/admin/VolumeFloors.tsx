@@ -6,9 +6,9 @@
  * is gone as the primary input. What remains is an override, and it reads as one:
  * blank means the measurement, and a value names what it replaced.
  *
- * Only the long window gets a table. The short window's measured floor is zero at
- * every judged hour on one page's traffic, and a second grid of zeros would state
- * one fact thirty times (L605), so that is one sentence unless it ever differs.
+ * The short window gets its own table only when it fires at some judged hour. On
+ * thin traffic its measured floor is zero everywhere, and a grid of zeros would
+ * state one fact thirty times (L605), so that case is one sentence instead.
  */
 import type { FloorOverride, VolumeBaseline } from "@/lib/monitor/volume-floors";
 import { hourLabel, type FloorTable } from "@/lib/admin/volume-floor-table";

@@ -2,15 +2,16 @@
  * Whose traffic the low volume floors are fitted to, and how a baseline is built
  * from the committed measurement (#1956).
  *
- * THE SCOPE IS A DECISION, and it lives here in one place. The first flip routes
- * one landing page's Low debt leads through Slate while cal.com keeps the rest
- * (docs/parallel-run-plan.md, Phase 3). Measured 2026-09-25, the Completed
- * Application Review page carries 50% of the Low tier's bookings, so a floor fitted
- * to the whole tier is one that page's traffic misses about half the time, and the
- * alarm would page every afternoon of the pilot.
+ * THE SCOPE IS A DECISION, and it lives here in one place. Dan, 2026-09-25: every
+ * Low landing page moves to Slate at once, so the floors are the whole Low tier's.
+ * Replayed over two held out weeks of real cal.com bookings, that scope paged 0
+ * times on normal traffic and caught a full outage in 30 minutes typically (85 at
+ * worst). The scope has to MATCH what Slate carries, in both directions: floors
+ * fitted to the tier while only one page flipped paged 108 to 283 times in the same
+ * two weeks, and floors fitted to one page while all flip are slow and blind.
  *
- * When the flip widens, change `FLOOR_SCOPE.forms` to every page Slate then carries
- * and run `pnpm measure:volume-floors`. The admin page names the scope and its share
+ * When what Slate carries changes, change `FLOOR_SCOPE.forms` to exactly those
+ * pages and run `REFIT=1 pnpm measure:volume-floors`. The admin page names the scope and its share
  * beside the floors, so a scope nobody updated is visible to whoever arms the alarm.
  *
  * The committed fixture keeps every Low page's series, not only the scoped one, so
@@ -29,8 +30,12 @@ export interface FloorScope {
 
 export const FLOOR_SCOPE: FloorScope = {
   tier: "1",
-  forms: ["Completed Application Review (/booking ai_agent_eligible false and /my-offers/result)"],
-  label: "Low debt bookings from the Completed Application Review page, the first page to move to Slate",
+  forms: [
+    "Income Verification Phone Call (engine /booking/portal and /offerhub)",
+    "Completed Application Review Follow Up Routing (ai_agent_eligible true /booking)",
+    "Completed Application Review (/booking ai_agent_eligible false and /my-offers/result)",
+  ],
+  label: "Low debt bookings from every Low landing page, all of which move to Slate together",
 };
 
 /** The committed measurement: booking counts per bucket, per page, for one tier. */

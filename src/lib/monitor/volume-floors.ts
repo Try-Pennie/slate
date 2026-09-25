@@ -26,9 +26,10 @@
  * is quiet by construction must read differently from one that is quiet because
  * nothing is wrong (L678).
  *
- * WHOSE TRAFFIC. A baseline is fitted to the traffic SLATE carries, never the whole
- * tier: the first flip is one landing page, and a floor fitted to the tier is one
- * that page can never clear. The scope is part of the baseline and is shown with it.
+ * WHOSE TRAFFIC. A baseline is fitted to exactly the traffic SLATE carries: a floor
+ * fitted to more pages than Slate serves is one it can never clear, and one fitted
+ * to fewer is slow to see an outage. The scope is part of the baseline and is shown
+ * with it (`scripts/lib/volume-floor-scope.ts`).
  *
  * No `@/` imports, so node scripts can run it directly.
  */

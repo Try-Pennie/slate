@@ -130,10 +130,10 @@ const fixture = JSON.parse(readFileSync("scripts/fixtures/calcom-low-bookings.js
   );
   eq(MEASURED_VOLUME_BASELINE.cells.length, 7, "seven weekdays");
   assert(MEASURED_VOLUME_BASELINE.cells.every((d) => d.length === 24), "twenty four hours each");
-  assert(
-    MEASURED_VOLUME_BASELINE.tierShare !== null && MEASURED_VOLUME_BASELINE.tierShare < 1,
-    "the floors are fitted to the page Slate carries, not the whole tier",
-  );
+  // Dan, 2026-09-25: every Low page moves to Slate at once, so the floors are the
+  // whole tier's. Fitting one page while all flip misses outages; fitting the tier
+  // while one flips paged 108 to 283 times in two normal weeks of replay.
+  eq(MEASURED_VOLUME_BASELINE.tierShare, null, "the floors are fitted to the whole Low tier, which is what Slate carries");
   assert(MEASURED_VOLUME_BASELINE.bookings > 1000, "fitted to a real volume of bookings, not a handful");
   // Every page in the tier is kept, so a wider scope can be fitted offline.
   assert(Object.keys(fixture.forms).length >= 2, "the measurement holds every Low page, not only the scoped one");
@@ -151,7 +151,9 @@ const fixture = JSON.parse(readFileSync("scripts/fixtures/calcom-low-bookings.js
   // The whole tier scope reports no share, because it IS the tier.
   const whole = baselineFromFixture(fixture, { ...FLOOR_SCOPE, forms: Object.keys(fixture.forms) });
   eq(whole.tierShare, null, "a scope covering every page is the whole tier");
-  assert(whole.bookings > MEASURED_VOLUME_BASELINE.bookings, "and it counts more bookings than one page");
+  const onePage = baselineFromFixture(fixture, { ...FLOOR_SCOPE, forms: [Object.keys(fixture.forms)[0]!] });
+  assert(onePage.tierShare !== null && onePage.tierShare < 1, "and one page alone reports its share of the tier");
+  assert(whole.bookings > onePage.bookings, "and the tier counts more bookings than one page");
 
   // buildFixture: only booked responses in the tier, in the bucket they arrived in.
   const s = Date.UTC(2026, 8, 1, 12, 0);
@@ -234,7 +236,12 @@ const fixture = JSON.parse(readFileSync("scripts/fixtures/calcom-low-bookings.js
   eq(table.rows.map((r) => r.label), ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"], "Sunday, shut, is not a row");
   eq(table.hours, [8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19], "8am to 7pm, the hours the check runs in");
   eq(table.rows[1]!.cells[6]!.floor120, MEASURED_VOLUME_BASELINE.cells[1]![14]!.floor120, "Tuesday 2pm is the baseline's own cell");
-  eq(table.shortRows, null, "a 30 minute floor of 0 at every judged hour is said once, not tabled");
+  assert(table.shortRows !== null, "the whole tier's 30 minute floor fires at some hour, so it is tabled");
+  const quiet = {
+    ...MEASURED_VOLUME_BASELINE,
+    cells: MEASURED_VOLUME_BASELINE.cells.map((day) => day.map((c) => ({ ...c, floor30: 0 }))),
+  };
+  eq(floorTable(quiet, week).shortRows, null, "a 30 minute floor of 0 at every judged hour is said once, not tabled");
   // A day with a shorter window shows nothing past it, rather than a floor it never judges.
   const shortSat = floorTable(MEASURED_VOLUME_BASELINE, {
     rules: [...week.rules.slice(0, 5), { weekday: 6, start_minute: 9 * 60, end_minute: 13 * 60 }],
