@@ -27,7 +27,7 @@ export function agentSyncFailureAlert(message: string): string {
  */
 export function twilioSyncFailureAlert(reason: string): string {
   return (
-    `The roster sync could not read Twilio, so no agent was taken out of the bookable pool for the Redistribute tag ` +
+    `The roster sync could not read Twilio on two runs in a row, so no agent was taken out of the bookable pool for the Redistribute tag ` +
     `and nobody was put back in. Salesforce still synced. ${reason}`
   );
 }

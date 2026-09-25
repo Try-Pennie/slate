@@ -126,11 +126,12 @@ describe("GET /api/cron/agents", () => {
   it("clears the failure streak and does not alert on a clean pass", async () => {
     const res = await GET(req());
     expect(res.status).toBe(200);
-    // Two streaks this lane owns, cleared by name rather than by count so a third
+    // Three streaks this lane owns, cleared by name rather than by count so a fourth
     // one added later cannot be waved through by the number happening to match:
-    // the Salesforce sync's, and the Twilio writes' (#2114).
+    // the Salesforce sync's, the Twilio read's (#2774), and the Twilio writes' (#2114).
     expect(streak.clearFailureStreak.mock.calls.map((c: unknown[]) => c[0]).sort()).toEqual([
       "cron_agents_failures",
+      "twilio_sync_failures",
       "twilio_write_failures",
     ]);
     expect(streak.recordFailureStreak).not.toHaveBeenCalled();
@@ -178,8 +179,9 @@ describe("GET /api/cron/agents", () => {
     expect(cleared).toContain("agent_sync_failures");
   });
 
-  it("pages on its own key when Twilio cannot be read, and still reports the Salesforce half", async () => {
+  it("pages on its own key when Twilio cannot be read on a second run in a row, and still reports the Salesforce half", async () => {
     twilio.syncTwilioRedistribute.mockRejectedValueOnce(new Error("Twilio refused the credentials (401)."));
+    streak.recordConsecutiveStreak.mockResolvedValueOnce(true);
     const res = await GET(req());
     // 200, deliberately: the Salesforce writes committed. A 500 would record a
     // Salesforce failure streak for a Twilio fault and page about the wrong system.
@@ -190,6 +192,48 @@ describe("GET /api/cron/agents", () => {
     // And the response says which half failed, rather than looking like a run where
     // nobody happened to be tagged.
     expect(await res.json()).toMatchObject({ twilio: { ok: false } });
+  });
+
+  // #2774: one failed read is recorded, not paged. On 2026-09-25 a single 520 from
+  // Twilio's edge paged a person while the hour before had read fine. The client
+  // already retried it once; what survives that is still usually a blip, so the
+  // page waits for the NEXT hourly run to fail too, like the Salesforce half.
+  it("records a single failed Twilio read without paging, and still says so everywhere else", async () => {
+    twilio.syncTwilioRedistribute.mockRejectedValueOnce(new Error("Twilio's worker listing returned 520"));
+    const res = await GET(req());
+    expect(streak.recordConsecutiveStreak).toHaveBeenCalledWith("twilio_sync_failures", expect.any(Number), 2);
+    const paged = dispatch.sendThrottledAlert.mock.calls.map((c: unknown[]) => c[0]);
+    expect(paged).not.toContain("twilio_sync_failures");
+    // The miss is still RECORDED on this run: the verdict stamp says the half did
+    // not conclude, and the response the banner reads says Twilio failed.
+    expect(verdict.recordDetectorVerdict).toHaveBeenCalledWith("verdict:twilio-roster", false);
+    expect(await res.json()).toMatchObject({ twilio: { ok: false } });
+    // And a failed read is not a healthy one, so its streak is not cleared.
+    expect(streak.clearFailureStreak.mock.calls.map((c: unknown[]) => c[0])).not.toContain("twilio_sync_failures");
+  });
+
+  it("pages when two consecutive runs fail to read Twilio", async () => {
+    twilio.syncTwilioRedistribute.mockRejectedValueOnce(new Error("Twilio's worker listing returned 520"));
+    streak.recordConsecutiveStreak.mockResolvedValueOnce(false);
+    await GET(req());
+    expect(dispatch.sendThrottledAlert).not.toHaveBeenCalled();
+    twilio.syncTwilioRedistribute.mockRejectedValueOnce(new Error("Twilio's worker listing returned 503"));
+    streak.recordConsecutiveStreak.mockResolvedValueOnce(true);
+    await GET(req());
+    const pages = dispatch.sendThrottledAlert.mock.calls.filter((c: unknown[]) => c[0] === "twilio_sync_failures");
+    expect(pages).toHaveLength(1);
+    expect(String(pages[0]![2])).toContain("503");
+  });
+
+  it("does not page on one failed run followed by a success, and the success clears the streak", async () => {
+    twilio.syncTwilioRedistribute.mockRejectedValueOnce(new Error("Twilio's worker listing returned 520"));
+    streak.recordConsecutiveStreak.mockResolvedValueOnce(false);
+    await GET(req());
+    await GET(req());
+    expect(dispatch.sendThrottledAlert).not.toHaveBeenCalled();
+    // Cleared on the measured success, so the next isolated miss starts from zero
+    // rather than pairing with one from days ago.
+    expect(streak.clearFailureStreak.mock.calls.map((c: unknown[]) => c[0])).toContain("twilio_sync_failures");
   });
 
   // #2114: the half AFTER the read. Until this, a flip that kept throwing, a

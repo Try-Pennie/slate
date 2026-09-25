@@ -31,6 +31,9 @@ const REFUSED = "Twilio refused the credentials (401). The API key has to be Tas
   assert(/Redistribute/.test(text), "and names the tag, which is the vocabulary the manager who set it uses");
   // The half that still worked, so nobody spends the morning on Salesforce.
   assert(/Salesforce still synced/.test(text), "and says the Salesforce half was fine, so the reader looks in the right place");
+  // #2774: it pages only on the second consecutive failed run, so it says so, or a
+  // reader takes it for a single blip and waits for the next hour to clear it.
+  assert(/two runs in a row/.test(text), "the page says the read failed on consecutive runs, not once");
   assert(text.includes(NOT_CONFIGURED), "the cause is carried through verbatim, so the instruction reaches the reader");
 }
 

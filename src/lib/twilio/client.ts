@@ -28,6 +28,22 @@ import { refuseUnderLoadtest } from "@/lib/loadtest-guard";
 const MAX_PAGES = 50;
 const PAGE_SIZE = 200;
 
+/**
+ * How long to wait before the one retry (#2774).
+ *
+ * On 2026-09-25 a single 520 from Twilio's edge paged a person while the run an
+ * hour earlier had read Twilio fine and Twilio reported no incident. A 5xx or a
+ * dropped connection is the kind of failure that heals in seconds, so it gets ONE
+ * more attempt after this pause. Exactly one: a real outage must still refuse
+ * inside the cron invocation rather than hang it (L110), and the run-level streak
+ * in `runRosterSync` is what absorbs anything longer.
+ */
+export const TWILIO_RETRY_DELAY_MS = 2_000;
+
+/** The pause between attempts. Injected so no test waits for real (L524). */
+export type Sleep = (ms: number) => Promise<void>;
+const realSleep: Sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
 export type TwilioReadFailure =
   /** One or more of the three credentials is unset or empty on this deployment. */
   | "not-configured"
@@ -82,11 +98,13 @@ export interface TwilioWorker {
  * `fetchImpl` is injected so the refusals are driven offline by
  * `scripts/test-twilio-client.ts`: they are the half that must work when something
  * has already gone wrong, and a live Twilio cannot be asked to produce a 401 on
- * demand.
+ * demand. `sleep` is injected for the same reason, so the retry is driven without
+ * waiting.
  */
 export async function fetchTwilioWorkers(
   creds: TwilioCredentials = twilioCredentials(),
   fetchImpl: typeof fetch = fetch,
+  sleep: Sleep = realSleep,
 ): Promise<TwilioWorker[]> {
   // Before the credentials are even looked at (#2335): under a load test there is no
   // reading of the real workspace that could be correct, whatever this deployment is
@@ -112,12 +130,7 @@ export async function fetchTwilioWorkers(
     url.searchParams.set("PageSize", String(PAGE_SIZE));
     if (pageToken) url.searchParams.set("PageToken", pageToken);
 
-    let res: Response;
-    try {
-      res = await fetchImpl(url, { headers: { Authorization: authHeader } });
-    } catch (err) {
-      throw new TwilioReadError("unreachable", `Twilio did not answer: ${String(err).slice(0, 200)}`);
-    }
+    const res = await fetchPageWithOneRetry(url, authHeader, fetchImpl, sleep);
     if (res.status === 401 || res.status === 403) {
       throw new TwilioReadError(
         "refused",
@@ -147,4 +160,34 @@ export async function fetchTwilioWorkers(
     );
   }
   return all;
+}
+
+/**
+ * One page request, retried ONCE when the failure is one that can heal (#2774): no
+ * answer at all, or a 5xx. Never a 401 or 403, which a second request a moment
+ * later cannot change, and never another 4xx. Whatever the second attempt meets is
+ * what the caller judges, so a refusal names the latest fact rather than the first.
+ */
+async function fetchPageWithOneRetry(
+  url: URL,
+  authHeader: string,
+  fetchImpl: typeof fetch,
+  sleep: Sleep,
+): Promise<Response> {
+  const attempt = async (): Promise<Response | { networkError: unknown }> => {
+    try {
+      return await fetchImpl(url, { headers: { Authorization: authHeader } });
+    } catch (err) {
+      return { networkError: err };
+    }
+  };
+  let res = await attempt();
+  if (!(res instanceof Response) || res.status >= 500) {
+    await sleep(TWILIO_RETRY_DELAY_MS);
+    res = await attempt();
+  }
+  if (!(res instanceof Response)) {
+    throw new TwilioReadError("unreachable", `Twilio did not answer: ${String(res.networkError).slice(0, 200)}`);
+  }
+  return res;
 }

@@ -62,6 +62,29 @@ const AGENTS_LOCK_TTL_MS = ROSTER_RUN_LOCK_TTL_MS;
 const TWILIO_WRITE_STREAK_KEY = "twilio_write_failures";
 const TWILIO_WRITE_STREAK_WINDOW_S = 3 * 60 * 60;
 const TWILIO_WRITE_STREAK_ALERT_AT = 2;
+
+/**
+ * The Twilio READ failures streak (#2774).
+ *
+ * The same mechanism as the writes above and as the Salesforce half's
+ * `agent_sync_failures` (`recordConsecutiveStreak` over the `rate_limit_hit` counter
+ * in `rate_limits`, cleared by `clearFailureStreak`), with its own key so a failing
+ * read and a failing write never count toward each other.
+ *
+ * On 2026-09-25 one 520 from Twilio's edge paged a person while the run an hour
+ * earlier had read Twilio fine. The client now retries a 5xx or a dropped
+ * connection once inside the run; what survives that still pages only when the
+ * NEXT hourly run fails to read Twilio as well. The miss is not hidden on the first
+ * run: the verdict stamp and the banner line say so every time, and only the page
+ * waits.
+ *
+ * The window is three hours for the same reason as the writes' window: two
+ * genuinely consecutive hourly runs land in one window rather than each looking
+ * like the first.
+ */
+const TWILIO_READ_STREAK_KEY = "twilio_sync_failures";
+const TWILIO_READ_STREAK_WINDOW_S = 3 * 60 * 60;
+const TWILIO_READ_STREAK_ALERT_AT = 2;
 const SYNC_ALERT_COOLDOWN_MS = 6 * 60 * 60 * 1000;
 
 export type RosterSyncOutcome =
@@ -132,7 +155,10 @@ export async function runRosterSync(): Promise<RosterSyncOutcome> {
       //
       // Hung off the MEASURED success, which is the only thing that can know Twilio
       // is readable. A run that threw above never reaches this line, so a Twilio
-      // half that could not measure anything clears nothing (#1134, #1152).
+      // half that could not measure anything clears nothing (#1134, #1152). The
+      // streak is cleared on the same footing (#2774), so a later isolated miss
+      // starts counting from zero.
+      await clearFailureStreak(TWILIO_READ_STREAK_KEY);
       const cleared = await resolveAlert("twilio_sync_failures", twilioSyncRecovery()).catch(() => false);
       if (cleared) log.info("agents", { msg: "twilio sync failure alert cleared" });
       await reportTwilioWriteOutcome(result);
@@ -140,14 +166,23 @@ export async function runRosterSync(): Promise<RosterSyncOutcome> {
       const reason = err instanceof Error ? err.message : String(err);
       twilio = { ok: false, reason };
       log.error("agents", { msg: "twilio half of the roster sync failed" }, err);
-      // alert-text-ok: every one of the read's five refusals is a short sentence
-      // this code wrote, carrying its own instruction. It is not a raw error.
-      // alert-key: twilio_sync_failures
-      await sendThrottledAlert(
-        "twilio_sync_failures",
-        SYNC_ALERT_COOLDOWN_MS,
-        twilioSyncFailureAlert(reason),
-      ).catch(() => {});
+      // #2774: pages on the SECOND consecutive run that cannot read Twilio, not the
+      // first. See TWILIO_READ_STREAK_KEY.
+      const consecutive = await recordConsecutiveStreak(
+        TWILIO_READ_STREAK_KEY,
+        TWILIO_READ_STREAK_WINDOW_S,
+        TWILIO_READ_STREAK_ALERT_AT,
+      );
+      if (consecutive) {
+        // alert-text-ok: every one of the read's five refusals is a short sentence
+        // this code wrote, carrying its own instruction. It is not a raw error.
+        // alert-key: twilio_sync_failures
+        await sendThrottledAlert(
+          "twilio_sync_failures",
+          SYNC_ALERT_COOLDOWN_MS,
+          twilioSyncFailureAlert(reason),
+        ).catch(() => {});
+      }
     }
 
     // #2114: the stamp that says the Twilio half CONCLUDED, as opposed to ran.

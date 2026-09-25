@@ -23,7 +23,11 @@ const dispatch = vi.hoisted(() => ({
   sendThrottledAlert: vi.fn(async () => {}),
   resolveAlert: vi.fn(async () => false),
 }));
-const streak = vi.hoisted(() => ({ clearFailureStreak: vi.fn(async () => {}) }));
+const streak = vi.hoisted(() => ({
+  clearFailureStreak: vi.fn(async () => {}),
+  // #2774: the Twilio read streak. False, so one failed read stays quiet.
+  recordConsecutiveStreak: vi.fn(async () => false),
+}));
 
 vi.mock("@/lib/locks", () => locks);
 vi.mock("@/lib/salesforce/sync", () => sync);
