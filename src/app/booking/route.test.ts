@@ -229,7 +229,7 @@ describe("POST /booking (embed) error mapping", () => {
       "error",
       "411",
       "existing_call_unavailable",
-      { by: "bucket", code: "411" },
+      { by: "bucket", code: "411", host: { prefill: null, referrer_origin: null } },
     );
   });
 
@@ -246,7 +246,11 @@ describe("POST /booking (embed) error mapping", () => {
     expect(body.error).toBe("We hit a temporary issue booking this time. Please try again in a moment.");
     expect(JSON.stringify(body)).not.toMatch(/SF query|salesforce|Error:/i);
     expect(rateLimit.refundRequest).toHaveBeenCalledTimes(3);
-    expect(recordApiOutcome).toHaveBeenCalledWith("error", "100", "lead_code_unavailable", { by: "bucket", code: "100" });
+    expect(recordApiOutcome).toHaveBeenCalledWith("error", "100", "lead_code_unavailable", {
+      by: "bucket",
+      code: "100",
+      host: { prefill: null, referrer_origin: null },
+    });
   });
 
   it("does not call a booking a test one when the link carried no routable code (#2638)", async () => {
@@ -282,6 +286,7 @@ describe("POST /booking (embed) error mapping", () => {
     expect(recordApiOutcome).toHaveBeenCalledWith("error", "411", "outside_calling_window", {
       by: "bucket",
       code: "411",
+      host: { prefill: null, referrer_origin: null },
     });
   });
 
@@ -951,5 +956,52 @@ describe("POST /booking partner join keys (#2659)", () => {
     const body = await (await post(VALID_BODY)).json();
     expect(body.submissionId).toBe("a0G5x00000AbCdEQAU");
     expect(body.regalProfileId).toBeNull();
+  });
+});
+
+// #2752: every attempt recorded here carries the host page facts the confirm holds,
+// in the shape the booking row stores them, so the tally can judge them through the
+// off site page's own predicate and keep a tester on a real code out of the failure
+// rate. The framing page is reduced exactly as createBooking reduces it.
+describe("POST /booking records the host page with each attempt (#2752)", () => {
+  beforeEach(() => recordApiOutcome.mockClear());
+  const hostOf = (i = 0) => (recordApiOutcome.mock.calls[i][3] as { host?: unknown }).host;
+
+  it("carries a localhost tester's declared origin and framing page on a refusal", async () => {
+    service.createBooking.mockRejectedValueOnce(new service.SlotUnavailableError("taken"));
+    await post({
+      ...VALID_BODY,
+      bucketCode: "100",
+      prefill: { parentOrigin: "http://localhost:3000", embed: "1" },
+      referrerOrigin: "http://localhost:3000/test-page?lead=x",
+    });
+    expect(recordApiOutcome.mock.calls[0][2]).toBe("slot_unavailable");
+    expect(hostOf()).toEqual({
+      prefill: { parentOrigin: "http://localhost:3000" },
+      // Reduced to the bare origin, never the path or query the client sent.
+      referrer_origin: "http://localhost:3000",
+    });
+  });
+
+  it("carries the production site on a created booking", async () => {
+    service.createBooking.mockResolvedValue({
+      booking: { id: "bk-1", starts_at: "2026-07-01T15:00:00.000Z", ends_at: "2026-07-01T15:30:00.000Z" },
+      manageUrl: "https://slate.test/booking/manage/tok",
+    });
+    await post({ ...VALID_BODY, prefill: { parentOrigin: "https://www.trypennie.com" } });
+    expect(recordApiOutcome.mock.calls[0][0]).toBe("created");
+    expect(hostOf()).toEqual({ prefill: { parentOrigin: "https://www.trypennie.com" }, referrer_origin: null });
+  });
+
+  it("carries no host when the confirm recorded none, which still counts", async () => {
+    service.createBooking.mockRejectedValueOnce(new service.SlotUnavailableError("taken"));
+    await post(VALID_BODY);
+    expect(hostOf()).toEqual({ prefill: null, referrer_origin: null });
+  });
+
+  it("reads the host off the raw body when the body itself is what failed to parse", async () => {
+    await post({ ...VALID_BODY, timezone: 42, prefill: { parentOrigin: "https://dev.trypennie.com" } });
+    expect(recordApiOutcome.mock.calls[0][2]).toBe("invalid_request");
+    expect(hostOf()).toEqual({ prefill: { parentOrigin: "https://dev.trypennie.com" }, referrer_origin: null });
   });
 });

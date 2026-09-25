@@ -183,7 +183,22 @@ export function isOffsiteOrigin(
  * `buckets.is_test`, and callers ask that separately.
  */
 export function isTestSourceBooking(b: BookingOriginFacts): boolean {
-  return judgeBookingOrigin(b).kind === "offsite";
+  return bookingHostClass(b) === "offsite";
+}
+
+/**
+ * The host page class of an attempt, as the booking outcome tally stores it
+ * (#2752, `booking_api_outcome_daily.host_class`). Exactly `judgeBookingOrigin`'s
+ * verdict, so the tally, the off site page and the below tier exclusion cannot
+ * disagree about a host (L342). The order is the database CHECK's order, and
+ * `scripts/test-tally-host-class.ts` holds the migration to this list.
+ */
+export const HOST_CLASSES = ["production", "offsite", "none"] as const;
+export type HostClass = (typeof HOST_CLASSES)[number];
+
+export function bookingHostClass(b: BookingOriginFacts): HostClass {
+  const kind: OriginVerdict["kind"] = judgeBookingOrigin(b).kind;
+  return kind;
 }
 
 /** Both recorded origins judged together. */

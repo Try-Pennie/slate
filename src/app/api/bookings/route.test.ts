@@ -550,7 +550,7 @@ describe("POST /api/bookings: a declined bucket change (#1465)", () => {
       "411",
       "bucket_change_declined_no_eligible_agents",
       // #1616: every recording site names how the test marker is resolved.
-      { by: "bucket", code: "411" },
+      { by: "bucket", code: "411", host: { prefill: {}, referrer_origin: null } },
     );
   });
 
@@ -566,6 +566,7 @@ describe("POST /api/bookings: a declined bucket change (#1465)", () => {
     expect(monitor.recordApiOutcome).toHaveBeenCalledWith("deduped", "411", null, {
       by: "bucket",
       code: "411",
+      host: { prefill: {}, referrer_origin: null },
     });
   });
 });

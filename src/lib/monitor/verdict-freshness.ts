@@ -338,6 +338,12 @@ export const PARKED_VERDICT_DETECTORS: Partial<Record<DetectorVerdictLane, Parke
   // detector conclude about the CANARY rather than about leads, which is a verdict
   // on the wrong population. Accepting a page every four days that nobody can act
   // on is how a channel stops being read by the second week.
+  //
+  // A test made in a REAL bucket from a page that is not the production site cannot
+  // un-park it either (#2752): the tally records the host page class through the off
+  // site page's own predicate and the reading passes `p_include_offsite: false`, so
+  // ten tester attempts from localhost no longer reach the floor. A test from the
+  // production site, or with no host recorded, still counts.
   [FAILURE_RATE_VERDICT_LANE]: {
     reason:
       "no real lead has booked yet, and the smoke canary cannot stand in for one: the outcome mix read passes p_include_test false (#1637), so every canary attempt counts zero toward the floor of attempts the check needs before it will judge. It can only conclude once the Low pilot page is live and real leads are booking",

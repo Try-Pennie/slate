@@ -83,6 +83,13 @@ export async function saveRateState(state: RateWindowState): Promise<void> {
  * (#1616). It is passed EXPLICITLY even though the RPC defaults it that way, so
  * the exclusion is visible in the repo at the reading site rather than living only
  * in a database default nothing here can see.
+ *
+ * `p_include_offsite: false` (#2752) does the same for a tester on a REAL code from
+ * a page that is not the production site, the host class the off site page (#2715)
+ * pages about. Left in, ten of those in four hours reached the attempt floor that
+ * un-parks this check's verdict watch (#2513), and a testing session that tripped
+ * the booker's refusals moved the failure share as if leads were failing. Attempts
+ * with no host recorded (the booking API, the standalone page, admin) still count.
  */
 export async function readTodayOutcomes(nowMs: number): Promise<OutcomeReading> {
   const day = DateTime.fromMillis(nowMs, { zone: ROSTER_ZONE }).toISODate() ?? "";
@@ -90,6 +97,7 @@ export async function readTodayOutcomes(nowMs: number): Promise<OutcomeReading> 
     await supabaseAdmin().rpc("booking_api_outcome_mix", {
       p_since: day,
       p_include_test: false,
+      p_include_offsite: false,
     }),
     "booking_api_outcome_mix",
   ) as RawMix | null;

@@ -7,6 +7,7 @@ import { supabaseAdmin } from "@/lib/supabase/admin";
 import {
   normalizeMix,
   excludedTestTrafficNote,
+  excludedOffsiteTrafficNote,
   OUTCOME_DAY_ZONE,
   type OutcomeMix,
   type RawMix,
@@ -53,6 +54,9 @@ function Window({ title, mix }: { title: string; mix: OutcomeMix }) {
           number, so what was left out is stated either way, and an unreadable
           count says so rather than showing zero. */}
       <p className="mt-1 text-xs text-fg-muted">{excludedTestTrafficNote(mix.testTotal)}</p>
+      {/* #2752: and the attempts on real buckets from pages that are not the
+          production site, where testers book, stated the same three ways. */}
+      <p className="mt-1 text-xs text-fg-muted">{excludedOffsiteTrafficNote(mix.offsiteTotal)}</p>
       {mix.total === 0 ? (
         <p className="mt-3 text-sm text-fg-muted">No direct booking API calls in this window.</p>
       ) : (
@@ -109,11 +113,12 @@ export default async function BookingOutcomesPage() {
 
   const db = supabaseAdmin();
   // p_include_test:false (#1616) so the panel measures the same population the
-  // failure-rate page does. Passed explicitly, not left to the RPC's default, so
+  // failure-rate page does, and p_include_offsite:false (#2752) for the same reason.
+  // Passed explicitly, not left to the RPC's default, so
   // the decision is readable here rather than only in the database.
   const [weekRes, monthRes, seenRes] = await Promise.all([
-    db.rpc("booking_api_outcome_mix", { p_since: sinceIso(7), p_include_test: false }),
-    db.rpc("booking_api_outcome_mix", { p_since: sinceIso(30), p_include_test: false }),
+    db.rpc("booking_api_outcome_mix", { p_since: sinceIso(7), p_include_test: false, p_include_offsite: false }),
+    db.rpc("booking_api_outcome_mix", { p_since: sinceIso(30), p_include_test: false, p_include_offsite: false }),
     // #2717: one row per (caller, host kind), so the limit is the whole key space.
     db
       .from("api_caller_seen")

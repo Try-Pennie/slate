@@ -163,6 +163,7 @@ describe("readTodayOutcomes", () => {
     expect(rpc).toHaveBeenCalledWith("booking_api_outcome_mix", {
       p_since: "2026-08-11",
       p_include_test: false,
+      p_include_offsite: false,
     });
   });
 

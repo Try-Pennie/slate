@@ -46,7 +46,8 @@ import { noStore } from "@/lib/api/no-store";
 import { recordApiOutcome } from "@/lib/monitor/record-api-outcome";
 import { log } from "@/lib/log";
 import { partnerKeysFrom } from "@/lib/booking/partner-keys";
-import { REFERRER_ORIGIN_MAX_CHARS } from "@/lib/embed/referrer-origin";
+import { REFERRER_ORIGIN_MAX_CHARS, readReferrerOrigin } from "@/lib/embed/referrer-origin";
+import type { BookingOriginFacts } from "@/lib/monitor/offsite-origin";
 
 export const dynamic = "force-dynamic";
 
@@ -89,6 +90,25 @@ const schema = z.object({
 function rawBucketCode(raw: unknown): string {
   const v = (raw as Record<string, unknown> | null)?.bucketCode;
   return typeof v === "string" ? v.slice(0, 16) : "";
+}
+
+/**
+ * The host page facts this request carries (#2752), in the shape the booking row
+ * stores them: the declared `parentOrigin` out of `prefill`, and the framing page
+ * reduced by `readReferrerOrigin` exactly as `createBooking` reduces it. Read off the
+ * RAW body so the one refusal that happens because the body did not parse is judged
+ * too. The tally then classifies these through `bookingHostClass`, the predicate the
+ * off site page and the below tier exclusion use, so a test attempt from a page that
+ * is not the production site is recorded as one and kept out of the failure rate.
+ */
+function confirmHost(raw: unknown): BookingOriginFacts {
+  const body = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
+  const prefill = body.prefill && typeof body.prefill === "object" ? (body.prefill as Record<string, unknown>) : null;
+  const parentOrigin = prefill?.parentOrigin;
+  return {
+    prefill: typeof parentOrigin === "string" ? { parentOrigin } : null,
+    referrer_origin: readReferrerOrigin(body.referrerOrigin),
+  };
 }
 
 /**
@@ -169,6 +189,7 @@ async function handlePost(req: NextRequest) {
   if (!(await allowRequest(bookingCaller, BOOKING_HOURLY_RATE_RULES))) return tooMany("hourly");
 
   const raw = await req.json().catch(() => null);
+  const host = confirmHost(raw);
 
   // Honeypot (#1033): a hidden decoy field a real user never sees or fills, so a
   // value here means a scripted bot filling every field. Reject with the SAME
@@ -192,7 +213,7 @@ async function handlePost(req: NextRequest) {
     // and nothing said so (#1318). Counted as an error, so the existing failure-rate
     // window (#1313) pages on the share and names the code. The bucket is read off the
     // raw body rather than the parsed one, which is exactly what failed to parse.
-    recordApiOutcome("error", rawBucketCode(raw), "invalid_request", { by: "bucket", code: rawBucketCode(raw) });
+    recordApiOutcome("error", rawBucketCode(raw), "invalid_request", { by: "bucket", code: rawBucketCode(raw), host });
     return NextResponse.json(
       { error: "Invalid request", details: parsed.error.flatten() },
       { status: 400 },
@@ -220,7 +241,7 @@ async function handlePost(req: NextRequest) {
     // incoming data disagreeing, which turns every lead from that source away at once,
     // and #1425 made that concrete: a number carrying an extension is now refused, so any
     // upstream source still sending one fails every time (#1318).
-    recordApiOutcome("error", parsed.data.bucketCode, "invalid_contact", { by: "bucket", code: parsed.data.bucketCode });
+    recordApiOutcome("error", parsed.data.bucketCode, "invalid_contact", { by: "bucket", code: parsed.data.bucketCode, host });
     return NextResponse.json(
       { error: "Please check your contact details.", fieldErrors: attendeeErrors },
       { status: 400 },
@@ -307,7 +328,7 @@ async function handlePost(req: NextRequest) {
       isTest,
     });
 
-    recordApiOutcome("created", parsed.data.bucketCode, null, { by: "bucket", code: parsed.data.bucketCode });
+    recordApiOutcome("created", parsed.data.bucketCode, null, { by: "bucket", code: parsed.data.bucketCode, host });
     return NextResponse.json({
       id: booking.id,
       startsAt: booking.starts_at,
@@ -339,7 +360,7 @@ async function handlePost(req: NextRequest) {
     // and the Move they are about to make is a separate request.
     if (err instanceof ExistingCallError) {
       await refundAll();
-      recordApiOutcome("deduped", parsed.data.bucketCode, "existing_call", { by: "bucket", code: parsed.data.bucketCode });
+      recordApiOutcome("deduped", parsed.data.bucketCode, "existing_call", { by: "bucket", code: parsed.data.bucketCode, host });
       // refusal: existing_call
       return NextResponse.json({ existingCall: err.existingCall }, { status: 409 });
     }
@@ -353,7 +374,7 @@ async function handlePost(req: NextRequest) {
     // could never cover this case.
     if (err instanceof ExistingCallCheckUnavailableError) {
       await refundAll();
-      recordApiOutcome("error", parsed.data.bucketCode, "existing_call_unavailable", { by: "bucket", code: parsed.data.bucketCode });
+      recordApiOutcome("error", parsed.data.bucketCode, "existing_call_unavailable", { by: "bucket", code: parsed.data.bucketCode, host });
       // refusal: existing_call_unavailable
       return NextResponse.json({ error: err.message }, { status: 503 });
     }
@@ -365,7 +386,7 @@ async function handlePost(req: NextRequest) {
     if (err instanceof LeadCodeUnavailableError) {
       await refundAll();
       log.error("booking", { msg: "lead routing code unreadable; refusing rather than routing to the catch-all" }, err.cause);
-      recordApiOutcome("error", parsed.data.bucketCode, "lead_code_unavailable", { by: "bucket", code: parsed.data.bucketCode });
+      recordApiOutcome("error", parsed.data.bucketCode, "lead_code_unavailable", { by: "bucket", code: parsed.data.bucketCode, host });
       // refusal: lead_code_unavailable
       return NextResponse.json({ error: err.message }, { status: 503 });
     }
@@ -375,7 +396,7 @@ async function handlePost(req: NextRequest) {
     if (err instanceof VerifyUnavailableError) {
       // Couldn't verify any candidate (a Google/DB outage), not the lead's fault.
       await refundAll();
-      recordApiOutcome("error", parsed.data.bucketCode, "verify_unavailable", { by: "bucket", code: parsed.data.bucketCode });
+      recordApiOutcome("error", parsed.data.bucketCode, "verify_unavailable", { by: "bucket", code: parsed.data.bucketCode, host });
       // refusal: verify_unavailable
       return NextResponse.json({ error: err.message }, { status: 503 });
     }
@@ -388,7 +409,7 @@ async function handlePost(req: NextRequest) {
       // WE ADVERTISED. One lost race is ordinary contention, which is why this
       // does not page on its own; fifty in two hours is the cal.com failure of
       // 2026-08-06, and it is indistinguishable from the one without a count.
-      recordApiOutcome("error", parsed.data.bucketCode, "slot_unavailable", { by: "bucket", code: parsed.data.bucketCode });
+      recordApiOutcome("error", parsed.data.bucketCode, "slot_unavailable", { by: "bucket", code: parsed.data.bucketCode, host });
       // refusal: slot_unavailable
       return NextResponse.json({ error: err.message }, { status: 409 });
     }
@@ -401,7 +422,7 @@ async function handlePost(req: NextRequest) {
     // Counted: a wave means the client filter and the server rule disagree.
     if (err instanceof OutsideCallingWindowError) {
       await refundAll();
-      recordApiOutcome("error", parsed.data.bucketCode, "outside_calling_window", { by: "bucket", code: parsed.data.bucketCode });
+      recordApiOutcome("error", parsed.data.bucketCode, "outside_calling_window", { by: "bucket", code: parsed.data.bucketCode, host });
       // refusal: outside_calling_window
       return NextResponse.json(
         { error: BOOKING_ERROR_COPY.outsideCallingHours, code: "OUTSIDE_CALLING_WINDOW" },
@@ -412,7 +433,7 @@ async function handlePost(req: NextRequest) {
     // (the API route #358 distinguishes them), but it is a config problem, not a
     // slot race: a retry won't help, so we deliberately do NOT refund here.
     if (err instanceof NoEligibleAgentsError) {
-      recordApiOutcome("error", parsed.data.bucketCode, "no_eligible_agents", { by: "bucket", code: parsed.data.bucketCode });
+      recordApiOutcome("error", parsed.data.bucketCode, "no_eligible_agents", { by: "bucket", code: parsed.data.bucketCode, host });
       // refusal: no_eligible_agents
       return NextResponse.json({ error: err.message }, { status: 409 });
     }
@@ -423,14 +444,14 @@ async function handlePost(req: NextRequest) {
     // invalid_request, because a wave of these is an embed sending a code Slate
     // does not serve; not refunded, because a retry cannot help.
     if (err instanceof UnknownBucketError) {
-      recordApiOutcome("error", parsed.data.bucketCode, "unknown_bucket", { by: "bucket", code: parsed.data.bucketCode });
+      recordApiOutcome("error", parsed.data.bucketCode, "unknown_bucket", { by: "bucket", code: parsed.data.bucketCode, host });
       // refusal: unknown_bucket
       return NextResponse.json(
         { error: BOOKING_ERROR_COPY.unknownBucket, code: "UNKNOWN_BUCKET" },
         { status: 422 },
       );
     }
-    recordApiOutcome("error", parsed.data.bucketCode, "internal", { by: "bucket", code: parsed.data.bucketCode });
+    recordApiOutcome("error", parsed.data.bucketCode, "internal", { by: "bucket", code: parsed.data.bucketCode, host });
     // refusal: internal
     return internalErrorResponse(err, "booking");
   }
