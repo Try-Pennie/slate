@@ -37,8 +37,8 @@ export default async function AgentRosterPage({
 
   const me = await currentUser();
   if (!me) redirect("/login");
-  if (!canManageAgents(me.role)) return <AdminDenied need="a manager or admin" />;
   if (consoleHiddenFor(me.role)) redirect("/admin/ooo");
+  if (!canManageAgents(me.role)) return <AdminDenied need="a manager or admin" />;
 
   // Exclude the synthetic smoke-test agent (#396) from the roster and the counts.
   const usersRes = await supabaseAdmin()

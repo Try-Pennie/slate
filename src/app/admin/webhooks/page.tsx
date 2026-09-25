@@ -75,8 +75,8 @@ export default async function WebhooksPage({
   const resend = sp.resend ? resendFeedback(sp.resend as ResendResult) : null;
   const me = await currentUser();
   if (!me) redirect("/login");
-  if (!canEditOrgSettings(me.role)) return <AdminDenied need="an admin" />;
   if (consoleHiddenFor(me.role)) redirect("/admin/ooo");
+  if (!canEditOrgSettings(me.role)) return <AdminDenied need="an admin" />;
 
   const db = supabaseAdmin();
   const webhookRes = await db

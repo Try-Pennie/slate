@@ -173,16 +173,27 @@ const entry = (over: Partial<ErasureWorklistEntry> = {}): ErasureWorklistEntry =
 // that names a fault and offers no remedy teaches its reader to skim it (L126,
 // L148), so the absence has to be explained rather than left as a gap.
 {
-  const how = howToPurgeText();
-  assert(/no button for this, deliberately/i.test(how), "it says the absence is a decision");
-  assert(/cannot be undone/i.test(how), "and why: the deletion is irreversible");
-  assert(/naming who asked/i.test(how), "it says the run has to name who asked for the erasure");
-  assert(/refuses to run without that name/i.test(how), "and that this is enforced rather than asked politely");
-  assert(/pii-erasure-runbook/.test(how), "and where the steps are");
-  // It names no COMMAND and no secret. A runbook step changes and a copy string
-  // does not, and one naming a stale command is worse than one naming none
-  // (L210). This is the assertion that fails if somebody pastes a curl in here.
-  assert(!/curl|CRON_SECRET|http/i.test(how), "and it pastes in no command or secret to go stale");
+  // #2699: two readers. The super admin who runs the purge gets the step and the
+  // runbook; an admin, who cannot run it, is told who to ask. Neither is told to
+  // ask Claude: that was an instruction for the person who operates Claude, and it
+  // meant nothing to anybody else who could open the page.
+  const runner = howToPurgeText(true);
+  const asker = howToPurgeText(false);
+  for (const how of [runner, asker]) {
+    assert(/no button for this, deliberately/i.test(how), "it says the absence is a decision");
+    assert(/cannot be undone/i.test(how), "and why: the deletion is irreversible");
+    assert(/who asked for the erasure/i.test(how), "it says the run has to name who asked for the erasure");
+    assert(/refuses to run without that name/i.test(how), "and that this is enforced rather than asked politely");
+    assert(!/claude/i.test(how), "and it never tells the reader to ask Claude");
+    // It names no COMMAND and no secret. A runbook step changes and a copy string
+    // does not, and one naming a stale command is worse than one naming none
+    // (L210). This is the assertion that fails if somebody pastes a curl in here.
+    assert(!/curl|CRON_SECRET|http/i.test(how), "and it pastes in no command or secret to go stale");
+  }
+  assert(/pii-erasure-runbook/.test(runner), "the super admin is told where the steps are");
+  assert(/^.*\bRun the warehouse purge\b/m.test(runner), "and to run it themselves");
+  assert(/ask a super admin/i.test(asker), "an admin is told who can run it");
+  assert(!/pii-erasure-runbook/.test(asker), "and is not sent to a runbook they cannot act on");
 }
 
 
@@ -195,7 +206,8 @@ const entry = (over: Partial<ErasureWorklistEntry> = {}): ErasureWorklistEntry =
     entryStatusLabel("unknown"),
     entryResidualText(entry()),
     entryResidualText(entry({ residuals: null, unmeasuredReason: "no answer" })),
-    howToPurgeText(),
+    howToPurgeText(true),
+    howToPurgeText(false),
     trailUnreadableText("boom"),
     warehouseUnreadableText("boom"),
     warehouseUnconfiguredText(),

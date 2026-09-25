@@ -145,8 +145,11 @@ export async function loadBookingDetail(
   id: string,
   deps: BookingDetailPageDeps,
 ): Promise<BookingDetailResult> {
-  if (!deps.canManage(deps.role)) return { kind: "forbidden" };
+  // The console gate answers first (#2699): while the console is hidden, every
+  // console route sends a held out viewer to the OOO page, and a role refusal
+  // here would name a rule that is not the one keeping them out.
   if (deps.oooOnly(deps.role)) return { kind: "ooo" };
+  if (!deps.canManage(deps.role)) return { kind: "forbidden" };
   const booking = await deps.getBooking(id, deps.orgId);
   if (!booking) return { kind: "notfound" };
   const roster = await deps.getRoster(deps.orgId);

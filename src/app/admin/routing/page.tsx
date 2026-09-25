@@ -15,8 +15,8 @@ export const dynamic = "force-dynamic";
 export default async function RecentRoutingPage() {
   const me = await currentUser();
   if (!me) redirect("/login");
-  if (!canManageAgents(me.role)) return <AdminDenied need="a manager or admin" />;
   if (consoleHiddenFor(me.role)) redirect("/admin/ooo");
+  if (!canManageAgents(me.role)) return <AdminDenied need="a manager or admin" />;
   const isAdmin = canEditOrgSettings(me.role);
 
   const db = supabaseAdmin();

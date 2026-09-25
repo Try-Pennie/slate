@@ -286,6 +286,29 @@ describe("the health page's status rows (#1767)", () => {
       expect(link.getAttribute("href")).toBe("/admin/business-hours");
     });
 
+    // #2699: a manager cannot open Hours, so a pointer to it sends them to a
+    // refusal. They are told who can act instead, and the Hours pointer stays for
+    // the viewers who can open it.
+    it("tells a manager to ask an admin rather than pointing at Hours", async () => {
+      auth.currentUser.mockResolvedValue({ ...SUPER_ADMIN, id: "m1", role: "manager" });
+      mockDb({ booking_settings: { data: { public_booking_paused: true }, error: null } });
+      render(await AdminPage());
+      expect(pageText()).toMatch(/stopped by hand\. leads cannot book a call/i);
+      expect(pageText()).toMatch(/ask an admin to start it again/i);
+      expect(screen.queryByRole("link", { name: /start it again on hours/i })).toBeNull();
+      expect(pageText()).not.toMatch(/hours screen/i);
+      expect(pageText()).toMatch(/an admin stops it by hand/i);
+    });
+
+    it("keeps the Hours pointer for an admin, who can open it", async () => {
+      auth.currentUser.mockResolvedValue({ ...SUPER_ADMIN, id: "ad1", role: "admin" });
+      mockDb({ booking_settings: { data: { public_booking_paused: true }, error: null } });
+      render(await AdminPage());
+      expect(screen.getByRole("link", { name: /start it again on hours/i })).toBeTruthy();
+      expect(pageText()).toMatch(/on the hours screen/i);
+      expect(pageText()).not.toMatch(/ask an admin/i);
+    });
+
     // The third state. An unreadable setting must not draw either answer: the booker
     // REFUSES while it cannot be read, so drawing "running" here would tell an admin
     // the opposite of what leads are meeting (L530, L11).

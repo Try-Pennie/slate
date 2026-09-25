@@ -23,6 +23,7 @@ export const dynamic = "force-dynamic";
 export default async function AvailabilityGridPage() {
   const me = await currentUser();
   if (!me) redirect("/login");
+  if (consoleHiddenFor(me.role)) redirect("/admin/ooo");
   if (!canManageAgents(me.role)) {
     return (
       <main className="p-8 text-sm text-fg-muted">
@@ -30,7 +31,6 @@ export default async function AvailabilityGridPage() {
       </main>
     );
   }
-  if (consoleHiddenFor(me.role)) redirect("/admin/ooo");
 
   const grid = await loadAvailabilityGrid();
   const zoneLabel = DateTime.now().setZone(BUSINESS_ZONE).toFormat("ZZZZ");

@@ -3,6 +3,7 @@ import { redirect } from "next/navigation";
 import type { ReactNode } from "react";
 import { currentUser } from "@/lib/auth";
 import { canManageAgents } from "@/lib/auth/roles";
+import { canOpenAdminRoute } from "@/lib/admin/nav";
 import { consoleHiddenFor } from "@/lib/env";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { isActive } from "@/lib/active-user";
@@ -201,8 +202,8 @@ function VerdictBadge({ verdict }: { verdict: Verdict }) {
 export default async function AdminHealthPage() {
   const me = await currentUser();
   if (!me) redirect("/login");
-  if (!canManageAgents(me.role)) return <AdminDenied need="a manager or admin" />;
   if (consoleHiddenFor(me.role)) redirect("/admin/ooo");
+  if (!canManageAgents(me.role)) return <AdminDenied need="a manager or admin" />;
 
   const db = supabaseAdmin();
   const [usersRes, calsRes, outboxRes, reservationRes] = await Promise.all([
@@ -340,13 +341,24 @@ export default async function AdminHealthPage() {
   // deliberately does NOT lift itself, so this statement is the whole remedy.
   const publicBookingPaused = await readPublicBookingPaused();
 
+  // #2699: the switch lives on Hours, which a manager cannot open. Pointing them
+  // there sends them to a refusal, so they are told who can act instead. Decided
+  // by the same gate the Hours route enforces, never a role list of its own.
+  const canOpenHours = canOpenAdminRoute(
+    me.role,
+    "/admin/business-hours",
+    consoleHiddenFor(me.role),
+  );
+
   const rows: StatusRow[] = [
     {
       key: "public-booking",
       label: "Online booking",
-      note:
-        "Whether a lead can book a call at all. It is stopped by hand, on the Hours " +
-        "screen, and nothing starts it again on its own.",
+      note: canOpenHours
+        ? "Whether a lead can book a call at all. It is stopped by hand, on the Hours " +
+          "screen, and nothing starts it again on its own."
+        : "Whether a lead can book a call at all. An admin stops it by hand, and " +
+          "nothing starts it again on its own.",
       verdict:
         publicBookingPaused === null ? "unmeasured" : publicBookingPaused ? "attention" : "ok",
       detail:
@@ -355,7 +367,11 @@ export default async function AdminHealthPage() {
         ) : publicBookingPaused ? (
           <>
             Stopped by hand. Leads cannot book a call.{" "}
-            <Link href="/admin/business-hours">Start it again on Hours</Link>
+            {canOpenHours ? (
+              <Link href="/admin/business-hours">Start it again on Hours</Link>
+            ) : (
+              "Ask an admin to start it again."
+            )}
           </>
         ) : (
           "Running. Leads can book a call."

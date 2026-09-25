@@ -63,7 +63,14 @@ function stamp(iso: string): string {
   return new Date(iso).toLocaleString("en-US", { dateStyle: "medium", timeStyle: "short" });
 }
 
-export function ErasureWorklist({ state }: { state: ErasureWorklistState }) {
+export function ErasureWorklist({
+  state,
+  viewerRunsPurge,
+}: {
+  state: ErasureWorklistState;
+  /** Whether the viewer is the one who runs the warehouse purge (#2699). */
+  viewerRunsPurge: boolean;
+}) {
   if (state.kind === "trail-unreadable") {
     return (
       <div role="alert" className="rounded-xl border border-[var(--error)] px-5 py-4 text-sm text-error">
@@ -141,7 +148,7 @@ export function ErasureWorklist({ state }: { state: ErasureWorklistState }) {
           of customer data is an instruction to a person, not a button. */}
       <section className={cardCls}>
         <h2 className="mb-1 text-sm font-semibold">How an outstanding purge is run</h2>
-        <p className={`text-xs text-fg-muted ${proseCls}`}>{howToPurgeText()}</p>
+        <p className={`text-xs text-fg-muted ${proseCls}`}>{howToPurgeText(viewerRunsPurge)}</p>
       </section>
     </div>
   );

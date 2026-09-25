@@ -81,17 +81,17 @@ function rowDetail(row: TierDepth): string {
 export default async function TiersPage() {
   const me = await currentUser();
   if (!me) redirect("/login");
+  // Mirror /admin: during the OOO-only launch, everyone below super admin is
+  // limited to the OOO surfaces (scheduling config isn't live yet).
+  if (consoleHiddenFor(me.role)) {
+    redirect("/admin/ooo");
+  }
   if (!canManageAgents(me.role)) {
     return (
       <main className="p-8 text-sm text-fg-muted">
         You need a manager or admin account to view staffing depth.
       </main>
     );
-  }
-  // Mirror /admin: during the OOO-only launch, everyone below super admin is
-  // limited to the OOO surfaces (scheduling config isn't live yet).
-  if (consoleHiddenFor(me.role)) {
-    redirect("/admin/ooo");
   }
 
   // #1629: `loadTierDepths` THROWS on an unreadable read rather than answering

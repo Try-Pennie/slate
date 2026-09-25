@@ -124,17 +124,17 @@ export default async function AgentProfilePage({
   const bookableOutcome = query?.bookable;
   const me = await currentUser();
   if (!me) redirect("/login");
+  // OOO-only launch: agent management is part of the booking tool; managers are
+  // limited to the OOO surfaces until scheduling goes live. Admins keep it.
+  if (consoleHiddenFor(me.role)) {
+    redirect("/admin/ooo");
+  }
   if (!canManageAgents(me.role)) {
     return (
       <main className="p-8 text-sm text-fg-muted">
         You need a manager or admin account to manage agents.
       </main>
     );
-  }
-  // OOO-only launch: agent management is part of the booking tool; managers are
-  // limited to the OOO surfaces until scheduling goes live. Admins keep it.
-  if (consoleHiddenFor(me.role)) {
-    redirect("/admin/ooo");
   }
   const isAdmin = canEditOrgSettings(me.role);
   const db = supabaseAdmin();

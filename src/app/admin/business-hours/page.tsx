@@ -66,8 +66,8 @@ export default async function BusinessHoursPage({
   const saved = savedSentence(savedOutcome(sp.ok));
   const me = await currentUser();
   if (!me) redirect("/login");
-  if (!canEditOrgSettings(me.role)) return <AdminDenied need="an admin" />;
   if (consoleHiddenFor(me.role)) redirect("/admin/ooo");
+  if (!canEditOrgSettings(me.role)) return <AdminDenied need="an admin" />;
 
   // could-not-measure state there was, `coverage = { ok: false }`, whose wording
   // names the ROSTER. A failed WEEK read therefore drew seven unchecked weekdays

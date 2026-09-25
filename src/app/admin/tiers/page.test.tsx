@@ -32,10 +32,25 @@ describe("TiersPage guard", () => {
     await expect(TiersPage()).rejects.toThrow(/NEXT_REDIRECT:\/login/);
   });
 
+  // With the console OPEN: while it is hidden the console gate answers first and
+  // sends everybody below super admin to /admin/ooo (#2699), so the role refusal
+  // is only reachable once the flag is on.
   it("shows the deny notice to a signed-in agent instead of the report", async () => {
+    const saved = process.env.AGENT_SCHEDULING_LIVE;
+    process.env.AGENT_SCHEDULING_LIVE = "true";
+    try {
+      auth.currentUser.mockResolvedValueOnce({ id: "a1", role: "agent", org_id: "o1" });
+      render(await TiersPage());
+      expect(screen.getByText(/manager or admin account to view staffing depth/i)).toBeTruthy();
+    } finally {
+      if (saved === undefined) delete process.env.AGENT_SCHEDULING_LIVE;
+      else process.env.AGENT_SCHEDULING_LIVE = saved;
+    }
+  });
+
+  it("sends a signed-in agent to /admin/ooo while the console is hidden (#2699)", async () => {
     auth.currentUser.mockResolvedValueOnce({ id: "a1", role: "agent", org_id: "o1" });
-    render(await TiersPage());
-    expect(screen.getByText(/manager or admin account to view staffing depth/i)).toBeTruthy();
+    await expect(TiersPage()).rejects.toThrow(/NEXT_REDIRECT:\/admin\/ooo/);
   });
 });
 
