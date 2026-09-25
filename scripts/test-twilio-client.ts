@@ -29,6 +29,14 @@ function stubFetch(replies: (Response | Error)[]) {
   };
   return { impl: impl as unknown as typeof fetch, urls, headers };
 }
+/** A sleep that returns at once and records how long it was asked to wait (L524). */
+function noSleep() {
+  const waits: number[] = [];
+  const impl = async (ms: number) => {
+    waits.push(ms);
+  };
+  return { impl, waits };
+}
 const page = (workers: unknown[], nextPageToken: string | null = null) =>
   new Response(JSON.stringify({ workers, meta: { next_page_token: nextPageToken } }), { status: 200 });
 
@@ -78,22 +86,27 @@ async function failure(
 
 {
   await failure(
-    () => fetchTwilioWorkers(creds, stubFetch([new Error("dns")]).impl),
+    () => fetchTwilioWorkers(creds, stubFetch([new Error("dns"), new Error("dns")]).impl, noSleep().impl),
     "unreachable",
-    "a network failure refuses",
+    "a network failure that survives the one retry refuses",
   );
   for (const status of [401, 403]) {
     const m = await failure(
-      () => fetchTwilioWorkers(creds, stubFetch([new Response("no", { status })]).impl),
+      () => fetchTwilioWorkers(creds, stubFetch([new Response("no", { status })]).impl, noSleep().impl),
       "refused",
       `a ${status} is its own refusal, not a generic unreachable`,
     );
     assert(m.includes("TaskRouter"), "and it says the key has to be TaskRouter scoped, which is the actual fix");
   }
   await failure(
-    () => fetchTwilioWorkers(creds, stubFetch([new Response("boom", { status: 500 })]).impl),
+    () =>
+      fetchTwilioWorkers(
+        creds,
+        stubFetch([new Response("boom", { status: 500 }), new Response("boom", { status: 500 })]).impl,
+        noSleep().impl,
+      ),
     "unreachable",
-    "a 500 refuses as unreachable",
+    "a 500 that survives the one retry refuses as unreachable",
   );
   await failure(
     () => fetchTwilioWorkers(creds, stubFetch([new Response("not json", { status: 200 })]).impl),
@@ -138,6 +151,68 @@ async function failure(
   const workers = await fetchTwilioWorkers(creds, s.impl);
   eq(s.urls.length, 2, "a repeated page token stops the walk instead of looping forever");
   eq(workers.length, 2, "with what it had already read kept");
+}
+
+// --- one retry, on the failures that can heal (#2774) -------------------------
+//
+// On 2026-09-25 a single 520 from Twilio's edge paged a person, and the run an hour
+// earlier had read Twilio fine. A 5xx or a dropped connection is retried ONCE,
+// after an injected wait, so the test waits for nothing real.
+
+{
+  const s = stubFetch([new Response("edge", { status: 520 }), page([{ attributes: "{}" }])]);
+  const sleep = noSleep();
+  const workers = await fetchTwilioWorkers(creds, s.impl, sleep.impl);
+  eq(workers.length, 1, "one 520 then a success reads the roster fine");
+  eq(s.urls.length, 2, "by asking twice");
+  eq(s.urls[1], s.urls[0], "for the same page");
+  eq(sleep.waits.length, 1, "with one wait between the two");
+  assert(sleep.waits[0]! > 0, "and the wait is a real pause, not zero");
+}
+
+{
+  const s = stubFetch([new Error("socket hang up"), page([{ attributes: "{}" }])]);
+  const sleep = noSleep();
+  const workers = await fetchTwilioWorkers(creds, s.impl, sleep.impl);
+  eq(workers.length, 1, "a dropped connection then a success reads the roster fine");
+  eq(sleep.waits.length, 1, "after one wait");
+}
+
+{
+  const s = stubFetch([new Response("edge", { status: 520 }), new Response("edge", { status: 503 })]);
+  const sleep = noSleep();
+  const m = await failure(() => fetchTwilioWorkers(creds, s.impl, sleep.impl), "unreachable", "two 5xx in a row refuse");
+  eq(s.urls.length, 2, "ONE retry, not a loop: a real outage still refuses inside the invocation (L110)");
+  assert(m.includes("503"), "and the refusal names the status the retry met, which is the latest fact");
+}
+
+{
+  // A refused key cannot heal between two requests a second apart, so asking again
+  // only doubles the load on a credential Twilio is already turning away.
+  for (const status of [401, 403]) {
+    const s = stubFetch([new Response("no", { status }), page([{ attributes: "{}" }])]);
+    const sleep = noSleep();
+    await failure(() => fetchTwilioWorkers(creds, s.impl, sleep.impl), "refused", `a ${status} refuses at once`);
+    eq(s.urls.length, 1, `a ${status} is never retried`);
+    eq(sleep.waits.length, 0, `and nothing waits on a ${status}`);
+  }
+  // A 4xx that is not a refusal is not a transient either.
+  const s = stubFetch([new Response("gone", { status: 404 }), page([{ attributes: "{}" }])]);
+  await failure(() => fetchTwilioWorkers(creds, s.impl, noSleep().impl), "unreachable", "a 404 refuses");
+  eq(s.urls.length, 1, "and is not retried, because only a 5xx or no answer at all can heal");
+}
+
+{
+  // The retry is per request, so a blip on the second page does not throw away the
+  // first page or start the walk over.
+  const s = stubFetch([
+    page([{ attributes: "{}" }], "tok2"),
+    new Response("edge", { status: 502 }),
+    page([{ attributes: "{}" }]),
+  ]);
+  const workers = await fetchTwilioWorkers(creds, s.impl, noSleep().impl);
+  eq(workers.length, 2, "a blip on a later page is retried in place");
+  eq(s.urls.length, 3, "without re-reading the first page");
 }
 
 finish();
