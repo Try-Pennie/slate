@@ -12,6 +12,8 @@ import {
   UnknownBucketError,
   OutsideCallingWindowError,
 } from "@/lib/booking/service";
+import { LeadCodeUnavailableError } from "@/lib/routing/lead-code";
+import { resolveRequestedCode } from "@/lib/routing/catchall";
 import { isPublicTestBucket } from "@/lib/embed/public-test-bucket";
 import { validateAttendee } from "@/lib/attendee";
 import { HONEYPOT_FIELD, honeypotTripped } from "@/lib/booking/honeypot";
@@ -234,7 +236,15 @@ async function handlePost(req: NextRequest) {
   // a real code can never cascade into a test bucket (the ladder is XBC only), so
   // a booking made here is a test one exactly when the code is the public test
   // code. Never read from the client's body beyond the code itself.
-  const isTest = isPublicTestBucket(parsed.data.bucketCode);
+  //
+  // #2638: when the link carried no routable code the service decides the pool
+  // itself (Salesforce, else the catch-all), and neither can ever be the public
+  // test bucket. So a posted test code with such a link is not a test booking,
+  // and the link has to name the test code too.
+  const isTest =
+    isPublicTestBucket(parsed.data.bucketCode) &&
+    (parsed.data.requestedCode === undefined ||
+      resolveRequestedCode(parsed.data.requestedCode).kind === "valid");
 
   try {
     const { booking, manageUrl } = await createBooking({
@@ -320,6 +330,18 @@ async function handlePost(req: NextRequest) {
       await refundAll();
       recordApiOutcome("error", parsed.data.bucketCode, "existing_call_unavailable", { by: "bucket", code: parsed.data.bucketCode });
       // refusal: existing_call_unavailable
+      return NextResponse.json({ error: err.message }, { status: 503 });
+    }
+    // #2638: the link carried no routable code, it names a lead, and the lead's
+    // XBC could not be read from Salesforce. Nothing was created. Refused rather
+    // than sent to the catch-all, because routing a lead whose score we could not
+    // read to the Low pool is the misroute this read exists to prevent. Retriable,
+    // and refunded like the other faults on our side.
+    if (err instanceof LeadCodeUnavailableError) {
+      await refundAll();
+      log.error("booking", { msg: "lead routing code unreadable; refusing rather than routing to the catch-all" }, err.cause);
+      recordApiOutcome("error", parsed.data.bucketCode, "lead_code_unavailable", { by: "bucket", code: parsed.data.bucketCode });
+      // refusal: lead_code_unavailable
       return NextResponse.json({ error: err.message }, { status: 503 });
     }
     // Couldn't verify any candidate (likely a Google/DB outage), not a full

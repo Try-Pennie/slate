@@ -124,6 +124,7 @@ import type {
 } from "@/lib/booking/orchestration";
 import type { PersonIdentity, PersonWorld } from "@/lib/booking/person-dedupe";
 import { personStrongIds } from "@/lib/booking/person-dedupe";
+import { readLeadXbcLive } from "@/lib/salesforce/lead-xbc";
 import { toE164 } from "@/lib/phone";
 import { escapeLike } from "@/lib/sql-like";
 import { noEligibleAgentsAlert } from "@/lib/availability/bucket-coverage";
@@ -874,6 +875,9 @@ export function realDeps(deferSend?: WebhookSendScheduler): BookingDeps {
   return {
     deferSend,
     resolveBucketByCode,
+    // #2638: the lead's XBC for a booker confirm whose link carried none. Throws
+    // on a failed read, which the confirm answers with a retriable 503.
+    readLeadXbc: readLeadXbcLive,
     roundRobinCandidates,
     // The org's opening hours (#1295). Throws on an unreadable week rather than
     // degrading, so a narrowing can never be silently re-opened by a failed read.

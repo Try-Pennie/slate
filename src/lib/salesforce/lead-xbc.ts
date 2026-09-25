@@ -23,6 +23,11 @@ export function leadIdKey(id: string): string {
   return id.slice(0, 15);
 }
 
+/** A Salesforce LEAD id: the `00Q` key prefix, 15 or 18 characters. */
+export function isLeadId(id: string): boolean {
+  return /^00Q[a-zA-Z0-9]{12}(?:[a-zA-Z0-9]{3})?$/.test(id);
+}
+
 /** One query's worth of records, shaped as this reader asks for them. */
 export interface LeadXbcRecord {
   Id: string;
@@ -58,4 +63,33 @@ export async function readLeadXbcs(
     }
   }
   return out;
+}
+
+/**
+ * One lead's `XBC__c`, for the booking path (#2638).
+ *
+ * Same three answers as `readLeadXbcs`, spelled for one id: a string is what
+ * Salesforce holds, null is a lead with the field empty, undefined is a lead
+ * Salesforce did not return. A refused query THROWS, so a failed read is never
+ * mistaken for a lead with no code, which would send them to the catch-all on
+ * exactly the read that could not tell.
+ */
+export async function readOneLeadXbc(
+  leadId: string,
+  run: LeadSoqlRunner,
+): Promise<string | null | undefined> {
+  const map = await readLeadXbcs([leadId], run);
+  const key = leadIdKey(leadId);
+  return map.has(key) ? (map.get(key) ?? null) : undefined;
+}
+
+/**
+ * `readOneLeadXbc` against the real org: one token exchange and one SOQL query,
+ * through the shared REST client (`rest.ts`), so the retry and the refusal text
+ * are the ones every other Salesforce reader uses. Throws on any refusal.
+ */
+export async function readLeadXbcLive(leadId: string): Promise<string | null | undefined> {
+  const { sfToken, querySoqlAll } = await import("@/lib/salesforce/rest");
+  const { token, instanceUrl } = await sfToken();
+  return readOneLeadXbc(leadId, (soql) => querySoqlAll<LeadXbcRecord>(instanceUrl, token, soql));
 }

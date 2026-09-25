@@ -21,6 +21,13 @@ import { CATCHALL_CODE } from "@/lib/routing/catchall";
 // L84). The confirm still refuses a hidden bucket (#2667).
 
 const admin = vi.hoisted(() => ({ supabaseAdmin: vi.fn() }));
+// #2638: the Salesforce read behind a link with no routable code. Only the live
+// reader is replaced; `isLeadId` and the decoding stay real.
+const leadXbc = vi.hoisted(() => ({ readLeadXbcLive: vi.fn(async (_id: string): Promise<string | null | undefined> => undefined) }));
+vi.mock("@/lib/salesforce/lead-xbc", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/salesforce/lead-xbc")>()),
+  readLeadXbcLive: leadXbc.readLeadXbcLive,
+}));
 
 vi.mock("@/lib/supabase/admin", () => admin);
 vi.mock("@/components/Booker", () => ({ default: () => null }));
@@ -178,5 +185,50 @@ describe("/book keeps the partner join keys in prefill (#2659)", () => {
 
     const prefill = bookerElement(el).prefill as Record<string, string>;
     expect(partnerKeysFrom(prefill)).toEqual({ submissionId: null, regalProfileId: null });
+  });
+});
+
+// #2638: a link with no routable code that names the lead is routed on the lead's
+// Salesforce XBC, and the PAGE shows that pool's times, so the times shown and
+// the pool the confirm books agree.
+describe("/book with no code on the link and a Lead id (#2638)", () => {
+  const LEAD = "00Q5e00000AbCdEEAU";
+
+  it("shows the pool the lead's Salesforce XBC names", async () => {
+    leadXbc.readLeadXbcLive.mockResolvedValueOnce("512");
+    const asked: string[] = [];
+    admin.supabaseAdmin.mockReturnValue(dbByCode({ "512": { org_id: "o1", is_test: false } }, asked));
+
+    const el = await BookEntry({ searchParams: Promise.resolve({ external_id: LEAD }) });
+
+    expect(leadXbc.readLeadXbcLive).toHaveBeenCalledWith(LEAD);
+    expect(asked).toEqual(["512"]);
+    expect(bookerElement(el)).toMatchObject({ bucketCode: "512", isTest: false });
+  });
+
+  it("takes the catch-all when Salesforce holds no code", async () => {
+    leadXbc.readLeadXbcLive.mockResolvedValueOnce(null);
+    admin.supabaseAdmin.mockReturnValue(dbByCode({ [CATCHALL_CODE]: { org_id: "o1", is_test: false } }, []));
+
+    const el = await BookEntry({ searchParams: Promise.resolve({ xbc: "", external_id: LEAD }) });
+
+    expect(bookerElement(el)).toMatchObject({ bucketCode: CATCHALL_CODE });
+  });
+
+  it("throws to the error boundary when the Salesforce read fails, never showing the catch-all", async () => {
+    leadXbc.readLeadXbcLive.mockRejectedValueOnce(new Error("SF query failed: 503"));
+    admin.supabaseAdmin.mockReturnValue(dbByCode({ [CATCHALL_CODE]: { org_id: "o1", is_test: false } }, []));
+
+    await expect(BookEntry({ searchParams: Promise.resolve({ external_id: LEAD }) })).rejects.toThrow(
+      /temporary issue/,
+    );
+  });
+
+  it("CONTROL: a routable code on the link never asks Salesforce", async () => {
+    admin.supabaseAdmin.mockReturnValue(dbByCode({ "111": { org_id: "o1", is_test: false } }, []));
+
+    await BookEntry({ searchParams: Promise.resolve({ xbc: "111", external_id: LEAD }) });
+
+    expect(leadXbc.readLeadXbcLive).not.toHaveBeenCalled();
   });
 });

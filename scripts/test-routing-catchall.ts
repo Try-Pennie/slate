@@ -143,7 +143,7 @@ const PUBLIC_TEST = PUBLIC_TEST_BUCKET_CODES[0];
   // Never counted as a rescue: a partner testing the embed is not a lead whose
   // routing input went missing, and the catch-all rate alert must not page on
   // a test.
-  const rec = catchallRecord(PUBLIC_TEST, PUBLIC_TEST);
+  const rec = catchallRecord(PUBLIC_TEST, PUBLIC_TEST, undefined);
   eq(rec.catchallApplied, false, "a test booking is never recorded as a catch-all rescue");
   eq(rec.requestedCode, PUBLIC_TEST, "though what arrived is still recorded");
 }
@@ -203,12 +203,12 @@ const PUBLIC_TEST = PUBLIC_TEST_BUCKET_CODES[0];
 // --- what actually gets written against a booking ------------------------------------
 {
   // The ordinary rescue: no code arrived, the booking landed in the Low pool.
-  const r = catchallRecord("", CATCHALL_CODE);
+  const r = catchallRecord("", CATCHALL_CODE, undefined);
   eq(r.catchallApplied, true, "a rescued booking is recorded as one");
   eq(r.requestedCode, "", "and keeps what arrived");
 }
 {
-  const r = catchallRecord("311", "311");
+  const r = catchallRecord("311", "311", undefined);
   eq(r.catchallApplied, false, "a lead with a real code is not a catch-all");
   eq(r.requestedCode, "311", "though the raw value is still recorded");
 }
@@ -216,7 +216,7 @@ const PUBLIC_TEST = PUBLIC_TEST_BUCKET_CODES[0];
   // An older embed sitting in a cached page sends nothing for this field. That is
   // NOT a lead who arrived with no code, and counting it as one would inflate the
   // very rate the alert watches with bookings that were routed perfectly well.
-  const r = catchallRecord(undefined, "412");
+  const r = catchallRecord(undefined, "412", undefined);
   eq(r.catchallApplied, false, "a caller that did not say is not a catch-all");
   eq(r.requestedCode, null, "and records nothing rather than an empty string");
 }
@@ -225,20 +225,20 @@ const PUBLIC_TEST = PUBLIC_TEST_BUCKET_CODES[0];
   // alongside a bucket the rescue would never have chosen must not be recorded as
   // a rescue: the rate the alert watches is precisely the number that would be
   // wrong, and it would be wrong in the direction that pages somebody.
-  const r = catchallRecord("999", "522");
+  const r = catchallRecord("999", "522", undefined);
   eq(r.catchallApplied, false, "a rescue that does not match the booked bucket is not recorded as one");
   eq(r.requestedCode, "999", "but what arrived is still kept, because it is evidence either way");
 }
 {
   // And the same shape when it IS consistent.
-  const r = catchallRecord("999", CATCHALL_CODE);
+  const r = catchallRecord("999", CATCHALL_CODE, undefined);
   eq(r.catchallApplied, true, "an unreadable code that really did land in the Low pool is a rescue");
 }
 {
   // A lead who genuinely asked for the Low pool books into the same bucket a
   // rescue does. They must not be counted, or the rate becomes meaningless: 100
   // is one of the most used real codes on the roster.
-  const r = catchallRecord(CATCHALL_CODE, CATCHALL_CODE);
+  const r = catchallRecord(CATCHALL_CODE, CATCHALL_CODE, undefined);
   eq(r.catchallApplied, false, "a genuine Low lead is never counted as rescued, though they share the bucket");
 }
 

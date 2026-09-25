@@ -19,9 +19,15 @@
  * and nothing about the booking looks wrong. cal.com already makes that trade;
  * what Slate adds is that the guess is RECORDED, so the rate is countable and the
  * upstream cause can be chased rather than absorbed silently.
+ *
+ * Since #2638 the catch-all is the LAST resort on the booker: a link that names
+ * the lead is first rescued from the lead's own Salesforce `XBC__c`
+ * (`lead-code.ts`), and a Salesforce read that fails refuses rather than landing
+ * here. The pages and the confirm reach this through that resolver.
  */
 import { bucketSpecForXbc } from "@/lib/xbc";
 import { isPublicTestBucket } from "@/lib/embed/public-test-bucket";
+import type { RoutingCodeRecord } from "./lead-code.ts";
 
 /**
  * The pool an unroutable lead lands in: Low, with no backend and no legal
@@ -113,15 +119,27 @@ export function isCatchall(r: CodeResolution): r is Extract<CodeResolution, { ki
  * `undefined` means the caller did not say, which is not the same as a lead who
  * arrived with no code: the first is an older embed that predates this field, the
  * second is the defect being measured. Only the second is a catch-all.
+ *
+ * `codeSource` is the resolver's own answer (#2638, `lead-code.ts`), recorded on
+ * the booking as `routing_trace.code_source`, and when it is present it DECIDES.
+ * The raw link code alone cannot: a blank link rescued by a Salesforce XBC that is
+ * genuinely the catch-all's own code lands on the same bucket as a real rescue,
+ * and reading the raw value would count it as one, inflating the catch-all rate
+ * while the trace says Salesforce. Required, so every call site is named by `tsc`;
+ * `undefined` only where no resolver ran (a reservation written before #2638).
  */
 export function catchallRecord(
   requested: string | undefined,
   bookedCode: string,
+  codeSource: RoutingCodeRecord | undefined,
 ): { requestedCode: string | null; catchallApplied: boolean } {
   if (requested === undefined) return { requestedCode: null, catchallApplied: false };
-  const resolved = resolveRequestedCode(requested);
+  const rescued =
+    codeSource !== undefined
+      ? codeSource.source === "catchall"
+      : resolveRequestedCode(requested).kind === "catchall";
   return {
     requestedCode: requested,
-    catchallApplied: resolved.kind === "catchall" && resolved.code === bookedCode,
+    catchallApplied: rescued && bookedCode === CATCHALL_CODE,
   };
 }

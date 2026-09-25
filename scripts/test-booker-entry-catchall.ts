@@ -46,9 +46,18 @@ assert(entries.length >= 2, `found the booker entry points to check (${entries.l
 for (const path of entries) {
   const src = readFileSync(path, "utf8");
 
+  // Since #2638 the page resolves through `resolveLandingCode`, which runs the
+  // shared catch-all (`resolveRequestedCode`) and, before falling back to it, the
+  // lead's own Salesforce XBC. It is the ONE landing resolver, so a page calling
+  // the bare catch-all would show the Low pool's times to a lead Salesforce
+  // scores higher, and the confirm would then book them elsewhere.
   assert(
-    src.includes("resolveRequestedCode"),
-    `${path} resolves the requested code through the shared catch-all rather than trusting it`,
+    src.includes("resolveLandingCode"),
+    `${path} resolves the requested code through the shared landing resolver rather than trusting it`,
+  );
+  assert(
+    !src.includes("resolveRequestedCode"),
+    `${path} does not call the bare catch-all, which skips the Salesforce rescue (#2638)`,
   );
 
   // The specific refusal that was left behind. Named as a string because it is
@@ -74,9 +83,9 @@ for (const path of entries) {
   const real = readFileSync(entries[0], "utf8");
 
   const unconverted = real
-    .replace(/resolveRequestedCode/g, "first")
+    .replace(/resolveLandingCode/g, "first")
     .replace(/requestedCode=\{/g, "somethingElse={");
-  assert(!unconverted.includes("resolveRequestedCode"), "control: a page that does not resolve is detectable");
+  assert(!unconverted.includes("resolveLandingCode"), "control: a page that does not resolve is detectable");
   assert(!unconverted.includes("requestedCode={"), "control: a page that does not pass the raw code is detectable");
 
   const refusing = real + '\n// This booking link is missing its configuration\n';

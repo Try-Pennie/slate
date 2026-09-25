@@ -91,7 +91,8 @@ import { routingMetaFromTrace } from "@/lib/webhooks/types";
 // Type-only (erased under --experimental-strip-types), so this never pulls the
 // emit module's runtime deps into the node-tested domain code.
 import type { WebhookSendScheduler } from "@/lib/webhooks/emit";
-import { catchallRecord } from "@/lib/routing/catchall";
+import { catchallRecord, resolveRequestedCode } from "@/lib/routing/catchall";
+import { resolveRoutingCode, type LeadXbcReader, type RoutingCodeRecord } from "@/lib/routing/lead-code";
 import type {
   Booking,
   BookingEventAction,
@@ -708,6 +709,13 @@ export interface BookingContext {
 export interface BookingDeps {
   // availability / routing
   resolveBucketByCode(code: string): Promise<{ bucket: Bucket; eventType: EventType } | null>;
+  /**
+   * One lead's `XBC__c` from Salesforce (#2638), for a booker confirm whose link
+   * carried no code Slate can route. THROWS on a failed read, never answers null
+   * for a query that did not run: a null routes the lead to the catch-all, which
+   * is the misroute the read exists to prevent. See `src/lib/routing/lead-code.ts`.
+   */
+  readLeadXbc: LeadXbcReader;
   /** `preview` = a dry run (#380): route read-only, skipping the #321 shadow-study
    *  log + the unfair-ordering alert so previews don't pollute real-assignment data. */
   /**
@@ -2420,6 +2428,41 @@ async function findExistingCall(
 }
 
 /**
+ * The bucket part of a confirm's idempotency key (#2638).
+ *
+ * A request whose link carried a routable code, or which never said what its
+ * link carried (the direct booking API), keys on its bucket code exactly as it
+ * always has, so a booking in flight across the deploy still matches its retry.
+ * One whose link carried NO routable code is routed by Salesforce, which can
+ * answer differently or not at all on the retry, so it keys on the RAW link code
+ * instead, under a prefix no bucket code carries. With the lead id already in the
+ * key, that is stable across every retry of the same submit.
+ */
+export function idempotencyCodeFor(
+  input: Pick<CreateBookingInput, "bucketCode" | "requestedCode">,
+): string {
+  if (input.requestedCode === undefined) return input.bucketCode;
+  if (resolveRequestedCode(input.requestedCode).kind === "valid") return input.bucketCode;
+  return `unrouted:${input.requestedCode}`;
+}
+
+/**
+ * The bucket code a booker confirm routes on (#2638), and the record of where it
+ * came from. A routable code on the link is left exactly as the caller posted it;
+ * anything else is decided by `resolveRoutingCode`, which asks Salesforce when the
+ * link names a lead and THROWS `LeadCodeUnavailableError` when that read fails.
+ */
+async function routeOnLeadCode(
+  input: CreateBookingInput,
+  deps: BookingDeps,
+): Promise<{ input: CreateBookingInput; codeSource: RoutingCodeRecord | undefined }> {
+  if (input.requestedCode === undefined) return { input, codeSource: undefined };
+  const routed = await resolveRoutingCode(input.requestedCode, input.salesforceId ?? null, deps.readLeadXbc);
+  if (routed.source === "link") return { input, codeSource: routed.record };
+  return { input: { ...input, bucketCode: routed.code }, codeSource: routed.record };
+}
+
+/**
  * The call this person already has, graded for disclosure, from an identity alone.
  *
  * Split out of the confirm path in #2166 so the BOOKER'S LANDING can ask the same
@@ -2474,7 +2517,7 @@ export async function findExistingCallForIdentity(
 }
 
 export async function createBooking(
-  input: CreateBookingInput,
+  requestedInput: CreateBookingInput,
   deps: BookingDeps,
 ): Promise<BookingResult> {
   /**
@@ -2498,20 +2541,27 @@ export async function createBooking(
   // A STABLE key (caller-supplied, or derived from the lead's contact identity)
   // is what lets a re-submit collapse onto the same booking. Anonymous bookings
   // have none (idempotencyKeyFor returns null).
+  //
+  // #2638: built from what a retry sends again unchanged, never from the pool
+  // Salesforce resolves (`idempotencyCodeFor`), so a retry of a confirm that
+  // already booked matches it without a second Salesforce call: an outage on the
+  // retry, or a score that moved between the two, would otherwise refuse the
+  // retry or miss the original and book a second call.
   const stableKey =
-    input.idempotencyKey ??
+    requestedInput.idempotencyKey ??
     idempotencyKeyFor({
-      bucketCode: input.bucketCode,
-      startIso: input.startIso,
-      email: input.attendee.email,
-      phone: input.attendee.phone,
-      salesforceId: input.salesforceId,
+      bucketCode: idempotencyCodeFor(requestedInput),
+      startIso: requestedInput.startIso,
+      email: requestedInput.attendee.email,
+      phone: requestedInput.attendee.phone,
+      salesforceId: requestedInput.salesforceId,
     });
 
   // Fast path: a double-click / retry of the same submit returns the existing
   // active booking instead of creating a second one (+ a second gcal event).
   // Only a stable key can match a prior booking; a synthetic key (below) is fresh
-  // per request, so there's nothing to look up.
+  // per request, so there's nothing to look up. It runs BEFORE the Salesforce
+  // read below, so a retry of a booking that exists never depends on it.
   if (stableKey) {
     const existing = await profile.time("idempotency-lookup", () =>
       deps.findBookingByIdempotencyKey(stableKey),
@@ -2520,6 +2570,16 @@ export async function createBooking(
       return { booking: existing, manageUrl: manageUrl(deps, existing.manage_token) };
     }
   }
+
+  // #2638: a booker confirm whose link carried no routable code is routed on the
+  // lead's Salesforce XBC when the link names the lead, and on the catch-all only
+  // when Salesforce holds none. Decided HERE, on the server, before anything else
+  // reads the bucket code, so the code the client posted for a rescued lead is
+  // never what decides their pool. Only the booker's confirm says what the link
+  // carried (`requestedCode`); the direct booking API names a bucket outright and
+  // is untouched. A failed Salesforce read throws `LeadCodeUnavailableError`
+  // before any write, and the route answers 503.
+  const { input, codeSource } = await routeOnLeadCode(requestedInput, deps);
 
   // #2310: the lead's calling window, judged in the zone the booker was using.
   // AFTER the idempotency fast path, so a retry of a booking that already exists
@@ -2619,7 +2679,7 @@ export async function createBooking(
           // rescued lead who then found no times is still a rescued lead, and
           // leaving it off here would undercount exactly the population whose
           // rescue did not work.
-          ...catchallRecord(input.requestedCode, bucket.code),
+          ...catchallRecord(input.requestedCode, bucket.code, codeSource),
           outcome,
         });
       } catch {
@@ -2698,6 +2758,10 @@ export async function createBooking(
       requested_tier: tierKeyOf(input.bucketCode),
       booked_tier: tierKeyOf(bookedBucket.code),
       rungs_dropped: tier.rungsDropped,
+      // #2638: where the routed code came from, and when the catch-all applied,
+      // why Salesforce could not supply one. Absent when the caller did not say
+      // what the link carried (the direct booking API, an older embed).
+      ...(codeSource ? { code_source: codeSource } : {}),
     },
   };
   const event: ReservationPayload["event"] = {
@@ -2927,7 +2991,7 @@ async function completeReservation(
         bookedTier: rt?.booked_tier ?? null,
         // Judged against the bucket actually booked, never against the raw value
         // alone: the raw one comes from the client (#1908).
-        ...catchallRecord(requestedCode, resolved.bucket.code),
+        ...catchallRecord(requestedCode, resolved.bucket.code, bookingInsert.routing_trace?.code_source),
         outcome: "booked",
       });
     } catch {

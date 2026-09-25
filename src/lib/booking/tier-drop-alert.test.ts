@@ -91,6 +91,10 @@ const tierDropInput: CreateBookingInput = {
 function makeTierDropDeps(): BookingDeps {
   const noop = async (..._args: unknown[]): Promise<void> => {};
   return {
+    // #2638: no test here routes a booker confirm on a missing code.
+    readLeadXbc: async () => {
+      throw new Error("Salesforce is not reachable from this test");
+    },
     resolveBucketByCode: async (code) => {
       if (code === "511") return { bucket: bucket511, eventType };
       if (code === "411") return { bucket: bucket411, eventType };

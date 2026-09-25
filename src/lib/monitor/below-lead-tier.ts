@@ -35,7 +35,7 @@
  */
 import { DEBT_TIER, bucketSpecForXbc } from "@/lib/xbc";
 import { formatSlotDay, formatSlotTime } from "@/lib/booking/slot-label";
-import { leadIdKey } from "@/lib/salesforce/lead-xbc";
+import { isLeadId, leadIdKey } from "@/lib/salesforce/lead-xbc";
 import { strongIdsOf } from "@/lib/booking/lookup-identity";
 import type { Criteria } from "@/lib/db/types";
 import type { AlertResolve, ThrottledNotify } from "./alert-deps";
@@ -123,10 +123,9 @@ export function poolTierOf(bucket: PoolBucket): PoolTier | null {
   return best === null ? null : { rank: best, label: DEBT_TIER[String(best)].label };
 }
 
-/** A Salesforce LEAD id: the `00Q` key prefix, 15 or 18 characters. */
-export function isLeadId(id: string): boolean {
-  return /^00Q[a-zA-Z0-9]{12}(?:[a-zA-Z0-9]{3})?$/.test(id);
-}
+// `isLeadId` lives beside the Lead reader now (#2638), since the booking path asks
+// the same question; re-exported so this module's callers are unchanged.
+export { isLeadId };
 
 /**
  * The lead id a booking carries. The embed writes it to `salesforce_id` and the

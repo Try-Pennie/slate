@@ -93,6 +93,10 @@ const deleteEvent = vi.fn(
 function makeDeps(): BookingDeps {
   const noop = async (..._args: unknown[]): Promise<void> => {};
   return {
+    // #2638: no test here routes a booker confirm on a missing code.
+    readLeadXbc: async () => {
+      throw new Error("Salesforce is not reachable from this test");
+    },
     resolveBucketByCode: async () => ({ bucket, eventType }),
     roundRobinCandidates: async () => ["target"],
     busyIntervalsForAgent: async () => [],

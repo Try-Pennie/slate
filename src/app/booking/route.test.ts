@@ -98,6 +98,7 @@ import { POST } from "./route";
 import { PUBLIC_TEST_BUCKET_CODES } from "@/lib/embed/public-test-bucket";
 import { BOOKING_ERROR_COPY } from "@/lib/booking/booker-copy";
 import { PARTNER_KEYS } from "@/lib/booking/partner-keys";
+import { LeadCodeUnavailableError } from "@/lib/routing/lead-code";
 
 const PUBLIC_TEST = PUBLIC_TEST_BUCKET_CODES[0];
 
@@ -219,6 +220,29 @@ describe("POST /booking (embed) error mapping", () => {
       "existing_call_unavailable",
       { by: "bucket", code: "411" },
     );
+  });
+
+  // #2638: the lead's XBC could not be read from Salesforce, so the service
+  // refused rather than routing them to the catch-all. A retriable 503, refunded,
+  // counted under its own code, and never a booking in the Low pool.
+  it("answers 503 and refunds when the lead's routing code cannot be read from Salesforce (#2638)", async () => {
+    service.createBooking.mockRejectedValueOnce(
+      new LeadCodeUnavailableError(new Error("SF query failed: 503 unavailable")),
+    );
+    const res = await post({ ...VALID_BODY, bucketCode: "100", requestedCode: "", salesforceId: "00Q5e00000AbCdEEAU" });
+    expect(res.status).toBe(503);
+    const body = (await res.json()) as { error?: string };
+    expect(body.error).toBe("We hit a temporary issue booking this time. Please try again in a moment.");
+    expect(JSON.stringify(body)).not.toMatch(/SF query|salesforce|Error:/i);
+    expect(rateLimit.refundRequest).toHaveBeenCalledTimes(3);
+    expect(recordApiOutcome).toHaveBeenCalledWith("error", "100", "lead_code_unavailable", { by: "bucket", code: "100" });
+  });
+
+  it("does not call a booking a test one when the link carried no routable code (#2638)", async () => {
+    await post({ ...VALID_BODY, bucketCode: PUBLIC_TEST, requestedCode: "" });
+    expect(service.createBooking).toHaveBeenCalledWith(expect.objectContaining({ allowTestBuckets: false }));
+    await post({ ...VALID_BODY, bucketCode: PUBLIC_TEST, requestedCode: PUBLIC_TEST });
+    expect(service.createBooking).toHaveBeenLastCalledWith(expect.objectContaining({ allowTestBuckets: true }));
   });
 
   it("refunds the IP cap AND both contact keys on a taken-slot 409, which isn't the lead's fault (#1089)", async () => {
