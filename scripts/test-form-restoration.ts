@@ -60,6 +60,10 @@ assert(files.length > 40, `the scanner found the app to judge (${files.length} f
   );
   // A scan that found no forms reads exactly like a clean tree (L98).
   assert(seen > 8, `the scan found forms to judge (${seen})`);
+  // #2768 changed how the mask reads literals, and must not have hidden any real
+  // form: 14 when it shipped. A new form raises this; a lower count means the mask
+  // swallowed one, so read the diff before lowering it.
+  assert(seen >= 14, `the scan still finds every real form (${seen}, at least 14 expected)`);
   // The escape hatch is for the lead facing forms that exist only after a click.
   // More than a handful means it has become the default rather than the exception.
   assert(optedOut <= 4, `the opt out stays rare (${optedOut} forms use it)`);
@@ -133,6 +137,50 @@ assert(files.length > 40, `the scanner found the app to judge (${files.length} f
   // A `//` line mentioning `/*` must not open a block that swallows the file.
   const slashMentionsBlock = `// the /* style of comment\n<form action={save}>`;
   assert(formTags(slashMentionsBlock).length === 1, "a line comment naming /* does not hide the form below it");
+
+  // #2768: a slash star inside a LITERAL is not a comment. Opening one there
+  // masked everything to the next star slash, so a bare form further down the
+  // file was skipped and the guard passed over it.
+  const urlThenForm = `const docs = new URL("/api/*", base);\n<p>hi</p>\n<form action={save}>`;
+  const urlTags = formTags(urlThenForm);
+  assert(urlTags.length === 1, `a slash star inside a string does not hide the form after it (${urlTags.length} found)`);
+  assert(
+    urlTags[0] !== undefined && formTagVerdict(urlThenForm, urlTags[0]) === null,
+    "and that bare form is caught",
+  );
+
+  const singleThenForm = `const g = 'src/*.tsx';\n<form action={save}>`;
+  assert(formTags(singleThenForm).length === 1, "a slash star inside a single quoted string does not hide the form after it");
+
+  const templateThenForm = "const u = `${base}/v1/*`;\nconst t = `line one\n/* still text ${x} */ /*`;\n<form action={save}>";
+  assert(formTags(templateThenForm).length === 1, "a slash star inside a template literal does not hide the form after it");
+
+  const regexThenForm = `const re = /\\/\\*[^]*?\\*\\//g;\nconst r2 = x.replace(/a/*b/, "");\n<form action={save}>`;
+  assert(formTags(regexThenForm).length === 1, "a slash star inside a regex literal does not hide the form after it");
+
+  const classThenForm = `const re = /[/*]+/;\n<form action={save}>`;
+  assert(formTags(classThenForm).length === 1, "a slash star inside a regex character class does not hide the form after it");
+  // An arrow body can be a regex (`x => /a*/`), and the `>` of `=>` is not the
+  // `>` closing a JSX tag, so a slash after it must still open a regex.
+  const arrowThenForm = `const strip = (s: string) => s.replace(/\\/*x/g, "");\nconst isGlob = (s: string) => /\\/*$/.test(s);\n<form action={save}>`;
+  assert(formTags(arrowThenForm).length === 1, "a slash star inside a regex returned by an arrow does not hide the form after it");
+
+  // The apostrophe the scan was written to survive: JSX text is not a string, so
+  // "don't" must not open one that hides real markup or a real comment.
+  const apostrophe = `<p>Don't worry, it's saved.</p>\n{/* about\n  <form action={x}> in prose */}\n<form action={save}>`;
+  const aTags = formTags(apostrophe);
+  assert(aTags.length === 1 && aTags[0]?.line === 4, `an apostrophe in JSX text neither hides a form nor unmasks a comment (${aTags.length} found)`);
+
+  const apostropheSameLine = `<p>Don't forget</p> <form action={save}>`;
+  assert(formTags(apostropheSameLine).length === 1, "an apostrophe in JSX text does not hide a form on the same line");
+
+  // A closing tag's slash is not a regex, so a comment beside it is still one.
+  const closingTag = `<p>x</p>{/* <form action={x}> */}\n<form action={save}>`;
+  assert(formTags(closingTag).length === 1, "a closing tag does not open a regex that unmasks the comment beside it");
+
+  // A `//` inside a string (every URL) is not a line comment either.
+  const urlSameLine = `const u = "https://x.test"; <form action={save}>`;
+  assert(formTags(urlSameLine).length === 1, "a double slash inside a string does not hide a form sharing its line");
 
   assert(!restoreOffWinsOverSpread(`<form autoComplete="off" {...rest}>`), "restoration off BEFORE the spread is caught");
   assert(restoreOffWinsOverSpread(`<form {...rest} autoComplete="off">`), "and after it passes");

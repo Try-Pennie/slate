@@ -52,29 +52,125 @@ export function formTags(src: string): FormTag[] {
  * its end, so a line comment that merely names `/*` cannot open a block that
  * swallows the rest of the file.
  *
- * String literals are deliberately NOT tracked: JSX text is full of apostrophes
- * ("don't"), and treating one as a quote would hide real markup, which is the
- * dangerous direction for this guard. The cost is that `//` inside a string
- * (a URL) masks the rest of that one line, which at worst hides a form sharing a
- * line with a URL literal.
+ * String, template and regex literals are skipped too (#2768): a `/*` inside a
+ * URL, a glob or a regex used to open a block that masked everything up to the
+ * next star slash, so a bare form further down the file was never judged. A
+ * literal only ever STOPS a comment opening inside it; its own text is never
+ * masked, so misreading one can hide at most a comment's prose, never markup.
+ *
+ * Two readings keep JSX text from being mistaken for a literal, which is the
+ * dangerous direction for this guard:
+ *   - an apostrophe straight after a letter or digit ("don't", "agents'") never
+ *     opens a string, and a quote with no partner on its own line was never an
+ *     opener, so nothing past that line is affected;
+ *   - a slash after `<`, `>` (other than an arrow's `=>`) or `}` is never a regex, because `</p>` and
+ *     `{price}/mo` are everywhere in JSX and a regex in those positions is rare.
+ *     A regex there is read as division, which at worst leaves a `/*` inside it
+ *     opening a comment, the behaviour before #2768.
+ *
+ * Out of scope, and named so a green run is not read as more than it is: JSX
+ * TEXT that itself contains a slash star (`<code>/api/*</code>`) still opens a
+ * comment, because nothing short of a parser tells JSX text from code.
+ *
+ * No shared helper in `scripts/lib` could be reused: each of the existing masks
+ * opens a string on any apostrophe or runs an unclosed quote across lines, and
+ * none reads regex literals.
  */
 export function commentMask(src: string): boolean[] {
   const mask = new Array<boolean>(src.length).fill(false);
+  const n = src.length;
+  // One entry per open template: the brace depth inside its current `${`
+  // expression, or -1 while reading the template's own text.
+  const templates: number[] = [];
   let i = 0;
-  while (i < src.length) {
+  while (i < n) {
+    const c = src[i]!;
+    const top = templates.length - 1;
+    if (top >= 0 && templates[top] === -1) {
+      if (c === "\\") i += 2;
+      else if (c === "`") {
+        templates.pop();
+        i++;
+      } else if (c === "$" && src[i + 1] === "{") {
+        templates[top] = 0;
+        i += 2;
+      } else i++;
+      continue;
+    }
     if (src.startsWith("/*", i)) {
       const end = src.indexOf("*/", i + 2);
-      const stop = end < 0 ? src.length : end + 2;
+      const stop = end < 0 ? n : end + 2;
       for (let k = i; k < stop; k++) mask[k] = true;
       i = stop;
     } else if (src.startsWith("//", i)) {
       const end = src.indexOf("\n", i);
-      const stop = end < 0 ? src.length : end;
+      const stop = end < 0 ? n : end;
       for (let k = i; k < stop; k++) mask[k] = true;
       i = stop;
+    } else if (c === "`") {
+      templates.push(-1);
+      i++;
+    } else if (top >= 0 && (c === "{" || c === "}")) {
+      if (c === "{") templates[top] = templates[top]! + 1;
+      else if (templates[top] === 0) templates[top] = -1;
+      else templates[top] = templates[top]! - 1;
+      i++;
+    } else if (c === '"' || (c === "'" && !WORD_CHAR.test(src[i - 1] ?? ""))) {
+      i = quotedEnd(src, i);
+    } else if (c === "/" && regexMayStart(src, i)) {
+      i = regexEnd(src, i);
     } else i++;
   }
   return mask;
+}
+
+const WORD_CHAR = /[A-Za-z0-9_]/;
+
+/** Past the string opened at `i`, or just past the quote when it never closes on its own line. */
+function quotedEnd(src: string, i: number): number {
+  const q = src[i];
+  for (let j = i + 1; j < src.length; j++) {
+    const c = src[j];
+    if (c === "\\") j++;
+    else if (c === q) return j + 1;
+    else if (c === "\n") break;
+  }
+  return i + 1;
+}
+
+/** Keywords after which a `/` begins a regex rather than a division. */
+const REGEX_KEYWORDS = new Set([
+  "return", "typeof", "case", "void", "in", "of", "delete", "throw", "yield", "await", "instanceof", "new", "else", "do",
+]);
+
+/** Whether a `/` at `i` begins a regex, judged by the last thing before it. */
+function regexMayStart(src: string, i: number): boolean {
+  let j = i - 1;
+  while (j >= 0 && /\s/.test(src[j]!)) j--;
+  if (j < 0) return true;
+  const p = src[j]!;
+  if ("(,=:[!&|?{;+-*%~^".includes(p)) return true;
+  // The `>` of an arrow (`x => /a/`) opens an expression, unlike a JSX tag's `>`.
+  if (p === ">" && src[j - 1] === "=") return true;
+  if (!/[A-Za-z_$]/.test(p)) return false;
+  let k = j;
+  while (k >= 0 && /[A-Za-z0-9_$]/.test(src[k]!)) k--;
+  return REGEX_KEYWORDS.has(src.slice(k + 1, j + 1));
+}
+
+/** Past the regex opened at `i`, or just past the slash when it never closes on its own line. */
+function regexEnd(src: string, i: number): number {
+  let inClass = false;
+  for (let j = i + 1; j < src.length; j++) {
+    const c = src[j];
+    if (c === "\\") j++;
+    else if (c === "\n") break;
+    else if (inClass) {
+      if (c === "]") inClass = false;
+    } else if (c === "[") inClass = true;
+    else if (c === "/") return j + 1;
+  }
+  return i + 1;
 }
 
 /** The attribute that stops the browser restoring the form's controls. */
