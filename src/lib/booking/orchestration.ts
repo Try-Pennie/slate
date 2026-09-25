@@ -2652,7 +2652,7 @@ export async function createBooking(
           // rescued lead who then found no times is still a rescued lead, and
           // leaving it off here would undercount exactly the population whose
           // rescue did not work.
-          ...catchallRecord(input.requestedCode, bucket.code),
+          ...catchallRecord(input.requestedCode, bucket.code, codeSource),
           outcome,
         });
       } catch {
@@ -2964,7 +2964,7 @@ async function completeReservation(
         bookedTier: rt?.booked_tier ?? null,
         // Judged against the bucket actually booked, never against the raw value
         // alone: the raw one comes from the client (#1908).
-        ...catchallRecord(requestedCode, resolved.bucket.code),
+        ...catchallRecord(requestedCode, resolved.bucket.code, bookingInsert.routing_trace?.code_source),
         outcome: "booked",
       });
     } catch {

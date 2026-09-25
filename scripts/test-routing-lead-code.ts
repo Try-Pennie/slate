@@ -181,6 +181,40 @@ async function confirmPath() {
     assert(calls.resolveBucketByCode.length === 0, "confirm: before any bucket is resolved");
     assert(calls.insertBooking.length === 0 && calls.createEvent.length === 0, "confirm: and nothing is written or invited");
   }
+  // --- catchall_applied comes from the resolver's answer, never the raw link alone ---
+  // A lead whose Salesforce XBC is genuinely the catch-all's own code was routed by
+  // Salesforce, not rescued, so the decision log must agree with code_source.
+  const decided = (calls: ReturnType<typeof makeDeps>["calls"]) =>
+    calls.recordRoutingDecision.at(-1);
+  /** The shared fake answers every code with bucket 411; the catch-all verdict is
+   *  judged against the bucket actually booked, so these need a bucket carrying
+   *  the code that was asked for. */
+  const echoingBuckets = (deps: ReturnType<typeof makeDeps>["deps"]) => {
+    const inner = deps.resolveBucketByCode;
+    deps.resolveBucketByCode = async (code) => {
+      const r = await inner(code);
+      return r && { ...r, bucket: { ...r.bucket, code } };
+    };
+    return deps;
+  };
+  {
+    const { deps, calls } = makeDeps({ leadXbc: { [LEAD]: CATCHALL_CODE } });
+    await createBooking(booker, echoingBuckets(deps));
+    assert(traceOf(calls.insertBooking[0])?.code_source?.source === "salesforce", "SF 100: code_source is salesforce");
+    assert(decided(calls)?.catchallApplied === false, "SF 100: the decision log records catchall_applied false");
+  }
+  {
+    const { deps, calls } = makeDeps({ leadXbc: { [LEAD]: "" } });
+    await createBooking(booker, echoingBuckets(deps));
+    assert(decided(calls)?.catchallApplied === true, "SF blank: the decision log still records catchall_applied true");
+  }
+  {
+    const { deps, calls } = makeDeps({ leadXbc: { [LEAD]: "012" } });
+    await createBooking(booker, echoingBuckets(deps));
+    const cs = traceOf(calls.insertBooking[0])?.code_source;
+    assert(decided(calls)?.catchallApplied === true, "SF 012: the decision log records catchall_applied true");
+    assert(cs?.source === "catchall" && cs.salesforce === "unreadable" && cs.salesforce_xbc === "012", "SF 012: with the reason");
+  }
   {
     // A routable link code is left alone, and the direct booking API (which never
     // says what a link carried) never reaches Salesforce at all.
