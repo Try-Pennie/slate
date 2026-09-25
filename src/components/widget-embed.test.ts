@@ -3,6 +3,7 @@ import { describe, it, expect, beforeAll, afterEach, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { EMBED_MESSAGE, LINK_FAILED } from "@/lib/embed/lifecycle-events";
+import { PARTNER_KEYS } from "@/lib/booking/partner-keys";
 
 // Drives the real widget.js IIFE in jsdom.
 // #593: slate:resize was applied from ANY frame/origin (unlike the
@@ -663,5 +664,103 @@ describe("widget.js forwards the booking source (#2072)", () => {
     expect(src.pathname).toBe("/book");
     expect(src.searchParams.get("source")).toBe("offerhub");
     expect(src.searchParams.get("xbc")).toBe("411");
+  });
+});
+
+describe("widget.js honours data-cal-config metadata on the trigger (#2716)", () => {
+  // The table lives in widget.js, which cannot import PARTNER_KEYS (it is a
+  // dependency free static asset), so it is read out of the shipped file here and
+  // held against the constant in BOTH directions (L41): a partner key with no
+  // metadata spelling, or an entry naming something that is not a partner key,
+  // fails.
+  function metadataTable(): Record<string, string> {
+    const start = widgetSrc.indexOf("// slate-partner-metadata: start");
+    const end = widgetSrc.indexOf("// slate-partner-metadata: end");
+    if (start < 0 || end < start) throw new Error("widget.js has no slate-partner-metadata block");
+    const out: Record<string, string> = {};
+    for (const m of widgetSrc.slice(start, end).matchAll(/^\s*(\w+):\s*"([^"]+)",?\s*$/gm)) {
+      out[m[1]] = m[2];
+    }
+    return out;
+  }
+
+  function openWith(link: string, config: string | null, ns: string): URL {
+    const trigger = document.createElement("button");
+    trigger.setAttribute("data-cal-link", link);
+    trigger.setAttribute("data-cal-namespace", ns);
+    if (config !== null) trigger.setAttribute("data-cal-config", config);
+    document.body.appendChild(trigger);
+    trigger.click();
+    const iframe = shownIframe();
+    if (!iframe) throw new Error("the modal did not open");
+    return new URL(iframe.getAttribute("src")!);
+  }
+
+  it("maps every partner key, and only partner keys, from a metadata name", () => {
+    const table = metadataTable();
+    expect(Object.keys(table).sort()).toEqual(Object.values(PARTNER_KEYS).sort());
+    // The metadata spelling is pinned here, from outside the code (L70): it is
+    // what trypennie's BookButton puts in data-cal-config, following cal.com.
+    expect(table[PARTNER_KEYS.submissionId]).toBe("sfdc_submission_id");
+    expect(table[PARTNER_KEYS.regalProfileId]).toBe("regal_profile_id");
+  });
+
+  it("puts both metadata keys on the booking URL under Slate's names, and layout and pageType nowhere", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const config = JSON.stringify({
+      layout: "month_view",
+      "cal.embed.pageType": "user.event.booking.slots",
+      "metadata[sfdc_submission_id]": "a0G5x00000AbCdEQAU",
+      "metadata[regal_profile_id]": "rp_01HZY3",
+    });
+    const src = openWith("router?xbc=411", config, "config-2716-both");
+    expect(src.searchParams.get(PARTNER_KEYS.submissionId)).toBe("a0G5x00000AbCdEQAU");
+    expect(src.searchParams.get(PARTNER_KEYS.regalProfileId)).toBe("rp_01HZY3");
+    expect(src.searchParams.get("xbc")).toBe("411");
+    expect(src.searchParams.has("layout")).toBe(false);
+    expect(src.searchParams.has("cal.embed.pageType")).toBe(false);
+    expect(src.searchParams.has("metadata[sfdc_submission_id]")).toBe(false);
+    expect(warn).not.toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  it("still opens when the config attribute is unreadable, or is JSON that is not an object", () => {
+    for (const [i, bad] of ["{not json", "null", "[1,2]", '"metadata[sfdc_submission_id]"', ""].entries()) {
+      const src = openWith("router?xbc=411", bad, `config-2716-bad-${i}`);
+      expect(src.pathname).toBe("/book");
+      expect(src.searchParams.get("xbc")).toBe("411");
+      expect(src.searchParams.has(PARTNER_KEYS.submissionId)).toBe(false);
+    }
+  });
+
+  it("drops an unknown metadata key and says so on the console once, not once per open", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const config = JSON.stringify({ "metadata[utm_campaign_2716]": "spring", "metadata[sfdc_submission_id]": "a0G5" });
+    const first = openWith("router?xbc=411", config, "config-2716-unknown");
+    expect(first.searchParams.has("utm_campaign_2716")).toBe(false);
+    expect(first.searchParams.has("metadata[utm_campaign_2716]")).toBe(false);
+    expect(first.searchParams.get(PARTNER_KEYS.submissionId)).toBe("a0G5");
+    document.querySelector<HTMLButtonElement>(`${SHOWN_OVERLAY} button[aria-label="Close"]`)!.click();
+    openWith("router?xbc=411", config, "config-2716-unknown");
+    const mentions = warn.mock.calls.filter((c) => c.map(String).join(" ").includes("utm_campaign_2716"));
+    expect(mentions).toHaveLength(1);
+    warn.mockRestore();
+  });
+
+  it("lets a URL parameter win over the config on a collision", () => {
+    const config = JSON.stringify({
+      "metadata[sfdc_submission_id]": "from-config",
+      "metadata[regal_profile_id]": "rp-from-config",
+    });
+    const src = openWith(`router?xbc=411&${PARTNER_KEYS.submissionId}=from-link`, config, "config-2716-collide");
+    expect(src.searchParams.get(PARTNER_KEYS.submissionId)).toBe("from-link");
+    expect(src.searchParams.get(PARTNER_KEYS.regalProfileId)).toBe("rp-from-config");
+  });
+
+  it("forwards no key for a blank or non string metadata value", () => {
+    const config = JSON.stringify({ "metadata[sfdc_submission_id]": "   ", "metadata[regal_profile_id]": { id: "x" } });
+    const src = openWith("router?xbc=411", config, "config-2716-blank");
+    expect(src.searchParams.has(PARTNER_KEYS.submissionId)).toBe(false);
+    expect(src.searchParams.has(PARTNER_KEYS.regalProfileId)).toBe(false);
   });
 });

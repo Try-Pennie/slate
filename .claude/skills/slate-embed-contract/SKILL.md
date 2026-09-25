@@ -86,6 +86,20 @@ Do not refactor the `Cal` queue / param / message plumbing while restyling.
 2. **`data-cal-*` triggers** (delegated click listener): `data-cal-link`,
    `data-cal-namespace`, `data-cal-config`. Keep the delegated listener so
    dynamically-added triggers still work.
+   **`data-cal-config` is read** (#2716): it is JSON on the trigger, and an
+   attribute that is not JSON, or not a JSON object, is ignored and never breaks
+   the open. cal.com's `metadata[<key>]` entries are mapped onto booking URL
+   params through the `PARTNER_METADATA` table in `widget.js`:
+   `metadata[sfdc_submission_id]` -> `submissionId`,
+   `metadata[regal_profile_id]` -> `regalProfileId`. An unknown metadata key is
+   dropped, with one `console.warn` per key per page, never forwarded under a
+   generic rename. `layout`, `cal.embed.pageType` and every other non metadata key
+   are accepted as no ops. A URL param (the link's own query, or the forwarded
+   host query) wins over the config on a collision. The table's param names are
+   held against `PARTNER_KEYS` in both directions by
+   `src/components/widget-embed.test.ts`, which reads the
+   `slate-partner-metadata` block out of the shipped file, so adding a partner key
+   means adding its metadata spelling there too.
 
 3. **URL params** built by `bookingUrl` and read by `/book/page.tsx`:
    `xbc` (bucket / routing key), `external_id` (-> salesforceId), prefill keys,
