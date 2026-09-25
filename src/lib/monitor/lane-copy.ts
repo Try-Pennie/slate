@@ -566,13 +566,14 @@ export function verdictUnparkLapsedText(
 /**
  * Which noodge check stamps which lane (#1228), with the name the check carries in
  * noodge's dashboard, so the page sends the reader to the right row. The names are
- * the ones `monitors/slate.sql` in Try-Pennie/noodge registers.
+ * the ones the production rows carry and `monitors/slate.sql` in Try-Pennie/noodge
+ * keeps them at.
  */
 const UPTIME_CHECK: Record<string, { path: string; name: string }> = {
-  "uptime:api-health": { path: "/api/health", name: "Slate: API health" },
+  "uptime:api-health": { path: "/api/health", name: "Slate: API health (DB + cron lanes)" },
   "uptime:availability-canary": {
     path: "/api/health/availability",
-    name: "Slate: availability canary",
+    name: "Slate: Booker availability canary",
   },
 };
 

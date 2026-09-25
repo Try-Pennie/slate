@@ -753,6 +753,9 @@ describe("alertOnStaleLanes (#803)", () => {
       expect(text).toMatch(/enabled/);
       expect(text).toMatch(/running/);
       expect(text).toMatch(/\/api\/health\b/);
+      // The row as noodge's dashboard names it (production id 5), so the reader
+      // can find it; monitors/slate.sql in Try-Pennie/noodge keeps that name.
+      expect(text).toContain('"Slate: API health (DB + cron lanes)"');
       expect(text).not.toMatch(/Infinity|NaN|undefined/);
     });
 
@@ -763,7 +766,9 @@ describe("alertOnStaleLanes (#803)", () => {
       });
       await alertOnStaleLanes();
       expect(pageFor("uptime:api-health")).toBeUndefined();
-      expect(String(pageFor("uptime:availability-canary")?.[2])).toMatch(/\/api\/health\/availability/);
+      const text = String(pageFor("uptime:availability-canary")?.[2]);
+      expect(text).toMatch(/\/api\/health\/availability/);
+      expect(text).toContain('"Slate: Booker availability canary"');
     });
 
     it("stays quiet inside the bound, through a run noodge is still retrying", async () => {

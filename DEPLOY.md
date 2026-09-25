@@ -403,9 +403,10 @@ working once verification is done.
 Slate's internal cron monitor only alerts while the Worker is alive. An external
 monitor is what catches a dead Worker, a broken deploy, or a DNS failure. noodge
 (https://noodge.trypennie.dev/) runs four checks against
-`https://slate.trypennie.app`, alerting to the same Slack channel the cron monitor
-uses (`C09F4L6PLQP`). (Cloudflare's native Health Checks were considered but need a
-paid plan; the `trypennie.app` zone is on Free, so noodge is the free choice.)
+`https://slate.trypennie.app`, alerting to #statuspage (`C08A3BYMB29`), which is
+NOT the channel Slate's own cron monitor posts to. (Cloudflare's native Health
+Checks were considered but need a paid plan; the `trypennie.app` zone is on Free,
+so noodge is the free choice.)
 
 **The checks are code, not dashboard rows.** They live in `monitors/slate.sql` in
 Try-Pennie/noodge, which is idempotent, keyed on stable keys, adopts rows that were
@@ -442,8 +443,8 @@ sustained, real condition (a cron lane well past its bound, a genuinely empty
 well-staffed tier), so the ten minutes that costs is not hiding flicker. Verify each
 check actually fails when it should: point it at a deliberately bad path once,
 confirm the Slack alert fires, then point it back. A check that can only ever pass
-is worse than no check. noodge's bot has to be in the channel (`/invite @Noodge`)
-for its alert to arrive.
+is worse than no check. noodge's bot has to be in #statuspage (`/invite @Noodge`)
+for its alert to arrive; it is.
 
 **Watching the watcher (#1228).** Checks 1 and 2 send `Authorization: Bearer` with
 a dedicated key, `UPTIME_HEARTBEAT_KEY` here and `SLATE_UPTIME_HEARTBEAT_KEY` when
@@ -462,7 +463,8 @@ What it cannot see, so a quiet channel is never read as more than it is:
 
 - **A dead Worker cannot receive a stamp, and cannot run the watchdog that would
   notice one missing.** A total outage is caught by noodge's OWN alert on checks 1
-  to 4, which is why its alerts go to the same channel.
+  to 4, in #statuspage. The uptime heartbeat pages above arrive in Slate's own
+  alerts channel instead, so the two halves land in different places.
 - **`/widget.js` and `/login` cannot stamp**, because no app code runs for them.
   Their only coverage against being deleted or paused is the registration file:
   re-applying `monitors/slate.sql` restores them, and nothing pages if one is
