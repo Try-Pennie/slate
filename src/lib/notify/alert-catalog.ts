@@ -387,6 +387,8 @@ export const ALERT_CATALOG: AlertEntry[] = [
   {
     key: "low_page_volume:*",
     kind: "condition",
+    // The suffix is one of the fixed Low landing pages in page-volume.ts.
+    suffix: "bounded",
     why:
       "One Low landing page has stopped booking while the others carry on (#2738); " +
       "that page's bookings come back and the same lane re-measures it against the " +
