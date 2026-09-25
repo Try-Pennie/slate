@@ -52,8 +52,8 @@ export default async function AlertSettingsPage({
   const saved = savedSentence(savedOutcome(sp.ok));
   const me = await currentUser();
   if (!me) redirect("/login");
-  if (!canEditOrgSettings(me.role)) return <AdminDenied need="an admin" />;
   if (consoleHiddenFor(me.role)) redirect("/admin/ooo");
+  if (!canEditOrgSettings(me.role)) return <AdminDenied need="an admin" />;
 
   // Read stored values to prefill. Guarded: the tables may not exist yet during
   // a migrate-before-deploy window, and a missing table must not 500 the page.

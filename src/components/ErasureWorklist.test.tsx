@@ -59,7 +59,7 @@ afterEach(() => {
 
 describe("ErasureWorklist: reading the state", () => {
   it("renders the unreadable screen, not an empty list, when the trail read failed", () => {
-    render(<ErasureWorklist state={{ kind: "trail-unreadable", reason: "permission denied" }} />);
+    render(<ErasureWorklist viewerRunsPurge state={{ kind: "trail-unreadable", reason: "permission denied" }} />);
     expect(screen.getByRole("alert").textContent).toMatch(/could not be read/i);
     expect(screen.getByRole("alert").textContent).toMatch(/permission denied/);
     // The reassuring screen must be absent, not merely different.
@@ -71,6 +71,7 @@ describe("ErasureWorklist: reading the state", () => {
   it("renders the empty trail as its own measured sentence", () => {
     render(
       <ErasureWorklist
+        viewerRunsPurge
         state={ready({ entries: [], trail: { entryCount: 0, bookingCount: 0, otherOrgBookingCount: 0 } })}
       />,
     );
@@ -80,6 +81,7 @@ describe("ErasureWorklist: reading the state", () => {
   it("shows an unmeasured residual as unknown, never as clean", () => {
     render(
       <ErasureWorklist
+        viewerRunsPurge
         state={ready({
           warehouse: { kind: "unreadable", reason: "Snowflake returned 503" },
           entries: [entry({ residuals: null, unmeasuredReason: "Snowflake returned 503" })],
@@ -92,12 +94,12 @@ describe("ErasureWorklist: reading the state", () => {
   });
 
   it("says an unconfigured mirror is a different thing from an unreadable one", () => {
-    render(<ErasureWorklist state={ready({ warehouse: { kind: "unconfigured" } })} />);
+    render(<ErasureWorklist viewerRunsPurge state={ready({ warehouse: { kind: "unconfigured" } })} />);
     expect(screen.getByRole("alert").textContent).toMatch(/not configured/i);
   });
 
   it("names the erasure by its hash, and never renders a cleartext address", () => {
-    render(<ErasureWorklist state={ready()} />);
+    render(<ErasureWorklist viewerRunsPurge state={ready()} />);
     expect(screen.getByText(/bf887269/)).toBeTruthy();
     expect(document.body.textContent).not.toMatch(/@/);
   });
@@ -119,6 +121,7 @@ describe("ErasureWorklist: nothing here purges (#1961)", () => {
   it("offers no control at all, on a trail with an outstanding purge", () => {
     render(
       <ErasureWorklist
+        viewerRunsPurge
         state={ready({ entries: [entry({ residuals: [{ table: "bookings", residual: 4 }] })] })}
       />,
     );
@@ -133,6 +136,7 @@ describe("ErasureWorklist: nothing here purges (#1961)", () => {
   it("posts nothing, because it renders no form", () => {
     const { container } = render(
       <ErasureWorklist
+        viewerRunsPurge
         state={ready({ entries: [entry({ residuals: [{ table: "bookings", residual: 4 }] })] })}
       />,
     );
@@ -144,9 +148,18 @@ describe("ErasureWorklist: nothing here purges (#1961)", () => {
   // it (L126, L148), so the absence of a button is explained rather than left as
   // a gap where one used to be.
   it("says how an outstanding purge is run instead", () => {
-    render(<ErasureWorklist state={ready()} />);
+    render(<ErasureWorklist state={ready()} viewerRunsPurge />);
     expect(screen.getByText(/no button for this, deliberately/i)).toBeTruthy();
     expect(screen.getByText(/naming who asked for the erasure/i)).toBeTruthy();
     expect(screen.getByText(/pii-erasure-runbook/i)).toBeTruthy();
+  });
+
+  // #2699: an admin cannot run the purge, so they are told who can, in their
+  // terms, and never told to ask Claude.
+  it("tells an admin to ask a super admin", () => {
+    render(<ErasureWorklist state={ready()} viewerRunsPurge={false} />);
+    expect(screen.getByText(/ask a super admin to run it/i)).toBeTruthy();
+    expect(screen.queryByText(/claude/i)).toBeNull();
+    expect(screen.queryByText(/pii-erasure-runbook/i)).toBeNull();
   });
 });

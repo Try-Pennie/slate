@@ -137,8 +137,15 @@ export interface PurgeSuccessFacts {
  * copy string is a thing that does not, and one naming a stale command would be
  * worse than one naming none (L210).
  */
-export function howToPurgeText(): string {
-  return "There is no button for this, deliberately: blanking a person's contact data in the warehouse cannot be undone, so it is run as a deliberate, audited step rather than a click. Ask Claude to run the warehouse purge for the entry above, naming who asked for the erasure. It refuses to run without that name, so the audit trail cannot hold a deletion with nobody attached to it. The steps are in docs/pii-erasure-runbook.md.";
+export function howToPurgeText(viewerRunsPurge: boolean): string {
+  const why =
+    "There is no button for this, deliberately: blanking a person's contact data in the warehouse cannot be undone, so it is run as a deliberate, audited step rather than a click.";
+  // #2699: an admin can open this page once the console is live, and cannot run
+  // the purge, so they are told who can rather than handed an instruction meant
+  // for the person who operates the tooling.
+  return viewerRunsPurge
+    ? `${why} Run the warehouse purge for the entry above, naming who asked for the erasure. It refuses to run without that name, so the audit trail cannot hold a deletion with nobody attached to it. The steps are in docs/pii-erasure-runbook.md.`
+    : `${why} Ask a super admin to run it for the entry above, and tell them who asked for the erasure. The purge refuses to run without that name, so the audit trail cannot hold a deletion with nobody attached to it.`;
 }
 
 export function trailUnreadableText(reason: string): string {

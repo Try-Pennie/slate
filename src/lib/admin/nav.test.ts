@@ -6,6 +6,7 @@ import {
   activeAdminItem,
   adminNavHrefs,
   adminNavFor,
+  canOpenAdminRoute,
   type AdminGate,
 } from "@/lib/admin/nav";
 import { ROLES } from "@/lib/auth/roles";
@@ -273,5 +274,29 @@ describe("activeAdminItem", () => {
 
   it("is null when there is no map at all", () => {
     expect(activeAdminItem([], "/admin")).toBeNull();
+  });
+});
+
+// #2699: copy that points somebody at a screen has to know whether they can open
+// it. The answer comes from the nav entry's gate, which
+// scripts/test-admin-nav-reachability.ts holds to the route's own guard, plus the
+// console flag, so it is the same decision the route makes rather than a second
+// list of roles.
+describe("canOpenAdminRoute", () => {
+  it("lets an admin and a super admin open Hours, and nobody below", () => {
+    const open = ROLES.filter((r) => canOpenAdminRoute(r, "/admin/business-hours", false));
+    expect(open).toEqual(["admin", "super_admin"]);
+  });
+
+  it("lets a manager open a manager route", () => {
+    expect(canOpenAdminRoute("manager", "/admin/agents", false)).toBe(true);
+  });
+
+  it("opens nothing while the console is hidden from that viewer", () => {
+    for (const r of ROLES) expect(canOpenAdminRoute(r, "/admin/business-hours", true)).toBe(false);
+  });
+
+  it("refuses to answer for a route the nav does not name", () => {
+    expect(() => canOpenAdminRoute("admin", "/admin/nowhere", false)).toThrow(/\/admin\/nowhere/);
   });
 });

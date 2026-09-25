@@ -1,6 +1,6 @@
 import { redirect } from "next/navigation";
 import { currentUser } from "@/lib/auth";
-import { canEditOrgSettings } from "@/lib/auth/roles";
+import { atLeast, canEditOrgSettings } from "@/lib/auth/roles";
 import { consoleHiddenFor } from "@/lib/env";
 import { ErasureWorklist } from "@/components/ErasureWorklist";
 import { loadErasureWorklist } from "@/lib/snowflake/erasure-worklist-load";
@@ -46,7 +46,9 @@ export default async function ErasureWorklistPage() {
   return (
     <>
       <>
-        <ErasureWorklist state={state} />
+        {/* #2699: the purge is run by a super admin from the runbook; an admin
+            can open this page and is told to ask one rather than to run it. */}
+        <ErasureWorklist state={state} viewerRunsPurge={atLeast(me.role, "super_admin")} />
       </>
     </>
   );

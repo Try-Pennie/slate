@@ -190,6 +190,15 @@ async function main() {
   const ooo = await loadBookingDetail("bk1", deps({ oooOnly: () => true }));
   eq(ooo.kind, "ooo", "ooo-only role -> ooo");
 
+  // #2699: the console gate answers before the role check, so a viewer who is
+  // BOTH held out of the console and below manager is redirected like every
+  // other console route does, not refused with a role message.
+  const both = await loadBookingDetail(
+    "bk1",
+    deps({ canManage: () => false, oooOnly: () => true }),
+  );
+  eq(both.kind, "ooo", "held out AND below manager -> ooo, not forbidden");
+
   // Booking absent or in another org -> notfound; getBooking is org-scoped.
   let scoped: { id: string; orgId: string } | null = null;
   const missing = await loadBookingDetail(

@@ -34,8 +34,8 @@ export default async function BucketsPage({
   const saved = savedSentence(savedOutcome(sp.ok));
   const me = await currentUser();
   if (!me) redirect("/login");
-  if (!canEditOrgSettings(me.role)) return <AdminDenied need="an admin" />;
   if (consoleHiddenFor(me.role)) redirect("/admin/ooo");
+  if (!canEditOrgSettings(me.role)) return <AdminDenied need="an admin" />;
 
   const db = supabaseAdmin();
   // allSettled, not all: a table that does not exist yet during a

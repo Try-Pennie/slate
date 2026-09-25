@@ -23,8 +23,8 @@ export default async function BookerCopyPage({
   const saved = savedSentence(savedOutcome(sp.ok));
   const me = await currentUser();
   if (!me) redirect("/login");
-  if (!canEditOrgSettings(me.role)) return <AdminDenied need="an admin" />;
   if (consoleHiddenFor(me.role)) redirect("/admin/ooo");
+  if (!canEditOrgSettings(me.role)) return <AdminDenied need="an admin" />;
 
   // #1335: the event types whose lead-facing description is editable here.
   // Guarded like its old neighbours, so a missing table during a

@@ -25,10 +25,10 @@ export default async function TeamAccessPage({
   const sp = await searchParams;
   const me = await currentUser();
   if (!me) redirect("/login");
+  if (consoleHiddenFor(me.role)) redirect("/admin/ooo");
   // Granting Slate access to somebody outside the debt team is a super admin
   // action, and the server action enforces that itself. This is presentation.
   if (me.role !== "super_admin") return <AdminDenied need="a super admin" />;
-  if (consoleHiddenFor(me.role)) redirect("/admin/ooo");
 
   // #1629: unwrap rather than `(data ?? [])`. An unreadable roster draws the same
   // empty queue an actually-empty one draws, and this page's whole subject is who

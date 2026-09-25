@@ -25,6 +25,7 @@ export const dynamic = "force-dynamic";
 export default async function BucketAvailabilityPage() {
   const me = await currentUser();
   if (!me) redirect("/login");
+  if (consoleHiddenFor(me.role)) redirect("/admin/ooo");
   if (!canManageAgents(me.role)) {
     return (
       <main className="p-8 text-sm text-fg-muted">
@@ -34,7 +35,6 @@ export default async function BucketAvailabilityPage() {
   }
   // Mirror /admin: during the OOO only launch, everyone below super admin is
   // limited to the OOO surfaces.
-  if (consoleHiddenFor(me.role)) redirect("/admin/ooo");
 
   const report = await loadBucketSupply(me.org_id);
   const zoneLabel = DateTime.now().setZone(BUSINESS_ZONE).toFormat("ZZZZ");
