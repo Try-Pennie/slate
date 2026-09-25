@@ -19,6 +19,8 @@ function renderIt(over: Partial<Parameters<typeof VolumeLearning>[0]> = {}) {
       detail={["Slate learns nothing from its own bookings until the day the ramp ended is set below."]}
       coverage={coverage}
       action={action}
+      earliest="2026-09-25"
+      minWeeks={4}
       {...over}
     />,
   );

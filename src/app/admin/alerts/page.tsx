@@ -36,7 +36,8 @@ import {
 } from "@/lib/monitor/settings";
 import { VolumeFloors } from "@/components/admin/VolumeFloors";
 import { VolumeLearning, type PageCoverageView } from "@/components/admin/VolumeLearning";
-import { baselineInForce, type BaselineInForce } from "@/lib/monitor/volume-relearn";
+import { EARLIEST_RAMP_END, baselineInForce, type BaselineInForce } from "@/lib/monitor/volume-relearn";
+import { LEARNING } from "@/lib/monitor/volume-learning";
 import { learningStatusCopy } from "@/lib/monitor/volume-relearn-copy";
 import { MEASURED_VOLUME_BASELINE } from "@/lib/monitor/volume-baseline";
 import { LOW_PAGES, pageCoverage } from "@/lib/monitor/page-volume";
@@ -629,6 +630,8 @@ export default async function AlertSettingsPage({
           coverage={coverage}
           notice={savedHere && saved ? <SettingsSaveNotice ok saved={saved} error={sp.error} /> : undefined}
           action={setVolumeRampEnd}
+          earliest={EARLIEST_RAMP_END}
+          minWeeks={LEARNING.minWeeks}
         />
       ) : (
         <section id="volume-learning" className={cardCls}>

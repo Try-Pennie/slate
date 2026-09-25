@@ -4,8 +4,6 @@ import { useState } from "react";
 import { ConfirmAction } from "@/components/ui/ConfirmAction";
 import { SaveForm, holdsAView } from "@/components/ui/SaveForm";
 import { btnCls, btnSecondaryCls, cardCls, inputCls, labelCls } from "@/components/ui/styles";
-import { EARLIEST_RAMP_END } from "@/lib/monitor/volume-relearn";
-import { LEARNING } from "@/lib/monitor/volume-learning";
 
 /** "Oct 12, 2026" for a YYYY-MM-DD, read as a date rather than as UTC midnight. */
 function day(iso: string): string {
@@ -53,6 +51,8 @@ export function VolumeLearning({
   coverage,
   notice,
   action,
+  earliest,
+  minWeeks,
 }: {
   /** The stored ramp end, YYYY-MM-DD, or null when none is declared. */
   rampEndOn: string | null;
@@ -63,6 +63,13 @@ export function VolumeLearning({
   /** The saved notice for this form, drawn here rather than at the top of the page. */
   notice?: React.ReactNode;
   action: (form: FormData) => Promise<void>;
+  /**
+   * `EARLIEST_RAMP_END` and `LEARNING.minWeeks`, handed down by the page rather
+   * than imported, so the learner and its date library stay out of the client
+   * bundle for the sake of two constants.
+   */
+  earliest: string;
+  minWeeks: number;
 }) {
   const [date, setDate] = useState(rampEndOn ?? "");
   const changing = rampEndOn !== null;
@@ -75,7 +82,7 @@ export function VolumeLearning({
   ) : (
     <>
       {changing ? `The ramp end moves from ${day(rampEndOn)} to ${day(typed)}. ` : ""}
-      From then, bookings made before {day(typed)} are never used. Once {LEARNING.minWeeks} full weeks
+      From then, bookings made before {day(typed)} are never used. Once {minWeeks} full weeks
       after it have been booked, the low volume alarm judges against floors learned from Slate&apos;s
       own bookings, refit every day, and never lower than the cal.com floors.
       {changing ? " The floors learned for the old date stop applying at the next check." : ""}
@@ -111,7 +118,7 @@ export function VolumeLearning({
               name="ramp_end"
               type="date"
               required
-              min={EARLIEST_RAMP_END}
+              min={earliest}
               value={date}
               onChange={(e) => setDate(e.target.value)}
               className={`${inputCls} w-44`}
