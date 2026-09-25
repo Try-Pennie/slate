@@ -59,6 +59,8 @@ export const SAVE_OUTCOMES = [
   "org-default-hours",
   "regal-ignore-added",
   "regal-ignore-removed",
+  "volume-ramp-end-cleared",
+  "volume-ramp-end-set",
   "webhook-endpoint",
   "working-hours",
 ] as const;
@@ -93,6 +95,10 @@ export const SAVE_OUTCOME_COPY: Record<Exclude<SaveOutcome, DynamicOutcome>, str
   // confirmed is which way the list moved.
   "regal-ignore-added": "Added to the ignore list. Their calls in Regal are no longer reported.",
   "regal-ignore-removed": "Removed from the ignore list. Their calls in Regal are reported again.",
+  // #2739. Each names what now happens to the floors, because which way it went is
+  // the one thing the reader needs confirmed.
+  "volume-ramp-end-set": "Ramp end saved. Slate learns its low volume floors from its own bookings after that day.",
+  "volume-ramp-end-cleared": "Ramp end cleared. The low volume floors are the cal.com measurement again.",
   // #2384: the endpoint save used to revalidate the Overview and say nothing at
   // all, so a successful save and a refused one drew the same screen: the form
   // redrawn with whatever was stored before the press.
@@ -190,4 +196,13 @@ export function refusedQuery(reason: string): string {
  * or a copied link, and the webhooks page's own two were invisible to the
  * stripper that only knew about `ok` and `error`.
  */
-export const OUTCOME_PARAMS = ["ok", "error", "resend", "replay"] as const;
+export const OUTCOME_PARAMS = ["ok", "error", "resend", "replay", "form"] as const;
+
+/**
+ * The `form` a refusal names when its page draws that form's refusal beside the
+ * form rather than at the top (#2739). A refusal carries no outcome name the way
+ * a save does, so without this the page cannot tell whose refusal it is.
+ */
+export function refusedFromQuery(reason: string, form: string): string {
+  return `${refusedQuery(reason)}&form=${encodeURIComponent(form)}`;
+}

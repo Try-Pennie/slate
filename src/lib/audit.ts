@@ -53,6 +53,10 @@ export const AUDIT_ACTIONS = [
   // one, since a test send deliberately writes no webhook_deliveries row.
   "webhook.test_sent",
   "monitor.settings",
+  // #2739: declaring the ramp over changes which floors the low volume alarm
+  // judges against, weeks later and with nobody watching, so the trail records the
+  // date before and after.
+  "monitor.volume_ramp_end",
   "reason.options",
   "booking.settings",
   // When Pennie is open (#1297). Distinct from booking.settings because it changes

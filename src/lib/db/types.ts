@@ -257,6 +257,13 @@ export interface MonitorAlertConfig {
   id: number;
   floor_30: number | null;
   floor_120: number | null;
+  /** #2739: the day the ramp ended (YYYY-MM-DD), declared on /admin/alerts. Null =
+   *  not declared, so nothing is learned and the cal.com floors stay in force. */
+  volume_ramp_end_on: string | null;
+  /** #2739: the monitor lane's last refit of the low volume floors, as written by
+   *  `runVolumeRelearn` (`StoredVolumeLearning`). Validated on every read, never
+   *  trusted as typed. Null = never refit. */
+  volume_learning: unknown;
   alerts_channel: string | null;
   info_channel: string | null;
   /** #575: UI arm/disarm for the low-booking-volume alert. Null = unset (fall

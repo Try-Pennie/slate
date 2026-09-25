@@ -16,6 +16,7 @@ function renderFloors(over: Partial<Parameters<typeof VolumeFloors>[0]> = {}) {
   return render(
     <VolumeFloors
       baseline={MEASURED_VOLUME_BASELINE}
+      inForce="In force: the cal.com measurement from Sep 25, 2026."
       table={floorTable(MEASURED_VOLUME_BASELINE, WEEK)}
       weekReadable
       override30={null}
@@ -31,7 +32,7 @@ describe("VolumeFloors", () => {
   it("names the source, the measurement date, the span and whose traffic it fitted", () => {
     const { container } = renderFloors();
     const line = container.querySelector("[data-floor-provenance]")!.textContent!;
-    expect(line).toContain("Measured from cal.com on Sep 25, 2026");
+    expect(line).toContain("In force: the cal.com measurement from Sep 25, 2026.");
     expect(line).toContain("Jul 24 to Sep 25");
     expect(line).toContain(MEASURED_VOLUME_BASELINE.bookings.toLocaleString("en-US"));
     expect(line).toContain(MEASURED_VOLUME_BASELINE.scope);
@@ -107,6 +108,7 @@ describe("VolumeFloors", () => {
     const { container } = render(
       <VolumeFloors
         baseline={MEASURED_VOLUME_BASELINE}
+        inForce="In force: the cal.com measurement from Sep 25, 2026."
         table={floorTable(MEASURED_VOLUME_BASELINE, null)}
         weekReadable={false}
         override30={null}

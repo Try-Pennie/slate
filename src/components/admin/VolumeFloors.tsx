@@ -14,17 +14,11 @@ import type { FloorOverride, VolumeBaseline } from "@/lib/monitor/volume-floors"
 import { hourLabel, type FloorTable } from "@/lib/admin/volume-floor-table";
 import { inputCls, labelCls } from "@/components/ui/styles";
 
-const SOURCE_NAME: Record<VolumeBaseline["source"], string> = {
-  calcom: "cal.com",
-  slate: "Slate",
-};
-
 /** A YYYY-MM-DD date as "Sep 25, 2026", read as a date rather than as UTC midnight. */
-function day(iso: string, withYear = false): string {
+function day(iso: string): string {
   return new Date(`${iso}T12:00:00Z`).toLocaleDateString("en-US", {
     month: "short",
     day: "numeric",
-    ...(withYear ? { year: "numeric" } : {}),
     timeZone: "UTC",
   });
 }
@@ -40,6 +34,7 @@ function overrideLine(o: FloorOverride | null): string | null {
 
 export function VolumeFloors({
   baseline,
+  inForce,
   table,
   weekReadable,
   override30,
@@ -48,6 +43,13 @@ export function VolumeFloors({
   stored120,
 }: {
   baseline: VolumeBaseline;
+  /**
+   * Which baseline this is, and since when (#2739): the cal.com measurement, or
+   * floors learned from Slate's own bookings and when they were last refit. From
+   * `learningStatusCopy`, so this line and the learning section are built from one
+   * judge and cannot disagree.
+   */
+  inForce: string;
   table: FloorTable;
   /** False when the org's week could not be read, so every hour is shown. */
   weekReadable: boolean;
@@ -67,7 +69,7 @@ export function VolumeFloors({
     <>
       <h2 className="mb-1 text-sm font-semibold">Low volume floors</h2>
       <p className="text-xs text-fg-muted" data-floor-provenance>
-        Measured from {SOURCE_NAME[baseline.source]} on {day(baseline.measuredOn, true)}:{" "}
+        {inForce}{" "}
         <span className="tabular-nums">{baseline.bookings.toLocaleString("en-US")}</span> bookings from{" "}
         {day(baseline.fromDate)} to {day(baseline.toDate)}. {baseline.scope}
         {share}.
