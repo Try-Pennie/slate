@@ -116,6 +116,7 @@ export function SlotTimes({
   classes,
   noDaysNode,
   reader,
+  failedMessage = null,
 }: {
   view: SlotPickerView;
   /** The viewer's zone: day headings and the announcement are read in it. */
@@ -132,6 +133,12 @@ export function SlotTimes({
    * staff on the admin panel. Required, so every surface decides it.
    */
   reader: { kind: "lead" } | { kind: "staff"; leadZone: string };
+  /**
+   * A failure's own sentence, shown instead of the ordinary "could not load"
+   * (#2666: the public test bucket's pass was refused). A retry cannot fix that
+   * one, so no retry is offered beside it; the sentence says what does.
+   */
+  failedMessage?: string | null;
 }) {
   // A day is a bare YYYY-MM-DD keyed in `timeZone`. Reading it back at noon UTC
   // keeps the label on that calendar day for every zone, east or west.
@@ -165,16 +172,18 @@ export function SlotTimes({
               <AlertIcon width={15} height={15} />
             </span>
             <span>
-              {messageLines(COPY.failed).map((line) => (
+              {messageLines(failedMessage ?? COPY.failed).map((line) => (
                 <span key={line} className="block">
                   {line}
                 </span>
               ))}
             </span>
           </p>
-          <button type="button" onClick={onRetry} className={classes.retry}>
-            Try again
-          </button>
+          {failedMessage === null && (
+            <button type="button" onClick={onRetry} className={classes.retry}>
+              Try again
+            </button>
+          )}
         </div>
       ) : view.kind === "no-days" ? (
         <>{noDaysNode}</>

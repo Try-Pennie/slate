@@ -37,6 +37,7 @@ import {
   type NextDaysFailure,
 } from "@/lib/booking/next-days-reply";
 import { getJson, postJson, REQUEST_TIMEOUT_MS } from "@/lib/http";
+import { testPassHeaders, testPassRefusalSentence } from "@/lib/embed/test-pass-header";
 import { TestModeBand } from "@/components/TestModeBand";
 import { useStalledAfter } from "@/lib/useStalledAfter";
 import { ConfirmationMark, preloadConfirmationMark } from "@/components/ConfirmationMark";
@@ -205,6 +206,13 @@ interface BookerProps {
    * neither a tester nor a stray lead can mistake it for a real booking (L678).
    */
   isTest?: boolean;
+  /**
+   * The short lived pass `/book` hands a page on an approved website when the
+   * bucket is the public test bucket (#2666), sent as a header on the availability
+   * read, the next days search and the confirm. Null for every other bucket, which
+   * is sent exactly as it always was.
+   */
+  testPass?: string | null;
   /** Active reschedule reason options, resolved from the store server-side
    *  (#346), for the Move offered when a lead already has a call (#1337). A
    *  reschedule records a mandatory reason and the lead is asked for it here
@@ -330,6 +338,7 @@ export default function Booker({
   brandColor,
   parentOrigin,
   isTest = false,
+  testPass = null,
   horizonDays,
   rescheduleReasons,
   cancelReasons,
@@ -436,6 +445,8 @@ export default function Booker({
   const [nextDaySlots, setNextDaySlots] = useState<string[] | null>(null);
   const [loadingNext, setLoadingNext] = useState(false);
   const [nextFailure, setNextFailure] = useState<NextDaysFailure | null>(null);
+  /** #2666: the server's sentence when the next days search refused the test pass. */
+  const [nextPassRefusal, setNextPassRefusal] = useState<string | null>(null);
   const [hour12, setHour12] = useState(true);
   // #1332: a prefilled number is what the advisor ends up calling, and most real
   // leads arrive with one from the landing page, so it reads the same as a typed
@@ -569,7 +580,13 @@ export default function Booker({
   // (#629), the day grouping in the viewer's zone, the chosen day and the
   // loading / failed / empty states, so the booker and the reschedule surfaces
   // cannot drift apart again. No day is chosen until the lead chooses one.
-  const picker = useSlotPicker({ url: availabilityUrl, zone, leadZone: zone, slotsOverride: nextDaySlots });
+  const picker = useSlotPicker({
+    url: availabilityUrl,
+    zone,
+    leadZone: zone,
+    slotsOverride: nextDaySlots,
+    testPass,
+  });
   const meta = picker.payload as AvailabilityResponse | null;
   /**
    * The time a request was just refused for, or null (#1319, #1549). Set only on a 409 race,
@@ -752,7 +769,10 @@ export default function Booker({
         },
         // Convert a wedged confirm (server accepted, never responds) into the
         // retryable error below instead of an endless "Booking your call…" (#626).
-        { timeoutMs: REQUEST_TIMEOUT_MS },
+        // #2666: the test pass rides along on the public test bucket only. A pass
+        // that ran out while the page sat open comes back as a 403 carrying its own
+        // sentence, which the `data.error` branch below shows as it is.
+        { timeoutMs: REQUEST_TIMEOUT_MS, headers: testPassHeaders(testPass) },
       );
 
       if (ok) {
@@ -1666,8 +1686,17 @@ export default function Booker({
     // arrives here as `ok: false`, which is already the failed screen below.
     const res = await getJson<unknown>(
       `/api/availability/next?bucket=${encodeURIComponent(bucketCode)}`,
-      { timeoutMs: REQUEST_TIMEOUT_MS, cache: "no-store" },
+      { timeoutMs: REQUEST_TIMEOUT_MS, cache: "no-store", headers: testPassHeaders(testPass) },
     );
+    // #2666: a refused test pass is neither "we could not look" nor "unreadable":
+    // it has its own sentence (reload, or tell us), carried by the reply itself.
+    const passRefusal = res.ok ? null : testPassRefusalSentence(res.data);
+    if (passRefusal !== null) {
+      setNextPassRefusal(passRefusal);
+      setLoadingNext(false);
+      return;
+    }
+    setNextPassRefusal(null);
     // An error state and an empty state are different screens: "we looked and
     // there is nothing" must never be shown for "we could not look". #2155: that
     // included a 200 whose payload this page cannot read, which used to be read as
@@ -1724,7 +1753,11 @@ export default function Booker({
       )}
       {isClosure && nextDaySlots === null && (
         <>
-          {nextFailure !== null && (
+          {nextPassRefusal !== null ? (
+            <p role="alert" className="text-sm text-[var(--error)]">
+              {nextPassRefusal}
+            </p>
+          ) : nextFailure !== null && (
             <p role="alert" className="text-sm text-[var(--error)]">
               {nextFailure === NEXT_DAYS_FAILURE.unreadable
                 ? NEXT_DAYS_COPY.unreadable
@@ -2002,6 +2035,7 @@ export default function Booker({
               timeZone={zone}
               reader={{ kind: "lead" }}
               onRetry={picker.retry}
+              failedMessage={picker.failedMessage}
               classes={{
                 muted: `text-sm ${c.faint}`,
                 heading: `text-sm font-semibold tabular-nums ${c.title}`,

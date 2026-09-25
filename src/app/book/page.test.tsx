@@ -30,6 +30,13 @@ vi.mock("@/lib/salesforce/lead-xbc", async (importOriginal) => ({
 }));
 
 vi.mock("@/lib/supabase/admin", () => admin);
+// #2666: the Referer of the iframe's own document request, which is how `/book`
+// learns which website framed it.
+const requestHeaders = vi.hoisted(() => ({ referer: null as string | null }));
+vi.mock("next/headers", () => ({
+  headers: async () => new Headers(requestHeaders.referer ? { referer: requestHeaders.referer } : {}),
+}));
+vi.mock("@/lib/log", () => ({ log: { error: vi.fn(), warn: vi.fn(), info: vi.fn() } }));
 vi.mock("@/components/Booker", () => ({ default: () => null }));
 vi.mock("@/components/StandaloneBookerShell", () => ({
   default: ({ children }: { children?: unknown }) => children ?? null,
@@ -50,8 +57,14 @@ vi.mock("@/lib/booking/service", () => ({
 import BookEntry from "./page";
 import Booker from "@/components/Booker";
 import { PARTNER_KEYS, partnerKeysFrom } from "@/lib/booking/partner-keys";
+import { TestAccessRefused } from "@/components/TestAccessRefused";
+import { TEST_ACCESS_COPY } from "@/lib/booking/booker-copy";
+import { verifyTestPass } from "@/lib/embed/test-pass";
+import { log } from "@/lib/log";
 
 const PUBLIC_TEST = PUBLIC_TEST_BUCKET_CODES[0];
+const SECRET = "p".repeat(64);
+const APPROVED = "https://dev.approved.example";
 
 /** The Booker element in the tree the page returned, found by its (mocked) type.
  *  The page hands back elements rather than rendering, so the props are read off
@@ -92,6 +105,10 @@ function dbByCode(rows: Record<string, { org_id: string; is_test: boolean }>, as
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.stubEnv("EMBED_TEST_PASS_SECRET", SECRET);
+  vi.stubEnv("EMBED_TEST_ORIGINS", `${APPROVED},https://approved.example`);
+  // An approved host by default, so the #2660 cases below still draw a booker.
+  requestHeaders.referer = `${APPROVED}/`;
 });
 
 describe("/book on the public test bucket (#2660)", () => {
@@ -156,6 +173,73 @@ describe("/book on the public test bucket (#2660)", () => {
 // the two names survive EXACTLY, because every reader downstream looks them up
 // by that spelling through one constant, and a page that started filtering
 // prefill to the fields it knows would drop them with nothing else failing.
+// #2666: the public test bucket opens only for a page on an approved website, and
+// the page says in the tester's words why it did not.
+describe("/book gates the public test bucket on the host's origin (#2666)", () => {
+  function refusal(node: unknown): Record<string, unknown> | null {
+    return findByType(node, TestAccessRefused as unknown);
+  }
+  const testRows = () =>
+    admin.supabaseAdmin.mockReturnValue(dbByCode({ [PUBLIC_TEST]: { org_id: "o1", is_test: true } }, []));
+
+  it("hands an approved page a pass bound to the public code", async () => {
+    testRows();
+    const el = await BookEntry({ searchParams: Promise.resolve({ xbc: PUBLIC_TEST }) });
+    const pass = bookerElement(el).testPass;
+    expect(typeof pass).toBe("string");
+    expect(verifyTestPass({ pass: pass as string, code: PUBLIC_TEST, secret: SECRET, nowMs: Date.now() })).toEqual({ ok: true });
+    expect(refusal(el)).toBeNull();
+  });
+
+  it("refuses a page with no referer, naming the cause", async () => {
+    requestHeaders.referer = null;
+    testRows();
+    const el = await BookEntry({ searchParams: Promise.resolve({ xbc: PUBLIC_TEST }) });
+    expect(findByType(el, Booker as unknown)).toBeNull();
+    expect(refusal(el)).toMatchObject({ sentence: TEST_ACCESS_COPY.noReferer });
+    expect(log.warn).toHaveBeenCalledWith("embed-test", expect.objectContaining({ reason: "no-referer" }));
+    // Nothing about any lead is read for a page that is not going to be drawn.
+    expect(admin.supabaseAdmin).not.toHaveBeenCalled();
+  });
+
+  it("refuses an unlisted website and names it", async () => {
+    requestHeaders.referer = "https://elsewhere.example/landing?x=1";
+    testRows();
+    const el = await BookEntry({ searchParams: Promise.resolve({ xbc: PUBLIC_TEST }) });
+    expect(findByType(el, Booker as unknown)).toBeNull();
+    expect(refusal(el)).toMatchObject({
+      sentence: TEST_ACCESS_COPY.unlistedOrigin("https://elsewhere.example"),
+    });
+    expect(log.warn).toHaveBeenCalledWith(
+      "embed-test",
+      expect.objectContaining({ reason: "unlisted-origin", origin: "https://elsewhere.example" }),
+    );
+  });
+
+  it("is switched off, in its own words, with no secret", async () => {
+    vi.stubEnv("EMBED_TEST_PASS_SECRET", "");
+    testRows();
+    const el = await BookEntry({ searchParams: Promise.resolve({ xbc: PUBLIC_TEST }) });
+    expect(refusal(el)).toMatchObject({ sentence: TEST_ACCESS_COPY.secretUnset });
+  });
+
+  it("is switched off, in its own words, with an empty origin list", async () => {
+    vi.stubEnv("EMBED_TEST_ORIGINS", "");
+    testRows();
+    const el = await BookEntry({ searchParams: Promise.resolve({ xbc: PUBLIC_TEST }) });
+    expect(refusal(el)).toMatchObject({ sentence: TEST_ACCESS_COPY.listEmpty });
+  });
+
+  it("CONTROL: a real code with no referer draws the ordinary booker and hands it no pass", async () => {
+    requestHeaders.referer = null;
+    admin.supabaseAdmin.mockReturnValue(dbByCode({ "111": { org_id: "o1", is_test: false } }, []));
+    const el = await BookEntry({ searchParams: Promise.resolve({ xbc: "111" }) });
+    expect(bookerElement(el)).toMatchObject({ bucketCode: "111", testPass: null });
+    expect(refusal(el)).toBeNull();
+    expect(log.warn).not.toHaveBeenCalledWith("embed-test", expect.anything());
+  });
+});
+
 describe("/book keeps the partner join keys in prefill (#2659)", () => {
   it("hands the Booker submissionId and regalProfileId under their exact spelling", async () => {
     admin.supabaseAdmin.mockReturnValue(dbByCode({ "111": { org_id: "o1", is_test: false } }, []));

@@ -50,6 +50,12 @@ import {
 interface ManageBookingProps {
   token: string;
   bucketCode: string;
+  /**
+   * The public test bucket's pass (#2666), minted server side for a TEST booking,
+   * whose bucket is the public test bucket and whose reschedule panel reads its
+   * times. Null for every real booking, whose read needs none.
+   */
+  testPass?: string | null;
   startsAt: string;
   status: string;
   eventName: string;
@@ -132,6 +138,7 @@ function initialsOf(name: string): string {
 export default function ManageBooking({
   token,
   bucketCode,
+  testPass = null,
   startsAt,
   status: initialStatus,
   eventName,
@@ -177,6 +184,7 @@ export default function ManageBooking({
     url: rescheduling ? `/api/availability?bucket=${encodeURIComponent(bucketCode)}` : null,
     zone: timeZone,
     leadZone: timeZone,
+    testPass,
   });
   const [busy, setBusy] = useState(false);
   // Still-alive cue if a cancel/reschedule POST hasn't returned by ~10s; the
@@ -621,6 +629,7 @@ export default function ManageBooking({
                     timeZone={timeZone}
                     reader={{ kind: "lead" }}
                     onRetry={picker.retry}
+                    failedMessage={picker.failedMessage}
                     classes={SLOT_TIMES_CLASSES.panel}
                     noDaysNode={
                       <p className="text-sm text-fg-muted">{RESCHEDULE_COPY.noTimes}</p>

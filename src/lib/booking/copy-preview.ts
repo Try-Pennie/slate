@@ -60,6 +60,7 @@ import {
   timesAvailableAnnouncement,
   NEAREST_TIMES_COPY,
   TEST_MODE_COPY,
+  TEST_ACCESS_COPY,
 } from "@/lib/booking/booker-copy";
 import {
   BEFORE_COPY,
@@ -341,6 +342,27 @@ export function bookerCopyScreens(): CopyScreen[] {
       lines: [
         { state: "the mark beside a test booking", text: TEST_MODE_COPY.label },
         { state: "the sentence on every screen", text: TEST_MODE_COPY.line },
+      ],
+    },
+    {
+      screen: "Booker: a test booking that cannot be opened",
+      purpose:
+        "The public test bucket opens only for a page on an approved website, carrying a " +
+        "short lived pass (#2666). The reader is a TESTER, never a lead, so each cause " +
+        "gets its own sentence naming the thing they can act on: open it from their own " +
+        "button, ask us to add the website, reload, or tell us it is switched off.",
+      lines: [
+        { state: "the heading over every refusal on the page", text: TEST_ACCESS_COPY.heading },
+        { state: "the page arrived with no referer", text: TEST_ACCESS_COPY.noReferer },
+        {
+          state: "a website that is not on the approved list",
+          text: TEST_ACCESS_COPY.unlistedOrigin("https://staging.example.com"),
+        },
+        { state: "no website is approved at all", text: TEST_ACCESS_COPY.listEmpty },
+        { state: "the deployment holds no signing secret", text: TEST_ACCESS_COPY.secretUnset },
+        { state: "the pass ran out while the page sat open", text: TEST_ACCESS_COPY.passExpired },
+        { state: "the pass was missing or altered", text: TEST_ACCESS_COPY.passRefused },
+        { state: "the secret went away while the page was open", text: TEST_ACCESS_COPY.passOff },
       ],
     },
     {

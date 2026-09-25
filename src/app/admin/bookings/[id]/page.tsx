@@ -3,6 +3,7 @@ import { redirect, notFound } from "next/navigation";
 import { currentUser } from "@/lib/auth";
 import { canManageAgents } from "@/lib/auth/roles";
 import { consoleHiddenFor } from "@/lib/env";
+import { currentTestPassFor } from "@/lib/embed/test-pass-gate";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { unwrap } from "@/lib/db/result";
 import { cardCls } from "@/components/ui/styles";
@@ -161,6 +162,9 @@ export default async function BookingDetailPage({
           <AdminBookingActions
             bookingId={booking.id}
             bucketCode={view.bucketCode}
+            // #2666: staff are already authorised, so a test booking's panel is
+            // handed the pass its reschedule read needs. Null for a real booking.
+            testPass={view.bucketCode ? currentTestPassFor(view.bucketCode) : null}
             leadTimeZone={booking.timezone}
             status={booking.status}
             currentAgentId={booking.assigned_user_id}

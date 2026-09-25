@@ -12,6 +12,7 @@ import { loadBookingHorizonDays } from "@/lib/booking/settings";
 import { availabilityWithinLimit, clientIp } from "@/lib/rate-limit";
 import { internalErrorResponse } from "@/lib/api/errors";
 import { isPublicTestBucket } from "@/lib/embed/public-test-bucket";
+import { refuseUnlessTestPass } from "@/lib/embed/test-pass-gate";
 import { DateTime } from "luxon";
 
 export const dynamic = "force-dynamic";
@@ -56,6 +57,14 @@ async function handle(req: NextRequest) {
 
   const code = req.nextUrl.searchParams.get("bucket");
   if (!code) return NextResponse.json({ error: "Missing bucket" }, { status: 400 });
+
+  // #2666: the public test bucket is served only to a page carrying the pass `/book`
+  // handed an approved website. Checked before the walk, which is the most
+  // expensive read a browser can ask for.
+  if (isPublicTestBucket(code)) {
+    const refused = refuseUnlessTestPass(req.headers, code, "availability-next");
+    if (refused) return NextResponse.json(refused.body, { status: refused.status });
+  }
 
   const [hours, horizonDays] = await Promise.all([
     loadBusinessHoursCached(),

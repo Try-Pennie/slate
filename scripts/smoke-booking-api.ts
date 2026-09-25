@@ -76,7 +76,11 @@
 import { envOr, loadEnvFiles } from "./smoke-env.ts";
 import { evaluateSlotAvailability, slots } from "./smoke-lib.ts";
 import { sweepQuietly } from "./lib/smoke-event-cleanup.ts";
-import { judgePublicTestBucketRead, publicTestBucketUrl } from "./lib/public-test-bucket-check.ts";
+import {
+  judgePublicTestBucketGate,
+  judgePublicTestBucketRead,
+  publicTestBucketUrl,
+} from "./lib/public-test-bucket-check.ts";
 import { PUBLIC_TEST_BUCKET_CODES } from "../src/lib/embed/public-test-bucket.ts";
 import { bookFirstFreeSlot } from "./lib/smoke-book-retry.ts";
 import { chooseCrossBucketSlot } from "./lib/smoke-cross-bucket-slot.ts";
@@ -424,21 +428,32 @@ function recordBooked(plan: SlotPlan, body: { booking?: { startsAt?: string } } 
   if (landed) plan.record(landed);
 }
 
-// --- The public test bucket answers with no key (#2660) ---
+// --- The public test bucket is served, and gated (#2660, #2666) ---
 // The exact request a partner's booker makes, on every tick, because nothing
 // else watches this bucket: every monitor skips is_test on purpose, so a row
 // deleted by hand or a recompute that stopped publishing it would otherwise be
 // found by the next partner reporting "no times". A read, so it runs on the dry
 // tick as well as the full pass. The verdict rules are pinned offline in
 // scripts/test-public-test-bucket-check.ts.
+//
+// #2666: two reads now. A browser reaches the bucket only with a pass `/book`
+// mints for an approved website, and the canary is not one, so whether it is
+// SERVED is asked with the canary's own key, and whether it is GATED is asked
+// with nothing at all, exactly as a stray caller would.
 async function checkPublicTestBucket() {
   for (const code of PUBLIC_TEST_BUCKET_CODES) {
-    // Deliberately NO authorization header: a browser cannot send one, and the
-    // point is that the bucket is served without it.
-    const res = await fetch(publicTestBucketUrl(BASE, code));
-    const body: unknown = await res.json().catch(() => null);
-    const verdict = judgePublicTestBucketRead({ status: res.status, body }, code);
-    check(verdict.outcome === "served", `public test bucket ${code} is served with no key: ${verdict.reason}`);
+    const served = await fetch(publicTestBucketUrl(BASE, code), {
+      headers: { authorization: `Bearer ${KEY}` },
+    });
+    const servedBody: unknown = await served.json().catch(() => null);
+    const verdict = judgePublicTestBucketRead({ status: served.status, body: servedBody }, code);
+    check(verdict.outcome === "served", `public test bucket ${code} is served: ${verdict.reason}`);
+
+    // Deliberately NO authorization header and NO pass.
+    const bare = await fetch(publicTestBucketUrl(BASE, code));
+    const bareBody: unknown = await bare.json().catch(() => null);
+    const gate = judgePublicTestBucketGate({ status: bare.status, body: bareBody }, code);
+    check(gate.outcome === "gated", `public test bucket ${code} is gated: ${gate.reason}`);
   }
 }
 

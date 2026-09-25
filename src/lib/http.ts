@@ -34,6 +34,11 @@ export interface PostJsonOptions {
    * instead of awaiting forever (#626). Omit to wait indefinitely (default).
    */
   timeoutMs?: number;
+  /**
+   * Extra request headers (#2666: the public test bucket's pass). Undefined sends
+   * the request exactly as before, so a caller with nothing to add is unchanged.
+   */
+  headers?: Record<string, string>;
 }
 
 /**
@@ -58,7 +63,7 @@ export async function postJson<T = Record<string, unknown>>(
   try {
     const res = await fetch(url, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: { ...options.headers, "content-type": "application/json" },
       body: JSON.stringify(body),
       signal: controller?.signal,
     });
@@ -93,6 +98,7 @@ export async function getJson<T = Record<string, unknown>>(
       method: "GET",
       signal: controller?.signal,
       ...(options.cache ? { cache: options.cache } : {}),
+      ...(options.headers ? { headers: options.headers } : {}),
     });
     const data = (await res.json().catch(() => ({}))) as T;
     return { ok: res.ok, status: res.status, data };

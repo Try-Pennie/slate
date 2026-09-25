@@ -85,6 +85,9 @@ export const PRODUCTION_ONLY_SECRETS = [
   "BOOKING_API_KEY_CANARY_2",
   "GITHUB_CANARY_TOKEN",
   "SNOWFLAKE_PRIVATE_KEY",
+  // #2666: signs the public test bucket's pass. Production's; the load run never
+  // books the public test bucket, so without it the test path is simply off there.
+  "EMBED_TEST_PASS_SECRET",
 ] as const;
 
 /** Which production-only names this environment is carrying. Names, never values. */

@@ -2,6 +2,8 @@
 
 import { useMemo, useState } from "react";
 
+import { testPassHeaders, testPassRefusalSentence } from "@/lib/embed/test-pass-header";
+
 import { useFetchList } from "@/components/AsyncList";
 import {
   pickerSlots,
@@ -54,6 +56,12 @@ export interface SlotPicker {
   /** The last availability body that parsed, kept across a later load, for the
    *  surfaces that read the org name / event type out of the same response. */
   payload: unknown;
+  /**
+   * The sentence to show INSTEAD of the ordinary "could not load" when the read
+   * failed because the public test bucket's pass was refused (#2666), or null. A
+   * retry cannot fix that failure, so a surface showing it offers no retry.
+   */
+  failedMessage: string | null;
 }
 
 export function useSlotPicker({
@@ -61,6 +69,7 @@ export function useSlotPicker({
   zone,
   leadZone,
   slotsOverride = null,
+  testPass = null,
 }: {
   /** The availability URL, or null to load nothing (an unopened panel, or a
    *  month entirely beyond the booking horizon: both settle as `no-days`
@@ -87,11 +96,23 @@ export function useSlotPicker({
    * caller looked and found nothing, which is a settled answer, not a load.
    */
   slotsOverride?: string[] | null;
+  /**
+   * The public test bucket's pass (#2666), sent as a header on the read. Null for
+   * every other bucket, whose read is sent exactly as it always was. The booker has
+   * it from `/book`; the manage page and the admin panel mint one server side for a
+   * test booking, because their viewer is already authorised by the token or the
+   * staff session.
+   */
+  testPass?: string | null;
 }): SlotPicker {
-  const { items: fetched, loading: fetching, error, retry, payload } = useFetchList(
+  // Memoised on the pass, since the headers object is part of the fetch's deps and
+  // a new object each render would refetch for ever.
+  const headers = useMemo(() => testPassHeaders(testPass), [testPass]);
+  const { items: fetched, loading: fetching, error, retry, payload, errorPayload } = useFetchList(
     url,
     url !== null,
     extractSlots,
+    headers,
   );
   const [selectedDay, setSelectedDay] = useState<string | null>(null);
 
@@ -127,5 +148,6 @@ export function useSlotPicker({
     selectDay: setSelectedDay,
     retry,
     payload,
+    failedMessage: failed ? testPassRefusalSentence(errorPayload) : null,
   };
 }

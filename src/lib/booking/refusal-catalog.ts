@@ -326,6 +326,21 @@ export const REFUSAL_CATALOG: RefusalPath[] = [
       "hidden bucket exists (#601).",
   },
   {
+    id: "test_pass_refused",
+    surface: "embed booker",
+    outcome: "403 TEST_PASS_EXPIRED, TEST_PASS_REFUSED or TEST_PASS_OFF, told to reload or to tell Pennie",
+    counting: { kind: "none" },
+    rateSignal: { kind: "none" },
+    why:
+      "Reached only on the public test bucket (#2666), whose reader is a TESTER on an approved " +
+      "website, never a lead: a lead's code can never be the test code. Counting it would put " +
+      "test traffic into the denominator the lead failure share is measured against, which is " +
+      "the harm the whole catalog exists to avoid. Each refusal is logged under tag=embed-test " +
+      "with its reason class, and the one state that turns testing off for everybody (no " +
+      "secret on the deployment) is caught by the canary's keyless read, which pages when the " +
+      "public bucket answers TEST_PASS_OFF.",
+  },
+  {
     id: "internal",
     surface: "embed booker",
     outcome: "500, a generic failure",

@@ -576,9 +576,13 @@ export interface CreateBookingInput {
   idempotencyKey?: string;
   /** External caller's stable per-person id (direct booking API, #357). */
   externalId?: string | null;
-  /** Allow booking a synthetic test bucket (#396). Only the key-authed direct
-   *  booking API sets this; the public /booking path leaves it falsy, so real
-   *  leads can never book a test bucket. */
+  /** Allow booking a synthetic test bucket (#396). Set in exactly two places:
+   *  the key authed direct booking API, only for a canary caller or for the
+   *  public test bucket's code (#2669, `mayBookTestBuckets`); and the Booker's
+   *  confirm (`/booking`), only when the code is the public test bucket (#2660)
+   *  and the request carries a good test pass (#2666). Every other caller leaves
+   *  it falsy, so a real lead can never book a test bucket and a hidden one is
+   *  refused like an unknown code. */
   allowTestBuckets?: boolean;
   /**
    * Refuse, rather than create, when this person already has an active call

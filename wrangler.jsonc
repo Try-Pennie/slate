@@ -84,6 +84,12 @@
 		"OOO_APPROVALS_TO": "salesmanagers@trypennie.com",
 		"OOO_APPROVALS_BCC": "dwright@trypennie.com",
 		"OOO_APPROVALS_REPLY_TO": "systemsteam@trypennie.com",
+		// The websites allowed to open the public test bucket (#2666), exact
+		// origins, comma separated. Committed here and never set after a deploy,
+		// so widening it is a reviewed change. Deliberately no localhost: that
+		// would approve every developer machine. Empty turns the test path off.
+		// The paired secret is EMBED_TEST_PASS_SECRET (wrangler secret put).
+		"EMBED_TEST_ORIGINS": "https://dev.trypennie.com,https://trypennie.com",
 		// Snowflake archival mirror (milestone #15). Non-secret connection config;
 		// the paired secret is SNOWFLAKE_PRIVATE_KEY (wrangler secret put). The
 		// export lane is a safe no-op until the private key is set, so an empty
@@ -272,6 +278,9 @@
 				"OOO_APPROVALS_TO": "salesmanagers@trypennie.com",
 				"OOO_APPROVALS_BCC": "dwright@trypennie.com",
 				"OOO_APPROVALS_REPLY_TO": "systemsteam@trypennie.com",
+				// The same list as production (#2666). Inert here: the load test
+				// Worker holds no EMBED_TEST_PASS_SECRET, so the test path is off.
+				"EMBED_TEST_ORIGINS": "https://dev.trypennie.com,https://trypennie.com",
 				"SNOWFLAKE_ACCOUNT": "vrkfjso-rwc54963",
 				"SNOWFLAKE_USER": "SLATE_SERVICE",
 				"SNOWFLAKE_DATABASE": "SLATE",

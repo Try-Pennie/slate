@@ -84,6 +84,7 @@ wrangler secret put BOOKING_API_KEY_TRYPENNIE # optional; trypennie's own bookin
 # wrangler secret put BOOKING_API_KEY_TRYPENNIE_2 # optional; trypennie's rotation slot, set only when rotating.
 wrangler secret put BOOKING_API_KEY_CANARY  # optional; the smoke canary's own key. The ONLY named key the smoke endpoints accept, so the GitHub repo secret BOOKING_API_KEY should hold this value.
 # wrangler secret put BOOKING_API_KEY_CANARY_2  # optional; the canary's rotation slot, set only when rotating.
+openssl rand -hex 32 | wrangler secret put EMBED_TEST_PASS_SECRET  # required for partner testing (#2666); signs the short lived pass /book hands a page on an EMBED_TEST_ORIGINS website. Piped so the value never appears. Empty = the public test bucket is OFF: /book says so, the routes answer 403 TEST_PASS_OFF, and the canary's gate read pages. Rotating it ends every open test page's pass (a reload fixes it).
 wrangler secret put GITHUB_CANARY_TOKEN     # optional; fine-grained GitHub token (Actions read/write on Try-Pennie/slate) so the monitor lane can re-fire the smoke-canary workflow when GitHub drops a scheduled run. Empty = gap-filler is a no-op (GitHub's schedule alone runs the canary).
 wrangler secret put SNOWFLAKE_PRIVATE_KEY   # optional; RSA private key (PKCS#8 PEM) for the Snowflake archival mirror export lane. Empty = the export lane is a safe no-op (logs "not configured" and skips). See docs/snowflake-setup.md.
 ```
@@ -124,6 +125,17 @@ Change one by editing `wrangler.jsonc` and redeploying.
   Unset = defaults to `MAIN_OOO_CAL_ID`.
 - `OOO_APPROVALS_TO` / `OOO_APPROVALS_BCC` / `OOO_APPROVALS_REPLY_TO`: recipients of
   the daily OOO-approvals digest email. Empty `TO` = the digest no-ops.
+- `EMBED_TEST_ORIGINS` (#2666): the websites allowed to open the public test bucket,
+  as a comma list of exact origins (`https://host`, no path, no trailing slash).
+  Today `https://dev.trypennie.com,https://trypennie.com`. `/book` compares the
+  iframe request's Referer origin against it with exact equality and, on a match,
+  hands the Booker a pass signed with `EMBED_TEST_PASS_SECRET` (2b). **The Referer
+  check is a convenience gate, not authentication**: anything that is not a
+  browser can send any Referer, so it keeps the test path off websites nobody
+  approved rather than proving who is asking. Never add `localhost`: that would
+  approve every developer machine. Empty = the test path is OFF and `/book` says
+  so. `scripts/test-embed-test-pass.ts` refuses an entry that is not exactly an
+  https origin, or that names a developer machine.
 - `OOO_CALCOM_DUAL_WRITE`: `"true"` mirrors approved OOO into cal.com during the
   cutover (requires `CALCOM_*` + `CALCOM_API_KEY`). `"false"`/unset = no-op.
 - `CALCOM_BASE_URL` / `CALCOM_ORG_ID`: cal.com API base + org for the dual-write.
@@ -209,10 +221,13 @@ slots, `PARTNER` answers the same 404 a typo does:
    `is_test`, has a member and has published slots. Any other state exits on its
    own code (2 no row, 3 no member, 4 not published yet, 5 not flagged) and says
    what to do. From then on the canary's 30 minute tick reads
-   `GET /api/availability?bucket=PARTNER` with no key and pages if it stops being
-   served.
+   `GET /api/availability?bucket=PARTNER` twice: with its own key, paging if it
+   stops being served, and with no key and no pass, paging if it is not refused
+   for want of a pass (#2666). The second read is also what notices a deployment
+   missing `EMBED_TEST_PASS_SECRET`.
 
-4. Make one booking through the embed from a host page with a test address, and
+4. Make one booking through the embed from a host page on a website listed in
+   `EMBED_TEST_ORIGINS` (2c; any other website is refused, by design) with a test address, and
    confirm the redirect, the confirmed page, the invite, the "Test" mark in the
    admin lookup, and that `webhook_deliveries` reads suppressed for it. Only then
    tell the partner it is ready.
