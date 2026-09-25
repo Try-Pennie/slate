@@ -90,29 +90,91 @@ export interface TreeWrite {
   suspects: string[];
 }
 
+/**
+ * What a finished watch saw. The two lists are separate outcomes on purpose:
+ * a write is a suite's fault and has one remedy, a watch that broke is the
+ * tripwire's own fault and has another, and filing one under the other sends
+ * the reader to fix a thing that did not happen (L11). Either fails the run.
+ */
+export interface TripwireResult {
+  writes: TreeWrite[];
+  /** Watchers that errored, or an end probe that could not be written or was never seen. */
+  watchFailures: string[];
+}
+
 export interface TreeWatch {
   /**
    * Wait until every event raised before this call has been delivered, then stop
-   * watching and return the writes seen. Resolves to an error string when a
-   * watcher never reported its own probe, since that watcher saw nothing.
+   * watching and return what was seen. Never throws: anything that goes wrong
+   * while stopping is itself a watch failure.
    */
-  stop(): Promise<{ writes: TreeWrite[] } | { error: string }>;
+  stop(): Promise<TripwireResult>;
+}
+
+/** Whether a finished watch fails the run: any write, or any sign it stopped seeing. */
+export function tripwireFailed(r: TripwireResult): boolean {
+  return r.writes.length > 0 || r.watchFailures.length > 0;
+}
+
+/** The lines the runner prints for a finished watch; empty when it saw nothing wrong. */
+export function formatTripwireFindings(r: TripwireResult): string[] {
+  const lines: string[] = [];
+  if (r.writes.length > 0) {
+    lines.push(
+      `=== TREE WRITES: ${r.writes.length} path(s) under scripts/, src/ or worker/ were written during the run ===`,
+    );
+    for (const w of r.writes) {
+      const who = w.suspects.length > 0 ? w.suspects.join(", ") : "none";
+      lines.push(`  ${w.path}  (running or just finished when it was seen: ${who})`);
+    }
+    lines.push(
+      "A suite that writes into the tree hands every concurrent suite walking it a file it can list and then fail to open (#2712).",
+      "Write into a mkdtempSync(tmpdir()) directory instead. If the write must land in the tree, add it to",
+      "ALLOWED_TREE_WRITES in scripts/lib/tree-write-tripwire.ts with the reason.",
+    );
+  }
+  if (r.watchFailures.length > 0) {
+    if (lines.length > 0) lines.push("");
+    lines.push(
+      `=== TREE WATCH FAILED: the tripwire stopped watching part of the tree, so this run is unverified ===`,
+    );
+    for (const f of r.watchFailures) lines.push(`  ${f}`);
+    lines.push(
+      "Nothing here says a suite wrote into the tree. A watcher that broke saw nothing after it broke,",
+      "so the run cannot be called clean. Run it again; if it repeats, the error above is about the",
+      "machine's file watching (a watch limit, a permission, a missing directory), not about a suite.",
+    );
+  }
+  return lines;
 }
 
 const FENCE_TIMEOUT_MS = 15_000;
 const PROBE_RETOUCH_MS = 50;
+
+/** Seams for the tripwire's own failure paths; production passes none. */
+export interface TreeWatchDeps {
+  watch?: typeof watch;
+  writeProbe?: (path: string, data: string) => void;
+}
+
+const reason = (err: unknown) => (err instanceof Error ? err.message : String(err));
 
 /**
  * Watch each dir under root, recursively. Resolves once every watcher has
  * reported a probe written after it started, so a watcher that is not live on
  * this platform refuses the run instead of passing it unwatched (L1, L98), and
  * nothing a suite writes can land before the watch is actually listening.
+ * Never throws: every way of failing to start resolves to `{ error }`.
  */
 export async function startTreeWatch(
   root: string,
   suspects: () => string[],
+  deps: TreeWatchDeps = {},
 ): Promise<{ watch: TreeWatch } | { error: string }> {
+  const watchFn = deps.watch ?? watch;
+  const writeProbe = deps.writeProbe ?? ((path: string, data: string) => writeFileSync(path, data));
   const writes: TreeWrite[] = [];
+  const watchFailures: string[] = [];
   const seen = new Set<string>();
   const waiting = new Map<string, () => void>();
   const watchers: FSWatcher[] = [];
@@ -128,23 +190,37 @@ export async function startTreeWatch(
     writes.push({ path: rel, suspects: suspects() });
   };
 
+  const closeAll = () => {
+    for (const w of watchers) {
+      try {
+        w.close();
+      } catch {
+        // Closing is best effort on the way out; the verdict is already decided.
+      }
+    }
+  };
+
   for (const dir of TRIPWIRE_WATCHED_DIRS) {
     try {
-      const w = watch(join(root, dir), { recursive: true }, (_ev, f) => onEvent(dir, f));
-      w.on("error", (err) => writes.push({ path: `${dir}/<watcher error: ${err.message}>`, suspects: suspects() }));
+      const w = watchFn(join(root, dir), { recursive: true }, (_ev, f) => onEvent(dir, f));
+      w.on("error", (err) =>
+        watchFailures.push(`the watcher on ${dir}/ failed (${reason(err)}) and saw nothing after that`),
+      );
       watchers.push(w);
     } catch (err) {
-      for (const w of watchers) w.close();
-      return { error: `could not watch ${dir}/ (${(err as Error).message}), so the tree would go unwatched` };
+      closeAll();
+      return { error: `could not watch ${dir}/ (${reason(err)}), so the tree would go unwatched` };
     }
   }
 
   // Write a probe at the top of every watched dir and wait until each watcher
   // reports its own. Events on one watcher arrive in order, so once the probe is
-  // seen every write raised before it has been delivered too.
-  const fence = async (): Promise<string | null> => {
+  // seen every write raised before it has been delivered too. Resolves to one
+  // reason per dir that could not be confirmed; never throws, because a throw
+  // here would leave the runner with an unhandled rejection instead of a verdict.
+  const fence = async (): Promise<string[]> => {
     const results = await Promise.all(
-      TRIPWIRE_WATCHED_DIRS.map(async (dir) => {
+      TRIPWIRE_WATCHED_DIRS.map(async (dir): Promise<string | null> => {
         const name = probeName(process.pid, probes++);
         const rel = `${dir}/${name}`;
         const path = join(root, dir, name);
@@ -154,43 +230,63 @@ export async function startTreeWatch(
         // single probe written straight after watch() was missed on two of
         // three dirs. The wait is on the event itself, never a fixed sleep.
         let touches = 0;
+        let writeFailure: string | null = null;
         const arrived = new Promise<boolean>((res) => {
-          const retouch = setInterval(() => writeFileSync(path, String(++touches)), PROBE_RETOUCH_MS);
-          const timer = setTimeout(() => {
-            clearInterval(retouch);
-            res(false);
-          }, FENCE_TIMEOUT_MS);
-          waiting.set(rel, () => {
-            clearInterval(retouch);
+          let retouch: ReturnType<typeof setInterval> | undefined;
+          const settle = (ok: boolean) => {
+            if (retouch !== undefined) clearInterval(retouch);
             clearTimeout(timer);
-            res(true);
-          });
+            res(ok);
+          };
+          const timer = setTimeout(() => settle(false), FENCE_TIMEOUT_MS);
+          const touch = () => {
+            try {
+              writeProbe(path, String(touches++));
+            } catch (err) {
+              writeFailure = `could not write the tripwire's probe ${rel} (${reason(err)})`;
+              settle(false);
+            }
+          };
+          waiting.set(rel, () => settle(true));
+          touch();
+          if (writeFailure === null) retouch = setInterval(touch, PROBE_RETOUCH_MS);
         });
-        writeFileSync(path, "");
         const ok = await arrived;
         waiting.delete(rel);
-        rmSync(path, { force: true });
-        return ok ? null : dir;
+        try {
+          rmSync(path, { force: true });
+        } catch (err) {
+          // A probe left behind is gitignored and harmless to the verdict; say so
+          // rather than fail a run whose watch worked.
+          console.error(`run-tests: could not remove the tripwire's probe ${rel} (${reason(err)}).`);
+        }
+        if (writeFailure !== null) return writeFailure;
+        return ok
+          ? null
+          : `the watcher on ${dir}/ never reported the tripwire's own probe within ${FENCE_TIMEOUT_MS / 1000}s, so it saw nothing`;
       }),
     );
-    const deaf = results.filter((d): d is string => d !== null);
-    return deaf.length === 0
-      ? null
-      : `the watcher on ${deaf.map((d) => `${d}/`).join(", ")} never reported the tripwire's own probe within ${FENCE_TIMEOUT_MS / 1000}s, so it saw nothing`;
+    return results.filter((r): r is string => r !== null);
   };
 
-  const startErr = await fence();
-  if (startErr) {
-    for (const w of watchers) w.close();
-    return { error: startErr };
+  const startFailures = await fence();
+  if (startFailures.length > 0 || watchFailures.length > 0) {
+    closeAll();
+    return { error: [...startFailures, ...watchFailures].join("; ") };
   }
+  // Anything reported before the start probes were seen was written BEFORE the
+  // run: macOS delivers writes made a moment before the stream was created.
+  // Measured: a root created just before the watch reported all six of its
+  // entries as writes. The run starts here, so its record does too.
+  writes.length = 0;
+  seen.clear();
 
   return {
     watch: {
       async stop() {
-        const endErr = await fence();
-        for (const w of watchers) w.close();
-        return endErr ? { error: endErr } : { writes };
+        const endFailures = await fence();
+        closeAll();
+        return { writes, watchFailures: [...watchFailures, ...endFailures] };
       },
     },
   };

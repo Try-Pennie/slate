@@ -14,15 +14,28 @@
 // are walking the tree (the #2712 hazard itself).
 // Run: node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/test-tree-write-tripwire.ts
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { EventEmitter } from "node:events";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  watch,
+  writeFileSync,
+  type FSWatcher,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   TRIPWIRE_WATCHED_DIRS,
+  formatTripwireFindings,
   isAllowedTreeWrite,
   probeName,
   resolveTripwireMode,
+  startTreeWatch,
+  tripwireFailed,
 } from "./lib/tree-write-tripwire.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
@@ -216,6 +229,122 @@ try {
     const r = runRunner([fx("fail-a.ts")], { SLATE_TREE_TRIPWIRE: "enforce" });
     assert(r.status === 1 && r.out.includes('"enforce"'), "an unknown SLATE_TREE_TRIPWIRE is refused by name");
     assert(!r.out.includes("fail-a marker ALPHA"), "and no suite ran");
+  }
+  // --- a watcher that breaks is its own outcome, never a tree write -----------
+  //
+  // A watcher that errors mid run has stopped seeing anything, so the run must
+  // fail (L98), and it must fail saying the WATCH broke: filing it under TREE
+  // WRITES would send the reader to move a write that never happened (L11).
+  {
+    const root = makeRoot();
+    const captured: FSWatcher[] = [];
+    const started = await startTreeWatch(root, () => ["scripts/test-x.ts"], {
+      watch: (path, opts, listener) => {
+        const w = watch(path, opts, listener);
+        captured.push(w);
+        return w;
+      },
+    });
+    assert("watch" in started, "the watch starts on a real throwaway root");
+    if ("watch" in started) {
+      eq(captured.length, TRIPWIRE_WATCHED_DIRS.length, "one watcher per watched dir was made");
+      captured[0].emit("error", new Error("inotify limit reached"));
+      const result = await started.watch.stop();
+      eq(result.writes.length, 0, "a watcher error is not recorded as a tree write");
+      eq(result.watchFailures.length, 1, "it is recorded as a watch failure");
+      assert(
+        /scripts\//.test(result.watchFailures[0] ?? "") && /inotify limit reached/.test(result.watchFailures[0] ?? ""),
+        "naming the dir whose watcher broke and why",
+      );
+      const report = formatTripwireFindings(result).join("\n");
+      assert(/stopped watching|could not watch|watch(er)? (failed|broke)/i.test(report), "the report says the watch failed");
+      assert(!/TREE WRITES/.test(report), "and does not file it under TREE WRITES");
+      assert(
+        !/mkdtempSync|ALLOWED_TREE_WRITES/.test(report),
+        "and does not advise moving a write that never happened",
+      );
+      assert(tripwireFailed(result), "and it fails the run");
+    }
+  }
+
+  // The same report with a real write carries the write's advice, and a clean
+  // result fails nothing, so the two halves above are distinguishable (L1).
+  {
+    const withWrite = { writes: [{ path: "src/x.ts", suspects: ["scripts/test-a.ts"] }], watchFailures: [] };
+    const report = formatTripwireFindings(withWrite).join("\n");
+    assert(/TREE WRITES/.test(report) && report.includes("src/x.ts") && /mkdtempSync/.test(report), "a real write gets the write advice");
+    assert(tripwireFailed(withWrite), "and fails the run");
+    const clean = { writes: [], watchFailures: [] };
+    eq(formatTripwireFindings(clean).length, 0, "a clean result prints nothing");
+    assert(!tripwireFailed(clean), "and fails nothing");
+  }
+
+  // --- a probe that cannot be written refuses by name, never throws ----------
+  {
+    const root = makeRoot();
+    let threw: unknown = null;
+    const started = await startTreeWatch(root, () => [], {
+      writeProbe: () => {
+        throw Object.assign(new Error("EACCES: permission denied"), { code: "EACCES" });
+      },
+    }).catch((err: unknown) => {
+      threw = err;
+      return null;
+    });
+    eq(threw, null, "a probe write that fails does not throw out of startTreeWatch");
+    assert(
+      started !== null && "error" in started && /EACCES/.test(started.error) && /probe/.test(started.error),
+      "it refuses the start, naming the probe and the error",
+    );
+  }
+
+  // The re-write on the interval is covered too: the first write lands, the
+  // watcher (a fake that reports nothing) never answers, and the second write
+  // fails. Unguarded, that throw is an uncaught exception that kills the runner.
+  {
+    const root = makeRoot();
+    const writes = new Map<string, number>();
+    const quiet = () => {
+      const w = new EventEmitter() as unknown as FSWatcher;
+      (w as unknown as { close: () => void }).close = () => {};
+      return w;
+    };
+    const started = await startTreeWatch(root, () => [], {
+      watch: quiet as unknown as typeof watch,
+      writeProbe: (path) => {
+        const n = (writes.get(path) ?? 0) + 1;
+        writes.set(path, n);
+        if (n > 1) throw new Error("ENOSPC: no space left on device");
+      },
+    });
+    assert(
+      "error" in started && /ENOSPC/.test(started.error),
+      "a failed re-write of the probe refuses the start by name rather than crashing",
+    );
+  }
+
+  // And at the END fence the same failure is a watch failure, not a throw.
+  {
+    const root = makeRoot();
+    let fail = false;
+    const started = await startTreeWatch(root, () => [], {
+      writeProbe: (path, data) => {
+        if (fail) throw new Error("EROFS: read-only file system");
+        // tree-write-ok: `path` is a probe under makeRoot(), a dir inside this suite's mkdtempSync(tmpdir()) base
+        writeFileSync(path, data);
+      },
+    });
+    assert("watch" in started, "the watch starts while probes can be written");
+    if ("watch" in started) {
+      fail = true;
+      const result = await started.watch.stop().catch(() => null);
+      assert(result !== null, "a probe that cannot be written at the end does not throw out of stop()");
+      assert(
+        result !== null && result.watchFailures.some((f) => /EROFS/.test(f)),
+        "it is reported as a watch failure naming the error",
+      );
+      assert(result !== null && tripwireFailed(result), "and it fails the run");
+    }
   }
 } finally {
   rmSync(base, { recursive: true, force: true });

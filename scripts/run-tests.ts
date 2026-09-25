@@ -21,7 +21,13 @@ import { fileURLToPath } from "node:url";
 import { dirname, resolve, relative } from "node:path";
 import { availableParallelism } from "node:os";
 import { discoverSuiteNames } from "./lib/suite-discovery.ts";
-import { resolveTripwireMode, startTreeWatch, type TreeWatch } from "./lib/tree-write-tripwire.ts";
+import {
+  formatTripwireFindings,
+  resolveTripwireMode,
+  startTreeWatch,
+  tripwireFailed,
+  type TreeWatch,
+} from "./lib/tree-write-tripwire.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, "..");
@@ -180,8 +186,6 @@ async function main() {
   // Stopping waits for the tripwire's own end probe, so every write raised before
   // the last suite exited has been delivered before the verdict is read.
   const watched = treeWatch ? await treeWatch.stop() : null;
-  const treeWrites = watched && "writes" in watched ? watched.writes : [];
-  const watchError = watched && "error" in watched ? watched.error : null;
 
   // Full output for every red file, so two broken files are BOTH visible.
   for (const r of failures) {
@@ -211,24 +215,10 @@ async function main() {
   const trip = `, tripwire ${tripwire.kind}`;
   const summary = `${passed} passed, ${failures.length} failed in ${(wall / 1000).toFixed(2)}s (concurrency ${concurrency}${clock}${trip})`;
 
-  if (treeWrites.length > 0) {
-    console.error(
-      `\n=== TREE WRITES: ${treeWrites.length} path(s) under scripts/, src/ or worker/ were written during the run ===`,
-    );
-    for (const w of treeWrites) {
-      const who = w.suspects.length > 0 ? w.suspects.join(", ") : "none";
-      console.error(`  ${w.path}  (running or just finished when it was seen: ${who})`);
-    }
-    console.error(
-      "A suite that writes into the tree hands every concurrent suite walking it a file it can list and then fail to open (#2712).\n" +
-        "Write into a mkdtempSync(tmpdir()) directory instead. If the write must land in the tree, add it to\n" +
-        "ALLOWED_TREE_WRITES in scripts/lib/tree-write-tripwire.ts with the reason.",
-    );
-  }
-  if (watchError) {
-    console.error(`\nrun-tests: the tree write tripwire could not confirm it saw the whole run: ${watchError}.`);
-  }
-  if (failures.length > 0 || treeWrites.length > 0 || watchError) {
+  const findings = watched ? formatTripwireFindings(watched) : [];
+  if (findings.length > 0) console.error("\n" + findings.join("\n"));
+  const tripped = watched !== null && tripwireFailed(watched);
+  if (failures.length > 0 || tripped) {
     console.error(`\nFAIL: ${summary}`);
     if (failures.length > 0) {
       console.error("Failed: " + failures.map((r) => rel(r.file)).join(", "));

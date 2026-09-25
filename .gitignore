@@ -65,3 +65,7 @@ coverage/
 # The planted control file scripts/test-scripts-typecheck.ts writes and removes
 # (#1516). It only ever survives a run that was killed part way through.
 scripts/typecheck-control.tmp.ts
+
+# The tree write tripwire's own probe (#2733). It only ever survives a run that
+# was killed part way through, or one whose removal of it failed and said so.
+.tree-write-tripwire-probe-*
