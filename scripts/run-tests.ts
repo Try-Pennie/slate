@@ -26,6 +26,7 @@ import {
   resolveTripwireMode,
   startTreeWatch,
   tripwireFailed,
+  tripwireWatchRoot,
   type TreeWatch,
 } from "./lib/tree-write-tripwire.ts";
 
@@ -53,9 +54,7 @@ const NODE_ARGS = [
 // overridable only so its own test can point it at a throwaway tree rather than
 // planting writes in this one.
 const tripwire = resolveTripwireMode(process.env);
-const watchRoot = process.env.SLATE_TREE_TRIPWIRE_ROOT
-  ? resolve(process.env.SLATE_TREE_TRIPWIRE_ROOT)
-  : repoRoot;
+const watchRoot = tripwireWatchRoot(process.env, repoRoot);
 
 // Every suite is told an outer run covers the tree, so a suite that starts this
 // runner again (test-run-tests.ts does) does not arm a second watcher that would
