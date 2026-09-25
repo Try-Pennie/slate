@@ -126,6 +126,7 @@ import {
   isAlertFiring,
   firingAlertKeys,
   existingAlertStateKeys,
+  resolveRecovered,
   firingFamilyMembers,
   firingKey,
   settleAlertsSilently,
@@ -427,6 +428,21 @@ describe("resolveAlert recovery notice (#1133)", () => {
       rows.set(many[0], new Date().toISOString());
       failReadInCall.value = 2;
       await expect(existingAlertStateKeys(many)).rejects.toThrow(/read timeout/);
+    });
+
+    it("resolveRecovered resolves nothing and SAYS so when the read is refused", async () => {
+      slack.postSlack.mockResolvedValue({ ok: true });
+      await sendThrottledAlert("cron_lane_stale:sync", COOLDOWN, "broken");
+      slack.postSlack.mockClear();
+      warn.mockClear();
+      failReads.value = true;
+      await expect(resolveRecovered([{ key: "cron_lane_stale:sync", text: "ok now" }])).resolves.toEqual([]);
+      expect(slack.postSlack).not.toHaveBeenCalled();
+      expect(warn).toHaveBeenCalledWith(
+        "slack-alert",
+        expect.objectContaining({ msg: expect.stringContaining("alert-state key read failed") }),
+        expect.any(Error),
+      );
     });
 
     it("throws on a refused single request too, so the caller can say the read failed", async () => {

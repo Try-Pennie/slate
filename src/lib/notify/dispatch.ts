@@ -295,7 +295,12 @@ export async function resolveRecovered(
 ): Promise<string[]> {
   if (recovered.length === 0) return [];
   const firing = await existingAlertStateKeys(recovered.map((r) => firingKey(r.key))).catch(
-    () => new Set<string>(),
+    (err) => {
+      // The read throws rather than answering empty (#2756), so the failure is
+      // logged here, where the decision to resolve nothing this tick is made.
+      log.warn("slack-alert", { msg: "alert-state key read failed; recovery deferred", keys: recovered.length }, err);
+      return new Set<string>();
+    },
   );
   const cleared: string[] = [];
   for (const r of recovered) {
