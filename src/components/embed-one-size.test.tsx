@@ -121,7 +121,29 @@ function closeControlGeometry() {
   if (![outlineWidth, outlineOffset, glow].every(Number.isFinite)) {
     throw new Error("could not read the close control's focus ring from widget.js");
   }
-  return { top: px("top"), right: px("right"), width: px("width"), height: px("height"), outlineWidth, outlineOffset, glow };
+  const signedPx = (prop: string) => {
+    const m = new RegExp(`(?:^|;)${prop}:(-?\\d+)px`).exec(text);
+    if (!m) throw new Error(`close control carries no ${prop} in px: ${text}`);
+    return Number(m[1]);
+  };
+  const position = /(?:^|;)position:([a-z]+)/.exec(text)?.[1];
+  // #2789: a sticky control sits where its flow puts it, so its distance from
+  // the right edge is its margin; `right` would act only on a horizontal scroll
+  // the modal never has.
+  const right = position === "sticky" ? px("margin-right") : px("right");
+  return {
+    text,
+    position,
+    top: px("top"),
+    right,
+    width: px("width"),
+    height: px("height"),
+    outlineWidth,
+    outlineOffset,
+    glow,
+    marginTop: () => signedPx("margin-top"),
+    marginBottom: () => signedPx("margin-bottom"),
+  };
 }
 
 /** Tailwind v4 spacing class to px (the default 0.25rem scale). */
@@ -324,6 +346,51 @@ describe("the host's close control has its corner to itself (#2748, #2766)", () 
   });
 });
 
+describe("the close control stays on screen at every scroll position (#2789)", () => {
+  // On a phone the modal is full screen and scrolls as one piece. A control
+  // positioned absolutely inside that scrolling box scrolls away with the
+  // booker, taking the only visible way out with it. jsdom cannot scroll, so
+  // these hold the decisions that pin it: the modal is the scroller, and the
+  // control is sticky to that scrollport (its own first child, asserted on the
+  // real DOM below).
+  it("the modal is the box that scrolls", () => {
+    const css = /modal\.style\.cssText\s*=([\s\S]*?);\n/.exec(widgetSrc)?.[1] ?? "";
+    const text = css
+      .split("\n")
+      .map((l) => l.replace(/^\s*\/\/.*$/, ""))
+      .join("")
+      .replace(/"\s*\+\s*"/g, "")
+      .replace(/"/g, "");
+    expect(text).toMatch(/(?:^|;)overflow:auto/);
+    expect(text).toMatch(/(?:^|;)position:relative/);
+  });
+
+  it("is sticky, not absolute: an absolute control scrolls off with the content", () => {
+    // Sticky rather than fixed: a fixed control is placed against the VIEWPORT,
+    // which is the modal only on a phone. On a laptop the modal is a centred
+    // card, and a fixed control would sit in the host page's corner outside it.
+    expect(closeControlGeometry().position).toBe("sticky");
+  });
+
+  it("rests where it pins, so it does not jump when the lead starts to scroll", () => {
+    const g = closeControlGeometry();
+    expect(g.marginTop()).toBe(g.top);
+  });
+
+  it("takes no room in the flow, so the booker still starts at the modal's top edge", () => {
+    const g = closeControlGeometry();
+    expect(g.marginTop() + g.height + g.marginBottom()).toBe(0);
+    // Right aligned by its margin, since a sticky box sits where its flow puts it.
+    expect(g.text).toMatch(/(?:^|;)margin-left:auto/);
+  });
+
+  it("no host rule moves it back out of the flow on a phone", () => {
+    const css = /style\.textContent\s*=([\s\S]*?);\n/.exec(widgetSrc)?.[1] ?? "";
+    expect(css).toContain("slate-widget-modal");
+    expect(css).not.toMatch(/button[^{]*\{[^}]*position/);
+  });
+});
+
 describe("the frame has no strip beneath it (#2766)", () => {
   it("the iframe is a block, so no inline baseline gap shows under the booker", () => {
     const iframeCss = /iframe\.style\.cssText\s*=\s*"([^"]*)"/.exec(widgetSrc)?.[1] ?? "";
@@ -363,6 +430,34 @@ describe("the close control reads on the booker behind it, in both themes (#2748
     close.dispatchEvent(new FocusEvent("focus"));
     return close;
   }
+
+  it("is the modal's own first child, so the modal is the scrollport it pins to (#2789)", () => {
+    const close = focusedClose("router?xbc=411");
+    const modal = close.closest<HTMLElement>(".slate-widget-modal")!;
+    expect(close.parentElement).toBe(modal);
+    expect(modal.firstElementChild).toBe(close);
+    expect(close.style.position).toBe("sticky");
+  });
+
+  // #2789: once pinned, booker content scrolls UNDER the control, so it carries
+  // the booker's own surface as a plate and the glyph never sits on text. At the
+  // top the plate is the colour of the corner behind it, so it is not seen.
+  const globalsCss = readFileSync(resolve("src/app/globals.css"), "utf8");
+  const darkSurface = /--surface:\s*(rgb\([^)]*\));\s*\/\*\s*cards float/.exec(globalsCss)?.[1];
+  const white = /--pennie-white:\s*(rgb\([^)]*\));/.exec(globalsCss)?.[1];
+  const norm = (c: string | undefined) => (c ?? "").replace(/\s+/g, "");
+
+  it("carries the light booker's surface as its plate, and the white chrome's while loading", () => {
+    expect(white).toBeDefined();
+    expect(norm(focusedClose("router?xbc=411").style.backgroundColor)).toBe(norm(white));
+    const loading = focusedClose("router?xbc=411&theme=dark", { loaded: false });
+    expect(norm(loading.style.backgroundColor)).toBe(norm(white));
+  });
+
+  it("carries the dark booker's surface as its plate once that booker shows", () => {
+    expect(darkSurface).toBeDefined();
+    expect(norm(focusedClose("router?xbc=411&theme=dark").style.backgroundColor)).toBe(norm(darkSurface));
+  });
 
   it("while the frame loads it sits on the white chrome, so it keeps the graphite ink", () => {
     const close = focusedClose("router?xbc=411&theme=dark", { loaded: false });

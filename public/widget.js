@@ -422,12 +422,27 @@
     // rather than being clipped by it. The booker leaves this corner empty in
     // the embed (#2748): its test band and its clock row stop short of it, and
     // `embed-one-size.test.tsx` holds the two sides against each other.
+    //
+    // #2789: STICKY, not absolute. On a phone the modal is full screen and
+    // scrolls as one piece, and an absolute control scrolled away with the
+    // booker, taking the only visible way out with it. Sticky pins it to the
+    // modal's own scrollport, which is right at every width; fixed would pin it
+    // to the VIEWPORT, which is the modal only on a phone, and would put it in
+    // the host page's corner outside the centred card on a laptop. It is the
+    // modal's first child and takes no room in the flow: its 12px top margin
+    // equals its sticky top, so it rests exactly where it pins and never jumps
+    // when scrolling starts, and the -56px bottom margin (12 plus its 44) hands
+    // that height back, so the booker still starts at the modal's top edge. The
+    // margins place it where top:12px;right:12px did, so the #2766 ring geometry
+    // is unchanged.
     close.style.cssText =
-      "position:absolute;top:12px;right:12px;border:0;background:transparent;" +
+      "position:sticky;top:12px;" +
+      "margin-top:12px;margin-right:12px;margin-bottom:-56px;margin-left:auto;" +
+      "border:0;background:rgb(255,255,255);" +
       "width:44px;height:44px;display:flex;align-items:center;" +
       "justify-content:center;border-radius:12px;" +
       "font-size:24px;line-height:1;cursor:pointer;" +
-      "z-index:1;box-sizing:border-box;margin:0;padding:0;" +
+      "z-index:1;box-sizing:border-box;padding:0;" +
       "letter-spacing:normal;text-align:center;font-family:'PP Mori'," +
       "-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif";
     // #2748: the control is drawn over whatever is BEHIND it, which is the white
@@ -437,14 +452,19 @@
     // has no Pennie tokens: the dark half mirrors `--pennie-muted-dark`,
     // `--pennie-beige` and the sky focus line D17 sets for navy; the light half
     // is the graphite recipe (the 3:1 line is the outline; the sky glow is
-    // decorative in both).
+    // decorative in both). Once pinned, booker content scrolls UNDER the
+    // control (#2789), so it also carries a plate in the surface it sits on
+    // (the booker's `--surface` in each theme, the chrome's white while
+    // loading): the glyph never lands on text, and at the top the plate is the
+    // colour of the corner behind it, so it is not seen at all.
     var darkBooker = /[?&]theme=dark(?:&|$)/.test(bookUrl);
-    var CLOSE_ON_LIGHT = { rest: "rgb(106,106,112)", strong: "rgb(52,52,52)", ring: "rgb(52,52,52)" };
-    var CLOSE_ON_DARK = { rest: "rgb(165,162,177)", strong: "rgb(249,246,240)", ring: "rgb(130,208,255)" };
+    var CLOSE_ON_LIGHT = { rest: "rgb(106,106,112)", strong: "rgb(52,52,52)", ring: "rgb(52,52,52)", plate: "rgb(255,255,255)" };
+    var CLOSE_ON_DARK = { rest: "rgb(165,162,177)", strong: "rgb(249,246,240)", ring: "rgb(130,208,255)", plate: "rgb(38,37,43)" };
     var closeFocused = false;
     var closeHovered = false;
     function paintClose() {
       var ink = darkBooker && loadState === "loaded" ? CLOSE_ON_DARK : CLOSE_ON_LIGHT;
+      close.style.backgroundColor = ink.plate;
       close.style.color = closeFocused || closeHovered ? ink.strong : ink.rest;
       close.style.outline = closeFocused ? "2px solid " + ink.ring : "";
       close.style.outlineOffset = closeFocused ? "2px" : "";
