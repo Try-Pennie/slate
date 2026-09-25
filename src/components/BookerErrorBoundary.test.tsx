@@ -4,7 +4,11 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import BookError from "@/app/book/error";
 import BookingError from "@/app/booking/[id]/error";
-import { BOUNDARY_TITLE } from "@/lib/errors/boundary-copy";
+import { BOUNDARY_BODY } from "@/lib/errors/boundary-copy";
+import { readFileSync } from "node:fs";
+import { BOOKER_BOUNDARY_COPY } from "@/lib/booking/booker-copy";
+import { BOOKER_BOUNDARY_COPY as LEAF_COPY } from "@/lib/booking/booker-boundary-copy";
+import { STANDALONE_CONTENT, mainClassFor } from "@/lib/booking/page-shell";
 import { EMBED_MESSAGE, LINK_FAILED } from "@/lib/embed/lifecycle-events";
 
 // #2658: the booker's own error boundary. A crash inside the embedded booker used
@@ -46,15 +50,58 @@ const ROUTES = [
 describe.each(ROUTES)("the booker error boundary on $name (#2658, #2732)", ({ Boundary, page }) => {
   it("says what happened, in Pennie's own words, with no way into the admin", () => {
     render(<Boundary error={err()} retry={() => {}} />);
-    expect(screen.getByRole("alert").textContent).toContain(BOUNDARY_TITLE);
+    expect(screen.getByRole("alert").textContent).toContain(BOOKER_BOUNDARY_COPY.heading);
     expect(screen.queryByRole("link")).toBeNull();
+  });
+
+  // #2754: a lead mid booking was shown the staff sentence about saving a change.
+  it("speaks to a lead, never in the staff wording about saving a change", () => {
+    render(<Boundary error={err()} retry={() => {}} />);
+    const text = screen.getByRole("alert").textContent ?? "";
+    expect(text).toContain(BOOKER_BOUNDARY_COPY.heading);
+    expect(text).toContain(BOOKER_BOUNDARY_COPY.body);
+    expect(text).not.toContain(BOUNDARY_BODY);
+    expect(text.toLowerCase()).not.toContain("saving a change");
+  });
+
+  // #2754: the boundary replaces the page, so it also replaced the page's gutter,
+  // and the card sat flush against the window. It draws the standalone shell's
+  // padded, centred page classes instead.
+  it("sits in the booker's padded layout on a standalone page", () => {
+    search.current = "xbc=411";
+    const { container } = render(<Boundary error={err()} retry={() => {}} />);
+    const main = container.querySelector("main")!;
+    expect(main.className).toBe(mainClassFor(false));
+    const card = screen.getByRole("alert");
+    expect(card.parentElement!.className).toBe(STANDALONE_CONTENT);
+    expect(card.className).toMatch(/\bmax-w-/);
+    expect(card.className).toMatch(/\bmx-auto\b/);
+  });
+
+  it("keeps a gutter inside the embed too, with no viewport height", () => {
+    search.current = "embed=1&parentOrigin=https%3A%2F%2Fhost.test";
+    const { container } = render(<Boundary error={err()} retry={() => {}} />);
+    const main = container.querySelector("main")!;
+    expect(main.className).toBe(mainClassFor(true));
+    expect(main.className).not.toMatch(/\bmin-h-/);
+    expect(screen.getByRole("alert").parentElement!.className).toBe(STANDALONE_CONTENT);
+  });
+
+  it("paints the theme the link asked for, light unless dark", () => {
+    search.current = "theme=dark";
+    const { container, unmount } = render(<Boundary error={err()} retry={() => {}} />);
+    expect(container.querySelector("[data-theme]")!.getAttribute("data-theme")).toBe("dark");
+    unmount();
+    search.current = "theme=sepia";
+    const again = render(<Boundary error={err()} retry={() => {}} />);
+    expect(again.container.querySelector("[data-theme]")!.getAttribute("data-theme")).toBe("light");
   });
 
   it("retries when asked", async () => {
     const user = userEvent.setup();
     const retry = vi.fn();
     render(<Boundary error={err()} retry={retry} />);
-    await user.click(screen.getByRole("button", { name: "Try again" }));
+    await user.click(screen.getByRole("button", { name: BOOKER_BOUNDARY_COPY.retry }));
     expect(retry).toHaveBeenCalledOnce();
   });
 
@@ -101,5 +148,26 @@ describe.each(ROUTES)("the booker error boundary on $name (#2658, #2732)", ({ Bo
     const text = JSON.stringify(postSpy.mock.calls[0]?.[0] ?? {});
     expect(text).not.toContain("dana@example.com");
     expect(text).not.toContain("at ");
+  });
+});
+
+// #2754: the boundary is a client component on the booker's routes, and reaching
+// for the whole booker copy module (directly, or through the standalone shell's
+// legal footer) added about 10 KB gzipped to the client bundle for three strings.
+// Its words come from a leaf module with no imports, which `booker-copy`
+// re-exports so the preview and the parity test read the same object.
+describe("the booker boundary stays light (#2754)", () => {
+  const src = (p: string) => readFileSync(p, "utf8");
+
+  it("reads its words from the leaf module, never the whole booker copy", () => {
+    const boundary = src("src/components/BookerErrorBoundary.tsx");
+    expect(boundary).toMatch(/from "@\/lib\/booking\/booker-boundary-copy"/);
+    expect(boundary).not.toMatch(/from "@\/lib\/booking\/booker-copy"/);
+    expect(boundary).not.toMatch(/from "@\/components\/(StandaloneBookerShell|LegalFooter)"/);
+  });
+
+  it("the leaf module imports nothing, and booker-copy re-exports the same object", () => {
+    expect(src("src/lib/booking/booker-boundary-copy.ts")).not.toMatch(/^\s*import\b/m);
+    expect(BOOKER_BOUNDARY_COPY).toBe(LEAF_COPY);
   });
 });
