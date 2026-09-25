@@ -30,6 +30,7 @@ import {
   FLOOR_SCOPE,
   baselineFromFixture,
   buildFixture,
+  offlineHoursFor,
   renderBaselineModule,
   scopedSeries,
   type VolumeFixture,
@@ -66,7 +67,7 @@ function flatSeries(weeks: number, perBucket: (i: number, atMs: number) => numbe
 // --- 1. windowCountsByCell places each tick in the right local hour ---
 {
   const s = flatSeries(1, () => 1);
-  const cells = windowCountsByCell(s, ZONE);
+  const cells = windowCountsByCell(s, ZONE, []);
   // Monday 01:00 local is the first hour with a full 120 minute history: ticks at
   // 02:00 onwards. Every tick sees 6 in 30 minutes and 24 in 120.
   eq(cells[0]![1]!.c120.length, 0, "no tick before a full long window of history");
@@ -92,7 +93,7 @@ function flatSeries(weeks: number, perBucket: (i: number, atMs: number) => numbe
 // --- 1. fitFloorCells ---
 {
   // Steady traffic, 1 booking every 5 minutes, is about 24 a long window.
-  const steady = fitFloorCells(flatSeries(8, () => 1), ZONE);
+  const steady = fitFloorCells(flatSeries(8, () => 1), ZONE, []);
   const c = steady[1]![14]!;
   eq(c.typical120, 24, "the typical long window is what the traffic holds");
   assert(c.floor120 > 0 && c.floor120 < 24, `the fitted floor sits below normal and above zero (got ${c.floor120})`);
@@ -104,14 +105,41 @@ function flatSeries(weeks: number, perBucket: (i: number, atMs: number) => numbe
     const dt = DateTime.fromMillis(at, { zone: ZONE });
     return dt.weekday === 2 && dt.weekNumber === DateTime.fromISO("2026-06-16", { zone: ZONE }).weekNumber ? 0 : 1;
   };
-  const withOutage = fitFloorCells(flatSeries(8, tuesdayOut), ZONE);
+  const withOutage = fitFloorCells(flatSeries(8, tuesdayOut), ZONE, []);
   eq(withOutage[1]![14]!.floor120, c.floor120, "the single worst week is left out of the fit when there are enough weeks");
   // With five weeks there is none to spare, and the outage drags the tail to zero.
-  const short = fitFloorCells(flatSeries(5, tuesdayOut), ZONE);
+  const short = fitFloorCells(flatSeries(5, tuesdayOut), ZONE, []);
   eq(short[1]![14]!.floor120, 0, "with too few weeks every week counts, the outage included");
 
   // A band with no traffic has no floor, rather than an invented one.
-  eq(fitFloorCells(flatSeries(8, () => 0), ZONE)[2]![12]!.floor120, 0, "no traffic, no floor");
+  eq(fitFloorCells(flatSeries(8, () => 0), ZONE, [])[2]![12]!.floor120, 0, "no traffic, no floor");
+}
+
+// --- 1. a day the org recorded as closed is not traffic (#2764) ---
+//
+// A holiday the org keeps in business_hours_exceptions is a day the alarm never
+// judges, so a floor fitted with it in is fitted to a day that is not normal: with
+// too few weeks to spare one, a single closed Monday drags every Monday to zero.
+{
+  const closed = "2026-06-15"; // the third Monday of a five week series from June 1
+  const shutThatDay = (_i: number, at: number) => (DateTime.fromMillis(at, { zone: ZONE }).toISODate() === closed ? 0 : 1);
+  const open = fitFloorCells(flatSeries(5, () => 1), ZONE, []);
+  const kept = fitFloorCells(flatSeries(5, shutThatDay), ZONE, []);
+  eq(kept[0]![14]!.floor120, 0, "control: a closed Monday left in the fit drags every Monday's floor to zero");
+  const excused = fitFloorCells(flatSeries(5, shutThatDay), ZONE, [closed]);
+  eq(excused[0]![14], open[0]![14], "a recorded closed day is left out, so every Monday keeps the floor its open days set");
+  eq(excused[1]![14], open[1]![14], "and no other weekday moves");
+
+  const cells = windowCountsByCell(flatSeries(5, shutThatDay), ZONE, [closed]);
+  eq(cells[0]![14]!.c120.length, 4 * 12, "no sample is taken on the closed day");
+  // A window reaching back across midnight into the closed day is part of it too.
+  eq(cells[1]![1]!.c120.length, 4 * 12, "the next morning's ticks whose window starts on the closed day are left out");
+  eq(cells[1]![2]!.c120.length, 5 * 12, "and the first tick whose window starts after midnight is kept");
+  eq(
+    windowCountsByCell(flatSeries(5, shutThatDay), ZONE, [])[0]![14]!.c120.length,
+    5 * 12,
+    "control: with no closed day every Monday is sampled",
+  );
 }
 
 // --- 2. the committed floors are the committed measurement's ---
@@ -172,9 +200,21 @@ const fixture = JSON.parse(readFileSync("scripts/fixtures/calcom-low-bookings.js
     zone: ZONE,
     measuredOn: "2026-09-01",
     formNames: [],
+    closedDates: ["2026-12-25", "2026-09-01", "2026-08-31"],
   });
   eq(built.forms.P, [0, 1, 0, 0, 0, 0], "one booked Low response, in the second bucket");
   eq(Object.keys(built.forms), ["P"], "a page with no bookings in the tier is not kept");
+  // #2764: the org's closed days are recorded WITH the measurement, so a refit from
+  // the committed file leaves out exactly the days the fit left out, with no read.
+  eq(built.closedDates, ["2026-09-01"], "only the closed days inside the measured span are recorded, in order");
+
+  // The committed measurement spans Labor Day, which production records as closed
+  // (`business_hours_exceptions`, read 2026-09-25), so the fit must have left it out.
+  assert(fixture.closedDates.includes("2026-09-07"), "the committed measurement records Labor Day as a closed day");
+  assert(
+    fixture.closedDates.every((d, i, all) => i === 0 || all[i - 1]! < d),
+    "its closed days are distinct and in date order, so the file diffs cleanly",
+  );
 }
 
 // --- 3. the policy ---
@@ -259,13 +299,30 @@ const fixture = JSON.parse(readFileSync("scripts/fixtures/calcom-low-bookings.js
 
 // --- 4. the replay ---
 //
-// The org's stored week, read from production on 2026-09-25: Monday to Saturday,
-// 08:00 to 20:00 Eastern, Sunday closed.
-const HOURS: BusinessHoursConfig = {
-  zone: ZONE,
-  rules: [1, 2, 3, 4, 5, 6].map((weekday) => ({ weekday, start_minute: 8 * 60, end_minute: 20 * 60 })),
-  exceptions: [],
-};
+// The org's stored week, read from production on 2026-09-25 (Monday to Saturday,
+// 08:00 to 20:00 Eastern, Sunday closed), with the closed days the measurement
+// recorded (#2764), because the live alarm reads both and a replay of it must too.
+const HOURS: BusinessHoursConfig = offlineHoursFor(fixture);
+{
+  // Labor Day, alone: the shipped alarm judges nothing on a recorded closed day,
+  // and the same day with the exceptions left out is judged in full (L159).
+  const series = scopedSeries(fixture, FLOOR_SCOPE);
+  const from = DateTime.fromISO("2026-09-07T00:00", { zone: ZONE }).toMillis();
+  const run = (businessHours: BusinessHoursConfig) =>
+    replayLowVolume({
+      series,
+      policy: { baseline: MEASURED_VOLUME_BASELINE, override30: null, override120: null },
+      businessHours,
+      fromMs: from,
+      toMs: from + DAY,
+      tickMinutes: 5,
+      cooldownMs: 30 * MIN,
+    });
+  const shut = await run(HOURS);
+  eq(shut.checked, 0, "the tier alarm judges no tick of Labor Day, which the org records closed");
+  eq(shut.pages.length, 0, "and so pages nothing on it");
+  eq((await run({ ...HOURS, exceptions: [] })).checked, 144, "control: without the exception every open tick of it is judged");
+}
 const COOLDOWN = 30 * MIN; // MONITOR_DEFAULTS.cooldownMs.low_booking_volume
 const fmt = (ms: number) => DateTime.fromMillis(ms, { zone: ZONE }).toFormat("ccc d LLL HH:mm");
 {
@@ -280,7 +337,7 @@ const fmt = (ms: number) => DateTime.fromMillis(ms, { zone: ZONE }).toFormat("cc
   const trainN = series.counts.length - (14 * DAY) / per;
   const trained: VolumeBaseline = {
     ...MEASURED_VOLUME_BASELINE,
-    cells: fitFloorCells(headOf(series, trainN), fixture.zone),
+    cells: fitFloorCells(headOf(series, trainN), fixture.zone, fixture.closedDates),
   };
   const policy: FloorPolicy = { baseline: trained, override30: null, override120: null };
   const holdout = await replayLowVolume({
@@ -338,6 +395,10 @@ const fmt = (ms: number) => DateTime.fromMillis(ms, { zone: ZONE }).toFormat("cc
   console.log(`replay: all nine weeks with the committed floors, ${inSample.checked} ticks judged, ${inSample.pages.length} pages`);
   for (const p of inSample.pages) console.log(`replay:   page at ${fmt(p.atMs)}: ${p.text}`);
   assert(inSample.pages.length <= 9, `at most about one page a week over the measured weeks (${inSample.pages.length})`);
+  const onClosed = inSample.pages.filter((p) =>
+    fixture.closedDates.includes(DateTime.fromMillis(p.atMs, { zone: ZONE }).toISODate() ?? ""),
+  );
+  eq(onClosed.length, 0, "no page on a day the org records as closed (#2764)");
 
   // INJECTED OUTAGE: every weekday in the holdout, nothing booked from 13:00 for
   // 150 minutes. The armed alarm must page inside it.

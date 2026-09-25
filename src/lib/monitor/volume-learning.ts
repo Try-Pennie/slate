@@ -24,11 +24,17 @@
  *   learned from, and no learned floor may fall below the measured anchor (the
  *   cal.com fit), so a decline too gradual for the comparison still meets a floor
  *   under the floor.
+ *
+ * And a day the org records as CLOSED (#2764) is not traffic in either direction:
+ * it is left out of the fit, and the decline comparison is made per OPEN day, so a
+ * shut Christmas week inside the recent weeks is not read as bookings falling away.
  */
+import { DateTime } from "luxon";
 import {
   SERIES_BUCKET_MINUTES,
   fitFloorCells,
   type BookingSeries,
+  type ClosedDates,
   type FloorCell,
   type VolumeBaseline,
 } from "./volume-floors.ts";
@@ -97,11 +103,17 @@ export function learnFloors(input: {
   nowMs: number;
   /** The measured floors learning may never fall below. */
   anchor: VolumeBaseline;
+  /** The dates the org records as closed, from `business_hours_exceptions` (#2764). */
+  closedDates: ClosedDates;
 }): LearnedFloors {
   if (input.rampEndMs === null) return { status: "not-started", reason: "ramp-not-declared" };
   const per = SERIES_BUCKET_MINUTES * 60_000;
   const endMs = Math.floor(input.nowMs / per) * per;
   const startMs = Math.ceil(Math.max(input.rampEndMs, endMs - LEARNING.horizonWeeks * WEEK_MS) / per) * per;
+
+  const zone = input.anchor.zone;
+  const closed = new Set(input.closedDates);
+  const onClosedDay = (ms: number) => closed.has(DateTime.fromMillis(ms, { zone }).toISODate() ?? "");
 
   let excludedTest = 0;
   let excludedRamp = 0;
@@ -115,6 +127,9 @@ export function learnFloors(input: {
       excludedRamp++;
       continue;
     }
+    // A lead booking ahead on a day the office is shut is not that day's traffic,
+    // and the day is not sampled by the fit, so it is simply not counted.
+    if (onClosedDay(b.createdAtMs)) continue;
     real.push(b.createdAtMs);
   }
 
@@ -134,16 +149,31 @@ export function learnFloors(input: {
       scope: "Every real customer booking Slate took after the ramp ended",
       tierShare: null,
       bookings,
-      cells: underpin(fitFloorCells(series, input.anchor.zone), input.anchor.cells),
+      cells: underpin(fitFloorCells(series, zone, input.closedDates), input.anchor.cells),
     };
   };
 
-  // The comparison is on whole weeks, so a weekday's shape cancels out of it.
+  // The comparison is on whole weeks, so a weekday's shape cancels out of it, and
+  // per OPEN time within them, so a closed day on one side is not a decline.
   const splitMs = endMs - LEARNING.recentWeeks * WEEK_MS;
   const inRange = (from: number, to: number) => real.filter((ms) => ms >= from && ms < to).length;
-  const recentPerWeek = inRange(splitMs, endMs) / LEARNING.recentWeeks;
-  const earlierWeeks = (splitMs - startMs) / WEEK_MS;
-  const earlierPerWeek = inRange(startMs, splitMs) / earlierWeeks;
+  const openMs = (from: number, to: number) => {
+    let shut = 0;
+    for (const d of closed) {
+      const dayStart = DateTime.fromISO(d, { zone }).startOf("day");
+      if (!dayStart.isValid) continue;
+      const a = Math.max(from, dayStart.toMillis());
+      const b = Math.min(to, dayStart.plus({ days: 1 }).toMillis());
+      if (b > a) shut += b - a;
+    }
+    return to - from - shut;
+  };
+  const perWeek = (from: number, to: number) => {
+    const open = openMs(from, to);
+    return open > 0 ? (inRange(from, to) / open) * WEEK_MS : 0;
+  };
+  const recentPerWeek = perWeek(splitMs, endMs);
+  const earlierPerWeek = perWeek(startMs, splitMs);
   if (earlierPerWeek > 0 && recentPerWeek < LEARNING.declineRatio * earlierPerWeek) {
     return {
       status: "declining",

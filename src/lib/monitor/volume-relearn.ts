@@ -216,6 +216,12 @@ export async function runVolumeRelearn(deps: {
   readConfig: () => Promise<{ rampEndOn: string | null; learning: unknown }>;
   /** Every booking created in [since, until), test bookings flagged. Throws on a failed read. */
   readBookings: (sinceIso: string, untilIso: string) => Promise<SlateBookingRow[]>;
+  /**
+   * The dates the org records as CLOSED from `fromIsoDate` onward (#2764), through the
+   * same exceptions loader the availability gate uses. Throws on a failed read: a
+   * refit with the holidays left in is the fault this exists to prevent.
+   */
+  readClosedDates: (fromIsoDate: string) => Promise<string[]>;
   /** Store the refit. Throws when the write did not land. */
   save: (state: StoredVolumeLearning) => Promise<void>;
   log?: (fields: Record<string, unknown>) => void;
@@ -239,7 +245,10 @@ export async function runVolumeRelearn(deps: {
   // there means none existed rather than that none were looked at.
   const sinceMs = deps.nowMs - LEARNING.horizonWeeks * WEEK_MS;
   const rows = await deps.readBookings(new Date(sinceMs).toISOString(), new Date(deps.nowMs).toISOString());
-  const result = learnFloors({ bookings: rows, rampEndMs: rampMs, nowMs: deps.nowMs, anchor: deps.anchor });
+  const closedDates = await deps.readClosedDates(
+    DateTime.fromMillis(sinceMs, { zone: deps.anchor.zone }).toISODate() ?? "",
+  );
+  const result = learnFloors({ bookings: rows, rampEndMs: rampMs, nowMs: deps.nowMs, anchor: deps.anchor, closedDates });
   await deps.save({
     version: LEARNING_STATE_VERSION,
     rampEndOn,
@@ -249,6 +258,7 @@ export async function runVolumeRelearn(deps: {
   deps.log?.({
     ramp_end: rampEndOn,
     rows_read: rows.length,
+    closed_days: closedDates.length,
     learned: result.status,
     ...(result.status === "not-started"
       ? {}

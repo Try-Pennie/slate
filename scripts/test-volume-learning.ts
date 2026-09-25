@@ -53,13 +53,13 @@ const cell = (b: VolumeBaseline, weekday: number, hour: number) => b.cells[weekd
 
 // --- nothing is learned until a person declares the ramp over ---
 {
-  const out = learnFloors({ bookings: bookings(RAMP_END, NOW, 5), rampEndMs: null, nowMs: NOW, anchor: anchor(0, 4) });
+  const out = learnFloors({ bookings: bookings(RAMP_END, NOW, 5), rampEndMs: null, nowMs: NOW, anchor: anchor(0, 4), closedDates: [] });
   eq(out.status, "not-started", "no declared ramp end, nothing learned, however much traffic there is");
 }
 
 // --- control: steady full traffic after the ramp is learned ---
 const steady = bookings(RAMP_END, NOW, 5);
-const control = learnFloors({ bookings: steady, rampEndMs: RAMP_END, nowMs: NOW, anchor: anchor(0, 4) });
+const control = learnFloors({ bookings: steady, rampEndMs: RAMP_END, nowMs: NOW, anchor: anchor(0, 4), closedDates: [] });
 {
   eq(control.status, "learned", "eight weeks of steady traffic is learned");
   if (control.status === "learned") {
@@ -73,7 +73,7 @@ const control = learnFloors({ bookings: steady, rampEndMs: RAMP_END, nowMs: NOW,
 // --- too little post ramp history ---
 {
   const soon = RAMP_END + 3 * WEEK;
-  const out = learnFloors({ bookings: bookings(RAMP_END, soon, 5), rampEndMs: RAMP_END, nowMs: soon, anchor: anchor(0, 4) });
+  const out = learnFloors({ bookings: bookings(RAMP_END, soon, 5), rampEndMs: RAMP_END, nowMs: soon, anchor: anchor(0, 4), closedDates: [] });
   eq(out.status, "insufficient", `fewer than ${LEARNING.minWeeks} weeks after the ramp is not enough`);
 }
 
@@ -85,8 +85,8 @@ const control = learnFloors({ bookings: steady, rampEndMs: RAMP_END, nowMs: NOW,
   const early = RAMP_END + 4 * WEEK;
   const ramp = bookings(rampStart, RAMP_END, 50);
   const full = bookings(RAMP_END, early, 5);
-  const out = learnFloors({ bookings: [...ramp, ...full], rampEndMs: RAMP_END, nowMs: early, anchor: anchor(0, 0) });
-  const onlyFull = learnFloors({ bookings: full, rampEndMs: RAMP_END, nowMs: early, anchor: anchor(0, 0) });
+  const out = learnFloors({ bookings: [...ramp, ...full], rampEndMs: RAMP_END, nowMs: early, anchor: anchor(0, 0), closedDates: [] });
+  const onlyFull = learnFloors({ bookings: full, rampEndMs: RAMP_END, nowMs: early, anchor: anchor(0, 0), closedDates: [] });
   eq(out.status, "learned", "four whole weeks after the ramp is learned");
   if (out.status === "learned" && onlyFull.status === "learned") {
     eq(out.excludedRamp, ramp.length, "every ramp booking is excluded and counted");
@@ -101,7 +101,7 @@ const control = learnFloors({ bookings: steady, rampEndMs: RAMP_END, nowMs: NOW,
 {
   // A smoke run every minute, all day, every day: many times the real rate.
   const smoke = bookings(RAMP_END, NOW, 1).map((b) => ({ ...b, isTest: true }));
-  const out = learnFloors({ bookings: [...steady, ...smoke], rampEndMs: RAMP_END, nowMs: NOW, anchor: anchor(0, 4) });
+  const out = learnFloors({ bookings: [...steady, ...smoke], rampEndMs: RAMP_END, nowMs: NOW, anchor: anchor(0, 4), closedDates: [] });
   eq(out.status, "learned", "test bookings do not stop learning");
   if (out.status === "learned" && control.status === "learned") {
     eq(out.excludedTest, smoke.length, "every test booking is excluded and counted");
@@ -113,7 +113,7 @@ const control = learnFloors({ bookings: steady, rampEndMs: RAMP_END, nowMs: NOW,
 {
   const split = NOW - LEARNING.recentWeeks * WEEK;
   const halved = bookings(RAMP_END, NOW, 5, (at) => (at >= split ? 0.5 : 1));
-  const out = learnFloors({ bookings: halved, rampEndMs: RAMP_END, nowMs: NOW, anchor: anchor(0, 4) });
+  const out = learnFloors({ bookings: halved, rampEndMs: RAMP_END, nowMs: NOW, anchor: anchor(0, 4), closedDates: [] });
   eq(out.status, "declining", "the last two weeks at half the earlier rate is a decline");
   if (out.status === "declining" && control.status === "learned") {
     assert(out.recentPerWeek < out.earlierPerWeek * 0.6, "and it reports both rates");
@@ -124,6 +124,38 @@ const control = learnFloors({ bookings: steady, rampEndMs: RAMP_END, nowMs: NOW,
   }
 }
 
+// --- a closed week is not a decline, and not traffic (#2764) ---
+{
+  // Christmas week shut Monday to Friday, inside the two recent weeks. The alarm
+  // never judges those days, so learning must neither read their silence as a
+  // decline nor fit a floor to it.
+  const closed = ["2026-12-21", "2026-12-22", "2026-12-23", "2026-12-24", "2026-12-25"];
+  const isClosed = (at: number) => closed.includes(DateTime.fromMillis(at, { zone: ZONE }).toISODate() ?? "");
+  const shut = bookings(RAMP_END, NOW, 5, (at) => (isClosed(at) ? 0 : 1));
+  const unexcused = learnFloors({ bookings: shut, rampEndMs: RAMP_END, nowMs: NOW, anchor: anchor(0, 4), closedDates: [] });
+  eq(unexcused.status, "declining", "control: the shut week read as traffic looks like a decline");
+  const out = learnFloors({ bookings: shut, rampEndMs: RAMP_END, nowMs: NOW, anchor: anchor(0, 4), closedDates: closed });
+  eq(out.status, "learned", "with the week recorded closed, the recent weeks are compared on their open days only");
+  if (out.status === "learned" && control.status === "learned") {
+    assert(
+      JSON.stringify(out.baseline.cells) === JSON.stringify(control.baseline.cells),
+      "and the floors are the ones steady traffic learns: the shut days are left out of the fit",
+    );
+  }
+  // A booking made on a closed day (a lead booking ahead) is not the day's traffic either.
+  const stray = learnFloors({
+    bookings: [...shut, ...bookings(Date.parse("2026-12-22T15:00:00Z"), Date.parse("2026-12-22T17:00:00Z"), 5)],
+    rampEndMs: RAMP_END,
+    nowMs: NOW,
+    anchor: anchor(0, 4),
+    closedDates: closed,
+  });
+  assert(
+    stray.status === "learned" && JSON.stringify(stray.baseline.cells) === JSON.stringify(control.baseline.cells),
+    "bookings on a closed day change no floor",
+  );
+}
+
 // --- trap 3b: a decline too slow for the comparison still meets the anchor ---
 {
   // Three percent fewer bookings every week: no two week window is 20% below the
@@ -131,14 +163,14 @@ const control = learnFloors({ bookings: steady, rampEndMs: RAMP_END, nowMs: NOW,
   // would sink with it. The anchor holds it up.
   const slow = bookings(RAMP_END, NOW, 5, (at) => Math.pow(0.97, Math.floor((at - RAMP_END) / WEEK)));
   const high = anchor(1, 20);
-  const out = learnFloors({ bookings: slow, rampEndMs: RAMP_END, nowMs: NOW, anchor: high });
+  const out = learnFloors({ bookings: slow, rampEndMs: RAMP_END, nowMs: NOW, anchor: high, closedDates: [] });
   eq(out.status, "learned", "a slow enough decline passes the comparison");
   if (out.status === "learned") {
     const everyCellHeld = out.baseline.cells.every((day) => day.every((c) => c.floor120 >= 20 && c.floor30 >= 1));
     assert(everyCellHeld, "and every learned floor stays at or above the measured anchor");
   }
   // Control: the same slow decline with no anchor to hold it learns something lower.
-  const unheld = learnFloors({ bookings: slow, rampEndMs: RAMP_END, nowMs: NOW, anchor: anchor(0, 0) });
+  const unheld = learnFloors({ bookings: slow, rampEndMs: RAMP_END, nowMs: NOW, anchor: anchor(0, 0), closedDates: [] });
   if (unheld.status === "learned") {
     assert(cell(unheld.baseline, 2, 14).floor120 < 20, "without the anchor the same traffic would have learned a lower floor");
   }

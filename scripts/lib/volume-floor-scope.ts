@@ -19,6 +19,7 @@
  */
 import { fitFloorCells, type BookingSeries, type VolumeBaseline } from "../../src/lib/monitor/volume-floors.ts";
 import { LOW_PAGES, type LowPage, type LowPageId } from "../../src/lib/monitor/page-volume.ts";
+import { DateTime } from "luxon";
 import type { BusinessHoursConfig } from "../../src/lib/monitor/booking-volume.ts";
 
 export interface FloorScope {
@@ -48,6 +49,13 @@ export interface VolumeFixture {
   bucketMinutes: number;
   /** Bookings per bucket, keyed by routing form name. Every form in the tier is present. */
   forms: Record<string, number[]>;
+  /**
+   * The days inside the measured span the org records as CLOSED (#2764), YYYY-MM-DD
+   * in `zone`, read from `business_hours_exceptions` through the same loader the
+   * availability gate uses. Recorded with the counts, so a refit from this file
+   * leaves out exactly the days the measurement left out without reading anything.
+   */
+  closedDates: string[];
 }
 
 /** The scope's series: every scoped form's counts summed bucket by bucket. */
@@ -88,7 +96,7 @@ export function baselineFromFixture(fixture: VolumeFixture, scope: FloorScope): 
     scope: scope.label,
     tierShare: allForms || tierTotal === 0 ? null : Math.round((scoped / tierTotal) * 100) / 100,
     bookings: scoped,
-    cells: fitFloorCells(series, fixture.zone),
+    cells: fitFloorCells(series, fixture.zone, fixture.closedDates),
   };
 }
 
@@ -106,6 +114,8 @@ export function buildFixture(opts: {
   zone: string;
   measuredOn: string;
   formNames: string[];
+  /** Every date the org records as closed; only those inside the span are kept. */
+  closedDates: readonly string[];
 }): VolumeFixture {
   const per = opts.bucketMinutes * 60_000;
   const n = Math.floor((opts.endMs - opts.startMs) / per);
@@ -125,6 +135,9 @@ export function buildFixture(opts: {
   for (const [name, counts] of Object.entries(forms)) {
     if (counts.every((v) => v === 0)) delete forms[name];
   }
+  const fromDate = DateTime.fromMillis(opts.startMs, { zone: opts.zone }).toISODate() ?? "";
+  const toDate = DateTime.fromMillis(opts.startMs + n * per - 1, { zone: opts.zone }).toISODate() ?? "";
+  const closedDates = [...new Set(opts.closedDates)].filter((d) => d >= fromDate && d <= toDate).sort();
   return {
     source: "calcom",
     measuredOn: opts.measuredOn,
@@ -133,6 +146,7 @@ export function buildFixture(opts: {
     startMs: opts.startMs,
     bucketMinutes: opts.bucketMinutes,
     forms,
+    closedDates,
   };
 }
 
@@ -178,6 +192,25 @@ export const OFFLINE_OPEN_WEEK: BusinessHoursConfig = {
   rules: [1, 2, 3, 4, 5, 6].map((weekday) => ({ weekday, start_minute: 8 * 60, end_minute: 20 * 60 })),
   exceptions: [],
 };
+
+/**
+ * The week a REPLAY of a measurement judges in (#2764): the stored week above, plus
+ * the closed days the measurement recorded, as the closed exceptions the live alarm
+ * reads. A replay with no exceptions judges a holiday as an open day the monitor
+ * never would, and reports pages the armed alarm could not have sent.
+ */
+export function offlineHoursFor(fixture: Pick<VolumeFixture, "closedDates">): BusinessHoursConfig {
+  return {
+    ...OFFLINE_OPEN_WEEK,
+    exceptions: fixture.closedDates.map((on_date) => ({
+      on_date,
+      is_open: false,
+      start_minute: null,
+      end_minute: null,
+      note: null,
+    })),
+  };
+}
 
 /**
  * One baseline per Low page (#2738): the same fit, on that page's own series. The

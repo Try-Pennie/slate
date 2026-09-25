@@ -134,7 +134,33 @@ export interface CellSamples {
   week: string[];
 }
 
-export function windowCountsByCell(series: BookingSeries, zone: string): CellSamples[][] {
+/**
+ * The dates the org recorded as CLOSED (#2764), as YYYY-MM-DD in the series' zone,
+ * which no window may be sampled from.
+ *
+ * The alarm never judges a closed day (its hours gate reads the same exceptions), so
+ * a fit that counted one would be fitting floors to a day the alarm is never asked
+ * about, and with too few weeks to spare it, one holiday sets the floor for that
+ * weekday at zero. Required, never defaulted to "none", so every fit names where its
+ * closed days came from (L168): they are read from `business_hours_exceptions`
+ * through the same loader the availability gate uses (L41).
+ */
+export type ClosedDates = readonly string[];
+
+/**
+ * Whether a window ending at `tickMs` touches a closed date: its first or its last
+ * minute falls on one. The windows are two hours, so no window spans a whole day
+ * and those two ends are enough.
+ */
+function touchesClosed(tickMs: number, closed: ReadonlySet<string>, zone: string): boolean {
+  if (closed.size === 0) return false;
+  const first = DateTime.fromMillis(tickMs - LONG_MIN * 60_000, { zone }).toISODate() ?? "";
+  const last = DateTime.fromMillis(tickMs - 1, { zone }).toISODate() ?? "";
+  return closed.has(first) || closed.has(last);
+}
+
+export function windowCountsByCell(series: BookingSeries, zone: string, closedDates: ClosedDates): CellSamples[][] {
+  const closed = new Set(closedDates);
   const per = series.bucketMinutes;
   if (SHORT_MIN % per !== 0 || LONG_MIN % per !== 0) {
     throw new Error(`a ${per} minute bucket cannot tile the ${SHORT_MIN} and ${LONG_MIN} minute windows`);
@@ -149,6 +175,7 @@ export function windowCountsByCell(series: BookingSeries, zone: string): CellSam
   for (const n of series.counts) prefix.push(prefix[prefix.length - 1]! + n);
   for (let i = longN; i <= series.counts.length; i++) {
     const tickMs = series.startMs + i * per * 60_000;
+    if (touchesClosed(tickMs, closed, zone)) continue;
     const dt = DateTime.fromMillis(tickMs, { zone });
     const cell = cells[dt.weekday - 1]![dt.hour]!;
     cell.c30.push(prefix[i]! - prefix[i - shortN]!);
@@ -192,9 +219,9 @@ function worstWeek(weeks: string[], counts: number[]): string | null {
   return worst;
 }
 
-/** Fit every weekday and hour's floors from a measured series. */
-export function fitFloorCells(series: BookingSeries, zone: string): FloorCell[][] {
-  const raw = windowCountsByCell(series, zone);
+/** Fit every weekday and hour's floors from a measured series, leaving out the org's closed days. */
+export function fitFloorCells(series: BookingSeries, zone: string, closedDates: ClosedDates): FloorCell[][] {
+  const raw = windowCountsByCell(series, zone, closedDates);
   return raw.map((day) =>
     day.map((_, hour) => {
       const band: CellSamples = { c30: [], c120: [], week: [] };

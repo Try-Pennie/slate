@@ -67,8 +67,11 @@ function harness(opts: {
   configThrows?: boolean;
   anchorBaseline?: VolumeBaseline;
   nowMs?: number;
+  closedDates?: string[];
+  closedThrows?: boolean;
 }) {
   const reads: { sinceIso: string; untilIso: string }[] = [];
+  const closedReads: string[] = [];
   const saves: StoredVolumeLearning[] = [];
   const run = () =>
     runVolumeRelearn({
@@ -83,12 +86,17 @@ function harness(opts: {
         if (opts.readThrows) throw new Error("bookings read failed");
         return opts.rows ?? [];
       },
+      readClosedDates: async (fromIsoDate) => {
+        closedReads.push(fromIsoDate);
+        if (opts.closedThrows) throw new Error("exceptions read failed");
+        return opts.closedDates ?? [];
+      },
       save: async (state) => {
         if (opts.saveThrows) throw new Error("write refused");
         saves.push(state);
       },
     });
-  return { run, reads, saves };
+  return { run, reads, saves, closedReads };
 }
 
 async function rejects(p: Promise<unknown>, message: RegExp): Promise<boolean> {
@@ -108,6 +116,7 @@ const steady = bookings(RAMP_END, NOW, 5);
   const out = await h.run();
   eq(out.status, "no-ramp-end", "no ramp end: the relearn step does nothing");
   eq(h.reads.length, 0, "and reads no bookings");
+  eq(h.closedReads.length, 0, "nor the org's closed days");
   eq(h.saves.length, 0, "and writes nothing");
 }
 
@@ -131,6 +140,28 @@ let fitted: StoredVolumeLearning | null = null;
   if (fitted.result.status === "learned") {
     assert(fitted.result.excludedTest > 0, "test bookings were counted as excluded");
   }
+}
+
+// --- the org's closed days are read for the horizon and left out (#2764) ---
+{
+  // Christmas week shut, in the last two weeks: read as traffic it is a decline.
+  const closed = ["2026-12-21", "2026-12-22", "2026-12-23", "2026-12-24", "2026-12-25"];
+  const shut = steady.filter((b) => !closed.includes(DateTime.fromMillis(b.createdAtMs, { zone: "America/New_York" }).toISODate() ?? ""));
+  const h = harness({ rampEndOn: RAMP_END_ON, rows: shut, closedDates: closed });
+  await h.run();
+  eq(
+    h.closedReads,
+    [DateTime.fromMillis(NOW - LEARNING.horizonWeeks * WEEK, { zone: "America/New_York" }).toISODate()],
+    "the closed days are read once, from the first day of the horizon the bookings are read over",
+  );
+  eq(h.saves[0]?.result.status, "learned", "and a shut week recorded closed is not learned as a decline");
+  const unread = harness({ rampEndOn: RAMP_END_ON, rows: shut, closedDates: [] });
+  await unread.run();
+  eq(unread.saves[0]?.result.status, "declining", "control: the same week with no closed days recorded reads as a decline");
+
+  const broken = harness({ rampEndOn: RAMP_END_ON, rows: steady, closedThrows: true });
+  assert(await rejects(broken.run(), /exceptions read failed/), "an unreadable exceptions list throws, rather than fitting holidays in");
+  eq(broken.saves.length, 0, "and nothing is written, so the floors in force stay");
 }
 
 // --- not due again inside a day, due after one ---

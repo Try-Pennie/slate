@@ -2,6 +2,7 @@ import type { supabaseAdmin } from "@/lib/supabase/admin";
 import { log } from "@/lib/log";
 import { parseStampMs } from "@/lib/date/stamp";
 import type { BookingSource } from "@/lib/booking/booking-source";
+import { LOW_PAGES, PAGE_SEEN_LOOKBACK_DAYS, UNSOURCED_VALUES, type PageSourceMeasure } from "@/lib/monitor/page-volume";
 
 /**
  * Customer bookings created since `sinceIso`, for the low-volume alarm (#370).
@@ -105,4 +106,42 @@ export async function customerBookingFromSourcesSince(
     throw new Error("page volume: could not read whether the page has recorded a booking");
   }
   return (data ?? []).length > 0;
+}
+
+/**
+ * Whether the Low pages' bookings are carrying their source (#2765, #2767): real
+ * bookings over the per page alarm's own lookback, how many recorded no page, and
+ * whether each page recorded one of its own. ONE measurement, read by the readiness
+ * gate and by /admin/alerts, so the two can never count differently.
+ *
+ * Throws on any failed read. Every caller maps that to "could not be read", never
+ * to zero unsourced, which is the answer that would show floors as coverage.
+ */
+export async function measurePageSources(
+  db: ReturnType<typeof supabaseAdmin>,
+  nowMs: number,
+): Promise<PageSourceMeasure> {
+  const sinceIso = new Date(nowMs - PAGE_SEEN_LOOKBACK_DAYS * 86_400_000).toISOString();
+  const realBookings = await countCustomerBookingsSince(db, sinceIso);
+  if (realBookings === null) throw new Error("page sources: the real booking count could not be read");
+  // cap-safe: head-only exact count, no rows. A null source is a booking from before #2072.
+  const { count: unsourced, error } = await db
+    .from("bookings")
+    .select("id, buckets!inner(is_test)", { count: "exact", head: true })
+    .eq("buckets.is_test", false)
+    .or(["source.is.null", ...UNSOURCED_VALUES.map((v) => `source.eq.${v}`)].join(","))
+    .gte("created_at", sinceIso);
+  if (error || unsourced === null) {
+    log.error("monitor", { msg: "unsourced booking count failed", since: sinceIso }, error ?? undefined);
+    throw new Error("page sources: the unsourced count could not be read");
+  }
+  const pages: PageSourceMeasure["pages"] = [];
+  for (const page of LOW_PAGES) {
+    pages.push({
+      id: page.id,
+      name: page.name,
+      recorded: await customerBookingFromSourcesSince(db, page.sources, sinceIso),
+    });
+  }
+  return { lookbackDays: PAGE_SEEN_LOOKBACK_DAYS, realBookings, unsourced, pages };
 }

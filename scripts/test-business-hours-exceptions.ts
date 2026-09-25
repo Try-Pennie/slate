@@ -17,6 +17,7 @@
 import {
   windowOnDate,
   resolveBusinessHoursExceptions,
+  closedExceptionDates,
   SEEDED_BUSINESS_HOURS,
   BUSINESS_ZONE,
   type BusinessHoursException,
@@ -113,6 +114,18 @@ const hours = { rules: SEEDED_BUSINESS_HOURS, exceptions: [] as BusinessHoursExc
   eq(exceptions.length, 1, "the usable row survives");
   eq(unreadable.length, 3, "and every unusable one is reported, including the duplicate date");
   eq(exceptions[0].on_date, "2026-12-25", "the first row for a date wins, deterministically");
+}
+
+// --- the closed days the volume alarms leave out of their fits (#2764) ----------
+// Taken from the same resolved exceptions the gate judges, so a day the booker
+// refuses is exactly a day the floors are not fitted to.
+{
+  eq(
+    closedExceptionDates([openOn("2026-12-27", 10 * 60, 14 * 60), shut("2026-12-25"), shut("2026-11-26", "Thanksgiving")]),
+    ["2026-11-26", "2026-12-25"],
+    "only the CLOSED dates, in date order; an opened Sunday is not a closed day",
+  );
+  eq(closedExceptionDates([]), [], "no exceptions, no closed days");
 }
 
 // --- the gate, in the org's own clock -------------------------------------------

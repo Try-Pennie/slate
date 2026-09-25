@@ -21,6 +21,14 @@
 // the booking being created. cal.com's own bookings listing carries no landing page,
 // and the page is exactly the dimension the first flip is cut along.
 //
+// THE ORG'S CLOSED DAYS (#2764). A day `business_hours_exceptions` records as shut is
+// a day the alarms never judge, so the fit leaves it out, and the dates are recorded
+// in the fixture beside the counts so a refit leaves out the same ones. They are read
+// through `loadBusinessHoursExceptions`, the loader the availability gate uses, which
+// needs the Supabase secret key (.env.local, or ENV_FILE from a worktree). A holiday
+// recorded AFTER a measurement is picked up with RECORD_CLOSED_DAYS=1, which re-reads
+// them for the committed span and refits without reading cal.com.
+//
 // It talks to cal.com, so it is deliberately not named `test-*.ts`.
 //
 // Env:
@@ -69,6 +77,41 @@ function report(fixture: VolumeFixture, baseline: VolumeBaseline): void {
   baseline.cells.forEach((day, i) => {
     console.log(`${WEEKDAY_NAMES[i]!.padEnd(10)} ${day.map((c) => `${c.floor30}/${c.floor120}`.padStart(5)).join("")}`);
   });
+}
+
+/**
+ * The closed days from `fromIsoDate` onward, through the loader the availability gate
+ * uses (L41). Imported only once the env files are loaded, because the admin client
+ * reads its key when it is built. A failed read throws: a fit with a holiday left IN
+ * is the defect this exists to prevent, so it is never written on a guess.
+ */
+async function readClosedDates(fromIsoDate: string): Promise<string[]> {
+  const { loadBusinessHoursExceptions } = await import("@/lib/booking/business-hours-load");
+  const { closedExceptionDates } = await import("@/lib/booking/business-hours");
+  return closedExceptionDates(await loadBusinessHoursExceptions(fromIsoDate));
+}
+
+// RECORD_CLOSED_DAYS=1 re-reads the org's closed days for the COMMITTED measurement's
+// span and refits, without reading cal.com: a holiday entered after the measurement.
+if (process.env.RECORD_CLOSED_DAYS === "1") {
+  loadEnvFiles([".env.local", ".dev.vars", ...(process.env.ENV_FILE ? [process.env.ENV_FILE] : [])]);
+  const committed = JSON.parse(readFileSync(FIXTURE_PATH, "utf8")) as VolumeFixture;
+  const span = baselineFromFixture({ ...committed, closedDates: [] }, FLOOR_SCOPE);
+  const read = await readClosedDates(span.fromDate).catch((e: Error) => {
+    console.error(`FAILED (closed-days-unreadable): ${e.message}; nothing was written`);
+    process.exit(4);
+  });
+  const fixture: VolumeFixture = {
+    ...committed,
+    closedDates: read.filter((d) => d >= span.fromDate && d <= span.toDate),
+  };
+  writeFileSync(FIXTURE_PATH, JSON.stringify(fixture) + "\n");
+  const baseline = baselineFromFixture(fixture, FLOOR_SCOPE);
+  writeFileSync(BASELINE_PATH, renderBaselineModule(baseline));
+  console.log(`Closed days in ${span.fromDate} to ${span.toDate}: ${fixture.closedDates.join(", ") || "none"}. Nothing was read from cal.com.`);
+  report(fixture, baseline);
+  writePages(fixture);
+  process.exit(0);
 }
 
 // REFIT=1 re-fits the floors from the COMMITTED measurement without reading cal.com,
@@ -134,7 +177,12 @@ if (!read.ok) {
   process.exit(2);
 }
 
+const closedDates = await readClosedDates(new Date(startMs).toISOString().slice(0, 10)).catch((e: Error) => {
+  console.error(`FAILED (closed-days-unreadable): ${e.message}; nothing was written`);
+  process.exit(4);
+});
 const fixture = buildFixture({
+  closedDates,
   rows: read.rows.map((r) => ({ ...r, tier: tierOf(r.code) })),
   tier: FLOOR_SCOPE.tier,
   startMs,
