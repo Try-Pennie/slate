@@ -21,7 +21,7 @@ const from = vi.hoisted(() =>
 );
 vi.mock("@/lib/supabase/admin", () => ({ supabaseAdmin: () => ({ rpc, from }) }));
 
-import { countBoundaryCatch, BOUNDARY_WINDOW_MS } from "./boundary-count";
+import { countBoundaryCatch, countUnrecognisedPageReport, BOUNDARY_WINDOW_MS } from "./boundary-count";
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -102,5 +102,35 @@ describe("countBoundaryCatch", () => {
   it("never throws", async () => {
     rpc.mockRejectedValue(new Error("network") as never);
     await expect(countBoundaryCatch("k")).resolves.toBeTruthy();
+  });
+});
+
+// #2755: every page Slate does not serve reports under ONE key, `other`, so an
+// invented path storm is one line rather than a thousand. One line is only
+// useful if it says how big the storm is, so the bucket is counted, in its own
+// key space and over the same window, on the same atomic counter.
+describe("countUnrecognisedPageReport", () => {
+  it("counts under its own key space, never the boundary one", async () => {
+    await countUnrecognisedPageReport("client_error:other");
+    expect(rpc).toHaveBeenCalledWith("rate_limit_hit", {
+      p_key: "unrecognised_page_count:client_error:other",
+      p_window_seconds: BOUNDARY_WINDOW_MS / 1000,
+      p_max: 1,
+    });
+  });
+
+  it("reports the first report in a window as one, without a read back", async () => {
+    expect(await countUnrecognisedPageReport("client_error:other")).toEqual({ count: 1, measured: true });
+    expect(from).not.toHaveBeenCalled();
+  });
+
+  it("reads the figure back for a later report", async () => {
+    rpc.mockResolvedValue({ data: false, error: null } as never);
+    expect(await countUnrecognisedPageReport("client_error:other")).toEqual({ count: 7, measured: true });
+  });
+
+  it("says it could not count rather than naming a number, and never throws", async () => {
+    rpc.mockRejectedValue(new Error("network") as never);
+    expect(await countUnrecognisedPageReport("client_error:other")).toEqual({ count: null, measured: false });
   });
 });

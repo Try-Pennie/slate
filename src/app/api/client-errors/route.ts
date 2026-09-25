@@ -6,11 +6,12 @@ import {
   boundaryCatchAlert,
   embedOriginMismatchAlert,
   testBucketClientErrorInfo,
+  unrecognisedPageReports,
 } from "@/lib/notify/misc-alert-copy";
 import { parseOriginMismatchMessage } from "@/lib/embed/parent-origin";
 import { resolveTestTraffic } from "@/lib/monitor/test-traffic";
 import { shortErrorReason } from "@/lib/notify/error-text";
-import { countBoundaryCatch, BOUNDARY_WINDOW_MS } from "@/lib/api/boundary-count";
+import { countBoundaryCatch, countUnrecognisedPageReport, BOUNDARY_WINDOW_MS } from "@/lib/api/boundary-count";
 
 /**
  * How long one page stays quiet after its boundary has been reported (#1974).
@@ -45,6 +46,7 @@ import { CLIENT_ERROR_ADDRESS_POLICY } from "@/lib/rate-limit-core";
 import {
   normalizeClientError,
   clientErrorSignature,
+  clientErrorSurface,
 } from "@/lib/api/client-error-scrub";
 
 export const dynamic = "force-dynamic";
@@ -192,6 +194,18 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     return done();
   }
 
-  await reportInternalError(err, clientErrorSignature(report));
+  // #2755: every page Slate does not serve shares the one `other` key, so a storm
+  // of invented paths is one alert per cooldown rather than one per path. That
+  // alert leads with how many there have been, or forty forged reports would read
+  // exactly like one stray one. (A boundary catch is already counted per key.)
+  const signature = clientErrorSignature(report);
+  if (clientErrorSurface(report.page) === "other") {
+    const seen = await countUnrecognisedPageReport(signature);
+    err.message = `${unrecognisedPageReports({
+      ...seen,
+      windowMinutes: Math.round(BOUNDARY_WINDOW_MS / 60_000),
+    })} ${err.message}`;
+  }
+  await reportInternalError(err, signature);
   return done();
 }

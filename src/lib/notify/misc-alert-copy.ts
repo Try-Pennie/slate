@@ -234,6 +234,23 @@ function boundaryScope(c: { count: number | null; measured: boolean; windowMinut
   return `It has shown that screen more than once in the last ${c.windowMinutes} minutes, so this is the page rather than one person's browser. Slate could not read the exact figure.`;
 }
 
+/**
+ * How many browser reports came from pages Slate does not serve (#2755), the
+ * lead of the detail on a `client_error:other` report.
+ *
+ * Every such page shares ONE key, so a storm of invented paths arrives as one
+ * alert per cooldown. That line has to carry the size, or forty forged reports
+ * read exactly like one stray one. It says only what was counted (L11): the
+ * figure, or that there is none.
+ */
+export function unrecognisedPageReports(c: { count: number | null; measured: boolean; windowMinutes: number }): string {
+  if (!c.measured || c.count === null) {
+    return `Slate could not count the reports from pages it does not serve; latest:`;
+  }
+  const n = c.count === 1 ? "1 report" : `${c.count} reports`;
+  return `${n} from pages Slate does not serve in the last ${c.windowMinutes} minutes; latest:`;
+}
+
 export function internalErrorAlert(context: string, detail: string): string {
   return `Unexpected server error on ${context} (${detail}). The caller got a generic 500. Full detail is in the Worker logs at level error.`;
 }

@@ -69,7 +69,35 @@ export interface BoundaryCount {
  * not become a failure of the endpoint it monitors.
  */
 export async function countBoundaryCatch(signature: string): Promise<BoundaryCount> {
-  const key = `${COUNT_PREFIX}:${signature}`;
+  return countInWindow(COUNT_PREFIX, signature);
+}
+
+/** The key space for reports from pages Slate does not serve (#2755), distinct
+ *  from the boundary one so a boundary catch on an invented path is not counted
+ *  twice under one key. */
+const UNRECOGNISED_PAGE_PREFIX = "unrecognised_page_count";
+
+/**
+ * Record one report from a page Slate does not serve, and say how many there have
+ * been in the window (#2755).
+ *
+ * Every such page reports under ONE key, `other`, because the path is text any
+ * caller can post and a key per invented path was unbounded. One key makes a storm
+ * of them one line; this count is what makes that one line say how big the storm
+ * is, rather than reading like a single stray report. Nothing is decided on it, so
+ * it returns the figure alone, `null` with `measured: false` when the counter could
+ * not answer, and never throws.
+ */
+export async function countUnrecognisedPageReport(
+  signature: string,
+): Promise<{ count: number | null; measured: boolean }> {
+  const seen = await countInWindow(UNRECOGNISED_PAGE_PREFIX, signature);
+  return { count: seen.count, measured: seen.measured };
+}
+
+/** One atomic count under `prefix:signature` over `BOUNDARY_WINDOW_MS`. */
+async function countInWindow(prefix: string, signature: string): Promise<BoundaryCount> {
+  const key = `${prefix}:${signature}`;
   const db = supabaseAdmin();
   try {
     const { data, error } = await db.rpc("rate_limit_hit", {

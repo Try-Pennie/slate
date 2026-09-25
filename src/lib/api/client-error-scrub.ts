@@ -168,6 +168,42 @@ export function normalizeClientError(body: unknown): ClientErrorReport | null {
 }
 
 /**
+ * The top level segments Slate serves a PAGE under, plus `root` for `/` (#2755).
+ *
+ * A fixed vocabulary, because the alert key is built from it and the page path it
+ * is looked up from is text anybody can post. The previous key took the first
+ * segment itself, sanitised and capped, which is still one new alert key, one new
+ * throttle bucket and one new `alert_state` row per invented path: the per key
+ * cooldown bounded each of them and nothing bounded the total.
+ *
+ * It is a literal rather than a read of the route tree because this module runs
+ * in the browser too. `scripts/test-client-error-scrub.ts` walks `src/app` and
+ * fails when the two disagree in EITHER direction, so a new top level page cannot
+ * silently report under `other`, and a removed one cannot linger (L41, L96).
+ */
+export const CLIENT_ERROR_SURFACES = ["admin", "book", "booking", "login", "me", "root"] as const;
+
+export type ClientErrorSurface = (typeof CLIENT_ERROR_SURFACES)[number] | "other";
+
+/**
+ * Which surface a reported page belongs to: one of `CLIENT_ERROR_SURFACES`, or
+ * `other` for anything that is not a path Slate serves.
+ *
+ * Matched EXACTLY, the way Next matches a segment: `/BOOK` is a 404, not the
+ * booker, so it is `other`. A query string or fragment is dropped first, since it
+ * is not part of the path. An absolute URL is not guessed at: the pages report a
+ * path, so anything else is somebody else's text.
+ */
+export function clientErrorSurface(page: string): ClientErrorSurface {
+  const path = page.split(/[?#]/)[0] ?? "";
+  if (!path.startsWith("/")) return "other";
+  const first = path.split("/").filter(Boolean)[0] ?? "root";
+  return (CLIENT_ERROR_SURFACES as readonly string[]).includes(first)
+    ? (first as ClientErrorSurface)
+    : "other";
+}
+
+/**
  * The context the alert is throttled on.
  *
  * MUST be bounded and MUST NOT include attacker controlled free text. Keying on
@@ -175,17 +211,19 @@ export function normalizeClientError(body: unknown): ClientErrorReport | null {
  * and would defeat the very throttle that keeps one broken deploy from becoming
  * thousands of Slack messages.
  *
- * So it is keyed on the SURFACE, reduced to its first path segment: every bucket
- * of the booker collapses to one key, because a broken bundle breaks all of them
- * at once and sixty messages say no more than one.
+ * So it is keyed on the SURFACE (`clientErrorSurface`): every bucket of the
+ * booker collapses to one key, because a broken bundle breaks all of them at once
+ * and sixty messages say no more than one, and every path Slate does not serve
+ * collapses to `other`, so an invented path storm is ONE key, counted, rather
+ * than a thousand (#2755). The key space is therefore the surface list, plus
+ * `other`, per family, and nothing a caller sends can add to it.
  */
 export function clientErrorSignature(input: { page: string; kind?: ClientErrorKind }): string {
-  const first = input.page.replace(/[^a-zA-Z0-9/_-]/g, "").split("/").filter(Boolean)[0] ?? "root";
   // #1974: a BOUNDARY catch gets its own key space, so a broken admin page and a
   // broken booker bundle do not share a cooldown. They are different failures
   // with different audiences, and one silencing the other for the cooldown's
   // length is exactly the shape that leaves the second invisible for as long as
   // it lasts.
   const prefix = input.kind === "boundary" ? "boundary_error" : "client_error";
-  return `${prefix}:${first.slice(0, 32)}`;
+  return `${prefix}:${clientErrorSurface(input.page)}`;
 }
