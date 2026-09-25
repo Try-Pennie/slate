@@ -182,7 +182,7 @@ const fixture = JSON.parse(readFileSync("scripts/fixtures/calcom-low-bookings.js
   eq(measured.weekday, 2, "Tuesday");
   eq(measured.hour, 14, "the 2pm band");
   eq(measured.floor120, MEASURED_VOLUME_BASELINE.cells[1]![14]!.floor120, "no override: the measured floor");
-  assert(!measured.overridden30 && !measured.overridden120, "and it says nothing is overridden");
+  assert(measured.override30 === null && measured.override120 === null, "and it says nothing is overridden");
 
   const one: FloorPolicy = {
     baseline: MEASURED_VOLUME_BASELINE,
@@ -193,7 +193,7 @@ const fixture = JSON.parse(readFileSync("scripts/fixtures/calcom-low-bookings.js
   eq(mixed.floor120, 11, "a stored value replaces the measured long floor");
   eq(mixed.measured120, measured.floor120, "while the measured value it replaced is still reported beside it");
   eq(mixed.floor30, measured.floor30, "and the other window keeps its measured floor");
-  assert(mixed.overridden120 && !mixed.overridden30, "an override is per window");
+  assert(mixed.override120 === "stored" && mixed.override30 === null, "an override is per window, with where it was set");
 
   let threw = false;
   try {
@@ -215,7 +215,16 @@ const fixture = JSON.parse(readFileSync("scripts/fixtures/calcom-low-bookings.js
     floorsFor({ baseline: MEASURED_VOLUME_BASELINE, override30: null, override120: { value: 9, origin: "env" } }, at),
   );
   eq(set.floor120, 9, "an override is the floor judged");
-  assert(set.basis120.startsWith("set by hand"), "and the alert says it was set, not measured");
+  // #1956 review: a deployment value must never be credited to the settings page,
+  // which would send the reader to a form that cannot change it (L11).
+  eq(set.basis120, "set in the deployment's settings", "an env override says it came from the deployment");
+  assert(!set.basis120.includes("alerts settings page"), "and never claims the settings page");
+  eq(set.basis30, "measured for Tuesdays 2pm to 3pm", "while the other window stays measured");
+  const stored = judgedFloors(
+    floorsFor({ baseline: MEASURED_VOLUME_BASELINE, override30: { value: 1, origin: "stored" }, override120: null }, at),
+  );
+  eq(stored.basis30, "set by hand on the alerts settings page", "a stored override says it came from the settings page");
+  assert(stored.basis30 !== set.basis120, "the two origins are worded differently");
 
   // The page's table: only the org's open days and the hours inside them.
   const week = {

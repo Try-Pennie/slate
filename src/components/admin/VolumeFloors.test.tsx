@@ -82,7 +82,7 @@ describe("VolumeFloors", () => {
 
   it("names a deployment value as coming from the deployment, not from this form", () => {
     renderFloors({ override30: { value: 4, origin: "env" } });
-    expect(document.getElementById("floor_30_state")!.textContent).toContain("set by the deployment");
+    expect(document.getElementById("floor_30_state")!.textContent).toContain("set in the deployment's settings");
     expect((screen.getByLabelText("Last 30 minutes") as HTMLInputElement).value).toBe("");
   });
 

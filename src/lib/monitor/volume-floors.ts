@@ -245,9 +245,14 @@ export interface FloorsNow {
   measured120: number;
   weekday: number;
   hour: number;
-  /** True when a person's value is standing in for the measured one on that window. */
-  overridden30: boolean;
-  overridden120: boolean;
+  /**
+   * Where a value standing in for the measured floor was set, per window, or null
+   * when the measured floor is the one judged. The ORIGIN rather than a boolean,
+   * because "set on the settings page" and "set in the deployment" send a reader
+   * to two different places to change it (L11).
+   */
+  override30: FloorOverride["origin"] | null;
+  override120: FloorOverride["origin"] | null;
 }
 
 /** The floors the alarm judges against at `nowMs`. */
@@ -264,8 +269,8 @@ export function floorsFor(policy: FloorPolicy, nowMs: number): FloorsNow {
     measured120: cell.floor120,
     weekday,
     hour,
-    overridden30: policy.override30 !== null,
-    overridden120: policy.override120 !== null,
+    override30: policy.override30?.origin ?? null,
+    override120: policy.override120?.origin ?? null,
   };
 }
 
@@ -284,6 +289,15 @@ export function bandLabel(weekday: number, hour: number): string {
 
 export { WEEKDAY_NAMES };
 
+/**
+ * Where an override was set, as the alert says it. Keyed on the origin so `tsc`
+ * names a third origin the day one is added, rather than it borrowing a wording.
+ */
+export const FLOOR_BASIS: Record<FloorOverride["origin"], string> = {
+  stored: "set by hand on the alerts settings page",
+  env: "set in the deployment's settings",
+};
+
 /** The floors a tick judges against, each with the words saying where it came from. */
 export interface JudgedFloors {
   floor30: number;
@@ -300,11 +314,12 @@ export interface JudgedFloors {
 export function judgedFloors(now: FloorsNow): JudgedFloors {
   // Worded to follow either "expected at least 7, ..." or "Both floors were ...".
   const measured = `measured for ${bandLabel(now.weekday, now.hour)}`;
-  const set = "set by hand on the alerts settings page";
+  const basis = (origin: FloorOverride["origin"] | null): string =>
+    origin === "stored" ? FLOOR_BASIS.stored : origin === "env" ? FLOOR_BASIS.env : measured;
   return {
     floor30: now.floor30,
     floor120: now.floor120,
-    basis30: now.overridden30 ? set : measured,
-    basis120: now.overridden120 ? set : measured,
+    basis30: basis(now.override30),
+    basis120: basis(now.override120),
   };
 }

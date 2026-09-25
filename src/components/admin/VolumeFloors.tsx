@@ -35,7 +35,7 @@ function overrideLine(o: FloorOverride | null): string | null {
   if (!o) return null;
   return o.origin === "stored"
     ? `${o.value} at every hour, in place of the measurement`
-    : `${o.value} at every hour, set by the deployment, in place of the measurement`;
+    : `${o.value} at every hour, set in the deployment's settings, in place of the measurement`;
 }
 
 export function VolumeFloors({

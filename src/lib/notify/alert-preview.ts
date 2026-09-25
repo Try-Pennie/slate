@@ -144,11 +144,12 @@ const TUESDAY_2PM: FloorsNow = {
   measured120: 12,
   weekday: 2,
   hour: 14,
-  overridden30: false,
-  overridden120: false,
+  override30: null,
+  override120: null,
 };
 const MEASURED_TUESDAY_2PM = judgedFloors(TUESDAY_2PM);
-const OVERRIDDEN_TUESDAY_2PM = judgedFloors({ ...TUESDAY_2PM, overridden120: true });
+const STORED_TUESDAY_2PM = judgedFloors({ ...TUESDAY_2PM, override120: "stored" });
+const ENV_TUESDAY_2PM = judgedFloors({ ...TUESDAY_2PM, override120: "env" });
 import {
   formatAvailabilityDriftAlert,
   formatAvailabilityDriftAllClear,
@@ -621,11 +622,17 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     // number somebody set, and the page says which, because the two send the
     // reader to different places.
     key: "low_booking_volume",
-    state: "below a floor somebody set in place of the measurement",
+    state: "below a floor set on the settings page in place of the measurement",
     channel: "alert",
     text: formatLowVolumeAlert([
-      { label: "120 min", count: 4, floor: 12, basis: OVERRIDDEN_TUESDAY_2PM.basis120 },
+      { label: "120 min", count: 4, floor: 12, basis: STORED_TUESDAY_2PM.basis120 },
     ]),
+  },
+  {
+    key: "low_booking_volume",
+    state: "below a floor set in the deployment in place of the measurement",
+    channel: "alert",
+    text: formatLowVolumeAlert([{ label: "120 min", count: 4, floor: 12, basis: ENV_TUESDAY_2PM.basis120 }]),
   },
   {
     key: "low_booking_volume",
