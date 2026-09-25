@@ -36,8 +36,10 @@
  * `00Q` lead id, so they were compared, and a single one of them was the verdict
  * that un-parked this check and paged "real leads are booking in Slate now". They
  * are excluded before anything is asked of Salesforce, counted as `testSource`,
- * and never cleared as gone. The predicate is the one the off site page uses, so
- * every booking excluded here is also paged there, and none of them goes unseen.
+ * and never cleared as gone. The predicate is the one the off site page uses, but
+ * that page reads only bookings MADE in its recent lookback while this reads every
+ * upcoming one, so an excluded booking was paged there only if that check was
+ * running when it was made (it was not for bookings older than #2715).
  *
  * Pure apart from dependency free helpers, so scripts/test-below-lead-tier.ts
  * drives it directly.
