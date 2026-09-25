@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { sendThrottledAlert } from "@/lib/notify/dispatch";
 import { shortErrorReason, DIAGNOSTIC_REASON_CHARS } from "@/lib/notify/error-text";
 import { log } from "@/lib/log";
-import { internalErrorAlert } from "@/lib/notify/misc-alert-copy";
+import { unexpectedFaultAlert } from "@/lib/notify/misc-alert-copy";
 
 /** The one client-facing message for an unexpected server fault. Shared so every
  *  route (the six #598 mutation routes and the direct bot API, #707) says the
@@ -27,6 +27,10 @@ export const INTERNAL_ERROR_COOLDOWN_MS = 15 * 60 * 1000;
  * route can't throttle away the first alert from a different route breaking at
  * the same time.
  *
+ * The browser error beacon raises through here too, under `client_error:<surface>`
+ * (#2788). Nothing returned a 500 for those, so `unexpectedFaultAlert` reads the
+ * key and gives them their own sentence; the key and cooldown are unchanged.
+ *
  * The alert can never escape: it writes to `alert_state`, so whatever broke the
  * route can break the alert too, and a monitoring failure must not become a
  * booking failure. Its own failure is logged, never swallowed into silence.
@@ -45,7 +49,7 @@ export async function reportInternalError(err: unknown, context: string): Promis
   await sendThrottledAlert(
     `internal_error:${context}`,
     INTERNAL_ERROR_COOLDOWN_MS,
-    internalErrorAlert(context, detail),
+    unexpectedFaultAlert(context, detail),
   ).catch((alertErr) => {
     log.error("api", { msg: "internal-error alert failed", context }, alertErr);
   });

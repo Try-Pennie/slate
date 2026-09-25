@@ -1,3 +1,5 @@
+import { CLIENT_ERROR_KEY_PREFIX } from "@/lib/api/client-error-scrub";
+
 /**
  * The remaining alert wording, lifted out of its send sites (#1153).
  *
@@ -182,7 +184,6 @@ export function misrouteAlert(bookingId: string, bucketCode: string, agentId: st
   return `Routing check: booking ${bookingId} in bucket ${bucketCode} went to agent ${agentId}, who does not match the bucket criteria, and no fallback was applied. This looks like a routing bug; the booking was allowed through. Inspect routing_decisions for this booking.`;
 }
 
-/** An unexpected server fault, reported without the raw error body. */
 /**
  * A page's error boundary caught something, so a person is looking at the error
  * screen right now (#1974).
@@ -245,14 +246,55 @@ function boundaryScope(c: { count: number | null; measured: boolean; windowMinut
  */
 export function unrecognisedPageReports(c: { count: number | null; measured: boolean; windowMinutes: number }): string {
   if (!c.measured || c.count === null) {
-    return `Slate could not count the reports from pages it does not serve; latest:`;
+    // Not opened with "Slate": it now leads the whole alert (#2788), and Slack
+    // already names the sender, so the fact worth having comes first.
+    return `Reports from pages Slate does not serve (it could not count how many); latest:`;
   }
   const n = c.count === 1 ? "1 report" : `${c.count} reports`;
   return `${n} from pages Slate does not serve in the last ${c.windowMinutes} minutes; latest:`;
 }
 
+/** An unexpected server fault, reported without the raw error body. */
 export function internalErrorAlert(context: string, detail: string): string {
   return `Unexpected server error on ${context} (${detail}). The caller got a generic 500. Full detail is in the Worker logs at level error.`;
+}
+
+/**
+ * A browser reported an error from a page Slate serves, or from a path it does
+ * not (#2788).
+ *
+ * Its own sentence because nothing returned a 500 here: the beacon answers 204,
+ * and what the person saw was whatever their browser drew. `internalErrorAlert`
+ * would send the reader looking for a route that failed, which did not happen
+ * (L11). This names the page, which is where to look, and says plainly that the
+ * report came from the page and not from the server.
+ *
+ * `surface` is the fixed vocabulary from `clientErrorSurface`, never request text.
+ * For `other` the detail leads, because it opens with the count sentence
+ * (`unrecognisedPageReports`, #2755) and the size of the storm is the fact that
+ * decides whether anybody looks.
+ */
+export function browserErrorAlert(surface: string, detail: string): string {
+  const notServer = "It came from the page itself, not from the server, so look at the page's code rather than a route.";
+  if (surface === "other") {
+    return `${detail}. A browser sent these itself; no page Slate serves is involved. Full detail is in the Worker logs at level error.`;
+  }
+  const where = surface === "root" ? "the home page (/)" : `a page under /${surface}`;
+  return `A browser reported an error on ${where} (${detail}). ${notServer} Full detail is in the Worker logs at level error.`;
+}
+
+/**
+ * The copy for anything raised through `reportInternalError`: a server fault, or
+ * a browser report riding the same chokepoint under `client_error:<surface>`.
+ *
+ * Decided HERE, from the key, rather than by each caller, so a browser report
+ * cannot reach Slack claiming a 500 whichever route raised it (#2788).
+ */
+export function unexpectedFaultAlert(context: string, detail: string): string {
+  const prefix = `${CLIENT_ERROR_KEY_PREFIX}:`;
+  return context.startsWith(prefix)
+    ? browserErrorAlert(context.slice(prefix.length), detail)
+    : internalErrorAlert(context, detail);
 }
 
 /**

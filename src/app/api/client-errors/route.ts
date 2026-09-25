@@ -206,6 +206,8 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       windowMinutes: Math.round(BOUNDARY_WINDOW_MS / 60_000),
     })} ${err.message}`;
   }
+  // #2788: the chokepoint reads the `client_error:` key and sends the browser
+  // report's own sentence, never the server fault's "generic 500" one.
   await reportInternalError(err, signature);
   return done();
 }

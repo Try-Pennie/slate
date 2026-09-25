@@ -646,7 +646,9 @@ export const ALERT_CATALOG: AlertEntry[] = [
     // A server route's own context, or `client_error:<surface>` where the surface
     // is Slate's route list plus `other` (#2755), never text from the request.
     suffix: "bounded",
-    why: "One request already returned a 500; there is no ongoing state, and the next request is unrelated.",
+    why:
+      "One request already returned a 500, or one browser already reported an error from a page (#2788); there is " +
+      "no ongoing state, and the next request or page load is unrelated.",
   },
   {
     key: "boundary_error:*",
