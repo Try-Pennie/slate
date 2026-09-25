@@ -83,6 +83,8 @@ const twilioOk = (over: Partial<TwilioSyncResult> = {}) => ({
     coverageSweepFailures: 0,
     tiersChanged: [],
     backendChanged: [],
+    redistributeTagLanded: [],
+    redistributeTagCleared: [],
     withoutWorker: [],
     attributeWriteFailures: 0,
     corruptAttributes: 0,
@@ -1384,6 +1386,33 @@ describe("syncSalesforceNow (#491, #2071)", () => {
     }
     expect(redirected).toContain("could not be queued for a move");
     expect(redirected).toContain("coverage panel");
+  });
+
+  // #2735: the tag is what silences the Regal call page, so a run that moved it for
+  // somebody already out of the pool has to say so. Somebody whose tag moved WITH a
+  // flip is already named by the flip's own line, so they are not counted twice.
+  it("names Redistribute tags that landed or came off without a flip", async () => {
+    rosterSync.runRosterSync.mockResolvedValueOnce(
+      syncOutcome(
+        { updated: 0 },
+        twilioOk({
+          turnedOff: ["a@x"],
+          redistributeTagLanded: ["a@x", "b@x", "c@x"],
+          turnedBackOn: ["d@x"],
+          reactivationRefused: ["e@x"],
+          redistributeTagCleared: ["d@x", "e@x", "f@x"],
+        }),
+      ),
+    );
+    let redirected = "";
+    try {
+      await syncSalesforceNow();
+    } catch (e) {
+      redirected = decodeURIComponent(String((e as Error).message));
+    }
+    expect(redirected).toContain("2 agents newly tagged Redistribute in Twilio");
+    expect(redirected).toContain("1 agent whose Redistribute tag came off in Twilio");
+    expect(redirected).not.toContain("@x");
   });
 
   it("says nothing about Twilio when it read fine and changed nobody", async () => {

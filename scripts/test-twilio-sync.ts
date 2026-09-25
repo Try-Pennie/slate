@@ -520,4 +520,102 @@ const backOn = {
   eq(d.calls, ['attrs:u1:{"redistribute_tagged":"Y"}'], "and the tag is written for them anyway");
 }
 
+// --- #2735: the tag's own landings and clearings are in the run's report --------
+// `redistribute_tagged` is what silences the Regal call pager, so a run that moved
+// it must say so. Counted only once the write LANDED, and never for a rewrite that
+// changed nothing a reader sees.
+
+{
+  const d = deps({ loadRoster: async () => [row({ bookable: false })] });
+  const r = await syncTwilioRedistribute(d.deps);
+  eq(r.redistributeTagLanded, ["a@trypennie.com"], "a tag written for somebody already out of the pool is reported as landed");
+  eq(r.redistributeTagCleared, [], "and nothing is reported as cleared");
+}
+{
+  const d = deps();
+  const r = await syncTwilioRedistribute(d.deps);
+  eq(r.redistributeTagLanded, ["a@trypennie.com"], "a tag landing through a turn off flip is reported too");
+}
+{
+  const d = deps({
+    fetchWorkers: async () => [worker("a@trypennie.com", ["Low Debt: 20k - 30k"])],
+    loadRoster: async () => [row({ bookable: false, attributes: { debt_team: ["low"], redistribute_tagged: "Y" } })],
+  });
+  const r = await syncTwilioRedistribute(d.deps);
+  eq(r.redistributeTagCleared, ["a@trypennie.com"], "a tag that came off is reported as cleared");
+  eq(r.redistributeTagLanded, [], "and not as landed");
+}
+{
+  const d = deps(
+    {
+      ...backOn,
+      loadRoster: async () => [
+        row({ bookable: false, attributes: { redistribute: "Y", debt_team: ["low"], redistribute_tagged: "Y" } }),
+      ],
+    },
+    (userId) => ({ status: "blocked", userId, reason: "google_unreachable" }),
+  );
+  const r = await syncTwilioRedistribute(d.deps);
+  eq(r.redistributeTagCleared, ["a@trypennie.com"], "a tag cleared by the held write of a refused reactivation is reported");
+}
+{
+  // The failure path: a write that threw moved nothing, so nothing is reported.
+  const d = deps({
+    loadRoster: async () => [row({ bookable: false })],
+    writeAttributes: async () => {
+      throw new Error("database went away");
+    },
+  });
+  const r = await syncTwilioRedistribute(d.deps);
+  eq(r.redistributeTagLanded, [], "a tag write that threw is not reported as landed");
+  eq(r.attributeWriteFailures, 1, "it is counted as the failure it is");
+}
+{
+  const d = deps({
+    fetchWorkers: async () => [worker("a@trypennie.com", ["Low Debt: 20k - 30k"])],
+    loadRoster: async () => [row({ bookable: false, attributes: { debt_team: ["low"], redistribute_tagged: "N" } })],
+  });
+  const r = await syncTwilioRedistribute(d.deps);
+  eq(d.calls, ['attrs:u1:{"debt_team":["low"]}'], "a junk spelling of the tag is cleaned up");
+  eq(r.redistributeTagCleared, [], "but it was never read as tagged, so nothing is reported as cleared");
+}
+
+// --- #2735: a worker that disappears is recorded, and its tag is kept ------------
+
+{
+  const d = deps({
+    fetchWorkers: async () => [worker("b@trypennie.com", ["Low Debt: 20k - 30k"])],
+    loadRoster: async () => [row({ bookable: false, attributes: { redistribute_tagged: "Y" } })],
+  });
+  const r = await syncTwilioRedistribute(d.deps);
+  eq(
+    d.calls,
+    [`attrs:u1:{"redistribute_tagged":"Y","twilio_worker_missing_since":"${NOW}"}`],
+    "the tag is kept and the absence is stamped, in one write",
+  );
+  eq(r.withoutWorker, ["a@trypennie.com"], "the row is still counted as without a worker");
+  eq(r.redistributeTagCleared, [], "and the tag is not reported as cleared, because it was not");
+}
+
+// --- #2735 review: an uninformative read writes nothing ------------------------
+// Every worker unreadable: the raw count is not zero, so the caller's empty read
+// refusal does not fire, and the merged map is empty. Nothing about anybody is
+// known, so a stored stamp, tag and tiers must all survive untouched.
+{
+  const d = deps({
+    fetchWorkers: async () => [{ attributes: "{not json" }, { attributes: "{also not json" }],
+    loadRoster: async () => [
+      row({
+        bookable: false,
+        attributes: { debt_team: ["low"], redistribute_tagged: "Y", twilio_worker_missing_since: "2026-09-01T00:00:00.000Z" },
+      }),
+      row({ id: "u2", email: "b@trypennie.com", bookable: false, attributes: { redistribute_tagged: "Y" } }),
+    ],
+  });
+  const r = await syncTwilioRedistribute(d.deps);
+  eq(d.calls, [], "an uninformative read writes nothing: no stamp cleared and none added");
+  eq(r.corruptAttributes, 2, "and the unreadable workers are still counted");
+  eq(r.redistributeTagCleared, [], "and no tag is reported as cleared");
+}
+
 finish();

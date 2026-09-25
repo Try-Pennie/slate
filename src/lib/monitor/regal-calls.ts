@@ -26,6 +26,13 @@
  *                 when the tag appeared. It does NOT cover a deactivated agent: the
  *                 tag explains a switch being off, not somebody having left, and the
  *                 sync stops writing a deactivated row, so its value is frozen.
+ *                 Nor does it cover an agent the last roster sync found NO Twilio
+ *                 worker for (#2735): the sync keeps their stored tag rather than
+ *                 clearing it on what may be a partial read (L214), so the tag is
+ *                 what Twilio said LAST, and a worker that has gone for good would
+ *                 otherwise stay exempt for ever. The sync records the absence as
+ *                 `twilio_worker_missing_since` and the exemption is refused on it,
+ *                 with a page worded for that case rather than the untagged one.
  *
  * plus `not-in-slate` for an address that resolved at the edge and has no user now.
  *
@@ -50,7 +57,11 @@ import { normalizeEmail } from "@/lib/auth/email";
 import { formatClockTime } from "@/lib/date/parse";
 import { BUSINESS_ZONE } from "@/lib/booking/business-hours";
 import { isRoutable } from "@/lib/routing/staffing-depth";
-import { carriesRedistributeTag } from "@/lib/twilio/roster-plan";
+import {
+  carriesRedistributeTag,
+  twilioWorkerMissing,
+  twilioWorkerMissingSinceMs,
+} from "@/lib/twilio/roster-plan";
 import type { Attributes, Role } from "@/lib/db/types";
 import type { AlertResolve, ThrottledNotify } from "./alert-deps";
 
@@ -106,11 +117,28 @@ export interface RegalCaller {
 }
 
 /**
+ * Switched off (not deactivated) and carrying the stored tag. Whether the tag can
+ * be TRUSTED is the separate question below; this is only whether it would apply.
+ */
+function redistributeWouldApply(u: RegalCaller): boolean {
+  return !isRoutable(u) && u.deactivated_at === null && carriesRedistributeTag(u.attributes);
+}
+
+/**
+ * The tag would exempt them, and the last roster sync found no Twilio worker to
+ * vouch for it (#2735), so it does not.
+ */
+function redistributeUnvouched(u: RegalCaller): boolean {
+  return redistributeWouldApply(u) && twilioWorkerMissing(u.attributes);
+}
+
+/**
  * The redistribute exemption, in ONE place so the judgement and the ending cannot
- * disagree: switched off (not deactivated) and tagged at the last roster sync.
+ * disagree: switched off (not deactivated), tagged at the last roster sync, and
+ * that sync found their Twilio worker.
  */
 function redistributeExempt(u: RegalCaller): boolean {
-  return !isRoutable(u) && u.deactivated_at === null && carriesRedistributeTag(u.attributes);
+  return redistributeWouldApply(u) && !twilioWorkerMissing(u.attributes);
 }
 
 /** One candidate row from `regal_call_events`. */
@@ -137,6 +165,12 @@ export interface RegalCallerVerdict {
   exemptions: RegalExemption[];
   /** Why Slate will not route to them, or null when it will. */
   axis: "deactivated" | "not-bookable" | null;
+  /**
+   * They carry the Redistribute tag, which would have exempted them, and the last
+   * roster sync found no Twilio worker for them, so it did not (#2735). The page
+   * says so rather than reading as if the tag were never there.
+   */
+  unvouchedRedistribute: boolean;
 }
 
 function instantMs(iso: string | null): number | null {
@@ -167,7 +201,7 @@ export function judgeRegalCallers(
   for (const [email, g] of grouped) {
     const u = byEmail.get(email) ?? null;
     if (!u) {
-      out.push({ email, user: null, ...g, exemptions: ["not-in-slate"], axis: null });
+      out.push({ email, user: null, ...g, exemptions: ["not-in-slate"], axis: null, unvouchedRedistribute: false });
       continue;
     }
     const exemptions: RegalExemption[] = [];
@@ -178,7 +212,7 @@ export function judgeRegalCallers(
     if (ignored.has(u.id)) exemptions.push("ignored");
     if (redistributeExempt(u)) exemptions.push("redistribute");
     const axis = routable ? null : u.deactivated_at !== null ? "deactivated" : "not-bookable";
-    out.push({ email, user: u, ...g, exemptions, axis });
+    out.push({ email, user: u, ...g, exemptions, axis, unvouchedRedistribute: redistributeUnvouched(u) });
   }
   return out.sort((a, b) => a.email.localeCompare(b.email));
 }
@@ -256,6 +290,22 @@ export function formatRegalCallAlert(v: RegalCallerVerdict): string {
     v.calls === 1
       ? `a call in Regal ${callTime(v.lastCallMs)}`
       : `${v.calls} calls in Regal, the last ${callTime(v.lastCallMs)}`;
+  if (v.axis === "not-bookable" && v.unvouchedRedistribute) {
+    const sinceMs = twilioWorkerMissingSinceMs(v.user?.attributes);
+    const since =
+      sinceMs === null
+        ? "the roster sync found no Twilio worker for their address"
+        : `the roster sync has found no Twilio worker for their address since ` +
+          `${DateTime.fromMillis(sinceMs, { zone: BUSINESS_ZONE }).toFormat("MMM d")}`;
+    return (
+      `${person} placed ${calls}, while their bookable switch is off in Slate. They carry the ` +
+      `Redistribute tag, which would explain that, but ${since}, so the tag is what Twilio said ` +
+      `last and no longer counts. If they have left, deactivate them under admin > agents and shut ` +
+      `off their Regal seat. If their Twilio worker was removed or its email changed, restore it with ` +
+      `this address and this stops within the hour. If neither fits, add them to the Regal call ` +
+      `ignore list under admin > alerts with the reason.`
+    );
+  }
   if (v.axis === "deactivated") {
     return (
       `${person} placed ${calls}, and is deactivated in Slate, ` +
