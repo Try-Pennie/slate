@@ -597,4 +597,25 @@ const backOn = {
   eq(r.redistributeTagCleared, [], "and the tag is not reported as cleared, because it was not");
 }
 
+// --- #2735 review: an uninformative read writes nothing ------------------------
+// Every worker unreadable: the raw count is not zero, so the caller's empty read
+// refusal does not fire, and the merged map is empty. Nothing about anybody is
+// known, so a stored stamp, tag and tiers must all survive untouched.
+{
+  const d = deps({
+    fetchWorkers: async () => [{ attributes: "{not json" }, { attributes: "{also not json" }],
+    loadRoster: async () => [
+      row({
+        bookable: false,
+        attributes: { debt_team: ["low"], redistribute_tagged: "Y", twilio_worker_missing_since: "2026-09-01T00:00:00.000Z" },
+      }),
+      row({ id: "u2", email: "b@trypennie.com", bookable: false, attributes: { redistribute_tagged: "Y" } }),
+    ],
+  });
+  const r = await syncTwilioRedistribute(d.deps);
+  eq(d.calls, [], "an uninformative read writes nothing: no stamp cleared and none added");
+  eq(r.corruptAttributes, 2, "and the unreadable workers are still counted");
+  eq(r.redistributeTagCleared, [], "and no tag is reported as cleared");
+}
+
 finish();

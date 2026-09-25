@@ -577,4 +577,75 @@ const twilio = (...sides: TwilioSide[]) => new Map(sides.map((s) => [s.email, s]
   assert(!twilioWorkerMissing({ redistribute_tagged: MARK }), "the tag alone says nothing about the worker");
 }
 
+// --- #2735 review: an absence writes the stamp and NOTHING else -----------------
+// A row with no worker, and an uninformative read (every worker unreadable, so the
+// merged map is empty), must not move any stored value, whatever its shape. Each
+// case below plants a stored value the old planner rewrote on an absence.
+
+const ELSEWHERE = () => twilio(side(["Low Debt: 20k - 30k"], "somebody-else@trypennie.com"));
+const OLD_STAMP = "2026-09-01T00:00:00.000Z";
+{
+  const plan = planTwilioRoster(
+    [row({ bookable: false, attributes: { redistribute_tagged: MARK, [TWILIO_WORKER_MISSING_KEY]: OLD_STAMP } })],
+    new Map(),
+    NOW,
+  );
+  eq(plan.attributeWrites.length, 0, "an EMPTY Twilio side does not clear a stamp already stored: it measured nothing");
+  eq(plan.flips.length, 0, "and flips nobody");
+}
+{
+  const plan = planTwilioRoster(
+    [row({ bookable: false, attributes: { debt_team: "low" as unknown as string[] } })],
+    ELSEWHERE(),
+    NOW,
+  );
+  eq(plan.attributeWrites[0]?.attributes.debt_team, "low", "a stored debt_team that is not a list is KEPT for a row with no worker");
+  eq(plan.attributeWrites[0]?.changes.debtTeams.changed, false, "and is not reported as changed");
+  eq(plan.attributeWrites[0]?.attributes[TWILIO_WORKER_MISSING_KEY], NOW, "while the stamp is still written");
+}
+{
+  const plan = planTwilioRoster(
+    [row({ bookable: false, attributes: { backend_service: true } })],
+    ELSEWHERE(),
+    NOW,
+  );
+  eq(plan.attributeWrites[0]?.attributes.backend_service, true, "a stored backend_service that is not a list is kept too");
+}
+{
+  const plan = planTwilioRoster(
+    [row({ bookable: false, attributes: { redistribute_tagged: "N" } })],
+    ELSEWHERE(),
+    NOW,
+  );
+  eq(plan.attributeWrites[0]?.attributes.redistribute_tagged, "N", "a junk tag spelling is kept for a row with no worker: only a worker can say it is gone");
+  eq(plan.attributeWrites[0]?.changes.redistributeTagged.changed, false, "and is not reported as moved");
+}
+{
+  // The same junk values, stamp already stored: nothing at all to write.
+  const plan = planTwilioRoster(
+    [
+      row({
+        bookable: false,
+        attributes: {
+          debt_team: "low" as unknown as string[],
+          redistribute_tagged: "N",
+          [TWILIO_WORKER_MISSING_KEY]: OLD_STAMP,
+        },
+      }),
+    ],
+    ELSEWHERE(),
+    NOW,
+  );
+  eq(plan.attributeWrites.length, 0, "a row with no worker and a stamp already stored is not written at all");
+}
+{
+  // Positive control in the same shape: a worker that IS present does tidy junk.
+  const plan = planTwilioRoster(
+    [row({ bookable: false, attributes: { debt_team: "low" as unknown as string[] } })],
+    twilio(side(["Low Debt: 20k - 30k"])),
+    NOW,
+  );
+  eq(plan.attributeWrites[0]?.attributes.debt_team, ["low"], "control: a present worker's answer replaces a junk value");
+}
+
 finish();

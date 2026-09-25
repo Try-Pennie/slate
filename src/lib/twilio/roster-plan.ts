@@ -71,9 +71,10 @@
 // may simply be partial (L214). So the planner writes the one thing the read did
 // measure, `twilio_worker_missing_since`, the moment it first found no worker, and
 // deletes it the run the worker is back. Every stored value stays as it was; the
-// detector reads the stamp and stops trusting the tag. It is never written from an
-// EMPTY Twilio side, which the caller refuses and which would otherwise stamp the
-// whole roster at once.
+// detector reads the stamp and stops trusting the tag. An EMPTY Twilio side (every
+// worker unreadable, so nothing about anybody is known) neither adds a stamp nor
+// clears one, and a row with no worker moves no other value at all, junk spellings
+// included: the stamp is the only write an absence can cause.
 import type { Attributes } from "@/lib/db/types";
 import {
   REDISTRIBUTE_MARK,
@@ -334,8 +335,12 @@ function listAlreadyStored(attributes: Attributes | null | undefined, key: strin
 /**
  * What Twilio says about this person, against what Slate holds.
  *
- * A row Twilio holds no worker for keeps its stored tiers, so nothing is planned
- * for it at all (the header says why).
+ * A row Twilio holds no worker for moves NO fact about the person, whatever shape
+ * the stored value has (L214): not a tier, not a backend, not the tag, and not a
+ * junk spelling of any of them, since tidying one is still a write decided on an
+ * absence. The one value that can move is the missing worker stamp, and only when
+ * the read was informative (`stampMissing`): an empty Twilio side measured nothing,
+ * so it neither adds a stamp nor clears one already there.
  */
 function planChanges(
   attributes: Attributes | null,
@@ -343,24 +348,35 @@ function planChanges(
   stampMissing: boolean,
   nowIso: string,
 ): TwilioChanges {
-  const debtTeams = worker ? worker.debtTeams : storedList<DebtTierValue>(attributes, "debt_team");
-  const backendServices = worker ? worker.backendServices : storedList<BackendValue>(attributes, "backend_service");
+  const storedMissing =
+    twilioWorkerMissingSinceMs(attributes) !== null ? String(attributes?.[TWILIO_WORKER_MISSING_KEY]) : null;
+  if (!worker) {
+    const storedTagReading = carriesRedistributeTag(attributes);
+    // Kept once written, so it says when the worker FIRST went missing, and
+    // rewritten only when what is stored is not a readable instant.
+    const missingSince = storedMissing ?? nowIso;
+    return {
+      redistributeTagged: { value: storedTagReading, changed: false, wasTagged: storedTagReading },
+      twilioWorkerMissingSince: {
+        value: stampMissing ? missingSince : storedMissing,
+        changed: stampMissing && storedMissing !== missingSince,
+      },
+      debtTeams: { value: storedList<DebtTierValue>(attributes, "debt_team"), changed: false },
+      backendServices: { value: storedList<BackendValue>(attributes, "backend_service"), changed: false },
+    };
+  }
+  const debtTeams = worker.debtTeams;
+  const backendServices = worker.backendServices;
   const storedTag = carriesRedistributeTag(attributes);
-  const tagged = worker ? worker.redistribute : storedTag;
+  const tagged = worker.redistribute;
   // Compared against the RAW stored value rather than the reading of it, so a key
   // holding anything but the one spelling is rewritten rather than kept as junk.
   const rawTag = (attributes ?? {})[REDISTRIBUTE_TAGGED_KEY];
   const tagAlreadyStored = tagged ? rawTag === REDISTRIBUTE_MARK : rawTag === undefined;
-  // The stamp is kept once written, so it says when the worker FIRST went missing,
-  // and is rewritten only when what is stored is not a readable instant.
-  const storedMissing =
-    twilioWorkerMissingSinceMs(attributes) !== null ? String(attributes?.[TWILIO_WORKER_MISSING_KEY]) : null;
-  const missingSince = !worker && stampMissing ? (storedMissing ?? nowIso) : null;
-  const missingAlreadyStored =
-    missingSince === null ? !twilioWorkerMissing(attributes) : storedMissing === missingSince;
   return {
     redistributeTagged: { value: tagged, changed: !tagAlreadyStored, wasTagged: storedTag },
-    twilioWorkerMissingSince: { value: missingSince, changed: !missingAlreadyStored },
+    // A worker is present, so any stamp is stale and goes.
+    twilioWorkerMissingSince: { value: null, changed: twilioWorkerMissing(attributes) },
     debtTeams: { value: debtTeams, changed: !listAlreadyStored(attributes, "debt_team", debtTeams) },
     backendServices: {
       value: backendServices,
@@ -369,7 +385,7 @@ function planChanges(
   };
 }
 
-/** The list a row already holds, for the absence case where nothing replaces it. */
+/** The list a row already holds, for the absence case. Only reported, never written. */
 function storedList<T extends string>(attributes: Attributes | null | undefined, key: string): T[] {
   const v = (attributes ?? {})[key as keyof Attributes];
   return Array.isArray(v) ? (v as T[]) : [];
@@ -383,16 +399,27 @@ function storedList<T extends string>(attributes: Attributes | null | undefined,
  * against that.
  */
 function withTwilioFacts(attributes: Attributes | null, changes: TwilioChanges): Attributes {
+  // Only the values that MOVED are applied. An unchanged one is left exactly as
+  // stored, which is what keeps a write carrying only the missing worker stamp
+  // from also rewriting every other key on an absence (#2735).
   const next: Attributes = { ...(attributes ?? {}) };
-  if (changes.debtTeams.value.length > 0) next.debt_team = [...changes.debtTeams.value];
-  else delete next.debt_team;
-  if (changes.backendServices.value.length > 0) next.backend_service = [...changes.backendServices.value];
-  else delete next.backend_service;
-  if (changes.redistributeTagged.value) next[REDISTRIBUTE_TAGGED_KEY] = REDISTRIBUTE_MARK;
-  else delete next[REDISTRIBUTE_TAGGED_KEY];
-  if (changes.twilioWorkerMissingSince.value !== null) {
-    next[TWILIO_WORKER_MISSING_KEY] = changes.twilioWorkerMissingSince.value;
-  } else delete next[TWILIO_WORKER_MISSING_KEY];
+  if (changes.debtTeams.changed) {
+    if (changes.debtTeams.value.length > 0) next.debt_team = [...changes.debtTeams.value];
+    else delete next.debt_team;
+  }
+  if (changes.backendServices.changed) {
+    if (changes.backendServices.value.length > 0) next.backend_service = [...changes.backendServices.value];
+    else delete next.backend_service;
+  }
+  if (changes.redistributeTagged.changed) {
+    if (changes.redistributeTagged.value) next[REDISTRIBUTE_TAGGED_KEY] = REDISTRIBUTE_MARK;
+    else delete next[REDISTRIBUTE_TAGGED_KEY];
+  }
+  if (changes.twilioWorkerMissingSince.changed) {
+    if (changes.twilioWorkerMissingSince.value !== null) {
+      next[TWILIO_WORKER_MISSING_KEY] = changes.twilioWorkerMissingSince.value;
+    } else delete next[TWILIO_WORKER_MISSING_KEY];
+  }
   return next;
 }
 
