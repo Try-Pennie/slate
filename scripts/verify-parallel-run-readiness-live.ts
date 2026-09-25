@@ -31,6 +31,18 @@ const { CALLER_HOST_KINDS } = await import("@/lib/booking/caller-seen");
 type CallerSeenRow = import("@/lib/booking/caller-seen").CallerSeenRow;
 const { judgeReadiness } = await import("./lib/parallel-run-readiness.ts");
 type ReadinessFacts = import("./lib/parallel-run-readiness.ts").ReadinessFacts;
+type LowVolumeArmingFacts = import("./lib/parallel-run-readiness.ts").LowVolumeArmingFacts;
+const { countCustomerBookingsSince, customerBookingFromSourcesSince } = await import("@/lib/monitor/customer-bookings");
+const { LOW_PAGES, PAGE_SEEN_LOOKBACK_DAYS } = await import("@/lib/monitor/page-volume");
+const { SOURCE_NOT_GIVEN } = await import("@/lib/booking/booking-source");
+const { loadBusinessHours } = await import("@/lib/booking/business-hours-load");
+const { holidayDatesToDecide, uncoveredHolidays } = await import("@/lib/booking/us-federal-holidays");
+const { DateTime } = await import("luxon");
+/**
+ * How far ahead the holiday check looks (#2767): about a quarter, so a run on any
+ * day sees at least the next two holidays, and one added now has time to be decided.
+ */
+const HOLIDAY_WINDOW_DAYS = 90;
 
 const db = supabaseAdmin();
 const nowMs = Date.now();
@@ -198,6 +210,54 @@ const partnerKey = await section("partner key sightings", async () => {
   return { caller: "trypennie", rows };
 });
 
+// #2767: what arming the low volume alarms (#1956, #2738) depends on. Each read is
+// the alarm's own: its arming switch, its own "has this page recorded anything"
+// lookup over its own lookback, and the org hours the alarms judge an open hour by.
+const armedState = await section("low volume arming switch", async () => {
+  const row = unwrap(
+    await db.from("monitor_alert_config").select("low_volume_armed").eq("id", 1).maybeSingle(),
+    "monitor_alert_config",
+  ) as { low_volume_armed: boolean | null } | null;
+  const stored = row?.low_volume_armed ?? null;
+  return stored === true ? "armed" : stored === false ? "disarmed" : "unset";
+}) as LowVolumeArmingFacts["armed"];
+
+const pageSources = await section("Low page booking sources", async () => {
+  const sinceIso = new Date(nowMs - PAGE_SEEN_LOOKBACK_DAYS * 86_400_000).toISOString();
+  const realBookings = await countCustomerBookingsSince(db, sinceIso);
+  if (realBookings === null) throw new Error("the real booking count could not be read");
+  // cap-safe: head-only exact count, no rows. Null source is a booking from before #2072.
+  const { count: unsourced, error } = await db
+    .from("bookings")
+    .select("id, buckets!inner(is_test)", { count: "exact", head: true })
+    .eq("buckets.is_test", false)
+    .or(`source.is.null,source.eq.${SOURCE_NOT_GIVEN}`)
+    .gte("created_at", sinceIso);
+  if (error || unsourced === null) throw new Error(`the unsourced count could not be read: ${error?.message ?? "no count"}`);
+  const pages = [];
+  for (const page of LOW_PAGES) {
+    pages.push({ name: page.name, recorded: await customerBookingFromSourcesSince(db, page.sources, sinceIso) });
+  }
+  return { lookbackDays: PAGE_SEEN_LOOKBACK_DAYS, realBookings, unsourced, pages };
+});
+
+const holidays = await section("holiday exceptions", async () => {
+  const hours = await loadBusinessHours();
+  const todayIso = DateTime.fromMillis(nowMs).setZone(hours.zone).toISODate();
+  if (!todayIso) throw new Error("today's date in the business zone is unreadable");
+  const openWeekdays = hours.rules.map((r) => r.weekday);
+  return {
+    windowDays: HOLIDAY_WINDOW_DAYS,
+    checked: holidayDatesToDecide(todayIso, HOLIDAY_WINDOW_DAYS).length,
+    uncovered: uncoveredHolidays({
+      todayIso,
+      windowDays: HOLIDAY_WINDOW_DAYS,
+      openWeekdays,
+      exceptionDates: hours.exceptions.map((e) => e.on_date),
+    }),
+  };
+});
+
 const facts: ReadinessFacts = {
   nowMs,
   stretchedCooldowns,
@@ -208,6 +268,7 @@ const facts: ReadinessFacts = {
   emptyTiers,
   unsetHours,
   partnerKey,
+  lowVolumeArming: { armed: armedState, pageSources, holidays },
 };
 const verdict = judgeReadiness(facts);
 console.log(verdict.summary);

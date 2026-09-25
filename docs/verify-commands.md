@@ -1187,11 +1187,42 @@ and is pinned offline by `scripts/test-parallel-run-readiness.ts`.
 | 9 | the cal.com comparison has not reached a verdict inside its 30 hour bound |
 | 10 | somebody is waiting to become bookable behind a refused activation |
 | 11 | a bookable agent is on working hours nobody set |
+| 14 | **low volume alarms armed** and a Low page has recorded no booking carrying its `source` in 7 days (see below) |
+| 15 | **low volume alarms armed** and a federal holiday in the next 90 days carries no business hours exception |
+| 16 | **low volume alarms armed** and no real booking in 7 days, so page sources are unmeasured |
 
 The rows are in the order the run is judged, worst first, which is not the order of
 the numbers: a code names an outcome and the order decides which one names a run.
 The table was two outcomes and a renumbering behind the code until #2717, so the
 authority is `READINESS_EXIT` and `READINESS_ORDER` in the judge.
+
+**Exits 14 to 16, the low volume alarms' arming preconditions (#2767).** The tier
+and per page low volume alarms (#1956, #2738) rest on two facts nothing else checks.
+The per page alarm counts each Low page by `bookings.source` (#2072), so a page whose
+links carry no `?source=` records every booking as `not-given` and, once armed, pages
+every 30 minutes as a page that stopped booking. And both alarms judge an hour by the
+org's business hours, date exceptions included, so a holiday with no exception is an
+ordinary open day to them: the per page replay (#2738) paged the Follow Up page eight
+times on Labor Day 2026-09-07. So the run reads, through the alarm's own reads, whether each
+Low page has recorded a booking carrying one of its sources inside the alarm's own
+`PAGE_SEEN_LOOKBACK_DAYS` (7), and whether every US federal holiday date in the next
+90 days, the observed weekday of a weekend holiday included, carries an exception
+(closed, or open because Pennie works that day, either being a decision) or falls on
+a weekday the org never opens. No real booking in the lookback is **unmeasured**
+(exit 16), never a pass. The holiday calendar is `src/lib/booking/us-federal-holidays.ts`,
+pinned against published dates by `scripts/test-us-federal-holidays.ts`.
+
+**They gate ARMING, not the shadow run, and that decides where they rank.** While
+`monitor_alert_config.low_volume_armed` is false they are printed under a "Before
+arming the low volume alarms" heading after the verdict and never change the exit,
+so a READY day is not held red by an alarm nobody has switched on, and a failed read
+of one is reported there too rather than as exit 2. Once the switch is on they are
+findings like the rest, ranked just below a muted alarm (exit 7) and below every
+finding that affects a lead: an armed alarm paging falsely is the other way an alarm
+stops being read, and neither turns anybody away. An UNSET switch counts as on,
+because it falls through to the deployment's `BOOKING_VOLUME_ALERT_ARMED`, which
+this command cannot read. **Run it, and read that heading, before ticking the switch
+on under Admin, Alerts.**
 
 **Exit 13, trypennie's key (#2717).** trypennie's confirmed page reads every Slate
 booking with its own key (#2645), so a key missing from their production

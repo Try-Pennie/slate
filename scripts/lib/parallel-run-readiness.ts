@@ -23,6 +23,14 @@
 //   missing from their production environment sends every pilot lead to a not
 //   found page.
 //
+// And two that gate ARMING the low volume alarms (#1956, #2738) rather than the
+// shadow run itself (#2767): each Low page's bookings carry their `source`, and the
+// upcoming federal holidays are decided in the org's date exceptions. While the
+// alarms are off these are listed under their own heading and never change the
+// exit, so a READY day is not held red by an alarm nobody has switched on; once the
+// switch is on (or unset, which the deployment's env may resolve to on) they are
+// findings like the rest, because an armed alarm with either unmet pages falsely.
+//
 // Two rules carry it. Every way of learning nothing exits on its OWN code, because
 // "an alarm is muted", "cal.com has not been compared for two days" and "the bucket
 // read failed" send three different people three different places (L11). And a run
@@ -85,6 +93,41 @@ export interface ReadinessFacts {
    * admin console shows, so the gate and the page cannot disagree.
    */
   partnerKey: { caller: string; rows: CallerSeenRow[] } | null;
+  /** The low volume alarms' arming preconditions (#2767). */
+  lowVolumeArming: LowVolumeArmingFacts;
+}
+
+/**
+ * What arming the tier and per page low volume alarms (#1956, #2738) depends on.
+ * Each read is null when it failed.
+ */
+export interface LowVolumeArmingFacts {
+  /**
+   * `monitor_alert_config.low_volume_armed`. "unset" is a null column, which falls
+   * through to the deployment's `BOOKING_VOLUME_ALERT_ARMED`, a value this command
+   * cannot read, so it is judged as armed (fail closed). null = unreadable.
+   */
+  armed: "armed" | "disarmed" | "unset" | null;
+  /**
+   * Whether each Low page has recorded a booking carrying one of its sources within
+   * the per page alarm's own lookback (`PAGE_SEEN_LOOKBACK_DAYS`). A page that has
+   * not is one the armed alarm reports as having stopped booking.
+   */
+  pageSources: {
+    lookbackDays: number;
+    /** Real (non test bucket) bookings in the lookback. Zero judges nothing. */
+    realBookings: number;
+    /** Of those, how many carried no page (`not-given`, or null from before #2072). */
+    unsourced: number;
+    pages: { name: string; recorded: boolean }[];
+  } | null;
+  /** Upcoming federal holiday dates no exception or closed weekday decides. */
+  holidays: {
+    windowDays: number;
+    /** How many holiday dates fell in the window. */
+    checked: number;
+    uncovered: { date: string; name: string }[];
+  } | null;
 }
 
 export type ReadinessFinding =
@@ -99,7 +142,13 @@ export type ReadinessFinding =
   | "parity-stale"
   | "bookable-pending"
   | "hours-unset"
-  | "partner-key-unproven";
+  | "partner-key-unproven"
+  | "page-source-missing"
+  | "holidays-uncovered"
+  | "page-source-unmeasured";
+
+/** The findings that gate ARMING the low volume alarms, and only while they are on. */
+export type ArmingFinding = "page-source-missing" | "holidays-uncovered" | "page-source-unmeasured";
 
 /**
  * Worst FIRST. The reasoning for each rung:
@@ -129,6 +178,15 @@ export const READINESS_ORDER: readonly ReadinessFinding[] = [
   // confirmation, which is the first thing they see from us.
   "partner-key-unproven",
   "alarm-muted",
+  // Only ever present while the low volume alarms are armed (#2767). Just below a
+  // muted alarm, because an alarm paging falsely is the other way an alarm stops
+  // being read (L36), and below everything that affects a lead, because neither
+  // turns anybody away. A page with no source pages every 30 minutes on every open
+  // day, a holiday gap for one day, and an unmeasured week is a question rather
+  // than a known fault, so they rank in that order.
+  "page-source-missing",
+  "holidays-uncovered",
+  "page-source-unmeasured",
   "parity-drifting",
   "parity-stale",
   "bookable-pending",
@@ -157,6 +215,12 @@ export const READINESS_EXIT = {
   hoursUnset: 11,
   /** "trypennie key never seen from production" (#2717), in every one of its forms. */
   partnerKeyUnproven: 13,
+  /** Low volume alarms armed and a Low page records no source (#2767). */
+  pageSourceMissing: 14,
+  /** Low volume alarms armed and an upcoming federal holiday is undecided (#2767). */
+  holidaysUncovered: 15,
+  /** Low volume alarms armed and no real booking in the lookback to judge sources by (#2767). */
+  pageSourceUnmeasured: 16,
 } as const;
 
 const EXIT_FOR: Record<ReadinessFinding, number> = {
@@ -172,12 +236,20 @@ const EXIT_FOR: Record<ReadinessFinding, number> = {
   "bookable-pending": READINESS_EXIT.bookablePending,
   "hours-unset": READINESS_EXIT.hoursUnset,
   "partner-key-unproven": READINESS_EXIT.partnerKeyUnproven,
+  "page-source-missing": READINESS_EXIT.pageSourceMissing,
+  "holidays-uncovered": READINESS_EXIT.holidaysUncovered,
+  "page-source-unmeasured": READINESS_EXIT.pageSourceUnmeasured,
 };
 
 export interface ReadinessJudgement {
   exit: number;
   /** Every finding, worst first, each with its own sentence. */
   findings: { kind: ReadinessFinding; detail: string }[];
+  /**
+   * The arming preconditions left unmet while the low volume alarms are OFF: shown,
+   * never gating. Empty while the alarms are on, when they are findings instead.
+   */
+  advisories: { kind: ArmingFinding | "unreadable"; detail: string }[];
   /** What was measured, then the findings, for a person reading the terminal. */
   summary: string;
 }
@@ -279,6 +351,65 @@ export function judgeReadiness(f: ReadinessFacts): ReadinessJudgement {
     });
   }
 
+  // #2767: the arming preconditions, judged the same way whether or not they gate.
+  const arming = f.lowVolumeArming;
+  const armingChecks: { kind: ArmingFinding; detail: string }[] = [];
+  const armingUnreadable: string[] = [];
+  if (arming.pageSources === null) armingUnreadable.push("Low page booking sources");
+  else {
+    const s = arming.pageSources;
+    if (s.realBookings === 0) {
+      armingChecks.push({
+        kind: "page-source-unmeasured",
+        detail: `page sources unmeasured: no real booking in the last ${s.lookbackDays} days, so whether each Low page's links carry ?source= cannot be judged yet; re-run after real bookings from each page`,
+      });
+    } else {
+      const without = s.pages.filter((p) => !p.recorded).map((p) => p.name);
+      if (without.length) {
+        armingChecks.push({
+          kind: "page-source-missing",
+          detail: `${without.length} Low page(s) recorded no booking carrying their source in the last ${s.lookbackDays} days (${s.unsourced} of ${s.realBookings} real bookings carried none), so the per page alarm would report each as a page that stopped booking: ${names(without)}`,
+        });
+      }
+    }
+  }
+  if (arming.holidays === null) armingUnreadable.push("holiday exceptions");
+  else if (arming.holidays.uncovered.length) {
+    const h = arming.holidays;
+    armingChecks.push({
+      kind: "holidays-uncovered",
+      detail: `${h.uncovered.length} federal holiday date(s) in the next ${h.windowDays} days carry no business hours exception, so both alarms would judge them as ordinary open days; add a closed exception, or an open one if Pennie works that day: ${names(h.uncovered.map((x) => `${x.name} ${x.date}`))}`,
+    });
+  }
+  if (arming.armed === null) armingUnreadable.push("low volume arming switch");
+  // Fail closed on an unset switch: the deployment's env decides it, unseen here.
+  const armingGates = arming.armed !== "disarmed";
+  const advisories: ReadinessJudgement["advisories"] = [];
+  if (armingGates) {
+    findings.push(...armingChecks);
+    unreadable.push(...armingUnreadable);
+  } else {
+    advisories.push(...armingChecks.sort((a, b) => READINESS_ORDER.indexOf(a.kind) - READINESS_ORDER.indexOf(b.kind)));
+    if (armingUnreadable.length) {
+      advisories.push({ kind: "unreadable", detail: `could not read ${armingUnreadable.join(", ")}, so that precondition is unjudged` });
+    }
+  }
+  const armingState =
+    arming.armed === "unset"
+      ? "the low volume switch is unset, so the deployment's BOOKING_VOLUME_ALERT_ARMED decides and they are judged as if armed"
+      : arming.armed === "armed"
+        ? "the low volume alarms are armed"
+        : "the low volume alarms are disarmed, so none of this changes the exit";
+  const armingLine =
+    advisories.length === 0 && !armingGates
+      ? `\nBefore arming the low volume alarms (#1956, #2738): every Low page has recorded its source in the last ${arming.pageSources?.lookbackDays} days, every federal holiday in the next ${arming.holidays?.windowDays} days is decided (${arming.holidays?.checked} date(s))`
+      : advisories.length
+        ? `\nBefore arming the low volume alarms (#1956, #2738); ${armingState}:\n` +
+          advisories.map((a) => `  ${a.kind}: ${a.detail}`).join("\n")
+        : armingChecks.length || armingUnreadable.length
+          ? `\nArming preconditions gate this run: ${armingState}`
+          : `\nArming preconditions met while gating (${armingState}): every Low page has recorded its source, every federal holiday in the next ${arming.holidays?.windowDays} days is decided`;
+
   if (unreadable.length) {
     findings.unshift({
       kind: "unreadable",
@@ -301,11 +432,12 @@ export function judgeReadiness(f: ReadinessFacts): ReadinessJudgement {
       ? `measured ${f.calendars.bookableAgents} bookable agents, ${f.emptyTiers.measuredTiers} debt tiers and ${f.emptyBuckets.realBuckets} real buckets`
       : "measured only part of the picture";
   if (findings.length === 0) {
-    return { exit: READINESS_EXIT.ready, findings, summary: `READY: ${measured}; no alarm muted, comparison fresh, nobody waiting, every calendar hydrated, every week set by somebody, every debt tier staffed, no empty bucket; ${partnerProof}` };
+    return { exit: READINESS_EXIT.ready, findings, advisories, summary: `READY: ${measured}; no alarm muted, comparison fresh, nobody waiting, every calendar hydrated, every week set by somebody, every debt tier staffed, no empty bucket; ${partnerProof}${armingLine}` };
   }
   return {
     exit: EXIT_FOR[findings[0].kind],
     findings,
-    summary: `NOT READY (${findings[0].kind}): ${measured}\n` + findings.map((x) => `  ${x.kind}: ${x.detail}`).join("\n"),
+    advisories,
+    summary: `NOT READY (${findings[0].kind}): ${measured}\n` + findings.map((x) => `  ${x.kind}: ${x.detail}`).join("\n") + armingLine,
   };
 }

@@ -84,6 +84,25 @@ work that calibrated the floors threw neither:
 the floor every tick reports `insufficient`, which renders exactly like a healthy
 hour and is the state #1394 exists to notice.
 
+## Arming the low volume alarms
+
+The tier alarm (#1956) and the per page alarm (#2738) share one switch, "Send a Slack
+alert when bookings drop off" under Admin, Alerts (`monitor_alert_config.low_volume_armed`).
+Before ticking it, run `pnpm verify:parallel-run-readiness` and read its "Before arming
+the low volume alarms" heading (#2767). Two things must hold, and while the switch is
+off the command reports them there without changing its exit:
+
+1. **Each Low page's bookings carry their `source`.** The per page alarm counts pages by
+   `bookings.source`; a page whose links carry no `?source=` records `not-given` and,
+   armed, pages every 30 minutes as a page that stopped booking. This needs real bookings
+   from each page after the flip, so before then it reads as unmeasured, never as met.
+2. **Every federal holiday in the next 90 days is decided** in the business hours
+   exceptions: closed, or open because Pennie works that day. Without one both alarms
+   page through the holiday (eight times on Labor Day 2026-09-07 in the replay).
+
+Once the switch is on, each unmet one becomes a finding with its own exit (14 to 16, in
+`docs/verify-commands.md`).
+
 This is not the whole flip day list, which lives on #65 and the Cutover milestone.
 It is the part decided here rather than on the day.
 
