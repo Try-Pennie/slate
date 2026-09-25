@@ -122,6 +122,8 @@ export const SETUP_STEP_READS: Record<string, keyof SetupReadiness> = {
   setup_business_hours: "businessHours",
   setup_hours: "workingHours",
   setup_horizon: "horizonDays",
+  // #2773: the armed switches and floors. Null only with no last known value.
+  setup_settings: "settings",
 };
 
 /**
@@ -141,6 +143,10 @@ const GATE_NAMES: Record<keyof ReturnType<typeof monitorSetupGates>, string> = {
   belowLeadTier: "the booking below the lead's Salesforce tier check",
   offsiteOrigin: "the real booking from an off site host page check",
   regalCallsQuiet: "the no Regal calls all business day alarm",
+  failureRate: "the booking failure rate page",
+  awaitingActivation: "the waiting to become bookable page",
+  regalCalls: "the unroutable Regal caller alarm",
+  regalCallsUnreadable: "the unreadable Regal events alarm",
 };
 
 /**

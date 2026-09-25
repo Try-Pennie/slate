@@ -126,7 +126,7 @@ const with_ = (over: Partial<SetupReadiness>): SetupReadiness => ({ ...ALL_SETUP
   const keys = Object.keys(ALL_SETUP_READ).sort();
   eq(
     keys.join(","),
-    ["buckets", "businessHours", "horizonDays", "slotHealth", "workingHours"].join(","),
+    ["buckets", "businessHours", "horizonDays", "settings", "slotHealth", "workingHours"].join(","),
     "every contained setup read has a readiness flag",
   );
   assert(
@@ -145,9 +145,14 @@ const with_ = (over: Partial<SetupReadiness>): SetupReadiness => ({ ...ALL_SETUP
     businessHours: false,
     workingHours: false,
     horizonDays: false,
+    settings: false,
   });
   assert(
-    !allDown.availabilityScan.run &&
+    !allDown.failureRate.run &&
+      !allDown.awaitingActivation.run &&
+      !allDown.regalCalls.run &&
+      !allDown.regalCallsUnreadable.run &&
+      !allDown.availabilityScan.run &&
       !allDown.availabilityTruth.run &&
       !allDown.lowVolume.run &&
       !allDown.calendarWindow.run &&
@@ -156,13 +161,63 @@ const with_ = (over: Partial<SetupReadiness>): SetupReadiness => ({ ...ALL_SETUP
   );
   const allUp = monitorSetupGates(ALL_SETUP_READ);
   assert(
-    allUp.availabilityScan.run &&
+    allUp.failureRate.run &&
+      allUp.awaitingActivation.run &&
+      allUp.regalCalls.run &&
+      allUp.regalCallsUnreadable.run &&
+      allUp.availabilityScan.run &&
       allUp.availabilityTruth.run &&
       allUp.lowVolume.run &&
       allUp.calendarWindow.run &&
       allUp.busyDrift.run,
     "and every gate can pass",
   );
+}
+
+// --- the monitor alert settings (#2773) ----------------------------------------
+// The settings read carries every ARMED switch and the low volume floors. Its old
+// fallback was the defaults, and every switch defaults to OFF, so one failed read
+// quietly disarmed half the lane for a tick. Now a failure with no last known value
+// stands down exactly the checks whose decision to page rests on a switch or a
+// floor, and nothing else: a cooldown only paces an alarm that already decided to
+// fire, so a check needing only that keeps running. Both directions, per gate.
+{
+  const g = monitorSetupGates(with_({ settings: false }));
+  const expected: Record<keyof typeof g, boolean> = {
+    // No switch and no floor: they must keep running through a settings outage.
+    availabilityScan: true,
+    calendarWindow: true,
+    busyDrift: true,
+    tierStaffing: true,
+    offsiteOrigin: true,
+    // An armed switch (and, for the volume alarm, the floors) decides whether each
+    // of these pages, so none may judge on a guessed one.
+    availabilityTruth: false,
+    lowVolume: false,
+    rosterCoverage: false,
+    belowLeadTier: false,
+    regalCallsQuiet: false,
+    failureRate: false,
+    awaitingActivation: false,
+    regalCalls: false,
+    regalCallsUnreadable: false,
+  };
+  for (const [name, runs] of Object.entries(expected) as [keyof typeof g, boolean][]) {
+    eq(g[name].run, runs, `settings unreadable: ${name} runs = ${runs}`);
+    const gate = g[name];
+    if (!gate.run) assert(/alert settings/.test(gate.why), `${name} says the alert settings are what it lacks`);
+  }
+  // Exhaustive: a gate added later must be decided here rather than defaulting.
+  eq(Object.keys(expected).sort().join(","), Object.keys(g).sort().join(","), "every gate is decided for settings");
+
+  // And the other direction: no OTHER read takes down a check that needs only the
+  // settings. Those four do their own reads inside their own boundaries.
+  for (const read of ["buckets", "slotHealth", "businessHours", "workingHours", "horizonDays"] as const) {
+    const o = monitorSetupGates(with_({ [read]: false }));
+    for (const name of ["failureRate", "awaitingActivation", "regalCalls", "regalCallsUnreadable"] as const) {
+      assert(o[name].run, `${read} unreadable: ${name} still runs`);
+    }
+  }
 }
 
 finish();

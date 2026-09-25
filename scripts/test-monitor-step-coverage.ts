@@ -11,7 +11,9 @@
 // that is missing is exactly the one that needed checking. So this reads every
 // check invocation in the route and requires each to be wrapped, which means a
 // step nobody thought about is covered by construction.
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync, statSync } from "node:fs";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { assert, eq, finish } from "./lib/harness.ts";
 
 const FILE = "src/app/api/cron/monitor/route.ts";
@@ -86,16 +88,15 @@ const code = src
   // Exactly four spaces of indent puts a statement directly in the handler's try
   // block; a read inside an injected callback is nested deeper.
   const HANDLER_AWAIT = /^ {4}const\s+[A-Za-z_$][\w$]*\s*=\s*await\s/;
-  // `loadMonitorSettings` resolves its own failures to env and coded defaults
-  // internally and cannot throw out, and its fallback is those same defaults, so
-  // wrapping it here would only duplicate them. Named, with the reason, rather
-  // than left as an unexplained gap.
+  // `loadMonitorSettings` is NOT exempt any more (#2773). It used to swallow its
+  // own failures into the defaults, which disarmed every switch for the tick; it
+  // throws now and is contained like every other setup read.
   // #2382: the step-failure judgement is the one thing here that must NOT be
   // contained, because it is what reports the runner's failures. Putting the
   // reporter behind the fault it reports is the defect one level up, and the
   // assertions below pin that it stays outside the runner and ahead of the
   // heartbeat.
-  const EXEMPT = ["loadMonitorSettings(", "judgeMonitorSteps("];
+  const EXEMPT = ["judgeMonitorSteps("];
   const offenders: string[] = [];
   code.split("\n").forEach((line, i) => {
     if (!HANDLER_AWAIT.test(line)) return;
@@ -121,7 +122,6 @@ const code = src
       (line) =>
         /^ {4}const\s+[A-Za-z_$][\w$]*\s*=\s*await\s/.test(line) &&
         !/steps\.run\s*[<(]/.test(line) &&
-        !line.includes("loadMonitorSettings(") &&
         !line.includes("judgeMonitorSteps("),
     );
   eq(offenders.length, 1, "a shared read added straight into the handler IS caught");
@@ -178,6 +178,14 @@ const code = src
     ["avail_truth", "gates.availabilityTruth.run"],
     ["calendar_window", "gates.calendarWindow.run"],
     ["busy_drift", "gates.busyDrift.run"],
+    // #2773: the checks whose decision to page is an armed switch.
+    ["roster_coverage", "gates.rosterCoverage.run"],
+    ["failure_rate", "gates.failureRate.run"],
+    ["awaiting_activation", "gates.awaitingActivation.run"],
+    ["below_lead_tier", "gates.belowLeadTier.run"],
+    ["regal_calls", "gates.regalCalls.run"],
+    ["regal_calls_quiet", "gates.regalCallsQuiet.run"],
+    ["regal_calls_unreadable", "gates.regalCallsUnreadable.run"],
   ]) {
     // Indexed off the step NAME rather than the `steps.run` token, because a call
     // carrying a type argument puts the two on different lines.
@@ -192,6 +200,53 @@ const code = src
       `${step} decides whether to run by consulting ${gate}, not a hand-rolled condition`,
     );
   }
+}
+
+// --- the settings read is contained, and falls back to the LAST KNOWN value (#2773)
+// A failed settings read used to resolve to the defaults inside the loader, and
+// every armed switch defaults to OFF, so one failure disarmed half the lane with
+// nothing saying so. The read throws now; here it must run in its own setup step
+// (so a sustained failure pages through the step streak), fall back to what this
+// isolate last read rather than to the defaults, and be the ONLY settings read on
+// the lane, so no check can reach round it to a copy that still falls back.
+{
+  assert(
+    /steps\.run<[^\n]*>\(\s*"setup_settings",\s*lastKnownMonitorSettings\(\),\s*\(\)\s*=>\s*loadMonitorSettings\(\)/.test(code),
+    "the settings read runs in the setup_settings step with the last known settings as its fallback",
+  );
+  eq(
+    (code.match(/loadMonitorSettings\(/g) ?? []).length,
+    1,
+    "the lane reads the settings exactly once, inside that step",
+  );
+  assert(
+    !/settings\.cooldownMs/.test(code),
+    "cooldowns come from the one resolved `cooldownMs`, never off a settings value that may be null",
+  );
+}
+
+// --- and nothing else calls the throwing read unprotected (#2773) ------------
+// `loadMonitorSettings` throws now. A lane that needs only a cooldown and called it
+// at the top of its handler would be taken down by a settings blip, which is worse
+// than the defect being fixed: the work the alarm is about would stop. Those lanes
+// use `loadMonitorCooldowns`, which never throws. Walked from `src/`, so a new
+// caller is covered by construction rather than by somebody remembering (L96).
+{
+  const walk = (dir: string): string[] =>
+    readdirSync(dir).flatMap((name) => {
+      const full = join(dir, name);
+      if (statSync(full).isDirectory()) return walk(full);
+      return /\.tsx?$/.test(name) && !/\.test\.tsx?$/.test(name) ? [full] : [];
+    });
+  const callers = walk(fileURLToPath(new URL("../src", import.meta.url)))
+    .filter((f) => /loadMonitorSettings\(/.test(readFileSync(f, "utf8")))
+    .map((f) => f.slice(f.indexOf("/src/") + 1))
+    .sort();
+  eq(
+    callers,
+    ["src/app/api/cron/monitor/route.ts", "src/lib/monitor/settings.ts"],
+    "only the monitor lane (inside its setup step) and the settings module call the throwing read",
+  );
 }
 
 // --- the cost line is actually emitted, or #1277 is unwired ---

@@ -42,6 +42,7 @@ import {
   stepOkStreakKey,
   type MonitorStepStreaks,
 } from "../src/lib/monitor/step-failure.ts";
+import { ALL_SETUP_READ } from "../src/lib/monitor/setup-gates.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
 /** Em/en dash detector built from escapes, so this file holds no literal dash. */
@@ -287,6 +288,30 @@ const tick = (...steps: { name: string; ok: boolean }[]) => steps;
       `${step} is a setup read whose failure stands checks down, and the page says which`,
     );
   }
+  // #2773: the settings read is a setup read like the others, so a sustained
+  // failure with nothing to fall back on pages naming the switches it took down,
+  // rather than those checks going quiet one tick at a time with nothing said.
+  const gatedBySettings = checksGatedByStep("setup_settings");
+  for (const name of [
+    "the booking failure rate page",
+    "the waiting to become bookable page",
+    "the unroutable Regal caller alarm",
+    "the unreadable Regal events alarm",
+    "the low booking volume alarm",
+  ]) {
+    assert(gatedBySettings.includes(name), `an unreadable settings read says it took down ${name}`);
+  }
+  assert(
+    !gatedBySettings.includes("the availability scan"),
+    "and does not claim a check that needs only a cooldown, which keeps running",
+  );
+  // Exhaustive in the other direction too: every readiness flag has its setup step,
+  // so a read added to the gates cannot page as nothing.
+  eq(
+    Object.values(SETUP_STEP_READS).sort().join(","),
+    Object.keys(ALL_SETUP_READ).sort().join(","),
+    "every setup readiness flag is performed by a named setup step",
+  );
 }
 
 // --- a whole tick's worth of steps, judged in bounded waves -------------------

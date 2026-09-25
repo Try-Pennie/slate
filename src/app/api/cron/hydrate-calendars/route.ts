@@ -16,7 +16,7 @@ import {
 } from "@/lib/google/hydration";
 import { recordConsecutiveStreak, clearFailureStreak } from "@/lib/notify/streak";
 import { sendThrottledAlert, resolveAlert } from "@/lib/notify/dispatch";
-import { loadMonitorSettings } from "@/lib/monitor/settings";
+import { loadMonitorCooldowns } from "@/lib/monitor/settings";
 import type { AgentCalendar } from "@/lib/db/types";
 import { log } from "@/lib/log";
 
@@ -56,7 +56,9 @@ export async function GET(req: NextRequest) {
   if (!lock) return NextResponse.json({ skipped: "overlapping-run" });
   try {
     const db = supabaseAdmin();
-    const settings = await loadMonitorSettings();
+    // Only a cooldown is needed here, so a settings blip must not stop the refresh
+    // (#2773): last known cooldowns, else the coded ones, and the fallback is logged.
+    const cooldownMs = await loadMonitorCooldowns("hydrate-calendars");
     const deadlineMs = Date.now() + HYDRATE_BUDGET_MS;
 
     // unwrap, not a bare destructure: a read error returning [] would look like "no
@@ -150,7 +152,7 @@ export async function GET(req: NextRequest) {
       // all-clear-proof: scripts/test-hydration-tick-verdict.ts - an unmeasured tick is its
       // own outcome and neither pages nor clears.
       resolve: resolveAlert,
-      cooldownMs: settings.cooldownMs.hydration_all_failing,
+      cooldownMs: cooldownMs.hydration_all_failing,
       consecutiveTicks: ALL_FAILED_TICKS,
     });
 

@@ -20,7 +20,7 @@ const dispatch = vi.hoisted(() => ({
   resolveAlert: vi.fn(async () => true),
 }));
 const settings = vi.hoisted(() => ({
-  loadMonitorSettings: vi.fn(async () => ({ cooldownMs: { schedule_parity_drift: 86_400_000 } })),
+  loadMonitorCooldowns: vi.fn(async () => ({ schedule_parity_drift: 86_400_000 })),
 }));
 
 vi.mock("@/lib/env", () => env);

@@ -220,7 +220,12 @@ import { BURST_LIMITER_BINDING } from "@/lib/rate-limit-burst";
 import { isWorkersRuntime, workersRuntimeMarker } from "@/lib/platform/runtime";
 import { getCloudflareContext } from "@opennextjs/cloudflare";
 import { WEBHOOK_EVENTS, deliberatelyUnsubscribedReason } from "@/lib/webhooks/events";
-import { loadMonitorSettings } from "@/lib/monitor/settings";
+import {
+  codedCooldownMs,
+  lastKnownMonitorSettings,
+  loadMonitorSettings,
+  type ResolvedMonitorSettings,
+} from "@/lib/monitor/settings";
 import { loadTierDepths } from "@/lib/routing/staffing-depth-load";
 import { runThinTierStaffingCheck } from "@/lib/monitor/thin-tier";
 import {
@@ -623,9 +628,21 @@ export async function GET(req: NextRequest) {
       },
     });
     const db = supabaseAdmin();
-    // UI-tunable cooldowns + low-volume floors (#571); never throws (falls back
-    // to env/coded defaults) so config can't take down the monitor tick.
-    const settings = await loadMonitorSettings();
+    // UI-tunable cooldowns, arming switches and low volume floors (#571). A setup
+    // read like the ones below, and contained the same way (#2773). The read throws
+    // rather than resolving to the defaults, because every switch defaults to OFF and
+    // that fallback silently disarmed half this lane. On a failure the step falls
+    // back to the LAST KNOWN settings in this isolate, and still records a failure,
+    // so a sustained outage pages through `monitor_step_failing:setup_settings`
+    // while the last known value carries the tick. With nothing known it is null,
+    // and `monitorSetupGates` stands down every check whose decision to page rests
+    // on a switch or a floor.
+    const settings = await steps.run<ResolvedMonitorSettings | null>("setup_settings", lastKnownMonitorSettings(), () => loadMonitorSettings(),
+    );
+    // The one exception, and why: a cooldown only paces an alarm that has already
+    // decided to fire, so no value of it can disarm anything. A check that needs
+    // only a cooldown keeps running on the coded ones rather than going dark.
+    const cooldownMs = settings?.cooldownMs ?? codedCooldownMs();
 
     // --- The shared setup reads, each in its OWN boundary (#1395) -------------
     // These five used to sit above every boundary, so a throw in any one of them
@@ -720,6 +737,7 @@ export async function GET(req: NextRequest) {
       businessHours: businessHours !== null,
       workingHours: workingHours !== null,
       horizonDays: horizonDays !== null,
+      settings: settings !== null,
     });
     if (!gates.availabilityScan.run) {
       log.warn("monitor", { msg: "availability scan skipped", why: gates.availabilityScan.why });
@@ -754,7 +772,7 @@ export async function GET(req: NextRequest) {
         // all-clear-proof: scripts/test-monitor-empty-reason.ts - a tick that could
         // not read its inputs clears nothing, in either direction.
         resolve: resolveAlert,
-        cooldownMs: settings.cooldownMs.booker_empty_reason,
+        cooldownMs: cooldownMs.booker_empty_reason,
         log: (m) => log.warn("empty-reason", { msg: m }),
       }),
     );
@@ -787,14 +805,14 @@ export async function GET(req: NextRequest) {
           agents,
           weekStartIso: currentWeekStartIso(businessHours.zone),
         }),
-        armed: settings.rosterCoverageArmed,
+        armed: settings!.rosterCoverageArmed,
         // alert-key: roster_coverage_gap
         notify: sendThrottledAlert,
         // alert-key: roster_coverage_gap
         // all-clear-proof: scripts/test-roster-coverage-gap.ts - a tick that could
         // not measure coverage neither pages nor clears.
         resolve: resolveAlert,
-        cooldownMs: settings.cooldownMs.roster_coverage_gap,
+        cooldownMs: cooldownMs.roster_coverage_gap,
         log: (m) => log.warn("roster-coverage", { msg: m }),
       });
     });
@@ -853,7 +871,7 @@ export async function GET(req: NextRequest) {
           // threshold, each clear NOTHING; only a tick that READ the flag as false
           // does, and a tick whose read threw never reaches the check at all.
           resolve: (key, text) => resolveAlert(key, text),
-          cooldownMs: settings.cooldownMs.public_booking_stopped,
+          cooldownMs: cooldownMs.public_booking_stopped,
           log: (m) => log.warn("booking-pause", { msg: m }),
         }),
     );
@@ -910,7 +928,7 @@ export async function GET(req: NextRequest) {
         // alert-key: empty_tier:*
         await sendThrottledAlert(
           tierStaffingKey(t.tier),
-          settings.cooldownMs.empty_tier,
+          cooldownMs.empty_tier,
           t.kind === "unstaffed" ? tierUnstaffedMessage(t) : tierNoSlotsMessage(t),
         ).catch(() => {});
       }
@@ -1010,9 +1028,9 @@ export async function GET(req: NextRequest) {
           // also all-clear the page it is sending.
           resolve: resolveAlert,
           cooldownMs: {
-            dataAnomaly: settings.cooldownMs.availability_data_anomaly,
-            bookedSolid: settings.cooldownMs.availability_booked_solid,
-            fallbackCovered: settings.cooldownMs.fallback_covered_availability,
+            dataAnomaly: cooldownMs.availability_data_anomaly,
+            bookedSolid: cooldownMs.availability_booked_solid,
+            fallbackCovered: cooldownMs.fallback_covered_availability,
           },
           log: (fields) => log.info("monitor", { msg: "availability scan", ...fields }),
         }),
@@ -1042,9 +1060,9 @@ export async function GET(req: NextRequest) {
         countSince: (sinceIso) => countCustomerBookingsSince(db, sinceIso),
         // #1956: the measured floors for THIS weekday and hour, each carrying where
         // it came from so a page can say whether it is the measurement or an override.
-        floors: judgedFloors(floorsFor(settings.floors, now)),
-        armed: settings.lowVolumeArmed,
-        cooldownMs: settings.cooldownMs.low_booking_volume,
+        floors: judgedFloors(floorsFor(settings!.floors, now)),
+        armed: settings!.lowVolumeArmed,
+        cooldownMs: cooldownMs.low_booking_volume,
         // alert-key: low_booking_volume
         // The key is passed by the pure check, not written here, so the coverage
         // scanner cannot read it off this call: it is declared instead (#1390).
@@ -1088,8 +1106,8 @@ export async function GET(req: NextRequest) {
         readSources: (sinceIso) => listCustomerBookingSourcesSince(db, sinceIso),
         pageSeenSince: (sources, sinceIso) => customerBookingFromSourcesSince(db, sources, sinceIso),
         tierLow: volume.status === "checked" ? volume.breaches.length > 0 : null,
-        armed: settings.lowVolumeArmed,
-        cooldownMs: settings.cooldownMs.low_booking_volume,
+        armed: settings!.lowVolumeArmed,
+        cooldownMs: cooldownMs.low_booking_volume,
         // alert-key: low_page_volume:*
         // alert-text-ok: our own copy from page-volume.ts, built from measured
         // counts and the page's own names; no error text can reach it.
@@ -1117,9 +1135,9 @@ export async function GET(req: NextRequest) {
         nowMs: now,
         anchor: MEASURED_VOLUME_BASELINE,
         readConfig: async () => {
-          // Its own read rather than `settings`, which falls back to defaults on a
-          // failed read by design: here an unreadable row must throw, not read as
-          // "no ramp end declared".
+          // Its own read rather than `settings`, whose step falls back to the last
+          // known value: here an unreadable row must throw, not read as the ramp
+          // state of some earlier tick.
           const row = unwrap(
             await db
               .from("monitor_alert_config")
@@ -1163,18 +1181,24 @@ export async function GET(req: NextRequest) {
     // unreadable tally, an unreadable state row, and a window too small to judge
     // each send NOTHING, in either direction. The all-clear hangs only off a
     // measured healthy verdict.
-    const failureRate = await steps.run<FailureRateResult | { status: "errored" }>(
+    const failureRate = await steps.run<
+      FailureRateResult | { status: "errored" } | { status: "skipped"; why: string }
+    >(
       "failure_rate",
       { status: "errored" },
-      () =>
-        runBookingFailureRateCheck({
+      async () =>
+        // #2773: its arming switch comes from the settings, so with none readable
+        // and none known it stands down rather than run disarmed by default.
+        !gates.failureRate.run
+          ? { status: "skipped", why: gates.failureRate.why }
+          : runBookingFailureRateCheck({
           nowMs: now,
           loadState: loadRateState,
           saveState: saveRateState,
           readToday: () => readTodayOutcomes(now),
           thresholds: FAILURE_RATE_THRESHOLDS,
-          armed: settings.failureRateArmed,
-          cooldownMs: settings.cooldownMs.booking_failure_rate,
+          armed: settings!.failureRateArmed,
+          cooldownMs: cooldownMs.booking_failure_rate,
           notify: (key, cooldownMs, text) => {
             // alert-key: booking_failure_rate
             // alert-text-ok: our own copy from booking-failure-rate.ts, built from
@@ -1220,7 +1244,7 @@ export async function GET(req: NextRequest) {
         // counts; no error text can reach it.
         await sendThrottledAlert(
           CATCHALL_RATE_ALERT_KEY,
-          settings.cooldownMs.catchall_rate,
+          cooldownMs.catchall_rate,
           catchallPageText(verdict, CATCHALL_WINDOW_HOURS),
         );
         return;
@@ -1288,7 +1312,10 @@ export async function GET(req: NextRequest) {
       if (failureRate.status !== "checked") {
         log.warn("monitor", {
           msg: "api refusal signals skipped",
-          why: failureRate.status === "unverified" ? failureRate.why : "failure rate step errored",
+          why:
+            failureRate.status === "unverified" || failureRate.status === "skipped"
+              ? failureRate.why
+              : "failure rate step errored",
         });
         return null;
       }
@@ -1308,7 +1335,7 @@ export async function GET(req: NextRequest) {
         samples: failureRate.state.samples.length,
       });
 
-      const cooldown = settings.cooldownMs.booking_failure_rate;
+      const cooldown = cooldownMs.booking_failure_rate;
       // Each signal pages and clears on its OWN key, so one condition ending
       // cannot clear another and a reader can always tell what stopped.
       const ceilingText = refusalSignalCopy.ceiling(
@@ -1387,8 +1414,8 @@ export async function GET(req: NextRequest) {
           alertContext: () => driftAlertContext(),
           markDrifting: markBucketDrifting,
           settleSilently: settleAlertsSilently,
-          armed: settings.availabilityDriftArmed,
-          cooldownMs: settings.cooldownMs.availability_drift,
+          armed: settings!.availabilityDriftArmed,
+          cooldownMs: cooldownMs.availability_drift,
           notify: (key, cooldownMs, text) => {
             // alert-key: availability_drift:*
             // alert-text-ok: our own copy from availability-truth.ts, built from
@@ -1418,7 +1445,7 @@ export async function GET(req: NextRequest) {
         loadDepths: () => loadTierDepths(db, undefined, new Date(now)),
         // alert-key: thin_tier_staffing
         notify: sendThrottledInfo,
-        cooldownMs: settings.cooldownMs.thin_tier_staffing,
+        cooldownMs: cooldownMs.thin_tier_staffing,
         log: (m) => log.info("thin-tier", { msg: m }),
       }),
     );
@@ -1476,7 +1503,7 @@ export async function GET(req: NextRequest) {
         },
         // alert-key: agents_without_schedule
         notify: sendThrottledInfo,
-        cooldownMs: settings.cooldownMs.agents_without_schedule,
+        cooldownMs: cooldownMs.agents_without_schedule,
         log: (m) => log.info("schedule-coverage", { msg: m }),
       }),
     );
@@ -1549,7 +1576,7 @@ export async function GET(req: NextRequest) {
         notify: (key, ms, text) => sendThrottledAlert(key, ms, text),
         // alert-key: agents_on_unset_hours
         resolve: (key, text) => resolveAlert(key, text),
-        cooldownMs: settings.cooldownMs.agents_on_unset_hours,
+        cooldownMs: cooldownMs.agents_on_unset_hours,
         nowMs: Date.now(),
       }),
     );
@@ -1561,12 +1588,16 @@ export async function GET(req: NextRequest) {
     // per agent refusal alert cannot see the deferred case and nothing else
     // watches the queue, so from outside a stuck hire is indistinguishable from a
     // healthy one. One column on a roster bounded table, in its own boundary: it
-    // consumes no shared setup state, so it is not gated on any of it.
+    // consumes no shared setup state beyond its arming switch (below).
     //
     // Disarmed until somebody has watched a few ordinary days (migration 0131); it
     // measures and logs either way, and clears nothing on a read that failed. ---
-    await steps.run("awaiting_activation", null, () =>
-      runAwaitingActivationCheck({
+    // #2773: its arming switch comes from the settings, so with none readable and
+    // none known it stands down rather than run disarmed by default.
+    await steps.run("awaiting_activation", null, async () =>
+      !gates.awaitingActivation.run
+        ? null
+        : runAwaitingActivationCheck({
         load: () =>
           selectAllPages<AwaitingActivationRow>("monitor awaiting-activation roster", (from, to) =>
             db
@@ -1576,12 +1607,12 @@ export async function GET(req: NextRequest) {
               .eq("is_test", false)
               .range(from, to),
           ),
-        armed: settings.awaitingActivationArmed,
+        armed: settings!.awaitingActivationArmed,
         // alert-key: agents_awaiting_activation
         notify: (key, ms, text) => sendThrottledAlert(key, ms, text),
         // alert-key: agents_awaiting_activation
         resolve: (key, text) => resolveAlert(key, text),
-        cooldownMs: settings.cooldownMs.agents_awaiting_activation,
+        cooldownMs: cooldownMs.agents_awaiting_activation,
         nowMs: Date.now(),
       }),
     );
@@ -1630,7 +1661,7 @@ export async function GET(req: NextRequest) {
         loadCatchall: (ids) => loadCatchallByBooking(db, ids),
         listFiring: async () => new Set(await firingFamilyMembers(BELOW_LEAD_TIER_KEY)),
         bookingUrl: (id) => `${appUrl()}${bookingDetailHref(id)}`,
-        armed: settings.belowLeadTierArmed,
+        armed: settings!.belowLeadTierArmed,
         // alert-key: booking_below_lead_tier:*
         // alert-text-ok: our own copy from below-lead-tier.ts, built from measured
         // tiers and the booking row; no error text can reach it.
@@ -1640,7 +1671,7 @@ export async function GET(req: NextRequest) {
         // a failed Salesforce read and a failed firing read each clear NOTHING, and
         // a paged booking that became unmeasurable keeps its page.
         resolve: (key, text) => resolveAlert(key, text),
-        cooldownMs: settings.cooldownMs.booking_below_lead_tier,
+        cooldownMs: cooldownMs.booking_below_lead_tier,
       }).then((result) => {
         if (result.status === "unreadable") {
           log.warn("monitor", { msg: "below lead tier unreadable", stage: result.stage, error: result.error });
@@ -1721,8 +1752,8 @@ export async function GET(req: NextRequest) {
     // CANDIDATE calls (a human on our domain who is a Slate user), the roster, the
     // ignore list and the pages already open in the family, and pages once per
     // agent per cooldown for anybody not routable and not exempt. Every read is in
-    // this boundary and consumes no shared setup state, so it is not gated. A read
-    // that fails measures nothing, pages nobody and clears nothing.
+    // this boundary, and the only shared setup state it consumes is its arming
+    // switch. A read that fails measures nothing, pages nobody and clears nothing.
     //
     // Armed by the `regal_calls_armed` setting (#2695, migration 0138); while it
     // is off it measures and logs every tick and sends nothing. ---
@@ -1733,8 +1764,12 @@ export async function GET(req: NextRequest) {
           "monitor regal call reason counts",
         ) ?? [],
       );
-    const regalCalls = await steps.run("regal_calls", null, () =>
-      runRegalCallCheck({
+    // #2773: armed by the settings, so it stands down with none readable and none
+    // known, rather than run disarmed by default.
+    const regalCalls = await steps.run("regal_calls", null, async () =>
+      !gates.regalCalls.run
+        ? null
+        : runRegalCallCheck({
         loadCandidates: (sinceIso) =>
           selectAllPages<RegalCandidate>("monitor regal call candidates", (from, to) =>
             db
@@ -1758,7 +1793,7 @@ export async function GET(req: NextRequest) {
             db.from("regal_call_ignores").select("user_id, reason").order("user_id").range(from, to),
           ),
         loadFiringUserIds: () => firingFamilyMembers(REGAL_CALL_ALERT_PREFIX),
-        armed: settings.regalCallsArmed,
+        armed: settings!.regalCallsArmed,
         // alert-key: regal_call_unroutable:*
         // alert-text-ok: our own copy from regal-calls.ts, built from roster fields and a
         // formatted time; no error text can reach it.
@@ -1768,7 +1803,7 @@ export async function GET(req: NextRequest) {
         // the events, the roster, the ignore list or the open pages clears nothing, and that
         // a disarmed tick clears nothing.
         resolve: (key, text) => resolveAlert(key, text),
-        cooldownMs: settings.cooldownMs.regal_call_unroutable,
+        cooldownMs: cooldownMs.regal_call_unroutable,
         nowMs: now,
       }),
     );
@@ -1796,21 +1831,21 @@ export async function GET(req: NextRequest) {
     // per reason count, and each silent in both directions when that count cannot
     // be read. The quiet one needs the org's week to know which day was the last
     // whole one, so it is gated on it; the unreadable one is not. Same switch as
-    // the detector above. ---
+    // the detector above, so both are gated on the settings too (#2773). ---
     const regalQuiet = await steps.run("regal_calls_quiet", null, async () =>
       !gates.regalCallsQuiet.run || !businessHours
         ? null
         : runRegalFeedQuietCheck({
             hours: { zone: businessHours.zone, rules: businessHours.rules, exceptions: businessHours.exceptions },
             loadCounts: loadRegalCounts,
-            armed: settings.regalCallsArmed,
+            armed: settings!.regalCallsArmed,
             // alert-key: regal_calls_quiet
             notify: (key, ms, text) => sendThrottledAlert(key, ms, text),
             // alert-key: regal_calls_quiet
             // all-clear-proof: scripts/test-regal-call-feed.ts pins that unreadable counts and
             // a disarmed tick clear nothing, and that only a measured call from a Slate user does.
             resolve: (key, text) => resolveAlert(key, text),
-            cooldownMs: settings.cooldownMs.regal_calls_quiet,
+            cooldownMs: cooldownMs.regal_calls_quiet,
             nowMs: now,
           }),
     );
@@ -1819,17 +1854,19 @@ export async function GET(req: NextRequest) {
     } else if (regalQuiet) {
       log.info("monitor", { msg: "regal calls quiet", status: regalQuiet.status });
     }
-    const regalUnreadable = await steps.run("regal_calls_unreadable", null, () =>
-      runRegalFeedUnreadableCheck({
+    const regalUnreadable = await steps.run("regal_calls_unreadable", null, async () =>
+      !gates.regalCallsUnreadable.run
+        ? null
+        : runRegalFeedUnreadableCheck({
         loadCounts: loadRegalCounts,
-        armed: settings.regalCallsArmed,
+        armed: settings!.regalCallsArmed,
         // alert-key: regal_calls_unreadable
         notify: (key, ms, text) => sendThrottledAlert(key, ms, text),
         // alert-key: regal_calls_unreadable
         // all-clear-proof: scripts/test-regal-call-feed.ts pins that unreadable counts and
         // a disarmed tick clear nothing, and that only a measured clean day does.
         resolve: (key, text) => resolveAlert(key, text),
-        cooldownMs: settings.cooldownMs.regal_calls_unreadable,
+        cooldownMs: cooldownMs.regal_calls_unreadable,
         nowMs: now,
       }),
     );
@@ -1871,7 +1908,7 @@ export async function GET(req: NextRequest) {
         loadUnroutableAgents,
         // alert-key: agents_without_routing
         notify: sendThrottledInfo,
-        cooldownMs: settings.cooldownMs.agents_without_routing,
+        cooldownMs: cooldownMs.agents_without_routing,
         log: (m) => log.info("attribute-coverage", { msg: m }),
       }),
     );
@@ -1929,7 +1966,7 @@ export async function GET(req: NextRequest) {
         // all-clear-proof: scripts/test-sync-staleness.ts - a roster read
         // that failed reports unverified and clears nothing.
         resolve: resolveAlert,
-        cooldownMs: settings.cooldownMs.sync_staleness,
+        cooldownMs: cooldownMs.sync_staleness,
         log: (m) => log.info("sync-staleness", { msg: m }),
       }),
     );
@@ -1979,7 +2016,7 @@ export async function GET(req: NextRequest) {
     const inactiveBookings = await steps.run("inactive_bookings", null, () =>
       runInactiveAgentBookingsCheck({
         loadHolders: loadInactiveHolders,
-        cooldownMs: settings.cooldownMs.inactive_agent_bookings,
+        cooldownMs: cooldownMs.inactive_agent_bookings,
         log: (fields) => log.info("inactive-agent-bookings", { msg: "tick", ...fields }),
       }),
     );
@@ -2070,7 +2107,7 @@ export async function GET(req: NextRequest) {
     const strandedCoverage = await steps.run("stranded_coverage", null, () =>
       runCoverageNeedsHumanCheck({
         loadStranded: loadStrandedHolders,
-        cooldownMs: settings.cooldownMs.coverage_needs_human,
+        cooldownMs: cooldownMs.coverage_needs_human,
         log: (fields) => log.info("coverage-needs-human", { msg: "tick", ...fields }),
       }),
     );
@@ -2173,7 +2210,7 @@ export async function GET(req: NextRequest) {
           load: loadOooProtection,
           nowMs: now,
           appBaseUrl: appUrl(),
-          cooldownMs: settings.cooldownMs.ooo_protection_lost,
+          cooldownMs: cooldownMs.ooo_protection_lost,
           log: (fields) => log.info("ooo-protection", { msg: "tick", ...fields }),
         }),
     );
@@ -2277,7 +2314,7 @@ export async function GET(req: NextRequest) {
     const oooCoverageGap = await steps.run("ooo_coverage_gap", null, () =>
       runOooCoverageGapCheck({
         loadHolders: loadOooCoverageGaps,
-        cooldownMs: settings.cooldownMs.ooo_coverage_gap,
+        cooldownMs: cooldownMs.ooo_coverage_gap,
         log: (fields) => log.info("ooo-coverage-gap", { msg: "tick", ...fields }),
       }),
     );
@@ -2349,7 +2386,7 @@ export async function GET(req: NextRequest) {
           loadRows: loadCalendarWindowRows,
           horizonDays: horizonDays as number,
           nowIso: new Date(now).toISOString(),
-          cooldownMs: settings.cooldownMs.calendar_window_uncovered,
+          cooldownMs: cooldownMs.calendar_window_uncovered,
           logTick: (fields) => log.info("calendar-window", { msg: "tick", ...fields }),
         });
       },
@@ -2439,7 +2476,7 @@ export async function GET(req: NextRequest) {
         // all-clear-proof: scripts/test-migration-drift.ts - an unreadable applied
         // set is classified unverified and never announces recovery.
         resolve: resolveAlert,
-        cooldownMs: settings.cooldownMs.migration_version_lag,
+        cooldownMs: cooldownMs.migration_version_lag,
         log: (msg, status, applied) =>
           log.info("migration-drift", {
             msg,
@@ -2498,7 +2535,7 @@ export async function GET(req: NextRequest) {
         // unreadable or throwing endpoint read clears nothing, because it measured
         // nothing.
         resolve: resolveAlert,
-        cooldownMs: settings.cooldownMs.webhook_event_no_subscriber,
+        cooldownMs: cooldownMs.webhook_event_no_subscriber,
         log: (msg) => log.info("webhook-subscribers", { msg }),
       }),
     );
@@ -2538,8 +2575,8 @@ export async function GET(req: NextRequest) {
         // unset page, and a truncated read never clears the undelivered page.
         clearAlert: resolveAlert,
         cooldownMs: {
-          channelUnset: settings.cooldownMs.handoff_channel_unset,
-          undelivered: settings.cooldownMs.handoff_undelivered,
+          channelUnset: cooldownMs.handoff_channel_unset,
+          undelivered: cooldownMs.handoff_undelivered,
         },
         log: (fields) => log.info("booking-handoffs", fields),
         warn: (fields) => log.warn("booking-handoffs", fields),
@@ -2638,7 +2675,7 @@ export async function GET(req: NextRequest) {
         // the Workers runtime, or a read that threw) clears nothing, because it measured
         // nothing.
         resolve: resolveAlert,
-        cooldownMs: settings.cooldownMs.edge_limiter_unusable,
+        cooldownMs: cooldownMs.edge_limiter_unusable,
         log: (msg) => log.info("edge-limiter", { msg }),
       }),
     );
@@ -2681,7 +2718,7 @@ export async function GET(req: NextRequest) {
         // all-clear-proof: scripts/test-definer-grants.ts - a read that failed, and a read
         // that came back empty, both report unmeasured and clear nothing.
         resolve: resolveAlert,
-        cooldownMs: settings.cooldownMs.definer_grants_to_web_roles,
+        cooldownMs: cooldownMs.definer_grants_to_web_roles,
         log: (msg) => log.info("definer-grants", { msg }),
       }),
     );
@@ -2753,8 +2790,8 @@ export async function GET(req: NextRequest) {
         readRuns: (token) => fetchRecentRuns(token),
         readJobs: (token, runId) => fetchRunJobs(token, runId),
         cooldownMs: {
-          deploy: settings.cooldownMs.main_not_deployed,
-          refusal: settings.cooldownMs.ci_runs_refused,
+          deploy: cooldownMs.main_not_deployed,
+          refusal: cooldownMs.ci_runs_refused,
         },
         // alert-key: main_not_deployed
         // alert-key: ci_runs_refused
@@ -2793,7 +2830,7 @@ export async function GET(req: NextRequest) {
         alert: async (key, text) => {
           // alert-key: ooo_calcom_unprotected
           // alert-text-ok: our own copy from calcom-override-sweep.ts, never a raw error.
-          await sendThrottledAlert(key, settings.cooldownMs.ooo_calcom_unprotected, text);
+          await sendThrottledAlert(key, cooldownMs.ooo_calcom_unprotected, text);
         },
         // alert-key: ooo_calcom_unprotected
         // alert-key: ooo_calcom
