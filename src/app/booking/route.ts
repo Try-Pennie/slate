@@ -15,6 +15,7 @@ import {
 import { LeadCodeUnavailableError } from "@/lib/routing/lead-code";
 import { resolveRequestedCode } from "@/lib/routing/catchall";
 import { isPublicTestBucket } from "@/lib/embed/public-test-bucket";
+import { refuseUnlessTestPass } from "@/lib/embed/test-pass-gate";
 import { validateAttendee } from "@/lib/attendee";
 import { HONEYPOT_FIELD, honeypotTripped } from "@/lib/booking/honeypot";
 import {
@@ -187,6 +188,20 @@ async function handlePost(req: NextRequest) {
       { error: "Invalid request", details: parsed.error.flatten() },
       { status: 400 },
     );
+  }
+
+  // #2666: the public test bucket is booked only with the pass `/book` handed a page
+  // on an approved website. Checked before anything about the attendee, so a pass
+  // that ran out while the modal sat open says so instead of a contact error, and
+  // before the contact caps, so it spends none of them. The address cap it already
+  // spent is handed back: the tester did nothing wrong, and a reload fixes it.
+  if (isPublicTestBucket(parsed.data.bucketCode)) {
+    const refused = refuseUnlessTestPass(req.headers, parsed.data.bucketCode, "booking");
+    if (refused) {
+      await refundRequest(bookingCaller, BOOKING_HOURLY_RATE_RULES);
+      // refusal: test_pass_refused
+      return NextResponse.json(refused.body, { status: refused.status });
+    }
   }
 
   const attendeeErrors = validateAttendee(parsed.data.attendee);

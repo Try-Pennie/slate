@@ -23,6 +23,8 @@ const env = vi.hoisted(() => ({
   bookingApiKeyPrimary: () => "smoke-key",
   bookingApiKeySecondary: () => "",
   bookingApiKeyFor: vi.fn((_caller: string, _slot: string) => ""),
+  // #2666: the secret the public test bucket's pass is signed with.
+  embedTestPassSecret: vi.fn(() => "t".repeat(64)),
 }));
 
 vi.mock("@/lib/availability/slot-cache", () => cache);
@@ -73,7 +75,10 @@ vi.mock("@/lib/booking/settings", () => settings);
 
 import { NextRequest } from "next/server";
 import { GENERIC_ERROR_MESSAGE } from "@/lib/api/errors";
-import { PUBLIC_TEST_BUCKET_CODES } from "@/lib/embed/public-test-bucket";
+import { HIDDEN_TEST_BUCKET_CODES, PUBLIC_TEST_BUCKET_CODES } from "@/lib/embed/public-test-bucket";
+import { TEST_PASS_HEADER, TEST_PASS_REFUSAL_CODES } from "@/lib/embed/test-pass-header";
+import { TEST_PASS_TTL_MS, mintTestPass } from "@/lib/embed/test-pass";
+import { log } from "@/lib/log";
 import { GET } from "./route";
 
 const PUBLIC_TEST = PUBLIC_TEST_BUCKET_CODES[0];
@@ -97,9 +102,10 @@ function slotsFor(isTest: boolean) {
   };
 }
 
-function get(bucket: string, authorization?: string) {
+function get(bucket: string, authorization?: string, pass?: string) {
   const headers = new Headers();
   if (authorization) headers.set("authorization", authorization);
+  if (pass) headers.set(TEST_PASS_HEADER, pass);
   return GET(
     new NextRequest(`http://localhost/api/availability?bucket=${bucket}`, { headers }),
   );
@@ -138,20 +144,79 @@ describe("GET /api/availability test-bucket hiding (#396)", () => {
     expect(res.status).toBe(200);
   });
 
-  // #2660: the PUBLIC test bucket is served with NO key. It is how a partner
-  // tests the embed from their own site without booking a real advisor, and a
-  // browser cannot send a bearer, so the code itself is the authorisation. The
-  // hidden canary buckets are untouched: the case above this block still 404s.
-  it("serves the public test bucket to an unauthenticated caller", async () => {
-    cache.getBucketSlotsWithFallback.mockResolvedValue({
-      ...slotsFor(true),
-      bucket: { code: PUBLIC_TEST, is_test: true },
-      routing: { ...slotsFor(true).routing, requested_code: PUBLIC_TEST, effective_code: PUBLIC_TEST },
-    });
-    const res = await get(PUBLIC_TEST);
+  // #2660 opened the PUBLIC test bucket to any caller; #2666 narrows it to a page
+  // `/book` approved, which carries a short lived pass. A browser still sends no
+  // key: the pass is what it sends instead.
+  const publicSlots = () => ({
+    ...slotsFor(true),
+    bucket: { code: PUBLIC_TEST, is_test: true },
+    routing: { ...slotsFor(true).routing, requested_code: PUBLIC_TEST, effective_code: PUBLIC_TEST },
+  });
+  const goodPass = () =>
+    mintTestPass({ code: PUBLIC_TEST, secret: env.embedTestPassSecret(), nowMs: Date.now() }).value;
+
+  it("serves the public test bucket to a caller carrying a good pass", async () => {
+    cache.getBucketSlotsWithFallback.mockResolvedValue(publicSlots());
+    const res = await get(PUBLIC_TEST, undefined, goodPass());
     expect(res.status).toBe(200);
     expect((await res.json()).bucket).toEqual({ code: PUBLIC_TEST });
     expect(cache.getBucketSlotsWithFallback).toHaveBeenCalledWith(PUBLIC_TEST, expect.any(String), true);
+  });
+
+  it("refuses the public test bucket with no pass, before reading anything", async () => {
+    cache.getBucketSlotsWithFallback.mockResolvedValue(publicSlots());
+    const res = await get(PUBLIC_TEST);
+    expect(res.status).toBe(403);
+    expect((await res.json()).code).toBe(TEST_PASS_REFUSAL_CODES.refused);
+    expect(cache.getBucketSlotsWithFallback).not.toHaveBeenCalled();
+    // The reason CLASS is logged, never a pass.
+    expect(log.warn).toHaveBeenCalledWith(
+      "embed-test",
+      expect.objectContaining({ reason: "missing", route: "availability" }),
+    );
+  });
+
+  it("refuses an expired pass with its own code", async () => {
+    const stale = mintTestPass({
+      code: PUBLIC_TEST,
+      secret: env.embedTestPassSecret(),
+      nowMs: Date.now() - TEST_PASS_TTL_MS - 1,
+    }).value;
+    const res = await get(PUBLIC_TEST, undefined, stale);
+    expect(res.status).toBe(403);
+    expect((await res.json()).code).toBe(TEST_PASS_REFUSAL_CODES.expired);
+  });
+
+  it("refuses the public test bucket as switched off when the deployment holds no secret", async () => {
+    const pass = goodPass();
+    env.embedTestPassSecret.mockReturnValueOnce("");
+    const res = await get(PUBLIC_TEST, undefined, pass);
+    expect(res.status).toBe(403);
+    expect((await res.json()).code).toBe(TEST_PASS_REFUSAL_CODES.off);
+  });
+
+  it("a good pass for the public bucket presented with the canary's code still 404s", async () => {
+    cache.getBucketSlotsWithFallback.mockResolvedValue(null);
+    const res = await get(HIDDEN_TEST_BUCKET_CODES[0], undefined, goodPass());
+    expect(res.status).toBe(404);
+    expect(cache.getBucketSlotsWithFallback).toHaveBeenCalledWith(
+      HIDDEN_TEST_BUCKET_CODES[0],
+      expect.any(String),
+      false,
+    );
+  });
+
+  it("the canary's key still reads the public test bucket with no pass", async () => {
+    cache.getBucketSlotsWithFallback.mockResolvedValue(publicSlots());
+    const res = await get(PUBLIC_TEST, "Bearer smoke-key");
+    expect(res.status).toBe(200);
+  });
+
+  it("a real bucket needs no pass: the manage page and the admin panel read it bare", async () => {
+    cache.getBucketSlotsWithFallback.mockResolvedValue(slotsFor(false));
+    const res = await get("411");
+    expect(res.status).toBe(200);
+    expect(log.warn).not.toHaveBeenCalledWith("embed-test", expect.anything());
   });
 
   it("does not let the public test code authorise a hidden one: a near miss is still hidden", async () => {

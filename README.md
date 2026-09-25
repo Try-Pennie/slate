@@ -192,9 +192,11 @@ No event carries the lead's contact. The full table, the raw `slate:*` messages
 behind each event and the payload shapes are in the `slate-embed-contract`
 skill, section 4.
 
-To test the embed end to end from any host page without booking a real advisor,
-use `xbc=PARTNER` (#2660): a public test bucket on the smoke test agent's
-calendar, marked as a test on every screen, with no webhook and no text. What a
+To test the embed end to end without booking a real advisor, use `xbc=PARTNER`
+(#2660) from a host page on a website listed in `EMBED_TEST_ORIGINS` (#2666;
+any other website is refused and told why): a public test bucket on the smoke
+test agent's calendar, marked as a test on every screen, with no webhook and no
+text. What a
 tester will see is in the `slate-embed-contract` skill; seeding it is in
 `DEPLOY.md`, beside the canary's hidden `SMOKE` buckets.
 

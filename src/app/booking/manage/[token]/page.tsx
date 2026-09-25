@@ -9,6 +9,7 @@ import {
   getBookingAdvisorPhoto,
 } from "@/lib/booking/service";
 import { loadReasonOptions } from "@/lib/booking/reason-options";
+import { currentTestPassFor } from "@/lib/embed/test-pass-gate";
 
 export const dynamic = "force-dynamic";
 
@@ -76,6 +77,10 @@ export default async function ManagePage({
       <ManageBooking
         token={token}
         bucketCode={found.bucket.code}
+        // #2666: the manage token already authorises this viewer, so a test
+        // booking's page mints the pass its reschedule panel needs to read the
+        // public test bucket's times. Null for every real booking.
+        testPass={currentTestPassFor(found.bucket.code)}
         startsAt={found.booking.starts_at}
         status={found.booking.status}
         eventName={found.eventType.name}

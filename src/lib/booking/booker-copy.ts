@@ -676,6 +676,38 @@ export const TEST_MODE_COPY = {
   line: "This is a test booking. It reaches a test calendar only and sends no texts.",
 } as const;
 
+// --- who may open a test booking (#2666) ------------------------------------------
+//
+// The public test bucket is served only to host pages on an approved website, and
+// only while the page's short lived pass is good. The reader here is a TESTER (a
+// partner or somebody at Pennie), never a lead, so these sentences name websites
+// and reloading, the things a tester can act on. One sentence per cause, because
+// each sends the reader somewhere different (L11): three are ours to fix, one is
+// theirs, and a pass that ran out is fixed by a reload.
+
+export const TEST_ACCESS_COPY = {
+  /** The heading over every refusal on the page itself. The cause is the body. */
+  heading: "Test bookings are not available here",
+  /** The page arrived with no Referer, so which website framed it is unknown. */
+  noReferer:
+    "We could not tell which website opened this test booking. Open it from the booking button on your website.",
+  /** A website that is not on the approved list. Names it, so the tester can
+   *  tell us exactly which one to add. */
+  unlistedOrigin: (origin: string) =>
+    `Test bookings are not turned on for ${origin}. Ask Pennie to add this website.`,
+  /** The deployment approves no website at all. */
+  listEmpty: "No website is approved for test bookings yet. Ask Pennie to add yours.",
+  /** The deployment holds no signing secret, so no pass can be made or checked. */
+  secretUnset: "Test bookings are turned off on our side right now. Please let Pennie know.",
+  /** A pass that ran out while the page sat open: a modal left open past its
+   *  expiry, found at the confirm or at a later read of the times. */
+  passExpired: "This test page was open too long to book from. Reload the page to keep testing.",
+  /** A pass that is missing, altered, or made for a different bucket. */
+  passRefused: "We could not confirm this test page. Reload the page to keep testing.",
+  /** The secret went away while the page was open, so its pass cannot be checked. */
+  passOff: "Test bookings were turned off while this page was open. Please let Pennie know.",
+} as const;
+
 // --- the honeypot (#1033) -----------------------------------------------------
 // Read only by a bot, and by a screen reader that ignores aria-hidden containers.
 // It is here so the preview shows every string the markup carries, including the

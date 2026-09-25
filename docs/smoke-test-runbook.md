@@ -134,11 +134,15 @@ so a booking regression is caught without anyone remembering to run it:
 
 - **Every ~30 min**: the side-effect-free dry-run tick (`SMOKE_DRY_RUN_ONLY=1`) as
   a fast health check against the live fleet. Since #2660 it also reads
-  `GET /api/availability?bucket=PARTNER` with NO key, the exact request a
-  partner's booker makes, and fails when the public test bucket does not answer
-  by name: every other monitor skips `is_test` buckets on purpose, so this is the
-  only thing that notices it going dark before a partner does. The verdict rules
-  are in `scripts/lib/public-test-bucket-check.ts`.
+  `GET /api/availability?bucket=PARTNER` and fails when the public test bucket
+  does not answer by name: every other monitor skips `is_test` buckets on
+  purpose, so this is the only thing that notices it going dark before a partner
+  does. Since #2666 a browser reaches that bucket only with a pass `/book` mints
+  for an approved website, so the read carries the canary's own key, and a
+  SECOND read with no key and no pass must be refused as `TEST_PASS_REFUSED`: a
+  200 there is the bucket open to any website again, and `TEST_PASS_OFF` is the
+  deployment missing `EMBED_TEST_PASS_SECRET`. The verdict rules are in
+  `scripts/lib/public-test-bucket-check.ts`.
 - **Every 6h**: the full strict pass (`SMOKE_STRICT=1`, plus
   `scripts/smoke-reschedule.ts`). It sets `SMOKE_SKIP_EVENT_CLEANUP=1` because the
   runner has no Google service-account creds; the API-driven cancels still tear

@@ -7,6 +7,13 @@ import { loadReasonOptions } from "@/lib/booking/reason-options";
 import { resolveLandingCode } from "@/lib/routing/landing-code";
 import { existingCallForLanding, landingAttendee } from "@/lib/booking/service";
 import { DEFAULT_BRAND_COLOR } from "@/lib/brand-label";
+import { headers } from "next/headers";
+import { TestAccessRefused } from "@/components/TestAccessRefused";
+import { isPublicTestBucket } from "@/lib/embed/public-test-bucket";
+import { judgeTestOrigin, testOriginRefusalSentence } from "@/lib/embed/test-pass";
+import { currentTestPassFor } from "@/lib/embed/test-pass-gate";
+import { embedTestOrigins, embedTestPassSecret } from "@/lib/env";
+import { log } from "@/lib/log";
 
 export const dynamic = "force-dynamic";
 // Lead-facing: the brand is Pennie; Slate stays internal.
@@ -46,6 +53,35 @@ export default async function BookEntry({
   const requestedCode = first(sp, "xbc");
   const resolved = await resolveLandingCode(requestedCode, first(sp, "external_id") || null);
   const bucketCode = resolved.code;
+  const embedded = first(sp, "embed") === "1";
+  const theme = first(sp, "theme") === "dark" ? ("dark" as const) : ("light" as const);
+
+  // #2666: the public test bucket opens only for a page on an approved website.
+  // The Referer here is the iframe document's own request, which a host sending
+  // `strict-origin-when-cross-origin` fills with its ORIGIN. That is a convenience
+  // gate, not authentication (anything that is not a browser can send any Referer
+  // it likes): it keeps the test path off every website nobody approved. Judged
+  // BEFORE any read about the lead, so a refused page reads nothing. An approved
+  // page is handed a short lived pass the Booker sends on every call it makes.
+  let testPass: string | null = null;
+  if (isPublicTestBucket(bucketCode)) {
+    const secret = embedTestPassSecret();
+    const gate = judgeTestOrigin({
+      referer: (await headers()).get("referer"),
+      approvedOrigins: embedTestOrigins(),
+      secret,
+    });
+    if (!gate.allow) {
+      // The reason CLASS and the origin that asked, never a pass.
+      log.warn("embed-test", { msg: "refused a test booking page", reason: gate.reason, origin: gate.origin });
+      return (
+        <StandaloneBookerShell embedded={embedded} theme={theme}>
+          <TestAccessRefused sentence={testOriginRefusalSentence(gate.reason, gate.origin)} />
+        </StandaloneBookerShell>
+      );
+    }
+    testPass = currentTestPassFor(bucketCode);
+  }
 
   // #2660: the PUBLIC test bucket passes through the resolver above, and this is
   // where the booker learns it is drawing a test booking, so every screen it
@@ -90,8 +126,6 @@ export default async function BookEntry({
     prefill[k] = Array.isArray(v) ? (v[0] ?? "") : (v ?? "");
   }
 
-  const embedded = first(sp, "embed") === "1";
-  const theme = first(sp, "theme") === "dark" ? ("dark" as const) : ("light" as const);
   // #2208: through the SAME resolver `/booking/{id}` uses, because both routes
   // grade the same identity and a second copy of this rule would let one of them
   // go on asking a recognised lead to retype what Slate holds (L613).
@@ -119,6 +153,7 @@ export default async function BookEntry({
         brandColor={first(sp, "brand") || (embedded ? DEFAULT_BRAND_COLOR : undefined)}
         parentOrigin={first(sp, "parentOrigin") || undefined}
         isTest={isTest}
+        testPass={testPass}
         horizonDays={horizonDays}
         rescheduleReasons={reasonOptions.reschedule.active}
         cancelReasons={reasonOptions.cancel.active}

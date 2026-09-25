@@ -234,6 +234,13 @@ export const oooApprovalsBcc = (): string[] => csvEnv("OOO_APPROVALS_BCC");
 export const oooApprovalsReplyTo = (): string =>
   process.env.OOO_APPROVALS_REPLY_TO ?? "";
 
+// The public test bucket's two halves (#2666). The origin list is a COMMITTED
+// wrangler.jsonc var, so a deploy can never quietly widen it; the secret signs the
+// short lived pass `/book` hands an approved page. Either empty turns the test
+// path OFF, and the page says which one in its own words.
+export const embedTestOrigins = (): string[] => csvEnv("EMBED_TEST_ORIGINS");
+export const embedTestPassSecret = (): string => process.env.EMBED_TEST_PASS_SECRET ?? "";
+
 // Cal.com dual-write during the cutover transition. Flag off = no-op.
 export const oooCalcomDualWrite = (): boolean =>
   process.env.OOO_CALCOM_DUAL_WRITE === "true";

@@ -12,8 +12,9 @@
  *
  *  - HIDDEN: the canary's own buckets. Read only with the canary's key; to the
  *    public they do not exist, and answer the same 404 as a typo (#601).
- *  - PUBLIC: served to anyone on the public paths (`/book`, `/api/availability`,
- *    `/api/availability/next`, the Booker's confirm) without a key. Still
+ *  - PUBLIC: served on the public paths (`/book`, `/api/availability`,
+ *    `/api/availability/next`, the Booker's confirm) without a key, to a page on
+ *    an APPROVED website carrying a short lived pass (#2666, `test-pass.ts`). Still
  *    `is_test` in the database, so every webhook is suppressed at the choke point
  *    (#459), no reminder is sent, no monitor counts it, and the booking lands on
  *    the smoke test agent's calendar and nowhere real.
@@ -34,7 +35,8 @@ export const HIDDEN_TEST_BUCKET_CODES = ["SMOKE", "SMOKE2"] as const;
 /**
  * The ONE test bucket the public paths serve. One stable code for any host page
  * (a partner's staging, a flipped live page being checked, a future partner),
- * chosen by Dan on 2026-09-24. Origin restriction is a separate change (#2666).
+ * chosen by Dan on 2026-09-24. Which websites may open it is `EMBED_TEST_ORIGINS`
+ * (#2666), judged in `test-pass.ts`.
  */
 export const PUBLIC_TEST_BUCKET_CODES = ["PARTNER"] as const;
 

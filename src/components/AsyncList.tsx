@@ -16,6 +16,9 @@ export function useFetchList<T>(
   url: string | null,
   active: boolean,
   extract: (json: unknown) => T[],
+  /** Extra request headers (#2666: the public test bucket's pass). Keep the
+   *  object's identity stable across renders: it is part of the fetch's deps. */
+  headers?: Record<string, string>,
 ): {
   items: T[];
   loading: boolean;
@@ -26,17 +29,22 @@ export function useFetchList<T>(
    *  availability response its slots come from; clearing it while the next
    *  month loads would blank the event panel for the length of the fetch. */
   payload: unknown;
+  /** The body of the reply that FAILED, when it had one, so a caller can read a
+   *  refusal's own sentence (#2666). Null on success and on a network failure. */
+  errorPayload: unknown;
 } {
   const [state, setState] = useState<{
     key: string;
     items: T[];
     error: boolean;
     payload: unknown;
+    errorPayload: unknown;
   }>({
     key: "",
     items: [],
     error: false,
     payload: null,
+    errorPayload: null,
   });
   const [nonce, setNonce] = useState(0);
 
@@ -56,25 +64,34 @@ export function useFetchList<T>(
     let cancelled = false;
     void (async () => {
       try {
-        const res = await fetch(url, { cache: "no-store", signal: controller.signal });
+        const res = await fetch(url, {
+          cache: "no-store",
+          signal: controller.signal,
+          ...(headers ? { headers } : {}),
+        });
         if (cancelled) return;
         if (res.ok) {
           const json = (await res.json().catch(() => null)) as unknown;
-          if (!cancelled) setState({ key, items: extract(json), error: false, payload: json });
-        } else if (!cancelled) {
-          setState((prev) => ({ key, items: [], error: true, payload: prev.payload }));
+          if (!cancelled) setState({ key, items: extract(json), error: false, payload: json, errorPayload: null });
+        } else {
+          const body = (await res.json().catch(() => null)) as unknown;
+          if (!cancelled) {
+            setState((prev) => ({ key, items: [], error: true, payload: prev.payload, errorPayload: body }));
+          }
         }
       } catch {
         // Aborts (supersession/unmount) leave state to the newer/next run; only
         // a live failure surfaces the retry affordance.
-        if (!cancelled) setState((prev) => ({ key, items: [], error: true, payload: prev.payload }));
+        if (!cancelled) {
+          setState((prev) => ({ key, items: [], error: true, payload: prev.payload, errorPayload: null }));
+        }
       }
     })();
     return () => {
       cancelled = true;
       controller.abort();
     };
-  }, [key, url, extract]);
+  }, [key, url, extract, headers]);
 
   const settled = key !== "" && state.key === key;
   const retry = useCallback(() => setNonce((n) => n + 1), []);
@@ -85,6 +102,7 @@ export function useFetchList<T>(
     error: settled && state.error,
     retry,
     payload: state.payload,
+    errorPayload: settled && state.error ? state.errorPayload : null,
   };
 }
 

@@ -13,10 +13,14 @@
 // Run: node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/test-public-test-bucket-check.ts
 import {
   PUBLIC_TEST_BUCKET_OUTCOMES,
+  PUBLIC_TEST_GATE_OUTCOMES,
+  judgePublicTestBucketGate,
   judgePublicTestBucketRead,
   publicTestBucketUrl,
   type PublicTestBucketOutcome,
+  type PublicTestGateOutcome,
 } from "./lib/public-test-bucket-check.ts";
+import { TEST_PASS_REFUSAL_CODES } from "../src/lib/embed/test-pass-header.ts";
 import { PUBLIC_TEST_BUCKET_CODES } from "../src/lib/embed/public-test-bucket.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
@@ -77,6 +81,39 @@ eq(judge(302, {}).outcome, "unreadable", "an unexpected status is unreadable rat
   assert(/seed/i.test(reasons.get("not-found") ?? ""), "not-found names the seed, which is the repair");
   assert(/rescued|catch/i.test(reasons.get("other-bucket") ?? ""), "other-bucket names the catch-all, which is what answered");
   assert(/key/i.test(reasons.get("refused") ?? ""), "refused names the key gate, which is what came back");
+}
+
+// --- the gate read (#2666): no key, no pass --------------------------------------------
+{
+  const gate = (status: number, body: unknown) => judgePublicTestBucketGate({ status, body }, CODE);
+  eq(gate(403, { error: "x", code: TEST_PASS_REFUSAL_CODES.refused }).outcome, "gated", "a pass refusal is the gate working");
+  eq(gate(200, { bucket: { code: CODE }, slots: [] }).outcome, "open", "a 200 with no pass is the bucket open to anybody again");
+  eq(gate(403, { error: "x", code: TEST_PASS_REFUSAL_CODES.off }).outcome, "switched-off", "TEST_PASS_OFF is the deployment missing its secret");
+  eq(gate(403, { error: "x", code: TEST_PASS_REFUSAL_CODES.expired }).outcome, "unreadable", "an EXPIRED refusal to a read that sent no pass is not the answer the gate gives");
+  eq(gate(403, {}).outcome, "unreadable", "a bare 403 is not recognised as the pass refusal");
+  eq(gate(404, {}).outcome, "unreadable", "a 404 is not the gate either");
+  eq(gate(429, {}).outcome, "throttled", "a 429 is the edge window");
+  eq(gate(502, {}).outcome, "error", "a 5xx is the route");
+
+  const reasons = new Map<PublicTestGateOutcome, string>();
+  const cases: [number, unknown][] = [
+    [403, { code: TEST_PASS_REFUSAL_CODES.refused }],
+    [200, {}],
+    [403, { code: TEST_PASS_REFUSAL_CODES.off }],
+    [429, {}],
+    [500, {}],
+    [302, {}],
+  ];
+  for (const [status, body] of cases) {
+    const v = gate(status, body);
+    reasons.set(v.outcome, v.reason);
+  }
+  eq(reasons.size, PUBLIC_TEST_GATE_OUTCOMES.length, "every declared gate outcome is produced by some observation");
+  eq(new Set(reasons.values()).size, reasons.size, "and no two share a sentence");
+  for (const [outcome, reason] of reasons) {
+    assert(!DASHES.test(reason), `${outcome}'s sentence carries no dash`);
+  }
+  assert(/EMBED_TEST_PASS_SECRET/.test(reasons.get("switched-off") ?? ""), "switched-off names the secret to set");
 }
 
 // --- the request is the partner's own ---------------------------------------------------

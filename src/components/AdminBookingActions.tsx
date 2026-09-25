@@ -35,6 +35,7 @@ const extractAgents = (json: unknown): ReassignAgent[] =>
 export default function AdminBookingActions({
   bookingId,
   bucketCode,
+  testPass = null,
   leadTimeZone,
   status,
   currentAgentId,
@@ -42,6 +43,12 @@ export default function AdminBookingActions({
 }: {
   bookingId: string;
   bucketCode: string | null;
+  /**
+   * The public test bucket's pass (#2666), minted server side for a TEST booking,
+   * whose bucket is the public test bucket and whose reschedule panel reads its
+   * times. Null for every real booking, whose read needs none.
+   */
+  testPass?: string | null;
   /**
    * The zone the lead booked in (#2310). The picker judges the lead's calling
    * window in it, never in the admin's own zone: moving a Honolulu lead's call
@@ -79,6 +86,7 @@ export default function AdminBookingActions({
         : null,
     zone: adminZone,
     leadZone: leadTimeZone,
+    testPass,
   });
   // The reassign agent list keeps the shared fetch+state hook (#627): loading and
   // error stay distinct from empty, so the panel never shows "no agents" while its
@@ -289,6 +297,7 @@ export default function AdminBookingActions({
             timeZone={adminZone}
             reader={{ kind: "staff", leadZone: leadTimeZone }}
             onRetry={picker.retry}
+            failedMessage={picker.failedMessage}
             classes={SLOT_TIMES_CLASSES.panel}
             noDaysNode={<p className="text-xs text-fg-muted">No open times.</p>}
             renderSlot={(iso) => (

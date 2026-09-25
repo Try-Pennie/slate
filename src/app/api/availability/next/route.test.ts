@@ -43,10 +43,15 @@ vi.mock("@/lib/notify/dispatch", () => ({ sendThrottledAlert: vi.fn(async () => 
 vi.mock("@/lib/log", () => ({ log: { error: vi.fn(), warn: vi.fn(), info: vi.fn() } }));
 
 import { NextRequest } from "next/server";
-import { PUBLIC_TEST_BUCKET_CODES } from "@/lib/embed/public-test-bucket";
+import { HIDDEN_TEST_BUCKET_CODES, PUBLIC_TEST_BUCKET_CODES } from "@/lib/embed/public-test-bucket";
+import { TEST_PASS_HEADER, TEST_PASS_REFUSAL_CODES } from "@/lib/embed/test-pass-header";
+import { TEST_PASS_TTL_MS, mintTestPass } from "@/lib/embed/test-pass";
+import { log } from "@/lib/log";
 import { GET } from "./route";
 
 const PUBLIC_TEST = PUBLIC_TEST_BUCKET_CODES[0];
+const SECRET = "n".repeat(64);
+const goodPass = () => mintTestPass({ code: PUBLIC_TEST, secret: SECRET, nowMs: Date.now() }).value;
 
 const EVENT_TYPE = { name: "Call", description: null, duration_min: 20, min_notice_min: 0 };
 
@@ -60,11 +65,16 @@ function computeReturning(slots: string[], opts?: { isTest?: boolean }) {
   }));
 }
 
-const get = (query = "?bucket=411") =>
-  GET(new NextRequest(`http://localhost/api/availability/next${query}`));
+const get = (query = "?bucket=411", pass?: string) =>
+  GET(
+    new NextRequest(`http://localhost/api/availability/next${query}`, {
+      headers: pass ? { [TEST_PASS_HEADER]: pass } : {},
+    }),
+  );
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.stubEnv("EMBED_TEST_PASS_SECRET", SECRET);
   rateLimit.availabilityWithinLimit.mockResolvedValue(true);
   hours.loadBusinessHoursCached.mockResolvedValue({
     zone: "America/New_York",
@@ -161,9 +171,35 @@ describe("GET /api/availability/next (#1329, #1339)", () => {
         (s) => Date.parse(s) >= Date.parse(from) && Date.parse(s) <= Date.parse(to),
       ),
     }));
-    const res = await get(`?bucket=${PUBLIC_TEST}`);
+    const res = await get(`?bucket=${PUBLIC_TEST}`, goodPass());
     expect(res.status).toBe(200);
     expect((await res.json()).slots).toEqual([day.toISOString()]);
+  });
+
+  // #2666: and only with the pass `/book` handed an approved page. Refused before
+  // the walk starts, since this is the most expensive read a browser can make.
+  it("refuses the public test bucket with no pass, before computing anything", async () => {
+    const res = await get(`?bucket=${PUBLIC_TEST}`);
+    expect(res.status).toBe(403);
+    expect((await res.json()).code).toBe(TEST_PASS_REFUSAL_CODES.refused);
+    expect(service.getBucketSlots).not.toHaveBeenCalled();
+    expect(log.warn).toHaveBeenCalledWith(
+      "embed-test",
+      expect.objectContaining({ reason: "missing", route: "availability-next" }),
+    );
+  });
+
+  it("refuses an expired pass with its own code", async () => {
+    const stale = mintTestPass({ code: PUBLIC_TEST, secret: SECRET, nowMs: Date.now() - TEST_PASS_TTL_MS - 1 }).value;
+    const res = await get(`?bucket=${PUBLIC_TEST}`, stale);
+    expect(res.status).toBe(403);
+    expect((await res.json()).code).toBe(TEST_PASS_REFUSAL_CODES.expired);
+  });
+
+  it("a good pass for the public bucket presented with the canary's code still 404s", async () => {
+    computeReturning([], { isTest: true });
+    const res = await get(`?bucket=${HIDDEN_TEST_BUCKET_CODES[0]}`, goodPass());
+    expect(res.status).toBe(404);
   });
 
   it("returns the generic 500 when the compute throws", async () => {

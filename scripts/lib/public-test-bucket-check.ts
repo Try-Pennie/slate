@@ -1,5 +1,8 @@
+import { TEST_PASS_REFUSAL_CODES } from "../../src/lib/embed/test-pass-header.ts";
+
 /**
- * What counts as the PUBLIC test bucket being served (#2660).
+ * What counts as the PUBLIC test bucket being served (#2660), and being GATED
+ * (#2666).
  *
  * The pure half of the canary's keyless read, split out for the same reason
  * every live check in this repo has one: the verdict is driven offline by
@@ -13,9 +16,21 @@
  * purpose: the empty bucket alarm, the slot health count, the booker_unstaffed
  * page. So a row deleted by hand, an agent made unbookable, or a recompute that
  * stopped publishing it would be found by the next partner reporting "no times",
- * which reads as a Slate outage. The 30 minute dry tick therefore makes the exact
- * request a partner's booker makes, with no key, and requires the bucket to
- * answer BY NAME.
+ * which reads as a Slate outage. The 30 minute dry tick therefore reads the
+ * bucket and requires it to answer BY NAME.
+ *
+ * ## Two reads since #2666, because one cannot answer both questions
+ *
+ * Since #2666 a browser reads the bucket only with a short lived pass `/book`
+ * mints for an approved website, and the canary is not a website. So:
+ *
+ *  - the SERVED read carries the canary's own key, which the availability read
+ *    accepts for every test bucket, and asks whether the bucket answers by name;
+ *  - the GATE read carries nothing, exactly as a stray caller would, and asks
+ *    whether it is REFUSED for want of a pass. A 200 there is the test path open
+ *    to anybody again; `TEST_PASS_OFF` is the deployment missing its signing
+ *    secret, which switches testing off for every partner at once and which no
+ *    other signal in Slate reports.
  *
  * It does NOT demand that times are offered: out of hours the bucket legitimately
  * offers nothing, and a check that demanded slots would be red every night (L36).
@@ -91,9 +106,9 @@ export function judgePublicTestBucketRead(
     return {
       outcome: "refused",
       reason:
-        `The public test bucket ${expectedCode} is being refused with ${o.status}, so the public ` +
-        `availability read is gating it on a key again. A browser can never send one, so no ` +
-        `partner can test the embed until the keyless path is restored.`,
+        `The public test bucket ${expectedCode} was refused with ${o.status} even though the ` +
+        `canary sent its own key, so the key it holds is not one the availability read accepts ` +
+        `for test buckets. Check BOOKING_API_KEY in the canary's secrets against CANARY_CALLERS.`,
     };
   }
   if (o.status === 429) {
@@ -137,7 +152,7 @@ export function judgePublicTestBucketRead(
     }
     return {
       outcome: "served",
-      reason: `The public test bucket ${expectedCode} answered by name, with no key.`,
+      reason: `The public test bucket ${expectedCode} answered by name to the canary's key.`,
     };
   }
   return {
@@ -146,5 +161,88 @@ export function judgePublicTestBucketRead(
       `The availability read answered ${o.status} for the public test bucket ${expectedCode}, ` +
       `a status this check does not know. Update scripts/lib/public-test-bucket-check.ts ` +
       `alongside whatever now answers it.`,
+  };
+}
+
+// --- the gate (#2666) -------------------------------------------------------------------
+
+export const PUBLIC_TEST_GATE_OUTCOMES = [
+  "gated",
+  "open",
+  "switched-off",
+  "throttled",
+  "error",
+  "unreadable",
+] as const;
+
+export type PublicTestGateOutcome = (typeof PUBLIC_TEST_GATE_OUTCOMES)[number];
+
+export interface PublicTestGateVerdict {
+  outcome: PublicTestGateOutcome;
+  reason: string;
+}
+
+function refusalCode(body: unknown): string | null {
+  if (!body || typeof body !== "object") return null;
+  const code = (body as { code?: unknown }).code;
+  return typeof code === "string" ? code : null;
+}
+
+/**
+ * Judge the read made with NO key and NO pass. Only `gated` passes: the bucket
+ * refused for want of a pass, which is the gate working. Each other answer sends
+ * a reader somewhere different (L11).
+ */
+export function judgePublicTestBucketGate(
+  o: PublicTestBucketObservation,
+  expectedCode: string,
+): PublicTestGateVerdict {
+  if (o.status === 403 && refusalCode(o.body) === TEST_PASS_REFUSAL_CODES.refused) {
+    return {
+      outcome: "gated",
+      reason: `The public test bucket ${expectedCode} refused a read carrying no pass, as it should.`,
+    };
+  }
+  if (o.status === 403 && refusalCode(o.body) === TEST_PASS_REFUSAL_CODES.off) {
+    return {
+      outcome: "switched-off",
+      reason:
+        `The public test bucket ${expectedCode} says test bookings are switched off: the ` +
+        `deployment holds no EMBED_TEST_PASS_SECRET, so no partner can test the embed. Set it ` +
+        `with wrangler secret put (DEPLOY.md, runtime secrets).`,
+    };
+  }
+  if (o.status === 200) {
+    return {
+      outcome: "open",
+      reason:
+        `The public test bucket ${expectedCode} answered 200 to a caller with no key and no ` +
+        `pass, so it is open to any website again. Check the pass gate in the availability ` +
+        `route (src/lib/embed/test-pass-gate.ts).`,
+    };
+  }
+  if (o.status === 429) {
+    return {
+      outcome: "throttled",
+      reason:
+        `The keyless read was throttled (429) before it could say whether the public test ` +
+        `bucket ${expectedCode} is gated. That is the edge window: re-run, and read the ` +
+        `throttle if it persists.`,
+    };
+  }
+  if (o.status >= 500) {
+    return {
+      outcome: "error",
+      reason:
+        `The keyless read of the public test bucket ${expectedCode} failed with ${o.status}. ` +
+        `That is the route, not the gate: read tag=availability in the Worker logs.`,
+    };
+  }
+  return {
+    outcome: "unreadable",
+    reason:
+      `The keyless read of the public test bucket ${expectedCode} answered ${o.status} with a ` +
+      `body this check does not recognise as the pass refusal. Update ` +
+      `scripts/lib/public-test-bucket-check.ts alongside whatever now answers it.`,
   };
 }

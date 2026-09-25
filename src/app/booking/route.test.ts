@@ -96,11 +96,19 @@ vi.mock("@/lib/booking/settings", () => bookingSettings);
 
 import { POST } from "./route";
 import { PUBLIC_TEST_BUCKET_CODES } from "@/lib/embed/public-test-bucket";
-import { BOOKING_ERROR_COPY } from "@/lib/booking/booker-copy";
+import { BOOKING_ERROR_COPY, TEST_ACCESS_COPY } from "@/lib/booking/booker-copy";
 import { PARTNER_KEYS } from "@/lib/booking/partner-keys";
 import { LeadCodeUnavailableError } from "@/lib/routing/lead-code";
+import { TEST_PASS_HEADER, TEST_PASS_REFUSAL_CODES } from "@/lib/embed/test-pass-header";
+import { TEST_PASS_TTL_MS, mintTestPass } from "@/lib/embed/test-pass";
+import { HIDDEN_TEST_BUCKET_CODES } from "@/lib/embed/public-test-bucket";
 
 const PUBLIC_TEST = PUBLIC_TEST_BUCKET_CODES[0];
+// #2666: the public test bucket is booked only with the pass `/book` handed an
+// approved page. The secret it is signed with, for every test in this file.
+const SECRET = "b".repeat(64);
+vi.stubEnv("EMBED_TEST_PASS_SECRET", SECRET);
+const goodPass = () => mintTestPass({ code: PUBLIC_TEST, secret: SECRET, nowMs: Date.now() }).value;
 
 const VALID_BODY = {
   bucketCode: "411",
@@ -109,11 +117,13 @@ const VALID_BODY = {
   attendee: { name: "Dana Lee", email: "dana@example.com", phone: "2155550100" },
 };
 
-function post(body: unknown) {
+function post(body: unknown, pass?: string) {
+  const headers = new Headers({ "content-type": "application/json" });
+  if (pass) headers.set(TEST_PASS_HEADER, pass);
   return POST(
     new Request("http://localhost/booking", {
       method: "POST",
-      headers: new Headers({ "content-type": "application/json" }),
+      headers,
       body: JSON.stringify(body),
     }) as never,
   );
@@ -239,9 +249,9 @@ describe("POST /booking (embed) error mapping", () => {
   });
 
   it("does not call a booking a test one when the link carried no routable code (#2638)", async () => {
-    await post({ ...VALID_BODY, bucketCode: PUBLIC_TEST, requestedCode: "" });
+    await post({ ...VALID_BODY, bucketCode: PUBLIC_TEST, requestedCode: "" }, goodPass());
     expect(service.createBooking).toHaveBeenCalledWith(expect.objectContaining({ allowTestBuckets: false }));
-    await post({ ...VALID_BODY, bucketCode: PUBLIC_TEST, requestedCode: PUBLIC_TEST });
+    await post({ ...VALID_BODY, bucketCode: PUBLIC_TEST, requestedCode: PUBLIC_TEST }, goodPass());
     expect(service.createBooking).toHaveBeenLastCalledWith(expect.objectContaining({ allowTestBuckets: true }));
   });
 
@@ -531,7 +541,7 @@ describe("POST /booking on the public test bucket (#2660)", () => {
   });
 
   it("lets the service book the public test bucket, and says the booking is a test", async () => {
-    const res = await post({ ...VALID_BODY, bucketCode: PUBLIC_TEST });
+    const res = await post({ ...VALID_BODY, bucketCode: PUBLIC_TEST }, goodPass());
     expect(res.status).toBe(200);
     expect((service.createBooking.mock.calls[0] as unknown[])[0]).toMatchObject({
       bucketCode: PUBLIC_TEST,
@@ -552,6 +562,59 @@ describe("POST /booking on the public test bucket (#2660)", () => {
     });
     expect(await res.json()).toMatchObject({ id: "bk-t", isTest: false });
     expect((service.findDuplicateBookingWarning.mock.calls[0] as unknown[])[0]).toMatchObject({ isTest: false });
+  });
+});
+
+// #2666: the confirm is the third place the pass is checked, and the one where a
+// pass that ran out matters most: a modal left open past its expiry reaches here
+// with a form already filled, so it has its own code and its own sentence.
+describe("POST /booking and the test pass (#2666)", () => {
+  beforeEach(() => {
+    service.createBooking.mockReset();
+    service.createBooking.mockResolvedValue({
+      booking: { id: "bk-t", starts_at: "2026-07-01T15:00:00.000Z", ends_at: "2026-07-01T15:30:00.000Z" },
+      manageUrl: "https://slate.test/booking/manage/tok",
+    });
+    service.findDuplicateBookingWarning.mockReset();
+    service.findDuplicateBookingWarning.mockResolvedValue(null);
+    rateLimit.refundRequest.mockClear();
+    recordApiOutcome.mockClear();
+  });
+
+  it("refuses the public test bucket with no pass, creating nothing", async () => {
+    const res = await post({ ...VALID_BODY, bucketCode: PUBLIC_TEST, requestedCode: PUBLIC_TEST });
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({
+      error: TEST_ACCESS_COPY.passRefused,
+      code: TEST_PASS_REFUSAL_CODES.refused,
+    });
+    expect(service.createBooking).not.toHaveBeenCalled();
+    // Not the tester's attempt to pay for, and not a lead refused either.
+    expect(rateLimit.refundRequest).toHaveBeenCalledTimes(1);
+    expect(recordApiOutcome).not.toHaveBeenCalled();
+  });
+
+  it("refuses a pass that ran out mid booking with its own code and sentence", async () => {
+    const stale = mintTestPass({ code: PUBLIC_TEST, secret: SECRET, nowMs: Date.now() - TEST_PASS_TTL_MS - 1 }).value;
+    const res = await post({ ...VALID_BODY, bucketCode: PUBLIC_TEST, requestedCode: PUBLIC_TEST }, stale);
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({
+      error: TEST_ACCESS_COPY.passExpired,
+      code: TEST_PASS_REFUSAL_CODES.expired,
+    });
+    expect(service.createBooking).not.toHaveBeenCalled();
+  });
+
+  it("a good pass for the public bucket cannot book the canary's bucket", async () => {
+    service.createBooking.mockRejectedValue(new service.UnknownBucketError("Unknown booking bucket"));
+    const res = await post({ ...VALID_BODY, bucketCode: HIDDEN_TEST_BUCKET_CODES[0] }, goodPass());
+    expect(res.status).toBe(422);
+    expect(service.createBooking).toHaveBeenCalledWith(expect.objectContaining({ allowTestBuckets: false }));
+  });
+
+  it("a real bucket is booked with no pass at all", async () => {
+    const res = await post(VALID_BODY);
+    expect(res.status).toBe(200);
   });
 });
 
