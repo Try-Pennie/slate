@@ -117,6 +117,12 @@ export const duplicateCancelApiKey = (): string => process.env.DUPLICATE_CANCEL_
 // called by the existing offboarding automation. Empty = endpoints disabled (503).
 export const offboardingApiKey = (): string => process.env.OFFBOARDING_API_KEY ?? "";
 
+// Bearer key noodge carries on its checks of /api/health and /api/health/availability
+// (#1228), so each can stamp its own uptime heartbeat. Its OWN key: it can do
+// nothing but stamp those two rows. Empty = neither endpoint ever stamps, so both
+// heartbeats go stale and the lane watchdog pages; the health answers are unaffected.
+export const uptimeHeartbeatKey = (): string => process.env.UPTIME_HEARTBEAT_KEY ?? "";
+
 // Bearer key for the bookable-toggle API (POST /api/users/bookable, #281),
 // called by the roster/onboarding automation to promote an agent into (or out
 // of) the booking pool. Empty = endpoint disabled (503).

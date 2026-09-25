@@ -225,6 +225,68 @@ export const CANARY_STALE_BOUNDS_MS: Record<string, number> = {
 };
 
 /**
+ * How noodge runs its two keyed checks of Slate (#1228): the mirror of
+ * `monitors/slate.sql` in Try-Pennie/noodge, whose own verifier pins the same
+ * numbers. The bound below is derived from these, so a change on either side that
+ * is not made on the other turns the bound into a claim about a monitor that does
+ * not exist; `scripts/test-uptime-heartbeat-bounds.ts` pins them here.
+ */
+export const NOODGE_SLATE_CHECK = {
+  /** `interval_min`: a run every 5 minutes. */
+  intervalMin: 5,
+  /** `alert_after`: noodge alerts on the 2nd consecutive failed run. */
+  alertAfter: 2,
+  /** `max_attempts`: a failed attempt is retried once inside the run. */
+  maxAttempts: 2,
+  /** `timeout_ms`: each attempt gives up after 20 seconds. */
+  timeoutMs: 20_000,
+  /** noodge's cron leases due checks once a minute, so a run can start a minute late. */
+  schedulerTickMs: MIN,
+} as const;
+
+/**
+ * The uptime checks' own dead man's switch (#1228): how long noodge's keyed check
+ * of each endpoint may go without reaching Slate before the watchdog pages.
+ *
+ * Slack only, like the canary family, and for the sharpest version of that reason:
+ * these lanes watch the thing that pages about /api/health, so a stale one flipping
+ * /api/health would have noodge report its own pause as a Slate outage.
+ *
+ * THE BOUND IS DERIVED. A stamp means a keyed request reached the endpoint, so the
+ * question is the longest gap a RUNNING noodge leaves without saying anything
+ * itself. After a stamped run, the next `alertAfter - 1` runs can all fail to reach
+ * Slate (a transport blip noodge retries quietly); the run after that either stamps
+ * or makes noodge alert, so from there on the silence belongs to noodge's own page.
+ * Each run can start one scheduler tick late and last every attempt's timeout:
+ *
+ *   longest quiet = alertAfter x interval + tick + maxAttempts x timeout
+ *                 = 2 x 5m + 1m + 2 x 20s = 11m40s
+ *
+ * The bound adds one more full interval of slack on top: 16m40s. So a page from here
+ * with no alert from noodge means noodge is not checking, and a check that was
+ * deleted, paused or stopped firing pages within about seventeen minutes.
+ *
+ * `neverIsStale` is ON with the grace window, like the retention lanes: a deployment
+ * with no UPTIME_HEARTBEAT_KEY, or a check nobody registered, never stamps at all,
+ * and invisible for ever is the failure this exists to end.
+ *
+ * One residual, accepted rather than missed: after an outage longer than the bound,
+ * this runs again the moment the Worker does and can page once before noodge's next
+ * run stamps, then all-clear minutes later. noodge will already have alerted about
+ * the outage itself, so the pair reads as the tail of that incident.
+ */
+const UPTIME_BOUND_MS =
+  NOODGE_SLATE_CHECK.alertAfter * NOODGE_SLATE_CHECK.intervalMin * MIN +
+  NOODGE_SLATE_CHECK.schedulerTickMs +
+  NOODGE_SLATE_CHECK.maxAttempts * NOODGE_SLATE_CHECK.timeoutMs +
+  NOODGE_SLATE_CHECK.intervalMin * MIN;
+
+export const UPTIME_STALE_BOUNDS_MS: Record<string, number> = {
+  "uptime:api-health": UPTIME_BOUND_MS,
+  "uptime:availability-canary": UPTIME_BOUND_MS,
+};
+
+/**
  * Staleness bounds for the Snowflake archival-mirror lanes (#1101), kept SEPARATE
  * from LANE_STALE_BOUNDS_MS on purpose (like the canary). A stopped mirror lane
  * means the analytics warehouse is going stale, or a compliance safety net has gone

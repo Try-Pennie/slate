@@ -10,14 +10,28 @@ const precompute = vi.hoisted(() => ({ listBucketSlotCounts: vi.fn() }));
 vi.mock("@/lib/supabase/admin", () => ({ supabaseAdmin: () => ({}) }));
 vi.mock("@/lib/routing/staffing-depth-load", () => staffing);
 vi.mock("@/lib/availability/precompute", () => precompute);
-vi.mock("@/lib/log", () => ({ log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } }));
+const log = vi.hoisted(() => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn() }));
+vi.mock("@/lib/log", () => ({ log }));
+// #1228: the uptime heartbeat noodge stamps through this endpoint.
+const heartbeat = vi.hoisted(() => ({ recordHeartbeat: vi.fn(async (_lane: string) => {}) }));
+vi.mock("@/lib/monitor/heartbeat", () => heartbeat);
 
 import { GET } from "./route";
+
+const KEY = "uptime-heartbeat-test-key";
+const req = (authorization?: string) =>
+  new Request("https://slate.test/api/health/availability", {
+    headers: authorization === undefined ? {} : { authorization },
+  });
 
 // The route only reads code + effectiveDepth off each TierDepth.
 const depth = (code: string, effectiveDepth: number) => ({ code, effectiveDepth });
 
-beforeEach(() => vi.clearAllMocks());
+beforeEach(() => {
+  vi.clearAllMocks();
+  process.env.UPTIME_HEARTBEAT_KEY = KEY;
+  heartbeat.recordHeartbeat.mockResolvedValue(undefined);
+});
 
 describe("GET /api/health/availability", () => {
   it("returns 200 ok when every staffed bucket has cached times", async () => {
@@ -27,7 +41,7 @@ describe("GET /api/health/availability", () => {
       { code: "205", slots: 12 },
     ]);
 
-    const res = await GET();
+    const res = await GET(req());
     const body = await res.json();
     expect(res.status).toBe(200);
     expect(body.status).toBe("ok");
@@ -41,7 +55,7 @@ describe("GET /api/health/availability", () => {
       { code: "205", slots: 12 },
     ]);
 
-    const res = await GET();
+    const res = await GET(req());
     const body = await res.json();
     expect(res.status).toBe(503);
     expect(body.status).toBe("degraded");
@@ -56,7 +70,7 @@ describe("GET /api/health/availability", () => {
       { code: "900", slots: 0 },
     ]);
 
-    const res = await GET();
+    const res = await GET(req());
     expect(res.status).toBe(200);
     expect((await res.json()).status).toBe("ok");
   });
@@ -65,7 +79,7 @@ describe("GET /api/health/availability", () => {
     staffing.loadTierDepths.mockRejectedValue(new Error("db down"));
     precompute.listBucketSlotCounts.mockResolvedValue([]);
 
-    const res = await GET();
+    const res = await GET(req());
     const body = await res.json();
     expect(res.status).toBe(503);
     expect(body.status).toBe("degraded");
@@ -81,7 +95,7 @@ describe("GET /api/health/availability", () => {
     );
     precompute.listBucketSlotCounts.mockResolvedValue([{ code: "100", slots: 142 }]);
 
-    const res = await GET();
+    const res = await GET(req());
     const body = await res.json();
     expect(res.status).toBe(503);
     expect(body.reason).toBe("check_error");
@@ -91,5 +105,62 @@ describe("GET /api/health/availability", () => {
     expect(body).toHaveProperty("unknownBuckets", null);
     // Nothing may be NAMED as broken off a reading that was never taken.
     expect(body.brokenBuckets).toEqual([]);
+  });
+});
+
+describe("GET /api/health/availability uptime heartbeat (#1228)", () => {
+  const healthyFleet = () => {
+    staffing.loadTierDepths.mockResolvedValue([depth("100", 69)]);
+    precompute.listBucketSlotCounts.mockResolvedValue([{ code: "100", slots: 142 }]);
+  };
+
+  it("stamps uptime:availability-canary when the request carries the heartbeat key", async () => {
+    healthyFleet();
+    const res = await GET(req(`Bearer ${KEY}`));
+    expect(res.status).toBe(200);
+    expect(heartbeat.recordHeartbeat).toHaveBeenCalledTimes(1);
+    expect(heartbeat.recordHeartbeat).toHaveBeenCalledWith("uptime:availability-canary");
+  });
+
+  it("does not stamp without a key, and answers exactly as it would have", async () => {
+    healthyFleet();
+    const res = await GET(req());
+    expect(res.status).toBe(200);
+    expect((await res.json()).status).toBe("ok");
+    expect(heartbeat.recordHeartbeat).not.toHaveBeenCalled();
+  });
+
+  it("does not stamp on a wrong key, and still answers normally", async () => {
+    healthyFleet();
+    const res = await GET(req(`Bearer not-${KEY}`));
+    expect(res.status).toBe(200);
+    expect(heartbeat.recordHeartbeat).not.toHaveBeenCalled();
+  });
+
+  it("never stamps when the deployment holds no key", async () => {
+    healthyFleet();
+    process.env.UPTIME_HEARTBEAT_KEY = "";
+    const res = await GET(req(`Bearer ${KEY}`));
+    expect(res.status).toBe(200);
+    expect(heartbeat.recordHeartbeat).not.toHaveBeenCalled();
+  });
+
+  it("still stamps, and still answers 503, when the canary's own read fails", async () => {
+    // noodge reached the endpoint, which is all the heartbeat claims. The verdict
+    // is noodge's to alert on, from the status code.
+    staffing.loadTierDepths.mockRejectedValue(new Error("db down"));
+    precompute.listBucketSlotCounts.mockResolvedValue([]);
+    const res = await GET(req(`Bearer ${KEY}`));
+    expect(res.status).toBe(503);
+    expect(heartbeat.recordHeartbeat).toHaveBeenCalledWith("uptime:availability-canary");
+  });
+
+  it("answers normally when the stamp write fails, and logs the failure", async () => {
+    healthyFleet();
+    heartbeat.recordHeartbeat.mockRejectedValue(new Error("supabase unreachable"));
+    const res = await GET(req(`Bearer ${KEY}`));
+    expect(res.status).toBe(200);
+    expect((await res.json()).status).toBe("ok");
+    expect(log.error.mock.calls.some((c) => c[0] === "uptime-heartbeat")).toBe(true);
   });
 });

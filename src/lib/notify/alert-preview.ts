@@ -41,6 +41,7 @@ import {
   retentionAlertText,
   LANE_STALE_BOUNDS_MS,
   TIME_OFF_STALE_BOUNDS_MS,
+  UPTIME_STALE_BOUNDS_MS,
   VERDICT_STALE_BOUNDS_MS,
 } from "@/lib/monitor/health";
 import { PARKED_VERDICT_DETECTORS } from "@/lib/monitor/verdict-freshness";
@@ -281,6 +282,8 @@ import {
   retentionRecoveryText,
   timeOffLaneAlertText,
   timeOffRecoveryText,
+  uptimeAlertText,
+  uptimeRecoveryText,
   verdictBlindAlertText,
   verdictParkedInfoText,
   verdictRecoveryText,
@@ -2660,6 +2663,49 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     state: "a time off lane recovered",
     channel: "recovery",
     text: timeOffRecoveryText("ooo-approvals-report"),
+  },
+  // #1228: the same key again, for noodge's keyed checks of Slate. Three pages,
+  // because each sends the reader somewhere different: a check that stopped, a
+  // check that never once arrived (which is also what a deployment with no key
+  // looks like), and a record that cannot be read.
+  {
+    key: "cron_lane_stale:*",
+    state: "noodge's /api/health check has stopped reaching Slate",
+    channel: "alert",
+    text: uptimeAlertText({
+      lane: "uptime:api-health",
+      ageMs: 40 * 60_000,
+      maxStaleMs: UPTIME_STALE_BOUNDS_MS["uptime:api-health"]!,
+      unreadable: false,
+    }),
+  },
+  {
+    key: "cron_lane_stale:*",
+    state: "noodge's availability check has never reached Slate with the key",
+    channel: "alert",
+    text: uptimeAlertText({
+      lane: "uptime:availability-canary",
+      ageMs: Infinity,
+      maxStaleMs: UPTIME_STALE_BOUNDS_MS["uptime:availability-canary"]!,
+      unreadable: false,
+    }),
+  },
+  {
+    key: "cron_lane_stale:*",
+    state: "an uptime check's last heartbeat record cannot be read",
+    channel: "alert",
+    text: uptimeAlertText({
+      lane: "uptime:api-health",
+      ageMs: NOW_MS,
+      maxStaleMs: UPTIME_STALE_BOUNDS_MS["uptime:api-health"]!,
+      unreadable: true,
+    }),
+  },
+  {
+    key: "cron_lane_stale:*",
+    state: "noodge's check is reaching Slate again",
+    channel: "recovery",
+    text: uptimeRecoveryText("uptime:availability-canary"),
   },
   // #1394: the same key, a different fault. These lanes are NOT quiet; they run
   // faithfully and conclude nothing, which every other message here would

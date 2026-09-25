@@ -29,6 +29,7 @@ import {
   MIRROR_STALE_BOUNDS_MS,
   RETENTION_STALE_BOUNDS_MS,
   TIME_OFF_STALE_BOUNDS_MS,
+  UPTIME_STALE_BOUNDS_MS,
   VERDICT_STALE_BOUNDS_MS,
 } from "../src/lib/monitor/health.ts";
 import { assert, finish } from "./lib/harness.ts";
@@ -49,6 +50,8 @@ const BOUNDS: Record<string, Record<string, number>> = {
   VERDICT_STALE_BOUNDS_MS,
   // #2543: the two daily time off lanes, four stamps between them.
   TIME_OFF_STALE_BOUNDS_MS,
+  // #1228: noodge's two keyed checks of Slate, stamped from the health endpoints.
+  UPTIME_STALE_BOUNDS_MS,
 };
 
 // A lane that deliberately stamps with NO bound watching it. Empty on purpose: an

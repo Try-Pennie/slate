@@ -86,6 +86,7 @@ wrangler secret put BOOKING_API_KEY_CANARY  # optional; the smoke canary's own k
 # wrangler secret put BOOKING_API_KEY_CANARY_2  # optional; the canary's rotation slot, set only when rotating.
 openssl rand -hex 32 | wrangler secret put EMBED_TEST_PASS_SECRET  # required for partner testing (#2666); signs the short lived pass /book hands a page on an EMBED_TEST_ORIGINS website. Piped so the value never appears. Empty = the public test bucket is OFF: /book says so, the routes answer 403 TEST_PASS_OFF, and the canary's gate read pages. Rotating it ends every open test page's pass (a reload fixes it).
 wrangler secret put GITHUB_CANARY_TOKEN     # optional; fine-grained GitHub token (Actions read/write on Try-Pennie/slate) so the monitor lane can re-fire the smoke-canary workflow when GitHub drops a scheduled run. Empty = gap-filler is a no-op (GitHub's schedule alone runs the canary).
+wrangler secret put UPTIME_HEARTBEAT_KEY    # required; the bearer noodge sends on its /api/health and /api/health/availability checks (#1228), so each stamps its own uptime heartbeat. The same value is SLATE_UPTIME_HEARTBEAT_KEY when noodge applies monitors/slate.sql. Empty = the endpoints never stamp, so both uptime heartbeats go stale and the lane watchdog pages every hour; the health answers themselves are unaffected.
 wrangler secret put SNOWFLAKE_PRIVATE_KEY   # optional; RSA private key (PKCS#8 PEM) for the Snowflake archival mirror export lane. Empty = the export lane is a safe no-op (logs "not configured" and skips). See docs/snowflake-setup.md.
 ```
 
@@ -398,13 +399,24 @@ working once verification is done.
 3. Configure event type + working hours + bucket `411` + webhook URL.
 4. Load `/booking/SF_TEST?xbc=411&...` → book → check calendar invite + webhook.
 
-## External uptime monitoring (noodge, #749)
+## External uptime monitoring (noodge, #749, #1228)
 Slate's internal cron monitor only alerts while the Worker is alive. An external
-monitor is what catches a dead Worker, a broken deploy, or a DNS failure. Register
-these checks in noodge (https://noodge.trypennie.dev/), all against
+monitor is what catches a dead Worker, a broken deploy, or a DNS failure. noodge
+(https://noodge.trypennie.dev/) runs four checks against
 `https://slate.trypennie.app`, alerting to the same Slack channel the cron monitor
-uses. (Cloudflare's native Health Checks were considered but need a paid plan; the
-`trypennie.app` zone is on Free, so noodge is the free choice.)
+uses (`C09F4L6PLQP`). (Cloudflare's native Health Checks were considered but need a
+paid plan; the `trypennie.app` zone is on Free, so noodge is the free choice.)
+
+**The checks are code, not dashboard rows.** They live in `monitors/slate.sql` in
+Try-Pennie/noodge, which is idempotent, keyed on stable keys, adopts rows that were
+first created by hand in the dashboard, and repairs drift on every apply. Apply it
+from the noodge repo with the heartbeat key in the environment (below):
+
+<!-- runbook-unverified: both run in the noodge repo, not this one, and the second writes noodge's production D1 with a Cloudflare write token -->
+```sh
+npm run test:monitors:slate   # local D1: adoption, idempotence, drift repair, refusal
+npm run monitors:sync:slate   # apply to production D1; refuses without SLATE_UPTIME_HEARTBEAT_KEY
+```
 
 1. `GET /api/health` expects `200`. Covers liveness, DB reachability, and cron lane
    freshness (a stalled recompute lane surfaces here). Interval: 5 min.
@@ -414,22 +426,47 @@ uses. (Cloudflare's native Health Checks were considered but need a paid plan; t
    the crons tick while the booker offers nothing). It is PTO-aware, so a tier that
    is empty only because its agents are all off does not page. Interval: 5 min.
    Because the verdict rides on the status code, noodge needs no body assertion.
-3. `GET /widget.js` expects `200` with a JavaScript content type. The embed script;
-   if it stops serving, every landing page that embeds Slate loses its booker.
+3. `GET /widget.js` expects `200`. The embed script; if it stops serving, every
+   landing page that embeds Slate loses its booker. (noodge asserts status, latency
+   and a JSON path, not a content type.)
 4. `GET /login` expects `200`. Cheap catch for a broken deploy: it proves the
    Next.js page-rendering path serves (not just the API routes). The root `/`
    redirects to `/login` (a `307`), so point the check at `/login` directly rather
    than `/`, or a strict expect-`200` check fails on the redirect.
 
-Alerting: noodge's alert-on-failure default is fine here. These endpoints are
-built to return `503` only on a sustained, real condition (a cron lane well past
-its bound, a genuinely empty well-staffed tier), not on momentary flicker, so a
-first-failure alert will not be noisy, and a server-side debounce could not smooth
-a network blip between noodge and Slate anyway (it never reaches the endpoint). If
-noodge offers a "retry once before alerting" option, turn it on to trim those
-transport blips. Verify each check actually fails when it should: point it at a
-deliberately bad path once, confirm the Slack alert fires, then point it back. A
-check that can only ever pass is worse than no check.
+Alerting: every check makes up to two attempts per run (`max_attempts` 2) and
+alerts after two consecutive failed runs (`alert_after` 2), so a transport blip
+between noodge and Slate, which never reaches the endpoint and which no server
+side debounce could smooth, does not page. These endpoints return `503` only on a
+sustained, real condition (a cron lane well past its bound, a genuinely empty
+well-staffed tier), so the ten minutes that costs is not hiding flicker. Verify each
+check actually fails when it should: point it at a deliberately bad path once,
+confirm the Slack alert fires, then point it back. A check that can only ever pass
+is worse than no check. noodge's bot has to be in the channel (`/invite @Noodge`)
+for its alert to arrive.
+
+**Watching the watcher (#1228).** Checks 1 and 2 send `Authorization: Bearer` with
+a dedicated key, `UPTIME_HEARTBEAT_KEY` here and `SLATE_UPTIME_HEARTBEAT_KEY` when
+noodge applies `monitors/slate.sql`. A request carrying it stamps
+`uptime:api-health` or `uptime:availability-canary` in `lane_heartbeats`, whatever
+the endpoint answers, and the lane watchdog pages (`cron_lane_stale:uptime:*`, with
+an all-clear) when either goes quiet for longer than `UPTIME_STALE_BOUNDS_MS`
+(16m40s, derived in `src/lib/monitor/health.ts` from the cadence above). So a check
+that is deleted, paused or stops firing, or noodge itself stopping, now pages. The
+key never changes the health answer: a wrong or missing key simply does not stamp.
+**A deployment with no `UPTIME_HEARTBEAT_KEY` never stamps at all**, so both
+heartbeats go stale and page, once per hour, one bound after the watchdog first sees
+them missing.
+
+What it cannot see, so a quiet channel is never read as more than it is:
+
+- **A dead Worker cannot receive a stamp, and cannot run the watchdog that would
+  notice one missing.** A total outage is caught by noodge's OWN alert on checks 1
+  to 4, which is why its alerts go to the same channel.
+- **`/widget.js` and `/login` cannot stamp**, because no app code runs for them.
+  Their only coverage against being deleted or paused is the registration file:
+  re-applying `monitors/slate.sql` restores them, and nothing pages if one is
+  paused in the dashboard between applies.
 
 The availability canary's paging rule (tunable constants in
 `src/lib/monitor/availability-canary.ts`): a single broken tier with at least 3

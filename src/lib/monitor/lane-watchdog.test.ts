@@ -135,6 +135,10 @@ const healthy = () => ({
   "verdict:offsite-origin": ago(5 * MIN),
   "verdict:awaiting-activation": ago(5 * MIN),
   "verdict:regal-call-feed": ago(5 * MIN),
+  // #1228: noodge's two keyed checks stamp every five minutes, and are judged with
+  // neverIsStale ON, so a healthy fleet has both a few minutes old.
+  "uptime:api-health": ago(3 * MIN),
+  "uptime:availability-canary": ago(3 * MIN),
   // `verdict:booking-failure-rate` is deliberately ABSENT, and that is the healthy
   // state rather than a gap in the fixture (#2499). The check cannot reach a
   // verdict before real Low leads book: the outcome mix read excludes test
@@ -729,6 +733,79 @@ describe("alertOnStaleLanes (#803)", () => {
         (c) => c[0] === "cron_lane_stale:ooo-approvals-report",
       );
       expect(call).toBeDefined();
+      expect(String(call?.[1])).toMatch(/No action is needed/);
+    });
+  });
+
+  describe("the external uptime checks' heartbeats (#1228)", () => {
+    const pageFor = (lane: string) =>
+      dispatch.sendThrottledAlert.mock.calls.find((c) => c[0] === `cron_lane_stale:${lane}`);
+
+    it("pages when noodge's /api/health check has stopped reaching Slate, and says what to do", async () => {
+      heartbeat.readAllHeartbeatMs.mockResolvedValue({ ...healthy(), "uptime:api-health": ago(45 * MIN) });
+      const { stale } = await alertOnStaleLanes();
+      expect(stale.map((l) => l.lane)).toContain("uptime:api-health");
+      const text = String(pageFor("uptime:api-health")?.[2]);
+      // What to DO, not the mechanism: the check is registered and enabled, and
+      // noodge itself is running.
+      expect(text).toMatch(/noodge/);
+      expect(text).toMatch(/registered/);
+      expect(text).toMatch(/enabled/);
+      expect(text).toMatch(/running/);
+      expect(text).toMatch(/\/api\/health\b/);
+      expect(text).not.toMatch(/Infinity|NaN|undefined/);
+    });
+
+    it("names the availability check separately, so one page cannot stand for both", async () => {
+      heartbeat.readAllHeartbeatMs.mockResolvedValue({
+        ...healthy(),
+        "uptime:availability-canary": ago(45 * MIN),
+      });
+      await alertOnStaleLanes();
+      expect(pageFor("uptime:api-health")).toBeUndefined();
+      expect(String(pageFor("uptime:availability-canary")?.[2])).toMatch(/\/api\/health\/availability/);
+    });
+
+    it("stays quiet inside the bound, through a run noodge is still retrying", async () => {
+      // Two quiet runs is a transport blip noodge has not yet alerted on itself.
+      heartbeat.readAllHeartbeatMs.mockResolvedValue({ ...healthy(), "uptime:api-health": ago(11 * MIN) });
+      const { stale } = await alertOnStaleLanes();
+      expect(stale.map((l) => l.lane)).not.toContain("uptime:api-health");
+      expect(pageFor("uptime:api-health")).toBeUndefined();
+    });
+
+    it("gives a never-stamped check its grace window rather than paging on the deploy", async () => {
+      const { "uptime:api-health": _omitted, ...rest } = healthy();
+      heartbeat.readAllHeartbeatMs.mockResolvedValue(rest);
+      marker.firstSeenAt = null;
+      await alertOnStaleLanes();
+      expect(pageFor("uptime:api-health")).toBeUndefined();
+      expect(marker.written).toContain("lane_never_seen:uptime:api-health");
+    });
+
+    it("pages a check that has never stamped once its grace window is spent, naming the missing key", async () => {
+      // A deployment with no UPTIME_HEARTBEAT_KEY never stamps at all, so this is
+      // the page it gets, and it has to say so.
+      const { "uptime:api-health": _omitted, ...rest } = healthy();
+      heartbeat.readAllHeartbeatMs.mockResolvedValue(rest);
+      marker.firstSeenAt = new Date(Date.now() - 60 * MIN).toISOString();
+      await alertOnStaleLanes();
+      const text = String(pageFor("uptime:api-health")?.[2]);
+      expect(text).toMatch(/never/i);
+      expect(text).toMatch(/UPTIME_HEARTBEAT_KEY/);
+      expect(text).toMatch(/monitors:sync:slate/);
+    });
+
+    it("all-clears a check that is reaching Slate again", async () => {
+      dispatch.existingAlertStateKeys.mockResolvedValue(
+        new Set(["alert_firing:cron_lane_stale:uptime:availability-canary"]),
+      );
+      await alertOnStaleLanes();
+      const call = dispatch.resolveAlert.mock.calls.find(
+        (c) => c[0] === "cron_lane_stale:uptime:availability-canary",
+      );
+      expect(call).toBeDefined();
+      expect(String(call?.[1])).toMatch(/noodge/i);
       expect(String(call?.[1])).toMatch(/No action is needed/);
     });
   });

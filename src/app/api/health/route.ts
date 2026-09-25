@@ -8,6 +8,7 @@ import {
 } from "@/lib/monitor/health";
 import { parseStampMs } from "@/lib/date/stamp";
 import { slackConfigured } from "@/lib/notify/slack";
+import { stampUptimeHeartbeat } from "@/lib/monitor/uptime-heartbeat";
 
 export const dynamic = "force-dynamic";
 
@@ -23,9 +24,17 @@ export const dynamic = "force-dynamic";
  * that has never stamped (fresh deploy) does not fail health. Body is
  * intentionally minimal (no sensitive data) so it is safe to expose to uptime
  * checks.
+ *
+ * #1228: a request carrying the uptime heartbeat key (noodge's check) also stamps
+ * `uptime:api-health`, so a check that stops firing goes stale and pages. The key
+ * decides only whether that stamp is written: the answer below is identical with a
+ * valid key, a wrong one, none at all, or none configured.
  */
-export async function GET() {
+export async function GET(req: Request) {
   const now = Date.now();
+  // Started before the read and awaited after it, so the stamp costs this request
+  // no extra round trip. It never throws.
+  const stamped = stampUptimeHeartbeat(req.headers.get("authorization"), "uptime:api-health");
 
   let dbOk = true;
   const ageByLane = new Map<string, number>();
@@ -72,6 +81,8 @@ export async function GET() {
   // NOT flip httpStatus (that would conflate "app down" with "paging off"). It
   // rides the body so an uptime check or a human reading the endpoint can see it.
   const alerting = slackConfigured() ? "ok" : "unconfigured";
+
+  await stamped;
 
   return NextResponse.json(
     {
