@@ -30,6 +30,15 @@
  * `unreadable` send somebody to two different places: the first is a lead nobody
  * scored, the second is a score written in a shape Slate does not know.
  *
+ * WHAT IS NOT LOOKED AT. A booking made from a known test source
+ * (`isTestSourceBooking`, #2737): a host page that is not the production site. On
+ * 2026-09-25 four test bookings on XBC 100 and 112 each carried a real looking
+ * `00Q` lead id, so they were compared, and a single one of them was the verdict
+ * that un-parked this check and paged "real leads are booking in Slate now". They
+ * are excluded before anything is asked of Salesforce, counted as `testSource`,
+ * and never cleared as gone. The predicate is the one the off site page uses, so
+ * every booking excluded here is also paged there, and none of them goes unseen.
+ *
  * Pure apart from dependency free helpers, so scripts/test-below-lead-tier.ts
  * drives it directly.
  */
@@ -39,6 +48,7 @@ import { isLeadId, leadIdKey } from "@/lib/salesforce/lead-xbc";
 import { strongIdsOf } from "@/lib/booking/lookup-identity";
 import type { Criteria } from "@/lib/db/types";
 import type { AlertResolve, ThrottledNotify } from "./alert-deps";
+import { isTestSourceBooking } from "./offsite-origin";
 
 /** The alert family: one condition per booking, `booking_below_lead_tier:<id>`. */
 export const BELOW_LEAD_TIER_KEY = "booking_below_lead_tier";
@@ -59,6 +69,8 @@ export interface UpcomingBooking {
   external_id: string | null;
   agent_name: string | null;
   agent_email: string | null;
+  /** Read for the host page the booking was made from (#2737), nothing else. */
+  prefill: Record<string, string> | null;
 }
 
 /** The columns this check needs off a `buckets` row. */
@@ -273,6 +285,8 @@ export type BelowLeadTierResult =
   | {
       status: "measured";
       compared: number;
+      /** Made from a known test source, so neither compared nor unmeasured (#2737). */
+      testSource: number;
       below: BelowFinding[];
       unmeasured: Record<UnmeasuredReason, number>;
       paged: boolean;
@@ -310,12 +324,15 @@ export interface BelowLeadTierDeps {
  * missing routing record must never fail the tick or take out the checks after it.
  */
 export async function runBelowLeadTierCheck(deps: BelowLeadTierDeps): Promise<BelowLeadTierResult> {
-  let bookings: UpcomingBooking[];
+  let read: UpcomingBooking[];
   try {
-    bookings = await deps.loadBookings();
+    read = await deps.loadBookings();
   } catch (err) {
     return { status: "unreadable", stage: "bookings", error: err instanceof Error ? err.message : String(err) };
   }
+  // A test booking is not a lead, so it is not asked about, compared, or cleared.
+  const bookings = read.filter((b) => !isTestSourceBooking(b.prefill));
+  const testSourceIds = new Set(read.filter((b) => isTestSourceBooking(b.prefill)).map((b) => b.id));
 
   // One question per lead, whichever spelling the bookings stored.
   const idsByKey = new Map<string, string>();
@@ -370,6 +387,8 @@ export async function runBelowLeadTierCheck(deps: BelowLeadTierDeps): Promise<Be
     if (firing !== null) {
       const byId = new Map(comparisons.map((c) => [c.booking.id, c]));
       for (const id of firing) {
+        // Excluded, so not measured this run: it keeps whatever it has (#1134).
+        if (testSourceIds.has(id)) continue;
         const c = byId.get(id);
         const why = c === undefined ? "gone" : c.kind === "agrees" ? "agrees" : null;
         if (why === null) continue;
@@ -381,5 +400,13 @@ export async function runBelowLeadTierCheck(deps: BelowLeadTierDeps): Promise<Be
     }
   }
 
-  return { status: "measured", compared, below, unmeasured, paged: deps.armed && below.length > 0, cleared };
+  return {
+    status: "measured",
+    compared,
+    testSource: testSourceIds.size,
+    below,
+    unmeasured,
+    paged: deps.armed && below.length > 0,
+    cleared,
+  };
 }

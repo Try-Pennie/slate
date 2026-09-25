@@ -1559,6 +1559,7 @@ export async function GET(req: NextRequest) {
           log.info("monitor", {
             msg: "below lead tier",
             compared: result.compared,
+            test_source: result.testSource,
             below: result.below.length,
             paged: result.paged,
             cleared: result.cleared,

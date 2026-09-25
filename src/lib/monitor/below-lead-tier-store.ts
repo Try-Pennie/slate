@@ -19,6 +19,9 @@ import type { UpcomingBooking } from "@/lib/monitor/below-lead-tier";
  *
  * Test-ness is a property of the BUCKET (#396), so the caller passes the real
  * bucket ids rather than this filtering a `bookings.is_test` that does not exist.
+ * `prefill` is read for the host page, because a test made in a REAL bucket is
+ * recognised by where it was made from (`isTestSourceBooking`, #2737), and that
+ * exclusion is the check's own, not this read's.
  * Sixty uuids ride in the URL comfortably (200 measured safe, #1321). Every page,
  * because at cutover the upcoming set is in the low thousands.
  */
@@ -31,7 +34,7 @@ export async function loadUpcomingBookingsInBuckets(
   return selectAllPages<UpcomingBooking>("monitor below lead tier bookings", (from, to) =>
     db
       .from("bookings")
-      .select("id, bucket_id, starts_at, salesforce_id, external_id, agent_name, agent_email")
+      .select("id, bucket_id, starts_at, salesforce_id, external_id, agent_name, agent_email, prefill")
       .in("bucket_id", bucketIds)
       .in("status", ACTIVE_BOOKING_STATUSES)
       .gte("starts_at", nowIso)
