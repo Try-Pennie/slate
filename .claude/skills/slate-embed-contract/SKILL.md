@@ -117,7 +117,9 @@ Do not refactor the `Cal` queue / param / message plumbing while restyling.
    - `slate:resize { height }` - Booker posts `scrollHeight`; widget sets iframe height
    - `slate:bookingSuccessful { data }` - widget re-emits the cal-style
      `bookingSuccessful` host event. `data` is `{ booking, salesforceId, outcome }`,
-     where `booking` is the Booker's confirm response: `id`, `startsAt`, `endsAt`,
+     where `booking` is the Booker's confirm response: `id`, the booking's own
+     `salesforceId` and `externalId` as stored (#2750, `null` when it holds none),
+     `startsAt`, `endsAt`,
      `manageUrl`, `duplicateWarning`, `calendarLinks` (#2643), and the partner
      join keys `submissionId` and `regalProfileId` (#2659, `null` when the URL
      carried none). It is posted for a
@@ -135,6 +137,16 @@ Do not refactor the `Cal` queue / param / message plumbing while restyling.
      (`docs/booking-api.md` section 3), which carries the contact and the calendar
      links. So `data.booking.id` is load bearing: renaming or dropping it breaks
      the confirmation page for every Slate booking.
+   - **Two lead ids ride on the success message, and they differ on a moved call
+     (#2750).** `data.booking.salesforceId` / `data.booking.externalId`, and the V2
+     events' `salesforceId` / `externalId`, are the ids the BOOKING is stored
+     under. `data.salesforceId` beside `booking` is the PAGE's `external_id`. A
+     lead who submits twice holds two lead records; moving the call they already
+     have from the second page leaves it on the FIRST lead, and the by id lookup
+     refuses a booking the id it is given does not own (#2657), so a lookup made
+     with the page's id 404s. **A host looks a booking up with the id from the
+     EVENT's booking, never one it re-derives from its own page.** The V2 payload
+     never falls back to the page's id: a booking holding none answers `null`.
    - **A wrong `parentOrigin` fails silently in the browser**, so the Booker checks
      it (#2641): when the declared origin differs from `document.referrer`'s origin,
      it reports the two origins once per load through `/api/client-errors`, which
@@ -172,7 +184,7 @@ Do not refactor the `Cal` queue / param / message plumbing while restyling.
      | `bookerReopened` | widget only | the modal is opened again on the same page, after the open succeeded (#2677) | `{}` |
      | `bookerReloaded` | widget only | the modal iframe fires `load` a second or later time: a retry, or a reload inside the frame, never a close and reopen | `{}` |
      | `linkFailed` | `slate:linkFailed`, and widget only for the modal's own load failure | the availability read failed (`availability_failed`), the page boundary caught a crash (`booker_crashed`), or the modal's iframe never loaded (`load_timeout`, `load_error`) | `{ code, msg }` |
-     | `bookingSuccessfulV2` | derived from `slate:bookingSuccessful` with `outcome: "created"` | a fresh booking | `{ uid, startTime, endTime, status: "confirmed", isTest }` |
+     | `bookingSuccessfulV2` | derived from `slate:bookingSuccessful` with `outcome: "created"` | a fresh booking | `{ uid, startTime, endTime, status: "confirmed", isTest, salesforceId, externalId }`, the ids the booking's own (#2750) |
      | `rescheduleBookingSuccessfulV2` | derived from `outcome: "rescheduled"` | a lead moved the call they already had | same shape |
      | `bookingCancelled` | `slate:bookingCancelled` | the in embed cancel (`cancelExistingCall`) succeeded | `{ booking: { uid, startTime, endTime, cancellationReason } }` |
      | `bookingSuccessful` | `slate:bookingSuccessful` | UNCHANGED, fresh and moved alike | `{ booking, salesforceId, outcome }` |

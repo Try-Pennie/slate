@@ -18,6 +18,7 @@ import { recordApiOutcome } from "@/lib/monitor/record-api-outcome";
 import { internalErrorResponse, reportInternalError } from "@/lib/api/errors";
 import { noStore } from "@/lib/api/no-store";
 import { partnerKeysFrom } from "@/lib/booking/partner-keys";
+import { bookingIdentityFrom } from "@/lib/booking/booking-identity";
 import { INPUT_LIMITS } from "@/lib/booking/input-limits";
 import { timezoneSchema } from "@/lib/booking/input-schema";
 import { BOOKING_ERROR_COPY } from "@/lib/booking/booker-copy";
@@ -138,6 +139,12 @@ async function handlePost(
     recordApiOutcome("rescheduled", "", null, { by: "manageToken", token });
     return NextResponse.json({
       id: booking.id,
+      // #2750: the lead ids the moved call is STORED under, which stay the ones it
+      // was first booked with. The page the lead moved it from can carry another
+      // lead id (a second submission, recognised by the weak match, #1340), and
+      // the host's confirmed page lookup refuses a booking that id does not own
+      // (#2657), so the host must be handed the booking's own.
+      ...bookingIdentityFrom(booking),
       startsAt: booking.starts_at,
       endsAt: booking.ends_at,
       manageUrl,

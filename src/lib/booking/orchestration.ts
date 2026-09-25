@@ -55,6 +55,7 @@ import {
 import { formatOwnerReassignNotice } from "./owner-notice-copy.ts";
 import { bookingDetailHref } from "./detail.ts";
 import { partnerKeysFrom, type PartnerKeys } from "./partner-keys.ts";
+import { bookingIdentityFrom } from "./booking-identity.ts";
 import { SLACK_NOT_CONFIGURED } from "../notify/slack.ts";
 import { isDefinitiveFailure, reachabilityFromError } from "../google/reachability-classify.ts";
 import type { FailureKind } from "../google/sync-health.ts";
@@ -3667,8 +3668,7 @@ export interface ApiBookingListItem extends ApiBookingView {
 function toApiBookingView(b: Booking, deps: BookingDeps, isTest: boolean): ApiBookingView {
   return {
     id: b.id,
-    externalId: b.external_id,
-    salesforceId: b.salesforce_id,
+    ...bookingIdentityFrom(b),
     startsAt: b.starts_at,
     endsAt: b.ends_at,
     status: b.status,

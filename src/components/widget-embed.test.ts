@@ -391,8 +391,12 @@ describe("widget.js booker lifecycle events (#2658)", () => {
       endsAt: "2026-10-01T15:30:00.000Z",
       manageUrl: "https://slate.test/booking/manage/t",
       isTest: true,
+      // #2750: the booking's OWN ids as stored, deliberately unlike the page's
+      // below, so a payload that took the page's id cannot pass.
+      salesforceId: "00QOriginal0001",
+      externalId: "00QOriginalExt1",
     },
-    salesforceId: "003xx",
+    salesforceId: "00QSecondPage01",
     outcome,
   });
   const v2Shape = {
@@ -401,7 +405,44 @@ describe("widget.js booker lifecycle events (#2658)", () => {
     endTime: "2026-10-01T15:30:00.000Z",
     status: "confirmed",
     isTest: true,
+    salesforceId: "00QOriginal0001",
+    externalId: "00QOriginalExt1",
   };
+
+  // #2750: a lead who submits twice holds two lead records, and moving the call
+  // they already had from the second page keeps the call on the FIRST lead. The
+  // host's confirmed page looks the booking up by id AND lead id, and the lookup
+  // refuses a booking the id it is given does not own (#2657), so the event must
+  // carry the booking's own lead id while the message's page level salesforceId
+  // stays the page's.
+  it("carries the moved call's ORIGINAL lead id on the V2 event, and the page's on the raw message", () => {
+    const legacy = calOn("bookingSuccessful");
+    const movedV2 = calOn("rescheduleBookingSuccessfulV2");
+    const iframe = openModalIn(freshNs());
+    const data = successData("rescheduled");
+    fromActiveFrame(iframe, { type: EMBED_MESSAGE.bookingSuccessful, data });
+
+    const [raw] = eventsOf(legacy) as Array<{ data: typeof data }>;
+    expect(raw.data.salesforceId).toBe("00QSecondPage01");
+    expect(raw.data.booking.salesforceId).toBe("00QOriginal0001");
+    const [moved] = eventsOf(movedV2) as Array<{ data: { salesforceId: string; externalId: string } }>;
+    expect(moved.data.salesforceId).toBe("00QOriginal0001");
+    expect(moved.data.externalId).toBe("00QOriginalExt1");
+  });
+
+  it("answers null for a booking id the response lacks, and never borrows the page's", () => {
+    const v2 = calOn("bookingSuccessfulV2");
+    const iframe = openModalIn(freshNs());
+    const data = successData("created");
+    const booking: Record<string, unknown> = { ...data.booking };
+    delete booking.salesforceId;
+    delete booking.externalId;
+    fromActiveFrame(iframe, { type: EMBED_MESSAGE.bookingSuccessful, data: { ...data, booking } });
+
+    const [fresh] = eventsOf(v2) as Array<{ data: Record<string, unknown> }>;
+    expect(fresh.data).toHaveProperty("salesforceId", null);
+    expect(fresh.data).toHaveProperty("externalId", null);
+  });
 
   it("keeps bookingSuccessful byte for byte and derives bookingSuccessfulV2 from outcome created", () => {
     const legacy = calOn("bookingSuccessful");

@@ -1005,3 +1005,33 @@ describe("POST /booking records the host page with each attempt (#2752)", () => 
     expect(hostOf()).toEqual({ prefill: { parentOrigin: "https://dev.trypennie.com" }, referrer_origin: null });
   });
 });
+
+// #2750: the host looks a booking up by the lead id the booking is STORED under,
+// so the confirm response carries the booking's own ids as stored. On a fresh
+// booking they are the page's; the reschedule route is where they differ.
+describe("POST /booking carries the booking's own identity (#2750)", () => {
+  it("answers salesforceId and externalId off the stored booking", async () => {
+    service.createBooking.mockResolvedValue({
+      booking: {
+        id: "bk-id",
+        starts_at: "2026-07-01T15:00:00.000Z",
+        ends_at: "2026-07-01T15:30:00.000Z",
+        salesforce_id: "00QStored000001",
+        external_id: "00QStoredExt001",
+      },
+      manageUrl: "https://slate.test/booking/manage/tok",
+    });
+    const body = await (await post(VALID_BODY)).json();
+    expect(body).toMatchObject({ id: "bk-id", salesforceId: "00QStored000001", externalId: "00QStoredExt001" });
+  });
+
+  it("answers null, never absent, for an id the booking does not hold", async () => {
+    service.createBooking.mockResolvedValue({
+      booking: { id: "bk-id", starts_at: "2026-07-01T15:00:00.000Z", ends_at: "2026-07-01T15:30:00.000Z", salesforce_id: null, external_id: null },
+      manageUrl: "https://slate.test/booking/manage/tok",
+    });
+    const body = await (await post(VALID_BODY)).json();
+    expect(body).toHaveProperty("salesforceId", null);
+    expect(body).toHaveProperty("externalId", null);
+  });
+});
