@@ -262,6 +262,12 @@ export const RAMP_END_FORM = "volume-ramp-end";
 /** The earliest ramp end the form accepts: the cal.com measurement's own date. */
 export const EARLIEST_RAMP_END = "2026-09-25";
 
+/** EARLIEST_RAMP_END as a reader sees it ("Sep 25, 2026"), derived so the refusal
+ *  can never name a different cutoff from the one it enforces. */
+export function earliestRampEndLabel(): string {
+  return DateTime.fromISO(EARLIEST_RAMP_END, { zone: "UTC" }).toFormat("LLL d, yyyy");
+}
+
 export type RampEndFormResult = { ok: true; rampEndOn: string | null } | { ok: false; error: string };
 
 /**
@@ -281,7 +287,7 @@ export function parseRampEndForm(input: { intent: string; rampEnd: string }): Ra
   if (d < EARLIEST_RAMP_END) {
     return {
       ok: false,
-      error: "The ramp cannot have ended before Sep 25, 2026: Slate carried no customer traffic before the cal.com measurement.",
+      error: `The ramp cannot have ended before ${earliestRampEndLabel()}: Slate carried no customer traffic before the cal.com measurement.`,
     };
   }
   return { ok: true, rampEndOn: d };

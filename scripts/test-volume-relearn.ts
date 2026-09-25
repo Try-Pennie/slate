@@ -19,6 +19,7 @@ import {
   REFIT_OVERDUE_MS,
   baselineInForce,
   parseRampEndForm,
+  earliestRampEndLabel,
   rampEndMs,
   readStoredLearning,
   runVolumeRelearn,
@@ -252,6 +253,8 @@ let fitted: StoredVolumeLearning | null = null;
   eq(blank.ok, false, "setting with no date is refused, never read as clearing");
   const early = parseRampEndForm({ intent: "set", rampEnd: "2026-09-01" });
   eq(early.ok, false, "a date before the cal.com measurement is refused");
+  eq(earliestRampEndLabel(), "Sep 25, 2026", "the cutoff reads as the measurement's own date");
+  assert(!early.ok && early.error.includes(earliestRampEndLabel()), "the refusal names the cutoff it enforces");
   const bogus = parseRampEndForm({ intent: "set", rampEnd: "2026-02-30" });
   eq(bogus.ok, false, "an impossible date is refused");
   const unknown = parseRampEndForm({ intent: "", rampEnd: "2026-10-12" });
