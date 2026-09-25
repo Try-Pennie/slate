@@ -105,8 +105,34 @@ assert(files.length > 40, `the scanner found the app to judge (${files.length} f
   const far = `// form-restore-ok: about something else\nconst a = 1;\n<form onSubmit={x}>`;
   assert(formTagVerdict(far, formTags(far)[0]!) === null, "an opt out that is not directly above does not count");
 
-  const prose = ` * Must live inside the \`<form>\`; a plain \`<form action={x}>\` is not this.\n// see <form>\n`;
+  // Real doc comments open with /** above the continuation line; a bare ` * ` fragment never occurs in source.
+  const prose = `/**
+ * Must live inside the \`<form>\`; a plain \`<form action={x}>\` is not this.\n */\n// see <form>\n`;
   assert(formTags(prose).length === 0, "a form named in a comment is not judged as a form");
+
+  // A CONTINUATION line of a block comment carries no marker of its own, so a
+  // check on the line's own prefix reads prose there as markup. The JSX form is
+  // the house style for a comment above a control.
+  const jsxBlock = `{/* #2718: the browser restores a plain\n    <form action={x}> over the stored value, so\n    this one is off. */}\n<form action={save} autoComplete="off">`;
+  const jsxTags = formTags(jsxBlock);
+  assert(jsxTags.length === 1, `a form named inside a multi line JSX comment is not a form (${jsxTags.length} found)`);
+  assert(jsxTags[0]?.line === 4, "and the real form after the comment closes is still found");
+
+  const plainBlock = `/*\n  a plain\n  <form action={x}> here is prose\n*/\nreturn <form action={save}>;`;
+  const plainTags = formTags(plainBlock);
+  assert(plainTags.length === 1, `a form named inside a multi line block comment is not a form (${plainTags.length} found)`);
+  assert(
+    plainTags[0] !== undefined && formTagVerdict(plainBlock, plainTags[0]) === null,
+    "and a bare form after the block closes is still caught",
+  );
+
+  // The comment closing mid line: what follows on that line is code again.
+  const closesMidLine = `{/* about\n  forms */} <form action={save}>`;
+  assert(formTags(closesMidLine).length === 1, "a form on the line a comment closes on is still found");
+
+  // A `//` line mentioning `/*` must not open a block that swallows the file.
+  const slashMentionsBlock = `// the /* style of comment\n<form action={save}>`;
+  assert(formTags(slashMentionsBlock).length === 1, "a line comment naming /* does not hide the form below it");
 
   assert(!restoreOffWinsOverSpread(`<form autoComplete="off" {...rest}>`), "restoration off BEFORE the spread is caught");
   assert(restoreOffWinsOverSpread(`<form {...rest} autoComplete="off">`), "and after it passes");

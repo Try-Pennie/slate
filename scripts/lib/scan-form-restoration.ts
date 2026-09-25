@@ -23,11 +23,12 @@ export type FormTag = { tag: string; index: number; line: number };
  */
 export function formTags(src: string): FormTag[] {
   const out: FormTag[] = [];
+  const inComment = commentMask(src);
   for (const m of src.matchAll(/<form\b/g)) {
     const start = m.index ?? 0;
-    // A `<form>` named in prose (a doc comment, a `//` line) is not a form.
-    const lineSoFar = src.slice(src.lastIndexOf("\n", start - 1) + 1, start).trim();
-    if (/^(\/\/|\/\*|\*|\{\/\*)/.test(lineSoFar)) continue;
+    // A `<form>` named in prose (a doc comment, a `//` line, ANY line of a block
+    // comment, not only the one that opens it) is not a form.
+    if (inComment[start]) continue;
     let depth = 0;
     for (let i = start + "<form".length; i < src.length; i++) {
       const c = src[i];
@@ -40,6 +41,40 @@ export function formTags(src: string): FormTag[] {
     }
   }
   return out;
+}
+
+/**
+ * Which characters of `src` sit inside a comment, walked once from the top.
+ *
+ * Tracked as STATE rather than judged per line, because a continuation line of a
+ * `/* ... *\/` or JSX `{/* ... *\/}` block carries no marker of its own, and a
+ * per line prefix check reads prose there as markup. A `//` line is skipped to
+ * its end, so a line comment that merely names `/*` cannot open a block that
+ * swallows the rest of the file.
+ *
+ * String literals are deliberately NOT tracked: JSX text is full of apostrophes
+ * ("don't"), and treating one as a quote would hide real markup, which is the
+ * dangerous direction for this guard. The cost is that `//` inside a string
+ * (a URL) masks the rest of that one line, which at worst hides a form sharing a
+ * line with a URL literal.
+ */
+export function commentMask(src: string): boolean[] {
+  const mask = new Array<boolean>(src.length).fill(false);
+  let i = 0;
+  while (i < src.length) {
+    if (src.startsWith("/*", i)) {
+      const end = src.indexOf("*/", i + 2);
+      const stop = end < 0 ? src.length : end + 2;
+      for (let k = i; k < stop; k++) mask[k] = true;
+      i = stop;
+    } else if (src.startsWith("//", i)) {
+      const end = src.indexOf("\n", i);
+      const stop = end < 0 ? src.length : end;
+      for (let k = i; k < stop; k++) mask[k] = true;
+      i = stop;
+    } else i++;
+  }
+  return mask;
 }
 
 /** The attribute that stops the browser restoring the form's controls. */
