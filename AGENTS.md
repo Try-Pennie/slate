@@ -598,7 +598,8 @@ and summary say whether it was on; `SLATE_TREE_TRIPWIRE=on` arms it by hand.
 The vitest suites get the same watch from a global setup
 (`scripts/vitest-tree-tripwire.ts`, declared in `vitest.config.ts`, #2759), armed by
 the same rule; it cannot say WHICH vitest file wrote, only that one did. It costs
-about 60ms a run (the start and end probes), and
+about 60ms a run, measured 2026-09-25 by timing the start and end probes
+directly on the real tree over 7 runs (medians 9ms and 52ms), and
 `scripts/test-vitest-tree-tripwire.ts` plants a write through real vitest to prove it
 fails the run. Rules and allowed paths: `scripts/lib/tree-write-tripwire.ts`.
 
