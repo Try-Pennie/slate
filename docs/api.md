@@ -955,6 +955,7 @@ cost matters; see `docs/cloudflare-platform-notes.md`.
 | `GET /api/cron/prune-routing` | Ages out routing decision rows past their retention window. |
 | `GET /api/cron/prune-busy-blocks` | Deletes cached busy blocks whose end is far enough in the past to be unreachable (#1252). |
 | `GET /api/cron/prune-regal-calls` | Deletes inbound Regal call events received more than three days ago (#2090). |
+| `GET /api/cron/prune-booking-alert-state` | Deletes the `alert_state` rows of alerts keyed by booking once that booking both started and was made more than a week ago (#2726). |
 | `GET /api/cron/prune-bookings-pii` | Redacts consumer contact data on bookings past the 24 month window (#1071). |
 | `GET /api/cron/prune-webhook-payloads` | Blanks `webhook_deliveries.payload`, which carries attendee PII, once a delivery is settled (#1073). |
 | `GET /api/cron/prune-warehouse-pii` | The warehouse half of the same 24 month booking PII window (#1180). |

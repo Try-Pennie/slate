@@ -54,6 +54,9 @@ export const RETENTION_HEARTBEAT_LANES = new Set([
   // #2090. Like prune-busy-blocks, not mirror-gated: the Regal call feed is not a
   // mirrored table and holds no lead data, so it uses only the heartbeat half.
   "prune-regal-calls",
+  // #2726. Not mirror-gated either: alert_state is not mirrored and holds no lead
+  // data, so it uses only the heartbeat half.
+  "prune-booking-alert-state",
 ]);
 
 /**

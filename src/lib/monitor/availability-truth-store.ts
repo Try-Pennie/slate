@@ -341,8 +341,8 @@ export async function driftAlertContext(): Promise<{
     // keys are composed rather than fixed-width, so their length follows the
     // bucket code and the prefix, which is exactly the case a count gets wrong.
     for (const batch of chunkIdsByUrlBudget(wanted)) {
-      // cap-safe: bounded by the chunk, and `wanted` is derived from the
-      // roster-bounded bucket ladder, never a growth table.
+      // Bounded by the chunk: a membership read on alert_state's primary key, and
+      // `wanted` is derived from the roster-bounded bucket ladder.
       const rows = unwrap(
         await supabaseAdmin().from("alert_state").select("key").in("key", batch),
         "availability-truth drift alert state",

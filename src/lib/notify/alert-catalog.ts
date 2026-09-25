@@ -33,12 +33,36 @@
 
 export type AlertKind = "condition" | "incident" | "info";
 
+/**
+ * What the part after `family:` is, for a `:*` family (#2726). Every family must
+ * say, because it decides whether the family GROWS `alert_state`:
+ *
+ *   booking - a booking id. One row pair per booking, and an incident never
+ *             resolves, so these accumulate with booking volume. Every such family
+ *             is pruned by `prune-booking-alert-state` once the booking is past
+ *             (`src/lib/notify/alert-state-retention.ts` derives its list from here).
+ *   bounded - something the roster or the code bounds: a bucket code, an agent or
+ *             manager id, a lane, a tier, an endpoint, a rate limited area.
+ *   caller  - text taken from a request (the first path segment of a page that
+ *             reported an error). Sanitised, capped at 32 characters and rate
+ *             limited, but NOT a fixed set, so it is named as what it is rather
+ *             than filed under bounded.
+ *
+ * `alert_state` left the capped read guard's SAFE_TABLES because the first of
+ * these made it a growth table while it was still listed as roster bounded.
+ * `scripts/test-alert-state-retention.ts` fails a family that declares nothing.
+ */
+export const ALERT_KEY_SUFFIXES = ["booking", "bounded", "caller"] as const;
+export type AlertKeySuffix = (typeof ALERT_KEY_SUFFIXES)[number];
+
 export interface AlertEntry {
   /** The key, or a `prefix:*` family. */
   key: string;
   kind: AlertKind;
   /** Why it is that kind. For an incident, what healthy state does NOT exist. */
   why: string;
+  /** For a `prefix:*` family only: what the suffix is (#2726). */
+  suffix?: AlertKeySuffix;
 }
 
 export const ALERT_CATALOG: AlertEntry[] = [
@@ -71,11 +95,13 @@ export const ALERT_CATALOG: AlertEntry[] = [
   {
     key: "cron_lane_stale:*",
     kind: "condition",
+    suffix: "bounded",
     why: "A cron lane is not running; it stamps a heartbeat again and the watchdog can see it.",
   },
   {
     key: "monitor_step_failing:*",
     kind: "condition",
+    suffix: "bounded",
     why:
       "A check on the monitor lane is throwing rather than reporting, so whatever it " +
       "watches is unwatched. It stays true until somebody deploys a fix, and the lane " +
@@ -84,6 +110,7 @@ export const ALERT_CATALOG: AlertEntry[] = [
   {
     key: "detector_unpark:*",
     kind: "condition",
+    suffix: "bounded",
     why:
       "A parked detector has started reaching verdicts, so it is switched off while able to watch. It ends two ways and each says so in its own words: deleting the registry entry arms it, or the verdict lapses and the park stands with nobody having armed anything (#1562).",
   },
@@ -210,6 +237,7 @@ export const ALERT_CATALOG: AlertEntry[] = [
   {
     key: "availability_drift:*",
     kind: "condition",
+    suffix: "bounded",
     why: "A bucket is offering times that are not really free; it ends when the cache reconverges with the calendars, and the probe re-measures that bucket on every rotation.",
   },
   {
@@ -282,6 +310,7 @@ export const ALERT_CATALOG: AlertEntry[] = [
   {
     key: "regal_call_unroutable:*",
     kind: "condition",
+    suffix: "bounded",
     why:
       "Somebody Slate routes no bookings to is placing calls in Regal; it ends when they are " +
       "routable again (a recovery) or are added to the ignore list, change role, or carry the " +
@@ -402,11 +431,13 @@ export const ALERT_CATALOG: AlertEntry[] = [
   {
     key: "retention_skipped:*",
     kind: "condition",
+    suffix: "bounded",
     why: "Retention is STOPPED while the mirror is unusable; a run that proceeds ends it.",
   },
   {
     key: "ooo-digest-unreachable:*",
     kind: "condition",
+    suffix: "bounded",
     why: "A manager is not receiving their digest until their Slack DM works; the daily run re-measures.",
   },
   {
@@ -417,11 +448,13 @@ export const ALERT_CATALOG: AlertEntry[] = [
   {
     key: "stale_phone_invite:*",
     kind: "incident",
+    suffix: "booking",
     why: "One correction's invite patch failed and nothing re-reads that event, so there is no healthy state to observe; the booking itself is already correct.",
   },
   {
     key: "bookable_trait_unrecorded:*",
     kind: "incident",
+    suffix: "bounded",
     why:
       "One agent's change of bookable state was saved and the delivery that tells Regal was never " +
       "recorded, so nothing retries it; there is no healthy state to observe, because the next " +
@@ -430,11 +463,13 @@ export const ALERT_CATALOG: AlertEntry[] = [
   {
     key: "webhook_dead:*",
     kind: "condition",
+    suffix: "bounded",
     why: "An endpoint is dead-lettering every delivery; a delivery that succeeds ends it.",
   },
   {
     key: "booking_below_lead_tier:*",
     kind: "condition",
+    suffix: "booking",
     why:
       "One upcoming call is with a team below the tier Salesforce gives the lead " +
       "today; it ends when the call moves to a team that works the tier, the score " +
@@ -444,6 +479,7 @@ export const ALERT_CATALOG: AlertEntry[] = [
   {
     key: "empty_tier:*",
     kind: "condition",
+    suffix: "bounded",
     why: "A debt tier is offering no booking time inside the next open business day, and stays that way until somebody is staffed onto it or its agents free up; the monitor re-measures every tick.",
   },
   {
@@ -576,26 +612,31 @@ export const ALERT_CATALOG: AlertEntry[] = [
   {
     key: "external_double_book:*",
     kind: "incident",
+    suffix: "bounded",
     why: "Two specific bookings already overlap; a person reschedules one, and no code path observes that.",
   },
   {
     key: "booking_offsite_origin:*",
     kind: "incident",
+    suffix: "booking",
     why: "One real booking was already made from a host page that is not the production site, and its reminder texts and call task have already gone out. A person cancels it or confirms the lead is real; nothing turns an off site booking into an on site one, so there is no healthy state to announce (#2715).",
   },
   {
     key: "misroute:*",
     kind: "incident",
+    suffix: "bounded",
     why: "One booking already went to a non-matching agent; the booking cannot un-happen.",
   },
   {
     key: "internal_error:*",
     kind: "incident",
+    suffix: "caller",
     why: "One request already returned a 500; there is no ongoing state, and the next request is unrelated.",
   },
   {
     key: "boundary_error:*",
     kind: "incident",
+    suffix: "caller",
     why:
       "People already met the error screen on loads that have finished. There is no state that CLEARS: the next load " +
       "either renders or does not, and it reports for itself, counted against its own window. An all-clear here would " +
@@ -625,47 +666,56 @@ export const ALERT_CATALOG: AlertEntry[] = [
   {
     key: "no_eligible_agents:*",
     kind: "incident",
+    suffix: "bounded",
     why: "One booking attempt found no agent. It is kept apart from the ongoing empty_tier:* deliberately: that one asks whether a whole DEBT TIER can serve a lead, and this one is a single bucket refusing a single attempt, which happens while the tier around it is healthy.",
   },
   {
     key: "tier_fallback:*",
     kind: "incident",
+    suffix: "bounded",
     why: "One booking fell back a tier; it is a routing breadcrumb about a booking already made.",
   },
   {
     key: "tier_fallback_deep:*",
     kind: "incident",
+    suffix: "bounded",
     why: "Same, for a deep fallback: it describes one completed routing decision.",
   },
   {
     key: "booker_unstaffed:*",
     kind: "incident",
+    suffix: "bounded",
     why: "One customer opened an unstaffed bucket and was shown nothing; that visit is over and they have gone. There is no ongoing twin for this one bucket: empty_tier:* watches the whole DEBT TIER, which can be perfectly healthy while one bucket inside it is empty, and that is the muting #2505 was opened for.",
   },
   {
     key: "bookable_blocked:*",
     kind: "incident",
+    suffix: "bounded",
     why: "One activation attempt was refused; the operator retries and the refusal has no ongoing state.",
   },
   {
     key: "bookable_unverified:*",
     kind: "incident",
+    suffix: "bounded",
     why: "Same: one activation attempt could not be verified.",
   },
   {
     key: "rate_limit_blocked:*",
     kind: "incident",
+    suffix: "bounded",
     why: "A caller was throttled in one window; windows expire on their own and carry no state to clear.",
   },
   {
     key: "rate_limit_unidentified:*",
     kind: "incident",
+    suffix: "bounded",
     why:
       "One request arrived with no client address, so a ceiling either did not apply to it or turned it away. It names requests already handled; there is no healthy state to observe, because a limiter reading addresses normally calls nothing. If it becomes an ongoing state, it belongs in its own key rather than folded in here.",
   },
   {
     key: "rate_limit_broken:*",
     kind: "incident",
+    suffix: "bounded",
     // Still an incident, and #1529 asked whether it should be a condition. It should not,
     // but only because the ONGOING state was given its own key rather than folded in here.
     // This key reports a fail-open on specific requests already served, per IP and per
@@ -679,6 +729,7 @@ export const ALERT_CATALOG: AlertEntry[] = [
   {
     key: "rate_limit_refund_broken:*",
     kind: "incident",
+    suffix: "bounded",
     why: "One refund of a counted hit failed; the window expires regardless.",
   },
   {

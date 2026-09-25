@@ -79,6 +79,13 @@ const FIXTURES: Fixture[] = [
     src: `const { data } = await db.from("some_new_ledger").select("id").eq("kind", "x");\nreturn (data ?? []).length;`,
   },
   {
+    // #2726: a family read over alert_state with no page bound. This is the shape
+    // firingFamilyMembers had while the table sat on SAFE_TABLES.
+    name: "alert_state family LIKE read with no range",
+    flagged: true,
+    src: `const { data } = await supabaseAdmin().from("alert_state").select("key").like("key", pattern);\nreturn (data ?? []).map((r) => r.key);`,
+  },
+  {
     name: "webhook_deliveries unbounded select",
     flagged: true,
     src: `const { data } = await db.from("webhook_deliveries").select("id").eq("status", "failed");\nreturn (data ?? []).length;`,
@@ -109,6 +116,21 @@ const FIXTURES: Fixture[] = [
     name: 'in("id", ids) primary-key membership',
     flagged: false,
     src: `const { data: bks } = await db.from("bookings").select("id, gcal_event_id").in("id", ids);`,
+  },
+  {
+    // #2726: alert_state is a growth table now (its per booking families grow with
+    // booking volume), and its primary key is `key`, not `id`, so a membership
+    // read on its key list is the same bounded lookup as `.in("id", ids)`.
+    name: 'in("key", keys) on alert_state, whose primary key is key',
+    flagged: false,
+    src: `const { data } = await supabaseAdmin().from("alert_state").select("key").in("key", keys);\nreturn new Set((data ?? []).map((r) => r.key));`,
+  },
+  {
+    // Only the primary key bounds the read: a membership on any other column of
+    // the same table can return any number of rows.
+    name: 'in("last_sent_at", ...) on alert_state, which is not its primary key',
+    flagged: true,
+    src: `const { data } = await supabaseAdmin().from("alert_state").select("key").in("last_sent_at", stamps);\nif ((data ?? []).length) x();`,
   },
   {
     name: 'eq("id", ...) primary-key lookup without single()',
