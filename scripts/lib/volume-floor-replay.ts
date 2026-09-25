@@ -8,7 +8,8 @@
  * cooldown, and a measured all-clear ends the episode so the next breach pages again.
  */
 import { runLowVolumeCheck, VOLUME_ALERT_KEY, type BusinessHoursConfig } from "../../src/lib/monitor/booking-volume.ts";
-import { floorsFor, judgedFloors, type BookingSeries, type FloorPolicy } from "../../src/lib/monitor/volume-floors.ts";
+import { floorsFor, judgedFloors, type BookingSeries, type FloorPolicy, type VolumeBaseline } from "../../src/lib/monitor/volume-floors.ts";
+import { LOW_PAGES, runPageVolumeCheck, type LowPageId, type SourceRow } from "../../src/lib/monitor/page-volume.ts";
 
 export interface ReplayPage {
   atMs: number;
@@ -89,4 +90,65 @@ export function withGap(series: BookingSeries, fromMs: number, toMs: number): Bo
 /** The first `bucketsKept` buckets of a series, for fitting on the earlier weeks only. */
 export function headOf(series: BookingSeries, bucketsKept: number): BookingSeries {
   return { ...series, counts: series.counts.slice(0, bucketsKept) };
+}
+
+/**
+ * The per page alarm (#2738), replayed the same way: the SHIPPED
+ * `runPageVolumeCheck`, armed, once per lane tick, reading bookings synthesised
+ * from each page's own measured series. Each page's key is throttled on its own,
+ * as the dispatcher throttles them. `tierLow` is null by default, so a page's
+ * detection is measured on its own rather than hidden behind the tier alarm.
+ */
+export async function replayPageVolume(opts: {
+  series: Record<LowPageId, BookingSeries>;
+  baselines: Record<LowPageId, VolumeBaseline>;
+  businessHours: BusinessHoursConfig;
+  fromMs: number;
+  toMs: number;
+  tickMinutes: number;
+  cooldownMs: number;
+  tierLow?: (tickMs: number) => boolean | null;
+}): Promise<{ checked: number; pages: (ReplayPage & { key: string })[] }> {
+  const pages: (ReplayPage & { key: string })[] = [];
+  const lastPage = new Map<string, number>();
+  let checked = 0;
+  for (let now = opts.fromMs; now < opts.toMs; now += opts.tickMinutes * 60_000) {
+    const tick = now;
+    const out = await runPageVolumeCheck({
+      nowMs: tick,
+      businessHours: opts.businessHours,
+      baselines: opts.baselines,
+      readSources: async (sinceIso) => {
+        const since = Date.parse(sinceIso);
+        const rows: SourceRow[] = [];
+        for (const page of LOW_PAGES) {
+          const s = opts.series[page.id];
+          const per = s.bucketMinutes * 60_000;
+          for (let i = Math.max(0, Math.floor((since - s.startMs) / per)); i < s.counts.length; i++) {
+            const at = s.startMs + i * per;
+            if (at >= tick) break;
+            if (at < since) continue;
+            for (let k = 0; k < s.counts[i]!; k++) rows.push({ createdMs: at, source: page.sources[0]! });
+          }
+        }
+        return rows;
+      },
+      pageSeenSince: async () => true,
+      tierLow: opts.tierLow ? opts.tierLow(tick) : null,
+      armed: true,
+      cooldownMs: opts.cooldownMs,
+      notify: async (key, cooldownMs, text) => {
+        const last = lastPage.get(key);
+        if (last !== undefined && tick - last < cooldownMs) return;
+        lastPage.set(key, tick);
+        pages.push({ atMs: tick, text, key });
+      },
+      resolveRecovered: async (recovered) => {
+        for (const r of recovered) lastPage.delete(r.key);
+        return [];
+      },
+    });
+    if (out.status === "checked") checked++;
+  }
+  return { checked, pages };
 }

@@ -218,7 +218,10 @@ build_pid=$!
 set +m
 
 pnpm lint
-pnpm test
+# Armed here because nobody edits this isolated tree, so any write into scripts/,
+# src/ or worker/ during the run is a suite's (#2733). Set on this one command
+# rather than exported, so nothing after it inherits the mode.
+SLATE_TREE_TRIPWIRE=pre-push pnpm test
 
 # The build's verdict. `wait` returns its exit status, and a failure prints the
 # whole captured log: a build that failed silently into a file nobody reads would

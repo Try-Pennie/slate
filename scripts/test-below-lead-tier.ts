@@ -14,7 +14,10 @@
 //    clear, no verdict;
 //  - comparing zero bookings is never a verdict (L98);
 //  - the all clear hangs off a MEASURED healthy booking, or a booking the read
-//    measured as no longer upcoming, never off a booking it could not measure.
+//    measured as no longer upcoming, never off a booking it could not measure;
+//  - a booking made from a known test source (#2737: a host page that is not the
+//    production site, the SAME predicate the off site page uses) is excluded, so a
+//    test booking in a real bucket is never the verdict that un-parks this check.
 import {
   BELOW_LEAD_TIER_KEY,
   belowLeadTierKey,
@@ -53,6 +56,7 @@ function booking(over: Partial<UpcomingBooking> = {}): UpcomingBooking {
     external_id: null,
     agent_name: "Dana Whitfield",
     agent_email: "dana.whitfield@trypennie.com",
+    prefill: { parentOrigin: "https://www.trypennie.com", embed: "1" },
     ...over,
   };
 }
@@ -295,6 +299,59 @@ async function main(): Promise<void> {
     eq(r.status === "measured" && r.unmeasured["xbc-absent"], 1, "and is counted under its own reason");
     assert(!belowLeadTierReachedVerdict(r), "no verdict off unmeasured bookings alone");
     eq(calls.resolved.length, 0, "a paged booking that became unmeasurable is NOT cleared");
+  }
+
+  // #2737: bookings from a known test source are excluded, and say so. The two
+  // prefills are the shape of 2026-09-25's real bucket test bookings (a partner's
+  // localhost page and the dev site), each with a real looking 00Q lead id.
+  {
+    const calls: Calls = { notified: [], resolved: [], sfQueries: 0 };
+    const r = await runBelowLeadTierCheck(
+      deps(
+        {
+          loadBookings: async () => [
+            booking({ id: "bk-local", salesforce_id: LEAD_A, prefill: { parentOrigin: "http://localhost:3000", embed: "1" } }),
+            booking({ id: "bk-dev", salesforce_id: LEAD_B, prefill: { parentOrigin: "https://dev.trypennie.com", embed: "1" } }),
+          ],
+          listFiring: async () => new Set(["bk-local"]),
+        },
+        calls,
+      ),
+    );
+    eq(r.status, "measured", "a run holding only test source bookings is still measured");
+    if (r.status === "measured") {
+      eq(r.compared, 0, "no test source booking is compared");
+      eq(r.testSource, 2, "each one is counted under its own name");
+      eq(r.below.length, 0, "and none is a finding, whatever the lead's tier");
+    }
+    assert(!belowLeadTierReachedVerdict(r), "test bookings alone are never the verdict that un-parks the check");
+    eq(calls.sfQueries, 0, "Salesforce is not asked about test bookings");
+    eq(calls.notified.length, 0, "no page about a test booking");
+    eq(calls.resolved.length, 0, "an excluded booking is not measured, so its page is not cleared as gone");
+  }
+
+  // The control the other way: a real lead's booking beside them is still compared.
+  {
+    const calls: Calls = { notified: [], resolved: [], sfQueries: 0 };
+    const r = await runBelowLeadTierCheck(
+      deps(
+        {
+          loadBookings: async () => [
+            booking({ id: "bk-local", salesforce_id: LEAD_B, prefill: { parentOrigin: "http://localhost:3000" } }),
+            booking({ id: "bk-real", salesforce_id: LEAD_A, prefill: { parentOrigin: "https://trypennie.com" } }),
+            booking({ id: "bk-api", salesforce_id: LEAD_A, prefill: null }),
+          ],
+        },
+        calls,
+      ),
+    );
+    eq(r.status, "measured", "measured");
+    if (r.status === "measured") {
+      eq(r.compared, 2, "a production origin booking and a no origin booking are both compared");
+      eq(r.testSource, 1, "only the localhost one is excluded");
+      eq(r.below.map((b) => b.booking.id).sort(), ["bk-api", "bk-real"], "and the real ones are judged as before");
+    }
+    assert(belowLeadTierReachedVerdict(r), "a real booking beside a test one still stamps");
   }
 
   // The all clears: a booking now agreeing, and a booking no longer upcoming.

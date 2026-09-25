@@ -30,7 +30,10 @@ function bookerEntryPoints(root: string): string[] {
       if (!name.endsWith(".tsx")) continue;
       if (name.endsWith(".test.tsx")) continue;
       const src = readFileSync(path, "utf8");
-      if (src.includes("<Booker")) out.push(path);
+      // The Booker element itself, not any component whose name starts with it:
+      // the route error boundaries render `<BookerErrorBoundary` (#2732), which
+      // takes no code at all and is not an entry point.
+      if (/<Booker[\s/>]/.test(src)) out.push(path);
     }
   };
   walk(root);

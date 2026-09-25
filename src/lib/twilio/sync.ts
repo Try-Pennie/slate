@@ -143,14 +143,26 @@ export interface TwilioSyncResult {
    */
   tiersChanged: string[];
   backendChanged: string[];
+  /**
+   * Emails whose mirrored `Redistribute` tag LANDED this run, and emails whose tag
+   * was CLEARED (#2735), each counted only once the write landed.
+   *
+   * Named apart from the flips because the tag reaches further than the pool: it is
+   * what exempts somebody from the Regal call page, so a run that moved it silenced
+   * or reopened a pager, and that has to be readable in the run's own report rather
+   * than inferred from the absence of a page. A junk spelling being tidied is in
+   * neither list, since nothing a reader sees changed.
+   */
+  redistributeTagLanded: string[];
+  redistributeTagCleared: string[];
 
   /**
    * Every in scope Slate row Twilio holds no worker for.
    *
-   * They are written to N like everybody else, because the default is N, so this
-   * is a count of values written on an ABSENCE. It is also the only visible shape
-   * of a PARTIAL Twilio read: a read that returned nothing is refused outright,
-   * and one that returned half the roster would quietly exclude the other half.
+   * No fact about them is written, only the `twilio_worker_missing_since` stamp that
+   * records the absence (#2735). This is also the only visible shape of a PARTIAL
+   * Twilio read: a read that returned nothing is refused outright, and one that
+   * returned half the roster would quietly exclude the other half.
    */
   withoutWorker: string[];
   /**
@@ -245,7 +257,9 @@ export async function syncTwilioRedistribute(deps: TwilioSyncDeps): Promise<Twil
   const reactivationDeferred: string[] = [];
   const tiersChanged: string[] = [];
   const backendChanged: string[] = [];
-  const landed: Landed = { tiersChanged, backendChanged };
+  const redistributeTagLanded: string[] = [];
+  const redistributeTagCleared: string[] = [];
+  const landed: Landed = { tiersChanged, backendChanged, redistributeTagLanded, redistributeTagCleared };
   const coverageSweeps: { email: string; bookings: number }[] = [];
   const counters = { coverageSweepFailures: 0, heldWriteFailures: 0 };
 
@@ -302,6 +316,15 @@ export async function syncTwilioRedistribute(deps: TwilioSyncDeps): Promise<Twil
       count: plan.withoutWorker.length,
     });
   }
+  if (redistributeTagLanded.length > 0 || redistributeTagCleared.length > 0) {
+    // Logged as well as returned, because the cron run's result is read by nobody
+    // unless something goes wrong, and this is the fact that silences a pager.
+    log.info("twilio-sync", {
+      msg: "Redistribute tag moved",
+      landed: redistributeTagLanded.length,
+      cleared: redistributeTagCleared.length,
+    });
+  }
   if (plan.markedWithNoWorker.length > 0) {
     log.warn("twilio-sync", {
       msg: "marked redistribute and Twilio holds no worker for them, so nothing was done",
@@ -321,6 +344,8 @@ export async function syncTwilioRedistribute(deps: TwilioSyncDeps): Promise<Twil
     coverageSweepFailures: counters.coverageSweepFailures,
     tiersChanged,
     backendChanged,
+    redistributeTagLanded,
+    redistributeTagCleared,
     withoutWorker: plan.withoutWorker,
     attributeWriteFailures: attributeWriteFailures + counters.heldWriteFailures,
     corruptAttributes,
@@ -340,6 +365,8 @@ export async function syncTwilioRedistribute(deps: TwilioSyncDeps): Promise<Twil
 interface Landed {
   tiersChanged: string[];
   backendChanged: string[];
+  redistributeTagLanded: string[];
+  redistributeTagCleared: string[];
 }
 
 /**
@@ -352,6 +379,11 @@ interface Landed {
 function countLanded(email: string, changes: TwilioChanges, out: Landed): void {
   if (changes.debtTeams.changed) out.tiersChanged.push(email);
   if (changes.backendServices.changed) out.backendChanged.push(email);
+  // Judged on the READING before and after, never on `changed` alone, which is also
+  // true when a junk spelling is tidied and nobody's exemption moved.
+  const tag = changes.redistributeTagged;
+  if (tag.value && !tag.wasTagged) out.redistributeTagLanded.push(email);
+  if (!tag.value && tag.wasTagged) out.redistributeTagCleared.push(email);
 }
 
 /**

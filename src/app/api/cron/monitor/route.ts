@@ -84,7 +84,13 @@ import {
   type LowVolumeResult,
 } from "@/lib/monitor/booking-volume";
 import { floorsFor, judgedFloors } from "@/lib/monitor/volume-floors";
-import { countCustomerBookingsSince } from "@/lib/monitor/customer-bookings";
+import {
+  countCustomerBookingsSince,
+  customerBookingFromSourcesSince,
+  listCustomerBookingSourcesSince,
+} from "@/lib/monitor/customer-bookings";
+import { runPageVolumeCheck, type PageVolumeResult } from "@/lib/monitor/page-volume";
+import { MEASURED_PAGE_BASELINES } from "@/lib/monitor/page-volume-baseline";
 import {
   runBookingFailureRateCheck,
   type FailureRateResult,
@@ -384,6 +390,7 @@ const REFUSAL_THRESHOLDS: RefusalThresholds = {
  * shape of the false-healthy defect the containment is meant not to introduce.
  */
 const UNMEASURED_VOLUME: LowVolumeResult = { status: "unverified" };
+const UNMEASURED_PAGE_VOLUME: PageVolumeResult = { status: "unverified" };
 
 const TRUTH_THRESHOLDS: TruthThresholds = {
   leadMs: 10 * 60_000,
@@ -1058,6 +1065,41 @@ export async function GET(req: NextRequest) {
       }),
     );
 
+    // --- Low booking volume PER LANDING PAGE (#2738): one page breaking while the
+    // others keep booking, which the tier total above cannot see. Same hours gate,
+    // same arming switch and cooldown; each page's floors are measured for that
+    // page, an hour it cannot be judged in is reported unmeasured, and while the
+    // tier alarm is itself low the pages hold rather than repeat it. ---
+    const pageVolume: PageVolumeResult = !gates.lowVolume.run
+      ? UNMEASURED_PAGE_VOLUME
+      : await steps.run("page_volume", UNMEASURED_PAGE_VOLUME, () =>
+      runPageVolumeCheck({
+        nowMs: now,
+        // Non-null by the gate above: the check does not run without this read.
+        businessHours: {
+          zone: businessHours!.zone,
+          rules: businessHours!.rules,
+          exceptions: businessHours!.exceptions,
+        },
+        baselines: MEASURED_PAGE_BASELINES,
+        readSources: (sinceIso) => listCustomerBookingSourcesSince(db, sinceIso),
+        pageSeenSince: (sources, sinceIso) => customerBookingFromSourcesSince(db, sources, sinceIso),
+        tierLow: volume.status === "checked" ? volume.breaches.length > 0 : null,
+        armed: settings.lowVolumeArmed,
+        cooldownMs: settings.cooldownMs.low_booking_volume,
+        // alert-key: low_page_volume:*
+        // alert-text-ok: our own copy from page-volume.ts, built from measured
+        // counts and the page's own names; no error text can reach it.
+        notify: (key, cooldownMs, text) => sendThrottledAlert(key, cooldownMs, text),
+        // alert-key: low_page_volume:*
+        // all-clear-proof: scripts/test-page-volume.ts - pins that an unmeasured
+        // hour, a low page, a tick outside business hours and a read that threw
+        // each clear NOTHING about that page.
+        resolveRecovered: (recovered) => resolveRecovered(recovered),
+        log: (fields) => log.info("monitor", { msg: "page booking volume", ...fields }),
+      }),
+    );
+
     // --- Customers failing to complete a booking (#1313) ---
     // The lagging half of the pair with #1315: this one sees customers already
     // being turned away. On 2026-08-06 cal.com refused 50+ confirms in about two
@@ -1559,6 +1601,7 @@ export async function GET(req: NextRequest) {
           log.info("monitor", {
             msg: "below lead tier",
             compared: result.compared,
+            test_source: result.testSource,
             below: result.below.length,
             paged: result.paged,
             cleared: result.cleared,
@@ -2910,6 +2953,7 @@ export async function GET(req: NextRequest) {
       definerGrants,
       truncated,
       volume,
+      pageVolume,
       failureRate,
       availabilityTruth,
       // Which steps failed, so a caller (and the smoke check) sees a degraded tick

@@ -13,7 +13,8 @@
 //     before any `.select`), not a read;
 //   - the chain (including a bound applied later to a reused query builder)
 //     carries `.single()`/`.maybeSingle()`/`.limit()`/`.range()`/`.csv()`, a
-//     `head: true` count, or a primary-key `.eq("id", …)`/`.in("id", …)`;
+//     `head: true` count, or a primary-key `.eq("id", …)`/`.in("id", …)` (the
+//     key column is per table, see PRIMARY_KEYS);
 //   - a `// cap-safe:` opt-out sits on / above the `.from(` line.
 //
 // TABLE-AWARE by decision (Dan, 2026-07-16): a table NOT on SAFE_TABLES defaults
@@ -54,7 +55,6 @@ export const SAFE_TABLES = new Set([
   "webhook_endpoints",
   "monitor_settings",
   "monitor_alert_config",
-  "alert_state",
   // Org business hours (#1294): exactly one row per weekday, a fixed 1..7 primary
   // key space, so it holds seven rows forever.
   "business_hours",
@@ -160,11 +160,25 @@ function readWindow(source: string, fromIndex: number): string {
   return source.slice(fromIndex, end);
 }
 
-function isCapSafe(window: string): boolean {
+/**
+ * The primary key column of a growth table whose key is NOT `id`. A `.eq` / `.in`
+ * on the primary key returns at most one row per value, so it is the same bounded
+ * lookup as `.in("id", ids)`. Per TABLE on purpose: a column called `key`
+ * elsewhere is an ordinary filter and bounds nothing.
+ *
+ * `alert_state` (#2726): off SAFE_TABLES since its per booking alert families
+ * grow with booking volume, and keyed by `key`.
+ */
+const PRIMARY_KEYS: Record<string, string> = {
+  alert_state: "key",
+};
+
+function isCapSafe(window: string, table: string): boolean {
   if (/\.(single|maybeSingle|limit|range|csv)\s*\(/.test(window)) return true;
   if (/head\s*:\s*true/.test(window)) return true;
-  // Primary-key lookup: bounded to the id (or the id list).
-  if (/\.(eq|in)\(\s*(["'`])id\2/.test(window)) return true;
+  // Primary-key lookup: bounded to the key (or the key list).
+  const pk = PRIMARY_KEYS[table] ?? "id";
+  if (new RegExp(`\\.(eq|in)\\(\\s*(["'\`])${pk}\\2`).test(window)) return true;
   return false;
 }
 
@@ -188,7 +202,7 @@ export function scanSrcCappedReads(source: string, file = "<source>"): SrcCapped
     const fromIndex = m.index as number;
     const window = readWindow(source, fromIndex);
     if (!isSelect(window)) continue; // a write, not a list read
-    if (isCapSafe(window)) continue; // bounded / paginated / single-row / count
+    if (isCapSafe(window, table)) continue; // bounded / paginated / single-row / count
     if (hasOptOut(source, fromIndex)) continue; // documented as one-page-max
 
     const snippet = window.replace(/\s+/g, " ").trim();

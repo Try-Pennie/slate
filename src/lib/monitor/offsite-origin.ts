@@ -128,6 +128,38 @@ export function classifyBookingOrigin(prefill: Record<string, string> | null | u
   return PRODUCTION_ORIGINS.includes(origin) ? { kind: "production", origin } : { kind: "offsite", origin };
 }
 
+/** The origins this module pages about: anything recorded that is not production. */
+export function isOffsiteOrigin(
+  origin: BookingOrigin,
+): origin is Extract<BookingOrigin, { kind: "offsite" | "unreadable" }> {
+  return origin.kind === "offsite" || origin.kind === "unreadable";
+}
+
+/**
+ * Was this booking made from a KNOWN TEST SOURCE? (#2737) The one answer, shared by
+ * the off site page above and by every check that must not count a test booking
+ * made in a real bucket as a lead (L261).
+ *
+ * Keyed on the recorded host page, because that is the one fact every embed booking
+ * already carries (`prefill.parentOrigin`, set by widget.js from its own page). The
+ * test bookings made on 2026-09-25 on XBC 100 and 112 came from a partner's
+ * localhost page and from dev.trypennie.com, and a real lead books from the
+ * production site. So the test is "a host was recorded and it is not one of
+ * `PRODUCTION_ORIGINS`", derived from the same list rather than a second list of
+ * test hosts: a list of test hosts would miss the next staging or preview host,
+ * where this catches it by construction, and a real production host missing from
+ * `PRODUCTION_ORIGINS` is paged about by the check above on its first booking.
+ *
+ * What it deliberately does NOT recognise, so a reader knows what still counts:
+ * a booking with NO host recorded (the standalone /book page, the booking API, an
+ * admin booking) and a test made FROM the production site. Neither carries anything
+ * that separates it from a lead. Test buckets are the other half of "is this a
+ * test", decided by `buckets.is_test`, and callers ask that separately.
+ */
+export function isTestSourceBooking(prefill: Record<string, string> | null | undefined): boolean {
+  return isOffsiteOrigin(classifyBookingOrigin(prefill));
+}
+
 /** One booking worth a page. */
 export interface OffsiteFinding {
   booking: RecentBooking;
@@ -226,7 +258,7 @@ export async function runOffsiteOriginCheck(deps: OffsiteOriginDeps): Promise<Of
     const origin = classifyBookingOrigin(booking.prefill);
     if (origin.kind === "none") noOrigin++;
     else if (origin.kind === "production") production++;
-    else findings.push({ booking, bucket, origin });
+    else if (isOffsiteOrigin(origin)) findings.push({ booking, bucket, origin });
   }
 
   let stamped = new Set<string>();

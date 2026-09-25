@@ -493,6 +493,8 @@ function twilioParts(
   r: TwilioSyncResult,
   plural: (n: number, one: string, many?: string) => string,
 ): (string | null)[] {
+  const tagLanded = tagOnly(r.redistributeTagLanded, r.turnedOff).length;
+  const tagCleared = tagOnly(r.redistributeTagCleared, [...r.turnedBackOn, ...r.reactivationRefused]).length;
   return [
     r.turnedOff.length
       ? `${plural(r.turnedOff.length, "agent")} taken out of the bookable pool because Twilio marks them redistribute`
@@ -524,6 +526,11 @@ function twilioParts(
     r.backendChanged.length
       ? `${plural(r.backendChanged.length, "agent")} whose backend service now matches their Twilio tags`
       : null,
+    // The Redistribute tag itself (#2735), which is what exempts somebody from the
+    // Regal call page. Anybody the flip lines above already named is left out, so
+    // one tag moving is one line (L605).
+    tagLanded ? `${plural(tagLanded, "agent")} newly tagged Redistribute in Twilio` : null,
+    tagCleared ? `${plural(tagCleared, "agent")} whose Redistribute tag came off in Twilio` : null,
     // A flip that threw. Said out loud, because the counts above are the only
     // evidence anybody looks at and one agent missing from them is the whole fault.
     r.flipFailures
@@ -533,6 +540,12 @@ function twilioParts(
       ? `${plural(r.attributeWriteFailures, "agent")} whose routing attributes could not be recorded, so press this again in a minute`
       : null,
   ];
+}
+
+/** The emails in `moved` that no flip line already names. */
+function tagOnly(moved: string[], namedByFlip: string[]): string[] {
+  const named = new Set(namedByFlip);
+  return moved.filter((e) => !named.has(e));
 }
 
 function num(form: FormData, key: string, fallback: number): number {

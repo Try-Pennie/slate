@@ -19,6 +19,7 @@
  * machine-to-machine endpoints all run the same timing-safe path.
  */
 import { bearerToken, timingSafeEqual } from "@/lib/bearer-auth";
+import { isPublicTestBucket } from "@/lib/embed/public-test-bucket";
 
 /**
  * Every system that holds a booking API key (#2645). Named callers come first so
@@ -35,6 +36,19 @@ export type NamedBookingApiCaller = Exclude<BookingApiCaller, "shared">;
  * looking alive. `shared` stays until the canary has moved to its own key.
  */
 export const CANARY_CALLERS: readonly BookingApiCaller[] = ["canary", "shared"];
+
+/**
+ * Whether an authenticated caller may book (or check) a test bucket through the
+ * key-authed API (#2669). The hidden test buckets are the canary's own (#396), so
+ * only `CANARY_CALLERS` may reach them, the same set the availability route lets
+ * READ them: a partner key used to be able to write where it could not read. The
+ * PUBLIC test bucket (#2660) exists for partners and is open to every caller, and
+ * that string check authorises the public code alone, never any other. A refused
+ * caller gets the same UnknownBucketError an unknown code gets, from the service.
+ */
+export function mayBookTestBuckets(caller: BookingApiCaller, bucketCode: string): boolean {
+  return CANARY_CALLERS.includes(caller) || isPublicTestBucket(bucketCode);
+}
 
 export type KeySlot = "primary" | "secondary";
 

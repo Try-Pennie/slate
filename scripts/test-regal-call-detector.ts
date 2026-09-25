@@ -21,6 +21,9 @@
 //      not exempt, the tag coming off reopens the finding, a page already open
 //      closes with suppression wording, and a failed read of the tag's source
 //      (the roster) clears nothing and exempts nobody.
+//   7. #2735: a tagged agent whose Twilio worker the last roster sync could not
+//      find is NOT exempt, pages with its own wording, and the exempt twin in the
+//      same fixture is the positive control.
 import { readFileSync } from "node:fs";
 import {
   judgeRegalCallers,
@@ -399,6 +402,81 @@ const TAGGED = { redistribute_tagged: "Y" } as const;
   const [v] = judgeRegalCallers([call("jane@trypennie.com")], [user()], []);
   const text = formatRegalCallAlert(v);
   assert(/Redistribute/.test(text), "the not bookable page names the third reason, the Redistribute tag");
+}
+
+// --- 7. a tag the roster sync can no longer vouch for (#2735) -------------------
+// The sync keeps a row's stored tag when Twilio holds no worker for them (L214), so
+// the tag alone would exempt somebody whose worker is gone for as long as it stays
+// gone. The sync stamps `twilio_worker_missing_since` instead of clearing anything,
+// and the detector refuses the exemption on it and pages with its own wording.
+
+const UNVOUCHED = { redistribute_tagged: "Y", twilio_worker_missing_since: "2026-09-22T14:00:00.000Z" } as const;
+{
+  // Same fixture as the exempt case in section 6, plus the stamp, so an exemption
+  // refused for any other reason would fail the control first (L159).
+  const [exempt] = judgeRegalCallers([call("jane@trypennie.com")], [user({ attributes: { ...TAGGED } })], []);
+  eq(exempt.exemptions, ["redistribute"], "control: the tagged agent with a worker is exempt");
+  const [v] = judgeRegalCallers([call("jane@trypennie.com")], [user({ attributes: { ...UNVOUCHED } })], []);
+  eq(v.exemptions, [], "the same agent whose Twilio worker the last sync could not find is NOT exempt");
+  eq(v.axis, "not-bookable", "and is still on the bookable axis");
+  eq(v.unvouchedRedistribute, true, "with the reason the tag did not count recorded on the verdict");
+  eq(exempt.unvouchedRedistribute, false, "which the exempt one does not carry");
+}
+{
+  const [v] = judgeRegalCallers(
+    [call("jane@trypennie.com")],
+    [user({ attributes: { redistribute_tagged: "Y", twilio_worker_missing_since: "not a date" } })],
+    [],
+  );
+  eq(v.exemptions, [], "an unreadable stamp still refuses the exemption: it fails toward reporting");
+  const text = formatRegalCallAlert(v);
+  assert(!/NaN|Invalid|undefined|null/.test(text), "and the page renders without a date rather than a broken one");
+}
+{
+  const [v] = judgeRegalCallers([call("jane@trypennie.com")], [user({ attributes: { ...UNVOUCHED } })], []);
+  const text = formatRegalCallAlert(v);
+  const [plain] = judgeRegalCallers([call("jane@trypennie.com")], [user()], []);
+  assert(text !== formatRegalCallAlert(plain), "the page has its own wording, not the untagged agent's");
+  assert(/Redistribute/.test(text), "it names the tag it could not trust");
+  assert(/no Twilio worker/i.test(text), "and says why: the sync found no Twilio worker for them");
+  assert(/Sep 22/.test(text), "and since when, from the stamp");
+  assert(!/tag them Redistribute/i.test(text), "and never tells the reader to add a tag they already carry");
+}
+{
+  const h = harness({ loadUsers: async () => [user({ attributes: { ...UNVOUCHED } })] });
+  const r = await runRegalCallCheck(h.deps);
+  eq(h.pages.map((p) => p.key), [regalCallAlertKey("u-jane")], "a call from them pages");
+  eq(r.status === "checked" ? r.exempt.redistribute : -1, 0, "and is not counted as a Redistribute exemption");
+  assert(/no Twilio worker/i.test(h.pages[0]?.text ?? ""), "with the wording that names the missing worker");
+}
+{
+  // An open page does not close while the worker is still missing, and closes with
+  // the suppression wording once the sync finds it again (the stamp is deleted).
+  const still = harness({
+    loadCandidates: async () => [],
+    loadFiringUserIds: async () => ["u-jane"],
+    loadUsers: async () => [user({ attributes: { ...UNVOUCHED } })],
+  });
+  await runRegalCallCheck(still.deps);
+  eq(still.resolved.length, 0, "a page stays open while the tag cannot be vouched for");
+  eq(
+    settleRegalCallAlerts(["u-jane"], [user({ attributes: { ...TAGGED } })], [])[0]?.ending,
+    "exempt-redistribute",
+    "and ends as a Redistribute suppression once the worker is back",
+  );
+}
+{
+  // Failure path: the roster read, which is where the stamp lives, fails. Nothing
+  // is paged or cleared, so an unreadable roster never reads as a missing worker.
+  const h = harness({
+    loadFiringUserIds: async () => ["u-jane"],
+    loadUsers: async () => {
+      throw new Error("users refused");
+    },
+  });
+  const r = await runRegalCallCheck(h.deps);
+  eq(r.status, "unreadable", "a failed roster read is unmeasured");
+  eq(h.pages.length + h.resolved.length, 0, "and pages nothing and clears nothing");
 }
 
 finish();

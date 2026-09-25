@@ -589,6 +589,14 @@ proven to be ROOTED in a temp directory: a real `node:os` `tmpdir()` or `node:fs
 `mkdtemp` as the path's base, never merely inside it (`// tree-write-ok: <why>`
 to opt out).
 
+That scan reads a suite's own source, so it cannot see a write made by a child
+process the suite starts. **`scripts/run-tests.ts` also watches `scripts/`, `src/`
+and `worker/` for the whole run** (#2733) and fails it naming each path written,
+but only in CI and the pre-push gate's isolated tree (`SLATE_TREE_TRIPWIRE=pre-push`),
+because in your own `pnpm test` your editor's saves would trip it. Its first line
+and summary say whether it was on; `SLATE_TREE_TRIPWIRE=on` arms it by hand.
+Rules and allowed paths: `scripts/lib/tree-write-tripwire.ts`.
+
 **The escape hatch** is `// typecheck-ok: <why>` on, or in the `//` block
 directly above, the line, and it must carry a reason. The one use today is the
 `?bust=1` cache-busting dynamic import in `test-alert-preview-coverage.ts`, which
@@ -918,7 +926,7 @@ agents, ~60 buckets) or a fixed key space, so they can never fill a page and are
 never flagged. The allowlist (`SAFE_TABLES` in `scan-src-capped-reads.ts`) holds
 `organizations`, `users`, `buckets`, `bucket_members`, `availability_schedules`,
 `agent_calendars`, `event_types`, `webhook_endpoints`, `monitor_settings`,
-`monitor_alert_config`, `alert_state`, `business_hours`, `bucket_slots`,
+`monitor_alert_config`, `business_hours`, `bucket_slots`,
 `sync_locks`, `rate_limits`, `reschedule_locks`, `lane_heartbeats`,
 `selfheal_scan_cursor`, `booking_failure_rate_state`, `export_cursor`,
 `reason_options`, and `booking_settings`. **Every other table defaults to a
@@ -930,6 +938,22 @@ cap-safe. This list is held against the constant in BOTH directions by
 `scripts/test-auto-loaded-doc-claims.ts`, because it had drifted two tables
 behind and was telling a reader that `business_hours` was flagged when it was
 already on the allowlist (#2398).
+
+`alert_state` was on that list until #2726 and is deliberately NOT any more. It
+was roster bounded when it held only cooldowns for lanes and buckets, and stopped
+being so the day an alert was keyed by booking (`booking_offsite_origin:<id>`,
+`stale_phone_invite:<id>`, `booking_below_lead_tier:<id>`): an incident never
+resolves, so those rows only ever accumulated, and the one pattern read over the
+table (`firingFamilyMembers`) was a single capped page. Its key reads are
+`.eq("key")` / `.in("key")` lookups on the primary key, which the guard accepts
+through `PRIMARY_KEYS` in the scanner; a family read pages with `selectAllPages`.
+Two halves keep the table from growing again, each blind where the other looks:
+every `:*` family in `src/lib/notify/alert-catalog.ts` must declare what its
+suffix is (`booking`, `bounded` or `caller`), and the daily
+`prune-booking-alert-state` lane deletes the rows of every `booking` family once
+that booking started and was made more than a week ago, with the family list
+DERIVED from the catalog so a new per booking alert is pruned by construction.
+`scripts/test-alert-state-retention.ts` pins both.
 
 # An `in` filter fed from an unbounded list (the `// in-chunk-ok:` convention)
 

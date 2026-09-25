@@ -16,7 +16,10 @@
  * Routing is by the `xbc` query param (the bucket code); the external record id
  * is read from `external_id`. `data-cal-link` clicks open a modal iframe at
  * `<origin>/book?…` carrying the link's own query plus, when
- * forwardQueryParams is set, the host page's query.
+ * forwardQueryParams is set, the host page's query. The trigger's
+ * `data-cal-config` is read for cal.com's `metadata[<key>]` entries, which map
+ * onto Slate's own param names through a small explicit table (#2716); a URL
+ * param wins on a collision, and every other config key is accepted as a no-op.
  *
  * `on` actions (#2658), under cal.com's own names so a host's GTM listener needs
  * no Slate branch. Each callback receives `{ detail: { type, data } }`:
@@ -196,7 +199,93 @@
     return (n.origin || window.location.origin).replace(/\/$/, "");
   }
 
-  function bookingUrl(link, ns) {
+  // --- data-cal-config metadata → booking URL params (#2716) ----------------
+  //
+  // cal.com takes extra booking fields on the trigger as `metadata[<key>]`
+  // entries in `data-cal-config`, and a partner written against cal.com puts its
+  // join keys there (trypennie's BookButton does). Slate reads the same keys off
+  // the booking URL under its own names (PARTNER_KEYS, #2659), so this table maps
+  // one onto the other. Each entry is <Slate's URL param>: <cal.com metadata key>.
+  //
+  // Explicit on purpose, never a generic rename: an unknown metadata key is
+  // dropped (with one console message per key per page) rather than forwarded,
+  // since anything on the booking URL rides into prefill, the booking row, every
+  // webhook and the warehouse. This file cannot import PARTNER_KEYS, so
+  // `widget-embed.test.ts` reads this block out of the shipped file and holds its
+  // param names against the constant in both directions (L41).
+  //
+  // slate-partner-metadata: start
+  var PARTNER_METADATA = {
+    submissionId: "sfdc_submission_id",
+    regalProfileId: "regal_profile_id",
+  };
+  // slate-partner-metadata: end
+
+  var warnedMetadata = {};
+  var warnedUnreadableConfig = 0;
+
+  function embedWarn(message) {
+    try {
+      console.warn("Slate embed: " + message);
+    } catch (_e) {
+      /* never throw into the host page */
+    }
+  }
+
+  // The trigger's config as an object, or null. An attribute that is absent, not
+  // JSON, or JSON that is not an object is ignored: the open must never depend on
+  // a host's config being well formed. An unreadable one is still SAID, once per
+  // page, because it may have carried a partner key that is now silently missing
+  // from the booking (L11), and an absent attribute is not the same fact.
+  function readTriggerConfig(trigger) {
+    var raw = trigger && trigger.getAttribute ? trigger.getAttribute("data-cal-config") : null;
+    if (!raw) return null;
+    var parsed = null;
+    try {
+      parsed = JSON.parse(raw);
+    } catch (_e) {
+      parsed = null;
+    }
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed;
+    if (!warnedUnreadableConfig) {
+      warnedUnreadableConfig = 1;
+      embedWarn("data-cal-config is not a JSON object, so none of it was read.");
+    }
+    return null;
+  }
+
+  // Every other config key (`layout`, `cal.embed.pageType`, ...) is accepted and
+  // ignored, as before: Slate styles and lays itself out.
+  function metadataParams(config) {
+    var out = {};
+    if (!config) return out;
+    var byMetadataKey = {};
+    Object.keys(PARTNER_METADATA).forEach(function (param) {
+      byMetadataKey[PARTNER_METADATA[param]] = param;
+    });
+    Object.keys(config).forEach(function (key) {
+      var m = /^metadata\[(.+)\]$/.exec(key);
+      if (!m) return;
+      var param = Object.prototype.hasOwnProperty.call(byMetadataKey, m[1])
+        ? byMetadataKey[m[1]]
+        : null;
+      if (!param) {
+        if (!warnedMetadata[m[1]]) {
+          warnedMetadata[m[1]] = 1;
+          embedWarn("data-cal-config metadata[" + m[1] + "] is not a field Slate reads, so it was not sent.");
+        }
+        return;
+      }
+      // A blank or non string value is absent: an empty join key joins nothing.
+      var value = config[key];
+      if (typeof value !== "string") return;
+      value = value.trim();
+      if (value) out[param] = value;
+    });
+    return out;
+  }
+
+  function bookingUrl(link, ns, config) {
     var params = new URLSearchParams();
     var q = link.indexOf("?");
     if (q >= 0) {
@@ -209,6 +298,12 @@
         params.set(k, v);
       });
     }
+    // The trigger's metadata fills only what the URLs did not set: a URL
+    // parameter wins over the config on a collision (#2716).
+    var fromConfig = metadataParams(config);
+    Object.keys(fromConfig).forEach(function (param) {
+      if (!params.has(param)) params.set(param, fromConfig[param]);
+    });
     // Forward the namespace's ui config so the booker matches the host page.
     var ui = (namespaces[ns] || namespaces[""] || {}).ui || {};
     if (ui.theme) params.set("theme", ui.theme);
@@ -263,7 +358,7 @@
   }
 
   function openModal(link, ns, trigger) {
-    var url = bookingUrl(link, ns);
+    var url = bookingUrl(link, ns, readTriggerConfig(trigger));
     var frame = frames[ns];
     // A different booking URL is a different booker, so the old frame goes (one
     // per namespace bounds the memory a page can hold). A frame the host page
@@ -298,7 +393,10 @@
     modal.setAttribute("aria-modal", "true");
     modal.setAttribute("aria-label", COPY.modalLabel);
     modal.style.cssText =
-      "background:#fff;border-radius:16px;width:min(720px,92vw);" +
+      // #2729: 896px is the standalone booker's content width (its max-w-4xl),
+      // the width its two column layout was designed at. 720px sat under the
+      // booker's switch, so the modal only ever showed the phone layout.
+      "background:#fff;border-radius:16px;width:min(896px,92vw);" +
       "max-height:90vh;max-height:90dvh;overflow:auto;position:relative;" +
       "box-shadow:0 12px 32px rgba(29,33,47,0.18);" +
       "box-sizing:border-box;font-family:'PP Mori',-apple-system," +
@@ -454,8 +552,11 @@
 
     var iframe = document.createElement("iframe");
     iframe.src = bookUrl;
+    // #2729: the floor sits under the two column booker's shortest loaded height
+    // (about 447px, measured in the 896px modal). At 560 the frame outgrew a
+    // booker that no longer stacks, and a strip of empty page showed beneath it.
     iframe.style.cssText =
-      "width:100%;border:0;min-height:560px;opacity:0" +
+      "width:100%;border:0;min-height:440px;opacity:0" +
       (reduceMotion ? "" : ";transition:opacity .15s ease,height .15s ease");
     iframe.setAttribute("title", COPY.frameTitle);
     iframe.allow = "fullscreen";

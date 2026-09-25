@@ -1,6 +1,7 @@
 import { reportWriteFailure } from "@/lib/db/result";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { chunkIdsByUrlBudget } from "@/lib/db/id-batch";
+import { selectAllPages } from "@/lib/supabase/paginate";
 import { postSlack, slackConfigured } from "@/lib/notify/slack";
 import { shouldSendAlert, alertStampMs } from "@/lib/notify/alerts";
 import { parseStampMs } from "@/lib/date/stamp";
@@ -208,8 +209,8 @@ export async function firingAlertKeys(keys: string[]): Promise<Set<string>> {
  */
 export async function existingAlertStateKeys(keys: string[]): Promise<Set<string>> {
   if (keys.length === 0) return new Set();
-  // cap-safe: bounded by `keys`, a caller-supplied list (the lane roster), never a
-  // growth table.
+  // Bounded by `keys`: a membership read on alert_state's primary key returns at
+  // most one row per key asked about, however large the table grows (#2726).
   // error-ok: an empty set on error defers the work one tick; it can never invent a
   // recovery, and the rows survive for the next attempt.
   const { data, error } = await supabaseAdmin()
@@ -241,15 +242,15 @@ export async function firingFamilyMembers(family: string): Promise<string[]> {
   // `_` is a LIKE wildcard, and alert keys are full of them, so it is escaped;
   // the startsWith below is the real filter either way.
   const pattern = `${prefix.replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
-  // cap-safe: alert_state is roster bounded (SAFE_TABLES), and a family with
-  // more open pages than this is an incident the pages themselves are reporting.
-  const { data, error } = await supabaseAdmin()
-    .from("alert_state")
-    .select("key")
-    .like("key", pattern)
-    .limit(1000);
-  if (error) throw new Error(`alert_state family read failed for ${family}: ${error.message}`);
-  return ((data ?? []) as { key: string }[])
+  // Paged, never one capped read (#2726). A family keyed by booking grows with
+  // booking volume, not with the roster, so a single read would return the first
+  // 1,000 markers and stop: every member past them would never be cleared and the
+  // family would read as smaller than it is. Ordered by key so the pages are
+  // stable. selectAllPages throws on a failed page, which keeps the contract below.
+  const rows = await selectAllPages<{ key: string }>(`alert_state family ${family}`, (from, to) =>
+    supabaseAdmin().from("alert_state").select("key").like("key", pattern).order("key").range(from, to),
+  );
+  return rows
     .map((r) => r.key)
     .filter((k) => k.startsWith(prefix))
     .map((k) => k.slice(prefix.length));

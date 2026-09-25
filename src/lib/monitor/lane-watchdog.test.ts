@@ -84,6 +84,7 @@ const healthy = () => ({
   "prune-busy-blocks": ago(4 * 60 * MIN),
   "prune-warehouse-pii": ago(4 * 60 * MIN),
   "prune-regal-calls": ago(4 * 60 * MIN),
+  "prune-booking-alert-state": ago(4 * 60 * MIN),
   // The two daily time off lanes (#2543), four stamps and also judged with
   // neverIsStale ON. A healthy fleet has this morning's 7am ET approvals run and
   // this morning's 9am ET nudge in it, both well inside their own bounds, and

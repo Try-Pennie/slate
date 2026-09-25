@@ -1065,7 +1065,15 @@ export default function Booker({
   const panelPrimaryProps = (isPrimary: boolean) =>
     isPrimary ? { "data-testid": "panel-primary" } : {};
 
-  const shell = `mx-auto max-w-4xl overflow-hidden rounded-xl shadow-xs ${c.shell}`;
+  // #2729: `@container` makes the booker's own width the thing its layout reads.
+  // It used to switch to two columns on the VIEWPORT (`md:`), and inside the
+  // widget's iframe the viewport is the frame, which the modal held narrower than
+  // the breakpoint, so the modal drew the phone layout on every desktop. A
+  // container variant (`@3xl:`, 48rem, the same width the old breakpoint used) is
+  // right in any host, any frame and any modal size. `max-w-4xl` is the width the
+  // widget's desktop modal is sized to match (`public/widget.js`), and
+  // `embed-two-column.test.tsx` holds the two together.
+  const shell = `@container mx-auto max-w-4xl overflow-hidden rounded-xl shadow-xs ${c.shell}`;
   // #2660: the test line, on EVERY screen this component can show. Each screen
   // below is its own root, so the band is placed in each rather than around a
   // shared frame this component does not have; a screen without it would read as
@@ -2023,7 +2031,7 @@ export default function Booker({
   );
 
   const eventPanel = (
-    <aside className={`border-b p-6 ${c.border} md:border-b-0 md:border-r`}>
+    <aside className={`border-b p-6 ${c.border} @3xl:border-b-0 @3xl:border-r`}>
       {/* #2629: the Pennie mark, where the first build drew the organisation's
           initials ("PE"), which meant nothing to a lead. Same slot and size, so
           nothing else on the card moves. Named for the organisation only once its
@@ -2108,7 +2116,7 @@ export default function Booker({
   return (
     <div ref={rootRef} data-theme={theme} className={shell}>
         {testBand}
-      <div className="grid grid-cols-1 md:grid-cols-[260px_1fr]">
+      <div className="grid grid-cols-1 @3xl:grid-cols-[260px_1fr]">
         {eventPanel}
         <div className="flex flex-col">
           {/* px-6 pt-6 aligns the strip's chips with the padded times list below. */}

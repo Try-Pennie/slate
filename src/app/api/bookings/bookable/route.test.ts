@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 // HTTP-level wiring for the validate-only bookable check (#541/#1017): the route
 // shares the key-authed gate (so a bad key is 401 and the ceiling trips 429),
@@ -40,6 +40,9 @@ vi.mock("@/lib/booking/service", () => service);
 vi.mock("@/lib/booking/settings", () => settings);
 vi.mock("@/lib/api/errors", () => errors);
 
+import { HIDDEN_TEST_BUCKET_CODES, PUBLIC_TEST_BUCKET_CODES } from "@/lib/embed/public-test-bucket";
+const PUBLIC_TEST = PUBLIC_TEST_BUCKET_CODES[0];
+const TEST_CODES: readonly string[] = [...HIDDEN_TEST_BUCKET_CODES, ...PUBLIC_TEST_BUCKET_CODES];
 import { GET } from "./route";
 
 const OK = {
@@ -106,7 +109,7 @@ describe("GET /api/bookings/bookable", () => {
     const res = await get("?startIso=2026-07-01T15:00:00.000Z");
     expect(res.status).toBe(200);
     expect(service.checkBookable).toHaveBeenCalledWith(
-      expect.objectContaining({ bucketCode: "200", allowTestBuckets: false }),
+      expect.objectContaining({ bucketCode: "200" }),
     );
     expect((await res.json()).requestedBucketCode).toBe("200");
   });
@@ -162,5 +165,49 @@ describe("GET /api/bookings/bookable", () => {
     expect(body.code).toBe("INTERNAL");
     expect(body.error).toBe("Something went wrong.");
     expect(errors.reportInternalError).toHaveBeenCalled();
+  });
+});
+
+// #2669: the bookable check takes its test bucket opt in from the CALLER, the same
+// rule as the booking write. It used to pass false for everyone, which kept a partner
+// out of SMOKE but also refused the canary its own bucket and every partner the
+// PUBLIC one they are meant to test against. The fake applies the service's rule, so
+// the refusal a partner meets on SMOKE is compared byte for byte with a typo's (#601).
+describe("GET /api/bookings/bookable: who may check a test bucket (#2669)", () => {
+  type GateInput = { bucketCode: string; allowTestBuckets?: boolean };
+  beforeEach(() => {
+    env.bookingApiKeyPrimary.mockReturnValue("");
+    env.bookingApiKeyFor.mockImplementation((caller: string, slot: string) =>
+      slot === "primary" && (caller === "canary" || caller === "trypennie") ? `${caller}-secret` : "",
+    );
+    service.checkBookable.mockImplementation(async (input: GateInput) => {
+      if (TEST_CODES.includes(input.bucketCode) && input.allowTestBuckets) return OK;
+      throw new service.UnknownBucketError("Unknown bucket");
+    });
+  });
+
+  afterEach(() => {
+    env.bookingApiKeyFor.mockReset();
+    env.bookingApiKeyFor.mockImplementation(() => "");
+  });
+
+  const at = "&startIso=2026-07-01T15:00:00.000Z";
+
+  it("the canary's own key checks SMOKE", async () => {
+    const res = await get(`?bucketCode=SMOKE${at}`, "Bearer canary-secret");
+    expect(res.status).toBe(200);
+  });
+
+  it("a partner key checking SMOKE gets the byte identical 422 an unknown code gets", async () => {
+    const hidden = await get(`?bucketCode=SMOKE${at}`, "Bearer trypennie-secret");
+    const unknown = await get(`?bucketCode=NOPE${at}`, "Bearer trypennie-secret");
+    expect(hidden.status).toBe(422);
+    expect(await hidden.text()).toBe(await unknown.text());
+    expect([...hidden.headers.entries()]).toEqual([...unknown.headers.entries()]);
+  });
+
+  it("a partner key checks the PUBLIC test bucket", async () => {
+    const res = await get(`?bucketCode=${PUBLIC_TEST}${at}`, "Bearer trypennie-secret");
+    expect(res.status).toBe(200);
   });
 });

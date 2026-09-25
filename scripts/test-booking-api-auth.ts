@@ -15,7 +15,9 @@ import {
   bookingApiKeyEnvName,
   parseApiKeys,
   authenticateBearer,
+  mayBookTestBuckets,
 } from "../src/lib/booking/api-auth.ts";
+import { HIDDEN_TEST_BUCKET_CODES, PUBLIC_TEST_BUCKET_CODES } from "../src/lib/embed/public-test-bucket.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
 const none = { primary: "", secondary: "" };
@@ -132,6 +134,27 @@ const keys = parseApiKeys([
   walk("src");
   assert(hits.includes(join("src", "lib", "env.ts")), "the scan finds env.ts's own reads (positive control)");
   eq(hits.filter((p) => p !== join("src", "lib", "env.ts")).join(", "), "", "no other src file reads a booking API key from the environment");
+}
+
+// --- who may book a test bucket through the key-authed API (#2669) ---------------
+// Since #2645 each partner holds its own key, and a partner could book the canary's
+// hidden buckets while it could not READ them. The canary callers may use every test
+// bucket; anyone may use the PUBLIC one (#2660), which a partner is meant to use.
+{
+  const hidden = HIDDEN_TEST_BUCKET_CODES[0];
+  const publicCode = PUBLIC_TEST_BUCKET_CODES[0];
+  for (const caller of BOOKING_API_CALLERS) {
+    const canary = CANARY_CALLERS.includes(caller);
+    eq(mayBookTestBuckets(caller, hidden), canary, `${caller} ${canary ? "may" : "may NOT"} book the hidden ${hidden}`);
+    eq(mayBookTestBuckets(caller, publicCode), true, `${caller} may book the public ${publicCode}`);
+  }
+  // The positive half is what makes the negative half mean something (L1): a helper
+  // hard wired to false would pass every "may NOT" above.
+  assert(mayBookTestBuckets("canary", "SMOKE2"), "the canary may book its second hidden bucket");
+  eq(mayBookTestBuckets("trypennie", "SMOKE2"), false, "a partner may not book the second hidden bucket");
+  // The public code authorises itself and nothing else, exactly and case sensitively.
+  eq(mayBookTestBuckets("regal", publicCode.toLowerCase()), false, "a lower case spelling of the public code is not the public code");
+  eq(mayBookTestBuckets("regal", "411"), false, "a real code never carries the test opt in for a partner");
 }
 
 finish();

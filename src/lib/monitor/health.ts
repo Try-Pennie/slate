@@ -283,6 +283,8 @@ export const RETENTION_STALE_BOUNDS_MS: Record<string, number> = {
   "prune-warehouse-pii": 28 * 60 * MIN,
   // #2090. Same daily cadence and the same reasoning as its siblings.
   "prune-regal-calls": 28 * 60 * MIN,
+  // #2726. Same daily cadence and the same reasoning as its siblings.
+  "prune-booking-alert-state": 28 * 60 * MIN,
 };
 
 /**
