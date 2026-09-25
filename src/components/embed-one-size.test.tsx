@@ -121,7 +121,29 @@ function closeControlGeometry() {
   if (![outlineWidth, outlineOffset, glow].every(Number.isFinite)) {
     throw new Error("could not read the close control's focus ring from widget.js");
   }
-  return { top: px("top"), right: px("right"), width: px("width"), height: px("height"), outlineWidth, outlineOffset, glow };
+  const signedPx = (prop: string) => {
+    const m = new RegExp(`(?:^|;)${prop}:(-?\\d+)px`).exec(text);
+    if (!m) throw new Error(`close control carries no ${prop} in px: ${text}`);
+    return Number(m[1]);
+  };
+  const position = /(?:^|;)position:([a-z]+)/.exec(text)?.[1];
+  // #2789: a sticky control sits where its flow puts it, so its distance from
+  // the right edge is its margin; `right` would act only on a horizontal scroll
+  // the modal never has.
+  const right = position === "sticky" ? px("margin-right") : px("right");
+  return {
+    text,
+    position,
+    top: px("top"),
+    right,
+    width: px("width"),
+    height: px("height"),
+    outlineWidth,
+    outlineOffset,
+    glow,
+    marginTop: () => signedPx("margin-top"),
+    marginBottom: () => signedPx("margin-bottom"),
+  };
 }
 
 /** Tailwind v4 spacing class to px (the default 0.25rem scale). */
@@ -324,6 +346,51 @@ describe("the host's close control has its corner to itself (#2748, #2766)", () 
   });
 });
 
+describe("the close control stays on screen at every scroll position (#2789)", () => {
+  // On a phone the modal is full screen and scrolls as one piece. A control
+  // positioned absolutely inside that scrolling box scrolls away with the
+  // booker, taking the only visible way out with it. jsdom cannot scroll, so
+  // these hold the decisions that pin it: the modal is the scroller, and the
+  // control is sticky to that scrollport (its own first child, asserted on the
+  // real DOM below).
+  it("the modal is the box that scrolls", () => {
+    const css = /modal\.style\.cssText\s*=([\s\S]*?);\n/.exec(widgetSrc)?.[1] ?? "";
+    const text = css
+      .split("\n")
+      .map((l) => l.replace(/^\s*\/\/.*$/, ""))
+      .join("")
+      .replace(/"\s*\+\s*"/g, "")
+      .replace(/"/g, "");
+    expect(text).toMatch(/(?:^|;)overflow:auto/);
+    expect(text).toMatch(/(?:^|;)position:relative/);
+  });
+
+  it("is sticky, not absolute: an absolute control scrolls off with the content", () => {
+    // Sticky rather than fixed: a fixed control is placed against the VIEWPORT,
+    // which is the modal only on a phone. On a laptop the modal is a centred
+    // card, and a fixed control would sit in the host page's corner outside it.
+    expect(closeControlGeometry().position).toBe("sticky");
+  });
+
+  it("rests where it pins, so it does not jump when the lead starts to scroll", () => {
+    const g = closeControlGeometry();
+    expect(g.marginTop()).toBe(g.top);
+  });
+
+  it("takes no room in the flow, so the booker still starts at the modal's top edge", () => {
+    const g = closeControlGeometry();
+    expect(g.marginTop() + g.height + g.marginBottom()).toBe(0);
+    // Right aligned by its margin, since a sticky box sits where its flow puts it.
+    expect(g.text).toMatch(/(?:^|;)margin-left:auto/);
+  });
+
+  it("no host rule moves it back out of the flow on a phone", () => {
+    const css = /style\.textContent\s*=([\s\S]*?);\n/.exec(widgetSrc)?.[1] ?? "";
+    expect(css).toContain("slate-widget-modal");
+    expect(css).not.toMatch(/button[^{]*\{[^}]*position/);
+  });
+});
+
 describe("the frame has no strip beneath it (#2766)", () => {
   it("the iframe is a block, so no inline baseline gap shows under the booker", () => {
     const iframeCss = /iframe\.style\.cssText\s*=\s*"([^"]*)"/.exec(widgetSrc)?.[1] ?? "";
@@ -363,6 +430,68 @@ describe("the close control reads on the booker behind it, in both themes (#2748
     close.dispatchEvent(new FocusEvent("focus"));
     return close;
   }
+
+  it("is the modal's own first child, so the modal is the scrollport it pins to (#2789)", () => {
+    const close = focusedClose("router?xbc=411");
+    const modal = close.closest<HTMLElement>(".slate-widget-modal")!;
+    expect(close.parentElement).toBe(modal);
+    expect(modal.firstElementChild).toBe(close);
+    expect(close.style.position).toBe("sticky");
+  });
+
+  // #2789: once pinned, booker content scrolls UNDER the control. Dan chose a
+  // transparent control over a solid plate (2026-09-25), so text shows through
+  // behind the X rather than being cut off by a square. So it paints no opaque
+  // background in any state, and its ink is judged against the booker surface
+  // it sits on in each theme.
+  const globalsCss = readFileSync(resolve("src/app/globals.css"), "utf8");
+  const darkSurface = /--surface:\s*(rgb\([^)]*\));\s*\/\*\s*cards float/.exec(globalsCss)?.[1];
+  const white = /--pennie-white:\s*(rgb\([^)]*\));/.exec(globalsCss)?.[1];
+  const rgbOf = (c: string | undefined): [number, number, number] => {
+    const m = /rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/.exec(c ?? "");
+    if (!m) throw new Error(`not an rgb colour: ${c}`);
+    return [Number(m[1]), Number(m[2]), Number(m[3])];
+  };
+  const contrast = (a: [number, number, number], b: [number, number, number]) => {
+    const lin = (v: number) => {
+      const s = v / 255;
+      return s <= 0.04045 ? s / 12.92 : Math.pow((s + 0.055) / 1.055, 2.4);
+    };
+    const lum = ([r, g, b]: [number, number, number]) => 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b);
+    const [hi, lo] = [lum(a), lum(b)].sort((x, y) => y - x);
+    return (hi + 0.05) / (lo + 0.05);
+  };
+  const isTransparent = (c: string) => c === "" || c === "transparent" || /rgba\([^)]*,\s*0\)$/.test(c);
+
+  it("paints no opaque background in either theme, loaded or loading", () => {
+    const controls = [
+      focusedClose("router?xbc=411"),
+      focusedClose("router?xbc=411&theme=dark"),
+      focusedClose("router?xbc=411&theme=dark", { loaded: false }),
+    ];
+    for (const close of controls) {
+      expect(isTransparent(close.style.backgroundColor)).toBe(true);
+      close.dispatchEvent(new FocusEvent("blur"));
+      expect(isTransparent(close.style.backgroundColor)).toBe(true);
+    }
+  });
+
+  it("its glyph and focus ring meet contrast over the booker surface in both themes", () => {
+    const cases: Array<[string, string | undefined]> = [
+      ["router?xbc=411", white],
+      ["router?xbc=411&theme=dark", darkSurface],
+    ];
+    for (const [link, surface] of cases) {
+      const bg = rgbOf(surface);
+      const close = focusedClose(link);
+      // Focused: the glyph in its strong ink, and the ring the 3:1 focus line.
+      expect(contrast(rgbOf(close.style.color), bg)).toBeGreaterThanOrEqual(4.5);
+      expect(contrast(rgbOf(close.style.outline), bg)).toBeGreaterThanOrEqual(3);
+      // At rest the glyph is the muted ink, still held to text contrast.
+      close.dispatchEvent(new FocusEvent("blur"));
+      expect(contrast(rgbOf(close.style.color), bg)).toBeGreaterThanOrEqual(4.5);
+    }
+  });
 
   it("while the frame loads it sits on the white chrome, so it keeps the graphite ink", () => {
     const close = focusedClose("router?xbc=411&theme=dark", { loaded: false });
