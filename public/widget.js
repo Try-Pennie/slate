@@ -298,7 +298,10 @@
     modal.setAttribute("aria-modal", "true");
     modal.setAttribute("aria-label", COPY.modalLabel);
     modal.style.cssText =
-      "background:#fff;border-radius:16px;width:min(720px,92vw);" +
+      // #2729: 896px is the standalone booker's content width (its max-w-4xl),
+      // the width its two column layout was designed at. 720px sat under the
+      // booker's switch, so the modal only ever showed the phone layout.
+      "background:#fff;border-radius:16px;width:min(896px,92vw);" +
       "max-height:90vh;max-height:90dvh;overflow:auto;position:relative;" +
       "box-shadow:0 12px 32px rgba(29,33,47,0.18);" +
       "box-sizing:border-box;font-family:'PP Mori',-apple-system," +
@@ -454,8 +457,11 @@
 
     var iframe = document.createElement("iframe");
     iframe.src = bookUrl;
+    // #2729: the floor sits under the two column booker's shortest loaded height
+    // (about 447px, measured in the 896px modal). At 560 the frame outgrew a
+    // booker that no longer stacks, and a strip of empty page showed beneath it.
     iframe.style.cssText =
-      "width:100%;border:0;min-height:560px;opacity:0" +
+      "width:100%;border:0;min-height:440px;opacity:0" +
       (reduceMotion ? "" : ";transition:opacity .15s ease,height .15s ease");
     iframe.setAttribute("title", COPY.frameTitle);
     iframe.allow = "fullscreen";
