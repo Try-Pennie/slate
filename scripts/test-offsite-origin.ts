@@ -11,13 +11,17 @@
 //  - the same booking pages once: a key already stamped is skipped, and the
 //    cooldown handed to the dispatcher outlasts the lookback so a failed
 //    already-paged read cannot page it again either;
-//  - an unreadable origin pages without echoing the raw value into Slack.
+//  - an unreadable origin pages without echoing the raw value into Slack;
+//  - `isTestSourceBooking` (#2737), the one answer to "was this booking made from a
+//    known test source", says yes to exactly the bookings this check pages about,
+//    so the two can never disagree about which host is a test host (L261).
 import {
   OFFSITE_ORIGIN_COOLDOWN_MS,
   OFFSITE_ORIGIN_KEY,
   OFFSITE_ORIGIN_LOOKBACK_MS,
   PRODUCTION_ORIGINS,
   classifyBookingOrigin,
+  isTestSourceBooking,
   offsiteOriginKey,
   runOffsiteOriginCheck,
   type OffsiteOriginDeps,
@@ -79,6 +83,23 @@ eq(classifyBookingOrigin({ parentOrigin: "file:///tmp/x.html" }).kind, "unreadab
 eq(classifyBookingOrigin({ embed: "1" }).kind, "none", "no parentOrigin is none");
 eq(classifyBookingOrigin({ parentOrigin: "  " }).kind, "none", "a blank parentOrigin is none");
 eq(classifyBookingOrigin(null).kind, "none", "a null prefill is none");
+
+// --- the shared test source predicate (#2737) -------------------------------------
+// The prefills below are the shape of the four real bucket bookings made on
+// 2026-09-25 (XBC 100 and 112), read off production: two from a partner's
+// localhost page and two from the dev site. Each one must be recognised.
+for (const origin of ["http://localhost:3000", "https://dev.trypennie.com"]) {
+  eq(isTestSourceBooking({ parentOrigin: origin, embed: "1", xbc: "100" }), true, `${origin} is a known test source`);
+}
+eq(isTestSourceBooking({ parentOrigin: "not a url" }), true, "an origin the real widget cannot produce is a test source too");
+// The control the other way: what a real lead's booking carries is never one.
+for (const o of PRODUCTION_ORIGINS) {
+  eq(isTestSourceBooking({ parentOrigin: o, embed: "1", xbc: "100" }), false, `${o} is a real lead's host, not a test source`);
+}
+eq(isTestSourceBooking({ parentOrigin: "https://www.trypennie.com/get-started" }), false, "a path on production is still production");
+eq(isTestSourceBooking({ name: "Pat" }), false, "no origin recorded is not evidence of a test");
+eq(isTestSourceBooking(null), false, "a null prefill is not evidence of a test");
+eq(isTestSourceBooking({ parentOrigin: "" }), false, "a blank origin is not evidence of a test");
 
 // --- the lookback and the cooldown -----------------------------------------------
 assert(
@@ -213,6 +234,28 @@ assert(
   eq(sent.length, 1, "an unreadable origin on a real bucket pages");
   assert(!sent[0].text.includes("<script>"), "and never echoes the raw value");
   assert(sent[0].text.includes("cannot read"), "it says the address could not be read");
+}
+
+// --- the page and the shared predicate agree, booking by booking (#2737) ----------
+{
+  const prefills: (Record<string, string> | null)[] = [
+    { parentOrigin: "http://localhost:3000" },
+    { parentOrigin: "https://dev.trypennie.com" },
+    { parentOrigin: "https://trypennie.com" },
+    { parentOrigin: "https://www.trypennie.com" },
+    { parentOrigin: "http://trypennie.com" },
+    { parentOrigin: "not a url" },
+    { embed: "1" },
+    null,
+  ];
+  const list = prefills.map((prefill, i) => booking({ id: `bk-${i}`, prefill }));
+  const { d, sent } = deps(list);
+  await runOffsiteOriginCheck(d);
+  eq(
+    sent.map((s) => s.key).sort(),
+    list.filter((b) => isTestSourceBooking(b.prefill)).map((b) => offsiteOriginKey(b.id)).sort(),
+    "the check pages on exactly the bookings the shared predicate calls a test source",
+  );
 }
 
 // --- an unassigned booking still reads as a sentence ----------------------------------

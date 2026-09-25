@@ -13,8 +13,14 @@ function fakeDb(tables: Record<string, Row[]>, opts: { error?: string } = {}) {
     from(table: string) {
       const filters: ((r: Row) => boolean)[] = [];
       let range: [number, number] = [0, 999];
+      // The column list is honoured too, so a read that stops naming a column the
+      // check needs hands it undefined here exactly as PostgREST would.
+      let columns: string[] | null = null;
       const chain = {
-        select: () => chain,
+        select: (cols: string) => {
+          columns = cols.split(",").map((c) => c.trim());
+          return chain;
+        },
         in: (col: string, vals: unknown[]) => {
           filters.push((r) => vals.includes(r[col]));
           return chain;
@@ -30,7 +36,9 @@ function fakeDb(tables: Record<string, Row[]>, opts: { error?: string } = {}) {
         },
         then: (res: (v: unknown) => unknown) => {
           if (opts.error) return Promise.resolve(res({ data: null, error: { message: opts.error } }));
-          const kept = (tables[table] ?? []).filter((r) => filters.every((f) => f(r)));
+          const kept = (tables[table] ?? [])
+            .filter((r) => filters.every((f) => f(r)))
+            .map((r) => (columns ? Object.fromEntries(columns.map((c) => [c, r[c]])) : r));
           return Promise.resolve(res({ data: kept.slice(range[0], range[1] + 1), error: null }));
         },
       };
@@ -71,6 +79,12 @@ describe("loadUpcomingBookingsInBuckets", () => {
     });
     const rows = await loadUpcomingBookingsInBuckets(db, ["real"], NOW);
     expect(rows.map((r) => r.id).sort()).toEqual(["keep", "rescheduled"]);
+  });
+
+  it("reads the host page each booking was made from, which is what excludes a test booking (#2737)", async () => {
+    const db = fakeDb({ bookings: [b("keep", { prefill: { parentOrigin: "http://localhost:3000" } })] });
+    const [row] = await loadUpcomingBookingsInBuckets(db, ["real"], NOW);
+    expect(row.prefill).toEqual({ parentOrigin: "http://localhost:3000" });
   });
 
   it("reads nothing for no buckets", async () => {
