@@ -574,9 +574,18 @@ CI) run tsc over `scripts/` and fail on the two classes that ship broken:
 
 The list lives in `scripts/lib/scan-scripts-typecheck.ts` (`BREAKING_CODES`).
 Widen it by fixing a class and adding its code, which is a deliberate act rather
-than a silent no-op. The guard plants a real undefined identifier in the tree and
-requires itself to catch it, because a tsc run that never looked at `scripts/`
-and a clean tree produce the same empty error list (L1, L98).
+than a silent no-op. The guard plants a real undefined identifier and requires
+itself to catch it, AND requires the run to have read every file the config
+names, because a tsc run that never looked at `scripts/` and a clean tree
+produce the same empty error list (L1, L98).
+
+**The control is planted in a temp directory, never in the tree** (#2712).
+Planted in `scripts/`, every concurrent suite walking that tree could list it and
+fail to open it, which failed CI on unrelated PRs and once skipped a deploy on
+main. `tsc -p` cannot add a file outside the config, so both guards drive the
+compiler API on the real config (`scripts/lib/typecheck-program.ts`), and
+`scripts/test-no-tree-writes.ts` fails any suite that writes a path it has not
+proven to be a temp directory (`// tree-write-ok: <why>` to opt out).
 
 **The escape hatch** is `// typecheck-ok: <why>` on, or in the `//` block
 directly above, the line, and it must carry a reason. The one use today is the
@@ -588,8 +597,8 @@ no resolver can follow and which is the entire point of that check.
 every cron tick passes through it, and esbuild bundles it without checking types.
 `tsconfig.worker.json` uses `@cloudflare/workers-types` (scoped to that config, so
 the Workers globals never enter the app's program) and
-`scripts/test-worker-typecheck.ts` runs it, failing on the same two classes and
-planting an undefined identifier to prove the run actually read the tree.
+`scripts/test-worker-typecheck.ts` runs it, failing on the same two classes, with
+the same out of tree control and the same proof the run read every file.
 
 `TS2578` (an unused `@ts-expect-error`) is deliberately out of scope there. The entry
 imports `../.open-next/worker.js`, which does not exist until

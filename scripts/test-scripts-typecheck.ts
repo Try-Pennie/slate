@@ -17,8 +17,7 @@
 // fakes, so this does NOT demand a clean typecheck. It fails on the two classes
 // that ship broken and says which ones it is watching, so widening it later is a
 // deliberate act rather than a silent no-op.
-import { execFileSync } from "node:child_process";
-import { readFileSync, writeFileSync, rmSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   BREAKING_CODES,
@@ -26,39 +25,20 @@ import {
   hasOptOut,
   parseTscErrors,
 } from "./lib/scan-scripts-typecheck.ts";
+import { typecheckWithControl, unreadConfigFiles } from "./lib/typecheck-program.ts";
 import { assert, finish } from "./lib/harness.ts";
 
 const repoRoot = new URL("..", import.meta.url).pathname;
 const CONFIG = "tsconfig.scripts.json";
+const CONTROL_SOURCE = "export const planted = thisNameIsNotDefined;\n";
 
 /**
- * How many times tsc has been spawned. Asserted to be ONE at the end: the run
- * costs about 10s and used to happen twice on every push and every CI job, once
- * for the verdict and once again to re-prove the guard could still fail (#1516).
+ * How many times the tree has been typechecked. Asserted to be ONE at the end:
+ * the run costs about 10s and used to happen twice on every push and every CI
+ * job, once for the verdict and once again to re-prove the guard could still
+ * fail (#1516).
  */
 let tscRuns = 0;
-
-/** Run tsc over the scripts tree and return its stdout (errors go to stdout). */
-function runTsc(): string {
-  tscRuns++;
-  try {
-    execFileSync("npx", ["tsc", "-p", CONFIG, "--noEmit"], {
-      cwd: repoRoot,
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    return "";
-  } catch (err) {
-    // A non-zero exit is expected: the tree has ~100 non-breaking errors.
-    const e = err as { stdout?: string; stderr?: string; code?: string };
-    // A missing `npx`/tsc must NOT read as "no errors found" (L98): finding
-    // nothing to check is not a pass.
-    if (e.code === "ENOENT") {
-      throw new Error("could not run tsc (npx not found), so nothing was checked");
-    }
-    return `${e.stdout ?? ""}${e.stderr ?? ""}`;
-  }
-}
 
 const readSource = (file: string): string[] => {
   try {
@@ -102,37 +82,51 @@ const readSource = (file: string): string[] => {
   );
 }
 
+// --- the coverage rule, on fixtures ---------------------------------------------
+{
+  const named = ["/r/scripts/a.ts", "/r/scripts/b.ts"];
+  assert(
+    unreadConfigFiles(named, new Set(named)).length === 0,
+    "a run that read every file its config names reports nothing unread",
+  );
+  assert(
+    unreadConfigFiles(named, new Set(["/r/scripts/a.ts", "/tmp/typecheck-control.ts"])).join() ===
+      "/r/scripts/b.ts",
+    "a run that read the control and skipped part of the tree is caught, naming the file",
+  );
+}
+
 // --- the real tree, judged by a run that PROVED it looked -----------------------
 //
-// One tsc invocation, not two. Everything the guard reports is satisfied by an
-// invocation that never looked at `scripts/` at all: a wrong `include`, a config
-// that failed to load, and a genuinely clean tree all produce the same empty
-// error list (L1, L98). So a real undefined identifier is planted in the tree
-// FIRST, and the single run has to come back with exactly that error and nothing
-// else breaking.
+// One typecheck, not two. Everything the guard reports is satisfied by a run that
+// never looked at `scripts/` at all: a wrong `include`, a config that failed to
+// load, and a genuinely clean tree all produce the same empty error list (L1,
+// L98). So the single run carries a planted undefined identifier and has to come
+// back with exactly that error and nothing else breaking, AND it has to have read
+// every file the config names.
 //
 // Two runs is how this started, and the second one paid ~10s on every push, every
 // pre-push gate and every CI job to re-prove a property the first run can prove
 // for free (#1516). Folding them together is also strictly stronger evidence: the
-// control now vouches for THE run that produced the verdict, rather than for a
-// second invocation that merely resembled it (L70).
+// control vouches for THE run that produced the verdict, rather than for a second
+// invocation that merely resembled it (L70).
 //
-// The control's filename does not match `test-*.ts`, so the suite runner cannot
-// pick it up if it somehow survives, and it is removed in a `finally`.
-const controlName = "typecheck-control.tmp.ts";
-const controlPath = join(repoRoot, "scripts", controlName);
+// The control lives in a temp directory, never in `scripts/` (#2712). It used to
+// be planted in the tree, and every concurrent suite walking `scripts/` could list
+// it and then fail to open it: ENOENT on unrelated PRs, and once on main, where it
+// skipped a deploy. Being outside the tree, the control alone can no longer prove
+// the run read `scripts/`, so that is now proved directly: the program must have
+// read every file the config's include resolves to, and those must include this
+// very file.
+const run = typecheckWithControl(repoRoot, CONFIG, CONTROL_SOURCE);
+tscRuns++;
+// The control's temp directory is gone by now, so its source (annotation free,
+// which is the point) is supplied directly to the opt-out lookup.
+const found = breakingErrors(run.output, (file) =>
+  file === run.controlFile ? CONTROL_SOURCE.split("\n") : readSource(file),
+);
 
-let found: ReturnType<typeof breakingErrors>;
-try {
-  writeFileSync(controlPath, "export const planted = thisNameIsNotDefined;\n");
-  // Read the errors while the control file still exists, so the opt-out lookup
-  // sees its real (annotation-free) source rather than an unreadable file.
-  found = breakingErrors(runTsc(), readSource);
-} finally {
-  rmSync(controlPath, { force: true });
-}
-
-const isControl = (file: string) => file.includes(controlName);
+const isControl = (file: string) => file === run.controlFile;
 const control = found.filter((e) => isControl(e.file));
 const breaking = found.filter((e) => !isControl(e.file));
 
@@ -142,10 +136,29 @@ const controlCaught = control.some((e) => e.code === "TS2304");
 assert(
   controlCaught,
   controlCaught
-    ? "this run was PROVEN to have read scripts/: it caught the planted undefined name"
+    ? "this run reports the class it watches: it caught the planted undefined name"
     : control.length > 0
       ? `the planted control was found but not as TS2304 (got ${control.map((e) => e.code).join(", ")}), so the class this guard watches is not the class being reported`
-      : "the planted undefined name was NOT caught, so this run did not look at scripts/ and its verdict below means nothing (check tsconfig.scripts.json's include, and that tsc ran)",
+      : "the planted undefined name was NOT caught, so this run reports nothing and its verdict below means nothing",
+);
+
+// THE COVERAGE. The control proves this pipeline reports the class; this proves
+// the run it came from read the tree the verdict is about.
+const self = new URL(import.meta.url).pathname;
+const namesTree = run.configFiles.includes(self) && run.configFiles.length > 200;
+assert(
+  namesTree,
+  namesTree
+    ? `${CONFIG} names the scripts tree (${run.configFiles.length} files, this suite among them)`
+    : `${CONFIG} names only ${run.configFiles.length} file(s)${run.configFiles.includes(self) ? "" : ", not even this suite"}, so the run did not cover scripts/ (check its include)`,
+);
+const unread = unreadConfigFiles(run.configFiles, run.readFiles);
+assert(
+  unread.length === 0,
+  unread.length === 0
+    ? `the run read every one of the ${run.configFiles.length} files ${CONFIG} names`
+    : `the run never read ${unread.length} file(s) ${CONFIG} names, so the verdict is about a subset:\n` +
+        unread.slice(0, 10).map((f) => `  ${f}`).join("\n"),
 );
 
 assert(
@@ -160,7 +173,7 @@ assert(
 // slowest suite in the pre-push gate and in CI, and nothing else would notice.
 assert(
   tscRuns === 1,
-  `tsc is spawned exactly once per run (spawned ${tscRuns}x); a second invocation doubles the slowest suite in CI`,
+  `the tree is typechecked exactly once per run (${tscRuns}x); a second pass doubles the slowest suite in CI`,
 );
 
 finish();
