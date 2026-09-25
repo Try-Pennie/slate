@@ -14,17 +14,24 @@
  * `PRODUCTION_ORIGINS`. It is a page and never a refusal: the origin is what the
  * host DECLARES (#2641), so it is evidence for a person to look at, not a gate.
  *
+ * TWO recorded origins, and EITHER one off site pages (#2728). Beside the declared
+ * `prefill.parentOrigin` the booking stores `referrer_origin`, the origin the
+ * BROWSER says framed the booker, reduced to a bare origin on the server
+ * (`readReferrerOrigin`). widget.js always declares its own page, so a booking that
+ * declares nothing came from a host that framed /book itself, which is what a test
+ * page does: 9 real bucket bookings in 60 days carried no declared origin and were
+ * invisible here until the referrer was recorded. `judgeBookingOrigin` is the one
+ * place the two are combined.
+ *
  * What does not page, each counted under its own name so a quiet run says what it
  * looked at (L98, L11):
  *   - a booking on an `is_test` bucket, from anywhere: the partner test path
  *     (#2660) is exactly where off site hosts belong;
- *   - a booking with no origin recorded: the standalone /book page, the booking API
- *     and an admin booking carry none, and absence is not evidence of anything;
- *   - a booking from a production origin.
- *
- * The REFERRER is not consulted, because nothing stores it on a booking: the booker
- * reads `document.referrer` only to compare it with the declared origin (#2641) and
- * posts neither to the confirm. `parentOrigin` is the one recorded fact.
+ *   - a booking with no origin recorded either way: the standalone /book page (whose
+ *     referrer is whatever linked to it, so the booker does not send it), the
+ *     booking API and an admin booking carry none, and absence is not evidence of
+ *     anything;
+ *   - a booking whose recorded origins are all production ones.
  *
  * INCIDENT, not condition: the booking has already been made and the texts already
  * sent. Cancelling it is the remedy, and an all clear saying "the booking that came
@@ -82,14 +89,25 @@ export const OFFSITE_ORIGIN_COOLDOWN_MS = 7 * 24 * 60 * 60_000;
 /** The zone the page renders a call's time in, named in the text as ET. */
 const ALERT_ZONE = "America/New_York";
 
+/**
+ * The two recorded facts about where a booking was made from (#2728). Both are
+ * REQUIRED, so a reader that forgets to select `referrer_origin` fails `tsc` rather
+ * than judging a booking on half its evidence.
+ */
+export interface BookingOriginFacts {
+  /** Carries `parentOrigin`, the origin the host DECLARED. */
+  prefill: Record<string, string> | null;
+  /** The origin the browser says framed the booker, stored already reduced. */
+  referrer_origin: string | null;
+}
+
 /** The columns this check needs off a `bookings` row. */
-export interface RecentBooking {
+export interface RecentBooking extends BookingOriginFacts {
   id: string;
   bucket_id: string;
   starts_at: string;
   agent_name: string | null;
   agent_email: string | null;
-  prefill: Record<string, string> | null;
 }
 
 /** The columns this check needs off a `buckets` row. */
@@ -110,12 +128,11 @@ export type BookingOrigin =
   | { kind: "unreadable" };
 
 /**
- * Classify the recorded `parentOrigin`. Judged on the ORIGIN (scheme, host and
- * port), so `http://trypennie.com` and `https://trypennie.com:8443` are not the
- * production site, and a path or query on the value cannot make one match.
+ * Classify ONE recorded origin. Judged on the ORIGIN (scheme, host and port), so
+ * `http://trypennie.com` and `https://trypennie.com:8443` are not the production
+ * site, and a path or query on the value cannot make one match.
  */
-export function classifyBookingOrigin(prefill: Record<string, string> | null | undefined): BookingOrigin {
-  const raw = prefill?.parentOrigin;
+export function classifyOrigin(raw: unknown): BookingOrigin {
   if (typeof raw !== "string" || raw.trim() === "") return { kind: "none" };
   let origin: string;
   try {
@@ -140,31 +157,88 @@ export function isOffsiteOrigin(
  * the off site page above and by every check that must not count a test booking
  * made in a real bucket as a lead (L261).
  *
- * Keyed on the recorded host page, because that is the one fact every embed booking
- * already carries (`prefill.parentOrigin`, set by widget.js from its own page). The
- * test bookings made on 2026-09-25 on XBC 100 and 112 came from a partner's
- * localhost page and from dev.trypennie.com, and a real lead books from the
- * production site. So the test is "a host was recorded and it is not one of
+ * Keyed on the recorded host page: the origin the host declared
+ * (`prefill.parentOrigin`, set by widget.js from its own page) and, since #2728, the
+ * origin the browser says framed the booker (`referrer_origin`), both through
+ * `judgeBookingOrigin`, so this and the page above can never disagree about a
+ * booking. The test bookings made on 2026-09-25 on XBC 100 and 112 came from a
+ * partner's localhost page and from dev.trypennie.com, and a real lead books from
+ * the production site. So the test is "a host was recorded and it is not one of
  * `PRODUCTION_ORIGINS`", derived from the same list rather than a second list of
  * test hosts: a list of test hosts would miss the next staging or preview host,
  * where this catches it by construction, and a real production host missing from
  * `PRODUCTION_ORIGINS` is paged about by the check above on its first booking.
  *
+ * Why the framing page counts here too, and not only on the page: it can make a
+ * booking a test source only by being recorded and not production, and the booker
+ * records it only when it is framed, so a real lead on the production site cannot
+ * be excluded by it. A booking framed by a page Slate does not know IS excluded
+ * from lead checks, and is paged about above, which is where it belongs.
+ *
  * What it deliberately does NOT recognise, so a reader knows what still counts:
- * a booking with NO host recorded (the standalone /book page, the booking API, an
- * admin booking) and a test made FROM the production site. Neither carries anything
- * that separates it from a lead. Test buckets are the other half of "is this a
- * test", decided by `buckets.is_test`, and callers ask that separately.
+ * a booking with NO host recorded either way (the standalone /book page, the
+ * booking API, an admin booking, a host whose referrer policy strips the referrer)
+ * and a test made FROM the production site. Neither carries anything that separates
+ * it from a lead. Test buckets are the other half of "is this a test", decided by
+ * `buckets.is_test`, and callers ask that separately.
  */
-export function isTestSourceBooking(prefill: Record<string, string> | null | undefined): boolean {
-  return isOffsiteOrigin(classifyBookingOrigin(prefill));
+export function isTestSourceBooking(b: BookingOriginFacts): boolean {
+  return judgeBookingOrigin(b).kind === "offsite";
+}
+
+/** Both recorded origins judged together. */
+export type OriginVerdict =
+  | { kind: "none" }
+  | { kind: "production" }
+  /** At least one of the two is off site or unreadable. Both are carried, so the
+   *  page can say what the host declared as well as where it was framed. */
+  | { kind: "offsite"; declared: BookingOrigin; framedBy: BookingOrigin };
+
+/**
+ * The one place the declared origin and the framing page are combined (#2728).
+ * EITHER one off site makes the booking off site: a host that declared nothing, or
+ * declared the production site while being framed somewhere else, is still not a
+ * lead on the production site. Production needs a production reading and no off
+ * site one; none means neither was recorded.
+ */
+export function judgeBookingOrigin(b: BookingOriginFacts): OriginVerdict {
+  const declared = classifyOrigin(b.prefill?.parentOrigin);
+  const framedBy = classifyOrigin(b.referrer_origin);
+  if (isOffsiteOrigin(declared) || isOffsiteOrigin(framedBy)) return { kind: "offsite", declared, framedBy };
+  if (declared.kind === "production" || framedBy.kind === "production") return { kind: "production" };
+  return { kind: "none" };
 }
 
 /** One booking worth a page. */
 export interface OffsiteFinding {
   booking: RecentBooking;
   bucket: OriginBucket;
-  origin: Extract<BookingOrigin, { kind: "offsite" | "unreadable" }>;
+  verdict: Extract<OriginVerdict, { kind: "offsite" }>;
+}
+
+/**
+ * Where the booking came from, in the page's words. Never echoes a value that did
+ * not parse as an origin: that is whatever somebody put in a URL.
+ */
+function describeOrigins(v: OffsiteFinding["verdict"]): string {
+  const { declared, framedBy } = v;
+  if (isOffsiteOrigin(declared)) {
+    const said = declared.kind === "offsite" ? declared.origin : "a host page whose address Slate cannot read";
+    if (framedBy.kind === "offsite" && (declared.kind !== "offsite" || framedBy.origin !== declared.origin)) {
+      return declared.kind === "offsite"
+        ? `the page said it was ${declared.origin}, and the browser says it was framed by ${framedBy.origin}`
+        : `the browser says it was framed by ${framedBy.origin}, and the address the page gave cannot be read`;
+    }
+    if (framedBy.kind === "unreadable") return `${said}, framed by a page whose address Slate cannot read`;
+    return said;
+  }
+  const framer =
+    framedBy.kind === "offsite"
+      ? `the browser says it was framed by ${framedBy.origin}`
+      : "it was framed by a page whose address Slate cannot read";
+  return declared.kind === "production"
+    ? `${framer}, although the page said it was ${declared.origin}`
+    : `${framer}, and the page did not say where it was`;
 }
 
 /**
@@ -176,12 +250,8 @@ export interface OffsiteFinding {
 export function formatOffsiteOriginAlert(f: OffsiteFinding, bookingUrl: string): string {
   const when = `${formatSlotDay(f.booking.starts_at, ALERT_ZONE)} at ${formatSlotTime(f.booking.starts_at, ALERT_ZONE)} ET`;
   const agent = f.booking.agent_name?.trim() || f.booking.agent_email || "an unassigned advisor";
-  const from =
-    f.origin.kind === "offsite"
-      ? `from ${f.origin.origin}`
-      : "from a host page whose address Slate cannot read";
   return (
-    `A booking on a real bucket came ${from}, which is not the production site. ` +
+    `A booking on a real bucket came from a page that is not the production site: ${describeOrigins(f.verdict)}. ` +
     `It is with ${agent} in bucket ${f.bucket.code} (${f.bucket.name}) on ${when}. ` +
     `If it was a test, cancel it so the advisor and the reminder texts stop; if it was a ` +
     `real lead, the page they booked from needs checking.\n${bookingUrl}`
@@ -208,7 +278,7 @@ export type OffsiteOriginResult =
       /** Real bucket bookings read. */
       checked: number;
       production: number;
-      /** No origin recorded: counted, never paged. */
+      /** No origin recorded, declared or framing: counted, never paged. */
       noOrigin: number;
       /** On a test bucket: skipped whatever the origin. */
       testBucket: number;
@@ -255,10 +325,10 @@ export async function runOffsiteOriginCheck(deps: OffsiteOriginDeps): Promise<Of
       continue;
     }
     checked++;
-    const origin = classifyBookingOrigin(booking.prefill);
-    if (origin.kind === "none") noOrigin++;
-    else if (origin.kind === "production") production++;
-    else if (isOffsiteOrigin(origin)) findings.push({ booking, bucket, origin });
+    const verdict = judgeBookingOrigin(booking);
+    if (verdict.kind === "none") noOrigin++;
+    else if (verdict.kind === "production") production++;
+    else findings.push({ booking, bucket, verdict });
   }
 
   let stamped = new Set<string>();

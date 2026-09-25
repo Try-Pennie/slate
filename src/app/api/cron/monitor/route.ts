@@ -1666,8 +1666,8 @@ export async function GET(req: NextRequest) {
 
     // --- A real booking from a host page that is not the production site (#2715).
     // Reads the real buckets' active bookings created inside the lookback and pages
-    // once per booking whose recorded `prefill.parentOrigin` is not one of
-    // PRODUCTION_ORIGINS. Test buckets are skipped by name, a booking with no origin
+    // once per booking whose recorded `prefill.parentOrigin` or framing page
+    // (`referrer_origin`, #2728) is not one of PRODUCTION_ORIGINS. Test buckets are skipped by name, a booking with no origin
     // is counted and never paged, and a failed read pages nothing and is logged as
     // unreadable rather than as zero off site. Once per booking: keys already
     // stamped in alert_state are skipped, and the cooldown outlasts the lookback.

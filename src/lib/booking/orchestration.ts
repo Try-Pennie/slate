@@ -79,6 +79,7 @@ import { leadCallingZone, withinLeadCallingWindow } from "./lead-calling-window.
 import { shortErrorReason } from "../notify/error-text.ts";
 import { log } from "@/lib/log";
 import { readBookingSource } from "./booking-source.ts";
+import { readReferrerOrigin } from "../embed/referrer-origin.ts";
 import {
   makeConfirmProfile,
   confirmProfileLine,
@@ -576,6 +577,13 @@ export interface CreateBookingInput {
   idempotencyKey?: string;
   /** External caller's stable per-person id (direct booking API, #357). */
   externalId?: string | null;
+  /**
+   * The origin of the page that framed the booker, as the CLIENT sent it (#2728).
+   * Untrusted: createBooking reduces it to a bare origin itself and drops anything
+   * that is not one. Only the public booker sends it; every other caller leaves it
+   * out and the booking records null.
+   */
+  referrerOrigin?: string | null;
   /** Allow booking a synthetic test bucket (#396). Set in exactly two places:
    *  the key authed direct booking API, only for a canary caller or for the
    *  public test bucket's code (#2669, `mayBookTestBuckets`); and the Booker's
@@ -2749,6 +2757,9 @@ export async function createBooking(
     idempotency_key: idempotencyKey,
     external_id: input.externalId ?? null,
     source: sourceReading.source,
+    // #2728: re-reduced here rather than trusted, so a path or query the client
+    // sent (which can carry a lead's details) never reaches the row.
+    referrer_origin: readReferrerOrigin(input.referrerOrigin),
     routing_trace: {
       bucket_code: bookedBucket.code,
       bucket_id: bookedBucket.id,

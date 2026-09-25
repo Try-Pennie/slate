@@ -1421,6 +1421,57 @@ describe("Booker embed postMessage origin (#593)", () => {
   });
 });
 
+// #2728: the confirm carries the ORIGIN of the page that framed the booker, so the
+// off site check can judge a host that declared none. Never the referrer's path or
+// query, which can carry a lead's details, and nothing at all when the booker is
+// its own page, whose referrer is whatever linked to it rather than a host.
+describe("Booker sends the framing page's origin with the confirm (#2728)", () => {
+  function withReferrer(referrer: string) {
+    Object.defineProperty(document, "referrer", { value: referrer, configurable: true });
+  }
+  function framed(on: boolean) {
+    // jsdom's top is the window itself, which is what an unframed page reads.
+    Object.defineProperty(window, "top", { value: on ? {} : window, configurable: true });
+  }
+  afterEach(() => {
+    withReferrer("");
+    framed(false);
+  });
+
+  async function confirmedBody(): Promise<Record<string, unknown>> {
+    let postedBody: Record<string, unknown> | null = null;
+    global.fetch = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+      if (String(url).includes("/api/availability")) {
+        return { ok: true, json: async () => availability } as Response;
+      }
+      if (String(url).includes("/api/client-errors")) return { ok: true, json: async () => ({}) } as Response;
+      postedBody = JSON.parse(String(init?.body));
+      return { ok: true, status: 200, json: async () => ({ startsAt: slotIso }) } as Response;
+    }) as unknown as typeof fetch;
+    render(<Booker {...baseProps} embedded />);
+    await fillAndConfirm();
+    await screen.findByText("You're all set");
+    expect(postedBody).not.toBeNull();
+    return postedBody!;
+  }
+
+  it("sends the origin only, never the path or the query", async () => {
+    framed(true);
+    withReferrer("https://partner.example/test-page?email=k%40x.com&phone=2155550100");
+    const body = await confirmedBody();
+    expect(body.referrerOrigin).toBe("https://partner.example");
+    expect(JSON.stringify(body)).not.toContain("test-page");
+    expect(JSON.stringify(body)).not.toContain("k%40x.com");
+  });
+
+  it("sends nothing when the booker is not framed", async () => {
+    framed(false);
+    withReferrer("https://mail.google.com/mail/u/0/");
+    const body = await confirmedBody();
+    expect("referrerOrigin" in body).toBe(false);
+  });
+});
+
 // #215 / #168 / #173: the availability panel has three states that are easy to
 // break silently. A failed fetch must offer a retry (not a permanent dead end);
 // a loaded-but-empty month must say so honestly; and the calendar must stop

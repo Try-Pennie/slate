@@ -452,6 +452,7 @@ const PREVIEW_BELOW_TIER: BelowFinding = {
     agent_name: "Dana Whitfield",
     agent_email: "dana.whitfield@trypennie.com",
     prefill: { parentOrigin: "https://www.trypennie.com" },
+    referrer_origin: "https://www.trypennie.com",
   },
   bucket: { id: "b-100", code: "100", name: "Low | None | No Legal Param", criteria: { debt_team: "low" } },
   pool: { rank: 1, label: "Low" },
@@ -469,9 +470,14 @@ const PREVIEW_OFFSITE: OffsiteFinding = {
     agent_name: "Dana Whitfield",
     agent_email: "dana.whitfield@trypennie.com",
     prefill: { parentOrigin: "http://localhost:3000" },
+    referrer_origin: "http://localhost:3000",
   },
   bucket: { id: "b-100", code: "100", name: "Low | None | No Legal Param", is_test: false },
-  origin: { kind: "offsite", origin: "http://localhost:3000" },
+  verdict: {
+    kind: "offsite",
+    declared: { kind: "offsite", origin: "http://localhost:3000" },
+    framedBy: { kind: "offsite", origin: "http://localhost:3000" },
+  },
 };
 const PREVIEW_OFFSITE_URL = "https://slate.trypennie.app/admin/bookings/7c1d2e3f-4a5b-4c6d-8e7f-9a0b1c2d3e4f";
 
@@ -959,7 +965,55 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     key: "booking_offsite_origin:*",
     state: "a real booking whose host page address could not be read",
     channel: "alert",
-    text: formatOffsiteOriginAlert({ ...PREVIEW_OFFSITE, origin: { kind: "unreadable" } }, PREVIEW_OFFSITE_URL),
+    text: formatOffsiteOriginAlert(
+      { ...PREVIEW_OFFSITE, verdict: { kind: "offsite", declared: { kind: "unreadable" }, framedBy: { kind: "none" } } },
+      PREVIEW_OFFSITE_URL,
+    ),
+  },
+  // #2728: the framing page is the only off site reading, the case the issue opened on.
+  {
+    key: "booking_offsite_origin:*",
+    state: "framed off site by a page that declared no origin",
+    channel: "alert",
+    text: formatOffsiteOriginAlert(
+      {
+        ...PREVIEW_OFFSITE,
+        verdict: { kind: "offsite", declared: { kind: "none" }, framedBy: { kind: "offsite", origin: "https://partner.example" } },
+      },
+      PREVIEW_OFFSITE_URL,
+    ),
+  },
+  {
+    key: "booking_offsite_origin:*",
+    state: "declared the production site while framed off site",
+    channel: "alert",
+    text: formatOffsiteOriginAlert(
+      {
+        ...PREVIEW_OFFSITE,
+        verdict: {
+          kind: "offsite",
+          declared: { kind: "production", origin: "https://trypennie.com" },
+          framedBy: { kind: "offsite", origin: "https://dev.trypennie.com" },
+        },
+      },
+      PREVIEW_OFFSITE_URL,
+    ),
+  },
+  {
+    key: "booking_offsite_origin:*",
+    state: "declared one off site page and framed by another",
+    channel: "alert",
+    text: formatOffsiteOriginAlert(
+      {
+        ...PREVIEW_OFFSITE,
+        verdict: {
+          kind: "offsite",
+          declared: { kind: "offsite", origin: "http://localhost:3000" },
+          framedBy: { kind: "offsite", origin: "https://partner.example" },
+        },
+      },
+      PREVIEW_OFFSITE_URL,
+    ),
   },
   {
     key: "empty_tier:*",

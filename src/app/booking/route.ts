@@ -69,6 +69,11 @@ const schema = z.object({
     phone: z.string().optional(),
   }),
   prefill: prefillSchema,
+  // #2728: the origin of the page that framed the booker. Untrusted and reduced
+  // again by createBooking, so any string is passed on as it came; a value of any
+  // other type is dropped here rather than refusing the booking, because a lead
+  // must never lose a call over a field only a monitor reads.
+  referrerOrigin: z.string().optional().catch(undefined),
 });
 
 /**
@@ -279,6 +284,7 @@ async function handlePost(req: NextRequest) {
         phone: parsed.data.attendee.phone?.trim(),
       },
       prefill: parsed.data.prefill,
+      referrerOrigin: parsed.data.referrerOrigin,
     });
     // Backstop, not the ordinary path (#1337): a second booking is normally
     // DECLINED above before anything is created. Since #1641 the window it
