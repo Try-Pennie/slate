@@ -29,12 +29,25 @@ export default function StandaloneBookerShell({
   theme: "light" | "dark";
   children: React.ReactNode;
 }) {
-  if (embedded) return <main>{children}</main>;
+  if (embedded) {
+    return (
+      <main>
+        {/* #2730: the root layout boots the document from the STAFF theme
+            cookie, which means nothing to a lead, so without this an embedded
+            booker opened by anybody with a dark console preference painted
+            dark until the Booker's own palette covered it. The embed's theme
+            is its own `theme` param (light unless dark), stamped before the
+            Booker so no part of it paints under the cookie's theme. */}
+        <StandaloneTheme theme={theme} />
+        {children}
+      </main>
+    );
+  }
 
   return (
     <main className={mainClassFor(false)}>
       {/* #706: standalone renders paint the theme at the document root so a dark
-          booker has no beige gutter. The embed leaves the host in control. */}
+          booker has no beige gutter. */}
       <StandaloneTheme theme={theme} />
       <div className={STANDALONE_CONTENT}>{children}</div>
       <LegalFooter />

@@ -25,8 +25,9 @@ interface StandaloneThemeProps {
  *
  * This paints the theme at the document root by setting data-theme on <html>,
  * rendered as the first child of a standalone page so it runs before the content
- * paints. Only used for standalone (non-embedded) renders; the embed leaves the
- * host in control of the iframe background per the embed contract.
+ * paints. #2730: the embedded booker renders it too, because without it the
+ * iframe's document booted on the staff cookie's theme (a dark flash for anybody
+ * with a dark console preference) rather than on the embed's own `theme` param.
  *
  * #2100: the script text is no longer written here. It comes from the one rule
  * in `@/lib/theme/boot`, which the root layout and the internal header also
