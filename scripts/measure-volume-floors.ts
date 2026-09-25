@@ -86,6 +86,12 @@ if (!Number.isInteger(DAYS) || DAYS < 14) {
   console.error("FAILED (bad-input): MEASURE_DAYS must be a whole number of at least 14");
   process.exit(1);
 }
+if (!Number.isFinite(PACE_MS) || PACE_MS < 0) {
+  // An unreadable pace becomes NaN, which a timer reads as no wait at all, and the
+  // run then meets cal.com's rate limit on every page instead of refusing (L50).
+  console.error("FAILED (bad-input): MEASURE_PACE_MS must be a number of milliseconds, 0 or more");
+  process.exit(1);
+}
 
 async function calGet(path: string): Promise<{ status: number; json: unknown }> {
   const res = await fetch(`https://api.cal.com/v2${path}`, {
