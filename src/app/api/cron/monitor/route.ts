@@ -85,6 +85,10 @@ import {
 } from "@/lib/monitor/booking-volume";
 import { floorsFor, judgedFloors } from "@/lib/monitor/volume-floors";
 import {
+  runVolumeVerdictGapCheck,
+  type VolumeVerdictGapResult,
+} from "@/lib/monitor/volume-verdict-gap";
+import {
   countCustomerBookingsSince,
   customerBookingFromSourcesSince,
   listCustomerBookingSourcesSince,
@@ -133,7 +137,7 @@ import {
   driftAlertContext,
   markBucketDrifting,
 } from "@/lib/monitor/availability-truth-store";
-import { recordHeartbeat, readHeartbeatMs } from "@/lib/monitor/heartbeat";
+import { recordHeartbeat, readHeartbeatMs, readHeartbeatMsStrict } from "@/lib/monitor/heartbeat";
 import { recordDetectorVerdict } from "@/lib/monitor/verdict-store";
 import {
   AVAILABILITY_TRUTH_VERDICT_LANE,
@@ -1079,6 +1083,7 @@ export async function GET(req: NextRequest) {
         },
         // alert-key: volume_count_unreadable
         // alert-key: low_booking_volume
+        // alert-key: low_volume_verdict_gap
         // all-clear-proof: scripts/test-monitor-booking-volume.ts - pins that a tick
         // which could not read the count, a tick outside business hours that read
         // nothing at all, and a tick that is itself PAGING a breach each clear
@@ -1087,6 +1092,37 @@ export async function GET(req: NextRequest) {
         log: (fields) => log.info("monitor", { msg: "booking volume", ...fields }),
       }),
     );
+
+    // --- The volume alarm's verdict gap (#2049): an hour of OPEN business time
+    // with no verdict pages, which the flat 4 day verdict bound cannot see. Runs
+    // under the same gate as the check (a stood down check is named by the step
+    // streak instead), and reads the stamp only on a tick that did not conclude
+    // while the org is open, so the healthy tick costs nothing. ---
+    const volumeVerdictGap: VolumeVerdictGapResult | null = !gates.lowVolume.run
+      ? null
+      : await steps.run("volume_verdict_gap", null, () =>
+      runVolumeVerdictGapCheck({
+        nowMs: now,
+        // Non-null by the gate above, as for the check itself.
+        businessHours: {
+          zone: businessHours!.zone,
+          rules: businessHours!.rules,
+          exceptions: businessHours!.exceptions,
+        },
+        volume,
+        // Strict: a failed read throws into this step's boundary and its streak
+        // pages, rather than reading as a lane that has never stamped.
+        readLastVerdictMs: () => readHeartbeatMsStrict(LOW_VOLUME_VERDICT_LANE),
+        // alert-key: low_volume_verdict_gap
+        // alert-text-ok: our own copy from volume-verdict-gap.ts, built from a
+        // count of minutes and a stamp; no error text can reach it.
+        notify: (key, cooldownMs, text) => sendThrottledAlert(key, cooldownMs, text),
+        log: (fields) => log.info("monitor", { msg: "volume verdict gap", ...fields }),
+      }),
+    );
+    if (volumeVerdictGap?.status === "gap") {
+      log.warn("monitor", { msg: "volume verdict gap paged", open_minutes: volumeVerdictGap.openMinutes });
+    }
 
     // --- Low booking volume PER LANDING PAGE (#2738): one page breaking while the
     // others keep booking, which the tier total above cannot see. Same hours gate,

@@ -9,6 +9,7 @@ import {
   runLowVolumeCheck,
   VOLUME_ALERT_KEY,
   VOLUME_COUNT_UNREADABLE_KEY,
+  VOLUME_VERDICT_GAP_KEY,
   type BusinessHoursConfig,
   type VolumeWindow,
 } from "../src/lib/monitor/booking-volume.ts";
@@ -441,6 +442,28 @@ function harness(overrides: {
     h.resolved.some((r) => r.key === VOLUME_ALERT_KEY),
     "a healthy reading offers the all-clear even while disarmed",
   );
+}
+
+// The verdict gap page (#2049) clears on any tick that REACHED a verdict, a
+// breaching one included: a breach is the check concluding, so the alarm is not
+// blind. Every tick that measured nothing clears nothing.
+{
+  const healthy = harness({ counts: { "30": 9, "120": 40 } });
+  await healthy.run();
+  assert(healthy.resolved.some((r) => r.key === VOLUME_VERDICT_GAP_KEY), "a healthy verdict clears the gap page");
+
+  const breach = harness({ counts: { "30": 1, "120": 40 } });
+  await breach.run();
+  assert(breach.resolved.some((r) => r.key === VOLUME_VERDICT_GAP_KEY), "a breaching verdict is still a verdict, so it clears the gap page");
+
+  for (const [name, h] of [
+    ["outside hours", harness({ nowMs: CLOSED_DAY_NOW })],
+    ["an unreadable count", harness({ counts: { "30": null, "120": null } })],
+    ["a reader that threw", harness({ countThrows: true })],
+  ] as const) {
+    await h.run();
+    assert(!h.resolved.some((r) => r.key === VOLUME_VERDICT_GAP_KEY), `${name} clears nothing about the verdict gap`);
+  }
 }
 
 // A settle that throws must not take down the tick.

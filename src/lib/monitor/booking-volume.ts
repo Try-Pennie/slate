@@ -99,6 +99,14 @@ export const VOLUME_ALERT_KEY = "low_booking_volume";
  */
 export const VOLUME_COUNT_UNREADABLE_KEY = "volume_count_unreadable";
 
+/**
+ * alert_state key for this check going an hour of OPEN business time without a
+ * verdict (#2049). The page is sent from `volume-verdict-gap.ts`; its all-clear is
+ * offered here, by the only thing that can measure it over: a tick that reached a
+ * verdict. It lives in this module so that one does not import the other both ways.
+ */
+export const VOLUME_VERDICT_GAP_KEY = "low_volume_verdict_gap";
+
 export type LowVolumeResult =
   | { status: "outside-hours" }
   | { status: "unverified" }
@@ -222,7 +230,15 @@ export async function runLowVolumeCheck(deps: {
   // page that was delivered while armed hanging forever after someone disarms it.
   // A key with no outstanding page costs nothing to offer: `settle` reads the
   // firing markers once and skips whatever is not there.
-  const recovered = [{ key: VOLUME_COUNT_UNREADABLE_KEY, text: formatVolumeCountReadableNotice() }];
+  //
+  // The verdict gap (#2049) clears on a breach too: a breach is the check
+  // concluding, which is the whole of what that page said was not happening. It
+  // rides this settle rather than a read of its own, so the healthy tick costs
+  // nothing extra on the budget four cron lanes share.
+  const recovered = [
+    { key: VOLUME_COUNT_UNREADABLE_KEY, text: formatVolumeCountReadableNotice() },
+    { key: VOLUME_VERDICT_GAP_KEY, text: formatVolumeVerdictGapRecoveryNotice() },
+  ];
   if (breaches.length === 0) {
     recovered.push({ key: VOLUME_ALERT_KEY, text: formatLowVolumeRecoveryNotice(windows) });
   }
@@ -256,6 +272,14 @@ export function formatVolumeCountReadableNotice(): string {
   return (
     "The booking volume monitor can read its count again, so it is measuring " +
     "whether customers are booking. No action is needed."
+  );
+}
+
+/** The all-clear for the verdict gap (#2049), hung off a tick that concluded. */
+export function formatVolumeVerdictGapRecoveryNotice(): string {
+  return (
+    "The low booking volume alarm is reaching a verdict again, so it is measuring " +
+    "whether customers are booking during open hours. No action is needed."
   );
 }
 

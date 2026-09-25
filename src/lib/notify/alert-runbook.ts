@@ -75,6 +75,7 @@ const FAMILY_BY_KEY: Record<string, AlertFamily> = {
   main_not_deployed: "a-merge-has-not-shipped-or-ci-cannot-run",
   ci_runs_refused: "a-merge-has-not-shipped-or-ci-cannot-run",
   volume_count_unreadable: "a-lane-or-schedule-has-gone-quiet",
+  low_volume_verdict_gap: "a-lane-or-schedule-has-gone-quiet",
   audit_write_failed: "a-lane-or-schedule-has-gone-quiet",
 
   // A lead would find nothing to book, or too little.

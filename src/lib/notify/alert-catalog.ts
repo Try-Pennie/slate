@@ -388,6 +388,14 @@ export const ALERT_CATALOG: AlertEntry[] = [
       "the read succeeds again and the same lane sees it on the next tick.",
   },
   {
+    key: "low_volume_verdict_gap",
+    kind: "condition",
+    why:
+      "The volume alarm has gone an hour of open business time without a verdict " +
+      "(#2049), so it is blind while the org is open; the next tick that reaches a " +
+      "verdict ends it, and the same lane re-measures every 5 minutes.",
+  },
+  {
     key: "low_page_volume:*",
     kind: "condition",
     // The suffix is one of the fixed Low landing pages in page-volume.ts.
