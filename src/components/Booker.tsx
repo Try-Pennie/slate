@@ -2,7 +2,7 @@
 
 import { DateTime } from "luxon";
 import { formatClockTime, formatLongDate } from "@/lib/date/parse";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 import { AlertIcon, ArrowRightIcon, ClockIcon, GlobeIcon, PennieMark, PhoneOutlineIcon } from "@/components/icons";
 import { BookerButton } from "@/components/BookerButton";
@@ -664,18 +664,34 @@ export default function Booker({
   }, [embedded, parentOrigin, bucketCode]);
 
   // Tell the embedding page our height so the iframe resizes with no scroll.
+  //
+  // #2769: the height reported is the TALLEST this booker has drawn, held for the
+  // life of the frame, never the current step's. The modal used to change size at
+  // every step (the picker, then a taller confirm step, then a much shorter
+  // existing call panel or confirmation), and Dan's rule is that a stepped flow in
+  // a fixed frame keeps one size and removes things instead. The root fills the
+  // frame it is given (`min-h-screen` below) and a short step centres inside it,
+  // so a shorter step is laid out FOR the box rather than shrinking it. Holding
+  // the number here as well as in the layout covers the frame being hidden: a
+  // closed modal's document reads its content height, and the reopened box would
+  // otherwise come back at whatever step the lead left it on.
+  const heldFrameHeight = useRef(0);
   useEffect(() => {
     if (!embedded || !rootRef.current) return;
-    const post = () =>
-      postToParent({
-        type: "slate:resize",
-        height: rootRef.current?.scrollHeight ?? 0,
-      });
+    const post = () => {
+      const measured = rootRef.current?.scrollHeight ?? 0;
+      heldFrameHeight.current = Math.max(heldFrameHeight.current, measured);
+      postToParent({ type: "slate:resize", height: heldFrameHeight.current });
+    };
     const ro = new ResizeObserver(post);
     ro.observe(rootRef.current);
     post();
     return () => ro.disconnect();
-  }, [embedded, meta, activeDay, selectedSlot, confirmed, postToParent]);
+    // Every state that swaps the ROOT element is listed, because each screen is
+    // its own root and an observer left on the old one measures nothing: the
+    // existing call panel and the cancelled screen were missing, so neither ever
+    // reported a height and the frame stayed at its floor (#2766).
+  }, [embedded, meta, activeDay, selectedSlot, confirmed, existingCall, pickingMoveTime, cancelled, postToParent]);
 
   // Keydowns inside the iframe never reach the host page, so relay Escape
   // for the host's modal chrome to close on (widget.js listens for it).
@@ -1113,14 +1129,52 @@ export default function Booker({
   // right in any host, any frame and any modal size. `max-w-4xl` is the width the
   // widget's desktop modal is sized to match (`public/widget.js`), and
   // `embed-two-column.test.tsx` holds the two together.
-  const shell = `@container mx-auto max-w-4xl overflow-hidden rounded-xl shadow-xs ${c.shell}`;
+  //
+  // #2769: in the embed the root also FILLS the frame (the frame's own viewport,
+  // which is the height the host set from `slate:resize`), as a column, so a
+  // shorter screen centres in the held box rather than leaving the page beneath
+  // it showing (#2766). The standalone page keeps its own layout.
+  const shell = `@container mx-auto max-w-4xl overflow-hidden rounded-xl shadow-xs ${c.shell}${
+    embedded ? " flex min-h-screen flex-col" : ""
+  }`;
+  /**
+   * #2769: the ONE box every step fills in the widget's desktop modal. Everything
+   * under the test band is this tall at two columns, on every screen: the picker's
+   * times list grows to fill it, a short screen (the confirmation, the existing
+   * call panel, the cancelled screen) centres in it, and a long one scrolls INSIDE
+   * it, so the modal never changes size between steps (Dan, 2026-09-25: "keep it a
+   * consistent size and just remove things as needed").
+   *
+   * 624px is measured, not guessed: in Chrome in the 896px modal on 2026-09-25
+   * the confirm step, once it lost the day strip, was 624px under the band, the
+   * tallest of the steps a lead normally passes through (the picker with a full
+   * list was 576). Sizing the box to the confirm step rather than the picker means
+   * Confirm booking is never below the fold; the picker spends the difference on
+   * more visible times. It fits a 768px tall laptop inside the modal's 90dvh cap.
+   * jsdom cannot lay out, so the number is written down here.
+   *
+   * Below two columns (a phone, where the modal is the whole screen and so is one
+   * size already) the body takes its content's height and the frame grows to the
+   * tallest step it has drawn (the held height above).
+   */
+  const embedBody = (children: ReactNode) =>
+    embedded ? (
+      <div data-embed-body className="flex min-h-0 flex-1 flex-col overflow-y-auto @3xl:h-[624px] @3xl:flex-none">
+        {children}
+      </div>
+    ) : (
+      children
+    );
   // #2660: the test line, on EVERY screen this component can show. Each screen
   // below is its own root, so the band is placed in each rather than around a
   // shared frame this component does not have; a screen without it would read as
   // nothing to warn about (L678), and the confirmation is the one a stray lead
   // reads last. Null on a real booking, so nothing is drawn rather than an empty
   // band.
-  const testBand = isTest ? <TestModeBand /> : null;
+  //
+  // #2748: framed, the band stops short of the corner the host's close control
+  // sits in, so the control never sits on it.
+  const testBand = isTest ? <TestModeBand framed={embedded} /> : null;
 
   // #1337: declined because this person already has an active call. Nothing was
   // created. No policy voice: the rule is not explained (that makes the panel
@@ -1139,7 +1193,12 @@ export default function Booker({
     return (
       <div ref={rootRef} data-theme={theme} className={shell}>
         {testBand}
-        <div className="mx-auto max-w-md p-8">
+        {/* #2766: the width of the picker's details column rather than a narrow
+            one (max-w-md read as a half filled box in the 896px modal), and
+            centred in the held box (#2769), so a short screen still reads as one
+            designed surface. */}
+        {embedBody(
+        <div className="mx-auto my-auto w-full max-w-2xl p-6 @3xl:p-8">
           <h2 className={`text-xl font-semibold ${c.title}`}>
             You already have a call booked
           </h2>
@@ -1439,7 +1498,8 @@ export default function Booker({
               {DUPLICATE_COPY.checkYourEmail}
             </p>
           )}
-        </div>
+        </div>,
+        )}
       </div>
     );
   }
@@ -1451,7 +1511,8 @@ export default function Booker({
     return (
       <div ref={rootRef} data-theme={theme} className={shell}>
         {testBand}
-        <div className="mx-auto max-w-md p-8 text-center">
+        {embedBody(
+        <div className="mx-auto my-auto w-full max-w-md p-8 text-center">
           <h2 className={`text-xl font-semibold ${c.title}`}>
             {BOOKER_CANCEL_COPY.doneHeading}
           </h2>
@@ -1468,7 +1529,8 @@ export default function Booker({
           >
             {BOOKER_CANCEL_COPY.doneBookAgain}
           </BookerButton>
-        </div>
+        </div>,
+        )}
       </div>
     );
   }
@@ -1498,7 +1560,8 @@ export default function Booker({
             gets the same branded coins illustration as the standalone page (one
             delight moment); confirmation is a one-time swap, so the single iframe
             resize it triggers is not the animated-height jitter guarded above. */}
-        <div className="pn-confirm-enter p-10 text-center">
+        {embedBody(
+        <div className="pn-confirm-enter my-auto w-full p-10 text-center">
           <ConfirmationMark />
           <h2
             ref={confirmedHeadingRef}
@@ -1592,7 +1655,8 @@ export default function Booker({
               )}
             </div>
           )}
-        </div>
+        </div>,
+        )}
       </div>
     );
   }
@@ -1846,7 +1910,11 @@ export default function Booker({
   const displayControls = (
     <div
       data-display-controls
-      className="mb-4 flex flex-wrap items-center justify-between gap-x-4 gap-y-2 text-xs"
+      // #2748: framed, the row stops short of the host's close control, which
+      // sits in this corner of the frame.
+      className={`mb-4 flex flex-wrap items-center justify-between gap-x-4 gap-y-2 text-xs${
+        embedded ? " @3xl:pr-10" : ""
+      }`}
     >
       <div className="flex min-w-0 items-center gap-1.5">
         <span className={c.faint}>
@@ -1889,7 +1957,17 @@ export default function Booker({
   // Times / booking form (the 420px
   // cap is for the scrolling slot list only).
   const timesPanel = (
-    <section className={`flex flex-col p-6 ${selectedSlot ? "" : "max-h-[420px]"}`}>
+    // #2769: in the embed's two column box the section FILLS what is left under
+    // the strip, so the times list grows into the box and a long confirm step
+    // scrolls inside it rather than growing it. The confirm step also starts
+    // closer to the row above, since the strip that sat between them is gone.
+    <section
+      className={`flex flex-col p-6 ${selectedSlot ? "" : "max-h-[420px]"}${
+        embedded
+          ? ` @3xl:min-h-0 @3xl:flex-1 ${selectedSlot ? "pt-2 @3xl:overflow-y-auto" : "@3xl:max-h-none"}`
+          : ""
+      }`}
+    >
       {selectedSlot ? (
         /* The step ARRIVES rather than appearing in the same frame the times
            left (Dan, 2026-09-22: "clicking the time (like 8am) felt bad. it
@@ -2170,13 +2248,19 @@ export default function Booker({
   return (
     <div ref={rootRef} data-theme={theme} className={shell}>
         {testBand}
-      <div className="grid grid-cols-1 @3xl:grid-cols-[260px_1fr]">
+      {embedBody(
+      <div className="grid flex-1 grid-cols-1 @3xl:grid-cols-[260px_1fr]">
         {eventPanel}
-        <div className="flex flex-col">
+        <div className="flex min-h-0 flex-col">
           {/* px-6 pt-6 aligns the strip's chips with the padded times list below. */}
           <div className="px-6 pt-6">
             {displayControls}
-            {loading ? (
+            {/* #2769: the confirm step drops the strip in the embed. The step's
+                own line states the chosen day and time, so the strip was a second
+                statement of one fact (L605), and it was what made the confirm step
+                taller than the box the picker set. The standalone page keeps it
+                (#2172: a live chip takes the lead back to that day's times). */}
+            {embedded && selectedSlot ? null : loading ? (
               // As many placeholder chips as days are about to arrive, so the
               // row does not change width as content lands.
               <BookerStripSkeleton skeletonClass={c.skeleton} count={horizonDays} />
@@ -2209,7 +2293,8 @@ export default function Booker({
           </div>
           {timesPanel}
         </div>
-      </div>
+      </div>,
+      )}
     </div>
   );
 }
