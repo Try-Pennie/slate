@@ -114,9 +114,9 @@ export const BELOW_LEAD_TIER_VERDICT_LANE = "verdict:below-lead-tier";
  * will not route to them.
  *
  * It needs this stamp for the reason the whole family exists: "nobody in that
- * state" and "no calls reached Slate at all" are the same silence. Before Regal's
- * reporting webhook is pointed at Slate it is the second, every tick, which is why
- * it is PARKED below against the issue that arms it.
+ * state" and "no calls reached Slate at all" are the same silence. Regal's
+ * reporting webhook has pointed at Slate since 2026-09-24 (#2695), so a lapsed
+ * stamp now means the feed stopped arriving, and the watch pages on it.
  */
 export const REGAL_CALLS_VERDICT_LANE = "verdict:regal-calls";
 
