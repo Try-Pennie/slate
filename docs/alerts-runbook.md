@@ -271,7 +271,8 @@ on purpose and is waiting for somebody.
 ## The roster or routing data is wrong
 
 Keys: `agent_sync_failures`, `agents_without_routing`, `agents_without_schedule`,
-`roster_coverage_gap`, `salesforce_user_id_conflicts`, `salesforce_manager_ambiguous`,
+`roster_coverage_gap`, `roster_coverage_upcoming_gap`, `salesforce_user_id_conflicts`,
+`salesforce_manager_ambiguous`,
 `misroute:*`, `rr_ordering_degraded`, `reassign-unknown-reason-code`,
 `booker_empty_reason`, `schedule_parity_drift`, `agents_on_unset_hours`,
 `booking_offsite_origin:*`.

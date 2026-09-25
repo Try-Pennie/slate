@@ -214,6 +214,7 @@ const FAMILY_BY_KEY: Record<string, AlertFamily> = {
   agents_without_routing: "the-roster-or-routing-data-is-wrong",
   agents_without_schedule: "the-roster-or-routing-data-is-wrong",
   roster_coverage_gap: "the-roster-or-routing-data-is-wrong",
+  roster_coverage_upcoming_gap: "the-roster-or-routing-data-is-wrong",
   schedule_parity_drift: "the-roster-or-routing-data-is-wrong",
   agents_on_unset_hours: "the-roster-or-routing-data-is-wrong",
   // #2318. Same family: the finding is about a roster row, and the first thing

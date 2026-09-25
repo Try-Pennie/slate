@@ -153,7 +153,13 @@ export function monitorSetupGates(readiness: SetupReadiness): {
     // whole week would report as uncovered. That second one is the dangerous
     // direction, because being wrong there is indistinguishable from the very
     // finding this check exists to report.
-    rosterCoverage: gate(readiness, ["businessHours", "workingHours", "settings"]),
+    //
+    // #1936: and the horizon, because the range it judges runs from today through
+    // the booking horizon plus a week, and the horizon is what splits a live gap
+    // (leads are being turned away) from an upcoming one (there is time). A guessed
+    // horizon would page a week out gap as live, or quietly file a live one as
+    // something that can wait.
+    rosterCoverage: gate(readiness, ["businessHours", "workingHours", "horizonDays", "settings"]),
     // #1262: whether every bookable agent's calendar is hydrated past the live
     // booking horizon. The horizon IS the bound being checked, so it must skip
     // when that read fails rather than judge against a guessed window: a guessed

@@ -43,6 +43,7 @@ export const ALERT_KEYS = [
   "availability_drift",
   "booker_empty_reason",
   "roster_coverage_gap",
+  "roster_coverage_upcoming_gap",
   "ooo_protection_lost",
   "webhook_event_no_subscriber",
   "edge_limiter_unusable",
@@ -270,7 +271,13 @@ export const ALERT_FIELDS: {
     key: "roster_coverage_gap",
     urgency: "page",
     label: "Advertised hours nobody is rostered for",
-    help: "The org's business hours include time no agent is scheduled to work, so a lead is offered nothing during hours we say we are open.",
+    help: "Inside the booking horizon, the org's business hours include time no agent is scheduled to work, so a lead is offered nothing during hours we say we are open.",
+  },
+  {
+    key: "roster_coverage_upcoming_gap",
+    urgency: "alert",
+    label: "Upcoming hours nobody is rostered for",
+    help: "In the week past the booking horizon, the org's business hours include time no agent is scheduled to work. No lead can book it yet, so there is time to change someone's hours or find cover.",
   },
   {
     key: "ooo_protection_lost",
@@ -458,6 +465,12 @@ export const MONITOR_DEFAULTS = {
     // repeat the same unchanged sentence twenty four times before anyone could
     // act on it, which is how a pager gets muted (L36). Daily.
     roster_coverage_gap: 24 * 60 * 60_000,
+    // The same gap a week out (#1936): nothing is broken yet, and the lead time is
+    // STAFFING_LEAD_DAYS (7). Every three days says it about twice before the day
+    // crosses into the horizon, where the live key above takes over at its daily
+    // pace; daily here would restate an unchanged, not yet urgent fact seven times,
+    // which is the repetition that gets a channel muted (L36).
+    roster_coverage_upcoming_gap: 3 * 24 * 60 * 60_000,
     // Approved time off blocking nothing (#1467): the agent is away and a lead can
     // be booked into those hours right now, and nothing repairs it on its own (the
     // request still records the block as written, so no retry acts on it). It stays

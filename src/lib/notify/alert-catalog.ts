@@ -78,7 +78,12 @@ export const ALERT_CATALOG: AlertEntry[] = [
   {
     key: "roster_coverage_gap",
     kind: "condition",
-    why: "The org advertises hours nobody is rostered for; a schedule or the business hours are edited and the monitor lane sees it on its next pass.",
+    why: "The org advertises hours nobody is rostered for inside the booking horizon; a schedule or the business hours are edited and the monitor lane sees it on its next pass.",
+  },
+  {
+    key: "roster_coverage_upcoming_gap",
+    kind: "condition",
+    why: "The org will advertise hours nobody is rostered for in the week past the booking horizon; a schedule or the business hours are edited and the monitor lane sees the range clear on its next pass.",
   },
   {
     key: "sync_failures",
