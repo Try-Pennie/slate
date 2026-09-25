@@ -182,10 +182,13 @@ vocabulary in the README's URL contract (for example `"prefill": { "source":
 
 ### One active appointment per person (dedupe + auto-reschedule)
 
-Before creating, the API looks the person up across **active** bookings — by
-`externalId`, then `salesforceId`, then email/phone — so a returning lead never
-ends up double-booked, even across channels (an embed booking carries no
-`externalId`, so it's matched by identity).
+Before creating, the API looks the person up across **active** bookings by
+`externalId`, then `salesforceId`, then email and phone, so a returning lead
+never ends up double-booked, even across channels. **A strong id you send is
+matched against either id column** (#2663): a booking made through the embed
+holds the lead's id as its `salesforceId` and has no `externalId`, so sending
+only `externalId=<lead id>` still finds it, and so does sending only
+`salesforceId`. A different lead's id matches nothing.
 
 | Situation | `outcome` | HTTP | What happened |
 |---|---|---|---|

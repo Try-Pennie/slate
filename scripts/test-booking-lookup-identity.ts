@@ -17,8 +17,8 @@
 // and the cancel, which asks the same ownership question. A different lead's id
 // still gets a 404 or an empty list.
 //
-// Scoped to those three. The one call per person dedupe (#357) keeps its own
-// column to column matching; the last block pins that this change did not touch it.
+// Scoped to those three by #2657. #2663 then took the same rule onto the one call
+// per person dedupe (#357); the last block pins that.
 import {
   bookViaApi,
   cancelDirectBooking,
@@ -132,7 +132,7 @@ async function run() {
       calls.findActiveBookingsByStrongIds.length === 1 && calls.findActiveBookingsByStrongIds[0].join() === LEAD,
       "list: the rows were fetched by the lead id against either column, not by external_id alone",
     );
-    assert(calls.findActiveBookingsForPerson.length === 0, "list: the dedupe path's column to column fetch was not used");
+    assert(calls.findActiveBookingsForPerson.length === 0, "list: the dedupe path's person fetch was not used");
   }
   {
     const { deps } = makeDeps({ personBookings: [apiBooking()] });
@@ -224,20 +224,25 @@ async function run() {
     assert(!calls.webhooks.some((w) => w.event === "booking.cancelled"), "cancel: and fires no booking.cancelled");
   }
 
-  // --- The dedupe path is NOT widened by this change ---
-  // The one call per person gate (#357) still matches column to column: an API
-  // caller sending only `externalId` does not see an embed booking as the same
-  // person by strong id (recorded as its own finding, deliberately not fixed here,
-  // L342). This block pins that #2657 left it alone. If that path is ever widened
-  // on purpose, delete this block in the same change rather than adjusting it.
+  // --- The dedupe path matches either column too (#2663) ---
+  // #2657 pinned the dedupe as column to column and said to delete that block
+  // in the change that widened it on purpose. #2663 is that change: an API
+  // caller sending only `externalId` now sees the lead's embed booking as the
+  // same person by strong id, so a same slot request dedupes instead of booking
+  // a second call. The grading itself is driven in scripts/test-person-dedupe.ts.
   {
     const identity = { externalId: LEAD, salesforceId: null, email: null, phone: null };
-    assert(findPersonMatch(identity, [embedBooking()]) === null, "dedupe: findPersonMatch still matches column to column");
+    const m = findPersonMatch(identity, [embedBooking()]);
+    assert(m?.strength === "strong", "dedupe: an externalId only caller grades the embed booking strong");
+    assert(
+      findPersonMatch({ ...identity, externalId: STRANGER }, [embedBooking()]) === null,
+      "dedupe: a different lead's id still matches nothing",
+    );
   }
   {
     const apiInput: ApiBookingInput = {
       ...input,
-      startIso: "2026-06-09T14:00:00.000Z",
+      startIso: embedBooking().starts_at,
       externalId: LEAD,
       salesforceId: null,
       attendee: { name: "Kris", email: "other@x.com", phone: "+12035550000" },
@@ -245,12 +250,9 @@ async function run() {
     };
     const { deps, calls } = makeDeps({ personBookings: [embedBooking()] });
     const res = await bookViaApi(apiInput, deps);
-    assert(res.outcome === "created", "dedupe: bookViaApi still grades through the column to column path");
-    assert(
-      calls.findActiveBookingsForPerson.length >= 1 && calls.findActiveBookingsForPerson[0].externalId === LEAD,
-      "dedupe: bookViaApi fetched through findActiveBookingsForPerson with the identity as given",
-    );
-    assert(calls.findActiveBookingsByStrongIds.length === 0, "dedupe: bookViaApi never used the lookup's either column fetch");
+    assert(res.outcome === "deduped", "dedupe: bookViaApi with only externalId dedupes onto the embed booking");
+    assert(calls.insertBooking.length === 0, "dedupe: and creates no second booking");
+    assert(calls.findActiveBookingsByStrongIds.length === 0, "dedupe: bookViaApi still fetches through its own person read");
   }
 }
 

@@ -91,12 +91,12 @@ async function run() {
     // nothing yet. The identity is the link alone, and that has to be enough or
     // the whole notice is unreachable on the very screen it is for.
     //
-    // The external id is a SEPARATE column from the Salesforce one, which is why
-    // `/book?external_id=` asks this as `salesforceId`: the Booker takes that
-    // parameter into its `salesforceId` prop and the confirm posts it under that
-    // name, so the booking is written with it in `salesforce_id`. Asking it here
-    // as `externalId` would query the column the booking does not carry, and the
-    // landing and the confirm would disagree about the same lead.
+    // `/book?external_id=` asks this as `salesforceId`, the field the confirm
+    // posts. Since #2663 a strong id matches EITHER column, so a booking an API
+    // caller made with only `external_id` is recognised at the landing too, and
+    // the landing and the confirm still agree, because both grade through the
+    // same `findPersonMatch`. Before #2663 this pinned the opposite (the two
+    // columns never met), which is the decision that change reversed.
     const { deps } = world({ external_id: "ext-9", salesforce_id: null });
     const byExternal = await findExistingCallForIdentity(
       { salesforceId: null, externalId: "ext-9", email: null, phone: null },
@@ -104,15 +104,21 @@ async function run() {
       REAL_WORLD,
     );
     assert(byExternal !== null, "a booking carrying an external id is recognised by it");
-    const byWrongField = await findExistingCallForIdentity(
+    const bySalesforceField = await findExistingCallForIdentity(
       { salesforceId: "ext-9", externalId: null, email: null, phone: null },
       deps,
       REAL_WORLD,
     );
     assert(
-      byWrongField === null,
-      "and the two ids are different columns, which is why the caller must ask with the field the confirm will send",
+      bySalesforceField?.disclose === true,
+      "and by the same id sent as salesforceId, since a strong id matches either column (#2663)",
     );
+    const byStranger = await findExistingCallForIdentity(
+      { salesforceId: "ext-other", externalId: null, email: null, phone: null },
+      deps,
+      REAL_WORLD,
+    );
+    assert(byStranger === null, "while a different id still finds nothing");
   }
 
   // --- somebody the link does not identify -------------------------------------
