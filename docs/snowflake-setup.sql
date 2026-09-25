@@ -110,7 +110,13 @@ CREATE TABLE IF NOT EXISTS bookings (
   -- Null for a booking made before sources were recorded. The legacy cal.com event
   -- type is derived from it in code, so a report grouping by the old names joins on
   -- SOURCE_DETAILS rather than on a stored copy.
-  source              VARCHAR
+  source              VARCHAR,
+  -- #2772: the origin (never the path) of the page that framed the booker
+  -- (#2728, supabase/migrations/0142_booking_referrer_origin.sql). Null when the
+  -- booker was not framed, the referrer was stripped, or the booking predates it.
+  -- Read beside prefill:parentOrigin; which origins count as production is decided
+  -- in code (src/lib/monitor/offsite-origin.ts), not here.
+  referrer_origin     VARCHAR
 )
 CLUSTER BY (created_at);
 
@@ -226,6 +232,12 @@ ALTER TABLE IF EXISTS routing_decisions   ADD COLUMN IF NOT EXISTS exported_at T
 -- warehouse without it fails every bookings export: run this BEFORE the change
 -- that exports it deploys.
 ALTER TABLE IF EXISTS bookings            ADD COLUMN IF NOT EXISTS source VARCHAR;
+
+-- #2772: the framing page's origin. Same rule as source: the MERGE writes it on
+-- every bookings row, so run this BEFORE the change that exports it deploys.
+-- scripts/test-snowflake-mirror-columns.ts fails the build on any column added to
+-- a CREATE above after provisioning that has no ALTER here.
+ALTER TABLE IF EXISTS bookings            ADD COLUMN IF NOT EXISTS referrer_origin VARCHAR;
 
 -- ----------------------------------------------------------------------------
 -- Grants on the mirror tables: SELECT + INSERT + UPDATE only. No DELETE.

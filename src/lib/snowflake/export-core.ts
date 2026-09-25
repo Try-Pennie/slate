@@ -65,6 +65,10 @@ export const MIRROR_TABLES: TableSpec[] = [
       // docs/snowflake-setup.sql, which must run BEFORE this deploys or every
       // bookings MERGE fails on an unknown column.
       v("source"),
+      // #2772: the origin of the page that framed the booker (#2728), judged beside
+      // prefill.parentOrigin. Same rule as source: its ALTER in
+      // docs/snowflake-setup.sql runs in Snowsight BEFORE this deploys.
+      v("referrer_origin"),
     ],
   },
   {
