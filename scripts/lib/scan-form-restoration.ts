@@ -63,7 +63,7 @@ export function formTags(src: string): FormTag[] {
  *   - an apostrophe straight after a letter or digit ("don't", "agents'") never
  *     opens a string, and a quote with no partner on its own line was never an
  *     opener, so nothing past that line is affected;
- *   - a slash after `<`, `>` or `}` is never a regex, because `</p>` and
+ *   - a slash after `<`, `>` (other than an arrow's `=>`) or `}` is never a regex, because `</p>` and
  *     `{price}/mo` are everywhere in JSX and a regex in those positions is rare.
  *     A regex there is read as division, which at worst leaves a `/*` inside it
  *     opening a comment, the behaviour before #2768.
@@ -150,6 +150,8 @@ function regexMayStart(src: string, i: number): boolean {
   if (j < 0) return true;
   const p = src[j]!;
   if ("(,=:[!&|?{;+-*%~^".includes(p)) return true;
+  // The `>` of an arrow (`x => /a/`) opens an expression, unlike a JSX tag's `>`.
+  if (p === ">" && src[j - 1] === "=") return true;
   if (!/[A-Za-z_$]/.test(p)) return false;
   let k = j;
   while (k >= 0 && /[A-Za-z0-9_$]/.test(src[k]!)) k--;

@@ -160,6 +160,10 @@ assert(files.length > 40, `the scanner found the app to judge (${files.length} f
 
   const classThenForm = `const re = /[/*]+/;\n<form action={save}>`;
   assert(formTags(classThenForm).length === 1, "a slash star inside a regex character class does not hide the form after it");
+  // An arrow body can be a regex (`x => /a*/`), and the `>` of `=>` is not the
+  // `>` closing a JSX tag, so a slash after it must still open a regex.
+  const arrowThenForm = `const strip = (s: string) => s.replace(/\\/*x/g, "");\nconst isGlob = (s: string) => /\\/*$/.test(s);\n<form action={save}>`;
+  assert(formTags(arrowThenForm).length === 1, "a slash star inside a regex returned by an arrow does not hide the form after it");
 
   // The apostrophe the scan was written to survive: JSX text is not a string, so
   // "don't" must not open one that hides real markup or a real comment.
