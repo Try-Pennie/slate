@@ -218,6 +218,18 @@ async function tick(input: {
   const text = notified.find((n) => n.key === ROSTER_COVERAGE_KEY)?.text ?? "";
   assert(/opens with nobody on/i.test(text), `a gap in the first hour says the day opens with nobody on (${text})`);
   eq(notified.length, 1, "the opening is emphasis on the same key, never a second alert");
+  // Every fact once per message (L605): the parenthetical pins which gap opens
+  // empty, so no second sentence restates what a lead meets at opening.
+  assert(!/arriving when the org opens|nothing at all/i.test(text), `the opening is stated once, not twice (${text})`);
+}
+
+// The same on the upcoming key: next Saturday opening empty is said once.
+{
+  const roster = [agent([1, 2, 3, 4, 5], 8 * 60, 20 * 60), agent([6], 9 * 60, 20 * 60)];
+  const { notified } = await tick({ agents: roster });
+  const text = notified.find((n) => n.key === ROSTER_COVERAGE_UPCOMING_KEY)?.text ?? "";
+  eq((text.match(/opens with nobody on/g) ?? []).length, 1, `the upcoming opening is stated once (${text})`);
+  assert(!/nothing at all/i.test(text), `and no second sentence restates it (${text})`);
 }
 
 // The control: a gap in the middle of the day does not claim the day opens empty.

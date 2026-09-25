@@ -395,11 +395,6 @@ function opensEmpty(g: DatedCoverageGap): boolean {
   return g.opensUncovered && !g.wholeDay;
 }
 
-/** What a lead meets at an empty opening, said once however many days it covers. */
-function opensConsequence(gaps: DatedCoverageGap[], verb: "finds" | "would find"): string {
-  return gaps.some(opensEmpty) ? ` A lead arriving when the org opens ${verb} nothing at all.` : "";
-}
-
 /**
  * The LIVE page: a gap on a day a lead can book right now. It leads with what a
  * lead meets, because that is the cost, then names both remedies, because which
@@ -410,7 +405,6 @@ export function formatRosterCoverageLiveAlert(gaps: DatedCoverageGap[]): string 
   return (
     `Leads are being turned away from hours the org says it is open, because no ` +
     `bookable agent is rostered for them: ${joinClauses(datedGapPhrases(gaps))}.` +
-    opensConsequence(gaps, "finds") +
     ` Set agents' working hours to cover them, or narrow the org's business hours ` +
     `so we stop advertising them.`
   );
@@ -425,7 +419,6 @@ export function formatRosterCoverageUpcomingAlert(gaps: DatedCoverageGap[]): str
   return (
     `No bookable agent is rostered yet for hours the org will soon be offering: ` +
     `${joinClauses(datedGapPhrases(gaps))}.` +
-    opensConsequence(gaps, "would find") +
     ` Nothing is broken yet, because those days are past the booking horizon and no ` +
     `lead can book them today. There is time to change someone's working hours, ask ` +
     `someone to cover, or narrow the org's business hours for those days.`
