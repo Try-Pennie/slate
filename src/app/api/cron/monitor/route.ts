@@ -8,6 +8,7 @@ import {
   resolveRecovered,
   settleAlertsSilently,
   firingFamilyMembers,
+  existingAlertStateKeys,
 } from "@/lib/notify/dispatch";
 import {
   runRegalCallCheck,
@@ -273,6 +274,8 @@ import {
   loadUpcomingBookingsInBuckets,
   loadCatchallByBooking,
 } from "@/lib/monitor/below-lead-tier-store";
+import { runOffsiteOriginCheck, OFFSITE_ORIGIN_LOOKBACK_MS } from "@/lib/monitor/offsite-origin";
+import { loadRecentBookingsInBuckets } from "@/lib/monitor/offsite-origin-store";
 import { readLeadXbcs, type LeadXbcRecord } from "@/lib/salesforce/lead-xbc";
 import { querySoqlAll, sfToken } from "@/lib/salesforce/rest";
 import type { OrgDefaults } from "@/lib/schedule-core";
@@ -1567,6 +1570,57 @@ export async function GET(req: NextRequest) {
     if (!gates.belowLeadTier.run) {
       log.warn("monitor", { msg: "below lead tier skipped", why: gates.belowLeadTier.why });
     }
+
+    // --- A real booking from a host page that is not the production site (#2715).
+    // Reads the real buckets' active bookings created inside the lookback and pages
+    // once per booking whose recorded `prefill.parentOrigin` is not one of
+    // PRODUCTION_ORIGINS. Test buckets are skipped by name, a booking with no origin
+    // is counted and never paged, and a failed read pages nothing and is logged as
+    // unreadable rather than as zero off site. Once per booking: keys already
+    // stamped in alert_state are skipped, and the cooldown outlasts the lookback.
+    // Gated on the shared bucket list, which is what says which buckets are real. ---
+    await steps.run("offsite_origin", null, async () => {
+      if (!gates.offsiteOrigin.run) {
+        log.warn("monitor", { msg: "offsite origin skipped", why: gates.offsiteOrigin.why });
+        return null;
+      }
+      return runOffsiteOriginCheck({
+        loadBookings: () =>
+          loadRecentBookingsInBuckets(
+            db,
+            // in-chunk-ok: the real buckets are the routing matrix, sixty codes at the
+            // design target, about 2,300 bytes of uuids against the 10,000 budget.
+            buckets!.filter((b) => !b.is_test).map((b) => b.id),
+            new Date(now - OFFSITE_ORIGIN_LOOKBACK_MS).toISOString(),
+          ),
+        buckets: buckets!,
+        alreadyPaged: (keys) => existingAlertStateKeys(keys),
+        // alert-key: booking_offsite_origin:*
+        // alert-text-ok: our own copy from offsite-origin.ts, built from the booking
+        // row and a parsed origin; no error text and no raw host value can reach it.
+        notify: (key, ms, text) => sendThrottledAlert(key, ms, text),
+        bookingUrl: (id) => `${appUrl()}${bookingDetailHref(id)}`,
+      }).then((result) => {
+        if (result.status === "unreadable") {
+          log.warn("monitor", { msg: "offsite origin unreadable", error: result.error });
+        } else {
+          log.info("monitor", {
+            msg: "offsite origin",
+            checked: result.checked,
+            production: result.production,
+            no_origin: result.noOrigin,
+            test_bucket: result.testBucket,
+            unknown_bucket: result.unknownBucket,
+            offsite: result.offsite,
+            paged: result.paged,
+            already_paged: result.alreadyPaged,
+            send_failed: result.sendFailed,
+            dedupe_unread: result.dedupeUnread,
+          });
+        }
+        return result;
+      });
+    });
 
     // --- Calling in Regal while Slate will not route to them (#2090). Regal posts
     // every completed call to /api/regal/calls, and the edge keeps a row per event

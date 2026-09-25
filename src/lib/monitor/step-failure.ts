@@ -139,6 +139,7 @@ const GATE_NAMES: Record<keyof ReturnType<typeof monitorSetupGates>, string> = {
   busyDrift: "the busy drift sampler",
   tierStaffing: "the debt tier staffing alarm",
   belowLeadTier: "the booking below the lead's Salesforce tier check",
+  offsiteOrigin: "the real booking from an off site host page check",
   regalCallsQuiet: "the no Regal calls all business day alarm",
 };
 

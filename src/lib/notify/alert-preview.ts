@@ -58,6 +58,7 @@ import {
   formatBelowLeadTierRecovery,
   type BelowFinding,
 } from "@/lib/monitor/below-lead-tier";
+import { formatOffsiteOriginAlert, type OffsiteFinding } from "@/lib/monitor/offsite-origin";
 import {
   formatAwaitingActivationAlert,
   formatAwaitingActivationRecovery,
@@ -434,6 +435,22 @@ const PREVIEW_BELOW_TIER: BelowFinding = {
   lead: { kind: "tier", rank: 5, key: "ultra_high", label: "Ultra High", code: "512" },
 };
 const PREVIEW_BELOW_TIER_URL = "https://slate.trypennie.app/admin/bookings/5b0c7a8e-2f41-4d7e-9a61-0c3f1e2d4b5a";
+
+// #2715. The 2026-09-25 shape: a partner testing from localhost onto a real Low
+// advisor at 13:00 UTC.
+const PREVIEW_OFFSITE: OffsiteFinding = {
+  booking: {
+    id: "7c1d2e3f-4a5b-4c6d-8e7f-9a0b1c2d3e4f",
+    bucket_id: "b-100",
+    starts_at: "2026-09-25T13:00:00.000Z",
+    agent_name: "Dana Whitfield",
+    agent_email: "dana.whitfield@trypennie.com",
+    prefill: { parentOrigin: "http://localhost:3000" },
+  },
+  bucket: { id: "b-100", code: "100", name: "Low | None | No Legal Param", is_test: false },
+  origin: { kind: "offsite", origin: "http://localhost:3000" },
+};
+const PREVIEW_OFFSITE_URL = "https://slate.trypennie.app/admin/bookings/7c1d2e3f-4a5b-4c6d-8e7f-9a0b1c2d3e4f";
 
 /** #2090: an invented agent for the Regal call previews (L155). */
 const REGAL_PREVIEW_CALLER: RegalCaller = {
@@ -839,6 +856,19 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     state: "the call was cancelled or its time passed",
     channel: "recovery",
     text: formatBelowLeadTierRecovery("5b0c7a8e-2f41-4d7e-9a61-0c3f1e2d4b5a", "gone", PREVIEW_BELOW_TIER_URL),
+  },
+  // #2715: one state per thing the origin can be, since the second cannot name it.
+  {
+    key: "booking_offsite_origin:*",
+    state: "a real booking from a localhost host page",
+    channel: "alert",
+    text: formatOffsiteOriginAlert(PREVIEW_OFFSITE, PREVIEW_OFFSITE_URL),
+  },
+  {
+    key: "booking_offsite_origin:*",
+    state: "a real booking whose host page address could not be read",
+    channel: "alert",
+    text: formatOffsiteOriginAlert({ ...PREVIEW_OFFSITE, origin: { kind: "unreadable" } }, PREVIEW_OFFSITE_URL),
   },
   {
     key: "empty_tier:*",

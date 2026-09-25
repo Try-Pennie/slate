@@ -33,6 +33,7 @@ const with_ = (over: Partial<SetupReadiness>): SetupReadiness => ({ ...ALL_SETUP
   assert(g.calendarWindow.run, "a healthy tick runs the calendar window coverage check");
   assert(g.busyDrift.run, "a healthy tick runs the busy drift sampler");
   assert(g.belowLeadTier.run, "a healthy tick runs the below lead tier check");
+  assert(g.offsiteOrigin.run, "a healthy tick runs the off site origin check");
 }
 
 // --- each read, alone, gates exactly the checks that depend on it --------------
@@ -85,6 +86,10 @@ const with_ = (over: Partial<SetupReadiness>): SetupReadiness => ({ ...ALL_SETUP
     eq(g.tierStaffing.run, c.tiers, `${c.name} unreadable: debt tier alarm runs = ${c.tiers}`);
     const below = c.below ?? true;
     eq(g.belowLeadTier.run, below, `${c.name} unreadable: below lead tier check runs = ${below}`);
+    // #2715: the off site origin check needs the bucket list to tell a real bucket
+    // from a test one, and nothing else.
+    const offsite = c.name !== "buckets";
+    eq(g.offsiteOrigin.run, offsite, `${c.name} unreadable: off site origin check runs = ${offsite}`);
   }
 }
 

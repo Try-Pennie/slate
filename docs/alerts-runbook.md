@@ -273,7 +273,8 @@ on purpose and is waiting for somebody.
 Keys: `agent_sync_failures`, `agents_without_routing`, `agents_without_schedule`,
 `roster_coverage_gap`, `salesforce_user_id_conflicts`, `salesforce_manager_ambiguous`,
 `misroute:*`, `rr_ordering_degraded`, `reassign-unknown-reason-code`,
-`booker_empty_reason`, `schedule_parity_drift`, `agents_on_unset_hours`.
+`booker_empty_reason`, `schedule_parity_drift`, `agents_on_unset_hours`,
+`booking_offsite_origin:*`.
 
 **What fired it.** Slate's picture of who works here, who they report to, or what they
 are eligible for disagrees with Salesforce, or with itself.
@@ -307,6 +308,15 @@ itself (`hours_source`), and a week the seeding wrote, or a pre stamp week still
 shaped exactly like the org default, is this finding. Fix by importing their real
 hours (`APPLY=1 pnpm import:calcom-schedules`) or setting them under the agent's
 hours; the same daily sweep clears it.
+
+**`booking_offsite_origin:*`** (#2715) names one booking on a REAL bucket whose host
+page declared an origin that is not the production site (`PRODUCTION_ORIGINS` in
+`src/lib/monitor/offsite-origin.ts`): localhost, a preview or staging host, or an
+address Slate cannot read. It is almost always somebody testing on a real code, and
+the advisor and the lead's reminder texts are live. Open the link and cancel it unless
+the lead is real. Tests belong on the public test bucket (#2660), which never pages.
+The origin is what the host declares, so a real lead on a misconfigured page reads the
+same way; that is why it pages rather than refuses.
 
 **Fix or escalate.** Data problems go to whoever owns the Salesforce record.
 `misroute` and `rr_ordering_degraded` are Slate's own routing reporting something it
