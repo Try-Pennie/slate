@@ -218,12 +218,22 @@ export function clientErrorSurface(page: string): ClientErrorSurface {
  * than a thousand (#2755). The key space is therefore the surface list, plus
  * `other`, per family, and nothing a caller sends can add to it.
  */
+/**
+ * The key family every non-boundary browser report is raised under (#2788).
+ *
+ * Exported because the alert copy reads it back: a `client_error:<surface>`
+ * context arrives at the same chokepoint as a server fault, and it is the prefix
+ * that tells the copy nothing returned a 500. One spelling, here, so a rename
+ * cannot leave the copy recognising a key nothing sends any more (L41).
+ */
+export const CLIENT_ERROR_KEY_PREFIX = "client_error";
+
 export function clientErrorSignature(input: { page: string; kind?: ClientErrorKind }): string {
   // #1974: a BOUNDARY catch gets its own key space, so a broken admin page and a
   // broken booker bundle do not share a cooldown. They are different failures
   // with different audiences, and one silencing the other for the cooldown's
   // length is exactly the shape that leaves the second invisible for as long as
   // it lasts.
-  const prefix = input.kind === "boundary" ? "boundary_error" : "client_error";
+  const prefix = input.kind === "boundary" ? "boundary_error" : CLIENT_ERROR_KEY_PREFIX;
   return `${prefix}:${clientErrorSurface(input.page)}`;
 }

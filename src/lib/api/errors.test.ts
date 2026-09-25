@@ -179,3 +179,63 @@ describe("internalErrorResponse alerting (#802)", () => {
     });
   });
 });
+
+// #2788: the browser error beacon raises its alerts through this same chokepoint,
+// keyed `client_error:<surface>`, and nothing returned a 500 there: the beacon
+// answers 204 and the page was whatever the browser showed. A sentence claiming a
+// 500 sends the reader hunting a server fault that did not happen (L11).
+describe("a browser error report is not a server fault (#2788)", () => {
+  const alertText = () =>
+    (dispatch.sendThrottledAlert.mock.calls[0] as unknown as [string, number, string])[2];
+
+  it("a client_error alert never says 500 and names the page it came from", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    await reportInternalError(new Error("error on /book/411: TypeError: x is undefined"), "client_error:book");
+
+    const body = alertText();
+    expect(body).not.toMatch(/500/);
+    expect(body).not.toMatch(/server error/i);
+    expect(body).toMatch(/browser reported an error/i);
+    expect(body).toContain("/book");
+    expect(body).toContain("TypeError: x is undefined");
+  });
+
+  it("the home page surface reads as a page, not as a key", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    await reportInternalError(new Error("error on /: boom"), "client_error:root");
+
+    const body = alertText();
+    expect(body).not.toMatch(/500/);
+    expect(body).not.toContain("client_error");
+    expect(body).not.toMatch(/\broot\b/);
+  });
+
+  it("the `other` alert still LEADS with its count sentence (#2755) and never says 500", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    await reportInternalError(
+      new Error("40 reports from pages Slate does not serve in the last 30 minutes; latest: error on /wp-login.php: boom"),
+      "client_error:other",
+    );
+
+    const body = alertText();
+    expect(body.startsWith("40 reports from pages Slate does not serve")).toBe(true);
+    expect(body).not.toMatch(/500/);
+    expect(body).not.toContain("client_error");
+  });
+
+  it("a real server fault still says the caller got a 500", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    await reportInternalError(new Error("db exploded"), "POST /api/bookings");
+
+    expect(alertText()).toMatch(/generic 500/);
+  });
+
+  it("keeps the throttle key unchanged, so the catalog entry and cooldown still apply", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    await reportInternalError(new Error("error on /book: boom"), "client_error:book");
+
+    const [key, cooldown] = dispatch.sendThrottledAlert.mock.calls[0] as unknown as [string, number, string];
+    expect(key).toBe("internal_error:client_error:book");
+    expect(cooldown).toBe(INTERNAL_ERROR_COOLDOWN_MS);
+  });
+});

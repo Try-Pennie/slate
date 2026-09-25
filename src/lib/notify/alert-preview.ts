@@ -205,6 +205,7 @@ import {
   embedOriginMismatchAlert,
   testBucketClientErrorInfo,
   internalErrorAlert,
+  unexpectedFaultAlert,
   misrouteAlert,
   oooApprovalsDigestAlert,
   retentionResumedText,
@@ -3236,13 +3237,22 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     text: misrouteAlert("bk_8f21c4", "411", "usr_22") },
   { key: "internal_error:*", state: "an unexpected 500", channel: "alert",
     text: internalErrorAlert("POST /api/bookings", "503 backendError") },
+  // #2788: a browser report rides the same key family and the same chokepoint,
+  // and nothing returned a 500 for it, so it reads as a report from a page.
+  // Rendered through the dispatcher the chokepoint itself calls, so the preview
+  // shows what ships rather than what one builder would say (L41).
+  { key: "internal_error:*", state: "a browser reported an error on the booker", channel: "alert",
+    text: unexpectedFaultAlert("client_error:book",
+      "error on /book/411: TypeError: slots.map is not a function (booker.js:1:4821)") },
+  { key: "internal_error:*", state: "a browser reported an error on the home page", channel: "alert",
+    text: unexpectedFaultAlert("client_error:root", "unhandledrejection on /: Failed to fetch") },
   // #2755: every page Slate does not serve shares one key, so the size of the
   // storm leads the detail. Two states: counted, and the counter unreadable.
   { key: "internal_error:*", state: "browser reports from pages Slate does not serve, counted", channel: "alert",
-    text: internalErrorAlert("client_error:other",
+    text: unexpectedFaultAlert("client_error:other",
       `${unrecognisedPageReports({ count: 40, measured: true, windowMinutes: 30 })} error on /wp-login.php: Loading chunk 412 failed`) },
   { key: "internal_error:*", state: "browser reports from pages Slate does not serve, uncounted", channel: "alert",
-    text: internalErrorAlert("client_error:other",
+    text: unexpectedFaultAlert("client_error:other",
       `${unrecognisedPageReports({ count: null, measured: false, windowMinutes: 30 })} error on /wp-login.php: Loading chunk 412 failed`) },
   // #1974: a page that failed to RENDER, which is a different event from a 500
   // and reads differently: nobody got a status code, somebody got a screen.
