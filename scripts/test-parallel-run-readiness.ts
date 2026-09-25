@@ -15,6 +15,7 @@ import {
 } from "./lib/parallel-run-readiness.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 import type { CallerSeenRow } from "../src/lib/booking/caller-seen.ts";
+import { sourceNotRecorded } from "../src/lib/monitor/page-volume.ts";
 
 const NOW = Date.parse("2026-09-08T16:00:00Z");
 const DAY = 24 * 60 * 60_000;
@@ -274,6 +275,12 @@ eq(
   const src = judgeReadiness(healthy({ lowVolumeArming: armed({ pageSources: missing }) }));
   eq(src.exit, READINESS_EXIT.pageSourceMissing, "armed with a page recording no source exits on its own code");
   assert(/source/i.test(src.findings[0].detail) && /Follow Up/.test(src.findings[0].detail), `and says which page (got: ${src.findings[0].detail})`);
+  // #2765: in the one sentence every surface uses for it, built by the per page alarm's
+  // own copy rather than reworded here.
+  assert(
+    src.findings[0].detail.startsWith(sourceNotRecorded(3, 40, "7 days")),
+    `and opens with how many bookings recorded no source (got: ${src.findings[0].detail})`,
+  );
 
   const hol = judgeReadiness(healthy({ lowVolumeArming: armed({ holidays: uncovered }) }));
   eq(hol.exit, READINESS_EXIT.holidaysUncovered, "armed with an undecided holiday exits on its own code");

@@ -40,7 +40,8 @@ import { EARLIEST_RAMP_END, RAMP_END_FORM, baselineInForce, type BaselineInForce
 import { LEARNING } from "@/lib/monitor/volume-learning";
 import { learningStatusCopy } from "@/lib/monitor/volume-relearn-copy";
 import { MEASURED_VOLUME_BASELINE } from "@/lib/monitor/volume-baseline";
-import { LOW_PAGES, pageCoverage } from "@/lib/monitor/page-volume";
+import { LOW_PAGES, pageCoverage, pageSourceStatus, type PageSourceMeasure } from "@/lib/monitor/page-volume";
+import { measurePageSources } from "@/lib/monitor/customer-bookings";
 import { MEASURED_PAGE_BASELINES } from "@/lib/monitor/page-volume-baseline";
 import { floorTable } from "@/lib/admin/volume-floor-table";
 import { loadBusinessHours } from "@/lib/booking/business-hours-load";
@@ -59,6 +60,23 @@ export const dynamic = "force-dynamic";
 // learning status says how long ago the last refit ran, which needs the present.
 function learningStatusNow(state: BaselineInForce) {
   return learningStatusCopy(state, Date.now());
+}
+
+/**
+ * #2765: what the per page section says in place of the pages' floors, or null once
+ * every real booking in the alarm's lookback carried its source. Through the same
+ * measurement the readiness gate reads; a failed read is its own sentence, never a
+ * lookback with nothing unsourced, which is the answer that would show the floors.
+ */
+async function pageSourceNoticeNow(): Promise<string | null> {
+  let measured: PageSourceMeasure | null = null;
+  try {
+    measured = await measurePageSources(supabaseAdmin(), Date.now());
+  } catch (err) {
+    log.error("admin-alerts", { msg: "page sources unreadable" }, err instanceof Error ? err : undefined);
+  }
+  const status = pageSourceStatus(measured);
+  return status.state === "recorded" ? null : status.text;
 }
 
 /** The two outcomes the learning section confirms in place rather than at the top. */
@@ -177,6 +195,8 @@ export default async function AlertSettingsPage({
         return { id: page.id, name: page.name, open: c.open, judged: c.judged };
       })
     : null;
+  // #2765: said in place of that coverage until every booking carries its page.
+  const sourceNotice = await pageSourceNoticeNow();
 
   const storedByKey = new Map(rows.map((r) => [r.key, r.cooldown_min]));
   // #1289: every alarm currently quieter than its coded default. Read through the
@@ -636,6 +656,7 @@ export default async function AlertSettingsPage({
           rampEndOn={config?.volume_ramp_end_on ?? null}
           detail={learning.detail}
           coverage={coverage}
+          sourceNotice={sourceNotice}
           notice={learningNotice}
           action={setVolumeRampEnd}
           earliest={EARLIEST_RAMP_END}

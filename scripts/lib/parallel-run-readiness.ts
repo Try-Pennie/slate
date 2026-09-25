@@ -42,6 +42,7 @@ import {
   PARTNER_KEY_MAX_AGE_DAYS,
   type CallerSeenRow,
 } from "../../src/lib/booking/caller-seen.ts";
+import { sourceNotRecorded } from "../../src/lib/monitor/page-volume.ts";
 
 export interface StretchedCooldown {
   key: string;
@@ -368,7 +369,9 @@ export function judgeReadiness(f: ReadinessFacts): ReadinessJudgement {
       if (without.length) {
         armingChecks.push({
           kind: "page-source-missing",
-          detail: `${without.length} Low page(s) recorded no booking carrying their source in the last ${s.lookbackDays} days (${s.unsourced} of ${s.realBookings} real bookings carried none), so the per page alarm would report each as a page that stopped booking: ${names(without)}`,
+          // #2765: opened with the per page alarm's own sentence for it, so the gate
+          // and the alarm say the same thing about the same bookings.
+          detail: `${sourceNotRecorded(s.unsourced, s.realBookings, `${s.lookbackDays} days`)}, and ${without.length} Low page(s) recorded no booking carrying their own source, so the per page alarm cannot tell whether each stopped booking: ${names(without)}`,
         });
       }
     }

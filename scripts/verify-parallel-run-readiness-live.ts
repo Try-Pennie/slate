@@ -32,9 +32,7 @@ type CallerSeenRow = import("@/lib/booking/caller-seen").CallerSeenRow;
 const { judgeReadiness } = await import("./lib/parallel-run-readiness.ts");
 type ReadinessFacts = import("./lib/parallel-run-readiness.ts").ReadinessFacts;
 type LowVolumeArmingFacts = import("./lib/parallel-run-readiness.ts").LowVolumeArmingFacts;
-const { countCustomerBookingsSince, customerBookingFromSourcesSince } = await import("@/lib/monitor/customer-bookings");
-const { LOW_PAGES, PAGE_SEEN_LOOKBACK_DAYS } = await import("@/lib/monitor/page-volume");
-const { SOURCE_NOT_GIVEN } = await import("@/lib/booking/booking-source");
+const { measurePageSources } = await import("@/lib/monitor/customer-bookings");
 const { loadBusinessHours } = await import("@/lib/booking/business-hours-load");
 const { holidayDatesToDecide, uncoveredHolidays } = await import("@/lib/booking/us-federal-holidays");
 const { DateTime } = await import("luxon");
@@ -222,24 +220,8 @@ const armedState = await section("low volume arming switch", async () => {
   return stored === true ? "armed" : stored === false ? "disarmed" : "unset";
 }) as LowVolumeArmingFacts["armed"];
 
-const pageSources = await section("Low page booking sources", async () => {
-  const sinceIso = new Date(nowMs - PAGE_SEEN_LOOKBACK_DAYS * 86_400_000).toISOString();
-  const realBookings = await countCustomerBookingsSince(db, sinceIso);
-  if (realBookings === null) throw new Error("the real booking count could not be read");
-  // cap-safe: head-only exact count, no rows. Null source is a booking from before #2072.
-  const { count: unsourced, error } = await db
-    .from("bookings")
-    .select("id, buckets!inner(is_test)", { count: "exact", head: true })
-    .eq("buckets.is_test", false)
-    .or(`source.is.null,source.eq.${SOURCE_NOT_GIVEN}`)
-    .gte("created_at", sinceIso);
-  if (error || unsourced === null) throw new Error(`the unsourced count could not be read: ${error?.message ?? "no count"}`);
-  const pages = [];
-  for (const page of LOW_PAGES) {
-    pages.push({ name: page.name, recorded: await customerBookingFromSourcesSince(db, page.sources, sinceIso) });
-  }
-  return { lookbackDays: PAGE_SEEN_LOOKBACK_DAYS, realBookings, unsourced, pages };
-});
+// #2765: the same measurement /admin/alerts shows in place of the per page floors.
+const pageSources = await section("Low page booking sources", () => measurePageSources(db, nowMs));
 
 const holidays = await section("holiday exceptions", async () => {
   const hours = await loadBusinessHours();

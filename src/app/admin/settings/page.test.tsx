@@ -41,7 +41,7 @@ const from = vi.hoisted(() => {
     // Every filter/ordering method is chainable and the builder is awaitable, so
     // a read that ends on `.limit()` or `.is()` resolves the same way one ending
     // on `.order()` does (#1658 drives reads with both shapes).
-    for (const m of ["select", "eq", "order", "in", "gte", "lte", "is", "limit", "neq", "range"]) {
+    for (const m of ["select", "eq", "order", "in", "gte", "lte", "is", "limit", "neq", "range", "or"]) {
       b[m] = () => b;
     }
     return b;
@@ -448,6 +448,51 @@ describe("AlertSettings ramp end outcomes (#2739)", () => {
     const card = learningCard().textContent!;
     expect(card).toContain("cannot say whether a ramp end is set");
     expect(card).toContain("Nothing has changed");
+  });
+});
+
+// #2765: the Low pages' own floors are not coverage while bookings arrive without the
+// page they came from, so the card says how many did in their place, measured by the
+// same `measurePageSources` the readiness gate reads.
+describe("AlertSettings per page floors wait on recorded sources (#2765)", () => {
+  const learningCard = () => document.getElementById("volume-learning")!;
+  const coverageRows = () => learningCard().querySelectorAll("[data-page-coverage]");
+
+  it("says how many bookings recorded no source, instead of the pages' floors", async () => {
+    auth.currentUser.mockResolvedValueOnce(ADMIN);
+    // The fake answers every bookings read alike: 40 real, 40 unsourced, a row found.
+    db.results.bookings = { data: [{ id: "b1" }], error: null, count: 40 } as { data: unknown; error: unknown };
+    render(await AlertSettingsPage(props));
+    const said = learningCard().querySelector("[data-page-sources]")!.textContent!;
+    expect(said).toMatch(/^Source not recorded on 40 of 40 bookings in the last 7 days/);
+    expect(coverageRows()).toHaveLength(0);
+    expect(db.reads.filter((t) => t === "bookings").length).toBeGreaterThan(0);
+  });
+
+  it("says a failed source read could not be read, never that every booking carried one", async () => {
+    auth.currentUser.mockResolvedValueOnce(ADMIN);
+    db.results.bookings = { data: null, error: { message: "statement timeout" } };
+    render(await AlertSettingsPage(props));
+    expect(learningCard().querySelector("[data-page-sources]")!.textContent).toContain("could not be read");
+    expect(coverageRows()).toHaveLength(0);
+  });
+
+  it("control: every real booking sourced shows the pages' floors", async () => {
+    auth.currentUser.mockResolvedValueOnce(ADMIN);
+    // A count of 40 for the real bookings and of 0 for the unsourced, in read order.
+    const counts = [40, 0];
+    db.results.bookings = {
+      data: [{ id: "b1" }],
+      error: null,
+      get count() {
+        return counts.shift() ?? 0;
+      },
+    } as unknown as { data: unknown; error: unknown };
+    db.results.business_hours = { data: [], error: null };
+    db.results.business_hours_exceptions = { data: [], error: null };
+    render(await AlertSettingsPage(props));
+    expect(learningCard().querySelector("[data-page-sources]")).toBeNull();
+    expect(coverageRows().length).toBeGreaterThan(0);
   });
 });
 

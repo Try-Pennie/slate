@@ -18,6 +18,7 @@ function renderIt(over: Partial<Parameters<typeof VolumeLearning>[0]> = {}) {
       rampEndOn={null}
       detail={["Slate learns nothing from its own bookings until the day the ramp ended is set below."]}
       coverage={coverage}
+      sourceNotice={null}
       action={action}
       earliest="2026-09-25"
       minWeeks={4}
@@ -68,6 +69,24 @@ describe("VolumeLearning", () => {
     fireEvent.click(screen.getByRole("button", { name: "Clear the ramp end" }));
     expect(screen.getByRole("alert").textContent).toContain("goes back to the cal.com floors");
     expect(screen.getByRole("alert").textContent).toContain("learned since Oct 5, 2026 is discarded");
+  });
+
+  // #2765: until every booking carries the page it came from, the pages' own floors
+  // are not coverage, so the count is said in their place rather than beside them.
+  it("says how many bookings recorded no source instead of showing the pages' floors", () => {
+    const notice = "Source not recorded on 12 of 40 bookings in the last 7 days, so a page whose missing bookings could be among them is held rather than paged.";
+    const { container } = renderIt({ sourceNotice: notice });
+    expect(container.querySelectorAll("[data-page-coverage]")).toHaveLength(0);
+    const shown = container.querySelector("[data-page-sources]")!;
+    expect(shown.textContent).toBe(notice);
+    expect(shown.getAttribute("role")).toBe("status");
+    expect(container.textContent).not.toContain("Open hours judged");
+  });
+
+  it("shows the pages' floors once every booking carried its source", () => {
+    const { container } = renderIt({ sourceNotice: null });
+    expect(container.querySelector("[data-page-sources]")).toBeNull();
+    expect(container.querySelectorAll("[data-page-coverage]")).toHaveLength(2);
   });
 
   it("says the week could not be read rather than listing no pages", () => {

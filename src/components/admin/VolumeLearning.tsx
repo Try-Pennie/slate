@@ -49,6 +49,7 @@ export function VolumeLearning({
   rampEndOn,
   detail,
   coverage,
+  sourceNotice,
   notice,
   action,
   earliest,
@@ -60,6 +61,12 @@ export function VolumeLearning({
   detail: string[];
   /** Each Low page's coverage from `pageCoverage()`, or null when the week could not be read. */
   coverage: PageCoverageView[] | null;
+  /**
+   * From `pageSourceStatus()` (#2765): what to say IN PLACE of the pages' floors while
+   * bookings arrive without the page they came from, or null once every booking in
+   * the lookback carried one. Required, so the page has to decide it.
+   */
+  sourceNotice: string | null;
   /** The saved notice for this form, drawn here rather than at the top of the page. */
   notice?: React.ReactNode;
   action: (form: FormData) => Promise<void>;
@@ -162,7 +169,11 @@ export function VolumeLearning({
         Each page&apos;s own alarm keeps the cal.com floors for that page; learning replaces the
         floors for the Low tier as a whole.
       </p>
-      {coverage === null ? (
+      {sourceNotice !== null ? (
+        <p className="mt-1 text-xs text-fg" role="status" data-page-sources>
+          {sourceNotice}
+        </p>
+      ) : coverage === null ? (
         <p className="mt-1 text-xs text-fg" role="status">
           The business week could not be read, so how much of each page&apos;s week can be judged is
           unknown.

@@ -67,13 +67,13 @@ import {
   tierRecoveredMessage,
 } from "@/lib/monitor/tier-staffing";
 import { loadTierAgentCounts, tierReadings } from "@/lib/monitor/tier-staffing-load";
-import { nextOpenDayEndMs } from "@/lib/booking/business-hours";
+import { closedExceptionDates, nextOpenDayEndMs } from "@/lib/booking/business-hours";
 import { coverageForWeek } from "@/lib/booking/business-hours-coverage";
 import {
   loadCoverageAgents,
   currentWeekStartIso,
 } from "@/lib/booking/business-hours-coverage-load";
-import { loadBusinessHours, type BusinessHours } from "@/lib/booking/business-hours-load";
+import { loadBusinessHours, loadBusinessHoursExceptions, type BusinessHours } from "@/lib/booking/business-hours-load";
 import { tierLadder } from "@/lib/routing/tiers";
 import { bucketSpecForXbc } from "@/lib/xbc";
 import { type WorkingRule } from "@/lib/monitor/availability-health";
@@ -1149,6 +1149,10 @@ export async function GET(req: NextRequest) {
           return { rampEndOn: row?.volume_ramp_end_on ?? null, learning: row?.volume_learning ?? null };
         },
         readBookings: (sinceIso, untilIso) => listBookingStampsBetween(db, sinceIso, untilIso),
+        // #2764: the org's closed days over the horizon, through the loader the
+        // availability gate uses, so a holiday is never learned as a quiet day. It
+        // throws on a failed read, and so does this step: nothing is written.
+        readClosedDates: async (fromIsoDate) => closedExceptionDates(await loadBusinessHoursExceptions(fromIsoDate)),
         save: async (state) => {
           // An UPDATE of the two machine columns only, never an upsert: it must not
           // touch the settings a person saved, nor the updated_at and updated_by the

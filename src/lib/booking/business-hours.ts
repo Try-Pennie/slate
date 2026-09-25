@@ -237,6 +237,19 @@ export function resolveBusinessHoursExceptions(rows: BusinessHoursException[]): 
   return { exceptions, unreadable };
 }
 
+/**
+ * The dates the org records as SHUT, in date order (#2764).
+ *
+ * The low volume alarms leave these out of every fit and every learning window,
+ * because their hours gate (the same `windowOnDate` the booker uses) never judges
+ * them. Taken from the RESOLVED exceptions, so a row the gate could not read is not
+ * a closed day to the floors either: one judge, one answer (L41). An open exception
+ * is not a closed day, even when it shortens the day.
+ */
+export function closedExceptionDates(exceptions: readonly BusinessHoursException[]): string[] {
+  return [...new Set(exceptions.filter((e) => !e.is_open).map((e) => e.on_date))].sort();
+}
+
 export function resolveBusinessHours(rows: BusinessHoursRow[]): BusinessHoursResolution {
   if (rows.length === 0) {
     return { ok: true, rules: SEEDED_BUSINESS_HOURS, source: "seeded" };
