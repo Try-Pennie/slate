@@ -406,7 +406,11 @@ const TRUTH_THRESHOLDS: TruthThresholds = {
   // whatever this is, and each offered time then costs a local interval
   // comparison, so this is only a runaway guard. Measured 2026-08-11 against 20
   // real agents over 4 days: one Google call, 342 busy intervals back, and 16ms
-  // of CPU to judge all 96 offered times (0.16ms each). 1000 is therefore far
+  // of CPU to judge all 96 offered times (0.16ms each). Re-measured 2026-09-25 at
+  // roster scale (#1397): the largest pool is 79 calendars, 4 Google calls and
+  // 1123 busy intervals over the 4 day horizon. The read costs one call per 20
+  // calendars, so it passes the old shape's 5 only above 100 calendars in one
+  // bucket; each read logs `google_calls` so that is visible. 1000 is therefore far
   // above any realistic horizon, and the tick logs `offered` beside `checked` so
   // a truncation is visible rather than reading as full coverage.
   maxSlots: 1000,

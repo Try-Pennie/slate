@@ -113,16 +113,27 @@ export async function readAgentBusyRange(
 
     const subjects = agents.slice(0, MAX_SUBJECT_ATTEMPTS).map((a) => a.email);
     let lastErr: unknown = null;
-    for (const subject of subjects) {
+    let googleCalls = 0;
+    for (const [attempt, subject] of subjects.entries()) {
       try {
         const busyByCalendar: Map<string, CalendarBusy> = new Map();
         // Every chunk is read, with no escalation. Over a range there is no first
         // free agent to stop at: a later offered time may need the very chunk an
         // earlier one would have let us skip.
         for (const calIds of chunks) {
+          googleCalls++;
           const read = await freeBusyMany(subject, fromIso, toIso, calIds);
           for (const [id, busy] of read) busyByCalendar.set(id, busy);
         }
+        // The cost grows with the eligible set's calendar count, not with anything
+        // the tick samples: past 100 calendars it exceeds the shape #1381 replaced
+        // (#1397). Said on every read so that growth is visible before it pages.
+        log.info("availability-truth", {
+          msg: "range read",
+          calendars: allCalIds.length,
+          google_calls: googleCalls,
+          subjects_tried: attempt + 1,
+        });
         return { agents, busyByCalendar, unreadable: readFailed.size };
       } catch (err) {
         lastErr = err;

@@ -15,11 +15,13 @@ const supabaseAdmin = vi.hoisted(() => vi.fn());
 const freeBusyMany = vi.hoisted(() => vi.fn());
 const calendarsForEmails = vi.hoisted(() => vi.fn());
 const freeAgentsFromBusy = vi.hoisted(() => vi.fn());
+const log = vi.hoisted(() => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn() }));
 
 vi.mock("@/lib/google/calendar", () => ({ freeBusyMany }));
 vi.mock("@/lib/booking/service", () => ({ calendarsForEmails, FREEBUSY_MAX_ITEMS: 20 }));
 vi.mock("@/lib/booking/core", () => ({ freeAgentsFromBusy }));
 vi.mock("@/lib/supabase/admin", () => ({ supabaseAdmin }));
+vi.mock("@/lib/log", () => ({ log }));
 
 import { verifySlotLive, verifyWindowsLive, driftAlertContext } from "./availability-truth-store";
 
@@ -367,5 +369,48 @@ describe("readAgentBusyRange subject selection", () => {
     freeAgentsFromBusy.mockReturnValue({ free: new Set(["a0@x"]), needsFallback: new Set() });
     await verifyWindowsLive(["a0@x", "a1@x"], [{ startIso: RANGE[0], endIso: RANGE[1] }]);
     expect(freeBusyMany).toHaveBeenCalledTimes(1);
+  });
+});
+
+// #1397: the range read costs one Google call per 20 CALENDARS in a bucket's
+// eligible set, so it grows with the roster rather than with anything the tick
+// samples. Measured 2026-09-25 the largest pool (79 calendars) costs 4 calls
+// against the 5 of the shape #1381 replaced; past 100 calendars it costs more.
+// The lane shares its budget with three others and a cost drift there once took
+// three days to surface somewhere else (#1245), so every read says what it spent.
+describe("readAgentBusyRange cost", () => {
+  const WINDOW = [{ startIso: "2026-08-11T09:00:00.000Z", endIso: "2026-08-11T17:00:00.000Z" }];
+  const costLine = () =>
+    log.info.mock.calls.find((c) => (c[1] as { msg?: string }).msg === "range read")?.[1];
+
+  it("logs the calendars read and the Google calls spent", async () => {
+    freeAgentsFromBusy.mockReturnValue({ free: new Set(["a0@x"]), needsFallback: new Set() });
+    await verifyWindowsLive(MANY, WINDOW);
+    expect(costLine()).toEqual({
+      msg: "range read",
+      calendars: 25,
+      google_calls: 2,
+      subjects_tried: 1,
+    });
+  });
+
+  it("counts the calls a refused subject spent, not only the read that worked", async () => {
+    // A subject refused on its SECOND chunk has already spent one call, so a
+    // count taken from the successful attempt alone would under-report.
+    let calls = 0;
+    freeBusyMany.mockImplementation(async () => {
+      calls++;
+      if (calls === 2) throw new Error("403 notACalendarUser");
+      return new Map();
+    });
+    freeAgentsFromBusy.mockReturnValue({ free: new Set(["a0@x"]), needsFallback: new Set() });
+    await verifyWindowsLive(MANY, WINDOW);
+    expect(costLine()).toMatchObject({ calendars: 25, google_calls: 4, subjects_tried: 2 });
+  });
+
+  it("logs nothing about cost when no read succeeded", async () => {
+    freeBusyMany.mockRejectedValue(new Error("503 backendError"));
+    expect(await verifyWindowsLive(MANY, WINDOW)).toBeNull();
+    expect(costLine()).toBeUndefined();
   });
 });
