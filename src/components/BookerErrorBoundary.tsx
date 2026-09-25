@@ -5,12 +5,12 @@ import { useSearchParams } from "next/navigation";
 import { log } from "@/lib/log";
 import { reportBoundaryCatch } from "@/lib/errors/report-boundary";
 import { btnCls, cardCls, proseCls } from "@/components/ui/styles";
-import {
-  BOUNDARY_BODY,
-  BOUNDARY_RETRY,
-  BOUNDARY_TITLE,
-  boundaryReference,
-} from "@/lib/errors/boundary-copy";
+import { boundaryReference } from "@/lib/errors/boundary-copy";
+// The leaf module, not `booker-copy` (which re-exports it): the whole copy module
+// weighs about 10 KB gzipped in a client chunk, and this screen needs three strings.
+import { BOOKER_BOUNDARY_COPY } from "@/lib/booking/booker-boundary-copy";
+import { STANDALONE_CONTENT, mainClassFor } from "@/lib/booking/page-shell";
+import StandaloneTheme from "@/components/StandaloneTheme";
 import { embedParentOrigin } from "@/lib/embed/parent-origin";
 import { EMBED_MESSAGE, LINK_FAILED } from "@/lib/embed/lifecycle-events";
 
@@ -59,6 +59,8 @@ export default function BookerErrorBoundary({
   const params = useSearchParams();
   const embedded = params.get("embed") === "1";
   const parentOrigin = params.get("parentOrigin");
+  // The rule the booker pages read their own `theme` by: light unless dark.
+  const theme = params.get("theme") === "dark" ? ("dark" as const) : ("light" as const);
 
   useEffect(() => {
     log.error("book-boundary", { msg: "page boundary caught", page, digest: error.digest }, error);
@@ -84,13 +86,24 @@ export default function BookerErrorBoundary({
 
   const reference = boundaryReference(error.digest);
 
-  return (
-    <section className={cardCls} role="alert">
-      <h1 className="text-lg font-semibold text-fg">{BOUNDARY_TITLE}</h1>
-      <p className={`mt-2 text-sm text-fg-muted ${proseCls}`}>{BOUNDARY_BODY}</p>
+  // #2754: the boundary REPLACES the page, so it also replaced the page's shell,
+  // and the card sat flush against the window's edges. It draws the same page
+  // classes the standalone booker shell does (`page-shell`: a full height column
+  // with the card centred and padded; nothing on the embed's own element, whose
+  // height the host sets), and the same padded wrapper in both, so the card never
+  // meets the frame's edge either. `data-theme` on the wrapper paints the link's
+  // theme even where the boot script cannot run, which it cannot on a boundary
+  // drawn on the client.
+  //
+  // Deliberately NOT `StandaloneBookerShell`: its legal footer imports the whole
+  // booker copy module, and this screen collects nothing the policies govern.
+  const card = (
+    <section className={`${cardCls} mx-auto w-full max-w-xl`} role="alert">
+      <h1 className="text-lg font-semibold text-fg">{BOOKER_BOUNDARY_COPY.heading}</h1>
+      <p className={`mt-2 text-sm text-fg-muted ${proseCls}`}>{BOOKER_BOUNDARY_COPY.body}</p>
       <div className="mt-4 flex flex-wrap items-center gap-2">
         <button type="button" className={btnCls} onClick={() => retry()}>
-          {BOUNDARY_RETRY}
+          {BOOKER_BOUNDARY_COPY.retry}
         </button>
       </div>
       {reference && (
@@ -99,5 +112,14 @@ export default function BookerErrorBoundary({
         </p>
       )}
     </section>
+  );
+
+  return (
+    <div data-theme={theme} className="bg-bg text-fg">
+      <main className={mainClassFor(embedded)}>
+        <StandaloneTheme theme={theme} />
+        <div className={STANDALONE_CONTENT}>{card}</div>
+      </main>
+    </div>
   );
 }

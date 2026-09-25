@@ -61,7 +61,9 @@ import {
   NEAREST_TIMES_COPY,
   TEST_MODE_COPY,
   TEST_ACCESS_COPY,
+  BOOKER_BOUNDARY_COPY,
 } from "@/lib/booking/booker-copy";
+import { boundaryReference } from "@/lib/errors/boundary-copy";
 import {
   BEFORE_COPY,
   CANCEL_COPY,
@@ -342,6 +344,24 @@ export function bookerCopyScreens(): CopyScreen[] {
       lines: [
         { state: "the mark beside a test booking", text: TEST_MODE_COPY.label },
         { state: "the sentence on every screen", text: TEST_MODE_COPY.line },
+      ],
+    },
+    {
+      screen: "Booker: the page could not load",
+      purpose:
+        "The booker's own error boundary (#2754), drawn when the booker page itself " +
+        "fails: a read the page depends on, or a crash anywhere inside it, the " +
+        "confirmation screen included. It cannot tell which, so it may not promise that " +
+        "nothing was booked. It shipped with the staff sentence about saving a change " +
+        "because this state was never read cold.",
+      lines: [
+        { state: "the heading", text: BOOKER_BOUNDARY_COPY.heading },
+        { state: "what happened and what to do", text: BOOKER_BOUNDARY_COPY.body },
+        { state: "the button", text: BOOKER_BOUNDARY_COPY.retry },
+        {
+          state: "the reference, when the error carries a digest",
+          text: boundaryReference("1234567890") ?? "",
+        },
       ],
     },
     {

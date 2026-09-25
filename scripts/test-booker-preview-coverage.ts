@@ -78,6 +78,9 @@ for (const required of [
   // #2660: the test line every test booking surface carries, previewed as its
   // own screen so a reader sees the sentence a tester and a stray lead will.
   "Booker and manage: a test booking",
+  // #2754: the booker's error boundary shipped with the staff wording because this
+  // state was never previewed, so nobody read it cold (L21).
+  "Booker: the page could not load",
 ]) {
   assert(
     screens.some((s) => s.screen === required),

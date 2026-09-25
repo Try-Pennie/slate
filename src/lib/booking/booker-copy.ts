@@ -708,6 +708,18 @@ export const TEST_ACCESS_COPY = {
   passOff: "Test bookings were turned off while this page was open. Please let Pennie know.",
 } as const;
 
+// --- the booker could not load (#2754) ----------------------------------------
+//
+// What the booker's own error boundary says (`BookerErrorBoundary`, on `/book` and
+// `/booking/[id]`). It used the staff boundary's sentence, which tells an admin mid
+// edit to check whether their change went through, and read oddly to a lead mid
+// booking. The reference line under it stays the shared `boundaryReference`, since
+// a digest is the same fact on every surface. The words live in a leaf module with
+// no imports, re-exported here, so the boundary can carry them without pulling this
+// whole file into the client bundle; that file says what they may claim and why.
+
+export { BOOKER_BOUNDARY_COPY } from "./booker-boundary-copy.ts";
+
 // --- the honeypot (#1033) -----------------------------------------------------
 // Read only by a bot, and by a screen reader that ignores aria-hidden containers.
 // It is here so the preview shows every string the markup carries, including the

@@ -29,10 +29,19 @@ vi.mock("@/lib/booking/timezones", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/booking/timezones")>()),
   deviceTimeZone: () => "America/New_York",
 }));
+// #2754: the booker's error boundary reads the query and reports what it caught.
+// Neither the Booker nor the manage page imports any of these three, so the stubs
+// reach only the boundary.
+vi.mock("next/navigation", () => ({ useSearchParams: () => new URLSearchParams("") }));
+vi.mock("@/lib/errors/report-boundary", () => ({ reportBoundaryCatch: vi.fn() }));
+vi.mock("@/lib/log", () => ({ log: { error: vi.fn(), warn: vi.fn(), info: vi.fn() } }));
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import Booker from "@/components/Booker";
 import ManageBooking from "@/components/ManageBooking";
 import ManageNotFound from "@/components/ManageNotFound";
+import BookError from "@/app/book/error";
+import BookingError from "@/app/booking/[id]/error";
+import { boundaryReference } from "@/lib/errors/boundary-copy";
 import { formatSlotTime } from "@/lib/booking/slot-label";
 import { RESCHEDULE_REASONS, CANCEL_REASONS } from "@/lib/booking/core";
 import {
@@ -51,6 +60,7 @@ import {
   MOVE_COPY,
   movedContactNote,
   TEST_MODE_COPY,
+  BOOKER_BOUNDARY_COPY,
 } from "@/lib/booking/booker-copy";
 import {
   BEFORE_COPY,
@@ -204,6 +214,18 @@ describe("the preview shows what the booker actually renders (#1343)", () => {
     for (const line of [NOT_FOUND_COPY.heading, NOT_FOUND_COPY.causes, NOT_FOUND_COPY.recovery]) {
       expect(pageText()).toContain(line);
     }
+  });
+
+  it.each([
+    ["/book", BookError],
+    ["/booking/[id]", BookingError],
+  ] as const)("uses the builder's lead words when the booker cannot load, on %s (#2754)", (_route, Boundary) => {
+    render(<Boundary error={Object.assign(new Error("boom"), { digest: "d1g3st" })} retry={() => {}} />);
+    for (const line of [BOOKER_BOUNDARY_COPY.heading, BOOKER_BOUNDARY_COPY.body]) {
+      expect(pageText()).toContain(line);
+    }
+    expect(screen.getByRole("button", { name: BOOKER_BOUNDARY_COPY.retry })).toBeTruthy();
+    expect(pageText()).toContain(boundaryReference("d1g3st")!);
   });
 
   it("uses the builder's words for the closed state and the search button", async () => {
