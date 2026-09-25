@@ -11,6 +11,7 @@ import {
   READINESS_EXIT,
   READINESS_ORDER,
   type ReadinessFacts,
+  type LowVolumeArmingFacts,
 } from "./lib/parallel-run-readiness.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 import type { CallerSeenRow } from "../src/lib/booking/caller-seen.ts";
@@ -35,8 +36,33 @@ function healthy(over: Partial<ReadinessFacts> = {}): ReadinessFacts {
     emptyTiers: { measuredTiers: 5, empty: [] },
     unsetHours: [],
     partnerKey: { caller: "trypennie", rows: [seen("production", DAY, "https://trypennie.com")] },
+    lowVolumeArming: disarmed(),
     ...over,
   };
+}
+
+/** Every Low page has recorded its source this week (#2767). */
+function sourcesRecorded(): NonNullable<LowVolumeArmingFacts["pageSources"]> {
+  return {
+    lookbackDays: 7,
+    realBookings: 40,
+    unsourced: 3,
+    pages: [
+      { name: "Income Verification Phone Call", recorded: true },
+      { name: "Completed Application Review Follow Up", recorded: true },
+      { name: "Completed Application Review", recorded: true },
+    ],
+  };
+}
+function holidaysDecided(): NonNullable<LowVolumeArmingFacts["holidays"]> {
+  return { windowDays: 90, checked: 3, uncovered: [] };
+}
+/** The arming preconditions with the alarms off, as production holds them today. */
+function disarmed(over: Partial<LowVolumeArmingFacts> = {}): LowVolumeArmingFacts {
+  return { armed: "disarmed", pageSources: sourcesRecorded(), holidays: holidaysDecided(), ...over };
+}
+function armed(over: Partial<LowVolumeArmingFacts> = {}): LowVolumeArmingFacts {
+  return disarmed({ armed: "armed", ...over });
 }
 
 // --- the only pass ------------------------------------------------------------------
@@ -217,6 +243,85 @@ eq(
   const worse = judgeReadiness(healthy({ partnerKey: { caller: "trypennie", rows: [] }, emptyBuckets: { realBuckets: 60, empty: ["120"] } }));
   eq(worse.exit, READINESS_EXIT.bucketEmpty, "a bucket with nobody in it outranks the partner key");
   assert(worse.findings.some((f) => f.kind === "partner-key-unproven"), "and the key finding is still listed");
+}
+
+// --- the low volume alarms' arming preconditions (#2767) ------------------------------
+//
+// Two things must hold before the tier and per page alarms (#1956, #2738) are armed:
+// each Low page's bookings carry their `source`, or every one records not-given and
+// each page pages as one that stopped booking; and the upcoming federal holidays are
+// decided in the org's exceptions, or both alarms page through a holiday (eight times
+// on Labor Day 2026-09-07 in the replay). They gate ARMING, so while the alarms are off
+// they are reported and never change the exit: a READY day stays READY.
+{
+  const missing = { ...sourcesRecorded(), pages: sourcesRecorded().pages.map((p, i) => ({ ...p, recorded: i !== 1 })) };
+  const uncovered = { windowDays: 90, checked: 3, uncovered: [{ date: "2026-10-12", name: "Columbus Day" }] };
+
+  // Disarmed: reported, never gating.
+  const off = judgeReadiness(healthy({ lowVolumeArming: disarmed({ pageSources: missing, holidays: uncovered }) }));
+  eq(off.exit, READINESS_EXIT.ready, "unmet arming preconditions leave a disarmed READY day READY");
+  eq(off.findings.length, 0, "and are not findings");
+  eq(off.advisories.map((a) => a.kind), ["page-source-missing", "holidays-uncovered"], "they are listed as arming advisories");
+  assert(/before arming/i.test(off.summary) && /disarmed/.test(off.summary), `the summary says they gate arming and the alarms are off (got: ${off.summary})`);
+  assert(/Completed Application Review Follow Up/.test(off.summary), "and names the page with no source");
+  assert(/Columbus Day/.test(off.summary) && /2026-10-12/.test(off.summary), "and names the holiday and its date");
+
+  const offMet = judgeReadiness(healthy());
+  eq(offMet.advisories.length, 0, "met preconditions carry no advisory");
+  assert(/before arming/i.test(offMet.summary) && /every federal holiday/i.test(offMet.summary), `and the READY line says they are met (got: ${offMet.summary})`);
+
+  // Armed: each is a finding on its own code, with its own sentence.
+  const src = judgeReadiness(healthy({ lowVolumeArming: armed({ pageSources: missing }) }));
+  eq(src.exit, READINESS_EXIT.pageSourceMissing, "armed with a page recording no source exits on its own code");
+  assert(/source/i.test(src.findings[0].detail) && /Follow Up/.test(src.findings[0].detail), `and says which page (got: ${src.findings[0].detail})`);
+
+  const hol = judgeReadiness(healthy({ lowVolumeArming: armed({ holidays: uncovered }) }));
+  eq(hol.exit, READINESS_EXIT.holidaysUncovered, "armed with an undecided holiday exits on its own code");
+  assert(/Columbus Day/.test(hol.findings[0].detail) && /90 days/.test(hol.findings[0].detail), `and names the holiday and the window (got: ${hol.findings[0].detail})`);
+
+  // No real bookings in the window: unmeasured, never a pass.
+  const none = { ...sourcesRecorded(), realBookings: 0, unsourced: 0, pages: sourcesRecorded().pages.map((p) => ({ ...p, recorded: false })) };
+  const unm = judgeReadiness(healthy({ lowVolumeArming: armed({ pageSources: none }) }));
+  eq(unm.exit, READINESS_EXIT.pageSourceUnmeasured, "armed with no real bookings to judge is unmeasured, on its own code");
+  assert(/unmeasured/i.test(unm.findings[0].detail), `and says so (got: ${unm.findings[0].detail})`);
+  const unmOff = judgeReadiness(healthy({ lowVolumeArming: disarmed({ pageSources: none }) }));
+  eq(unmOff.exit, READINESS_EXIT.ready, "disarmed, unmeasured does not gate either");
+  eq(unmOff.advisories.map((a) => a.kind), ["page-source-unmeasured"], "and is reported as unmeasured, not as met or missing");
+  assert(!/every Low page has recorded/i.test(unmOff.summary), "and never reads as met");
+
+  const texts = new Set([src, hol, unm].map((j) => j.findings[0].detail));
+  eq(texts.size, 3, "each reads differently");
+
+  // An UNSET switch falls through to the deployment's env, which this cannot see, so
+  // it gates: fail closed, and say why.
+  const unset = judgeReadiness(healthy({ lowVolumeArming: disarmed({ armed: "unset", holidays: uncovered }) }));
+  eq(unset.exit, READINESS_EXIT.holidaysUncovered, "an unset switch gates, because the deployment may arm it");
+  assert(/unset/.test(unset.summary), `and says the switch is unset (got: ${unset.summary})`);
+
+  // Unreadable: while armed it vouches for nothing; while disarmed it is reported, not gating.
+  eq(judgeReadiness(healthy({ lowVolumeArming: armed({ holidays: null }) })).exit, READINESS_EXIT.unreadable, "armed and the holiday read failed is unreadable");
+  eq(judgeReadiness(healthy({ lowVolumeArming: armed({ pageSources: null }) })).exit, READINESS_EXIT.unreadable, "armed and the source read failed is unreadable");
+  const unreadSwitch = judgeReadiness(healthy({ lowVolumeArming: disarmed({ armed: null }) }));
+  eq(unreadSwitch.exit, READINESS_EXIT.unreadable, "an unreadable switch is unreadable");
+  // It gates, so it must never be described as disarmed (L11).
+  assert(!/disarmed/.test(unreadSwitch.summary), `an unreadable switch is not called disarmed (got: ${unreadSwitch.summary})`);
+  assert(/could not be read/.test(unreadSwitch.summary), `and says the switch could not be read (got: ${unreadSwitch.summary})`);
+  const offUnread = judgeReadiness(healthy({ lowVolumeArming: disarmed({ holidays: null }) }));
+  eq(offUnread.exit, READINESS_EXIT.ready, "disarmed, a failed precondition read does not gate");
+  assert(/could not read/.test(offUnread.summary) && /holiday/.test(offUnread.summary), `and says it could not read it (got: ${offUnread.summary})`);
+
+  // Ranked below everything that affects a lead: an empty bucket still names the run.
+  const worse = judgeReadiness(healthy({ emptyBuckets: { realBuckets: 60, empty: ["120"] }, lowVolumeArming: armed({ pageSources: missing, holidays: uncovered }) }));
+  eq(worse.exit, READINESS_EXIT.bucketEmpty, "an empty bucket outranks an arming precondition");
+  eq(worse.findings.length, 3, "and both preconditions are still listed");
+  const order = READINESS_ORDER as readonly string[];
+  assert(
+    order.indexOf("alarm-muted") < order.indexOf("page-source-missing") &&
+      order.indexOf("page-source-missing") < order.indexOf("holidays-uncovered") &&
+      order.indexOf("holidays-uncovered") < order.indexOf("page-source-unmeasured") &&
+      order.indexOf("page-source-unmeasured") < order.indexOf("parity-drifting"),
+    "the preconditions sit just below a muted alarm, measured ones first",
+  );
 }
 
 finish();
