@@ -12,7 +12,7 @@ import {
   type BusinessHoursConfig,
   type VolumeWindow,
 } from "../src/lib/monitor/booking-volume.ts";
-import { assert, finish } from "./lib/harness.ts";
+import { assert, eq, finish } from "./lib/harness.ts";
 
 /** Em/en dash detector built from escapes: writing the characters themselves
  *  would trip the repo's own copy lint on this very file. */
@@ -118,6 +118,26 @@ const CFG: BusinessHoursConfig = {
   const msg = formatLowVolumeAlert([{ label: "30 min", count: 0, floor: 25 }]);
   assert(msg.includes("0") && msg.includes("30 min") && msg.includes("25"), "alert states the count, window, and expected floor");
   assert(!/[\u2013\u2014]/.test(msg), "alert uses no em/en dashes (copy rule)");
+
+  // #1956: the page says where each floor came from, once when every window shares it.
+  const measured = "measured for Tuesdays 2pm to 3pm";
+  const both = formatLowVolumeAlert([
+    { label: "30 min", count: 0, floor: 3, basis: measured },
+    { label: "120 min", count: 4, floor: 12, basis: measured },
+  ]);
+  assert(both.includes(`Both floors were ${measured}.`), "a basis both windows share is said once");
+  eq(both.split(measured).length - 1, 1, "and only once");
+  const mixed = formatLowVolumeAlert([
+    { label: "30 min", count: 0, floor: 3, basis: measured },
+    { label: "120 min", count: 4, floor: 12, basis: "set by hand on the alerts settings page" },
+  ]);
+  assert(
+    mixed.includes(`(expected at least 3, ${measured})`) && mixed.includes("(expected at least 12, set by hand"),
+    "different bases are each said against their own window",
+  );
+  assert(!mixed.includes("Both floors"), "and never summed into one claim");
+  const one = formatLowVolumeAlert([{ label: "120 min", count: 4, floor: 12, basis: measured }]);
+  assert(one.includes(`(expected at least 12, ${measured})`) && !one.includes("Both"), "a single window carries its own basis");
 }
 
 // --- runLowVolumeCheck (#1158): the paging DECISION, extracted from the cron

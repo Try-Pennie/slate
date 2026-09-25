@@ -9,6 +9,7 @@ const admin = vi.hoisted(() => ({ supabaseAdmin: vi.fn() }));
 vi.mock("@/lib/supabase/admin", () => admin);
 
 import { loadMonitorSettings, MONITOR_DEFAULTS } from "./settings";
+import { MEASURED_VOLUME_BASELINE } from "./volume-baseline";
 
 const ENV = process.env;
 beforeEach(() => {
@@ -24,7 +25,10 @@ it("falls back to coded defaults when the DB client throws", async () => {
   expect(out.cooldownMs.availability_data_anomaly).toBe(
     MONITOR_DEFAULTS.cooldownMs.availability_data_anomaly,
   );
-  expect(out.floors).toEqual({ floor30: MONITOR_DEFAULTS.floor30, floor120: MONITOR_DEFAULTS.floor120 });
+  // #1956: an unreadable store leaves the MEASURED floors in charge, never nothing.
+  expect(out.floors.baseline).toBe(MEASURED_VOLUME_BASELINE);
+  expect(out.floors.override30).toBeNull();
+  expect(out.floors.override120).toBeNull();
 });
 
 it("falls back when the query resolves with an error (missing relation)", async () => {
@@ -59,6 +63,7 @@ describe("happy path", () => {
     });
     const out = await loadMonitorSettings();
     expect(out.cooldownMs.availability_data_anomaly).toBe(10 * 60_000);
-    expect(out.floors).toEqual({ floor30: 2, floor120: 8 });
+    expect(out.floors.override30).toEqual({ value: 2, origin: "stored" });
+    expect(out.floors.override120).toEqual({ value: 8, origin: "stored" });
   });
 });
