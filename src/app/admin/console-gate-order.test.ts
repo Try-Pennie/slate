@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from "vitest";
 
 /**
  * The console gate runs BEFORE every role check, on every console route (#2699).
@@ -88,10 +88,28 @@ function viewer(role: string) {
   };
 }
 
+/**
+ * Every route module, imported ONCE before any case runs (#2779).
+ *
+ * The first import of a page pulls its whole graph through the transform, which
+ * took 3.1s idle and 5.0s under load for `agents/[id]`, and whichever case ran
+ * first paid it inside vitest's 5s per case budget, so the gate failed on branches
+ * that never touched the console. The cost is one time and belongs to the file,
+ * not to a case: it is paid here, under its own bound, and every case keeps the
+ * default timeout so a route that really hangs still fails by name.
+ */
+const loaded = new Map<string, PageModule>();
+const WARM_TIMEOUT_MS = 60_000;
+
+beforeAll(async () => {
+  for (const [path, load] of Object.entries(pages)) loaded.set(path, await load());
+}, WARM_TIMEOUT_MS);
+
 /** What the route did: the redirect target, or "rendered" when it returned markup. */
 async function outcome(path: string, role: string): Promise<string> {
   auth.currentUser.mockResolvedValue(viewer(role));
-  const mod = await pages[path]!();
+  const mod = loaded.get(path);
+  if (!mod) throw new Error(`${path} was not imported before the cases ran`);
   try {
     await mod.default(props);
     return "rendered";
@@ -122,6 +140,10 @@ describe("console gate ordering (#2699)", () => {
     expect(gated.length).toBeGreaterThanOrEqual(20);
     expect(gated).toContain("./buckets/page.tsx");
     expect(gated).toContain("./page.tsx");
+  });
+
+  it("imported every route before the first case, so no case pays a cold import", () => {
+    expect([...loaded.keys()].sort()).toEqual(Object.keys(pages).sort());
   });
 
   it("names only exemptions that still exist", () => {
