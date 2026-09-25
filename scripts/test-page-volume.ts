@@ -257,6 +257,25 @@ const HEALTHY_ROWS: SourceRow[] = [
   const noneOut = await none.run();
   eq(none.calls.sent.length, 1, "control: with every booking tagged the quiet page pages");
   assert(noneOut.status === "checked" && noneOut.sources.unsourced === 0, "and the step reports none untagged");
+  // The untagged bookings are ONE pool, spent once: three of them cannot be three
+  // missing bookings of one page AND three of another. Pages are excused in the list's
+  // own order until the pool is spent, and a page it cannot cover still pages.
+  const shared = harness({
+    baselines: { "income-verification": flat(0, 3), "application-review-follow-up": flat(0, 0), "application-review": flat(0, 3) },
+    rows: [ago(10, "not-given"), ago(20, "not-given"), ago(30, null)],
+  });
+  const sharedOut = await shared.run();
+  const sharedPages = sharedOut.status === "checked" ? sharedOut.pages : [];
+  eq(verdictOf(sharedPages, "income-verification").verdict, "source-unrecorded", "the first short page takes the three untagged bookings");
+  eq(verdictOf(sharedPages, "application-review").verdict, "low", "so the second, short by three too, cannot be excused by the same three");
+  eq(shared.calls.sent.map((s) => s.key), [pageVolumeAlertKey("application-review")], "and pages");
+  // Control: six untagged bookings cover both, and nothing pages.
+  const enough = harness({
+    baselines: { "income-verification": flat(0, 3), "application-review-follow-up": flat(0, 0), "application-review": flat(0, 3) },
+    rows: [10, 20, 30, 40, 50, 60].map((m) => ago(m, "not-given")),
+  });
+  await enough.run();
+  eq(enough.calls.sent.length, 0, "control: a pool large enough for both short pages excuses both");
   // An unrecognised source is a link that NAMED a page, so it is not an untagged booking.
   const odd = harness({ rows: [...HEALTHY_ROWS.filter((r) => r.source !== "offerhub"), ago(10, "unrecognised"), ago(20, "unrecognised")] });
   await odd.run();

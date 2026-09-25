@@ -284,6 +284,10 @@ export async function runPageVolumeCheck(deps: {
   const unsourcedIn = (ms: number) => rows.filter((r) => isUnsourced(r.source) && inWindow(r, ms)).length;
   const sources = { unsourced: unsourcedIn(longMs), total: rows.filter((r) => inWindow(r, longMs)).length };
 
+  // The untagged bookings in each window (short, then long, as the windows below are
+  // built), left to excuse short pages with; spent as pages are excused.
+  const unsourcedPool = [unsourcedIn(shortMs), unsourcedIn(longMs)];
+
   const recovered: { key: string; text: string }[] = [];
   for (const { page, floors, measurable } of judged) {
     if (!measurable) {
@@ -292,8 +296,6 @@ export async function runPageVolumeCheck(deps: {
     }
     const mine = rows.filter((r) => r.source !== null && (page.sources as readonly string[]).includes(r.source));
     const since = (ms: number) => mine.filter((r) => inWindow(r, ms)).length;
-    // The span of each window below, in the same order.
-    const spans = [shortMs, longMs];
     const windows: VolumeWindow[] = [
       { label: `${LOW_VOLUME_WINDOW_MINUTES.short} min`, count: since(shortMs), floor: floors.floor30, basis: floors.basis30 },
       { label: `${LOW_VOLUME_WINDOW_MINUTES.long} min`, count: since(longMs), floor: floors.floor120, basis: floors.basis120 },
@@ -306,11 +308,12 @@ export async function runPageVolumeCheck(deps: {
     }
     // Every breach one the untagged bookings could make up: this page's bookings may
     // be arriving without their source, so the counts cannot say it stopped (#2765).
-    // A breach even they cannot cover is a real shortfall, and goes on to page.
-    const coverable = windows.every(
-      (w, i) => w.count >= w.floor || w.count + unsourcedIn(spans[i]!) >= w.floor,
-    );
-    if (coverable) {
+    // The untagged bookings are ONE pool, spent once across the pages in the list's
+    // order: the same three bookings cannot be the missing three of two pages. A
+    // shortfall the pool left cannot cover is a real one, and goes on to page.
+    const shortfall = windows.map((w) => Math.max(0, w.floor - w.count));
+    if (shortfall.every((d, i) => d <= unsourcedPool[i]!)) {
+      shortfall.forEach((d, i) => (unsourcedPool[i]! -= d));
       pages.push({
         id: page.id,
         verdict: "source-unrecorded",

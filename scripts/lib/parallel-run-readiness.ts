@@ -370,8 +370,13 @@ export function judgeReadiness(f: ReadinessFacts): ReadinessJudgement {
         armingChecks.push({
           kind: "page-source-missing",
           // #2765: opened with the per page alarm's own sentence for it, so the gate
-          // and the alarm say the same thing about the same bookings.
-          detail: `${sourceNotRecorded(s.unsourced, s.realBookings, `${s.lookbackDays} days`)}, and ${without.length} Low page(s) recorded no booking carrying their own source, so the per page alarm cannot tell whether each stopped booking: ${names(without)}`,
+          // and the alarm say the same thing about the same bookings. With no
+          // untagged booking nothing can be hiding a page's bookings, so it claims
+          // no ambiguity: the page simply recorded none.
+          detail:
+            s.unsourced > 0
+              ? `${sourceNotRecorded(s.unsourced, s.realBookings, `${s.lookbackDays} days`)}, and ${without.length} Low page(s) recorded no booking carrying their own source, so the per page alarm cannot tell whether each stopped booking: ${names(without)}`
+              : `${without.length} Low page(s) recorded no booking at all in the last ${s.lookbackDays} days, though every one of the ${s.realBookings} real bookings carried a source, so the per page alarm would report each as a page that stopped booking: ${names(without)}`,
         });
       }
     }

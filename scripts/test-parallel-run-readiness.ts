@@ -281,6 +281,14 @@ eq(
     src.findings[0].detail.startsWith(sourceNotRecorded(3, 40, "7 days")),
     `and opens with how many bookings recorded no source (got: ${src.findings[0].detail})`,
   );
+  assert(/cannot tell whether/.test(src.findings[0].detail), "with untagged bookings about, it says the page cannot be told apart");
+  // With NO untagged booking, nothing could be hiding the page's bookings: it simply
+  // recorded none, and saying otherwise claims an ambiguity nobody measured (L11).
+  const bare = judgeReadiness(healthy({ lowVolumeArming: armed({ pageSources: { ...missing, unsourced: 0 } }) }));
+  const bareDetail = bare.findings[0].detail;
+  eq(bare.exit, READINESS_EXIT.pageSourceMissing, "a page with no bookings and none untagged is still the missing source finding");
+  assert(!/cannot tell/.test(bareDetail) && !/Source not recorded/.test(bareDetail), `and claims no ambiguity (got: ${bareDetail})`);
+  assert(/recorded no booking at all in the last 7 days/.test(bareDetail) && /Follow Up/.test(bareDetail), `it says the page recorded no bookings (got: ${bareDetail})`);
 
   const hol = judgeReadiness(healthy({ lowVolumeArming: armed({ holidays: uncovered }) }));
   eq(hol.exit, READINESS_EXIT.holidaysUncovered, "armed with an undecided holiday exits on its own code");
