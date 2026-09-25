@@ -40,6 +40,12 @@ export interface SetupReadiness {
   workingHours: boolean;
   /** The org's booking horizon in days. */
   horizonDays: boolean;
+  /**
+   * The monitor alert settings (#2773): every ARMED switch and the low volume
+   * floors. False only when the read failed AND this isolate holds no last known
+   * value to fall back on; a failure with one is served from it and reads as true.
+   */
+  settings: boolean;
 }
 
 /** Every read succeeded. Also the base a test mutates one flag at a time. */
@@ -49,6 +55,7 @@ export const ALL_SETUP_READ: SetupReadiness = {
   businessHours: true,
   workingHours: true,
   horizonDays: true,
+  settings: true,
 };
 
 /**
@@ -67,6 +74,7 @@ const READ_NAMES: Record<keyof SetupReadiness, string> = {
   businessHours: "the org's business hours",
   workingHours: "the agents' working hours",
   horizonDays: "the booking horizon",
+  settings: "the monitor alert settings",
 };
 
 function gate(readiness: SetupReadiness, needs: (keyof SetupReadiness)[]): SetupGate {
@@ -86,9 +94,9 @@ function gate(readiness: SetupReadiness, needs: (keyof SetupReadiness)[]): Setup
 /**
  * What this tick may check, given which setup reads came back.
  *
- * Only the two checks that consume setup state are gated. The other eleven do
- * their own reads inside their own boundaries and are deliberately absent: the
- * whole point is that a failure up here stops touching them.
+ * Only the checks that consume setup state are gated. The others do their own
+ * reads inside their own boundaries and are deliberately absent: the whole point
+ * is that a failure up here stops touching them.
  */
 export function monitorSetupGates(readiness: SetupReadiness): {
   availabilityScan: SetupGate;
@@ -101,6 +109,10 @@ export function monitorSetupGates(readiness: SetupReadiness): {
   belowLeadTier: SetupGate;
   offsiteOrigin: SetupGate;
   regalCallsQuiet: SetupGate;
+  failureRate: SetupGate;
+  awaitingActivation: SetupGate;
+  regalCalls: SetupGate;
+  regalCallsUnreadable: SetupGate;
 } {
   return {
     // The scan compares every bucket's cached slot count against a live recompute,
@@ -117,14 +129,23 @@ export function monitorSetupGates(readiness: SetupReadiness): {
     // cache and checks it against live Google, so it needs neither the bucket list
     // nor the shift gate. It does need the horizon, because that is the window it
     // asks for: guessing it would check times the bucket is not offering.
-    availabilityTruth: gate(readiness, ["horizonDays"]),
+    //
+    // #2773: and the settings, because `availability_drift_armed` decides whether a
+    // drift it finds pages. Every gate below that names "settings" has the same
+    // reason: the switch (and for the volume alarm the floors) is the decision to
+    // page, and its default is OFF, so judging on a guessed one is the silent
+    // disarm this gate exists to prevent. A check needing only a COOLDOWN is not
+    // gated on it: a cooldown paces an alarm that has already decided to fire.
+    availabilityTruth: gate(readiness, ["horizonDays", "settings"]),
     // #1298: the volume alarm asks "is the org open right now" before deciding that
     // a quiet half hour is worth mentioning, and it now asks the org's REAL hours
     // rather than a second hardcoded copy of them. So it depends on that read, and
     // must SKIP when it fails rather than fall back to a guessed window: guessing
     // open would page for an ordinary closed evening, and guessing shut would
     // silence a genuinely dead Monday morning. Neither is a measurement.
-    lowVolume: gate(readiness, ["businessHours"]),
+    //
+    // #2773: and the settings, which carry both its arming switch and its floors.
+    lowVolume: gate(readiness, ["businessHours", "settings"]),
     // #1454: holds the org's advertised week against the union of the agents'
     // rostered hours. It needs both, and must skip on either, for OPPOSITE
     // reasons: with no advertised week there is nothing to hold the roster
@@ -132,7 +153,7 @@ export function monitorSetupGates(readiness: SetupReadiness): {
     // whole week would report as uncovered. That second one is the dangerous
     // direction, because being wrong there is indistinguishable from the very
     // finding this check exists to report.
-    rosterCoverage: gate(readiness, ["businessHours", "workingHours"]),
+    rosterCoverage: gate(readiness, ["businessHours", "workingHours", "settings"]),
     // #1262: whether every bookable agent's calendar is hydrated past the live
     // booking horizon. The horizon IS the bound being checked, so it must skip
     // when that read fails rather than judge against a guessed window: a guessed
@@ -160,7 +181,7 @@ export function monitorSetupGates(readiness: SetupReadiness): {
     // tier. The bucket list is where a pool's tier comes from AND which buckets are
     // real rather than the smoke canary's, so it must skip without it: with no
     // list every booking would be unmeasurable, which reads as a quiet day.
-    belowLeadTier: gate(readiness, ["buckets"]),
+    belowLeadTier: gate(readiness, ["buckets", "settings"]),
     // #2715: a real bucket booking from a host page that is not the production
     // site. The bucket list is what says which buckets are REAL, and the test ones
     // are exactly where off site hosts belong, so it must skip without it: guessing
@@ -173,6 +194,14 @@ export function monitorSetupGates(readiness: SetupReadiness): {
     // week rather than guess: guessing open pages about a Sunday nobody worked,
     // and guessing shut silences a genuinely dead Monday. The Regal call detector
     // and the unreadable event alarm read the feed alone and are not gated.
-    regalCallsQuiet: gate(readiness, ["businessHours"]),
+    regalCallsQuiet: gate(readiness, ["businessHours", "settings"]),
+    // #2773: four checks that do every read of their own and consume no other
+    // setup state, but whose decision to page is an armed switch from the
+    // settings: the booking failure rate page, the waiting to become bookable
+    // page, the Regal call detector and the unreadable Regal events alarm.
+    failureRate: gate(readiness, ["settings"]),
+    awaitingActivation: gate(readiness, ["settings"]),
+    regalCalls: gate(readiness, ["settings"]),
+    regalCallsUnreadable: gate(readiness, ["settings"]),
   };
 }

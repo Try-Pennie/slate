@@ -2,7 +2,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import { authenticateBearer, CANARY_CALLERS } from "@/lib/booking/api-auth";
 import { configuredBookingApiKeys } from "@/lib/booking/api-keys";
 import { sendThrottledAlert, resolveAlert } from "@/lib/notify/dispatch";
-import { loadMonitorSettings } from "@/lib/monitor/settings";
+import { loadMonitorCooldowns } from "@/lib/monitor/settings";
 import {
   parseParitySweep,
   classifyParitySweep,
@@ -89,10 +89,12 @@ export async function POST(req: NextRequest) {
   }
 
   if (judgement.action === "page") {
-    const settings = await loadMonitorSettings();
+    // Only the cooldown is needed, so an unreadable settings row must not swallow
+    // the page (#2773): last known cooldowns, else the coded one, logged either way.
+    const cooldownMs = await loadMonitorCooldowns("schedule-parity");
     await sendThrottledAlert(
       PARITY_ALERT_KEY,
-      settings.cooldownMs.schedule_parity_drift,
+      cooldownMs.schedule_parity_drift,
       buildScheduleParityAlert(judgement),
     );
   } else {

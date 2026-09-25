@@ -319,7 +319,7 @@ fails when two share either.
 Every check on the monitor lane runs inside its own boundary (`steps.run`, #1281),
 and since #1395 so does every SHARED READ at the top of the handler: the bucket
 list, the cached slot rows, the org's business hours, the agents' working hours,
-and the booking horizon. A throw in one of those used to end the tick before a
+the booking horizon, and (#2773) the monitor alert settings. A throw in one of those used to end the tick before a
 single check ran, taking out the availability probe and the cal.com override
 sweep, neither of which needs most of them.
 
@@ -329,6 +329,15 @@ confidently instead of skipping: zero buckets makes the whole ladder look like a
 dead end, an empty week does the same (#1296), no working-hours rules makes every
 agent look off shift, and a guessed horizon has the scan compare a probe against a
 row computed over a different window and call the difference drift (#216).
+
+The settings read is the one with a second fallback, and it is still not the
+defaults: every armed switch defaults to OFF, so resolving a failed read to them
+silently disarmed half the lane (#2773). A failure falls back to the LAST KNOWN
+settings in the isolate while the step still fails (so a sustained outage pages),
+and with none known the checks whose decision to page is a switch or a floor stand
+down through the gates. Cooldowns alone fall to the coded values, because a
+cooldown only paces an alarm that already decided to fire; lanes needing nothing
+else use `loadMonitorCooldowns`, which never throws.
 
 Which check depends on which read lives in ONE pure place,
 `src/lib/monitor/setup-gates.ts` (`monitorSetupGates`), node-tested with each read

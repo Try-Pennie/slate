@@ -153,7 +153,10 @@ export function truthReachedVerdict(result: TruthResult | { status: "errored" })
  * is no honest rate to quote. On a dark roster that is EVERY tick, so counting
  * it would report the detector healthy for exactly as long as it is blind.
  */
-export function failureRateReachedVerdict(result: FailureRateResult | { status: "errored" }): boolean {
+export function failureRateReachedVerdict(
+  // "skipped" is a tick whose settings could not be read (#2773): it measured nothing.
+  result: FailureRateResult | { status: "errored" } | { status: "skipped"; why: string },
+): boolean {
   return result.status === "checked" && result.verdict.status !== "insufficient";
 }
 

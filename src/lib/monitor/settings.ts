@@ -1,4 +1,6 @@
 import { supabaseAdmin } from "@/lib/supabase/admin";
+import { unwrap } from "@/lib/db/result";
+import { log } from "@/lib/log";
 import type { MonitorAlertConfig, MonitorSettings } from "@/lib/db/types";
 import type { FloorOverride, FloorPolicy } from "./volume-floors.ts";
 import { MEASURED_VOLUME_BASELINE } from "./volume-baseline.ts";
@@ -6,10 +8,11 @@ import { baselineInForce } from "./volume-relearn.ts";
 
 /**
  * UI-tunable monitor alert settings (#571). Cooldowns and low-volume floors are
- * read from a store at runtime with precedence store > env > coded default; an
- * empty or unreadable store falls through to these defaults so alerting can never
- * be broken by its own config. The pure resolvers own precedence + validation;
- * `loadMonitorSettings` is a thin, error-safe DB wrapper around them.
+ * read from a store at runtime with precedence store > env > coded default. An
+ * EMPTY store (no row, no stored value) falls through to the defaults; an
+ * UNREADABLE one never does (#2773), because every armed switch defaults to off
+ * and a failed read would silently disarm them. The pure resolvers own precedence
+ * and validation; `loadMonitorSettings` is the DB read around them, and it throws.
  */
 
 /**
@@ -882,64 +885,71 @@ export interface ResolvedMonitorSettings {
   regalCallsArmed: boolean;
 }
 
+type AlertConfigRow = Pick<
+  MonitorAlertConfig,
+  | "floor_30"
+  | "floor_120"
+  | "volume_ramp_end_on"
+  | "volume_learning"
+  | "low_volume_armed"
+  | "failure_rate_armed"
+  | "availability_drift_armed"
+  | "roster_coverage_armed"
+  | "awaiting_activation_armed"
+  | "below_lead_tier_armed"
+  | "regal_calls_armed"
+>;
+
 /**
- * Reads the store and resolves the monitor's runtime settings. NEVER throws:
- * any DB error (incl. the table not existing during a migrate-before-deploy
- * window) falls back to env/coded defaults so the monitor tick keeps alerting.
+ * The last settings this isolate read successfully, or null on a cold isolate.
+ * Only ever written by a SUCCESSFUL read: a failure is never recorded as a value.
+ */
+let lastKnown: ResolvedMonitorSettings | null = null;
+
+/**
+ * Reads the store and resolves the monitor's runtime settings, and THROWS when
+ * either read fails (#2773).
+ *
+ * It used to swallow any error into env and coded defaults, on the theory that
+ * config must never take down alerting. The defaults are not neutral, though:
+ * every armed switch defaults to OFF, so a single failed read of
+ * `monitor_alert_config` disarmed the low volume alarm, the failure rate, drift,
+ * roster coverage, activation, below tier and Regal pages, dropped the floor
+ * overrides and reverted the learned floors to the cal.com measurement, for that
+ * tick, with nothing reporting it. Swallowing it WAS config taking alerting down,
+ * just quietly.
+ *
+ * So a failure is the caller's to handle, with two tools:
+ *
+ * - `lastKnownMonitorSettings()`, the last successful read in this isolate, which
+ *   is what the monitor lane falls back to inside its `setup_settings` step. The
+ *   step still FAILS, so a sustained outage pages through the step streak even
+ *   while the last known value is carrying the tick (the business hours cache's
+ *   shape: the fallback buys time, it does not hide the fault).
+ * - with no last known value, the lane's checks whose decision to page is a switch
+ *   or a floor stand down through `monitorSetupGates` rather than judge on a guess.
+ *
+ * A store that is readable and EMPTY is not a failure: no config row, or no stored
+ * cooldown, resolves through the resolvers exactly as before.
  */
 export async function loadMonitorSettings(): Promise<ResolvedMonitorSettings> {
-  let rows: Pick<MonitorSettings, "key" | "cooldown_min">[] = [];
-  let config:
-    | Pick<
-        MonitorAlertConfig,
-        | "floor_30"
-        | "floor_120"
-        | "volume_ramp_end_on"
-        | "volume_learning"
-        | "low_volume_armed"
-        | "failure_rate_armed"
-        | "availability_drift_armed"
-        | "roster_coverage_armed"
-        | "awaiting_activation_armed"
-        | "below_lead_tier_armed"
-        | "regal_calls_armed"
-      >
-    | null = null;
-  try {
-    const db = supabaseAdmin();
-    const [cooldowns, cfg] = await Promise.all([
-      db.from("monitor_settings").select("key, cooldown_min"),
-      db
-        .from("monitor_alert_config")
-        .select(
-          "floor_30, floor_120, volume_ramp_end_on, volume_learning, low_volume_armed, failure_rate_armed, availability_drift_armed, roster_coverage_armed, awaiting_activation_armed, below_lead_tier_armed, regal_calls_armed",
-        )
-        .eq("id", 1)
-        .maybeSingle(),
-    ]);
-    if (!cooldowns.error && cooldowns.data) {
-      rows = cooldowns.data as Pick<MonitorSettings, "key" | "cooldown_min">[];
-    }
-    if (!cfg.error && cfg.data) {
-      config = cfg.data as Pick<
-        MonitorAlertConfig,
-        | "floor_30"
-        | "floor_120"
-        | "volume_ramp_end_on"
-        | "volume_learning"
-        | "low_volume_armed"
-        | "failure_rate_armed"
-        | "availability_drift_armed"
-        | "roster_coverage_armed"
-        | "awaiting_activation_armed"
-        | "below_lead_tier_armed"
-        | "regal_calls_armed"
-      >;
-    }
-  } catch {
-    // Fall through to env/defaults (config must never take down alerting).
-  }
-  return {
+  const db = supabaseAdmin();
+  const [cooldowns, cfg] = await Promise.all([
+    db.from("monitor_settings").select("key, cooldown_min"),
+    db
+      .from("monitor_alert_config")
+      .select(
+        "floor_30, floor_120, volume_ramp_end_on, volume_learning, low_volume_armed, failure_rate_armed, availability_drift_armed, roster_coverage_armed, awaiting_activation_armed, below_lead_tier_armed, regal_calls_armed",
+      )
+      .eq("id", 1)
+      .maybeSingle(),
+  ]);
+  const rows = (unwrap(cooldowns, "monitor cooldowns") ?? []) as Pick<
+    MonitorSettings,
+    "key" | "cooldown_min"
+  >[];
+  const config = unwrap(cfg, "monitor alert config") as AlertConfigRow | null;
+  const resolved: ResolvedMonitorSettings = {
     cooldownMs: resolveCooldownMs(rows),
     floors: resolveFloors(config, envFloors()),
     lowVolumeArmed: resolveLowVolumeArmed(config, envLowVolumeArmed()),
@@ -950,6 +960,43 @@ export async function loadMonitorSettings(): Promise<ResolvedMonitorSettings> {
     belowLeadTierArmed: resolveBelowLeadTierArmed(config),
     regalCallsArmed: resolveRegalCallsArmed(config),
   };
+  lastKnown = resolved;
+  return resolved;
+}
+
+/** The last settings this isolate read successfully, or null if it never has. */
+export function lastKnownMonitorSettings(): ResolvedMonitorSettings | null {
+  return lastKnown;
+}
+
+/** The coded cooldowns, for a caller with no settings reading at all. */
+export function codedCooldownMs(): Record<MonitorAlertKey, number> {
+  return resolveCooldownMs([]);
+}
+
+/**
+ * The cooldowns alone, for a lane that needs nothing else from the settings
+ * (hydrate-calendars, the schedule parity sweep). Never throws.
+ *
+ * This is the one place a failed read may fall as far as a coded default, and the
+ * reason is specific to what a cooldown IS: it paces an alarm that has already
+ * decided to fire, so no value of it can disarm anything. The worst a coded
+ * cooldown does is repeat a page more or less often than somebody tuned it to.
+ * Taking the lane down instead would stop the work the alarm is about. Last known
+ * first, coded only with nothing known, and either fallback is logged by name.
+ */
+export async function loadMonitorCooldowns(tag: string): Promise<Record<MonitorAlertKey, number>> {
+  try {
+    return (await loadMonitorSettings()).cooldownMs;
+  } catch (err) {
+    const known = lastKnownMonitorSettings();
+    if (known) {
+      log.warn(tag, { msg: "monitor settings unreadable; using the last known cooldowns" }, err);
+      return known.cooldownMs;
+    }
+    log.warn(tag, { msg: "monitor settings unreadable and none known; using the coded cooldowns" }, err);
+    return codedCooldownMs();
+  }
 }
 
 /** The deploy-gated arm flag (#370), now only the fallback when the store is unset
