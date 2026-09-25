@@ -585,7 +585,9 @@ fail to open it, which failed CI on unrelated PRs and once skipped a deploy on
 main. `tsc -p` cannot add a file outside the config, so both guards drive the
 compiler API on the real config (`scripts/lib/typecheck-program.ts`), and
 `scripts/test-no-tree-writes.ts` fails any suite that writes a path it has not
-proven to be a temp directory (`// tree-write-ok: <why>` to opt out).
+proven to be ROOTED in a temp directory: a real `node:os` `tmpdir()` or `node:fs`
+`mkdtemp` as the path's base, never merely inside it (`// tree-write-ok: <why>`
+to opt out).
 
 **The escape hatch** is `// typecheck-ok: <why>` on, or in the `//` block
 directly above, the line, and it must carry a reason. The one use today is the

@@ -12,9 +12,17 @@
  * this fixes the class (L30, L433).
  *
  * The rule is PROVE SAFE, not detect unsafe. A write is fine only when the path
- * it writes, followed through the variables it was built from, derives from a
- * `mkdtemp`/`mkdtempSync` or `tmpdir()` call. Everything else is flagged: a path
- * built from the repo root, a function parameter, a string literal. Listing the
+ * it writes is ROOTED in a temp directory, followed through the variables it was
+ * built from. Rooted means the temp call is the BASE of the path, never merely
+ * somewhere inside it: the whole expression, the FIRST argument of `path.join`,
+ * the last anchoring argument of `path.resolve` (everything after it a relative
+ * literal), or the head of a template or `+` concatenation. So
+ * `join(repoRoot, "scripts", basename(mkdtempSync(...)))` and
+ * `join(repoRoot, tmpdir())` are refused: each names a temp directory and writes
+ * into the repo. The temp calls are `tmpdir()` and a `mkdtemp`/`mkdtempSync`
+ * whose own PREFIX is rooted in a temp directory (`mkdtempSync("scripts/x-")`
+ * creates its directory in the tree). Everything else is flagged: a path built
+ * from the repo root, a function parameter, a string literal. Listing the
  * spellings of "the repo root" instead would exempt every spelling nobody listed
  * (L257), and a helper that takes its path as a parameter is exactly the shape
  * that hides a repo path one call away.
@@ -22,8 +30,10 @@
  * It parses with the TypeScript compiler and resolves each name through the
  * checker, so a name means the binding in scope at the write (two functions each
  * with their own `path` are two names), a write NAMED inside a string or comment
- * is not a write, and only calls bound to `node:fs` / `node:fs/promises` count, so
- * a local helper that happens to be called `rm` is not one either. A variable
+ * is not a write, and only calls bound to the real modules count (writes and
+ * `mkdtemp` to `node:fs` / `node:fs/promises`, `tmpdir` to `node:os`, `join` and
+ * `resolve` to `node:path`), so a local helper that happens to be called `rm` or
+ * `tmpdir` is not one either. A variable
  * that is REASSIGNED counts as temp only if every value it is ever given is.
  *
  * What it cannot see, stated so it is not read as broader than it is:
@@ -42,7 +52,12 @@ import { hasOptOut } from "./opt-out.ts";
 
 export const OPT_OUT = "tree-write-ok:";
 
-const FS_MODULES = new Set(["fs", "node:fs", "fs/promises", "node:fs/promises"]);
+/** Which module group a specifier belongs to; anything else is not followed. */
+const MODULE_GROUP: ReadonlyMap<string, "fs" | "os" | "path"> = new Map([
+  ["fs", "fs"], ["node:fs", "fs"], ["fs/promises", "fs"], ["node:fs/promises", "fs"],
+  ["os", "os"], ["node:os", "os"],
+  ["path", "path"], ["node:path", "path"],
+] as const);
 
 /**
  * fs calls that create, change or remove a path, and WHICH arguments are the
@@ -66,20 +81,12 @@ export const WRITE_CALLS: ReadonlyMap<string, readonly number[]> = new Map<strin
   ["renameSync", [0, 1]], ["rename", [0, 1]],
 ]);
 
-/** Calls whose result is a temp directory, so a path built from one is safe. */
-const TEMP_CALLS = new Set(["mkdtemp", "mkdtempSync", "tmpdir"]);
 
 export interface TreeWrite {
   line: number;
   call: string;
   /** The path argument as written. */
   target: string;
-}
-
-function calleeName(callee: ts.Expression): string | null {
-  if (ts.isIdentifier(callee)) return callee.text;
-  if (ts.isPropertyAccessExpression(callee)) return callee.name.text;
-  return null;
 }
 
 /** A one-file program with no lib and no module resolution: enough for the
@@ -105,28 +112,58 @@ function checkerFor(file: string, source: string): { sf: ts.SourceFile; checker:
 export function scanTreeWrites(source: string, file = "suite.ts"): TreeWrite[] {
   const { sf, checker } = checkerFor(file, source);
 
-  // How this file reaches fs: named imports (local name -> fs name) and the
-  // local names of default or namespace imports (`fs.writeFileSync`,
-  // `fs.promises.writeFile`).
-  const named = new Map<string, string>();
-  const namespaces = new Set<string>();
+  // How this file reaches fs, os and path: named imports (local name -> the
+  // module's own name) and the local names of default or namespace imports
+  // (`fs.writeFileSync`, `fs.promises.writeFile`, `os.tmpdir`, `path.join`).
+  const named = { fs: new Map<string, string>(), os: new Map<string, string>(), path: new Map<string, string>() };
+  const namespaces = { fs: new Set<string>(), os: new Set<string>(), path: new Set<string>() };
   for (const st of sf.statements) {
     if (!ts.isImportDeclaration(st) || !st.importClause) continue;
-    if (!ts.isStringLiteral(st.moduleSpecifier) || !FS_MODULES.has(st.moduleSpecifier.text)) continue;
+    if (!ts.isStringLiteral(st.moduleSpecifier)) continue;
+    const group = MODULE_GROUP.get(st.moduleSpecifier.text);
+    if (!group) continue;
     const clause = st.importClause;
     if (clause.isTypeOnly) continue;
-    if (clause.name) namespaces.add(clause.name.text);
+    if (clause.name) namespaces[group].add(clause.name.text);
     const nb = clause.namedBindings;
-    if (nb && ts.isNamespaceImport(nb)) namespaces.add(nb.name.text);
+    if (nb && ts.isNamespaceImport(nb)) namespaces[group].add(nb.name.text);
     if (nb && ts.isNamedImports(nb)) {
       for (const el of nb.elements) {
         if (el.isTypeOnly) continue;
         const imported = (el.propertyName ?? el.name).text;
-        if (imported === "promises") namespaces.add(el.name.text);
-        else named.set(el.name.text, imported);
+        if (group === "fs" && imported === "promises") namespaces.fs.add(el.name.text);
+        else named[group].set(el.name.text, imported);
       }
     }
   }
+
+  /** The module function a call's callee is bound to, as `[group, name]`, or null
+   *  for anything not reached through a real fs, os or path import. */
+  const boundCall = (callee: ts.Expression): ["fs" | "os" | "path", string] | null => {
+    if (ts.isIdentifier(callee)) {
+      for (const group of ["fs", "os", "path"] as const) {
+        const imported = named[group].get(callee.text);
+        if (imported) return [group, imported];
+      }
+      return null;
+    }
+    if (!ts.isPropertyAccessExpression(callee)) return null;
+    const obj = callee.expression;
+    if (ts.isIdentifier(obj)) {
+      for (const group of ["fs", "os", "path"] as const) {
+        if (namespaces[group].has(obj.text)) return [group, callee.name.text];
+      }
+    }
+    if (
+      ts.isPropertyAccessExpression(obj) &&
+      obj.name.text === "promises" &&
+      ts.isIdentifier(obj.expression) &&
+      namespaces.fs.has(obj.expression.text)
+    ) {
+      return ["fs", callee.name.text];
+    }
+    return null;
+  };
 
   // Every value each variable is REASSIGNED to, keyed by its symbol.
   const assigned = new Map<ts.Symbol, ts.Expression[]>();
@@ -163,49 +200,57 @@ export function scanTreeWrites(source: string, file = "suite.ts"): TreeWrite[] {
     return values.length > 0 ? values : null;
   };
 
-  const isTemp = (expr: ts.Node, seen: Set<ts.Node>): boolean => {
-    let found = false;
-    const walk = (n: ts.Node): void => {
-      if (found) return;
-      if (ts.isCallExpression(n)) {
-        const name = calleeName(n.expression);
-        if (name && TEMP_CALLS.has(name)) {
-          found = true;
-          return;
-        }
+  /** A string literal that cannot re-anchor a `path.resolve`: a relative piece. */
+  const isRelativeLiteral = (e: ts.Expression): boolean =>
+    (ts.isStringLiteral(e) || ts.isNoSubstitutionTemplateLiteral(e)) && !e.text.startsWith("/");
+
+  /** True when `expr` is a path ROOTED in a temp directory: the temp call is its
+   *  base, not merely present somewhere inside it. */
+  const isTemp = (expr: ts.Expression, seen: Set<ts.Node>): boolean => {
+    if (ts.isParenthesizedExpression(expr) || ts.isAsExpression(expr) || ts.isNonNullExpression(expr)) {
+      return isTemp(expr.expression, seen);
+    }
+    if (ts.isAwaitExpression(expr)) return isTemp(expr.expression, seen);
+    if (ts.isIdentifier(expr)) {
+      if (seen.has(expr)) return false;
+      seen.add(expr);
+      const values = valuesOf(expr);
+      return values !== null && values.every((v) => isTemp(v, seen));
+    }
+    if (ts.isTemplateExpression(expr)) {
+      // `${dir}/x`: rooted only when nothing precedes the first substitution.
+      return expr.head.text === "" && isTemp(expr.templateSpans[0].expression, seen);
+    }
+    if (ts.isBinaryExpression(expr) && expr.operatorToken.kind === ts.SyntaxKind.PlusToken) {
+      return isTemp(expr.left, seen);
+    }
+    if (!ts.isCallExpression(expr)) return false;
+    const bound = boundCall(expr.expression);
+    if (!bound) return false;
+    const [group, name] = bound;
+    const args = expr.arguments;
+    if (group === "os" && name === "tmpdir") return true;
+    // A temp directory is created INSIDE its prefix, so the prefix is what has
+    // to be rooted in a temp directory.
+    if (group === "fs" && (name === "mkdtemp" || name === "mkdtempSync")) {
+      return args.length > 0 && isTemp(args[0], seen);
+    }
+    if (group === "path" && name === "join") return args.length > 0 && isTemp(args[0], seen);
+    if (group === "path" && name === "resolve") {
+      // The result is anchored at the LAST absolute argument, so the temp base
+      // must be followed only by relative literals that cannot re-anchor it.
+      for (let i = args.length - 1; i >= 0; i--) {
+        if (isTemp(args[i], seen)) return true;
+        if (!isRelativeLiteral(args[i])) return false;
       }
-      if (ts.isIdentifier(n) && !seen.has(n)) {
-        seen.add(n);
-        const values = valuesOf(n);
-        if (values && values.length > 0 && values.every((v) => isTemp(v, seen))) {
-          found = true;
-          return;
-        }
-      }
-      ts.forEachChild(n, walk);
-    };
-    walk(expr);
-    return found;
+      return false;
+    }
+    return false;
   };
 
   const writeName = (callee: ts.Expression): string | null => {
-    if (ts.isIdentifier(callee)) {
-      const imported = named.get(callee.text);
-      return imported && WRITE_CALLS.has(imported) ? imported : null;
-    }
-    if (ts.isPropertyAccessExpression(callee) && WRITE_CALLS.has(callee.name.text)) {
-      const obj = callee.expression;
-      if (ts.isIdentifier(obj) && namespaces.has(obj.text)) return callee.name.text;
-      if (
-        ts.isPropertyAccessExpression(obj) &&
-        obj.name.text === "promises" &&
-        ts.isIdentifier(obj.expression) &&
-        namespaces.has(obj.expression.text)
-      ) {
-        return callee.name.text;
-      }
-    }
-    return null;
+    const bound = boundCall(callee);
+    return bound && bound[0] === "fs" && WRITE_CALLS.has(bound[1]) ? bound[1] : null;
   };
 
   const lines = source.split("\n");

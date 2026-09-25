@@ -63,6 +63,7 @@ const ROOT = new URL("..", import.meta.url).pathname;
       [
         'import { mkdtempSync, writeFileSync, rmSync } from "node:fs";',
         'import { tmpdir } from "node:os";',
+        'import { join } from "node:path";',
         'const dir = mkdtempSync(join(tmpdir(), "x-"));',
         'const file = join(dir, "a.txt");',
         'writeFileSync(file, "");',
@@ -78,12 +79,14 @@ const ROOT = new URL("..", import.meta.url).pathname;
     flagged(
       [
         'import { mkdtempSync, writeFileSync } from "node:fs";',
-        'let p = mkdtempSync("/tmp/x");',
+        'import { tmpdir } from "node:os";',
+        'import { join } from "node:path";',
+        'let p = mkdtempSync(join(tmpdir(), "x"));',
         'p = new URL("..", import.meta.url).pathname;',
         'writeFileSync(p, "");',
       ].join("\n"),
     ).join(","),
-    "writeFileSync:4",
+    "writeFileSync:6",
     "a name bound once to a temp dir and once to the repo is NOT proven temp",
   );
 
@@ -91,8 +94,10 @@ const ROOT = new URL("..", import.meta.url).pathname;
     flagged(
       [
         'import { mkdtempSync, writeFileSync } from "node:fs";',
+        'import { tmpdir } from "node:os";',
+        'import { join } from "node:path";',
         "function a() {",
-        '  const path = mkdtempSync("/tmp/a-");',
+        '  const path = mkdtempSync(join(tmpdir(), "a-"));',
         '  writeFileSync(path, "");',
         "}",
         "function b() {",
@@ -101,7 +106,7 @@ const ROOT = new URL("..", import.meta.url).pathname;
         "}",
       ].join("\n"),
     ).join(","),
-    "writeFileSync:8",
+    "writeFileSync:10",
     "names resolve by SCOPE: a temp `path` in one function does not vouch for a repo `path` in another",
   );
 
@@ -109,13 +114,15 @@ const ROOT = new URL("..", import.meta.url).pathname;
     flagged(
       [
         'import { mkdtempSync, symlinkSync, copyFileSync, renameSync } from "node:fs";',
-        'const dir = mkdtempSync("/tmp/x-");',
+        'import { tmpdir } from "node:os";',
+        'import { join } from "node:path";',
+        'const dir = mkdtempSync(join(tmpdir(), "x-"));',
         'symlinkSync("/usr/bin/git", join(dir, "git"));',
         'copyFileSync(join(dir, "a"), "scripts/a.ts");',
         'renameSync("scripts/b.ts", join(dir, "b"));',
       ].join("\n"),
     ).join(","),
-    "copyFileSync:4,renameSync:5",
+    "copyFileSync:6,renameSync:7",
     "a link or copy is judged by its DESTINATION, and a rename by both ends",
   );
 
@@ -123,14 +130,94 @@ const ROOT = new URL("..", import.meta.url).pathname;
     flagged(
       [
         'import { mkdtempSync, rmSync } from "node:fs";',
+        'import { tmpdir } from "node:os";',
+        'import { join } from "node:path";',
         "let dir: string | undefined;",
-        'dir = mkdtempSync("/tmp/x-");',
+        'dir = mkdtempSync(join(tmpdir(), "x-"));',
         "rmSync(dir);",
         "for (const d of dirs) rmSync(d);",
       ].join("\n"),
     ).join(","),
-    "rmSync:5",
+    "rmSync:7",
     "a `let` with no initialiser is judged by its assignments; a loop variable is not followed",
+  );
+
+  // Review finding 1 (#2725): a temp call must be the BASE of the path, not merely
+  // somewhere inside it. Each of these names a temp directory and writes into the repo.
+  eq(
+    flagged(
+      [
+        'import { mkdtempSync, writeFileSync, mkdirSync } from "node:fs";',
+        'import { tmpdir } from "node:os";',
+        'import { basename, join, resolve } from "node:path";',
+        'const repoRoot = new URL("..", import.meta.url).pathname;',
+        'writeFileSync(join(repoRoot, "scripts", basename(mkdtempSync(join(tmpdir(), "x-")))), "");',
+        'writeFileSync(join(repoRoot, tmpdir()), "");',
+        'writeFileSync(resolve(tmpdir(), repoRoot, "x.ts"), "");',
+        'writeFileSync(`${repoRoot}/${tmpdir()}`, "");',
+        'mkdirSync(mkdtempSync(join(repoRoot, "scripts", "x-")));',
+      ].join("\n"),
+    ).join(","),
+    "writeFileSync:5,writeFileSync:6,writeFileSync:7,writeFileSync:8,mkdirSync:9",
+    "a temp call INSIDE a repo path is refused: under join after the repo root, re-anchored by resolve, " +
+      "late in a template, and a mkdtemp whose prefix is in the tree",
+  );
+  eq(
+    flagged(
+      [
+        'import { writeFileSync } from "node:fs";',
+        'import { tmpdir } from "node:os";',
+        'import { join, resolve } from "node:path";',
+        'const dir = tmpdir();',
+        'writeFileSync(resolve("/ignored", dir, "a", "b.txt"), "");',
+        'writeFileSync(`${dir}/c.txt`, "");',
+        'writeFileSync(dir + "/d.txt", "");',
+      ].join("\n"),
+    ).length,
+    0,
+    "a temp base stays accepted as resolve's anchor, a template head and a concatenation head",
+  );
+
+  // Review finding 2 (#2725): the temp call must be the REAL one, bound to
+  // node:os / node:fs, never a local function that happens to share its name.
+  eq(
+    flagged(
+      [
+        'import { writeFileSync } from "node:fs";',
+        'import { join } from "node:path";',
+        'function tmpdir() { return new URL("..", import.meta.url).pathname; }',
+        "const mkdtempSync = (p: string) => p;",
+        'writeFileSync(join(tmpdir(), "x.ts"), "");',
+        'writeFileSync(join(mkdtempSync("scripts/"), "y.ts"), "");',
+      ].join("\n"),
+    ).join(","),
+    "writeFileSync:5,writeFileSync:6",
+    "a LOCAL function named tmpdir or mkdtempSync proves nothing",
+  );
+  eq(
+    flagged(
+      [
+        'import * as fs from "node:fs";',
+        'import os from "node:os";',
+        'import * as path from "node:path";',
+        'const d = fs.mkdtempSync(path.join(os.tmpdir(), "x-"));',
+        'fs.writeFileSync(path.join(d, "a"), "");',
+      ].join("\n"),
+    ).length,
+    0,
+    "the real calls are recognised through namespace and default imports too",
+  );
+  eq(
+    flagged(
+      [
+        'import { writeFileSync } from "node:fs";',
+        'import { tmpdir } from "node:os";',
+        'function join(...p: string[]) { return p.join("/"); }',
+        'writeFileSync(join(tmpdir(), "x"), "");',
+      ].join("\n"),
+    ).join(","),
+    "writeFileSync:4",
+    "a LOCAL join is not path.join, so its first argument does not vouch for the result",
   );
 
   eq(
