@@ -140,7 +140,7 @@ export function pageSourceStatus(m: PageSourceMeasure | null): PageSourceStatus 
         `measured yet, and no page's own floors can be judged.`,
     };
   }
-  if (m.unsourced > 0) {
+  if (!bookingSourcesRecorded(m)) {
     const silent = m.pages.filter((p) => !p.recorded).map((p) => p.name);
     return {
       state: "unrecorded",
@@ -172,6 +172,23 @@ export interface SourceRow {
  */
 export function isUnsourced(source: string | null): boolean {
   return source === null || source === SOURCE_NOT_GIVEN;
+}
+
+/**
+ * Whether the Low pages' bookings recorded their source well enough for the per page
+ * floors to stand as coverage (#2796): the lookback held real bookings, and not ONE
+ * of them was `isUnsourced`. A single untagged booking can be the missing booking of
+ * a page that stopped, and the alarm then holds that page rather than paging it, so
+ * a lookback carrying any is not recorded well enough, however many pages also
+ * recorded bookings of their own.
+ *
+ * The one rule for it: the alerts settings page reads it through `pageSourceStatus`,
+ * and the readiness gate reads that same status, so the two cannot answer the same
+ * bookings differently (L53, L342). Whether each PAGE recorded a booking is a
+ * separate question, asked of `pages`, and never a substitute for this one.
+ */
+export function bookingSourcesRecorded(m: PageSourceMeasure): boolean {
+  return m.realBookings > 0 && m.unsourced === 0;
 }
 
 /** The `bookings.source` values `isUnsourced` counts, for a database filter. */

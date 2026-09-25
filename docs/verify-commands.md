@@ -1199,7 +1199,7 @@ and is pinned offline by `scripts/test-parallel-run-readiness.ts`.
 | 6 | a calendar is not hydrated to the booking horizon |
 | 13 | **trypennie key never seen from production** (see below) |
 | 7 | an alert cooldown is stretched above its default |
-| 14 | **low volume alarms armed** and a Low page has recorded no booking carrying its `source` in 7 days (see below) |
+| 14 | **low volume alarms armed** and a real booking in 7 days carried no `source`, or a Low page has recorded none carrying its own (see below) |
 | 15 | **low volume alarms armed** and a federal holiday in the next 90 days carries no business hours exception |
 | 16 | **low volume alarms armed** and no real booking in 7 days, so page sources are unmeasured |
 | 8 | the cal.com comparison is reporting drift |
@@ -1219,14 +1219,25 @@ links carry no `?source=` records every booking as `not-given` and, once armed, 
 every 30 minutes as a page that stopped booking. And both alarms judge an hour by the
 org's business hours, date exceptions included, so a holiday with no exception is an
 ordinary open day to them: the per page replay (#2738) paged the Follow Up page eight
-times on Labor Day 2026-09-07. So the run reads, through the alarm's own reads, whether each
-Low page has recorded a booking carrying one of its sources inside the alarm's own
-`PAGE_SEEN_LOOKBACK_DAYS` (7), and whether every US federal holiday date in the next
+times on Labor Day 2026-09-07. So the run reads, through the alarm's own reads, whether
+every real booking inside the alarm's own `PAGE_SEEN_LOOKBACK_DAYS` (7) carried its
+source and each Low page recorded one of its own, and whether every US federal holiday date in the next
 90 days, the observed weekday of a weekend holiday included, carries an exception
 (closed, or open because Pennie works that day, either being a decision) or falls on
 a weekday the org never opens. No real booking in the lookback is **unmeasured**
 (exit 16), never a pass. The holiday calendar is `src/lib/booking/us-federal-holidays.ts`,
 pinned against published dates by `scripts/test-us-federal-holidays.ts`.
+
+**Whether the sources are recorded is the alerts page's rule, not a second one
+(#2796).** The run judges it through `pageSourceStatus`, the status Admin, Alerts
+shows in place of the per page floors, which reads `bookingSourcesRecorded` in
+`src/lib/monitor/page-volume.ts`: a lookback with even ONE untagged booking is not
+recorded well enough, because that booking can be the missing one of a page that
+stopped, and the armed alarm holds such a page rather than paging it. The run used to
+be satisfied once every page had recorded one booking of its own, so on the same
+bookings it could print READY while the alerts page said "source not recorded".
+Exit 14 now covers both: bookings with no source (in the alerts page's own sentence),
+or, with every booking tagged, a page that recorded none.
 
 **They gate ARMING, not the shadow run, and that decides where they rank.** While
 `monitor_alert_config.low_volume_armed` is false they are printed under a "Before

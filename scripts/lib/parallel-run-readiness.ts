@@ -42,7 +42,7 @@ import {
   PARTNER_KEY_MAX_AGE_DAYS,
   type CallerSeenRow,
 } from "../../src/lib/booking/caller-seen.ts";
-import { sourceNotRecorded } from "../../src/lib/monitor/page-volume.ts";
+import { pageSourceStatus, type PageSourceMeasure } from "../../src/lib/monitor/page-volume.ts";
 
 export interface StretchedCooldown {
   key: string;
@@ -110,18 +110,13 @@ export interface LowVolumeArmingFacts {
    */
   armed: "armed" | "disarmed" | "unset" | null;
   /**
-   * Whether each Low page has recorded a booking carrying one of its sources within
-   * the per page alarm's own lookback (`PAGE_SEEN_LOOKBACK_DAYS`). A page that has
-   * not is one the armed alarm reports as having stopped booking.
+   * `measurePageSources` over the per page alarm's own lookback
+   * (`PAGE_SEEN_LOOKBACK_DAYS`), the same measurement the alerts settings page
+   * judges: how many real bookings carried no source, and whether each Low page
+   * recorded one of its own. A page that has not is one the armed alarm reports as
+   * having stopped booking.
    */
-  pageSources: {
-    lookbackDays: number;
-    /** Real (non test bucket) bookings in the lookback. Zero judges nothing. */
-    realBookings: number;
-    /** Of those, how many carried no page (`not-given`, or null from before #2072). */
-    unsourced: number;
-    pages: { name: string; recorded: boolean }[];
-  } | null;
+  pageSources: PageSourceMeasure | null;
   /** Upcoming federal holiday dates no exception or closed weekday decides. */
   holidays: {
     windowDays: number;
@@ -216,7 +211,7 @@ export const READINESS_EXIT = {
   hoursUnset: 11,
   /** "trypennie key never seen from production" (#2717), in every one of its forms. */
   partnerKeyUnproven: 13,
-  /** Low volume alarms armed and a Low page records no source (#2767). */
+  /** Low volume alarms armed and bookings recorded no source, or a Low page recorded none (#2767, #2796). */
   pageSourceMissing: 14,
   /** Low volume alarms armed and an upcoming federal holiday is undecided (#2767). */
   holidaysUncovered: 15,
@@ -359,24 +354,28 @@ export function judgeReadiness(f: ReadinessFacts): ReadinessJudgement {
   if (arming.pageSources === null) armingUnreadable.push("Low page booking sources");
   else {
     const s = arming.pageSources;
-    if (s.realBookings === 0) {
+    // #2796: whether the sources are recorded well enough is judged by the alerts
+    // settings page's own status, which reads the one rule in page-volume.ts
+    // (`bookingSourcesRecorded`), so the two surfaces cannot answer the same
+    // bookings differently. Every page having recorded one booking of its own is
+    // NOT that rule: one untagged booking can still hold a page that stopped.
+    const status = pageSourceStatus(s);
+    if (status.state === "unmeasured") {
       armingChecks.push({
         kind: "page-source-unmeasured",
         detail: `page sources unmeasured: no real booking in the last ${s.lookbackDays} days, so whether each Low page's links carry ?source= cannot be judged yet; re-run after real bookings from each page`,
       });
+    } else if (status.state === "unrecorded") {
+      // In the alerts page's own sentence, which also names any page with none.
+      armingChecks.push({ kind: "page-source-missing", detail: status.text });
     } else {
+      // Every booking carried a source, so nothing can be hiding a page's bookings
+      // and this claims no ambiguity: the page simply recorded none (L11).
       const without = s.pages.filter((p) => !p.recorded).map((p) => p.name);
       if (without.length) {
         armingChecks.push({
           kind: "page-source-missing",
-          // #2765: opened with the per page alarm's own sentence for it, so the gate
-          // and the alarm say the same thing about the same bookings. With no
-          // untagged booking nothing can be hiding a page's bookings, so it claims
-          // no ambiguity: the page simply recorded none.
-          detail:
-            s.unsourced > 0
-              ? `${sourceNotRecorded(s.unsourced, s.realBookings, `${s.lookbackDays} days`)}, and ${without.length} Low page(s) recorded no booking carrying their own source, so the per page alarm cannot tell whether each stopped booking: ${names(without)}`
-              : `${without.length} Low page(s) recorded no booking at all in the last ${s.lookbackDays} days, though every one of the ${s.realBookings} real bookings carried a source, so the per page alarm would report each as a page that stopped booking: ${names(without)}`,
+          detail: `${without.length} Low page(s) recorded no booking at all in the last ${s.lookbackDays} days, though every one of the ${s.realBookings} real bookings carried a source, so the per page alarm would report each as a page that stopped booking: ${names(without)}`,
         });
       }
     }
@@ -412,13 +411,13 @@ export function judgeReadiness(f: ReadinessFacts): ReadinessJudgement {
           : "the low volume alarms are disarmed, so none of this changes the exit";
   const armingLine =
     advisories.length === 0 && !armingGates
-      ? `\nBefore arming the low volume alarms (#1956, #2738): every Low page has recorded its source in the last ${arming.pageSources?.lookbackDays} days, every federal holiday in the next ${arming.holidays?.windowDays} days is decided (${arming.holidays?.checked} date(s))`
+      ? `\nBefore arming the low volume alarms (#1956, #2738): every real booking in the last ${arming.pageSources?.lookbackDays} days carried its source and every Low page recorded one, every federal holiday in the next ${arming.holidays?.windowDays} days is decided (${arming.holidays?.checked} date(s))`
       : advisories.length
         ? `\nBefore arming the low volume alarms (#1956, #2738); ${armingState}:\n` +
           advisories.map((a) => `  ${a.kind}: ${a.detail}`).join("\n")
         : armingChecks.length || armingUnreadable.length
           ? `\nArming preconditions gate this run: ${armingState}`
-          : `\nArming preconditions met while gating (${armingState}): every Low page has recorded its source, every federal holiday in the next ${arming.holidays?.windowDays} days is decided`;
+          : `\nArming preconditions met while gating (${armingState}): every real booking carried its source and every Low page recorded one, every federal holiday in the next ${arming.holidays?.windowDays} days is decided`;
 
   if (unreadable.length) {
     findings.unshift({
