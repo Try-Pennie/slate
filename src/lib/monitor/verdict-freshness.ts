@@ -31,6 +31,8 @@ import type { LowVolumeResult } from "@/lib/monitor/booking-volume";
 import type { OooProtectionResult } from "@/lib/monitor/ooo-protection";
 import type { BelowLeadTierResult } from "@/lib/monitor/below-lead-tier";
 import type { RegalCallResult } from "@/lib/monitor/regal-calls";
+import type { RosterCoverageVerdict } from "@/lib/monitor/roster-coverage";
+import type { monitorSetupGates } from "@/lib/monitor/setup-gates";
 import { SHIPPED_FAILURE_RATE_THRESHOLDS } from "@/lib/monitor/failure-rate-thresholds";
 
 /**
@@ -120,6 +122,16 @@ export const BELOW_LEAD_TIER_VERDICT_LANE = "verdict:below-lead-tier";
  */
 export const REGAL_CALLS_VERDICT_LANE = "verdict:regal-calls";
 
+/**
+ * The roster coverage alarm (#1941): advertised hours no bookable agent is
+ * rostered for (#1454).
+ *
+ * Once #1456 arms it, a fully covered week is silent, and so is every tick that
+ * could not read the roster, was skipped by its setup gate, or had no week to
+ * hold the roster against. This stamp is what tells those apart.
+ */
+export const ROSTER_COVERAGE_VERDICT_LANE = "verdict:roster-coverage";
+
 export type DetectorVerdictLane =
   | typeof TIER_STAFFING_VERDICT_LANE
   | typeof AVAILABILITY_TRUTH_VERDICT_LANE
@@ -131,7 +143,8 @@ export type DetectorVerdictLane =
   | typeof BURST_COUNTER_VERDICT_LANE
   | typeof KILL_SWITCH_VERDICT_LANE
   | typeof BELOW_LEAD_TIER_VERDICT_LANE
-  | typeof REGAL_CALLS_VERDICT_LANE;
+  | typeof REGAL_CALLS_VERDICT_LANE
+  | typeof ROSTER_COVERAGE_VERDICT_LANE;
 
 /**
  * Did this availability truth tick compare real calendars and decide?
@@ -225,6 +238,23 @@ export function belowLeadTierReachedVerdict(result: BelowLeadTierResult | null):
  */
 export function regalCallsReachedVerdict(result: RegalCallResult | null): boolean {
   return result?.status === "checked";
+}
+
+/**
+ * Did the roster coverage alarm hold a real roster against a real week? (#1941)
+ *
+ * `gaps` and `covered` both stamp, and the second is the one that matters: an
+ * empty gap list is a genuine finding of full coverage, where `skipped` (the
+ * roster could not be read, so `coverageForWeek` answered `{ ok: false }`) is an
+ * absence of one. Both end a tick with nothing paged, so this predicate is the
+ * only place the difference survives. A disarmed tick that found gaps still
+ * stamps: the switch decides whether it pages, not whether it looked.
+ *
+ * Null is a step the setup gate refused, a tick with no business hours, or a step
+ * that threw; none of them measured anything.
+ */
+export function rosterCoverageReachedVerdict(result: RosterCoverageVerdict | null): boolean {
+  return result?.status === "gaps" || result?.status === "covered";
 }
 
 /**
@@ -428,3 +458,78 @@ export function detectorParkState(
   // as the arrival of real traffic for the next four days.
   return nowMs - lastVerdictMs < parked.unparkWithinMs ? "unpark" : "parked";
 }
+
+/**
+ * Which verdict lane watches each gated monitor check (#1941).
+ *
+ * The lane list above is hand written, so until this table a new fail safe
+ * detector was exempt from the watch by default, and roster coverage shipped
+ * exactly that way (L96). This table is keyed on what `monitorSetupGates`
+ * RETURNS, so `tsc` names a newly gated check with no entry, and
+ * scripts/test-detector-verdict-registry.ts enumerates the same keys at runtime
+ * and refuses an entry that names an unbound lane or carries no reason.
+ *
+ * Three kinds of entry, and only the first is coverage:
+ *
+ *  - `lane`    stamped on a measured verdict and watched against its bound.
+ *  - `exempt`  deliberately unwatched, with the reason a lane would be wrong.
+ *  - `pending` a lane is wanted and does not exist yet: named, with the issue that
+ *              adds it, so the gap reads as a known debt rather than as coverage
+ *              (L65). Delete the entry in the change that adds the lane.
+ */
+export type DetectorVerdictCoverage =
+  | { lane: DetectorVerdictLane }
+  | { exempt: string }
+  | { pending: string; issue: number };
+
+export type MonitorGatedCheck = keyof ReturnType<typeof monitorSetupGates>;
+
+/** Found by the #1941 registry: each swallows a failed read into a status that
+ *  pages nothing and throws nothing, so neither `monitor_step_failing` nor any
+ *  lane sees it held. */
+const SWALLOWS_UNREADABLE = 2798;
+
+export const GATED_CHECK_VERDICT_COVERAGE: Record<MonitorGatedCheck, DetectorVerdictCoverage> = {
+  availabilityTruth: { lane: AVAILABILITY_TRUTH_VERDICT_LANE },
+  lowVolume: { lane: LOW_VOLUME_VERDICT_LANE },
+  rosterCoverage: { lane: ROSTER_COVERAGE_VERDICT_LANE },
+  tierStaffing: { lane: TIER_STAFFING_VERDICT_LANE },
+  belowLeadTier: { lane: BELOW_LEAD_TIER_VERDICT_LANE },
+  failureRate: { lane: FAILURE_RATE_VERDICT_LANE },
+  regalCalls: { lane: REGAL_CALLS_VERDICT_LANE },
+  busyDrift: {
+    exempt:
+      "observe only: it logs drift for calibration and pages nobody, so going blind silences " +
+      "no page, and the issue that activates it has to add a lane alongside the page",
+  },
+  availabilityScan: {
+    pending:
+      "the recompute that verifies each bucket's probe swallows its own failure to null, so a " +
+      "recompute failing on every tick leaves every finding unverified and nothing pages",
+    issue: SWALLOWS_UNREADABLE,
+  },
+  calendarWindow: {
+    pending: "an unreadable calendar row read returns status unreadable, which pages nothing and throws nothing",
+    issue: SWALLOWS_UNREADABLE,
+  },
+  offsiteOrigin: {
+    pending: "an unreadable booking read returns status unreadable, which pages nothing and throws nothing",
+    issue: SWALLOWS_UNREADABLE,
+  },
+  awaitingActivation: {
+    pending: "an unreadable roster read returns status unreadable, which pages nothing and throws nothing",
+    issue: SWALLOWS_UNREADABLE,
+  },
+  regalCallsQuiet: {
+    pending:
+      "a failed reason count read returns status unmeasured through its own RPC, which the Regal " +
+      "call detector's lane does not read",
+    issue: SWALLOWS_UNREADABLE,
+  },
+  regalCallsUnreadable: {
+    pending:
+      "a failed reason count read returns status unmeasured through its own RPC, which the Regal " +
+      "call detector's lane does not read",
+    issue: SWALLOWS_UNREADABLE,
+  },
+};

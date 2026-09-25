@@ -91,6 +91,22 @@ each upcoming booking's pool tier against the lead's current Salesforce
 parked in `PARKED_VERDICT_DETECTORS` because on 2026-09-24 no real lead had an
 upcoming booking in Slate, so there was nothing to compare.
 
+`verdict:roster-coverage` (#1941) watches the roster coverage alarm (#1454). It
+stamps on a gap list AND on an empty one, since a fully covered week is a
+finding, and never on an unreadable roster, a gate skip or a missing week. Its
+bound is six hours: it concludes on every monitor tick the week and roster are
+readable, so the bound is a maintenance window over a failed read, the same
+arithmetic as `verdict:ooo-protection` and `verdict:tier-staffing`.
+
+**A new gated check cannot join the monitor lane unwatched** (#1941).
+`GATED_CHECK_VERDICT_COVERAGE` in `verdict-freshness.ts` is keyed on the checks
+`monitorSetupGates` returns, so `tsc` names a new gate with no entry, and
+`scripts/test-detector-verdict-registry.ts` enumerates the same keys at runtime.
+Each entry is a lane (with a bound), a reasoned `exempt`, or a `pending` lane
+naming the issue that adds it; six checks are pending on #2798 because each
+swallows a failed read into a status that pages nothing. Checks that are NOT
+gated, and detectors off the monitor lane, are outside that enumeration.
+
 # Proving the burst counter answers (`pnpm verify:burst-counter`)
 
 The same shape as the truth probe above, on the burst ceiling (#1564).

@@ -125,6 +125,9 @@ const healthy = () => ({
   // #2695: Regal has posted every completed call to Slate since 2026-09-24, so a
   // healthy fleet judges one on almost every monitor tick.
   "verdict:regal-calls": ago(10 * MIN),
+  // #1941: concludes on every tick the week and the roster are readable,
+  // including a fully covered week.
+  "verdict:roster-coverage": ago(5 * MIN),
   // `verdict:booking-failure-rate` is deliberately ABSENT, and that is the healthy
   // state rather than a gap in the fixture (#2499). The check cannot reach a
   // verdict before real Low leads book: the outcome mix read excludes test
