@@ -589,6 +589,14 @@ proven to be ROOTED in a temp directory: a real `node:os` `tmpdir()` or `node:fs
 `mkdtemp` as the path's base, never merely inside it (`// tree-write-ok: <why>`
 to opt out).
 
+That scan reads a suite's own source, so it cannot see a write made by a child
+process the suite starts. **`scripts/run-tests.ts` also watches `scripts/`, `src/`
+and `worker/` for the whole run** (#2733) and fails it naming each path written,
+but only in CI and the pre-push gate's isolated tree (`SLATE_TREE_TRIPWIRE=pre-push`),
+because in your own `pnpm test` your editor's saves would trip it. Its first line
+and summary say whether it was on; `SLATE_TREE_TRIPWIRE=on` arms it by hand.
+Rules and allowed paths: `scripts/lib/tree-write-tripwire.ts`.
+
 **The escape hatch** is `// typecheck-ok: <why>` on, or in the `//` block
 directly above, the line, and it must carry a reason. The one use today is the
 `?bust=1` cache-busting dynamic import in `test-alert-preview-coverage.ts`, which
