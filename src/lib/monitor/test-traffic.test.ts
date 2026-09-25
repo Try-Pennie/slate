@@ -26,7 +26,7 @@ const logged = vi.hoisted(() => ({ warn: vi.fn(), info: vi.fn(), error: vi.fn() 
 vi.mock("@/lib/supabase/admin", () => admin);
 vi.mock("@/lib/log", () => ({ log: logged }));
 
-import { resolveTestTraffic } from "./test-traffic";
+import { resolveTestTraffic, resolveTrafficMarkers } from "./test-traffic";
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -96,6 +96,63 @@ describe("resolveTestTraffic, unidentifiable", () => {
     expect(
       await resolveTestTraffic({ by: "unidentifiable", why: "auth refused before the body" }),
     ).toBe(false);
+    expect(from).not.toHaveBeenCalled();
+  });
+});
+
+// #2752: the host page class the tally stores beside the test marker. Judged by the
+// off site page's own predicate, so a tester on a real code from a page that is not
+// the production site is kept out of the failure rate, and a lead is not.
+describe("resolveTrafficMarkers, the host page class", () => {
+  const host = (parentOrigin: string | null, referrer: string | null = null) => ({
+    prefill: parentOrigin === null ? null : { parentOrigin },
+    referrer_origin: referrer,
+  });
+
+  it("classes a real bucket attempt from localhost as off site, and still reads the bucket", async () => {
+    expect(await resolveTrafficMarkers({ by: "bucket", code: "100", host: host("http://localhost:3000") })).toEqual({
+      isTest: false,
+      hostClass: "offsite",
+    });
+    expect(from).toHaveBeenCalledWith("buckets");
+  });
+
+  it("classes the production site as production", async () => {
+    expect(
+      (await resolveTrafficMarkers({ by: "bucket", code: "100", host: host("https://www.trypennie.com") })).hostClass,
+    ).toBe("production");
+  });
+
+  it("classes a page that framed the booker without declaring itself as off site", async () => {
+    expect(
+      (await resolveTrafficMarkers({ by: "bucket", code: "100", host: host(null, "https://dev.trypennie.com") })).hostClass,
+    ).toBe("offsite");
+  });
+
+  it("classes an attempt with no host recorded as none, which still counts", async () => {
+    expect((await resolveTrafficMarkers({ by: "bucket", code: "100", host: host(null) })).hostClass).toBe("none");
+  });
+
+  it("reads a reschedule's host off the booking it names, in the same lookup as its bucket", async () => {
+    bookingMaybeSingle.mockResolvedValue({
+      data: { prefill: { parentOrigin: "http://localhost:3000" }, referrer_origin: null, buckets: { is_test: false } },
+      error: null,
+    });
+    expect(await resolveTrafficMarkers({ by: "manageToken", token: "tok" })).toEqual({ isTest: false, hostClass: "offsite" });
+    expect(bookingMaybeSingle).toHaveBeenCalledTimes(1);
+  });
+
+  it("counts a reschedule whose booking cannot be read as real with no host, and says so", async () => {
+    bookingMaybeSingle.mockResolvedValue({ data: null, error: { message: "timeout" } });
+    expect(await resolveTrafficMarkers({ by: "manageToken", token: "tok" })).toEqual({ isTest: false, hostClass: "none" });
+    expect(logged.warn).toHaveBeenCalled();
+  });
+
+  it("counts an unidentifiable attempt as real with no host, without a read", async () => {
+    expect(await resolveTrafficMarkers({ by: "unidentifiable", why: "auth refused" })).toEqual({
+      isTest: false,
+      hostClass: "none",
+    });
     expect(from).not.toHaveBeenCalled();
   });
 });

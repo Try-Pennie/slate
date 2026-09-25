@@ -1,7 +1,7 @@
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { afterResponse } from "@/lib/after-response";
 import { outcomeTallyArgs } from "@/lib/monitor/booking-api-outcome";
-import { resolveTestTraffic, type TestTraffic } from "@/lib/monitor/test-traffic";
+import { resolveTrafficMarkers, type AttemptSource } from "@/lib/monitor/test-traffic";
 
 /**
  * Record one booking-attempt outcome into the daily tally (#418).
@@ -19,17 +19,22 @@ import { resolveTestTraffic, type TestTraffic } from "@/lib/monitor/test-traffic
  * "real" would put canary traffic back into the failure rate, which is the exact
  * defect this parameter exists to remove. It is resolved INSIDE the deferred work,
  * so the lookup it costs is paid after the response rather than by the lead.
+ *
+ * Since #2752 the same source also says which host page the attempt came from, so
+ * the failure rate can leave out a tester on a real code from an off site page. A
+ * source naming a bucket must carry the host facts the request holds, again so
+ * `tsc` enumerates every site.
  */
 export function recordApiOutcome(
   outcome: string,
   bucketCode: string,
   errorCode: string | null,
-  source: TestTraffic,
+  source: AttemptSource,
 ): void {
   const atMs = Date.now();
   afterResponse("booking-api-tally", async () => {
-    const isTest = await resolveTestTraffic(source);
-    const args = outcomeTallyArgs({ outcome, bucketCode, errorCode, isTest, atMs });
+    const { isTest, hostClass } = await resolveTrafficMarkers(source);
+    const args = outcomeTallyArgs({ outcome, bucketCode, errorCode, isTest, hostClass, atMs });
     const { error } = await supabaseAdmin().rpc("bump_booking_api_outcome", args);
     if (error) throw new Error(`bump_booking_api_outcome failed: ${error.message}`);
   });

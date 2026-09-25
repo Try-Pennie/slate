@@ -220,6 +220,8 @@ export interface Database {
           p_bucket: string;
           p_error_code: string;
           p_is_test: boolean;
+          /** #2752, migration 0143: 'production' | 'offsite' | 'none'. */
+          p_host_class: "production" | "offsite" | "none";
         };
         Returns: undefined;
       };
@@ -227,13 +229,18 @@ export interface Database {
        *  row ({ by_outcome, by_error }) so it never hits the 1000-row SETOF cap.
        *  `p_include_test` (#1616) defaults to false in the database as well, so the
        *  safe direction is what a forgetful caller gets; `test_total` always counts
-       *  the window's test attempts, so a panel that hides them can say how many. */
+       *  the window's test attempts, so a panel that hides them can say how many.
+       *  `p_include_offsite` (#2752, migration 0143) defaults to false the same way,
+       *  leaving out real bucket attempts from a page that is not the production site. */
       booking_api_outcome_mix: {
-        Args: { p_since: string; p_include_test?: boolean };
+        Args: { p_since: string; p_include_test?: boolean; p_include_offsite?: boolean };
         Returns: {
           by_outcome?: Record<string, number>;
           by_error?: Record<string, number>;
           test_total?: number;
+          /** #2752: real bucket attempts from off site hosts, counted whichever way
+           *  `p_include_offsite` is set. */
+          offsite_total?: number;
         } | null;
       };
       /** #990/#989: how often each reason has been picked since p_since. Returns a

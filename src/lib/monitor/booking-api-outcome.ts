@@ -12,6 +12,7 @@
 // the tally args and the mix normalization. No alert; visibility only.
 
 import { DateTime } from "luxon";
+import type { HostClass } from "./offsite-origin.ts";
 
 /**
  * The zone whose calendar day the tally is KEYED by: a call is counted on its
@@ -102,6 +103,8 @@ export interface TallyArgs {
   p_error_code: string;
   /** #1616: whether this attempt was the smoke canary's rather than a customer's. */
   p_is_test: boolean;
+  /** #2752, migration 0143: the host page class the attempt was made from. */
+  p_host_class: HostClass;
 }
 
 export interface TallyInput {
@@ -115,6 +118,13 @@ export interface TallyInput {
    * `reschedule_conflict` and drop its successes.
    */
   isTest: boolean;
+  /**
+   * #2752. The host page the attempt came from, as `bookingHostClass` judges it
+   * (the same verdict the off site page and the below tier exclusion reach), so
+   * the failure rate can leave out a tester on a real code from a page that is not
+   * the production site. Required, like `isTest`, so no recording site can forget it.
+   */
+  hostClass: HostClass;
   /** The call time (epoch ms), bucketed into its OUTCOME_DAY_ZONE calendar day. */
   atMs: number;
 }
@@ -137,6 +147,7 @@ export function outcomeTallyArgs(input: TallyInput): TallyArgs {
     p_bucket: input.bucketCode,
     p_error_code: input.errorCode ?? "",
     p_is_test: input.isTest,
+    p_host_class: input.hostClass,
   };
 }
 
@@ -164,6 +175,12 @@ export interface OutcomeMix {
    */
   testTotal: number | null;
   /**
+   * How many attempts on REAL buckets came from a page that is not the production
+   * site in this window (#2752), or null when the read did not report it. Null,
+   * never 0, for the same reason as `testTotal`.
+   */
+  offsiteTotal: number | null;
+  /**
    * The self-inflicted refusals (#1442 / #1450 / #1709), carried on the SAME
    * reading rather than fetched separately: four cron lanes share one invocation's
    * subrequest budget, so a second RPC for three numbers already in this row
@@ -180,6 +197,8 @@ export interface RawMix {
   by_error?: Record<string, number> | null;
   /** #1616, migration 0108. Absent from a pre-0108 function and from a failed read. */
   test_total?: number | null;
+  /** #2752, migration 0143. Absent from a pre-0143 function and from a failed read. */
+  offsite_total?: number | null;
 }
 
 /**
@@ -200,9 +219,10 @@ export function normalizeMix(raw: RawMix | null | undefined): OutcomeMix {
     .map(([code, count]) => ({ code, count }))
     .sort((a, b) => b.count - a.count || a.code.localeCompare(b.code));
   const testTotal = typeof raw?.test_total === "number" ? raw.test_total : null;
+  const offsiteTotal = typeof raw?.offsite_total === "number" ? raw.offsite_total : null;
   const refusals = emptyRefusalCounts();
   for (const name of SELF_INFLICTED_REFUSALS) refusals[name] = byOutcome[name] ?? 0;
-  return { total, outcomes, errors, testTotal, refusals };
+  return { total, outcomes, errors, testTotal, offsiteTotal, refusals };
 }
 
 /**
@@ -225,4 +245,19 @@ export function excludedTestTrafficNote(testTotal: number | null): string {
   if (testTotal === 0) return "No smoke canary calls in this window.";
   const calls = testTotal === 1 ? "call" : "calls";
   return `Excludes ${testTotal} smoke canary ${calls}.`;
+}
+
+/**
+ * The second sentence the outcome panel shows about what it left out (#2752):
+ * attempts on real buckets made from a page that is not the production site,
+ * which is where testers book. Same three states as the canary note, for the same
+ * reason (L11): some left out, none, and could not count.
+ */
+export function excludedOffsiteTrafficNote(offsiteTotal: number | null): string {
+  if (offsiteTotal === null) {
+    return "Could not count the calls from pages other than the production site this window leaves out.";
+  }
+  if (offsiteTotal === 0) return "No calls from pages other than the production site in this window.";
+  const calls = offsiteTotal === 1 ? "call" : "calls";
+  return `Excludes ${offsiteTotal} ${calls} from pages other than the production site.`;
 }

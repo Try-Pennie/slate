@@ -19,6 +19,7 @@ import {
 import { DIRECT_BOOKING_API_READ_HOURLY_RATE_RULES } from "@/lib/rate-limit-core";
 import { log } from "@/lib/log";
 import { recordApiOutcome } from "@/lib/monitor/record-api-outcome";
+import type { BookingOriginFacts } from "@/lib/monitor/offsite-origin";
 import { partnerKeysFrom } from "@/lib/booking/partner-keys";
 import { mayBookTestBuckets } from "@/lib/booking/api-auth";
 
@@ -80,6 +81,9 @@ async function handlePost(req: NextRequest) {
   }
 
   const v = parsed.value;
+  // #2752: a server caller has no framing page, and whatever prefill it sends is what
+  // the booking row stores, so the tally judges the same facts the off site page would.
+  const apiHost: BookingOriginFacts = { prefill: v.prefill, referrer_origin: null };
   // #2669: the test bucket opt in follows the CALLER. The canary's hidden buckets
   // (#396) only for the canary callers, the public one (#2660) for anyone; a partner
   // naming SMOKE meets the same 422 UNKNOWN_BUCKET a typo does (#601).
@@ -200,7 +204,7 @@ async function handlePost(req: NextRequest) {
       result.outcome,
       v.bucketCode,
       result.bucketChangeDeclined ? `bucket_change_declined_${result.bucketChangeDeclined}` : null,
-      { by: "bucket", code: v.bucketCode },
+      { by: "bucket", code: v.bucketCode, host: apiHost },
     );
     return NextResponse.json(body, { status });
   } catch (err) {
@@ -213,7 +217,7 @@ async function handlePost(req: NextRequest) {
       status,
       code,
     });
-    recordApiOutcome("error", v.bucketCode, code, { by: "bucket", code: v.bucketCode });
+    recordApiOutcome("error", v.bucketCode, code, { by: "bucket", code: v.bucketCode, host: apiHost });
     return NextResponse.json(
       await apiErrorBody(err, code, "book", "Booking failed"),
       { status },

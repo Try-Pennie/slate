@@ -17,21 +17,21 @@ const after = vi.hoisted(() => ({
 
 // #1616: the test marker is resolved server-side from the bucket. Stubbed here so
 // this file stays about the tally; test-traffic.test.ts owns the resolution rules.
-const resolveTestTraffic = vi.hoisted(() => vi.fn());
+const resolveTrafficMarkers = vi.hoisted(() => vi.fn());
 
 vi.mock("@/lib/supabase/admin", () => admin);
 vi.mock("@/lib/after-response", () => after);
-vi.mock("@/lib/monitor/test-traffic", () => ({ resolveTestTraffic }));
+vi.mock("@/lib/monitor/test-traffic", () => ({ resolveTrafficMarkers }));
 
 import { recordApiOutcome } from "./record-api-outcome";
 
-const REAL = { by: "bucket", code: "DEBT1" } as const;
+const REAL = { by: "bucket", code: "DEBT1", host: { prefill: null, referrer_origin: null } } as const;
 
 beforeEach(() => {
   vi.clearAllMocks();
   deferred.work = null;
   rpc.mockResolvedValue({ error: null });
-  resolveTestTraffic.mockResolvedValue(false);
+  resolveTrafficMarkers.mockResolvedValue({ isTest: false, hostClass: "none" });
 });
 
 describe("recordApiOutcome", () => {
@@ -72,10 +72,10 @@ describe("recordApiOutcome", () => {
 
 describe("recordApiOutcome and the test marker (#1616)", () => {
   it("stamps the row as test when the attempt resolves to a test bucket", async () => {
-    resolveTestTraffic.mockResolvedValue(true);
+    resolveTrafficMarkers.mockResolvedValue({ isTest: true, hostClass: "none" });
     recordApiOutcome("error", "", "reschedule_conflict", { by: "manageToken", token: "tok" });
     await deferred.work!();
-    expect(resolveTestTraffic).toHaveBeenCalledWith({ by: "manageToken", token: "tok" });
+    expect(resolveTrafficMarkers).toHaveBeenCalledWith({ by: "manageToken", token: "tok" });
     expect(rpc.mock.calls[0][1].p_is_test).toBe(true);
   });
 
@@ -88,6 +88,29 @@ describe("recordApiOutcome and the test marker (#1616)", () => {
   it("resolves the marker AFTER the response, so the booking path pays nothing", () => {
     recordApiOutcome("created", "DEBT1", null, REAL);
     // Scheduling alone must not have gone to the database.
-    expect(resolveTestTraffic).not.toHaveBeenCalled();
+    expect(resolveTrafficMarkers).not.toHaveBeenCalled();
+  });
+});
+
+describe("recordApiOutcome and the host page class (#2752)", () => {
+  it("stamps the class the markers resolved, so an off site tester is kept out of the failure rate", async () => {
+    resolveTrafficMarkers.mockResolvedValue({ isTest: false, hostClass: "offsite" });
+    const source = {
+      by: "bucket",
+      code: "100",
+      host: { prefill: { parentOrigin: "http://localhost:3000" }, referrer_origin: null },
+    } as const;
+    recordApiOutcome("error", "100", "slot_unavailable", source);
+    await deferred.work!();
+    expect(resolveTrafficMarkers).toHaveBeenCalledWith(source);
+    expect(rpc.mock.calls[0][1].p_host_class).toBe("offsite");
+    expect(rpc.mock.calls[0][1].p_is_test).toBe(false);
+  });
+
+  it("stamps production for the production site, which still counts", async () => {
+    resolveTrafficMarkers.mockResolvedValue({ isTest: false, hostClass: "production" });
+    recordApiOutcome("created", "100", null, REAL);
+    await deferred.work!();
+    expect(rpc.mock.calls[0][1].p_host_class).toBe("production");
   });
 });

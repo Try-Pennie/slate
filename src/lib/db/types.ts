@@ -938,6 +938,13 @@ export interface BookingApiOutcomeDaily {
    * cannot be identified by one. Part of the row's unique key.
    */
   is_test: boolean;
+  /**
+   * #2752, migration 0143: the host page the attempt came from, judged at the
+   * point of recording by `bookingHostClass` (the off site page's own predicate).
+   * `offsite` attempts are left out of the failure rate; rows written before 0143
+   * read `none`, which still counts. Part of the row's unique key.
+   */
+  host_class: "production" | "offsite" | "none";
   count: number;
   created_at: string;
   updated_at: string;
