@@ -1,6 +1,6 @@
 import { reportWriteFailure } from "@/lib/db/result";
 import { supabaseAdmin } from "@/lib/supabase/admin";
-import { chunkIdsByUrlBudget } from "@/lib/db/id-batch";
+import { chunkIdsByUrlBudget, inIdChunks } from "@/lib/db/id-batch";
 import { selectAllPages } from "@/lib/supabase/paginate";
 import { postSlack, slackConfigured } from "@/lib/notify/slack";
 import { shouldSendAlert, alertStampMs } from "@/lib/notify/alerts";
@@ -189,7 +189,12 @@ export async function isAlertFiring(key: string): Promise<boolean> {
  * wrong "firing" would send callers off to prove a health they cannot establish.
  */
 export async function firingAlertKeys(keys: string[]): Promise<Set<string>> {
-  const present = await existingAlertStateKeys(keys.map(firingKey));
+  // The raw read below throws on a refused request (#2756); this wrapper keeps its
+  // documented fail closed answer, and says so in the log rather than in silence.
+  const present = await existingAlertStateKeys(keys.map(firingKey)).catch((err) => {
+    log.warn("slack-alert", { msg: "alert-state key read failed", keys: keys.length }, err);
+    return new Set<string>();
+  });
   const firing = new Set<string>();
   for (const k of keys) if (present.has(firingKey(k))) firing.add(k);
   return firing;
@@ -204,24 +209,34 @@ export async function firingAlertKeys(keys: string[]): Promise<Set<string>> {
  * question it has about that table per tick instead of one query per key, which
  * matters because the watchdog runs on the every-minute lane.
  *
- * Fails CLOSED (an empty set on a read error). Every caller treats "not present"
- * as "do nothing", so a failed read defers work by a tick rather than inventing it.
+ * THROWS on a read error (#2756), and every caller decides its own safe side:
+ * `firingAlertKeys`, `resolveRecovered` and the lane watchdog catch it and do
+ * nothing this tick, and the off site origin check reports its dedupe read as
+ * unreadable. It used to answer an empty set, which reads exactly like "none of
+ * these exist" (L215), and now that one call can be several requests that would
+ * also let a merge of the chunks that worked pass for the whole answer.
+ *
+ * Split by URL size, not by a count (#2756). The keys ride in the query string,
+ * and the off site origin check asks about one key per recent booking, so the list
+ * grows with booking volume; one unchunked filter past PostgREST's URL ceiling is
+ * refused outright. Alert keys are strings of every length (a lane name, a family
+ * prefix plus a booking uuid), which is why `inIdChunks` measures each key's
+ * encoded length rather than assuming one. A failure in any chunk throws, naming
+ * how many chunks had finished, so no partial set is ever returned.
  */
 export async function existingAlertStateKeys(keys: string[]): Promise<Set<string>> {
   if (keys.length === 0) return new Set();
-  // Bounded by `keys`: a membership read on alert_state's primary key returns at
-  // most one row per key asked about, however large the table grows (#2726).
-  // error-ok: an empty set on error defers the work one tick; it can never invent a
-  // recovery, and the rows survive for the next attempt.
-  const { data, error } = await supabaseAdmin()
-    .from("alert_state")
-    .select("key")
-    .in("key", keys);
-  if (error) {
-    log.warn("slack-alert", { msg: "alert-state key read failed", keys: keys.length });
-    return new Set();
-  }
-  return new Set(((data ?? []) as { key: string }[]).map((r) => r.key));
+  const chunks = await inIdChunks("alert_state key read", keys, async (chunk) => {
+    // Bounded by `chunk`: a membership read on alert_state's primary key returns at
+    // most one row per key asked about, however large the table grows (#2726).
+    const { data, error } = await supabaseAdmin()
+      .from("alert_state")
+      .select("key")
+      .in("key", chunk);
+    if (error) throw new Error(`alert_state key read failed: ${error.message}`);
+    return ((data ?? []) as { key: string }[]).map((r) => r.key);
+  });
+  return new Set(chunks.flat());
 }
 
 /**
@@ -280,7 +295,12 @@ export async function resolveRecovered(
 ): Promise<string[]> {
   if (recovered.length === 0) return [];
   const firing = await existingAlertStateKeys(recovered.map((r) => firingKey(r.key))).catch(
-    () => new Set<string>(),
+    (err) => {
+      // The read throws rather than answering empty (#2756), so the failure is
+      // logged here, where the decision to resolve nothing this tick is made.
+      log.warn("slack-alert", { msg: "alert-state key read failed; recovery deferred", keys: recovered.length }, err);
+      return new Set<string>();
+    },
   );
   const cleared: string[] = [];
   for (const r of recovered) {
