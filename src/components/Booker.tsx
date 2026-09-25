@@ -1115,6 +1115,9 @@ export default function Booker({
                   {callPhone ? advisorWillCall(callPhone) : BOOKER_PHONE_COPY.noNumber}
                 </p>
                 {editingCallPhone ? (
+                  // form-restore-ok: this form exists only after the lead presses
+                  // the change button, so it is never in the page a reload parses
+                  // and nothing of it can be restored (#2718).
                   <form
                     className="mt-3"
                     onSubmit={(e) => {

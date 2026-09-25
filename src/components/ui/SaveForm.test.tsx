@@ -549,3 +549,30 @@ describe("every SaveForm guards unsaved work by default (#2076)", () => {
     expect(screen.queryByRole("alertdialog")).toBeNull();
   });
 });
+
+describe("SaveForm never lets the browser restore an unsaved edit (#2718)", () => {
+  // A browser putting back the controls somebody changed (a reload in Safari and
+  // Firefox, back and forward everywhere) draws them over the `defaultChecked`
+  // the page took from the stored value, so an alarm nobody saved reads as
+  // armed on the very refresh done to check it (L732).
+  it("turns form state restoration off on the form it renders", () => {
+    const { container } = render(
+      <SaveForm unsaved="changes to these alert settings" action={async () => {}} name="alerts">
+        <input type="checkbox" name="armed" defaultChecked={false} aria-label="armed" />
+      </SaveForm>,
+    );
+    expect(container.querySelector("form")?.getAttribute("autocomplete")).toBe("off");
+  });
+
+  it("keeps it off whatever a call site spreads onto the form", () => {
+    // The props type refuses `autoComplete`; this is the runtime half, for a
+    // spread that got past the type (a cast, a props object built loosely).
+    const loose = { autoComplete: "on" } as unknown as Record<string, never>;
+    const { container } = render(
+      <SaveForm unsaved="changes" action={async () => {}} name="loose" {...loose}>
+        <input name="x" defaultValue="1" aria-label="x" />
+      </SaveForm>,
+    );
+    expect(container.querySelector("form")?.getAttribute("autocomplete")).toBe("off");
+  });
+});

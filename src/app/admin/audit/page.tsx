@@ -164,7 +164,12 @@ export default async function AuditLogPage({
           is an annoyance, and a guard that fires on filters is the one people
           learn to click through, after which it is not protecting the alert
           floors either (L36, #2076). */}
-      <form method="GET" action="/admin/audit" className="mb-3 flex flex-wrap items-end gap-2">
+      <form
+        method="GET"
+        action="/admin/audit"
+        className="mb-3 flex flex-wrap items-end gap-2"
+        autoComplete="off"
+      >
           <label className="flex flex-col gap-1 text-xs text-fg-muted">
             Action
             <SelectField

@@ -42,7 +42,7 @@ export function ImpersonationDropNotice({
       </span>
       {/* No-JS fallback: a real form so the cookie can be cleared without
           scripting. With JS the auto-clear already ran, so this just dismisses. */}
-      <form action={endDroppedImpersonation.bind(null, reason)}>
+      <form action={endDroppedImpersonation.bind(null, reason)} autoComplete="off">
         <SubmitButton className="pn-btn pn-btn--small pn-btn--primary" pendingLabel="Dismissing">
           Dismiss
         </SubmitButton>

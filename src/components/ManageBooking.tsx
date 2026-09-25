@@ -709,6 +709,9 @@ export default function ManageBooking({
                       always-open field, because most leads never need it, and a
                       real button at rest rather than a hover affordance (L49). */}
                   {editingPhone ? (
+                    // form-restore-ok: this form exists only after the lead presses
+                    // the change button, so it is never in the page a reload parses
+                    // and nothing of it can be restored (#2718).
                     <form
                       className="mt-4 max-w-sm"
                       onSubmit={(e) => {
