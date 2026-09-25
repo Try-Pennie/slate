@@ -83,6 +83,7 @@ import {
   isBusinessHours,
   type LowVolumeResult,
 } from "@/lib/monitor/booking-volume";
+import { floorsFor, judgedFloors } from "@/lib/monitor/volume-floors";
 import { countCustomerBookingsSince } from "@/lib/monitor/customer-bookings";
 import {
   runBookingFailureRateCheck,
@@ -1029,7 +1030,9 @@ export async function GET(req: NextRequest) {
           exceptions: businessHours!.exceptions,
         },
         countSince: (sinceIso) => countCustomerBookingsSince(db, sinceIso),
-        floors: settings.floors,
+        // #1956: the measured floors for THIS weekday and hour, each carrying where
+        // it came from so a page can say whether it is the measurement or an override.
+        floors: judgedFloors(floorsFor(settings.floors, now)),
         armed: settings.lowVolumeArmed,
         cooldownMs: settings.cooldownMs.low_booking_volume,
         // alert-key: low_booking_volume

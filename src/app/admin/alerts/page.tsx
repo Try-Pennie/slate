@@ -31,7 +31,12 @@ import {
   resolveBelowLeadTierArmed,
   resolveRegalCallsArmed,
   envLowVolumeArmed,
+  envFloors,
+  resolveFloors,
 } from "@/lib/monitor/settings";
+import { VolumeFloors } from "@/components/admin/VolumeFloors";
+import { floorTable } from "@/lib/admin/volume-floor-table";
+import { loadBusinessHours } from "@/lib/booking/business-hours-load";
 import { SubmitButton } from "@/components/ui/SubmitButton";
 import { AdminPageHeader, AdminDenied } from "@/components/admin/AdminPageHeader";
 import { SlackDestinations, SLACK_CHANNEL_LIST_ID } from "@/components/admin/SlackDestinations";
@@ -81,6 +86,21 @@ export default async function AlertSettingsPage({
   const awaitingActivationArmed = resolveAwaitingActivationArmed(config);
   const belowLeadTierArmed = resolveBelowLeadTierArmed(config);
   const regalCallsArmed = resolveRegalCallsArmed(config);
+  // #1956: the measured floors and anything replacing them, through the same
+  // resolver the monitor uses, so the page shows what the alarm will judge against.
+  const floorPolicy = resolveFloors(config, envFloors());
+  // The org's week decides which hours the floor table shows. Unreadable is its
+  // own state (every hour shown, and said), never an empty table (L10).
+  let week: { rules: { weekday: number; start_minute: number; end_minute: number }[] } | null = null;
+  try {
+    week = await loadBusinessHours();
+  } catch (err) {
+    log.error(
+      "admin-alerts",
+      { msg: "business week unreadable for the floor table" },
+      err instanceof Error ? err : undefined,
+    );
+  }
 
   // #2090: the Regal call ignore list and the roster its picker offers. Both reads
   // are paged, and a failure of either renders its own notice rather than an empty
@@ -136,7 +156,9 @@ export default async function AlertSettingsPage({
     .sort((a, b) => Date.parse(b.updated_at) - Date.parse(a.updated_at));
   const lastChanged = lastChangedLine(stamps[0] ?? null, nameById);
   // Direct-booking default bucket (#1016). Read the current default + the list of
-  const armed = process.env.BOOKING_VOLUME_ALERT_ARMED === "1";
+  // #1956: the EFFECTIVE arming (store > env > disarmed). This used to read the env
+  // var alone, so it announced "disarmed" to an admin who had armed the alarm here.
+  const armed = lowVolumeArmed;
   const envAlerts = process.env.SLACK_ALERTS_CHANNEL ?? "";
   const envInfo = process.env.SLACK_INFO_CHANNEL ?? "";
 
@@ -155,8 +177,8 @@ export default async function AlertSettingsPage({
       {sp.error && !saved && <SettingsSaveNotice ok={false} error={sp.error} saved="" />}
       {!armed && (
         <div className="rounded-md border border-border bg-[var(--bg-alt)] px-5 py-4 text-sm text-fg-muted">
-          Heads up: the low-booking-volume alarm is currently <strong>disarmed</strong> (a
-          deploy-time setting). Tuning its floors below has no effect until it is armed.
+          The low booking volume alarm is <strong>off</strong>: its floors below are measured
+          and ready, and nothing pages until it is turned on.
         </div>
       )}
       {/* #1289: an alarm quieted for a good reason is indistinguishable from an
@@ -340,48 +362,17 @@ export default async function AlertSettingsPage({
         </section>
 
         <section className={cardCls}>
-          {/* heading-gloss-ok: the UNIT again. A floor could be a rate or a count
-              and the two read identically without this. */}
-          <h2 className="mb-1 text-sm font-semibold">Low-volume floors (booking counts)</h2>
-          <p className={`mb-4 text-xs text-fg-muted ${proseCls}`}>
-            Expected minimum bookings in each window; below the floor triggers the
-            low-volume alert (when armed).
-          </p>
-          <div className="flex flex-wrap gap-6">
-            <div>
-              {/* heading-gloss-ok: the WINDOW this floor is counted over. Two fields differ
-                  by nothing else, so the bracket is the only thing telling them apart. */}
-              <label className={labelCls} htmlFor="floor_30">
-                Floor (last 30 min)
-              </label>
-              <input
-                id="floor_30"
-                name="floor_30"
-                type="number"
-                min={0}
-                inputMode="numeric"
-                defaultValue={config?.floor_30 ?? ""}
-                placeholder={`default ${MONITOR_DEFAULTS.floor30}`}
-                className={`${inputCls} w-40 tabular-nums`}
-              />
-            </div>
-            <div>
-              {/* heading-gloss-ok: the other window, as above. */}
-              <label className={labelCls} htmlFor="floor_120">
-                Floor (last 120 min)
-              </label>
-              <input
-                id="floor_120"
-                name="floor_120"
-                type="number"
-                min={0}
-                inputMode="numeric"
-                defaultValue={config?.floor_120 ?? ""}
-                placeholder={`default ${MONITOR_DEFAULTS.floor120}`}
-                className={`${inputCls} w-40 tabular-nums`}
-              />
-            </div>
-          </div>
+          {/* #1956: the floors are MEASURED per weekday and hour; the two numbers
+              that used to be the primary input are an override of that now. */}
+          <VolumeFloors
+            baseline={floorPolicy.baseline}
+            table={floorTable(floorPolicy.baseline, week)}
+            weekReadable={week !== null}
+            override30={floorPolicy.override30}
+            override120={floorPolicy.override120}
+            stored30={config?.floor_30 ?? null}
+            stored120={config?.floor_120 ?? null}
+          />
           <label className="mt-4 flex items-center gap-2 text-sm">
             <input
               type="checkbox"
@@ -394,8 +385,8 @@ export default async function AlertSettingsPage({
           </label>
           <p className="mt-1 text-xs text-fg-muted">
             Off: Slate still counts bookings, but nobody is notified. On: Slack gets an
-            alert when bookings fall below the floors set above. Leave this off during
-            the ramp and turn it on once Slate owns roughly full booking traffic.
+            alert when bookings fall below the floors above. The floors are fitted to the
+            traffic named above, so turn this on once that traffic reaches Slate.
             Saving applies immediately, no deploy needed.
           </p>
           <label className="mt-4 flex items-center gap-2 text-sm">

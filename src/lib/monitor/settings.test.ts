@@ -13,6 +13,8 @@ import {
   type MonitorSettingsFormInput,
 } from "./settings";
 import { ALERT_CATALOG } from "@/lib/notify/alert-catalog";
+import { floorsFor } from "./volume-floors";
+import { MEASURED_VOLUME_BASELINE } from "./volume-baseline";
 
 // #571: the monitor's cooldowns and low-volume floors become UI-tunable via a
 // store, with precedence store > env > coded default. These pure resolvers own
@@ -187,29 +189,44 @@ describe("resolveCooldownMs", () => {
 });
 
 describe("resolveFloors", () => {
-  it("uses coded defaults when neither store nor env is set", () => {
-    const out = resolveFloors(null, {});
-    expect(out).toEqual({ floor30: MONITOR_DEFAULTS.floor30, floor120: MONITOR_DEFAULTS.floor120 });
+  // #1956: with nothing set, the floors are the MEASURED ones, not a coded pair.
+  const at = Date.parse("2026-09-22T18:10:00Z"); // a Tuesday, 14:10 Eastern
+  const measured = MEASURED_VOLUME_BASELINE.cells[1]![14]!;
+
+  it("uses the measured floors when neither store nor env is set", () => {
+    const policy = resolveFloors(null, {});
+    expect(policy.baseline).toBe(MEASURED_VOLUME_BASELINE);
+    expect(policy.override30).toBeNull();
+    expect(policy.override120).toBeNull();
+    const now = floorsFor(policy, at);
+    expect([now.floor30, now.floor120]).toEqual([measured.floor30, measured.floor120]);
   });
 
-  it("uses env when the store is unset", () => {
-    const out = resolveFloors({ floor_30: null, floor_120: null }, { floor30: 7, floor120: 25 });
-    expect(out).toEqual({ floor30: 7, floor120: 25 });
+  it("uses env as an override when the store is unset", () => {
+    const policy = resolveFloors({ floor_30: null, floor_120: null }, { floor30: 7, floor120: 25 });
+    expect(policy.override30).toEqual({ value: 7, origin: "env" });
+    expect(policy.override120).toEqual({ value: 25, origin: "env" });
   });
 
-  it("prefers the store over env and default (store wins)", () => {
-    const out = resolveFloors({ floor_30: 3, floor_120: 12 }, { floor30: 7, floor120: 25 });
-    expect(out).toEqual({ floor30: 3, floor120: 12 });
+  it("prefers the store over env (store wins)", () => {
+    const policy = resolveFloors({ floor_30: 3, floor_120: 12 }, { floor30: 7, floor120: 25 });
+    expect(policy.override30).toEqual({ value: 3, origin: "stored" });
+    expect(policy.override120).toEqual({ value: 12, origin: "stored" });
+    const now = floorsFor(policy, at);
+    expect(now.floor120).toBe(12);
+    expect(now.measured120).toBe(measured.floor120);
   });
 
-  it("accepts a stored floor of zero (a valid, meaningful floor)", () => {
-    const out = resolveFloors({ floor_30: 0, floor_120: 0 }, { floor30: 7, floor120: 25 });
-    expect(out).toEqual({ floor30: 0, floor120: 0 });
+  it("accepts a stored floor of zero (a valid, meaningful override)", () => {
+    const policy = resolveFloors({ floor_30: 0, floor_120: 0 }, { floor30: 7, floor120: 25 });
+    expect(policy.override30).toEqual({ value: 0, origin: "stored" });
+    expect(policy.override120).toEqual({ value: 0, origin: "stored" });
   });
 
-  it("ignores invalid stored floors (negative, non-integer) and falls through to env/default", () => {
-    const out = resolveFloors({ floor_30: -1, floor_120: 2.5 }, { floor30: 7 });
-    expect(out).toEqual({ floor30: 7, floor120: MONITOR_DEFAULTS.floor120 });
+  it("ignores invalid stored floors (negative, non-integer) and falls through to env, then the measurement", () => {
+    const policy = resolveFloors({ floor_30: -1, floor_120: 2.5 }, { floor30: 7 });
+    expect(policy.override30).toEqual({ value: 7, origin: "env" });
+    expect(policy.override120).toBeNull();
   });
 });
 

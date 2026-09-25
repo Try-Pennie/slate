@@ -1,5 +1,7 @@
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import type { MonitorAlertConfig, MonitorSettings } from "@/lib/db/types";
+import type { FloorOverride, FloorPolicy } from "./volume-floors.ts";
+import { MEASURED_VOLUME_BASELINE } from "./volume-baseline.ts";
 
 /**
  * UI-tunable monitor alert settings (#571). Cooldowns and low-volume floors are
@@ -502,8 +504,10 @@ export const MONITOR_DEFAULTS = {
     // holding through a long incident must not be asked about every hour (L36).
     public_booking_stopped: 4 * 60 * 60_000,
   },
-  floor30: 5,
-  floor120: 20,
+  // No coded low volume floors any more (#1956). They were 5 and 20, one pair for
+  // every hour of the week, and nothing had measured either: replayed over two
+  // real weeks they would have paged 258 times. The floors now come from
+  // MEASURED_VOLUME_BASELINE, fitted per weekday and hour to real traffic.
 } as const;
 
 const validPositiveInt = (n: number | null | undefined): n is number =>
@@ -592,18 +596,34 @@ export function quietedAlarms(
   );
 }
 
-/** Low-volume floors: store (valid, incl. 0) > env (valid) > coded default. */
+/**
+ * The low volume floors (#1956): the MEASURED floors per weekday and hour, each
+ * window replaced only where a person set a value. Store (valid, including 0) wins
+ * over env, and either one is an OVERRIDE of the measured floor at every hour,
+ * reported as such so the page can show it beside the measurement it replaced.
+ */
 export function resolveFloors(
   config: Pick<MonitorAlertConfig, "floor_30" | "floor_120"> | null,
   env: { floor30?: number; floor120?: number },
-): { floor30: number; floor120: number } {
-  const pick = (stored: number | null, envVal: number | undefined, def: number): number =>
-    validNonNegInt(stored) ? stored : validNonNegInt(envVal) ? envVal : def;
+): FloorPolicy {
+  const pick = (stored: number | null, envVal: number | undefined): FloorOverride | null =>
+    validNonNegInt(stored)
+      ? { value: stored, origin: "stored" }
+      : validNonNegInt(envVal)
+        ? { value: envVal, origin: "env" }
+        : null;
   return {
-    floor30: pick(config?.floor_30 ?? null, env.floor30, MONITOR_DEFAULTS.floor30),
-    floor120: pick(config?.floor_120 ?? null, env.floor120, MONITOR_DEFAULTS.floor120),
+    baseline: MEASURED_VOLUME_BASELINE,
+    override30: pick(config?.floor_30 ?? null, env.floor30),
+    override120: pick(config?.floor_120 ?? null, env.floor120),
   };
 }
+
+/** The env half of the floors, read in one place for the monitor and the admin page. */
+export const envFloors = (): { floor30?: number; floor120?: number } => ({
+  floor30: parseEnvInt(process.env.BOOKING_VOLUME_FLOOR_30),
+  floor120: parseEnvInt(process.env.BOOKING_VOLUME_FLOOR_120),
+});
 
 /**
  * The arming precedence, shared by every arm/disarm switch: an explicit stored
@@ -835,7 +855,8 @@ const parseEnvInt = (raw: string | undefined): number | undefined => {
 
 export interface ResolvedMonitorSettings {
   cooldownMs: Record<MonitorAlertKey, number>;
-  floors: { floor30: number; floor120: number };
+  /** #1956: the measured floors and any override; resolve an instant with `floorsFor`. */
+  floors: FloorPolicy;
   /** #575: is the low-booking-volume alert armed (store > env > disarmed)? */
   lowVolumeArmed: boolean;
   /** #1313: is the booking-failure-rate page armed (store > disarmed)? */
@@ -907,10 +928,7 @@ export async function loadMonitorSettings(): Promise<ResolvedMonitorSettings> {
   }
   return {
     cooldownMs: resolveCooldownMs(rows),
-    floors: resolveFloors(config, {
-      floor30: parseEnvInt(process.env.BOOKING_VOLUME_FLOOR_30),
-      floor120: parseEnvInt(process.env.BOOKING_VOLUME_FLOOR_120),
-    }),
+    floors: resolveFloors(config, envFloors()),
     lowVolumeArmed: resolveLowVolumeArmed(config, envLowVolumeArmed()),
     failureRateArmed: resolveFailureRateArmed(config),
     availabilityDriftArmed: resolveAvailabilityDriftArmed(config),

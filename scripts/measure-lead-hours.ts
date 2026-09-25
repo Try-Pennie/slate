@@ -40,7 +40,7 @@ if (!KEY) {
   process.exit(1);
 }
 
-const { extractCode } = await import("./lib/router-replay.ts");
+const { readRoutingResponses } = await import("./lib/calcom-routing-responses.ts");
 
 const ORG = envOr(process.env.CALCOM_ORG_ID, "19474");
 const DAYS = Number(envOr(process.env.MEASURE_DAYS, "14"));
@@ -50,8 +50,6 @@ if (!Number.isFinite(DAYS) || DAYS <= 0) {
   process.exit(1);
 }
 
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-
 async function calGet(path: string): Promise<{ status: number; json: unknown }> {
   const res = await fetch(`https://api.cal.com/v2${path}`, {
     headers: { Authorization: `Bearer ${KEY}`, "cal-api-version": "2024-06-14" },
@@ -60,50 +58,25 @@ async function calGet(path: string): Promise<{ status: number; json: unknown }> 
   return { status: res.status, json };
 }
 
-interface FormRow {
-  id: string;
-  name: string;
-}
-interface ResponseRow {
-  response: unknown;
-  createdAt: string;
-  formName?: string;
-}
-
-const formsRes = await calGet(`/organizations/${ORG}/routing-forms`);
-const forms = (formsRes.json as { data?: FormRow[] } | null)?.data;
-if (formsRes.status !== 200 || !Array.isArray(forms) || forms.length === 0) {
+// The paging loop is shared with `measure:volume-floors` (#1956), so both commands
+// count the same traffic and both refuse a partial read the same way (L98).
+const read = await readRoutingResponses({
+  get: calGet,
+  org: ORG,
+  fromIso: new Date(Date.now() - DAYS * 86_400_000).toISOString(),
+  paceMs: PACE_MS,
+  sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+});
+if (!read.ok) {
   console.error(
-    `FAILED (calcom-unreadable): cal.com answered ${formsRes.status} for the org's routing forms, so nothing was measured.`,
+    read.reason === "forms-unreadable"
+      ? `FAILED (calcom-unreadable): cal.com answered ${read.status} for the org's routing forms, so nothing was measured.`
+      : `FAILED (calcom-unreadable): cal.com answered ${read.status} for "${read.formName}", so this run saw only part ` +
+          `of the traffic. A 429 means the pacing is too fast; this run used MEASURE_PACE_MS=${PACE_MS}.`,
   );
   process.exit(2);
 }
-
-const fromMs = Date.now() - DAYS * 86_400_000;
-const fromIso = new Date(fromMs).toISOString();
-const PAGE = 250;
-const rows: ResponseRow[] = [];
-for (const form of forms) {
-  for (let skip = 0; ; skip += PAGE) {
-    const res = await calGet(
-      `/organizations/${ORG}/routing-forms/${form.id}/responses` +
-        `?take=${PAGE}&skip=${skip}&sortCreatedAt=desc&afterCreatedAt=${encodeURIComponent(fromIso)}`,
-    );
-    const page = (res.json as { data?: ResponseRow[] } | null)?.data;
-    if (res.status !== 200 || !Array.isArray(page)) {
-      // Refused rather than reported: a partial read would make every count below a
-      // measurement of whichever forms happened to answer (L98).
-      console.error(
-        `FAILED (calcom-unreadable): cal.com answered ${res.status} for "${form.name}", so this run saw only part ` +
-          `of the traffic. A 429 means the pacing is too fast; this run used MEASURE_PACE_MS=${PACE_MS}.`,
-      );
-      process.exit(2);
-    }
-    for (const r of page) rows.push({ ...r, formName: form.name });
-    if (page.length < PAGE) break;
-    if (PACE_MS > 0) await sleep(PACE_MS);
-  }
-}
+const rows = read.rows;
 
 if (rows.length === 0) {
   console.error(`FAILED (nothing-measured): no routing form responses in the last ${DAYS} days`);
@@ -121,7 +94,7 @@ const perHour = new Map<string, Map<string, number>>();
 const perFormHour = new Map<string, Map<string, number>>();
 let unreadable = 0;
 for (const r of rows) {
-  const code = extractCode(r.response);
+  const code = r.code;
   const ms = Date.parse(r.createdAt);
   if (!Number.isFinite(ms)) {
     unreadable++;
@@ -164,7 +137,7 @@ function quantile(sorted: number[], q: number): number {
   return sorted[i]!;
 }
 
-console.log(`Read ${rows.length} routing form responses over the last ${DAYS} days, across ${forms.length} forms.`);
+console.log(`Read ${rows.length} routing form responses over the last ${DAYS} days, across ${read.formCount} forms.`);
 if (unreadable > 0) console.log(`${unreadable} carried a timestamp this could not read and are excluded.`);
 console.log(`${perHour.size} distinct hours held at least one lead.\n`);
 

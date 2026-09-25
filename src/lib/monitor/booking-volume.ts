@@ -75,6 +75,8 @@ export interface VolumeWindow {
   count: number;
   /** Expected minimum for this window; below it is a breach. */
   floor: number;
+  /** Where the floor came from, in words (#1956), or absent where nothing says. */
+  basis?: string;
 }
 
 /** Windows whose count fell strictly below their floor. A count exactly at the
@@ -124,7 +126,11 @@ export async function runLowVolumeCheck(deps: {
   businessHours: BusinessHoursConfig;
   /** Bookings created at or after `sinceIso`, or null when the read failed. */
   countSince: (sinceIso: string) => Promise<number | null>;
-  floors: { floor30: number; floor120: number };
+  /**
+   * The floors for THIS tick (#1956): measured per weekday and hour, so the caller
+   * resolves them for `nowMs` rather than passing one pair for every hour.
+   */
+  floors: { floor30: number; floor120: number; basis30?: string; basis120?: string };
   armed: boolean;
   cooldownMs: number;
   notify: ThrottledNotify;
@@ -183,8 +189,18 @@ export async function runLowVolumeCheck(deps: {
   }
 
   const windows: VolumeWindow[] = [
-    { label: `${LOW_VOLUME_WINDOW_MINUTES.short} min`, count: count30, floor: deps.floors.floor30 },
-    { label: `${LOW_VOLUME_WINDOW_MINUTES.long} min`, count: count120, floor: deps.floors.floor120 },
+    {
+      label: `${LOW_VOLUME_WINDOW_MINUTES.short} min`,
+      count: count30,
+      floor: deps.floors.floor30,
+      basis: deps.floors.basis30,
+    },
+    {
+      label: `${LOW_VOLUME_WINDOW_MINUTES.long} min`,
+      count: count120,
+      floor: deps.floors.floor120,
+      basis: deps.floors.basis120,
+    },
   ];
   const breaches = lowVolumeBreaches(windows);
   if (breaches.length && deps.armed) {
@@ -263,11 +279,19 @@ export function formatLowVolumeRecoveryNotice(windows: VolumeWindow[]): string {
 /** Slack body for a low-volume breach. No em/en dashes (the copy lint forbids
  *  them in user-facing strings); colons/semicolons only. */
 export function formatLowVolumeAlert(breaches: VolumeWindow[]): string {
+  // Where the floors came from (#1956) is said ONCE when every breached window
+  // shares it, rather than repeated inside each bracket (L605).
+  const bases = new Set(breaches.map((b) => b.basis ?? ""));
+  const shared = bases.size === 1 && breaches.length > 1 ? [...bases][0]! : "";
   const lines = breaches
-    .map((b) => `${b.count} in the last ${b.label} (expected at least ${b.floor})`)
+    .map((b) => {
+      const own = !shared && b.basis ? `, ${b.basis}` : "";
+      return `${b.count} in the last ${b.label} (expected at least ${b.floor}${own})`;
+    })
     .join("; ");
+  const provenance = shared ? ` Both floors were ${shared}.` : "";
   return (
-    `Booking volume is low: ${lines}. The booker may be down ` +
+    `Booking volume is low: ${lines}.${provenance} The booker may be down ` +
     `(broken embed, empty availability, or sync wedged); check it.`
   );
 }

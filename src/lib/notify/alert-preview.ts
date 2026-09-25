@@ -134,6 +134,21 @@ import {
   formatLowVolumeAlert,
   formatLowVolumeRecoveryNotice,
 } from "@/lib/monitor/booking-volume";
+import { judgedFloors, type FloorsNow } from "@/lib/monitor/volume-floors";
+
+/** A Tuesday 2pm tick, measured, and the same tick with the long floor overridden (#1956). */
+const TUESDAY_2PM: FloorsNow = {
+  floor30: 3,
+  floor120: 12,
+  measured30: 3,
+  measured120: 12,
+  weekday: 2,
+  hour: 14,
+  overridden30: false,
+  overridden120: false,
+};
+const MEASURED_TUESDAY_2PM = judgedFloors(TUESDAY_2PM);
+const OVERRIDDEN_TUESDAY_2PM = judgedFloors({ ...TUESDAY_2PM, overridden120: true });
 import {
   formatAvailabilityDriftAlert,
   formatAvailabilityDriftAllClear,
@@ -597,8 +612,19 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     state: "bookings have dried up",
     channel: "alert",
     text: formatLowVolumeAlert([
-      { label: "30 min", count: 0, floor: 3 },
-      { label: "120 min", count: 4, floor: 12 },
+      { label: "30 min", count: 0, floor: 3, basis: MEASURED_TUESDAY_2PM.basis30 },
+      { label: "120 min", count: 4, floor: 12, basis: MEASURED_TUESDAY_2PM.basis120 },
+    ]),
+  },
+  {
+    // #1956: the floor a page quotes is either the measured one for that hour or a
+    // number somebody set, and the page says which, because the two send the
+    // reader to different places.
+    key: "low_booking_volume",
+    state: "below a floor somebody set in place of the measurement",
+    channel: "alert",
+    text: formatLowVolumeAlert([
+      { label: "120 min", count: 4, floor: 12, basis: OVERRIDDEN_TUESDAY_2PM.basis120 },
     ]),
   },
   {
