@@ -23,7 +23,6 @@
 // values compare directly, and bucketing would hide the commonest drift on this
 // roster rather than tolerate noise (26 real windows sit on a half or quarter
 // hour, and 09:00 against 09:30 opens the same hour).
-import { DateTime } from "luxon";
 import {
   mapCalcomSchedule,
   AGENT_OWNS_HOURS,
@@ -31,6 +30,7 @@ import {
   type SlateRule,
   type SlateSchedule,
 } from "@/lib/calcom/schedule-import";
+import { zonesKeepSameClock } from "@/lib/booking/timezones";
 
 /** Luxon's convention, which is Slate's: 1 = Monday .. 7 = Sunday. Named rather
  *  than numbered wherever a person reads the output: nobody acts on "day 6". */
@@ -116,22 +116,6 @@ export const VERDICT_RANK: Record<ScheduleVerdict, number> = {
 };
 
 /**
- * How far ahead two zones are compared, and how finely.
- *
- * 400 days covers both of a zone's transitions plus the three weeks a year when
- * one of two zones has changed its clocks and the other has not, which is the
- * window a shorter check would sail through. Hourly, because a divergence that
- * lasts less than a day is still a lead shown the wrong time.
- */
-const ZONE_SAMPLE_DAYS = 400;
-const ZONE_SAMPLE_HOURS = ZONE_SAMPLE_DAYS * 24;
-
-/** Memoised on the WHOLE input, the day included, because the answer depends on
- *  the zone rules in force and those can be changed by legislation. A coarser key
- *  would be fast and silently wrong the year one of them moved (L573). */
-const zoneAgreementCache = new Map<string, boolean>();
-
-/**
  * Whether two zone names are the same clock for every hour worth booking.
  *
  * Slate stores `America/Denver` where cal.com stores `America/Boise` for nine
@@ -142,23 +126,14 @@ const zoneAgreementCache = new Map<string, boolean>();
  * harmless one indistinguishable, and the harmless one is nine times commoner.
  *
  * A zone no clock can read never agrees with anything: answering true there would
- * quietly downgrade a genuinely broken value to cosmetic.
+ * quietly downgrade a genuinely broken value to cosmetic. Two IDENTICAL names
+ * agree without a reading, since they are one value whatever it holds.
  */
 export function zonesAgree(a: string, b: string, nowMs: number = Date.now()): boolean {
   if (a === b) return true;
-  const day = Math.floor(nowMs / 86_400_000);
-  const key = `${a}|${b}|${day}`;
-  const hit = zoneAgreementCache.get(key);
-  if (hit !== undefined) return hit;
-
-  const from = DateTime.fromMillis(nowMs, { zone: "utc" });
-  let agree = from.setZone(a).isValid && from.setZone(b).isValid;
-  for (let h = 0; agree && h < ZONE_SAMPLE_HOURS; h++) {
-    const t = from.plus({ hours: h });
-    if (t.setZone(a).offset !== t.setZone(b).offset) agree = false;
-  }
-  zoneAgreementCache.set(key, agree);
-  return agree;
+  // The window, the sampling and the memo live in ONE judge, shared with the
+  // booker's zone picker (#2687), so the two cannot disagree about Boise.
+  return zonesKeepSameClock(a, b, nowMs);
 }
 
 export interface AgentComparison {
