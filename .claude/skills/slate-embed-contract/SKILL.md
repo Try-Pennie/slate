@@ -88,7 +88,8 @@ Do not refactor the `Cal` queue / param / message plumbing while restyling.
    dynamically-added triggers still work.
    **`data-cal-config` is read** (#2716): it is JSON on the trigger, and an
    attribute that is not JSON, or not a JSON object, is ignored and never breaks
-   the open. cal.com's `metadata[<key>]` entries are mapped onto booking URL
+   the open (one `console.warn` per page says so, since it may have carried a
+   partner key). cal.com's `metadata[<key>]` entries are mapped onto booking URL
    params through the `PARTNER_METADATA` table in `widget.js`:
    `metadata[sfdc_submission_id]` -> `submissionId`,
    `metadata[regal_profile_id]` -> `regalProfileId`. An unknown metadata key is

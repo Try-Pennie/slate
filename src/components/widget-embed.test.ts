@@ -724,13 +724,25 @@ describe("widget.js honours data-cal-config metadata on the trigger (#2716)", ()
     warn.mockRestore();
   });
 
-  it("still opens when the config attribute is unreadable, or is JSON that is not an object", () => {
+  it("still opens when the config attribute is unreadable, or is JSON that is not an object, and says so once", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     for (const [i, bad] of ["{not json", "null", "[1,2]", '"metadata[sfdc_submission_id]"', ""].entries()) {
       const src = openWith("router?xbc=411", bad, `config-2716-bad-${i}`);
       expect(src.pathname).toBe("/book");
       expect(src.searchParams.get("xbc")).toBe("411");
       expect(src.searchParams.has(PARTNER_KEYS.submissionId)).toBe(false);
     }
+    const mentions = warn.mock.calls.filter((c) => c.map(String).join(" ").includes("not a JSON object"));
+    expect(mentions).toHaveLength(1);
+    warn.mockRestore();
+  });
+
+  it("says nothing about a trigger that carries no config at all", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const src = openWith("router?xbc=411", null, "config-2716-none");
+    expect(src.searchParams.get("xbc")).toBe("411");
+    expect(warn).not.toHaveBeenCalled();
+    warn.mockRestore();
   });
 
   it("drops an unknown metadata key and says so on the console once, not once per open", () => {

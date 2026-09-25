@@ -222,19 +222,36 @@
   // slate-partner-metadata: end
 
   var warnedMetadata = {};
+  var warnedUnreadableConfig = 0;
+
+  function embedWarn(message) {
+    try {
+      console.warn("Slate embed: " + message);
+    } catch (_e) {
+      /* never throw into the host page */
+    }
+  }
 
   // The trigger's config as an object, or null. An attribute that is absent, not
   // JSON, or JSON that is not an object is ignored: the open must never depend on
-  // a host's config being well formed.
+  // a host's config being well formed. An unreadable one is still SAID, once per
+  // page, because it may have carried a partner key that is now silently missing
+  // from the booking (L11), and an absent attribute is not the same fact.
   function readTriggerConfig(trigger) {
     var raw = trigger && trigger.getAttribute ? trigger.getAttribute("data-cal-config") : null;
     if (!raw) return null;
+    var parsed = null;
     try {
-      var parsed = JSON.parse(raw);
-      return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : null;
+      parsed = JSON.parse(raw);
     } catch (_e) {
-      return null;
+      parsed = null;
     }
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed;
+    if (!warnedUnreadableConfig) {
+      warnedUnreadableConfig = 1;
+      embedWarn("data-cal-config is not a JSON object, so none of it was read.");
+    }
+    return null;
   }
 
   // Every other config key (`layout`, `cal.embed.pageType`, ...) is accepted and
@@ -255,13 +272,7 @@
       if (!param) {
         if (!warnedMetadata[m[1]]) {
           warnedMetadata[m[1]] = 1;
-          try {
-            console.warn(
-              "Slate embed: data-cal-config metadata[" + m[1] + "] is not a field Slate reads, so it was not sent.",
-            );
-          } catch (_e) {
-            /* never throw into the host page */
-          }
+          embedWarn("data-cal-config metadata[" + m[1] + "] is not a field Slate reads, so it was not sent.");
         }
         return;
       }
