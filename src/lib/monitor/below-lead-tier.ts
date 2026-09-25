@@ -31,7 +31,8 @@
  * scored, the second is a score written in a shape Slate does not know.
  *
  * WHAT IS NOT LOOKED AT. A booking made from a known test source
- * (`isTestSourceBooking`, #2737): a host page that is not the production site. On
+ * (`isTestSourceBooking`, #2737): a host page that is not the production site,
+ * whether the host declared it or, since #2728, the browser reported framing it. On
  * 2026-09-25 four test bookings on XBC 100 and 112 each carried a real looking
  * `00Q` lead id, so they were compared, and a single one of them was the verdict
  * that un-parked this check and paged "real leads are booking in Slate now". They
@@ -50,7 +51,7 @@ import { isLeadId, leadIdKey } from "@/lib/salesforce/lead-xbc";
 import { strongIdsOf } from "@/lib/booking/lookup-identity";
 import type { Criteria } from "@/lib/db/types";
 import type { AlertResolve, ThrottledNotify } from "./alert-deps";
-import { isTestSourceBooking } from "./offsite-origin";
+import { isTestSourceBooking, type BookingOriginFacts } from "./offsite-origin";
 
 /** The alert family: one condition per booking, `booking_below_lead_tier:<id>`. */
 export const BELOW_LEAD_TIER_KEY = "booking_below_lead_tier";
@@ -63,7 +64,9 @@ export function belowLeadTierKey(bookingId: string): string {
 const ALERT_ZONE = "America/New_York";
 
 /** The columns this check needs off a `bookings` row. */
-export interface UpcomingBooking {
+/** `prefill` and `referrer_origin` are read for the host page the booking was made
+ *  from (#2737, #2728), nothing else. */
+export interface UpcomingBooking extends BookingOriginFacts {
   id: string;
   bucket_id: string;
   starts_at: string;
@@ -71,8 +74,6 @@ export interface UpcomingBooking {
   external_id: string | null;
   agent_name: string | null;
   agent_email: string | null;
-  /** Read for the host page the booking was made from (#2737), nothing else. */
-  prefill: Record<string, string> | null;
 }
 
 /** The columns this check needs off a `buckets` row. */
@@ -333,8 +334,8 @@ export async function runBelowLeadTierCheck(deps: BelowLeadTierDeps): Promise<Be
     return { status: "unreadable", stage: "bookings", error: err instanceof Error ? err.message : String(err) };
   }
   // A test booking is not a lead, so it is not asked about, compared, or cleared.
-  const bookings = read.filter((b) => !isTestSourceBooking(b.prefill));
-  const testSourceIds = new Set(read.filter((b) => isTestSourceBooking(b.prefill)).map((b) => b.id));
+  const bookings = read.filter((b) => !isTestSourceBooking(b));
+  const testSourceIds = new Set(read.filter((b) => isTestSourceBooking(b)).map((b) => b.id));
 
   // One question per lead, whichever spelling the bookings stored.
   const idsByKey = new Map<string, string>();

@@ -26,7 +26,7 @@ export function embedParentOrigin(
 }
 
 /** A web origin (http or https, no path), or null for anything else. */
-function httpOrigin(value: string | null | undefined): string | null {
+export function httpOrigin(value: string | null | undefined): string | null {
   if (!value) return null;
   try {
     const url = new URL(value);

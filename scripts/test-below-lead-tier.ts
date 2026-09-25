@@ -57,6 +57,7 @@ function booking(over: Partial<UpcomingBooking> = {}): UpcomingBooking {
     agent_name: "Dana Whitfield",
     agent_email: "dana.whitfield@trypennie.com",
     prefill: { parentOrigin: "https://www.trypennie.com", embed: "1" },
+    referrer_origin: "https://www.trypennie.com",
     ...over,
   };
 }
@@ -328,6 +329,30 @@ async function main(): Promise<void> {
     eq(calls.sfQueries, 0, "Salesforce is not asked about test bookings");
     eq(calls.notified.length, 0, "no page about a test booking");
     eq(calls.resolved.length, 0, "an excluded booking is not measured, so its page is not cleared as gone");
+  }
+
+  // #2728: a host that declared NO origin is recognised by the page that framed the
+  // booker, through the same predicate the off site page uses, so a booking excluded
+  // here is one that page names too. A production framing page is still a lead.
+  {
+    const calls: Calls = { notified: [], resolved: [], sfQueries: 0 };
+    const r = await runBelowLeadTierCheck(
+      deps(
+        {
+          loadBookings: async () => [
+            booking({ id: "bk-framed", salesforce_id: LEAD_B, prefill: { embed: "1" }, referrer_origin: "http://localhost:3000" }),
+            booking({ id: "bk-prod", salesforce_id: LEAD_A, prefill: { embed: "1" }, referrer_origin: "https://trypennie.com" }),
+          ],
+        },
+        calls,
+      ),
+    );
+    eq(r.status, "measured", "framing page: measured");
+    if (r.status === "measured") {
+      eq(r.testSource, 1, "a booking framed off site with nothing declared is a test source");
+      eq(r.compared, 1, "a booking framed by production is still compared");
+      eq(r.below.map((b) => b.booking.id), ["bk-prod"], "and judged as a lead");
+    }
   }
 
   // The control the other way: a real lead's booking beside them is still compared.

@@ -102,6 +102,7 @@ import { LeadCodeUnavailableError } from "@/lib/routing/lead-code";
 import { TEST_PASS_HEADER, TEST_PASS_REFUSAL_CODES } from "@/lib/embed/test-pass-header";
 import { TEST_PASS_TTL_MS, mintTestPass } from "@/lib/embed/test-pass";
 import { HIDDEN_TEST_BUCKET_CODES } from "@/lib/embed/public-test-bucket";
+import { REFERRER_ORIGIN_MAX_CHARS } from "@/lib/embed/referrer-origin";
 
 const PUBLIC_TEST = PUBLIC_TEST_BUCKET_CODES[0];
 // #2666: the public test bucket is booked only with the pass `/book` handed an
@@ -291,6 +292,35 @@ describe("POST /booking (embed) error mapping", () => {
     });
     await post({ ...VALID_BODY, timezone: "Pacific/Honolulu" });
     expect(service.createBooking.mock.calls[0][0].timezone).toBe("Pacific/Honolulu");
+  });
+
+  // #2728: the framing page's origin rides through to createBooking, which reduces
+  // it itself; a value of the wrong type must never cost the lead the booking.
+  it("passes the referrer origin through, and books when it is not even a string (#2728)", async () => {
+    const created = {
+      booking: { id: "b1", starts_at: VALID_BODY.start, ends_at: VALID_BODY.start, prefill: {} },
+      manageUrl: "u",
+    };
+    service.createBooking.mockResolvedValue(created);
+    await post({ ...VALID_BODY, referrerOrigin: "http://localhost:3000" });
+    expect(service.createBooking.mock.calls[0][0].referrerOrigin).toBe("http://localhost:3000");
+
+    const res = await post({ ...VALID_BODY, referrerOrigin: { href: "x" } });
+    expect(res.status).toBe(200);
+    expect(service.createBooking.mock.calls[1][0].referrerOrigin).toBeUndefined();
+
+    await post(VALID_BODY);
+    expect(service.createBooking.mock.calls[2][0].referrerOrigin).toBeUndefined();
+
+    // Bounded like every sibling field: an oversized value is dropped at the edge,
+    // never handed on, and the lead still books.
+    const oversized = `https://partner.example/${"a".repeat(REFERRER_ORIGIN_MAX_CHARS)}`;
+    const big = await post({ ...VALID_BODY, referrerOrigin: oversized });
+    expect(big.status).toBe(200);
+    expect(service.createBooking.mock.calls[3][0].referrerOrigin).toBeUndefined();
+    const atCap = "https://p.example/".padEnd(REFERRER_ORIGIN_MAX_CHARS, "a");
+    await post({ ...VALID_BODY, referrerOrigin: atCap });
+    expect(service.createBooking.mock.calls[4][0].referrerOrigin).toBe(atCap);
   });
 
   it("does NOT refund on an empty/misconfigured-pool 409 (NoEligibleAgents), which is not a retryable slot race (#1089)", async () => {

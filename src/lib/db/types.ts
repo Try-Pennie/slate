@@ -579,6 +579,14 @@ export interface Booking {
    */
   source: BookingSource | null;
   /**
+   * The origin (never the path) of the page that framed the booker (#2728), from
+   * `document.referrer`, reduced on the server by `readReferrerOrigin`. Judged
+   * beside `prefill.parentOrigin` by the off site check. NULL when the booker was
+   * not framed, the referrer was stripped, the booking came through the API or an
+   * admin, or it predates the column.
+   */
+  referrer_origin: string | null;
+  /**
    * The appointment START a 24 hour reminder email has been sent about (#2359).
    *
    * A TIMESTAMP rather than a flag, so a booking that moves earns a fresh reminder
@@ -854,6 +862,9 @@ export type BookingInsert = {
   routing_trace: RoutingTrace;
   /** #2072: always written by createBooking, read off the link on the server. */
   source: BookingSource;
+  /** #2728: always written by createBooking, reduced on the server; null when the
+   *  booker sent no framing page. */
+  referrer_origin: string | null;
 };
 
 /** The calendar-event input, captured in a reservation so a resume re-creates

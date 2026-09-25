@@ -578,6 +578,23 @@ async function run() {
     );
   }
 
+  // --- #2728: the booking records the origin of the page that framed the booker ---
+  // Reduced on the SERVER, whatever the client sent: a path and a query can carry a
+  // lead's details and must never reach the row.
+  const referrerOf = async (referrerOrigin: string | null | undefined) => {
+    const { deps, calls } = makeDeps({ candidates: ["a"], freeEmails: new Set(["a@x.com"]) });
+    await createBooking({ ...input, referrerOrigin }, deps);
+    return calls.insertBooking.at(-1);
+  };
+  {
+    const row = await referrerOf("https://partner.example/landing?email=k%40x.com&phone=5551234");
+    assert(row?.referrer_origin === "https://partner.example", "create: a referrer with a path and a query is stored as its origin only");
+    assert(!JSON.stringify(row).includes("k%40x.com"), "create: the referrer's query reaches no part of the row");
+  }
+  assert((await referrerOf("not a url"))?.referrer_origin === null, "create: a malformed referrer is dropped, never stored raw");
+  assert((await referrerOf(undefined))?.referrer_origin === null, "create: no referrer sent is stored as null");
+  assert((await referrerOf("http://localhost:3000"))?.referrer_origin === "http://localhost:3000", "create: a bare origin is stored as itself");
+
 }
 
 await run();

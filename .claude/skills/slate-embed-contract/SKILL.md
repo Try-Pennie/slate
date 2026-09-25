@@ -141,6 +141,19 @@ Do not refactor the `Cal` queue / param / message plumbing while restyling.
      logs them (`tag=client-errors msg="embed origin mismatch"`) and says so in the
      info channel at most daily. There is deliberately no allow list: a preview or
      staging host must keep working. A host should pass `window.location.origin`.
+   - **The confirm carries the framing page's ORIGIN (#2728).** When the Booker is
+     inside a frame, its `/booking` POST adds `referrerOrigin`: `document.referrer`
+     reduced to scheme, host and port, never its path or query, which on a booking
+     page can carry a lead's details. It is absent when the Booker is its own page
+     (that referrer is whatever linked to it, not a host) and when the referrer is
+     Slate's own origin. The server does not trust it: `readReferrerOrigin`
+     (`src/lib/embed/referrer-origin.ts`) reduces it again, drops anything that is
+     not a web origin, and a value of the wrong type never refuses the booking. It
+     is stored as `bookings.referrer_origin`, beside `prefill.parentOrigin`, and the
+     off site page (`src/lib/monitor/offsite-origin.ts`) pages when EITHER one is
+     not the production site, which is what catches a host that framed `/book`
+     itself and declared nothing. A host whose referrer policy is `no-referrer`
+     records null, which is absence, not a finding.
    - If a loading state needs a new signal, **ADD** a message; do NOT rename or
      drop an existing one.
    - **The booker lifecycle (#2658).** Pennie's GA4 tagging spec instruments
@@ -214,7 +227,7 @@ Do not refactor the `Cal` queue / param / message plumbing while restyling.
 
 ---
 
-## Testing the embed from any host page (#2660)
+## Testing the embed from an approved host page (#2660, #2666)
 
 Slate has no staging deployment, so a partner testing the embed from THEIR staging
 site used to have one path: book a real advisor, with a real invite, a real text
@@ -225,10 +238,26 @@ path. Open the embed exactly as a real page does, with the bucket code `PARTNER`
 <button data-cal-link="router?form=review&xbc=PARTNER" data-cal-namespace="review">Book a call</button>
 ```
 
-or `/book?xbc=PARTNER&embed=1&parentOrigin=<your origin>` directly. Every host
-page may use it and no key is needed (Dan, 2026-09-24: any origin for now;
-restricting it to approved host origins is #2666, which also records the exposure
-this accepts).
+or `/book?xbc=PARTNER&embed=1&parentOrigin=<your origin>` directly. No key is
+needed, but **it works only from a website listed in `EMBED_TEST_ORIGINS`**
+(#2666; `wrangler.jsonc`, today `https://dev.trypennie.com` and
+`https://trypennie.com`, never `localhost`). It no longer works from any host page,
+which is what #2660 first shipped:
+
+- `/book` reads the Referer of the iframe's OWN document request and compares its
+  origin with the list by exact equality. A website not on it, a request with no
+  Referer, an empty list, or a deployment with no `EMBED_TEST_PASS_SECRET` gets a
+  page saying test bookings are not available there and why, in
+  `TEST_ACCESS_COPY` (`src/lib/booking/booker-copy.ts`), never a booker.
+- On a match, `/book` hands the Booker a **pass**: an HMAC over the code and an
+  expiry, good for `TEST_PASS_TTL_MS` (30 minutes, `src/lib/embed/test-pass.ts`).
+  The Booker sends it on every read of the times and on the confirm, and each of
+  those routes refuses the test bucket without a good one (403 with a
+  `TEST_PASS_*` code). A modal left open past the expiry is told to reload.
+- **The Referer check is a convenience gate, not authentication**: anything that
+  is not a browser can send any Referer. It keeps the test path off websites
+  nobody approved. To test from a new website, ask for its exact origin to be
+  added to the list.
 
 **What it proves, and only this:** the embed contract. Times are offered, the
 booking confirms, the host receives `slate:bookingSuccessful`, the redirect lands,

@@ -20,8 +20,9 @@ import {
   OFFSITE_ORIGIN_KEY,
   OFFSITE_ORIGIN_LOOKBACK_MS,
   PRODUCTION_ORIGINS,
-  classifyBookingOrigin,
+  classifyOrigin,
   isTestSourceBooking,
+  judgeBookingOrigin,
   offsiteOriginKey,
   runOffsiteOriginCheck,
   type OffsiteOriginDeps,
@@ -42,6 +43,7 @@ function booking(over: Partial<RecentBooking> = {}): RecentBooking {
     agent_name: "Tia Rios",
     agent_email: "trios@trypennie.com",
     prefill: { parentOrigin: "http://localhost:3000", embed: "1" },
+    referrer_origin: null,
     ...over,
   };
 }
@@ -71,35 +73,73 @@ function deps(bookings: RecentBooking[] | Error, over: Partial<OffsiteOriginDeps
 }
 
 // --- classification -------------------------------------------------------------
-eq(classifyBookingOrigin({ parentOrigin: "http://localhost:3000" }), { kind: "offsite", origin: "http://localhost:3000" }, "localhost is off site");
+eq(classifyOrigin("http://localhost:3000"), { kind: "offsite", origin: "http://localhost:3000" }, "localhost is off site");
 for (const o of PRODUCTION_ORIGINS) {
-  eq(classifyBookingOrigin({ parentOrigin: o }).kind, "production", `${o} is production`);
+  eq(classifyOrigin(o).kind, "production", `${o} is production`);
 }
-eq(classifyBookingOrigin({ parentOrigin: "https://trypennie.com/get-started?x=1" }).kind, "production", "a path on the production origin is still production");
-eq(classifyBookingOrigin({ parentOrigin: "http://trypennie.com" }).kind, "offsite", "plain http is not the production origin");
-eq(classifyBookingOrigin({ parentOrigin: "https://trypennie.com.evil.example" }).kind, "offsite", "a lookalike host is off site");
-eq(classifyBookingOrigin({ parentOrigin: "not a url" }).kind, "unreadable", "garbage is unreadable, not absent");
-eq(classifyBookingOrigin({ parentOrigin: "file:///tmp/x.html" }).kind, "unreadable", "a non web scheme is unreadable");
-eq(classifyBookingOrigin({ embed: "1" }).kind, "none", "no parentOrigin is none");
-eq(classifyBookingOrigin({ parentOrigin: "  " }).kind, "none", "a blank parentOrigin is none");
-eq(classifyBookingOrigin(null).kind, "none", "a null prefill is none");
+eq(classifyOrigin("https://trypennie.com/get-started?x=1").kind, "production", "a path on the production origin is still production");
+eq(classifyOrigin("http://trypennie.com").kind, "offsite", "plain http is not the production origin");
+eq(classifyOrigin("https://trypennie.com.evil.example").kind, "offsite", "a lookalike host is off site");
+eq(classifyOrigin("not a url").kind, "unreadable", "garbage is unreadable, not absent");
+eq(classifyOrigin("file:///tmp/x.html").kind, "unreadable", "a non web scheme is unreadable");
+eq(classifyOrigin(undefined).kind, "none", "no origin is none");
+eq(classifyOrigin("  ").kind, "none", "a blank origin is none");
+eq(classifyOrigin(null).kind, "none", "a null origin is none");
+eq(classifyOrigin(42).kind, "none", "a non string is none");
+
+/** The facts a booking carries when only a host's DECLARED origin was recorded. */
+function declared(prefill: Record<string, string> | null) {
+  return { prefill, referrer_origin: null };
+}
 
 // --- the shared test source predicate (#2737) -------------------------------------
 // The prefills below are the shape of the four real bucket bookings made on
 // 2026-09-25 (XBC 100 and 112), read off production: two from a partner's
 // localhost page and two from the dev site. Each one must be recognised.
 for (const origin of ["http://localhost:3000", "https://dev.trypennie.com"]) {
-  eq(isTestSourceBooking({ parentOrigin: origin, embed: "1", xbc: "100" }), true, `${origin} is a known test source`);
+  eq(isTestSourceBooking(declared({ parentOrigin: origin, embed: "1", xbc: "100" })), true, `${origin} is a known test source`);
 }
-eq(isTestSourceBooking({ parentOrigin: "not a url" }), true, "an origin the real widget cannot produce is a test source too");
+eq(isTestSourceBooking(declared({ parentOrigin: "not a url" })), true, "an origin the real widget cannot produce is a test source too");
 // The control the other way: what a real lead's booking carries is never one.
 for (const o of PRODUCTION_ORIGINS) {
-  eq(isTestSourceBooking({ parentOrigin: o, embed: "1", xbc: "100" }), false, `${o} is a real lead's host, not a test source`);
+  eq(isTestSourceBooking(declared({ parentOrigin: o, embed: "1", xbc: "100" })), false, `${o} is a real lead's host, not a test source`);
 }
-eq(isTestSourceBooking({ parentOrigin: "https://www.trypennie.com/get-started" }), false, "a path on production is still production");
-eq(isTestSourceBooking({ name: "Pat" }), false, "no origin recorded is not evidence of a test");
-eq(isTestSourceBooking(null), false, "a null prefill is not evidence of a test");
-eq(isTestSourceBooking({ parentOrigin: "" }), false, "a blank origin is not evidence of a test");
+eq(isTestSourceBooking(declared({ parentOrigin: "https://www.trypennie.com/get-started" })), false, "a path on production is still production");
+eq(isTestSourceBooking(declared({ name: "Pat" })), false, "no origin recorded is not evidence of a test");
+eq(isTestSourceBooking(declared(null)), false, "a null prefill is not evidence of a test");
+eq(isTestSourceBooking(declared({ parentOrigin: "" })), false, "a blank origin is not evidence of a test");
+
+// --- the framing page's origin (#2728), both directions ----------------------------
+// The browser's own statement of who framed the booker, stored beside the declared
+// origin. EITHER one off site makes the booking off site: a host that declared none,
+// or declared the production site while being framed elsewhere, is still a test.
+const framed = (prefill: Record<string, string> | null, referrer_origin: string | null) => ({ prefill, referrer_origin });
+eq(
+  judgeBookingOrigin(framed({ embed: "1" }, "http://localhost:3000")).kind,
+  "offsite",
+  "no origin declared and framed by localhost is off site (the issue's case)",
+);
+eq(
+  judgeBookingOrigin(framed({ parentOrigin: "https://trypennie.com" }, "https://dev.trypennie.com")).kind,
+  "offsite",
+  "declared production while framed by the dev site is off site",
+);
+eq(
+  judgeBookingOrigin(framed({ parentOrigin: "http://localhost:3000" }, "https://www.trypennie.com")).kind,
+  "offsite",
+  "framed by production while declaring localhost is still off site",
+);
+eq(
+  judgeBookingOrigin(framed({ parentOrigin: "https://trypennie.com" }, "https://www.trypennie.com")).kind,
+  "production",
+  "both production, in either spelling, is production",
+);
+eq(judgeBookingOrigin(framed({ embed: "1" }, "https://trypennie.com")).kind, "production", "framed by production with nothing declared is production");
+eq(judgeBookingOrigin(framed({ parentOrigin: "https://trypennie.com" }, null)).kind, "production", "declared production with no framing page recorded is production");
+eq(judgeBookingOrigin(framed({ embed: "1" }, null)).kind, "none", "neither recorded is none");
+eq(judgeBookingOrigin(framed(null, "not a url")).kind, "offsite", "an unreadable stored framing origin is judged like an unreadable declared one");
+eq(isTestSourceBooking(framed({ embed: "1" }, "http://localhost:3000")), true, "the shared predicate reads the framing page too");
+eq(isTestSourceBooking(framed({ embed: "1" }, "https://www.trypennie.com")), false, "and a production framing page is not a test source");
 
 // --- the lookback and the cooldown -----------------------------------------------
 assert(
@@ -248,14 +288,73 @@ assert(
     { embed: "1" },
     null,
   ];
-  const list = prefills.map((prefill, i) => booking({ id: `bk-${i}`, prefill }));
+  // #2728: every declared origin against every framing origin, so the agreement is
+  // held on the pairs where the two facts disagree, not only where one is absent.
+  const referrers = [null, "http://localhost:3000", "https://trypennie.com", "not a url"];
+  const list = prefills.flatMap((prefill, i) =>
+    referrers.map((referrer_origin, j) => booking({ id: `bk-${i}-${j}`, prefill, referrer_origin })),
+  );
   const { d, sent } = deps(list);
   await runOffsiteOriginCheck(d);
+  const excluded = list.filter((b) => isTestSourceBooking(b));
+  assert(excluded.length > 0 && excluded.length < list.length, "the grid holds both verdicts");
   eq(
     sent.map((s) => s.key).sort(),
-    list.filter((b) => isTestSourceBooking(b.prefill)).map((b) => offsiteOriginKey(b.id)).sort(),
+    excluded.map((b) => offsiteOriginKey(b.id)).sort(),
     "the check pages on exactly the bookings the shared predicate calls a test source",
   );
+}
+
+// --- the page names the framing origin (#2728) -----------------------------------------
+{
+  const { d, sent } = deps([booking({ prefill: { embed: "1" }, referrer_origin: "https://partner.example" })]);
+  const r = await runOffsiteOriginCheck(d);
+  eq(sent.length, 1, "a booking framed off site with nothing declared pages");
+  assert(sent[0].text.includes("https://partner.example"), `the page names the framing origin: ${sent[0].text}`);
+  assert(sent[0].text.includes("did not say"), "and says the page declared no origin of its own");
+  if (r.status === "checked") eq(r.noOrigin, 0, "it is not counted as having no origin");
+}
+{
+  const { d, sent } = deps([booking({ prefill: { parentOrigin: "https://trypennie.com" }, referrer_origin: "https://dev.trypennie.com" })]);
+  await runOffsiteOriginCheck(d);
+  eq(sent.length, 1, "declared production while framed off site pages");
+  assert(
+    sent[0].text.includes("https://dev.trypennie.com") && sent[0].text.includes("https://trypennie.com"),
+    `names both what the page said and where it was framed: ${sent[0].text}`,
+  );
+}
+{
+  const { d, sent } = deps([booking({ prefill: { parentOrigin: "http://localhost:3000" }, referrer_origin: "http://localhost:3000" })]);
+  await runOffsiteOriginCheck(d);
+  eq(sent.length, 1, "the same off site origin both ways pages once");
+  eq(sent[0].text.split("http://localhost:3000").length - 1, 1, "and names it once, not twice");
+}
+{
+  // The mirror of "declared production while framed off site": both facts named.
+  const { d, sent } = deps([booking({ prefill: { parentOrigin: "http://localhost:3000" }, referrer_origin: "https://www.trypennie.com" })]);
+  await runOffsiteOriginCheck(d);
+  eq(sent.length, 1, "declared off site while framed by production pages");
+  assert(
+    sent[0].text.includes("http://localhost:3000") && sent[0].text.includes("https://www.trypennie.com"),
+    `names both what the page said and the production framing: ${sent[0].text}`,
+  );
+}
+{
+  const { d, sent } = deps([booking({ prefill: { parentOrigin: "not a url" }, referrer_origin: "https://trypennie.com" })]);
+  await runOffsiteOriginCheck(d);
+  assert(
+    sent[0].text.includes("cannot read") && sent[0].text.includes("https://trypennie.com"),
+    `an unreadable declared origin still names the production framing: ${sent[0].text}`,
+  );
+}
+{
+  const { d, sent } = deps([
+    booking({ id: "bk-p", prefill: { parentOrigin: "https://www.trypennie.com" }, referrer_origin: "https://www.trypennie.com" }),
+    booking({ id: "bk-f", prefill: { embed: "1" }, referrer_origin: "https://trypennie.com" }),
+  ]);
+  const r = await runOffsiteOriginCheck(d);
+  eq(sent.length, 0, "production both ways, or framed by production alone, does not page");
+  if (r.status === "checked") eq(r.production, 2, "both counted as production");
 }
 
 // --- an unassigned booking still reads as a sentence ----------------------------------

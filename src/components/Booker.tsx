@@ -86,6 +86,7 @@ import {
   originMismatchMessage,
   parentOriginMismatch,
 } from "@/lib/embed/parent-origin";
+import { isFramed, referrerOriginForConfirm } from "@/lib/embed/referrer-origin";
 import { postClientReport } from "@/components/ClientErrorBeacon";
 import ReasonPicker from "@/components/ReasonPicker";
 import { validateReason, type ReasonOption } from "@/lib/booking/core";
@@ -145,6 +146,21 @@ type FormFieldErrors = NameFieldErrors & Pick<AttendeeErrors, "email" | "phone">
 function formErrorsFromServer(errors: AttendeeErrors): FormFieldErrors {
   const { name, ...rest } = errors;
   return name ? { ...rest, firstName: name } : rest;
+}
+
+/**
+ * The confirm's `referrerOrigin` field (#2728), spread into the body so it is
+ * ABSENT rather than null when there is nothing to send. Read at confirm time, off
+ * the browser, because the frame and the referrer are facts about this page load.
+ */
+function confirmReferrerOrigin(): { referrerOrigin?: string } {
+  if (typeof window === "undefined") return {};
+  const origin = referrerOriginForConfirm({
+    referrer: document.referrer,
+    ownOrigin: window.location.origin,
+    framed: isFramed(window),
+  });
+  return origin ? { referrerOrigin: origin } : {};
 }
 
 /** The lead's OTHER active booking, surfaced by /booking so the confirmation
@@ -763,6 +779,10 @@ export default function Booker({
             phone: attendee.phone.trim(),
           },
           prefill,
+          // #2728: the ORIGIN of the page that framed us, so the off site check can
+          // judge a host that declared none. Never the path or query, and absent
+          // when this is its own page. The server reduces it again regardless.
+          ...confirmReferrerOrigin(),
           // Empty for every real lead; a bot filling all fields sends a value the
           // server rejects (#1033).
           [HONEYPOT_FIELD]: honeypot,

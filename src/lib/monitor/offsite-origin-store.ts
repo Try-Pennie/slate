@@ -21,7 +21,7 @@ export async function loadRecentBookingsInBuckets(
   return selectAllPages<RecentBooking>("monitor offsite origin bookings", (from, to) =>
     db
       .from("bookings")
-      .select("id, bucket_id, starts_at, agent_name, agent_email, prefill")
+      .select("id, bucket_id, starts_at, agent_name, agent_email, prefill, referrer_origin")
       // in-chunk-ok: the real buckets are the routing matrix, sixty codes at the
       // design target, about 2,300 bytes of uuids against the 10,000 budget.
       .in("bucket_id", bucketIds)

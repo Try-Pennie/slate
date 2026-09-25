@@ -46,6 +46,7 @@ import { noStore } from "@/lib/api/no-store";
 import { recordApiOutcome } from "@/lib/monitor/record-api-outcome";
 import { log } from "@/lib/log";
 import { partnerKeysFrom } from "@/lib/booking/partner-keys";
+import { REFERRER_ORIGIN_MAX_CHARS } from "@/lib/embed/referrer-origin";
 
 export const dynamic = "force-dynamic";
 
@@ -69,6 +70,14 @@ const schema = z.object({
     phone: z.string().optional(),
   }),
   prefill: prefillSchema,
+  // #2728: the origin of the page that framed the booker. Untrusted and reduced
+  // again by createBooking. Bounded like its siblings, at REFERRER_ORIGIN_MAX_CHARS
+  // (2048, the database constraint's own ceiling): a real origin is a few dozen
+  // characters, and 2048 is the long standing practical URL limit, so nothing a
+  // browser sends can reach it. A value that is too long, or not a string, is
+  // DROPPED here rather than refusing the booking, because a lead must never lose a
+  // call over a field only a monitor reads.
+  referrerOrigin: z.string().max(REFERRER_ORIGIN_MAX_CHARS).optional().catch(undefined),
 });
 
 /**
@@ -279,6 +288,7 @@ async function handlePost(req: NextRequest) {
         phone: parsed.data.attendee.phone?.trim(),
       },
       prefill: parsed.data.prefill,
+      referrerOrigin: parsed.data.referrerOrigin,
     });
     // Backstop, not the ordinary path (#1337): a second booking is normally
     // DECLINED above before anything is created. Since #1641 the window it
