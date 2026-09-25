@@ -15,9 +15,16 @@ import {
 } from "./lib/parallel-run-readiness.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 import type { CallerSeenRow } from "../src/lib/booking/caller-seen.ts";
-import { sourceNotRecorded } from "../src/lib/monitor/page-volume.ts";
+import {
+  bookingSourcesRecorded,
+  pageSourceStatus,
+  sourceNotRecorded,
+  type PageSourceMeasure,
+} from "../src/lib/monitor/page-volume.ts";
 
 const NOW = Date.parse("2026-09-08T16:00:00Z");
+/** How the summary says the source precondition is met, asserted both ways below. */
+const SOURCES_MET = /every real booking (in the last \d+ days )?carried its source/i;
 const DAY = 24 * 60 * 60_000;
 
 /** One `api_caller_seen` row for trypennie, seen `agoMs` before NOW (#2717). */
@@ -42,16 +49,20 @@ function healthy(over: Partial<ReadinessFacts> = {}): ReadinessFacts {
   };
 }
 
-/** Every Low page has recorded its source this week (#2767). */
+/**
+ * Every real booking this week carried its source, and every Low page recorded one
+ * (#2767, #2796). Not a single untagged booking: one of those is enough for the
+ * alerts page to hold the floors back, so the readiness gate must not call it met.
+ */
 function sourcesRecorded(): NonNullable<LowVolumeArmingFacts["pageSources"]> {
   return {
     lookbackDays: 7,
     realBookings: 40,
-    unsourced: 3,
+    unsourced: 0,
     pages: [
-      { name: "Income Verification Phone Call", recorded: true },
-      { name: "Completed Application Review Follow Up", recorded: true },
-      { name: "Completed Application Review", recorded: true },
+      { id: "income-verification", name: "Income Verification Phone Call", recorded: true },
+      { id: "application-review-follow-up", name: "Completed Application Review Follow Up", recorded: true },
+      { id: "application-review", name: "Completed Application Review", recorded: true },
     ],
   };
 }
@@ -255,7 +266,7 @@ eq(
 // on Labor Day 2026-09-07 in the replay). They gate ARMING, so while the alarms are off
 // they are reported and never change the exit: a READY day stays READY.
 {
-  const missing = { ...sourcesRecorded(), pages: sourcesRecorded().pages.map((p, i) => ({ ...p, recorded: i !== 1 })) };
+  const missing = { ...sourcesRecorded(), unsourced: 3, pages: sourcesRecorded().pages.map((p, i) => ({ ...p, recorded: i !== 1 })) };
   const uncovered = { windowDays: 90, checked: 3, uncovered: [{ date: "2026-10-12", name: "Columbus Day" }] };
 
   // Disarmed: reported, never gating.
@@ -270,6 +281,7 @@ eq(
   const offMet = judgeReadiness(healthy());
   eq(offMet.advisories.length, 0, "met preconditions carry no advisory");
   assert(/before arming/i.test(offMet.summary) && /every federal holiday/i.test(offMet.summary), `and the READY line says they are met (got: ${offMet.summary})`);
+  assert(SOURCES_MET.test(offMet.summary), `and says every booking carried its source (got: ${offMet.summary})`);
 
   // Armed: each is a finding on its own code, with its own sentence.
   const src = judgeReadiness(healthy({ lowVolumeArming: armed({ pageSources: missing }) }));
@@ -281,7 +293,7 @@ eq(
     src.findings[0].detail.startsWith(sourceNotRecorded(3, 40, "7 days")),
     `and opens with how many bookings recorded no source (got: ${src.findings[0].detail})`,
   );
-  assert(/cannot tell whether/.test(src.findings[0].detail), "with untagged bookings about, it says the page cannot be told apart");
+  eq(src.findings[0].detail, pageSourceStatus(missing).text, "with untagged bookings about, it says exactly what the alerts page says about them (#2796)");
   // With NO untagged booking, nothing could be hiding the page's bookings: it simply
   // recorded none, and saying otherwise claims an ambiguity nobody measured (L11).
   const bare = judgeReadiness(healthy({ lowVolumeArming: armed({ pageSources: { ...missing, unsourced: 0 } }) }));
@@ -302,7 +314,7 @@ eq(
   const unmOff = judgeReadiness(healthy({ lowVolumeArming: disarmed({ pageSources: none }) }));
   eq(unmOff.exit, READINESS_EXIT.ready, "disarmed, unmeasured does not gate either");
   eq(unmOff.advisories.map((a) => a.kind), ["page-source-unmeasured"], "and is reported as unmeasured, not as met or missing");
-  assert(!/every Low page has recorded/i.test(unmOff.summary), "and never reads as met");
+  assert(!SOURCES_MET.test(unmOff.summary), "and never reads as met");
 
   const texts = new Set([src, hol, unm].map((j) => j.findings[0].detail));
   eq(texts.size, 3, "each reads differently");
@@ -337,6 +349,62 @@ eq(
       order.indexOf("page-source-unmeasured") < order.indexOf("parity-drifting"),
     "the preconditions sit just below a muted alarm, measured ones first",
   );
+}
+
+// #2796: whether booking sources are recorded well enough is ONE rule,
+// `bookingSourcesRecorded` in page-volume.ts, which the alerts settings page reads
+// through `pageSourceStatus` and this gate reads too. They used to differ: this gate
+// was satisfied once every Low page had recorded one booking of its own, while the
+// alerts page held the floors back on a single untagged booking. So on the first
+// pilot morning the same bookings could read READY here and "source not recorded"
+// there.
+{
+  // The case the two used to disagree on: every page recorded one of its own, and
+  // three bookings still carried no source. The old rule said READY; it is not.
+  const untagged: PageSourceMeasure = { ...sourcesRecorded(), unsourced: 3 };
+  eq(bookingSourcesRecorded(untagged), false, "three untagged bookings are not sources recorded well enough");
+  eq(pageSourceStatus(untagged).state, "unrecorded", "and the alerts page holds the floors back on them");
+  const armedUntagged = judgeReadiness(healthy({ lowVolumeArming: armed({ pageSources: untagged }) }));
+  eq(armedUntagged.exit, READINESS_EXIT.pageSourceMissing, "so the armed gate refuses on the missing source code rather than READY");
+  eq(armedUntagged.findings[0].detail, pageSourceStatus(untagged).text, "in the alerts page's own sentence");
+  const offUntagged = judgeReadiness(healthy({ lowVolumeArming: disarmed({ pageSources: untagged }) }));
+  eq(offUntagged.exit, READINESS_EXIT.ready, "disarmed, it is reported and does not gate");
+  eq(offUntagged.advisories.map((a) => a.kind), ["page-source-missing"], "and is listed as an arming advisory");
+  assert(!SOURCES_MET.test(offUntagged.summary), `and the summary never reads as met (got: ${offUntagged.summary})`);
+
+  // Agreement over every shape of the measurement, derived from the shared rule
+  // rather than restated here: the gate reports a source finding exactly when the
+  // rule says sources are not recorded, or (with them recorded) a page recorded none.
+  const pageSets = [
+    sourcesRecorded().pages,
+    sourcesRecorded().pages.map((p, i) => ({ ...p, recorded: i !== 1 })),
+    sourcesRecorded().pages.map((p) => ({ ...p, recorded: false })),
+  ];
+  let compared = 0;
+  for (const realBookings of [0, 1, 40]) {
+    for (const unsourced of [0, 1, 3, 40].filter((u) => u <= realBookings)) {
+      for (const pages of pageSets) {
+        const m: PageSourceMeasure = { lookbackDays: 7, realBookings, unsourced, pages };
+        const status = pageSourceStatus(m);
+        const j = judgeReadiness(healthy({ lowVolumeArming: armed({ pageSources: m }) }));
+        const sourceFinding = j.findings.find((f) => f.kind === "page-source-missing" || f.kind === "page-source-unmeasured");
+        const label = `${realBookings} real, ${unsourced} untagged, ${pages.filter((p) => p.recorded).length} pages recorded`;
+        eq(status.state === "recorded", bookingSourcesRecorded(m), `${label}: the alerts page shows floors exactly when the rule says recorded`);
+        if (realBookings === 0) {
+          eq(sourceFinding?.kind, "page-source-unmeasured", `${label}: both call it unmeasured`);
+        } else if (!bookingSourcesRecorded(m)) {
+          eq(sourceFinding?.detail, status.text, `${label}: the gate refuses in the alerts page's own words`);
+        } else if (pages.some((p) => !p.recorded)) {
+          eq(sourceFinding?.kind, "page-source-missing", `${label}: sources recorded, and a page with none is still named`);
+        } else {
+          eq(sourceFinding, undefined, `${label}: sources recorded and every page seen, so neither holds anything back`);
+          eq(j.exit, READINESS_EXIT.ready, `${label}: and the gate is READY`);
+        }
+        compared++;
+      }
+    }
+  }
+  eq(compared, 21, "every shape of the measurement was compared");
 }
 
 finish();
