@@ -95,6 +95,10 @@ export const CRON_ROUTES: Record<string, string | string[]> = {
     // deleted in one statement. Here with its siblings rather than on the
     // every-minute trigger for the reason given above.
     "/api/cron/prune-regal-calls",
+    // #2726: the alert_state rows of alerts keyed by booking, once that booking is
+    // a week past. One paged read per family, one bookings read and one delete, so
+    // it costs this invocation a handful of subrequests.
+    "/api/cron/prune-booking-alert-state",
   ],
   // Calendar hydration rotation (#1261): re-bootstrap a slice of the calendars every 15
   // minutes, sized from the live count so every calendar is refreshed at least once a day.

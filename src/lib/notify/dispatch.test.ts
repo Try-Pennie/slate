@@ -55,17 +55,30 @@ vi.mock("@/lib/supabase/admin", () => ({
               ? { data: null, error: { message: "statement timeout" } }
               : { data: rows.has(key) ? { last_sent_at: rows.get(key) } : null, error: null },
         }),
-        // The family read (#2593): a LIKE over the firing markers, bounded.
-        like: (_col: string, pattern: string) => ({
-          limit: async () => {
-            if (failReads.value) return { data: null, error: { message: "read timeout" } };
+        // The family read (#2593): a LIKE over the firing markers. It honours a
+        // `.limit(n)` and an ordered `.range(from, to)` the way PostgREST does, so a
+        // family bigger than one page is truncated by a single capped read exactly
+        // as production would truncate it (#2726).
+        like: (_col: string, pattern: string) => {
+          const matching = () => {
             const prefix = pattern.replace(/%$/, "").replace(/\\_/g, "_");
-            return {
-              data: [...rows.keys()].filter((k) => k.startsWith(prefix)).map((key) => ({ key })),
-              error: null,
-            };
-          },
-        }),
+            return [...rows.keys()]
+              .filter((k) => k.startsWith(prefix))
+              .sort()
+              .map((key) => ({ key }));
+          };
+          const refused = { data: null, error: { message: "read timeout" } };
+          return {
+            limit: async (n: number) =>
+              failReads.value ? refused : { data: matching().slice(0, Math.min(n, 1000)), error: null },
+            order: () => ({
+              range: async (from: number, to: number) =>
+                failReads.value
+                  ? refused
+                  : { data: matching().slice(from, Math.min(to + 1, from + 1000)), error: null },
+            }),
+          };
+        },
         // The bulk firing-marker read (#1134).
         in: async (_col: string, keys: string[]) =>
           failReads.value
@@ -385,6 +398,16 @@ describe("resolveAlert recovery notice (#1133)", () => {
       await sendThrottledAlert("booking_below_lead_tier:bk-1", COOLDOWN, "below");
       await resolveAlert("booking_below_lead_tier:bk-1", "fine now");
       expect(await firingFamilyMembers("booking_below_lead_tier")).toEqual([]);
+    });
+
+    it("reads EVERY member of a family bigger than one PostgREST page (#2726)", async () => {
+      // A capped single read returns the first 1,000 and stops, so the members past
+      // it would never be cleared and the family would read as smaller than it is.
+      const ids = Array.from({ length: 2345 }, (_, i) => `bk-${String(i).padStart(5, "0")}`);
+      for (const id of ids) rows.set(firingKey(`booking_below_lead_tier:${id}`), new Date().toISOString());
+      const members = await firingFamilyMembers("booking_below_lead_tier");
+      expect(members.length).toBe(ids.length);
+      expect(new Set(members)).toEqual(new Set(ids));
     });
 
     it("THROWS when the read fails, so a caller can never clear off a list it did not get", async () => {
