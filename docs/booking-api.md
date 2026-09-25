@@ -451,6 +451,24 @@ and for a lead moving the call they already have, told apart by `data.outcome`,
 `/my-offers/result/booking-confirmed?bookingId=<id>&submissionId=<id>`, and that
 page fetches this lookup server side with its own key.
 
+**Look the booking up with the lead id from the EVENT, never with one your page
+re-derives** (#2750). A moved call keeps the lead id it was first booked under. A
+person who submits twice holds two lead records, and if they move the call they
+already have from the second page, that page's lead id does not own the booking,
+so a by id lookup sent with it is refused with `404` (above). The success events
+therefore carry two different lead ids, and they are different on purpose:
+
+| Where | Whose id |
+|---|---|
+| `bookingSuccessful` `data.booking.salesforceId` / `data.booking.externalId` | the BOOKING's, as stored |
+| `bookingSuccessfulV2` / `rescheduleBookingSuccessfulV2` `data.salesforceId` / `data.externalId` | the BOOKING's, as stored |
+| `bookingSuccessful` `data.salesforceId` (beside `booking`) | the PAGE's, as the page passed it |
+
+Read `uid` (V2) or `booking.id` together with the booking's `salesforceId`, and
+pass that as `externalId`. On a fresh booking the two lead ids agree; on a moved
+call only the booking's finds it. Either id field may be `null` when the booking
+holds none; it is never filled in from the page.
+
 By-id not found / not owned / status mismatch → `404 { "code": "NOT_FOUND" }`.
 
 ---

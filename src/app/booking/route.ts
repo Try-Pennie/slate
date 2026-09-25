@@ -46,6 +46,7 @@ import { noStore } from "@/lib/api/no-store";
 import { recordApiOutcome } from "@/lib/monitor/record-api-outcome";
 import { log } from "@/lib/log";
 import { partnerKeysFrom } from "@/lib/booking/partner-keys";
+import { bookingIdentityFrom } from "@/lib/booking/booking-identity";
 import { REFERRER_ORIGIN_MAX_CHARS, readReferrerOrigin } from "@/lib/embed/referrer-origin";
 import type { BookingOriginFacts } from "@/lib/monitor/offsite-origin";
 
@@ -331,6 +332,9 @@ async function handlePost(req: NextRequest) {
     recordApiOutcome("created", parsed.data.bucketCode, null, { by: "bucket", code: parsed.data.bucketCode, host });
     return NextResponse.json({
       id: booking.id,
+      // #2750: the lead ids the booking is STORED under, which the host looks it up
+      // by. On a fresh booking they are the page's; they differ on a moved call.
+      ...bookingIdentityFrom(booking),
       startsAt: booking.starts_at,
       endsAt: booking.ends_at,
       manageUrl,

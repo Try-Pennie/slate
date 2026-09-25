@@ -30,7 +30,7 @@
  *   bookerReopened                the modal opened again on this page             {}
  *   bookerReloaded                the modal iframe loaded a second time           {}
  *   linkFailed                    the booker could not be used                    { code, msg }
- *   bookingSuccessfulV2           a fresh booking                                 { uid, startTime, endTime, status, isTest }
+ *   bookingSuccessfulV2           a fresh booking                                 { uid, startTime, endTime, status, isTest, salesforceId, externalId }
  *   rescheduleBookingSuccessfulV2 a lead moved the call they already had          same shape
  *   bookingCancelled              the in embed cancel succeeded                   { booking: { uid, startTime, endTime, cancellationReason } }
  *   bookingSuccessful             UNCHANGED: fresh and moved alike                { booking, salesforceId, outcome }
@@ -39,6 +39,13 @@
  * A host records a booking from bookingSuccessfulV2 OR from bookingSuccessful,
  * never both: they announce the same booking. No event carries the lead's
  * contact.
+ *
+ * Two lead ids, and they differ on a moved call (#2750). `booking.salesforceId`,
+ * `booking.externalId` and the V2 events' `salesforceId` / `externalId` are the
+ * ids the BOOKING is stored under; the `salesforceId` beside `booking` in
+ * bookingSuccessful is the PAGE's. A moved call keeps the lead id it was first
+ * booked with, so a host looks a booking up with the id from the event's booking,
+ * never with one it re-derives from its own page.
  *
  * The modal frame is built on the FIRST open and kept across close and reopen
  * (#2678), the way cal.com keeps its modal: closing hides the overlay, and the
@@ -896,6 +903,11 @@
       endTime: b.endsAt,
       status: "confirmed",
       isTest: b.isTest,
+      // #2750: the booking's OWN lead ids, never the page's `data.salesforceId`,
+      // which is a different lead on a call moved from a second submission. Null
+      // rather than borrowed from the page when the booking names none.
+      salesforceId: b.salesforceId == null ? null : b.salesforceId,
+      externalId: b.externalId == null ? null : b.externalId,
     };
   }
 

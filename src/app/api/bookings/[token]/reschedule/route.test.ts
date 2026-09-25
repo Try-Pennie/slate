@@ -536,3 +536,34 @@ describe("POST /api/bookings/[token]/reschedule partner join keys (#2659)", () =
     expect(body.regalProfileId).toBeNull();
   });
 });
+
+// #2750: a moved call keeps the lead id it was FIRST booked under, and the host's
+// confirmed page looks it up by that id (the by id lookup refuses a booking the
+// caller's id does not own, #2657). So the move's response, which the Booker
+// posts to the host, carries the booking's own stored ids, never the page's.
+describe("POST /api/bookings/[token]/reschedule carries the booking's own identity (#2750)", () => {
+  it("answers the ORIGINAL lead's salesforceId and externalId off the moved booking", async () => {
+    service.rescheduleBooking.mockResolvedValueOnce({
+      booking: {
+        id: "bk1",
+        starts_at: "2026-07-01T15:00:00.000Z",
+        ends_at: "2026-07-01T15:30:00.000Z",
+        salesforce_id: "00QOriginal0001",
+        external_id: "00QOriginalExt1",
+      },
+      manageUrl: "https://slate.test/booking/manage/tok1",
+    });
+    const body = await (await POST(req({ start: "2026-07-01T15:00:00.000Z", reason: "schedule_conflict" }), params)).json();
+    expect(body).toMatchObject({ id: "bk1", salesforceId: "00QOriginal0001", externalId: "00QOriginalExt1" });
+  });
+
+  it("answers null, never absent, for an id the booking does not hold", async () => {
+    service.rescheduleBooking.mockResolvedValueOnce({
+      booking: { id: "bk1", starts_at: "2026-07-01T15:00:00.000Z", ends_at: "2026-07-01T15:30:00.000Z", salesforce_id: null, external_id: null },
+      manageUrl: "https://slate.test/booking/manage/tok1",
+    });
+    const body = await (await POST(req({ start: "2026-07-01T15:00:00.000Z", reason: "schedule_conflict" }), params)).json();
+    expect(body).toHaveProperty("salesforceId", null);
+    expect(body).toHaveProperty("externalId", null);
+  });
+});
