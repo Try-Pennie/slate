@@ -2,12 +2,12 @@
  * Phase 2 of #1956: re-fitting the low volume floors from Slate's OWN bookings once
  * Slate carries the traffic.
  *
- * NOT WIRED TO LIVE DATA YET, deliberately. Slate has taken no real customer
- * traffic, and learning needs a declared end to the ramp, which does not exist
- * until cutover is finished. So the monitor reads the cal.com measurement
- * (`volume-baseline.ts`) and this module is exercised only by fixtures in
- * scripts/test-volume-learning.ts. Turning it on means reading the post ramp
- * bookings and passing a real `rampEndMs`, and the fixtures say what it will do.
+ * WIRED, AND INERT UNTIL A PERSON DECLARES THE RAMP OVER (#2739). An admin sets
+ * the ramp end on /admin/alerts; until then `volume-relearn.ts` reads nothing, and
+ * the monitor judges against the cal.com measurement (`volume-baseline.ts`). Once
+ * it is set, the monitor lane refits from Slate's own bookings once a day and
+ * stores the result, and the fixtures in scripts/test-volume-learning.ts say what
+ * a refit does.
  *
  * Three traps each turn a self learning floor into an alarm that can never fire,
  * and each has its own guard here:
@@ -78,7 +78,7 @@ function seriesOf(bookings: number[], startMs: number, endMs: number): BookingSe
 }
 
 /** Every learned floor held at or above the anchor's, cell by cell. */
-function underpin(learned: FloorCell[][], anchor: FloorCell[][]): FloorCell[][] {
+export function underpin(learned: FloorCell[][], anchor: FloorCell[][]): FloorCell[][] {
   return learned.map((day, d) =>
     day.map((cell, h) => ({
       floor30: Math.max(cell.floor30, anchor[d]?.[h]?.floor30 ?? 0),

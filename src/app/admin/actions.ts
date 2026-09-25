@@ -84,6 +84,7 @@ import {
   ALERT_KEYS as MONITOR_ALERT_KEYS,
   type MonitorAlertKey,
 } from "@/lib/monitor/settings";
+import { parseRampEndForm } from "@/lib/monitor/volume-relearn";
 import {
   coerceReasonOptionsForm,
   parseReasonOptionsForm,
@@ -1034,6 +1035,63 @@ export async function setMonitorSettings(form: FormData): Promise<void> {
   __clearChannelCache();
   revalidatePath("/admin/alerts");
   redirect(`/admin/alerts${savedQuery("alerts")}`);
+}
+
+/**
+ * Declare, change or clear the day the booking ramp ended (#2739). Admin only, the
+ * same gate as the rest of /admin/alerts.
+ *
+ * Its own action rather than a field on the settings form, because it is the one
+ * setting on that page whose effect arrives WEEKS later with nobody watching: from
+ * this date the monitor lane refits the low volume floors from Slate's own bookings.
+ * So the page confirms it with that consequence named, and a save of the cooldowns
+ * can never touch it.
+ *
+ * Refused before the audit entry and the saved notice (#2379). The audit entry
+ * carries the date before and after, because "what did the alarm judge against on a
+ * given day" is answered from the trail (L529).
+ */
+export async function setVolumeRampEnd(form: FormData): Promise<void> {
+  const admin = await requireAdmin();
+  const parsed = parseRampEndForm({
+    intent: String(form.get("intent") ?? ""),
+    rampEnd: String(form.get("ramp_end") ?? ""),
+  });
+  if (!parsed.ok) redirect(`/admin/alerts${refusedQuery(parsed.error)}#volume-learning`);
+
+  const db = supabaseAdmin();
+  const before = unwrap(
+    await db.from("monitor_alert_config").select("volume_ramp_end_on").eq("id", 1).maybeSingle(),
+    "volume ramp end before",
+  ) as { volume_ramp_end_on: string | null } | null;
+  const from = before?.volume_ramp_end_on ?? null;
+
+  // Clearing also drops the stored refit, so declaring the same date again later
+  // starts from a fresh refit rather than bringing back floors fitted weeks ago.
+  const { error } = await db.from("monitor_alert_config").upsert(
+    {
+      id: 1,
+      volume_ramp_end_on: parsed.rampEndOn,
+      ...(parsed.rampEndOn === null ? { volume_learning: null } : {}),
+      updated_at: new Date().toISOString(),
+      updated_by: admin.id,
+    },
+    { onConflict: "id" },
+  );
+  if (error) {
+    redirect(`/admin/alerts${refusedQuery(writeRefused("The ramp end", error))}#volume-learning`);
+  }
+
+  await recordAudit({
+    orgId: admin.org_id,
+    actorId: admin.id,
+    action: "monitor.volume_ramp_end",
+    details: { from, to: parsed.rampEndOn },
+  });
+  revalidatePath("/admin/alerts");
+  redirect(
+    `/admin/alerts${savedQuery(parsed.rampEndOn === null ? "volume-ramp-end-cleared" : "volume-ramp-end-set")}#volume-learning`,
+  );
 }
 
 /**

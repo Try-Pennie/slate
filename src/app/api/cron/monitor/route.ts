@@ -89,6 +89,9 @@ import {
   customerBookingFromSourcesSince,
   listCustomerBookingSourcesSince,
 } from "@/lib/monitor/customer-bookings";
+import { listBookingStampsBetween } from "@/lib/monitor/volume-learning-bookings";
+import { runVolumeRelearn } from "@/lib/monitor/volume-relearn";
+import { MEASURED_VOLUME_BASELINE } from "@/lib/monitor/volume-baseline";
 import { runPageVolumeCheck, type PageVolumeResult } from "@/lib/monitor/page-volume";
 import { MEASURED_PAGE_BASELINES } from "@/lib/monitor/page-volume-baseline";
 import {
@@ -1097,6 +1100,50 @@ export async function GET(req: NextRequest) {
         // each clear NOTHING about that page.
         resolveRecovered: (recovered) => resolveRecovered(recovered),
         log: (fields) => log.info("monitor", { msg: "page booking volume", ...fields }),
+      }),
+    );
+
+    // --- Relearning the low volume floors from Slate's own bookings (#2739) ---
+    // Inert until an admin declares the ramp over on /admin/alerts: with no ramp
+    // end it reads the one config row and stops. Once declared it refits at most
+    // once a day and stores the result, which the NEXT tick's settings read puts in
+    // force. Deliberately outside the business hours gate, since a refit reads
+    // history rather than the minutes just gone. Every failure throws, so this
+    // boundary logs it and the step streak pages `monitor_step_failing:volume_learning`;
+    // nothing is written on the way, so the floors in force stay exactly as they
+    // were, and a refit that did not land is due again on the next tick.
+    await steps.run("volume_learning", null, () =>
+      runVolumeRelearn({
+        nowMs: now,
+        anchor: MEASURED_VOLUME_BASELINE,
+        readConfig: async () => {
+          // Its own read rather than `settings`, which falls back to defaults on a
+          // failed read by design: here an unreadable row must throw, not read as
+          // "no ramp end declared".
+          const row = unwrap(
+            await db
+              .from("monitor_alert_config")
+              .select("volume_ramp_end_on, volume_learning")
+              .eq("id", 1)
+              .maybeSingle(),
+            "volume learning config",
+          ) as { volume_ramp_end_on: string | null; volume_learning: unknown } | null;
+          return { rampEndOn: row?.volume_ramp_end_on ?? null, learning: row?.volume_learning ?? null };
+        },
+        readBookings: (sinceIso, untilIso) => listBookingStampsBetween(db, sinceIso, untilIso),
+        save: async (state) => {
+          // An UPDATE of the two machine columns only, never an upsert: it must not
+          // touch the settings a person saved, nor the updated_at and updated_by the
+          // page reports as the last human change.
+          const written = unwrap(
+            await db.from("monitor_alert_config").update({ volume_learning: state }).eq("id", 1).select("id"),
+            "volume learning write",
+          ) as { id: number }[] | null;
+          if (!written || written.length === 0) {
+            throw new Error("volume learning: the settings row was not there to write the refit to");
+          }
+        },
+        log: (fields) => log.info("monitor", { msg: "volume learning", ...fields }),
       }),
     );
 

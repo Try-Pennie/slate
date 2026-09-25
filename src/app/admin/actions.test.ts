@@ -303,6 +303,7 @@ import {
   replayFailedWebhooks,
   setWebhookEndpoint,
   setMonitorSettings,
+  setVolumeRampEnd,
   setUserLifecycle,
   setBookable,
   syncSalesforceNow,
@@ -773,6 +774,62 @@ describe("setWebhookEndpoint URL scheme guard (#1032)", () => {
 // explicit null (never 0), an out-of-range value must refuse to save, each row is
 // written whole so clearing one field can't wipe a sibling, and the actor is
 // stamped. The real parser runs; only auth, DB, audit and redirect are mocked.
+// #2739: the day the booking ramp ended, which starts the low volume floors
+// learning from Slate's own bookings. Its own action, confirmed on the page, and
+// audited with the date before and after.
+describe("setVolumeRampEnd (#2739)", () => {
+  beforeEach(() => {
+    auth.requireAdmin.mockResolvedValue(admin);
+    dbState.rowsByTable.monitor_alert_config = { volume_ramp_end_on: "2026-10-05" };
+  });
+
+  const configWrite = () => upsert.mock.calls.at(-1)?.[0] as Record<string, unknown> | undefined;
+
+  it("stores the date, stamps the admin, audits before and after, and says it saved", async () => {
+    await expect(setVolumeRampEnd(form({ intent: "set", ramp_end: "2026-10-12" }))).rejects.toThrow(
+      /NEXT_REDIRECT:\/admin\/alerts\?ok=volume-ramp-end-set#volume-learning/,
+    );
+    expect(configWrite()).toMatchObject({ id: 1, volume_ramp_end_on: "2026-10-12", updated_by: admin.id });
+    expect(upsert.mock.calls.at(-1)?.[1]).toEqual({ onConflict: "id" });
+    // Only its own columns: a ramp end save must never rewrite a floor or a switch,
+    // and changing the date keeps the stored refit, which the lane replaces at once.
+    expect(Object.keys(configWrite() ?? {}).sort()).toEqual(["id", "updated_at", "updated_by", "volume_ramp_end_on"]);
+    expect(recordAudit.mock.calls.at(-1)?.[0]).toMatchObject({
+      action: "monitor.volume_ramp_end",
+      actorId: admin.id,
+      details: { from: "2026-10-05", to: "2026-10-12" },
+    });
+  });
+
+  it("clears the date and the stored refit together", async () => {
+    await expect(setVolumeRampEnd(form({ intent: "clear" }))).rejects.toThrow(/ok=volume-ramp-end-cleared/);
+    expect(configWrite()).toMatchObject({ volume_ramp_end_on: null, volume_learning: null });
+    expect(recordAudit.mock.calls.at(-1)?.[0]).toMatchObject({ details: { from: "2026-10-05", to: null } });
+  });
+
+  it("refuses a set press with no date, and writes nothing", async () => {
+    await expect(setVolumeRampEnd(form({ intent: "set", ramp_end: "" }))).rejects.toThrow(/\?error=.*#volume-learning/);
+    expect(upsert).not.toHaveBeenCalled();
+    expect(recordAudit).not.toHaveBeenCalled();
+  });
+
+  it("refuses a refused write before the audit entry and the saved notice", async () => {
+    upsert.mockResolvedValueOnce({ error: { message: "permission denied" } } as never);
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    await expect(setVolumeRampEnd(form({ intent: "set", ramp_end: "2026-10-12" }))).rejects.toThrow(/\?error=/);
+    log.mockRestore();
+    expect(recordAudit).not.toHaveBeenCalled();
+    expect(revalidatePath).not.toHaveBeenCalled();
+  });
+
+  it("refuses when the current date cannot be read, rather than auditing a guessed one", async () => {
+    dbState.errorByTable.monitor_alert_config = { message: "read timeout" };
+    await expect(setVolumeRampEnd(form({ intent: "set", ramp_end: "2026-10-12" }))).rejects.toThrow(/read timeout|volume ramp end/);
+    expect(upsert).not.toHaveBeenCalled();
+    expect(recordAudit).not.toHaveBeenCalled();
+  });
+});
+
 describe("setMonitorSettings save path (#582)", () => {
   beforeEach(() => {
     auth.requireAdmin.mockResolvedValue(admin);

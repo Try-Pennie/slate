@@ -2,6 +2,7 @@ import { supabaseAdmin } from "@/lib/supabase/admin";
 import type { MonitorAlertConfig, MonitorSettings } from "@/lib/db/types";
 import type { FloorOverride, FloorPolicy } from "./volume-floors.ts";
 import { MEASURED_VOLUME_BASELINE } from "./volume-baseline.ts";
+import { baselineInForce } from "./volume-relearn.ts";
 
 /**
  * UI-tunable monitor alert settings (#571). Cooldowns and low-volume floors are
@@ -601,9 +602,13 @@ export function quietedAlarms(
  * window replaced only where a person set a value. Store (valid, including 0) wins
  * over env, and either one is an OVERRIDE of the measured floor at every hour,
  * reported as such so the page can show it beside the measurement it replaced.
+ *
+ * The baseline is the cal.com measurement until a ramp end is declared and a refit
+ * for it has been learned (#2739), and it is decided by `baselineInForce`, the one
+ * judge the admin page also reads, so the page and the alarm cannot disagree.
  */
 export function resolveFloors(
-  config: Pick<MonitorAlertConfig, "floor_30" | "floor_120"> | null,
+  config: Pick<MonitorAlertConfig, "floor_30" | "floor_120" | "volume_ramp_end_on" | "volume_learning"> | null,
   env: { floor30?: number; floor120?: number },
 ): FloorPolicy {
   const pick = (stored: number | null, envVal: number | undefined): FloorOverride | null =>
@@ -612,8 +617,12 @@ export function resolveFloors(
       : validNonNegInt(envVal)
         ? { value: envVal, origin: "env" }
         : null;
+  const inForce = baselineInForce(
+    { rampEndOn: config?.volume_ramp_end_on ?? null, learning: config?.volume_learning ?? null },
+    MEASURED_VOLUME_BASELINE,
+  );
   return {
-    baseline: MEASURED_VOLUME_BASELINE,
+    baseline: inForce.baseline,
     override30: pick(config?.floor_30 ?? null, env.floor30),
     override120: pick(config?.floor_120 ?? null, env.floor120),
   };
@@ -885,6 +894,8 @@ export async function loadMonitorSettings(): Promise<ResolvedMonitorSettings> {
         MonitorAlertConfig,
         | "floor_30"
         | "floor_120"
+        | "volume_ramp_end_on"
+        | "volume_learning"
         | "low_volume_armed"
         | "failure_rate_armed"
         | "availability_drift_armed"
@@ -901,7 +912,7 @@ export async function loadMonitorSettings(): Promise<ResolvedMonitorSettings> {
       db
         .from("monitor_alert_config")
         .select(
-          "floor_30, floor_120, low_volume_armed, failure_rate_armed, availability_drift_armed, roster_coverage_armed, awaiting_activation_armed, below_lead_tier_armed, regal_calls_armed",
+          "floor_30, floor_120, volume_ramp_end_on, volume_learning, low_volume_armed, failure_rate_armed, availability_drift_armed, roster_coverage_armed, awaiting_activation_armed, below_lead_tier_armed, regal_calls_armed",
         )
         .eq("id", 1)
         .maybeSingle(),
@@ -914,6 +925,8 @@ export async function loadMonitorSettings(): Promise<ResolvedMonitorSettings> {
         MonitorAlertConfig,
         | "floor_30"
         | "floor_120"
+        | "volume_ramp_end_on"
+        | "volume_learning"
         | "low_volume_armed"
         | "failure_rate_armed"
         | "availability_drift_armed"

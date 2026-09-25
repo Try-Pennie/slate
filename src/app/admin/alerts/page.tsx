@@ -5,7 +5,7 @@ import { currentUser } from "@/lib/auth";
 import { canEditOrgSettings } from "@/lib/auth/roles";
 import { consoleHiddenFor } from "@/lib/env";
 import { supabaseAdmin } from "@/lib/supabase/admin";
-import { setMonitorSettings, addRegalCallIgnore, removeRegalCallIgnore } from "@/app/admin/actions";
+import { setMonitorSettings, setVolumeRampEnd, addRegalCallIgnore, removeRegalCallIgnore } from "@/app/admin/actions";
 import { selectAllPages } from "@/lib/supabase/paginate";
 import { log } from "@/lib/log";
 import {
@@ -35,6 +35,12 @@ import {
   resolveFloors,
 } from "@/lib/monitor/settings";
 import { VolumeFloors } from "@/components/admin/VolumeFloors";
+import { VolumeLearning, type PageCoverageView } from "@/components/admin/VolumeLearning";
+import { baselineInForce, type BaselineInForce } from "@/lib/monitor/volume-relearn";
+import { learningStatusCopy } from "@/lib/monitor/volume-relearn-copy";
+import { MEASURED_VOLUME_BASELINE } from "@/lib/monitor/volume-baseline";
+import { LOW_PAGES, pageCoverage } from "@/lib/monitor/page-volume";
+import { MEASURED_PAGE_BASELINES } from "@/lib/monitor/page-volume-baseline";
 import { floorTable } from "@/lib/admin/volume-floor-table";
 import { loadBusinessHours } from "@/lib/booking/business-hours-load";
 import { SubmitButton } from "@/components/ui/SubmitButton";
@@ -48,13 +54,26 @@ import type { MonitorAlertConfig, MonitorSettings, User } from "@/lib/db/types";
 
 export const dynamic = "force-dynamic";
 
+// Module scope so the clock read does not trip react-hooks/purity in render: the
+// learning status says how long ago the last refit ran, which needs the present.
+function learningStatusNow(state: BaselineInForce) {
+  return learningStatusCopy(state, Date.now());
+}
+
+/** The two outcomes the learning section confirms in place rather than at the top. */
+const LEARNING_OUTCOMES = new Set(["volume-ramp-end-set", "volume-ramp-end-cleared"]);
+
 export default async function AlertSettingsPage({
   searchParams,
 }: {
   searchParams: Promise<{ ok?: string; error?: string }>;
 }) {
   const sp = await searchParams;
-  const saved = savedSentence(savedOutcome(sp.ok));
+  const outcome = savedOutcome(sp.ok);
+  const saved = savedSentence(outcome);
+  // #2739: the ramp end form sits lower on the page, and its confirmation is drawn
+  // beside it, where the person pressed, rather than above the fold (L608).
+  const savedHere = outcome !== null && LEARNING_OUTCOMES.has(outcome);
   const me = await currentUser();
   if (!me) redirect("/login");
   if (consoleHiddenFor(me.role)) redirect("/admin/ooo");
@@ -64,6 +83,9 @@ export default async function AlertSettingsPage({
   // a migrate-before-deploy window, and a missing table must not 500 the page.
   let rows: MonitorSettings[] = [];
   let config: MonitorAlertConfig | null = null;
+  // #2739: whether the config row was READ, so the learning section can say it
+  // could not tell rather than reporting "no ramp end declared" off a failed read.
+  let configReadable = false;
   try {
     const db = supabaseAdmin();
     const [cooldowns, cfg] = await Promise.all([
@@ -72,6 +94,7 @@ export default async function AlertSettingsPage({
     ]);
     if (!cooldowns.error && cooldowns.data) rows = cooldowns.data as MonitorSettings[];
     if (!cfg.error && cfg.data) config = cfg.data as MonitorAlertConfig;
+    configReadable = !cfg.error;
   } catch {
     // Fall through to empty (defaults shown as placeholders).
   }
@@ -89,6 +112,14 @@ export default async function AlertSettingsPage({
   // #1956: the measured floors and anything replacing them, through the same
   // resolver the monitor uses, so the page shows what the alarm will judge against.
   const floorPolicy = resolveFloors(config, envFloors());
+  // #2739: which baseline that is, through the judge `resolveFloors` itself used, so
+  // the words and the floors cannot disagree.
+  const learning = learningStatusNow(
+    baselineInForce(
+      { rampEndOn: config?.volume_ramp_end_on ?? null, learning: config?.volume_learning ?? null },
+      MEASURED_VOLUME_BASELINE,
+    ),
+  );
   // The org's week decides which hours the floor table shows. Unreadable is its
   // own state (every hour shown, and said), never an empty table (L10).
   let week: { rules: { weekday: number; start_minute: number; end_minute: number }[] } | null = null;
@@ -129,6 +160,14 @@ export default async function AlertSettingsPage({
   } catch (err) {
     log.error("admin-alerts", { msg: "regal ignore list unreadable" }, err instanceof Error ? err : undefined);
   }
+
+  // #2738's per page coverage, against the same week the floor tables use.
+  const coverage: PageCoverageView[] | null = week
+    ? LOW_PAGES.map((page) => {
+        const c = pageCoverage(page, MEASURED_PAGE_BASELINES[page.id], week);
+        return { id: page.id, name: page.name, open: c.open, judged: c.judged };
+      })
+    : null;
 
   const storedByKey = new Map(rows.map((r) => [r.key, r.cooldown_min]));
   // #1289: every alarm currently quieter than its coded default. Read through the
@@ -173,7 +212,7 @@ export default async function AlertSettingsPage({
           that saved rather than whatever this page had written down. An
           unrecognised value (a bookmarked `?ok=1` from before outcomes were
           named) shows nothing, rather than confirming a save nobody made. */}
-      {saved && <SettingsSaveNotice ok saved={saved} error={sp.error} />}
+      {saved && !savedHere && <SettingsSaveNotice ok saved={saved} error={sp.error} />}
       {sp.error && !saved && <SettingsSaveNotice ok={false} error={sp.error} saved="" />}
       {!armed && (
         <div className="rounded-md border border-border bg-[var(--bg-alt)] px-5 py-4 text-sm text-fg-muted">
@@ -366,6 +405,7 @@ export default async function AlertSettingsPage({
               that used to be the primary input are an override of that now. */}
           <VolumeFloors
             baseline={floorPolicy.baseline}
+            inForce={learning.inForce}
             table={floorTable(floorPolicy.baseline, week)}
             weekReadable={week !== null}
             override30={floorPolicy.override30}
@@ -579,6 +619,26 @@ export default async function AlertSettingsPage({
         </div>
       </SaveForm>
 
+      {/* #2739. Outside the settings form on purpose, like the ignore list below:
+          the ramp end is its own confirmed action, and a nested form is not valid
+          markup. Directly under the form, so it sits after the floors it changes. */}
+      {configReadable ? (
+        <VolumeLearning
+          rampEndOn={config?.volume_ramp_end_on ?? null}
+          detail={learning.detail}
+          coverage={coverage}
+          notice={savedHere && saved ? <SettingsSaveNotice ok saved={saved} error={sp.error} /> : undefined}
+          action={setVolumeRampEnd}
+        />
+      ) : (
+        <section id="volume-learning" className={cardCls}>
+          <h2 className="mb-1 text-sm font-semibold">Learning the floors from Slate&apos;s bookings</h2>
+          <UnreadableNotice>
+            The alert settings could not be read, so this page cannot say whether a ramp end is set
+            or which floors are in force. Nothing has changed; reload to try again.
+          </UnreadableNotice>
+        </section>
+      )}
       {/* #2090. Outside the settings form on purpose: each add and each removal is
           its own action with its own confirmation, and a nested form is not valid
           markup. */}
