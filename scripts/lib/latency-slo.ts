@@ -87,3 +87,115 @@ export function judgeLatency(
   }
   return { medianMs, regressed: false, message: null };
 }
+
+/**
+ * How long to wait before re-measuring a batch that came in over budget (#2811).
+ *
+ * Measured, not chosen: 590 canary runs from 2026-09-11 to 2026-09-26 went over budget
+ * 10 times, and the NEXT run after every one of them read between 38ms and 204ms. The
+ * slow stretches inside those runs span a few seconds (one batch's five requests), so a
+ * two minute pause outlasts every one on record while keeping the job far inside its
+ * 15 minute timeout. It is paid only on the rare over-budget batch, never on a healthy run.
+ */
+export const LATENCY_RECHECK_DELAY_MS = 2 * 60_000;
+
+/**
+ * What one canary pass concluded about latency, after any recheck.
+ *
+ *  - `not-measured`        the first batch had nothing to judge. Not a page, and not a
+ *                          measured reading either, so it stamps no verdict (#1700).
+ *  - `healthy`             the first batch was inside the budget.
+ *  - `passing-blip`        over budget, then inside it on the recheck. Logged, not paged.
+ *  - `confirmed`           over budget on both batches. Pages.
+ *  - `recheck-unmeasured`  over budget, and the recheck got no usable readings. Pages,
+ *                          because the only thing known is that the read was slow.
+ */
+export type LatencyRunKind =
+  | "not-measured"
+  | "healthy"
+  | "passing-blip"
+  | "confirmed"
+  | "recheck-unmeasured";
+
+export interface LatencyRun {
+  kind: LatencyRunKind;
+  /** True when this pass must page. */
+  page: boolean;
+  /** True when a real median was read, pass or fail: the #1700 verdict stamp. */
+  measured: boolean;
+  /** One sentence for the log, and for the failure log when `page` is true. */
+  message: string | null;
+  first: LatencyVerdict;
+  recheck: LatencyVerdict | null;
+}
+
+export interface LatencyRunDeps {
+  /** Take one batch of `LATENCY_SAMPLES` timed reads, in order, errors left out. */
+  takeBatch: () => Promise<number[]>;
+  /** Injected so a test never waits for real (L524). */
+  sleep: (ms: number) => Promise<void>;
+  budgetMs?: number;
+  recheckDelayMs?: number;
+}
+
+const ms = (n: number | null) => `${Math.round(n ?? 0)}ms`;
+
+/**
+ * Measure, and re-measure once before paging (#2811).
+ *
+ * One slow batch paged on its own before this, and in the whole recorded history that
+ * was never the start of a real regression. A cache-first read that has stopped being
+ * cache-first is slow on EVERY read, so it is slow on the recheck too and still pages
+ * in the same run.
+ */
+export async function measureLatency(deps: LatencyRunDeps): Promise<LatencyRun> {
+  const budgetMs = deps.budgetMs ?? AVAILABILITY_P50_BUDGET_MS;
+  const delayMs = deps.recheckDelayMs ?? LATENCY_RECHECK_DELAY_MS;
+  const first = judgeLatency(await deps.takeBatch(), budgetMs);
+  if (first.medianMs === null) {
+    return { kind: "not-measured", page: false, measured: false, message: first.message, first, recheck: null };
+  }
+  if (!first.regressed) {
+    return { kind: "healthy", page: false, measured: true, message: null, first, recheck: null };
+  }
+  await deps.sleep(delayMs);
+  const recheck = judgeLatency(await deps.takeBatch(), budgetMs);
+  const wait = `${Math.round(delayMs / 60_000)} minutes`;
+  if (recheck.medianMs === null) {
+    return {
+      kind: "recheck-unmeasured",
+      page: true,
+      measured: true,
+      message:
+        `availability read median ${ms(first.medianMs)}, past the ${budgetMs}ms budget, and it could not be ` +
+        `re-measured ${wait} later (no usable readings), so it cannot be ruled a passing blip. Look for a read ` +
+        `that has stopped being served from the cache, and at whether the endpoint is answering at all.`,
+      first,
+      recheck,
+    };
+  }
+  if (!recheck.regressed) {
+    return {
+      kind: "passing-blip",
+      page: false,
+      measured: true,
+      message:
+        `availability read median ${ms(first.medianMs)} was past the ${budgetMs}ms budget, and ` +
+        `${ms(recheck.medianMs)} on a recheck ${wait} later, so it was a slow minute and nobody is paged.`,
+      first,
+      recheck,
+    };
+  }
+  return {
+    kind: "confirmed",
+    page: true,
+    measured: true,
+    message:
+      `availability read median ${ms(first.medianMs)}, and ${ms(recheck.medianMs)} again on a recheck ${wait} ` +
+      `later, both past the ${budgetMs}ms budget. That is an order of magnitude above the warm cached read and ` +
+      `it did not pass, so look for a read that has stopped being served from the cache rather than for a slow ` +
+      `datacenter.`,
+    first,
+    recheck,
+  };
+}

@@ -22,6 +22,7 @@ import {
   REGAL_CALLS_VERDICT_LANE,
   BURST_COUNTER_VERDICT_LANE,
   KILL_SWITCH_VERDICT_LANE,
+  AVAILABILITY_LATENCY_VERDICT_LANE,
   BELOW_LEAD_TIER_VERDICT_LANE,
   ROSTER_COVERAGE_VERDICT_LANE,
   AVAILABILITY_SCAN_VERDICT_LANE,
@@ -340,6 +341,18 @@ const VERDICT_SUBJECT: Record<string, { what: string; cost: string; look: string
     look:
       "whether the nightly kill-switch workflow ran at all in the Actions tab, then what its " +
       "last run said, since it ends on a different exit code for each way the check can fail",
+  },
+  [AVAILABILITY_LATENCY_VERDICT_LANE]: {
+    what: "the smoke canary's check on how fast the booker's availability read answers",
+    cost:
+      "a read that has stopped being served from the cache would go unreported, and leads would " +
+      "wait on it before seeing a single time",
+    // The canary runs every 30 minutes and pages under its own name when it stops, so the
+    // first place to look is a run that DID happen: its latency step says why it had no
+    // usable reading, one line per refused request.
+    look:
+      "the Availability latency step of the last smoke canary run in the Actions tab, whose " +
+      "lines say what each request answered instead of a timing",
   },
   [TWILIO_ROSTER_VERDICT_LANE]: {
     what: "the hourly roster sync's Twilio half, which takes an agent out of the bookable pool when Twilio marks them redistribute",

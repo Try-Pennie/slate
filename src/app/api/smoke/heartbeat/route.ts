@@ -51,6 +51,10 @@ const CANARY_HEARTBEAT_LANES = new Set([
   // the workflow ran, so a run the deployment never answered, or one that stood down
   // because somebody had already stopped bookings, leaves it unstamped.
   "verdict:kill-switch",
+  // The availability latency reading the smoke canary takes (#1700). Same family
+  // and same rule: it records that the check read a real median, never that the
+  // step ran, so a run whose every request was refused leaves it unstamped.
+  "verdict:availability-latency",
 ]);
 
 export async function POST(req: NextRequest) {

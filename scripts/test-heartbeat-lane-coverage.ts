@@ -248,6 +248,12 @@ for (const [mapName, bounds] of Object.entries(BOUNDS)) {
       file: "kill-switch.yml",
       call: /lane=verdict:kill-switch(?![\w:-])/,
     },
+    // #1700: the canary's latency check, stamped only when it read a real median.
+    {
+      lane: "verdict:availability-latency",
+      file: "smoke-canary.yml",
+      call: /lane=verdict:availability-latency(?![\w:-])/,
+    },
   ];
   // Anchored on a word boundary, never a bare substring. `includes("lane=router-replay")`
   // is satisfied by `lane=router-replay-typo`, and the first version of this guard

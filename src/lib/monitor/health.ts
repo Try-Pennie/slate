@@ -534,6 +534,17 @@ export const VERDICT_STALE_BOUNDS_MS: Record<string, number> = {
   // so editing the cron or the timeout without revisiting this fails the build, and it
   // also refuses a bound with days of slack in it.
   "verdict:kill-switch": 52 * 60 * MIN,
+  // The smoke canary's latency reading (#1700), stamped by the 30 minute canary
+  // workflow whenever the check read a real median.
+  //
+  // 6 hours, which is four times the canary's OWN 90 minute bound, and that ratio is
+  // the point. A canary that is not running at all leaves this unstamped too, and it
+  // must page under its own name first (`smoke-canary`, which the monitor lane also
+  // refires), so this page means one thing: the canary IS running and the latency
+  // step specifically has stopped measuring. The longest measured-reading gap in 590
+  // runs (2026-09-11 to 2026-09-26) was three hours, and it was exactly that case, a
+  // canary whose jobs failed before any step started.
+  "verdict:availability-latency": 6 * 60 * MIN,
   // The booking below the lead's Salesforce tier check (#2593). It concludes on
   // every 5 minute tick that compares at least one upcoming booking, and once
   // real leads book there is always one: calls are booked days ahead, so Friday
