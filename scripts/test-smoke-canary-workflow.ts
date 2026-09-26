@@ -8,6 +8,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { assert, eq, finish } from "./lib/harness.ts";
+import { LATENCY_RECHECK_DELAY_MS } from "./lib/latency-slo.ts";
 
 const ROOT = join(import.meta.dirname, "..");
 const wf = readFileSync(join(ROOT, ".github", "workflows", "smoke-canary.yml"), "utf8");
@@ -232,6 +233,48 @@ assert(/\/api\/smoke\/heartbeat/.test(wf), "stamps the smoke-canary heartbeat en
   assert(
     /if:\s*success\(\)/.test(stamp.slice(0, 300)),
     "the heartbeat is gated on success(), which a continue-on-error step leaves true",
+  );
+}
+
+// --- #1700: the latency check stamps a verdict whenever it MEASURED, pass or fail ---
+{
+  // Before this, a latency step that stopped getting usable readings said "not
+  // measured" every 30 minutes and exited 0, which reads exactly like a healthy pass.
+  const title = "Stamp the latency verdict";
+  const at = wf.indexOf(title);
+  assert(at > 0, "the canary has a step stamping the latency verdict");
+  const step = wf.slice(at, wf.indexOf("\n      - name:", at + 1));
+  const code = step
+    .split("\n")
+    .filter((l) => !/^\s*#/.test(l))
+    .join("\n");
+  assert(
+    /steps\.latency\.outputs\.measured == '1'/.test(code),
+    "it is gated on the latency step reporting a MEASURED reading, never on the step merely running",
+  );
+  // always(): a custom `if` without a status function gets success() ANDed in, and a
+  // confirmed regression is a measured verdict whose own step failed. Whether the check
+  // concluded and whether the read was fast are two facts (L53).
+  assert(/always\(\)/.test(code), "it runs even when the latency step itself failed on a real regression");
+  assert(
+    /lane=verdict:availability-latency(?![\w:-])/.test(code),
+    "and it stamps the availability latency verdict lane",
+  );
+  assert(
+    wf.indexOf("Availability latency (read path)") < at,
+    "and it comes after the latency step whose output it reads",
+  );
+  // Overlay control: a gate that dropped the measured condition must be caught by the
+  // same predicate, or the assertion above could be passing on the comment (L1).
+  assert(
+    !/steps\.latency\.outputs\.measured == '1'/.test(code.replace("steps.latency.outputs.measured == '1'", "true")),
+    "overlay control: removing the measured gate is caught",
+  );
+  // The step's timeout has to hold the recheck: two batches and the pause between.
+  const timeout = Number(/timeout-minutes:\s*(\d+)/.exec(wf)?.[1]);
+  assert(
+    Number.isFinite(timeout) && timeout * 60_000 > LATENCY_RECHECK_DELAY_MS + 5 * 60_000,
+    `the job timeout (${timeout} min) leaves room for the latency recheck pause on top of a normal run`,
   );
 }
 

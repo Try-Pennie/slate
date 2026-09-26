@@ -2779,6 +2779,18 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
       unreadable: false,
     }),
   },
+  // #1700: the canary's latency check, the third detector stamped by a GitHub workflow.
+  {
+    key: "cron_lane_stale:*",
+    state: "the canary latency check has stopped measuring",
+    channel: "alert",
+    text: verdictBlindAlertText({
+      lane: "verdict:availability-latency",
+      ageMs: 8 * 60 * 60_000,
+      maxStaleMs: VERDICT_STALE_BOUNDS_MS["verdict:availability-latency"],
+      unreadable: false,
+    }),
+  },
   // #2798: the five gated checks that answered a failed read with a status of
   // their own. Each gets its own page because each sends a reader to a different
   // log line, and the whole point is that the page names what went blind.

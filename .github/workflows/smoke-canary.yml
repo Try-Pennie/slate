@@ -154,6 +154,27 @@ jobs:
           SMOKE_FAILURE_FILE: smoke-failures.txt
         run: node --experimental-strip-types scripts/smoke-latency.ts
 
+      # #1700: stamped ONLY when the latency check read a real median, pass or fail,
+      # never merely because the step ran. A check whose every request was refused says
+      # "not measured" and exits 0 on purpose (the availability check already fails for
+      # that), so without this a check that has stopped measuring reads as a healthy one
+      # every 30 minutes. Left unstamped, the verdict goes stale and the lane watchdog
+      # pages (VERDICT_STALE_BOUNDS_MS).
+      #
+      # `always()` is load bearing. A confirmed regression fails the latency step, and
+      # without a status function GitHub ANDs `success()` into a custom `if`, which would
+      # skip the stamp on exactly the run that measured most clearly. Whether the check
+      # concluded and whether the read was fast are two different facts (L53).
+      - name: Stamp the latency verdict (a measured reading only)
+        if: always() && steps.pre.outputs.configured == '1' && steps.latency.outputs.measured == '1'
+        env:
+          BOOKING_API_KEY: ${{ secrets.BOOKING_API_KEY }}
+          SLATE_BASE_URL: ${{ vars.SLATE_BASE_URL }}
+        run: |
+          base="${SLATE_BASE_URL:-https://slate.trypennie.app}"
+          curl -fsS -X POST "${base%/}/api/smoke/heartbeat?lane=verdict:availability-latency" \
+            -H "authorization: Bearer $BOOKING_API_KEY"
+
       # #1006: the uptime canary proves the SERVER responds and cannot prove the
       # front end draws. cal.com is watched by a Checkly browser check that loads
       # the embedded scheduler and confirms the modal appears; Slate's embed had no

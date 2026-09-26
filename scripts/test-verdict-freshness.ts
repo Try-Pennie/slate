@@ -37,6 +37,7 @@ import {
   OFFSITE_ORIGIN_VERDICT_LANE,
   AWAITING_ACTIVATION_VERDICT_LANE,
   REGAL_CALL_FEED_VERDICT_LANE,
+  AVAILABILITY_LATENCY_VERDICT_LANE,
   laneWatchdogReachedVerdict,
   twilioRosterReachedVerdict,
   truthReachedVerdict,
@@ -202,6 +203,7 @@ const HOUR = 60 * 60_000;
         OFFSITE_ORIGIN_VERDICT_LANE,
         AWAITING_ACTIVATION_VERDICT_LANE,
         REGAL_CALL_FEED_VERDICT_LANE,
+        AVAILABILITY_LATENCY_VERDICT_LANE,
       ]
         .sort()
         .join(","),

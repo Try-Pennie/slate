@@ -122,6 +122,9 @@ const healthy = () => ({
   // GitHub workflow like the line above and carrying the same 52h bound. A healthy
   // fleet has last night's run in it.
   "verdict:kill-switch": ago(24 * 60 * MIN),
+  // #1700: the canary's latency reading, stamped from the 30 minute canary workflow
+  // whenever it read a real median, so a healthy fleet has one well inside the hour.
+  "verdict:availability-latency": ago(40 * MIN),
   // #2695: Regal has posted every completed call to Slate since 2026-09-24, so a
   // healthy fleet judges one on almost every monitor tick.
   "verdict:regal-calls": ago(10 * MIN),

@@ -13,8 +13,11 @@
 import {
   judgeLatency,
   median,
+  measureLatency,
   LATENCY_SAMPLES,
+  LATENCY_RECHECK_DELAY_MS,
   AVAILABILITY_P50_BUDGET_MS,
+  type LatencyRun,
 } from "./lib/latency-slo.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
@@ -100,6 +103,113 @@ eq(median([1, 2, 3, 10]), 2.5, "an even count takes the mean of the two middles"
     AVAILABILITY_P50_BUDGET_MS <= 2000,
     "and still low enough that a read a lead would notice is caught",
   );
+}
+
+// --- #2811: one slow batch is re-measured before anybody is paged -------------
+//
+// 590 canary runs from 2026-09-11 to 2026-09-26 went over budget 10 times, and the run
+// after every one of the 10 read between 38ms and 204ms. So a single slow batch has
+// never once been the start of a real regression, while it paged somebody about every
+// day and a half. The fixtures below are those runs' real samples.
+//
+// The fake takes batches off a list and records every sleep, so nothing here waits
+// for real (L524) and the pause itself is asserted rather than assumed.
+function fakeRun(batches: number[][]) {
+  const sleeps: number[] = [];
+  let taken = 0;
+  const deps = {
+    takeBatch: async () => batches[taken++] ?? [],
+    sleep: async (ms: number) => {
+      sleeps.push(ms);
+    },
+  };
+  return { deps, sleeps, taken: () => taken };
+}
+
+const ONE_OFF_2026_09_26 = [2162, 114, 353, 1090, 960]; // run 36252424908, median 657ms
+const NEXT_RUN_2026_09_26 = [166, 120, 51, 41, 45]; // run 36253396530, median 48ms
+const SUSTAINED = [700, 800, 900, 850, 820];
+
+{
+  const f = fakeRun([ONE_OFF_2026_09_26, NEXT_RUN_2026_09_26]);
+  const run: LatencyRun = await measureLatency(f.deps);
+  eq(run.kind, "passing-blip", "the 2026-09-26 one-off reads as a passing blip");
+  eq(run.page, false, "and pages nobody");
+  eq(run.measured, true, "while still counting as a measured reading");
+  eq(f.taken(), 2, "because a second batch was taken");
+  eq(f.sleeps, [LATENCY_RECHECK_DELAY_MS], "after exactly one pause of the recheck delay");
+  assert(
+    run.message !== null && /657ms/.test(run.message) && /48ms/.test(run.message),
+    `and the log line names both medians, so the blip is visible in the run (${run.message})`,
+  );
+}
+{
+  const f = fakeRun([SUSTAINED, SUSTAINED]);
+  const run = await measureLatency(f.deps);
+  eq(run.kind, "confirmed", "a read slow on both batches is a confirmed regression");
+  eq(run.page, true, "and it pages, in the same run rather than a cadence later");
+  assert(
+    run.message !== null && /835ms/.test(run.message) && /again/.test(run.message),
+    `the page names the recheck, so the reader knows it was not one slow minute (${run.message})`,
+  );
+  assert(run.message !== null && /cache/.test(run.message), "and still points at the cache");
+}
+{
+  // Slow, then the endpoint stops answering at all. That is not a blip to swallow: the
+  // one thing known is that it was slow, and nothing since says otherwise.
+  const f = fakeRun([SUSTAINED, []]);
+  const run = await measureLatency(f.deps);
+  eq(run.kind, "recheck-unmeasured", "a recheck with no usable readings is its own outcome");
+  eq(run.page, true, "and it pages rather than letting the slow reading go unreported");
+  assert(
+    run.message !== null && /could not be re-measured|no usable/.test(run.message),
+    `and says the recheck measured nothing, rather than claiming a confirmation (${run.message})`,
+  );
+}
+{
+  const f = fakeRun([NEXT_RUN_2026_09_26]);
+  const run = await measureLatency(f.deps);
+  eq(run.kind, "healthy", "a batch inside the budget is healthy");
+  eq(run.page, false, "pages nobody");
+  eq(run.measured, true, "and is a measured reading");
+  eq(f.taken(), 1, "with no second batch");
+  eq(f.sleeps, [], "and no pause, so a healthy run costs no extra minutes");
+}
+{
+  // #1700: the one outcome that must NOT count as measured.
+  const f = fakeRun([[42]]);
+  const run = await measureLatency(f.deps);
+  eq(run.kind, "not-measured", "a batch with nothing to judge is not measured");
+  eq(run.measured, false, "so it stamps no verdict");
+  eq(run.page, false, "and does not page either, for the reason judgeLatency gives");
+  eq(f.taken(), 1, "and it does not recheck something it never measured");
+}
+{
+  // The fixture list is the real history, so check it says what the comment claims.
+  const blips = [
+    [456, 68, 1192, 1140, 669],
+    [631, 87, 1092, 79, 987],
+    [1076, 963, 2067, 479, 71],
+    [1628, 1624, 1472, 1455, 1954],
+    [268, 146, 149, 1109, 1183],
+    [1437, 1331, 98, 75, 1302],
+    [473, 80, 1259, 1183, 75],
+    [1622, 1460, 273, 1068, 101],
+    [1104, 971, 2009, 110, 114],
+    ONE_OFF_2026_09_26,
+  ];
+  for (const b of blips) {
+    assert(judgeLatency(b).regressed, `the historical one-off ${JSON.stringify(b)} was over budget`);
+    const run = await measureLatency(fakeRun([b, NEXT_RUN_2026_09_26]).deps);
+    eq(run.page, false, `and with a healthy recheck it would not have paged (${JSON.stringify(b)})`);
+  }
+}
+{
+  // The pause has to be long enough to outlast the slow stretches in that history, which
+  // span one run's five requests (a few seconds), and short enough to leave the job well
+  // inside its 15 minute timeout.
+  assert(LATENCY_RECHECK_DELAY_MS >= 60_000, "the recheck waits at least a minute");
+  assert(LATENCY_RECHECK_DELAY_MS <= 5 * 60_000, "and no more than five, inside the job timeout");
 }
 
 finish();

@@ -157,6 +157,22 @@ export const CALENDAR_WINDOW_VERDICT_LANE = "verdict:calendar-window";
 export const OFFSITE_ORIGIN_VERDICT_LANE = "verdict:offsite-origin";
 export const AWAITING_ACTIVATION_VERDICT_LANE = "verdict:awaiting-activation";
 export const REGAL_CALL_FEED_VERDICT_LANE = "verdict:regal-call-feed";
+/**
+ * The smoke canary's availability latency reading (#1700), the third member of this
+ * family stamped from OUTSIDE the Worker.
+ *
+ * The latency check reports "not measured" and exits 0 when it gets no usable samples,
+ * deliberately, because a canary that could not reach the endpoint already fails on the
+ * availability check and failing twice for one cause stops an alert naming its cause.
+ * The cost was that nothing watched for that outcome repeating: a check that has
+ * stopped measuring and a read that keeps being fast looked the same every 30 minutes.
+ *
+ * So `.github/workflows/smoke-canary.yml` stamps this lane whenever the check read a
+ * REAL median, pass or fail. Which runs those are is decided beside the check itself,
+ * in `measureLatency` (`scripts/lib/latency-slo.ts`), since that script runs on bare
+ * node and cannot import this file.
+ */
+export const AVAILABILITY_LATENCY_VERDICT_LANE = "verdict:availability-latency";
 
 export type DetectorVerdictLane =
   | typeof TIER_STAFFING_VERDICT_LANE
@@ -175,7 +191,8 @@ export type DetectorVerdictLane =
   | typeof CALENDAR_WINDOW_VERDICT_LANE
   | typeof OFFSITE_ORIGIN_VERDICT_LANE
   | typeof AWAITING_ACTIVATION_VERDICT_LANE
-  | typeof REGAL_CALL_FEED_VERDICT_LANE;
+  | typeof REGAL_CALL_FEED_VERDICT_LANE
+  | typeof AVAILABILITY_LATENCY_VERDICT_LANE;
 
 /**
  * Did this availability truth tick compare real calendars and decide?
