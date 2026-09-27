@@ -41,9 +41,30 @@ export interface ClockShiftDecision {
   detail: string;
 }
 
-/** The runner's own summary line, which is the only thing this trusts. */
-const SUMMARY =
-  /^(?:PASS|FAIL): (\d+) passed, (\d+) failed in [\d.]+s \(concurrency \d+(?:, clock ([^)]*))?\)\s*$/m;
+/**
+ * The runner's own summary line, which is the only thing this trusts. Its shape is
+ * formatted by `formatRunSummary` (scripts/lib/run-summary.ts). The bracket holds
+ * `, ` separated fields, and the clock is read as ONE of them rather than captured
+ * up to the closing bracket: the tree write tripwire (#2733) added a field after
+ * the clock, the old capture read `+1d, tripwire on` as the clock, and every shift
+ * was reported unmeasured every night (#2813). A field added later must not be able
+ * to join the clock again.
+ */
+const SUMMARY = /^(?:PASS|FAIL): (\d+) passed, (\d+) failed in [\d.]+s \(([^)]*)\)\s*$/m;
+const CONCURRENCY_FIELD = /^concurrency \d+$/;
+const CLOCK_FIELD = "clock ";
+
+/**
+ * The fields inside the summary's bracket, or null when the bracket is not the
+ * runner's (its first field is always the concurrency). Returning null rather than
+ * an empty list keeps a malformed line on the no summary branch instead of letting
+ * it read as a run that reported no clock.
+ */
+function summaryFields(bracket: string): string[] | null {
+  const fields = bracket.split(",").map((f) => f.trim());
+  if (!CONCURRENCY_FIELD.test(fields[0] ?? "")) return null;
+  return fields;
+}
 const FAILED_LIST = /^Failed: (.+)$/m;
 
 /**
@@ -67,7 +88,8 @@ export function readShiftLog(
   });
 
   const m = SUMMARY.exec(log);
-  if (!m) {
+  const fields = m ? summaryFields(m[3] as string) : null;
+  if (!m || !fields) {
     return unmeasured(
       "the run left no summary line, so it died before the suite finished. Read the step's output.",
     );
@@ -79,7 +101,11 @@ export function readShiftLog(
   // branch gets taken with no error raised anywhere.
   const passed = Number(m[1]);
   const failed = Number(m[2]);
-  const clock = (m[3] ?? "").trim();
+  // No clock field reads as "", which the next check refuses as a run on today's
+  // date. Two clock fields cannot come from the formatter; taking the first keeps
+  // the comparison below an equality, so a stray second one cannot make it pass.
+  const clockField = fields.find((f) => f.startsWith(CLOCK_FIELD));
+  const clock = clockField ? clockField.slice(CLOCK_FIELD.length).trim() : "";
   const executed = passed + failed;
 
   // The clock the runner REPORTS, against the shift that was asked for. A hook that
