@@ -302,20 +302,62 @@ export function recomputeHeadroomRecovery(rearmMinutes: number): string {
   );
 }
 
+/** "1 bucket" / "3 buckets". */
+function bucketCount(n: number): string {
+  return `${n} ${n === 1 ? "bucket" : "buckets"}`;
+}
+
+/** "1 minute" / "6 minutes". */
+function minutesText(n: number): string {
+  return `${n} ${n === 1 ? "minute" : "minutes"}`;
+}
+
+/**
+ * "bucket 530", "buckets 530, 531 and 532", or "including buckets 411, ..." when
+ * the examples are only part of the stale set (the route passes at most five).
+ * The values are bucket CODES, the XBC codes the landing pages send.
+ */
+function staleBucketList(count: number, examples: string[]): string {
+  if (examples.length === 0) return "";
+  const noun = examples.length === 1 ? "bucket" : "buckets";
+  const joined =
+    examples.length === 1
+      ? examples[0]
+      : `${examples.slice(0, -1).join(", ")} and ${examples[examples.length - 1]}`;
+  return count > examples.length ? `including ${noun} ${joined}` : `${noun} ${joined}`;
+}
+
+/**
+ * What a lead sees while a bucket's saved times are old (#2815). True because the
+ * booker serves the stored row whatever its age (`resolveBucketSlots` has no age
+ * check), and verify-on-book reads live Google at confirm time, so a time that
+ * filled since the last refresh is refused there with the alternatives shown.
+ */
+const STALE_SLOTS_LEAD_IMPACT =
+  "Leads still see times, but from the last refresh, so a time that has filled since " +
+  "can still be offered; it is caught when they confirm and they are asked to pick another.";
+
 /** Cached slot rows are going stale after a recompute pass. */
 export function bucketSlotsStaleAlert(count: number, minutes: number, examples: string[]): string {
-  return `${count} bucket_slots row(s) stale >${minutes}m (e.g. ${examples.join(", ")}); a precompute writer may be stuck.`;
+  const list = staleBucketList(count, examples);
+  return (
+    `The open times for ${bucketCount(count)} have not been refreshed in over ` +
+    `${minutesText(minutes)}${list ? ` (${list})` : ""}. ${STALE_SLOTS_LEAD_IMPACT} ` +
+    `This can clear by itself within a few minutes when a refresh was only slow, and an ` +
+    `all clear will follow here. If none arrives within 15 minutes, the refresh job is ` +
+    `stuck and needs looking at. Diagnose via tag=recompute in the Worker logs.`
+  );
 }
 
 /**
  * The same staleness, but the deliberate-invalidation marker could not be READ
  * (#1304), on enough consecutive ticks that a blip is ruled out.
  *
- * Distinct copy on purpose. The ordinary page says a precompute writer may be
- * stuck, which is a measured claim about the drain; here nothing about the drain
- * was measured at all, because the one value that would have explained the
- * staleness is unavailable. Sending the ordinary wording would point the reader at
- * the writers when the thing to look at is the read.
+ * Distinct copy on purpose. The ordinary page says the refresh job may be stuck,
+ * which is a measured claim about the drain; here nothing about the drain was
+ * measured at all, because the one value that would have explained the staleness
+ * is unavailable. Sending the ordinary wording would point the reader at the
+ * refresh job when the thing to look at first is the marker read.
  */
 export function bucketSlotsStaleUnreadableMarkerAlert(
   count: number,
@@ -323,18 +365,23 @@ export function bucketSlotsStaleUnreadableMarkerAlert(
   examples: string[],
   consecutiveTicks: number,
 ): string {
+  const list = staleBucketList(count, examples);
   return (
-    `${count} bucket_slots row(s) stale >${minutes}m (e.g. ${examples.join(", ")}), and the ` +
-    `deliberate invalidation marker has been unreadable for ${consecutiveTicks} minutes running, ` +
-    `so nothing can say whether a booking settings save explains this or a precompute writer is ` +
-    `stuck. Check the alert_state read first, then the writers.`
+    `The open times for ${bucketCount(count)} have not been refreshed in over ` +
+    `${minutesText(minutes)}${list ? ` (${list})` : ""}, and for ` +
+    `${minutesText(consecutiveTicks)} running the check that tells a planned refresh from a ` +
+    `stuck one could not be read. So this may be the expected catch up after somebody saved a ` +
+    `booking setting, or the refresh job may be stuck. ${STALE_SLOTS_LEAD_IMPACT} ` +
+    `A catch up clears by itself and an all clear will follow here. If none arrives within ` +
+    `15 minutes, act. Diagnose via tag=recompute in the Worker logs: check the ` +
+    `invalidation marker read in alert_state first, then the refresh job.`
   );
 }
 
 /** Nothing is stale any more. */
 export function bucketSlotsStaleRecovery(): string {
-  return "No cached availability rows are stale any more. The precompute writers are " +
-          "keeping up, so the booker is showing current times again. No action is needed.";
+  return "No cached availability rows are stale any more. Open times are being refreshed " +
+          "on schedule again, so the booker is showing current times. No action is needed.";
 }
 
 /** A manager's daily time-off digest is not reaching them. */
