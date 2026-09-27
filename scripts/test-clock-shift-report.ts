@@ -19,15 +19,21 @@ import {
 } from "./lib/clock-shift-report.ts";
 import { collectVerdicts, run } from "./notify-clock-shift.ts";
 import { discoverSuiteNames } from "./lib/suite-discovery.ts";
+import { formatRunSummary } from "./lib/run-summary.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
 const SCRIPTS = resolve(import.meta.dirname);
 
+// The summary lines come from the SAME function the runner prints with (#2813), so
+// a field the runner adds reaches these fixtures the day it ships. Hand typed lines
+// stopped at the clock and stayed green for weeks after the runner stopped doing so.
+const summary = (passed: number, failed: number, clock: string, tripwire = "on") =>
+  formatRunSummary({ passed, failed, wallMs: 12160, concurrency: 14, clock, tripwire });
 const green = (n: number, clock: string) =>
-  `Slowest: scripts/test-a.ts 900ms\nPASS: ${n} passed, 0 failed in 12.16s (concurrency 14, clock ${clock})\n`;
+  `Slowest: scripts/test-a.ts 900ms\nPASS: ${summary(n, 0, clock)}\n`;
 const red = (pass: number, fail: number, clock: string, names: string[]) =>
   `=== FAILED: ${names[0]} (exit 1) ===\nFAIL: a fixture went stale\n` +
-  `FAIL: ${pass} passed, ${fail} failed in 12.16s (concurrency 14, clock ${clock})\n` +
+  `FAIL: ${summary(pass, fail, clock)}\n` +
   `Failed: ${names.join(", ")}\n`;
 
 // --- reading one shift's log ---------------------------------------------------
@@ -62,6 +68,63 @@ const red = (pass: number, fail: number, clock: string, names: string[]) =>
   const short = readShiftLog("+1d", green(12, "+1d"), 499);
   eq(short.state, "unmeasured", "a run covering fewer suites than the checkout holds");
   assert(/12 suites/.test(short.why), `and says how short it fell (${short.why})`);
+
+  // The REAL line, as the runner has written it since the tree write tripwire
+  // (#2733) added a field after the clock (#2813). The fixtures above end at the
+  // clock, which is why every one of them stayed green while the nightly run read
+  // `+1d, tripwire on` as the clock and reported every shift unmeasured.
+  const withTrip = readShiftLog(
+    "+1d",
+    "PASS: 300 passed, 0 failed in 12.34s (concurrency 4, clock +1d, tripwire on)\n",
+    300,
+  );
+  eq(withTrip.state, "agreed", `a later field does not join the clock (${withTrip.why})`);
+  const tripOff = readShiftLog(
+    "+1d",
+    "PASS: 300 passed, 0 failed in 12.34s (concurrency 4, clock +1d, tripwire off)\n",
+    300,
+  );
+  eq(tripOff.state, "agreed", `nor does it when the tripwire is off (${tripOff.why})`);
+  const redTrip = readShiftLog(
+    "+1d",
+    "FAIL: 298 passed, 2 failed in 12.34s (concurrency 4, clock +1d, tripwire on)\n" +
+      "Failed: scripts/test-x.ts, scripts/test-y.ts\n",
+    300,
+  );
+  eq(redTrip.state, "date-dependent", "a failure with the tripwire field is still a finding");
+  const noClockTrip = readShiftLog(
+    "+1d",
+    "PASS: 300 passed, 0 failed in 12.34s (concurrency 4, tripwire on)\n",
+    300,
+  );
+  eq(noClockTrip.state, "unmeasured", "a tripwire field with no clock measured nothing");
+  assert(
+    /reported no clock at all/.test(noClockTrip.why),
+    `and says no clock was reported, not that the summary is missing (${noClockTrip.why})`,
+  );
+  const wrongClockTrip = readShiftLog(
+    "+13mo",
+    "PASS: 300 passed, 0 failed in 12.34s (concurrency 4, clock +1d, tripwire on)\n",
+    300,
+  );
+  eq(wrongClockTrip.state, "unmeasured", "a wrong clock beside the tripwire field is refused");
+  assert(
+    /reported \+1d\.$/.test(wrongClockTrip.why),
+    `and names the clock alone, without the field after it (${wrongClockTrip.why})`,
+  );
+
+  // Every shape the runner can print, built by the runner's own formatter: each
+  // tripwire state, with and without a clock. A clock present must agree, a clock
+  // absent must be refused as no clock (never as a missing summary).
+  for (const tripwire of ["on", "off"]) {
+    const shifted = readShiftLog("+1d", `PASS: ${summary(300, 0, "+1d", tripwire)}\n`, 300);
+    eq(shifted.state, "agreed", `the runner's own line agrees, tripwire ${tripwire} (${shifted.why})`);
+    const plain = readShiftLog("+1d", `PASS: ${summary(300, 0, "", tripwire)}\n`, 300);
+    assert(
+      plain.state === "unmeasured" && /reported no clock at all/.test(plain.why),
+      `the runner's own unshifted line reads as no clock, tripwire ${tripwire} (${plain.why})`,
+    );
+  }
 
   // No two of them explain themselves the same way.
   const reasons = [noSummary, noClock, wrongClock, short].map((v) => v.why);

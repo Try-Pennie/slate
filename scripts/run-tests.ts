@@ -21,6 +21,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, resolve, relative } from "node:path";
 import { availableParallelism } from "node:os";
 import { discoverSuiteNames } from "./lib/suite-discovery.ts";
+import { formatRunSummary } from "./lib/run-summary.ts";
 import {
   formatTripwireFindings,
   resolveTripwireMode,
@@ -208,11 +209,17 @@ async function main() {
   // is what a workflow step and a person scrolling to the bottom both read. A
   // shifted run reporting the same sentence as an ordinary one would let a shift
   // that never applied read as a clean result (L98).
-  const clock = clockShiftSpec ? `, clock ${clockShiftSpec}` : "";
   // The tripwire's state rides in the summary for the same reason: an unwatched
-  // pass must never read like a watched one.
-  const trip = `, tripwire ${tripwire.kind}`;
-  const summary = `${passed} passed, ${failures.length} failed in ${(wall / 1000).toFixed(2)}s (concurrency ${concurrency}${clock}${trip})`;
+  // pass must never read like a watched one. The shape lives in one function the
+  // clock shift report's tests also build their fixtures from (#2813).
+  const summary = formatRunSummary({
+    passed,
+    failed: failures.length,
+    wallMs: wall,
+    concurrency,
+    clock: clockShiftSpec,
+    tripwire: tripwire.kind,
+  });
 
   const findings = watched ? formatTripwireFindings(watched) : [];
   if (findings.length > 0) console.error("\n" + findings.join("\n"));
