@@ -27,6 +27,7 @@ import {
   OOO_DIGEST_ATTEMPT_LANE,
   OOO_DIGEST_NUDGE_LANE,
 } from "../src/lib/ooo/time-off-lanes.ts";
+import { parseWeekdayField } from "./lib/cloudflare-cron-weekday.ts";
 import { assert, finish } from "./lib/harness.ts";
 
 const HOUR = 60 * 60_000;
@@ -42,7 +43,7 @@ const MAX_SLACK_MS = 12 * HOUR;
  * year's clock changes fall inside it, twice.
  *
  * The parser covers the shape these crons actually use (a literal minute, a literal
- * hour, `*` for day and month, `*` or `a-b` for weekday) and REFUSES anything else,
+ * hour, `*` for day and month, `*` or day names for weekday) and REFUSES anything else,
  * because a cron it silently failed to understand would contribute no fires and the
  * gap would come back looking comfortable (L98).
  */
@@ -52,17 +53,19 @@ function firesUtc(cron: string): number[] {
   const [min, hour, dom, mon, dow] = parts as [string, string, string, string, string];
   assert(/^\d+$/.test(min) && /^\d+$/.test(hour), `cron "${cron}" has a literal minute and hour`);
   assert(dom === "*" && mon === "*", `cron "${cron}" fires every day of every month`);
-  assert(dow === "*" || /^\d-\d$/.test(dow), `cron "${cron}" has a weekday field this can read`);
-
-  // Cron weekdays are 0=Sun..6=Sat, which is what getUTCDay returns.
-  const [dowLo, dowHi] = dow === "*" ? [0, 6] : dow.split("-").map(Number);
+  // Read through the same parser the weekday guard uses (#2814). This used to read
+  // `1-5` as Monday to Friday on the 0 = Sunday convention, while Cloudflare counts
+  // 1 = Sunday and ran it Sunday to Thursday, so this suite derived a gap for a
+  // schedule that was not the one running. The parser refuses numbers outright.
+  const days = parseWeekdayField(dow);
+  assert(days !== null, `cron "${cron}" has a weekday field this can read (names or *, never numbers)`);
   const out: number[] = [];
   const start = Date.UTC(2026, 0, 1);
   for (let day = 0; day < 730; day++) {
     const at = start + day * 24 * HOUR;
     const d = new Date(at);
     const wd = d.getUTCDay();
-    if (wd < dowLo! || wd > dowHi!) continue;
+    if (!days?.has(wd)) continue;
     out.push(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), Number(hour), Number(min)));
   }
   return out;
@@ -123,6 +126,15 @@ function holds(lane: string, gapMs: number, what: string) {
   );
   holds(OOO_DIGEST_ATTEMPT_LANE, attemptGap, "the weekend gap between cron fires");
   const gated = fires.filter((ms) => isDigestTime(ms));
+  // The nudge must land on every weekday in New York and never at the weekend
+  // (#2814: the schedule ran Sunday to Thursday, so Friday never got one).
+  const etDays = new Set(
+    gated.map((ms) => new Date(ms).toLocaleDateString("en-US", { weekday: "short", timeZone: "America/New_York" })),
+  );
+  assert(
+    [...etDays].sort().join(",") === "Fri,Mon,Thu,Tue,Wed",
+    `the 9am ET nudge runs Monday to Friday and no other day (got ${[...etDays].sort().join(", ")})`,
+  );
   holds(OOO_DIGEST_NUDGE_LANE, widestGap(gated), "the weekend gap between 9am ET runs");
   assert(
     gated.length > 500 && gated.length <= fires.length / 2 + 2,
