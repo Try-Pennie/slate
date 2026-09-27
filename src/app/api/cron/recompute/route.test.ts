@@ -250,7 +250,8 @@ describe("the stale alarm during a deliberate invalidation", () => {
     expect(stalePages()).toHaveLength(1);
     // And the copy must not claim a measured fall-behind: nothing about the drain
     // was measured, because the value that would have explained it is unavailable.
-    expect(String(stalePages()[0][2])).toMatch(/unreadable/i);
+    // #2815: the plain wording says the check "could not be read".
+    expect(String(stalePages()[0][2])).toMatch(/could not be read/i);
   });
 
   it("still pages immediately for an ABSENT marker, whatever the unreadable streak says", async () => {

@@ -3324,11 +3324,15 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
   { key: "recompute_headroom", state: "caught up", channel: "recovery",
     text: recomputeHeadroomRecovery(RECOMPUTE_REARM_CYCLES) },
   { key: "bucket_slots_stale", state: "rows stale after a pass", channel: "alert",
-    text: bucketSlotsStaleAlert(9, 12, ["411", "412", "511", "512", "611"]) },
+    text: bucketSlotsStaleAlert(3, 6, ["530", "531", "532"]) },
+  { key: "bucket_slots_stale", state: "one bucket stale", channel: "alert",
+    text: bucketSlotsStaleAlert(1, 6, ["530"]) },
+  { key: "bucket_slots_stale", state: "more stale than the five named", channel: "alert",
+    text: bucketSlotsStaleAlert(9, 6, ["411", "412", "511", "512", "611"]) },
   // #1304: the same staleness with nothing able to EXPLAIN it. Distinct wording,
-  // because the ordinary page's claim about the writers was never measured here.
+  // because the ordinary page's claim about the refresh job was never measured here.
   { key: "bucket_slots_stale", state: "stale, and the invalidation marker cannot be read", channel: "alert",
-    text: bucketSlotsStaleUnreadableMarkerAlert(62, 12, ["411", "412", "511", "512", "611"], 3) },
+    text: bucketSlotsStaleUnreadableMarkerAlert(62, 6, ["411", "412", "511", "512", "611"], 3) },
   { key: "bucket_slots_stale", state: "nothing stale", channel: "recovery",
     text: bucketSlotsStaleRecovery() },
 
