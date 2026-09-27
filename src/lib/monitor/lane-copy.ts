@@ -158,7 +158,8 @@ const TIME_OFF_SUBJECT: Record<string, { what: string; cost: string; look: strin
     what: "the morning nudge about pending time off",
     cost:
       "no manager is being reminded of the requests waiting on them, so agents are waiting on approvals nobody has been told about",
-    look: "the Worker logs for the /api/cron/ooo-digest 500, and that Slack still accepts a DM",
+    look:
+      "that the ooo-digest schedule in wrangler.jsonc runs Monday to Friday, then the Worker logs for the /api/cron/ooo-digest 500, and that Slack still accepts a DM",
   },
 };
 

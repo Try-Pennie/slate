@@ -380,8 +380,12 @@ export const RETENTION_STALE_BOUNDS_MS: Record<string, number> = {
  *
  * THE BOUNDS ARE DERIVED, not chosen. The approvals lane fires daily, so its
  * longest legitimate silence is a day; the pending digest fires Mon to Fri, so its
- * longest legitimate silence is the WEEKEND, about three days, and a bound reasoned
- * from "daily plus slack" would page every Sunday for ever.
+ * longest legitimate silence is the WEEKEND, about three days (Friday 13:00 UTC to
+ * Monday 14:00 UTC across a clock change is 73h for the nudge, 71h for the
+ * attempt), and a bound reasoned from "daily plus slack" would page every Sunday
+ * for ever. Until #2814 the schedule really ran Sunday to Thursday (Cloudflare
+ * counts weekday 1 as Sunday), so the gap it cleared was Thursday to Sunday; the
+ * length was the same, which is why 76h did not have to move.
  * `scripts/test-time-off-lane-bounds.ts` re-derives both from the shipped cron
  * expressions and the shipped time gates and fails on a bound that is under the gap
  * or more than 12 hours over it, so neither number can be edited into one that
