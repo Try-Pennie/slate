@@ -67,6 +67,9 @@ export const eventType = {
 export const users: Record<string, User> = {
   a: { id: "a", name: "Agent A", email: "a@x.com" } as unknown as User,
   b: { id: "b", name: "Agent B", email: "b@x.com" } as unknown as User,
+  c: { id: "c", name: "Agent C", email: "c@x.com" } as unknown as User,
+  d: { id: "d", name: "Agent D", email: "d@x.com" } as unknown as User,
+  e: { id: "e", name: "Agent E", email: "e@x.com" } as unknown as User,
 };
 
 export const input: CreateBookingInput = {
@@ -119,6 +122,13 @@ export interface FakeOpts {
   deferSend?: (work: () => Promise<void>) => void;
   insertBookingFails?: boolean;
   insertBookingConflict?: boolean;
+  /** #2281: the overlap guard refuses the insert only for these assigned agents,
+   *  so a test can model one advisor losing the race while another is free. */
+  insertBookingConflictFor?: Set<string>;
+  /** #2281: per rung candidate lists. When set, resolveBucketByCode answers a
+   *  bucket carrying the code asked for, and roundRobinCandidates reads the list
+   *  for that code (empty when absent), so a test can tell rungs apart. */
+  candidatesByCode?: Record<string, string[]>;
   existingByKey?: Booking | null; // idempotency hit on the pre-check
   conflictWinner?: Booking | null; // booking found by key AFTER an insert conflict
   reservation?: BookingReservation | null; // loadReservationByKey (re-submit resume)
@@ -519,10 +529,13 @@ export function makeDeps(opts: FakeOpts) {
       (calls.resolveBucketByCode.push(code), opts.unknownBucket)
         ? null
         : {
-            bucket: opts.testBucket ? ({ ...bucket, is_test: true } as Bucket) : bucket,
+            bucket: {
+              ...(opts.testBucket ? ({ ...bucket, is_test: true } as Bucket) : bucket),
+              ...(opts.candidatesByCode ? { code } : {}),
+            } as Bucket,
             eventType,
           },
-    roundRobinCandidates: async (_b, _e, _ms, preview, onlyUserId) => {
+    roundRobinCandidates: async (b, _e, _ms, preview, onlyUserId) => {
       calls.roundRobinPreview.push(preview);
       calls.roundRobinOnly.push(onlyUserId);
       // #2073: a named link narrows the read to one agent, so the fake narrows the
@@ -531,7 +544,9 @@ export function makeDeps(opts: FakeOpts) {
         const narrowed = (opts.candidates ?? ["a"]).filter((id) => id === onlyUserId);
         return { candidates: narrowed, memberCount: opts.memberCount ?? 1 };
       }
-      const candidates = opts.candidates ?? ["a"];
+      const candidates = opts.candidatesByCode
+        ? (opts.candidatesByCode[b.code] ?? [])
+        : (opts.candidates ?? ["a"]);
       // #1300: the pool SIZE, which is what tells an empty bucket (pages) apart
       // from a bucket whose people are simply off shift (must not page). Defaults
       // to the candidate count, and `memberCount` overrides it so a test can say
@@ -727,6 +742,9 @@ export function makeDeps(opts: FakeOpts) {
       insertAttempted = true;
       calls.insertBooking.push(row as unknown as Record<string, unknown>);
       if (opts.insertBookingConflict) return { ok: false, conflict: true };
+      if (opts.insertBookingConflictFor?.has(String(row.assigned_user_id))) {
+        return { ok: false, conflict: true };
+      }
       if (opts.insertBookingFails) return { ok: false, conflict: false };
       return { ok: true, booking: { ...row, id: "bk-new" } as unknown as Booking };
     },
