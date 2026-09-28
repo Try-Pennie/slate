@@ -89,7 +89,12 @@ import {
 } from "@/lib/booking/confirm-profile";
 import { isLoadtest } from "@/lib/loadtest-guard";
 import { sendThrottledAlert } from "../notify/dispatch.ts";
-import { raceBoundHitPage } from "../monitor/race-contention.ts";
+import {
+  raceBoundHitPage,
+  raceOutcomeForConfirm,
+  raceOutcomeForRefusal,
+  type RaceTallyOutcome,
+} from "../monitor/race-contention.ts";
 import type { BookingEventPayload, BookingReasonMeta } from "@/lib/webhooks/types";
 import { routingMetaFromTrace } from "@/lib/webhooks/types";
 // Type-only (erased under --experimental-strip-types), so this never pulls the
@@ -3557,9 +3562,15 @@ export interface ApiBookingResult {
    * 200 deduped reads as "handled" while the routing request was dropped.
    */
   bucketChangeDeclined?: BucketChangeDeclineReason;
-  /** #2838: carried from `BookingResult` on a "created" outcome. An idempotent
-   *  replay also answers "created", so only this says THIS call made the booking. */
-  newlyInserted?: true;
+  /**
+   * #2838, #2861: the race tally row THIS call's own confirm earned, beside its
+   * ordinary outcome: a booking made after a lost overlap race, on the create arm
+   * or on a cross bucket move, or a move refused after one and reported as a
+   * declined bucket change. Absent on an uncontested confirm and on a replay of a
+   * booking an earlier call made. A lost race that is THROWN is not named here:
+   * the route counts the `RaceLostRefusalError` itself, so it is counted once.
+   */
+  raceOutcome?: RaceTallyOutcome;
 }
 
 // Machine-to-machine rebooking reason; recorded on the reschedule history row.
@@ -3811,8 +3822,13 @@ function notBookable(reason: BookableReason): BookableResult {
  */
 type BucketMove =
   | { outcome: "unchanged" }
-  | { outcome: "moved"; booking: Booking; manageUrl: string }
-  | { outcome: "declined"; reason: BucketChangeDeclineReason };
+  | { outcome: "moved"; booking: Booking; manageUrl: string; raceOutcome: RaceTallyOutcome | null }
+  | { outcome: "declined"; reason: BucketChangeDeclineReason; raceOutcome: RaceTallyOutcome | null };
+
+/** Spread onto an `ApiBookingResult`: the field only when there is a race to count. */
+function raceField(raceOutcome: RaceTallyOutcome | null): { raceOutcome?: RaceTallyOutcome } {
+  return raceOutcome ? { raceOutcome } : {};
+}
 
 async function moveToRequestedBucket(
   input: ApiBookingInput,
@@ -3832,14 +3848,30 @@ async function moveToRequestedBucket(
     // Only the two ordinary "no" answers are tolerated. A transient verify
     // outage or anything unexpected must never be reported as a lead who simply
     // could not be moved, because that would be a claim the code never measured.
-    if (err instanceof SlotUnavailableError) return { outcome: "declined", reason: "slot_taken" };
+    //
+    // #2861: a refusal after a lost overlap race is still a declined bucket
+    // change to the caller, and is named so the race tally counts it. Swallowed
+    // here, it would never reach the route's own catch, which is the only other
+    // place a lost race refusal is counted.
+    if (err instanceof SlotUnavailableError) {
+      return {
+        outcome: "declined",
+        reason: "slot_taken",
+        raceOutcome: err instanceof RaceLostRefusalError ? raceOutcomeForRefusal(err) : null,
+      };
+    }
     if (err instanceof NoEligibleAgentsError) {
-      return { outcome: "declined", reason: "no_eligible_agents" };
+      return { outcome: "declined", reason: "no_eligible_agents", raceOutcome: null };
     }
     throw err;
   }
   await cancelBooking(existing.manage_token, API_REBOOK_REASON, "system", deps);
-  return { outcome: "moved", booking: created.booking, manageUrl: created.manageUrl };
+  return {
+    outcome: "moved",
+    booking: created.booking,
+    manageUrl: created.manageUrl,
+    raceOutcome: raceOutcomeForConfirm(created),
+  };
 }
 
 export async function bookViaApi(
@@ -3855,7 +3887,7 @@ export async function bookViaApi(
         outcome: "created",
         booking: res.booking,
         manageUrl: res.manageUrl,
-        ...(res.newlyInserted ? { newlyInserted: true as const } : {}),
+        ...raceField(raceOutcomeForConfirm(res)),
       };
     }
     case "dedupe": {
@@ -3870,6 +3902,7 @@ export async function bookViaApi(
           outcome: "rescheduled",
           booking: moved.booking,
           manageUrl: moved.manageUrl,
+          ...raceField(moved.raceOutcome),
         };
       }
       return {
@@ -3878,7 +3911,9 @@ export async function bookViaApi(
         manageUrl: manageUrl(deps, decision.booking.manage_token),
         // Undefined when the bucket never changed, so the field means "the
         // change you asked for was dropped" rather than merely "no change".
-        ...(moved.outcome === "declined" ? { bucketChangeDeclined: moved.reason } : {}),
+        ...(moved.outcome === "declined"
+          ? { bucketChangeDeclined: moved.reason, ...raceField(moved.raceOutcome) }
+          : {}),
       };
     }
     case "reschedule": {
@@ -3895,7 +3930,12 @@ export async function bookViaApi(
         tolerateRefusal: false,
       });
       if (moved.outcome === "moved") {
-        return { outcome: "rescheduled", booking: moved.booking, manageUrl: moved.manageUrl };
+        return {
+          outcome: "rescheduled",
+          booking: moved.booking,
+          manageUrl: moved.manageUrl,
+          ...raceField(moved.raceOutcome),
+        };
       }
       const res = await rescheduleBooking(
         decision.booking.manage_token,

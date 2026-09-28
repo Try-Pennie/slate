@@ -23,6 +23,8 @@ import {
   NoEligibleAgentsError,
   SlotUnavailableError,
   UnknownBucketError,
+  RaceLostRefusalError,
+  MAX_RACE_REASSIGNS,
   type ApiBookingInput,
   type PendingEventDeletion,
 } from "../src/lib/booking/orchestration.ts";
@@ -258,6 +260,205 @@ async function run() {
       !calls.webhooks.some((w) => w.event === "booking.cancelled"),
       "and the old appointment is never cancelled when its replacement did not land",
     );
+  }
+
+  // --- #2861: a lost overlap race on a cross bucket move reaches the race tally ---
+  //
+  // The move (#364, #1465) confirms through the same createBooking as a fresh
+  // create, so it loses the overlap race the same way. Its refusal used to be
+  // folded into a declined bucket change and its rescue into a plain reschedule,
+  // so neither half ever reached the daily race whisper (#2838). The result now
+  // names the tally row, and only for a booking this call's own insert made.
+  {
+    const moveFixture = (startIso: string) => {
+      const existingB = makeBooking({
+        id: "bk-existing",
+        external_id: "ext-1",
+        bucket_id: "bkt-OLD",
+        manage_token: "tokX",
+        starts_at: "2026-06-08T13:00:00.000Z",
+      });
+      const apiInput: ApiBookingInput = { ...input, startIso, externalId: "ext-1", confirmReschedule: false };
+      return { existingB, apiInput };
+    };
+    const SAME_TIME = "2026-06-08T13:00:00.000Z";
+    const NEW_TIME = "2026-06-09T14:00:00.000Z";
+
+    // Rescued: the first advisor lost, the next one in the rung took it, on both
+    // arms that move (the same time dedupe and the new time reschedule).
+    for (const startIso of [SAME_TIME, NEW_TIME]) {
+      const { existingB, apiInput } = moveFixture(startIso);
+      const { deps } = makeDeps({
+        personBookings: [existingB],
+        existing: { booking: existingB, bucket, eventType },
+        candidates: ["a", "b"],
+        freeEmails: new Set(["a@x.com", "b@x.com"]),
+        insertBookingConflictFor: new Set(["a"]),
+      });
+      const res = await bookViaApi(apiInput, deps);
+      assert(res.outcome === "rescheduled", `race on a move at ${startIso}: still moved (got ${res.outcome})`);
+      assert(
+        res.booking.assigned_user_id === "b",
+        `race on a move at ${startIso}: booked with the next advisor (got ${res.booking.assigned_user_id})`,
+      );
+      assert(
+        res.raceOutcome === "race_reassigned",
+        `race on a move at ${startIso}: the rescue is counted (got ${String(res.raceOutcome)})`,
+      );
+    }
+
+    // Refused below the bound, on the same time arm that tolerates a refusal:
+    // the contract is unchanged (a declined bucket change), and the race is named.
+    {
+      const { existingB, apiInput } = moveFixture(SAME_TIME);
+      const { deps, calls } = makeDeps({
+        personBookings: [existingB],
+        existing: { booking: existingB, bucket, eventType },
+        candidates: ["a", "b"],
+        freeEmails: new Set(["a@x.com"]),
+        insertBookingConflictFor: new Set(["a"]),
+      });
+      const res = await bookViaApi(apiInput, deps);
+      assert(res.outcome === "deduped", `refused race on a move: still a dedupe (got ${res.outcome})`);
+      assert(res.bucketChangeDeclined === "slot_taken", "refused race on a move: still a declined bucket change");
+      assert(res.booking.id === "bk-existing", "refused race on a move: the lead keeps the appointment they had");
+      assert(
+        res.raceOutcome === "race_refused",
+        `refused race on a move: the refusal is counted (got ${String(res.raceOutcome)})`,
+      );
+      assert(
+        !calls.webhooks.some((w) => w.event === "booking.cancelled"),
+        "refused race on a move: the old appointment is not cancelled",
+      );
+    }
+
+    // Refused at the bound.
+    {
+      const all = ["a", "b", "c", "d", "e"];
+      assert(MAX_RACE_REASSIGNS < all.length - 1, "fixture: more free advisors than the retry bound allows");
+      const { existingB, apiInput } = moveFixture(SAME_TIME);
+      const { deps } = makeDeps({
+        personBookings: [existingB],
+        existing: { booking: existingB, bucket, eventType },
+        candidates: all,
+        freeEmails: new Set(all.map((id) => `${id}@x.com`)),
+        insertBookingConflictFor: new Set(all),
+      });
+      const res = await bookViaApi(apiInput, deps);
+      assert(res.bucketChangeDeclined === "slot_taken", "bound hit on a move: still a declined bucket change");
+      assert(
+        res.raceOutcome === "race_refused_bound",
+        `bound hit on a move: counted as the bound (got ${String(res.raceOutcome)})`,
+      );
+    }
+
+    // Refused on the new time arm, which does not tolerate a refusal: the lost
+    // race propagates as itself, so the route's own catch counts it exactly once.
+    {
+      const { existingB, apiInput } = moveFixture(NEW_TIME);
+      const { deps } = makeDeps({
+        personBookings: [existingB],
+        existing: { booking: existingB, bucket, eventType },
+        candidates: ["a", "b"],
+        freeEmails: new Set(["a@x.com"]),
+        insertBookingConflictFor: new Set(["a"]),
+      });
+      let err: unknown = null;
+      try {
+        await bookViaApi(apiInput, deps);
+      } catch (e) {
+        err = e;
+      }
+      assert(
+        err instanceof RaceLostRefusalError && err.boundHit === false,
+        `refused race on a new time move: propagates as the lost race refusal (got ${String(err)})`,
+      );
+    }
+
+    // A move whose confirm replays a booking an earlier call made: that call
+    // counted its race, so this one counts nothing.
+    {
+      const { existingB, apiInput } = moveFixture(SAME_TIME);
+      const replayed = makeBooking({
+        id: "bk-replayed",
+        manage_token: "tok-replayed",
+        routing_trace: {
+          bucket_code: "411",
+          bucket_id: "bkt1",
+          considered: ["a", "b"],
+          chosen_user_id: "b",
+          fallback_applied: false,
+          race_lost: ["a"],
+        },
+      });
+      const { deps } = makeDeps({
+        personBookings: [existingB],
+        existing: { booking: existingB, bucket, eventType },
+        existingByKey: replayed,
+      });
+      const res = await bookViaApi(apiInput, deps);
+      assert(
+        res.outcome === "rescheduled" && res.booking.id === "bk-replayed",
+        `replayed move: the earlier booking is returned (got ${res.outcome} ${res.booking.id})`,
+      );
+      assert(
+        res.raceOutcome === undefined,
+        `replayed move: a race an earlier call made is not counted again (got ${String(res.raceOutcome)})`,
+      );
+    }
+
+    // Controls: an uncontested move and a move refused for want of an agent
+    // name no race, or the field is satisfied by a move that always claims one.
+    {
+      const { existingB, apiInput } = moveFixture(SAME_TIME);
+      const { deps } = makeDeps({ personBookings: [existingB], existing: { booking: existingB, bucket, eventType } });
+      const res = await bookViaApi(apiInput, deps);
+      assert(res.outcome === "rescheduled", "uncontested move: moved");
+      assert(res.raceOutcome === undefined, "uncontested move: no race is counted");
+    }
+    {
+      const { existingB, apiInput } = moveFixture(SAME_TIME);
+      const { deps } = makeDeps({
+        personBookings: [existingB],
+        existing: { booking: existingB, bucket, eventType },
+        candidates: [],
+      });
+      const res = await bookViaApi(apiInput, deps);
+      assert(res.bucketChangeDeclined === "no_eligible_agents", "empty pool move: declined for want of an agent");
+      assert(res.raceOutcome === undefined, "empty pool move: no race is counted");
+    }
+  }
+
+  // --- #2861: the fresh create arm names its race through the same field ---
+  {
+    const apiInput: ApiBookingInput = { ...input, externalId: "ext-new", confirmReschedule: false };
+    const { deps } = makeDeps({
+      personBookings: [],
+      candidates: ["a", "b"],
+      freeEmails: new Set(["a@x.com", "b@x.com"]),
+      insertBookingConflictFor: new Set(["a"]),
+    });
+    const res = await bookViaApi(apiInput, deps);
+    assert(res.outcome === "created", "race on a create: created");
+    assert(res.raceOutcome === "race_reassigned", `race on a create: counted (got ${String(res.raceOutcome)})`);
+  }
+  {
+    const apiInput: ApiBookingInput = { ...input, externalId: "ext-new", confirmReschedule: false };
+    const replayed = makeBooking({
+      id: "bk-replayed",
+      routing_trace: {
+        bucket_code: "411",
+        bucket_id: "bkt1",
+        considered: ["a", "b"],
+        chosen_user_id: "b",
+        fallback_applied: false,
+        race_lost: ["a"],
+      },
+    });
+    const { deps } = makeDeps({ personBookings: [], existingByKey: replayed });
+    const res = await bookViaApi(apiInput, deps);
+    assert(res.outcome === "created", "replayed create: still answers created");
+    assert(res.raceOutcome === undefined, "replayed create: the earlier call's race is not counted again");
   }
 
   // --- bookViaApi: WEAK match (email only), different time -> confirm_required ---

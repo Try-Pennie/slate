@@ -593,18 +593,49 @@ describe("POST /api/bookings: lost overlap races are counted (#2838)", () => {
   it("counts a created booking that was handed on after a lost race", async () => {
     service.bookViaApi.mockResolvedValue({
       ...result("created", { bucket_code: "411", race_lost: ["a"] }),
-      newlyInserted: true,
+      raceOutcome: "race_reassigned",
     });
     await post("Bearer secret", VALID_BODY);
     expect(outcomes()).toEqual([["created", null], ["race_reassigned", null]]);
   });
 
-  it("does not count a race again when a same key retry returns the booking already made", async () => {
-    // createBooking's idempotent replay still answers `created`, so the outcome
-    // alone cannot tell a replay apart; only a booking THIS call inserted counts.
+  it("counts only the race the service names, never one read off the booking's trace", async () => {
+    // A same key replay still answers `created` and carries the earlier confirm's
+    // trace. The service decides whether THIS call's insert made the booking
+    // (scripts/test-booking-api.ts), so the route must not re-derive it.
     service.bookViaApi.mockResolvedValue(result("created", { bucket_code: "411", race_lost: ["a"] }));
     await post("Bearer secret", VALID_BODY);
     expect(outcomes()).toEqual([["created", null]]);
+  });
+
+  // #2861: the cross bucket move confirms through the same race loop, and used to
+  // reach the tally in neither of its outcomes.
+  it("counts a race rescued on a cross bucket move", async () => {
+    service.bookViaApi.mockResolvedValue({
+      ...result("rescheduled", { bucket_code: "411", race_lost: ["a"] }),
+      raceOutcome: "race_reassigned",
+    });
+    const res = await post("Bearer secret", VALID_BODY);
+    expect((await res.json()).outcome).toBe("rescheduled");
+    expect(outcomes()).toEqual([["rescheduled", null], ["race_reassigned", null]]);
+  });
+
+  it("counts a race that refused a cross bucket move, beside the declined change", async () => {
+    service.bookViaApi.mockResolvedValue({
+      ...result("deduped"),
+      bucketChangeDeclined: "slot_taken",
+      raceOutcome: "race_refused_bound",
+    });
+    const res = await post("Bearer secret", VALID_BODY);
+    const body = await res.json();
+    expect(res.status).toBe(200);
+    expect(body.outcome).toBe("deduped");
+    expect(body.bucketChangeDeclined.reason).toBe("slot_taken");
+    expect("raceOutcome" in body).toBe(false);
+    expect(outcomes()).toEqual([
+      ["deduped", "bucket_change_declined_slot_taken"],
+      ["race_refused_bound", null],
+    ]);
   });
 
   it("counts an uncontested booking once", async () => {
