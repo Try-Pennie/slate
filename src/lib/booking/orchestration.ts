@@ -80,6 +80,7 @@ import { leadCallingZone, withinLeadCallingWindow } from "./lead-calling-window.
 import { shortErrorReason } from "../notify/error-text.ts";
 import { log } from "@/lib/log";
 import { readBookingSource } from "./booking-source.ts";
+import { rescheduleTimesFrom, type RescheduleTimesFrom } from "./reschedule-times-url.ts";
 import { readReferrerOrigin } from "../embed/referrer-origin.ts";
 import {
   makeConfirmProfile,
@@ -358,6 +359,14 @@ export type ExistingCall =
       advisorName: string | null;
       /** Lets the lead move THIS call into the slot they just picked. */
       manageToken: string;
+      /**
+       * Where the times for moving THIS call come from (#2827). A call booked
+       * through an advisor's own link can only move to a time that advisor can
+       * take, so the booker's picker reads that advisor's times by the manage token
+       * above rather than the page's own pool. Decided by `rescheduleTimesFrom`,
+       * the predicate the manage page and the admin move use too.
+       */
+      rescheduleTimesFrom: RescheduleTimesFrom;
       /**
        * The number the advisor will ring, in full, or null when the booking
        * carries none (#2213).
@@ -2688,6 +2697,7 @@ export async function findExistingCallForIdentity(
       .loadAgentDisplayName(match.booking.assigned_user_id ?? null)
       .catch(() => null),
     manageToken: match.booking.manage_token,
+    rescheduleTimesFrom: rescheduleTimesFrom(match.booking),
     mayCancel: match.strength === "strong",
     // #2213: the whole number. The panel let a recognised lead move and cancel and
     // not correct the number the advisor will ring, once #2203 took the details

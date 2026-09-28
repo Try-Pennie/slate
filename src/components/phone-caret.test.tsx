@@ -35,6 +35,7 @@ const baseProps = {
 
 const manageProps = {
   token: "tok_1",
+  rescheduleTimesFrom: "pool" as const,
   startsAt: slotIso,
   timezone: "America/New_York",
   bucketCode: "411",

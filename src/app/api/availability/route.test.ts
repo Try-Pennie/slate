@@ -77,6 +77,11 @@ vi.mock("@/lib/booking/settings", () => settings);
 // to them, behind the same rate limit, and never touches the pooled cache.
 const agentLink = vi.hoisted(() => ({ agentLinkAvailabilityLive: vi.fn() }));
 vi.mock("@/lib/agent-link/service", () => agentLink);
+// #2827: an advisor link booking's move times. The decisions are pinned by
+// scripts/test-reschedule-times.ts; this proves the route hands the manage token
+// to them, behind the same rate limit, and never touches the pooled cache.
+const rescheduleTimes = vi.hoisted(() => ({ bookingRescheduleTimesLive: vi.fn() }));
+vi.mock("@/lib/booking/reschedule-times-live", () => rescheduleTimes);
 
 import { NextRequest } from "next/server";
 import { GENERIC_ERROR_MESSAGE } from "@/lib/api/errors";
@@ -570,6 +575,51 @@ describe("GET /api/availability?advisor= (#2073)", () => {
   it("a fault in the agent link compute is an internal error, never an empty week", async () => {
     agentLink.agentLinkAvailabilityLive.mockRejectedValue(new Error("db down"));
     const res = await GET(new NextRequest(`http://localhost/api/availability?advisor=${TOKEN}`));
+    expect(res.status).toBe(500);
+  });
+});
+
+describe("GET /api/availability?booking= (#2827)", () => {
+  beforeEach(() => vi.clearAllMocks());
+  const MANAGE = "cd".repeat(32);
+
+  it("serves an advisor link booking's move times keyed on its manage token, never the pooled cache", async () => {
+    rescheduleTimes.bookingRescheduleTimesLive.mockResolvedValue({
+      status: 200,
+      body: { bucket: { code: "" }, orgName: "Pennie", eventType: { name: "Call", description: null, durationMin: 30 }, slots: ["2099-01-01T15:00:00.000Z"], emptyBecause: null },
+    });
+    const res = await GET(new NextRequest(`http://localhost/api/availability?booking=${MANAGE}&from=2099-01-01T00:00:00.000Z`));
+    expect(res.status).toBe(200);
+    expect((await res.json()).slots).toEqual(["2099-01-01T15:00:00.000Z"]);
+    expect(rescheduleTimes.bookingRescheduleTimesLive).toHaveBeenCalledWith(
+      { manageToken: MANAGE },
+      { from: "2099-01-01T00:00:00.000Z", to: null },
+      expect.any(Number),
+    );
+    expect(cache.getBucketSlotsWithFallback).not.toHaveBeenCalled();
+    expect(agentLink.agentLinkAvailabilityLive).not.toHaveBeenCalled();
+  });
+
+  it("answers the refusal with its own status and body", async () => {
+    rescheduleTimes.bookingRescheduleTimesLive.mockResolvedValue({
+      status: 404,
+      body: { error: "We cannot offer new times for this call right now.", code: "RESCHEDULE_TIMES_UNAVAILABLE" },
+    });
+    const res = await GET(new NextRequest(`http://localhost/api/availability?booking=${MANAGE}`));
+    expect(res.status).toBe(404);
+    expect((await res.json()).code).toBe("RESCHEDULE_TIMES_UNAVAILABLE");
+  });
+
+  it("is rate limited like every public availability read", async () => {
+    rateLimit.availabilityWithinLimit.mockResolvedValueOnce(false);
+    const res = await GET(new NextRequest(`http://localhost/api/availability?booking=${MANAGE}`));
+    expect(res.status).toBe(429);
+    expect(rescheduleTimes.bookingRescheduleTimesLive).not.toHaveBeenCalled();
+  });
+
+  it("a fault reading the booking is an internal error, never an empty week", async () => {
+    rescheduleTimes.bookingRescheduleTimesLive.mockRejectedValue(new Error("db down"));
+    const res = await GET(new NextRequest(`http://localhost/api/availability?booking=${MANAGE}`));
     expect(res.status).toBe(500);
   });
 });

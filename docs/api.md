@@ -368,6 +368,28 @@ kept server-side and never appears in this payload (rule #259).
 about a minute, and verify-on-book runs at booking time. A slot read here can be
 gone by book time; handle `SLOT_TAKEN` on `POST /api/bookings` by re-querying.
 
+**Moving a booking made through an advisor's own link (#2827):**
+
+```
+GET /api/availability?booking=<manageToken>&from=<ISO>&to=<ISO>
+```
+
+A booking with `kind = 'agent_link'` (#2073) can only be rescheduled to a time
+its advisor can take: the reschedule keeps the advisor or refuses. So its move
+times are NOT the bucket's pool, and a caller moving one (the manage page, the
+booker, or a partner holding the manage token) reads them here, keyed on that
+booking's manage token. It runs the same live compute `?advisor=` does, narrowed
+to the booking's own advisor and bounded to the booking horizon, and answers in the
+same payload shape with `bucket.code` empty. The token unlocks only its own
+booking's advisor; the request names nobody. Same edge throttle.
+
+Every refusal (no booking holds the token, the booking is cancelled or completed,
+it is a ROUTED booking, or nobody is on it) is one body,
+`404 { "error": "We cannot offer new times for this call right now.", "code": "RESCHEDULE_TIMES_UNAVAILABLE" }`.
+A routed booking's move times are its bucket's pool, read with `?bucket=` as above.
+An unreadable `from` or `to` is `400 VALIDATION`, and a failed read is a `500`,
+never an empty week.
+
 ---
 
 ## GET /api/availability/next
@@ -895,6 +917,7 @@ request gets a `403` and is logged under `tag=same-origin`.
 | `GET /api/admin/agents` | manager+ | List agents |
 | `POST /api/admin/bookings/[id]/cancel` | booking actor | Staff cancel a booking |
 | `POST /api/admin/bookings/[id]/reschedule` | booking actor | Staff reschedule a booking |
+| `GET /api/admin/bookings/[id]/availability` | manager+ | The times an advisor link booking may be moved to, for the admin move (#2827): its own advisor's, never the bucket's pool. Read inside the caller's org; a routed, missing or finished booking is the `404 RESCHEDULE_TIMES_UNAVAILABLE` refusal, and a read fault a `500` |
 | `POST /api/admin/bookings/[id]/reassign` | manager+ | Manager reassign by booking id (#546); at-cap returns a distinct `409` for the two-step "Reassign anyway", not-found `404`, terminal `409` |
 | `GET /api/admin/bookings/search` | manager+ | Booking lookup by attendee email, name or phone, or by booking id (#901). Tenant-scoped; bounded to 20 rows and reports when the bound was filled (#903). A read fault is a `500`, never an empty `200` |
 | `POST /api/admin/agents/[id]/bulk-reassign` | booking actor | Start a bulk coverage reassign for one out agent over a date range (#974). The accountable actor is recorded on the job (#549) |

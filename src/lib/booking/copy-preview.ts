@@ -81,6 +81,7 @@ import {
   doneHeading,
   movedNote,
   phoneSaved,
+  rescheduleNoTimes,
 } from "@/lib/booking/manage-copy";
 import { DateTime } from "luxon";
 import {
@@ -154,6 +155,7 @@ const TIME = formatSlotTime(SLOT_ISO, ZONE);
 const ZONE_LABEL = "EDT";
 const PHONE = "(215) 555-0100";
 const EMAIL = "dana@example.com";
+const ADVISOR = "Aisha Bello";
 
 export function bookerCopyScreens(): CopyScreen[] {
   return [
@@ -632,7 +634,18 @@ export function bookerCopyScreens(): CopyScreen[] {
           text: reasonRefusal({ code: "other", detail: "" }),
         },
         { state: "the time they pressed", text: RESCHEDULE_COPY.moving },
-        { state: "nothing is offered", text: RESCHEDULE_COPY.noTimes },
+        { state: "nothing is offered", text: rescheduleNoTimes({ from: "pool", advisorName: ADVISOR }) },
+        // #2827: a call booked through an advisor's own link moves only within
+        // that advisor's times, so an empty week names them rather than "all".
+        {
+          state: "an advisor link call, and the advisor has nothing left",
+          text: rescheduleNoTimes({ from: "advisor", advisorName: ADVISOR }),
+        },
+        {
+          state: "the same, with no advisor name to give",
+          text: rescheduleNoTimes({ from: "advisor", advisorName: null }),
+        },
+        { state: "the times for moving it could not be offered at all", text: RESCHEDULE_COPY.unavailable },
         { state: "the way out", text: RESCHEDULE_COPY.keepCurrent },
         { state: "it failed", text: RESCHEDULE_COPY.failed },
         // #2215: said by the move done on this page and by nothing else, so a

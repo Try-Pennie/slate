@@ -202,6 +202,12 @@ only `externalId=<lead id>` still finds it, and so does sending only
 ² weak = matched by email **or** phone only. The confirm step guards against
 silently moving the wrong person (shared household phone, recycled id).
 
+A booking made through an advisor's own link (#2073, `kind = 'agent_link'`) can
+only be moved to a time that same advisor can take; a time only somebody else in
+the bucket is free for is refused. Read the times it CAN move to with
+`GET /api/availability?booking=<manageToken>` (#2827, `docs/api.md`), not the
+bucket's pooled times.
+
 > A rebook **moves the existing appointment** rather than making a second one. If
 > it targets the **same bucket**, the appointment's time is shifted in place. If
 > it targets a **different bucket**, the lead is **moved to the new bucket** (a

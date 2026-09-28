@@ -193,6 +193,7 @@ describe("the preview shows what the booker actually renders (#1343)", () => {
           startsAt: slotIso,
           advisorName: null,
           manageToken: "tok-existing",
+          rescheduleTimesFrom: "pool",
           mayCancel: true,
           phone: "(215) 555-0100",
         }}
@@ -383,6 +384,7 @@ describe("the preview shows what the manage page actually renders (#1343)", () =
   const manageProps = {
     token: "tok1",
     bucketCode: "411",
+    rescheduleTimesFrom: "pool" as const,
     startsAt: slotIso,
     status: "confirmed",
     eventName: "Debt consultation",

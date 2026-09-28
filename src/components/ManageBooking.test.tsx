@@ -17,7 +17,7 @@ import { DateTime } from "luxon";
 import ManageBooking from "@/components/ManageBooking";
 import { RESCHEDULE_REASONS, CANCEL_REASONS } from "@/lib/booking/core";
 import { NEAREST_TIMES_COPY } from "@/lib/booking/booker-copy";
-import { RESCHEDULE_COPY, LIVE_COPY, DONE_COPY, movedNote } from "@/lib/booking/manage-copy";
+import { RESCHEDULE_COPY, LIVE_COPY, DONE_COPY, movedNote, rescheduleNoTimes } from "@/lib/booking/manage-copy";
 
 // Regression coverage for the booker hardening (#168): cancel must use an
 // in-DOM confirm (not native confirm()) and surface a failed POST instead of
@@ -26,6 +26,8 @@ import { RESCHEDULE_COPY, LIVE_COPY, DONE_COPY, movedNote } from "@/lib/booking/
 const baseProps = {
   token: "tok1",
   bucketCode: "411",
+  // #2827: a routed booking, whose move times are its bucket's pool.
+  rescheduleTimesFrom: "pool" as const,
   startsAt: "2026-06-20T15:00:00.000Z",
   status: "confirmed",
   eventName: "Senior Loan Advisor Call",
@@ -364,6 +366,70 @@ describe("ManageBooking", () => {
 
     expect(await screen.findByText(/all times are taken right now/i)).toBeTruthy();
     expect(screen.queryByText("Finding the days you can book.")).toBeNull();
+  });
+
+  // #2827: a call booked through an advisor's own link can only move to a time
+  // that advisor can take, so the picker must never offer the bucket's pool.
+  describe("an advisor link booking (#2827)", () => {
+    const POOL_ONLY = "2026-06-21T16:00:00.000Z";
+    const ADVISOR_FREE = "2026-06-21T15:00:00.000Z";
+    /** A server where the pool has a time the advisor does not. */
+    function twoSources() {
+      return vi.fn(async (url: RequestInfo | URL) => {
+        const u = String(url);
+        if (u.includes("/availability?booking=")) {
+          return { ok: true, status: 200, json: async () => ({ slots: [ADVISOR_FREE] }) } as Response;
+        }
+        if (u.includes("/availability?bucket=")) {
+          return { ok: true, status: 200, json: async () => ({ slots: [ADVISOR_FREE, POOL_ONLY] }) } as Response;
+        }
+        return { ok: true, status: 200, json: async () => ({}) } as Response;
+      });
+    }
+    const zoned = { ...baseProps };
+
+    it("reads the advisor's times by this page's token, never the bucket's pool", async () => {
+      const fn = twoSources();
+      global.fetch = fn as unknown as typeof fetch;
+      render(<ManageBooking {...zoned} rescheduleTimesFrom="advisor" />);
+      await userEvent.click(screen.getByRole("button", { name: /^reschedule$/i }));
+      await pickDay();
+      const urls = fn.mock.calls.map(([u]) => String(u)).filter((u) => u.includes("/availability"));
+      expect(urls).toEqual(["/api/availability?booking=tok1"]);
+      // Only the advisor's one time is a button; the pool-only one is not offered.
+      expect(screen.getAllByRole("button", { name: /:\d{2}/ })).toHaveLength(1);
+    });
+
+    it("a routed booking still reads the pool, where the pool-only time IS offered", async () => {
+      const fn = twoSources();
+      global.fetch = fn as unknown as typeof fetch;
+      render(<ManageBooking {...zoned} rescheduleTimesFrom="pool" />);
+      await userEvent.click(screen.getByRole("button", { name: /^reschedule$/i }));
+      await pickDay();
+      const urls = fn.mock.calls.map(([u]) => String(u)).filter((u) => u.includes("/availability"));
+      expect(urls).toEqual(["/api/availability?bucket=411"]);
+      expect(screen.getAllByRole("button", { name: /:\d{2}/ })).toHaveLength(2);
+    });
+
+    it("says the advisor has nothing left, by name, rather than that all times are taken", async () => {
+      mockFetch({ availability: { ok: true, body: { slots: [] } } });
+      render(<ManageBooking {...zoned} rescheduleTimesFrom="advisor" />);
+      await userEvent.click(screen.getByRole("button", { name: /^reschedule$/i }));
+      expect(
+        await screen.findByText(rescheduleNoTimes({ from: "advisor", advisorName: "Aisha Bello" })),
+      ).toBeTruthy();
+      expect(screen.queryByText(/all times are taken/i)).toBeNull();
+    });
+
+    it("a refused read says so in the reschedule's own words and offers no retry", async () => {
+      mockFetch({
+        availability: { ok: false, status: 404, body: { error: "x", code: "RESCHEDULE_TIMES_UNAVAILABLE" } },
+      });
+      render(<ManageBooking {...zoned} rescheduleTimesFrom="advisor" />);
+      await userEvent.click(screen.getByRole("button", { name: /^reschedule$/i }));
+      expect(await screen.findByText(RESCHEDULE_COPY.unavailable)).toBeTruthy();
+      expect(screen.queryByRole("button", { name: /try again/i })).toBeNull();
+    });
   });
 
   it("shows a still-working cue when a cancel POST hangs (#626)", async () => {

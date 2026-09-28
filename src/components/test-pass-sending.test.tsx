@@ -190,6 +190,7 @@ describe("the booker sends the test pass (#2666)", () => {
 const manageProps = {
   token: "tok1",
   bucketCode: PUBLIC_TEST,
+  rescheduleTimesFrom: "pool" as const,
   startsAt: "2026-06-20T15:00:00.000Z",
   status: "confirmed",
   eventName: "Advisor Call",
@@ -227,6 +228,7 @@ describe("the manage page and the admin panel send it for a test booking (#2666)
     render(
       <AdminBookingActions
         bookingId="bk1"
+        rescheduleTimesFrom="pool"
         bucketCode={PUBLIC_TEST}
         testPass={PASS}
         leadTimeZone="America/New_York"
@@ -244,6 +246,7 @@ describe("the manage page and the admin panel send it for a test booking (#2666)
     render(
       <AdminBookingActions
         bookingId="bk1"
+        rescheduleTimesFrom="pool"
         bucketCode="411"
         leadTimeZone="America/New_York"
         status="confirmed"

@@ -20,6 +20,10 @@ import { deviceTimeZone } from "@/lib/booking/timezones";
 import { postJson, REQUEST_TIMEOUT_MS } from "@/lib/http";
 import { useStalledAfter } from "@/lib/useStalledAfter";
 import { formatSlotTime } from "@/lib/booking/slot-label";
+import {
+  adminRescheduleTimesUrl,
+  type RescheduleTimesFrom,
+} from "@/lib/booking/reschedule-times-url";
 
 type Mode = null | "cancel" | "reschedule" | "reassign";
 
@@ -40,6 +44,7 @@ const DESTRUCTIVE_CONFIRM_CLS =
 export default function AdminBookingActions({
   bookingId,
   bucketCode,
+  rescheduleTimesFrom,
   testPass = null,
   leadTimeZone,
   status,
@@ -48,6 +53,14 @@ export default function AdminBookingActions({
 }: {
   bookingId: string;
   bucketCode: string | null;
+  /**
+   * Where the move times come from (#2827), decided by the page off the booking's
+   * kind with `rescheduleTimesFrom`. A call booked through an advisor's own link
+   * can only move to a time that advisor can take, so it reads that advisor's
+   * times through the staff route; a routed call reads its bucket's pool.
+   * Required, so no surface can forget to decide it.
+   */
+  rescheduleTimesFrom: RescheduleTimesFrom;
   /**
    * The public test bucket's pass (#2666), minted server side for a TEST booking,
    * whose bucket is the public test bucket and whose reschedule panel reads its
@@ -85,9 +98,10 @@ export default function AdminBookingActions({
   const adminZone = useMemo(() => deviceTimeZone(), []);
   const today = useMemo(() => DateTime.now().setZone(adminZone).startOf("day"), [adminZone]);
   const picker = useSlotPicker({
+    // #2827: an advisor link booking reads its own advisor's times, never the pool.
     url:
-      mode === "reschedule" && bucketCode
-        ? `/api/availability?bucket=${encodeURIComponent(bucketCode)}`
+      mode === "reschedule"
+        ? adminRescheduleTimesUrl(rescheduleTimesFrom, { bucketCode, bookingId })
         : null,
     zone: adminZone,
     leadZone: leadTimeZone,
@@ -304,7 +318,13 @@ export default function AdminBookingActions({
             onRetry={picker.retry}
             failedMessage={picker.failedMessage}
             classes={SLOT_TIMES_CLASSES.panel}
-            noDaysNode={<p className="text-xs text-fg-muted">No open times.</p>}
+            noDaysNode={
+              <p className="text-xs text-fg-muted">
+                {rescheduleTimesFrom === "advisor"
+                  ? "No open times. Booked through the advisor's own link, so it can only move to a time they can take."
+                  : "No open times."}
+              </p>
+            }
             renderSlot={(iso) => (
               <button
                 key={iso}

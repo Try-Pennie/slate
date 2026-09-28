@@ -233,6 +233,25 @@ async function run() {
     );
   }
 
+  // --- #2827: where the times for MOVING the call come from ----------------------
+  // A call booked through an advisor's own link can only move to a time that
+  // advisor can take, so the booker must read that advisor's times, not its pool.
+  for (const [kind, want] of [
+    ["agent_link", "advisor"],
+    ["routed", "pool"],
+  ] as const) {
+    const { deps } = world({ kind });
+    const call = await findExistingCallForIdentity(
+      { salesforceId: SF_ID, externalId: null, email: null, phone: null },
+      deps,
+      REAL_WORLD,
+    );
+    assert(
+      call?.disclose === true && call.rescheduleTimesFrom === want,
+      `a ${kind} call's move times come from its ${want} (got ${JSON.stringify(call)})`,
+    );
+  }
+
   finish();
 }
 
