@@ -15,6 +15,7 @@ import { validateReason, type ReasonOption } from "@/lib/booking/core";
 import ReasonPicker from "@/components/ReasonPicker";
 import { AlertIcon, CheckIcon, GlobeIcon, XIcon } from "@/components/icons";
 import { BookerStrip } from "@/components/BookerStrip";
+import { DANGER_FILL_CLASSES } from "@/components/booker-button";
 import { SlotTimes, SLOT_TIMES_CLASSES } from "@/components/SlotTimes";
 import { useSlotPicker } from "@/components/use-slot-picker";
 import { NearestTimesPanel } from "@/components/NearestTimes";
@@ -579,7 +580,7 @@ export default function ManageBooking({
                     <button
                       onClick={commitCancel}
                       disabled={busy}
-                      className="inline-flex min-h-[44px] items-center justify-center gap-2 rounded-lg bg-[var(--error)] px-5 text-sm font-semibold text-[var(--fg-on-error)] transition-opacity hover:opacity-90 disabled:opacity-60"
+                      className={`inline-flex min-h-[44px] items-center justify-center gap-2 rounded-lg px-5 text-sm font-semibold disabled:opacity-60 ${DANGER_FILL_CLASSES}`}
                     >
                       <XIcon width={15} height={15} />
                       {busy ? CANCEL_COPY.confirming : CANCEL_COPY.confirm}
