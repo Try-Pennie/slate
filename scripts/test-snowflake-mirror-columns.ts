@@ -96,6 +96,29 @@ assert(
   "the setup file carries the ALTER that adds referrer_origin to the existing bookings mirror",
 );
 
+// #2828: whether a booking was routed or made through an advisor's own link
+// (bookings.kind, migration 0144), so warehouse analytics can leave the advisor
+// link bookings out of anything about routing.
+eq(
+  bookingsSpec?.cols.find((c) => c.name === "kind")?.type,
+  "varchar",
+  "the bookings mirror exports kind as a varchar",
+);
+assert(
+  (alters.get("bookings") ?? []).some((c) => c.name === "kind" && c.type === "VARCHAR"),
+  "the setup file carries the ALTER that adds kind to the existing bookings mirror",
+);
+// The ALTER leaves every row already in the warehouse with a null kind, and those
+// rows are never exported again unless they change. Every booking created before
+// #2073 shipped is routed (nothing could make any other kind), so the setup file
+// says so for exactly that population, and no later one.
+assert(
+  /^UPDATE\s+bookings\s+SET\s+kind\s*=\s*'routed'\s+WHERE\s+kind\s+IS\s+NULL\s+AND\s+created_at\s*<\s*'2026-09-28 15:17:32 \+00:00'::TIMESTAMP_TZ\s*;$/im.test(
+    sql,
+  ),
+  "the setup file backfills kind only for bookings created before advisor links shipped",
+);
+
 // --- positive controls: the guard can fail -----------------------------------
 const withoutSourceAlter = sql.replace(
   /^ALTER TABLE IF EXISTS\s+bookings\s+ADD COLUMN IF NOT EXISTS\s+source\s+VARCHAR\s*;$/m,
