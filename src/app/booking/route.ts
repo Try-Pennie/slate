@@ -42,6 +42,7 @@ import { judgePublicBooking } from "@/lib/booking/kill-switch";
 import { readPublicBookingPaused } from "@/lib/booking/settings";
 import { AGENT_LINK_COPY, BOOKING_ERROR_COPY } from "@/lib/booking/booker-copy";
 import { resolveAgentLink } from "@/lib/agent-link/store";
+import { AGENT_LINK_UNAVAILABLE_CODE } from "@/lib/agent-link/refusal-sentence";
 import { internalErrorResponse } from "@/lib/api/errors";
 import { noStore } from "@/lib/api/no-store";
 import { recordApiOutcome } from "@/lib/monitor/record-api-outcome";
@@ -320,7 +321,7 @@ async function handlePost(req: NextRequest) {
       log.info("agent-link", { msg: "confirm refused, the link books nobody", why: judged.why });
       // refusal: agent_link_unavailable
       return NextResponse.json(
-        { error: AGENT_LINK_COPY.unavailable, code: "AGENT_LINK_UNAVAILABLE" },
+        { error: AGENT_LINK_COPY.unavailable, code: AGENT_LINK_UNAVAILABLE_CODE },
         { status: 404 },
       );
     }

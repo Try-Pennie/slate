@@ -2,6 +2,7 @@ import { filterSlotsFromNow, type BusinessHoursRules } from "@/lib/availability/
 import { explainEmptyWindow, type EmptyReason } from "@/lib/availability/empty-reason";
 import { AGENT_LINK_COPY } from "@/lib/booking/booker-copy";
 import type { AgentLinkJudgement } from "@/lib/agent-link/link";
+import { AGENT_LINK_UNAVAILABLE_CODE } from "@/lib/agent-link/refusal-sentence";
 import type { EventType } from "@/lib/db/types";
 
 /**
@@ -61,6 +62,11 @@ export type AgentLinkAvailabilityReply =
 
 const DAY_MS = 86_400_000;
 
+/** The one refusal, for every cause (see the header). */
+function unavailableReply(): AgentLinkAvailabilityReply {
+  return { status: 404, body: { error: AGENT_LINK_COPY.unavailable, code: AGENT_LINK_UNAVAILABLE_CODE } };
+}
+
 function readInstant(value: string | null): number | null | "unreadable" {
   if (value === null || value === "") return null;
   const ms = Date.parse(value);
@@ -82,7 +88,7 @@ export async function agentLinkAvailability(
   const link = await deps.resolve(token);
   if (!link.ok) {
     deps.logRefusal(link.why);
-    return { status: 404, body: { error: AGENT_LINK_COPY.unavailable, code: "AGENT_LINK_UNAVAILABLE" } };
+    return unavailableReply();
   }
 
   // Bounded to the org's booking horizon however far the caller asks, because
@@ -100,7 +106,7 @@ export async function agentLinkAvailability(
     // The bucket the judge chose vanished between the two reads. Nobody can be
     // booked through it right now, which is the same thing the lead is told.
     deps.logRefusal("bucket_unresolvable");
-    return { status: 404, body: { error: AGENT_LINK_COPY.unavailable, code: "AGENT_LINK_UNAVAILABLE" } };
+    return unavailableReply();
   }
 
   const slots = filterSlotsFromNow(computed.slots, nowMs, computed.eventType.min_notice_min).filter(
