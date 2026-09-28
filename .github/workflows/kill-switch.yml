@@ -37,7 +37,7 @@ name: Kill switch
 # booking (exit 13), because finishing would turn it back on for them. The proof stands
 # down and says so, and a run of those is what `public_booking_stopped` (#2366) is for.
 #
-# Needs the SUPABASE_SECRET_KEY, BOOKING_API_KEY and SLACK_BOT_TOKEN repo secrets, and the
+# Needs the SUPABASE_SECRET_KEY, BOOKING_API_KEY_CANARY and SLACK_BOT_TOKEN repo secrets, and the
 # SLATE_BASE_URL and SLACK_ALERTS_CHANNEL repo variables. All five already exist for the
 # canary, the parity sweep and the weekly replay; `pnpm check:workflow-settings` is what
 # says so.
@@ -164,9 +164,9 @@ jobs:
       - name: Stamp the verdict (a measured verdict only)
         if: always() && steps.pre.outputs.configured == '1' && steps.report.outputs.concluded == '1'
         env:
-          BOOKING_API_KEY: ${{ secrets.BOOKING_API_KEY }}
+          BOOKING_API_KEY_CANARY: ${{ secrets.BOOKING_API_KEY_CANARY }}
           SLATE_BASE_URL: ${{ vars.SLATE_BASE_URL }}
         run: |
           base="${SLATE_BASE_URL:-https://slate.trypennie.app}"
           curl -fsS -X POST "${base%/}/api/smoke/heartbeat?lane=verdict:kill-switch" \
-            -H "authorization: Bearer $BOOKING_API_KEY"
+            -H "authorization: Bearer $BOOKING_API_KEY_CANARY"

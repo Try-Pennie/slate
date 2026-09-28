@@ -32,7 +32,7 @@ const base = (process.env.SLATE_BASE_URL || "https://slate.trypennie.app").repla
 // env-ok: SMOKE_BUCKET (a local override; CI wants the seeded SMOKE bucket)
 const bucket = process.env.SMOKE_BUCKET ?? "SMOKE";
 const url = `${base}/api/availability?bucket=${encodeURIComponent(bucket)}`;
-const key = process.env.BOOKING_API_KEY ?? "";
+const key = process.env.BOOKING_API_KEY_CANARY ?? "";
 
 const io = {
   append: (path: string, line: string) => appendFileSync(path, line),

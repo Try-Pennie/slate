@@ -100,6 +100,38 @@ const keys = parseApiKeys([
   assert(authenticateBearer("Bearer ", parseApiKeys([{ caller: "regal", primary: "x", secondary: "" }])).ok === false, "empty token never matches an unset slot");
 }
 
+// --- #2822: the canary's own key, through the same constant time verifier ------------
+//
+// The canary moves off the shared key so a shared sighting means a partner. Its key
+// must authenticate AS the canary even with the shared pair configured beside it, a
+// wrong token must still be refused, and a canary key the Worker does not hold must
+// be refused rather than falling back to any other caller.
+{
+  const withCanary = parseApiKeys([
+    { caller: "shared", primary: "shared-secret", secondary: "" },
+    { caller: "canary", primary: "canary-secret", secondary: "canary-next" },
+  ]);
+  const c = authenticateBearer("Bearer canary-secret", withCanary);
+  assert(c.ok === true && c.caller === "canary" && c.keyId === "canary:primary", "the canary's key names the canary, not shared");
+  const c2 = authenticateBearer("Bearer canary-next", withCanary);
+  assert(c2.ok === true && c2.caller === "canary" && c2.keyId === "canary:secondary", "and its rotation slot too");
+  const wrongCanary = authenticateBearer("Bearer canary-secretX", withCanary);
+  assert(wrongCanary.ok === false && wrongCanary.status === 401 && wrongCanary.tokenPresent === true, "a near miss of the canary key is a 401 with a token present");
+
+  // The Worker without BOOKING_API_KEY_CANARY set: the canary's value is nobody's key.
+  const workerWithoutCanary = parseApiKeys([
+    { caller: "shared", primary: "shared-secret", secondary: "" },
+    { caller: "canary", primary: "", secondary: "" },
+  ]);
+  const orphan = authenticateBearer("Bearer canary-secret", workerWithoutCanary);
+  assert(orphan.ok === false && orphan.status === 401, "a canary key the Worker does not hold is refused (401), which fails the canary loudly");
+  // Only the canary configured, no shared key: the endpoint is ON for the canary alone.
+  const canaryOnly = parseApiKeys([{ caller: "canary", primary: "canary-secret", secondary: "" }, { caller: "shared", primary: "", secondary: "" }]);
+  assert(authenticateBearer("Bearer shared-secret", canaryOnly).ok === false, "with the shared key retired, its old value is refused");
+  const ok = authenticateBearer("Bearer canary-secret", canaryOnly);
+  assert(ok.ok === true && ok.caller === "canary", "and the canary still authenticates");
+}
+
 // --- the env reads are literal, one per caller and slot (#2645) ----------------------
 //
 // The deploy runbook guard (scripts/test-deploy-env-coverage.ts) only sees an env

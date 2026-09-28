@@ -28,7 +28,7 @@
 // the offline unit suite. Its decision logic is pinned offline by
 // `scripts/test-burst-counter-live-control.ts`.
 //
-// Needs BOOKING_API_KEY (from .env.local / .dev.vars, or the environment).
+// Needs BOOKING_API_KEY_CANARY (from .env.local / .dev.vars, or the environment).
 //
 // It runs DAILY on `.github/workflows/burst-counter.yml` (#2392) as well as by hand. The rule to
 // re-run it after any change to the burst path lived only in AGENTS.md, and the path moved five
@@ -38,9 +38,9 @@
 // message (L11, L98). A hand run sets no path and writes nothing.
 //
 // Env overrides:
-//   SLATE_BASE_URL     the deployment to ask (default https://slate.trypennie.app)
-//   BOOKING_API_KEY    the Bearer key the deployment accepts
-//   BURST_SUMMARY_FILE where to record the verdict for the scheduled lane (unset: nowhere)
+//   SLATE_BASE_URL          the deployment to ask (default https://slate.trypennie.app)
+//   BOOKING_API_KEY_CANARY  the Bearer key the deployment accepts
+//   BURST_SUMMARY_FILE      where to record the verdict for the scheduled lane (unset: nowhere)
 import { loadEnvFiles, envOr } from "./smoke-env.ts";
 import type { ProbeOutcome } from "./lib/burst-counter-live-control.ts";
 // Statically imported, unlike the two below: it reads no environment as it loads (only node:fs),
@@ -61,7 +61,7 @@ const { BURST_WINDOW_MS } = await import("@/lib/rate-limit-burst");
 // envOr, not `??`: a workflow wiring SLATE_BASE_URL from an unset repo variable sets it to the
 // empty string, and `??` would take that as the value (#1494).
 const BASE = envOr(process.env.SLATE_BASE_URL, "https://slate.trypennie.app").replace(/\/$/, "");
-const KEY = process.env.BOOKING_API_KEY ?? "";
+const KEY = process.env.BOOKING_API_KEY_CANARY ?? "";
 
 /** How close to a window boundary is too close to start. Two reports and their round trips are
  *  well under a second; five seconds is that with room to spare, and it costs nothing on the
@@ -88,7 +88,7 @@ function fail(exitCode: number, why: string): never {
 if (!KEY) {
   fail(
     VERIFY_EXIT.misconfigured,
-    "BOOKING_API_KEY is not set, so nothing was attempted. Put it in .env.local or .dev.vars, " +
+    "BOOKING_API_KEY_CANARY is not set, so nothing was attempted. Put it in .env.local or .dev.vars, " +
       "or pass it on the command line.",
   );
 }

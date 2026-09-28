@@ -24,7 +24,7 @@
 //     scripts/smoke-create-resume.ts
 //
 // Required env (from .env.local or the process env; process env wins):
-//   BOOKING_API_KEY, NEXT_PUBLIC_SUPABASE_URL, SUPABASE_SECRET_KEY, CRON_SECRET
+//   BOOKING_API_KEY_CANARY, NEXT_PUBLIC_SUPABASE_URL, SUPABASE_SECRET_KEY, CRON_SECRET
 // Optional: SLATE_BASE_URL (default prod), SMOKE_BUCKET (default SMOKE).
 
 import { buildResumeReservation, type PersistedBookingRow } from "./create-resume-reservation.ts";
@@ -38,7 +38,7 @@ loadEnvFiles([".env.local"]);
 // envOr, not `??`: a workflow wiring SLATE_BASE_URL from an unset repo variable
 // passes an EMPTY STRING, which `??` would accept as the base URL (#1494).
 const BASE = envOr(process.env.SLATE_BASE_URL, "https://slate.trypennie.app").replace(/\/$/, "");
-const KEY = process.env.BOOKING_API_KEY ?? "";
+const KEY = process.env.BOOKING_API_KEY_CANARY ?? "";
 const SB_URL = (process.env.NEXT_PUBLIC_SUPABASE_URL ?? "").replace(/\/$/, "");
 const SB_KEY = process.env.SUPABASE_SECRET_KEY ?? "";
 const CRON = process.env.CRON_SECRET ?? "";
@@ -101,7 +101,7 @@ const BOOKING_COLS =
 
 async function main(): Promise<void> {
   const missing = [
-    ["BOOKING_API_KEY", KEY],
+    ["BOOKING_API_KEY_CANARY", KEY],
     ["NEXT_PUBLIC_SUPABASE_URL", SB_URL],
     ["SUPABASE_SECRET_KEY", SB_KEY],
     ["CRON_SECRET", CRON],

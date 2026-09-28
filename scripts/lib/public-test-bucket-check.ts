@@ -108,7 +108,7 @@ export function judgePublicTestBucketRead(
       reason:
         `The public test bucket ${expectedCode} was refused with ${o.status} even though the ` +
         `canary sent its own key, so the key it holds is not one the availability read accepts ` +
-        `for test buckets. Check BOOKING_API_KEY in the canary's secrets against CANARY_CALLERS.`,
+        `for test buckets. Check BOOKING_API_KEY_CANARY in the canary's secrets against CANARY_CALLERS.`,
     };
   }
   if (o.status === 429) {

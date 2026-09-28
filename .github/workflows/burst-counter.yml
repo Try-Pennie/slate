@@ -26,7 +26,7 @@ name: Burst counter
 # scripts/test-burst-counter-live-control.ts walks the shipped EDGE_LIMITERS table so a
 # limiter that ever adopted it fails the build.
 #
-# Needs the BOOKING_API_KEY and SLACK_BOT_TOKEN repo secrets, and the SLATE_BASE_URL and
+# Needs the BOOKING_API_KEY_CANARY and SLACK_BOT_TOKEN repo secrets, and the SLATE_BASE_URL and
 # SLACK_ALERTS_CHANNEL repo variables. All four already exist for the canary and the
 # parity sweep; `pnpm check:workflow-settings` is what says so.
 #
@@ -80,13 +80,13 @@ jobs:
       - name: Preflight (is the proof configured?)
         id: pre
         env:
-          BOOKING_API_KEY: ${{ secrets.BOOKING_API_KEY }}
+          BOOKING_API_KEY_CANARY: ${{ secrets.BOOKING_API_KEY_CANARY }}
         run: |
-          if [ -n "$BOOKING_API_KEY" ]; then
+          if [ -n "$BOOKING_API_KEY_CANARY" ]; then
             echo "configured=1" >> "$GITHUB_OUTPUT"
           else
             echo "configured=0" >> "$GITHUB_OUTPUT"
-            echo "::notice::BOOKING_API_KEY is not set as a repo secret, so the burst counter proof is skipping. Add it in Settings > Secrets and variables > Actions."
+            echo "::notice::BOOKING_API_KEY_CANARY is not set as a repo secret, so the burst counter proof is skipping. Add it in Settings > Secrets and variables > Actions."
           fi
 
       # `continue-on-error`, because this step's exit code is the FINDING: it exits non-zero
@@ -99,7 +99,7 @@ jobs:
         continue-on-error: true
         if: steps.pre.outputs.configured == '1'
         env:
-          BOOKING_API_KEY: ${{ secrets.BOOKING_API_KEY }}
+          BOOKING_API_KEY_CANARY: ${{ secrets.BOOKING_API_KEY_CANARY }}
           SLATE_BASE_URL: ${{ vars.SLATE_BASE_URL }}
           # A literal path, not a repo variable: it is an internal handoff between two steps
           # of the same job, and the step below reads the same path.
@@ -145,9 +145,9 @@ jobs:
       - name: Stamp the verdict (a measured verdict only)
         if: always() && steps.pre.outputs.configured == '1' && steps.report.outputs.concluded == '1'
         env:
-          BOOKING_API_KEY: ${{ secrets.BOOKING_API_KEY }}
+          BOOKING_API_KEY_CANARY: ${{ secrets.BOOKING_API_KEY_CANARY }}
           SLATE_BASE_URL: ${{ vars.SLATE_BASE_URL }}
         run: |
           base="${SLATE_BASE_URL:-https://slate.trypennie.app}"
           curl -fsS -X POST "${base%/}/api/smoke/heartbeat?lane=verdict:burst-counter" \
-            -H "authorization: Bearer $BOOKING_API_KEY"
+            -H "authorization: Bearer $BOOKING_API_KEY_CANARY"

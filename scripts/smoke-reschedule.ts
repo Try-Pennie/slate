@@ -8,7 +8,7 @@
 // It hits PRODUCTION (creates a real, then-cancelled booking on smoketest@'s
 // calendar; the attendee is a plus-alias of that same mailbox). Run it manually:
 //
-//   BOOKING_API_KEY=<key> node --experimental-strip-types scripts/smoke-reschedule.ts
+//   BOOKING_API_KEY_CANARY=<key> node --experimental-strip-types scripts/smoke-reschedule.ts
 //
 // Optional env: SLATE_BASE_URL (default prod), SMOKE_BUCKET (default SMOKE).
 
@@ -18,7 +18,7 @@ import { jpost, slots, tokenFrom, createChecker, type Json } from "./smoke-lib.t
 // envOr, not `??`: the canary wires SLATE_BASE_URL from a repo Actions variable and
 // `${{ vars.X }}` for an unset variable arrives as "" rather than undefined (#1494).
 const BASE = envOr(process.env.SLATE_BASE_URL, "https://slate.trypennie.app").replace(/\/$/, "");
-const KEY = process.env.BOOKING_API_KEY ?? "";
+const KEY = process.env.BOOKING_API_KEY_CANARY ?? "";
 // env-ok: SMOKE_BUCKET (a local override only; CI wants the seeded SMOKE bucket,
 //   and wiring it would let an unset repo variable aim the run at bucket "")
 const BUCKET = envOr(process.env.SMOKE_BUCKET, "SMOKE");
@@ -28,7 +28,7 @@ const { check, failed } = createChecker();
 
 async function main(): Promise<void> {
   if (!KEY) {
-    console.error("Set BOOKING_API_KEY in the environment first.");
+    console.error("Set BOOKING_API_KEY_CANARY in the environment first.");
     process.exit(2);
   }
   console.log(`# reschedule smoke vs ${BASE} (bucket ${BUCKET})`);

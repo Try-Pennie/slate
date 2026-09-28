@@ -5,6 +5,7 @@ import {
   CALLER_HOST_KINDS,
   PARTNER_KEY_MAX_AGE_DAYS,
   judgePartnerKey,
+  judgeSharedKeyExposure,
   type CallerHostKind,
   type CallerSeenRow,
 } from "@/lib/booking/caller-seen";
@@ -36,10 +37,19 @@ export function CallerSightings({ rows, now }: { rows: CallerSeenRow[]; now: num
   // The judge's own sentence in every state, so a pass says which sighting it
   // passed on (a production host or a server call) in the words the gate prints.
   const partnerLine = `${verdict.detail}.`;
+  // #2822: the shared key sent from a browser, judged by the same function the
+  // readiness gate exits 18 on. Shown only when it happened: on a healthy day the
+  // partner line above is the whole story.
+  const exposure = judgeSharedKeyExposure(rows, now, PARTNER_KEY_MAX_AGE_DAYS * 86_400_000);
   return (
     <section className={cardCls}>
       <h2 className="text-sm font-semibold">Keys seen authenticating</h2>
       <p className={`mt-1 text-sm ${verdict.status === "proven" ? "text-fg" : "text-error"}`}>{partnerLine}</p>
+      {exposure.detail && (
+        <p role="alert" className="mt-1 text-sm text-error">
+          {`Security: ${exposure.detail}.`}
+        </p>
+      )}
       <div className="mt-3 overflow-x-auto rounded-md border border-border">
         <table className="w-full min-w-[520px] text-sm">
           <thead>

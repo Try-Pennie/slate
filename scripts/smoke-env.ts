@@ -1,5 +1,5 @@
 // Shared .env loader for the manual smoke scripts. They read keys
-// (BOOKING_API_KEY, REASSIGN_API_KEY, the Supabase vars) straight from
+// (BOOKING_API_KEY_CANARY, REASSIGN_API_KEY, the Supabase vars) straight from
 // process.env; this loads them from .env.local / .dev.vars line-by-line. A
 // line-by-line parse is deliberate: shell `source ./.env.local` dies on an
 // unmatched quote anywhere in the file, but a smoke run only needs a few keys —

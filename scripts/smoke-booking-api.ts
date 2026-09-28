@@ -1,8 +1,8 @@
 // Manual smoke test for the live direct booking API (#253/#250). NOT a CI test
 // (it hits production and creates REAL, then-cancelled bookings) — run it by
-// hand to validate the endpoint end to end after setting BOOKING_API_KEY.
+// hand to validate the endpoint end to end after setting BOOKING_API_KEY_CANARY.
 //
-//   BOOKING_API_KEY=xxx node --experimental-strip-types scripts/smoke-booking-api.ts
+//   BOOKING_API_KEY_CANARY=xxx node --experimental-strip-types scripts/smoke-booking-api.ts
 //
 // Optional env:
 //   SLATE_BASE_URL  (default https://slate.trypennie.app)
@@ -69,7 +69,7 @@
 //      length (new slot overlaps the booking's own event) -> assert it stayed on
 //      the SAME agent (no silent re-route in the two-agent SMOKE bucket, #464).
 //
-// Keys (BOOKING_API_KEY, REASSIGN_API_KEY, ...) load from .env.local / .dev.vars
+// Keys (BOOKING_API_KEY_CANARY, REASSIGN_API_KEY, ...) load from .env.local / .dev.vars
 // if not already in the environment, so a plain `node … smoke-booking-api.ts`
 // works without exporting them by hand (and without `source`, which dies on an
 // unmatched quote anywhere in the file).
@@ -120,7 +120,7 @@ const BASE = envOr(process.env.SLATE_BASE_URL, "https://slate.trypennie.app").re
 // env-ok: SMOKE_BUCKET_B (same, the seeded second isolated bucket)
 const BUCKET_A = envOr(process.env.SMOKE_BUCKET, "SMOKE");
 const BUCKET_B = envOr(process.env.SMOKE_BUCKET_B, "SMOKE2");
-const KEY = process.env.BOOKING_API_KEY ?? "";
+const KEY = process.env.BOOKING_API_KEY_CANARY ?? "";
 // Reassign scenario (#450): a separate Bearer key (the owner-override API) and
 // the second test agent the booking is forced onto. Defaults to the seeded
 // smoketest2@ target; the scenario SKIPs if REASSIGN_API_KEY is unset.
@@ -799,7 +799,7 @@ async function scenarioRescheduleStickiness(slotsA: string[], plan: SlotPlan) {
 
 async function main() {
   if (!KEY) {
-    console.error("Set BOOKING_API_KEY in the environment first.");
+    console.error("Set BOOKING_API_KEY_CANARY in the environment first.");
     process.exit(2);
   }
   console.log(`Smoke test against ${BASE} (bucket ${BUCKET_A}${BUCKET_B ? `, cross-bucket ${BUCKET_B}` : ""})`);

@@ -129,7 +129,7 @@ function refuse(outcome: ProbeOutcome, which: "first" | "second"): { exitCode: n
         exitCode: VERIFY_EXIT.unauthorized,
         message:
           `The ${which} report was refused: the deployment did not accept this key. Set ` +
-          "BOOKING_API_KEY to the key the running deployment holds, and check it has not been " +
+          "BOOKING_API_KEY_CANARY to the key the running deployment holds, and check it has not been " +
           "rotated since.",
       };
     case "not-configured":

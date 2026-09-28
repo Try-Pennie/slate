@@ -31,9 +31,9 @@ export function smokeBase(): string {
   return envOr(process.env.SLATE_BASE_URL, "https://slate.trypennie.app").replace(/\/$/, "");
 }
 
-/** The booking API key (BOOKING_API_KEY); empty string if unset. */
+/** The booking API key (BOOKING_API_KEY_CANARY); empty string if unset. */
 export function smokeKey(): string {
-  return process.env.BOOKING_API_KEY ?? "";
+  return process.env.BOOKING_API_KEY_CANARY ?? "";
 }
 
 /** Last path segment of a manage URL (the manage token); safe on null/undefined. */

@@ -35,7 +35,7 @@ name: Router replay
 # machinery would cost more than it buys: one message a week at most, and only when
 # there is something to say.
 #
-# Needs the CALCOM_API_KEY, SUPABASE_SECRET_KEY, BOOKING_API_KEY and SLACK_BOT_TOKEN
+# Needs the CALCOM_API_KEY, SUPABASE_SECRET_KEY, BOOKING_API_KEY_CANARY and SLACK_BOT_TOKEN
 # repo secrets, and the SLACK_ALERTS_CHANNEL and SLATE_BASE_URL repo variables.
 on:
   schedule:
@@ -161,9 +161,9 @@ jobs:
       - name: Stamp the replay heartbeat (a measured verdict only)
         if: always() && steps.pre.outputs.configured == '1' && steps.report.outputs.concluded == '1'
         env:
-          BOOKING_API_KEY: ${{ secrets.BOOKING_API_KEY }}
+          BOOKING_API_KEY_CANARY: ${{ secrets.BOOKING_API_KEY_CANARY }}
           SLATE_BASE_URL: ${{ vars.SLATE_BASE_URL }}
         run: |
           base="${SLATE_BASE_URL:-https://slate.trypennie.app}"
           curl -fsS -X POST "${base%/}/api/smoke/heartbeat?lane=router-replay" \
-            -H "authorization: Bearer $BOOKING_API_KEY"
+            -H "authorization: Bearer $BOOKING_API_KEY_CANARY"

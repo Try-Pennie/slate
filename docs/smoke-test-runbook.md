@@ -68,7 +68,7 @@ handling of a real booking). Then:
 
 - `.env.local` at the repo root holds `NEXT_PUBLIC_SUPABASE_URL` and
   `SUPABASE_SECRET_KEY` (the seed script reads both from that file). The smoke
-  test also reads `BOOKING_API_KEY` (and, for the optional reassign scenario,
+  test also reads `BOOKING_API_KEY_CANARY` (and, for the optional reassign scenario,
   `REASSIGN_API_KEY`) from `.env.local` or `.dev.vars`, so no key needs to be
   typed on the command line.
 - Node with `--experimental-strip-types` support (the same runtime the other
@@ -148,7 +148,7 @@ handling of a real booking). Then:
   `scripts/lib/smoke-event-cleanup.ts` imports through the alias. The step 2 seed
   happened to survive without it only because nothing it imports uses the alias
   yet, so the shorter form was never safe, just lucky.
-- **Keys live in `.env.local`, never on the command line.** `BOOKING_API_KEY` is
+- **Keys live in `.env.local`, never on the command line.** `BOOKING_API_KEY_CANARY` is
   required; the test exits with a message if it is missing. `REASSIGN_API_KEY`
   enables the reassign scenario (#450), which otherwise reports SKIP. Add both to
   `.env.local` or `.dev.vars` so a plain `node ... scripts/smoke-booking-api.ts`
@@ -192,14 +192,14 @@ Two ways it stays honest:
 - **Alert on failure.** Any failed step (a real regression, a bad key, a missing
   fixture) posts a Slack alert via `scripts/notify-smoke-failure.ts`.
 - **Alert on not-having-run.** Each successful run stamps the `smoke-canary`
-  heartbeat (`POST /api/smoke/heartbeat`, Bearer `BOOKING_API_KEY`). The
+  heartbeat (`POST /api/smoke/heartbeat`, Bearer `BOOKING_API_KEY_CANARY`). The
   lane-watchdog pages if that heartbeat goes stale past `CANARY_STALE_BOUNDS_MS`
   (90 min), so a schedule that silently stops firing is noticed. This is kept out
   of `LANE_STALE_BOUNDS_MS` on purpose: a dead canary must not flip the external
   `/api/health` 503 as if the app itself were down.
 
-**Required repo settings (Actions):** the workflow needs `BOOKING_API_KEY` and
+**Required repo settings (Actions):** the workflow needs `BOOKING_API_KEY_CANARY` and
 `REASSIGN_API_KEY` as repo **secrets** (the Worker's keys, added to Actions), plus
 the existing `SLACK_BOT_TOKEN` secret and `SLACK_ALERTS_CHANNEL` variable. Until
-`BOOKING_API_KEY` is set, the scheduled runs fail (and alert). Trigger a first run
+`BOOKING_API_KEY_CANARY` is set, the scheduled runs fail (and alert). Trigger a first run
 manually from the Actions tab once the secrets are in.

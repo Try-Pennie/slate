@@ -19,7 +19,7 @@ name: Schedule parity
 # side, so it needs an all clear and must not repeat every morning while it sits. Both
 # need a memory of what was said yesterday, which a runner has none of.
 #
-# Needs the CALCOM_API_KEY, BOOKING_API_KEY, SUPABASE_SECRET_KEY, SLACK_BOT_TOKEN and
+# Needs the CALCOM_API_KEY, BOOKING_API_KEY_CANARY, SUPABASE_SECRET_KEY, SLACK_BOT_TOKEN and
 # the three TWILIO_* repo secrets, and the SLACK_ALERTS_CHANNEL and SLATE_BASE_URL
 # repo variables. The Twilio three became required when #2153 made the withheld set
 # come from Twilio's worker tags; they were not wired at the time, and this lane died
@@ -92,7 +92,7 @@ jobs:
         id: pre
         env:
           CALCOM_API_KEY: ${{ secrets.CALCOM_API_KEY }}
-          BOOKING_API_KEY: ${{ secrets.BOOKING_API_KEY }}
+          BOOKING_API_KEY_CANARY: ${{ secrets.BOOKING_API_KEY_CANARY }}
           # Named here as well as on the sweep step so a MISSING one is reported by
           # this step, which says what to create, rather than by the sweep failing
           # five minutes later with a message about Twilio.
@@ -101,7 +101,7 @@ jobs:
           TWILIO_WORKSPACE_SID: ${{ secrets.TWILIO_WORKSPACE_SID }}
         run: |
           missing=""
-          for name in CALCOM_API_KEY BOOKING_API_KEY TWILIO_API_KEY_SID TWILIO_API_KEY_SECRET TWILIO_WORKSPACE_SID; do
+          for name in CALCOM_API_KEY BOOKING_API_KEY_CANARY TWILIO_API_KEY_SID TWILIO_API_KEY_SECRET TWILIO_WORKSPACE_SID; do
             eval "value=\${$name}"
             if [ -z "$value" ]; then missing="$missing $name"; fi
           done
@@ -188,7 +188,7 @@ jobs:
         id: report
         if: steps.pre.outputs.configured == '1'
         env:
-          BOOKING_API_KEY: ${{ secrets.BOOKING_API_KEY }}
+          BOOKING_API_KEY_CANARY: ${{ secrets.BOOKING_API_KEY_CANARY }}
           SLATE_BASE_URL: ${{ vars.SLATE_BASE_URL }}
           PARITY_SUMMARY_FILE: parity-summary.json
           # What the apply step above wrote, so the message can say what the lane
@@ -207,12 +207,12 @@ jobs:
       - name: Stamp the parity heartbeat (a measured sweep only)
         if: success() && steps.pre.outputs.configured == '1'
         env:
-          BOOKING_API_KEY: ${{ secrets.BOOKING_API_KEY }}
+          BOOKING_API_KEY_CANARY: ${{ secrets.BOOKING_API_KEY_CANARY }}
           SLATE_BASE_URL: ${{ vars.SLATE_BASE_URL }}
         run: |
           base="${SLATE_BASE_URL:-https://slate.trypennie.app}"
           curl -fsS -X POST "${base%/}/api/smoke/heartbeat?lane=schedule-parity" \
-            -H "authorization: Bearer $BOOKING_API_KEY"
+            -H "authorization: Bearer $BOOKING_API_KEY_CANARY"
 
       # The drift itself is reported by Slate, through the app's own alerting. This
       # speaks about the OTHER failure: the sweep could not read cal.com, or could not
