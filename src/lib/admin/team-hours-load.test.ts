@@ -9,6 +9,7 @@ vi.mock("@/lib/supabase/admin", () => admin);
 vi.mock("@/lib/log", () => ({ log: { error: vi.fn(), warn: vi.fn(), info: vi.fn() } }));
 
 import { loadTeamHours } from "./team-hours-load";
+import { idFilterBytes, MAX_IN_FILTER_BYTES } from "@/lib/db/id-batch";
 
 type Result = { data: unknown; error: { message: string } | null };
 type Call = { table: string; filters: [string, unknown][]; range?: [number, number] };
@@ -97,6 +98,31 @@ describe("loadTeamHours", () => {
     await loadTeamHours(VIEWER, { kind: "all" });
     const usersCall = calls.find((c) => c.table === "users")!;
     expect(usersCall.filters.some(([k]) => k === "eq:manager_id")).toBe(false);
+    // ...but the hours reads are still narrowed to the roster it read, so they never
+    // pull the schedules of test agents or of anyone outside the org.
+    const sched = calls.find((c) => c.table === "availability_schedules")!;
+    expect(sched.filters).toContainEqual(["in:user_id", ["a1", "a2"]]);
+    const rules = calls.find((c) => c.table === "availability_rules")!;
+    expect(rules.filters).toContainEqual(["in:schedule_id", ["s1"]]);
+  });
+
+  it("splits a roster past the URL budget into several narrowed reads, losing nobody", async () => {
+    // 300 agents is past the design target of 200 and past the ~266 uuids one
+    // `in` filter can carry, so the read must be split rather than refused.
+    const uuid = (i: number) => `00000000-0000-4000-8000-${String(i).padStart(12, "0")}`;
+    const many = Array.from({ length: 300 }, (_, i) => ({ ...USERS[0]!, id: uuid(i), name: `A${i}` }));
+    mockDb({ users: { data: many, error: null }, availability_schedules: { data: [], error: null } });
+    const r = await loadTeamHours(VIEWER, { kind: "all" });
+    expect(r.kind).toBe("ok");
+    const schedCalls = calls.filter((c) => c.table === "availability_schedules");
+    expect(schedCalls.length).toBeGreaterThan(1);
+    const sent = schedCalls.flatMap((c) => c.filters.filter(([k]) => k === "in:user_id").flatMap(([, v]) => v as string[]));
+    expect(new Set(sent).size).toBe(300);
+    for (const c of schedCalls) {
+      const ids = c.filters.find(([k]) => k === "in:user_id")![1] as string[];
+      // Judged in bytes, the unit the transport refuses in, never a row count.
+      expect(idFilterBytes(ids)).toBeLessThanOrEqual(MAX_IN_FILTER_BYTES);
+    }
   });
 
   it("reports an unreadable roster as the roster, not as an empty team", async () => {

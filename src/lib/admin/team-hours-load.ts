@@ -14,6 +14,7 @@ import { supabaseAdmin } from "@/lib/supabase/admin";
 import { log } from "@/lib/log";
 import { unwrap } from "@/lib/db/result";
 import { selectAllPages } from "@/lib/supabase/paginate";
+import { inIdChunks } from "@/lib/db/id-batch";
 import type { OrgDefaults } from "@/lib/schedule-core";
 import type { HoursSource } from "@/lib/monitor/unset-hours";
 import {
@@ -96,42 +97,39 @@ export async function loadTeamHours(
   let schedules: TeamHoursSchedule[];
   try {
     const ids = agents.map((a) => a.id);
-    const scheduleRows =
-      ids.length === 0
-        ? []
-        : ((unwrap(
-            await (scope.kind === "team"
-              ? db
-                  .from("availability_schedules")
-                  .select("id, user_id, timezone, hours_source, hours_set_at, created_at")
-                  .in("user_id", ids)
-              : db
-                  .from("availability_schedules")
-                  .select("id, user_id, timezone, hours_source, hours_set_at, created_at")),
-            "team hours schedules",
-          ) ?? []) as ScheduleRow[]);
+    // Both hours reads are narrowed to the roster just read, in EVERY scope, so
+    // the admin view never pulls test agents' or another org's schedules. The id
+    // lists are split by URL bytes (`inIdChunks`), because the roster can pass the
+    // ~266 uuids one `in` filter carries, and a failed batch throws rather than
+    // returning a short list that reads as agents with no hours.
+    const scheduleRows = (
+      await inIdChunks("team hours schedules", ids, async (chunk) =>
+        (unwrap(
+          await db
+            .from("availability_schedules")
+            .select("id, user_id, timezone, hours_source, hours_set_at, created_at")
+            .in("user_id", chunk),
+          "team hours schedules",
+        ) ?? []) as ScheduleRow[],
+      )
+    ).flat();
 
     const scheduleIds = scheduleRows.map((s) => s.id);
-    // Paged: one rule per agent per working day is about 700 rows for the whole
-    // roster today and 1,400 at the design target, past the 1,000 row cap, and a
-    // truncated read here draws the last agents as having no hours.
-    const rules =
-      scheduleIds.length === 0
-        ? []
-        : await selectAllPages<RuleRow>("team hours rules", (from, to) =>
-            scope.kind === "team"
-              ? db
-                  .from("availability_rules")
-                  .select("schedule_id, weekday, start_minute, end_minute")
-                  .in("schedule_id", scheduleIds)
-                  .order("id")
-                  .range(from, to)
-              : db
-                  .from("availability_rules")
-                  .select("schedule_id, weekday, start_minute, end_minute")
-                  .order("id")
-                  .range(from, to),
-          );
+    // Paged as well: one rule per agent per working day is about 700 rows for the
+    // whole roster today and 1,400 at the design target, past the 1,000 row cap,
+    // and a truncated read here draws the last agents as having no hours.
+    const rules = (
+      await inIdChunks("team hours rules", scheduleIds, (chunk) =>
+        selectAllPages<RuleRow>("team hours rules", (from, to) =>
+          db
+            .from("availability_rules")
+            .select("schedule_id, weekday, start_minute, end_minute")
+            .in("schedule_id", chunk)
+            .order("id")
+            .range(from, to),
+        ),
+      )
+    ).flat();
 
     const rulesBySchedule = new Map<string, TeamHoursSchedule["rules"]>();
     for (const r of rules) {
