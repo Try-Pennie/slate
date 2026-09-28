@@ -12,7 +12,7 @@
  * WHY PER HOST KIND and not one row per caller: a single "last seen" row would let a
  * localhost test at 10:30 overwrite the production call at 10:00, and the readiness
  * gate would then report the key as seen only from localhost. Four kinds times four
- * callers bounds the table at sixteen rows.
+ * callers, plus the `canary-lanes` sighting (#2822), bounds the table at twenty rows.
  *
  * WHAT A HOST IS. The request's `Origin` header, else the origin of its `Referer`,
  * reduced to scheme, host and port so a path or query (a booking id on the confirmed

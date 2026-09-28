@@ -16,9 +16,12 @@ export const dynamic = "force-dynamic";
  * out of the external /api/health signal, so a dead canary never reads as the app
  * being down.
  *
- * Auth reuses the booking-API Bearer key: the caller is the same trusted smoke
- * run that already holds it, so no new secret. Fails CLOSED (503) when no key is
- * configured; 401 for a wrong or missing key.
+ * Auth: the canary sends its own key, `BOOKING_API_KEY_CANARY` (#2822); the legacy
+ * shared `BOOKING_API_KEY` is still accepted until it retires, and a partner's key
+ * is refused. A stamp made with the canary's own key also records a `canary-lanes`
+ * sighting, which is how the partner judge knows when the scheduled lanes left the
+ * shared key. Fails CLOSED (503) when no key is configured; 401 for a wrong or
+ * missing key.
  *
  * The optional `?lane=` selects which canary heartbeat to stamp, restricted to an
  * allowlist (#982): the 30-min dry tick stamps `smoke-canary`, the 6h full pass

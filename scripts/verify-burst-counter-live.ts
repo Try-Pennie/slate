@@ -38,9 +38,9 @@
 // message (L11, L98). A hand run sets no path and writes nothing.
 //
 // Env overrides:
-//   SLATE_BASE_URL     the deployment to ask (default https://slate.trypennie.app)
-//   BOOKING_API_KEY_CANARY    the Bearer key the deployment accepts
-//   BURST_SUMMARY_FILE where to record the verdict for the scheduled lane (unset: nowhere)
+//   SLATE_BASE_URL          the deployment to ask (default https://slate.trypennie.app)
+//   BOOKING_API_KEY_CANARY  the Bearer key the deployment accepts
+//   BURST_SUMMARY_FILE      where to record the verdict for the scheduled lane (unset: nowhere)
 import { loadEnvFiles, envOr } from "./smoke-env.ts";
 import type { ProbeOutcome } from "./lib/burst-counter-live-control.ts";
 // Statically imported, unlike the two below: it reads no environment as it loads (only node:fs),
