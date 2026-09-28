@@ -110,6 +110,7 @@ async function main() {
       err instanceof RaceLostRefusalError && err.lostRaces === 1 && err.boundHit === false,
       `race, rung full: refused as a lost race, one lost, bound not hit (got ${JSON.stringify(err)})`,
     );
+    assert(calls.raceBoundHitPages.length === 0, "race, rung full: below the bound nothing is paged");
     assert(calls.insertBooking.length === 1, "race, rung full: no second insert when nobody else is free");
     assert(
       calls.deleteEvent.length === calls.createEvent.length && calls.deleteEvent[0].id === "gcal-1",
@@ -218,6 +219,11 @@ async function main() {
     assert(
       err instanceof RaceLostRefusalError && err.boundHit === true && err.lostRaces === 1 + MAX_RACE_REASSIGNS,
       `race bound: refused at the bound, every attempt counted as lost (got ${JSON.stringify(err)})`,
+    );
+    // #2838: the page goes to the injected dispatcher, never to the real one.
+    assert(
+      calls.raceBoundHitPages.length === 1 && calls.raceBoundHitPages[0].key === "booking_race_bound_hit",
+      `race bound: the bound hit page is handed to the dispatcher once (got ${JSON.stringify(calls.raceBoundHitPages)})`,
     );
     assert(
       calls.insertBooking.length === 1 + MAX_RACE_REASSIGNS,

@@ -239,6 +239,11 @@ function makeTierDropDeps(requested = "511", lower = "411"): BookingDeps {
       throw new Error("owner reassign notice not exercised by this suite");
     },
     advisorTimezone: async () => null,
+    // #2838: a suite that is not about the race bound must never page, so the
+    // dispatcher throws rather than no-oping (the race suite below overrides it).
+    pageRaceBoundHit: () => {
+      throw new Error("race bound hit page not exercised by this suite");
+    },
   };
 }
 
@@ -293,14 +298,15 @@ describe("tier-drop alert dispatch", () => {
   });
 });
 
-// #2838: the same dispatch seam, on the confirm path's OTHER page. A lead refused
-// after every advisor it was handed lost the overlap race is paged the moment it
-// happens, because the daily whisper cannot page one event without either holding
-// a second day's page back or re-paging the same lead all day. It lives here
-// because this file already owns a full BookingDeps fake behind the mocked
-// dispatcher; the refusal is driven by making every insert lose the race.
-describe("race bound hit page dispatch (#2838)", () => {
-  function racingDeps(candidates: string[], isTest = false): BookingDeps {
+// #2838: a lead refused after every advisor it was handed lost the overlap race is
+// paged the moment it happens. The page goes through `deps.pageRaceBoundHit`, so
+// this suite hands in a recorder and nothing it drives can reach alert_state or
+// Slack (L2); the production dispatcher is tested on its own in
+// race-bound-page.test.ts. It lives here because this file already owns a full
+// BookingDeps fake; the refusal is driven by making every insert lose the race.
+describe("race bound hit page (#2838)", () => {
+  function racingDeps(candidates: string[], isTest = false) {
+    const pages: { key: string; cooldownMs: number; text: string }[] = [];
     const deps = makeTierDropDeps("411", "311");
     const b = { ...bucket411, is_test: isTest } as unknown as Bucket;
     deps.resolveBucketByCode = async (code) => (code === "411" ? { bucket: b, eventType } : null);
@@ -308,62 +314,39 @@ describe("race bound hit page dispatch (#2838)", () => {
     deps.loadEmails = async (ids) => new Map(ids.map((id) => [id, `${id}@x.com`]));
     // Every insert loses the overlap race to another confirm.
     deps.insertBooking = async () => ({ ok: false as const, conflict: true as const });
-    return deps;
+    deps.pageRaceBoundHit = (page) => {
+      pages.push(page);
+    };
+    return { deps, pages };
   }
   const input411: CreateBookingInput = { ...tierDropInput, bucketCode: "411", allowTestBuckets: true };
-  const boundPages = () =>
-    dispatch.sendThrottledAlert.mock.calls.filter(([key]) => key === "booking_race_bound_hit");
 
-  it("pages once when the lead is refused at the reassign bound", async () => {
-    const err = await createBooking(input411, racingDeps(["a", "b", "c", "d", "e"])).catch((e) => e);
+  it("hands the dispatcher one page when the lead is refused at the reassign bound", async () => {
+    const { deps, pages } = racingDeps(["a", "b", "c", "d", "e"]);
+    const err = await createBooking(input411, deps).catch((e) => e);
     expect(err).toBeInstanceOf(RaceLostRefusalError);
     expect((err as RaceLostRefusalError).boundHit).toBe(true);
-    expect(boundPages()).toHaveLength(1);
-    const [, cooldownMs, text] = boundPages()[0];
-    expect(cooldownMs).toBeGreaterThan(0);
-    expect(text).toContain("bucket 411");
-    expect(text).toContain("4 advisors");
-  });
-
-  it("still refuses the lead when the page itself cannot be sent, and logs the failure", async () => {
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    dispatch.sendThrottledAlert.mockRejectedValueOnce(new Error("slack down"));
-    const err = await createBooking(input411, racingDeps(["a", "b", "c", "d", "e"])).catch((e) => e);
-    // The refusal is the lead's answer; a failed page must not turn it into a 500.
-    expect(err).toBeInstanceOf(RaceLostRefusalError);
-    expect(boundPages()).toHaveLength(1);
-    // The send runs after the response, so let its rejection settle before reading the log.
-    await new Promise((r) => setTimeout(r, 0));
-    const lines = warn.mock.calls.map((c) => String(c[0]));
-    expect(lines.some((l) => l.includes("could not page a race bound hit"))).toBe(true);
-    warn.mockRestore();
-  });
-
-  it("refuses without waiting on the page, so Slack can never hold the 409", async () => {
-    // A send that never settles: if the confirm path awaited it, this would hang.
-    dispatch.sendThrottledAlert.mockImplementationOnce(() => new Promise<void>(() => {}));
-    const outcome = await Promise.race([
-      createBooking(input411, racingDeps(["a", "b", "c", "d", "e"])).then(
-        () => "booked",
-        (e) => (e instanceof RaceLostRefusalError ? "refused" : "other"),
-      ),
-      new Promise((r) => setTimeout(() => r("waited on the page"), 1000)),
-    ]);
-    expect(outcome).toBe("refused");
-    expect(boundPages()).toHaveLength(1);
+    expect(pages).toHaveLength(1);
+    expect(pages[0].key).toBe("booking_race_bound_hit");
+    expect(pages[0].cooldownMs).toBeGreaterThan(0);
+    expect(pages[0].text).toContain("bucket 411");
+    expect(pages[0].text).toContain("4 advisors");
+    // Never the real dispatcher.
+    expect(dispatch.sendThrottledAlert.mock.calls.filter(([k]) => k === "booking_race_bound_hit")).toHaveLength(0);
   });
 
   it("does not page a refusal below the bound, which the daily whisper counts instead", async () => {
-    const err = await createBooking(input411, racingDeps(["a"])).catch((e) => e);
+    const { deps, pages } = racingDeps(["a"]);
+    const err = await createBooking(input411, deps).catch((e) => e);
     expect(err).toBeInstanceOf(RaceLostRefusalError);
     expect((err as RaceLostRefusalError).boundHit).toBe(false);
-    expect(boundPages()).toHaveLength(0);
+    expect(pages).toHaveLength(0);
   });
 
   it("does not page the smoke canary's buckets", async () => {
-    const err = await createBooking(input411, racingDeps(["a", "b", "c", "d", "e"], true)).catch((e) => e);
+    const { deps, pages } = racingDeps(["a", "b", "c", "d", "e"], true);
+    const err = await createBooking(input411, deps).catch((e) => e);
     expect(err).toBeInstanceOf(RaceLostRefusalError);
-    expect(boundPages()).toHaveLength(0);
+    expect(pages).toHaveLength(0);
   });
 });
-

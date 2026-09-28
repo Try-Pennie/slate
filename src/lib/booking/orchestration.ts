@@ -90,7 +90,6 @@ import {
 import { isLoadtest } from "@/lib/loadtest-guard";
 import { sendThrottledAlert } from "../notify/dispatch.ts";
 import { raceBoundHitPage } from "../monitor/race-contention.ts";
-import { afterResponse } from "@/lib/after-response";
 import type { BookingEventPayload, BookingReasonMeta } from "@/lib/webhooks/types";
 import { routingMetaFromTrace } from "@/lib/webhooks/types";
 // Type-only (erased under --experimental-strip-types), so this never pulls the
@@ -924,6 +923,13 @@ export interface BookingDeps {
    * schedule for them. Never a default (see `loadAdvisorTimezone`).
    */
   advisorTimezone(userId: string): Promise<string | null>;
+  /**
+   * #2838: page a lead refused at the race reassign bound. Returns at once and
+   * never throws: production (`pageRaceBoundHitAfterResponse`) sends it after the
+   * response, so the lead's 409 never waits on Slack. A dependency rather than a
+   * direct send so no suite driving that refusal can reach alert_state or Slack.
+   */
+  pageRaceBoundHit(page: { key: string; cooldownMs: number; text: string }): void;
   /** #401: record a Google event deletion that failed, for the retry drain. */
   enqueueEventDeletion(calendarEmail: string, gcalEventId: string, bookingId: string | null): Promise<void>;
   /** #401: load pending event deletions for the retry drain. */
@@ -3089,19 +3095,9 @@ export async function createBooking(
           startIso,
           lostRaces: raceLost.length + 1,
         });
-        if (page) {
-          // After the response, never awaited here: the lead's 409 must not wait
-          // on an alert_state read and a Slack post (up to its 8s timeout). A
-          // failed send is logged and the refusal stands.
-          afterResponse("race-bound-hit-page", () =>
-            // alert-key: booking_race_bound_hit
-            // alert-text-ok: our own copy from race-contention.ts, built from a
-            // bucket code, the requested time and a count; no error text reaches it.
-            sendThrottledAlert(page.key, page.cooldownMs, page.text).catch((pageErr) =>
-              log.warn("booking", { msg: "could not page a race bound hit; the refusal stands" }, pageErr),
-            ),
-          );
-        }
+        // Handed to the injected dispatcher, never sent from here: production
+        // defers it past the response, and a test supplies a fake (L2).
+        if (page) deps.pageRaceBoundHit(page);
         throw new RaceLostRefusalError(raceLost.length + 1, boundHit);
       }
       log.info("booking", {

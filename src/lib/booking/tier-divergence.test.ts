@@ -236,6 +236,11 @@ function makeDeps(): BookingDeps {
       throw new Error("owner reassign notice not exercised by this suite");
     },
     advisorTimezone: async () => null,
+    // #2838: a suite that is not about the race bound must never page, so the
+    // dispatcher throws rather than no-oping (the race suite below overrides it).
+    pageRaceBoundHit: () => {
+      throw new Error("race bound hit page not exercised by this suite");
+    },
   };
 }
 
