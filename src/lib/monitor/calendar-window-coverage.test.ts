@@ -158,6 +158,37 @@ describe("runCalendarWindowCheck", () => {
     expect(recordConsecutiveStreak).not.toHaveBeenCalled();
   });
 
+  // all-clear-proof: a clear pass over ZERO judged calendars measured nothing, so it
+  // may not end a page or reset the streak toward one (#2807, the #1152 shape).
+  it("an empty roster judged nothing: no all-clear, no streak change (#2807)", async () => {
+    const result = await runCalendarWindowCheck(deps([]));
+    expect(result.status).toBe("clear");
+    expect(result.judged).toBe(0);
+    expect(resolveAlert).not.toHaveBeenCalled();
+    expect(clearFailureStreak).not.toHaveBeenCalled();
+    expect(recordConsecutiveStreak).not.toHaveBeenCalled();
+    expect(sendThrottledAlert).not.toHaveBeenCalled();
+  });
+
+  it("a pass that graced every calendar judged nothing: no all-clear, no streak change (#2807)", async () => {
+    const result = await runCalendarWindowCheck(deps([brandNew(3), brandNew(7)]));
+    expect(result.status).toBe("clear");
+    expect(result.judged).toBe(0);
+    expect(result.graced).toBe(2);
+    expect(resolveAlert).not.toHaveBeenCalled();
+    expect(clearFailureStreak).not.toHaveBeenCalled();
+    expect(recordConsecutiveStreak).not.toHaveBeenCalled();
+    expect(sendThrottledAlert).not.toHaveBeenCalled();
+  });
+
+  it("one judged calendar that is covered is enough to resolve, even beside a graced one (#2807)", async () => {
+    const result = await runCalendarWindowCheck(deps([row(), brandNew(3)]));
+    expect(result.status).toBe("clear");
+    expect(result.judged).toBe(1);
+    expect(clearFailureStreak).toHaveBeenCalledWith(CALENDAR_WINDOW_KEY);
+    expect(resolveAlert).toHaveBeenCalledWith(CALENDAR_WINDOW_KEY, formatCalendarWindowRecovery(1));
+  });
+
   it("an uncovered tick that has not persisted counts the streak without paging", async () => {
     recordConsecutiveStreak.mockResolvedValueOnce(false);
     const result = await runCalendarWindowCheck(deps([row({ syncWindowToIso: null })]));
