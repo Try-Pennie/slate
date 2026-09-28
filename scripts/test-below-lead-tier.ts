@@ -213,6 +213,15 @@ function booking(over: Partial<UpcomingBooking> = {}): UpcomingBooking {
   assert(/XBC 512 \(Ultra High\)/.test(sameCode), "it names the code the lead arrived with");
   assert(/below the code it was given/i.test(sameCode), "and says the routing placed the call below that code");
 
+  // Both at once: arrived on a lower code than today's AND placed below even that
+  // code. Calling it only a re-score would hide a routing fault, and "was routed on
+  // it" would be false, so the page must name both causes.
+  if (lowFinding.pool.rank >= 4) throw new Error("fixture must sit below the Very High pool");
+  const both = formatBelowLeadTierAlert(lowFinding, { catchall: false, requestedCode: "422" }, "u");
+  assert(/re-scored/i.test(both), "a lead re-scored above an arrival code still reads as re-scored");
+  assert(/below the code it was given/i.test(both), "and a pool below the arrival code is still named as a routing fault");
+  assert(!/was routed on it/i.test(both), "and never claims the call was routed on the arrival code");
+
   // An arrival code in the same tier as today's score is not a re-score either.
   const sameTier = formatBelowLeadTierAlert(lowFinding, { catchall: false, requestedCode: "501" }, "u");
   assert(!/re-scored/i.test(sameTier), "an arrival code in today's tier is never called re-scored");

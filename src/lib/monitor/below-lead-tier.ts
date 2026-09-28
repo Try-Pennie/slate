@@ -244,6 +244,14 @@ function routingLine(f: BelowFinding, c: RoutingContext): string {
     return "The routing catch-all chose this pool, because the lead's link carried a blank or unreadable code.";
   }
   const arrived = leadTierOf(c.requestedCode);
+  // Both causes at once: re-scored since, AND placed below the arrival code too.
+  // Naming only the re-score would hide the routing fault.
+  if (arrived.kind === "tier" && arrived.rank < f.lead.rank && f.pool.rank < arrived.rank) {
+    return (
+      `The lead arrived with XBC ${arrived.code} (${arrived.label}) and Salesforce has re-scored ` +
+      `them to ${f.lead.label} since, but the routing also placed the call below the code it was given.`
+    );
+  }
   if (arrived.kind === "tier" && arrived.rank < f.lead.rank) {
     return (
       `The lead arrived with XBC ${arrived.code} (${arrived.label}) and was routed on it, so ` +
