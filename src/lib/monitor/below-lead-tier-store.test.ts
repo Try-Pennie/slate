@@ -8,7 +8,10 @@ import { loadUpcomingBookingsInBuckets, loadRoutingContextByBooking } from "./be
 
 type Row = Record<string, unknown>;
 
-function fakeDb(tables: Record<string, Row[]>, opts: { error?: string } = {}) {
+function fakeDb(
+  tables: Record<string, Row[]>,
+  opts: { error?: string; orders?: [string, string, unknown][] } = {},
+) {
   return {
     from(table: string) {
       const filters: ((r: Row) => boolean)[] = [];
@@ -33,7 +36,13 @@ function fakeDb(tables: Record<string, Row[]>, opts: { error?: string } = {}) {
           filters.push((r) => r[col] === val);
           return chain;
         },
-        order: () => chain,
+        // Recorded rather than applied, so a test can ask whether the paged read
+        // asked for a stable order at all: without one Postgres may skip or
+        // repeat rows across pages.
+        order: (col: string, o?: unknown) => {
+          opts.orders?.push([table, col, o]);
+          return chain;
+        },
         range: (from: number, to: number) => {
           range = [from, to];
           return chain;
@@ -133,6 +142,40 @@ describe("loadRoutingContextByBooking", () => {
       const m = await loadRoutingContextByBooking(fakeDb({ routing_decisions: ordered }), ["bk-1"]);
       expect(m.get("bk-1")?.requestedCode).toBe("422");
     }
+  });
+
+  it("takes the catch-all flag from the NEWEST decision too, so an older catch-all is not blamed", async () => {
+    // An earlier decision fell to the catch-all and a later one routed the lead
+    // properly. The call sits where the later one put it, so the page must not
+    // say the catch-all chose the pool.
+    const rows = [
+      { booking_id: "bk-1", catchall_applied: true, requested_code: "", created_at: EARLIER },
+      { booking_id: "bk-1", catchall_applied: false, requested_code: "422", created_at: LATER },
+    ];
+    for (const ordered of [rows, [...rows].reverse()]) {
+      const m = await loadRoutingContextByBooking(fakeDb({ routing_decisions: ordered }), ["bk-1"]);
+      expect(m.get("bk-1")).toEqual({ catchall: false, requestedCode: "422" });
+    }
+  });
+
+  it("says catch-all when the NEWEST decision was the catch-all, whatever order the rows arrive in", async () => {
+    const rows = [
+      { booking_id: "bk-1", catchall_applied: false, requested_code: "422", created_at: EARLIER },
+      { booking_id: "bk-1", catchall_applied: true, requested_code: "", created_at: LATER },
+    ];
+    for (const ordered of [rows, [...rows].reverse()]) {
+      const m = await loadRoutingContextByBooking(fakeDb({ routing_decisions: ordered }), ["bk-1"]);
+      expect(m.get("bk-1")).toEqual({ catchall: true, requestedCode: "" });
+    }
+  });
+
+  it("pages in a stable order (created_at, then id), so no row is skipped or repeated across pages", async () => {
+    const orders: [string, string, unknown][] = [];
+    await loadRoutingContextByBooking(fakeDb({ routing_decisions: [] }, { orders }), ["bk-1"]);
+    expect(orders.map(([t, c]) => [t, c])).toEqual([
+      ["routing_decisions", "created_at"],
+      ["routing_decisions", "id"],
+    ]);
   });
 
   it("THROWS on a read error, so the page says the context could not be read", async () => {
