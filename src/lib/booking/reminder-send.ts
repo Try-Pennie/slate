@@ -1,4 +1,4 @@
-import { reminderDue, reminderSubject, reminderBody } from "./reminder.ts";
+import { reminderDue, reminderHeld, reminderSubject, reminderBody } from "./reminder.ts";
 import { classifyReminderSendFailure } from "./reminder-rate.ts";
 import type { MimeMessage } from "@/lib/notify/email-mime";
 import { parseStampMs } from "@/lib/date/stamp";
@@ -30,6 +30,8 @@ import { parseStampMs } from "@/lib/date/stamp";
 export interface DueBooking {
   id: string;
   startsAtIso: string;
+  /** When the booking was made, which the hand-back hold is measured from (#2633). */
+  createdAtIso: string;
   reminderSentForIso: string | null;
   status: string;
   /** Null when the lead gave a phone and no address, which is legitimate. */
@@ -66,6 +68,12 @@ export interface ReminderRun {
   failed: number;
   /** Due, and not sendable: no address to send to. Counted, never silent. */
   skipped: number;
+  /**
+   * Due, and HELD because the booking is too young for the owner hand-back to have
+   * landed (#2633). Not sent, not failed, not attempted and not claimed: it is owed
+   * a reminder on a later tick, and it is counted so the wait is visible.
+   */
+  held: number;
   /** Due, and claimed by somebody else this tick. */
   lost: number;
   /**
@@ -106,6 +114,7 @@ export async function runBookingReminders(deps: ReminderDeps): Promise<ReminderR
     sent: 0,
     failed: 0,
     skipped: 0,
+    held: 0,
     lost: 0,
     attempted: 0,
     byCode: {},
@@ -123,6 +132,21 @@ export async function runBookingReminders(deps: ReminderDeps): Promise<ReminderR
       nowMs,
     );
     if (!due) continue;
+
+    // Held BEFORE anything else is decided, and never claimed, so the owner hand-back
+    // can move the booking first and the next tick reads the advisor who will call
+    // (#2633). The row is re-read every tick, so nothing is carried across the wait.
+    const held = reminderHeld(
+      {
+        createdAtMs: parseStampMs(row.createdAtIso) ?? NaN,
+        startsAtMs: parseStampMs(row.startsAtIso) ?? NaN,
+      },
+      nowMs,
+    );
+    if (held) {
+      run.held += 1;
+      continue;
+    }
 
     // No address is not a fault and must not page: a booking can legitimately carry
     // a phone and nothing else. It is COUNTED, because a silent skip is how a gap

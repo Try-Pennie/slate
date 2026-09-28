@@ -13,7 +13,10 @@
 //     reminder is a property of the appointment rather than of the lead.
 import {
   REMINDER_LEAD_MS,
+  REMINDER_HOLD_MS,
+  REMINDER_HOLD_FLOOR_MS,
   reminderDue,
+  reminderHeld,
   reminderSubject,
   reminderBody,
 } from "../src/lib/booking/reminder.ts";
@@ -62,6 +65,58 @@ const booking = (over: Partial<Parameters<typeof reminderDue>[0]> = {}) => ({
 {
   assert(reminderDue(booking({ startsAtMs: NOW + 2 * HOUR }), NOW), "a same day booking is due at once");
   assert(reminderDue(booking({ startsAtMs: NOW + 20 * MIN }), NOW), "and so is one made twenty minutes out");
+}
+
+// --- a young booking is HELD so the owner hand-back lands first (#2633) ----------
+//
+// The hand-back moves a booking to the lead's owner seconds after it is made (26s
+// in the #2630 case), and since #2630 a reassign never sends a second reminder. So a
+// reminder sent at once would name, and reply to, the advisor who will NOT call.
+// Both sides of every boundary are pinned, because a hold judged with the wrong
+// comparison is either a tick late or no hold at all.
+{
+  eq(REMINDER_HOLD_MS, 10 * MIN, "the hold is ten minutes, derived from the measured hand-back");
+  eq(REMINDER_HOLD_FLOOR_MS, 60 * MIN, "and never runs past an hour before the call");
+
+  const created = NOW;
+  const start = NOW + 5 * HOUR;
+  const held = (nowMs: number, over: Partial<Parameters<typeof reminderHeld>[0]> = {}) =>
+    reminderHeld({ createdAtMs: created, startsAtMs: start, ...over }, nowMs);
+
+  assert(held(created), "a booking made this instant is held");
+  assert(held(created + REMINDER_HOLD_MS - 1), "one millisecond short of the hold is still held");
+  assert(!held(created + REMINDER_HOLD_MS), "the hold's end itself is released");
+  assert(!held(created + REMINDER_HOLD_MS + 5 * MIN), "and so is anything older");
+}
+
+// --- the floor: a call starting sooner than the hold is not held past it ---------
+//
+// The next thing the lead hears is Regal's one hour SMS, and this email is the one
+// that carries the link to move or cancel, so it must never be held into that last
+// hour. A booking made seventy minutes out is released at the hour mark, not at ten
+// minutes old; one made inside the hour is not held at all.
+{
+  const created = NOW;
+  const start = NOW + 65 * MIN;
+  const held = (nowMs: number) => reminderHeld({ createdAtMs: created, startsAtMs: start }, nowMs);
+  assert(held(created), "sixty five minutes out, a brand new booking is still held");
+  assert(held(start - REMINDER_HOLD_FLOOR_MS - 1), "until just before the hour mark");
+  assert(!held(start - REMINDER_HOLD_FLOOR_MS), "and released at the hour mark, before the hold would end");
+
+  const soon = NOW + 30 * MIN;
+  assert(
+    !reminderHeld({ createdAtMs: created, startsAtMs: soon }, created),
+    "a call half an hour away is sent at once despite being seconds old",
+  );
+}
+
+// --- an unreadable stamp does not hold a reminder forever ------------------------
+//
+// The hold is a courtesy about WHICH advisor signs the email; the reminder itself is
+// the promise. So an unreadable creation time or clock releases rather than holds.
+{
+  assert(!reminderHeld({ createdAtMs: NaN, startsAtMs: NOW + 5 * HOUR }, NOW), "an unreadable creation time is not held");
+  assert(!reminderHeld({ createdAtMs: NOW, startsAtMs: NOW + 5 * HOUR }, NaN), "and neither is an unreadable clock");
 }
 
 // --- a call that has already started is never reminded about ---------------------

@@ -14,6 +14,9 @@ const NOW = Date.UTC(2026, 8, 16, 14, 0, 0);
 const due = (over: Partial<DueBooking> = {}): DueBooking => ({
   id: "bk-1",
   startsAtIso: new Date(NOW + 12 * HOUR).toISOString(),
+  // Old enough to be past the hand-back hold (#2633), so the suites below judge the
+  // send path rather than the hold. The hold has its own section at the end.
+  createdAtIso: new Date(NOW - HOUR).toISOString(),
   reminderSentForIso: null,
   status: "confirmed",
   attendeeEmail: "lead@example.com",
@@ -207,4 +210,84 @@ function spy(over: Partial<ReminderDeps> = {}) {
   eq(Object.keys(result.byCode).length, 0, "a clean run names no failure reasons");
 }
 
+// --- a young booking is HELD, visibly, and not claimed (#2633) --------------------
+//
+// A held booking is neither a failure nor a send: it is owed a reminder on a later
+// tick. So it is not claimed (claiming would mark it reminded for a message that
+// does not exist yet), not attempted (the failure share must not shrink while a
+// real outage runs), and it is COUNTED, because a silent skip is how a gap hides.
+{
+  const MIN = 60_000;
+  const s = spy({
+    loadDue: async () => [
+      due({ id: "young", createdAtIso: new Date(NOW - 2 * MIN).toISOString() }),
+      due({ id: "old", attendeeEmail: "old@x.com", createdAtIso: new Date(NOW - 11 * MIN).toISOString() }),
+    ],
+  });
+  const result = await runBookingReminders(s.deps);
+  eq(result.held, 1, "the two minute old booking is held");
+  eq(result.sent, 1, "the eleven minute old one is sent");
+  eq(result.attempted, 1, "a held booking is not an attempt");
+  eq(result.failed, 0, "and not a failure");
+  eq(result.skipped, 0, "and not an addressless skip either, which is a different fact");
+  assert(!s.order.includes("claim:young"), "the held booking is not claimed");
+  eq(s.sent.map((m) => m.to).join(","), "old@x.com", "only the older booking's lead is emailed");
+}
+
+// --- a call starting soon is sent despite being seconds old ----------------------
+{
+  const s = spy({
+    loadDue: async () => [
+      due({
+        createdAtIso: new Date(NOW - 5_000).toISOString(),
+        startsAtIso: new Date(NOW + 40 * 60_000).toISOString(),
+      }),
+    ],
+  });
+  const result = await runBookingReminders(s.deps);
+  eq(result.held, 0, "a call forty minutes out is inside the floor, so it is not held");
+  eq(result.sent, 1, "and its reminder goes out on this tick");
+}
+
+// --- held, then handed back, then sent: the email names the NEW advisor ------------
+//
+// The whole point of the hold. Tick one sees the booking seconds old on the first
+// advisor and holds it; the owner hand-back then moves it; tick two, past the hold,
+// reads the row again and sends from, and signs as, the owner who will call.
+{
+  const MIN = 60_000;
+  const created = NOW;
+  const startsAtIso = new Date(NOW + 5 * HOUR).toISOString();
+  const row = (agentEmail: string, agentName: string) =>
+    due({ createdAtIso: new Date(created).toISOString(), startsAtIso, agentEmail, agentName });
+
+  let clock = created + 30_000;
+  let current = row("asage@trypennie.com", "Alex Sage");
+  const froms: string[] = [];
+  const bodies: string[] = [];
+  const s = spy({
+    now: () => clock,
+    loadDue: async () => [current],
+    send: async (msg) => {
+      froms.push(msg.from);
+      bodies.push(msg.body);
+      return "gmail-id";
+    },
+  });
+
+  const first = await runBookingReminders(s.deps);
+  eq(first.held, 1, "tick one: seconds old, held");
+  eq(froms.length, 0, "and nothing is sent from the first advisor");
+
+  current = row("trios@trypennie.com", "Taylor Rios");
+  clock = created + 10 * MIN + 30_000;
+  const second = await runBookingReminders(s.deps);
+  eq(second.held, 0, "tick two: past the hold, released");
+  eq(second.sent, 1, "and sent");
+  eq(froms.join(","), "trios@trypennie.com", "from the NEW advisor's mailbox, so a reply reaches them");
+  assert(bodies[0]!.includes("Taylor Rios"), "and signed by the new advisor");
+  assert(!bodies[0]!.includes("Alex Sage"), "with no trace of the first");
+}
+
 finish();
+

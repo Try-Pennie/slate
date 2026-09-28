@@ -28,6 +28,8 @@ import { formatClockTime } from "@/lib/date/parse";
  * A booking made LESS than 24 hours ahead is reminded at once (2026-09-16), so there
  * is no "unless" to explain and no second schedule to maintain. It arrives alongside
  * the Google invite for a same day booking, which is the accepted cost of one rule.
+ * "At once" means once the hand-back hold has passed (#2633, `REMINDER_HOLD_MS`), so
+ * the reminder comes from the advisor who will actually call.
  *
  * A booking that MOVES earns a fresh reminder for its new time, because the reminder
  * is a property of the appointment rather than of the lead: a call a fortnight out
@@ -69,6 +71,74 @@ export function reminderDue(b: ReminderSubject, nowMs: number): boolean {
   // The record is the START it was sent about, so a booking that moved no longer
   // matches and earns its own reminder with nobody clearing anything.
   return b.reminderSentForMs !== b.startsAtMs;
+}
+
+/**
+ * How long a NEW booking waits before its reminder may go out (#2633), so the owner
+ * hand-back lands first and the single reminder comes from the advisor who will call.
+ *
+ * Why a hold at all: the upstream automation that owns contact stickiness hands a
+ * booking to the lead's owner through `POST /api/bookings/reassign` seconds after it
+ * is made, and since #2630 a reassign never sends a second reminder. A call booked
+ * inside the 24 hour window used to be reminded on the very next tick, so the one
+ * reminder the lead kept named the first advisor and its "just reply to this email"
+ * sent replies to the wrong mailbox.
+ *
+ * Why ten minutes, MEASURED on production 2026-09-28 rather than guessed: the time
+ * from `bookings.created_at` to the first `booking_events` row with action
+ * `reassigned` and initiator `system` (the owner hand-back), per booking.
+ *
+ *   real buckets:  n = 5,   p50 26s, max 101s (22.6s, 23.8s, 26.0s, 35.4s, 101.4s)
+ *   test buckets:  n = 344, p50 4s, p95 8s, max 49s (the canary calling the route
+ *                  directly, so it measures Slate's own swap, not the upstream flow)
+ *
+ * Five real hand-backs is too few to read a p95 from, so this is the issue's ten
+ * minutes CHECKED against the data rather than derived from a tail: it is about six
+ * times the worst real hand-back seen, which leaves room for a slower run of the
+ * upstream automation, or a retry of it, and the lane's five minute cadence
+ * means the reminder lands 10 to 15 minutes after booking, still well inside the
+ * 120 minute minimum notice every event type carries today. Re-measure once there
+ * are fifty or more real hand-backs; the query is in the #2633 PR.
+ */
+export const REMINDER_HOLD_MS = 10 * 60_000;
+
+/**
+ * The hold never runs past this long before the call (#2633).
+ *
+ * The next message the lead hears is Regal's one hour SMS, and this email is the one
+ * that carries the link to move or cancel, so it must land before that hour starts
+ * rather than inside it. A reminder from the first advisor is a smaller harm than a
+ * reminder that arrives with no time left to act on it. The lane runs every five
+ * minutes, so a release at the hour mark reaches the lead at worst 55 minutes out.
+ * With today's 120 minute minimum notice the floor only binds for a booking an admin
+ * moves close in; it exists because that notice is a setting, not a law.
+ */
+export const REMINDER_HOLD_FLOOR_MS = 60 * 60_000;
+
+export interface ReminderHoldSubject {
+  createdAtMs: number;
+  startsAtMs: number;
+}
+
+/**
+ * Whether a booking that is otherwise due is HELD this tick, waiting for the owner
+ * hand-back. Judged separately from `reminderDue` so the lane can count a held
+ * booking as its own outcome: it is neither sent nor failed, and it is owed a
+ * reminder on a later tick.
+ *
+ * It releases at the EARLIER of the hold ending and the floor before the call. Every
+ * unreadable value releases rather than holds, the opposite direction to
+ * `reminderDue`, because the hold is a courtesy about who signs the email while the
+ * reminder itself is the promise: a NaN that held would silently cost the lead it.
+ * The floor makes that bounded either way, but the courtesy must not be the thing
+ * that decides.
+ */
+export function reminderHeld(b: ReminderHoldSubject, nowMs: number): boolean {
+  if (!Number.isFinite(nowMs) || !Number.isFinite(b.createdAtMs) || !Number.isFinite(b.startsAtMs)) {
+    return false;
+  }
+  const releaseAtMs = Math.min(b.createdAtMs + REMINDER_HOLD_MS, b.startsAtMs - REMINDER_HOLD_FLOOR_MS);
+  return nowMs < releaseAtMs;
 }
 
 export interface ReminderCopyInput {
