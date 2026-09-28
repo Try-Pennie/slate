@@ -134,6 +134,15 @@ describe("manage page advisor wiring (#1338)", () => {
     expect(props?.calendarLinks).toBeNull();
   });
 
+  // #2827: the move picker's times follow the booking's kind, decided here from
+  // the row rather than left for the component to guess.
+  it("an advisor link booking's picker reads that advisor's times, a routed one its pool", async () => {
+    service.getBookingByToken.mockResolvedValue({ ...found, booking: { ...found.booking, kind: "agent_link" } });
+    expect((await renderPage())?.rescheduleTimesFrom).toBe("advisor");
+    service.getBookingByToken.mockResolvedValue({ ...found, booking: { ...found.booking, kind: "routed" } });
+    expect((await renderPage())?.rescheduleTimesFrom).toBe("pool");
+  });
+
   it("does not look up an advisor for a token that resolves to nothing", async () => {
     service.getBookingByToken.mockResolvedValue(null);
     await renderPage();

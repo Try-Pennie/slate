@@ -18,6 +18,11 @@ import type { EventType } from "@/lib/db/types";
  *
  * Every refusal is one body (`AGENT_LINK_UNAVAILABLE`) whatever the cause, so the
  * response cannot be used to learn whether a token was ever real.
+ *
+ * The compute after the link is judged is `namedAgentTimes`, which is ALSO what an
+ * advisor link booking's move times are served from (#2827,
+ * `src/lib/booking/reschedule-times.ts`): the times a lead can book with an advisor
+ * and the times they can move that call to are one computation.
  */
 
 /** The slice of an event type a lead may see, as `/api/availability` sends it. */
@@ -27,11 +32,15 @@ interface PublicEventType {
   durationMin: number;
 }
 
-export interface AgentLinkAvailabilityDeps {
-  resolve(token: string): Promise<AgentLinkJudgement>;
+/**
+ * What computing ONE named agent's times needs (#2073, #2827). Shared by the
+ * advisor link's read and by the read that offers an advisor link booking its
+ * move times, so the two are one compute rather than two copies of it.
+ */
+export interface NamedAgentTimesDeps {
   horizonDays(): Promise<number>;
-  /** That one agent's slots in the bucket the link books into, or null when the
-   *  bucket cannot be resolved. */
+  /** That one agent's slots in the named bucket, or null when the bucket cannot
+   *  be resolved. */
   slotsFor(
     bucketCode: string,
     agentUserId: string,
@@ -40,24 +49,28 @@ export interface AgentLinkAvailabilityDeps {
   ): Promise<{ slots: string[]; eventType: EventType; orgName: string } | null>;
   /** For saying WHY there is nothing; null when it could not be read. */
   businessHours(): Promise<BusinessHoursRules | null>;
+}
+
+export interface AgentLinkAvailabilityDeps extends NamedAgentTimesDeps {
+  resolve(token: string): Promise<AgentLinkJudgement>;
   /** The refusal cause, for the log only. */
   logRefusal(why: string): void;
 }
 
+/** One named agent's times, in the shape `/api/availability` sends. */
+export interface NamedAgentTimesBody {
+  // The code is left EMPTY: which bucket a named booking is stored in is
+  // internal, and the lead never chose it (rule #259, no routing internals in
+  // the payload).
+  bucket: { code: string };
+  orgName: string;
+  eventType: PublicEventType;
+  slots: string[];
+  emptyBecause: EmptyReason | null;
+}
+
 export type AgentLinkAvailabilityReply =
-  | {
-      status: 200;
-      body: {
-        // The shape `/api/availability` sends, with the code left EMPTY: which
-        // bucket a named booking is stored in is internal, and the lead never
-        // chose it (rule #259, no routing internals in the payload).
-        bucket: { code: string };
-        orgName: string;
-        eventType: PublicEventType;
-        slots: string[];
-        emptyBecause: EmptyReason | null;
-      };
-    }
+  | { status: 200; body: NamedAgentTimesBody }
   | { status: 400 | 404; body: { error: string; code: string } };
 
 const DAY_MS = 86_400_000;
@@ -73,41 +86,46 @@ function readInstant(value: string | null): number | null | "unreadable" {
   return Number.isFinite(ms) ? ms : "unreadable";
 }
 
-export async function agentLinkAvailability(
-  token: string,
-  query: { from: string | null; to: string | null },
-  nowMs: number,
-  deps: AgentLinkAvailabilityDeps,
-): Promise<AgentLinkAvailabilityReply> {
+/**
+ * The asked for window, read. `unreadable` when either bound is not a date, which
+ * every caller answers with a 400 BEFORE reading anything else.
+ */
+export function readTimesWindow(query: {
+  from: string | null;
+  to: string | null;
+}): { fromMs: number | null; toMs: number | null } | "unreadable" {
   const from = readInstant(query.from);
   const to = readInstant(query.to);
-  if (from === "unreadable" || to === "unreadable") {
-    return { status: 400, body: { error: "The requested window could not be read.", code: "VALIDATION" } };
-  }
+  if (from === "unreadable" || to === "unreadable") return "unreadable";
+  return { fromMs: from, toMs: to };
+}
 
-  const link = await deps.resolve(token);
-  if (!link.ok) {
-    deps.logRefusal(link.why);
-    return unavailableReply();
-  }
+/** The 400 for an unreadable window, one wording for both reads. */
+export const UNREADABLE_WINDOW_BODY = { error: "The requested window could not be read.", code: "VALIDATION" };
 
+/**
+ * One named agent's offerable times in one bucket, bounded to the org's booking
+ * horizon (#2073, #2827). Null when the bucket cannot be resolved, which each
+ * caller answers with its own refusal.
+ */
+export async function namedAgentTimes(
+  target: { bucketCode: string; agentUserId: string },
+  window: { fromMs: number | null; toMs: number | null },
+  nowMs: number,
+  deps: NamedAgentTimesDeps,
+): Promise<NamedAgentTimesBody | null> {
   // Bounded to the org's booking horizon however far the caller asks, because
   // this compute is live and per request. A day of slack covers the booker asking
   // from the start of the lead's day rather than from this instant.
   const horizonDays = await deps.horizonDays();
   const ceilingMs = nowMs + (horizonDays + 1) * DAY_MS;
-  const fromMs = Math.max(from ?? nowMs, nowMs);
-  const toMs = Math.min(to ?? ceilingMs, ceilingMs);
+  const fromMs = Math.max(window.fromMs ?? nowMs, nowMs);
+  const toMs = Math.min(window.toMs ?? ceilingMs, ceilingMs);
   const fromIso = new Date(fromMs).toISOString();
   const toIso = new Date(Math.max(toMs, fromMs)).toISOString();
 
-  const computed = await deps.slotsFor(link.bucketCode, link.agent.id, fromIso, toIso);
-  if (!computed) {
-    // The bucket the judge chose vanished between the two reads. Nobody can be
-    // booked through it right now, which is the same thing the lead is told.
-    deps.logRefusal("bucket_unresolvable");
-    return unavailableReply();
-  }
+  const computed = await deps.slotsFor(target.bucketCode, target.agentUserId, fromIso, toIso);
+  if (!computed) return null;
 
   const slots = filterSlotsFromNow(computed.slots, nowMs, computed.eventType.min_notice_min).filter(
     (s) => Date.parse(s) <= toMs,
@@ -122,17 +140,44 @@ export async function agentLinkAvailability(
   }
 
   return {
-    status: 200,
-    body: {
-      bucket: { code: "" },
-      orgName: computed.orgName,
-      eventType: {
-        name: computed.eventType.name,
-        description: computed.eventType.description,
-        durationMin: computed.eventType.duration_min,
-      },
-      slots,
-      emptyBecause,
+    bucket: { code: "" },
+    orgName: computed.orgName,
+    eventType: {
+      name: computed.eventType.name,
+      description: computed.eventType.description,
+      durationMin: computed.eventType.duration_min,
     },
+    slots,
+    emptyBecause,
   };
+}
+
+export async function agentLinkAvailability(
+  token: string,
+  query: { from: string | null; to: string | null },
+  nowMs: number,
+  deps: AgentLinkAvailabilityDeps,
+): Promise<AgentLinkAvailabilityReply> {
+  const window = readTimesWindow(query);
+  if (window === "unreadable") return { status: 400, body: UNREADABLE_WINDOW_BODY };
+
+  const link = await deps.resolve(token);
+  if (!link.ok) {
+    deps.logRefusal(link.why);
+    return unavailableReply();
+  }
+
+  const times = await namedAgentTimes(
+    { bucketCode: link.bucketCode, agentUserId: link.agent.id },
+    window,
+    nowMs,
+    deps,
+  );
+  if (!times) {
+    // The bucket the judge chose vanished between the two reads. Nobody can be
+    // booked through it right now, which is the same thing the lead is told.
+    deps.logRefusal("bucket_unresolvable");
+    return unavailableReply();
+  }
+  return { status: 200, body: times };
 }

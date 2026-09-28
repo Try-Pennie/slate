@@ -21,6 +21,7 @@ import { loadBusinessHoursCached } from "@/lib/booking/business-hours-load";
 import { loadBookingHorizonDays } from "@/lib/booking/settings";
 import { log } from "@/lib/log";
 import { agentLinkAvailabilityLive } from "@/lib/agent-link/service";
+import { bookingRescheduleTimesLive } from "@/lib/booking/reschedule-times-live";
 
 export const dynamic = "force-dynamic";
 
@@ -62,6 +63,23 @@ async function handle(req: NextRequest) {
   if (advisor !== null) {
     const reply = await agentLinkAvailabilityLive(
       advisor,
+      { from: params.get("from"), to: params.get("to") },
+      Date.now(),
+    );
+    return NextResponse.json(reply.body, { status: reply.status });
+  }
+
+  // #2827: the times a call booked through an advisor's link may MOVE to, keyed
+  // on the booking's manage token. Its move keeps the advisor or refuses, so it is
+  // offered that advisor's times through the same compute as the branch above,
+  // never the pool of the bucket it is stored in. The token already lets its
+  // holder move this booking, and it unlocks only this booking's own advisor: the
+  // request names nobody. A routed booking is refused here and reads its pool
+  // through `bucket=` below, exactly as it always has.
+  const booking = params.get("booking");
+  if (booking !== null) {
+    const reply = await bookingRescheduleTimesLive(
+      { manageToken: booking },
       { from: params.get("from"), to: params.get("to") },
       Date.now(),
     );

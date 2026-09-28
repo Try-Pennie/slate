@@ -202,6 +202,7 @@ describe("the manage page (#2165)", () => {
   const manageProps = {
     token: "tok1",
     bucketCode: "411",
+    rescheduleTimesFrom: "pool" as const,
     startsAt: slotIso,
     status: "confirmed",
     eventName: "Debt consultation",

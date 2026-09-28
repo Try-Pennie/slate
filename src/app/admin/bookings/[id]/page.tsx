@@ -13,6 +13,7 @@ import BookingHistory from "@/components/BookingHistory";
 import ViewerTime from "@/components/ViewerTime";
 import { bookingIsActionable, loadBookingDetail } from "@/lib/booking/detail";
 import { loadReasonOptions } from "@/lib/booking/reason-options";
+import { rescheduleTimesFrom } from "@/lib/booking/reschedule-times-url";
 import type { BookingEventView, HistoryRosterUser } from "@/lib/booking/event-display";
 import { listBookingHistory } from "@/lib/booking/history";
 import { log } from "@/lib/log";
@@ -162,6 +163,9 @@ export default async function BookingDetailPage({
           <AdminBookingActions
             bookingId={booking.id}
             bucketCode={view.bucketCode}
+            // #2827: a call booked through an advisor's own link can only move to
+            // a time that advisor can take, so its picker reads that advisor's times.
+            rescheduleTimesFrom={rescheduleTimesFrom(booking)}
             // #2666: staff are already authorised, so a test booking's panel is
             // handed the pass its reschedule read needs. Null for a real booking.
             testPass={view.bucketCode ? currentTestPassFor(view.bucketCode) : null}

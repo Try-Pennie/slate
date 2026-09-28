@@ -45,7 +45,12 @@ import {
   doneHeading,
   movedNote,
   phoneSaved as phoneSaved_,
+  rescheduleNoTimes,
 } from "@/lib/booking/manage-copy";
+import {
+  leadRescheduleTimesUrl,
+  type RescheduleTimesFrom,
+} from "@/lib/booking/reschedule-times-url";
 
 
 interface ManageBookingProps {
@@ -57,6 +62,14 @@ interface ManageBookingProps {
    * times. Null for every real booking, whose read needs none.
    */
   testPass?: string | null;
+  /**
+   * Where the move times come from (#2827), decided server side off the
+   * booking's kind by `rescheduleTimesFrom`. A call booked through an advisor's
+   * own link can only move to a time that advisor can take, so it reads that
+   * advisor's times by this page's token; a routed call reads its bucket's pool.
+   * Required, so no surface can forget to decide it.
+   */
+  rescheduleTimesFrom: RescheduleTimesFrom;
   startsAt: string;
   status: string;
   eventName: string;
@@ -140,6 +153,7 @@ export default function ManageBooking({
   token,
   bucketCode,
   testPass = null,
+  rescheduleTimesFrom,
   startsAt,
   status: initialStatus,
   eventName,
@@ -182,7 +196,10 @@ export default function ManageBooking({
   // Null while the panel is shut: nothing is fetched, and the picker settles as
   // "no days" rather than sitting in a load that never runs.
   const picker = useSlotPicker({
-    url: rescheduling ? `/api/availability?bucket=${encodeURIComponent(bucketCode)}` : null,
+    // #2827: an advisor link booking reads its own advisor's times, never the pool.
+    url: rescheduling
+      ? leadRescheduleTimesUrl(rescheduleTimesFrom, { bucketCode, manageToken: token })
+      : null,
     zone: timeZone,
     leadZone: timeZone,
     testPass,
@@ -633,7 +650,9 @@ export default function ManageBooking({
                     failedMessage={picker.failedMessage}
                     classes={SLOT_TIMES_CLASSES.panel}
                     noDaysNode={
-                      <p className="text-sm text-fg-muted">{RESCHEDULE_COPY.noTimes}</p>
+                      <p className="text-sm text-fg-muted">
+                        {rescheduleNoTimes({ from: rescheduleTimesFrom, advisorName })}
+                      </p>
                     }
                     renderSlot={(iso) => (
                       <button

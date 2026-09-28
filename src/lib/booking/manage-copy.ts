@@ -20,6 +20,7 @@
  */
 
 import { formatPhoneForDisplay } from "../phone-format.ts";
+import { RESCHEDULE_TIMES_UNAVAILABLE_SENTENCE } from "./reschedule-times-refusal.ts";
 
 // --- the link resolved to no booking ------------------------------------------
 
@@ -204,6 +205,9 @@ export const RESCHEDULE_COPY = {
   /** The only way back out while the panel is open (#1336). */
   keepCurrent: "Keep my current time",
   noTimes: "All times are taken right now. Check back soon.",
+  /** The move times could not be served for this booking at all (#2827). Held
+   *  in a leaf module the shared picker can read without this file. */
+  unavailable: RESCHEDULE_TIMES_UNAVAILABLE_SENTENCE,
   failed: "Could not reschedule. Please try again.",
   /**
    * What a move done ON this page says for itself once it lands (#1336, #2215).
@@ -216,6 +220,24 @@ export const RESCHEDULE_COPY = {
    */
   moved: "Your call is moved",
 } as const;
+
+/**
+ * What the move picker says when it has nothing to offer (#2827).
+ *
+ * A call booked through an advisor's own link can only move to a time that
+ * advisor can take, so "all times are taken" is untrue there: other people's
+ * times may be wide open. The advisor is the subject, by name when the page has
+ * one and never by pronoun, and the lead is told the one thing they can still do.
+ * A routed call keeps the pooled sentence.
+ */
+export function rescheduleNoTimes(input: {
+  from: "pool" | "advisor";
+  advisorName: string | null;
+}): string {
+  if (input.from === "pool") return RESCHEDULE_COPY.noTimes;
+  const who = input.advisorName ?? "Your advisor";
+  return `${who} has no other open times in the next few days. Keep your current time, or check back later.`;
+}
 
 /**
  * The two facts the card cannot show for itself: a fresh invite is coming, and

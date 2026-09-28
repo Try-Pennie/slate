@@ -10,6 +10,7 @@ import {
 } from "@/lib/booking/service";
 import { loadReasonOptions } from "@/lib/booking/reason-options";
 import { currentTestPassFor } from "@/lib/embed/test-pass-gate";
+import { rescheduleTimesFrom } from "@/lib/booking/reschedule-times-url";
 
 export const dynamic = "force-dynamic";
 
@@ -81,6 +82,9 @@ export default async function ManagePage({
         // booking's page mints the pass its reschedule panel needs to read the
         // public test bucket's times. Null for every real booking.
         testPass={currentTestPassFor(found.bucket.code)}
+        // #2827: a call booked through an advisor's own link can only move to a
+        // time that advisor can take, so its picker reads that advisor's times.
+        rescheduleTimesFrom={rescheduleTimesFrom(found.booking)}
         startsAt={found.booking.starts_at}
         status={found.booking.status}
         eventName={found.eventType.name}

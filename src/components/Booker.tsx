@@ -195,6 +195,7 @@ type DuplicateWarning =
  * erased, so no server module reaches the bundle.
  */
 import type { ExistingCall } from "@/lib/booking/orchestration";
+import { leadRescheduleTimesUrl } from "@/lib/booking/reschedule-times-url";
 import type { CalendarLinks } from "@/lib/booking/calendar-links";
 import AddToCalendar from "@/components/AddToCalendar";
 import { MarkedLabel } from "@/components/ui/MarkedLabel";
@@ -605,15 +606,27 @@ export default function Booker({
   // month boundary that clipped the horizon: with four bookable days and today the
   // 30th, `min(monthEnd, horizonEnd)` asked only to the 31st and the lead was
   // offered two days instead of four. Nothing about the strip ever wanted a month.
+  const moveAdvisorToken =
+    existingCall?.disclose && existingCall.rescheduleTimesFrom === "advisor"
+      ? existingCall.manageToken
+      : null;
   const availabilityUrl = useMemo(() => {
     const from = today.toUTC().toISO();
     const to = today.plus({ days: horizonDays }).toUTC().toISO();
+    const range = `from=${encodeURIComponent(from!)}&to=${encodeURIComponent(to!)}`;
+    // #2827: this lead already has a call booked through an advisor's own link,
+    // and a time picked here can only MOVE that call, which keeps its advisor or
+    // refuses. So the times are that advisor's, read by the call's manage token
+    // through the one URL builder the manage page uses, never this page's pool.
+    if (moveAdvisorToken) {
+      return `${leadRescheduleTimesUrl("advisor", { bucketCode, manageToken: moveAdvisorToken })}&${range}`;
+    }
     // #2073: an agent's own link reads that one agent's times, never a pool's.
     const subject = agentLinkToken
       ? `advisor=${encodeURIComponent(agentLinkToken)}`
       : `bucket=${encodeURIComponent(bucketCode)}`;
-    return `/api/availability?${subject}&from=${encodeURIComponent(from!)}&to=${encodeURIComponent(to!)}`;
-  }, [agentLinkToken, bucketCode, today, horizonDays]);
+    return `/api/availability?${subject}&${range}`;
+  }, [agentLinkToken, bucketCode, today, horizonDays, moveAdvisorToken]);
 
   // The shared picker (#1336) owns the fetch, the abort + supersession guard
   // (#629), the day grouping in the viewer's zone, the chosen day and the

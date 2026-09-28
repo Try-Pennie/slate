@@ -4,6 +4,7 @@ import { useMemo, useState } from "react";
 
 import { testPassHeaders, testPassRefusalSentence } from "@/lib/embed/test-pass-header";
 import { agentLinkRefusalSentence } from "@/lib/agent-link/refusal-sentence";
+import { rescheduleTimesRefusalSentence } from "@/lib/booking/reschedule-times-refusal";
 
 import { useFetchList } from "@/components/AsyncList";
 import {
@@ -150,9 +151,12 @@ export function useSlotPicker({
     retry,
     payload,
     // #2073: or because an agent's own link stopped booking anybody while the
-    // page was open. Both are refusals a retry cannot fix.
+    // page was open, or (#2827) because a booking keyed move times read found no
+    // advisor booking to serve. All are refusals a retry cannot fix.
     failedMessage: failed
-      ? (testPassRefusalSentence(errorPayload) ?? agentLinkRefusalSentence(errorPayload))
+      ? (testPassRefusalSentence(errorPayload) ??
+        agentLinkRefusalSentence(errorPayload) ??
+        rescheduleTimesRefusalSentence(errorPayload))
       : null,
   };
 }

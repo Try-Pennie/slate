@@ -471,6 +471,7 @@ describe("Booker refuses a second booking (#1337)", () => {
           startsAt: existingIso,
           advisorName: "Aisha Bello",
           manageToken: "tok-old",
+          rescheduleTimesFrom: "pool",
           mayCancel: true,
           phone: null,
         }}
@@ -490,13 +491,58 @@ describe("Booker refuses a second booking (#1337)", () => {
       <Booker
         {...baseProps}
         salesforceId="003xx"
-        landingCall={{ disclose: true, startsAt: existingIso, advisorName: null, manageToken: "tok-old", mayCancel: true, phone: null }}
+        landingCall={{ disclose: true, startsAt: existingIso, advisorName: null, manageToken: "tok-old", rescheduleTimesFrom: "pool", mayCancel: true, phone: null }}
       />,
     );
     await screen.findByText("You already have a call booked");
     fireEvent.click(screen.getByRole("button", { name: MOVE_COPY.pickAnotherTime }));
     expect(screen.queryByText("You already have a call booked")).toBeNull();
     expect(await dayChip()).toBeTruthy();
+  });
+
+  // #2827: a call booked through an advisor's own link can only move to a time
+  // that advisor can take, so the times offered for moving it are the advisor's,
+  // read by its manage token, never this page's pool.
+  it("offers an advisor link call's own advisor's times when moving it, never the page's pool", async () => {
+    const urls: string[] = [];
+    global.fetch = vi.fn(async (url: RequestInfo | URL) => {
+      urls.push(String(url));
+      return { ok: true, json: async () => availability } as Response;
+    }) as unknown as typeof fetch;
+    render(
+      <Booker
+        {...baseProps}
+        salesforceId="003xx"
+        landingCall={{ disclose: true, startsAt: existingIso, advisorName: null, manageToken: "tok-old", rescheduleTimesFrom: "advisor", mayCancel: true, phone: null }}
+      />,
+    );
+    await screen.findByText("You already have a call booked");
+    fireEvent.click(screen.getByRole("button", { name: MOVE_COPY.pickAnotherTime }));
+    expect(await dayChip()).toBeTruthy();
+    const reads = urls.filter((u) => u.includes("/api/availability"));
+    expect(reads.length).toBeGreaterThan(0);
+    expect(reads.every((u) => u.startsWith("/api/availability?booking=tok-old&from="))).toBe(true);
+  });
+
+  it("a routed call's move still reads the page's pool", async () => {
+    const urls: string[] = [];
+    global.fetch = vi.fn(async (url: RequestInfo | URL) => {
+      urls.push(String(url));
+      return { ok: true, json: async () => availability } as Response;
+    }) as unknown as typeof fetch;
+    render(
+      <Booker
+        {...baseProps}
+        salesforceId="003xx"
+        landingCall={{ disclose: true, startsAt: existingIso, advisorName: null, manageToken: "tok-old", rescheduleTimesFrom: "pool", mayCancel: true, phone: null }}
+      />,
+    );
+    await screen.findByText("You already have a call booked");
+    fireEvent.click(screen.getByRole("button", { name: MOVE_COPY.pickAnotherTime }));
+    expect(await dayChip()).toBeTruthy();
+    const reads = urls.filter((u) => u.includes("/api/availability"));
+    expect(reads.length).toBeGreaterThan(0);
+    expect(reads.every((u) => u.startsWith(`/api/availability?bucket=${baseProps.bucketCode}&from=`))).toBe(true);
   });
 
   it("shows the ordinary picker when nothing identifies the lead", async () => {
@@ -527,7 +573,7 @@ describe("Booker refuses a second booking (#1337)", () => {
       <Booker
         {...baseProps}
         salesforceId="003xx"
-        landingCall={{ disclose: true, startsAt: existingIso, advisorName: null, manageToken: "tok-old", mayCancel: true, phone: null }}
+        landingCall={{ disclose: true, startsAt: existingIso, advisorName: null, manageToken: "tok-old", rescheduleTimesFrom: "pool", mayCancel: true, phone: null }}
       />,
     );
     await screen.findByText("You already have a call booked");
@@ -565,7 +611,7 @@ describe("Booker refuses a second booking (#1337)", () => {
       <Booker
         {...baseProps}
         salesforceId="003xx"
-        landingCall={{ disclose: true, startsAt: existingIso, advisorName: null, manageToken: "tok-old", mayCancel: true, phone: null }}
+        landingCall={{ disclose: true, startsAt: existingIso, advisorName: null, manageToken: "tok-old", rescheduleTimesFrom: "pool", mayCancel: true, phone: null }}
       />,
     );
     await screen.findByText("You already have a call booked");
@@ -602,7 +648,7 @@ describe("Booker refuses a second booking (#1337)", () => {
         {...baseProps}
         salesforceId="003xx"
         attendee={{ name: "Dana Lead", email: "dana@example.com", phone: "" }}
-        landingCall={{ disclose: true, startsAt: existingIso, advisorName: null, manageToken: "tok-old", mayCancel: true, phone: null }}
+        landingCall={{ disclose: true, startsAt: existingIso, advisorName: null, manageToken: "tok-old", rescheduleTimesFrom: "pool", mayCancel: true, phone: null }}
       />,
     );
     await screen.findByText("You already have a call booked");
@@ -640,7 +686,7 @@ describe("Booker refuses a second booking (#1337)", () => {
         {...baseProps}
         salesforceId="003xx"
         attendee={{ name: "Mary Jo Smith", firstName: "Mary Jo", email: "", phone: "" }}
-        landingCall={{ disclose: true, startsAt: existingIso, advisorName: null, manageToken: "tok-old", mayCancel: true, phone: null }}
+        landingCall={{ disclose: true, startsAt: existingIso, advisorName: null, manageToken: "tok-old", rescheduleTimesFrom: "pool", mayCancel: true, phone: null }}
       />,
     );
     await screen.findByText("You already have a call booked");
@@ -663,7 +709,7 @@ describe("Booker refuses a second booking (#1337)", () => {
       <Booker
         {...baseProps}
         salesforceId="003xx"
-        landingCall={{ disclose: true, startsAt: existingIso, advisorName: null, manageToken: "tok-old", mayCancel: true, phone: null }}
+        landingCall={{ disclose: true, startsAt: existingIso, advisorName: null, manageToken: "tok-old", rescheduleTimesFrom: "pool", mayCancel: true, phone: null }}
       />,
     );
     await screen.findByText("You already have a call booked");
@@ -683,14 +729,14 @@ describe("Booker refuses a second booking (#1337)", () => {
     // they choose sends them to the form to be told, by a 409, about the call they
     // never stopped having (L676).
     global.fetch = declineWith(
-      { disclose: true, startsAt: existingIso, advisorName: null, manageToken: "tok-old", mayCancel: true, phone: null },
+      { disclose: true, startsAt: existingIso, advisorName: null, manageToken: "tok-old", rescheduleTimesFrom: "pool", mayCancel: true, phone: null },
       { ok: false, status: 409, body: { reason: "slot_taken" } },
     );
     render(
       <Booker
         {...baseProps}
         salesforceId="003xx"
-        landingCall={{ disclose: true, startsAt: existingIso, advisorName: null, manageToken: "tok-old", mayCancel: true, phone: null }}
+        landingCall={{ disclose: true, startsAt: existingIso, advisorName: null, manageToken: "tok-old", rescheduleTimesFrom: "pool", mayCancel: true, phone: null }}
       />,
     );
     await screen.findByText("You already have a call booked");
@@ -715,7 +761,7 @@ describe("Booker refuses a second booking (#1337)", () => {
   // change what we would ring. The person that hurts is the one the cancel was
   // built for: somebody who never got the invite email, so has no manage link
   // either (L677).
-  const withPhone = { disclose: true as const, startsAt: existingIso, advisorName: null, manageToken: "tok-old", mayCancel: true, phone: "(203) 555-5295" };
+  const withPhone = { disclose: true as const, startsAt: existingIso, advisorName: null, manageToken: "tok-old", rescheduleTimesFrom: "pool" as const, mayCancel: true, phone: "(203) 555-5295" };
 
   it("names the number the advisor will ring, in full", async () => {
     global.fetch = vi.fn(async () => ({ ok: true, json: async () => availability }) as Response) as unknown as typeof fetch;
@@ -953,7 +999,7 @@ describe("Booker refuses a second booking (#1337)", () => {
       <Booker
         {...baseProps}
         salesforceId="003xx"
-        landingCall={{ disclose: true, startsAt: existingIso, advisorName: null, manageToken: "tok-old", mayCancel: true, phone: null }}
+        landingCall={{ disclose: true, startsAt: existingIso, advisorName: null, manageToken: "tok-old", rescheduleTimesFrom: "pool", mayCancel: true, phone: null }}
       />,
     );
     await screen.findByText("You already have a call booked");
@@ -998,7 +1044,7 @@ describe("Booker refuses a second booking (#1337)", () => {
       <Booker
         {...baseProps}
         salesforceId="003xx"
-        landingCall={{ disclose: true, startsAt: existingIso, advisorName: null, manageToken: "tok-old", mayCancel: true, phone: null }}
+        landingCall={{ disclose: true, startsAt: existingIso, advisorName: null, manageToken: "tok-old", rescheduleTimesFrom: "pool", mayCancel: true, phone: null }}
       />,
     );
     await screen.findByText("You already have a call booked");
@@ -1021,7 +1067,7 @@ describe("Booker refuses a second booking (#1337)", () => {
       <Booker
         {...baseProps}
         salesforceId="003xx"
-        landingCall={{ disclose: true, startsAt: existingIso, advisorName: null, manageToken: "tok-old", mayCancel: true, phone: null }}
+        landingCall={{ disclose: true, startsAt: existingIso, advisorName: null, manageToken: "tok-old", rescheduleTimesFrom: "pool", mayCancel: true, phone: null }}
       />,
     );
     await screen.findByText("You already have a call booked");
@@ -1044,7 +1090,7 @@ describe("Booker refuses a second booking (#1337)", () => {
       <Booker
         {...baseProps}
         salesforceId="003xx"
-        landingCall={{ disclose: true, startsAt: existingIso, advisorName: null, manageToken: "tok-old", mayCancel: false, phone: null }}
+        landingCall={{ disclose: true, startsAt: existingIso, advisorName: null, manageToken: "tok-old", rescheduleTimesFrom: "pool", mayCancel: false, phone: null }}
       />,
     );
     await screen.findByText("You already have a call booked");
@@ -1142,7 +1188,7 @@ describe("Booker refuses a second booking (#1337)", () => {
   // left with neither call moved nor a new one booked.
   it("tells the lead and returns them to the picker when the slot goes before the Move", async () => {
     global.fetch = declineWith(
-      { disclose: true, startsAt: existingIso, advisorName: "Aisha Bello", manageToken: "tok-old", mayCancel: true, phone: null },
+      { disclose: true, startsAt: existingIso, advisorName: "Aisha Bello", manageToken: "tok-old", rescheduleTimesFrom: "pool", mayCancel: true, phone: null },
       { ok: false, status: 409, body: { error: "That time is no longer available." } },
     );
     render(<Booker {...baseProps} />);
@@ -1345,7 +1391,7 @@ describe("Booker embed postMessage origin (#593)", () => {
         embedded={embedded}
         parentOrigin="https://host.test"
         salesforceId="003xx"
-        landingCall={{ disclose: true, startsAt: slotIso, advisorName: null, manageToken: "tok-old", mayCancel: true, phone: null }}
+        landingCall={{ disclose: true, startsAt: slotIso, advisorName: null, manageToken: "tok-old", rescheduleTimesFrom: "pool", mayCancel: true, phone: null }}
       />,
     );
   }
@@ -1624,7 +1670,7 @@ describe("Booker lifecycle messages (#2658)", () => {
         parentOrigin={HOST}
         salesforceId="003xx"
         attendee={{ name: "Dana Lead", email: "dana@example.com", phone: "+12035615295" }}
-        landingCall={{ disclose: true, startsAt: slotIso, advisorName: null, manageToken: "tok-old", mayCancel: true, phone: "+12035615295" }}
+        landingCall={{ disclose: true, startsAt: slotIso, advisorName: null, manageToken: "tok-old", rescheduleTimesFrom: "pool", mayCancel: true, phone: "+12035615295" }}
       />,
     );
     await screen.findByText("You already have a call booked");
@@ -1664,7 +1710,7 @@ describe("Booker lifecycle messages (#2658)", () => {
         embedded
         parentOrigin={HOST}
         salesforceId="003xx"
-        landingCall={{ disclose: true, startsAt: slotIso, advisorName: null, manageToken: "tok-old", mayCancel: true, phone: null }}
+        landingCall={{ disclose: true, startsAt: slotIso, advisorName: null, manageToken: "tok-old", rescheduleTimesFrom: "pool", mayCancel: true, phone: null }}
       />,
     );
     await screen.findByText("You already have a call booked");
@@ -2996,6 +3042,7 @@ describe("a committed time is spelled the same way wherever it is read back (#22
           startsAt: existing,
           advisorName: null,
           manageToken: "tok-old",
+          rescheduleTimesFrom: "pool",
           mayCancel: true,
           phone: null,
         }}
