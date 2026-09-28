@@ -28,7 +28,7 @@ function envOr(name: string, fallback: string): string {
 }
 
 const baseUrl = envOr("SLATE_BASE_URL", "https://slate.trypennie.app");
-const apiKey = envOr("BOOKING_API_KEY", "");
+const apiKey = envOr("BOOKING_API_KEY_CANARY", "");
 const summaryPath = envOr("PARITY_SUMMARY_FILE", "parity-summary.json");
 const runUrl = envOr("RUN_URL", "https://github.com/Try-Pennie/slate/actions");
 const appliedPath = envOr("PARITY_APPLY_FILE", "");

@@ -31,7 +31,7 @@ export interface DeployEnvironment {
    * shipped, and a run that cannot tell is exactly the run where that is likeliest.
    */
   dirty: boolean | null;
-  /** `BOOKING_API_KEY`, which the probe needs to read /api/smoke/version. */
+  /** `BOOKING_API_KEY_CANARY`, which the probe needs to read /api/smoke/version. */
   bookingApiKey?: string;
   /** `APP_URL`, defaulted by the caller to production. */
   appUrl?: string;
@@ -107,7 +107,7 @@ export function planVerifiedDeploy(env: DeployEnvironment): DeployPlan {
       ok: false,
       code: 3,
       reason:
-        "BOOKING_API_KEY is unset, so the probe cannot read /api/smoke/version and nothing would confirm the deploy. This is the whole point of this command, so it refuses rather than deploying unverified",
+        "BOOKING_API_KEY_CANARY is unset, so the probe cannot read /api/smoke/version and nothing would confirm the deploy. This is the whole point of this command, so it refuses rather than deploying unverified",
     };
   }
   const appUrl = (env.appUrl ?? DEFAULT_APP_URL).replace(/\/$/, "");

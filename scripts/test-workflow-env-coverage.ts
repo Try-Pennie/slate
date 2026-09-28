@@ -398,7 +398,7 @@ jobs:
     `the real workflows reference settings the scan can see (found ${found.size})`,
   );
   assert(
-    found.has("secrets.BOOKING_API_KEY"),
+    found.has("secrets.BOOKING_API_KEY_CANARY"),
     "including a secret the canary genuinely depends on",
   );
 }

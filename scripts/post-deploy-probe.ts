@@ -11,7 +11,7 @@
 // tested; this file is only I/O and wiring.
 //
 // Run: node --experimental-strip-types scripts/post-deploy-probe.ts
-//   env: APP_URL, PROBE_COMMIT (or GITHUB_SHA), BOOKING_API_KEY, SMOKE_BUCKET
+//   env: APP_URL, PROBE_COMMIT (or GITHUB_SHA), BOOKING_API_KEY_CANARY, SMOKE_BUCKET
 import {
   runProbe,
   DEFAULT_POLL_INTERVAL_MS,
@@ -21,7 +21,7 @@ import {
 import { normalizeCommit } from "./stamp-build-info.ts";
 
 const appUrl = (process.env.APP_URL ?? "https://slate.trypennie.app").replace(/\/$/, "");
-const key = process.env.BOOKING_API_KEY ?? "";
+const key = process.env.BOOKING_API_KEY_CANARY ?? "";
 // Same env var name the existing smoke scripts use (scripts/smoke-create-resume.ts,
 // scripts/smoke-booking-api.ts), so there is one name for one thing rather than a
 // second convention to keep in sync. SMOKE is the isolated test bucket (#396), so
@@ -33,7 +33,7 @@ if (!key) {
   // Fail loud, never a green skip: this runs only on a real deploy, so a missing
   // key means the probe verified nothing while reporting success (#766).
   console.error(
-    "::error title=post-deploy probe cannot run::BOOKING_API_KEY is unset, so the deployed version could not be confirmed. Add it under Settings > Secrets and variables > Actions.",
+    "::error title=post-deploy probe cannot run::BOOKING_API_KEY_CANARY is unset, so the deployed version could not be confirmed. Add it under Settings > Secrets and variables > Actions.",
   );
   process.exit(1);
 }

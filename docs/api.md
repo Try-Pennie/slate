@@ -86,7 +86,7 @@ names which one it requires.
 | Slack signature | `X-Slack-Signature` + `X-Slack-Request-Timestamp` | Slack signing secret | `POST /api/slack/interactions` |
 | Supabase session (staff) | session cookie | Supabase Auth | every `/api/admin/*` route |
 | Manage token | in the URL path | per-booking `manage_token` | `POST /api/bookings/[token]/cancel`, `POST /api/bookings/[token]/reschedule`, `POST /api/bookings/[token]/phone`, `GET /api/bookings/[token]/ics` |
-| Smoke key | `Authorization: Bearer <key>` | `BOOKING_API_KEY_CANARY` (or the legacy shared `BOOKING_API_KEY`); a partner's key is refused | `GET /api/smoke/version`, `POST /api/smoke/heartbeat`, `POST /api/smoke/burst-counter`, `POST /api/smoke/schedule-parity` |
+| Smoke key | `Authorization: Bearer <key>` | `BOOKING_API_KEY_CANARY`, which every canary lane sends (#2822), or the legacy shared `BOOKING_API_KEY`, still accepted until it retires; a partner's key is refused | `GET /api/smoke/version`, `POST /api/smoke/heartbeat`, `POST /api/smoke/burst-counter`, `POST /api/smoke/schedule-parity` |
 | None (public) | n/a | n/a | `GET /api/availability`, `GET /api/availability/next`, `POST /api/routing`, `POST /api/client-errors`, `POST /api/csp-report`, `GET /api/health`, `GET /api/health/availability`, `GET /api/auth/callback` |
 
 Every Bearer credential is compared in constant time (`src/lib/bearer-auth.ts`).
@@ -988,7 +988,7 @@ answer `503` when no booking API key is configured.
 | `BOOKING_API_KEY_2` | The shared key's rotation slot | Ignored; primary still works |
 | `BOOKING_API_KEY_REGAL`, `_2` | Regal's own booking key (#2645) | Regal must use the shared key |
 | `BOOKING_API_KEY_TRYPENNIE`, `_2` | trypennie's own booking key | trypennie must use the shared key |
-| `BOOKING_API_KEY_CANARY`, `_2` | The smoke canary's own key, the only named key the smoke endpoints accept | The canary must use the shared key |
+| `BOOKING_API_KEY_CANARY`, `_2` | The smoke canary's own key, the only named key the smoke endpoints accept | Every canary lane, the deploy probe and every heartbeat stamp fail with a 401 and alert (#2822: they no longer fall back to the shared key) |
 | `REASSIGN_API_KEY` | `POST /api/bookings/reassign` | `503` |
 | `DUPLICATE_CANCEL_API_KEY` | `POST /api/bookings/cancel-duplicate` | `503` |
 | `OFFBOARDING_API_KEY` | `/api/users/lifecycle`, `/api/users/deactivate`, `/api/users/reactivate` | `503` |

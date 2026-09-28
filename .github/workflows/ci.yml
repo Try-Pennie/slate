@@ -467,6 +467,6 @@ jobs:
       - name: Post-deploy probe (live site is serving this commit and is healthy)
         env:
           APP_URL: https://slate.trypennie.app
-          BOOKING_API_KEY: ${{ secrets.BOOKING_API_KEY }}
+          BOOKING_API_KEY_CANARY: ${{ secrets.BOOKING_API_KEY_CANARY }}
           GITHUB_SHA: ${{ github.sha }}
         run: node --experimental-strip-types scripts/post-deploy-probe.ts

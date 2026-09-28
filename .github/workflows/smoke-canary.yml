@@ -21,8 +21,15 @@ name: Smoke canary
 # GITHUB_CANARY_TOKEN Worker secret). The concurrency group below dedupes any
 # overlap between the two triggers.
 #
-# Needs repo secrets BOOKING_API_KEY and REASSIGN_API_KEY (the Worker's keys, added
+# Needs repo secrets BOOKING_API_KEY_CANARY and REASSIGN_API_KEY (the Worker's keys, added
 # to Actions), and the existing SLACK_BOT_TOKEN secret + SLACK_ALERTS_CHANNEL var.
+#
+# #2822: the canary sends its OWN key and is recorded as `canary`, never the shared
+# BOOKING_API_KEY, so every shared key sighting in api_caller_seen is a partner's.
+# scripts/test-canary-key-wiring.ts fails the build if any step goes back to it. The
+# GitHub secret must hold the SAME value as the Worker's BOOKING_API_KEY_CANARY secret:
+# a value the Worker does not hold is a 401 on the first step, which fails the run
+# and alerts.
 on:
   schedule:
     - cron: "*/30 * * * *"
@@ -57,19 +64,21 @@ jobs:
       - name: Install
         run: pnpm install --frozen-lockfile
 
-      # Skip quietly until BOOKING_API_KEY is configured as a repo secret, so
+      # Skip quietly until BOOKING_API_KEY_CANARY is configured as a repo secret, so
       # merging this doesn't spam Slack every 30 min before setup. An absent key is
-      # "not configured yet"; a present-but-wrong key still runs and alerts.
+      # "not configured yet"; a present-but-wrong key still runs and alerts. A skip
+      # stamps no heartbeat, so a secret deleted later goes stale against the lane
+      # watchdog's bound and pages rather than staying quiet for ever.
       - name: Preflight (is the canary configured?)
         id: pre
         env:
-          BOOKING_API_KEY: ${{ secrets.BOOKING_API_KEY }}
+          BOOKING_API_KEY_CANARY: ${{ secrets.BOOKING_API_KEY_CANARY }}
         run: |
-          if [ -n "$BOOKING_API_KEY" ]; then
+          if [ -n "$BOOKING_API_KEY_CANARY" ]; then
             echo "configured=1" >> "$GITHUB_OUTPUT"
           else
             echo "configured=0" >> "$GITHUB_OUTPUT"
-            echo "::notice::BOOKING_API_KEY is not set as a repo secret, so the smoke canary is skipping. Add it (and REASSIGN_API_KEY) in Settings > Secrets and variables > Actions."
+            echo "::notice::BOOKING_API_KEY_CANARY is not set as a repo secret, so the smoke canary is skipping. Add it (and REASSIGN_API_KEY) in Settings > Secrets and variables > Actions."
           fi
 
       - name: Select pass (full on the 6h cron or a manual full dispatch, else dry)
@@ -102,7 +111,7 @@ jobs:
       - name: Booking smoke (dry-run health tick)
         if: success() && steps.pre.outputs.configured == '1' && steps.mode.outputs.full == '0'
         env:
-          BOOKING_API_KEY: ${{ secrets.BOOKING_API_KEY }}
+          BOOKING_API_KEY_CANARY: ${{ secrets.BOOKING_API_KEY_CANARY }}
           SLATE_BASE_URL: ${{ vars.SLATE_BASE_URL }}
           EXPECT_HTTPS_REDIRECT: ${{ vars.EXPECT_HTTPS_REDIRECT }}
           SMOKE_FAILURE_FILE: smoke-failures.txt
@@ -112,7 +121,7 @@ jobs:
       - name: Booking smoke (full strict pass)
         if: success() && steps.pre.outputs.configured == '1' && steps.mode.outputs.full == '1'
         env:
-          BOOKING_API_KEY: ${{ secrets.BOOKING_API_KEY }}
+          BOOKING_API_KEY_CANARY: ${{ secrets.BOOKING_API_KEY_CANARY }}
           REASSIGN_API_KEY: ${{ secrets.REASSIGN_API_KEY }}
           SLATE_BASE_URL: ${{ vars.SLATE_BASE_URL }}
           EXPECT_HTTPS_REDIRECT: ${{ vars.EXPECT_HTTPS_REDIRECT }}
@@ -126,7 +135,7 @@ jobs:
       - name: Reschedule smoke (full pass only)
         if: success() && steps.pre.outputs.configured == '1' && steps.mode.outputs.full == '1'
         env:
-          BOOKING_API_KEY: ${{ secrets.BOOKING_API_KEY }}
+          BOOKING_API_KEY_CANARY: ${{ secrets.BOOKING_API_KEY_CANARY }}
           SLATE_BASE_URL: ${{ vars.SLATE_BASE_URL }}
           SMOKE_FAILURE_FILE: smoke-failures.txt
         run: node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/smoke-reschedule.ts
@@ -149,7 +158,7 @@ jobs:
         continue-on-error: true
         if: success() && steps.pre.outputs.configured == '1'
         env:
-          BOOKING_API_KEY: ${{ secrets.BOOKING_API_KEY }}
+          BOOKING_API_KEY_CANARY: ${{ secrets.BOOKING_API_KEY_CANARY }}
           SLATE_BASE_URL: ${{ vars.SLATE_BASE_URL }}
           SMOKE_FAILURE_FILE: smoke-failures.txt
         run: node --experimental-strip-types scripts/smoke-latency.ts
@@ -168,12 +177,12 @@ jobs:
       - name: Stamp the latency verdict (a measured reading only)
         if: always() && steps.pre.outputs.configured == '1' && steps.latency.outputs.measured == '1'
         env:
-          BOOKING_API_KEY: ${{ secrets.BOOKING_API_KEY }}
+          BOOKING_API_KEY_CANARY: ${{ secrets.BOOKING_API_KEY_CANARY }}
           SLATE_BASE_URL: ${{ vars.SLATE_BASE_URL }}
         run: |
           base="${SLATE_BASE_URL:-https://slate.trypennie.app}"
           curl -fsS -X POST "${base%/}/api/smoke/heartbeat?lane=verdict:availability-latency" \
-            -H "authorization: Bearer $BOOKING_API_KEY"
+            -H "authorization: Bearer $BOOKING_API_KEY_CANARY"
 
       # #1006: the uptime canary proves the SERVER responds and cannot prove the
       # front end draws. cal.com is watched by a Checkly browser check that loads
@@ -213,7 +222,7 @@ jobs:
         env:
           SLATE_BASE_URL: ${{ vars.SLATE_BASE_URL }}
           SMOKE_FAILURE_FILE: smoke-failures.txt
-        # Deliberately NO BOOKING_API_KEY and NO SMOKE_BUCKET here. The other
+        # Deliberately NO BOOKING_API_KEY_CANARY and NO SMOKE_BUCKET here. The other
         # canary steps drive the hidden SMOKE bucket with a bearer token; a BROWSER
         # cannot send one, so the booker correctly refuses that bucket and this
         # check would false-page every full pass. It drives a real bucket instead.
@@ -234,12 +243,12 @@ jobs:
       - name: Stamp canary heartbeat (success only)
         if: success() && steps.pre.outputs.configured == '1'
         env:
-          BOOKING_API_KEY: ${{ secrets.BOOKING_API_KEY }}
+          BOOKING_API_KEY_CANARY: ${{ secrets.BOOKING_API_KEY_CANARY }}
           SLATE_BASE_URL: ${{ vars.SLATE_BASE_URL }}
         run: |
           base="${SLATE_BASE_URL:-https://slate.trypennie.app}"
           curl -fsS -X POST "${base%/}/api/smoke/heartbeat" \
-            -H "authorization: Bearer $BOOKING_API_KEY"
+            -H "authorization: Bearer $BOOKING_API_KEY_CANARY"
 
       # #982: stamp the SEPARATE smoke-canary-full heartbeat, but only after a
       # successful FULL pass. The dry tick keeps smoke-canary fresh every 30 min,
@@ -248,12 +257,12 @@ jobs:
       - name: Stamp full-pass canary heartbeat (full pass success only)
         if: success() && steps.pre.outputs.configured == '1' && steps.mode.outputs.full == '1'
         env:
-          BOOKING_API_KEY: ${{ secrets.BOOKING_API_KEY }}
+          BOOKING_API_KEY_CANARY: ${{ secrets.BOOKING_API_KEY_CANARY }}
           SLATE_BASE_URL: ${{ vars.SLATE_BASE_URL }}
         run: |
           base="${SLATE_BASE_URL:-https://slate.trypennie.app}"
           curl -fsS -X POST "${base%/}/api/smoke/heartbeat?lane=smoke-canary-full" \
-            -H "authorization: Bearer $BOOKING_API_KEY"
+            -H "authorization: Bearer $BOOKING_API_KEY_CANARY"
 
       # The latency and embed steps are `continue-on-error`, so a failure in either
       # does NOT make the job fail, and `failure()` alone would leave it recorded in

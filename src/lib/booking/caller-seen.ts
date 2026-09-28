@@ -34,6 +34,7 @@
  * drives it; `record-caller-seen.ts` wires the real ones.
  */
 import { PRODUCTION_ORIGINS } from "@/lib/monitor/offsite-origin";
+import { BOOKING_API_CALLERS } from "@/lib/booking/api-auth";
 
 /** Every kind of host a request can be recorded under. The migration's CHECK lists
  *  the same four, held equal by scripts/test-caller-seen.ts. */
@@ -59,10 +60,17 @@ export type CallerSeenRow = {
   last_seen_at: string;
   method: string;
   origin: string | null;
+  /**
+   * When this caller was first seen from this host kind (#2822, migration 0146).
+   * Stamped by the database on insert and never written by the recorder, so a
+   * refresh cannot move it. Optional because a read that did not select it (or a
+   * database before 0146) has none, and the judge then treats it as unknown.
+   */
+  first_seen_at?: string | null;
 };
 
-/** What one write stores. The same shape as the row, so the upsert is the row. */
-export type CallerSeenWrite = CallerSeenRow;
+/** What one write stores: the row WITHOUT `first_seen_at`, which the database owns. */
+export type CallerSeenWrite = Omit<CallerSeenRow, "first_seen_at">;
 
 /** The two headers this reads, so a plain `Headers` and a Next request's both fit. */
 export interface HeaderSource {
@@ -151,9 +159,42 @@ export function makeCallerSeenRecorder(deps: CallerSeenDeps) {
 
 /**
  * The caller the shared `BOOKING_API_KEY` authenticates as (#2645). The smoke canary
- * holds it too, which is what makes a sighting on it hard to read (#2819).
+ * held it too until #2822, which is what made a sighting on it hard to read (#2819).
  */
 export const SHARED_CALLER = "shared";
+
+/** The caller the smoke canary authenticates as once it holds its own key (#2822). */
+export const CANARY_CALLER = "canary";
+
+/**
+ * The partners a shared key sighting can belong to once the canary has left it: every
+ * caller that is neither the shared pair nor the canary, derived from the list the
+ * authorizer uses so a partner added there is a suspect here without an edit (L41).
+ */
+const PARTNER_CALLERS: readonly string[] = BOOKING_API_CALLERS.filter((c) => c !== SHARED_CALLER && c !== CANARY_CALLER);
+
+/**
+ * How long after the canary first authenticates on its own key a shared sighting may
+ * still be the canary's: a run that started on the old workflow file finishes on the
+ * shared key. One refresh interval, which is far longer than a canary run (its jobs
+ * time out in fifteen minutes) and short enough that a partner calling within the
+ * hour of the move is caught the next day at the latest.
+ */
+export const CANARY_SWITCH_GRACE_MS = CALLER_SEEN_REFRESH_MS;
+
+/**
+ * When the canary first authenticated on its own key, or null when it never has or
+ * the stamp is unreadable. The EARLIEST first sighting across its host kinds, since
+ * the move happened the first time any of them was written. Null is the fail safe
+ * reading: the judge then hedges about the canary rather than accusing a partner.
+ */
+export function canaryMovedAtMs(rows: readonly CallerSeenRow[]): number | null {
+  const stamps = rows
+    .filter((r) => r.caller === CANARY_CALLER)
+    .map((r) => (r.first_seen_at ? Date.parse(r.first_seen_at) : Number.NaN))
+    .filter((ms) => Number.isFinite(ms));
+  return stamps.length ? Math.min(...stamps) : null;
+}
 
 export type PartnerKeyStatus = "proven" | "never-seen" | "not-from-production" | "stale" | "on-shared-key";
 
@@ -205,6 +246,14 @@ function readable(rows: readonly CallerSeenRow[], caller: string): SeenAt[] {
  *     deployed".
  * The production origins are trypennie's (`PRODUCTION_ORIGINS`), which is the only
  * partner this gates.
+ *
+ * THE CANARY ON ITS OWN KEY (#2822). Once the canary authenticates as `canary`, the
+ * hedge above ends: a shared server call made after the canary's first own-key
+ * sighting (`first_seen_at`, plus `CANARY_SWITCH_GRACE_MS`) can only be a partner's.
+ * If this caller is the only partner not seen on its own key inside the bound, that
+ * is `on-shared-key` outright; if another partner (Regal, until it holds its own key)
+ * is also unaccounted for, the sentence names both and asks which. A shared row from
+ * before the move is the canary's history and reads as nothing.
  */
 export function judgePartnerKey(
   caller: string,
@@ -270,6 +319,44 @@ export function judgePartnerKey(
       detail: `${ownFact}, but calls are arriving on the shared key from ${sharedProd.origin}, the latest ${ageDays(nowMs - sharedProd.ms)}, so ${caller} may hold the shared key instead of its own`,
     };
   }
+
+  // #2822: once the canary authenticates on its own key, a shared server call made
+  // after that moment is a partner's. A shared row last written before it (or inside
+  // the grace after it) is the canary's own history and says nothing about anybody.
+  const movedMs = canaryMovedAtMs(rows);
+  if (movedMs !== null) {
+    const since = ageDays(nowMs - movedMs);
+    const partnerCall = shared
+      .filter((r) => r.host_kind === "unstated" && r.ms > movedMs + CANARY_SWITCH_GRACE_MS)
+      .sort((a, b) => b.ms - a.ms)[0];
+    if (partnerCall) {
+      // Which partners could it be: this caller (its own key is not proven), and any
+      // other partner with no recent sighting on its own key. One suspect is a fact;
+      // several is a question, asked by name.
+      const suspects = PARTNER_CALLERS.filter((p) => p === caller || !readable(rows, p).some((r) => recent(r)));
+      if (!suspects.includes(caller)) suspects.push(caller);
+      const latest = `a server is calling on the shared key, the latest ${ageDays(nowMs - partnerCall.ms)}, and since the smoke canary moved to its own key ${since} only a partner holds it`;
+      if (suspects.length === 1) {
+        return {
+          status: "on-shared-key",
+          via: null,
+          detail: `${ownFact}, but ${latest}; ${caller} is the only partner not seen on its own key, so it holds the shared key instead of its own`,
+        };
+      }
+      return {
+        status,
+        via: null,
+        detail: `${ownFact}, but ${latest}; ${suspects.join(" and ")} are not seen on their own keys, so confirm which key ${caller} holds`,
+      };
+    }
+    if (status !== "never-seen") return { status, via: null, detail: alone };
+    return {
+      status,
+      via: null,
+      detail: `${ownFact} and no server has called on the shared key since the smoke canary moved to its own key ${since}, so nothing suggests ${caller} has deployed`,
+    };
+  }
+
   if (status !== "never-seen") return { status, via: null, detail: alone };
   if (shared.length === 0) {
     return {
@@ -281,6 +368,37 @@ export function judgePartnerKey(
   return {
     status,
     via: null,
-    detail: `${ownFact}, and nothing on the shared key came from ${caller}'s production site; a server call on the shared key cannot be told apart from the smoke canary's, so if ${caller} has deployed, confirm which key it holds`,
+    detail: `${ownFact}, and nothing on the shared key came from ${caller}'s production site; the smoke canary has not yet authenticated on its own key, so a server call on the shared key cannot be told apart from the canary's, and if ${caller} has deployed, confirm which key it holds`,
+  };
+}
+
+export interface SharedKeyExposure {
+  exposed: boolean;
+  /** One sentence naming every exposing origin, or null when there is none. */
+  detail: string | null;
+}
+
+/**
+ * Was the SHARED key sent from a browser recently (#2822)? A request carrying an
+ * `Origin` or `Referer` was made by a browser, so a shared key sighting from a public
+ * host means the key sat in page code any visitor to that page can read. That is a
+ * security finding in its own right, separate from which partner holds the key, and
+ * the repair is to move the call to a server AND rotate the key, because a key a page
+ * has shipped must be treated as known.
+ *
+ * Public hosts only: a production origin, or another host (a preview, or an origin a
+ * browser stated and this could not read). A developer's own machine is left out,
+ * since no visitor loads that page. A partner's OWN key from its production site is
+ * not judged here: Dan accepted that as the proof the partner deployed (2026-09-25).
+ */
+export function judgeSharedKeyExposure(rows: readonly CallerSeenRow[], nowMs: number, maxAgeMs: number): SharedKeyExposure {
+  const hits = readable(rows, SHARED_CALLER)
+    .filter((r) => (r.host_kind === "production" || r.host_kind === "other-host") && nowMs - r.ms <= maxAgeMs)
+    .sort((a, b) => b.ms - a.ms);
+  if (hits.length === 0) return { exposed: false, detail: null };
+  const where = hits.map((r) => `${r.origin ?? "an address unreadable"} (${ageDays(nowMs - r.ms)})`).join(", ");
+  return {
+    exposed: true,
+    detail: `the shared booking key was sent from a browser at ${where}, where any visitor to that page can read it: move that call to a server and rotate BOOKING_API_KEY`,
   };
 }

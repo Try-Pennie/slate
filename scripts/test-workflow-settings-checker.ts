@@ -34,6 +34,8 @@ const REAL_VARS = [
 ];
 const REAL_SECRETS = [
   "BOOKING_API_KEY",
+  // #2822: the canary's own key, which every canary lane now sends instead of the shared one.
+  "BOOKING_API_KEY_CANARY",
   "CALCOM_API_KEY",
   "CLOUDFLARE_ACCOUNT_ID",
   "CLOUDFLARE_API_TOKEN",
@@ -229,11 +231,11 @@ const stub = (vars: string[], secrets: string[], org: OrgStub = { kind: "empty" 
 
 // --- a missing SECRET is named as a secret, not a variable ----------------------
 {
-  const r = runChecker(stub(REAL_VARS, REAL_SECRETS.filter((s) => s !== "BOOKING_API_KEY")));
+  const r = runChecker(stub(REAL_VARS, REAL_SECRETS.filter((s) => s !== "BOOKING_API_KEY_CANARY")));
   assert(r.code !== 0, "a missing secret fails too");
-  assert(r.out.includes("secrets.BOOKING_API_KEY"), "named as a secret");
+  assert(r.out.includes("secrets.BOOKING_API_KEY_CANARY"), "named as a secret");
   assert(
-    r.out.includes("gh secret set BOOKING_API_KEY") && !r.out.includes("gh variable set BOOKING_API_KEY"),
+    r.out.includes("gh secret set BOOKING_API_KEY_CANARY") && !r.out.includes("gh variable set BOOKING_API_KEY_CANARY"),
     "and repaired with the secret command, since the two are different settings",
   );
 }

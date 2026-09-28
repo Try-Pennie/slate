@@ -131,6 +131,21 @@ function armed(over: Partial<LowVolumeArmingFacts> = {}): LowVolumeArmingFacts {
       },
       READINESS_EXIT.partnerOnSharedKey,
     ],
+    // #2822: the shared key sent from a browser on a public host, with trypennie's own
+    // key proven, so nothing but the exposure is wrong.
+    [
+      "the shared key sent from a browser",
+      {
+        partnerKey: {
+          caller: "trypennie",
+          rows: [
+            { caller: "trypennie", host_kind: "production", last_seen_at: new Date(NOW - DAY).toISOString(), method: "GET", origin: "https://trypennie.com" },
+            { caller: "shared", host_kind: "other-host", last_seen_at: new Date(NOW - DAY).toISOString(), method: "GET", origin: "https://tp-git-x.vercel.app" },
+          ],
+        },
+      },
+      READINESS_EXIT.sharedKeyInBrowser,
+    ],
   ];
   const seen = new Map<number, number>();
   for (const [what, over, expected] of cases) {
@@ -274,6 +289,23 @@ eq(
   eq(canaryOnly.exit, READINESS_EXIT.partnerKeyUnproven, "the canary alone on the shared key is still never seen, not trypennie");
   assert(!/may hold the shared key/.test(canaryOnly.summary), `and is not read as trypennie (got: ${canaryOnly.summary})`);
   assert(canaryOnly.findings[0].detail !== never.findings[0].detail, "and reads differently from nothing on either key");
+  // #2822: a production origin on the shared key is BOTH findings: which key trypennie
+  // holds, and the fact that the key was in a browser. Different repairs, both listed.
+  assert(onShared.findings.some((f) => f.kind === "shared-key-in-browser"), "a production origin on the shared key is also listed as a browser exposure");
+  assert(/rotate BOOKING_API_KEY/.test(onShared.summary), `and says to rotate it (got: ${onShared.summary})`);
+  const order2822 = READINESS_ORDER as readonly string[];
+  assert(order2822.indexOf("partner-key-unproven") < order2822.indexOf("shared-key-in-browser"), "the exposure ranks below the partner findings, which stop a lead seeing their booking");
+  assert(order2822.indexOf("shared-key-in-browser") < order2822.indexOf("alarm-muted"), "and above a muted alarm");
+  const serverOnly = judgeReadiness(healthy({ partnerKey: { caller: "trypennie", rows: [seen("production", DAY, "https://trypennie.com"), sharedRow("unstated", 60_000, null)] } }));
+  eq(serverOnly.exit, READINESS_EXIT.ready, "a server call on the shared key is not an exposure");
+
+  // After the canary moved to its own key, with Regal proven on its own, a shared server
+  // call names trypennie outright (#2822).
+  const moved: CallerSeenRow = { caller: "canary", host_kind: "unstated", last_seen_at: new Date(NOW - 60_000).toISOString(), method: "POST", origin: null, first_seen_at: new Date(NOW - 3 * DAY).toISOString() };
+  const regalOwn: CallerSeenRow = { caller: "regal", host_kind: "unstated", last_seen_at: new Date(NOW - DAY).toISOString(), method: "POST", origin: null };
+  const named = judgeReadiness(healthy({ partnerKey: { caller: "trypennie", rows: [moved, regalOwn, sharedRow("unstated", 60 * 60_000, null)] } }));
+  eq(named.exit, READINESS_EXIT.partnerOnSharedKey, "a partner server call on the shared key after the move names trypennie on its own exit");
+
   const onSharedWorse = judgeReadiness(healthy({ partnerKey: { caller: "trypennie", rows: [sharedRow("production", DAY, "https://trypennie.com")] }, emptyBuckets: { realBuckets: 60, empty: ["120"] } }));
   eq(onSharedWorse.exit, READINESS_EXIT.bucketEmpty, "an empty bucket still outranks the shared key finding");
 

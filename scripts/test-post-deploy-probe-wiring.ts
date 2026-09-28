@@ -43,8 +43,8 @@ assert(
 
 // The probe needs the booking key and the commit, or it cannot do its job.
 assert(
-  /BOOKING_API_KEY:\s*\$\{\{\s*secrets\.BOOKING_API_KEY\s*\}\}/.test(deployJob),
-  "the probe step is given BOOKING_API_KEY (the version endpoint is key-authed)",
+  /BOOKING_API_KEY_CANARY:\s*\$\{\{\s*secrets\.BOOKING_API_KEY_CANARY\s*\}\}/.test(deployJob),
+  "the probe step is given BOOKING_API_KEY_CANARY (#2822, the canary's own key; the version endpoint is key-authed)",
 );
 assert(
   /GITHUB_SHA:\s*\$\{\{\s*github\.sha\s*\}\}/.test(deployJob),

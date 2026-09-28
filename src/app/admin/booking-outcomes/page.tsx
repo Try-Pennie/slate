@@ -122,7 +122,9 @@ export default async function BookingOutcomesPage() {
     // #2717: one row per (caller, host kind), so the limit is the whole key space.
     db
       .from("api_caller_seen")
-      .select("caller, host_kind, last_seen_at, method, origin")
+      // first_seen_at (#2822) is how the partner line knows when the canary left the
+      // shared key, so a shared call after that moment is read as a partner's.
+      .select("caller, host_kind, last_seen_at, first_seen_at, method, origin")
       .limit(BOOKING_API_CALLERS.length * CALLER_HOST_KINDS.length),
   ]);
   // An unreadable table must not render as "never authenticated", which is the

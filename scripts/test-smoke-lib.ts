@@ -26,7 +26,7 @@ function stubFetch(responses: Array<{ status: number; json: unknown }>) {
 }
 
 process.env.SLATE_BASE_URL = "https://test.example/";
-process.env.BOOKING_API_KEY = "test-key";
+process.env.BOOKING_API_KEY_CANARY = "test-key";
 
 // --- tokenFrom: pure last-path-segment extraction ---
 assert(tokenFrom("https://x/manage/abc123") === "abc123", "tokenFrom returns the last path segment");

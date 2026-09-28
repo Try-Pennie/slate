@@ -118,6 +118,41 @@ describe("BookingOutcomesPage caller sightings", () => {
     expect(screen.queryByText(/never authenticated/i)).toBeNull();
   });
 
+  // #2822: the shared key sent from a browser is its own line, beside the partner line.
+  it("says so when the shared key was sent from a browser, and says nothing when it was not", async () => {
+    auth.currentUser.mockResolvedValueOnce(ADMIN);
+    rpc.mockResolvedValue(MIX);
+    const recent = new Date(Date.now() - 2 * HOUR).toISOString();
+    seenRead.mockResolvedValue({
+      data: [
+        { caller: "trypennie", host_kind: "unstated", last_seen_at: recent, method: "GET", origin: null },
+        { caller: "shared", host_kind: "production", last_seen_at: recent, method: "GET", origin: "https://www.trypennie.com" },
+      ],
+      error: null,
+    });
+    const { unmount } = render(await BookingOutcomesPage());
+    expect(screen.getByText(/shared booking key was sent from a browser at https:\/\/www\.trypennie\.com/i)).toBeTruthy();
+    expect(screen.getByText(/rotate BOOKING_API_KEY/)).toBeTruthy();
+    unmount();
+
+    auth.currentUser.mockResolvedValueOnce(ADMIN);
+    seenRead.mockResolvedValue({
+      data: [{ caller: "shared", host_kind: "unstated", last_seen_at: recent, method: "POST", origin: null }],
+      error: null,
+    });
+    render(await BookingOutcomesPage());
+    expect(screen.queryByText(/sent from a browser/i)).toBeNull();
+  });
+
+  it("reads first_seen_at, which says when the canary left the shared key", async () => {
+    auth.currentUser.mockResolvedValueOnce(ADMIN);
+    rpc.mockResolvedValue(MIX);
+    const select = vi.fn(() => ({ limit: seenRead }));
+    from.mockImplementationOnce(() => ({ select }));
+    render(await BookingOutcomesPage());
+    expect(String((select.mock.calls[0] as unknown[])[0])).toMatch(/first_seen_at/);
+  });
+
   it("surfaces an unreadable table rather than reading it as never seen", async () => {
     auth.currentUser.mockResolvedValueOnce(ADMIN);
     rpc.mockResolvedValue(MIX);

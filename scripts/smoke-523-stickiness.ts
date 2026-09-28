@@ -13,7 +13,7 @@
 //
 // Run it by hand from a shell that has the app env (it reads .env.local +
 // .dev.vars itself for NEXT_PUBLIC_SUPABASE_URL / SUPABASE_SECRET_KEY /
-// BOOKING_API_KEY):
+// BOOKING_API_KEY_CANARY):
 //
 //   node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/smoke-523-stickiness.ts
 //
@@ -28,7 +28,7 @@ loadEnvFiles([".env.local", ".dev.vars"]);
 // envOr, not `??`: a workflow wiring SLATE_BASE_URL from an unset repo variable
 // passes an EMPTY STRING, which `??` would accept as the base URL (#1494).
 const BASE = envOr(process.env.SLATE_BASE_URL, "https://slate.trypennie.app").replace(/\/$/, "");
-const KEY = process.env.BOOKING_API_KEY ?? "";
+const KEY = process.env.BOOKING_API_KEY_CANARY ?? "";
 const BUCKET = "SMOKE";
 const SMOKE_BUCKET_ID = "44004a29-da8a-47fe-9ebc-6a95bccd1bfc";
 const SMOKETEST2_ID = "c0000000-0000-4000-8000-000000000002";
@@ -37,7 +37,7 @@ const { check, failed } = createChecker();
 
 async function main(): Promise<void> {
   if (!KEY) {
-    console.error("Set BOOKING_API_KEY (or put it in .env.local / .dev.vars) first.");
+    console.error("Set BOOKING_API_KEY_CANARY (or put it in .env.local / .dev.vars) first.");
     process.exit(2);
   }
   const { supabaseAdmin } = await import("@/lib/supabase/admin");

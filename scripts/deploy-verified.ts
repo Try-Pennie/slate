@@ -19,7 +19,7 @@
 // but a laptop does: leaving it modified means the next commit quietly carries a real
 // sha where the repo expects the "dev" placeholder.
 //
-// Run: BOOKING_API_KEY=<key> pnpm cf:deploy:verified
+// Run: BOOKING_API_KEY_CANARY=<key> pnpm cf:deploy:verified
 //      APP_URL=... to target something other than production.
 import { execFileSync, spawnSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
@@ -51,7 +51,7 @@ const plan = planVerifiedDeploy({
   // here would have scored an unreadable status as clean and quietly skipped the
   // dirty-tree refusal on exactly the runs least able to vouch for the stamp.
   dirty: dirtyState(),
-  bookingApiKey: process.env.BOOKING_API_KEY,
+  bookingApiKey: process.env.BOOKING_API_KEY_CANARY,
   appUrl: process.env.APP_URL,
   allowDirty: process.env.ALLOW_DIRTY_DEPLOY === "1",
 });

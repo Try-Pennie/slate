@@ -127,7 +127,7 @@ export async function reportOutcome(input: ReportInput): Promise<ReportResult> {
   if (!base || !input.apiKey.trim()) {
     return {
       exit: REPORT_EXIT.notConfigured,
-      reason: "no base URL or no BOOKING_API_KEY here, so nothing was reported",
+      reason: "no base URL or no BOOKING_API_KEY_CANARY here, so nothing was reported",
     };
   }
 
