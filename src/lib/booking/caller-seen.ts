@@ -183,14 +183,28 @@ const PARTNER_CALLERS: readonly string[] = BOOKING_API_CALLERS.filter((c) => c !
 export const CANARY_SWITCH_GRACE_MS = CALLER_SEEN_REFRESH_MS;
 
 /**
- * When the canary first authenticated on its own key, or null when it never has or
- * the stamp is unreadable. The EARLIEST first sighting across its host kinds, since
- * the move happened the first time any of them was written. Null is the fail safe
- * reading: the judge then hedges about the canary rather than accusing a partner.
+ * The sighting that says the canary's SCHEDULED LANES have left the shared key
+ * (#2822, review of #2855). Written only by `/api/smoke/heartbeat` when the canary's
+ * own key stamps, and every heartbeat is stamped by a scheduled workflow step, never by
+ * a hand run. A plain `canary` row cannot stand in for it: a person smoke testing the
+ * canary key by hand, or any booking on it, writes one while the lanes are still on
+ * the shared key, and taking that as the move would read the lanes' own shared calls
+ * as a partner's. Not a caller the authorizer knows, so it never appears in
+ * `BOOKING_API_CALLERS` and is never a partner suspect.
+ */
+export const CANARY_LANES_CALLER = "canary-lanes";
+
+/**
+ * When the canary's scheduled lanes first stamped a heartbeat on its own key, or null
+ * when they never have or the stamp is unreadable. The EARLIEST first sighting across
+ * its host kinds. Null is the fail safe reading: the judge then hedges about the canary
+ * rather than accusing a partner. `first_seen_at` is the database's insert stamp, and
+ * this row cannot predate migration 0146 (the heartbeat route never recorded one before
+ * it), so no backfilled value can reach it.
  */
 export function canaryMovedAtMs(rows: readonly CallerSeenRow[]): number | null {
   const stamps = rows
-    .filter((r) => r.caller === CANARY_CALLER)
+    .filter((r) => r.caller === CANARY_LANES_CALLER)
     .map((r) => (r.first_seen_at ? Date.parse(r.first_seen_at) : Number.NaN))
     .filter((ms) => Number.isFinite(ms));
   return stamps.length ? Math.min(...stamps) : null;
@@ -247,9 +261,10 @@ function readable(rows: readonly CallerSeenRow[], caller: string): SeenAt[] {
  * The production origins are trypennie's (`PRODUCTION_ORIGINS`), which is the only
  * partner this gates.
  *
- * THE CANARY ON ITS OWN KEY (#2822). Once the canary authenticates as `canary`, the
- * hedge above ends: a shared server call made after the canary's first own-key
- * sighting (`first_seen_at`, plus `CANARY_SWITCH_GRACE_MS`) can only be a partner's.
+ * THE CANARY ON ITS OWN KEY (#2822). Once the canary's scheduled lanes stamp a
+ * heartbeat on its own key, the hedge above ends: a shared server call made after the
+ * first such stamp (`canaryMovedAtMs`, plus `CANARY_SWITCH_GRACE_MS`) can only be a
+ * partner's. A plain `canary` sighting never ends it, since a hand run writes one too.
  * If this caller is the only partner not seen on its own key inside the bound, that
  * is `on-shared-key` outright; if another partner (Regal, until it holds its own key)
  * is also unaccounted for, the sentence names both and asks which. A shared row from
@@ -396,7 +411,7 @@ export function judgeSharedKeyExposure(rows: readonly CallerSeenRow[], nowMs: nu
     .filter((r) => (r.host_kind === "production" || r.host_kind === "other-host") && nowMs - r.ms <= maxAgeMs)
     .sort((a, b) => b.ms - a.ms);
   if (hits.length === 0) return { exposed: false, detail: null };
-  const where = hits.map((r) => `${r.origin ?? "an address unreadable"} (${ageDays(nowMs - r.ms)})`).join(", ");
+  const where = hits.map((r) => `${r.origin ?? "an unreadable address"} (${ageDays(nowMs - r.ms)})`).join(", ");
   return {
     exposed: true,
     detail: `the shared booking key was sent from a browser at ${where}, where any visitor to that page can read it: move that call to a server and rotate BOOKING_API_KEY`,

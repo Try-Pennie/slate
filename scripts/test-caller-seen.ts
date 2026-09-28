@@ -12,6 +12,7 @@ import { readFileSync } from "node:fs";
 import {
   CALLER_HOST_KINDS,
   CALLER_SEEN_REFRESH_MS,
+  CANARY_LANES_CALLER,
   CANARY_SWITCH_GRACE_MS,
   PARTNER_KEY_MAX_AGE_DAYS,
   canaryMovedAtMs,
@@ -269,11 +270,18 @@ function shared(host_kind: CallerSeenRow["host_kind"], agoMs: number, origin: st
 // --- #2822: the canary on its OWN key, so a shared sighting is a partner's ------------
 //
 // The canary used to hold the shared key, so a shared server call could be the canary.
-// Once it authenticates as "canary", every shared call made after that moment is a
-// partner's. first_seen_at on the canary's rows is that moment; a shared row whose last
-// sighting predates it (plus a grace for a run in flight) is the canary's own history.
+// The move is when the SCHEDULED LANES first stamped a heartbeat on the canary's own key
+// (`canary-lanes`, written only by /api/smoke/heartbeat), never when anything first
+// authenticated as `canary`: a hand run smoke on the canary key before the lanes switch
+// would otherwise set a move that has not happened, and read the lanes' own shared calls
+// as a partner's. A shared row last written before the move (plus a grace for a run in
+// flight) is the canary's own history.
 function canary(host_kind: CallerSeenRow["host_kind"], agoMs: number, firstAgoMs: number): CallerSeenRow {
-  return { ...row(host_kind, agoMs), caller: "canary", first_seen_at: new Date(NOW - firstAgoMs).toISOString() };
+  return { ...row(host_kind, agoMs), caller: CANARY_LANES_CALLER, first_seen_at: new Date(NOW - firstAgoMs).toISOString() };
+}
+/** A plain `canary` sighting, as a hand run or a booking on the canary key leaves. */
+function canaryHandRun(agoMs: number, firstAgoMs: number): CallerSeenRow {
+  return { ...row("unstated", agoMs), caller: "canary", method: "POST", first_seen_at: new Date(NOW - firstAgoMs).toISOString() };
 }
 function regal(agoMs: number): CallerSeenRow {
   return { ...row("unstated", agoMs), caller: "regal", method: "POST" };
@@ -289,6 +297,28 @@ function regal(agoMs: number): CallerSeenRow {
   eq(canaryMovedAtMs([{ ...canary("unstated", 60_000, DAY), first_seen_at: null }]), null, "an unreadable first sighting is not a move, so the verdict hedges rather than accuses");
   eq(canaryMovedAtMs([{ ...canary("unstated", 60_000, DAY), first_seen_at: "garbage" }]), null, "and neither is garbage");
   eq(canaryMovedAtMs([{ ...shared("unstated", 60_000), first_seen_at: new Date(NOW - DAY).toISOString() }]), null, "another caller's first sighting is never the canary's");
+  eq(canaryMovedAtMs([canaryHandRun(60_000, 5 * DAY)]), null, "a plain canary sighting (a hand run, a booking) is NOT the lanes moving");
+  eq(
+    canaryMovedAtMs([canaryHandRun(60_000, 5 * DAY), canary("unstated", 60_000, 2 * DAY)]),
+    NOW - 2 * DAY,
+    "with both, the move is the lanes' first heartbeat, not the earlier hand run",
+  );
+
+  // The review's case (#2855): somebody smoke tested the canary key by hand five days
+  // ago, before the lanes switched, and the lanes are STILL calling on the shared key.
+  // That must hedge about the canary, never accuse a partner.
+  const handRunOnly = judgePartnerKey("trypennie", [canaryHandRun(5 * DAY, 5 * DAY), regal(DAY), shared("unstated", 60 * 60_000)], NOW, MAX);
+  eq(handRunOnly.status, "never-seen", "a hand run on the canary key before the lanes move does not turn the lanes' shared calls into a partner's");
+  assert(/cannot be told apart from the canary/.test(handRunOnly.detail), `and hedges about the canary (got: ${handRunOnly.detail})`);
+  // And once the lanes did move, a shared call from BEFORE their first heartbeat but
+  // after the hand run is still the lanes' own.
+  const betweenRunAndMove = judgePartnerKey(
+    "trypennie",
+    [canaryHandRun(5 * DAY, 5 * DAY), canary("unstated", 60_000, 2 * DAY), regal(DAY), shared("unstated", 3 * DAY)],
+    NOW,
+    MAX,
+  );
+  eq(betweenRunAndMove.status, "never-seen", "a shared call between the hand run and the lanes' move is the lanes' own");
 
   // The canary moved three days ago; a server called on the shared key an hour ago.
   // Regal has not been seen on its own key, so either partner could hold it.
@@ -349,7 +379,7 @@ function regal(agoMs: number): CallerSeenRow {
   eq(preview.exposed, true, "a preview or other public host on the shared key is an exposure too");
   const opaque = judgeSharedKeyExposure([shared("other-host", DAY, null)], NOW, MAX);
   eq(opaque.exposed, true, "an unreadable origin is still something a browser stated");
-  assert(/address unreadable/.test(opaque.detail ?? ""), `and says the address was unreadable (got: ${opaque.detail})`);
+  assert(/at an unreadable address \(/.test(opaque.detail ?? ""), `and says the address was unreadable, in plain words (got: ${opaque.detail})`);
 
   const two = judgeSharedKeyExposure([shared("production", DAY, "https://trypennie.com"), shared("other-host", 2 * DAY, "https://x.vercel.app")], NOW, MAX);
   assert(/trypennie\.com/.test(two.detail ?? "") && /x\.vercel\.app/.test(two.detail ?? ""), `every exposing origin is named (got: ${two.detail})`);

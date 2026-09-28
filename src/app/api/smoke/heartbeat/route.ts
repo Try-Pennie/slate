@@ -2,6 +2,8 @@ import { NextResponse, type NextRequest } from "next/server";
 import { authenticateBearer, CANARY_CALLERS } from "@/lib/booking/api-auth";
 import { configuredBookingApiKeys } from "@/lib/booking/api-keys";
 import { recordHeartbeat } from "@/lib/monitor/heartbeat";
+import { recordCallerSeen } from "@/lib/booking/record-caller-seen";
+import { CANARY_LANES_CALLER } from "@/lib/booking/caller-seen";
 
 export const dynamic = "force-dynamic";
 
@@ -69,5 +71,11 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "unknown lane" }, { status: 400 });
   }
   await recordHeartbeat(lane);
+  // #2822: only the scheduled lanes stamp heartbeats, so a stamp on the canary's OWN
+  // key is the signal that the lanes have left the shared key. The partner judge reads
+  // this sighting's first_seen_at as the move, never a plain `canary` row, which a hand
+  // run writes too. Throttled and deferred like every other sighting, and it can never
+  // fail the stamp.
+  if (auth.caller === "canary") recordCallerSeen(CANARY_LANES_CALLER, "POST", req.headers);
   return NextResponse.json({ ok: true });
 }

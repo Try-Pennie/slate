@@ -301,7 +301,7 @@ eq(
 
   // After the canary moved to its own key, with Regal proven on its own, a shared server
   // call names trypennie outright (#2822).
-  const moved: CallerSeenRow = { caller: "canary", host_kind: "unstated", last_seen_at: new Date(NOW - 60_000).toISOString(), method: "POST", origin: null, first_seen_at: new Date(NOW - 3 * DAY).toISOString() };
+  const moved: CallerSeenRow = { caller: "canary-lanes", host_kind: "unstated", last_seen_at: new Date(NOW - 60_000).toISOString(), method: "POST", origin: null, first_seen_at: new Date(NOW - 3 * DAY).toISOString() };
   const regalOwn: CallerSeenRow = { caller: "regal", host_kind: "unstated", last_seen_at: new Date(NOW - DAY).toISOString(), method: "POST", origin: null };
   const named = judgeReadiness(healthy({ partnerKey: { caller: "trypennie", rows: [moved, regalOwn, sharedRow("unstated", 60 * 60_000, null)] } }));
   eq(named.exit, READINESS_EXIT.partnerOnSharedKey, "a partner server call on the shared key after the move names trypennie on its own exit");

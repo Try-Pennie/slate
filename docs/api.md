@@ -967,9 +967,14 @@ cost matters; see `docs/cloudflare-platform-notes.md`.
 
 ## Smoke and probe routes (key-authed)
 
-Three endpoints that exist for the deploy probe and the canary rather than for
-any integrator. All three take `Authorization: Bearer <BOOKING_API_KEY>` and
-answer `503` when no booking API key is configured.
+Four endpoints that exist for the deploy probe and the canary rather than for
+any integrator. All four take `Authorization: Bearer <BOOKING_API_KEY_CANARY>`,
+which every canary lane and the deploy probe send (#2822); the legacy shared
+`BOOKING_API_KEY` is still accepted until it retires, and a partner's key is
+refused. They answer `503` when neither key is configured. A heartbeat stamped
+on the canary's own key also records a `canary-lanes` sighting in
+`api_caller_seen`, which is how the readiness check knows when the lanes left the
+shared key.
 
 | Method + path | Purpose |
 |---|---|

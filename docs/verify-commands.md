@@ -1313,10 +1313,13 @@ holds rather than reading them as "not yet".
 server call, so while the canary shared the key a deployment holding it and calling
 only from its server read as the canary. Every canary lane, the deploy probe and
 every heartbeat stamp now send `BOOKING_API_KEY_CANARY` and are recorded as
-`canary` (`scripts/test-canary-key-wiring.ts` fails the build if any goes back), and
-`api_caller_seen.first_seen_at` (migration 0146) records when the canary first
-authenticated on it. A shared server call made after that moment, plus one hour for
-a run in flight, is a partner's. If trypennie is the only partner not seen on its own
+`canary` (`scripts/test-canary-key-wiring.ts` fails the build if any goes back). The
+move is NOT the first `canary` sighting, because a hand run smoke or any booking on
+the canary key writes one while the lanes may still be on the shared key. It is the
+first heartbeat stamped on the canary's own key, which `/api/smoke/heartbeat`
+records as a `canary-lanes` sighting: only scheduled workflow steps stamp
+heartbeats. Its `api_caller_seen.first_seen_at` (migration 0146) is the moment. A
+shared server call made after it, plus one hour for a run in flight, is a partner's. If trypennie is the only partner not seen on its own
 key inside the bound, that is exit 17 outright ("trypennie is the only partner not
 seen on its own key, so it holds the shared key instead of its own"); if Regal is
 also unaccounted for (it holds the shared key until `BOOKING_API_KEY_REGAL` is set),

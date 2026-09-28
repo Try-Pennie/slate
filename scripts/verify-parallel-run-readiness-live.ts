@@ -28,7 +28,7 @@ const { loadBookingHorizonDays } = await import("@/lib/booking/settings");
 const { agentsOnUnsetHours, groupRulesBySchedule } = await import("@/lib/monitor/unset-hours");
 const { loadTierAgentCounts } = await import("@/lib/monitor/tier-staffing-load");
 const { DEBT_TIER } = await import("@/lib/xbc");
-const { CALLER_HOST_KINDS } = await import("@/lib/booking/caller-seen");
+const { CALLER_HOST_KINDS, CANARY_LANES_CALLER } = await import("@/lib/booking/caller-seen");
 const { BOOKING_API_CALLERS } = await import("@/lib/booking/api-auth");
 type CallerSeenRow = import("@/lib/booking/caller-seen").CallerSeenRow;
 const { judgeReadiness } = await import("./lib/parallel-run-readiness.ts");
@@ -208,8 +208,8 @@ const partnerKey = await section("partner key sightings", async () => {
     await db
       .from("api_caller_seen")
       .select("caller, host_kind, last_seen_at, first_seen_at, method, origin")
-      .in("caller", [...BOOKING_API_CALLERS])
-      .limit(BOOKING_API_CALLERS.length * CALLER_HOST_KINDS.length),
+      .in("caller", [...BOOKING_API_CALLERS, CANARY_LANES_CALLER])
+      .limit((BOOKING_API_CALLERS.length + 1) * CALLER_HOST_KINDS.length),
     "api_caller_seen",
   ) ?? []) as CallerSeenRow[];
   return { caller: "trypennie", rows };
