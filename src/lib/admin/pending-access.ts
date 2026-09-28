@@ -1,6 +1,7 @@
 import { atLeast } from "../auth/roles.ts";
 import { isActive } from "../active-user.ts";
 import type { Role, User } from "../db/types.ts";
+import { isNeverSignedIn, unclaimedDays } from "./unclaimed.ts";
 
 /**
  * Elevated access that has never been claimed by a login (#160).
@@ -115,7 +116,7 @@ export function pendingPrivilegedAccess(
 
   const waiting = users.filter(
     (u) =>
-      u.auth_user_id === null &&
+      isNeverSignedIn(u) &&
       atLeast(u.role, "manager") &&
       isActive(u) &&
       !u.is_test,
@@ -136,13 +137,8 @@ export function pendingPrivilegedAccess(
         }
       }
     }
-    const createdMs = Date.parse(u.created_at);
-    // parse-ok: created_at is a NOT NULL timestamptz the database writes. An
-    // unreadable one would still report a wait, so it is mapped to 0 days rather
-    // than to NaN, and a 0 day wait understates rather than inventing an alarm.
-    const waitedDays = Number.isFinite(createdMs)
-      ? Math.max(0, Math.floor((nowMs - createdMs) / 86_400_000))
-      : 0;
+    // One figure for every surface asking "never signed in, for how long" (#1802).
+    const waitedDays = unclaimedDays(u.created_at, nowMs);
     return {
       id: u.id,
       email: u.email,
@@ -155,11 +151,4 @@ export function pendingPrivilegedAccess(
   });
 
   return rows.sort((a, b) => b.waitedDays - a.waitedDays || a.email.localeCompare(b.email));
-}
-
-/** How long a pending account has waited, as a sentence fragment. */
-export function pendingWaitText(waitedDays: number): string {
-  if (waitedDays <= 0) return "added today";
-  if (waitedDays === 1) return "waiting 1 day";
-  return `waiting ${waitedDays} days`;
 }
