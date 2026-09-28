@@ -13,7 +13,7 @@ import {
   OutsideCallingWindowError,
   RaceLostRefusalError,
 } from "@/lib/booking/service";
-import { raceOutcomeForBooking, raceOutcomeForRefusal } from "@/lib/monitor/race-contention";
+import { raceOutcomeForConfirm, raceOutcomeForRefusal } from "@/lib/monitor/race-contention";
 import { LeadCodeUnavailableError } from "@/lib/routing/lead-code";
 import { resolveRequestedCode } from "@/lib/routing/catchall";
 import { isPublicTestBucket } from "@/lib/embed/public-test-bucket";
@@ -390,7 +390,7 @@ async function handlePost(req: NextRequest) {
     // counted again, on a row outside the failure share, for the daily race whisper.
     // Only when THIS confirm inserted it: a replay returns an earlier confirm's
     // booking, whose race was counted when that confirm made it.
-    const raced = newlyInserted ? raceOutcomeForBooking(booking.routing_trace) : null;
+    const raced = raceOutcomeForConfirm({ booking, newlyInserted });
     if (raced) recordRoutedOutcome(raced, code, null, { by: "bucket", code, host });
     return NextResponse.json({
       id: booking.id,

@@ -107,6 +107,20 @@ export function raceOutcomeForBooking(
   return trace?.race_lost && trace.race_lost.length > 0 ? "race_reassigned" : null;
 }
 
+/**
+ * Which tally row a confirm that returned a booking adds, or null. Only when THIS
+ * confirm's own insert made the booking (`newlyInserted`): a replay returns an
+ * earlier confirm's booking, whose race was counted when that confirm made it.
+ * The one judge for the booker, the booking API's create arm and its cross bucket
+ * move (#2861), so the three cannot disagree about when a race counts.
+ */
+export function raceOutcomeForConfirm(r: {
+  booking: { routing_trace?: { race_lost?: string[] } | null };
+  newlyInserted?: true;
+}): RaceTallyOutcome | null {
+  return r.newlyInserted ? raceOutcomeForBooking(r.booking.routing_trace) : null;
+}
+
 /** Which tally row a confirm refused after a lost race adds. */
 export function raceOutcomeForRefusal(r: { boundHit: boolean }): RaceTallyOutcome {
   return r.boundHit ? "race_refused_bound" : "race_refused";
