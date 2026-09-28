@@ -6,7 +6,8 @@ import { AgentLinkUnavailable } from "@/components/AgentLinkUnavailable";
 import { loadBookingHorizonDays } from "@/lib/booking/settings";
 import { loadReasonOptions } from "@/lib/booking/reason-options";
 import { landingAttendee } from "@/lib/booking/service";
-import { resolveAgentLink } from "@/lib/agent-link/store";
+import { agentLinkPoolCode, resolveAgentLink } from "@/lib/agent-link/store";
+import { agentLinkPoolHref } from "@/lib/agent-link/link";
 import { DEFAULT_BRAND_COLOR } from "@/lib/brand-label";
 import { log } from "@/lib/log";
 
@@ -59,9 +60,14 @@ export default async function AgentLinkPage({
   if (!link.ok) {
     // The cause, never the token: a token in the log is a working link in the log.
     log.info("agent-link", { msg: "page refused, the link books nobody", why: link.why });
+    // #2831: every refusal offers the ordinary routed booker. A token still naming
+    // an advisor offers their own pool, anything else the catch all; the button is
+    // the same on both, so its presence says nothing about the link. A failed pool
+    // read throws to the error boundary rather than quietly offering the catch all.
+    const poolCode = await agentLinkPoolCode(token, link.why);
     return (
       <StandaloneBookerShell embedded={embedded} theme={theme}>
-        <AgentLinkUnavailable />
+        <AgentLinkUnavailable href={agentLinkPoolHref(poolCode, sp)} />
       </StandaloneBookerShell>
     );
   }

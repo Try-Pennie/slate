@@ -5,7 +5,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 // booker for that one agent, or ONE unavailable panel for every way the link can
 // book nobody, and it never falls back to a pool.
 
-const store = vi.hoisted(() => ({ resolveAgentLink: vi.fn() }));
+const store = vi.hoisted(() => ({ resolveAgentLink: vi.fn(), agentLinkPoolCode: vi.fn() }));
 vi.mock("@/lib/agent-link/store", () => store);
 vi.mock("@/lib/log", () => ({ log: { error: vi.fn(), warn: vi.fn(), info: vi.fn() } }));
 vi.mock("@/components/Booker", () => ({ default: () => null }));
@@ -84,17 +84,44 @@ describe("/book/advisor/[token] (#2073)", () => {
   it("draws the same panel for every way the link books nobody, and no booker", async () => {
     for (const why of ["unknown", "departed", "not_bookable", "no_bucket"]) {
       store.resolveAgentLink.mockResolvedValue({ ok: false, why });
+      store.agentLinkPoolCode.mockResolvedValue(null);
       const tree = await render();
       expect(findByType(tree, Booker)).toBeNull();
       const panel = findByType(tree, AgentLinkUnavailable);
       expect(panel).not.toBeNull();
-      // No props at all, so nothing about the cause can reach the page.
-      expect(Object.keys(panel!).filter((k) => k !== "children")).toEqual([]);
+      // Only the way on, never the cause: nothing else about the link reaches
+      // the page (#2831). Every refusal carries it, so its presence says nothing.
+      expect(Object.keys(panel!).filter((k) => k !== "children")).toEqual(["href"]);
+      expect(panel!.href).toBe("/book");
     }
     // The cause goes to the log, and never the token.
     const logged = JSON.stringify((log.info as ReturnType<typeof vi.fn>).mock.calls);
     expect(logged).toContain("departed");
     expect(logged).not.toContain(TOKEN);
+  });
+
+  it("offers a known advisor's own pool, asked with the refusal's cause and the token (#2831)", async () => {
+    store.resolveAgentLink.mockResolvedValue({ ok: false, why: "departed" });
+    store.agentLinkPoolCode.mockResolvedValue("411");
+    const tree = await render({ name: "Dana", email: "dana@example.com", embed: "1", theme: "dark" });
+    expect(store.agentLinkPoolCode).toHaveBeenCalledWith(TOKEN, "departed");
+    const href = findByType(tree, AgentLinkUnavailable)!.href as string;
+    const url = new URL(href, "https://slate.example");
+    expect(url.pathname).toBe("/book");
+    expect(url.searchParams.get("xbc")).toBe("411");
+    // The lead's details and the embed settings travel with them.
+    expect(url.searchParams.get("name")).toBe("Dana");
+    expect(url.searchParams.get("email")).toBe("dana@example.com");
+    expect(url.searchParams.get("embed")).toBe("1");
+    expect(url.searchParams.get("theme")).toBe("dark");
+    // The token never leaves the advisor link's own address.
+    expect(href).not.toContain(TOKEN);
+  });
+
+  it("lets an unreadable pool reach the error boundary rather than guess at the catch all", async () => {
+    store.resolveAgentLink.mockResolvedValue({ ok: false, why: "not_bookable" });
+    store.agentLinkPoolCode.mockRejectedValue(new Error("buckets down"));
+    await expect(render()).rejects.toThrow("buckets down");
   });
 
   it("lets an unreadable link reach the error boundary rather than claim the advisor is unavailable", async () => {

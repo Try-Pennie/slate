@@ -2,12 +2,14 @@ import { supabaseAdmin } from "@/lib/supabase/admin";
 import { unwrap } from "@/lib/db/result";
 import { bucketsForAgent } from "@/lib/availability/precompute";
 import {
+  chooseAgentLinkPoolCode,
   isWellFormedAgentLinkToken,
   judgeAgentLink,
   newAgentLinkToken,
   type AgentLinkAgent,
   type AgentLinkBucketChoice,
   type AgentLinkJudgement,
+  type AgentLinkRefusal,
 } from "@/lib/agent-link/link";
 
 /**
@@ -42,14 +44,42 @@ export async function resolveAgentLink(token: string): Promise<AgentLinkJudgemen
   // who has left or is not bookable. The judge orders the reasons the same way.
   if (!agent || agent.deactivated_at !== null || !agent.bookable) return judgeAgentLink(agent, []);
 
-  const codes = await bucketsForAgent(agent.id);
-  if (codes.length === 0) return judgeAgentLink(agent, []);
-  const buckets = (unwrap(
+  return judgeAgentLink(agent, await agentBucketChoices(agent.id));
+}
+
+/** One agent's buckets, as the choices above read them. THROWS on a failed read. */
+async function agentBucketChoices(userId: string): Promise<AgentLinkBucketChoice[]> {
+  const codes = await bucketsForAgent(userId);
+  if (codes.length === 0) return [];
+  return (unwrap(
     // in-chunk-ok: one agent's buckets, bounded by the routing matrix (sixty codes).
-    await db.from("buckets").select("code, is_test").in("code", codes),
+    await supabaseAdmin().from("buckets").select("code, is_test").in("code", codes),
     "agent link buckets",
   ) ?? []) as AgentLinkBucketChoice[];
-  return judgeAgentLink(agent, buckets);
+}
+
+/**
+ * The pool a REFUSED link offers instead (#2831), or null for the catch all.
+ *
+ * Only a link whose token still names somebody who has left or is not bookable
+ * has a pool of its own to offer. Every other refusal answers null WITHOUT a
+ * read: an unknown or replaced token names nobody, and an agent in no bucket has
+ * no pool. So a token that never existed costs nothing here, as it costs nothing
+ * in `resolveAgentLink`.
+ *
+ * THROWS on a failed read, like every read in this file: silently answering the
+ * catch all would send a lead whose pool is known to the Low pool on a database
+ * blip, which is a misroute that looks like an ordinary booking.
+ */
+export async function agentLinkPoolCode(token: string, why: AgentLinkRefusal): Promise<string | null> {
+  if (why !== "departed" && why !== "not_bookable") return null;
+  if (!isWellFormedAgentLinkToken(token)) return null;
+  const link = unwrap(
+    await supabaseAdmin().from("agent_links").select("user_id").eq("token", token).maybeSingle(),
+    "agent link pool by token",
+  ) as { user_id: string } | null;
+  if (!link) return null;
+  return chooseAgentLinkPoolCode(await agentBucketChoices(link.user_id));
 }
 
 /** The agent's current token, or null when they have none (a row predating 0144's backfill cannot exist, but a read is not a promise). */

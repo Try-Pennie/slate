@@ -39,6 +39,7 @@ import { act, fireEvent, render, screen } from "@testing-library/react";
 import Booker from "@/components/Booker";
 import ManageBooking from "@/components/ManageBooking";
 import ManageNotFound from "@/components/ManageNotFound";
+import { AgentLinkUnavailable } from "@/components/AgentLinkUnavailable";
 import BookError from "@/app/book/error";
 import BookingError from "@/app/booking/[id]/error";
 import { boundaryReference } from "@/lib/errors/boundary-copy";
@@ -46,6 +47,7 @@ import { formatSlotTime } from "@/lib/booking/slot-label";
 import { RESCHEDULE_REASONS, CANCEL_REASONS } from "@/lib/booking/core";
 import {
   ADD_TO_CALENDAR_COPY,
+  AGENT_LINK_COPY,
   confirmedAdvisor,
   CONFIRMED_COPY,
   DETAILS_COPY,
@@ -214,6 +216,16 @@ describe("the preview shows what the booker actually renders (#1343)", () => {
     for (const line of [NOT_FOUND_COPY.heading, NOT_FOUND_COPY.causes, NOT_FOUND_COPY.recovery]) {
       expect(pageText()).toContain(line);
     }
+  });
+
+  it("uses the builder's words on a refused advisor link, and offers the way on (#2831)", () => {
+    render(<AgentLinkUnavailable href="/book?xbc=411" />);
+    expect(pageText()).toContain(AGENT_LINK_COPY.unavailable);
+    const link = screen.getByRole("link", { name: AGENT_LINK_COPY.bookAnother });
+    expect(link.getAttribute("href")).toBe("/book?xbc=411");
+    // A design system control, never the browser's default link.
+    expect(link.className).toContain("pn-btn");
+    expect(link.className).toContain("pn-btn--primary");
   });
 
   it.each([
