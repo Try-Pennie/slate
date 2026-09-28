@@ -121,31 +121,6 @@ function armed(over: Partial<LowVolumeArmingFacts> = {}): LowVolumeArmingFacts {
     ],
     ["an agent on hours nobody set", { unsetHours: ["cfrank@x", "jsaminu@x"] }, READINESS_EXIT.hoursUnset],
     ["trypennie's key never seen", { partnerKey: { caller: "trypennie", rows: [] } }, READINESS_EXIT.partnerKeyUnproven],
-    [
-      "trypennie calling on the shared key",
-      {
-        partnerKey: {
-          caller: "trypennie",
-          rows: [{ caller: "shared", host_kind: "production", last_seen_at: new Date(NOW - DAY).toISOString(), method: "GET", origin: "https://trypennie.com" }],
-        },
-      },
-      READINESS_EXIT.partnerOnSharedKey,
-    ],
-    // #2822: the shared key sent from a browser on a public host, with trypennie's own
-    // key proven, so nothing but the exposure is wrong.
-    [
-      "the shared key sent from a browser",
-      {
-        partnerKey: {
-          caller: "trypennie",
-          rows: [
-            { caller: "trypennie", host_kind: "production", last_seen_at: new Date(NOW - DAY).toISOString(), method: "GET", origin: "https://trypennie.com" },
-            { caller: "shared", host_kind: "other-host", last_seen_at: new Date(NOW - DAY).toISOString(), method: "GET", origin: "https://tp-git-x.vercel.app" },
-          ],
-        },
-      },
-      READINESS_EXIT.sharedKeyInBrowser,
-    ],
   ];
   const seen = new Map<number, number>();
   for (const [what, over, expected] of cases) {
@@ -277,37 +252,14 @@ eq(
   eq(unread.exit, READINESS_EXIT.unreadable, "an unreadable sightings table vouches for nothing, and never reads as never seen");
   assert(/partner key/.test(unread.summary), `and names what it could not read (got: ${unread.summary})`);
 
-  // #2819: trypennie's calls arriving on the SHARED key is its own finding and exit,
-  // because the fix is a different key in their environment, not a deploy.
-  const sharedRow = (host_kind: CallerSeenRow["host_kind"], agoMs: number, origin: string | null): CallerSeenRow => ({ ...seen(host_kind, agoMs, origin), caller: "shared" });
-  const onShared = judgeReadiness(healthy({ partnerKey: { caller: "trypennie", rows: [sharedRow("production", DAY, "https://trypennie.com"), sharedRow("unstated", 60_000, null)] } }));
-  eq(onShared.exit, READINESS_EXIT.partnerOnSharedKey, "trypennie calling on the shared key exits on its own code");
-  assert(onShared.findings.some((f) => f.kind === "partner-on-shared-key"), "as its own finding");
-  assert(!onShared.findings.some((f) => f.kind === "partner-key-unproven"), "and not also as never seen");
-  assert(/may hold the shared key instead of its own/.test(onShared.summary), `and says so (got: ${onShared.summary})`);
-  const canaryOnly = judgeReadiness(healthy({ partnerKey: { caller: "trypennie", rows: [sharedRow("unstated", 60_000, null)] } }));
-  eq(canaryOnly.exit, READINESS_EXIT.partnerKeyUnproven, "the canary alone on the shared key is still never seen, not trypennie");
-  assert(!/may hold the shared key/.test(canaryOnly.summary), `and is not read as trypennie (got: ${canaryOnly.summary})`);
-  assert(canaryOnly.findings[0].detail !== never.findings[0].detail, "and reads differently from nothing on either key");
-  // #2822: a production origin on the shared key is BOTH findings: which key trypennie
-  // holds, and the fact that the key was in a browser. Different repairs, both listed.
-  assert(onShared.findings.some((f) => f.kind === "shared-key-in-browser"), "a production origin on the shared key is also listed as a browser exposure");
-  assert(/rotate BOOKING_API_KEY/.test(onShared.summary), `and says to rotate it (got: ${onShared.summary})`);
-  const order2822 = READINESS_ORDER as readonly string[];
-  assert(order2822.indexOf("partner-key-unproven") < order2822.indexOf("shared-key-in-browser"), "the exposure ranks below the partner findings, which stop a lead seeing their booking");
-  assert(order2822.indexOf("shared-key-in-browser") < order2822.indexOf("alarm-muted"), "and above a muted alarm");
-  const serverOnly = judgeReadiness(healthy({ partnerKey: { caller: "trypennie", rows: [seen("production", DAY, "https://trypennie.com"), sharedRow("unstated", 60_000, null)] } }));
-  eq(serverOnly.exit, READINESS_EXIT.ready, "a server call on the shared key is not an exposure");
-
-  // After the canary moved to its own key, with Regal proven on its own, a shared server
-  // call names trypennie outright (#2822).
-  const moved: CallerSeenRow = { caller: "canary-lanes", host_kind: "unstated", last_seen_at: new Date(NOW - 60_000).toISOString(), method: "POST", origin: null, first_seen_at: new Date(NOW - 3 * DAY).toISOString() };
-  const regalOwn: CallerSeenRow = { caller: "regal", host_kind: "unstated", last_seen_at: new Date(NOW - DAY).toISOString(), method: "POST", origin: null };
-  const named = judgeReadiness(healthy({ partnerKey: { caller: "trypennie", rows: [moved, regalOwn, sharedRow("unstated", 60 * 60_000, null)] } }));
-  eq(named.exit, READINESS_EXIT.partnerOnSharedKey, "a partner server call on the shared key after the move names trypennie on its own exit");
-
-  const onSharedWorse = judgeReadiness(healthy({ partnerKey: { caller: "trypennie", rows: [sharedRow("production", DAY, "https://trypennie.com")] }, emptyBuckets: { realBuckets: 60, empty: ["120"] } }));
-  eq(onSharedWorse.exit, READINESS_EXIT.bucketEmpty, "an empty bucket still outranks the shared key finding");
+  // #2865: the shared key is retired, and the rows it left behind are not trypennie's.
+  // A leftover shared row from trypennie's own site reads exactly as no rows at all.
+  const leftover: CallerSeenRow = { ...seen("production", DAY, "https://trypennie.com"), caller: "shared" };
+  const onLeftover = judgeReadiness(healthy({ partnerKey: { caller: "trypennie", rows: [leftover] } }));
+  eq(onLeftover.exit, READINESS_EXIT.partnerKeyUnproven, "a leftover shared row does not prove trypennie");
+  eq(onLeftover.summary, never.summary, "and reads exactly as nothing on trypennie's key");
+  const retiredExits = Object.values(READINESS_EXIT) as number[];
+  assert(!retiredExits.includes(17) && !retiredExits.includes(18), "exits 17 and 18 stay retired with the shared key, never reused");
 
   const worse = judgeReadiness(healthy({ partnerKey: { caller: "trypennie", rows: [] }, emptyBuckets: { realBuckets: 60, empty: ["120"] } }));
   eq(worse.exit, READINESS_EXIT.bucketEmpty, "a bucket with nobody in it outranks the partner key");

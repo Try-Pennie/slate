@@ -7,11 +7,15 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 // bookable true/false -> 200, unknown bucket -> 422, transient verify -> 503.
 // The routing/verify logic itself is covered by scripts/test-booking-api.ts; the
 // rate-limit IO, env, default-bucket read, and the check are mocked here.
+// #2865: the key these tests authenticate with is Regal's. There is no shared caller.
+const regalKey = vi.hoisted(() => ({ primary: vi.fn(() => "real-secret"), secondary: vi.fn(() => "") }));
 const env = vi.hoisted(() => ({
-  bookingApiKeyPrimary: vi.fn(() => "real-secret"),
-  bookingApiKeySecondary: vi.fn(() => ""),
-  bookingApiKeyFor: vi.fn((_caller: string, _slot: string) => ""),
+  bookingApiKeyFor: vi.fn((caller: string, slot: string) =>
+    caller !== "regal" ? "" : slot === "primary" ? regalKey.primary() : regalKey.secondary(),
+  ),
 }));
+const regalKeyFor = (caller: string, slot: string) =>
+  caller !== "regal" ? "" : slot === "primary" ? regalKey.primary() : regalKey.secondary();
 const rateLimit = vi.hoisted(() => ({
   allowRequest: vi.fn(async () => true),
   bookingApiWriteWithinLimit: vi.fn(async () => true),
@@ -65,8 +69,8 @@ const VALID = "?bucketCode=411&startIso=2026-07-01T15:00:00.000Z";
 
 beforeEach(() => {
   vi.clearAllMocks();
-  env.bookingApiKeyPrimary.mockReturnValue("real-secret");
-  env.bookingApiKeySecondary.mockReturnValue("");
+  regalKey.primary.mockReturnValue("real-secret");
+  regalKey.secondary.mockReturnValue("");
   rateLimit.allowRequest.mockResolvedValue(true);
   rateLimit.bookingApiReadWithinLimit.mockResolvedValue(true);
   rateLimit.bookingApiIpWithinLimit.mockResolvedValue(true);
@@ -176,7 +180,7 @@ describe("GET /api/bookings/bookable", () => {
 describe("GET /api/bookings/bookable: who may check a test bucket (#2669)", () => {
   type GateInput = { bucketCode: string; allowTestBuckets?: boolean };
   beforeEach(() => {
-    env.bookingApiKeyPrimary.mockReturnValue("");
+    regalKey.primary.mockReturnValue("");
     env.bookingApiKeyFor.mockImplementation((caller: string, slot: string) =>
       slot === "primary" && (caller === "canary" || caller === "trypennie") ? `${caller}-secret` : "",
     );
@@ -188,7 +192,7 @@ describe("GET /api/bookings/bookable: who may check a test bucket (#2669)", () =
 
   afterEach(() => {
     env.bookingApiKeyFor.mockReset();
-    env.bookingApiKeyFor.mockImplementation(() => "");
+    env.bookingApiKeyFor.mockImplementation(regalKeyFor);
   });
 
   const at = "&startIso=2026-07-01T15:00:00.000Z";

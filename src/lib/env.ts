@@ -21,7 +21,7 @@
 
 import { atLeast, isRole } from "@/lib/auth/roles";
 import { isLoadtest, loadtestPointedAtProduction } from "@/lib/loadtest-guard";
-import type { KeySlot, NamedBookingApiCaller } from "@/lib/booking/api-auth";
+import type { BookingApiCaller, KeySlot } from "@/lib/booking/api-auth";
 
 function requireEnv(name: string): string {
   const value = process.env[name];
@@ -136,20 +136,15 @@ export const bookableApiKey = (): string => process.env.BOOKABLE_API_KEY ?? "";
 // every post with a 503 naming this variable.
 export const regalInboundKey = (): string => process.env.REGAL_INBOUND_KEY ?? "";
 
-// Bearer keys for the direct booking API (POST /api/bookings), called by
-// the external AI auto-booker (#355). TWO slots so the secret rotates with zero
-// downtime: add the new key as _2, point the caller at it, then retire the old
-// primary. These two are the `shared` caller (#2645): the pair Regal and the
-// canary held together before each caller had its own. Every slot of every
-// caller empty = endpoint disabled (503).
-export const bookingApiKeyPrimary = (): string => process.env.BOOKING_API_KEY ?? "";
-export const bookingApiKeySecondary = (): string => process.env.BOOKING_API_KEY_2 ?? "";
-
-// #2645: one booking API key per caller, each with its own rotation slot. Literal
+// Bearer keys for the direct booking API (POST /api/bookings, #355). #2645: one
+// key per caller, each with TWO slots so it rotates with zero downtime: add the new
+// key as _2, point the caller at it, then retire the old primary. Every slot of
+// every caller empty = endpoint disabled (503). The bare BOOKING_API_KEY pair the
+// callers once shared is read by nothing (#2865). Literal
 // reads on purpose: the deploy runbook guard only sees a name read literally, and
 // `scripts/test-booking-api-auth.ts` holds each one to `bookingApiKeyEnvName`. The
 // Record is over the caller type, so tsc refuses a caller added without its reads.
-const NAMED_BOOKING_API_KEYS: Record<NamedBookingApiCaller, Record<KeySlot, () => string>> = {
+const BOOKING_API_KEYS: Record<BookingApiCaller, Record<KeySlot, () => string>> = {
   regal: {
     primary: () => process.env.BOOKING_API_KEY_REGAL ?? "",
     secondary: () => process.env.BOOKING_API_KEY_REGAL_2 ?? "",
@@ -163,8 +158,8 @@ const NAMED_BOOKING_API_KEYS: Record<NamedBookingApiCaller, Record<KeySlot, () =
     secondary: () => process.env.BOOKING_API_KEY_CANARY_2 ?? "",
   },
 };
-export const bookingApiKeyFor = (caller: NamedBookingApiCaller, slot: KeySlot): string =>
-  NAMED_BOOKING_API_KEYS[caller][slot]();
+export const bookingApiKeyFor = (caller: BookingApiCaller, slot: KeySlot): string =>
+  BOOKING_API_KEYS[caller][slot]();
 
 // Fine-grained GitHub token (Actions: read/write on Try-Pennie/slate) so the
 // monitor lane can trigger the smoke-canary workflow when GitHub's own schedule

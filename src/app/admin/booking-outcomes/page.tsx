@@ -119,14 +119,14 @@ export default async function BookingOutcomesPage() {
   const [weekRes, monthRes, seenRes] = await Promise.all([
     db.rpc("booking_api_outcome_mix", { p_since: sinceIso(7), p_include_test: false, p_include_offsite: false }),
     db.rpc("booking_api_outcome_mix", { p_since: sinceIso(30), p_include_test: false, p_include_offsite: false }),
-    // #2717: one row per (caller, host kind), so the limit is the whole key space,
-    // including the canary lanes row (#2822) that says when the lanes left the shared key.
+    // #2717: one row per (caller, host kind), so the limit is the whole key space.
+    // Only the callers the authorizer still knows: rows for the retired shared key and
+    // its canary lanes marker (#2865) stay in the table and must not take a place.
     db
       .from("api_caller_seen")
-      // first_seen_at (#2822) is how the partner line knows when the canary left the
-      // shared key, so a shared call after that moment is read as a partner's.
-      .select("caller, host_kind, last_seen_at, first_seen_at, method, origin")
-      .limit((BOOKING_API_CALLERS.length + 1) * CALLER_HOST_KINDS.length),
+      .select("caller, host_kind, last_seen_at, method, origin")
+      .in("caller", [...BOOKING_API_CALLERS])
+      .limit(BOOKING_API_CALLERS.length * CALLER_HOST_KINDS.length),
   ]);
   // An unreadable table must not render as "never authenticated", which is the
   // exact finding this panel exists to show (L10).

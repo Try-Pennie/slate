@@ -38,7 +38,7 @@ export const dynamic = "force-dynamic";
  * person-level dedupe + auto-reschedule (#357), and the machine-readable error
  * contract (#358) — lands in later phases, so a valid call returns 501 for now.
  *
- *   POST (Bearer BOOKING_API_KEY[_2]) -> 501 | 401 | 429 | 503
+ *   POST (Bearer a caller's own key, BOOKING_API_KEY_<CALLER>[_2]) -> 501 | 401 | 429 | 503
  */
 /**
  * #2243: under SLATE_LOADTEST only, every response carries the address the

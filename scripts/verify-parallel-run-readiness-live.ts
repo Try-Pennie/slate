@@ -28,7 +28,7 @@ const { loadBookingHorizonDays } = await import("@/lib/booking/settings");
 const { agentsOnUnsetHours, groupRulesBySchedule } = await import("@/lib/monitor/unset-hours");
 const { loadTierAgentCounts } = await import("@/lib/monitor/tier-staffing-load");
 const { DEBT_TIER } = await import("@/lib/xbc");
-const { CALLER_HOST_KINDS, CANARY_LANES_CALLER } = await import("@/lib/booking/caller-seen");
+const { CALLER_HOST_KINDS } = await import("@/lib/booking/caller-seen");
 const { BOOKING_API_CALLERS } = await import("@/lib/booking/api-auth");
 type CallerSeenRow = import("@/lib/booking/caller-seen").CallerSeenRow;
 const { judgeReadiness } = await import("./lib/parallel-run-readiness.ts");
@@ -197,19 +197,17 @@ const unsetHours = await section("hours sources", async () => {
   }).map((a) => a.email ?? a.id);
 });
 
-// #2717: which hosts trypennie's key has authenticated from, and (#2819) the shared
-// key's, so a trypennie deployment holding the shared key is told from one not made
-// yet. #2822: EVERY caller, because the canary's first own-key sighting is what says a
-// later shared call is a partner's, and Regal's own-key sightings say whether it could
-// be Regal. At most one row per caller and host kind, so the limit is the whole key
-// space and the read can never be long.
+// #2717: which hosts trypennie's key has authenticated from. Only the callers the
+// authorizer knows, so rows left by the retired shared key (#2865) take no place. At
+// most one row per caller and host kind, so the limit is the whole key space and the
+// read can never be long.
 const partnerKey = await section("partner key sightings", async () => {
   const rows = (unwrap(
     await db
       .from("api_caller_seen")
-      .select("caller, host_kind, last_seen_at, first_seen_at, method, origin")
-      .in("caller", [...BOOKING_API_CALLERS, CANARY_LANES_CALLER])
-      .limit((BOOKING_API_CALLERS.length + 1) * CALLER_HOST_KINDS.length),
+      .select("caller, host_kind, last_seen_at, method, origin")
+      .in("caller", [...BOOKING_API_CALLERS])
+      .limit(BOOKING_API_CALLERS.length * CALLER_HOST_KINDS.length),
     "api_caller_seen",
   ) ?? []) as CallerSeenRow[];
   return { caller: "trypennie", rows };

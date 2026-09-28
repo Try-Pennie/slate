@@ -76,7 +76,7 @@ names which one it requires.
 
 | Auth model | Header | Backing secret(s) | Used by |
 |---|---|---|---|
-| Booking API key | `Authorization: Bearer <key>` | one per caller, each with a `_2` slot: `BOOKING_API_KEY_REGAL`, `BOOKING_API_KEY_TRYPENNIE`, `BOOKING_API_KEY_CANARY`, plus the legacy shared `BOOKING_API_KEY` (#2645; see `docs/booking-api.md` section 2) | `POST/GET/DELETE /api/bookings`, `POST /api/bookings/cancel`, and (for hidden test buckets only) `GET /api/availability` |
+| Booking API key | `Authorization: Bearer <key>` | one per caller, each with a `_2` slot: `BOOKING_API_KEY_REGAL`, `BOOKING_API_KEY_TRYPENNIE`, `BOOKING_API_KEY_CANARY`; there is no shared key (#2645, #2865; see `docs/booking-api.md` section 2) | `POST/GET/DELETE /api/bookings`, `POST /api/bookings/cancel`, and (for hidden test buckets only) `GET /api/availability` |
 | Reassign API key | `Authorization: Bearer <key>` | `REASSIGN_API_KEY` | `POST /api/bookings/reassign` |
 | Offboarding API key | `Authorization: Bearer <key>` | `OFFBOARDING_API_KEY` | `POST /api/users/lifecycle`, `POST /api/users/deactivate`, `POST /api/users/reactivate` |
 | Bookable API key | `Authorization: Bearer <key>` | `BOOKABLE_API_KEY` | `POST /api/users/bookable` |
@@ -86,7 +86,7 @@ names which one it requires.
 | Slack signature | `X-Slack-Signature` + `X-Slack-Request-Timestamp` | Slack signing secret | `POST /api/slack/interactions` |
 | Supabase session (staff) | session cookie | Supabase Auth | every `/api/admin/*` route |
 | Manage token | in the URL path | per-booking `manage_token` | `POST /api/bookings/[token]/cancel`, `POST /api/bookings/[token]/reschedule`, `POST /api/bookings/[token]/phone`, `GET /api/bookings/[token]/ics` |
-| Smoke key | `Authorization: Bearer <key>` | `BOOKING_API_KEY_CANARY` only, which every canary lane and the load test send (#2822, #2854); the shared `BOOKING_API_KEY` and a partner's key are refused | `GET /api/smoke/version`, `POST /api/smoke/heartbeat`, `POST /api/smoke/burst-counter`, `POST /api/smoke/schedule-parity` |
+| Smoke key | `Authorization: Bearer <key>` | `BOOKING_API_KEY_CANARY` only, which every canary lane and the load test send (#2822, #2854); a partner's key is refused | `GET /api/smoke/version`, `POST /api/smoke/heartbeat`, `POST /api/smoke/burst-counter`, `POST /api/smoke/schedule-parity` |
 | None (public) | n/a | n/a | `GET /api/availability`, `GET /api/availability/next`, `POST /api/routing`, `POST /api/client-errors`, `POST /api/csp-report`, `GET /api/health`, `GET /api/health/availability`, `GET /api/auth/callback` |
 
 Every Bearer credential is compared in constant time (`src/lib/bearer-auth.ts`).
@@ -106,8 +106,8 @@ the same XBC bucket routing, round-robin assignment, and verify-on-book as the
 embed. Refs #253 and #250. All three methods share one auth plus rate-limit gate
 (`authorize`).
 
-**Auth (all methods):** `Authorization: Bearer <BOOKING_API_KEY>` (or
-`BOOKING_API_KEY_2`). Missing or wrong key: `401`. No key configured: `503`.
+**Auth (all methods):** `Authorization: Bearer <your caller's key>`, either of its two slots
+(`BOOKING_API_KEY_<CALLER>` or `_2`). Missing or wrong key: `401`. No key configured: `503`.
 
 **Rate limits:** per key, with separate ceilings for writes and reads so status
 polling cannot starve the booking path (#393). A coarse per-IP backstop also
@@ -304,7 +304,7 @@ and PATCH only. Source: `src/app/api/bookings/cancel/route.ts`.
 
 ```jsonc
 POST /api/bookings/cancel
-Authorization: Bearer <BOOKING_API_KEY>
+Authorization: Bearer <your caller's key>
 
 {
   "bookingId": "<uuid>",          // required
@@ -335,7 +335,7 @@ Source: `src/app/api/availability/route.ts`. The cache-first read the embed uses
 to render slots. Reads precomputed slots from `bucket_slots`, never live Google.
 
 **Auth:** public (no auth). Edge-throttled per datacenter IP (#56), fails open;
-over the limit returns `429`. A `Bearer <BOOKING_API_KEY>` is optional and only
+over the limit returns `429`. A `Bearer <BOOKING_API_KEY_CANARY>` is optional and only
 matters for reading a hidden `is_test` bucket (#396): without it, a test bucket
 code is indistinguishable from an unknown code (#601).
 
@@ -715,8 +715,8 @@ It runs the REAL per-slot routing (round robin plus verify-on-book, cascading th
 tier ladder), which is the point: a check that consulted the cache instead would
 answer differently from the confirm it exists to predict.
 
-**Auth:** the same Bearer keys as `POST /api/bookings` (`BOOKING_API_KEY` or
-`BOOKING_API_KEY_2`). Wrong key: `401`. No key configured: `503`.
+**Auth:** the same Bearer keys as `POST /api/bookings` (each caller's own key, either
+slot). Wrong key: `401`. No key configured: `503`.
 
 **Request:** `GET /api/bookings/bookable?bucket=411&start=<ISO>`
 
@@ -992,13 +992,10 @@ cost matters; see `docs/cloudflare-platform-notes.md`.
 
 Four endpoints that exist for the deploy probe and the canary rather than for
 any integrator. All four take `Authorization: Bearer <BOOKING_API_KEY_CANARY>`,
-which every canary lane, the deploy probe and the load test send (#2822). The
-shared `BOOKING_API_KEY` is refused here like a partner's key (#2854), because
-Regal still holds it and could otherwise stamp the canary's heartbeat. They
-answer `503` when the canary key is not configured. A heartbeat stamped
-on the canary's own key also records a `canary-lanes` sighting in
-`api_caller_seen`, which is how the readiness check knows when the lanes left the
-shared key.
+which every canary lane, the deploy probe and the load test send (#2822). A
+partner's key is refused (#2854), because a partner that could stamp the canary's
+heartbeat could keep a dead canary looking alive. They answer `503` when the
+canary key is not configured.
 
 | Method + path | Purpose |
 |---|---|
@@ -1013,11 +1010,9 @@ shared key.
 
 | Variable | Gates | Behavior when unset |
 |---|---|---|
-| `BOOKING_API_KEY` | Booking API, the legacy shared key, accepted alongside the per caller keys until retired | With every booking key unset, `503` on `/api/bookings` |
-| `BOOKING_API_KEY_2` | The shared key's rotation slot | Ignored; primary still works |
-| `BOOKING_API_KEY_REGAL`, `_2` | Regal's own booking key (#2645) | Regal must use the shared key |
-| `BOOKING_API_KEY_TRYPENNIE`, `_2` | trypennie's own booking key | trypennie must use the shared key |
-| `BOOKING_API_KEY_CANARY`, `_2` | The smoke canary's own key, the only named key the smoke endpoints accept | Every canary lane, the deploy probe and every heartbeat stamp fail with a 401 and alert (#2822: they no longer fall back to the shared key) |
+| `BOOKING_API_KEY_REGAL`, `_2` | Regal's own booking key (#2645) | Regal's calls are refused with `401`; with every booking key unset, `503` on `/api/bookings` |
+| `BOOKING_API_KEY_TRYPENNIE`, `_2` | trypennie's own booking key. `_2` holds the value trypennie was given before the split (#2865) | trypennie's calls are refused with `401` |
+| `BOOKING_API_KEY_CANARY`, `_2` | The smoke canary's own key, the only key the smoke endpoints accept | Every canary lane, the deploy probe and every heartbeat stamp fail with a 401 and alert (#2822) |
 | `REASSIGN_API_KEY` | `POST /api/bookings/reassign` | `503` |
 | `DUPLICATE_CANCEL_API_KEY` | `POST /api/bookings/cancel-duplicate` | `503` |
 | `OFFBOARDING_API_KEY` | `/api/users/lifecycle`, `/api/users/deactivate`, `/api/users/reactivate` | `503` |

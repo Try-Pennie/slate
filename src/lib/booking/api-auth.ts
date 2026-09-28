@@ -8,9 +8,10 @@
  * #2645: one key per CALLER. Each caller in `BOOKING_API_CALLERS` holds its own
  * secret, and each has two slots (primary + secondary) so its secret rotates with
  * zero downtime: add the new secret as the secondary, point the caller at it, then
- * retire the old primary. `shared` is the original pair, which Regal and the
- * canary held together before the split; it stays accepted so nothing breaks
- * before the named keys are handed out. Each authenticated call reports the
+ * retire the old primary. The original shared pair is retired (#2865): the canary
+ * moved to its own key (#2822), Regal was given a fresh one, and trypennie's value
+ * moved into its own rotation slot, so every key names exactly one caller. Each
+ * authenticated call reports the
  * matched CALLER and slot (labels, never the secret), so the rate ceiling and the
  * logs can say who made a request rather than which of two shared slots it used.
  *
@@ -22,19 +23,17 @@ import { bearerToken, timingSafeEqual } from "@/lib/bearer-auth";
 import { isPublicTestBucket } from "@/lib/embed/public-test-bucket";
 
 /**
- * Every system that holds a booking API key (#2645). Named callers come first so
- * that, if two callers were ever handed the same value by mistake, the request is
- * attributed to the named one rather than to the legacy pair.
+ * Every system that holds a booking API key (#2645), one key each. If two callers
+ * were ever handed the same value by mistake, the request is attributed to the one
+ * declared first.
  */
-export const BOOKING_API_CALLERS = ["regal", "trypennie", "canary", "shared"] as const;
+export const BOOKING_API_CALLERS = ["regal", "trypennie", "canary"] as const;
 export type BookingApiCaller = (typeof BOOKING_API_CALLERS)[number];
-export type NamedBookingApiCaller = Exclude<BookingApiCaller, "shared">;
 
 /**
  * Who may call the smoke endpoints. They can stamp the canary's own heartbeat and
  * reach the hidden test buckets, so a partner key there could keep a dead canary
- * looking alive. The shared key left once the canary was seen on its own (#2854),
- * because Regal still holds it.
+ * looking alive (#2854).
  */
 export const CANARY_CALLERS: readonly BookingApiCaller[] = ["canary"];
 
@@ -54,12 +53,12 @@ export function mayBookTestBuckets(caller: BookingApiCaller, bucketCode: string)
 export type KeySlot = "primary" | "secondary";
 
 /**
- * The environment variable holding one caller's slot. `shared` keeps the names
- * the Worker has always had; every other caller is suffixed, so the whole set
- * follows one rule and `scripts/test-booking-api-auth.ts` can hold `env.ts` to it.
+ * The environment variable holding one caller's slot. Every caller is suffixed, so
+ * the whole set follows one rule and `scripts/test-booking-api-auth.ts` can hold
+ * `env.ts` to it. The bare `BOOKING_API_KEY` pair is nobody's (#2865).
  */
 export function bookingApiKeyEnvName(caller: BookingApiCaller, slot: KeySlot): string {
-  const base = caller === "shared" ? "BOOKING_API_KEY" : `BOOKING_API_KEY_${caller.toUpperCase()}`;
+  const base = `BOOKING_API_KEY_${caller.toUpperCase()}`;
   return slot === "primary" ? base : `${base}_2`;
 }
 
@@ -188,7 +187,8 @@ export function authRefusalCounting(
 /**
  * Build the labelled key set from each caller's two slots, skipping any that are
  * unset or blank. A whitespace-only value is treated as unset, never a usable
- * secret. Named callers are ordered before `shared` whatever order they arrive in.
+ * secret. Callers are ordered as `BOOKING_API_CALLERS` declares them, whatever order
+ * they arrive in.
  */
 export function parseApiKeys(callers: readonly CallerSecrets[]): ApiKey[] {
   const rank = (c: BookingApiCaller) => BOOKING_API_CALLERS.indexOf(c);

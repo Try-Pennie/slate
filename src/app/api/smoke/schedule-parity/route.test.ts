@@ -11,13 +11,11 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 // (#1134, #1152).
 
 const env = vi.hoisted(() => ({
-  bookingApiKeyPrimary: vi.fn(() => ""),
-  bookingApiKeySecondary: vi.fn(() => ""),
   bookingApiKeyFor: vi.fn((_caller: string, _slot: string) => ""),
 }));
 // #2854: the smoke endpoints take the canary's own key and nothing else, so the key
-// these tests authenticate with is the canary's. `bookingApiKeyPrimary` above is the
-// shared key, which is left configured in the refusal test to prove it is refused.
+// these tests authenticate with is the canary's; a partner's key is configured
+// beside it in the refusal test to prove it is refused.
 const canaryKey = vi.hoisted(() => ({ primary: vi.fn(() => ""), secondary: vi.fn(() => "") }));
 const canaryKeyFor = (caller: string, slot: string) =>
   caller !== "canary" ? "" : slot === "primary" ? canaryKey.primary() : canaryKey.secondary();
@@ -50,7 +48,6 @@ function post(body: unknown, authorization = "Bearer real-secret") {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  env.bookingApiKeyPrimary.mockReturnValue("");
   env.bookingApiKeyFor.mockImplementation(canaryKeyFor);
   canaryKey.primary.mockReturnValue("real-secret");
   canaryKey.secondary.mockReturnValue("");
@@ -72,10 +69,10 @@ describe("POST /api/smoke/schedule-parity (#2031)", () => {
     expect(dispatch.resolveAlert).not.toHaveBeenCalled();
   });
 
-  // #2854: the shared key is refused here, because Regal holds it.
-  it("returns 401 and says nothing for the shared key", async () => {
-    env.bookingApiKeyPrimary.mockReturnValue("shared-secret");
-    const res = await post({ total: 1, compared: 1, findings: [], runUrl: RUN }, "Bearer shared-secret");
+  // #2854: a partner's key is refused here, even configured beside the canary's.
+  it("returns 401 and says nothing for a partner's key", async () => {
+    env.bookingApiKeyFor.mockImplementation((c: string, s: string) => (c === "regal" && s === "primary" ? "regal-key" : canaryKeyFor(c, s)));
+    const res = await post({ total: 1, compared: 1, findings: [], runUrl: RUN }, "Bearer regal-key");
     expect(res.status).toBe(401);
     expect(dispatch.sendThrottledAlert).not.toHaveBeenCalled();
     expect(dispatch.resolveAlert).not.toHaveBeenCalled();

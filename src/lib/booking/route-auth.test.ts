@@ -9,11 +9,15 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 // identical in review (L3, built is not wired). So this drives the real authorizer
 // with the recorder mocked, and asserts what reached it.
 
+// #2865: the key these tests authenticate with is Regal's. There is no shared caller.
+const regalKey = vi.hoisted(() => ({ primary: vi.fn(() => "goodsecret"), secondary: vi.fn(() => "") }));
 const env = vi.hoisted(() => ({
-  bookingApiKeyPrimary: vi.fn(() => "goodsecret"),
-  bookingApiKeySecondary: vi.fn(() => ""),
-  bookingApiKeyFor: vi.fn((_caller: string, _slot: string) => ""),
+  bookingApiKeyFor: vi.fn((caller: string, slot: string) =>
+    caller !== "regal" ? "" : slot === "primary" ? regalKey.primary() : regalKey.secondary(),
+  ),
 }));
+const regalKeyFor = (caller: string, slot: string) =>
+  caller !== "regal" ? "" : slot === "primary" ? regalKey.primary() : regalKey.secondary();
 const rateLimit = vi.hoisted(() => ({
   allowRequest: vi.fn(async (_caller: unknown, _rules: unknown) => true),
   bookingApiWriteWithinLimit: vi.fn(async (_keyId: string) => true),
@@ -57,9 +61,9 @@ function recordedOutcomes() {
 describe("authorizeBookingApi refusal reasons (#1429)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    env.bookingApiKeyPrimary.mockReturnValue("goodsecret");
-    env.bookingApiKeySecondary.mockReturnValue("");
-    env.bookingApiKeyFor.mockReturnValue("");
+    regalKey.primary.mockReturnValue("goodsecret");
+    regalKey.secondary.mockReturnValue("");
+    env.bookingApiKeyFor.mockImplementation(regalKeyFor);
     rateLimit.allowRequest.mockResolvedValue(true);
     rateLimit.bookingApiWriteWithinLimit.mockResolvedValue(true);
     rateLimit.bookingApiReadWithinLimit.mockResolvedValue(true);
@@ -84,8 +88,8 @@ describe("authorizeBookingApi refusal reasons (#1429)", () => {
   });
 
   it("names an endpoint with no configured key as not_configured, under its own code", async () => {
-    env.bookingApiKeyPrimary.mockReturnValue("");
-    env.bookingApiKeySecondary.mockReturnValue("");
+    regalKey.primary.mockReturnValue("");
+    regalKey.secondary.mockReturnValue("");
     const out = await authorizeBookingApi(req("Bearer anything"));
     expect(out.ok).toBe(false);
     if (out.ok) return;
@@ -183,14 +187,15 @@ describe("authorizeBookingApi refusal reasons (#1429)", () => {
 });
 
 // #2645: the ceiling and the logs name the CALLER, not the slot. Before the split
-// every system shared one key, so "per key" meant per everyone.
+// every system shared one key, so "per key" meant per everyone. That pair is retired
+// (#2865), so the second caller here is the canary.
 describe("authorizeBookingApi caller attribution (#2645)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    env.bookingApiKeyPrimary.mockReturnValue("sharedsecret");
-    env.bookingApiKeySecondary.mockReturnValue("");
     env.bookingApiKeyFor.mockImplementation((caller: string, slot: string) =>
-      caller === "trypennie" ? (slot === "primary" ? "trypennie-old" : "trypennie-new") : caller === "regal" && slot === "primary" ? "regalsecret" : "",
+      caller === "trypennie"
+        ? slot === "primary" ? "trypennie-old" : "trypennie-new"
+        : slot !== "primary" ? "" : caller === "regal" ? "regalsecret" : caller === "canary" ? "canarysecret" : "",
     );
     rateLimit.allowRequest.mockResolvedValue(true);
     rateLimit.bookingApiWriteWithinLimit.mockResolvedValue(true);
@@ -226,13 +231,8 @@ describe("authorizeBookingApi caller attribution (#2645)", () => {
 
   it("gives each caller its own budget, so one partner cannot spend another's", async () => {
     await authorizeBookingApi(req("Bearer regalsecret"));
-    await authorizeBookingApi(req("Bearer sharedsecret"));
-    expect(budgetsSpent().sort()).toEqual(["edge:regal", "edge:shared", "hourly:key:regal", "hourly:key:shared"]);
-  });
-
-  it("still accepts the legacy shared pair, as the shared caller", async () => {
-    const out = await authorizeBookingApi(req("Bearer sharedsecret"));
-    expect(out.ok && out.caller).toBe("shared");
+    await authorizeBookingApi(req("Bearer canarysecret"));
+    expect(budgetsSpent().sort()).toEqual(["edge:canary", "edge:regal", "hourly:key:canary", "hourly:key:regal"]);
   });
 });
 
@@ -244,8 +244,6 @@ describe("authorizeBookingApi caller attribution (#2645)", () => {
 describe("authorizeBookingApi records who authenticated (#2717)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    env.bookingApiKeyPrimary.mockReturnValue("sharedsecret");
-    env.bookingApiKeySecondary.mockReturnValue("");
     env.bookingApiKeyFor.mockImplementation((caller: string, slot: string) =>
       caller === "trypennie" && slot === "primary" ? "trypenniesecret" : "",
     );

@@ -12,12 +12,8 @@ import { readFileSync } from "node:fs";
 import {
   CALLER_HOST_KINDS,
   CALLER_SEEN_REFRESH_MS,
-  CANARY_LANES_CALLER,
-  CANARY_SWITCH_GRACE_MS,
   PARTNER_KEY_MAX_AGE_DAYS,
-  canaryMovedAtMs,
   judgePartnerKey,
-  judgeSharedKeyExposure,
   makeCallerSeenRecorder,
   requestHost,
   type CallerSeenRow,
@@ -220,181 +216,28 @@ function row(host_kind: CallerSeenRow["host_kind"], agoMs: number, origin: strin
   eq(other.status, "never-seen", "another caller's row never answers for this one");
 }
 
-// --- #2819: trypennie on the SHARED key ------------------------------------------------
+// --- #2865: rows the retired shared key left behind prove nothing -------------------
 //
-// With no trypennie row, "not deployed yet" and "deployed holding BOOKING_API_KEY
-// instead of its own" used to read the same. The canary also holds the shared key and
-// calls it from a server that names no host, so only a sighting that names a trypennie
-// production origin is evidence about trypennie; a server call on it is not.
-function shared(host_kind: CallerSeenRow["host_kind"], agoMs: number, origin: string | null = null): CallerSeenRow {
-  return { ...row(host_kind, agoMs, origin), caller: "shared" };
-}
+// The shared caller is gone, but its rows (and the canary lanes marker) stay in the
+// table. A leftover row must neither prove trypennie nor change what is said about it.
 {
-  const onShared = judgePartnerKey("trypennie", [shared("production", DAY, "https://www.trypennie.com"), shared("unstated", 60_000)], NOW, MAX);
-  eq(onShared.status, "on-shared-key", "a production origin on the shared key, with no trypennie row, is its own outcome");
-  assert(/shared key/.test(onShared.detail) && /www\.trypennie\.com/.test(onShared.detail), `and names the key and the origin (got: ${onShared.detail})`);
-  assert(/may hold the shared key instead of its own/.test(onShared.detail), `and says what it suggests (got: ${onShared.detail})`);
-  assert(/never authenticated/.test(onShared.detail), `and still says trypennie's own key has not (got: ${onShared.detail})`);
-
-  // The canary alone: server calls on the shared key, no origin. Must NOT be read as
-  // trypennie, and must say it cannot tell rather than claiming nothing is arriving.
-  const canaryOnly = judgePartnerKey("trypennie", [shared("unstated", 60_000)], NOW, MAX);
-  eq(canaryOnly.status, "never-seen", "canary server calls on the shared key are not trypennie");
-  assert(!/may hold the shared key/.test(canaryOnly.detail), `and are not reported as trypennie on the shared key (got: ${canaryOnly.detail})`);
-  assert(/canary/.test(canaryOnly.detail), `and say a server call there cannot be told from the canary's (got: ${canaryOnly.detail})`);
-
-  // Nothing on either key: plain "not yet", in words distinct from the canary case.
-  const nothing = judgePartnerKey("trypennie", [], NOW, MAX);
-  assert(/nothing has authenticated on the shared key/.test(nothing.detail), `nothing on the shared key either says so (got: ${nothing.detail})`);
-  assert(nothing.detail !== canaryOnly.detail, "and reads differently from the canary only case");
-
-  // Localhost or a preview on the shared key names no trypennie production site.
-  const sharedLocal = judgePartnerKey("trypennie", [shared("localhost", DAY, "http://localhost:3000"), shared("other-host", DAY, "https://x.vercel.app")], NOW, MAX);
-  eq(sharedLocal.status, "never-seen", "a localhost or preview host on the shared key is not a trypennie production sighting");
-
-  const oldShared = judgePartnerKey("trypennie", [shared("production", MAX + DAY, "https://trypennie.com")], NOW, MAX);
-  eq(oldShared.status, "never-seen", "a production sighting on the shared key outside the window is not evidence of today");
-
-  // trypennie's own key tested locally, then deployed on the shared key.
-  const localThenShared = judgePartnerKey("trypennie", [row("localhost", DAY, "http://localhost:3000"), shared("production", DAY, "https://trypennie.com")], NOW, MAX);
-  eq(localThenShared.status, "on-shared-key", "its own key only on localhost plus the shared key from production is the shared key outcome");
-  assert(/localhost:3000/.test(localThenShared.detail), `and still names where its own key was seen (got: ${localThenShared.detail})`);
-
-  const provenAnyway = judgePartnerKey("trypennie", [row("unstated", DAY), shared("production", DAY, "https://trypennie.com")], NOW, MAX);
-  eq(provenAnyway.status, "proven", "its own key proven wins over any shared key sighting");
-
-  const selfJudged = judgePartnerKey("shared", [shared("production", DAY, "https://trypennie.com")], NOW, MAX);
-  eq(selfJudged.status, "proven", "judging the shared caller itself never reports it as on the shared key");
-}
-
-// --- #2822: the canary on its OWN key, so a shared sighting is a partner's ------------
-//
-// The canary used to hold the shared key, so a shared server call could be the canary.
-// The move is when the SCHEDULED LANES first stamped a heartbeat on the canary's own key
-// (`canary-lanes`, written only by /api/smoke/heartbeat), never when anything first
-// authenticated as `canary`: a hand run smoke on the canary key before the lanes switch
-// would otherwise set a move that has not happened, and read the lanes' own shared calls
-// as a partner's. A shared row last written before the move (plus a grace for a run in
-// flight) is the canary's own history.
-function canary(host_kind: CallerSeenRow["host_kind"], agoMs: number, firstAgoMs: number): CallerSeenRow {
-  return { ...row(host_kind, agoMs), caller: CANARY_LANES_CALLER, first_seen_at: new Date(NOW - firstAgoMs).toISOString() };
-}
-/** A plain `canary` sighting, as a hand run or a booking on the canary key leaves. */
-function canaryHandRun(agoMs: number, firstAgoMs: number): CallerSeenRow {
-  return { ...row("unstated", agoMs), caller: "canary", method: "POST", first_seen_at: new Date(NOW - firstAgoMs).toISOString() };
-}
-function regal(agoMs: number): CallerSeenRow {
-  return { ...row("unstated", agoMs), caller: "regal", method: "POST" };
-}
-{
-  eq(CANARY_SWITCH_GRACE_MS, CALLER_SEEN_REFRESH_MS, "the grace after the move is one refresh interval");
-  eq(canaryMovedAtMs([]), null, "no canary row: the canary has not moved");
-  eq(
-    canaryMovedAtMs([canary("unstated", 60_000, 3 * DAY), canary("production", 60_000, 5 * DAY)]),
-    NOW - 5 * DAY,
-    "the move is the EARLIEST first sighting across its rows",
-  );
-  eq(canaryMovedAtMs([{ ...canary("unstated", 60_000, DAY), first_seen_at: null }]), null, "an unreadable first sighting is not a move, so the verdict hedges rather than accuses");
-  eq(canaryMovedAtMs([{ ...canary("unstated", 60_000, DAY), first_seen_at: "garbage" }]), null, "and neither is garbage");
-  eq(canaryMovedAtMs([{ ...shared("unstated", 60_000), first_seen_at: new Date(NOW - DAY).toISOString() }]), null, "another caller's first sighting is never the canary's");
-  eq(canaryMovedAtMs([canaryHandRun(60_000, 5 * DAY)]), null, "a plain canary sighting (a hand run, a booking) is NOT the lanes moving");
-  eq(
-    canaryMovedAtMs([canaryHandRun(60_000, 5 * DAY), canary("unstated", 60_000, 2 * DAY)]),
-    NOW - 2 * DAY,
-    "with both, the move is the lanes' first heartbeat, not the earlier hand run",
-  );
-
-  // The review's case (#2855): somebody smoke tested the canary key by hand five days
-  // ago, before the lanes switched, and the lanes are STILL calling on the shared key.
-  // That must hedge about the canary, never accuse a partner.
-  const handRunOnly = judgePartnerKey("trypennie", [canaryHandRun(5 * DAY, 5 * DAY), regal(DAY), shared("unstated", 60 * 60_000)], NOW, MAX);
-  eq(handRunOnly.status, "never-seen", "a hand run on the canary key before the lanes move does not turn the lanes' shared calls into a partner's");
-  assert(/cannot be told apart from the canary/.test(handRunOnly.detail), `and hedges about the canary (got: ${handRunOnly.detail})`);
-  // And once the lanes did move, a shared call from BEFORE their first heartbeat but
-  // after the hand run is still the lanes' own.
-  const betweenRunAndMove = judgePartnerKey(
+  const leftover = (host_kind: CallerSeenRow["host_kind"], agoMs: number, origin: string | null = null): CallerSeenRow => ({
+    ...row(host_kind, agoMs, origin),
+    caller: "shared",
+  });
+  const alone = judgePartnerKey("trypennie", [], NOW, MAX);
+  const withLeftovers = judgePartnerKey(
     "trypennie",
-    [canaryHandRun(5 * DAY, 5 * DAY), canary("unstated", 60_000, 2 * DAY), regal(DAY), shared("unstated", 3 * DAY)],
+    [leftover("production", DAY, "https://www.trypennie.com"), leftover("unstated", 60_000), { ...leftover("unstated", 60_000), caller: "canary-lanes" }],
     NOW,
     MAX,
   );
-  eq(betweenRunAndMove.status, "never-seen", "a shared call between the hand run and the lanes' move is the lanes' own");
-
-  // The canary moved three days ago; a server called on the shared key an hour ago.
-  // Regal has not been seen on its own key, so either partner could hold it.
-  const both = judgePartnerKey("trypennie", [canary("unstated", 60_000, 3 * DAY), shared("unstated", 60 * 60_000)], NOW, MAX);
-  eq(both.status, "never-seen", "with two partners off their own keys, the caller is not named as the holder");
-  assert(/since the smoke canary moved to its own key/.test(both.detail), `says the canary is no longer on the shared key (got: ${both.detail})`);
-  assert(/regal/.test(both.detail) && /trypennie/.test(both.detail), `and names both partners it could be (got: ${both.detail})`);
-  assert(!/cannot be told apart/.test(both.detail), `and no longer hedges about the canary (got: ${both.detail})`);
-
-  // Regal seen on its own key: trypennie is the only partner left, so it is named.
-  const sole = judgePartnerKey("trypennie", [canary("unstated", 60_000, 3 * DAY), regal(DAY), shared("unstated", 60 * 60_000)], NOW, MAX);
-  eq(sole.status, "on-shared-key", "the only partner off its own key, with a partner on the shared key, is on the shared key");
-  assert(/only partner not seen on its own key/.test(sole.detail), `and says why it is named, with no heuristic (got: ${sole.detail})`);
-
-  // A regal sighting outside the bound does not clear regal.
-  const oldRegal = judgePartnerKey("trypennie", [canary("unstated", 60_000, 3 * DAY), regal(MAX + DAY), shared("unstated", 60 * 60_000)], NOW, MAX);
-  eq(oldRegal.status, "never-seen", "a partner last seen on its own key outside the bound is still a suspect");
-
-  // A shared server row last written BEFORE the move is the canary's own history.
-  const history = judgePartnerKey("trypennie", [canary("unstated", 60_000, 2 * DAY), shared("unstated", 2 * DAY + 30 * 60_000)], NOW, MAX);
-  eq(history.status, "never-seen", "a shared server row from before the move is the canary's, not a partner's");
-  assert(/nothing suggests trypennie has deployed/.test(history.detail), `and reads as nothing on the shared key since (got: ${history.detail})`);
-
-  // Inside the grace after the move, still the canary's (a run in flight at the switch).
-  const inFlight = judgePartnerKey("trypennie", [canary("unstated", 60_000, 2 * DAY), shared("unstated", 2 * DAY - 30 * 60_000)], NOW, MAX);
-  eq(inFlight.status, "never-seen", "a shared call inside the grace after the move is still the canary's");
-  assert(/nothing suggests/.test(inFlight.detail), `(got: ${inFlight.detail})`);
-
-  // Before the move the hedge stays, and now says what will end it.
-  const before = judgePartnerKey("trypennie", [shared("unstated", 60_000)], NOW, MAX);
-  assert(/canary/.test(before.detail) && /own key/.test(before.detail), `before the move the hedge names the canary's own key as the fix (got: ${before.detail})`);
-
-  const sentences = new Set([both.detail, sole.detail, history.detail, before.detail]);
-  eq(sentences.size, 4, "each reading of the shared key says something different");
-
-  const proven = judgePartnerKey("trypennie", [row("unstated", DAY), canary("unstated", 60_000, 3 * DAY), shared("unstated", 60_000)], NOW, MAX);
-  eq(proven.status, "proven", "its own key proven wins over any shared sighting after the move");
-}
-
-// --- #2822: the shared key sent from a BROWSER ------------------------------------------
-//
-// An Origin or Referer is set by a browser. A shared key sighting carrying a public one
-// means the key was in page code any visitor can read: a security finding in its own
-// right, whoever sent it and whatever the partner verdict says.
-{
-  const none = judgeSharedKeyExposure([shared("unstated", 60_000), canary("unstated", 60_000, DAY)], NOW, MAX);
-  eq(none.exposed, false, "server calls on the shared key are not an exposure");
-  eq(none.detail, null, "and say nothing");
-
-  const prod = judgeSharedKeyExposure([shared("production", DAY, "https://www.trypennie.com")], NOW, MAX);
-  eq(prod.exposed, true, "a trypennie production origin on the shared key is an exposure");
-  assert(
-    /www\.trypennie\.com/.test(prod.detail ?? "") && /browser/.test(prod.detail ?? "") && /rotate/i.test(prod.detail ?? ""),
-    `naming the origin, the browser and the repair (got: ${prod.detail})`,
-  );
-
-  const preview = judgeSharedKeyExposure([shared("other-host", DAY, "https://x.vercel.app")], NOW, MAX);
-  eq(preview.exposed, true, "a preview or other public host on the shared key is an exposure too");
-  const opaque = judgeSharedKeyExposure([shared("other-host", DAY, null)], NOW, MAX);
-  eq(opaque.exposed, true, "an unreadable origin is still something a browser stated");
-  assert(/at an unreadable address \(/.test(opaque.detail ?? ""), `and says the address was unreadable, in plain words (got: ${opaque.detail})`);
-
-  const two = judgeSharedKeyExposure([shared("production", DAY, "https://trypennie.com"), shared("other-host", 2 * DAY, "https://x.vercel.app")], NOW, MAX);
-  assert(/trypennie\.com/.test(two.detail ?? "") && /x\.vercel\.app/.test(two.detail ?? ""), `every exposing origin is named (got: ${two.detail})`);
-
-  const local = judgeSharedKeyExposure([shared("localhost", DAY, "http://localhost:3000")], NOW, MAX);
-  eq(local.exposed, false, "a developer's own machine is not a page a visitor can load");
-
-  const old = judgeSharedKeyExposure([shared("production", MAX + DAY, "https://trypennie.com")], NOW, MAX);
-  eq(old.exposed, false, "a browser sighting outside the bound is not today's exposure");
-
-  const own = judgeSharedKeyExposure([row("production", DAY, "https://trypennie.com")], NOW, MAX);
-  eq(own.exposed, false, "a partner's OWN key from its production site is the accepted proof (Dan, 2026-09-25), not this finding");
-
-  const junk = judgeSharedKeyExposure([{ ...shared("production", DAY, "https://trypennie.com"), last_seen_at: "nope" }], NOW, MAX);
-  eq(junk.exposed, false, "an unreadable stamp accuses nobody");
+  eq(withLeftovers.status, "never-seen", "a leftover shared row from trypennie's own site does not prove trypennie");
+  eq(withLeftovers.detail, alone.detail, "and says exactly what no rows at all would say");
+  // Positive control: the same rows under trypennie's own name DO prove it, so the
+  // equality above is the retired caller being ignored, not the judge being deaf (L1).
+  const own = judgePartnerKey("trypennie", [row("production", DAY, "https://www.trypennie.com")], NOW, MAX);
+  eq(own.status, "proven", "the same sighting under trypennie's own key proves it");
 }
 
 finish();

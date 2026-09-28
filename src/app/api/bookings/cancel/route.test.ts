@@ -10,10 +10,12 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 // reporter (it alerts). Left REAL on purpose: the authorizer, the parsers, the write
 // failure class and the error mapping, since those are the glue under test.
 
+// #2865: the key these tests authenticate with is Regal's. There is no shared caller.
+const regalKey = vi.hoisted(() => ({ primary: vi.fn(() => "real-secret"), secondary: vi.fn(() => "") }));
 const env = vi.hoisted(() => ({
-  bookingApiKeyPrimary: vi.fn(() => "real-secret"),
-  bookingApiKeySecondary: vi.fn(() => ""),
-  bookingApiKeyFor: vi.fn((_caller: string, _slot: string) => ""),
+  bookingApiKeyFor: vi.fn((caller: string, slot: string) =>
+    caller !== "regal" ? "" : slot === "primary" ? regalKey.primary() : regalKey.secondary(),
+  ),
 }));
 const rateLimit = vi.hoisted(() => ({
   allowRequest: vi.fn(async (_caller: unknown, _rules: unknown) => true),
@@ -86,7 +88,7 @@ const viaDelete: Verb = (fields, authorization = "Bearer real-secret") => {
 };
 
 beforeEach(() => {
-  env.bookingApiKeyPrimary.mockReturnValue("real-secret");
+  regalKey.primary.mockReturnValue("real-secret");
   for (const f of [
     rateLimit.allowRequest,
     rateLimit.bookingApiWriteWithinLimit,
@@ -131,7 +133,7 @@ describe.each([
   });
 
   it("answers 503 when no key is configured, and cancels nothing", async () => {
-    env.bookingApiKeyPrimary.mockReturnValue("");
+    regalKey.primary.mockReturnValue("");
     const res = await send({ bookingId: "bk-7", externalId: "ext-1" });
     expect(res.status).toBe(503);
     expect(service.cancelDirectBooking).not.toHaveBeenCalled();

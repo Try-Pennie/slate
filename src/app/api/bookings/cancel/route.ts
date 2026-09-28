@@ -10,7 +10,7 @@ export const dynamic = "force-dynamic";
  * webhook step offers GET, POST, PUT and PATCH only. Auth, ownership and every
  * ending are `respondToDirectCancel`'s, shared with the DELETE form.
  *
- *   POST (Bearer BOOKING_API_KEY[_2]) -> 200 | 400 | 401 | 404 | 429 | 500 | 503
+ *   POST (Bearer a caller's own key, BOOKING_API_KEY_<CALLER>[_2]) -> 200 | 400 | 401 | 404 | 429 | 500 | 503
  */
 export async function POST(req: NextRequest) {
   return respondToDirectCancel(req, async (allowedCancel) =>

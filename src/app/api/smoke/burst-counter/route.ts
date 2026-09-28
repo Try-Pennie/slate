@@ -48,7 +48,7 @@ interface DurableObjectishNamespace {
 }
 
 export async function POST(req: NextRequest) {
-  // #2645, #2854: the canary's own key only, never the shared key or a partner's.
+  // #2645, #2854: the canary's own key only, never a partner's.
   const keys = configuredBookingApiKeys(CANARY_CALLERS);
   const auth = authenticateBearer(req.headers.get("authorization"), keys);
   if (!auth.ok) {

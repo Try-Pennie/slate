@@ -4,11 +4,10 @@
 // The canary, the deploy probe and every heartbeat stamp used to send the shared
 // `BOOKING_API_KEY`, so in `api_caller_seen` a partner holding that key could not be
 // told from our own traffic (#2819). They now send `BOOKING_API_KEY_CANARY` and are
-// recorded as `canary`, which is what lets the readiness gate read every later shared
-// call as a partner's. That reading is only true while NOTHING of ours goes back to
-// the shared key, and one step quietly wired to it would make every partner verdict
-// after it wrong in the direction that accuses somebody. So this is a scan, not a
-// comment.
+// recorded as `canary`. Since #2865 the shared key is retired and the Worker holds no
+// such secret, so a step wired back to it would be refused with a 401 at run time, on
+// the canary lane that pages about it. This catches the same mistake at build time,
+// where it costs nothing. So this is a scan, not a comment.
 //
 // Two surfaces, each blind where the other looks:
 //   - a WORKFLOW naming the bare shared key (a `secrets.` reference, an env name, a
@@ -22,7 +21,7 @@
 /** Workflows that may name the bare shared key, each with its reason (L129). */
 export const SHARED_KEY_WORKFLOW_EXEMPT: Record<string, string> = {
   "loadtest.yml":
-    "drives a throwaway Worker whose BOOKING_API_KEY is the LOADTEST_BOOKING_API_KEY secret, not production's shared key, and records into its own branch database",
+    "names BOOKING_API_KEY only as its drivers' own variable, fed from the LOADTEST_BOOKING_API_KEY secret; the throwaway Worker it drives holds that value as BOOKING_API_KEY_CANARY (LOADTEST_ALLOWED_SECRETS, #2865) and records into its own branch database",
 };
 
 /** Script paths (relative to scripts/) that may name the bare shared key, with reasons. */

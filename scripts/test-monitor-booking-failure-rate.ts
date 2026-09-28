@@ -296,7 +296,7 @@ const reading = (
     topCodes: [{ code: "API_KEY_REJECTED", count: 29 }],
   });
   assert(
-    rotated.includes("the shared BOOKING_API_KEY) was rotated") && rotated.includes("BOOKING_API_KEY_REGAL"),
+    rotated.includes("_TRYPENNIE or _CANARY) was rotated") && rotated.includes("BOOKING_API_KEY_REGAL") && !rotated.includes("shared"),
     "a rejected-key wave says to check whether the key was rotated without the caller being updated",
   );
   assert(
@@ -319,6 +319,12 @@ const reading = (
   assert(
     !unset.includes("rotated"),
     "and does NOT repeat the rotation advice, which cannot fix a secret nobody set (L36)",
+  );
+  // #2865: the bare shared pair is read by nothing, so naming it would send the
+  // reader to set a secret that cannot bring the endpoint back.
+  assert(
+    !/BOOKING_API_KEY\b(?!_)/.test(unset) && !/BOOKING_API_KEY\b(?!_)/.test(rotated),
+    "neither credential page names the retired shared BOOKING_API_KEY",
   );
   assert(
     !internalWave.includes("BOOKING_API_KEY"),
