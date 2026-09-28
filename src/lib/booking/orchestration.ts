@@ -90,6 +90,7 @@ import {
 import { isLoadtest } from "@/lib/loadtest-guard";
 import { sendThrottledAlert } from "../notify/dispatch.ts";
 import { raceBoundHitPage } from "../monitor/race-contention.ts";
+import { afterResponse } from "@/lib/after-response";
 import type { BookingEventPayload, BookingReasonMeta } from "@/lib/webhooks/types";
 import { routingMetaFromTrace } from "@/lib/webhooks/types";
 // Type-only (erased under --experimental-strip-types), so this never pulls the
@@ -3089,11 +3090,16 @@ export async function createBooking(
           lostRaces: raceLost.length + 1,
         });
         if (page) {
-          // alert-key: booking_race_bound_hit
-          // alert-text-ok: our own copy from race-contention.ts, built from a
-          // bucket code, the requested time and a count; no error text reaches it.
-          await sendThrottledAlert(page.key, page.cooldownMs, page.text).catch((pageErr) =>
-            log.warn("booking", { msg: "could not page a race bound hit; the refusal stands" }, pageErr),
+          // After the response, never awaited here: the lead's 409 must not wait
+          // on an alert_state read and a Slack post (up to its 8s timeout). A
+          // failed send is logged and the refusal stands.
+          afterResponse("race-bound-hit-page", () =>
+            // alert-key: booking_race_bound_hit
+            // alert-text-ok: our own copy from race-contention.ts, built from a
+            // bucket code, the requested time and a count; no error text reaches it.
+            sendThrottledAlert(page.key, page.cooldownMs, page.text).catch((pageErr) =>
+              log.warn("booking", { msg: "could not page a race bound hit; the refusal stands" }, pageErr),
+            ),
           );
         }
         throw new RaceLostRefusalError(raceLost.length + 1, boundHit);

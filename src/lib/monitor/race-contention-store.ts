@@ -22,7 +22,10 @@ import { raceWindowFromMix, type RaceContentionWindow } from "@/lib/monitor/race
 
 /** Today's race counts, on the tally's own Eastern day boundary. */
 export async function readRaceContentionWindow(nowMs: number): Promise<RaceContentionWindow> {
-  const day = DateTime.fromMillis(nowMs, { zone: OUTCOME_DAY_ZONE }).toISODate() ?? "";
+  // An unformattable clock must refuse, never become p_since "", which would ask
+  // for a window nobody chose and report it as today.
+  const day = DateTime.fromMillis(nowMs, { zone: OUTCOME_DAY_ZONE }).toISODate();
+  if (!day) throw new Error(`could not name the Eastern day for ${String(nowMs)}, so nothing was read`);
   const raw = unwrap(
     await supabaseAdmin().rpc("booking_api_outcome_mix", {
       p_since: day,

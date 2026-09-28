@@ -325,11 +325,31 @@ describe("race bound hit page dispatch (#2838)", () => {
     expect(text).toContain("4 advisors");
   });
 
-  it("still refuses the lead when the page itself cannot be sent", async () => {
+  it("still refuses the lead when the page itself cannot be sent, and logs the failure", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     dispatch.sendThrottledAlert.mockRejectedValueOnce(new Error("slack down"));
     const err = await createBooking(input411, racingDeps(["a", "b", "c", "d", "e"])).catch((e) => e);
     // The refusal is the lead's answer; a failed page must not turn it into a 500.
     expect(err).toBeInstanceOf(RaceLostRefusalError);
+    expect(boundPages()).toHaveLength(1);
+    // The send runs after the response, so let its rejection settle before reading the log.
+    await new Promise((r) => setTimeout(r, 0));
+    const lines = warn.mock.calls.map((c) => String(c[0]));
+    expect(lines.some((l) => l.includes("could not page a race bound hit"))).toBe(true);
+    warn.mockRestore();
+  });
+
+  it("refuses without waiting on the page, so Slack can never hold the 409", async () => {
+    // A send that never settles: if the confirm path awaited it, this would hang.
+    dispatch.sendThrottledAlert.mockImplementationOnce(() => new Promise<void>(() => {}));
+    const outcome = await Promise.race([
+      createBooking(input411, racingDeps(["a", "b", "c", "d", "e"])).then(
+        () => "booked",
+        (e) => (e instanceof RaceLostRefusalError ? "refused" : "other"),
+      ),
+      new Promise((r) => setTimeout(() => r("waited on the page"), 1000)),
+    ]);
+    expect(outcome).toBe("refused");
     expect(boundPages()).toHaveLength(1);
   });
 

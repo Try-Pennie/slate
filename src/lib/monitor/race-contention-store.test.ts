@@ -48,6 +48,11 @@ describe("readRaceContentionWindow", () => {
     await expect(readRaceContentionWindow(NOW)).rejects.toThrow(/could not be read/);
   });
 
+  it("THROWS on a clock it cannot turn into a day, rather than asking for every day since ''", async () => {
+    await expect(readRaceContentionWindow(Number.NaN)).rejects.toThrow(/could not name the Eastern day/);
+    expect(rpc).not.toHaveBeenCalled();
+  });
+
   it("reads an empty day as zeros, which the verdict then calls unmeasured", async () => {
     rpc.mockResolvedValue({ data: { by_outcome: {} }, error: null });
     expect(await readRaceContentionWindow(NOW)).toEqual({
