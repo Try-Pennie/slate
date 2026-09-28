@@ -20,7 +20,17 @@ export const COPY_LINK_COPY = {
  * nothing (L608). A refused write says so too, and selects the link so the
  * ordinary copy keystroke is the whole remedy.
  */
-export function CopyLinkField({ label, url }: { label: string; url: string }) {
+export function CopyLinkField({
+  label,
+  url,
+  labelHidden = false,
+}: {
+  label: string;
+  url: string;
+  /** Keep the label for assistive tech only, when a heading right above already
+   *  says what the field is and a visible label would state it twice (L605). */
+  labelHidden?: boolean;
+}) {
   const id = useId();
   const fieldRef = useRef<HTMLInputElement>(null);
   const [outcome, setOutcome] = useState<"copied" | "failed" | null>(null);
@@ -38,7 +48,7 @@ export function CopyLinkField({ label, url }: { label: string; url: string }) {
 
   return (
     <div>
-      <label htmlFor={id} className={labelCls}>
+      <label htmlFor={id} className={labelHidden ? "sr-only" : labelCls}>
         {label}
       </label>
       <div className="mt-1 flex flex-wrap items-center gap-2">

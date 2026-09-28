@@ -24,6 +24,12 @@ describe("CopyLinkField", () => {
     expect(field.readOnly).toBe(true);
   });
 
+  it("keeps the field's name for assistive tech when the visible label is hidden", () => {
+    render(<CopyLinkField label="Booking link" url={URL_VALUE} labelHidden />);
+    expect((screen.getByLabelText("Booking link") as HTMLInputElement).value).toBe(URL_VALUE);
+    expect(screen.getByText("Booking link").className).toBe("sr-only");
+  });
+
   it("copies the link and says it did", async () => {
     const writeText = vi.fn(async () => {});
     stubClipboard(writeText);

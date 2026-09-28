@@ -234,7 +234,7 @@ export default async function MePage({
               Send this to a lead for a later call with you. It books you
               directly, in your working hours, and skips routing.
             </p>
-            <CopyLinkField label="Link" url={bookingLink.url} />
+            <CopyLinkField label="Booking link" url={bookingLink.url} labelHidden />
           </>
         )}
       </section>

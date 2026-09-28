@@ -217,7 +217,7 @@ describe("MePage and the agent's own booking link (#2073)", () => {
   it("shows the link with a copy control", async () => {
     mockDb({ agent_links: { data: { token: TOKEN }, error: null } });
     render(await MePage(props()));
-    const field = screen.getByLabelText("Link") as HTMLInputElement;
+    const field = screen.getByLabelText("Booking link") as HTMLInputElement;
     expect(field.value).toMatch(new RegExp(`/book/advisor/${TOKEN}$`));
     expect(screen.getByRole("button", { name: "Copy link" })).toBeTruthy();
   });
@@ -227,7 +227,7 @@ describe("MePage and the agent's own booking link (#2073)", () => {
     render(await MePage(props()));
     expect(screen.getByText(/booking link could not be read/i)).toBeTruthy();
     expect(screen.queryByText(/do not have a booking link/i)).toBeNull();
-    expect(screen.queryByLabelText("Link")).toBeNull();
+    expect(screen.queryByLabelText("Booking link")).toBeNull();
     // The failure is the link's alone.
     expect(screen.getByRole("button", { name: "Save" })).toBeTruthy();
   });

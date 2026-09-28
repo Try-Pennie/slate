@@ -520,7 +520,7 @@ export default async function AgentProfilePage({
             ) : (
               <div className="mt-3 space-y-4">
                 {bookingLink.kind === "link" ? (
-                  <CopyLinkField label="Link" url={bookingLink.url} />
+                  <CopyLinkField label="Booking link" url={bookingLink.url} labelHidden />
                 ) : (
                   <p className={`text-sm text-fg-muted ${proseCls}`}>
                     {agent.name ?? agent.email} has no booking link yet.

@@ -964,7 +964,7 @@ describe("the booking link card (#2073)", () => {
     dbState.agent = agentOf("agent");
     agentLinkStore.loadAgentLinkToken.mockResolvedValue(TOKEN);
     render(await AgentProfilePage(props));
-    expect((screen.getByLabelText("Link") as HTMLInputElement).value).toMatch(new RegExp(`/book/advisor/${TOKEN}$`));
+    expect((screen.getByLabelText("Booking link") as HTMLInputElement).value).toMatch(new RegExp(`/book/advisor/${TOKEN}$`));
     await userEvent.click(screen.getByRole("button", { name: "Replace link" }));
     const group = screen.getByRole("group", { name: /replace x1.s booking link/i });
     expect(group.textContent).toMatch(/stops working at once/);
