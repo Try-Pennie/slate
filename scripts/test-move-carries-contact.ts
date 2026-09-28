@@ -269,14 +269,65 @@ async function run() {
       `a name changed without a first name clears the stale one (got ${JSON.stringify(patch)})`,
     );
   }
+  // --- #2835: a first name that moved on its own is stored ----------------------
+  //
+  // This REVERSES the #2549 control that stood here ("an unchanged name leaves the
+  // stored first name alone"). That rule existed because a returning lead's form
+  // was seeded by splitting the joined name, so an unedited "Mary" / "Jo Smith"
+  // came back looking like an answer. The form now seeds from the answered first
+  // name, and sends a first name back only when it IS an answer (seeded from one,
+  // or edited by the lead), so a lead who fixes only the split gets it stored.
   {
-    // THE CONTROL: an unchanged name leaves the stored first name alone. A returning
-    // lead's prefill is shown SPLIT ("Mary" / "Jo Smith"), so the first name it
-    // sends back is a guess, and overwriting "Mary Jo" with it is the regression.
     const { deps, calls } = world({}, { attendee_name: "Mary Jo Smith", attendee_first_name: "Mary Jo" });
     const res = await updateBookingContact(TOKEN, { name: "Mary Jo Smith", firstName: "Mary" }, deps);
-    assert(res.ok && !res.changed.name, "the same name is no change");
-    assert(calls.updateBookingContact.length === 0, "and the stored first name is not overwritten");
+    assert(res.ok && !res.changed.name, "moving the split is not a change to the name");
+    const patch = calls.updateBookingContact[0]?.patch;
+    assert(
+      calls.updateBookingContact.length === 1 && patch?.attendee_first_name === "Mary",
+      `the corrected first name is written (got ${JSON.stringify(calls.updateBookingContact)})`,
+    );
+    assert(patch !== undefined && !("attendee_name" in patch), "and the name it agrees with is left as it is");
+    assert(calls.updateEventContact.length === 0, "and the invite, which carries only the joined name, is not rewritten");
+  }
+  {
+    // The Mary Jo case itself: a legacy booking with no answered first name, and a
+    // lead who moves the split to "Mary Jo" / "Smith".
+    const { deps, calls } = world({}, { attendee_name: "Mary Jo Smith", attendee_first_name: null });
+    await updateBookingContact(TOKEN, { name: "Mary Jo Smith", firstName: "Mary Jo" }, deps);
+    assert(
+      calls.updateBookingContact[0]?.patch.attendee_first_name === "Mary Jo",
+      `"Mary Jo" / "Smith" is stored as answered (got ${JSON.stringify(calls.updateBookingContact)})`,
+    );
+  }
+  {
+    // A first name the unchanged name does not start with is not one fact with it,
+    // and is never stored beside it, nor does it clear the answer already held.
+    const { deps, calls } = world({}, { attendee_name: "Mary Jo Smith", attendee_first_name: "Mary Jo" });
+    const res = await updateBookingContact(TOKEN, { name: "Mary Jo Smith", firstName: "Robin" }, deps);
+    assert(res.ok, "a disagreeing first name is not a refusal");
+    assert(calls.updateBookingContact.length === 0, "and writes nothing");
+  }
+  {
+    const { deps, calls } = world({}, { attendee_name: "Mary Jo Smith", attendee_first_name: "Mary Jo" });
+    await updateBookingContact(TOKEN, { name: "Mary Jo Smith", firstName: "Mary Jo" }, deps);
+    assert(calls.updateBookingContact.length === 0, "the same first name again writes nothing");
+  }
+  {
+    // No first name sent is no statement about it: the stored answer stays.
+    const { deps, calls } = world({}, { attendee_name: "Mary Jo Smith", attendee_first_name: "Mary Jo" });
+    await updateBookingContact(TOKEN, { name: "Mary Jo Smith" }, deps);
+    assert(calls.updateBookingContact.length === 0, "an unchanged name with no first name keeps the stored one");
+  }
+  {
+    // And a move carrying only the corrected split sends it to Regal.
+    const { deps, calls } = world({}, { attendee_name: "Mary Jo Smith", attendee_first_name: "Mary" });
+    await rescheduleBooking(
+      TOKEN, NEW_START, reason, "customer", deps, Date.parse("2026-09-10T12:00:00.000Z"),
+      undefined, { name: "Mary Jo Smith", firstName: "Mary Jo" },
+    );
+    const sent = calls.webhooks.find((w) => w.event === "booking.rescheduled");
+    const attendee = sent?.attendee as { first_name?: string | null } | undefined;
+    assert(attendee?.first_name === "Mary Jo", `the move carries the corrected first name (got ${JSON.stringify(attendee)})`);
   }
   {
     // And the move's own webhook payload carries it, since Regal is built from that.

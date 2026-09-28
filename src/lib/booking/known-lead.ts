@@ -33,14 +33,26 @@
  * interface back to the reader, which is the class #2204 deleted from this same
  * step (L604).
  *
+ * ## The answered first name (#2835)
+ *
+ * A booking also stores the first name the lead typed in its own field (#2549).
+ * It is carried beside the name only from the SAME booking and only while that
+ * name starts with it, so the form can show "Mary Jo" / "Smith" rather than
+ * splitting the joined name into "Mary" / "Jo Smith". It discloses nothing the
+ * name beside it does not already say: it is a prefix of that name, and it is
+ * never carried without it.
+ *
  * Pure, with no `@/` imports, so the node suite can drive it.
  */
+import { storedFirstName } from "../attendee.ts";
 
 /** The columns a booking carries about the person who made it. */
 export interface KnownContactRow {
   id: string;
   created_at: string;
   attendee_name: string | null;
+  /** #2549: the first name as answered, null where nobody answered one. */
+  attendee_first_name: string | null;
   attendee_email: string | null;
   attendee_phone: string | null;
 }
@@ -48,6 +60,9 @@ export interface KnownContactRow {
 /** What Slate holds, with a null per fact it does not hold. */
 export interface KnownContact {
   name: string | null;
+  /** The first name answered beside `name`, on the same booking, and only while
+   *  `name` starts with it (#2835). Never present without `name`. */
+  firstName: string | null;
   email: string | null;
   phone: string | null;
 }
@@ -85,8 +100,14 @@ export function knownContactFromBookings(rows: KnownContactRow[]): KnownContact 
     }
     return null;
   };
+  // The first name is taken from the row that supplied the NAME, never searched
+  // for on its own: pairing one booking's name with another's first name would
+  // show the lead a split that no booking ever held.
+  const nameRow = newestFirst.find((r) => value(r.attendee_name));
+  const name = nameRow ? value(nameRow.attendee_name) : null;
   const contact: KnownContact = {
-    name: first((r) => r.attendee_name),
+    name,
+    firstName: nameRow ? storedFirstName(name, value(nameRow.attendee_first_name)) : null,
     email: first((r) => r.attendee_email),
     phone: first((r) => r.attendee_phone),
   };
@@ -101,19 +122,31 @@ export interface LinkAttendee {
   phone: string;
 }
 
+/** What the details form starts with: the link's three fields, plus the first
+ *  name answered beside the name it shows, or "" when there is none (#2835). */
+export interface LandingAttendee extends LinkAttendee {
+  firstName: string;
+}
+
 /**
  * What the details form starts with: the link's answer per field, and Slate's
  * own record wherever the link answered nothing.
  *
  * A link field holding only spaces is a field the link did not answer, so it
  * falls through rather than blanking a fact Slate holds.
+ *
+ * The answered first name follows whichever NAME wins, and only while that name
+ * still starts with it: a link carrying a different name drops it, so the form
+ * never seeds a first name that disagrees with the name beside it.
  */
 export function attendeeForLanding(
   link: LinkAttendee,
   known: KnownContact | null,
-): LinkAttendee {
+): LandingAttendee {
+  const name = value(link.name) ?? known?.name ?? "";
   return {
-    name: value(link.name) ?? known?.name ?? "",
+    name,
+    firstName: storedFirstName(name, known?.firstName) ?? "",
     email: value(link.email) ?? known?.email ?? "",
     phone: value(link.phone) ?? known?.phone ?? "",
   };

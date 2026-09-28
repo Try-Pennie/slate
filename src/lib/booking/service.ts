@@ -24,6 +24,7 @@ import {
   knownContactFromBookings,
   type KnownContact,
   type KnownContactRow,
+  type LandingAttendee,
   type LinkAttendee,
 } from "@/lib/booking/known-lead";
 import { loadBusinessHours } from "@/lib/booking/business-hours-load";
@@ -2298,7 +2299,9 @@ export async function knownContactForLanding(
     const rows = unwrap(
       await supabaseAdmin()
         .from("bookings")
-        .select("id, created_at, attendee_name, attendee_email, attendee_phone, buckets!inner(is_test)")
+        .select(
+          "id, created_at, attendee_name, attendee_first_name, attendee_email, attendee_phone, buckets!inner(is_test)",
+        )
         .eq("buckets.is_test", world.isTest)
         .eq("salesforce_id", salesforceId)
         .order("created_at", { ascending: false })
@@ -2334,7 +2337,7 @@ export async function landingAttendee(
   link: LinkAttendee,
   /** The world of the bucket being landed on (#2660). */
   world: PersonWorld,
-): Promise<LinkAttendee> {
+): Promise<LandingAttendee> {
   const complete = link.name.trim() && link.email.trim() && link.phone.trim();
   if (complete) return attendeeForLanding(link, null);
   return attendeeForLanding(link, await knownContactForLanding(identity, world));

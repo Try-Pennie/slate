@@ -86,6 +86,28 @@ export function splitName(full: string | null | undefined): Required<NameFields>
 }
 
 /**
+ * A returning lead's two name fields (#2835): the first name they ANSWERED last
+ * time, with only what follows it as the last name, whenever that answer agrees
+ * with the joined name the form is showing. Otherwise the visible split above.
+ *
+ * `guessed` says the fields hold that split of a name with more than one word,
+ * which is Slate's inference rather than anything the lead answered. A caller
+ * that stores the first name must not send back an untouched guess as one: that
+ * would overwrite an answered "Mary Jo" with "Mary", or record a guess as an
+ * answer (L192). A single word needs no split, so it is never a guess.
+ */
+export function prefillNameFields(
+  name: string | null | undefined,
+  firstName: string | null | undefined,
+): Required<NameFields> & { guessed: boolean } {
+  const full = (name ?? "").trim().replace(/\s+/g, " ");
+  const first = storedFirstName(full, (firstName ?? "").trim().replace(/\s+/g, " "));
+  if (first !== null) return { firstName: first, lastName: lastNameAfter(full, first) ?? "", guessed: false };
+  const split = splitName(full);
+  return { ...split, guessed: split.lastName !== "" };
+}
+
+/**
  * Which FIELD is wrong, which the joined name cannot say.
  *
  * Only the first name is required, matching cal.com and leaving somebody with one

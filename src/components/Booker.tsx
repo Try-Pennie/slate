@@ -21,7 +21,7 @@ import {
   validateAttendee,
   nameFieldErrors,
   joinName,
-  splitName,
+  prefillNameFields,
   type AttendeeErrors,
   type NameFieldErrors,
 } from "@/lib/attendee";
@@ -96,6 +96,9 @@ import { validateReason, type ReasonOption } from "@/lib/booking/core";
 /** What the page hands over: one name, as every layer below the form carries it. */
 interface Attendee {
   name: string;
+  /** #2835: the first name a returning lead ANSWERED beside `name`, when Slate
+   *  holds one. Seeds the first field whole whenever `name` starts with it. */
+  firstName?: string;
   email: string;
   phone: string;
 }
@@ -487,8 +490,14 @@ export default function Booker({
   // #2362: a prefilled full name is shown SPLIT, in the two fields, so the guess
   // is in front of the lead and can be corrected before they commit. An inference
   // somebody can see and change is not one presented as a recorded fact (L192).
+  //
+  // #2835: unless Slate holds the first name they ANSWERED beside that name, in
+  // which case the fields show it whole ("Mary Jo" / "Smith") rather than a split
+  // of it. Held so the move can tell an untouched guess from an answer below.
+  const [nameSeed] = useState(() => prefillNameFields(initialAttendee.name, initialAttendee.firstName));
   const [attendee, setAttendee] = useState<AttendeeFields>(() => ({
-    ...splitName(initialAttendee.name),
+    firstName: nameSeed.firstName,
+    lastName: nameSeed.lastName,
     email: initialAttendee.email,
     phone: initialPhone.value,
   }));
@@ -1006,8 +1015,15 @@ export default function Booker({
   /** Only the details that carry a value: see the send site below (#2203). */
   const typedDetails: { name?: string; firstName?: string; email?: string; phone?: string } = {};
   if (attendeeName) typedDetails.name = attendeeName;
-  // #2549: travels with the name; the server writes it only when the name moved.
-  if (attendeeName && attendee.firstName.trim()) typedDetails.firstName = attendee.firstName.trim();
+  // #2549: travels with the name. #2835: the server now also stores a first name
+  // that moved on its own, so an untouched SPLIT must not travel: it is Slate's
+  // guess, and sent back it would overwrite an answered first name or be stored as
+  // one (L192). An answered seed, or anything the lead edited, is an answer.
+  const nameIsUntouchedGuess =
+    nameSeed.guessed && attendee.firstName === nameSeed.firstName && attendee.lastName === nameSeed.lastName;
+  if (attendeeName && attendee.firstName.trim() && !nameIsUntouchedGuess) {
+    typedDetails.firstName = attendee.firstName.trim();
+  }
   if (attendee.email.trim()) typedDetails.email = attendee.email.trim();
   // #2210: and never the number, once one has been corrected on this screen. The
   // panel offers no correction for the name or the email, so those still travel:
