@@ -616,7 +616,9 @@ describe("Booker refuses a second booking (#1337)", () => {
     await waitFor(() => expect(posted).toHaveLength(1));
     // The two that carry a value, and only those: an empty phone is not a
     // correction to a blank number, it is somebody who typed nothing.
-    expect(posted[0].attendee).toEqual({ name: "Dana Lead", email: "dana@example.com" });
+    // #2549: with the first name as the fields show it, which the server writes
+    // only if the name itself moved.
+    expect(posted[0].attendee).toEqual({ name: "Dana Lead", firstName: "Dana", email: "dana@example.com" });
   });
 
   it("puts a recognised lead back on their call when they keep the time they have", async () => {
@@ -1756,6 +1758,30 @@ describe("Booker phone handling (#1332, #1333)", () => {
     await userEvent.paste("+1 (215) 555-0100");
     // Not "(121) 555-5010", which is a different number that looks just as valid.
     expect(phone.value).toBe("(215) 555-0100");
+  });
+
+  // #2549: the confirm carries the first name AS ANSWERED beside the joined name,
+  // so "Mary Jo" reaches Regal whole instead of being split back into "Mary".
+  it("sends the first name the lead answered beside the joined name", async () => {
+    let postedBody: Record<string, unknown> | null = null;
+    global.fetch = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+      if (String(url).includes("/api/availability")) {
+        return { ok: true, json: async () => availability } as Response;
+      }
+      postedBody = JSON.parse(String(init?.body));
+      return { ok: true, status: 200, json: async () => ({ startsAt: slotIso }) } as Response;
+    }) as unknown as typeof fetch;
+
+    render(<Booker {...baseProps} />);
+    await pickFirstDay();
+    await userEvent.click(await screen.findByRole("button", { name: /:\d{2}/ }));
+    await userEvent.type(screen.getByLabelText("First name"), "Mary Jo");
+    await userEvent.type(screen.getByLabelText("Last name"), "Smith");
+    await userEvent.type(screen.getByLabelText("Email"), "mj@example.com");
+    await userEvent.type(screen.getByLabelText("Phone"), "(203) 561-5295");
+    await userEvent.click(screen.getByRole("button", { name: /confirm booking/i }));
+    await screen.findByText("You're all set");
+    expect(postedBody!.attendee).toEqual(expect.objectContaining({ name: "Mary Jo Smith", firstName: "Mary Jo" }));
   });
 
   it("sends the formatted number, which validation still accepts", async () => {

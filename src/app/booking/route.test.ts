@@ -304,6 +304,19 @@ describe("POST /booking (embed) error mapping", () => {
     expect(service.createBooking.mock.calls[0][0].timezone).toBe("Pacific/Honolulu");
   });
 
+  // #2549: the first name the lead answered in its own field reaches the booking,
+  // so it can be stored rather than split back out of the joined name.
+  it("passes the answered first name through to the booking, trimmed (#2549)", async () => {
+    service.createBooking.mockResolvedValueOnce({
+      booking: { id: "b1", starts_at: VALID_BODY.start, ends_at: VALID_BODY.start, prefill: {} },
+      manageUrl: "u",
+    });
+    await post({ ...VALID_BODY, attendee: { ...VALID_BODY.attendee, name: "Mary Jo Smith", firstName: " Mary Jo " } });
+    expect(service.createBooking.mock.calls[0][0].attendee).toEqual(
+      expect.objectContaining({ name: "Mary Jo Smith", firstName: "Mary Jo" }),
+    );
+  });
+
   // #2728: the framing page's origin rides through to createBooking, which reduces
   // it itself; a value of the wrong type must never cost the lead the booking.
   it("passes the referrer origin through, and books when it is not even a string (#2728)", async () => {

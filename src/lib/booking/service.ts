@@ -2156,7 +2156,7 @@ async function rescheduleWithLog(
   reason: ValidatedReason,
   initiator: BookingEventInitiator,
   actor?: BookingActor,
-  contact?: { name?: string; email?: string; phone?: string },
+  contact?: { name?: string; firstName?: string; email?: string; phone?: string },
   leadZone?: string | null,
 ): Promise<BookingResult> {
   try {
@@ -2344,7 +2344,7 @@ export async function landingAttendee(
 /** The lead's own details on a booking (#2164), for a caller that is not moving it. */
 export async function updateBookingContact(
   token: string,
-  contact: { name?: string; email?: string; phone?: string },
+  contact: { name?: string; firstName?: string; email?: string; phone?: string },
 ): Promise<orchestration.UpdateContactResult> {
   return orchestration.updateBookingContact(token, contact, realDeps());
 }
@@ -2470,7 +2470,7 @@ export function rescheduleBooking(
   reason: ValidatedReason,
   initiator: BookingEventInitiator,
   /** The lead's own details, when they typed them on the way here (#2164). */
-  contact?: { name?: string; email?: string; phone?: string },
+  contact?: { name?: string; firstName?: string; email?: string; phone?: string },
   /** #2310: the zone the lead is viewing the new time in; absent means the
    *  booking's own zone is judged instead. */
   leadZone?: string | null,

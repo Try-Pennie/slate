@@ -562,4 +562,46 @@ for (const [zone, label] of [
 }
 
 
+
+// #2549: the first name is the one the lead ANSWERED, not one Slate worked out.
+// The booker asks in two fields (#2362) and the booking stores the first one, so
+// "Mary Jo" / "Smith" reaches Regal, and the text message that greets the lead
+// from this trait, as Mary Jo. Splitting the joined name gives "Mary", which is
+// the defect this exists to end.
+{
+  const traitsFor = (attendee: BookingEventPayload["attendee"]) =>
+    buildRegalEvent("booking.created", { ...payload, attendee }).traits;
+  const base = { email: "mj@example.com", phone: "+12035615295" };
+
+  const answered = traitsFor({ ...base, name: "Mary Jo Smith", first_name: "Mary Jo" });
+  assert(answered.firstName === "Mary Jo", `#2549: the stored first name reaches Regal whole (got ${answered.firstName})`);
+  assert(answered.lastName === "Smith", `#2549: and the last name is what followed it (got ${answered.lastName})`);
+
+  const single = traitsFor({ ...base, name: "Cher", first_name: "Cher" });
+  assert(single.firstName === "Cher" && single.lastName === undefined, "#2549: a lead with one name has no last name sent");
+
+  // THE CONTROL: a row written before the column existed (or through the direct
+  // API, which takes one name) has nothing stored, and splits exactly as it did.
+  const legacy = traitsFor({ ...base, name: "Mary Jo Smith", first_name: null });
+  assert(
+    legacy.firstName === "Mary" && legacy.lastName === "Jo Smith",
+    `#2549: no stored first name still splits as before (got ${legacy.firstName} / ${legacy.lastName})`,
+  );
+  const stored = traitsFor({ ...base, name: "Mary Jo Smith" });
+  assert(
+    stored.firstName === "Mary" && stored.lastName === "Jo Smith",
+    "#2549: a stored payload predating the field splits as before (resend, dead letter replay)",
+  );
+
+  // A stored first name that is not the start of the stored name is two facts that
+  // disagree. The answered first name still wins, and no last name is invented
+  // from a string it does not begin.
+  const disagree = traitsFor({ ...base, name: "Smith Mary", first_name: "Mary" });
+  assert(
+    disagree.firstName === "Mary" && disagree.lastName === undefined,
+    `#2549: a first name the full name does not start with sends no guessed last name (got ${disagree.lastName})`,
+  );
+}
+
+
 finish();

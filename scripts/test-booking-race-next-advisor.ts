@@ -271,6 +271,25 @@ async function main() {
     assert(calls.reservations.length === 1, "adopted reservation: no retry under a pin this request did not choose");
   }
 
+  // --- #2549: every attempt carries the answered first name ------------------
+  // The retry rebuilds the insert per advisor, so the second row must hold the
+  // same first name the lead typed, not fall back to the split.
+  {
+    const { deps, calls } = makeDeps({
+      candidates: ["a", "b"],
+      freeEmails: new Set(["a@x.com", "b@x.com"]),
+      insertBookingConflictFor: new Set(["a"]),
+    });
+    await createBooking(
+      { ...input, attendee: { ...input.attendee, name: "Mary Jo Smith", firstName: "Mary Jo" } },
+      deps,
+    );
+    assert(
+      calls.insertBooking.length === 2 && calls.insertBooking.every((row) => row.attendee_first_name === "Mary Jo"),
+      `race: both attempts store the answered first name (got ${JSON.stringify(calls.insertBooking.map((r) => r.attendee_first_name))})`,
+    );
+  }
+
   finish();
 }
 

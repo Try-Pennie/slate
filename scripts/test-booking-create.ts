@@ -595,6 +595,30 @@ async function run() {
   assert((await referrerOf(undefined))?.referrer_origin === null, "create: no referrer sent is stored as null");
   assert((await referrerOf("http://localhost:3000"))?.referrer_origin === "http://localhost:3000", "create: a bare origin is stored as itself");
 
+  // --- #2549: the booking stores the first name the lead ANSWERED ---
+  // Beside the joined name, so Regal and the greeting it sends read "Mary Jo"
+  // rather than splitting "Mary Jo Smith" into "Mary".
+  const firstNameOf = async (attendee: typeof input.attendee) => {
+    const { deps, calls } = makeDeps({ candidates: ["a"], freeEmails: new Set(["a@x.com"]) });
+    await createBooking({ ...input, attendee }, deps);
+    return calls.insertBooking.at(-1);
+  };
+  {
+    const row = await firstNameOf({ ...input.attendee, name: "Mary Jo Smith", firstName: "Mary Jo" });
+    assert(row?.attendee_first_name === "Mary Jo", `create: the answered first name is stored (got ${row?.attendee_first_name})`);
+    assert(row?.attendee_name === "Mary Jo Smith", "create: beside the joined name, which is unchanged");
+  }
+  {
+    // A caller that sends one name (the direct booking API) stores no first name,
+    // never a split presented as an answer (L192).
+    const row = await firstNameOf({ ...input.attendee, name: "Mary Jo Smith" });
+    assert(row?.attendee_first_name === null, `create: no first name sent stores null (got ${row?.attendee_first_name})`);
+  }
+  {
+    const row = await firstNameOf({ ...input.attendee, name: "Smith Mary", firstName: "Mary" });
+    assert(row?.attendee_first_name === null, "create: a first name the joined name does not start with is not stored");
+  }
+
 }
 
 await run();

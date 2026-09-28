@@ -38,6 +38,38 @@ export function joinName(fields: NameFields): string {
 }
 
 /**
+ * The first name a booking STORES beside its joined name (#2549), or null.
+ *
+ * Only a value the lead answered, and only when the joined name begins with it
+ * as a whole word. That keeps the two columns one fact: the last name is then
+ * exactly what follows the first, rather than a second guess, and a first name
+ * that disagrees with the name it travels with is not stored at all. Null means
+ * "nobody answered", and every reader falls back to the old split for it; it is
+ * never filled with that split, which would present a guess as an answer (L192).
+ */
+export function storedFirstName(
+  name: string | null | undefined,
+  firstName: string | null | undefined,
+): string | null {
+  const full = (name ?? "").trim();
+  const first = (firstName ?? "").trim();
+  if (!full || !first) return null;
+  if (full === first) return first;
+  return full.startsWith(first) && /\s/.test(full.charAt(first.length)) ? first : null;
+}
+
+/**
+ * The last name that goes with a stored first name: whatever the joined name
+ * holds after it, or undefined when there is nothing after it or the two do not
+ * agree. Never a split of the whole name.
+ */
+export function lastNameAfter(name: string | null | undefined, firstName: string): string | undefined {
+  const full = (name ?? "").trim();
+  if (storedFirstName(full, firstName) === null) return undefined;
+  return full.slice(firstName.trim().length).trim() || undefined;
+}
+
+/**
  * A prefilled full name, shown as the two fields.
  *
  * This is the one split left, and it happens IN FRONT OF THE LEAD: a landing page

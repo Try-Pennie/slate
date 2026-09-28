@@ -17,6 +17,7 @@ import { resolveRequestedCode } from "@/lib/routing/catchall";
 import { isPublicTestBucket } from "@/lib/embed/public-test-bucket";
 import { refuseUnlessTestPass } from "@/lib/embed/test-pass-gate";
 import { validateAttendee } from "@/lib/attendee";
+import { INPUT_LIMITS } from "@/lib/booking/input-limits";
 import { HONEYPOT_FIELD, honeypotTripped } from "@/lib/booking/honeypot";
 import {
   bucketCodeSchema,
@@ -75,6 +76,11 @@ const schema = z.object({
   // which also enforces the contact length cap.
   attendee: z.object({
     name: z.string().optional(),
+    // #2549: the first name the lead answered in its own field, stored beside the
+    // joined `name` rather than split back out of it. Only the booker sends it.
+    // Bounded like a contact field; whether it is stored is decided by
+    // `storedFirstName`, which keeps only a value `name` begins with.
+    firstName: z.string().max(INPUT_LIMITS.contact).optional(),
     email: z.string().optional(),
     phone: z.string().optional(),
   }),
@@ -351,6 +357,7 @@ async function handlePost(req: NextRequest) {
       salesforceId: parsed.data.salesforceId ?? null,
       attendee: {
         name: parsed.data.attendee.name?.trim(),
+        firstName: parsed.data.attendee.firstName?.trim(),
         email: parsed.data.attendee.email?.trim(),
         phone: parsed.data.attendee.phone?.trim(),
       },

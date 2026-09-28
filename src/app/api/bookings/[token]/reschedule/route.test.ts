@@ -301,6 +301,23 @@ describe("POST /bookings/[token]/reschedule", () => {
     expect((await res.json()).contactChanged).toEqual({ name: false, email: true, phone: true });
   });
 
+  it("hands the answered first name to the booking layer with the name (#2549)", async () => {
+    service.rescheduleBooking.mockResolvedValueOnce({
+      booking: { id: "bk1", starts_at: "2026-07-01T15:00:00.000Z", ends_at: "2026-07-01T15:30:00.000Z" },
+      manageUrl: "https://slate.test/booking/manage/tok1",
+      contactChanged: { name: true, email: false, phone: false },
+    });
+    await POST(
+      req({
+        start: "2026-07-01T15:00:00.000Z",
+        reason: "schedule_conflict",
+        attendee: { name: "Mary Jo Smith", firstName: "Mary Jo" },
+      }),
+      params,
+    );
+    expect(service.rescheduleBooking.mock.calls.at(-1)?.[4]).toEqual({ name: "Mary Jo Smith", firstName: "Mary Jo" });
+  });
+
   it("says nothing about the details when the move changed none of them", async () => {
     service.rescheduleBooking.mockResolvedValueOnce({
       booking: { id: "bk1", starts_at: "2026-07-01T15:00:00.000Z", ends_at: "2026-07-01T15:30:00.000Z" },

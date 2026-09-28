@@ -246,6 +246,50 @@ async function run() {
     );
   }
 
+
+  // --- #2549: the answered first name travels with the name ---------------------
+  {
+    const { deps, calls } = world({}, { attendee_first_name: null });
+    const res = await updateBookingContact(TOKEN, { name: "Mary Jo Smith", firstName: "Mary Jo" }, deps);
+    assert(res.ok && res.changed.name, "a changed name is a change");
+    const patch = calls.updateBookingContact[0]?.patch;
+    assert(
+      patch?.attendee_name === "Mary Jo Smith" && patch?.attendee_first_name === "Mary Jo",
+      `the answered first name is written with it (got ${JSON.stringify(patch)})`,
+    );
+  }
+  {
+    // A name changed by a caller that sent no first name must not leave the OLD
+    // first name beside the NEW name, where Regal would greet the lead by it.
+    const { deps, calls } = world({}, { attendee_name: "Dana Old", attendee_first_name: "Dana" });
+    await updateBookingContact(TOKEN, { name: "Robin New" }, deps);
+    const patch = calls.updateBookingContact[0]?.patch;
+    assert(
+      patch !== undefined && "attendee_first_name" in patch && patch.attendee_first_name === null,
+      `a name changed without a first name clears the stale one (got ${JSON.stringify(patch)})`,
+    );
+  }
+  {
+    // THE CONTROL: an unchanged name leaves the stored first name alone. A returning
+    // lead's prefill is shown SPLIT ("Mary" / "Jo Smith"), so the first name it
+    // sends back is a guess, and overwriting "Mary Jo" with it is the regression.
+    const { deps, calls } = world({}, { attendee_name: "Mary Jo Smith", attendee_first_name: "Mary Jo" });
+    const res = await updateBookingContact(TOKEN, { name: "Mary Jo Smith", firstName: "Mary" }, deps);
+    assert(res.ok && !res.changed.name, "the same name is no change");
+    assert(calls.updateBookingContact.length === 0, "and the stored first name is not overwritten");
+  }
+  {
+    // And the move's own webhook payload carries it, since Regal is built from that.
+    const { deps, calls } = world({}, { attendee_first_name: null });
+    await rescheduleBooking(
+      TOKEN, NEW_START, reason, "customer", deps, Date.parse("2026-09-10T12:00:00.000Z"),
+      undefined, { name: "Mary Jo Smith", firstName: "Mary Jo" },
+    );
+    const sent = calls.webhooks.find((w) => w.event === "booking.rescheduled");
+    const attendee = sent?.attendee as { first_name?: string | null } | undefined;
+    assert(attendee?.first_name === "Mary Jo", `the rescheduled payload carries the answered first name (got ${JSON.stringify(attendee)})`);
+  }
+
   finish();
 }
 

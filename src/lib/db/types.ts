@@ -573,6 +573,9 @@ export interface Booking {
   status: BookingStatus;
   salesforce_id: string | null;
   attendee_name: string | null;
+  /** The first name the lead answered (#2549, migration 0145); null for every row
+   *  made before it, and for a caller that sends one name. Never a split. */
+  attendee_first_name: string | null;
   attendee_email: string | null;
   attendee_phone: string | null;
   prefill: Record<string, string>;
@@ -876,6 +879,9 @@ export type BookingInsert = {
   status: "confirmed";
   salesforce_id: string | null;
   attendee_name: string | null;
+  /** The first name the lead answered (#2549, migration 0145); null for every row
+   *  made before it, and for a caller that sends one name. Never a split. */
+  attendee_first_name: string | null;
   attendee_email: string | null;
   attendee_phone: string | null;
   prefill: Record<string, string>;
