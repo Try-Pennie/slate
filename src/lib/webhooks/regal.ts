@@ -115,10 +115,79 @@ interface RegalEvent {
   };
 }
 
+/**
+ * #2073: the Regal event a booking made through an advisor's own link is sent as.
+ * cal.com's personal links send "Client Sync Action" today and live journey 304
+ * ("Client Sync - Generate Tasks") is built on it, so these bookings keep that
+ * contract at cutover and never trigger the routed "Slate Booking ..." journeys.
+ * The name, the three action literals and the property names were read off
+ * journey 304 itself. cal.com's personal link sent nothing on a reassign or a
+ * completion, so those have no entry: `regalSendsNothingFor` keeps them away from
+ * Regal entirely.
+ */
+const CLIENT_SYNC_EVENT = "Client Sync Action";
+const CLIENT_SYNC_ACTIONS: Partial<Record<BookingWebhookEvent, string>> = {
+  "booking.created": "BOOKING_CREATED",
+  "booking.rescheduled": "BOOKING_RESCHEDULED",
+  "booking.cancelled": "BOOKING_CANCELLED",
+};
+
+/**
+ * Whether Regal must receive NOTHING for this event (#2073): an agent link
+ * booking's reassign or completion, which cal.com's personal link never reported.
+ * Asked per endpoint by the emitter, so other subscribers still get the event.
+ */
+export function regalSendsNothingFor(event: BookingWebhookEvent, p: Pick<BookingEventPayload, "booking_kind">): boolean {
+  return p.booking_kind === "agent_link" && CLIENT_SYNC_ACTIONS[event] === undefined;
+}
+
+/** The contact identity envelope every booking event carries, so the profile matches. */
+function contactTraits(p: BookingEventPayload, isCreated: boolean): RegalEvent["traits"] {
+  const traits: RegalEvent["traits"] = {};
+  const { first, last } = nameParts(p.attendee.name);
+  if (first) traits.firstName = first;
+  if (last) traits.lastName = last;
+  if (p.attendee.phone) {
+    traits.phones = {
+      [p.attendee.phone]: isCreated
+        ? { voiceOptIn: { subscribed: true }, smsOptIn: { subscribed: true } }
+        : {},
+    };
+  }
+  if (p.attendee.email) {
+    traits.emails = {
+      [p.attendee.email]: isCreated ? { emailOptIn: { subscribed: true } } : {},
+    };
+  }
+  return traits;
+}
+
+function buildClientSyncEvent(event: BookingWebhookEvent, p: BookingEventPayload): RegalEvent {
+  const action = CLIENT_SYNC_ACTIONS[event];
+  // The emitter never builds one of these (regalSendsNothingFor), so reaching it is
+  // a fault: refused rather than guessed, which records the delivery as failed.
+  if (!action) throw new Error(`An agent link booking has no Regal event for ${event} (#2073)`);
+  const startMs = Date.parse(p.starts_at);
+  // parse-ok: an unreadable start is refused, never sent as a date the journey's delays would key on
+  if (!Number.isFinite(startMs)) throw new Error("An agent link booking's start could not be read (#2073)");
+  return {
+    name: CLIENT_SYNC_EVENT,
+    eventSource: "slate",
+    properties: {
+      action,
+      // ISO 8601 UTC, the NEW start on a reschedule: journey 304's delays key on it.
+      scheduled_at: new Date(startMs).toISOString(),
+      agent_email: p.agent.email,
+    },
+    traits: contactTraits(p, event === "booking.created"),
+  };
+}
+
 export function buildRegalEvent(
   event: BookingWebhookEvent,
   p: BookingEventPayload,
 ): RegalEvent {
+  if (p.booking_kind === "agent_link") return buildClientSyncEvent(event, p);
   const tz = p.timezone;
   const start = DateTime.fromISO(p.starts_at, { zone: tz });
   // This also runs on an admin resend and the dead-letter replay, which rebuild the
@@ -133,7 +202,6 @@ export function buildRegalEvent(
     rungs_dropped: 0,
   };
   const agentName = p.agent.name ?? "Unknown";
-  const { first, last } = nameParts(p.attendee.name);
   const isCreated = event === "booking.created";
 
   const regal: RegalEvent = {
@@ -177,19 +245,9 @@ export function buildRegalEvent(
       slateRequestedTier: routing.requested_tier,
       slateBookedTier: routing.booked_tier,
       slateRungsDropped: routing.rungs_dropped,
-      // #2073: true when the lead booked through their advisor's own named link
-      // rather than being routed. Such a booking carries no routing (every field
-      // above reads as "nothing unusual"), and its bucketCode is only where the
-      // booking is stored, so a journey that reasons about routing or tiers should
-      // branch on this. False on a stored payload that predates the field, which
-      // was always routed.
-      slateAgentLink: p.booking_kind === "agent_link",
     },
-    traits: {},
+    traits: contactTraits(p, isCreated),
   };
-
-  if (first) regal.traits.firstName = first;
-  if (last) regal.traits.lastName = last;
 
   // #2659: the two join keys the landing page put on the booking URL, under the
   // GTM/GA4 tagging spec's OWN names (snake case, not camel cased to match the
@@ -202,19 +260,6 @@ export function buildRegalEvent(
   const partner = partnerKeysFrom(p.prefill);
   if (partner.submissionId !== null) regal.properties.sfdc_submission_id = partner.submissionId;
   if (partner.regalProfileId !== null) regal.properties.regal_profile_id = partner.regalProfileId;
-
-  if (p.attendee.phone) {
-    regal.traits.phones = {
-      [p.attendee.phone]: isCreated
-        ? { voiceOptIn: { subscribed: true }, smsOptIn: { subscribed: true } }
-        : {},
-    };
-  }
-  if (p.attendee.email) {
-    regal.traits.emails = {
-      [p.attendee.email]: isCreated ? { emailOptIn: { subscribed: true } } : {},
-    };
-  }
 
   if (event === "booking.rescheduled") {
     regal.properties.rescheduleId = p.booking_id;

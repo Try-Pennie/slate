@@ -140,8 +140,13 @@ book asks live Google about them alone.
   already has one is what the link is for. An exact double submit still collapses.
 - The booking records `kind = 'agent_link'`, and every monitor, rate and routing
   reader filters to `kind = 'routed'` (`scripts/test-routed-booking-reads.ts`).
-  Webhooks fire as for any booking and carry `booking_kind`; the Regal event
-  carries `slateAgentLink`.
+  Webhooks fire as for any booking and carry `booking_kind`. Regal gets what
+  cal.com's personal links send, so journey 304 keeps working: a create, move
+  or cancel arrives as `Client Sync Action` with `action` (`BOOKING_CREATED`,
+  `BOOKING_RESCHEDULED`, `BOOKING_CANCELLED`), `scheduled_at` (the call start,
+  ISO UTC) and `agent_email`, never as a `Slate Booking ...` event. A reassign
+  or completion sends Regal nothing (recorded as suppressed), since the personal
+  link had no equivalent.
 - A link that books nobody (unknown, replaced, departed, not bookable) draws one
   sentence whatever the cause. `source` defaults to `agent-direct`.
 
