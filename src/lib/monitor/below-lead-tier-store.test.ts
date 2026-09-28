@@ -169,6 +169,17 @@ describe("loadRoutingContextByBooking", () => {
     }
   });
 
+  it("breaks a tie on created_at by the higher id, whatever order the rows arrive in", async () => {
+    const rows = [
+      { id: "a1", booking_id: "bk-1", catchall_applied: true, requested_code: "", created_at: LATER },
+      { id: "b2", booking_id: "bk-1", catchall_applied: false, requested_code: "422", created_at: LATER },
+    ];
+    for (const ordered of [rows, [...rows].reverse()]) {
+      const m = await loadRoutingContextByBooking(fakeDb({ routing_decisions: ordered }), ["bk-1"]);
+      expect(m.get("bk-1")).toEqual({ catchall: false, requestedCode: "422" });
+    }
+  });
+
   it("pages in a stable order (created_at, then id), so no row is skipped or repeated across pages", async () => {
     const orders: [string, string, unknown][] = [];
     await loadRoutingContextByBooking(fakeDb({ routing_decisions: [] }, { orders }), ["bk-1"]);
