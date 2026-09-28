@@ -285,11 +285,11 @@ export default async function BusinessHoursPage({
         <p className={`mb-4 ${proseCls} text-xs text-fg-muted`}>
           A lead is offered the next {OFFERED_OPEN_DAYS} days the business is open,
           and a lower tier before a later day. Only when every tier they may use is
-          full for those days are later ones offered, up to this many days that
-          actually have times, so a closed day does not use one up: with Sundays
-          closed, four days can reach into the following week. Applies to every
-          bucket. A change refreshes availability across all buckets within a minute
-          or two.
+          full for those days are later days offered. This number is how far that
+          can reach, counted from today in days that actually have times, so a
+          closed day does not use one up: with Sundays closed, four days can reach
+          into the following week. Applies to every bucket. A change refreshes
+          availability across all buckets within a minute or two.
         </p>
         <SaveForm action={setBookingHorizon} name="booking-horizon" unsaved="changes to the booking window" className="space-y-4">
           <div>
