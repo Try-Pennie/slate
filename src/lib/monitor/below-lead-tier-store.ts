@@ -61,9 +61,13 @@ export async function loadUpcomingBookingsInBuckets(
  * Asked only about the bookings being paged about, so it is a handful of ids. A
  * booking made without a routing decision (a direct booking API call, an admin
  * booking) has no row and is simply absent: the page says it is not recorded.
- * When a booking has several decisions, the catch-all flag is true if any said
- * so, and the arrival code is the NEWEST decision's, since that is the one that
- * placed the call where it sits.
+ * When a booking has several decisions, BOTH facts come from the NEWEST one,
+ * since that is the one that placed the call where it sits. Taking the flag from
+ * any older decision would blame the catch-all for a call a later decision routed
+ * properly, and pair it with an arrival code it never saw. Newest is judged on
+ * created_at and then id, so a tie resolves the same way whatever order the rows
+ * arrive in, and the paged read is ordered on the same pair so Postgres cannot
+ * skip or repeat a row between pages.
  */
 export async function loadRoutingContextByBooking(
   db: ReturnType<typeof supabaseAdmin>,
@@ -73,6 +77,7 @@ export async function loadRoutingContextByBooking(
   if (bookingIds.length === 0) return out;
   const pages = await inIdChunks("monitor below lead tier routing", bookingIds, (batch) =>
     selectAllPages<{
+      id: string;
       booking_id: string;
       catchall_applied: boolean;
       requested_code: string | null;
@@ -80,24 +85,27 @@ export async function loadRoutingContextByBooking(
     }>("monitor below lead tier routing", (from, to) =>
       db
         .from("routing_decisions")
-        .select("booking_id, catchall_applied, requested_code, created_at")
+        .select("id, booking_id, catchall_applied, requested_code, created_at")
         .in("booking_id", batch)
+        .order("created_at", { ascending: true })
+        .order("id", { ascending: true })
         .range(from, to) as unknown as PromiseLike<{
         data: unknown[] | null;
         error?: { message: string } | null;
       }>,
     ),
   );
-  const newestAt = new Map<string, string>();
+  const newest = new Map<string, { createdAt: string; id: string }>();
   for (const rows of pages) {
     for (const r of rows) {
-      const prev = out.get(r.booking_id);
-      const newer = prev === undefined || r.created_at > (newestAt.get(r.booking_id) ?? "");
-      if (newer) newestAt.set(r.booking_id, r.created_at);
-      out.set(r.booking_id, {
-        catchall: prev?.catchall === true || r.catchall_applied,
-        requestedCode: newer ? r.requested_code : (prev?.requestedCode ?? null),
-      });
+      const prev = newest.get(r.booking_id);
+      const isNewer =
+        prev === undefined ||
+        r.created_at > prev.createdAt ||
+        (r.created_at === prev.createdAt && r.id > prev.id);
+      if (!isNewer) continue;
+      newest.set(r.booking_id, { createdAt: r.created_at, id: r.id });
+      out.set(r.booking_id, { catchall: r.catchall_applied, requestedCode: r.requested_code });
     }
   }
   return out;
