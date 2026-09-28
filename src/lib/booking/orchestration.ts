@@ -5263,31 +5263,42 @@ export async function updateBookingContact(
     phone: nextPhone !== booking.attendee_phone,
   };
   const stored = nextPhone ?? "";
-  if (contactUnchanged(changed)) return { ok: true, phone: stored, changed };
 
-  // #2549: the answered first name moves WITH the name and only with it. A name
-  // changed by a caller that sent no first name clears the old one, which would
-  // otherwise greet the lead by somebody else's first name. An unchanged name
-  // leaves it alone: a returning lead's prefill is shown split ("Mary" / "Jo
-  // Smith"), so the first name it sends back unedited is a guess, and writing it
-  // over an answered "Mary Jo" would be the defect this column ends.
-  const nextFirstName = changed.name ? storedFirstName(nextName, contact.firstName) : booking.attendee_first_name;
+  // #2549: the answered first name moves WITH the name. A name changed by a caller
+  // that sent no first name clears the old one, which would otherwise greet the
+  // lead by somebody else's first name.
+  //
+  // #2835: and it may also move ON ITS OWN, when the name is unchanged and the
+  // caller sent a first name that agrees with it: a lead who fixes only the split
+  // between their first and last name. That was refused under #2549 because the
+  // form seeded a returning lead by splitting the joined name, so an unedited
+  // "Mary" came back looking like an answer. The form now seeds from the answered
+  // first name and never sends back an untouched split (`prefillNameFields`), so
+  // what arrives here is an answer. One that disagrees with the name, or that is
+  // absent, leaves the stored answer alone rather than clearing it.
+  const answeredFirstName = storedFirstName(nextName, contact.firstName);
+  const firstNameMoved =
+    !changed.name && answeredFirstName !== null && answeredFirstName !== booking.attendee_first_name;
+  if (contactUnchanged(changed) && !firstNameMoved) return { ok: true, phone: stored, changed };
+
+  const nextFirstName = changed.name || firstNameMoved ? answeredFirstName : booking.attendee_first_name;
   await deps.updateBookingContact(booking.id, {
-    ...(changed.name ? { attendee_name: nextName ?? "", attendee_first_name: nextFirstName } : {}),
+    ...(changed.name ? { attendee_name: nextName ?? "" } : {}),
+    ...(changed.name || firstNameMoved ? { attendee_first_name: nextFirstName } : {}),
     ...(changed.email ? { attendee_email: nextEmail ?? "" } : {}),
     ...(changed.phone ? { attendee_phone: stored } : {}),
   });
   // The in-memory row too, so a caller that goes on to use this context (the move,
   // #2164) builds its calendar event and its webhook payload from the details the
   // lead just gave rather than the ones it read a moment ago.
-  if (changed.name) {
-    booking.attendee_name = nextName ?? null;
-    booking.attendee_first_name = nextFirstName;
-  }
+  if (changed.name) booking.attendee_name = nextName ?? null;
+  booking.attendee_first_name = nextFirstName;
   if (changed.email) booking.attendee_email = nextEmail ?? null;
   if (changed.phone) booking.attendee_phone = stored;
 
-  if (booking.gcal_event_id && booking.agent_email) {
+  // The invite carries the joined name, never the first name, so a first name that
+  // moved on its own leaves it exactly as it is and nothing is sent to rewrite it.
+  if (booking.gcal_event_id && booking.agent_email && !contactUnchanged(changed)) {
     try {
       await deps.updateEventContact(booking.agent_email, booking.gcal_event_id, {
         // Each field is sent only when it moved, so the PATCH says exactly what

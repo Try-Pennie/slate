@@ -1,6 +1,13 @@
 // Sanity test for the shared attendee contact validation (#37).
 // Run: node --experimental-strip-types scripts/test-attendee.ts
-import { validateAttendee, joinName, splitName, nameFieldErrors, storedFirstName } from "../src/lib/attendee.ts";
+import {
+  validateAttendee,
+  joinName,
+  splitName,
+  nameFieldErrors,
+  storedFirstName,
+  prefillNameFields,
+} from "../src/lib/attendee.ts";
 import { US_ONLY_PHONE_NOTICE } from "../src/lib/booking/booker-copy.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
@@ -218,5 +225,37 @@ eq(storedFirstName("Mary Jo Smith", "   "), null, "a blank answer stores nothing
 eq(storedFirstName("Smith Mary", "Mary"), null, "a first name the joined name does not start with is refused, not stored beside it");
 eq(storedFirstName("Maryanne Smith", "Mary"), null, "a prefix that ends mid word is not the first name");
 eq(storedFirstName(undefined, "Mary"), null, "no name, no first name");
+
+// #2835: a returning lead's two name fields are seeded from the first name they
+// ANSWERED last time whenever it agrees with the joined name, and fall back to
+// the visible split only when it does not.
+{
+  const mj = prefillNameFields("Mary Jo Smith", "Mary Jo");
+  eq(mj.firstName, "Mary Jo", "the answered first name fills the first field whole");
+  eq(mj.lastName, "Smith", "and only what follows it is the last name");
+  eq(mj.guessed, false, "and that is an answer, not a guess");
+  eq(joinName(mj), "Mary Jo Smith", "joining them back returns the stored name exactly");
+
+  // A stored first name the joined name does not start with is not one fact with
+  // it, so it is dropped rather than shown beside a name it contradicts.
+  const disagree = prefillNameFields("Mary Jo Smith", "Robin");
+  eq(disagree.firstName, "Mary", "a disagreeing first name falls back to the split");
+  eq(disagree.lastName, "Jo Smith", "all of it");
+  eq(disagree.guessed, true, "and the split is marked as the guess it is");
+
+  const midWord = prefillNameFields("Maryanne Smith", "Mary");
+  eq(midWord.firstName, "Maryanne", "a first name ending mid word does not agree either");
+
+  const none = prefillNameFields("Mary Jo Smith", null);
+  eq(none.firstName, "Mary", "no answer on record keeps the old split");
+  eq(none.guessed, true, "which is a guess");
+
+  // One word needs no split, so there is nothing guessed about it.
+  eq(prefillNameFields("Cher", null).guessed, false, "a lone name is not a guess");
+  eq(prefillNameFields("Cher", null).firstName, "Cher", "and fills the first field");
+  eq(prefillNameFields("", "Mary").firstName, "", "no name, nothing seeded, whatever the first name says");
+  eq(prefillNameFields("", "Mary").guessed, false, "and nothing guessed");
+  eq(prefillNameFields("  Mary Jo   Smith ", " Mary Jo ").lastName, "Smith", "padding does not survive");
+}
 
 finish();

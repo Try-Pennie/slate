@@ -616,9 +616,43 @@ describe("Booker refuses a second booking (#1337)", () => {
     await waitFor(() => expect(posted).toHaveLength(1));
     // The two that carry a value, and only those: an empty phone is not a
     // correction to a blank number, it is somebody who typed nothing.
-    // #2549: with the first name as the fields show it, which the server writes
-    // only if the name itself moved.
-    expect(posted[0].attendee).toEqual({ name: "Dana Lead", firstName: "Dana", email: "dana@example.com" });
+    // #2835: and NO first name. "Dana" / "Lead" is Slate's split of a name
+    // nobody touched, and the server now stores a first name that moved on its
+    // own, so sending the guess would record it as an answer (L192).
+    expect(posted[0].attendee).toEqual({ name: "Dana Lead", email: "dana@example.com" });
+  });
+
+  it("carries the first name the lead answered onto the move", async () => {
+    // The other half of the rule above: an answered first name IS an answer, so it
+    // travels, and the server keeps the stored "Mary Jo" rather than a split.
+    const posted: Record<string, unknown>[] = [];
+    global.fetch = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+      const u = String(url);
+      if (u.includes("/api/availability")) {
+        return { ok: true, json: async () => availability } as Response;
+      }
+      posted.push(JSON.parse(String(init?.body ?? "{}")));
+      return { ok: true, status: 200, json: async () => ({ startsAt: slotIso }) } as Response;
+    }) as unknown as typeof fetch;
+
+    render(
+      <Booker
+        {...baseProps}
+        salesforceId="003xx"
+        attendee={{ name: "Mary Jo Smith", firstName: "Mary Jo", email: "", phone: "" }}
+        landingCall={{ disclose: true, startsAt: existingIso, advisorName: null, manageToken: "tok-old", mayCancel: true, phone: null }}
+      />,
+    );
+    await screen.findByText("You already have a call booked");
+    fireEvent.click(screen.getByRole("button", { name: MOVE_COPY.pickAnotherTime }));
+    await pickFirstDay();
+    await userEvent.click(await screen.findByRole("button", { name: /:\d{2}/ }));
+    await screen.findByText(MOVE_COPY.reasonLegend);
+    fireEvent.click(screen.getAllByRole("radio")[0]);
+    fireEvent.click(screen.getByRole("button", { name: /^Move my call to/ }));
+
+    await waitFor(() => expect(posted).toHaveLength(1));
+    expect(posted[0].attendee).toEqual({ name: "Mary Jo Smith", firstName: "Mary Jo" });
   });
 
   it("puts a recognised lead back on their call when they keep the time they have", async () => {
@@ -2847,6 +2881,38 @@ describe("the booker details step", () => {
     await userEvent.clear(screen.getByLabelText("Email"));
     await userEvent.type(screen.getByLabelText("Email"), "new@example.com");
     expect((screen.getByLabelText("Email") as HTMLInputElement).value).toBe("new@example.com");
+  });
+
+  // #2835: a returning lead who ANSWERED "Mary Jo" last time sees "Mary Jo" /
+  // "Smith", not a split of the joined name into "Mary" / "Jo Smith".
+  it("seeds the two name fields from the first name the lead answered", async () => {
+    global.fetch = plainFetch();
+    render(
+      <Booker
+        {...baseProps}
+        salesforceId="003xx"
+        attendee={{ name: "Mary Jo Smith", firstName: "Mary Jo", email: "", phone: "" }}
+      />,
+    );
+    await pickFirstDay();
+    await userEvent.click(await screen.findByRole("button", { name: /:\d{2}/ }));
+    expect((screen.getByLabelText("First name") as HTMLInputElement).value).toBe("Mary Jo");
+    expect((screen.getByLabelText("Last name") as HTMLInputElement).value).toBe("Smith");
+  });
+
+  it("falls back to the split when the stored first name disagrees with the name", async () => {
+    global.fetch = plainFetch();
+    render(
+      <Booker
+        {...baseProps}
+        salesforceId="003xx"
+        attendee={{ name: "Mary Jo Smith", firstName: "Robin", email: "", phone: "" }}
+      />,
+    );
+    await pickFirstDay();
+    await userEvent.click(await screen.findByRole("button", { name: /:\d{2}/ }));
+    expect((screen.getByLabelText("First name") as HTMLInputElement).value).toBe("Mary");
+    expect((screen.getByLabelText("Last name") as HTMLInputElement).value).toBe("Jo Smith");
   });
 
   // L605, read as the composed page: the number was stated twice on this one
