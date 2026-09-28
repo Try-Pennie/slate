@@ -69,16 +69,18 @@ locally instead of breaking main after merge. Skip it in a pinch with
 `SKIP_PREPUSH_CHECKS=1`.
 
 Once that build has finished, the hook also **weighs the client bundle** it left in
-the isolated tree (#2571): the gzipped `.open-next/assets/_next/static/chunks`
-total is judged by the shared measurer (`~/.claude/hooks/lib/bundle-budget.py`)
-against the same record file the global `check-bundle-budget.sh` guard keeps, and
-growth past 3% AND 10 KB refuses the push. The global guard reads the build in the
-CHECKOUT, which this gate never builds in, so on every Slate push it still prints
-its "build is stale, nothing judged" line; **this in-gate step is the one that
-counts here.** A machine without the shared config gets a printed "not weighed"
-skip, never a silent pass. `ACCEPT_BUNDLE_GROWTH=1` records the new total and
-`SKIP_BUNDLE_BUDGET_CHECK=1` skips the weighing, each for one push and each said
-out loud first. `scripts/test-prepush-bundle-budget.ts` pins the step's shape.
+the isolated tree (#2571) against a record **committed in the repo**,
+`.githooks/bundle-budget.txt` (#2676). Two rules: the pushed commit's record must
+carry what that commit builds to, within 1 KB, or the push is refused and prints
+`pnpm bundle:record <total>` to commit; and growth past 3% AND 10 KB over the
+record at the **merge base** with main is refused unless `ACCEPT_BUNDLE_GROWTH=1`.
+So the change that moves the bundle moves the record. The old record in
+`~/.claude/state` moved only on an acceptance, so each change inside the margin
+left it behind and the next one paid (it sat 11 KB behind main). Two PRs that both
+move it conflict on that line: rebase and let the gate print the right number.
+`SKIP_BUNDLE_BUDGET_CHECK=1` skips it, said out loud first. The global
+`check-bundle-budget.sh` still prints "stale, nothing judged" here and is not the
+budget. `scripts/test-prepush-bundle-budget.ts` pins the rule and the step.
 
 **It takes about 40s, not the ~20s this file used to claim** (#1594). Measured end
 to end on 2026-08-29: 60s before the overlap below, 40s after. There is no "warm
