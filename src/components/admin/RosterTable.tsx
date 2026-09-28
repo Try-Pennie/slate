@@ -8,6 +8,7 @@ import { InPlaceLink } from "@/components/ui/InPlaceLink";
 import { ViewAsButton } from "@/components/admin/ViewAsButton";
 import { teamsOf } from "@/lib/admin/agent-display";
 import { isNeverSignedIn } from "@/lib/admin/unclaimed";
+import { storedPhotoUrl } from "@/lib/stored-photo";
 import { DebtTeamLedger, LEDGER_LEGEND } from "@/components/admin/DebtTeamLedger";
 import { RowActionsMenu } from "@/components/ui/RowActionsMenu";
 import { SelectField } from "@/components/ui/SelectField";
@@ -22,6 +23,8 @@ import {
   neverSignedInCount,
   rosterSigninText,
   rosterHoursText,
+  needsPhoto,
+  ROSTER_NEEDS_PHOTO_TEXT,
   sortRoster,
   hasAnyRosterFilter,
   rosterCountText,
@@ -173,6 +176,22 @@ export function RosterTable({
         />
         {/* No Search button: it filters as you type. */}
 
+        {/* #2837: in column order, beside the search, because the marker lives
+            in the Member cell. From the stored photo, never from sign in. */}
+        <SelectField
+          name="photo"
+          value={filters.photo}
+          onChange={(v) => set("photo", v as RosterFilters["photo"])}
+          ariaLabel="Filter by photo"
+          placeholder="Any photo"
+          options={[
+            { value: "", label: "Any photo" },
+            { value: "needed", label: "Needs a photo" },
+            { value: "has", label: "Has a photo" },
+          ]}
+          className="w-44"
+        />
+
         {teamOptions.length > 0 && (
 <SelectField
             name="team"
@@ -315,10 +334,13 @@ export function RosterTable({
               <tr key={u.id} className="transition-colors hover:bg-[var(--bg-alt)]">
                 <td className="px-4 py-3">
                   <div className="flex items-center gap-3">
-                    {u.avatar_url ? (
+                    {/* One judge of "has a photo" for the picture and the
+                        marker below it, so a blank stored value draws initials
+                        AND is marked, never a broken image (#2837). */}
+                    {storedPhotoUrl(u.avatar_url) ? (
                       // eslint-disable-next-line @next/next/no-img-element -- external Google avatar; OpenNext/CF has no image loader
                       <img
-                        src={u.avatar_url}
+                        src={storedPhotoUrl(u.avatar_url)!}
                         alt=""
                         referrerPolicy="no-referrer"
                         className="h-8 w-8 shrink-0 rounded-full object-cover"
@@ -336,6 +358,14 @@ export function RosterTable({
                         {u.name ?? u.email}
                       </InPlaceLink>
                       <p className="truncate text-xs text-fg-muted">{u.email}</p>
+                      {/* #2837: quiet on the healthy row, where the face says
+                          it, and at full weight on the exception. Words, so
+                          it is never colour alone, and it names the remedy.
+                          Kept out of the Signed in cell: the two are separate
+                          facts (#1802). */}
+                      {needsPhoto(u) && (
+                        <p className="text-xs font-semibold text-fg">{ROSTER_NEEDS_PHOTO_TEXT}</p>
+                      )}
                     </div>
                   </div>
                 </td>
