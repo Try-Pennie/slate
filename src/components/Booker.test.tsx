@@ -686,7 +686,7 @@ describe("Booker refuses a second booking (#1337)", () => {
         {...baseProps}
         salesforceId="003xx"
         attendee={{ name: "Mary Jo Smith", firstName: "Mary Jo", email: "", phone: "" }}
-        landingCall={{ disclose: true, startsAt: existingIso, advisorName: null, manageToken: "tok-old", mayCancel: true, phone: null }}
+        landingCall={{ disclose: true, startsAt: existingIso, advisorName: null, manageToken: "tok-old", rescheduleTimesFrom: "pool", mayCancel: true, phone: null }}
       />,
     );
     await screen.findByText("You already have a call booked");
