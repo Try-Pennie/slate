@@ -16,7 +16,8 @@ import { unwrap } from "@/lib/db/result";
 import { selectAllPages } from "@/lib/supabase/paginate";
 import { inIdChunks } from "@/lib/db/id-batch";
 import type { OrgDefaults } from "@/lib/schedule-core";
-import type { HoursSource } from "@/lib/monitor/unset-hours";
+import { groupRulesBySchedule, type HoursSource } from "@/lib/monitor/unset-hours";
+import { onRoster } from "@/lib/admin/roster-filter";
 import {
   buildTeamHours,
   type TeamHoursAgent,
@@ -32,6 +33,7 @@ export type TeamHoursLoad =
 interface UserRow extends TeamHoursAgent {
   role: string;
   deactivated_at: string | null;
+  is_test: boolean;
 }
 
 interface ScheduleRow {
@@ -73,7 +75,7 @@ export async function loadTeamHours(
 
     let q = db
       .from("users")
-      .select("id, name, email, role, manager_id, bookable, deactivated_at")
+      .select("id, name, email, role, manager_id, bookable, deactivated_at, is_test")
       .eq("org_id", viewer.org_id)
       .eq("is_test", false);
     // A manager reads only their own reports; an admin reads everybody, including
@@ -87,7 +89,9 @@ export async function loadTeamHours(
       for (const u of users) managers.set(u.id, u.name?.trim() || u.email);
     }
     agents = users
-      .filter((u) => u.role === "agent" && u.deactivated_at === null)
+      // The roster's own predicate (#1802), so this page and the roster count one
+      // population however the rows arrived.
+      .filter((u) => u.role === "agent" && onRoster(u))
       .map(({ id, name, email, manager_id, bookable }) => ({ id, name, email, manager_id, bookable }));
   } catch (err) {
     log.error("team-hours", { msg: "roster unreadable" }, err);
@@ -131,19 +135,19 @@ export async function loadTeamHours(
       )
     ).flat();
 
-    const rulesBySchedule = new Map<string, TeamHoursSchedule["rules"]>();
-    for (const r of rules) {
-      const list = rulesBySchedule.get(r.schedule_id) ?? [];
-      list.push({ weekday: r.weekday, start_minute: r.start_minute, end_minute: r.end_minute });
-      rulesBySchedule.set(r.schedule_id, list);
-    }
+    // The same grouping the unset hours detector and the roster use (#1802).
+    const rulesBySchedule = groupRulesBySchedule(rules);
     schedules = scheduleRows.map((s) => ({
       user_id: s.user_id,
       timezone: s.timezone,
       hours_source: s.hours_source,
       hours_set_at: s.hours_set_at,
       created_at: s.created_at,
-      rules: rulesBySchedule.get(s.id) ?? [],
+      rules: (rulesBySchedule.get(s.id) ?? []).map(({ weekday, start_minute, end_minute }) => ({
+        weekday,
+        start_minute,
+        end_minute,
+      })),
     }));
   } catch (err) {
     log.error("team-hours", { msg: "hours unreadable" }, err);
