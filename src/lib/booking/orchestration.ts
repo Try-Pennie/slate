@@ -89,6 +89,7 @@ import {
 } from "@/lib/booking/confirm-profile";
 import { isLoadtest } from "@/lib/loadtest-guard";
 import { sendThrottledAlert } from "../notify/dispatch.ts";
+import { raceBoundHitPage } from "../monitor/race-contention.ts";
 import type { BookingEventPayload, BookingReasonMeta } from "@/lib/webhooks/types";
 import { routingMetaFromTrace } from "@/lib/webhooks/types";
 // Type-only (erased under --experimental-strip-types), so this never pulls the
@@ -133,6 +134,30 @@ export class SlotUnavailableError extends Error {
   constructor() {
     super("That time is no longer available. Please pick another slot.");
     this.name = "SlotUnavailableError";
+  }
+}
+
+/**
+ * #2838: a confirm refused AFTER its insert lost the overlap race (#2274) and no
+ * further advisor in the same rung took it (#2281). A SlotUnavailableError, so every
+ * caller keeps answering the same 409 with the same sentence; the subclass exists
+ * so the booker can count it apart from a time already taken at the free check,
+ * which is the only way a refusal after a race reaches any counter at all (it
+ * writes no booking and no routing decision).
+ *
+ * `lostRaces` is how many advisors this confirm lost in a row. `boundHit` says the
+ * refusal came from `MAX_RACE_REASSIGNS`, not from nobody after the loser being
+ * free: the rung was not asked about a further advisor, so nothing may claim it
+ * had none.
+ */
+export class RaceLostRefusalError extends SlotUnavailableError {
+  readonly lostRaces: number;
+  readonly boundHit: boolean;
+  constructor(lostRaces: number, boundHit: boolean) {
+    super();
+    this.name = "RaceLostRefusalError";
+    this.lostRaces = lostRaces;
+    this.boundHit = boundHit;
   }
 }
 
@@ -656,6 +681,15 @@ export interface BookingResult {
    * calling in (#2660).
    */
   isTest?: boolean;
+  /**
+   * #2838: true only when THIS call's own insert made the booking. Absent on an
+   * idempotent replay, on a reservation whose booking already existed, and when a
+   * same key racer won, all of which return a booking an earlier confirm made. A
+   * crash resume that completes the insert here does set it: the crashed request
+   * never returned, so nothing counted that booking before. The booker counts a
+   * lost race only when this is set, so one race is never counted twice.
+   */
+  newlyInserted?: true;
 }
 
 /**
@@ -898,6 +932,13 @@ export interface BookingDeps {
    * schedule for them. Never a default (see `loadAdvisorTimezone`).
    */
   advisorTimezone(userId: string): Promise<string | null>;
+  /**
+   * #2838: page a lead refused at the race reassign bound. Returns at once and
+   * never throws: production (`pageRaceBoundHitAfterResponse`) sends it after the
+   * response, so the lead's 409 never waits on Slack. A dependency rather than a
+   * direct send so no suite driving that refusal can reach alert_state or Slack.
+   */
+  pageRaceBoundHit(page: { key: string; cooldownMs: number; text: string }): void;
   /** #401: record a Google event deletion that failed, for the retry drain. */
   enqueueEventDeletion(calendarEmail: string, gcalEventId: string, bookingId: string | null): Promise<void>;
   /** #401: load pending event deletions for the retry drain. */
@@ -3042,7 +3083,40 @@ export async function createBooking(
         startIso,
         endIso,
       });
-      if (!next) throw err;
+      if (!next) {
+        if (!(err instanceof SlotUnavailableError)) throw err;
+        // #2838: refused after a lost race. Said apart so it can be counted, and
+        // a bound hit paged at once: a lead turned away while the rung was still
+        // handing out advisors, which ordinary traffic cannot produce.
+        const boundHit = raceLost.length >= MAX_RACE_REASSIGNS;
+        log.warn("booking", {
+          msg: "confirm lost the overlap race and was refused",
+          lost_user_id: userId,
+          bucket_code: bookedBucket.code,
+          lost_races: raceLost.length + 1,
+          bound_hit: boundHit,
+        });
+        const page = raceBoundHitPage({
+          boundHit,
+          isTest: bookedBucket.is_test,
+          loadtest: isLoadtest(),
+          bucketCode: bookedBucket.code,
+          startIso,
+          lostRaces: raceLost.length + 1,
+        });
+        // Handed to the injected dispatcher, never sent from here: production
+        // defers it past the response, and a test supplies a fake (L2).
+        // A dispatcher that throws is logged and the lead still gets the 409:
+        // the refusal is their answer, and a page must never turn it into a 500.
+        if (page) {
+          try {
+            deps.pageRaceBoundHit(page);
+          } catch (pageErr) {
+            log.warn("booking", { msg: "could not hand off a race bound hit page; the refusal stands" }, pageErr);
+          }
+        }
+        throw new RaceLostRefusalError(raceLost.length + 1, boundHit);
+      }
       log.info("booking", {
         msg: "confirm lost the overlap race, handed to the next advisor in the same rung",
         lost_user_id: userId,
@@ -3278,7 +3352,9 @@ async function completeReservation(
   }
 
   await deps.deleteReservation(reservation.id);
-  return { booking, manageUrl: manageUrl(deps, booking.manage_token) };
+  // #2838: the one return where THIS call's own insert made the booking. Every
+  // other return hands back a booking an earlier or racing confirm made.
+  return { booking, manageUrl: manageUrl(deps, booking.manage_token), newlyInserted: true };
 }
 
 /**
@@ -3481,6 +3557,9 @@ export interface ApiBookingResult {
    * 200 deduped reads as "handled" while the routing request was dropped.
    */
   bucketChangeDeclined?: BucketChangeDeclineReason;
+  /** #2838: carried from `BookingResult` on a "created" outcome. An idempotent
+   *  replay also answers "created", so only this says THIS call made the booking. */
+  newlyInserted?: true;
 }
 
 // Machine-to-machine rebooking reason; recorded on the reschedule history row.
@@ -3772,7 +3851,12 @@ export async function bookViaApi(
   switch (decision.action) {
     case "create": {
       const res = await createBooking(input, deps);
-      return { outcome: "created", booking: res.booking, manageUrl: res.manageUrl };
+      return {
+        outcome: "created",
+        booking: res.booking,
+        manageUrl: res.manageUrl,
+        ...(res.newlyInserted ? { newlyInserted: true as const } : {}),
+      };
     }
     case "dedupe": {
       // #1465: the decision is made on the INSTANT alone, which is right for its

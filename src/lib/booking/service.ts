@@ -428,6 +428,7 @@ export async function agentBusyIntervals(
 
 export {
   SlotUnavailableError,
+  RaceLostRefusalError,
   ExistingCallError,
   ExistingCallCheckUnavailableError,
   RescheduleConflictError,
@@ -445,6 +446,7 @@ export {
   BookingNotChangeableError,
 } from "@/lib/booking/orchestration";
 import { log } from "@/lib/log";
+import { pageRaceBoundHitAfterResponse } from "@/lib/booking/race-bound-page";
 import { recordConsecutiveStreak, clearFailureStreak } from "@/lib/notify/streak";
 import { resolveAdvisorName, type AdvisorNameReader } from "@/lib/booking/advisor-name";
 import { resolveAdvisorPhoto, type AdvisorPhotoReader } from "@/lib/booking/advisor-photo";
@@ -975,6 +977,7 @@ export function realDeps(deferSend?: WebhookSendScheduler): BookingDeps {
     // all come back as not-ok with a reason, which the step classifies.
     postHandoffNotice: (channel, text) => postSlack({ channel, text }),
     advisorTimezone: (userId) => loadAdvisorTimezone(supabaseAdmin(), userId),
+    pageRaceBoundHit: pageRaceBoundHitAfterResponse,
     enqueueEventDeletion: async (calendarEmail, gcalEventId, bookingId) => {
       // THROWS (#2482). This row IS the record that a Google event still has to be
       // deleted, and nothing else holds that fact: a refused upsert leaves the event

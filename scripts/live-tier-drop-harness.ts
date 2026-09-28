@@ -276,6 +276,11 @@ function buildDeps(
   }
 
   return {
+    // #2838: a harness run must never page the alerts channel; a bound hit here
+    // is printed instead.
+    pageRaceBoundHit: (page) => {
+      console.log(`[harness] race bound hit page not sent: ${page.text}`);
+    },
     // --- availability / routing ---
     resolveBucketByCode,
 

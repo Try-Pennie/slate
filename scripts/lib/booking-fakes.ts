@@ -247,6 +247,8 @@ export interface FakeOpts {
   advisorTimezones?: Record<string, string>;
   /** The schedule read fails, so the step must retry rather than say less. */
   advisorTimezoneThrows?: boolean;
+  /** #2838: the race bound hit dispatcher throws synchronously when handed a page. */
+  raceBoundPageThrows?: boolean;
 }
 
 /** The three ways a calendar write fails, as the fakes model them. */
@@ -436,6 +438,9 @@ export function makeDeps(opts: FakeOpts) {
     // suite can assert WHERE it landed and not only that something was sent.
     handoffNoticePosts: [] as { channel: string; text: string }[],
     advisorTimezoneReads: [] as string[],
+    /** #2838: bound hit pages the confirm path handed to its dispatcher. A fake,
+     *  so no suite that drives a refusal at the bound can reach alert_state or Slack. */
+    raceBoundHitPages: [] as { key: string; cooldownMs: number; text: string }[],
     ownerAlertDeletes: [] as { actorEmail: string; calendarId: string; eventId: string }[],
     ownerAlertMoves: [] as {
       calendarId: string;
@@ -670,6 +675,10 @@ export function makeDeps(opts: FakeOpts) {
       return handoffNoticePostFails
         ? { ok: false, error: handoffNoticePostFails }
         : { ok: true };
+    },
+    pageRaceBoundHit: (page) => {
+      calls.raceBoundHitPages.push(page);
+      if (opts.raceBoundPageThrows) throw new Error("dispatcher refused the page");
     },
     advisorTimezone: async (userId) => {
       calls.advisorTimezoneReads.push(userId);

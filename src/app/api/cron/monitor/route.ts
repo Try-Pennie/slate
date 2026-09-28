@@ -124,6 +124,13 @@ import {
 } from "@/lib/monitor/top-tier-cascade";
 import { readTopTierCascadeWindow } from "@/lib/monitor/top-tier-cascade-store";
 import {
+  raceContentionVerdict,
+  raceContentionNoticeText,
+  RACE_CONTENTION_NOTICE_KEY,
+  RACE_CONTENTION_COOLDOWN_MS,
+} from "@/lib/monitor/race-contention";
+import { readRaceContentionWindow } from "@/lib/monitor/race-contention-store";
+import {
   loadRateState,
   saveRateState,
   readTodayOutcomes,
@@ -1384,6 +1391,49 @@ export async function GET(req: NextRequest) {
         TOP_TIER_CASCADE_NOTICE_KEY,
         TOP_TIER_CASCADE_COOLDOWN_MS,
         topTierCascadeNoticeText(verdict, TOP_TIER_CASCADE_WINDOW_HOURS),
+      );
+    });
+
+    // --- Are confirms losing the overlap race (#2838)? ---
+    //
+    // Since #2281 a confirm that loses the race is handed to the next free advisor
+    // in the same rung, and the loss was recorded only in a trace field and a log
+    // line nobody reads. This counts both halves (handed on, and refused) from the
+    // day's outcome tally and whispers once a day when the share of confirms that
+    // lost one is above what the busiest measured traffic could produce, a
+    // threshold derived in race-contention.ts rather than typed.
+    //
+    // Info only, and it never resolves: there is no condition to end, and a day
+    // back under the share is not news. A lead refused at the reassign BOUND is
+    // paged from the confirm path at the moment it happens instead, because a
+    // daily counter cannot page on one event without either holding a second
+    // day's page back or re-paging the same lead all day.
+    //
+    // On this lane rather than a daily one because it is ONE cap safe RPC and the
+    // 24 hour cooldown, not the cadence, decides how often it speaks; a tick that
+    // cannot read the tally throws inside its own boundary (L73) and sends nothing,
+    // since an unreadable tally is not a day with no races.
+    await steps.run("booking_race_contention", null, async () => {
+      const window = await readRaceContentionWindow(now);
+      const verdict = raceContentionVerdict(window);
+      log.info("monitor", {
+        msg: "booking race contention",
+        day: window.day,
+        created: window.created,
+        reassigned: window.reassigned,
+        refused: window.refused,
+        refused_at_bound: window.refusedAtBound,
+        verdict: verdict.kind,
+        ...(verdict.kind === "unmeasured" ? { why: verdict.reason } : {}),
+      });
+      if (verdict.kind !== "report") return;
+      // alert-key: booking_race_contention
+      // alert-text-ok: our own copy from race-contention.ts, built from measured
+      // counts; no error text can reach it.
+      await sendThrottledInfo(
+        RACE_CONTENTION_NOTICE_KEY,
+        RACE_CONTENTION_COOLDOWN_MS,
+        raceContentionNoticeText(verdict),
       );
     });
 

@@ -11,12 +11,13 @@
 import {
   createBooking,
   SlotUnavailableError,
+  RaceLostRefusalError,
   MAX_RACE_REASSIGNS,
   type CreateBookingInput,
 } from "../src/lib/booking/orchestration.ts";
 import { tierLadder } from "../src/lib/routing/tiers.ts";
 import type { BookingReservation, RoutingTrace } from "../src/lib/db/types.ts";
-import { createAsserter, makeDeps, input } from "./lib/booking-fakes.ts";
+import { createAsserter, makeDeps, makeBooking, input } from "./lib/booking-fakes.ts";
 
 const { assert, finish } = createAsserter();
 
@@ -39,6 +40,8 @@ async function main() {
     });
     const res = await createBooking(input, deps);
     assert(res.booking.assigned_user_id === "b", "race: the loser is booked with the next advisor in the rung");
+    // #2838: the route counts a race only on a booking THIS call inserted.
+    assert(res.newlyInserted === true, "race: a booking this confirm inserted says so");
     assert(res.booking.agent_email === "b@x.com", "race: the row names the advisor it was handed to");
     assert(calls.insertBooking.length === 2, `race: one insert per advisor tried (got ${calls.insertBooking.length})`);
     assert(
@@ -103,6 +106,13 @@ async function main() {
     });
     const err = await refusal(() => createBooking(input, deps));
     assert(err instanceof SlotUnavailableError, "race, rung full: the lead is asked to pick another time");
+    // #2838: the refusal says it followed a lost race, so the booker can count it
+    // apart from a time already taken at the free check, and says the bound was NOT hit.
+    assert(
+      err instanceof RaceLostRefusalError && err.lostRaces === 1 && err.boundHit === false,
+      `race, rung full: refused as a lost race, one lost, bound not hit (got ${JSON.stringify(err)})`,
+    );
+    assert(calls.raceBoundHitPages.length === 0, "race, rung full: below the bound nothing is paged");
     assert(calls.insertBooking.length === 1, "race, rung full: no second insert when nobody else is free");
     assert(
       calls.deleteEvent.length === calls.createEvent.length && calls.deleteEvent[0].id === "gcal-1",
@@ -197,6 +207,22 @@ async function main() {
     );
   }
 
+  // --- #2838: a replay returning the existing booking is not a new booking --------
+  {
+    const existing = makeBooking({
+      id: "bk-existing",
+      manage_token: "tok-existing",
+      routing_trace: { bucket_code: "411", bucket_id: "bkt1", considered: ["a", "b"], chosen_user_id: "b", fallback_applied: false, race_lost: ["a"] },
+    });
+    const { deps } = makeDeps({ candidates: ["a", "b"], freeEmails: new Set(["a@x.com", "b@x.com"]), existingByKey: existing });
+    const res = await createBooking(input, deps);
+    assert(res.booking.id === "bk-existing", "replay: the existing booking is returned");
+    assert(
+      res.newlyInserted !== true,
+      "replay: a booking an earlier confirm made is not marked as inserted here, so its race is not counted twice",
+    );
+  }
+
   // --- the retry is bounded -----------------------------------------------------
   {
     const all = ["a", "b", "c", "d", "e"];
@@ -208,6 +234,15 @@ async function main() {
     });
     const err = await refusal(() => createBooking(input, deps));
     assert(err instanceof SlotUnavailableError, "race, every insert refused: the lead is asked to pick another time");
+    assert(
+      err instanceof RaceLostRefusalError && err.boundHit === true && err.lostRaces === 1 + MAX_RACE_REASSIGNS,
+      `race bound: refused at the bound, every attempt counted as lost (got ${JSON.stringify(err)})`,
+    );
+    // #2838: the page goes to the injected dispatcher, never to the real one.
+    assert(
+      calls.raceBoundHitPages.length === 1 && calls.raceBoundHitPages[0].key === "booking_race_bound_hit",
+      `race bound: the bound hit page is handed to the dispatcher once (got ${JSON.stringify(calls.raceBoundHitPages)})`,
+    );
     assert(
       calls.insertBooking.length === 1 + MAX_RACE_REASSIGNS,
       `race bound: one first attempt plus at most ${MAX_RACE_REASSIGNS} more (got ${calls.insertBooking.length})`,
@@ -221,6 +256,23 @@ async function main() {
       `race bound: every event created is removed (${calls.createEvent.length} made, ${calls.deleteEvent.length} removed)`,
     );
     assert(calls.roundRobinPreview.length === 1, "race bound: the pool is resolved once");
+  }
+
+  // --- #2838: a dispatcher that throws never turns the 409 into a 500 --------------
+  {
+    const all = ["a", "b", "c", "d", "e"];
+    const { deps, calls } = makeDeps({
+      candidates: all,
+      freeEmails: new Set(all.map((id) => `${id}@x.com`)),
+      insertBookingConflictFor: new Set(all),
+      raceBoundPageThrows: true,
+    });
+    const err = await refusal(() => createBooking(input, deps));
+    assert(calls.raceBoundHitPages.length === 1, "throwing dispatcher: it was handed the page");
+    assert(
+      err instanceof RaceLostRefusalError && err.boundHit === true,
+      `throwing dispatcher: the lead still gets the lost race refusal, not the dispatcher's error (got ${String(err)})`,
+    );
   }
 
   // --- a named advisor link that loses is refused, never handed to anybody -----

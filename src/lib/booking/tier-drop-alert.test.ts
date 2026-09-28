@@ -23,6 +23,7 @@ vi.mock("@/lib/supabase/admin", () => ({
 
 import {
   createBooking,
+  RaceLostRefusalError,
   type BookingDeps,
   type CreateBookingInput,
 } from "./orchestration";
@@ -238,6 +239,11 @@ function makeTierDropDeps(requested = "511", lower = "411"): BookingDeps {
       throw new Error("owner reassign notice not exercised by this suite");
     },
     advisorTimezone: async () => null,
+    // #2838: a suite that is not about the race bound must never page, so the
+    // dispatcher is never the real one; it throws, which the confirm path logs.
+    pageRaceBoundHit: () => {
+      throw new Error("race bound hit page not exercised by this suite");
+    },
   };
 }
 
@@ -292,3 +298,55 @@ describe("tier-drop alert dispatch", () => {
   });
 });
 
+// #2838: a lead refused after every advisor it was handed lost the overlap race is
+// paged the moment it happens. The page goes through `deps.pageRaceBoundHit`, so
+// this suite hands in a recorder and nothing it drives can reach alert_state or
+// Slack (L2); the production dispatcher is tested on its own in
+// race-bound-page.test.ts. It lives here because this file already owns a full
+// BookingDeps fake; the refusal is driven by making every insert lose the race.
+describe("race bound hit page (#2838)", () => {
+  function racingDeps(candidates: string[], isTest = false) {
+    const pages: { key: string; cooldownMs: number; text: string }[] = [];
+    const deps = makeTierDropDeps("411", "311");
+    const b = { ...bucket411, is_test: isTest } as unknown as Bucket;
+    deps.resolveBucketByCode = async (code) => (code === "411" ? { bucket: b, eventType } : null);
+    deps.roundRobinCandidates = async () => ({ candidates, memberCount: candidates.length });
+    deps.loadEmails = async (ids) => new Map(ids.map((id) => [id, `${id}@x.com`]));
+    // Every insert loses the overlap race to another confirm.
+    deps.insertBooking = async () => ({ ok: false as const, conflict: true as const });
+    deps.pageRaceBoundHit = (page) => {
+      pages.push(page);
+    };
+    return { deps, pages };
+  }
+  const input411: CreateBookingInput = { ...tierDropInput, bucketCode: "411", allowTestBuckets: true };
+
+  it("hands the dispatcher one page when the lead is refused at the reassign bound", async () => {
+    const { deps, pages } = racingDeps(["a", "b", "c", "d", "e"]);
+    const err = await createBooking(input411, deps).catch((e) => e);
+    expect(err).toBeInstanceOf(RaceLostRefusalError);
+    expect((err as RaceLostRefusalError).boundHit).toBe(true);
+    expect(pages).toHaveLength(1);
+    expect(pages[0].key).toBe("booking_race_bound_hit");
+    expect(pages[0].cooldownMs).toBeGreaterThan(0);
+    expect(pages[0].text).toContain("bucket 411");
+    expect(pages[0].text).toContain("4 advisors");
+    // Never the real dispatcher.
+    expect(dispatch.sendThrottledAlert.mock.calls.filter(([k]) => k === "booking_race_bound_hit")).toHaveLength(0);
+  });
+
+  it("does not page a refusal below the bound, which the daily whisper counts instead", async () => {
+    const { deps, pages } = racingDeps(["a"]);
+    const err = await createBooking(input411, deps).catch((e) => e);
+    expect(err).toBeInstanceOf(RaceLostRefusalError);
+    expect((err as RaceLostRefusalError).boundHit).toBe(false);
+    expect(pages).toHaveLength(0);
+  });
+
+  it("does not page the smoke canary's buckets", async () => {
+    const { deps, pages } = racingDeps(["a", "b", "c", "d", "e"], true);
+    const err = await createBooking(input411, deps).catch((e) => e);
+    expect(err).toBeInstanceOf(RaceLostRefusalError);
+    expect(pages).toHaveLength(0);
+  });
+});

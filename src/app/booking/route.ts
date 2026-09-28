@@ -11,7 +11,9 @@ import {
   NoEligibleAgentsError,
   UnknownBucketError,
   OutsideCallingWindowError,
+  RaceLostRefusalError,
 } from "@/lib/booking/service";
+import { raceOutcomeForBooking, raceOutcomeForRefusal } from "@/lib/monitor/race-contention";
 import { LeadCodeUnavailableError } from "@/lib/routing/lead-code";
 import { resolveRequestedCode } from "@/lib/routing/catchall";
 import { isPublicTestBucket } from "@/lib/embed/public-test-bucket";
@@ -341,7 +343,7 @@ async function handlePost(req: NextRequest) {
       resolveRequestedCode(parsed.data.requestedCode).kind === "valid");
 
   try {
-    const { booking, manageUrl } = await createBooking({
+    const { booking, manageUrl, newlyInserted } = await createBooking({
       // One call per person, enforced here and only here (#1337): the direct
       // booking API owns its own richer decision and must keep creating on a
       // cross-bucket rebook (#364).
@@ -384,6 +386,12 @@ async function handlePost(req: NextRequest) {
     });
 
     recordRoutedOutcome("created", code, null, { by: "bucket", code, host });
+    // #2838: a booking made after its first advisor lost the overlap race is
+    // counted again, on a row outside the failure share, for the daily race whisper.
+    // Only when THIS confirm inserted it: a replay returns an earlier confirm's
+    // booking, whose race was counted when that confirm made it.
+    const raced = newlyInserted ? raceOutcomeForBooking(booking.routing_trace) : null;
+    if (raced) recordRoutedOutcome(raced, code, null, { by: "bucket", code, host });
     return NextResponse.json({
       id: booking.id,
       // #2750: the lead ids the booking is STORED under, which the host looks it up
@@ -468,6 +476,12 @@ async function handlePost(req: NextRequest) {
       // does not page on its own; fifty in two hours is the cal.com failure of
       // 2026-08-06, and it is indistinguishable from the one without a count.
       recordRoutedOutcome("error", code, "slot_unavailable", { by: "bucket", code, host });
+      // #2838: refused AFTER a lost overlap race, counted apart from a time already
+      // taken at the free check, and apart again at the reassign bound. A second
+      // row outside the failure share, so the share above reads exactly as before.
+      if (err instanceof RaceLostRefusalError) {
+        recordRoutedOutcome(raceOutcomeForRefusal(err), code, null, { by: "bucket", code, host });
+      }
       // refusal: slot_unavailable
       return NextResponse.json({ error: err.message }, { status: 409 });
     }

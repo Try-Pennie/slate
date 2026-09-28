@@ -29,6 +29,16 @@ const rateLimit = vi.hoisted(() => ({
 }));
 const service = vi.hoisted(() => {
   class SlotUnavailableError extends Error {}
+  // #2838: refused after a lost overlap race, a SlotUnavailableError underneath.
+  class RaceLostRefusalError extends SlotUnavailableError {
+    lostRaces: number;
+    boundHit: boolean;
+    constructor(lostRaces: number, boundHit: boolean) {
+      super("taken");
+      this.lostRaces = lostRaces;
+      this.boundHit = boundHit;
+    }
+  }
   class VerifyUnavailableError extends Error {}
   class NoEligibleAgentsError extends Error {}
   class UnknownBucketError extends Error {}
@@ -42,6 +52,7 @@ const service = vi.hoisted(() => {
     lookupPersonBookings: vi.fn(),
     bookingDetailExtras: vi.fn(),
     SlotUnavailableError,
+    RaceLostRefusalError,
     VerifyUnavailableError,
     NoEligibleAgentsError,
     UnknownBucketError,
@@ -570,6 +581,60 @@ describe("POST /api/bookings: a declined bucket change (#1465)", () => {
     });
   });
 });
+// #2838: the direct API reaches the same race loop the booker does, so a lost race
+// is counted here too, beside the ordinary outcome and outside the failure share.
+describe("POST /api/bookings: lost overlap races are counted (#2838)", () => {
+  beforeEach(() => {
+    env.bookingApiKeyPrimary.mockReturnValue("secret");
+    monitor.recordApiOutcome.mockClear();
+  });
+  const outcomes = () => monitor.recordApiOutcome.mock.calls.map((c) => [c[0], c[2]]);
+
+  it("counts a created booking that was handed on after a lost race", async () => {
+    service.bookViaApi.mockResolvedValue({
+      ...result("created", { bucket_code: "411", race_lost: ["a"] }),
+      newlyInserted: true,
+    });
+    await post("Bearer secret", VALID_BODY);
+    expect(outcomes()).toEqual([["created", null], ["race_reassigned", null]]);
+  });
+
+  it("does not count a race again when a same key retry returns the booking already made", async () => {
+    // createBooking's idempotent replay still answers `created`, so the outcome
+    // alone cannot tell a replay apart; only a booking THIS call inserted counts.
+    service.bookViaApi.mockResolvedValue(result("created", { bucket_code: "411", race_lost: ["a"] }));
+    await post("Bearer secret", VALID_BODY);
+    expect(outcomes()).toEqual([["created", null]]);
+  });
+
+  it("counts an uncontested booking once", async () => {
+    service.bookViaApi.mockResolvedValue(result("created"));
+    await post("Bearer secret", VALID_BODY);
+    expect(outcomes()).toEqual([["created", null]]);
+  });
+
+  it("does not count a race on a booking this call did not make", async () => {
+    // A dedupe names the booking the lead already held, whose trace describes an
+    // earlier confirm: counting it again would count one race twice.
+    service.bookViaApi.mockResolvedValue(result("deduped", { bucket_code: "411", race_lost: ["a"] }));
+    await post("Bearer secret", VALID_BODY);
+    expect(outcomes()).toEqual([["deduped", null]]);
+  });
+
+  it("counts a refusal after a lost race, and one at the bound, apart from SLOT_TAKEN", async () => {
+    service.bookViaApi.mockRejectedValueOnce(new service.RaceLostRefusalError(1, false));
+    expect((await post("Bearer secret", VALID_BODY)).status).toBe(409);
+    service.bookViaApi.mockRejectedValueOnce(new service.RaceLostRefusalError(4, true));
+    expect((await post("Bearer secret", VALID_BODY)).status).toBe(409);
+    expect(outcomes()).toEqual([
+      ["error", "SLOT_TAKEN"],
+      ["race_refused", null],
+      ["error", "SLOT_TAKEN"],
+      ["race_refused_bound", null],
+    ]);
+  });
+});
+
 // #1515: the caller is the system of record for which team owns a lead, and the
 // response named an agent and nothing else. Two things move a lead away from the
 // bucket that was asked for, and neither was visible: a cross bucket rebook

@@ -846,6 +846,26 @@ export const ALERT_CATALOG: AlertEntry[] = [
       "a day with no overflow simply sends nothing.",
   },
   {
+    key: "booking_race_contention",
+    kind: "info",
+    why:
+      "The daily share of confirms that lost the overlap race (#2838), handed on to the next " +
+      "advisor or refused, when it is above what the busiest measured traffic could produce. " +
+      "Nobody has to act tonight: most of those leads were booked with somebody else in the " +
+      "same bucket, and a lead refused at the reassign bound has its own page. There is no " +
+      "condition to end either; ask what the all-clear would SAY and it is 'fewer leads collided today', " +
+      "which is not news, so a day back under the share simply sends nothing.",
+  },
+  {
+    key: "booking_race_bound_hit",
+    kind: "incident",
+    why:
+      "One lead was refused after every advisor they were handed in a row was taken by other " +
+      "confirms at the same moment (#2838). That lead has been asked to pick another time and " +
+      "the moment is over; there is no healthy state to observe, and the next collision is " +
+      "its own event.",
+  },
+  {
     key: "top_tier_cascade_rate",
     kind: "info",
     why:

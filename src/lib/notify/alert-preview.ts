@@ -180,6 +180,12 @@ import {
   TOP_TIER_CASCADE_WINDOW_HOURS,
   type TopTierCascadeWindow,
 } from "@/lib/monitor/top-tier-cascade";
+import {
+  raceBoundHitPageText,
+  raceContentionNoticeText,
+  raceContentionVerdict,
+  type RaceContentionWindow,
+} from "@/lib/monitor/race-contention";
 import { bookerUnstaffedAlert,
   bookingWindowExtendedAlert } from "@/lib/booking/alert-copy";
 import {
@@ -564,6 +570,19 @@ function topTierCascadeReportPreview(w: Omit<TopTierCascadeWindow, "windowHours"
     throw new Error(`top tier cascade preview fixture is not a reportable window (${verdict.kind})`);
   }
   return topTierCascadeNoticeText(verdict, TOP_TIER_CASCADE_WINDOW_HOURS);
+}
+
+/**
+ * One rendered race contention whisper (#2838), through the real verdict for the
+ * same reason as the two above: a window the lane would not report on throws here
+ * rather than rendering a sentence nobody will see.
+ */
+function raceContentionReportPreview(w: Omit<RaceContentionWindow, "day">): string {
+  const verdict = raceContentionVerdict({ ...w, day: "2026-07-28" });
+  if (verdict.kind !== "report") {
+    throw new Error(`race contention preview fixture is not a reportable window (${verdict.kind})`);
+  }
+  return raceContentionNoticeText(verdict);
 }
 
 /** A roster coverage gap fixture (#1936). Data only: the words come from the
@@ -3183,6 +3202,33 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     state: "only Very High was booked",
     channel: "info",
     text: topTierCascadeReportPreview({ ultraBooked: 0, ultraCascaded: 0, veryHighBooked: 5, veryHighCascaded: 2 }),
+  },
+  // #2838. Three states, because the second sentence reads differently in each: a
+  // day where every loser was booked with somebody else, one where some were
+  // refused below the bound, and a saturated thin day where some hit the bound.
+  {
+    key: "booking_race_contention",
+    state: "over the share, every loser handed on and booked",
+    channel: "info",
+    text: raceContentionReportPreview({ created: 180, reassigned: 6, refused: 0, refusedAtBound: 0 }),
+  },
+  {
+    key: "booking_race_contention",
+    state: "over the share, some refused, one at the bound",
+    channel: "info",
+    text: raceContentionReportPreview({ created: 200, reassigned: 4, refused: 1, refusedAtBound: 1 }),
+  },
+  {
+    key: "booking_race_contention",
+    state: "saturated on a thin day",
+    channel: "info",
+    text: raceContentionReportPreview({ created: 5, reassigned: 3, refused: 2, refusedAtBound: 0 }),
+  },
+  {
+    key: "booking_race_bound_hit",
+    state: "a lead refused after every advisor handed on was taken",
+    channel: "alert",
+    text: raceBoundHitPageText({ bucketCode: "311", startIso: "2026-07-28T18:00:00.000Z", lostRaces: 4 }),
   },
   // A High lead and below: an Ultra High or Very High cascade is counted daily
   // above instead (#2843), so these fixtures are the tiers that still page.
