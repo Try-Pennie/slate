@@ -240,8 +240,14 @@ assert(files.length > 0, `found migrations to scan (got ${files.length})`);
 // functions in `public`, all with a pinned path. The list below is that set minus
 // `rls_auto_enable` (Supabase's own event-trigger function, not in Slate's
 // migrations) plus `applied_migration_version`, whose definition is still in 0071
-// though 0076 dropped it from the database.
+// though 0076 dropped it from the database. The list is every PINNED function the
+// parser finds, definer or not: the trap is the pin, not the definer flag, so a
+// SECURITY INVOKER function with a pinned path belongs here too (0144's
+// `agent_link_for_new_user`, #2073) and adds nothing to that definer count.
 const EXPECTED_PINNED = [
+  // #2073: mints a new user's booking link token. Security INVOKER, pinned, and
+  // it reaches only pg_catalog built ins (sha256, gen_random_uuid).
+  "agent_link_for_new_user",
   "applied_migration_version",
   "applied_migration_versions",
   "booking_api_outcome_mix",

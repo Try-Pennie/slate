@@ -708,6 +708,24 @@ export const TEST_ACCESS_COPY = {
   passOff: "Test bookings were turned off while this page was open. Please let Pennie know.",
 } as const;
 
+// --- an agent's own booking link (#2073) --------------------------------------
+//
+// A link an agent sends for the later calls with a lead who is already theirs. It
+// books that one advisor and nobody else, so it has no pool to fall back on.
+
+export const AGENT_LINK_COPY = {
+  /**
+   * The link books nobody. ONE sentence for every cause: a token that never
+   * existed, one an admin replaced, an advisor who has left, and one who is not
+   * taking calls. A second sentence for any of them would let the page be used to
+   * learn whether a link was ever real, or who is still on the roster.
+   */
+  unavailable: "This advisor is not taking bookings through this link right now.",
+  /** The advisor is taking bookings and has no open time in the window shown.
+   *  Names the advisor rather than "all times", because there is only one of them. */
+  noTimes: "This advisor has no open times in the next few days. Please check back later.",
+} as const;
+
 // --- the booker could not load (#2754) ----------------------------------------
 //
 // What the booker's own error boundary says (`BookerErrorBoundary`, on `/book` and

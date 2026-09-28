@@ -114,6 +114,11 @@ vi.mock("@/lib/env", async (importOriginal) => ({
 }));
 vi.mock("@/lib/supabase/admin", () => ({ supabaseAdmin: () => ({ from }) }));
 vi.mock("@/components/AppHeader", () => ({ AppHeader: () => null }));
+// #2073: the agent's own booking link. Null (no link) unless a test says otherwise.
+const agentLinkStore = vi.hoisted(() => ({
+  loadAgentLinkToken: vi.fn(async (_userId: string): Promise<string | null> => null),
+}));
+vi.mock("@/lib/agent-link/store", () => agentLinkStore);
 
 import { btnDangerCls, btnSecondaryCls } from "@/components/ui/styles";
 import { COVERAGE_PANEL_NAME } from "@/lib/booking/coverage-panel-copy";
@@ -947,5 +952,49 @@ describe("AgentProfilePage routing attributes are read only (#1874)", () => {
       expect(row.textContent).toContain(label);
     }
     expect(row.textContent).not.toMatch(/legal/i);
+  });
+});
+
+describe("the booking link card (#2073)", () => {
+  const TOKEN = "ab".repeat(32);
+  const asAdmin = () => auth.currentUser.mockResolvedValue({ id: "a1", role: "admin", org_id: "o1", email: "a1@ex.com" });
+
+  it("shows an admin the link and a replace control that confirms naming the consequence", async () => {
+    asAdmin();
+    dbState.agent = agentOf("agent");
+    agentLinkStore.loadAgentLinkToken.mockResolvedValue(TOKEN);
+    render(await AgentProfilePage(props));
+    expect((screen.getByLabelText("Booking link") as HTMLInputElement).value).toMatch(new RegExp(`/book/advisor/${TOKEN}$`));
+    await userEvent.click(screen.getByRole("button", { name: "Replace link" }));
+    const group = screen.getByRole("group", { name: /replace x1.s booking link/i });
+    expect(group.textContent).toMatch(/stops working at once/);
+    expect(screen.getByRole("button", { name: "Keep this link" })).toBeTruthy();
+  });
+
+  it("offers to create a link when the agent has none", async () => {
+    asAdmin();
+    dbState.agent = agentOf("agent");
+    agentLinkStore.loadAgentLinkToken.mockResolvedValue(null);
+    render(await AgentProfilePage(props));
+    expect(screen.getByText(/has no booking link yet/)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Create link" })).toBeTruthy();
+  });
+
+  it("withholds both controls when the link could not be read, since creating one would replace it", async () => {
+    asAdmin();
+    dbState.agent = agentOf("agent");
+    agentLinkStore.loadAgentLinkToken.mockRejectedValue(new Error("db down"));
+    render(await AgentProfilePage(props));
+    expect(screen.getByText(/booking link could not be read/i)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /(Replace|Create) link/ })).toBeNull();
+  });
+
+  it("is not shown to a manager, who cannot replace a link", async () => {
+    auth.currentUser.mockResolvedValue({ id: "m1", role: "manager", org_id: "o1", email: "m1@ex.com" });
+    dbState.agent = agentOf("agent");
+    agentLinkStore.loadAgentLinkToken.mockResolvedValue(TOKEN);
+    render(await AgentProfilePage(props));
+    expect(screen.queryByText("Booking link")).toBeNull();
+    expect(agentLinkStore.loadAgentLinkToken).not.toHaveBeenCalled();
   });
 });

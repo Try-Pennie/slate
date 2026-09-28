@@ -29,6 +29,10 @@ function fakeDb(tables: Record<string, Row[]>, opts: { error?: string } = {}) {
           filters.push((r) => String(r[col]) >= val);
           return chain;
         },
+        eq: (col: string, val: unknown) => {
+          filters.push((r) => r[col] === val);
+          return chain;
+        },
         order: () => chain,
         range: (from: number, to: number) => {
           range = [from, to];
@@ -61,6 +65,7 @@ function b(id: string, over: Row = {}): Row {
     external_id: null,
     agent_name: "A",
     agent_email: "a@trypennie.com",
+    kind: "routed",
     ...over,
   };
 }
@@ -75,6 +80,9 @@ describe("loadUpcomingBookingsInBuckets", () => {
         b("completed", { status: "completed" }),
         b("past", { starts_at: EARLIER }),
         b("smoke", { bucket_id: "smoke" }),
+        // #2073: booked with the agent the lead already has, never routed below
+        // their tier, so it is not the check's to page about.
+        b("named", { kind: "agent_link" }),
       ],
     });
     const rows = await loadUpcomingBookingsInBuckets(db, ["real"], NOW);

@@ -2082,6 +2082,8 @@ export async function GET(req: NextRequest) {
         "monitor inactive-agent bookings",
         (from, to) =>
           db
+            // agent-link-ok: an upcoming call held by somebody who has left needs
+            // a person however it was booked, including through their own link (#2073).
             .from("bookings")
             .select("assigned_user_id")
             .in("assigned_user_id", outOfPool.map((a) => a.id))
@@ -2131,6 +2133,8 @@ export async function GET(req: NextRequest) {
         async (batch) =>
           (unwrap(
             await db
+              // agent-link-ok: a stranded coverage item is a real call waiting for
+              // a person, whatever kind of booking it is (#2073).
               .from("bookings")
               // cap-safe: primary-key lookup, already split to the URL budget.
               .select("id")

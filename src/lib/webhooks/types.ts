@@ -1,4 +1,5 @@
 import type {
+  BookingKind,
   BookingStatus,
   BookingEventInitiator,
   RoutingTrace,
@@ -66,7 +67,18 @@ export interface BookingEventPayload {
    * naming nobody (L192).
    */
   previous_agent_email: string | null;
-  routing: RoutingMeta;
+  /**
+   * How the booking routed. NULL for an agent link booking (#2073): nothing was
+   * routed, so there is no outcome to report, and a summary of all falses would
+   * claim a routed booking that dropped no tier.
+   */
+  routing: RoutingMeta | null;
+  /**
+   * #2073: `agent_link` when the lead booked through their advisor's own named
+   * link rather than being routed. Optional because a payload stored before the
+   * field existed has none, and every such booking was routed.
+   */
+  booking_kind?: BookingKind;
 }
 
 /** The booking events, the family `buildRegalEvent` describes. */

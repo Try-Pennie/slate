@@ -1,6 +1,6 @@
 // Sanity test for the Regal event builder.
 // Run: node --experimental-strip-types scripts/test-regal.ts
-import { buildRegalEvent } from "../src/lib/webhooks/regal.ts";
+import { buildRegalEvent, regalSendsNothingFor } from "../src/lib/webhooks/regal.ts";
 import type { BookingEventPayload } from "../src/lib/webhooks/types.ts";
 import type { WebhookEvent } from "../src/lib/db/types.ts";
 import { assert, finish } from "./lib/harness.ts";
@@ -517,6 +517,48 @@ for (const [zone, label] of [
   // A sweep that compared nothing would report zero collisions too (L98).
   assert(compared === SWEPT_ZONES.length * 12, `#2117: the sweep really ran (${compared} labels compared)`);
   assert(collisions === 0, `#2117: one label means one clock, every offered zone, every month (${collisions} collisions)`);
+}
+
+// #2073: a booking through the advisor's own link reaches Regal as cal.com's
+// personal links do today, "Client Sync Action", so live journey 304 ("Client Sync
+// - Generate Tasks") keeps working at cutover and no routed journey fires. The
+// contract was read off journey 304 itself: the name, the three action literals
+// it branches on, scheduled_at (its delays key on it) and agent_email.
+{
+  const named = { ...payload, booking_kind: "agent_link" as const };
+  for (const [event, action] of [
+    ["booking.created", "BOOKING_CREATED"],
+    ["booking.rescheduled", "BOOKING_RESCHEDULED"],
+    ["booking.cancelled", "BOOKING_CANCELLED"],
+  ] as const) {
+    const e = buildRegalEvent(event, named);
+    assert(e.name === "Client Sync Action", `#2073: ${event} is sent as Client Sync Action`);
+    assert(e.properties.action === action, `#2073: ${event} carries action ${action}`);
+    assert(e.properties.scheduled_at === "2026-06-08T13:00:00.000Z", `#2073: ${event} carries the call start as an ISO UTC instant`);
+    assert(e.properties.agent_email === "jane@trypennie.com", `#2073: ${event} carries the advisor's email`);
+    assert(Object.keys(e.properties).sort().join(",") === "action,agent_email,scheduled_at", `#2073: ${event} carries only the journey's properties`);
+    assert(e.eventSource === "slate", `#2073: ${event} keeps the Slate event source`);
+    assert(
+      e.traits.emails?.["kristinakelly17@gmail.com"] !== undefined && e.traits.phones?.["+12035615295"] !== undefined,
+      `#2073: ${event} keeps the contact identity envelope so the profile still matches`,
+    );
+  }
+  // A reschedule sends the NEW start: the journey's delays key on it.
+  const moved = buildRegalEvent("booking.rescheduled", { ...named, starts_at: "2026-06-09T18:30:00+00:00" });
+  assert(moved.properties.scheduled_at === "2026-06-09T18:30:00.000Z", "#2073: a reschedule carries the new start, normalised to ISO UTC");
+  // The same shape stored by Postgres keeps meaning the same instant.
+  // cal.com's personal link sent nothing for these, so there is no event to build.
+  for (const event of ["booking.reassigned", "booking.completed"] as const) {
+    assert(regalSendsNothingFor(event, named), `#2073: an agent link ${event} sends nothing to Regal`);
+    assert(!regalSendsNothingFor(event, payload), `#2073: a routed ${event} is still sent`);
+  }
+  for (const event of ["booking.created", "booking.rescheduled", "booking.cancelled"] as const) {
+    assert(!regalSendsNothingFor(event, named), `#2073: an agent link ${event} IS sent`);
+  }
+  // Routed bookings, and stored payloads predating the field, keep the Slate names.
+  assert(buildRegalEvent("booking.created", { ...payload, booking_kind: "routed" }).name === "Slate Booking Created", "#2073: a routed booking keeps Slate Booking Created");
+  assert(buildRegalEvent("booking.cancelled", payload).name === "Slate Booking Cancelled", "#2073: a payload with no kind is routed");
+  assert(!("slateAgentLink" in buildRegalEvent("booking.created", payload).properties), "#2073: routed events carry no agent link flag");
 }
 
 

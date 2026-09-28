@@ -61,6 +61,7 @@ import {
   NEAREST_TIMES_COPY,
   TEST_MODE_COPY,
   TEST_ACCESS_COPY,
+  AGENT_LINK_COPY,
   BOOKER_BOUNDARY_COPY,
 } from "@/lib/booking/booker-copy";
 import { boundaryReference } from "@/lib/errors/boundary-copy";
@@ -383,6 +384,19 @@ export function bookerCopyScreens(): CopyScreen[] {
         { state: "the pass ran out while the page sat open", text: TEST_ACCESS_COPY.passExpired },
         { state: "the pass was missing or altered", text: TEST_ACCESS_COPY.passRefused },
         { state: "the secret went away while the page was open", text: TEST_ACCESS_COPY.passOff },
+      ],
+    },
+    {
+      screen: "Booker: an advisor's own booking link",
+      purpose:
+        "The link an advisor sends a lead for a later call with them (#2073). It books " +
+        "that one advisor and nobody else, so there is no pool to fall back on. The " +
+        "refusal is ONE sentence whatever the cause (a link that never existed, one " +
+        "replaced, an advisor who left or is not taking calls), so the page cannot say " +
+        "which. An empty week names the advisor rather than every time being taken.",
+      lines: [
+        { state: "the link books nobody, whatever the cause", text: AGENT_LINK_COPY.unavailable },
+        { state: "the advisor has no open time in the window shown", text: AGENT_LINK_COPY.noTimes },
       ],
     },
     {

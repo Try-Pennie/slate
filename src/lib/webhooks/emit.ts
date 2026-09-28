@@ -10,6 +10,7 @@ import { log } from "@/lib/log";
 import { webhookDeadAlert, webhookDeadRecovery } from "@/lib/monitor/cron-alert-copy";
 import type { WebhookPayload, WebhookPayloadFor } from "@/lib/webhooks/types";
 import { isAgentEvent } from "@/lib/webhooks/events";
+import { regalSendsNothingFor } from "@/lib/webhooks/regal";
 import { payloadForSend, type CurrentRoutableRead } from "@/lib/webhooks/agent-trait";
 import type { WebhookEndpoint, WebhookEvent } from "@/lib/db/types";
 import { gatedWriteApplied } from "@/lib/booking/gated-write";
@@ -19,6 +20,37 @@ const DEAD_LETTER_COOLDOWN_MS = 30 * 60 * 1000;
 
 /** Stamped on a delivery that was recorded but deliberately never sent (#459). */
 const SUPPRESSED_RESPONSE = "suppressed: is_test bucket, external POST skipped (#459)";
+
+/**
+ * #2073: an agent link booking's reassign or completion, recorded for a Regal
+ * endpoint and never sent. cal.com's personal link sent Regal nothing for either,
+ * and the Regal body for these bookings ("Client Sync Action") has no action for
+ * them, so sending one would invent an event no journey expects.
+ */
+const SUPPRESSED_AGENT_LINK_RESPONSE =
+  "suppressed: an agent link booking has no Regal event for this (#2073), external POST skipped";
+
+/**
+ * Whether THIS endpoint must not receive THIS emission, and why, or null. Decided
+ * per endpoint because the #2073 rule is Regal's alone: a generic subscriber still
+ * gets every event.
+ */
+function suppressionFor(
+  endpoint: WebhookEndpoint,
+  event: WebhookEvent,
+  payload: WebhookPayload,
+  suppressed: boolean,
+): string | null {
+  if (suppressed) return isAgentEvent(event) ? SUPPRESSED_AGENT_RESPONSE : SUPPRESSED_RESPONSE;
+  if (
+    endpoint.format === "regal" &&
+    !isAgentEvent(event) &&
+    regalSendsNothingFor(event as Parameters<typeof regalSendsNothingFor>[0], payload as Parameters<typeof regalSendsNothingFor>[1])
+  ) {
+    return SUPPRESSED_AGENT_LINK_RESPONSE;
+  }
+  return null;
+}
 
 /** The same, for a smoke test AGENT's bookable trait (#2085, #396). */
 const SUPPRESSED_AGENT_RESPONSE = "suppressed: is_test agent, external POST skipped (#2085)";
@@ -270,6 +302,7 @@ export async function emitWebhook<E extends WebhookEvent>(
 
   await Promise.all(
     ((endpoints ?? []) as WebhookEndpoint[]).map(async (endpoint) => {
+      const suppression = suppressionFor(endpoint, event, payload as WebhookPayload, suppressed);
       const { data: delivery, error } = await db
         .from("webhook_deliveries")
         .insert({
@@ -278,14 +311,10 @@ export async function emitWebhook<E extends WebhookEvent>(
           payload: payload as unknown as Record<string, unknown>,
           // A suppressed delivery lands in a TERMINAL state, so the retry sweep
           // (which picks up pending/failed) can never send it after the fact.
-          status: suppressed ? "success" : "pending",
+          status: suppression !== null ? "success" : "pending",
           dedupe_key: dedupeKey,
-          suppressed,
-          last_response: suppressed
-            ? isAgentEvent(event)
-              ? SUPPRESSED_AGENT_RESPONSE
-              : SUPPRESSED_RESPONSE
-            : null,
+          suppressed: suppression !== null,
+          last_response: suppression,
         })
         .select("id")
         .single();
@@ -303,7 +332,7 @@ export async function emitWebhook<E extends WebhookEvent>(
       if (!delivery) return;
       // #459: the row is recorded (so the exactly-once dedupe stays observable on
       // the smoke bucket) but nothing goes out the door.
-      if (suppressed) return;
+      if (suppression !== null) return;
       // #884: the durable pending row is written above, so a dropped send is
       // recoverable by the retry sweep. On a user-facing path the scheduler
       // hands the POST to Next after() so the response isn't blocked on it; the

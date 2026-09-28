@@ -40,7 +40,9 @@ import {
 import { BOOKING_LIMITER, type CallerKey } from "@/lib/rate-limit-core";
 import { judgePublicBooking } from "@/lib/booking/kill-switch";
 import { readPublicBookingPaused } from "@/lib/booking/settings";
-import { BOOKING_ERROR_COPY } from "@/lib/booking/booker-copy";
+import { AGENT_LINK_COPY, BOOKING_ERROR_COPY } from "@/lib/booking/booker-copy";
+import { resolveAgentLink } from "@/lib/agent-link/store";
+import { AGENT_LINK_UNAVAILABLE_CODE } from "@/lib/agent-link/refusal-sentence";
 import { internalErrorResponse } from "@/lib/api/errors";
 import { noStore } from "@/lib/api/no-store";
 import { recordApiOutcome } from "@/lib/monitor/record-api-outcome";
@@ -54,7 +56,12 @@ export const dynamic = "force-dynamic";
 
 const schema = z.object({
   // Bounded, shared with the API parser so the size caps can't drift (#1034).
-  bucketCode: bucketCodeSchema,
+  // Optional since #2073: a confirm through an agent's own link names the link
+  // instead, and exactly one of the two must be present (the refine below).
+  bucketCode: bucketCodeSchema.optional(),
+  // #2073: the token of an agent's own booking link. Bounded so a long value
+  // cannot reach the token read; its SHAPE is judged by resolveAgentLink.
+  agentLinkToken: z.string().max(128).optional(),
   // The `xbc` exactly as it arrived. Optional, because an older embed still in a
   // cached page will not send it, and a missing one must not refuse the booking.
   // It is used ONLY to record whether the catch-all was applied (#1908), never to
@@ -80,6 +87,8 @@ const schema = z.object({
   // DROPPED here rather than refusing the booking, because a lead must never lose a
   // call over a field only a monitor reads.
   referrerOrigin: z.string().max(REFERRER_ORIGIN_MAX_CHARS).optional().catch(undefined),
+}).refine((d) => (d.bucketCode === undefined) !== (d.agentLinkToken === undefined), {
+  message: "Name a bucket or an agent link, not both",
 });
 
 /**
@@ -221,13 +230,21 @@ async function handlePost(req: NextRequest) {
     );
   }
 
+  // #2073: a confirm through an agent's own link is not a ROUTED booking, so it
+  // stays out of the outcome tally every routed rate is judged from (the failure
+  // share, the per bucket error mix). Its failures still reach the log and, for a
+  // fault, the internal error alert.
+  const agentLinkToken = parsed.data.agentLinkToken;
+  const recordRoutedOutcome: typeof recordApiOutcome = agentLinkToken !== undefined ? () => {} : recordApiOutcome;
+  const code = parsed.data.bucketCode ?? "";
+
   // #2666: the public test bucket is booked only with the pass `/book` handed a page
   // on an approved website. Checked before anything about the attendee, so a pass
   // that ran out while the modal sat open says so instead of a contact error, and
   // before the contact caps, so it spends none of them. The address cap it already
   // spent is handed back: the tester did nothing wrong, and a reload fixes it.
-  if (isPublicTestBucket(parsed.data.bucketCode)) {
-    const refused = refuseUnlessTestPass(req.headers, parsed.data.bucketCode, "booking");
+  if (isPublicTestBucket(code)) {
+    const refused = refuseUnlessTestPass(req.headers, code, "booking");
     if (refused) {
       await refundRequest(bookingCaller, BOOKING_HOURLY_RATE_RULES);
       // refusal: test_pass_refused
@@ -242,7 +259,7 @@ async function handlePost(req: NextRequest) {
     // incoming data disagreeing, which turns every lead from that source away at once,
     // and #1425 made that concrete: a number carrying an extension is now refused, so any
     // upstream source still sending one fails every time (#1318).
-    recordApiOutcome("error", parsed.data.bucketCode, "invalid_contact", { by: "bucket", code: parsed.data.bucketCode, host });
+    recordRoutedOutcome("error", code, "invalid_contact", { by: "bucket", code, host });
     return NextResponse.json(
       { error: "Please check your contact details.", fieldErrors: attendeeErrors },
       { status: 400 },
@@ -287,8 +304,33 @@ async function handlePost(req: NextRequest) {
   // itself (Salesforce, else the catch-all), and neither can ever be the public
   // test bucket. So a posted test code with such a link is not a test booking,
   // and the link has to name the test code too.
-  const isTest =
-    isPublicTestBucket(parsed.data.bucketCode) &&
+  // #2073: an agent's own link is resolved HERE, after every rate limit and the
+  // contact caps, so probing for tokens pays the same budget a booking does. One
+  // refusal for every cause, so the answer cannot say whether a token was ever
+  // real; the cause goes to the log, never the token.
+  let agentLink: { userId: string; bucketCode: string; isTest: boolean } | null = null;
+  if (agentLinkToken !== undefined) {
+    let judged: Awaited<ReturnType<typeof resolveAgentLink>>;
+    try {
+      judged = await resolveAgentLink(agentLinkToken);
+    } catch (err) {
+      // refusal: agent_link_unreadable
+      return internalErrorResponse(err, "booking");
+    }
+    if (!judged.ok) {
+      log.info("agent-link", { msg: "confirm refused, the link books nobody", why: judged.why });
+      // refusal: agent_link_unavailable
+      return NextResponse.json(
+        { error: AGENT_LINK_COPY.unavailable, code: AGENT_LINK_UNAVAILABLE_CODE },
+        { status: 404 },
+      );
+    }
+    agentLink = { userId: judged.agent.id, bucketCode: judged.bucketCode, isTest: judged.bucket.is_test };
+  }
+
+  const isTest = agentLink
+    ? agentLink.isTest
+    : isPublicTestBucket(code) &&
     (parsed.data.requestedCode === undefined ||
       resolveRequestedCode(parsed.data.requestedCode).kind === "valid");
 
@@ -297,10 +339,13 @@ async function handlePost(req: NextRequest) {
       // One call per person, enforced here and only here (#1337): the direct
       // booking API owns its own richer decision and must keep creating on a
       // cross-bucket rebook (#364).
-      refuseIfPersonHasCall: true,
+      // #2073: except through an agent's own link, which is the exception that
+      // rule exists to allow (a later call with a lead who already has one).
+      refuseIfPersonHasCall: agentLink === null,
       allowTestBuckets: isTest,
-      bucketCode: parsed.data.bucketCode,
-      requestedCode: parsed.data.requestedCode,
+      bucketCode: agentLink ? agentLink.bucketCode : code,
+      requestedCode: agentLink ? undefined : parsed.data.requestedCode,
+      ...(agentLink ? { agentLinkUserId: agentLink.userId } : {}),
       startIso: parsed.data.start,
       timezone: parsed.data.timezone,
       salesforceId: parsed.data.salesforceId ?? null,
@@ -317,7 +362,9 @@ async function handlePost(req: NextRequest) {
     // covers is two simultaneous confirms both passing the check, and no longer
     // a failed lookup, which is refused rather than booked. When a duplicate does
     // reach here, the lead is told about it (#626).
-    const duplicateWarning = await findDuplicateBookingWarning({
+    // #2073: not through an agent's own link, where holding another call is the
+    // expected case rather than a mistake to warn about.
+    const duplicateWarning = agentLink ? null : await findDuplicateBookingWarning({
       excludeBookingId: booking.id,
       salesforceId: parsed.data.salesforceId ?? null,
       attendee: {
@@ -329,7 +376,7 @@ async function handlePost(req: NextRequest) {
       isTest,
     });
 
-    recordApiOutcome("created", parsed.data.bucketCode, null, { by: "bucket", code: parsed.data.bucketCode, host });
+    recordRoutedOutcome("created", code, null, { by: "bucket", code, host });
     return NextResponse.json({
       id: booking.id,
       // #2750: the lead ids the booking is STORED under, which the host looks it up
@@ -364,7 +411,7 @@ async function handlePost(req: NextRequest) {
     // and the Move they are about to make is a separate request.
     if (err instanceof ExistingCallError) {
       await refundAll();
-      recordApiOutcome("deduped", parsed.data.bucketCode, "existing_call", { by: "bucket", code: parsed.data.bucketCode, host });
+      recordRoutedOutcome("deduped", code, "existing_call", { by: "bucket", code, host });
       // refusal: existing_call
       return NextResponse.json({ existingCall: err.existingCall }, { status: 409 });
     }
@@ -378,7 +425,7 @@ async function handlePost(req: NextRequest) {
     // could never cover this case.
     if (err instanceof ExistingCallCheckUnavailableError) {
       await refundAll();
-      recordApiOutcome("error", parsed.data.bucketCode, "existing_call_unavailable", { by: "bucket", code: parsed.data.bucketCode, host });
+      recordRoutedOutcome("error", code, "existing_call_unavailable", { by: "bucket", code, host });
       // refusal: existing_call_unavailable
       return NextResponse.json({ error: err.message }, { status: 503 });
     }
@@ -390,7 +437,7 @@ async function handlePost(req: NextRequest) {
     if (err instanceof LeadCodeUnavailableError) {
       await refundAll();
       log.error("booking", { msg: "lead routing code unreadable; refusing rather than routing to the catch-all" }, err.cause);
-      recordApiOutcome("error", parsed.data.bucketCode, "lead_code_unavailable", { by: "bucket", code: parsed.data.bucketCode, host });
+      recordRoutedOutcome("error", code, "lead_code_unavailable", { by: "bucket", code, host });
       // refusal: lead_code_unavailable
       return NextResponse.json({ error: err.message }, { status: 503 });
     }
@@ -400,7 +447,7 @@ async function handlePost(req: NextRequest) {
     if (err instanceof VerifyUnavailableError) {
       // Couldn't verify any candidate (a Google/DB outage), not the lead's fault.
       await refundAll();
-      recordApiOutcome("error", parsed.data.bucketCode, "verify_unavailable", { by: "bucket", code: parsed.data.bucketCode, host });
+      recordRoutedOutcome("error", code, "verify_unavailable", { by: "bucket", code, host });
       // refusal: verify_unavailable
       return NextResponse.json({ error: err.message }, { status: 503 });
     }
@@ -413,7 +460,7 @@ async function handlePost(req: NextRequest) {
       // WE ADVERTISED. One lost race is ordinary contention, which is why this
       // does not page on its own; fifty in two hours is the cal.com failure of
       // 2026-08-06, and it is indistinguishable from the one without a count.
-      recordApiOutcome("error", parsed.data.bucketCode, "slot_unavailable", { by: "bucket", code: parsed.data.bucketCode, host });
+      recordRoutedOutcome("error", code, "slot_unavailable", { by: "bucket", code, host });
       // refusal: slot_unavailable
       return NextResponse.json({ error: err.message }, { status: 409 });
     }
@@ -426,7 +473,7 @@ async function handlePost(req: NextRequest) {
     // Counted: a wave means the client filter and the server rule disagree.
     if (err instanceof OutsideCallingWindowError) {
       await refundAll();
-      recordApiOutcome("error", parsed.data.bucketCode, "outside_calling_window", { by: "bucket", code: parsed.data.bucketCode, host });
+      recordRoutedOutcome("error", code, "outside_calling_window", { by: "bucket", code, host });
       // refusal: outside_calling_window
       return NextResponse.json(
         { error: BOOKING_ERROR_COPY.outsideCallingHours, code: "OUTSIDE_CALLING_WINDOW" },
@@ -437,7 +484,7 @@ async function handlePost(req: NextRequest) {
     // (the API route #358 distinguishes them), but it is a config problem, not a
     // slot race: a retry won't help, so we deliberately do NOT refund here.
     if (err instanceof NoEligibleAgentsError) {
-      recordApiOutcome("error", parsed.data.bucketCode, "no_eligible_agents", { by: "bucket", code: parsed.data.bucketCode, host });
+      recordRoutedOutcome("error", code, "no_eligible_agents", { by: "bucket", code, host });
       // refusal: no_eligible_agents
       return NextResponse.json({ error: err.message }, { status: 409 });
     }
@@ -448,14 +495,14 @@ async function handlePost(req: NextRequest) {
     // invalid_request, because a wave of these is an embed sending a code Slate
     // does not serve; not refunded, because a retry cannot help.
     if (err instanceof UnknownBucketError) {
-      recordApiOutcome("error", parsed.data.bucketCode, "unknown_bucket", { by: "bucket", code: parsed.data.bucketCode, host });
+      recordRoutedOutcome("error", code, "unknown_bucket", { by: "bucket", code, host });
       // refusal: unknown_bucket
       return NextResponse.json(
         { error: BOOKING_ERROR_COPY.unknownBucket, code: "UNKNOWN_BUCKET" },
         { status: 422 },
       );
     }
-    recordApiOutcome("error", parsed.data.bucketCode, "internal", { by: "bucket", code: parsed.data.bucketCode, host });
+    recordRoutedOutcome("error", code, "internal", { by: "bucket", code, host });
     // refusal: internal
     return internalErrorResponse(err, "booking");
   }

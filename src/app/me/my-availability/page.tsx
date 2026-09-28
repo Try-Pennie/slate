@@ -13,6 +13,11 @@ import { SettingsSaveNotice } from "@/app/admin/settings/SettingsSaveNotice";
 import { BookablePill } from "@/components/ui/BookablePill";
 import { AdminPageHeader } from "@/components/admin/AdminPageHeader";
 import { ME_TABS } from "@/lib/me/nav";
+import { CopyLinkField } from "@/components/ui/CopyLinkField";
+import { loadAgentLinkToken } from "@/lib/agent-link/store";
+import { agentLinkUrl } from "@/lib/agent-link/link";
+import { appUrl } from "@/lib/env";
+import { log } from "@/lib/log";
 
 export const dynamic = "force-dynamic";
 
@@ -86,6 +91,17 @@ export default async function MePage({
   // rules[0], which showed Monday's hours for the whole week and then overwrote
   // the rest on save.
   const hoursDays = workingHoursDays(rules);
+
+  // #2073: the agent's own booking link. A failed read is its own state, never
+  // "no link yet", which would send them to ask an admin for something they have.
+  let bookingLink: { kind: "link"; url: string } | { kind: "none" } | { kind: "unreadable" };
+  try {
+    const token = await loadAgentLinkToken(me.id);
+    bookingLink = token ? { kind: "link", url: agentLinkUrl(appUrl(), token) } : { kind: "none" };
+  } catch (err) {
+    log.error("agent-link", { msg: "could not read an agent's own booking link" }, err);
+    bookingLink = { kind: "unreadable" };
+  }
 
   const firstName = me.name?.trim().split(/\s+/)[0] ?? null;
   const timeOffHref = ME_TABS[1].href;
@@ -193,6 +209,32 @@ export default async function MePage({
               timezone={sched?.timezone ?? "America/New_York"}
               timezoneLabel="Your timezone"
             />
+          </>
+        )}
+      </section>
+
+      {/* #2073: the link an agent sends a lead for a later call with them. It
+          books this person directly, with no routing, so it replaces the
+          personal cal.com link cutover removes. */}
+      <section className={cardCls}>
+        <h2 className="mb-1 text-sm font-semibold">Your booking link</h2>
+        {bookingLink.kind === "unreadable" ? (
+          <UnreadableNotice className="mt-3">
+            Your booking link could not be read just now. The link itself still
+            works. Reload to try again.
+          </UnreadableNotice>
+        ) : bookingLink.kind === "none" ? (
+          <p className={`text-sm text-fg-muted ${proseCls}`}>
+            You do not have a booking link yet. An admin can create one from your
+            page in the console.
+          </p>
+        ) : (
+          <>
+            <p className={`mb-4 text-xs text-fg-muted ${proseCls}`}>
+              Send this to a lead for a later call with you. It books you
+              directly, in your working hours, and skips routing.
+            </p>
+            <CopyLinkField label="Booking link" url={bookingLink.url} labelHidden />
           </>
         )}
       </section>

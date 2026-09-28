@@ -192,6 +192,15 @@ export interface Bucket {
   created_at: string;
 }
 
+/** #2073, migration 0144: one agent's booking link token. Server only. */
+export interface AgentLink {
+  user_id: string;
+  token: string;
+  created_at: string;
+  rotated_at: string | null;
+  rotated_by: string | null;
+}
+
 export interface BucketMember {
   id: string;
   bucket_id: string;
@@ -539,6 +548,9 @@ export interface AgentCalendar {
   created_at: string;
 }
 
+/** #2073: how a booking was made. See `Booking.kind`. */
+export type BookingKind = "routed" | "agent_link";
+
 export interface Booking {
   id: string;
   org_id: string;
@@ -586,6 +598,14 @@ export interface Booking {
    * admin, or it predates the column.
    */
   referrer_origin: string | null;
+  /**
+   * Whether the booking was ROUTED through a bucket pool or booked through an
+   * agent's own named link (#2073, migration 0144). Every reader that reasons
+   * about routed bookings (the volume alarms, the per page volume, the bucket
+   * share ranking) filters on it; the named booking still sits in a bucket only
+   * because bucket_id is NOT NULL and the event type is the bucket's.
+   */
+  kind: BookingKind;
   /**
    * The appointment START a 24 hour reminder email has been sent about (#2359).
    *
@@ -859,7 +879,11 @@ export type BookingInsert = {
   manage_token: string;
   idempotency_key: string | null;
   external_id: string | null;
-  routing_trace: RoutingTrace;
+  /** Null on a named link booking (#2073): nothing was routed, so there is no
+   *  trace to record, and a fabricated one would read as a routing decision. */
+  routing_trace: RoutingTrace | null;
+  /** #2073: routed, or booked through an agent's own named link. */
+  kind: BookingKind;
   /** #2072: always written by createBooking, read off the link on the server. */
   source: BookingSource;
   /** #2728: always written by createBooking, reduced on the server; null when the

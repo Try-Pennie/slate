@@ -106,6 +106,7 @@ const NON_SINGLETON_TABLES: { table: string; category: string; why: string }[] =
   { table: "export_cursor", category: "lock/counter", why: "one Snowflake-export watermark row per (lane, table) keyed by text PK; ~a dozen rows, #1098" },
   { table: "api_caller_seen", category: "lock/counter", why: "#2717: one sighting row per (caller, host kind) keyed by that PK; four callers by four kinds, sixteen rows at most" },
   { table: "bucket_slots", category: "lock/counter", why: "one precomputed cache row per bucket_code (PK), ~60 rows" },
+  { table: "agent_links", category: "roster/config", why: "#2073: one booking link token per user, keyed by user_id as the PK, so a second row for a user is structurally impossible; bounded by the roster" },
   { table: "reason_options", category: "roster/config", why: "a few dozen reason rows keyed by (action, code) PK; config-bounded, #346" },
   // Roster / config-bounded: row count is capped by the roster or org, not by
   // booking volume or time, so duplicates are not the failure mode.

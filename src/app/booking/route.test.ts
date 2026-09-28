@@ -94,9 +94,14 @@ vi.mock("@/lib/monitor/record-api-outcome", () => ({ recordApiOutcome }));
 // decision, including the direction it fails in.
 vi.mock("@/lib/booking/settings", () => bookingSettings);
 
+// #2073: an agent's own booking link. The token resolves through this seam; the
+// judge behind it is driven by scripts/test-agent-link.ts.
+const agentLinkStore = vi.hoisted(() => ({ resolveAgentLink: vi.fn() }));
+vi.mock("@/lib/agent-link/store", () => agentLinkStore);
+
 import { POST } from "./route";
 import { PUBLIC_TEST_BUCKET_CODES } from "@/lib/embed/public-test-bucket";
-import { BOOKING_ERROR_COPY, TEST_ACCESS_COPY } from "@/lib/booking/booker-copy";
+import { AGENT_LINK_COPY, BOOKING_ERROR_COPY, TEST_ACCESS_COPY } from "@/lib/booking/booker-copy";
 import { PARTNER_KEYS } from "@/lib/booking/partner-keys";
 import { LeadCodeUnavailableError } from "@/lib/routing/lead-code";
 import { TEST_PASS_HEADER, TEST_PASS_REFUSAL_CODES } from "@/lib/embed/test-pass-header";
@@ -1033,5 +1038,110 @@ describe("POST /booking carries the booking's own identity (#2750)", () => {
     const body = await (await post(VALID_BODY)).json();
     expect(body).toHaveProperty("salesforceId", null);
     expect(body).toHaveProperty("externalId", null);
+  });
+});
+
+describe("POST /booking through an agent's own link (#2073)", () => {
+  const TOKEN = "ab".repeat(32);
+  const LINK_BODY = {
+    agentLinkToken: TOKEN,
+    start: "2026-07-01T15:00:00.000Z",
+    timezone: "America/New_York",
+    attendee: { name: "Dana Lee", email: "dana@example.com", phone: "2155550100" },
+    prefill: {},
+  };
+  const bookable = {
+    ok: true,
+    agent: { id: "u1", name: "Jane Doe", email: "jane@x.com", bookable: true, deactivated_at: null },
+    bucketCode: "411",
+    bucket: { code: "411", is_test: false },
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    rateLimit.bookingWithinLimit.mockResolvedValue(true);
+    rateLimit.allowRequest.mockResolvedValue(true);
+    bookingSettings.readPublicBookingPaused.mockResolvedValue(false);
+    agentLinkStore.resolveAgentLink.mockResolvedValue(bookable);
+    service.createBooking.mockResolvedValue({
+      booking: { id: "b1", starts_at: "2026-07-01T15:00:00.000Z", ends_at: "2026-07-01T15:30:00.000Z", agent_name: "Jane Doe", prefill: {} },
+      manageUrl: "https://slate.test/booking/manage/t",
+    });
+  });
+
+  it("books the named agent in their own bucket, with no person rule and no routing", async () => {
+    const res = await post(LINK_BODY);
+    expect(res.status).toBe(200);
+    expect(agentLinkStore.resolveAgentLink).toHaveBeenCalledWith(TOKEN);
+    const input = service.createBooking.mock.calls[0][0];
+    expect(input.agentLinkUserId).toBe("u1");
+    expect(input.bucketCode).toBe("411");
+    expect(input.refuseIfPersonHasCall).toBe(false);
+    expect(input.requestedCode).toBeUndefined();
+    expect(input.allowTestBuckets).toBe(false);
+    const body = await res.json();
+    expect(body.isTest).toBe(false);
+    expect(body.advisorName).toBe("Jane Doe");
+  });
+
+  it("is kept out of the routed booking tally and warns about no other call", async () => {
+    await post(LINK_BODY);
+    expect(recordApiOutcome).not.toHaveBeenCalled();
+    expect(service.findDuplicateBookingWarning).not.toHaveBeenCalled();
+  });
+
+  it("refuses a link that books nobody with one sentence, creating nothing", async () => {
+    const bodies = new Set<string>();
+    for (const why of ["unknown", "departed", "not_bookable", "no_bucket"]) {
+      agentLinkStore.resolveAgentLink.mockResolvedValue({ ok: false, why });
+      const res = await post(LINK_BODY);
+      expect(res.status).toBe(404);
+      bodies.add(JSON.stringify(await res.json()));
+    }
+    expect(bodies.size).toBe(1);
+    expect(JSON.parse([...bodies][0]).error).toBe(AGENT_LINK_COPY.unavailable);
+    expect(service.createBooking).not.toHaveBeenCalled();
+  });
+
+  it("books a test agent's link as a test booking", async () => {
+    agentLinkStore.resolveAgentLink.mockResolvedValue({ ...bookable, bucketCode: "SMOKE", bucket: { code: "SMOKE", is_test: true } });
+    const res = await post(LINK_BODY);
+    expect(service.createBooking.mock.calls[0][0].allowTestBuckets).toBe(true);
+    expect((await res.json()).isTest).toBe(true);
+  });
+
+  it("is paused by the kill switch like every public booking", async () => {
+    bookingSettings.readPublicBookingPaused.mockResolvedValue(true);
+    const res = await post(LINK_BODY);
+    expect(res.status).toBe(503);
+    expect(agentLinkStore.resolveAgentLink).not.toHaveBeenCalled();
+  });
+
+  it("is rate limited like every public booking", async () => {
+    rateLimit.bookingWithinLimit.mockResolvedValue(false);
+    const res = await post(LINK_BODY);
+    expect(res.status).toBe(429);
+    expect(agentLinkStore.resolveAgentLink).not.toHaveBeenCalled();
+  });
+
+  it("maps the named agent being busy to the ordinary taken slot answer", async () => {
+    service.createBooking.mockRejectedValue(new service.SlotUnavailableError("taken"));
+    const res = await post(LINK_BODY);
+    expect(res.status).toBe(409);
+    expect(recordApiOutcome).not.toHaveBeenCalled();
+  });
+
+  it("refuses a body naming both a bucket and a link, or neither", async () => {
+    expect((await post({ ...LINK_BODY, bucketCode: "411" })).status).toBe(400);
+    const { agentLinkToken: _dropped, ...neither } = LINK_BODY;
+    expect((await post(neither)).status).toBe(400);
+    expect(service.createBooking).not.toHaveBeenCalled();
+  });
+
+  it("an unreadable link is a fault, never the not taking bookings sentence", async () => {
+    agentLinkStore.resolveAgentLink.mockRejectedValue(new Error("db down"));
+    const res = await post(LINK_BODY);
+    expect(res.status).toBe(500);
+    expect(service.createBooking).not.toHaveBeenCalled();
   });
 });

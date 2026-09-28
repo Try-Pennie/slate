@@ -184,6 +184,10 @@ async function loadBookedTimes(
         .from("bookings")
         .select("starts_at, buckets!inner(code)")
         .eq("org_id", orgId)
+        // #2073: a share of a bucket's ROUTED demand. A booking through an agent's
+        // own link sits in a bucket only because a booking needs one, so it is not
+        // demand that bucket's pool served.
+        .eq("kind", "routed")
         // A cancelled time is free again, so counting it would report a bucket
         // as busier than it is. `rescheduled` is NOT excluded: that marks a
         // booking that MOVED, and the row carries the time it moved to, so its

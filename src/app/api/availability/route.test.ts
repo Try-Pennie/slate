@@ -72,6 +72,11 @@ const eligible = vi.hoisted(() => ({
 vi.mock("@/lib/availability/eligible-cache", () => eligible);
 vi.mock("@/lib/booking/business-hours-load", () => hours);
 vi.mock("@/lib/booking/settings", () => settings);
+// #2073: an agent's own booking link. The decisions are in
+// scripts/test-agent-link-availability.ts; this proves the ROUTE hands the token
+// to them, behind the same rate limit, and never touches the pooled cache.
+const agentLink = vi.hoisted(() => ({ agentLinkAvailabilityLive: vi.fn() }));
+vi.mock("@/lib/agent-link/service", () => agentLink);
 
 import { NextRequest } from "next/server";
 import { GENERIC_ERROR_MESSAGE } from "@/lib/api/errors";
@@ -521,5 +526,49 @@ describe("GET /api/availability, a bucket with nobody in it (#2158)", () => {
     await get("SMOKE");
     // The ordinary hot path must pay nothing for this.
     expect(eligible.eligibleAgentIdsCached).not.toHaveBeenCalled();
+  });
+});
+
+describe("GET /api/availability?advisor= (#2073)", () => {
+  beforeEach(() => vi.clearAllMocks());
+  const TOKEN = "ab".repeat(32);
+
+  it("serves the named agent's times from the agent link, never the pooled cache", async () => {
+    agentLink.agentLinkAvailabilityLive.mockResolvedValue({
+      status: 200,
+      body: { bucket: { code: "" }, orgName: "Pennie", eventType: { name: "Call", description: null, durationMin: 30 }, slots: ["2099-01-01T15:00:00.000Z"], emptyBecause: null },
+    });
+    const res = await GET(new NextRequest(`http://localhost/api/availability?advisor=${TOKEN}&from=2099-01-01T00:00:00.000Z&to=2099-01-05T00:00:00.000Z`));
+    expect(res.status).toBe(200);
+    expect((await res.json()).slots).toHaveLength(1);
+    expect(agentLink.agentLinkAvailabilityLive).toHaveBeenCalledWith(
+      TOKEN,
+      { from: "2099-01-01T00:00:00.000Z", to: "2099-01-05T00:00:00.000Z" },
+      expect.any(Number),
+    );
+    expect(cache.getBucketSlotsWithFallback).not.toHaveBeenCalled();
+  });
+
+  it("answers the refusal with its own status and body", async () => {
+    agentLink.agentLinkAvailabilityLive.mockResolvedValue({
+      status: 404,
+      body: { error: "This advisor is not taking bookings through this link right now.", code: "AGENT_LINK_UNAVAILABLE" },
+    });
+    const res = await GET(new NextRequest(`http://localhost/api/availability?advisor=${TOKEN}`));
+    expect(res.status).toBe(404);
+    expect((await res.json()).code).toBe("AGENT_LINK_UNAVAILABLE");
+  });
+
+  it("is rate limited like every public availability read", async () => {
+    rateLimit.availabilityWithinLimit.mockResolvedValueOnce(false);
+    const res = await GET(new NextRequest(`http://localhost/api/availability?advisor=${TOKEN}`));
+    expect(res.status).toBe(429);
+    expect(agentLink.agentLinkAvailabilityLive).not.toHaveBeenCalled();
+  });
+
+  it("a fault in the agent link compute is an internal error, never an empty week", async () => {
+    agentLink.agentLinkAvailabilityLive.mockRejectedValue(new Error("db down"));
+    const res = await GET(new NextRequest(`http://localhost/api/availability?advisor=${TOKEN}`));
+    expect(res.status).toBe(500);
   });
 });

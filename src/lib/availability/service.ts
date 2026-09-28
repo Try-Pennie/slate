@@ -129,6 +129,15 @@ export async function eligibleAgentIds(
   return applyFallback(matched, bucket.fallback_user_id, !!fallback);
 }
 
+/**
+ * The eligibility resolver for ONE named agent (#2073): the "pool" is them. The
+ * link's own judge already decided they are bookable and not departed, so this
+ * reads nothing.
+ */
+export function namedAgentResolver(userId: string): EligibleResolver {
+  return async () => ({ ids: [userId], fallbackApplied: false });
+}
+
 export interface ResolvedBucket {
   bucket: Bucket;
   eventType: EventType;
@@ -345,6 +354,12 @@ export async function roundRobinCandidates(
   eventType: EventType,
   startMs: number,
   preview = false,
+  /**
+   * #2073: one named agent instead of the bucket's pool, for a booking made
+   * through their own link. Everything below runs unchanged for them alone, which
+   * is the point: the same predicate the booker's display uses judges the slot.
+   */
+  onlyUserId?: string,
 ): Promise<{ candidates: string[]; memberCount: number }> {
   const endIso = new Date(
     startMs + eventType.duration_min * 60_000,
@@ -353,7 +368,12 @@ export async function roundRobinCandidates(
   // see the same org window (#1295): otherwise a direct-API book at a closed hour
   // would find candidates the booker would never have offered.
   const [pool, businessHours] = await Promise.all([
-    loadMembersAvailability(bucket, new Date(startMs).toISOString(), endIso),
+    loadMembersAvailability(
+      bucket,
+      new Date(startMs).toISOString(),
+      endIso,
+      onlyUserId !== undefined ? namedAgentResolver(onlyUserId) : eligibleAgentIds,
+    ),
     loadBusinessHours(),
   ]);
   const members = pool.members;
@@ -440,6 +460,10 @@ async function rankBucketShare(
       .from("bookings")
       .select("assigned_user_id, starts_at, created_at")
       .eq("bucket_id", bucketId)
+      // #2073: a named link booking was never a share of this bucket's routing,
+      // so counting it would push its agent down the order for leads they never
+      // received through the pool.
+      .eq("kind", "routed")
       .gte("starts_at", new Date(priorStartMs).toISOString())
       .lt("starts_at", new Date(period.endMs).toISOString())
       .in("assigned_user_id", candidateIds)

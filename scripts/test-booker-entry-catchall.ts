@@ -49,6 +49,19 @@ assert(entries.length >= 2, `found the booker entry points to check (${entries.l
 for (const path of entries) {
   const src = readFileSync(path, "utf8");
 
+  // #2073: a page drawing the Booker for an agent's OWN link routes nothing, so it
+  // has no landing code to resolve and none to record as a rescue. Exempt by that
+  // property (the Booker is handed the link's token), never by file name, so the
+  // next such page is covered by the same reason (L362). The opposite is asserted
+  // instead: a named link page that resolved a code would be routing through it.
+  if (src.includes("agentLinkToken={")) {
+    assert(
+      !src.includes("resolveLandingCode") && !src.includes("requestedCode={"),
+      `${path} is a named link entry (#2073), so it resolves no landing code and passes none on`,
+    );
+    continue;
+  }
+
   // Since #2638 the page resolves through `resolveLandingCode`, which runs the
   // shared catch-all (`resolveRequestedCode`) and, before falling back to it, the
   // lead's own Salesforce XBC. It is the ONE landing resolver, so a page calling

@@ -45,6 +45,7 @@
  */
 export const SAVE_OUTCOMES = [
   "agent-attributes",
+  "agent-booking-link",
   "agent-ooo-calendar",
   "alerts",
   "booker-copy",
@@ -76,6 +77,9 @@ export type SaveOutcome = (typeof SAVE_OUTCOMES)[number];
  */
 export const SAVE_OUTCOME_COPY: Record<Exclude<SaveOutcome, DynamicOutcome>, string> = {
   "agent-attributes": "Routing attributes saved.",
+  // #2073: says what now happens, because the one thing the reader needs
+  // confirmed is that the old link no longer books anybody.
+  "agent-booking-link": "Booking link replaced. The old link no longer books anybody.",
   "agent-ooo-calendar": "Time off calendar saved.",
   alerts: "Alert settings saved.",
   "booker-copy": "Booker copy saved.",

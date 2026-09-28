@@ -42,6 +42,9 @@ export default async function RecentRoutingPage() {
       )
       .eq("org_id", me.org_id)
       .eq("buckets.is_test", false)
+      // #2073: routing decisions only. A booking through an agent's own link was
+      // never routed and carries no trace, so it would draw as an empty decision.
+      .eq("kind", "routed")
       .order("created_at", { ascending: false })
       .limit(25),
   ]);

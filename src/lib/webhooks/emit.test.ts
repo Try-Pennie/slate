@@ -550,6 +550,53 @@ describe("misconfigured Regal endpoint (#600)", () => {
   });
 });
 
+// #2073: a booking through an advisor's own link reaches Regal as "Client Sync
+// Action" for a create, a move and a cancel, which is all cal.com's personal link
+// ever sent. A reassign or a completion has no equivalent, so Regal gets nothing,
+// while a non Regal subscriber still receives the event as before.
+describe("agent link bookings and Regal (#2073)", () => {
+  const regal = { ...endpoint, id: "ep-regal", format: "regal", url: "https://events.regalvoice.com/events", auth_header: "key" };
+  const generic = { ...endpoint, id: "ep-generic" };
+  const named = {
+    booking_id: "bk1",
+    bucket_code: "411",
+    booking_kind: "agent_link",
+    starts_at: "2026-09-28T15:20:00.000Z",
+    agent: { id: "u1", name: "Jane", email: "jane@trypennie.com" },
+    attendee: { name: "Dana Lee", email: "dana@example.com", phone: "+12155550100" },
+    prefill: {},
+  } as unknown as BookingEventPayload;
+
+  for (const event of ["booking.reassigned", "booking.completed"] as const) {
+    it(`sends Regal nothing for an agent link ${event}, and still sends other subscribers`, async () => {
+      state.endpoints = [regal, generic];
+      await emitWebhook("o1", event, named, `bk1:${event}`);
+      const regalRow = state.inserted.find((r) => r.endpoint_id === "ep-regal");
+      expect(regalRow).toMatchObject({ suppressed: true, status: "success" });
+      expect(String(regalRow?.last_response)).toMatch(/2073/);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(String(fetchMock.mock.calls[0][0])).not.toContain("regalvoice");
+    });
+  }
+
+  it("sends Regal a Client Sync Action for an agent link create", async () => {
+    state.endpoints = [regal];
+    await emitWebhook("o1", "booking.created", named, "bk1");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const body = JSON.parse(String(fetchMock.mock.calls[0][1].body));
+    expect(body.name).toBe("Client Sync Action");
+    expect(body.properties).toMatchObject({ action: "BOOKING_CREATED", scheduled_at: "2026-09-28T15:20:00.000Z", agent_email: "jane@trypennie.com" });
+  });
+
+  it("still sends a ROUTED reassign to Regal", async () => {
+    state.endpoints = [regal];
+    const routed = { ...named, booking_kind: "routed", event_type: "Call", reason: null, routing: undefined } as unknown as BookingEventPayload;
+    await emitWebhook("o1", "booking.reassigned", routed, "bk1:r");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1].body)).name).toBe("Slate Booking Reassigned");
+  });
+});
+
 // #1073: a delivery whose payload was blanked for PII retention (payload_erased)
 // must never be re-sent, or the admin resend / dead-letter replay would POST an
 // empty {} body (a fake success on a generic endpoint, a throw on Regal). Mirrors
