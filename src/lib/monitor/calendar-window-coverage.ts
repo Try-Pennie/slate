@@ -229,7 +229,8 @@ export interface CalendarWindowResult {
  *
  *  - uncovered calendars: count toward the streak, page once sustained;
  *  - a MEASURED zero uncovered: clear the streak and resolve (a no-op unless a
- *    page was actually delivered);
+ *    page was actually delivered). Measured means at least one calendar was
+ *    judged; a pass that judged none touches neither (#2807);
  *  - a read that FAILED: do neither. An unread roster comes back empty, and an
  *    empty result here is indistinguishable from "everyone is covered";
  *    announcing recovery off it would clear a real page at the exact moment the
@@ -261,6 +262,15 @@ export async function runCalendarWindowCheck(deps: {
   const judged = rows.length - graced;
 
   if (uncovered.length === 0) {
+    // A clear over ZERO judged calendars (an empty roster, or every calendar still
+    // inside its first run) measured nothing, so it may neither end a page nor reset
+    // the streak toward one: the fault that paged can still stand (#2807, the #1152
+    // shape). It still reports `clear` with `judged: 0`, which the verdict lane
+    // already refuses to stamp on (#2798).
+    if (judged === 0) {
+      deps.logTick?.({ status: "clear", calendars: rows.length, graced, judged });
+      return { status: "clear", uncovered: 0, graced, judged };
+    }
     await clearFailureStreak(CALENDAR_WINDOW_KEY);
     // alert-key: calendar_window_uncovered
     await resolveAlert(CALENDAR_WINDOW_KEY, formatCalendarWindowRecovery(graced)).catch(() => {});
