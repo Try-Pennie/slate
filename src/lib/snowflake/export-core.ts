@@ -69,6 +69,11 @@ export const MIRROR_TABLES: TableSpec[] = [
       // prefill.parentOrigin. Same rule as source: its ALTER in
       // docs/snowflake-setup.sql runs in Snowsight BEFORE this deploys.
       v("referrer_origin"),
+      // #2828: routed or agent_link (#2073, migration 0144), so warehouse analytics
+      // can leave advisor link bookings out of anything about routing. Same rule as
+      // source: its ALTER in docs/snowflake-setup.sql runs in Snowsight BEFORE this
+      // deploys.
+      v("kind"),
     ],
   },
   {

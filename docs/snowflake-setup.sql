@@ -116,7 +116,12 @@ CREATE TABLE IF NOT EXISTS bookings (
   -- booker was not framed, the referrer was stripped, or the booking predates it.
   -- Read beside prefill:parentOrigin; which origins count as production is decided
   -- in code (src/lib/monitor/offsite-origin.ts), not here.
-  referrer_origin     VARCHAR
+  referrer_origin     VARCHAR,
+  -- #2828: 'routed' (through a bucket pool) or 'agent_link' (booked through an
+  -- advisor's own named link, which does not route), from
+  -- supabase/migrations/0144_agent_links.sql. Anything about routing filters on
+  -- kind = 'routed', as every Slate reader does.
+  kind                VARCHAR
 )
 CLUSTER BY (created_at);
 
@@ -238,6 +243,20 @@ ALTER TABLE IF EXISTS bookings            ADD COLUMN IF NOT EXISTS source VARCHA
 -- scripts/test-snowflake-mirror-columns.ts fails the build on any column added to
 -- a CREATE above after provisioning that has no ALTER here.
 ALTER TABLE IF EXISTS bookings            ADD COLUMN IF NOT EXISTS referrer_origin VARCHAR;
+
+-- #2828: the booking kind. Same rule as source: the MERGE writes it on every
+-- bookings row, so run this BEFORE the change that exports it deploys.
+ALTER TABLE IF EXISTS bookings            ADD COLUMN IF NOT EXISTS kind VARCHAR;
+
+-- The ALTER leaves every row already here with a null kind, and a row is exported
+-- again only when it changes, so most never would be. Every booking created before
+-- advisor links shipped (#2073, merged 2026-09-28 15:17:32 UTC) is routed, because
+-- nothing before that could make any other kind, so this says so for exactly those
+-- rows and no later ones. It is idempotent. A row created after the cutoff that
+-- still reads null was exported before this change deployed and has not changed
+-- since: rewind the bookings export cursor to the cutoff (docs/migrations-runbook.md)
+-- rather than guessing its kind here.
+UPDATE bookings SET kind = 'routed' WHERE kind IS NULL AND created_at < '2026-09-28 15:17:32 +00:00'::TIMESTAMP_TZ;
 
 -- ----------------------------------------------------------------------------
 -- Grants on the mirror tables: SELECT + INSERT + UPDATE only. No DELETE.
