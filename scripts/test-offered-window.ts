@@ -5,7 +5,7 @@
 // times, as the stored rows do, is what let a fully booked pool's strip slide
 // into the next week.
 import { DateTime } from "luxon";
-import { openDaysWindowEndMs } from "../src/lib/booking/business-hours.ts";
+import { openDaysWindowEndMs, type BusinessHoursException } from "../src/lib/booking/business-hours.ts";
 import { bookingWindowExtendedAlert } from "../src/lib/booking/alert-copy.ts";
 import { OFFERED_OPEN_DAYS } from "../src/lib/availability/bookable-days.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
@@ -13,7 +13,7 @@ import { assert, eq, finish } from "./lib/harness.ts";
 const zone = "America/New_York";
 // Mon to Sat 08:00 to 20:00, Sunday closed: the live week, measured 2026-09-17.
 const week = [1, 2, 3, 4, 5, 6].map((weekday) => ({ weekday, start_minute: 480, end_minute: 1200 }));
-const hours = { zone, rules: week, exceptions: [] };
+const hours: { zone: string; rules: typeof week; exceptions: BusinessHoursException[] } = { zone, rules: week, exceptions: [] };
 const asEt = (iso: string) => DateTime.fromISO(iso, { zone }).toMillis();
 const et = (ms: number | null) => (ms === null ? null : DateTime.fromMillis(ms, { zone }).toISO({ suppressMilliseconds: true }));
 
@@ -26,7 +26,7 @@ eq(et(openDaysWindowEndMs(hours, asEt("2026-10-02T10:00"), 3)), "2026-10-05T20:0
 // A holiday exception is a closed day like any other, asked of `windowOnDate`.
 eq(
   et(openDaysWindowEndMs(
-    { ...hours, exceptions: [{ on_date: "2026-09-29", is_open: false, start_minute: null, end_minute: null }] },
+    { ...hours, exceptions: [{ on_date: "2026-09-29", is_open: false, start_minute: null, end_minute: null, note: null }] },
     asEt("2026-09-28T09:00"),
     3,
   )),

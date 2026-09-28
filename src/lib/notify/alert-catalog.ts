@@ -722,7 +722,7 @@ export const ALERT_CATALOG: AlertEntry[] = [
     key: "booking_window_extended:*",
     kind: "incident",
     suffix: "bounded",
-    why: "One customer on this bucket was offered times past the three open day window because every tier their cascade may use was full (#2841). They were still offered times, so it is not the dead end booker_unstaffed reports. It records a visit that is over; what to look at is the staffing depth, which /admin/tiers shows.",
+    why: "One customer on this bucket was offered times past the offered window of open days (OFFERED_OPEN_DAYS) because every tier their cascade may use was full (#2841). They were still offered times, so it is not the dead end booker_unstaffed reports. It records a visit that is over; what to look at is the staffing depth, which /admin/tiers shows.",
   },
   {
     key: "bookable_blocked:*",
