@@ -73,7 +73,8 @@ Keys: `empty_tier:*`, `bucket_slots_stale`, `availability_booked_solid`,
 `availability_data_anomaly`, `availability_drift:*`, `fallback_covered_availability`,
 `thin_tier_staffing`, `tier_fallback:*`, `tier_fallback_deep:*`, `no_eligible_agents:*`,
 `low_booking_volume`, `booking_failure_rate`, `calendar_window_uncovered`,
-`booker_unstaffed:*`, `public_booking_stopped`.
+`booker_unstaffed:*`, `public_booking_stopped`, `booking_race_contention`,
+`booking_race_bound_hit`.
 
 **What fired it.** Something between the roster and the cache means a lead sees fewer
 times than they should, or none. The alerts are deliberately split by CAUSE, because
@@ -99,6 +100,19 @@ urgent of the two.
   customer who triggered it has already gone.
 - It is throttled to one per bucket per half hour, so the count in Slack is not the
   count of customers who met it.
+
+**`booking_race_contention` and `booking_race_bound_hit` are leads colliding on one
+time** (#2838). Since #2281 a confirm that loses the overlap race is handed to the next
+free advisor in the same bucket, up to three times, before the lead is asked to pick
+another time. The whisper is the day's share of confirms that lost one, sent when it is
+above about 1.8 percent, the most the busiest tier's measured traffic could produce even
+if every lead picked the same time (`src/lib/monitor/race-contention.ts` derives it).
+The page is one lead refused at the bound, sent the moment it happens. Look at the day's
+bookings whose `routing_trace` carries `race_lost`, by start time and bucket: many
+leads on one time points at a replayed link or a burst from one source, which is a
+question for the booking ceiling; races spread across many times points at slow
+confirms widening the race. Refused confirms made no booking, so they are only in the
+logs (`tag=booking msg="confirm lost the overlap race and was refused"`).
 
 **`public_booking_stopped` is the one cause in this family that is not a fault**
 (#2366). Somebody threw the kill switch on purpose and it has been on longer than the

@@ -10,6 +10,16 @@ import { rateLimitKey, type CallerKey } from "@/lib/rate-limit-core";
 
 const service = vi.hoisted(() => {
   class SlotUnavailableError extends Error {}
+  // #2838: refused after a lost overlap race, a SlotUnavailableError underneath.
+  class RaceLostRefusalError extends SlotUnavailableError {
+    lostRaces: number;
+    boundHit: boolean;
+    constructor(lostRaces: number, boundHit: boolean) {
+      super("taken");
+      this.lostRaces = lostRaces;
+      this.boundHit = boundHit;
+    }
+  }
   class VerifyUnavailableError extends Error {}
   class NoEligibleAgentsError extends Error {}
   // #1337: the route declines rather than creating when the person already has
@@ -54,6 +64,7 @@ const service = vi.hoisted(() => {
       > => null,
     ),
     SlotUnavailableError,
+    RaceLostRefusalError,
     VerifyUnavailableError,
     NoEligibleAgentsError,
     ExistingCallError,
@@ -763,6 +774,52 @@ describe("POST /booking outcome tally (#1313)", () => {
     service.createBooking.mockRejectedValue(new service.SlotUnavailableError("taken"));
     await post(VALID_BODY);
     expect(outcomes()).toEqual([["error", "slot_unavailable"]]);
+  });
+
+  // #2838: a confirm that lost the overlap race is counted a second time, on a row
+  // outside the failure share, so the daily race whisper can see both halves: the
+  // ones handed to the next advisor and the ones refused. The ordinary outcome is
+  // unchanged, so the failure share reads exactly what it read before.
+  it("counts a booking handed on after a lost race beside the ordinary created row", async () => {
+    service.createBooking.mockResolvedValue({
+      booking: {
+        id: "bk-1",
+        starts_at: "2026-07-01T15:00:00.000Z",
+        ends_at: "2026-07-01T15:30:00.000Z",
+        routing_trace: { bucket_code: "411", race_lost: ["a"] },
+      },
+      manageUrl: "https://slate.test/booking/manage/tok",
+    });
+    await post(VALID_BODY);
+    expect(outcomes()).toEqual([["created", null], ["race_reassigned", null]]);
+  });
+
+  it("counts an uncontested booking once", async () => {
+    service.createBooking.mockResolvedValue({
+      booking: {
+        id: "bk-1",
+        starts_at: "2026-07-01T15:00:00.000Z",
+        ends_at: "2026-07-01T15:30:00.000Z",
+        routing_trace: { bucket_code: "411" },
+      },
+      manageUrl: "https://slate.test/booking/manage/tok",
+    });
+    await post(VALID_BODY);
+    expect(outcomes()).toEqual([["created", null]]);
+  });
+
+  it("counts a refusal after a lost race apart from a time already taken", async () => {
+    service.createBooking.mockRejectedValue(new service.RaceLostRefusalError(1, false));
+    const res = await post(VALID_BODY);
+    expect(res.status).toBe(409);
+    expect(outcomes()).toEqual([["error", "slot_unavailable"], ["race_refused", null]]);
+  });
+
+  it("counts a refusal at the reassign bound on its own row", async () => {
+    service.createBooking.mockRejectedValue(new service.RaceLostRefusalError(4, true));
+    const res = await post(VALID_BODY);
+    expect(res.status).toBe(409);
+    expect(outcomes()).toEqual([["error", "slot_unavailable"], ["race_refused_bound", null]]);
   });
 
   it("counts an empty pool apart from a lost slot race", async () => {

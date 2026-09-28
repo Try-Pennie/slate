@@ -15,7 +15,9 @@ import {
   NoEligibleAgentsError,
   UnknownBucketError,
   OutsideCallingWindowError,
+  RaceLostRefusalError,
 } from "@/lib/booking/service";
+import { raceOutcomeForBooking, raceOutcomeForRefusal } from "@/lib/monitor/race-contention";
 import { DIRECT_BOOKING_API_READ_HOURLY_RATE_RULES } from "@/lib/rate-limit-core";
 import { log } from "@/lib/log";
 import { recordApiOutcome } from "@/lib/monitor/record-api-outcome";
@@ -206,6 +208,11 @@ async function handlePost(req: NextRequest) {
       result.bucketChangeDeclined ? `bucket_change_declined_${result.bucketChangeDeclined}` : null,
       { by: "bucket", code: v.bucketCode, host: apiHost },
     );
+    // #2838: only on a booking THIS call made. A dedupe or a reschedule names a
+    // booking whose trace describes an earlier confirm, and counting it again would
+    // count one race twice.
+    const raced = result.outcome === "created" ? raceOutcomeForBooking(result.booking.routing_trace) : null;
+    if (raced) recordApiOutcome(raced, v.bucketCode, null, { by: "bucket", code: v.bucketCode, host: apiHost });
     return NextResponse.json(body, { status });
   } catch (err) {
     const { status, code } = mapBookingError(err);
@@ -218,6 +225,14 @@ async function handlePost(req: NextRequest) {
       code,
     });
     recordApiOutcome("error", v.bucketCode, code, { by: "bucket", code: v.bucketCode, host: apiHost });
+    // #2838: refused after a lost overlap race, on a row outside the failure share.
+    if (err instanceof RaceLostRefusalError) {
+      recordApiOutcome(raceOutcomeForRefusal(err), v.bucketCode, null, {
+        by: "bucket",
+        code: v.bucketCode,
+        host: apiHost,
+      });
+    }
     return NextResponse.json(
       await apiErrorBody(err, code, "book", "Booking failed"),
       { status },

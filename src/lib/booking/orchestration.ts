@@ -89,6 +89,7 @@ import {
 } from "@/lib/booking/confirm-profile";
 import { isLoadtest } from "@/lib/loadtest-guard";
 import { sendThrottledAlert } from "../notify/dispatch.ts";
+import { raceBoundHitPage } from "../monitor/race-contention.ts";
 import type { BookingEventPayload, BookingReasonMeta } from "@/lib/webhooks/types";
 import { routingMetaFromTrace } from "@/lib/webhooks/types";
 // Type-only (erased under --experimental-strip-types), so this never pulls the
@@ -133,6 +134,30 @@ export class SlotUnavailableError extends Error {
   constructor() {
     super("That time is no longer available. Please pick another slot.");
     this.name = "SlotUnavailableError";
+  }
+}
+
+/**
+ * #2838: a confirm refused AFTER its insert lost the overlap race (#2274) and no
+ * further advisor in the same rung took it (#2281). A SlotUnavailableError, so every
+ * caller keeps answering the same 409 with the same sentence; the subclass exists
+ * so the booker can count it apart from a time already taken at the free check,
+ * which is the only way a refusal after a race reaches any counter at all (it
+ * writes no booking and no routing decision).
+ *
+ * `lostRaces` is how many advisors this confirm lost in a row. `boundHit` says the
+ * refusal came from `MAX_RACE_REASSIGNS`, not from nobody after the loser being
+ * free: the rung was not asked about a further advisor, so nothing may claim it
+ * had none.
+ */
+export class RaceLostRefusalError extends SlotUnavailableError {
+  readonly lostRaces: number;
+  readonly boundHit: boolean;
+  constructor(lostRaces: number, boundHit: boolean) {
+    super();
+    this.name = "RaceLostRefusalError";
+    this.lostRaces = lostRaces;
+    this.boundHit = boundHit;
   }
 }
 
@@ -3042,7 +3067,37 @@ export async function createBooking(
         startIso,
         endIso,
       });
-      if (!next) throw err;
+      if (!next) {
+        if (!(err instanceof SlotUnavailableError)) throw err;
+        // #2838: refused after a lost race. Said apart so it can be counted, and
+        // a bound hit paged at once: a lead turned away while the rung was still
+        // handing out advisors, which ordinary traffic cannot produce.
+        const boundHit = raceLost.length >= MAX_RACE_REASSIGNS;
+        log.warn("booking", {
+          msg: "confirm lost the overlap race and was refused",
+          lost_user_id: userId,
+          bucket_code: bookedBucket.code,
+          lost_races: raceLost.length + 1,
+          bound_hit: boundHit,
+        });
+        const page = raceBoundHitPage({
+          boundHit,
+          isTest: bookedBucket.is_test,
+          loadtest: isLoadtest(),
+          bucketCode: bookedBucket.code,
+          startIso,
+          lostRaces: raceLost.length + 1,
+        });
+        if (page) {
+          // alert-key: booking_race_bound_hit
+          // alert-text-ok: our own copy from race-contention.ts, built from a
+          // bucket code, the requested time and a count; no error text reaches it.
+          await sendThrottledAlert(page.key, page.cooldownMs, page.text).catch((pageErr) =>
+            log.warn("booking", { msg: "could not page a race bound hit; the refusal stands" }, pageErr),
+          );
+        }
+        throw new RaceLostRefusalError(raceLost.length + 1, boundHit);
+      }
       log.info("booking", {
         msg: "confirm lost the overlap race, handed to the next advisor in the same rung",
         lost_user_id: userId,

@@ -11,6 +11,7 @@
 import {
   createBooking,
   SlotUnavailableError,
+  RaceLostRefusalError,
   MAX_RACE_REASSIGNS,
   type CreateBookingInput,
 } from "../src/lib/booking/orchestration.ts";
@@ -103,6 +104,12 @@ async function main() {
     });
     const err = await refusal(() => createBooking(input, deps));
     assert(err instanceof SlotUnavailableError, "race, rung full: the lead is asked to pick another time");
+    // #2838: the refusal says it followed a lost race, so the booker can count it
+    // apart from a time already taken at the free check, and says the bound was NOT hit.
+    assert(
+      err instanceof RaceLostRefusalError && err.lostRaces === 1 && err.boundHit === false,
+      `race, rung full: refused as a lost race, one lost, bound not hit (got ${JSON.stringify(err)})`,
+    );
     assert(calls.insertBooking.length === 1, "race, rung full: no second insert when nobody else is free");
     assert(
       calls.deleteEvent.length === calls.createEvent.length && calls.deleteEvent[0].id === "gcal-1",
@@ -208,6 +215,10 @@ async function main() {
     });
     const err = await refusal(() => createBooking(input, deps));
     assert(err instanceof SlotUnavailableError, "race, every insert refused: the lead is asked to pick another time");
+    assert(
+      err instanceof RaceLostRefusalError && err.boundHit === true && err.lostRaces === 1 + MAX_RACE_REASSIGNS,
+      `race bound: refused at the bound, every attempt counted as lost (got ${JSON.stringify(err)})`,
+    );
     assert(
       calls.insertBooking.length === 1 + MAX_RACE_REASSIGNS,
       `race bound: one first attempt plus at most ${MAX_RACE_REASSIGNS} more (got ${calls.insertBooking.length})`,

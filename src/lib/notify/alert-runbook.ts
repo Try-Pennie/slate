@@ -94,6 +94,11 @@ const FAMILY_BY_KEY: Record<string, AlertFamily> = {
   // #2841: the booker offered too little inside the window, so it reached past it.
   booking_window_extended: "the-booker-is-offering-nothing-or-too-little",
   no_eligible_agents: "the-booker-is-offering-nothing-or-too-little",
+  // #2838. Both about confirms losing the overlap race on a time the booker offered:
+  // the daily share (info) and a lead refused at the reassign bound (a page). The
+  // first check is the same as the family's, what the booker offered and to whom.
+  booking_race_contention: "the-booker-is-offering-nothing-or-too-little",
+  booking_race_bound_hit: "the-booker-is-offering-nothing-or-too-little",
   low_booking_volume: "the-booker-is-offering-nothing-or-too-little",
   // #2738. The same family as the tier alarm it sits beside: one page's customers
   // are not getting through, and the procedure starts from what that page links to.
