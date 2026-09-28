@@ -38,10 +38,8 @@ export default async function TeamHoursPage() {
   return (
     <>
       <AdminPageHeader title={own ? "Your team's hours" : "Team hours"}>
-        Each agent&apos;s working hours, in their own timezone. A lead is only offered
-        an agent inside these hours, so a wrong week here is a wrong time offered.
-        {" "}Agents with no hours, or still on the company default nobody chose for
-        them, are listed first.
+        A lead is only offered an agent inside these hours, read in the
+        agent&apos;s own timezone, so a wrong week here is a wrong time offered.
       </AdminPageHeader>
 
       {result.kind === "unreadable" ? (

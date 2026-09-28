@@ -87,6 +87,34 @@ describe("TeamHoursTable", () => {
     expect(screen.queryByText("Cal Other")).toBeNull();
   });
 
+  it("gives the commonest source, not recorded, the quietest mark", () => {
+    const g = buildTeamHours({
+      scope: { kind: "all" },
+      agents: [{ id: "u", name: "Uma", email: "u@x.com", manager_id: "m1", bookable: true }],
+      schedules: [
+        {
+          user_id: "u",
+          timezone: "America/Chicago",
+          hours_source: null,
+          hours_set_at: null,
+          created_at: "2026-08-01T00:00:00Z",
+          rules: [{ weekday: 1, start_minute: 540, end_minute: 1020 }],
+        },
+      ],
+      managers: new Map([["m1", "Mia Manager"]]),
+      org: ORG,
+    });
+    render(<TeamHoursTable groups={g} showTeamHeadings />);
+    const row = screen.getByRole("link", { name: "Uma" }).closest("tr")!;
+    const cell = row.lastElementChild as HTMLElement;
+    // A muted dash on screen, and the words still reach a screen reader.
+    expect(cell.querySelector('[aria-hidden="true"]')?.textContent).toBe("-");
+    expect(cell.querySelector(".sr-only")?.textContent).toBe("Not recorded");
+    // The meaning of the dash is said once, on the column, not on every row.
+    const header = screen.getByRole("columnheader", { name: /Set by/ });
+    expect(header.textContent).toMatch(/dash/i);
+  });
+
   it("names the group with no manager of record", () => {
     const g = buildTeamHours({
       scope: { kind: "all" },

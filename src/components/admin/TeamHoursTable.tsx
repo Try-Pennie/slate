@@ -19,6 +19,10 @@ import { cardCls } from "@/components/ui/styles";
 const DAYS = [1, 2, 3, 4, 5, 6, 7] as const;
 const SHORT = (weekday: number) => WEEKDAY_NAMES[weekday]!.slice(0, 3);
 
+/** What the dash in the Set by column means, said once per table (#1757). */
+const DASH_MEANS =
+  "a dash means the week was written before Slate recorded who sets hours";
+
 function teamHeading(g: TeamHoursGroup): string {
   if (g.managerId === null) return "No manager of record";
   // A manager id the roster read cannot name (the manager left, or is outside it)
@@ -62,7 +66,18 @@ function Row({ r }: { r: TeamHoursRow }) {
           <td
             className={`px-3 py-3 align-top ${r.hours.setBy === "seed" ? "text-fg" : "text-fg-muted"}`}
           >
-            {setByLabel(r.hours.setBy)}
+            {/* The commonest value on the roster gets the quietest mark (L609),
+                so the exceptions (a cal.com copy, an untouched default) are what
+                the eye finds. The words stay for a screen reader, and the dash
+                is explained once, in the column header. */}
+            {r.hours.setBy === "not-recorded" ? (
+              <>
+                <span aria-hidden="true">-</span>
+                <span className="sr-only">{setByLabel("not-recorded")}</span>
+              </>
+            ) : (
+              setByLabel(r.hours.setBy)
+            )}
           </td>
         </>
       )}
@@ -118,8 +133,9 @@ export function TeamHoursTable({
                         </abbr>
                       </th>
                     ))}
-                    <th scope="col" className="px-3 py-2.5 font-semibold">
+                    <th scope="col" className="px-3 py-2.5 font-semibold" title={DASH_MEANS}>
                       Set by
+                      <span className="sr-only">{` (${DASH_MEANS})`}</span>
                     </th>
                   </tr>
                 </thead>
