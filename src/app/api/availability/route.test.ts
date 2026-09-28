@@ -20,9 +20,13 @@ const rateLimit = vi.hoisted(() => ({
   clientIp: () => "203.0.113.7",
 }));
 const env = vi.hoisted(() => ({
-  bookingApiKeyPrimary: () => "smoke-key",
+  // #2854: only the canary's own key reads a hidden test bucket. The shared key is
+  // configured too, so the test below proves it is refused rather than absent.
+  bookingApiKeyPrimary: () => "shared-key",
   bookingApiKeySecondary: () => "",
-  bookingApiKeyFor: vi.fn((_caller: string, _slot: string) => ""),
+  bookingApiKeyFor: vi.fn((caller: string, slot: string) =>
+    caller === "canary" && slot === "primary" ? "smoke-key" : "",
+  ),
   // #2666: the secret the public test bucket's pass is signed with.
   embedTestPassSecret: vi.fn(() => "t".repeat(64)),
 }));
@@ -147,6 +151,13 @@ describe("GET /api/availability test-bucket hiding (#396)", () => {
     const body = await res.json();
     expect(body.slots).toHaveLength(1);
     expect(cache.getBucketSlotsWithFallback).toHaveBeenCalledWith("SMOKE", expect.any(String), true);
+  });
+
+  it("hides a test bucket from the shared key, which Regal holds (#2854)", async () => {
+    cache.getBucketSlotsWithFallback.mockResolvedValue(null);
+    const res = await get("SMOKE", "Bearer shared-key");
+    expect(res.status).toBe(404);
+    expect(cache.getBucketSlotsWithFallback).toHaveBeenCalledWith("SMOKE", expect.any(String), false);
   });
 
   it("serves a normal (non-test) bucket publicly with no auth", async () => {

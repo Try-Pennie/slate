@@ -437,7 +437,14 @@ reachable endpoint would be a configuration leak wearing a safety check's clothe
 Cloudflare secrets are per environment (`wrangler secret put --env loadtest`), so
 a fresh load test deployment starts with NONE of production's. Do not copy them
 across wholesale. It needs `SUPABASE_SECRET_KEY`, `CRON_SECRET` and
-`BOOKING_API_KEY`, and that is the list. **What goes in `SUPABASE_SECRET_KEY` is
+`BOOKING_API_KEY_CANARY`, and that is the list. The booking key goes in the
+CANARY slot, not the shared `BOOKING_API_KEY`: the preflight asks
+`/api/smoke/version` whether the deployment is in load test mode, and that endpoint
+accepts the canary's key and nothing else (#2854), so a deployment holding only the
+shared key answers 503 and the run refuses before writing anything. The drivers
+still read the value from their own `BOOKING_API_KEY` variable, fed from the
+`LOADTEST_BOOKING_API_KEY` repo secret; the Worker's per caller ceilings are the
+same for every caller, so which slot holds it changes nothing the run measures. **What goes in `SUPABASE_SECRET_KEY` is
 not a secret key**, and the next section is why.
 
 **The secrets are not the only way a credential arrives, and the other way has no

@@ -15,6 +15,12 @@ const env = vi.hoisted(() => ({
   bookingApiKeySecondary: vi.fn(() => ""),
   bookingApiKeyFor: vi.fn((_caller: string, _slot: string) => ""),
 }));
+// #2854: the smoke endpoints take the canary's own key and nothing else, so the key
+// these tests authenticate with is the canary's. `bookingApiKeyPrimary` above is the
+// shared key, which is left configured in the refusal test to prove it is refused.
+const canaryKey = vi.hoisted(() => ({ primary: vi.fn(() => ""), secondary: vi.fn(() => "") }));
+const canaryKeyFor = (caller: string, slot: string) =>
+  caller !== "canary" ? "" : slot === "primary" ? canaryKey.primary() : canaryKey.secondary();
 const dispatch = vi.hoisted(() => ({
   sendThrottledAlert: vi.fn(async () => {}),
   resolveAlert: vi.fn(async () => true),
@@ -44,13 +50,15 @@ function post(body: unknown, authorization = "Bearer real-secret") {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  env.bookingApiKeyPrimary.mockReturnValue("real-secret");
-  env.bookingApiKeySecondary.mockReturnValue("");
+  env.bookingApiKeyPrimary.mockReturnValue("");
+  env.bookingApiKeyFor.mockImplementation(canaryKeyFor);
+  canaryKey.primary.mockReturnValue("real-secret");
+  canaryKey.secondary.mockReturnValue("");
 });
 
 describe("POST /api/smoke/schedule-parity (#2031)", () => {
   it("returns 503 and says nothing when no key is configured", async () => {
-    env.bookingApiKeyPrimary.mockReturnValue("");
+    canaryKey.primary.mockReturnValue("");
     const res = await post({ total: 1, compared: 1, findings: [], runUrl: RUN }, "Bearer anything");
     expect(res.status).toBe(503);
     expect(dispatch.sendThrottledAlert).not.toHaveBeenCalled();
@@ -59,6 +67,15 @@ describe("POST /api/smoke/schedule-parity (#2031)", () => {
 
   it("returns 401 and says nothing for a wrong key", async () => {
     const res = await post({ total: 1, compared: 1, findings: [], runUrl: RUN }, "Bearer wrong");
+    expect(res.status).toBe(401);
+    expect(dispatch.sendThrottledAlert).not.toHaveBeenCalled();
+    expect(dispatch.resolveAlert).not.toHaveBeenCalled();
+  });
+
+  // #2854: the shared key is refused here, because Regal holds it.
+  it("returns 401 and says nothing for the shared key", async () => {
+    env.bookingApiKeyPrimary.mockReturnValue("shared-secret");
+    const res = await post({ total: 1, compared: 1, findings: [], runUrl: RUN }, "Bearer shared-secret");
     expect(res.status).toBe(401);
     expect(dispatch.sendThrottledAlert).not.toHaveBeenCalled();
     expect(dispatch.resolveAlert).not.toHaveBeenCalled();

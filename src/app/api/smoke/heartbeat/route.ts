@@ -16,12 +16,12 @@ export const dynamic = "force-dynamic";
  * out of the external /api/health signal, so a dead canary never reads as the app
  * being down.
  *
- * Auth: the canary sends its own key, `BOOKING_API_KEY_CANARY` (#2822); the legacy
- * shared `BOOKING_API_KEY` is still accepted until it retires, and a partner's key
- * is refused. A stamp made with the canary's own key also records a `canary-lanes`
- * sighting, which is how the partner judge knows when the scheduled lanes left the
- * shared key. Fails CLOSED (503) when no key is configured; 401 for a wrong or
- * missing key.
+ * Auth: the canary sends its own key, `BOOKING_API_KEY_CANARY` (#2822), and it is
+ * the only key accepted: the shared `BOOKING_API_KEY` is refused like a partner's
+ * (#2854), because Regal holds it and could keep a dead canary looking alive. A
+ * stamp also records a `canary-lanes` sighting, which is how the partner judge
+ * knows when the scheduled lanes left the shared key. Fails CLOSED (503) when no
+ * key is configured; 401 for a wrong or missing key.
  *
  * The optional `?lane=` selects which canary heartbeat to stamp, restricted to an
  * allowlist (#982): the 30-min dry tick stamps `smoke-canary`, the 6h full pass
@@ -63,7 +63,7 @@ const CANARY_HEARTBEAT_LANES = new Set([
 ]);
 
 export async function POST(req: NextRequest) {
-  // #2645: the canary's own key (and the legacy shared pair) only, never a partner's.
+  // #2645, #2854: the canary's own key only, never the shared key or a partner's.
   const keys = configuredBookingApiKeys(CANARY_CALLERS);
   const auth = authenticateBearer(req.headers.get("authorization"), keys);
   if (!auth.ok) {

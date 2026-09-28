@@ -477,6 +477,24 @@ export function chooseCeilingTarget(offers: readonly CeilingOffer[]): CeilingTar
   return null;
 }
 
+/**
+ * The body `/api/smoke/version` answers when the deployment holds no key it accepts.
+ * Copied rather than imported, because the drivers run on bare node with no path
+ * alias; `scripts/test-loadtest-preflight-checks.ts` takes the body from the real
+ * authorizer, so a reworded refusal fails that test rather than going unexplained.
+ */
+const NO_KEY_CONFIGURED = "booking api not configured";
+
+/** Whether a refusal is the route saying it holds no key at all (#2854). */
+function isNoKeyConfigured(status: number, body: unknown): boolean {
+  return (
+    status === 503 &&
+    typeof body === "object" &&
+    body !== null &&
+    (body as { error?: unknown }).error === NO_KEY_CONFIGURED
+  );
+}
+
 /** What `/api/smoke/version` said about the deployment the run is about to drive. */
 export type LoadtestModeVerdict =
   | { ok: true; commit: string | null }
@@ -503,11 +521,20 @@ export function loadtestModeVerdict(
   body: unknown,
 ): LoadtestModeVerdict {
   if (status !== 200) {
+    // #2854: the smoke endpoints take the canary's key and nothing else, so a Worker
+    // given only the shared BOOKING_API_KEY answers 503, and one whose canary key
+    // differs from the drivers' answers 401. Both are the same provisioning step.
+    const keyHint =
+      isNoKeyConfigured(status, body) || status === 401
+        ? " The load test Worker must hold the drivers' key as BOOKING_API_KEY_CANARY " +
+          "(wrangler secret put BOOKING_API_KEY_CANARY --env loadtest); the shared " +
+          "BOOKING_API_KEY is refused by this endpoint."
+        : "";
     return {
       ok: false,
       why:
         `/api/smoke/version answered ${status}, so whether this deployment is in load test mode ` +
-        `could not be established. Nothing was written.`,
+        `could not be established. Nothing was written.${keyHint}`,
     };
   }
   // A body that is not an object at all is what `.json()` gives for a plain text
@@ -619,7 +646,10 @@ export function faultModeVerdict(
     // A 5xx is the deployment being momentarily unwell, which a redeploy causes
     // and which passes; every other refusal here (a wrong key, a missing endpoint,
     // a build that is not in load test mode) is a state waiting cannot change.
-    return { ok: false, why: mode.why, retriable: status >= 500 && status <= 599 };
+    // The route's own "no key configured" 503 is the exception: it is a missing
+    // secret, and waiting cannot supply one.
+    const retriable = status >= 500 && status <= 599 && !isNoKeyConfigured(status, body);
+    return { ok: false, why: mode.why, retriable };
   }
   const payload =
     typeof body === "object" && body !== null ? (body as { faultPct?: unknown }) : {};

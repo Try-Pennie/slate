@@ -920,10 +920,15 @@ describe("POST /api/bookings: who may book a test bucket (#2669)", () => {
     expect(service.bookViaApi).toHaveBeenCalledWith(expect.objectContaining({ allowTestBuckets: true }));
   });
 
-  it("the legacy shared pair still books SMOKE while the canary moves to its own key", async () => {
+  // #2854: the canary books on its own key now, and Regal holds the shared one, so
+  // the shared key is refused the hidden buckets exactly as a partner's key is.
+  it("the shared key booking SMOKE gets the 422 an unknown code gets", async () => {
     env.bookingApiKeyPrimary.mockReturnValue("shared-secret");
-    const res = await post("Bearer shared-secret", { ...VALID_BODY, bucketCode: "SMOKE" });
-    expect(res.status).toBe(200);
+    const hidden = await post("Bearer shared-secret", { ...VALID_BODY, bucketCode: "SMOKE" });
+    const unknown = await post("Bearer shared-secret", { ...VALID_BODY, bucketCode: "NOPE" });
+    expect(service.bookViaApi).toHaveBeenNthCalledWith(1, expect.objectContaining({ allowTestBuckets: false }));
+    expect(hidden.status).toBe(422);
+    expect(await hidden.text()).toBe(await unknown.text());
   });
 
   it("a partner key booking SMOKE gets the byte identical 422 an unknown code gets", async () => {

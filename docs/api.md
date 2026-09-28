@@ -86,7 +86,7 @@ names which one it requires.
 | Slack signature | `X-Slack-Signature` + `X-Slack-Request-Timestamp` | Slack signing secret | `POST /api/slack/interactions` |
 | Supabase session (staff) | session cookie | Supabase Auth | every `/api/admin/*` route |
 | Manage token | in the URL path | per-booking `manage_token` | `POST /api/bookings/[token]/cancel`, `POST /api/bookings/[token]/reschedule`, `POST /api/bookings/[token]/phone`, `GET /api/bookings/[token]/ics` |
-| Smoke key | `Authorization: Bearer <key>` | `BOOKING_API_KEY_CANARY`, which every canary lane sends (#2822), or the legacy shared `BOOKING_API_KEY`, still accepted until it retires; a partner's key is refused | `GET /api/smoke/version`, `POST /api/smoke/heartbeat`, `POST /api/smoke/burst-counter`, `POST /api/smoke/schedule-parity` |
+| Smoke key | `Authorization: Bearer <key>` | `BOOKING_API_KEY_CANARY` only, which every canary lane and the load test send (#2822, #2854); the shared `BOOKING_API_KEY` and a partner's key are refused | `GET /api/smoke/version`, `POST /api/smoke/heartbeat`, `POST /api/smoke/burst-counter`, `POST /api/smoke/schedule-parity` |
 | None (public) | n/a | n/a | `GET /api/availability`, `GET /api/availability/next`, `POST /api/routing`, `POST /api/client-errors`, `POST /api/csp-report`, `GET /api/health`, `GET /api/health/availability`, `GET /api/auth/callback` |
 
 Every Bearer credential is compared in constant time (`src/lib/bearer-auth.ts`).
@@ -992,9 +992,10 @@ cost matters; see `docs/cloudflare-platform-notes.md`.
 
 Four endpoints that exist for the deploy probe and the canary rather than for
 any integrator. All four take `Authorization: Bearer <BOOKING_API_KEY_CANARY>`,
-which every canary lane and the deploy probe send (#2822); the legacy shared
-`BOOKING_API_KEY` is still accepted until it retires, and a partner's key is
-refused. They answer `503` when neither key is configured. A heartbeat stamped
+which every canary lane, the deploy probe and the load test send (#2822). The
+shared `BOOKING_API_KEY` is refused here like a partner's key (#2854), because
+Regal still holds it and could otherwise stamp the canary's heartbeat. They
+answer `503` when the canary key is not configured. A heartbeat stamped
 on the canary's own key also records a `canary-lanes` sighting in
 `api_caller_seen`, which is how the readiness check knows when the lanes left the
 shared key.
