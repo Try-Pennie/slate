@@ -180,7 +180,8 @@ import {
   TOP_TIER_CASCADE_WINDOW_HOURS,
   type TopTierCascadeWindow,
 } from "@/lib/monitor/top-tier-cascade";
-import { bookerUnstaffedAlert } from "@/lib/booking/alert-copy";
+import { bookerUnstaffedAlert,
+  bookingWindowExtendedAlert } from "@/lib/booking/alert-copy";
 import {
   formatPublicBookingStoppedAlert,
   formatPublicBookingRunningRecovery,
@@ -3180,6 +3181,8 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     channel: "alert",
     text: tierFallbackAlert({ requestedCode: "311", effectiveCode: "111" })?.text ?? "",
   },
+  { key: "booking_window_extended:*", state: "a customer was offered a day past the window", channel: "alert",
+    text: bookingWindowExtendedAlert("511") },
   { key: "booker_unstaffed:*", state: "a customer opened a bucket with nobody in it", channel: "alert",
     text: bookerUnstaffedAlert("120") },
 

@@ -719,6 +719,12 @@ export const ALERT_CATALOG: AlertEntry[] = [
     why: "One customer opened an unstaffed bucket and was shown nothing; that visit is over and they have gone. There is no ongoing twin for this one bucket: empty_tier:* watches the whole DEBT TIER, which can be perfectly healthy while one bucket inside it is empty, and that is the muting #2505 was opened for.",
   },
   {
+    key: "booking_window_extended:*",
+    kind: "incident",
+    suffix: "bounded",
+    why: "One customer on this bucket was offered times past the three open day window because every tier their cascade may use was full (#2841). They were still offered times, so it is not the dead end booker_unstaffed reports. It records a visit that is over; what to look at is the staffing depth, which /admin/tiers shows.",
+  },
+  {
     key: "bookable_blocked:*",
     kind: "incident",
     suffix: "bounded",

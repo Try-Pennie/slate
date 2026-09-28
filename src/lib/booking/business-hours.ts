@@ -160,17 +160,59 @@ export function nextOpenDayEndMs(
     const day = today.plus({ days: i });
     const window = windowOnDate(hours, day.toISODate() ?? "", day.weekday);
     if (!window) continue;
-    // Wall clock, never an added duration: on a DST transition day adding
-    // minutes from midnight shifts the close by the offset delta.
-    if (window.end_minute >= DAY_END_MINUTE) return day.plus({ days: 1 }).startOf("day").toMillis();
-    return day
-      .set({
-        hour: Math.floor(window.end_minute / 60),
-        minute: window.end_minute % 60,
-        second: 0,
-        millisecond: 0,
-      })
-      .toMillis();
+    return closeOf(day, window.end_minute);
+  }
+  return null;
+}
+
+/**
+ * When a day's window closes, as epoch ms. Wall clock, never an added duration:
+ * on a DST transition day adding minutes from midnight shifts the close by the
+ * offset delta.
+ */
+function closeOf(day: DateTime, endMinute: number): number {
+  if (endMinute >= DAY_END_MINUTE) return day.plus({ days: 1 }).startOf("day").toMillis();
+  return day
+    .set({ hour: Math.floor(endMinute / 60), minute: endMinute % 60, second: 0, millisecond: 0 })
+    .toMillis();
+}
+
+/**
+ * When the `days`th OPEN business day from now closes, as epoch ms, or null when
+ * the org has fewer than that many open days inside `lookaheadDays` (#2840).
+ *
+ * The window a lead is offered. Sales ops, 2026-09-28 (Slack #C091G6LEQ80,
+ * p1790609176877419), Sam: "We never really want to book out further than 3 days
+ * if we can help it". It counts days the business is OPEN, never days that happen
+ * to have a free time: counting those is what lets a fully booked pool's strip
+ * slide into the next week, which is exactly the problem that thread was about.
+ *
+ * Today counts only while a booking can still start before it closes, which is
+ * what `earliestStartMs` says (now plus the event's minimum notice): a lead at
+ * 19:59 with two hours' notice has no today, and must not lose one of three days
+ * to it. Closed days, a holiday exception included, are skipped by asking
+ * `windowOnDate`, the single judge of whether the org is open on a date (L107).
+ *
+ * Null rather than a guess, like `nextOpenDayEndMs`: a caller handed a fabricated
+ * window would narrow a lead's times to a period nobody is working.
+ */
+export function openDaysWindowEndMs(
+  hours: { zone: string; rules: BusinessWindow[]; exceptions: BusinessHoursException[] },
+  earliestStartMs: number,
+  days: number,
+  lookaheadDays = 21,
+): number | null {
+  if (!Number.isInteger(days) || days <= 0) return null;
+  const today = DateTime.fromMillis(earliestStartMs, { zone: hours.zone }).startOf("day");
+  let counted = 0;
+  for (let i = 0; i <= lookaheadDays; i++) {
+    const day = today.plus({ days: i });
+    const window = windowOnDate(hours, day.toISODate() ?? "", day.weekday);
+    if (!window) continue;
+    const close = closeOf(day, window.end_minute);
+    if (close <= earliestStartMs) continue;
+    counted += 1;
+    if (counted === days) return close;
   }
   return null;
 }

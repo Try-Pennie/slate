@@ -1,5 +1,10 @@
 import { sendThrottledAlert } from "@/lib/notify/dispatch";
-import { bookerUnstaffedAlert, BOOKER_UNSTAFFED_COOLDOWN_MS } from "@/lib/booking/alert-copy";
+import {
+  bookerUnstaffedAlert,
+  bookingWindowExtendedAlert,
+  BOOKER_UNSTAFFED_COOLDOWN_MS,
+  BOOKING_WINDOW_EXTENDED_COOLDOWN_MS,
+} from "@/lib/booking/alert-copy";
 import { eligibleAgentIdsCached } from "@/lib/availability/eligible-cache";
 import type { Bucket } from "@/lib/db/types";
 import { NextResponse, type NextRequest } from "next/server";
@@ -141,6 +146,20 @@ async function handle(req: NextRequest) {
       `booker_unstaffed:${result.bucket.code}`,
       BOOKER_UNSTAFFED_COOLDOWN_MS,
       bookerUnstaffedAlert(result.bucket.code),
+    ).catch(() => {});
+  }
+
+  // #2841: every tier this lead's cascade may use was full for the whole three
+  // open day window, so times past it were served. The lead can still book, so
+  // the response is unchanged; somebody should look. Keyed to the code the lead
+  // ASKED for, which is what the landing page sent, and throttled per code, because
+  // this is the hot path. A failed send never costs the lead their times.
+  if (result.routing.window_extended && !result.bucket.is_test) {
+    // alert-key: booking_window_extended:*
+    await sendThrottledAlert(
+      `booking_window_extended:${result.routing.requested_code}`,
+      BOOKING_WINDOW_EXTENDED_COOLDOWN_MS,
+      bookingWindowExtendedAlert(result.routing.requested_code),
     ).catch(() => {});
   }
 

@@ -91,6 +91,8 @@ const FAMILY_BY_KEY: Record<string, AlertFamily> = {
   // #2158: this one IS the booker offering nothing, and to a real person, so it
   // sits with the family whose first check is the availability health endpoint.
   booker_unstaffed: "the-booker-is-offering-nothing-or-too-little",
+  // #2841: the booker offered too little inside the window, so it reached past it.
+  booking_window_extended: "the-booker-is-offering-nothing-or-too-little",
   no_eligible_agents: "the-booker-is-offering-nothing-or-too-little",
   low_booking_volume: "the-booker-is-offering-nothing-or-too-little",
   // #2738. The same family as the tier alarm it sits beside: one page's customers
