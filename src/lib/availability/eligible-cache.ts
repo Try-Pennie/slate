@@ -14,7 +14,7 @@
 
 import type { Bucket } from "@/lib/db/types";
 import { appUrl } from "@/lib/env";
-import { eligibleAgentIds } from "./service.ts";
+import { eligibleAgentIds, type EligibleAgents } from "./service.ts";
 import { eligibleCacheKey, ELIGIBLE_TTL_SECONDS } from "./eligible-cache-key.ts";
 
 export { eligibleCacheKey, ELIGIBLE_TTL_SECONDS } from "./eligible-cache-key.ts";
@@ -39,7 +39,7 @@ function keyRequest(bucketId: string): Request {
 /** The cached shape. It also carried whether a legal restriction had been dropped
  *  to find the pool (#2158), which #2218 removed along with the criterion that
  *  made a widening possible. */
-type EligibleResult = { ids: string[]; fallbackApplied: boolean };
+type EligibleResult = EligibleAgents;
 
 /**
  * Eligible agents for `bucket`, served from the 60-second Cloudflare Cache API

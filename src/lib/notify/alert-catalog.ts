@@ -840,6 +840,17 @@ export const ALERT_CATALOG: AlertEntry[] = [
       "a day with no overflow simply sends nothing.",
   },
   {
+    key: "top_tier_cascade_rate",
+    kind: "info",
+    why:
+      "The daily count of Ultra High and Very High leads taken by a lower tier (#2843), " +
+      "which replaced the per booking tier_fallback pages for those leads. Sales ops " +
+      "decided on 2026-09-28 that these leads are cascaded rather than booked days out " +
+      "(as far as Medium, never to a Low carrier), so a cascade is the rule working and " +
+      "nothing is asked of the reader. There is no condition to end: a day with no " +
+      "cascade simply sends nothing.",
+  },
+  {
     key: "ooo_coverage_gap_later",
     kind: "info",
     why:

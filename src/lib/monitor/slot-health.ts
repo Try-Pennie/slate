@@ -19,7 +19,12 @@ import { slotsWithinBusinessHours, type BusinessHoursRules } from "../availabili
 
 export interface SlotHealthRow {
   bucket_code: string;
-  payload: { slots?: string[]; eventType?: { duration_min?: number } } | null;
+  payload: {
+    slots?: string[];
+    /** #2842: the times an advisor without Low is free (`BucketSlots.slotsWithoutLow`). */
+    slotsWithoutLow?: string[];
+    eventType?: { duration_min?: number };
+  } | null;
   computed_at: string;
 }
 
@@ -51,6 +56,14 @@ export interface SlotHealth {
    * that nobody can book (L50, and the #1171 class this file already guards).
    */
   firstSlotMs: number | null;
+  /**
+   * #2842: how many of those times an advisor WITHOUT Low is offering, through the
+   * same hours filter. It is what a rung below a top tier lead's own tier is judged
+   * on. `null` when the row carries no second list (a pool no top tier lead can
+   * reach, or a row written before the field existed), which is unmeasured and
+   * never zero: zero is the finding "nobody without Low is free".
+   */
+  slotCountWithoutLow: number | null;
 }
 
 /**
@@ -95,6 +108,11 @@ export function slotHealthByCode(
       const durationMin = r.payload?.eventType?.duration_min;
       const measurable = slots !== undefined && typeof durationMin === "number";
       const served = measurable ? slotsWithinBusinessHours(slots, durationMin, businessHours) : null;
+      const withoutLow = r.payload?.slotsWithoutLow;
+      const servedWithoutLow =
+        withoutLow !== undefined && typeof durationMin === "number"
+          ? slotsWithinBusinessHours(withoutLow, durationMin, businessHours)
+          : null;
       return [
         r.bucket_code,
         {
@@ -105,6 +123,7 @@ export function slotHealthByCode(
               : null,
           computedAtMs: parseStampMs(r.computed_at) ?? 0,
           firstSlotMs: earliestSlotMs(served),
+          slotCountWithoutLow: servedWithoutLow === null ? null : servedWithoutLow.length,
         },
       ];
     }),

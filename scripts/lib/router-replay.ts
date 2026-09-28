@@ -28,7 +28,8 @@
  */
 import type { Attributes, Criteria } from "@/lib/db/types";
 import { agentIdsFromPool } from "@/lib/availability/pool";
-import { tierLadder } from "@/lib/routing/tiers";
+import { rungExcludesLow, tierLadder } from "@/lib/routing/tiers";
+import { carriesLow } from "@/lib/availability/low-exclusion";
 import { resolveRequestedCode } from "@/lib/routing/catchall";
 
 /** A Slate user as the replay needs them. Every user, not only the bookable ones:
@@ -243,7 +244,10 @@ export function classifyLead(lead: ReplayLead, world: PreparedWorld): ReplayVerd
     const pool = world.poolByCode.get(ladder[rung]!);
     if (!pool) continue;
     if (pool.size > 0) anyRungStaffed = true;
-    const hit = routable.find((u) => pool.has(u.id));
+    // #2842: below a top tier lead's own tier Slate offers only advisors without
+    // Low, so a host who carries Low there is not somebody Slate would have chosen.
+    const excludeLow = rungExcludesLow(code, ladder[rung]!);
+    const hit = routable.find((u) => pool.has(u.id) && !(excludeLow && carriesLow(u.attributes)));
     if (hit) {
       return {
         verdict: rung === 0 ? "agree" : "agree-via-ladder",

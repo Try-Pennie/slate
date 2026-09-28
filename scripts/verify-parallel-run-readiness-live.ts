@@ -16,6 +16,7 @@ if (!creds) process.exit(1);
 const { supabaseAdmin } = await import("@/lib/supabase/admin");
 const { unwrap } = await import("@/lib/db/result");
 const { eligibleAgentIds } = await import("@/lib/availability/service");
+const { withoutLowCarriers } = await import("@/lib/availability/low-exclusion");
 const { emptyBuckets: emptyBucketCodes } = await import("@/lib/availability/bucket-coverage");
 type BucketCoverage = import("@/lib/availability/bucket-coverage").BucketCoverage;
 const { uncoveredCalendars } = await import("@/lib/monitor/calendar-window-coverage");
@@ -119,10 +120,12 @@ const emptyBuckets = await section("buckets", async () => {
   // can take a lead.
   const coverage: BucketCoverage[] = [];
   for (const b of buckets) {
-    const { ids } = await eligibleAgentIds(b as never);
+    const { ids, lowIds } = await eligibleAgentIds(b as never);
     coverage.push({
       code: b.code,
       eligibleCount: ids.length,
+      // #2842: what a top tier lead's cascade may use from this bucket.
+      eligibleWithoutLowCount: withoutLowCarriers(ids, lowIds).length,
       // The pool grouping is what the PAGE uses to fold six codes into one
       // finding. This gate names codes, so each stands alone here.
       poolKey: b.code,

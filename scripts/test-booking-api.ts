@@ -21,6 +21,7 @@ import {
   BookingNotFoundError,
   VerifyUnavailableError,
   NoEligibleAgentsError,
+  SlotUnavailableError,
   UnknownBucketError,
   type ApiBookingInput,
   type PendingEventDeletion,
@@ -1007,6 +1008,80 @@ async function run() {
     assert(
       tierDropWebhook?.bucket_code === "311",
       `tier-drop: booking.created webhook bucket_code is the booked bucket ("311"), got "${tierDropWebhook?.bucket_code}"`,
+    );
+  }
+
+  // --- #2842: a top tier lead's booking cascade stops at Medium and skips Low carriers ---
+  //
+  // Sales ops, 2026-09-28: an Ultra or Very High lead may cascade to Medium, never to
+  // Low, and on every rung below their own tier "as long as the person ... isn't
+  // also on Low". The booking cascade must ask the same rungs the display cascade
+  // showed, with the same people removed, or a lead is shown a time nobody allowed
+  // can take (or booked with somebody the display never offered).
+  {
+    const asked: { code: string; excludeLow: boolean | undefined }[] = [];
+    const { deps } = makeDeps({ freeEmails: new Set(["a@x.com"]) });
+    deps.resolveBucketByCode = async (code: string) => ({
+      bucket: { ...bucket, id: `bkt${code}`, code } as unknown as Bucket,
+      eventType,
+    });
+    deps.roundRobinCandidates = async (b, _e, _ms, _p, _only, excludeLow) => {
+      asked.push({ code: b.code, excludeLow });
+      // Only 211 has anybody free, and only once Low carriers are removed does the
+      // free advisor remain: a fake that ignored the flag would answer the same.
+      return b.code === "211" && excludeLow ? { candidates: ["a"], memberCount: 1 } : { candidates: [], memberCount: 3 };
+    };
+    const res = await createBooking({ ...input, bucketCode: "411" }, deps);
+    assert(
+      asked.map((a) => a.code).join(",") === "411,311,211",
+      `top tier: the booking cascade asks 411, 311, 211 and never Low (got ${asked.map((a) => a.code).join(",")})`,
+    );
+    assert(asked[0].excludeLow !== true, "top tier: the lead's own tier keeps its whole pool");
+    assert(
+      asked.slice(1).every((a) => a.excludeLow === true),
+      "top tier: every rung below the lead's own tier drops Low carriers",
+    );
+    assert(
+      (res.booking as unknown as Record<string, unknown>).bucket_id === "bkt211",
+      "top tier: the booking lands on the Medium rung",
+    );
+  }
+  {
+    // A High lead's cascade may reach Low and keeps Low carriers throughout.
+    const asked: { code: string; excludeLow: boolean | undefined }[] = [];
+    const { deps } = makeDeps({ freeEmails: new Set(["a@x.com"]) });
+    deps.resolveBucketByCode = async (code: string) => ({
+      bucket: { ...bucket, id: `bkt${code}`, code } as unknown as Bucket,
+      eventType,
+    });
+    deps.roundRobinCandidates = async (b, _e, _ms, _p, _only, excludeLow) => {
+      asked.push({ code: b.code, excludeLow });
+      return b.code === "111" ? { candidates: ["a"], memberCount: 1 } : { candidates: [], memberCount: 3 };
+    };
+    await createBooking({ ...input, bucketCode: "311" }, deps);
+    assert(asked.map((a) => a.code).join(",") === "311,211,111", "High: the cascade may reach Low");
+    assert(asked.every((a) => a.excludeLow !== true), "High: no rung drops Low carriers");
+  }
+  {
+    // Every allowed rung below is made of Low carriers only. That is the ordinary
+    // "nobody can take this time" outcome, NOT an empty bucket: the last rung's
+    // empty filtered pool must not page as a misconfigured bucket.
+    const { deps } = makeDeps({ freeEmails: new Set(["a@x.com"]) });
+    deps.resolveBucketByCode = async (code: string) => ({
+      bucket: { ...bucket, id: `bkt${code}`, code } as unknown as Bucket,
+      eventType,
+    });
+    deps.roundRobinCandidates = async (b, _e, _ms, _p, _only, excludeLow) =>
+      b.code === "411" ? { candidates: [], memberCount: 3 } : excludeLow ? { candidates: [], memberCount: 0 } : { candidates: ["a"], memberCount: 1 };
+    let err: unknown;
+    try {
+      await createBooking({ ...input, bucketCode: "411" }, deps);
+    } catch (e) {
+      err = e;
+    }
+    assert(
+      err instanceof SlotUnavailableError && !(err instanceof NoEligibleAgentsError),
+      `top tier: a cascade with nobody allowed reads as a taken time, not an empty bucket (got ${String(err)})`,
     );
   }
 

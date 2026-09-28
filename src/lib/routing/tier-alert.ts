@@ -1,5 +1,5 @@
 import { BACKEND } from "../xbc.ts";
-import { tierLadder } from "./tiers.ts";
+import { isTopTierCode, tierLadder } from "./tiers.ts";
 
 const XBC = /^[1-5][0-3][0-2]$/;
 
@@ -48,6 +48,23 @@ export function tierFallbackAlert(input: {
   if (!tierLadder(requestedCode).includes(effectiveCode)) return null;
 
   const tiersDropped = Number(requestedCode[0]) - Number(effectiveCode[0]);
+
+  // A TOP TIER CASCADE SENDS NOTHING PER BOOKING (#2843).
+  //
+  // Sales ops decided on 2026-09-28 (Slack #C091G6LEQ80, p1790609176877419) that an
+  // Ultra High or Very High lead is cascaded rather than booked days out: Sam, "We
+  // never really want to book out further than 3 days if we can help it", with the
+  // cascade stopping at Medium and skipping anybody who also carries Low (#2842).
+  // There are six Ultra advisors, so inside a three day window this is ordinary
+  // routing, and a page per booking reporting it is the alert nobody reads by the
+  // second week (L36). It is counted once a day on the info channel instead,
+  // `top_tier_cascade_rate` in `src/lib/monitor/top-tier-cascade.ts`.
+  //
+  // The ladder already refuses to go lower than the floor, so any pair that gets
+  // this far is inside the rule. What is genuinely wrong for these leads, every
+  // allowed tier full, is a different event with its own signal (#2841), and it
+  // must not page twice.
+  if (tiersDropped > 0 && isTopTierCode(requestedCode)) return null;
   const backendChanged = requestedCode[1] !== effectiveCode[1];
   // Named, so the notice says who took the booking rather than a digit.
   //

@@ -21,6 +21,7 @@ import {
   type AgentShift,
   type DeadEndCause,
 } from "../src/lib/monitor/availability-health.ts";
+import { tierLadder } from "../src/lib/routing/tiers.ts";
 import { assert, finish } from "./lib/harness.ts";
 
 // Em dash, en dash, or a spaced hyphen used as punctuation. Built from escapes so
@@ -113,9 +114,9 @@ const ladder = (code: string) => {
     { code: "521", eligibleCount: 2, slotCount: 0, computedAtMs: NOW - 1000, onShiftNow: true },
     { code: "530", eligibleCount: 2, slotCount: 0, computedAtMs: NOW - 1000, onShiftNow: false }, // closed, not failing
   ];
-  const bucketInfo = new Map<string, { slotCount: number; isTest: boolean }>([
+  const bucketInfo = new Map<string, { slotCount: number; slotCountWithoutLow?: number | null; isTest: boolean }>([
     ["520", { slotCount: 0, isTest: false }],
-    ["420", { slotCount: 50, isTest: false }], // covers 520
+    ["420", { slotCount: 50, slotCountWithoutLow: 50, isTest: false }], // covers 520
     ["320", { slotCount: 64, isTest: false }],
     ["521", { slotCount: 0, isTest: false }],
     ["421", { slotCount: 0, isTest: false }],
@@ -160,6 +161,44 @@ const ladder = (code: string) => {
     bucketInfo: new Map([["510", { slotCount: 0, isTest: false }]]),
   });
   assert(out.page.length === 1 && out.covered.length === 0, "missing lower-rung rows count as no coverage");
+}
+
+// --- #2842: below a top tier lead's own tier, only advisors without Low count ---
+//
+// The booker judges those rungs on the times an advisor WITHOUT Low is free, so the
+// monitor must too, or it reports an Ultra lead as covered by a Medium pool made
+// entirely of Low carriers while the booker offers that lead nothing.
+{
+  const rows = [
+    { code: "520", eligibleCount: 3, slotCount: 0, computedAtMs: NOW - 1000, onShiftNow: true },
+    { code: "320", eligibleCount: 3, slotCount: 0, computedAtMs: NOW - 1000, onShiftNow: true },
+  ];
+  const bucketInfo = new Map<string, { slotCount: number; slotCountWithoutLow?: number | null; isTest: boolean }>([
+    ["520", { slotCount: 0, isTest: false }],
+    ["420", { slotCount: 50, slotCountWithoutLow: 0, isTest: false }], // only Low carriers free
+    ["320", { slotCount: 0, slotCountWithoutLow: null, isTest: false }], // unmeasured second list
+    ["220", { slotCount: 9, slotCountWithoutLow: 4, isTest: false }],
+  ]);
+  const out = classifyEmptyBuckets(rows, { nowMs: NOW, freshWindowMs: FRESH, ladder: tierLadder, bucketInfo });
+  const ultra = out.covered.find((c) => c.code === "520");
+  assert(ultra?.via === "220", `an Ultra lead is covered only where an advisor without Low is free (got ${ultra?.via})`);
+  // The same pools judged for a HIGH lead: its cascade keeps Low carriers, so
+  // 220's full count covers it, the direction that proves the rule is per lead.
+  const high = out.covered.find((c) => c.code === "320");
+  assert(high?.via === "220", `a High lead's cascade counts Low carriers (got ${high?.via})`);
+}
+{
+  // Every lower rung free only for Low carriers: an Ultra dead end, not coverage.
+  const rows = [{ code: "511", eligibleCount: 3, slotCount: 0, computedAtMs: NOW - 1000, onShiftNow: true }];
+  const bucketInfo = new Map<string, { slotCount: number; slotCountWithoutLow?: number | null; isTest: boolean }>([
+    ["511", { slotCount: 0, isTest: false }],
+    ["411", { slotCount: 20, slotCountWithoutLow: 0, isTest: false }],
+    ["311", { slotCount: 20, isTest: false }], // a row from before the second list existed
+    ["211", { slotCount: 20, slotCountWithoutLow: 0, isTest: false }],
+    ["111", { slotCount: 99, slotCountWithoutLow: 99, isTest: false }], // below the floor
+  ]);
+  const out = classifyEmptyBuckets(rows, { nowMs: NOW, freshWindowMs: FRESH, ladder: tierLadder, bucketInfo });
+  assert(out.page.includes("511"), "an Ultra lead only Low carriers could serve is a dead end, and pages");
 }
 
 // --- formatFallbackCoveredNotice (#567/#585): the low-priority info signal,

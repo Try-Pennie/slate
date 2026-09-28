@@ -18,7 +18,7 @@ import { appUrl } from "@/lib/env";
 import { loadBookingHorizonDays } from "@/lib/booking/settings";
 import { loadBusinessHoursCached } from "@/lib/booking/business-hours-load";
 import { selectWithTierFallback } from "@/lib/routing/tier-fallback";
-import { tierKeyOf } from "@/lib/routing/tiers";
+import { rungExcludesLow, tierKeyOf } from "@/lib/routing/tiers";
 import { log } from "@/lib/log";
 
 // Short L1 TTL: the precompute row is the source of truth, so the Cache API is
@@ -213,6 +213,22 @@ export interface AvailabilityRoutingMeta {
 }
 
 /**
+ * The times rung `rungCode` may offer a lead who asked for `requestedCode`
+ * (#2842): its whole list, or, on a rung below a top tier lead's own tier, only
+ * the times an advisor without Low is free. An unknown second list offers nothing
+ * (`BucketSlots.slotsWithoutLow`), so the rung is skipped rather than showing the
+ * lead advisors the rule keeps away.
+ */
+function servedSlotsForRung(
+  requestedCode: string,
+  rungCode: string,
+  row: ResolvedBucketSlots,
+): string[] {
+  if (!rungExcludesLow(requestedCode, rungCode)) return row.slots;
+  return row.slotsWithoutLow ?? [];
+}
+
+/**
  * Cached slots for `code`; if the whole horizon window is empty, cascade down
  * the tier ladder (lower debt-tier, same backend+legal digits) and return the
  * first tier that has slots, with a routing descriptor.
@@ -237,19 +253,24 @@ export async function getBucketSlotsWithFallback(
   if (requested.bucket.is_test && !authorizedForTest) return null;
 
   const withRouting = (
-    slotsFor: ResolvedBucketSlots,
+    resolved: ResolvedBucketSlots,
     rungs: number,
-  ): ResolvedBucketSlots & { routing: AvailabilityRoutingMeta } => ({
-    ...slotsFor,
-    routing: {
-      requested_code: code,
-      effective_code: slotsFor.bucket.code,
-      tier_fallback: rungs > 0,
-      rungs_dropped: rungs,
-      requested_tier: tierKeyOf(code),
-      booked_tier: tierKeyOf(slotsFor.bucket.code),
-    },
-  });
+  ): ResolvedBucketSlots & { routing: AvailabilityRoutingMeta } => {
+    // #2842: the second list is routing input, never output. The served list was
+    // already chosen from it below, so it goes no further than this function.
+    const { slotsWithoutLow: _routingOnly, ...slotsFor } = resolved;
+    return {
+      ...slotsFor,
+      routing: {
+        requested_code: code,
+        effective_code: slotsFor.bucket.code,
+        tier_fallback: rungs > 0,
+        rungs_dropped: rungs,
+        requested_tier: tierKeyOf(code),
+        booked_tier: tierKeyOf(slotsFor.bucket.code),
+      },
+    };
+  };
 
   if (requested.slots.length > 0) return withRouting(requested, 0);
 
@@ -263,13 +284,16 @@ export async function getBucketSlotsWithFallback(
     // Skip synthetic test buckets in the display cascade (the booking cascade
     // skips them too); treat like a non-existent bucket so a real lower tier wins.
     if (row?.bucket.is_test) return null;
-    return row?.slots ?? null;
+    if (!row) return null;
+    return servedSlotsForRung(code, c, row);
   });
 
   if (!winner || winner.rungsDropped === 0) return withRouting(requested, 0);
   const winningBucket = seen.get(winner.effectiveCode);
   if (!winningBucket) return withRouting(requested, 0);
-  return withRouting(winningBucket, winner.rungsDropped);
+  // Serve exactly the list the rung was judged on, so a rung that excludes Low
+  // never shows the lead a time only a Low carrier is free for.
+  return withRouting({ ...winningBucket, slots: winner.slots }, winner.rungsDropped);
 }
 
 /**

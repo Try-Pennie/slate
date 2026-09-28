@@ -1,4 +1,4 @@
-import { tierLadder } from "@/lib/routing/tiers";
+import { rungExcludesLow, tierLadder } from "@/lib/routing/tiers";
 
 /**
  * No-eligible-agents monitor (#327) — pure decision + alert copy. A bucket whose
@@ -14,6 +14,12 @@ export interface BucketCoverage {
   code: string;
   /** Eligible bookable agents the bucket currently resolves to (incl. fallback). */
   eligibleCount: number;
+  /**
+   * #2842: how many of them do NOT carry Low, which is all a rung below a top tier
+   * lead's own tier may offer. `null` (or absent) is unmeasured, and an unmeasured
+   * rung is no rescue for those leads.
+   */
+  eligibleWithoutLowCount?: number | null;
   /**
    * The POOL this bucket routes through (#2237). Sixty codes resolve to fifteen
    * pools, so a tier with nobody in it is ONE finding that used to arrive as six
@@ -63,12 +69,22 @@ export interface BucketCoverage {
  */
 export function emptyBuckets(coverage: BucketCoverage[]): string[] {
   const staffed = new Set(coverage.filter((b) => b.eligibleCount > 0).map((b) => b.code));
+  // #2842: the rungs below a top tier lead's own tier are judged on the advisors
+  // without Low, exactly as the router judges them (`rungExcludesLow`).
+  const staffedWithoutLow = new Set(
+    coverage.filter((b) => (b.eligibleWithoutLowCount ?? 0) > 0).map((b) => b.code),
+  );
   return coverage
     .filter((b) => b.eligibleCount === 0)
     // A rung absent from the coverage is no rescue: it is a code this sweep never
     // measured, and an unmeasured rung reading as a staffed one is the same fail
     // open in a second costume.
-    .filter((b) => !tierLadder(b.code).some((rung) => staffed.has(rung)))
+    .filter(
+      (b) =>
+        !tierLadder(b.code).some((rung) =>
+          (rungExcludesLow(b.code, rung) ? staffedWithoutLow : staffed).has(rung),
+        ),
+    )
     .map((b) => b.code);
 }
 

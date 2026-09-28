@@ -8,6 +8,7 @@
  */
 import { DateTime } from "luxon";
 import type { AlertResolve, ThrottledNotify } from "./alert-deps";
+import { rungExcludesLow } from "../routing/tiers.ts";
 
 /** A working-hours window for one weekday (1=Mon..7=Sun), minutes from local
  *  midnight. Structurally matches availability/compute.ts's WorkingRule. */
@@ -144,7 +145,12 @@ export function classifyEmptyBuckets(
     nowMs: number;
     freshWindowMs: number;
     ladder: (code: string) => string[];
-    bucketInfo: Map<string, { slotCount: number | null; isTest: boolean }>;
+    /**
+     * `slotCountWithoutLow` (#2842) is what a rung below a top tier lead's own
+     * tier is judged on, as the booker judges it. Absent or null is unmeasured,
+     * so that rung is no rescue for those leads.
+     */
+    bucketInfo: Map<string, { slotCount: number | null; slotCountWithoutLow?: number | null; isTest: boolean }>;
   },
 ): EmptyBucketClassification {
   const failing = failingBuckets(rows, { nowMs: opts.nowMs, freshWindowMs: opts.freshWindowMs });
@@ -161,7 +167,9 @@ export function classifyEmptyBuckets(
       if (!info || info.isTest) continue;
       // An unmeasured rung (null) must not claim to cover a tier it might not, so
       // it is skipped rather than counted either way (#1296).
-      if (info.slotCount !== null && info.slotCount > 0) {
+      // #2842: the same list the booker serves that lead from this rung.
+      const count = rungExcludesLow(code, rung) ? (info.slotCountWithoutLow ?? null) : info.slotCount;
+      if (count !== null && count > 0) {
         via = rung;
         break;
       }

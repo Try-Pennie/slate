@@ -20,9 +20,10 @@ import { assert, eq, finish } from "./lib/harness.ts";
 
 /** A bucket in a pool of its own, which is what every case below the pool
  *  section was written against. */
-const alone = (code: string, eligibleCount: number) => ({
+const alone = (code: string, eligibleCount: number, eligibleWithoutLowCount: number | null = eligibleCount) => ({
   code,
   eligibleCount,
+  eligibleWithoutLowCount,
   poolKey: `pool-${code}`,
   poolLabel: null,
 });
@@ -96,9 +97,10 @@ const alone = (code: string, eligibleCount: number) => ({
 // It asks `tierLadder` rather than re-deriving a rule here, so it can never claim
 // a rescue the router does not perform, and a widened ladder moves both together.
 {
-  const rung = (code: string, eligibleCount: number) => ({
+  const rung = (code: string, eligibleCount: number, eligibleWithoutLowCount: number | null = eligibleCount) => ({
     code,
     eligibleCount,
+    eligibleWithoutLowCount,
     poolKey: `pool-${code}`,
     poolLabel: null,
   });
@@ -140,6 +142,21 @@ const alone = (code: string, eligibleCount: number) => ({
 
   // A rung nobody measured is not a staffed rung.
   eq(emptyBuckets([rung("522", 0)]).length, 1, "a ladder whose rungs are absent from the sweep is a dead end");
+
+  // #2842: below a top tier lead's own tier only advisors WITHOUT Low count, as
+  // the router counts them. A Medium pool made entirely of Low carriers is no
+  // rescue for an Ultra lead, and is one for a High lead.
+  const lowOnlyBelow = [rung("511", 0), rung("411", 5, 0), rung("311", 9, 0), rung("211", 30, 0), rung("111", 80, 80)];
+  assert(emptyBuckets(lowOnlyBelow).includes("511"), "an Ultra code only Low carriers could serve is a dead end");
+  assert(!emptyBuckets(lowOnlyBelow).includes("411"), "a Very High code with advisors of its own is not empty");
+  assert(
+    emptyBuckets([rung("411", 0), rung("311", 9, 0), rung("211", 30, 0), rung("111", 80, 80)]).includes("411"),
+    "an empty Very High code only Low carriers could serve is a dead end",
+  );
+  assert(!emptyBuckets([rung("311", 0), rung("211", 30, 0)]).includes("311"), "a High code keeps Low carriers");
+  assert(!emptyBuckets([rung("511", 0), rung("211", 30, 2)]).includes("511"), "one advisor without Low is a rescue");
+  // Unmeasured is no rescue, never a staffed rung.
+  assert(emptyBuckets([rung("511", 0), rung("411", 5, null)]).includes("511"), "an unmeasured count is no rescue");
 }
 
 finish();

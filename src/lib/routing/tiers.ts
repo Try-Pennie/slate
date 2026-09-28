@@ -53,7 +53,7 @@ export function wholeTierPoolCode(tier: string): string {
  *   2. for a BEYOND code, the Achieve rung (#1909);
  *   3. for any SPECIFIC backend (Beyond or Achieve), the tier's whole pool.
  *
- * So `511` (unconstrained) gives `511, 411, 311, 211, 111`; `531` gives
+ * So `511` (unconstrained) gives `511, 411, 311, 211` (it stops at Medium, below); `531` gives
  * `531, 511, 431, 411, ...`; `522` gives `522, 532, 512, 422, 432, 412, ...`.
  *
  * ## Why the tier is exhausted before it is dropped (#2486)
@@ -114,6 +114,16 @@ export function wholeTierPoolCode(tier: string): string {
  * reaches somebody who cannot place them, and `beyond-overflow.ts` is what has
  * to keep counting it.
  *
+ * ## The floor (#2842)
+ *
+ * The walk stops at `cascadeFloorTier`: Ultra High and Very High leads go no
+ * lower than Medium, and High and below may reach Low. On every rung BELOW a top
+ * tier lead's own tier, advisors who also carry Low are skipped
+ * (`rungExcludesLow`). Both rules are sales ops' (2026-09-28, Slack #C091G6LEQ80,
+ * p1790609176877419): "only cascade down to a medium", "as long as the person
+ * who is on Medium isn't also on Low", and "A high" as the highest tier allowed
+ * to reach Low.
+ *
  * Invalid codes return [code].
  */
 export function tierLadder(code: string): string[] {
@@ -123,12 +133,66 @@ export function tierLadder(code: string): string[] {
   const legal = code[2];
   const specificBackend = backend === BEYOND || backend === ACHIEVE;
   const out: string[] = [];
-  for (let t = adv; t >= 1; t--) {
+  for (let t = adv; t >= cascadeFloorTier(adv); t--) {
     out.push(`${t}${backend}${legal}`);
     if (backend === BEYOND) out.push(`${t}${ACHIEVE}${legal}`);
     if (specificBackend) out.push(tierPoolCode(String(t), legal));
   }
   return out;
+}
+
+/** The highest debt tier whose cascade must keep away from Low (#2842). */
+const TOP_TIER_FROM = 4;
+/** Where a top tier lead's cascade stops: Medium. */
+const TOP_TIER_FLOOR = 2;
+
+/**
+ * The lowest debt tier a lead of `tier` may be cascaded to.
+ *
+ * Ultra High (5) and Very High (4) stop at Medium (2); every other tier may reach
+ * Low (1). Its own function rather than a literal in the loop, because the ladder,
+ * the booking cascade and the tests all have to ask the same question (L107).
+ */
+export function cascadeFloorTier(tier: number): number {
+  return tier >= TOP_TIER_FROM ? TOP_TIER_FLOOR : 1;
+}
+
+/** Whether a code is an Ultra High or Very High one, whose cascade is restricted
+ *  (#2842) and counted rather than paged (#2843). */
+export function isTopTierCode(code: string): boolean {
+  return XBC.test(code) && Number(code[0]) >= TOP_TIER_FROM;
+}
+
+/**
+ * Whether the rung `rungCode` of the ladder for `requestedCode` must skip every
+ * advisor who also carries Low (#2842).
+ *
+ * True only BELOW a top tier lead's own tier. The lead's own tier keeps its whole
+ * pool, Low carriers included, because the rule is about where a cascade may send
+ * a top tier lead, not about who may serve one: an Ultra advisor who also carries
+ * Low is still the Ultra lead's own advisor.
+ *
+ * The one place this is decided. The display cascade (which reads each pool's
+ * `slotsWithoutLow`) and the booking cascade (which drops Low carriers from the
+ * candidates) both call it, so what a lead is shown and who can take it cannot
+ * drift apart.
+ *
+ * An unreadable code excludes nothing, because it has no ladder below itself.
+ */
+export function rungExcludesLow(requestedCode: string, rungCode: string): boolean {
+  if (!isTopTierCode(requestedCode) || !XBC.test(rungCode)) return false;
+  return Number(rungCode[0]) < Number(requestedCode[0]);
+}
+
+/**
+ * Whether a pool can ever be asked for its advisors who do not carry Low: a tier
+ * a top tier lead can be cascaded ONTO, which is Medium up to one below the top.
+ * The compute uses it to spend the second pass only where a reader exists.
+ */
+export function poolServesLowExcludedRungs(code: string): boolean {
+  if (!XBC.test(code)) return false;
+  const tier = Number(code[0]);
+  return tier >= TOP_TIER_FLOOR && tier < 5;
 }
 
 /** The debt_team key for a code's first digit, or null if the code is invalid. */
