@@ -75,7 +75,7 @@ import {
   MANAGE_PHONE_NOT_CHANGEABLE,
   MANAGE_PHONE_NOT_FOUND,
 } from "./manage-copy.ts";
-import { validateAttendee } from "../attendee.ts";
+import { storedFirstName, validateAttendee } from "../attendee.ts";
 import { leadCallingZone, withinLeadCallingWindow } from "./lead-calling-window.ts";
 import { shortErrorReason } from "../notify/error-text.ts";
 import { log } from "@/lib/log";
@@ -572,7 +572,10 @@ export interface CreateBookingInput {
   startIso: string;
   timezone: string;
   salesforceId?: string | null;
-  attendee: { name?: string; email?: string; phone?: string };
+  /** `firstName` is the first name the lead answered in its own field (#2549):
+   *  the public booker sends it, the direct booking API takes one name and does
+   *  not. `name` stays the joined name every layer carries. */
+  attendee: { name?: string; firstName?: string; email?: string; phone?: string };
   prefill: Record<string, string>;
   /** Optional caller-supplied key; falls back to a derived bucket+slot+attendee key. */
   idempotencyKey?: string;
@@ -921,7 +924,13 @@ export interface BookingDeps {
   /** The lead's own details on the booking row, in one write (#2164). */
   updateBookingContact(
     bookingId: string,
-    patch: { attendee_name?: string; attendee_email?: string; attendee_phone?: string },
+    patch: {
+      attendee_name?: string;
+      /** #2549: travels with `attendee_name`, and null clears a stale one. */
+      attendee_first_name?: string | null;
+      attendee_email?: string;
+      attendee_phone?: string;
+    },
   ): Promise<void>;
   insertBooking(row: BookingInsert): Promise<InsertBookingResult>;
   /** One write for many blocks (#762). The reconcile-missing sweep can re-create up
@@ -1824,6 +1833,7 @@ function webhookPayload(
     },
     attendee: {
       name: booking.attendee_name,
+      first_name: booking.attendee_first_name ?? null,
       email: booking.attendee_email,
       phone: booking.attendee_phone,
     },
@@ -2921,6 +2931,8 @@ export async function createBooking(
       status: "confirmed",
       salesforce_id: input.salesforceId ?? null,
       attendee_name: input.attendee.name ?? null,
+      // #2549: the answered first name, or null; never a split of the name above.
+      attendee_first_name: storedFirstName(input.attendee.name, input.attendee.firstName),
       attendee_email: input.attendee.email ?? null,
       attendee_phone: phone,
       prefill: input.prefill,
@@ -4062,7 +4074,7 @@ export async function rescheduleBooking(
    * Undefined on every other caller, which is every path where nobody typed
    * anything: the manage link's own reschedule, the admin move, the API.
    */
-  contact?: { name?: string; email?: string; phone?: string },
+  contact?: { name?: string; firstName?: string; email?: string; phone?: string },
   /**
    * #2310: the zone the lead is looking at the new time in, when the caller
    * knows it: the manage page and the booker's move panel send the zone they
@@ -5173,7 +5185,7 @@ export function contactUnchanged(changed: ContactChange): boolean {
  */
 export async function updateBookingContact(
   token: string,
-  contact: { name?: string; email?: string; phone?: string },
+  contact: { name?: string; firstName?: string; email?: string; phone?: string },
   deps: BookingDeps,
 ): Promise<UpdateContactResult> {
   // Only the fields this caller actually sent are judged. Handing the validator a
@@ -5238,15 +5250,25 @@ export async function updateBookingContact(
   const stored = nextPhone ?? "";
   if (contactUnchanged(changed)) return { ok: true, phone: stored, changed };
 
+  // #2549: the answered first name moves WITH the name and only with it. A name
+  // changed by a caller that sent no first name clears the old one, which would
+  // otherwise greet the lead by somebody else's first name. An unchanged name
+  // leaves it alone: a returning lead's prefill is shown split ("Mary" / "Jo
+  // Smith"), so the first name it sends back unedited is a guess, and writing it
+  // over an answered "Mary Jo" would be the defect this column ends.
+  const nextFirstName = changed.name ? storedFirstName(nextName, contact.firstName) : booking.attendee_first_name;
   await deps.updateBookingContact(booking.id, {
-    ...(changed.name ? { attendee_name: nextName ?? "" } : {}),
+    ...(changed.name ? { attendee_name: nextName ?? "", attendee_first_name: nextFirstName } : {}),
     ...(changed.email ? { attendee_email: nextEmail ?? "" } : {}),
     ...(changed.phone ? { attendee_phone: stored } : {}),
   });
   // The in-memory row too, so a caller that goes on to use this context (the move,
   // #2164) builds its calendar event and its webhook payload from the details the
   // lead just gave rather than the ones it read a moment ago.
-  if (changed.name) booking.attendee_name = nextName ?? null;
+  if (changed.name) {
+    booking.attendee_name = nextName ?? null;
+    booking.attendee_first_name = nextFirstName;
+  }
   if (changed.email) booking.attendee_email = nextEmail ?? null;
   if (changed.phone) booking.attendee_phone = stored;
 

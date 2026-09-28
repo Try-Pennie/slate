@@ -52,6 +52,8 @@ const schema = z.object({
   attendee: z
     .object({
       name: z.string().max(INPUT_LIMITS.contact).optional(),
+      // #2549: the answered first name, which travels with `name`.
+      firstName: z.string().max(INPUT_LIMITS.contact).optional(),
       email: z.string().max(INPUT_LIMITS.contact).optional(),
       phone: z.string().max(INPUT_LIMITS.contact).optional(),
     })

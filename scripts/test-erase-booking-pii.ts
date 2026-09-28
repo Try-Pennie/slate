@@ -14,6 +14,7 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { assert, finish } from "./lib/harness.ts";
+import { REDACTED_BOOKING_UPDATE } from "../src/lib/booking/pii-retention.ts";
 
 const dir = join(import.meta.dirname, "..", "supabase", "migrations");
 // The function is defined with `create or replace`, so when several migrations
@@ -135,5 +136,20 @@ assert(
   !code.includes("gcal") && !code.includes("calendar"),
   "erasure does NOT delete Google Calendar events (agent's operational record)",
 );
+
+
+// #2549: erasure on request clears EVERY contact column retention clears, derived
+// from the retention shape rather than listed again here, so a contact column
+// added to one (attendee_first_name was the first) cannot be missed by the other.
+{
+  const bookingsUpdate = code.match(/update bookings set ([\s\S]*?) where/)?.[1] ?? "";
+  assert(bookingsUpdate.length > 0, "erase_booking_pii has an update bookings ... set ... where block");
+  for (const column of Object.keys(REDACTED_BOOKING_UPDATE)) {
+    assert(
+      new RegExp(`\\b${column}\\s*=`).test(bookingsUpdate),
+      `erase_booking_pii clears ${column}, as retention does (${file})`,
+    );
+  }
+}
 
 finish();

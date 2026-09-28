@@ -48,7 +48,12 @@ export interface BookingEventPayload {
   ends_at: string;
   timezone: string;
   agent: { id: string; name: string | null; email: string };
-  attendee: { name: string | null; email: string | null; phone: string | null };
+  /**
+   * `first_name` is the first name the lead answered (#2549), null when the
+   * booking holds none. Optional because a stored payload written before it
+   * existed carries no key, and a resend rebuilds from that payload.
+   */
+  attendee: { name: string | null; email: string | null; phone: string | null; first_name?: string | null };
   prefill: Record<string, string>;
   manage_url: string;
   /**

@@ -29,6 +29,7 @@ import { deterministicEventId, EventGone } from "../../src/lib/booking/core.ts";
 import type { PersonIdentity, PersonWorld } from "../../src/lib/booking/person-dedupe.ts";
 import { GoogleHttpError } from "../../src/lib/google/http-error.ts";
 import type { OwnerAlertEventBody } from "../../src/lib/booking/owner-alert.ts";
+import type { BookingEventPayload } from "../../src/lib/webhooks/types.ts";
 
 /**
  * Per-file assertion counter. Each suite is its own process (the runner spawns
@@ -99,6 +100,7 @@ export function makeBooking(over: Partial<Booking>): Booking {
     manage_token: "tok1",
     salesforce_id: "sf1",
     attendee_name: "Kris",
+    attendee_first_name: null,
     attendee_email: "k@x.com",
     attendee_phone: "+12035615295",
     prefill: {},
@@ -355,7 +357,7 @@ export function makeDeps(opts: FakeOpts) {
       // true on user-facing paths (confirm/cancel/reschedule), false on cron drains.
       deferred: boolean;
       /** Who the payload is about (#2164). */
-      attendee: { name: string | null; email: string | null; phone: string | null };
+      attendee: BookingEventPayload["attendee"];
       /**
        * The advisor a reassign moved the booking AWAY from (#2368). Recorded
        * because it can only come off the outbox row: the booking the notify step

@@ -806,6 +806,9 @@ export default function Booker({
           salesforceId,
           attendee: {
             name: attendeeName,
+            // #2549: the first name as answered, so the booking stores it rather
+            // than Regal splitting it back out of the joined name.
+            firstName: attendee.firstName.trim(),
             email: attendee.email.trim(),
             phone: attendee.phone.trim(),
           },
@@ -1001,8 +1004,10 @@ export default function Booker({
   }
 
   /** Only the details that carry a value: see the send site below (#2203). */
-  const typedDetails: { name?: string; email?: string; phone?: string } = {};
+  const typedDetails: { name?: string; firstName?: string; email?: string; phone?: string } = {};
   if (attendeeName) typedDetails.name = attendeeName;
+  // #2549: travels with the name; the server writes it only when the name moved.
+  if (attendeeName && attendee.firstName.trim()) typedDetails.firstName = attendee.firstName.trim();
   if (attendee.email.trim()) typedDetails.email = attendee.email.trim();
   // #2210: and never the number, once one has been corrected on this screen. The
   // panel offers no correction for the name or the email, so those still travel:

@@ -15,6 +15,7 @@ and which data we deliberately keep forever and why.
 | Data | Table.column | Collected on | Class |
 |------|--------------|--------------|-------|
 | Attendee name | `bookings.attendee_name` | public booker | direct contact PII |
+| Attendee first name, as answered (#2549) | `bookings.attendee_first_name` | public booker | direct contact PII; cleared by retention and by `erase_booking_pii`; not mirrored to Snowflake |
 | Attendee email | `bookings.attendee_email` | public booker | direct contact PII |
 | Attendee phone | `bookings.attendee_phone` | public booker | direct contact PII |
 | Prefill answers | `bookings.prefill` (jsonb) | public booker | may carry contact PII |

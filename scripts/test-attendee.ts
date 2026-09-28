@@ -1,6 +1,6 @@
 // Sanity test for the shared attendee contact validation (#37).
 // Run: node --experimental-strip-types scripts/test-attendee.ts
-import { validateAttendee, joinName, splitName, nameFieldErrors } from "../src/lib/attendee.ts";
+import { validateAttendee, joinName, splitName, nameFieldErrors, storedFirstName } from "../src/lib/attendee.ts";
 import { US_ONLY_PHONE_NOTICE } from "../src/lib/booking/booker-copy.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
@@ -205,5 +205,18 @@ function phoneError(phone: string): string | undefined {
     );
   }
 }
+
+
+// #2549: what the booking stores as the ANSWERED first name. It must be the start
+// of the joined name it travels with, so the last name can be read off the
+// remainder exactly rather than guessed.
+eq(storedFirstName("Mary Jo Smith", "Mary Jo"), "Mary Jo", "a first name the name starts with is stored");
+eq(storedFirstName("Mary Jo Smith", "  Mary Jo "), "Mary Jo", "trimmed, like the name it joins");
+eq(storedFirstName("Cher", "Cher"), "Cher", "a lone first name is the whole name");
+eq(storedFirstName("Mary Jo Smith", undefined), null, "nothing answered stores nothing, never a split");
+eq(storedFirstName("Mary Jo Smith", "   "), null, "a blank answer stores nothing");
+eq(storedFirstName("Smith Mary", "Mary"), null, "a first name the joined name does not start with is refused, not stored beside it");
+eq(storedFirstName("Maryanne Smith", "Mary"), null, "a prefix that ends mid word is not the first name");
+eq(storedFirstName(undefined, "Mary"), null, "no name, no first name");
 
 finish();

@@ -5,6 +5,7 @@ import type {
   BookingWebhookEvent,
 } from "@/lib/webhooks/types";
 import { partnerKeysFrom } from "@/lib/booking/partner-keys";
+import { lastNameAfter } from "@/lib/attendee";
 
 /**
  * Builds the Regal event payload directly (replacing the Cal.com -> Regal
@@ -92,7 +93,19 @@ function tzAbbreviation(at: DateTime): string {
   return abbr;
 }
 
-function nameParts(full: string | null): { first?: string; last?: string } {
+/**
+ * The name traits, from the first name the lead ANSWERED when the booking holds
+ * one (#2549), and from splitting the joined name only when it does not.
+ *
+ * The split is right for "Mary Smith" and wrong for "Mary Jo Smith", and this
+ * value is what the confirmation text greets the lead with. It stays as the
+ * fallback for the rows that have nothing better: every booking made before the
+ * column existed, every booking through the direct API (which takes one name),
+ * and every stored payload a resend or replay rebuilds from.
+ */
+function nameParts(full: string | null, answeredFirst?: string | null): { first?: string; last?: string } {
+  const first = answeredFirst?.trim();
+  if (first) return { first, last: lastNameAfter(full, first) };
   if (!full) return {};
   const parts = full.trim().split(/\s+/);
   return { first: parts[0], last: parts.length > 1 ? parts.slice(1).join(" ") : undefined };
@@ -144,7 +157,7 @@ export function regalSendsNothingFor(event: BookingWebhookEvent, p: Pick<Booking
 /** The contact identity envelope every booking event carries, so the profile matches. */
 function contactTraits(p: BookingEventPayload, isCreated: boolean): RegalEvent["traits"] {
   const traits: RegalEvent["traits"] = {};
-  const { first, last } = nameParts(p.attendee.name);
+  const { first, last } = nameParts(p.attendee.name, p.attendee.first_name);
   if (first) traits.firstName = first;
   if (last) traits.lastName = last;
   if (p.attendee.phone) {

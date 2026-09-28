@@ -28,6 +28,8 @@ eq(
 eq(REDACTED_BOOKING_UPDATE.attendee_name, null, "clears attendee_name");
 eq(REDACTED_BOOKING_UPDATE.attendee_email, null, "clears attendee_email");
 eq(REDACTED_BOOKING_UPDATE.attendee_phone, null, "clears attendee_phone");
+// #2549: the answered first name is the same contact data as the joined name.
+eq(REDACTED_BOOKING_UPDATE.attendee_first_name, null, "clears attendee_first_name");
 assert(
   JSON.stringify(REDACTED_BOOKING_UPDATE.prefill) === "{}",
   "blanks the prefill blob to an empty object",

@@ -43,11 +43,14 @@ export function bookingPiiCutoffIso(
  */
 export const REDACTED_BOOKING_UPDATE: {
   attendee_name: null;
+  attendee_first_name: null;
   attendee_email: null;
   attendee_phone: null;
   prefill: Record<string, never>;
 } = {
   attendee_name: null,
+  // #2549: the answered first name is the same contact data as the joined name.
+  attendee_first_name: null,
   attendee_email: null,
   attendee_phone: null,
   prefill: {},
