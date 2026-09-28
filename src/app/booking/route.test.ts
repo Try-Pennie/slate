@@ -789,9 +789,26 @@ describe("POST /booking outcome tally (#1313)", () => {
         routing_trace: { bucket_code: "411", race_lost: ["a"] },
       },
       manageUrl: "https://slate.test/booking/manage/tok",
+      newlyInserted: true,
     });
     await post(VALID_BODY);
     expect(outcomes()).toEqual([["created", null], ["race_reassigned", null]]);
+  });
+
+  it("does not count a race again on a replay that returns an earlier confirm's booking", async () => {
+    // A double click or retry with the same key returns the booking already made,
+    // whose trace describes the earlier confirm's race. That race was counted then.
+    service.createBooking.mockResolvedValue({
+      booking: {
+        id: "bk-1",
+        starts_at: "2026-07-01T15:00:00.000Z",
+        ends_at: "2026-07-01T15:30:00.000Z",
+        routing_trace: { bucket_code: "411", race_lost: ["a"] },
+      },
+      manageUrl: "https://slate.test/booking/manage/tok",
+    });
+    await post(VALID_BODY);
+    expect(outcomes()).toEqual([["created", null]]);
   });
 
   it("counts an uncontested booking once", async () => {

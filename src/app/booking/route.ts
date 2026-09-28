@@ -343,7 +343,7 @@ async function handlePost(req: NextRequest) {
       resolveRequestedCode(parsed.data.requestedCode).kind === "valid");
 
   try {
-    const { booking, manageUrl } = await createBooking({
+    const { booking, manageUrl, newlyInserted } = await createBooking({
       // One call per person, enforced here and only here (#1337): the direct
       // booking API owns its own richer decision and must keep creating on a
       // cross-bucket rebook (#364).
@@ -388,7 +388,9 @@ async function handlePost(req: NextRequest) {
     recordRoutedOutcome("created", code, null, { by: "bucket", code, host });
     // #2838: a booking made after its first advisor lost the overlap race is
     // counted again, on a row outside the failure share, for the daily race whisper.
-    const raced = raceOutcomeForBooking(booking.routing_trace);
+    // Only when THIS confirm inserted it: a replay returns an earlier confirm's
+    // booking, whose race was counted when that confirm made it.
+    const raced = newlyInserted ? raceOutcomeForBooking(booking.routing_trace) : null;
     if (raced) recordRoutedOutcome(raced, code, null, { by: "bucket", code, host });
     return NextResponse.json({
       id: booking.id,

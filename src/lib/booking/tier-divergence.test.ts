@@ -237,7 +237,7 @@ function makeDeps(): BookingDeps {
     },
     advisorTimezone: async () => null,
     // #2838: a suite that is not about the race bound must never page, so the
-    // dispatcher throws rather than no-oping (the race suite below overrides it).
+    // dispatcher is never the real one; it throws, which the confirm path logs.
     pageRaceBoundHit: () => {
       throw new Error("race bound hit page not exercised by this suite");
     },

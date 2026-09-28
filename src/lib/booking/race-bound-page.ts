@@ -4,8 +4,8 @@
  *
  * The confirm path never calls the alert dispatcher itself: it hands the page to
  * `deps.pageRaceBoundHit`, so every suite that drives a refusal at the reassign
- * bound supplies a fake and cannot reach alert_state or Slack (L2), and a fake
- * that forgets it fails the refusal loudly rather than paging for real.
+ * bound supplies a fake and cannot reach alert_state or Slack (L2). A fake
+ * that forgets it, or throws, is logged by the confirm path and never pages.
  *
  * Here the send runs AFTER the response, so the lead's 409 never waits on an
  * alert_state read and a Slack post (up to its 8s timeout). A failed send is

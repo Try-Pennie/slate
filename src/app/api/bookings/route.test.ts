@@ -591,9 +591,20 @@ describe("POST /api/bookings: lost overlap races are counted (#2838)", () => {
   const outcomes = () => monitor.recordApiOutcome.mock.calls.map((c) => [c[0], c[2]]);
 
   it("counts a created booking that was handed on after a lost race", async () => {
-    service.bookViaApi.mockResolvedValue(result("created", { bucket_code: "411", race_lost: ["a"] }));
+    service.bookViaApi.mockResolvedValue({
+      ...result("created", { bucket_code: "411", race_lost: ["a"] }),
+      newlyInserted: true,
+    });
     await post("Bearer secret", VALID_BODY);
     expect(outcomes()).toEqual([["created", null], ["race_reassigned", null]]);
+  });
+
+  it("does not count a race again when a same key retry returns the booking already made", async () => {
+    // createBooking's idempotent replay still answers `created`, so the outcome
+    // alone cannot tell a replay apart; only a booking THIS call inserted counts.
+    service.bookViaApi.mockResolvedValue(result("created", { bucket_code: "411", race_lost: ["a"] }));
+    await post("Bearer secret", VALID_BODY);
+    expect(outcomes()).toEqual([["created", null]]);
   });
 
   it("counts an uncontested booking once", async () => {

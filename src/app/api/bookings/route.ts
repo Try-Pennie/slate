@@ -211,7 +211,11 @@ async function handlePost(req: NextRequest) {
     // #2838: only on a booking THIS call made. A dedupe or a reschedule names a
     // booking whose trace describes an earlier confirm, and counting it again would
     // count one race twice.
-    const raced = result.outcome === "created" ? raceOutcomeForBooking(result.booking.routing_trace) : null;
+    // A same key replay also answers `created`, so the outcome alone is not enough.
+    const raced =
+      result.outcome === "created" && result.newlyInserted
+        ? raceOutcomeForBooking(result.booking.routing_trace)
+        : null;
     if (raced) recordApiOutcome(raced, v.bucketCode, null, { by: "bucket", code: v.bucketCode, host: apiHost });
     return NextResponse.json(body, { status });
   } catch (err) {

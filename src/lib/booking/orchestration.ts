@@ -681,6 +681,15 @@ export interface BookingResult {
    * calling in (#2660).
    */
   isTest?: boolean;
+  /**
+   * #2838: true only when THIS call's own insert made the booking. Absent on an
+   * idempotent replay, on a reservation whose booking already existed, and when a
+   * same key racer won, all of which return a booking an earlier confirm made. A
+   * crash resume that completes the insert here does set it: the crashed request
+   * never returned, so nothing counted that booking before. The booker counts a
+   * lost race only when this is set, so one race is never counted twice.
+   */
+  newlyInserted?: true;
 }
 
 /**
@@ -3097,7 +3106,15 @@ export async function createBooking(
         });
         // Handed to the injected dispatcher, never sent from here: production
         // defers it past the response, and a test supplies a fake (L2).
-        if (page) deps.pageRaceBoundHit(page);
+        // A dispatcher that throws is logged and the lead still gets the 409:
+        // the refusal is their answer, and a page must never turn it into a 500.
+        if (page) {
+          try {
+            deps.pageRaceBoundHit(page);
+          } catch (pageErr) {
+            log.warn("booking", { msg: "could not hand off a race bound hit page; the refusal stands" }, pageErr);
+          }
+        }
         throw new RaceLostRefusalError(raceLost.length + 1, boundHit);
       }
       log.info("booking", {
@@ -3335,7 +3352,9 @@ async function completeReservation(
   }
 
   await deps.deleteReservation(reservation.id);
-  return { booking, manageUrl: manageUrl(deps, booking.manage_token) };
+  // #2838: the one return where THIS call's own insert made the booking. Every
+  // other return hands back a booking an earlier or racing confirm made.
+  return { booking, manageUrl: manageUrl(deps, booking.manage_token), newlyInserted: true };
 }
 
 /**
@@ -3538,6 +3557,9 @@ export interface ApiBookingResult {
    * 200 deduped reads as "handled" while the routing request was dropped.
    */
   bucketChangeDeclined?: BucketChangeDeclineReason;
+  /** #2838: carried from `BookingResult` on a "created" outcome. An idempotent
+   *  replay also answers "created", so only this says THIS call made the booking. */
+  newlyInserted?: true;
 }
 
 // Machine-to-machine rebooking reason; recorded on the reschedule history row.
@@ -3829,7 +3851,12 @@ export async function bookViaApi(
   switch (decision.action) {
     case "create": {
       const res = await createBooking(input, deps);
-      return { outcome: "created", booking: res.booking, manageUrl: res.manageUrl };
+      return {
+        outcome: "created",
+        booking: res.booking,
+        manageUrl: res.manageUrl,
+        ...(res.newlyInserted ? { newlyInserted: true as const } : {}),
+      };
     }
     case "dedupe": {
       // #1465: the decision is made on the INSTANT alone, which is right for its

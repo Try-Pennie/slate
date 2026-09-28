@@ -247,6 +247,8 @@ export interface FakeOpts {
   advisorTimezones?: Record<string, string>;
   /** The schedule read fails, so the step must retry rather than say less. */
   advisorTimezoneThrows?: boolean;
+  /** #2838: the race bound hit dispatcher throws synchronously when handed a page. */
+  raceBoundPageThrows?: boolean;
 }
 
 /** The three ways a calendar write fails, as the fakes model them. */
@@ -676,6 +678,7 @@ export function makeDeps(opts: FakeOpts) {
     },
     pageRaceBoundHit: (page) => {
       calls.raceBoundHitPages.push(page);
+      if (opts.raceBoundPageThrows) throw new Error("dispatcher refused the page");
     },
     advisorTimezone: async (userId) => {
       calls.advisorTimezoneReads.push(userId);
