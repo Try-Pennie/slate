@@ -21,7 +21,7 @@
 /** Workflows that may name the bare shared key, each with its reason (L129). */
 export const SHARED_KEY_WORKFLOW_EXEMPT: Record<string, string> = {
   "loadtest.yml":
-    "drives a throwaway Worker whose BOOKING_API_KEY is the LOADTEST_BOOKING_API_KEY secret, not production's shared key, and records into its own branch database",
+    "names BOOKING_API_KEY only as its drivers' own variable, fed from the LOADTEST_BOOKING_API_KEY secret; the throwaway Worker it drives holds that value as BOOKING_API_KEY_CANARY (LOADTEST_ALLOWED_SECRETS, #2865) and records into its own branch database",
 };
 
 /** Script paths (relative to scripts/) that may name the bare shared key, with reasons. */
