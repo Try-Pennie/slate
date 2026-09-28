@@ -65,8 +65,9 @@ const SIZES: Record<BookerButtonSize, string> = {
 
 /**
  * The colour half. Three of the four read the palette they are handed; `danger`
- * reads `--error` directly, because the rose is one token that flips with the
- * theme rather than a pair the palette holds two halves of.
+ * reads `--error` and its label `--fg-on-error` directly, because the rose and
+ * the label on it flip with the theme together (white on the light rose,
+ * graphite on the lightened dark one, #2611) rather than living in the palette.
  */
 function variantClasses(variant: BookerButtonVariant, p: BookerButtonPalette): string {
   switch (variant) {
@@ -75,7 +76,7 @@ function variantClasses(variant: BookerButtonVariant, p: BookerButtonPalette): s
     case "secondary":
       return `border ${p.toggleBorder} ${p.body} ${p.navHover}`;
     case "danger":
-      return "bg-[var(--error)] text-white transition-opacity hover:opacity-90";
+      return "bg-[var(--error)] text-[var(--fg-on-error)] transition-opacity hover:opacity-90";
     case "quiet":
       return `underline underline-offset-2 hover:no-underline ${p.muted}`;
   }

@@ -241,14 +241,14 @@ export async function AppHeader({
       <ImpersonationDropNotice reason={impersonation.reason} />
     )}
     {calendar.urgent && (
-      <div className="flex flex-wrap items-center justify-center gap-x-3 gap-y-1 bg-[var(--error)] px-4 py-2 text-center text-sm text-white">
+      <div className="flex flex-wrap items-center justify-center gap-x-3 gap-y-1 bg-[var(--error)] px-4 py-2 text-center text-sm text-[var(--fg-on-error)]">
         <span>
           Your Google Calendar isn&apos;t syncing, so your availability can be
           wrong and you may get double-booked.
         </span>
         <a
           href="/login"
-          className="rounded-md bg-white px-3 py-1.5 font-semibold text-error"
+          className="rounded-md bg-[var(--fg-on-error)] px-3 py-1.5 font-semibold text-[var(--error)]"
         >
           Connect Google
         </a>

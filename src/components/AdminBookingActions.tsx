@@ -268,7 +268,7 @@ export default function AdminBookingActions({
           <button
             onClick={doCancel}
             disabled={busy || !reasonValid}
-            className="min-h-9 rounded-md bg-[var(--error)] px-3 py-1 text-xs font-semibold text-white disabled:opacity-60"
+            className="min-h-9 rounded-md bg-[var(--error)] px-3 py-1 text-xs font-semibold text-[var(--fg-on-error)] disabled:opacity-60"
           >
             {busy ? "Cancelling…" : "Confirm cancel"}
           </button>
@@ -329,7 +329,7 @@ export default function AdminBookingActions({
                 <button
                   onClick={() => doReassign(capWarn.email, true)}
                   disabled={busy}
-                  className="min-h-9 rounded-md bg-[var(--error)] px-3 py-1 text-xs font-semibold text-white disabled:opacity-60"
+                  className="min-h-9 rounded-md bg-[var(--error)] px-3 py-1 text-xs font-semibold text-[var(--fg-on-error)] disabled:opacity-60"
                 >
                   {busy ? "Reassigning…" : "Reassign anyway"}
                 </button>
@@ -348,7 +348,7 @@ export default function AdminBookingActions({
                 <button
                   onClick={() => doReassign(rotationWarn.email, false)}
                   disabled={busy}
-                  className="min-h-9 rounded-md bg-[var(--error)] px-3 py-1 text-xs font-semibold text-white disabled:opacity-60"
+                  className="min-h-9 rounded-md bg-[var(--error)] px-3 py-1 text-xs font-semibold text-[var(--fg-on-error)] disabled:opacity-60"
                 >
                   {busy ? "Reassigning…" : "Reassign anyway"}
                 </button>

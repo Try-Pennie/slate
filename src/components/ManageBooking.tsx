@@ -579,7 +579,7 @@ export default function ManageBooking({
                     <button
                       onClick={commitCancel}
                       disabled={busy}
-                      className="inline-flex min-h-[44px] items-center justify-center gap-2 rounded-lg bg-[var(--error)] px-5 text-sm font-semibold text-white transition-opacity hover:opacity-90 disabled:opacity-60"
+                      className="inline-flex min-h-[44px] items-center justify-center gap-2 rounded-lg bg-[var(--error)] px-5 text-sm font-semibold text-[var(--fg-on-error)] transition-opacity hover:opacity-90 disabled:opacity-60"
                     >
                       <XIcon width={15} height={15} />
                       {busy ? CANCEL_COPY.confirming : CANCEL_COPY.confirm}

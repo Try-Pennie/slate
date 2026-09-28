@@ -12,6 +12,8 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { assert, fail, finish } from "./lib/harness.ts";
 import { ratio, type RGB } from "./lib/wcag-contrast.ts";
+import { scanRosePairings, tokenForColourClass } from "./lib/scan-rose-pairings.ts";
+import { sourceFiles } from "./lib/source-files.ts";
 
 // --- Token parsing ----------------------------------------------------------
 const TOKEN_FILE = join("src", "app", "globals.css");
@@ -894,6 +896,79 @@ for (let i = 1; i < DARK_LADDER.length; i++) {
     `dark ladder: ${DARK_LADDER[i - 1]} to ${DARK_LADDER[i]} is a visible step`,
   );
 }
+
+// --- #2611: every rose pairing written in a class string, in both themes -----
+//
+// `--fg-on-error` was added for the danger BUTTON's hover (#2455) and measured
+// there, while other places went on writing `bg-[var(--error)] text-white` by
+// hand: the lead's cancel button and its confirm, the admin cancel and reassign
+// confirms, and the calendar sync banner. White is right on the light rose
+// (5.14:1) and 2.39:1 on the dark one, so every one of them was unreadable on the
+// dark theme while this file reported the pair as passing, because the pair it
+// measured was not the pair those sites drew.
+//
+// So the pairs are FOUND rather than listed: every literal in src that puts a
+// text colour on a rose fill, or a rose label on an opaque fill, is resolved to
+// its two tokens and measured in both themes. A new site cannot ship unmeasured.
+function isColourToken(token: string): boolean {
+  try {
+    r(token);
+    return true;
+  } catch {
+    return false;
+  }
+}
+// The positive control first: the exact shape this issue was opened about must be
+// found and must fail in dark, or the sweep below proves nothing (L1).
+{
+  const found = scanRosePairings('className="rounded-lg bg-[var(--error)] px-5 text-sm text-white"', isColourToken);
+  assert(
+    found.length === 1 && found[0].bg === "bg-[var(--error)]" && found[0].fg === "text-white",
+    "the rose pairing scan finds a hand written white label on the rose fill",
+  );
+  below(
+    rDark(tokenForColourClass(found[0]?.fg ?? "text-white") ?? "--pennie-white"),
+    rDark("--error"),
+    4.5,
+    "white on the dark rose fill - the 2.39 this issue was opened about",
+  );
+  assert(
+    scanRosePairings('"bg-error/25 text-fg"', isColourToken).length === 0,
+    "a translucent rose wash is not measured as an opaque fill (its colour depends on what is behind it)",
+  );
+  assert(
+    scanRosePairings('"text-sm text-center font-semibold"', isColourToken).length === 0,
+    "size and alignment classes are not read as colours",
+  );
+  assert(
+    scanRosePairings('"bg-[var(--error)] text-white hover:bg-surface"', isColourToken).length === 1,
+    "a hover class is a different state and is not paired with the rest state",
+  );
+}
+const rosePairFiles = sourceFiles({
+  match: /\.(ts|tsx)$/,
+  exclude: (f) => /\.test\.tsx?$/.test(f),
+});
+let rosePairsMeasured = 0;
+for (const file of rosePairFiles) {
+  const src = readFileSync(file, "utf8");
+  for (const pair of scanRosePairings(src, isColourToken)) {
+    const bgToken = tokenForColourClass(pair.bg);
+    const fgToken = tokenForColourClass(pair.fg);
+    if (!bgToken || !fgToken) continue;
+    rosePairsMeasured++;
+    for (const [theme, read] of [
+      ["light", r],
+      ["dark", rDark],
+    ] as [string, (n: string) => RGB][]) {
+      atLeast(read(fgToken), read(bgToken), 4.5, `${file}:${pair.line} ${pair.fg} on ${pair.bg} (${theme})`);
+    }
+  }
+}
+// The lead's cancel button, its confirm, the admin confirms and the sync banner
+// are all rose pairings, so a sweep that measured fewer than that read the wrong
+// tree or lost its pattern rather than finding a clean one (L98).
+assert(rosePairsMeasured >= 6, `the rose pairing sweep measured ${rosePairsMeasured} pairs in src (expects at least 6)`);
 
 
 finish();
