@@ -46,6 +46,7 @@ import { savedOutcome, savedSentence } from "@/lib/admin/save-outcomes";
 import { AdminPageHeader, AdminDenied } from "@/components/admin/AdminPageHeader";
 import { PublicBookingSwitch } from "@/components/admin/PublicBookingSwitch";
 import { btnCls, cardCls, inputCls, labelCls, proseCls } from "@/components/ui/styles";
+import { OFFERED_OPEN_DAYS } from "@/lib/availability/bookable-days";
 
 export const dynamic = "force-dynamic";
 
@@ -282,18 +283,20 @@ export default async function BusinessHoursPage({
       <section className={cardCls}>
         <h2 className="mb-1 text-sm font-semibold">Days offered</h2>
         <p className={`mb-4 ${proseCls} text-xs text-fg-muted`}>
-          How many days a lead is offered to choose from. Counted in days that
-          actually have times, so a closed day does not use one up: with Sundays
-          closed, four days can reach into the following week. Applies to every
-          bucket. A change refreshes availability across all buckets within a minute
-          or two.
+          A lead is offered the next {OFFERED_OPEN_DAYS} days the business is open,
+          and a lower tier before a later day. Only when every tier they may use is
+          full for those days are later days offered. This number is how far that
+          can reach, counted from today in days that actually have times, so a
+          closed day does not use one up: with Sundays closed, four days can reach
+          into the following week. Applies to every bucket. A change refreshes
+          availability across all buckets within a minute or two.
         </p>
         <SaveForm action={setBookingHorizon} name="booking-horizon" unsaved="changes to the booking window" className="space-y-4">
           <div>
             {/* heading-gloss-ok: the accepted RANGE of the number, derived from the same
                   constants the server validates against. */}
             <label className={labelCls} htmlFor="horizon_days">
-              Days offered ({HORIZON_MIN} to {HORIZON_MAX})
+              Most days offered ({HORIZON_MIN} to {HORIZON_MAX})
             </label>
             {/* #1924: pre-filled with the real default, not a placeholder. A
                 required field that loads EMPTY forces an admin to type a number

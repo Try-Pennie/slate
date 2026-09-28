@@ -10,6 +10,19 @@ vi.mock("@/lib/availability/precompute-core", () => ({
   resolveBucketSlots: mockResolveBucketSlots,
 }));
 
+// #2840: the offered window is counted in the org's OPEN days. Open all day every
+// day here, so a fixture's days are calendar days; a test about an unreadable week
+// overrides it.
+const mockBusinessHours = vi.hoisted(() => vi.fn());
+vi.mock("@/lib/booking/business-hours-load", () => ({
+  loadBusinessHoursCached: mockBusinessHours,
+}));
+const OPEN_ALL_WEEK = {
+  zone: "America/New_York",
+  rules: [1, 2, 3, 4, 5, 6, 7].map((weekday) => ({ weekday, start_minute: 0, end_minute: 1440 })),
+  exceptions: [],
+};
+
 import { getBucketSlotsWithFallback } from "./slot-cache";
 import type { BucketSlots } from "./service";
 import type { Bucket, EventType } from "@/lib/db/types";
@@ -57,7 +70,10 @@ function makeBucketSlots(
 const FROM_ISO = "2026-06-08T00:00:00.000Z";
 const SLOT = "2026-06-08T13:00:00.000Z";
 
-beforeEach(() => vi.clearAllMocks());
+beforeEach(() => {
+  vi.clearAllMocks();
+  mockBusinessHours.mockResolvedValue(OPEN_ALL_WEEK);
+});
 
 describe("getBucketSlotsWithFallback", () => {
   it("returns the requested bucket with tier_fallback=false when it has slots", async () => {
@@ -192,6 +208,97 @@ describe("getBucketSlotsWithFallback", () => {
     const result = await getBucketSlotsWithFallback("411", FROM_ISO);
 
     expect(result).not.toHaveProperty("slotsWithoutLow");
+  });
+
+  // --- #2840/#2841: three open days, then a fourth only as the last resort ---
+  //
+  // Sales ops, 2026-09-28, Sam: "You want to contain to 3 days. Cascade down with
+  // rule set. All else fails, day 4 which is 100% open."
+  describe("the three open day window", () => {
+    // Monday 2026-06-08 08:00 New York. The third open day closes at the end of
+    // Wednesday, 2026-06-11T04:00Z.
+    const NOW = Date.parse("2026-06-08T12:00:00.000Z");
+    const MON = "2026-06-08T14:00:00.000Z";
+    const WED = "2026-06-10T14:00:00.000Z";
+    const THU = "2026-06-11T14:00:00.000Z";
+    const FRI = "2026-06-12T14:00:00.000Z";
+
+    it("cascades to a lower tier that has a time inside the window before offering the lead's own tier a later day", async () => {
+      mockResolveBucketSlots.mockImplementation(async (code: string) => {
+        if (code === "511") return makeBucketSlots("511", [FRI]);
+        if (code === "411") return makeBucketSlots("411", [MON]);
+        return makeBucketSlots(code, []);
+      });
+
+      const result = await getBucketSlotsWithFallback("511", FROM_ISO, false, NOW);
+
+      expect(result!.bucket.code).toBe("411");
+      expect(result!.slots).toEqual([MON]);
+      expect(result!.routing.window_extended).toBe(false);
+    });
+
+    it("offers only the times inside the window when the lead's own tier has some", async () => {
+      mockResolveBucketSlots.mockResolvedValue(makeBucketSlots("411", [MON, WED, THU, FRI]));
+
+      const result = await getBucketSlotsWithFallback("411", FROM_ISO, false, NOW);
+
+      expect(result!.slots).toEqual([MON, WED]);
+      expect(result!.routing.window_extended).toBe(false);
+    });
+
+    it("opens the fourth day on the lead's own tier first when every allowed tier is full for three days", async () => {
+      mockResolveBucketSlots.mockImplementation(async (code: string) => {
+        if (code === "511") return makeBucketSlots("511", [THU, FRI]);
+        if (code === "411") return makeBucketSlots("411", [THU]);
+        return makeBucketSlots(code, []);
+      });
+
+      const result = await getBucketSlotsWithFallback("511", FROM_ISO, false, NOW);
+
+      expect(result!.bucket.code).toBe("511");
+      expect(result!.slots).toEqual([THU, FRI]);
+      expect(result!.routing.window_extended).toBe(true);
+      expect(result!.routing.rungs_dropped).toBe(0);
+    });
+
+    it("walks the allowed ladder again for the fourth day when the lead's own tier has nothing at all", async () => {
+      mockResolveBucketSlots.mockImplementation(async (code: string) => {
+        if (code === "311") return makeBucketSlots("311", []);
+        if (code === "211") return makeBucketSlots("211", [FRI]);
+        return makeBucketSlots(code, []);
+      });
+
+      const result = await getBucketSlotsWithFallback("311", FROM_ISO, false, NOW);
+
+      expect(result!.bucket.code).toBe("211");
+      expect(result!.slots).toEqual([FRI]);
+      expect(result!.routing.window_extended).toBe(true);
+    });
+
+    it("never offers a top tier lead a Low carrier's fourth day either", async () => {
+      mockResolveBucketSlots.mockImplementation(async (code: string) => {
+        if (code === "511") return makeBucketSlots("511", []);
+        if (code === "411") return makeBucketSlots("411", [THU], false, []);
+        return makeBucketSlots(code, []);
+      });
+
+      const result = await getBucketSlotsWithFallback("511", FROM_ISO, false, NOW);
+
+      expect(result!.slots).toEqual([]);
+      expect(result!.routing.window_extended).toBe(false);
+    });
+
+    it("serves the stored window unchanged when the org's week cannot be read, and says it did not extend", async () => {
+      // No window can be measured, so none is imposed: the rows are already the
+      // horizon the settings ask for, which is the behaviour before #2840.
+      mockBusinessHours.mockRejectedValue(new Error("business hours are unusable"));
+      mockResolveBucketSlots.mockResolvedValue(makeBucketSlots("411", [MON, FRI]));
+
+      const result = await getBucketSlotsWithFallback("411", FROM_ISO, false, NOW);
+
+      expect(result!.slots).toEqual([MON, FRI]);
+      expect(result!.routing.window_extended).toBe(false);
+    });
   });
 
   it("skips an is_test bucket in the cascade so a real lower tier wins", async () => {

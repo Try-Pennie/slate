@@ -103,6 +103,7 @@ function slotsFor(isTest: boolean) {
       rungs_dropped: 0,
       requested_tier: null,
       booked_tier: null,
+      window_extended: false,
     },
   };
 }
@@ -570,5 +571,52 @@ describe("GET /api/availability?advisor= (#2073)", () => {
     agentLink.agentLinkAvailabilityLive.mockRejectedValue(new Error("db down"));
     const res = await GET(new NextRequest(`http://localhost/api/availability?advisor=${TOKEN}`));
     expect(res.status).toBe(500);
+  });
+});
+
+// #2841: every tier the lead's cascade may use was full for three open days, so
+// the fourth was opened. Sales ops want to be told (Dan, 2026-09-28: "if this
+// happens, something is probably wrong, so I would set up an alert so that we
+// could look at it").
+describe("GET /api/availability: the fourth day was opened", () => {
+  const extended = (isTest = false) => ({
+    ...slotsFor(isTest),
+    bucket: { code: "511", is_test: isTest },
+    routing: { ...slotsFor(isTest).routing, requested_code: "511", effective_code: "511", window_extended: true },
+  });
+  beforeEach(() => sendThrottledAlert.mockClear());
+  const windowAlerts = () =>
+    sendThrottledAlert.mock.calls.filter(([key]) => String(key).startsWith("booking_window_extended:"));
+
+  it("sends one throttled alert keyed to the bucket the lead asked for, and still serves the times", async () => {
+    cache.getBucketSlotsWithFallback.mockResolvedValue(extended());
+    const res = await get("511");
+
+    expect(res.status).toBe(200);
+    expect((await res.json()).slots).toEqual(["2099-01-01T15:00:00.000Z"]);
+    const calls = windowAlerts();
+    expect(calls).toHaveLength(1);
+    expect(calls[0][0]).toBe("booking_window_extended:511");
+    expect(typeof calls[0][1]).toBe("number");
+    expect(String(calls[0][2])).toContain("511");
+  });
+
+  it("says nothing when the times were inside the window", async () => {
+    cache.getBucketSlotsWithFallback.mockResolvedValue(slotsFor(false));
+    await get("SMOKE");
+    expect(windowAlerts()).toHaveLength(0);
+  });
+
+  it("says nothing for a test bucket", async () => {
+    cache.getBucketSlotsWithFallback.mockResolvedValue(extended(true));
+    await get("511", "Bearer smoke-key");
+    expect(windowAlerts()).toHaveLength(0);
+  });
+
+  it("still serves the times when the alert itself fails", async () => {
+    cache.getBucketSlotsWithFallback.mockResolvedValue(extended());
+    sendThrottledAlert.mockRejectedValueOnce(new Error("slack down"));
+    const res = await get("511");
+    expect(res.status).toBe(200);
   });
 });

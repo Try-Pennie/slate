@@ -20,6 +20,9 @@ import { loadBusinessHoursCached } from "@/lib/booking/business-hours-load";
 import { selectWithTierFallback } from "@/lib/routing/tier-fallback";
 import { rungExcludesLow, tierKeyOf } from "@/lib/routing/tiers";
 import { log } from "@/lib/log";
+import { parseStampMs } from "@/lib/date/stamp";
+import { openDaysWindowEndMs } from "@/lib/booking/business-hours";
+import { OFFERED_OPEN_DAYS } from "./bookable-days";
 
 // Short L1 TTL: the precompute row is the source of truth, so the Cache API is
 // just a per-colo accelerator. 5s keeps a far-colo read self-healing well inside
@@ -210,6 +213,12 @@ export interface AvailabilityRoutingMeta {
   rungs_dropped: number;
   requested_tier: string | null;
   booked_tier: string | null;
+  /**
+   * #2841: every tier the lead's cascade may use was full for the whole offered
+   * window, so times past it were served as the last resort. Somebody should look
+   * whenever this is true; the availability route alerts on it.
+   */
+  window_extended: boolean;
 }
 
 /**
@@ -247,6 +256,8 @@ export async function getBucketSlotsWithFallback(
   code: string,
   from: string,
   authorizedForTest = false,
+  // Injected so the window can be driven at a fixed instant; the route passes none.
+  nowMs = Date.now(),
 ): Promise<(ResolvedBucketSlots & { routing: AvailabilityRoutingMeta }) | null> {
   const requested = await getCachedBucketSlots(code, from);
   if (!requested) return null;
@@ -255,6 +266,7 @@ export async function getBucketSlotsWithFallback(
   const withRouting = (
     resolved: ResolvedBucketSlots,
     rungs: number,
+    windowExtended = false,
   ): ResolvedBucketSlots & { routing: AvailabilityRoutingMeta } => {
     // #2842: the second list is routing input, never output. The served list was
     // already chosen from it below, so it goes no further than this function.
@@ -268,32 +280,76 @@ export async function getBucketSlotsWithFallback(
         rungs_dropped: rungs,
         requested_tier: tierKeyOf(code),
         booked_tier: tierKeyOf(slotsFor.bucket.code),
+        window_extended: windowExtended,
       },
     };
   };
 
-  if (requested.slots.length > 0) return withRouting(requested, 0);
+  // #2840: the lead is offered the next OFFERED_OPEN_DAYS days the business is
+  // open. Null when that cannot be measured, and then no window is imposed: the
+  // stored rows already hold the horizon the settings ask for, which is exactly
+  // what was served before this existed, so an unreadable week degrades to the
+  // old behaviour rather than to no times at all.
+  const windowEndMs = await offeredWindowEndMs(nowMs, requested.eventType.min_notice_min);
+  const inWindow = (slots: string[]) =>
+    windowEndMs === null ? slots : slots.filter((s) => (parseStampMs(s) ?? Infinity) < windowEndMs);
 
-  // Horizon window is empty: cascade down the tier ladder.
-  // Pre-seed the seen map with the already-fetched requested bucket so the
-  // callback never fetches it again.
+  // Pre-seed the seen map with the already-fetched requested bucket so neither
+  // pass ever fetches it again, and the second pass reads no bucket twice.
   const seen = new Map<string, ResolvedBucketSlots | null>([[code, requested]]);
-  const winner = await selectWithTierFallback(code, async (c) => {
-    if (!seen.has(c)) seen.set(c, await getCachedBucketSlots(c, from));
-    const row = seen.get(c);
-    // Skip synthetic test buckets in the display cascade (the booking cascade
-    // skips them too); treat like a non-existent bucket so a real lower tier wins.
-    if (row?.bucket.is_test) return null;
-    if (!row) return null;
-    return servedSlotsForRung(code, c, row);
-  });
-
-  if (!winner || winner.rungsDropped === 0) return withRouting(requested, 0);
-  const winningBucket = seen.get(winner.effectiveCode);
-  if (!winningBucket) return withRouting(requested, 0);
+  const walk = (narrow: (slots: string[]) => string[]) =>
+    selectWithTierFallback(code, async (c) => {
+      if (!seen.has(c)) seen.set(c, await getCachedBucketSlots(c, from));
+      const row = seen.get(c);
+      // Skip synthetic test buckets on the LOWER rungs (the booking cascade skips
+      // them too), so a real lower tier wins. The requested bucket is never
+      // skipped: a test bucket reaching here was authorised above.
+      if (c !== code && row?.bucket.is_test) return null;
+      if (!row) return null;
+      return narrow(servedSlotsForRung(code, c, row));
+    });
   // Serve exactly the list the rung was judged on, so a rung that excludes Low
-  // never shows the lead a time only a Low carrier is free for.
-  return withRouting({ ...winningBucket, slots: winner.slots }, winner.rungsDropped);
+  // never shows the lead a time only a Low carrier is free for, and a rung found
+  // inside the window never shows a time past it.
+  const served = (
+    winner: { effectiveCode: string; slots: string[]; rungsDropped: number },
+    windowExtended: boolean,
+  ) => {
+    const bucket = seen.get(winner.effectiveCode);
+    return bucket ? withRouting({ ...bucket, slots: winner.slots }, winner.rungsDropped, windowExtended) : null;
+  };
+
+  // Pass one: the allowed ladder, inside the window. The requested tier is its
+  // first rung, so a lead whose own tier has a time inside the window is served it.
+  const inside = await walk(inWindow);
+  if (inside) return served(inside, false) ?? withRouting({ ...requested, slots: [] }, 0);
+  if (windowEndMs === null) return withRouting({ ...requested, slots: [] }, 0);
+
+  // Pass two, the last resort (#2841): every allowed tier is full for the whole
+  // window, so the stored times past it are offered, the lead's own tier first.
+  // Sam: "All else fails, day 4 which is 100% open." The rows reach the horizon's
+  // number of days WITH times, so this is day four in the ordinary case and the
+  // next day anybody allowed has free when day four is full too, rather than no
+  // times at all. `window_extended` is what the route alerts on: somebody should
+  // look whenever this happens.
+  const beyond = await walk((slots) => slots);
+  if (beyond) return served(beyond, true) ?? withRouting({ ...requested, slots: [] }, 0);
+  return withRouting({ ...requested, slots: [] }, 0);
+}
+
+/**
+ * When the offered window closes (#2840): the end of the `OFFERED_OPEN_DAYS`th
+ * open day, counting today only while a booking can still start before it
+ * closes. Null when the org's week cannot be read or holds no such day.
+ */
+async function offeredWindowEndMs(nowMs: number, minNoticeMin: number): Promise<number | null> {
+  try {
+    const hours = await loadBusinessHoursCached();
+    return openDaysWindowEndMs(hours, nowMs + minNoticeMin * 60_000, OFFERED_OPEN_DAYS);
+  } catch (err) {
+    log.warn("availability", { msg: "offered window unmeasured, serving the stored horizon" }, err);
+    return null;
+  }
 }
 
 /**

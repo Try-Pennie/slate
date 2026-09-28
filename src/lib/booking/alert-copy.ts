@@ -11,6 +11,7 @@
  * the consequence and where to look, and never promise that anything will retry.
  */
 import type { FailureKind } from "@/lib/google/sync-health";
+import { OFFERED_OPEN_DAYS } from "@/lib/availability/bookable-days";
 
 /** A cached busy_blocks write that did not land, per operation. */
 export function busyBlockWriteThroughAlert(
@@ -332,3 +333,25 @@ export function bookerUnstaffedAlert(code: string): string {
  *  meeting a dead end is a live loss rather than a standing condition, and long
  *  enough that one bot refreshing the page cannot fill the channel. */
 export const BOOKER_UNSTAFFED_COOLDOWN_MS = 30 * 60 * 1000;
+
+/**
+ * A lead was offered times past the three open day window (#2841): every tier
+ * their cascade may use was full for all three days, so the fourth was opened.
+ *
+ * Dan, 2026-09-28: "Realistically, if this happens, something is probably wrong,
+ * so I would set up an alert so that we could look at it." The lead WAS offered
+ * times, so this is not the dead end `booker_unstaffed` reports, and it says so.
+ */
+export function bookingWindowExtendedAlert(code: string): string {
+  return (
+    `A customer on bucket ${code} was offered times past the ${OFFERED_OPEN_DAYS} day booking window: every ` +
+    `tier their booking may cascade to was full for the next ${OFFERED_OPEN_DAYS} open days, so a later day ` +
+    `was opened for them. They could still book. This should be rare, and usually means the ` +
+    `pools for that tier and the ones below it are short on advisors, or a lot of them are ` +
+    `on time off at once. Check /admin/tiers.`
+  );
+}
+
+/** How often the alert above may repeat for one bucket: once an hour, since the
+ *  condition behind it lasts for hours and every visit in that time would repeat it. */
+export const BOOKING_WINDOW_EXTENDED_COOLDOWN_MS = 60 * 60 * 1000;
