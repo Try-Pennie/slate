@@ -99,11 +99,13 @@
   --fg-on-sky:          var(--pennie-graphite);
   /* The label on a ROSE fill (#2455). Unlike --fg-on-sky this one really does
      flip with the theme, because the dark theme lightens the rose itself: white
-     reads 5.14:1 on the light rose and 1.28:1 on the lightened one, so a single
+     reads 5.14:1 on the light rose and 2.39:1 on the lightened one, so a single
      value is wrong in one theme whichever is chosen. It is declared here beside
      --error and overridden beside --error in the dark block, so the pair is
      maintained in one place rather than two (L213), and both halves are asserted
-     in scripts/test-contrast.ts in both themes. */
+     in scripts/test-contrast.ts in both themes. Every class string that lays a
+     label on the rose uses it (`text-[var(--fg-on-error)]`, #2611), and the
+     contrast suite finds those strings itself rather than from a list. */
   --fg-on-error:        var(--pennie-white);
 
   --border:             rgba(52, 52, 52, 0.16);
@@ -308,7 +310,7 @@
      this reads 4.96:1 on ink-2 and 6.72:1 on navy. */
   --error:            rgb(223, 148, 148);
   /* And the label ON that lightened rose, flipped with it. Graphite reads 5.22:1
-     on it; white, which is correct in light, reads 1.28:1 and would be an
+     on it; white, which is correct in light, reads 2.39:1 and would be an
      invisible label rather than a dim one (#2455). */
   --fg-on-error:      var(--pennie-graphite);
 }

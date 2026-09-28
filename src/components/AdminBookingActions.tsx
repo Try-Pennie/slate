@@ -26,6 +26,11 @@ type Mode = null | "cancel" | "reschedule" | "reassign";
 const extractAgents = (json: unknown): ReassignAgent[] =>
   (json as { agents?: ReassignAgent[] } | null)?.agents ?? [];
 
+/** The one destructive confirm this panel draws, for cancel and both reassign
+ *  confirms. The label is `--fg-on-error`, which flips with the rose (#2611). */
+const DESTRUCTIVE_CONFIRM_CLS =
+  "min-h-9 rounded-md bg-[var(--error)] px-3 py-1 text-xs font-semibold text-[var(--fg-on-error)] disabled:opacity-60";
+
 /**
  * Internal admin reschedule / cancel / reassign for a single booking (#326, #546).
  * Staff act on a booking from the recent-bookings list; every action REQUIRES a
@@ -268,7 +273,7 @@ export default function AdminBookingActions({
           <button
             onClick={doCancel}
             disabled={busy || !reasonValid}
-            className="min-h-9 rounded-md bg-[var(--error)] px-3 py-1 text-xs font-semibold text-white disabled:opacity-60"
+            className={DESTRUCTIVE_CONFIRM_CLS}
           >
             {busy ? "Cancelling…" : "Confirm cancel"}
           </button>
@@ -329,7 +334,7 @@ export default function AdminBookingActions({
                 <button
                   onClick={() => doReassign(capWarn.email, true)}
                   disabled={busy}
-                  className="min-h-9 rounded-md bg-[var(--error)] px-3 py-1 text-xs font-semibold text-white disabled:opacity-60"
+                  className={DESTRUCTIVE_CONFIRM_CLS}
                 >
                   {busy ? "Reassigning…" : "Reassign anyway"}
                 </button>
@@ -348,7 +353,7 @@ export default function AdminBookingActions({
                 <button
                   onClick={() => doReassign(rotationWarn.email, false)}
                   disabled={busy}
-                  className="min-h-9 rounded-md bg-[var(--error)] px-3 py-1 text-xs font-semibold text-white disabled:opacity-60"
+                  className={DESTRUCTIVE_CONFIRM_CLS}
                 >
                   {busy ? "Reassigning…" : "Reassign anyway"}
                 </button>

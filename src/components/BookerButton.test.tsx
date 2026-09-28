@@ -69,7 +69,8 @@ describe("bookerButtonClass", () => {
   it("the destructive variant is the only one that looks destructive", () => {
     const danger = classesFor("danger", "md");
     expect(danger).toContain("bg-[var(--error)]");
-    expect(danger).toContain("text-white");
+    expect(danger).toContain("text-[var(--fg-on-error)]");
+    expect(danger).not.toContain("text-white");
     for (const other of ["primary", "secondary", "quiet"] as const) {
       expect(classesFor(other, "md")).not.toContain("bg-[var(--error)]");
     }
