@@ -312,8 +312,8 @@ const CODE_GUIDANCE: Record<string, string> = {
     "appear more than once.",
   API_NOT_CONFIGURED:
     "API_NOT_CONFIGURED means Slate has no booking API key set, so the endpoint refuses " +
-    "everyone. Check the booking API key secrets (BOOKING_API_KEY and the per caller " +
-    "BOOKING_API_KEY_REGAL, _TRYPENNIE, _CANARY) on the deployed Worker. Counted per refused " +
+    "everyone. Check the per caller booking API key secrets " +
+    "(BOOKING_API_KEY_REGAL, _TRYPENNIE, _CANARY) on the deployed Worker. Counted per refused " +
     "call, so a caller that retries can appear more than once.",
 };
 

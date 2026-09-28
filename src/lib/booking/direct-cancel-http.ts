@@ -14,7 +14,7 @@ import { GENERIC_ERROR_MESSAGE, reportInternalError } from "@/lib/api/errors";
  * call, whose booking may be touched and what each ending answers lives here, so the
  * two verbs differ only in where the fields are read from.
  *
- * Who may call: a holder of `BOOKING_API_KEY`, under the same ceilings as every other
+ * Who may call: a holder of a booking API caller key, under the same ceilings as every other
  * write on that key. Whose booking: only one owned by the strong id the caller sends
  * (`cancelDirectBooking` checks ownership and answers not found otherwise).
  *

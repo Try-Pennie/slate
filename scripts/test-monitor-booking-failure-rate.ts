@@ -320,6 +320,12 @@ const reading = (
     !unset.includes("rotated"),
     "and does NOT repeat the rotation advice, which cannot fix a secret nobody set (L36)",
   );
+  // #2865: the bare shared pair is read by nothing, so naming it would send the
+  // reader to set a secret that cannot bring the endpoint back.
+  assert(
+    !/BOOKING_API_KEY\b(?!_)/.test(unset) && !/BOOKING_API_KEY\b(?!_)/.test(rotated),
+    "neither credential page names the retired shared BOOKING_API_KEY",
+  );
   assert(
     !internalWave.includes("BOOKING_API_KEY"),
     "an internal-error wave carries no credential advice, so the reader is not sent at the wrong system",
