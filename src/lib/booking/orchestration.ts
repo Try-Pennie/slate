@@ -1553,6 +1553,81 @@ export async function reconcileMissingBusyBlocks(
 const VERIFY_WAVE_SIZE = 20;
 
 /**
+ * #2281: how many further advisors a confirm that LOST the overlap race (#2274)
+ * may be handed to before the lead is asked to pick another time. Each attempt
+ * costs a live free check, a calendar event and its removal, all on the lead's
+ * confirm tap, and a confirm losing to several racers in a row is a burst the
+ * lead is better told about than kept waiting through.
+ */
+export const MAX_RACE_REASSIGNS = 3;
+
+/**
+ * #2281: when a confirm's insert loses the overlap race (#2274), the advisor to
+ * hand it to instead, or null to refuse the time exactly as before.
+ *
+ * Dan's boundary: another advisor "in the correct bucket/routing rules" is fine;
+ * anything that "would require cascading" is not. So the only advisors this can
+ * return are the ones AFTER the loser in the candidate list the booked rung
+ * already resolved for this instant, in round robin order, confirmed free by the
+ * same live check verify on book uses. It never resolves the pool again, never
+ * walks the tier ladder, and never books a named link's lead with anybody else.
+ *
+ * It refuses (returns null) on:
+ *  - any failure that is not a lost race: a transient insert failure keeps its
+ *    own path, which leaves the reservation for the drain;
+ *  - a named advisor link (#2073), which must never fall to another advisor;
+ *  - a reservation this request did not pin: a same key racer's pin was adopted,
+ *    and choosing again under it would be a second request's decision;
+ *  - the bound, `MAX_RACE_REASSIGNS`;
+ *  - nobody after the loser free, or the free check itself failing. A check that
+ *    cannot answer is never read as free, and the lead is told what they were
+ *    told before this existed, rather than an outage replacing a taken time.
+ *
+ * The lost attempt's calendar event is already gone by the time this runs:
+ * `completeReservation` removes it (and the reservation) before it raises the
+ * refusal, and a new attempt pins its own event id, since the id is derived from
+ * the advisor as well as the idempotency key.
+ */
+async function nextAdvisorAfterLostRace(
+  deps: BookingDeps,
+  lost: {
+    err: unknown;
+    named: boolean;
+    reservation: BookingReservation;
+    lostUserId: string;
+    candidates: string[];
+    lostSoFar: number;
+    startIso: string;
+    endIso: string;
+  },
+): Promise<AssignResult | null> {
+  if (!(lost.err instanceof SlotUnavailableError)) return null;
+  if (lost.named) return null;
+  if (lost.reservation.pinned_user_id !== lost.lostUserId) return null;
+  if (lost.lostSoFar >= MAX_RACE_REASSIGNS) return null;
+  const at = lost.candidates.indexOf(lost.lostUserId);
+  if (at < 0) return null;
+  const remaining = lost.candidates.slice(at + 1);
+  if (remaining.length === 0) return null;
+  try {
+    const { assignment } = await selectAgent(
+      remaining,
+      (userIds) => deps.loadEmails(userIds),
+      (emails) => deps.verifyFree(emails, lost.startIso, lost.endIso),
+      VERIFY_WAVE_SIZE,
+    );
+    return assignment;
+  } catch (err) {
+    log.warn(
+      "booking",
+      { msg: "could not check the next advisor after a lost race; refusing the time", lost_user_id: lost.lostUserId },
+      err,
+    );
+    return null;
+  }
+}
+
+/**
  * Verify-on-book: confirm round-robin candidates against live Google free/busy
  * in WAVES (one batched check per wave) rather than one serial call each, so a
  * large candidate pool can't chain many slow Google calls onto the lead's
@@ -2792,8 +2867,12 @@ export async function createBooking(
   const bookedEventType = tier.eventType;
   const startIso = tier.startIso;
   const endIso = tier.endIso;
-  const { userId, email, candidates } = tier;
-  const agent = await deps.getUser(userId);
+  const { candidates } = tier;
+  // #2281: who this attempt is booking. Starts as the rung's first free advisor
+  // and moves, at most MAX_RACE_REASSIGNS times, to the next advisor the SAME
+  // rung already resolved when an insert loses the overlap race (#2274).
+  let chosen: AssignResult = { userId: tier.userId, email: tier.email };
+  const raceLost: string[] = [];
   let traceExtras: ReturnType<typeof buildRoutingTraceExtras> = {
     considered: candidates,
     excluded: [],
@@ -2808,7 +2887,6 @@ export async function createBooking(
   }
   const phone = toE164(input.attendee.phone);
   const manageToken = deps.newManageToken();
-  const gcalClientId = await deterministicEventId(idempotencyKey, userId);
   // #2072: where the lead booked from, read off the link on the SERVER. An
   // unknown value is recorded as `unrecognised` and the booking goes ahead: a
   // broken link must never cost a lead. The raw value is logged so the link can
@@ -2823,88 +2901,122 @@ export async function createBooking(
     });
   }
 
-  const bookingInsert: BookingInsert = {
-    org_id: bookedBucket.org_id,
-    bucket_id: bookedBucket.id,
-    event_type_id: bookedEventType.id,
-    assigned_user_id: userId,
-    agent_name: agent.name,
-    agent_email: agent.email,
-    starts_at: startIso,
-    ends_at: endIso,
-    original_starts_at: startIso,
-    original_ends_at: endIso,
-    timezone: input.timezone,
-    status: "confirmed",
-    salesforce_id: input.salesforceId ?? null,
-    attendee_name: input.attendee.name ?? null,
-    attendee_email: input.attendee.email ?? null,
-    attendee_phone: phone,
-    prefill: input.prefill,
-    gcal_event_id: gcalClientId, // the pinned client id IS the stored event id
-    manage_token: manageToken,
-    idempotency_key: idempotencyKey,
-    external_id: input.externalId ?? null,
-    source: sourceReading.source,
-    // #2728: re-reduced here rather than trusted, so a path or query the client
-    // sent (which can carry a lead's details) never reaches the row.
-    referrer_origin: readReferrerOrigin(input.referrerOrigin),
-    kind: agentLinkUserId !== undefined ? "agent_link" : "routed",
-    // #2073: nothing was routed, so there is no trace, and a fabricated one would
-    // read as a routing decision to every reader of the column.
-    routing_trace: agentLinkUserId !== undefined ? null : {
-      bucket_code: bookedBucket.code,
+  let result: BookingResult;
+  for (;;) {
+    const { userId, email } = chosen;
+    const agent = await deps.getUser(userId);
+    const gcalClientId = await deterministicEventId(idempotencyKey, userId);
+    const bookingInsert: BookingInsert = {
+      org_id: bookedBucket.org_id,
       bucket_id: bookedBucket.id,
-      considered: candidates,
-      chosen_user_id: userId,
-      fallback_applied:
-        bookedBucket.fallback_user_id != null &&
-        candidates.length > 0 &&
-        candidates.every((id) => id === bookedBucket.fallback_user_id),
-      excluded: traceExtras.excluded,
-      tier_fallback: tier.rungsDropped > 0,
-      requested_tier: tierKeyOf(input.bucketCode),
-      booked_tier: tierKeyOf(bookedBucket.code),
-      rungs_dropped: tier.rungsDropped,
-      // #2638: where the routed code came from, and when the catch-all applied,
-      // why Salesforce could not supply one. Absent when the caller did not say
-      // what the link carried (the direct booking API, an older embed).
-      ...(codeSource ? { code_source: codeSource } : {}),
-    },
-  };
-  const event: ReservationPayload["event"] = {
-    summary: eventSummary(bookedEventType.name, input.attendee.name ?? null),
-    description: eventDescription(phone, manageUrl(deps, manageToken), { isTest: bookedBucket.is_test }),
-    start: startIso,
-    end: endIso,
-    timezone: input.timezone,
-    attendeeEmail: input.attendee.email,
-    attendeeName: input.attendee.name,
-  };
-
-  // The UNIQUE(idempotency_key) on the reservation is the concurrency arbiter:
-  // a same-key racer that already won is returned here, so we adopt ITS pin.
-  const reservation = await profile.time("reserve", () =>
-    deps.insertReservation({
+      event_type_id: bookedEventType.id,
+      assigned_user_id: userId,
+      agent_name: agent.name,
+      agent_email: agent.email,
+      starts_at: startIso,
+      ends_at: endIso,
+      original_starts_at: startIso,
+      original_ends_at: endIso,
+      timezone: input.timezone,
+      status: "confirmed",
+      salesforce_id: input.salesforceId ?? null,
+      attendee_name: input.attendee.name ?? null,
+      attendee_email: input.attendee.email ?? null,
+      attendee_phone: phone,
+      prefill: input.prefill,
+      gcal_event_id: gcalClientId, // the pinned client id IS the stored event id
+      manage_token: manageToken,
       idempotency_key: idempotencyKey,
-      pinned_user_id: userId,
-      pinned_agent_email: email,
-      gcal_client_id: gcalClientId,
-      payload: {
-        booking: bookingInsert,
-        event,
-        bucketCode: input.bucketCode,
-        requestedCode: input.requestedCode,
+      external_id: input.externalId ?? null,
+      source: sourceReading.source,
+      // #2728: re-reduced here rather than trusted, so a path or query the client
+      // sent (which can carry a lead's details) never reaches the row.
+      referrer_origin: readReferrerOrigin(input.referrerOrigin),
+      kind: agentLinkUserId !== undefined ? "agent_link" : "routed",
+      // #2073: nothing was routed, so there is no trace, and a fabricated one would
+      // read as a routing decision to every reader of the column.
+      routing_trace: agentLinkUserId !== undefined ? null : {
+        bucket_code: bookedBucket.code,
+        bucket_id: bookedBucket.id,
+        considered: candidates,
+        chosen_user_id: userId,
+        fallback_applied:
+          bookedBucket.fallback_user_id != null &&
+          candidates.length > 0 &&
+          candidates.every((id) => id === bookedBucket.fallback_user_id),
+        excluded: traceExtras.excluded,
+        tier_fallback: tier.rungsDropped > 0,
+        requested_tier: tierKeyOf(input.bucketCode),
+        booked_tier: tierKeyOf(bookedBucket.code),
+        rungs_dropped: tier.rungsDropped,
+        // #2638: where the routed code came from, and when the catch-all applied,
+        // why Salesforce could not supply one. Absent when the caller did not say
+        // what the link carried (the direct booking API, an older embed).
+        ...(codeSource ? { code_source: codeSource } : {}),
+        // #2281: the advisors this confirm was first given and lost to a racing
+        // booking, in the order tried. Present only when that happened, so the
+        // trace never reads as though the first choice took the call.
+        ...(raceLost.length > 0 ? { race_lost: [...raceLost] } : {}),
       },
-    }),
-  );
+    };
+    const event: ReservationPayload["event"] = {
+      summary: eventSummary(bookedEventType.name, input.attendee.name ?? null),
+      description: eventDescription(phone, manageUrl(deps, manageToken), { isTest: bookedBucket.is_test }),
+      start: startIso,
+      end: endIso,
+      timezone: input.timezone,
+      attendeeEmail: input.attendee.email,
+      attendeeName: input.attendee.name,
+    };
 
-  // The insert, the exclusion index write and the cache write through, which is
-  // where the overlap constraint (#2280) and the in request pool recompute both
-  // land: two of the three candidates #2321 names.
-  const result = await profile.time("complete-reservation", () =>
-    completeReservation(deps, reservation),
-  );
+    // The UNIQUE(idempotency_key) on the reservation is the concurrency arbiter:
+    // a same-key racer that already won is returned here, so we adopt ITS pin.
+    const reservation = await profile.time("reserve", () =>
+      deps.insertReservation({
+        idempotency_key: idempotencyKey,
+        pinned_user_id: userId,
+        pinned_agent_email: email,
+        gcal_client_id: gcalClientId,
+        payload: {
+          booking: bookingInsert,
+          event,
+          bucketCode: input.bucketCode,
+          requestedCode: input.requestedCode,
+        },
+      }),
+    );
+
+    // The insert, the exclusion index write and the cache write through, which is
+    // where the overlap constraint (#2280) and the in request pool recompute both
+    // land: two of the three candidates #2321 names.
+    try {
+      result = await profile.time("complete-reservation", () =>
+        completeReservation(deps, reservation),
+      );
+      break;
+    } catch (err) {
+      const next = await nextAdvisorAfterLostRace(deps, {
+        err,
+        named: agentLinkUserId !== undefined,
+        reservation,
+        lostUserId: userId,
+        candidates,
+        lostSoFar: raceLost.length,
+        startIso,
+        endIso,
+      });
+      if (!next) throw err;
+      log.info("booking", {
+        msg: "confirm lost the overlap race, handed to the next advisor in the same rung",
+        lost_user_id: userId,
+        next_user_id: next.userId,
+        bucket_code: bookedBucket.code,
+        attempt: raceLost.length + 2,
+      });
+      raceLost.push(userId);
+      chosen = next;
+    }
+  }
 
   // The apportionment, once, at the end. It carries no contact data: the stage
   // names and their durations, plus what they do NOT account for. Under

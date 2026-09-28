@@ -652,6 +652,10 @@ export interface RoutingTrace {
    *  XBC, or the catch-all with the reason Salesforce could not supply one.
    *  Written only by the booker's confirm; absent means nobody said. */
   code_source?: RoutingCodeRecord;
+  /** #2281: advisors this confirm was first given whose insert lost the overlap
+   *  race (#2274), in the order tried, before `chosen_user_id` took the booking.
+   *  All from the same rung's candidates. Absent when the first choice won. */
+  race_lost?: string[];
 }
 
 /** One routing decision, including attempts that produced no booking. */
