@@ -76,13 +76,11 @@ wrangler secret put DUPLICATE_CANCEL_API_KEY # optional; bearer for the duplicat
 wrangler secret put OFFBOARDING_API_KEY     # optional; bearer for deactivate/reactivate. Empty = offboarding endpoints return 503.
 wrangler secret put BOOKABLE_API_KEY        # optional; bearer for the bookable-toggle API. Empty = POST /api/users/bookable returns 503.
 wrangler secret put REGAL_INBOUND_KEY       # optional; bearer Regal's reporting webhook sends to POST /api/regal/calls (#2090). Its own secret, never the outbound Regal key. Empty = that endpoint returns 503 naming it.
-wrangler secret put BOOKING_API_KEY         # optional; the SHARED booking API key (#2645), held by every caller before each had its own. Retire it once all three below are set and handed out. Every booking key empty = POST /api/bookings returns 503.
-# wrangler secret put BOOKING_API_KEY_2     # optional 2nd shared key; set only when rotating (both accepted at once).
-wrangler secret put BOOKING_API_KEY_REGAL   # optional; Regal's own booking API key (its journeys cancel through it). Logs and the rate ceiling name the caller "regal".
+wrangler secret put BOOKING_API_KEY_REGAL   # optional; Regal's own booking API key (its journeys cancel through it, as the SLATE_BOOKING_API_KEY brand secret). Logs and the rate ceiling name the caller "regal". One key per caller (#2645): the shared BOOKING_API_KEY pair is retired and read by nothing (#2865). Every booking key empty = POST /api/bookings returns 503.
 # wrangler secret put BOOKING_API_KEY_REGAL_2   # optional; Regal's rotation slot, set only when rotating.
 wrangler secret put BOOKING_API_KEY_TRYPENNIE # optional; trypennie's own booking API key (the booking confirmed page's lookup, #2643).
-# wrangler secret put BOOKING_API_KEY_TRYPENNIE_2 # optional; trypennie's rotation slot, set only when rotating.
-wrangler secret put BOOKING_API_KEY_CANARY  # required for the smoke canary (#2822); its own key, recorded as "canary" so every shared key sighting is a partner's. The GitHub repo secret of the SAME NAME must hold the SAME value: every canary lane, the deploy probe and every heartbeat stamp send it, and a value the Worker does not hold fails them with a 401 and an alert. Empty here = every canary lane fails loudly.
+wrangler secret put BOOKING_API_KEY_TRYPENNIE_2 # trypennie's rotation slot. SET since 2026-09-28 (#2865): it holds the value trypennie's Vercel SLATE_BOOKING_API_KEY was given, the old shared key, kept rather than rotated so trypennie changes nothing.
+wrangler secret put BOOKING_API_KEY_CANARY  # required for the smoke canary (#2822); its own key, recorded as "canary". The GitHub repo secret of the SAME NAME must hold the SAME value: every canary lane, the deploy probe and every heartbeat stamp send it, and a value the Worker does not hold fails them with a 401 and an alert. Empty here = every canary lane fails loudly.
 # wrangler secret put BOOKING_API_KEY_CANARY_2  # optional; the canary's rotation slot, set only when rotating.
 openssl rand -hex 32 | wrangler secret put EMBED_TEST_PASS_SECRET  # required for partner testing (#2666); signs the short lived pass /book hands a page on an EMBED_TEST_ORIGINS website. Piped so the value never appears. Empty = the public test bucket is OFF: /book says so, the routes answer 403 TEST_PASS_OFF, and the canary's gate read pages. Rotating it ends every open test page's pass (a reload fixes it).
 wrangler secret put GITHUB_CANARY_TOKEN     # optional; fine-grained GitHub token (Actions read/write on Try-Pennie/slate) so the monitor lane can re-fire the smoke-canary workflow when GitHub drops a scheduled run. Empty = gap-filler is a no-op (GitHub's schedule alone runs the canary).
@@ -95,8 +93,8 @@ wrangler secret put SNOWFLAKE_PRIVATE_KEY   # optional; RSA private key (PKCS#8 
 this file is either set or deliberately not, and nothing is set that this file
 does not document. The three not set:
 
-1. `BOOKING_API_KEY_2` is correctly absent. It is the commented line above, set
-   only during a key rotation.
+1. `BOOKING_API_KEY_2` was correctly absent then, and the shared pair it belonged to
+   is retired now (#2865).
 2. `SLACK_INFO_CHANNEL` is unset, so info-only alerts fall back to
    `SLACK_ALERTS_CHANNEL` as documented. That works, but it means the quieter
    channel separation (#567) is not actually in effect today.
@@ -179,7 +177,7 @@ A merge to `main` reaches 100% of traffic instantly, so the `deploy` job wraps
    into `src/lib/build-info.ts`, which is compiled into the Worker bundle. The
    committed value is the placeholder `"dev"` and is *expected* to be stale in git.
 2. **After** the deploy, `scripts/post-deploy-probe.ts` polls
-   `GET /api/smoke/version` (key-authed with `BOOKING_API_KEY`) until the live site
+   `GET /api/smoke/version` (key-authed with `BOOKING_API_KEY_CANARY`) until the live site
    reports that commit, and only then checks `/api/health` and the availability read
    path for the isolated `SMOKE` bucket.
 
@@ -248,7 +246,7 @@ exactly when an unverified release is most expensive, so use:
      same ones the deploy job executes several times a week. -->
 
 ```bash
-BOOKING_API_KEY=<the key the deployment holds> pnpm cf:deploy:verified
+BOOKING_API_KEY_CANARY=<the key the deployment holds> pnpm cf:deploy:verified
 ```
 
 It runs the same three steps as CI, calling the same two scripts, so the two paths
@@ -263,7 +261,7 @@ apart:
 |---|---|---|
 | 1 | no commit to stamp, or a target that is not an https origin | run it inside the repo, on a real commit |
 | 2 | the working tree has uncommitted changes | commit first; locally is enough, an emergency does not require pushing |
-| 3 | `BOOKING_API_KEY` is unset | set it; without it nothing can confirm the deploy, which is the whole point |
+| 3 | `BOOKING_API_KEY_CANARY` is unset | set it; without it nothing can confirm the deploy, which is the whole point |
 | 4 | it could not tell whether the tree is clean (`git status` did not answer) | fix git; this is not the same as a dirty tree, and "commit first" would be advice that cannot help |
 
 The dirty-tree refusal is the one that matters. The stamp writes a commit into the
@@ -297,11 +295,13 @@ stamped source file is never left behind for the next commit to carry.
   is guarded: if the agent's Google calendar is unreachable, the flip is refused
   with a `409` and a Slack alert fires (the agent stays out of the pool until the
   calendar is fixed). Unset key ⇒ the endpoint returns 503 (disabled).
-- **Direct booking API (optional):** to let the programmatic/AI auto-booker book
-  without the embed, set `BOOKING_API_KEY` (above) and share it with the
-  integrator. Unset ⇒ `POST /api/bookings` returns 503. Set a second
-  `BOOKING_API_KEY_2` only when rotating (both keys are accepted at once). Full
-  request/response/error contract: `docs/booking-api.md`.
+- **Direct booking API (optional):** each integrator gets its OWN key
+  (`BOOKING_API_KEY_REGAL`, `_TRYPENNIE`, `_CANARY`, above), never a shared one, so
+  every call is attributed to its caller and one can be revoked alone (#2645,
+  #2865). A new integrator is a new caller in `BOOKING_API_CALLERS`. Every key
+  unset ⇒ `POST /api/bookings` returns 503. Rotate through the caller's `_2` slot
+  (both are accepted at once). Full request/response/error contract:
+  `docs/booking-api.md`.
 - **Low-volume booking alert (#370, arm at cutover):** the monitor lane counts
   bookings every 5 min during Eastern business hours, but the Slack alert is
   DISARMED by default so it can't cry wolf during the cal.com to Slate ramp (low

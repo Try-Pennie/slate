@@ -2,9 +2,9 @@
 // under `node --experimental-strip-types` with no Next/Supabase/Google in scope.
 //
 // #2645: one key per CALLER. Regal, trypennie and the smoke canary each hold their
-// own secret (with its own two slot rotation), and the original pair stays as the
-// `shared` caller so nothing breaks before the named keys are handed out. Every
-// authenticated call reports WHICH caller and slot it matched (labels, never the
+// own secret (with its own two slot rotation). The original shared pair is gone
+// (#2865): Regal got a fresh key and trypennie's value moved into its own rotation
+// slot, so every key now names exactly one caller. Every authenticated call reports WHICH caller and slot it matched (labels, never the
 // secret), which is what lets the rate ceiling and the logs name a caller.
 // Run: node --experimental-strip-types scripts/test-booking-api-auth.ts
 import { readdirSync, readFileSync, statSync } from "node:fs";
@@ -26,22 +26,24 @@ const none = { primary: "", secondary: "" };
 {
   eq(
     [...BOOKING_API_CALLERS].sort().join(","),
-    "canary,regal,shared,trypennie",
-    "the four callers the booking API knows",
+    "canary,regal,trypennie",
+    "the three callers the booking API knows, and no shared caller (#2865)",
   );
   // CANARY_CALLERS gates the smoke endpoints, which can stamp the canary's own
   // heartbeat: a partner key there could keep a dead canary looking alive.
-  // The legacy shared key left this set once the canary was seen on its own key
-  // (#2854): Regal holds the shared key, so leaving it here let a partner stamp the
-  // canary's heartbeat.
   eq([...CANARY_CALLERS].sort().join(","), "canary", "only the canary may call the smoke endpoints");
-  eq(CANARY_CALLERS.includes("shared"), false, "the shared key may not call the smoke endpoints");
 }
 
 // --- env names are derived from the caller, one rule for all of them -------------
 {
-  eq(bookingApiKeyEnvName("shared", "primary"), "BOOKING_API_KEY", "shared primary keeps its original name");
-  eq(bookingApiKeyEnvName("shared", "secondary"), "BOOKING_API_KEY_2", "shared secondary keeps its original name");
+  // #2865: the bare pair is nobody's any more, so no caller may resolve to it. A
+  // Worker still holding BOOKING_API_KEY after the retirement is then read by nothing.
+  for (const caller of BOOKING_API_CALLERS) {
+    for (const slot of ["primary", "secondary"] as const) {
+      const name = bookingApiKeyEnvName(caller, slot);
+      assert(name !== "BOOKING_API_KEY" && name !== "BOOKING_API_KEY_2", `${caller} ${slot} is not the retired shared name (${name})`);
+    }
+  }
   eq(bookingApiKeyEnvName("regal", "primary"), "BOOKING_API_KEY_REGAL", "a named caller's primary");
   eq(bookingApiKeyEnvName("trypennie", "secondary"), "BOOKING_API_KEY_TRYPENNIE_2", "a named caller's rotation slot");
 }
@@ -49,14 +51,14 @@ const none = { primary: "", secondary: "" };
 // --- parseApiKeys: build the labelled key set from each caller's two slots -------
 {
   const keys = parseApiKeys([
-    { caller: "shared", primary: "shared-secret", secondary: "" },
+    { caller: "canary", primary: "canary-secret", secondary: "" },
     { caller: "regal", primary: "regal-old", secondary: "regal-new" },
     { caller: "trypennie", ...none },
   ]);
   eq(
     keys.map((k) => k.id).join(","),
-    "regal:primary,regal:secondary,shared:primary",
-    "configured slots only, named callers before the shared pair",
+    "regal:primary,regal:secondary,canary:primary",
+    "configured slots only, in the order the callers are declared",
   );
   const regal = keys.find((k) => k.id === "regal:secondary");
   assert(regal?.caller === "regal" && regal.slot === "secondary" && regal.secret === "regal-new", "a key carries its caller and slot");
@@ -72,7 +74,6 @@ const none = { primary: "", secondary: "" };
 }
 
 const keys = parseApiKeys([
-  { caller: "shared", primary: "shared-secret", secondary: "shared-next" },
   { caller: "regal", primary: "regal-secret", secondary: "" },
   { caller: "trypennie", primary: "trypennie-secret", secondary: "trypennie-next" },
   { caller: "canary", ...none },
@@ -86,8 +87,11 @@ const keys = parseApiKeys([
   const t = authenticateBearer("Bearer trypennie-next", keys);
   assert(t.ok === true && t.caller === "trypennie" && t.keyId === "trypennie:secondary", "a rotation slot names its caller");
 
-  const s = authenticateBearer("Bearer shared-secret", keys);
-  assert(s.ok === true && s.caller === "shared" && s.keyId === "shared:primary", "the legacy pair still authenticates, as shared");
+  // #2865: trypennie kept the value it already held, now in its rotation slot, so a
+  // value the shared caller used to answer for authenticates as trypennie.
+  const moved = parseApiKeys([{ caller: "trypennie", primary: "trypennie-own", secondary: "old-shared-value" }]);
+  const m = authenticateBearer("Bearer old-shared-value", moved);
+  assert(m.ok === true && m.caller === "trypennie" && m.keyId === "trypennie:secondary", "the old shared value, held in trypennie's slot, names trypennie");
 }
 
 // --- bad / missing / malformed credentials -> 401 ------------------------------------
@@ -106,17 +110,17 @@ const keys = parseApiKeys([
 
 // --- #2822: the canary's own key, through the same constant time verifier ------------
 //
-// The canary moves off the shared key so a shared sighting means a partner. Its key
-// must authenticate AS the canary even with the shared pair configured beside it, a
+// The canary holds its own key. It must authenticate AS the canary even with another
+// caller configured beside it, a
 // wrong token must still be refused, and a canary key the Worker does not hold must
 // be refused rather than falling back to any other caller.
 {
   const withCanary = parseApiKeys([
-    { caller: "shared", primary: "shared-secret", secondary: "" },
+    { caller: "regal", primary: "regal-secret", secondary: "" },
     { caller: "canary", primary: "canary-secret", secondary: "canary-next" },
   ]);
   const c = authenticateBearer("Bearer canary-secret", withCanary);
-  assert(c.ok === true && c.caller === "canary" && c.keyId === "canary:primary", "the canary's key names the canary, not shared");
+  assert(c.ok === true && c.caller === "canary" && c.keyId === "canary:primary", "the canary's key names the canary, not another caller");
   const c2 = authenticateBearer("Bearer canary-next", withCanary);
   assert(c2.ok === true && c2.caller === "canary" && c2.keyId === "canary:secondary", "and its rotation slot too");
   const wrongCanary = authenticateBearer("Bearer canary-secretX", withCanary);
@@ -124,14 +128,14 @@ const keys = parseApiKeys([
 
   // The Worker without BOOKING_API_KEY_CANARY set: the canary's value is nobody's key.
   const workerWithoutCanary = parseApiKeys([
-    { caller: "shared", primary: "shared-secret", secondary: "" },
+    { caller: "regal", primary: "regal-secret", secondary: "" },
     { caller: "canary", primary: "", secondary: "" },
   ]);
   const orphan = authenticateBearer("Bearer canary-secret", workerWithoutCanary);
   assert(orphan.ok === false && orphan.status === 401, "a canary key the Worker does not hold is refused (401), which fails the canary loudly");
-  // Only the canary configured, no shared key: the endpoint is ON for the canary alone.
-  const canaryOnly = parseApiKeys([{ caller: "canary", primary: "canary-secret", secondary: "" }, { caller: "shared", primary: "", secondary: "" }]);
-  assert(authenticateBearer("Bearer shared-secret", canaryOnly).ok === false, "with the shared key retired, its old value is refused");
+  // Only the canary configured: the endpoint is ON for the canary alone.
+  const canaryOnly = parseApiKeys([{ caller: "canary", primary: "canary-secret", secondary: "" }, { caller: "regal", primary: "", secondary: "" }]);
+  assert(authenticateBearer("Bearer regal-secret", canaryOnly).ok === false, "an unset caller's value is refused");
   const ok = authenticateBearer("Bearer canary-secret", canaryOnly);
   assert(ok.ok === true && ok.caller === "canary", "and the canary still authenticates");
 }
@@ -170,6 +174,9 @@ const keys = parseApiKeys([
   walk("src");
   assert(hits.includes(join("src", "lib", "env.ts")), "the scan finds env.ts's own reads (positive control)");
   eq(hits.filter((p) => p !== join("src", "lib", "env.ts")).join(", "), "", "no other src file reads a booking API key from the environment");
+  // #2865: and env.ts no longer reads the retired shared pair at all.
+  const envSrc = readFileSync(join("src", "lib", "env.ts"), "utf8");
+  eq(/process\.env\.BOOKING_API_KEY(_2)?\b(?!_)/.test(envSrc), false, "env.ts reads neither BOOKING_API_KEY nor BOOKING_API_KEY_2");
 }
 
 // --- who may book a test bucket through the key-authed API (#2669) ---------------

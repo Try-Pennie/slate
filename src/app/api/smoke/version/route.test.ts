@@ -9,13 +9,11 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 // CLOSED (503) when no key is configured, 401 for a wrong or missing key.
 
 const env = vi.hoisted(() => ({
-  bookingApiKeyPrimary: vi.fn(() => ""),
-  bookingApiKeySecondary: vi.fn(() => ""),
   bookingApiKeyFor: vi.fn((_caller: string, _slot: string) => ""),
 }));
 // #2854: the smoke endpoints take the canary's own key and nothing else, so the key
-// these tests authenticate with is the canary's. `bookingApiKeyPrimary` above is the
-// shared key, which is left configured in the refusal test to prove it is refused.
+// these tests authenticate with is the canary's; a partner's key is configured
+// beside it in the refusal test to prove it is refused.
 const canaryKey = vi.hoisted(() => ({ primary: vi.fn(() => ""), secondary: vi.fn(() => "") }));
 const canaryKeyFor = (caller: string, slot: string) =>
   caller !== "canary" ? "" : slot === "primary" ? canaryKey.primary() : canaryKey.secondary();
@@ -32,7 +30,6 @@ function get(authorization?: string) {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  env.bookingApiKeyPrimary.mockReturnValue("");
   env.bookingApiKeyFor.mockImplementation(canaryKeyFor);
   canaryKey.primary.mockReturnValue("");
   canaryKey.secondary.mockReturnValue("");
@@ -60,11 +57,11 @@ describe("GET /api/smoke/version", () => {
     expect(JSON.stringify(await res.json())).not.toContain("abc1234");
   });
 
-  // #2854: the shared key is refused here, because Regal holds it.
-  it("401s the shared key without revealing the commit", async () => {
+  // #2854: a partner's key is refused here, even configured beside the canary's.
+  it("401s a partner's key without revealing the commit", async () => {
     canaryKey.primary.mockReturnValue("real-key");
-    env.bookingApiKeyPrimary.mockReturnValue("shared-key");
-    const res = await get("Bearer shared-key");
+    env.bookingApiKeyFor.mockImplementation((c: string, s: string) => (c === "regal" && s === "primary" ? "regal-key" : canaryKeyFor(c, s)));
+    const res = await get("Bearer regal-key");
     expect(res.status).toBe(401);
     expect(JSON.stringify(await res.json())).not.toContain("abc1234");
   });

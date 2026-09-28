@@ -27,13 +27,15 @@
  *
  * `SUPABASE_SECRET_KEY` (which on a connector-created branch is really the
  * branch's PUBLISHABLE key, see the runbook), `CRON_SECRET` so the lanes can be
- * driven, and `BOOKING_API_KEY` so the drivers can book. Every other name in the
- * deployment's secret inventory belongs to production.
+ * driven, and `BOOKING_API_KEY_CANARY` so the drivers can book AND the preflight can
+ * ask `/api/smoke/version`, which accepts the canary's key and nothing else (#2854).
+ * The drivers' value is the run's own, never production's canary key. Every other
+ * name in the deployment's secret inventory belongs to production.
  */
 export const LOADTEST_ALLOWED_SECRETS = [
   "SUPABASE_SECRET_KEY",
   "CRON_SECRET",
-  "BOOKING_API_KEY",
+  "BOOKING_API_KEY_CANARY",
 ] as const;
 
 /**
@@ -76,12 +78,10 @@ export const PRODUCTION_ONLY_SECRETS = [
   "OFFBOARDING_API_KEY",
   "BOOKABLE_API_KEY",
   "REGAL_INBOUND_KEY",
-  "BOOKING_API_KEY_2",
   "BOOKING_API_KEY_REGAL",
   "BOOKING_API_KEY_REGAL_2",
   "BOOKING_API_KEY_TRYPENNIE",
   "BOOKING_API_KEY_TRYPENNIE_2",
-  "BOOKING_API_KEY_CANARY",
   "BOOKING_API_KEY_CANARY_2",
   "GITHUB_CANARY_TOKEN",
   // #1228: noodge's heartbeat key for the two health endpoints. The load run has no

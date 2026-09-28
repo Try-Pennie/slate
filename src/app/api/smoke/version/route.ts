@@ -19,8 +19,9 @@ export const dynamic = "force-dynamic";
  * KEY-AUTHED, and that is a deliberate choice rather than caution for its own
  * sake: publishing the running commit on an unauthenticated endpoint tells anyone
  * probing the app exactly which build is live, and therefore which known issues to
- * try. The deploy job already holds the booking key (it is a repo secret for the
- * smoke canary), so gating this costs nothing operationally. Same trust level and
+ * try. The deploy job already holds the canary's own key, `BOOKING_API_KEY_CANARY`
+ * (a repo secret, #2822), the only key this accepts, so gating this costs nothing
+ * operationally. Same trust level and
  * same failure modes as `/api/smoke/heartbeat`: fails CLOSED with a 503 when no key
  * is configured, 401 for a wrong or missing key.
  *
@@ -28,7 +29,7 @@ export const dynamic = "force-dynamic";
  * liveness signal and must stay minimal and safe to expose.
  */
 export async function GET(req: NextRequest) {
-  // #2645, #2854: the canary's own key only, never the shared key or a partner's.
+  // #2645, #2854: the canary's own key only, never a partner's.
   const keys = configuredBookingApiKeys(CANARY_CALLERS);
   const auth = authenticateBearer(req.headers.get("authorization"), keys);
   if (!auth.ok) {

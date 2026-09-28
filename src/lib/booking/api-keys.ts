@@ -1,4 +1,4 @@
-import { bookingApiKeyFor, bookingApiKeyPrimary, bookingApiKeySecondary } from "@/lib/env";
+import { bookingApiKeyFor } from "@/lib/env";
 import {
   BOOKING_API_CALLERS,
   parseApiKeys,
@@ -19,10 +19,10 @@ export function configuredBookingApiKeys(
   callers: readonly BookingApiCaller[] = BOOKING_API_CALLERS,
 ): ApiKey[] {
   return parseApiKeys(
-    callers.map((caller) =>
-      caller === "shared"
-        ? { caller, primary: bookingApiKeyPrimary(), secondary: bookingApiKeySecondary() }
-        : { caller, primary: bookingApiKeyFor(caller, "primary"), secondary: bookingApiKeyFor(caller, "secondary") },
-    ),
+    callers.map((caller) => ({
+      caller,
+      primary: bookingApiKeyFor(caller, "primary"),
+      secondary: bookingApiKeyFor(caller, "secondary"),
+    })),
   );
 }

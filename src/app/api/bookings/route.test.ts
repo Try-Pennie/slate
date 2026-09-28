@@ -8,11 +8,15 @@ import { rateLimitKey, BOOKING_API_IP_LIMITER, type CallerKey } from "@/lib/rate
 // body lands. Auth/key logic itself is covered by scripts/test-booking-api-auth.ts;
 // the rate-limit IO and env reads are mocked so this exercises only the glue.
 
+// #2865: the key these tests authenticate with is Regal's. There is no shared caller.
+const regalKey = vi.hoisted(() => ({ primary: vi.fn(() => ""), secondary: vi.fn(() => "") }));
 const env = vi.hoisted(() => ({
-  bookingApiKeyPrimary: vi.fn(() => ""),
-  bookingApiKeySecondary: vi.fn(() => ""),
-  bookingApiKeyFor: vi.fn((_caller: string, _slot: string) => ""),
+  bookingApiKeyFor: vi.fn((caller: string, slot: string) =>
+    caller !== "regal" ? "" : slot === "primary" ? regalKey.primary() : regalKey.secondary(),
+  ),
 }));
+const regalKeyFor = (caller: string, slot: string) =>
+  caller !== "regal" ? "" : slot === "primary" ? regalKey.primary() : regalKey.secondary();
 const rateLimit = vi.hoisted(() => ({
   allowRequest: vi.fn(async (_caller: unknown, _rules: unknown) => true),
   // Per-minute burst windows run at the edge (#961); default to allow so the auth /
@@ -121,8 +125,8 @@ function post(authorization?: string, body?: unknown, ip?: string) {
 
 describe("POST /api/bookings (auth skeleton)", () => {
   beforeEach(() => {
-    env.bookingApiKeyPrimary.mockReturnValue("");
-    env.bookingApiKeySecondary.mockReturnValue("");
+    regalKey.primary.mockReturnValue("");
+    regalKey.secondary.mockReturnValue("");
     rateLimit.allowRequest.mockClear();
     rateLimit.allowRequest.mockResolvedValue(true);
     rateLimit.bookingApiWriteWithinLimit.mockClear();
@@ -151,51 +155,51 @@ describe("POST /api/bookings (auth skeleton)", () => {
   });
 
   it("returns 401 for a wrong key when one is configured", async () => {
-    env.bookingApiKeyPrimary.mockReturnValue("real-secret");
+    regalKey.primary.mockReturnValue("real-secret");
     const res = await post("Bearer wrong-secret");
     expect(res.status).toBe(401);
   });
 
   it("returns 401 when the Authorization header is missing", async () => {
-    env.bookingApiKeyPrimary.mockReturnValue("real-secret");
+    regalKey.primary.mockReturnValue("real-secret");
     const res = await post();
     expect(res.status).toBe(401);
   });
 
   it("authenticates the secondary key too (zero-downtime rotation)", async () => {
-    env.bookingApiKeyPrimary.mockReturnValue("old-secret");
-    env.bookingApiKeySecondary.mockReturnValue("new-secret");
+    regalKey.primary.mockReturnValue("old-secret");
+    regalKey.secondary.mockReturnValue("new-secret");
     const res = await post("Bearer new-secret", VALID_BODY);
     expect(res.status).toBe(200);
   });
 
   it("trips 429 when the per-key ceiling is exceeded", async () => {
-    env.bookingApiKeyPrimary.mockReturnValue("real-secret");
+    regalKey.primary.mockReturnValue("real-secret");
     rateLimit.allowRequest.mockResolvedValue(false);
     const res = await post("Bearer real-secret");
     expect(res.status).toBe(429);
   });
 
   it("rate-limits on the matched key's CALLER, in its own bucket (#2645)", async () => {
-    env.bookingApiKeyPrimary.mockReturnValue("real-secret");
+    regalKey.primary.mockReturnValue("real-secret");
     await post("Bearer real-secret");
     expect(rateLimit.allowRequest).toHaveBeenCalledWith(
-      { kind: "opaque", key: "key:shared" },
+      { kind: "opaque", key: "key:regal" },
       DIRECT_BOOKING_API_HOURLY_RATE_RULES,
     );
     // The per-minute burst window runs at the edge (#961), keyed on the caller.
-    expect(rateLimit.bookingApiWriteWithinLimit).toHaveBeenCalledWith("shared");
+    expect(rateLimit.bookingApiWriteWithinLimit).toHaveBeenCalledWith("regal");
   });
 
   // #961: the per-minute window is the edge limiter now. A block there must 429
   // BEFORE the DB hourly cap is consulted (no wasted round-trip on a throttled call).
   it("trips 429 on the per-key EDGE limiter, without touching the DB hourly cap", async () => {
-    env.bookingApiKeyPrimary.mockReturnValue("real-secret");
+    regalKey.primary.mockReturnValue("real-secret");
     rateLimit.bookingApiWriteWithinLimit.mockResolvedValue(false);
     const res = await post("Bearer real-secret", VALID_BODY);
     expect(res.status).toBe(429);
     expect(rateLimit.allowRequest).not.toHaveBeenCalledWith(
-      { kind: "opaque", key: "key:shared" },
+      { kind: "opaque", key: "key:regal" },
       DIRECT_BOOKING_API_HOURLY_RATE_RULES,
     );
     expect(service.bookViaApi).not.toHaveBeenCalled();
@@ -204,7 +208,7 @@ describe("POST /api/bookings (auth skeleton)", () => {
   // #597: per-key alone meant a leaked integrator key had a 6000/hr ceiling and no
   // second bound. The per-IP ceiling caps any single machine well below that.
   it("ALSO applies a per-IP ceiling, keyed on the client IP in a separate bucket", async () => {
-    env.bookingApiKeyPrimary.mockReturnValue("real-secret");
+    regalKey.primary.mockReturnValue("real-secret");
     await post("Bearer real-secret", VALID_BODY, "203.0.113.9");
     expect(rateLimit.allowRequest).toHaveBeenCalledWith(
       // #1557: an address descriptor carrying the backstop's own answer for a caller it
@@ -217,7 +221,7 @@ describe("POST /api/bookings (auth skeleton)", () => {
   });
 
   it("trips 429 on the per-IP EDGE backstop even when the key is within budget", async () => {
-    env.bookingApiKeyPrimary.mockReturnValue("real-secret");
+    regalKey.primary.mockReturnValue("real-secret");
     rateLimit.bookingApiIpWithinLimit.mockResolvedValue(false);
     const res = await post("Bearer real-secret", VALID_BODY, "203.0.113.9");
     expect(res.status).toBe(429);
@@ -225,7 +229,7 @@ describe("POST /api/bookings (auth skeleton)", () => {
   });
 
   it("trips 429 on the per-IP ceiling even when the key is well within its budget", async () => {
-    env.bookingApiKeyPrimary.mockReturnValue("real-secret");
+    regalKey.primary.mockReturnValue("real-secret");
     // The key is fine; only the IP is flooding. This is the leaked-key case.
     rateLimit.allowRequest.mockImplementation(
       async (caller: unknown) => !rateLimitKey(caller as CallerKey).startsWith("ip:"),
@@ -238,14 +242,14 @@ describe("POST /api/bookings (auth skeleton)", () => {
   });
 
   it("returns 400 for an authenticated call with an invalid body", async () => {
-    env.bookingApiKeyPrimary.mockReturnValue("real-secret");
+    regalKey.primary.mockReturnValue("real-secret");
     const { externalId: _drop, ...noExternalId } = VALID_BODY;
     const res = await post("Bearer real-secret", noExternalId);
     expect(res.status).toBe(400);
   });
 
   it("surfaces attendee field errors on a bad-contact body", async () => {
-    env.bookingApiKeyPrimary.mockReturnValue("real-secret");
+    regalKey.primary.mockReturnValue("real-secret");
     const res = await post("Bearer real-secret", {
       ...VALID_BODY,
       attendee: { name: "Dana", email: "", phone: "2155550100" },
@@ -255,7 +259,7 @@ describe("POST /api/bookings (auth skeleton)", () => {
   });
 
   it("routes a dryRun call to previewBooking and returns the preview (no booking)", async () => {
-    env.bookingApiKeyPrimary.mockReturnValue("real-secret");
+    regalKey.primary.mockReturnValue("real-secret");
     const res = await post("Bearer real-secret", { ...VALID_BODY, dryRun: true });
     expect(res.status).toBe(200);
     expect(service.previewBooking).toHaveBeenCalledOnce();
@@ -264,7 +268,7 @@ describe("POST /api/bookings (auth skeleton)", () => {
   });
 
   it("answers a dry run outside the calling window with the same code a real call gets (#2310)", async () => {
-    env.bookingApiKeyPrimary.mockReturnValue("real-secret");
+    regalKey.primary.mockReturnValue("real-secret");
     service.previewBooking.mockRejectedValueOnce(new service.OutsideCallingWindowError("outside"));
     const res = await post("Bearer real-secret", { ...VALID_BODY, dryRun: true });
     expect(res.status).toBe(422);
@@ -272,7 +276,7 @@ describe("POST /api/bookings (auth skeleton)", () => {
   });
 
   it("returns 200 with the booking on a created/deduped/rescheduled outcome", async () => {
-    env.bookingApiKeyPrimary.mockReturnValue("real-secret");
+    regalKey.primary.mockReturnValue("real-secret");
     for (const outcome of ["created", "deduped", "rescheduled"]) {
       service.bookViaApi.mockResolvedValue(result(outcome));
       const res = await post("Bearer real-secret", VALID_BODY);
@@ -285,7 +289,7 @@ describe("POST /api/bookings (auth skeleton)", () => {
   });
 
   it("returns 409 on confirm_required so the bot can ask the lead first", async () => {
-    env.bookingApiKeyPrimary.mockReturnValue("real-secret");
+    regalKey.primary.mockReturnValue("real-secret");
     service.bookViaApi.mockResolvedValue(result("confirm_required"));
     const res = await post("Bearer real-secret", VALID_BODY);
     expect(res.status).toBe(409);
@@ -293,7 +297,7 @@ describe("POST /api/bookings (auth skeleton)", () => {
   });
 
   it("maps each booking error to a stable status + machine code", async () => {
-    env.bookingApiKeyPrimary.mockReturnValue("real-secret");
+    regalKey.primary.mockReturnValue("real-secret");
     const cases: [Error, number, string][] = [
       [new service.UnknownBucketError("nope"), 422, "UNKNOWN_BUCKET"],
       [new service.NoEligibleAgentsError("empty"), 409, "NO_ELIGIBLE_AGENTS"],
@@ -312,7 +316,7 @@ describe("POST /api/bookings (auth skeleton)", () => {
   });
 
   it("tags an invalid body with the VALIDATION code", async () => {
-    env.bookingApiKeyPrimary.mockReturnValue("real-secret");
+    regalKey.primary.mockReturnValue("real-secret");
     const { externalId: _drop, ...noExternalId } = VALID_BODY;
     const res = await post("Bearer real-secret", noExternalId);
     expect(res.status).toBe(400);
@@ -321,7 +325,7 @@ describe("POST /api/bookings (auth skeleton)", () => {
 
   it("does NOT leak the raw message on an INTERNAL 500, but keeps the code (#707)", async () => {
     vi.spyOn(console, "error").mockImplementation(() => {});
-    env.bookingApiKeyPrimary.mockReturnValue("real-secret");
+    regalKey.primary.mockReturnValue("real-secret");
     service.bookViaApi.mockRejectedValueOnce(new Error('relation "bookings" does not exist'));
     const res = await post("Bearer real-secret", VALID_BODY);
     expect(res.status).toBe(500);
@@ -331,7 +335,7 @@ describe("POST /api/bookings (auth skeleton)", () => {
   });
 
   it("keeps the intended message on a typed error (SLOT_TAKEN) (#707)", async () => {
-    env.bookingApiKeyPrimary.mockReturnValue("real-secret");
+    regalKey.primary.mockReturnValue("real-secret");
     service.bookViaApi.mockRejectedValueOnce(new service.SlotUnavailableError("That time was just taken."));
     const res = await post("Bearer real-secret", VALID_BODY);
     expect(res.status).toBe(409);
@@ -347,7 +351,7 @@ describe("POST /api/bookings (auth skeleton)", () => {
   it("emits the key-attribution audit line at a queryable level, never console.log", async () => {
     const info = vi.spyOn(console, "info").mockImplementation(() => {});
     const log = vi.spyOn(console, "log").mockImplementation(() => {});
-    env.bookingApiKeyPrimary.mockReturnValue("real-secret");
+    regalKey.primary.mockReturnValue("real-secret");
 
     await post("Bearer real-secret", VALID_BODY);
 
@@ -355,7 +359,7 @@ describe("POST /api/bookings (auth skeleton)", () => {
     // found by filtering tag=booking-api rather than guessing at a substring.
     expect(info).toHaveBeenCalledWith(expect.stringContaining("tag=booking-api"));
     expect(info).toHaveBeenCalledWith(expect.stringContaining('msg="authenticated request"'));
-    expect(info).toHaveBeenCalledWith(expect.stringContaining('key="shared:primary"'));
+    expect(info).toHaveBeenCalledWith(expect.stringContaining('key="regal:primary"'));
     expect(log).not.toHaveBeenCalled();
   });
 
@@ -365,7 +369,7 @@ describe("POST /api/bookings (auth skeleton)", () => {
   // tagged format, so the fields it carries are pinned here instead.
   it("emits the outcome line with the fields the bot's outcome mix is tallied from", async () => {
     const info = vi.spyOn(console, "info").mockImplementation(() => {});
-    env.bookingApiKeyPrimary.mockReturnValue("real-secret");
+    regalKey.primary.mockReturnValue("real-secret");
     service.bookViaApi.mockResolvedValueOnce(result("confirm_required"));
 
     await post("Bearer real-secret", VALID_BODY);
@@ -374,14 +378,14 @@ describe("POST /api/bookings (auth skeleton)", () => {
     expect(outcome).toContain("tag=booking-api");
     expect(outcome).toContain('outcome="confirm_required"');
     expect(outcome).toContain('bucket="411"');
-    expect(outcome).toContain('key="shared:primary"');
+    expect(outcome).toContain('key="regal:primary"');
     expect(outcome).toContain("status=409");
   });
 
   it("carries the machine error code on the outcome line when the call fails", async () => {
     const info = vi.spyOn(console, "info").mockImplementation(() => {});
     vi.spyOn(console, "error").mockImplementation(() => {});
-    env.bookingApiKeyPrimary.mockReturnValue("real-secret");
+    regalKey.primary.mockReturnValue("real-secret");
     service.bookViaApi.mockRejectedValueOnce(new service.SlotUnavailableError("taken"));
 
     await post("Bearer real-secret", VALID_BODY);
@@ -398,7 +402,7 @@ describe("POST /api/bookings (auth skeleton)", () => {
     const info = vi.spyOn(console, "info").mockImplementation(() => {});
     const log = vi.spyOn(console, "log").mockImplementation(() => {});
     vi.spyOn(console, "error").mockImplementation(() => {});
-    env.bookingApiKeyPrimary.mockReturnValue("real-secret");
+    regalKey.primary.mockReturnValue("real-secret");
     service.bookViaApi.mockRejectedValueOnce(new service.SlotUnavailableError("taken"));
 
     const res = await post("Bearer real-secret", VALID_BODY);
@@ -412,8 +416,8 @@ describe("POST /api/bookings (auth skeleton)", () => {
 
 describe("GET /api/bookings (list mode + lookup mode)", () => {
   beforeEach(() => {
-    env.bookingApiKeyPrimary.mockReturnValue("real-secret");
-    env.bookingApiKeySecondary.mockReturnValue("");
+    regalKey.primary.mockReturnValue("real-secret");
+    regalKey.secondary.mockReturnValue("");
     rateLimit.allowRequest.mockClear();
     rateLimit.allowRequest.mockResolvedValue(true);
     rateLimit.bookingApiWriteWithinLimit.mockClear();
@@ -471,7 +475,7 @@ describe("GET /api/bookings (list mode + lookup mode)", () => {
   });
 
   it("GET list mode requires auth (no key -> 401/503)", async () => {
-    env.bookingApiKeyPrimary.mockReturnValue("");
+    regalKey.primary.mockReturnValue("");
     const res = await GET(new Request("http://localhost/api/bookings") as never);
     expect([401, 503]).toContain(res.status);
   });
@@ -479,15 +483,15 @@ describe("GET /api/bookings (list mode + lookup mode)", () => {
   it("GET (read) draws from the separate read rate ceiling, not the write one", async () => {
     await authedGet("http://localhost/api/bookings?status=confirmed");
     expect(rateLimit.allowRequest).toHaveBeenCalledWith(
-      { kind: "opaque", key: "key:shared" },
+      { kind: "opaque", key: "key:regal" },
       DIRECT_BOOKING_API_READ_HOURLY_RATE_RULES,
     );
     expect(rateLimit.allowRequest).not.toHaveBeenCalledWith(
-      { kind: "opaque", key: "key:shared" },
+      { kind: "opaque", key: "key:regal" },
       DIRECT_BOOKING_API_HOURLY_RATE_RULES,
     );
     // And its edge per-minute window is the READ binding, not the write one (#961).
-    expect(rateLimit.bookingApiReadWithinLimit).toHaveBeenCalledWith("shared");
+    expect(rateLimit.bookingApiReadWithinLimit).toHaveBeenCalledWith("regal");
     expect(rateLimit.bookingApiWriteWithinLimit).not.toHaveBeenCalled();
   });
 });
@@ -499,7 +503,7 @@ describe("GET /api/bookings (list mode + lookup mode)", () => {
 // start 429ing reads.
 describe("GET rate limiting (#597)", () => {
   beforeEach(() => {
-    env.bookingApiKeyPrimary.mockReturnValue("real-secret");
+    regalKey.primary.mockReturnValue("real-secret");
     rateLimit.allowRequest.mockResolvedValue(true);
     rateLimit.allowRequest.mockClear();
     rateLimit.bookingApiWriteWithinLimit.mockClear();
@@ -522,7 +526,7 @@ describe("GET rate limiting (#597)", () => {
     );
 
     expect(rateLimit.allowRequest).toHaveBeenCalledWith(
-      { kind: "opaque", key: "key:shared" },
+      { kind: "opaque", key: "key:regal" },
       DIRECT_BOOKING_API_READ_HOURLY_RATE_RULES,
     );
     const keys = rateLimit.allowRequest.mock.calls.map(([c]) => rateLimitKey(c as CallerKey));
@@ -538,7 +542,7 @@ describe("POST /api/bookings: a declined bucket change (#1465)", () => {
   // cannot be, the response has to say so. A bare 200 deduped reads as "handled"
   // while the routing request was dropped and the lead stayed with the old team.
   it("names a declined bucket change on the response, with the bucket that was asked for", async () => {
-    env.bookingApiKeyPrimary.mockReturnValue("secret");
+    regalKey.primary.mockReturnValue("secret");
     service.bookViaApi.mockResolvedValue({
       ...result("deduped"),
       bucketChangeDeclined: "no_eligible_agents",
@@ -566,7 +570,7 @@ describe("POST /api/bookings: a declined bucket change (#1465)", () => {
   });
 
   it("omits the field entirely when nothing was declined, so its presence always means something", async () => {
-    env.bookingApiKeyPrimary.mockReturnValue("secret");
+    regalKey.primary.mockReturnValue("secret");
     service.bookViaApi.mockResolvedValue(result("deduped"));
 
     const res = await post("Bearer secret", VALID_BODY);
@@ -585,7 +589,7 @@ describe("POST /api/bookings: a declined bucket change (#1465)", () => {
 // is counted here too, beside the ordinary outcome and outside the failure share.
 describe("POST /api/bookings: lost overlap races are counted (#2838)", () => {
   beforeEach(() => {
-    env.bookingApiKeyPrimary.mockReturnValue("secret");
+    regalKey.primary.mockReturnValue("secret");
     monitor.recordApiOutcome.mockClear();
   });
   const outcomes = () => monitor.recordApiOutcome.mock.calls.map((c) => [c[0], c[2]]);
@@ -674,7 +678,7 @@ describe("POST /api/bookings: lost overlap races are counted (#2838)", () => {
 // tier drop at all.
 describe("POST /api/bookings: the bucket the lead actually landed in (#1515)", () => {
   beforeEach(() => {
-    env.bookingApiKeyPrimary.mockReturnValue("secret");
+    regalKey.primary.mockReturnValue("secret");
   });
 
   it("reports the effective bucket beside the one that was requested", async () => {
@@ -747,8 +751,8 @@ describe("POST /api/bookings confirmation extras (#2643)", () => {
     calendarLinks: { google: "g", outlook: "o", office365: "m", ics: "i" },
   };
   beforeEach(() => {
-    env.bookingApiKeyPrimary.mockReturnValue("real-secret");
-    env.bookingApiKeySecondary.mockReturnValue("");
+    regalKey.primary.mockReturnValue("real-secret");
+    regalKey.secondary.mockReturnValue("");
     rateLimit.allowRequest.mockResolvedValue(true);
     rateLimit.bookingApiWriteWithinLimit.mockResolvedValue(true);
     rateLimit.bookingApiIpWithinLimit.mockResolvedValue(true);
@@ -783,8 +787,8 @@ describe("POST /api/bookings confirmation extras (#2643)", () => {
 // log line saying WHICH key it presented can show its key was set correctly.
 describe("GET /api/bookings lookup attribution (#2643, #2645)", () => {
   beforeEach(() => {
-    env.bookingApiKeyPrimary.mockReturnValue("real-secret");
-    env.bookingApiKeySecondary.mockReturnValue("");
+    regalKey.primary.mockReturnValue("real-secret");
+    regalKey.secondary.mockReturnValue("");
     rateLimit.allowRequest.mockResolvedValue(true);
     rateLimit.bookingApiReadWithinLimit.mockResolvedValue(true);
     service.getPersonBookingById.mockReset();
@@ -802,7 +806,7 @@ describe("GET /api/bookings lookup attribution (#2643, #2645)", () => {
     const res = await lookup("externalId=00Q1&bookingId=bk-1");
     expect(res.status).toBe(200);
     expect(info).toHaveBeenCalledWith(expect.stringContaining('msg="lookup"'));
-    expect(info).toHaveBeenCalledWith(expect.stringContaining('key="shared:primary"'));
+    expect(info).toHaveBeenCalledWith(expect.stringContaining('key="regal:primary"'));
     expect(info).toHaveBeenCalledWith(expect.stringContaining('mode="by_id"'));
     info.mockRestore();
   });
@@ -830,8 +834,8 @@ describe("GET /api/bookings lookup attribution (#2643, #2645)", () => {
 // already held, and its keys are the ones the warehouse will join on.
 describe("POST /api/bookings partner join keys (#2659)", () => {
   beforeEach(() => {
-    env.bookingApiKeyPrimary.mockReturnValue("real-secret");
-    env.bookingApiKeySecondary.mockReturnValue("");
+    regalKey.primary.mockReturnValue("real-secret");
+    regalKey.secondary.mockReturnValue("");
     rateLimit.allowRequest.mockResolvedValue(true);
     rateLimit.bookingApiWriteWithinLimit.mockResolvedValue(true);
     rateLimit.bookingApiIpWithinLimit.mockResolvedValue(true);
@@ -892,8 +896,8 @@ describe("POST /api/bookings: who may book a test bucket (#2669)", () => {
   };
 
   beforeEach(() => {
-    env.bookingApiKeyPrimary.mockReturnValue("");
-    env.bookingApiKeySecondary.mockReturnValue("");
+    regalKey.primary.mockReturnValue("");
+    regalKey.secondary.mockReturnValue("");
     env.bookingApiKeyFor.mockImplementation((caller: string, slot: string) =>
       slot === "primary" && (caller === "canary" || caller === "trypennie") ? `${caller}-secret` : "",
     );
@@ -911,24 +915,13 @@ describe("POST /api/bookings: who may book a test bucket (#2669)", () => {
 
   afterEach(() => {
     env.bookingApiKeyFor.mockReset();
-    env.bookingApiKeyFor.mockImplementation(() => "");
+    env.bookingApiKeyFor.mockImplementation(regalKeyFor);
   });
 
   it("the canary's own key books the hidden SMOKE bucket", async () => {
     const res = await post("Bearer canary-secret", { ...VALID_BODY, bucketCode: "SMOKE" });
     expect(res.status).toBe(200);
     expect(service.bookViaApi).toHaveBeenCalledWith(expect.objectContaining({ allowTestBuckets: true }));
-  });
-
-  // #2854: the canary books on its own key now, and Regal holds the shared one, so
-  // the shared key is refused the hidden buckets exactly as a partner's key is.
-  it("the shared key booking SMOKE gets the 422 an unknown code gets", async () => {
-    env.bookingApiKeyPrimary.mockReturnValue("shared-secret");
-    const hidden = await post("Bearer shared-secret", { ...VALID_BODY, bucketCode: "SMOKE" });
-    const unknown = await post("Bearer shared-secret", { ...VALID_BODY, bucketCode: "NOPE" });
-    expect(service.bookViaApi).toHaveBeenNthCalledWith(1, expect.objectContaining({ allowTestBuckets: false }));
-    expect(hidden.status).toBe(422);
-    expect(await hidden.text()).toBe(await unknown.text());
   });
 
   it("a partner key booking SMOKE gets the byte identical 422 an unknown code gets", async () => {

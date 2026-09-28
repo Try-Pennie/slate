@@ -2,8 +2,6 @@ import { NextResponse, type NextRequest } from "next/server";
 import { authenticateBearer, CANARY_CALLERS } from "@/lib/booking/api-auth";
 import { configuredBookingApiKeys } from "@/lib/booking/api-keys";
 import { recordHeartbeat } from "@/lib/monitor/heartbeat";
-import { recordCallerSeen } from "@/lib/booking/record-caller-seen";
-import { CANARY_LANES_CALLER } from "@/lib/booking/caller-seen";
 
 export const dynamic = "force-dynamic";
 
@@ -17,10 +15,8 @@ export const dynamic = "force-dynamic";
  * being down.
  *
  * Auth: the canary sends its own key, `BOOKING_API_KEY_CANARY` (#2822), and it is
- * the only key accepted: the shared `BOOKING_API_KEY` is refused like a partner's
- * (#2854), because Regal holds it and could keep a dead canary looking alive. A
- * stamp also records a `canary-lanes` sighting, which is how the partner judge
- * knows when the scheduled lanes left the shared key. Fails CLOSED (503) when no
+ * the only key accepted: a partner's key is refused (#2854), because a partner
+ * stamping here could keep a dead canary looking alive. Fails CLOSED (503) when no
  * key is configured; 401 for a wrong or missing key.
  *
  * The optional `?lane=` selects which canary heartbeat to stamp, restricted to an
@@ -63,7 +59,7 @@ const CANARY_HEARTBEAT_LANES = new Set([
 ]);
 
 export async function POST(req: NextRequest) {
-  // #2645, #2854: the canary's own key only, never the shared key or a partner's.
+  // #2645, #2854: the canary's own key only, never a partner's.
   const keys = configuredBookingApiKeys(CANARY_CALLERS);
   const auth = authenticateBearer(req.headers.get("authorization"), keys);
   if (!auth.ok) {
@@ -74,11 +70,5 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "unknown lane" }, { status: 400 });
   }
   await recordHeartbeat(lane);
-  // #2822: only the scheduled lanes stamp heartbeats, so a stamp on the canary's OWN
-  // key is the signal that the lanes have left the shared key. The partner judge reads
-  // this sighting's first_seen_at as the move, never a plain `canary` row, which a hand
-  // run writes too. Throttled and deferred like every other sighting, and it can never
-  // fail the stamp.
-  if (auth.caller === "canary") recordCallerSeen(CANARY_LANES_CALLER, "POST", req.headers);
   return NextResponse.json({ ok: true });
 }

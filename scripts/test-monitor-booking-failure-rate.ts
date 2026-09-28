@@ -296,7 +296,7 @@ const reading = (
     topCodes: [{ code: "API_KEY_REJECTED", count: 29 }],
   });
   assert(
-    rotated.includes("the shared BOOKING_API_KEY) was rotated") && rotated.includes("BOOKING_API_KEY_REGAL"),
+    rotated.includes("_TRYPENNIE or _CANARY) was rotated") && rotated.includes("BOOKING_API_KEY_REGAL") && !rotated.includes("shared"),
     "a rejected-key wave says to check whether the key was rotated without the caller being updated",
   );
   assert(

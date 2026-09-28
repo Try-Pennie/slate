@@ -7,23 +7,19 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 // key, and only a valid key records the `smoke-canary` heartbeat.
 
 const env = vi.hoisted(() => ({
-  bookingApiKeyPrimary: vi.fn(() => ""),
-  bookingApiKeySecondary: vi.fn(() => ""),
   bookingApiKeyFor: vi.fn((_caller: string, _slot: string) => ""),
 }));
 // #2854: the smoke endpoints take the canary's own key and nothing else, so the key
-// these tests authenticate with is the canary's. `bookingApiKeyPrimary` above is the
-// shared key, which is left configured in the refusal test to prove it is refused.
+// these tests authenticate with is the canary's; a partner's key is configured
+// beside it in the refusal test to prove it is refused.
 const canaryKey = vi.hoisted(() => ({ primary: vi.fn(() => ""), secondary: vi.fn(() => "") }));
 const canaryKeyFor = (caller: string, slot: string) =>
   caller !== "canary" ? "" : slot === "primary" ? canaryKey.primary() : canaryKey.secondary();
 const heartbeat = vi.hoisted(() => ({ recordHeartbeat: vi.fn(async () => {}) }));
 
-const seen = vi.hoisted(() => ({ recordCallerSeen: vi.fn() }));
 
 vi.mock("@/lib/env", () => env);
 vi.mock("@/lib/monitor/heartbeat", () => heartbeat);
-vi.mock("@/lib/booking/record-caller-seen", () => seen);
 
 import { POST } from "./route";
 
@@ -37,7 +33,6 @@ function post(authorization?: string, lane?: string) {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  env.bookingApiKeyPrimary.mockReturnValue("");
   env.bookingApiKeyFor.mockImplementation(canaryKeyFor);
   canaryKey.primary.mockReturnValue("");
   canaryKey.secondary.mockReturnValue("");
@@ -66,42 +61,6 @@ describe("POST /api/smoke/heartbeat caller scope (#2645)", () => {
       expect(res.status).toBe(401);
     }
     expect(heartbeat.recordHeartbeat).not.toHaveBeenCalled();
-    expect(seen.recordCallerSeen).not.toHaveBeenCalled();
-  });
-});
-
-// #2822: only the scheduled lanes stamp heartbeats, so a heartbeat on the canary's
-// OWN key is the signal that the lanes have left the shared key. A hand run smoke or
-// a single booking on the canary key never reaches this endpoint, which is why the
-// partner judge reads this sighting and not the plain `canary` rows.
-describe("POST /api/smoke/heartbeat records the lanes' move to their own key (#2822)", () => {
-  beforeEach(() => {
-    env.bookingApiKeyPrimary.mockReturnValue("shared-secret");
-    env.bookingApiKeyFor.mockImplementation((caller: string, slot: string) =>
-      slot === "primary" ? `${caller}-secret` : "",
-    );
-  });
-
-  it("records a canary lanes sighting when the canary's own key stamps", async () => {
-    const res = await post("Bearer canary-secret", "router-replay");
-    expect(res.status).toBe(200);
-    expect(seen.recordCallerSeen).toHaveBeenCalledTimes(1);
-    expect((seen.recordCallerSeen.mock.calls[0] as unknown[])[0]).toBe("canary-lanes");
-  });
-
-  // #2854: the shared key used to stamp here and record nothing. Regal holds it, so
-  // it is refused outright now, and a refused stamp can record no sighting either.
-  it("refuses the shared key, stamping and recording nothing", async () => {
-    const res = await post("Bearer shared-secret");
-    expect(res.status).toBe(401);
-    expect(heartbeat.recordHeartbeat).not.toHaveBeenCalled();
-    expect(seen.recordCallerSeen).not.toHaveBeenCalled();
-  });
-
-  it("records nothing for a lane it refused", async () => {
-    const res = await post("Bearer canary-secret", "sync");
-    expect(res.status).toBe(400);
-    expect(seen.recordCallerSeen).not.toHaveBeenCalled();
   });
 });
 

@@ -307,7 +307,7 @@ const CODE_GUIDANCE: Record<string, string> = {
   API_KEY_REJECTED:
     "API_KEY_REJECTED means the caller is presenting a key Slate does not accept, so every lead " +
     "it handles is refused until the key is fixed. Check whether that caller's key " +
-    "(BOOKING_API_KEY_REGAL, _TRYPENNIE, _CANARY, or the shared BOOKING_API_KEY) was rotated " +
+    "(BOOKING_API_KEY_REGAL, _TRYPENNIE or _CANARY) was rotated " +
     "without the caller being updated. Counted per refused call, so a caller that retries can " +
     "appear more than once.",
   API_NOT_CONFIGURED:

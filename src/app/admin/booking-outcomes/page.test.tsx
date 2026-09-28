@@ -10,9 +10,9 @@ import { render, screen } from "@testing-library/react";
 const auth = vi.hoisted(() => ({ currentUser: vi.fn() }));
 const env = vi.hoisted(() => ({ consoleHiddenFor: vi.fn(() => false) }));
 const rpc = vi.hoisted(() => vi.fn());
-// #2717: the api_caller_seen read, as `.from(t).select(c).limit(n)`.
+// #2717: the api_caller_seen read, as `.from(t).select(c).in(col, callers).limit(n)`.
 const seenRead = vi.hoisted(() => vi.fn(async () => ({ data: [] as unknown[], error: null as { message: string } | null })));
-const from = vi.hoisted(() => vi.fn(() => ({ select: () => ({ limit: seenRead }) })));
+const from = vi.hoisted(() => vi.fn(() => ({ select: () => ({ in: () => ({ limit: seenRead }) }) })));
 const admin = vi.hoisted(() => ({ supabaseAdmin: vi.fn(() => ({ rpc, from })) }));
 const redirect = vi.hoisted(() =>
   vi.fn((url: string) => {
@@ -118,39 +118,29 @@ describe("BookingOutcomesPage caller sightings", () => {
     expect(screen.queryByText(/never authenticated/i)).toBeNull();
   });
 
-  // #2822: the shared key sent from a browser is its own line, beside the partner line.
-  it("says so when the shared key was sent from a browser, and says nothing when it was not", async () => {
+  // #2865: the shared key is retired, and the rows it left in the table stay there.
+  // The read asks for the known callers only, so a leftover row can never take one of
+  // the limited places a real caller's row needs.
+  it("reads only the callers the authorizer knows", async () => {
+    auth.currentUser.mockResolvedValueOnce(ADMIN);
+    rpc.mockResolvedValue(MIX);
+    const inFilter = vi.fn(() => ({ limit: seenRead }));
+    from.mockImplementationOnce(() => ({ select: () => ({ in: inFilter }) }));
+    render(await BookingOutcomesPage());
+    expect(inFilter).toHaveBeenCalledWith("caller", ["regal", "trypennie", "canary"]);
+  });
+
+  it("shows no row and no warning for a leftover shared key sighting", async () => {
     auth.currentUser.mockResolvedValueOnce(ADMIN);
     rpc.mockResolvedValue(MIX);
     const recent = new Date(Date.now() - 2 * HOUR).toISOString();
     seenRead.mockResolvedValue({
-      data: [
-        { caller: "trypennie", host_kind: "unstated", last_seen_at: recent, method: "GET", origin: null },
-        { caller: "shared", host_kind: "production", last_seen_at: recent, method: "GET", origin: "https://www.trypennie.com" },
-      ],
-      error: null,
-    });
-    const { unmount } = render(await BookingOutcomesPage());
-    expect(screen.getByText(/shared booking key was sent from a browser at https:\/\/www\.trypennie\.com/i)).toBeTruthy();
-    expect(screen.getByText(/rotate BOOKING_API_KEY/)).toBeTruthy();
-    unmount();
-
-    auth.currentUser.mockResolvedValueOnce(ADMIN);
-    seenRead.mockResolvedValue({
-      data: [{ caller: "shared", host_kind: "unstated", last_seen_at: recent, method: "POST", origin: null }],
+      data: [{ caller: "shared", host_kind: "production", last_seen_at: recent, method: "GET", origin: "https://www.trypennie.com" }],
       error: null,
     });
     render(await BookingOutcomesPage());
-    expect(screen.queryByText(/sent from a browser/i)).toBeNull();
-  });
-
-  it("reads first_seen_at, which says when the canary left the shared key", async () => {
-    auth.currentUser.mockResolvedValueOnce(ADMIN);
-    rpc.mockResolvedValue(MIX);
-    const select = vi.fn(() => ({ limit: seenRead }));
-    from.mockImplementationOnce(() => ({ select }));
-    render(await BookingOutcomesPage());
-    expect(String((select.mock.calls[0] as unknown[])[0])).toMatch(/first_seen_at/);
+    expect(screen.queryByText(/shared/i)).toBeNull();
+    expect(screen.getByText(/trypennie's key has never authenticated/i)).toBeTruthy();
   });
 
   it("surfaces an unreadable table rather than reading it as never seen", async () => {

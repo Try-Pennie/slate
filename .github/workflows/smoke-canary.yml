@@ -24,9 +24,9 @@ name: Smoke canary
 # Needs repo secrets BOOKING_API_KEY_CANARY and REASSIGN_API_KEY (the Worker's keys, added
 # to Actions), and the existing SLACK_BOT_TOKEN secret + SLACK_ALERTS_CHANNEL var.
 #
-# #2822: the canary sends its OWN key and is recorded as `canary`, never the shared
-# BOOKING_API_KEY, so every shared key sighting in api_caller_seen is a partner's.
-# scripts/test-canary-key-wiring.ts fails the build if any step goes back to it. The
+# #2822: the canary sends its OWN key and is recorded as `canary`. The shared
+# BOOKING_API_KEY is retired (#2865) and the Worker holds none, so a step sending it
+# would be refused; scripts/test-canary-key-wiring.ts fails the build first. The
 # GitHub secret must hold the SAME value as the Worker's BOOKING_API_KEY_CANARY secret:
 # a value the Worker does not hold is a 401 on the first step, which fails the run
 # and alerts.

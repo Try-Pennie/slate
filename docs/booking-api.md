@@ -8,7 +8,7 @@ the old headless embed-scraping auto-booker. Refs #253/#250.)
 > **Two surfaces:**
 > - **Public create** — `POST /booking` (keyless; same as the embed form submit).
 > - **Key-authed API** — everything under `POST|GET|DELETE /api/bookings`
->   (requires `Authorization: Bearer <BOOKING_API_KEY>`).
+>   (requires `Authorization: Bearer <your caller's key>`).
 
 Three calls cover the full flow:
 
@@ -99,7 +99,7 @@ outage. A `503` is never downgraded to a confident `bookable: false`.
 ### Auth
 
 ```
-Authorization: Bearer <BOOKING_API_KEY>
+Authorization: Bearer <your caller's key>
 ```
 
 - **One key per caller** (#2645). Each system that calls this API holds its own
@@ -111,17 +111,16 @@ Authorization: Bearer <BOOKING_API_KEY>
   | Regal | `BOOKING_API_KEY_REGAL` | `BOOKING_API_KEY_REGAL_2` |
   | trypennie | `BOOKING_API_KEY_TRYPENNIE` | `BOOKING_API_KEY_TRYPENNIE_2` |
   | smoke canary | `BOOKING_API_KEY_CANARY` | `BOOKING_API_KEY_CANARY_2` |
-  | shared (legacy) | `BOOKING_API_KEY` | `BOOKING_API_KEY_2` |
 
-  `shared` is the one key every caller held before the split. It still works, so
-  nothing breaks before the named keys are handed out, and it is retired once all
-  three callers are on their own. Never give two callers the same value: the
-  request would be attributed to whichever is listed first.
+  There is no shared key. The one every caller held before the split is retired
+  (#2865): the canary moved to its own, Regal was given a fresh one, and trypennie
+  kept the value it already had, now in its own `_2` slot. Never give two callers
+  the same value: the request would be attributed to whichever is listed first.
 - **Each caller has two slots** so its secret rotates with **zero downtime**: add
   the new key in the `_2` slot, point that caller at it, then retire the primary.
 - `503` if no key is configured (endpoint disabled); `401` on a missing/wrong key.
 - The smoke endpoints (`/api/smoke/*`) and the hidden test buckets accept only
-  the canary's key and the shared pair, never a partner's.
+  the canary's key, never a partner's.
 - **Rate limit:** per CALLER (both of a caller's slots share one budget), generous, a runaway/leaked-key backstop rather than a
   per-request throttle. Writes (`POST`/`DELETE`) and reads (`GET`) draw from
   **separate** ceilings, so frequent status polling can't throttle the booking

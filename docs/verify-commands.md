@@ -1215,9 +1215,7 @@ and is pinned offline by `scripts/test-parallel-run-readiness.ts`.
 | 12 | **a real bucket has nobody to route to** |
 | 5 | **a bookable agent has no calendar row**, so they read as free all day |
 | 6 | a calendar is not hydrated to the booking horizon |
-| 17 | **trypennie's own key unproven while calls arrive on the shared key from its production site** (see below) |
 | 13 | **trypennie key never seen from production** (see below) |
-| 18 | **the shared booking key was sent from a browser** on a public host (see below) |
 | 7 | an alert cooldown is stretched above its default |
 | 14 | **low volume alarms armed** and a real booking in 7 days carried no `source`, or a Low page has recorded none carrying its own (see below) |
 | 15 | **low volume alarms armed** and a federal holiday in the next 90 days carries no business hours exception |
@@ -1294,49 +1292,14 @@ developer calling with the production key from their own server satisfies it too
 The same fact is shown on `/admin/booking-outcomes`, judged by the same function
 (`judgePartnerKey`, `src/lib/booking/caller-seen.ts`).
 
-**Exit 17, trypennie on the shared key (#2819).** With no trypennie row, "not
-deployed yet" and "deployed holding `BOOKING_API_KEY` instead of
-`BOOKING_API_KEY_TRYPENNIE`" read the same, and on 2026-09-28 nobody could say which
-key had been sent. So the run also reads the `shared` caller's rows. The table
-records only caller, host kind, origin, method and a last seen time, and the smoke
-canary holds the shared key and calls it from a server that names no host, so only
-one shared sighting is evidence about trypennie: one from a production origin
-inside the same 7 day bound. That is exit 17, with its own sentence ("calls are
-arriving on the shared key from <origin>, the latest <age>, so trypennie may hold the shared key instead
-of its own"), whatever trypennie's own key was last seen doing short of passing.
-Exit 13 then says which of two things it met: nothing at all on the shared key
-("nothing suggests trypennie has deployed"), or shared server calls, which cannot be
-told apart from the canary's, so the sentence says to confirm which key trypennie
-holds rather than reading them as "not yet".
-
-**The canary on its own key (#2822).** trypennie's confirmed page lookup is itself a
-server call, so while the canary shared the key a deployment holding it and calling
-only from its server read as the canary. Every canary lane, the deploy probe and
-every heartbeat stamp now send `BOOKING_API_KEY_CANARY` and are recorded as
-`canary` (`scripts/test-canary-key-wiring.ts` fails the build if any goes back). The
-move is NOT the first `canary` sighting, because a hand run smoke or any booking on
-the canary key writes one while the lanes may still be on the shared key. It is the
-first heartbeat stamped on the canary's own key, which `/api/smoke/heartbeat`
-records as a `canary-lanes` sighting: only scheduled workflow steps stamp
-heartbeats. Its `api_caller_seen.first_seen_at` (migration 0146) is the moment. A
-shared server call made after it, plus one hour for a run in flight, is a partner's. If trypennie is the only partner not seen on its own
-key inside the bound, that is exit 17 outright ("trypennie is the only partner not
-seen on its own key, so it holds the shared key instead of its own"); if Regal is
-also unaccounted for (it holds the shared key until `BOOKING_API_KEY_REGAL` is set),
-exit 13 names both and asks which. A shared row last written before the move is the
-canary's history and reads as nothing. Until the canary's first own-key sighting the
-old hedge stands, and says the canary's own key is what ends it.
-
-**Exit 18, the shared key sent from a browser (#2822).** A request carrying an
-`Origin` or `Referer` was made by a browser, so a shared key sighting from the
-production site or another public host means the key sat in page code any visitor
-can read. That is its own finding with its own repair: move the call to a server and
-rotate `BOOKING_API_KEY`. It can appear beside exit 17 (a production origin on the
-shared key is both), and ranks below it because it does not stop a lead seeing their
-booking today. Localhost is not judged, since no visitor loads that page, and a
-partner's OWN key from its production site is the accepted proof it deployed, not
-this finding. The same sentence shows on `/admin/booking-outcomes`, from the same
-function (`judgeSharedKeyExposure`).
+**Exits 17 and 18 are retired (#2865).** They judged the shared booking key: 17 read
+calls arriving on it from trypennie's production site as trypennie holding the wrong
+key (#2819), and 18 reported it being sent from a browser (#2822). The shared key is
+gone. Regal has its own key, and the value trypennie was given sits in trypennie's
+own `_2` slot, so a call with it is recorded as `trypennie` and exit 13 answers the
+whole question. The numbers stay unused so an old log never reads as a new finding.
+Rows the shared key left in `api_caller_seen` are never read: every read asks for
+the callers the authorizer knows.
 
 A deliberately dropped check, so nobody adds it back by accident: a bookable agent
 sitting on the seeded default week is NOT reported. The seeded week is also a real
