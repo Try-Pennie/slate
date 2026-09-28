@@ -8,6 +8,10 @@ import {
   hasAnyRosterFilter,
   rosterEmptyText,
   rosterCountText,
+  neverSignedInCount,
+  rosterSigninText,
+  rosterHoursText,
+  EMPTY_ROSTER_FILTERS,
   type RosterFilters,
   type RosterRow,
 } from "@/lib/admin/roster-filter";
@@ -31,6 +35,9 @@ const row = (o: Partial<RosterRow> & { id: string }): RosterRow => ({
   manager_id: null,
   deactivated_at: null,
   attributes: {},
+  auth_user_id: "auth",
+  created_at: "2026-09-01T00:00:00Z",
+  is_test: false,
   ...o,
 });
 
@@ -41,7 +48,7 @@ const ROSTER: RosterRow[] = [
   row({ id: "d", name: "Gone Person", email: "gone@x.com", deactivated_at: "2026-01-01T00:00:00Z" }),
 ];
 
-const NONE: RosterFilters = { q: "", role: "", team: "", manager: "", bookable: "" };
+const NONE: RosterFilters = EMPTY_ROSTER_FILTERS;
 
 describe("filterRoster", () => {
   it("hides anyone offboarded, whatever else is asked for", () => {
@@ -120,7 +127,7 @@ describe("sortRoster", () => {
 
 describe("the URL and the filters are one round trip", () => {
   it("reads every filter back out of the params it wrote", () => {
-    const f: RosterFilters = { q: "ada", role: "agent", team: "credit", manager: "m1", bookable: "yes" };
+    const f: RosterFilters = { q: "ada", role: "agent", team: "credit", manager: "m1", bookable: "yes", signin: "never", hours: "seeded" };
     expect(rosterFiltersFromParams(new URLSearchParams(rosterFiltersToQuery(f)))).toEqual(f);
   });
 
@@ -306,5 +313,97 @@ describe("the page size", () => {
   it("is a positive whole number the table and the pager both read", () => {
     expect(Number.isInteger(ROSTER_PAGE_SIZE)).toBe(true);
     expect(ROSTER_PAGE_SIZE).toBeGreaterThan(0);
+  });
+});
+
+// #1802: "never signed in" is a recorded fact, `auth_user_id` being null, and it
+// used to be readable only by accident from whose photo was missing. Since #2600
+// photos come from the Workspace directory, so the photo says nothing at all.
+describe("never signed in", () => {
+  const NOW = Date.UTC(2026, 8, 28, 12, 0, 0);
+  const ago = (d: number) => new Date(NOW - d * 86_400_000).toISOString();
+  const SIGNIN: RosterRow[] = [
+    // Signed in, no photo: the case the avatar heuristic got wrong.
+    row({ id: "s1", auth_user_id: "auth-1", avatar_url: null }),
+    // Never signed in, photo from the directory backfill (#2600).
+    row({ id: "n1", auth_user_id: null, avatar_url: "https://photo", created_at: ago(12) }),
+    row({ id: "n2", auth_user_id: null, created_at: ago(0) }),
+    row({ id: "s2", auth_user_id: "auth-2", avatar_url: "https://photo" }),
+    // Offboarded and test rows are not on the roster, so they are not counted.
+    row({ id: "gone", auth_user_id: null, deactivated_at: ago(3) }),
+    row({ id: "smoke", auth_user_id: null, is_test: true }),
+  ];
+
+  it("filters to the people with no linked sign in, whatever their photo", () => {
+    expect(filterRoster(SIGNIN, { ...NONE, signin: "never" }).map((u) => u.id)).toEqual(["n1", "n2"]);
+    expect(filterRoster(SIGNIN, { ...NONE, signin: "yes" }).map((u) => u.id)).toEqual(["s1", "s2"]);
+  });
+
+  it("counts exactly the active non test rows whose auth_user_id is null", () => {
+    const direct = SIGNIN.filter((u) => u.auth_user_id === null && u.deactivated_at === null && !u.is_test).length;
+    expect(neverSignedInCount(SIGNIN)).toBe(direct);
+    expect(neverSignedInCount(SIGNIN)).toBe(2);
+  });
+
+  it("does not count somebody who signed in and has no photo", () => {
+    expect(neverSignedInCount([row({ id: "s1", auth_user_id: "auth-1", avatar_url: null })])).toBe(0);
+    expect(rosterSigninText(row({ id: "s1", auth_user_id: "auth-1", avatar_url: null }), NOW)).toBe("Yes");
+  });
+
+  it("says how long a never signed in row has been on the roster, through the shared wait", () => {
+    expect(rosterSigninText(SIGNIN[1]!, NOW)).toBe("Never, waiting 12 days");
+    expect(rosterSigninText(SIGNIN[2]!, NOW)).toBe("Never, added today");
+  });
+
+  it("carries the new filters through the URL and counts them as filters", () => {
+    const f: RosterFilters = { ...NONE, signin: "never", hours: "seeded" };
+    expect(rosterFiltersFromParams(new URLSearchParams(rosterFiltersToQuery(f)))).toEqual(f);
+    expect(hasAnyRosterFilter({ ...NONE, signin: "never" })).toBe(true);
+    expect(hasAnyRosterFilter({ ...NONE, hours: "none" })).toBe(true);
+    expect(rosterEmptyText({ ...NONE, signin: "never" })).toBe("Nobody on the roster matches those filters.");
+  });
+
+  it("refuses a value outside the picker's list rather than filtering on it", () => {
+    // A hand edited URL must not become a filter that matches nobody for a reason
+    // nobody can see in the picker.
+    const f = rosterFiltersFromParams(new URLSearchParams("signin=maybe&hours=whenever"));
+    expect(f.signin).toBe("");
+    expect(f.hours).toBe("");
+  });
+
+  it("puts the never signed in count beside the total, once, only when nothing is filtered", () => {
+    expect(rosterCountText({ matched: 130, total: 130, filtered: false, neverSignedIn: 41 })).toBe(
+      "130 agents, 41 never signed in",
+    );
+    expect(rosterCountText({ matched: 130, total: 130, filtered: false, neverSignedIn: 0 })).toBe(
+      "130 agents, all signed in",
+    );
+    // Filtered to never signed in, the matched figure IS the count: saying it again
+    // would print one fact twice on one line (L605).
+    expect(rosterCountText({ matched: 41, total: 130, filtered: true, neverSignedIn: 41 })).toBe("41 of 130 agents");
+  });
+});
+
+// Working hours still on the seeded default are a SEPARATE fact from sign in:
+// somebody can sign in and never set hours, and hours can be set for somebody by
+// an admin or the cal.com import before they ever log in.
+describe("working hours state", () => {
+  const H: RosterRow[] = [
+    row({ id: "seed", hours: "seeded" }),
+    row({ id: "set", hours: "set" }),
+    row({ id: "none", hours: "none" }),
+    row({ id: "never-set", auth_user_id: null, hours: "set" }),
+  ];
+
+  it("filters on the hours state independently of sign in", () => {
+    expect(filterRoster(H, { ...NONE, hours: "seeded" }).map((u) => u.id)).toEqual(["seed"]);
+    expect(filterRoster(H, { ...NONE, hours: "set" }).map((u) => u.id)).toEqual(["set", "never-set"]);
+    expect(filterRoster(H, { ...NONE, hours: "set", signin: "never" }).map((u) => u.id)).toEqual(["never-set"]);
+  });
+
+  it("names each state in its own words", () => {
+    const words = (["seeded", "set", "none"] as const).map(rosterHoursText);
+    expect(new Set(words).size).toBe(3);
+    expect(rosterHoursText("seeded")).toBe("Seeded default");
   });
 });

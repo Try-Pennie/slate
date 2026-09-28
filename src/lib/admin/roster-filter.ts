@@ -1,6 +1,7 @@
 import { isActive } from "@/lib/active-user";
 import { matchesSearchQuery, normalizeSearchQuery } from "@/lib/search-query";
 import { teamsOf } from "@/lib/admin/agent-display";
+import { isNeverSignedIn, unclaimedDays, unclaimedWaitText } from "@/lib/admin/unclaimed";
 import type { User } from "@/lib/db/types";
 
 /**
@@ -31,7 +32,47 @@ export type RosterRow = Pick<
   | "deactivated_at"
   | "attributes"
   | "avatar_url"
->;
+  | "auth_user_id"
+  | "created_at"
+  | "is_test"
+> & {
+  /**
+   * The state of this agent's working hours (#1802). Absent or null when the
+   * page could not read the schedules, in which case the page offers no hours
+   * column and no hours filter rather than a guess.
+   */
+  hours?: RosterHours | null;
+};
+
+/**
+ * The state of an agent's working hours, as the roster shows it.
+ *
+ *   seeded  still the org's default week, which nobody chose (`isUnsetHours`,
+ *           the predicate the unset hours alert and the activation import use)
+ *   set     a week somebody chose: the agent, an admin, or the cal.com import
+ *   none    no schedule, or one with no days in it
+ *
+ * Deliberately a separate fact from sign in: somebody can sign in and never set
+ * hours, and an admin or the import can set hours for somebody who never logs in.
+ */
+export type RosterHours = "seeded" | "set" | "none";
+export const ROSTER_HOURS: readonly RosterHours[] = ["seeded", "set", "none"] as const;
+
+/** Each hours state in the roster's words. One place, so a cell and the picker agree. */
+export function rosterHoursText(h: RosterHours): string {
+  switch (h) {
+    case "seeded":
+      return "Seeded default";
+    case "set":
+      return "Set";
+    case "none":
+      return "None";
+  }
+}
+
+/** The sign in filter's values, "" meaning any. */
+export const ROSTER_SIGNIN = ["never", "yes"] as const;
+export type RosterSignin = (typeof ROSTER_SIGNIN)[number];
 
 export interface RosterFilters {
   /**
@@ -49,6 +90,10 @@ export interface RosterFilters {
   manager: string;
   /** "" any · "yes" · "no" */
   bookable: string;
+  /** "" any · "never" (no linked Google sign in) · "yes" (#1802) */
+  signin: "" | RosterSignin;
+  /** "" any, or one `RosterHours` (#1802) */
+  hours: "" | RosterHours;
 }
 
 /** Rows per rendered page, so the DOM stays bounded as the roster grows (#94). */
@@ -60,6 +105,8 @@ export const EMPTY_ROSTER_FILTERS: RosterFilters = {
   team: "",
   manager: "",
   bookable: "",
+  signin: "",
+  hours: "",
 };
 
 export function hasAnyRosterFilter(f: RosterFilters): boolean {
@@ -67,8 +114,18 @@ export function hasAnyRosterFilter(f: RosterFilters): boolean {
   // filter. Otherwise the table would show everyone while the surface offered a
   // Clear button for a filter doing nothing.
   return Boolean(
-    normalizeSearchQuery(f.q) || f.role || f.team || f.manager || f.bookable,
+    normalizeSearchQuery(f.q) || f.role || f.team || f.manager || f.bookable || f.signin || f.hours,
   );
+}
+
+/**
+ * Whether a row is on the roster at all: not offboarded, and not a synthetic test
+ * row (#396). The page already reads without test rows; this says so here too, so
+ * the filter, the roster's size and the never signed in count are one population
+ * however the rows arrived (#1802).
+ */
+export function onRoster(u: Pick<RosterRow, "deactivated_at" | "is_test">): boolean {
+  return isActive(u) && !u.is_test;
 }
 
 /**
@@ -80,12 +137,16 @@ export function hasAnyRosterFilter(f: RosterFilters): boolean {
 export function filterRoster<T extends RosterRow>(rows: T[], f: RosterFilters): T[] {
   const needle = normalizeSearchQuery(f.q);
   return rows.filter((u) => {
-    if (!isActive(u)) return false;
+    if (!onRoster(u)) return false;
     if (f.role && u.role !== f.role) return false;
     if (f.bookable === "yes" && !u.bookable) return false;
     if (f.bookable === "no" && u.bookable) return false;
     if (f.team && !teamsOf(u).includes(f.team)) return false;
     if (f.manager && u.manager_id !== f.manager) return false;
+    // The linked sign in, never the photo (#1802, #2600).
+    if (f.signin === "never" && !isNeverSignedIn(u)) return false;
+    if (f.signin === "yes" && isNeverSignedIn(u)) return false;
+    if (f.hours && u.hours !== f.hours) return false;
     // Name and email as SEPARATE fields, never joined (#1791). The old join
     // inserted a space no record holds, which a query with a space could match
     // across.
@@ -106,7 +167,7 @@ export function filterRoster<T extends RosterRow>(rows: T[], f: RosterFilters): 
  */
 export function rosterEmptyText(f: RosterFilters): string {
   const q = normalizeSearchQuery(f.q);
-  const others = Boolean(f.role || f.team || f.manager || f.bookable);
+  const others = Boolean(f.role || f.team || f.manager || f.bookable || f.signin || f.hours);
   if (q) return others ? `Nothing matches "${q}" with those filters.` : `Nothing matches "${q}".`;
   if (others) return "Nobody on the roster matches those filters.";
   return "No agents yet.";
@@ -132,8 +193,14 @@ export function rosterCountText(counts: {
   matched: number;
   total: number;
   filtered: boolean;
+  /**
+   * How many on the roster have never signed in (#1802). Said beside the total
+   * only when nothing is filtered: it is a fact about the whole roster, and
+   * under the sign in filter the matched figure already is this number.
+   */
+  neverSignedIn?: number;
 }): string {
-  const { matched, total, filtered } = counts;
+  const { matched, total, filtered, neverSignedIn } = counts;
   // An empty roster is already stated by the table directly underneath. Saying it
   // again in a live region announces one fact twice.
   if (total === 0) return "";
@@ -141,7 +208,29 @@ export function rosterCountText(counts: {
   const agents = (n: number) => `${n} agent${n === 1 ? "" : "s"}`;
   // Equal counts carry one fact, so they print as one number. That covers the
   // unfiltered case and a filter that happens to match everyone.
-  return matched === total ? agents(total) : `${matched} of ${agents(total)}`;
+  if (matched !== total) return `${matched} of ${agents(total)}`;
+  if (filtered || neverSignedIn === undefined) return agents(total);
+  return neverSignedIn === 0
+    ? `${agents(total)}, all signed in`
+    : `${agents(total)}, ${neverSignedIn} never signed in`;
+}
+
+/**
+ * Everyone on the roster who has never signed in: active, not a test row, and no
+ * linked Google sign in. The same population `filterRoster` shows under the sign
+ * in filter, since both read `onRoster` and `isNeverSignedIn`.
+ */
+export function neverSignedInCount(rows: RosterRow[]): number {
+  return rows.filter((u) => onRoster(u) && isNeverSignedIn(u)).length;
+}
+
+/**
+ * The Signed in cell. "Yes", or "Never" with how long the row has been on the
+ * roster unclaimed, in the wording the pending access panel uses (`unclaimed.ts`).
+ */
+export function rosterSigninText(u: Pick<RosterRow, "auth_user_id" | "created_at">, nowMs: number): string {
+  if (!isNeverSignedIn(u)) return "Yes";
+  return `Never, ${unclaimedWaitText(unclaimedDays(u.created_at, nowMs))}`;
 }
 
 /**
@@ -183,13 +272,21 @@ export function rosterFiltersFromParams(params: URLSearchParams): RosterFilters 
     team: params.get("team") ?? "",
     manager: params.get("manager") ?? "",
     bookable: params.get("bookable") ?? "",
+    // Only a value the picker offers. A hand edited URL would otherwise be a
+    // filter matching nobody for a reason no control on the page shows.
+    signin: oneOf(ROSTER_SIGNIN, params.get("signin")),
+    hours: oneOf(ROSTER_HOURS, params.get("hours")),
   };
+}
+
+function oneOf<T extends string>(allowed: readonly T[], v: string | null): "" | T {
+  return v !== null && (allowed as readonly string[]).includes(v) ? (v as T) : "";
 }
 
 /** The query string for these filters, omitting every one that is not set. */
 export function rosterFiltersToQuery(f: RosterFilters): string {
   const params = new URLSearchParams();
-  for (const key of ["q", "role", "team", "manager", "bookable"] as const) {
+  for (const key of ["q", "role", "team", "manager", "bookable", "signin", "hours"] as const) {
     if (f[key]) params.set(key, f[key]);
   }
   return params.toString();

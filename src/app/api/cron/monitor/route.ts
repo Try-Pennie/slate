@@ -291,7 +291,7 @@ import { inIdChunks } from "@/lib/db/id-batch";
 import { selectAllPages } from "@/lib/supabase/paginate";
 import type { Attributes, Bucket } from "@/lib/db/types";
 import { log } from "@/lib/log";
-import { runUnsetHoursCheck, type UnsetHoursAgent, type HoursSource } from "@/lib/monitor/unset-hours";
+import { groupRulesBySchedule, runUnsetHoursCheck, type UnsetHoursAgent, type HoursSource } from "@/lib/monitor/unset-hours";
 import {
   runAwaitingActivationCheck,
   type AwaitingActivationRow,
@@ -1612,8 +1612,7 @@ export async function GET(req: NextRequest) {
           ]);
           const org = unwrap(orgRow, "monitor unset-hours org defaults") as OrgDefaults | null;
           if (!org) throw new Error("no organization row");
-          const rulesBySchedule = new Map<string, typeof rules>();
-          for (const r of rules) rulesBySchedule.set(r.schedule_id, [...(rulesBySchedule.get(r.schedule_id) ?? []), r]);
+          const rulesBySchedule = groupRulesBySchedule(rules);
           return {
             org,
             agents,

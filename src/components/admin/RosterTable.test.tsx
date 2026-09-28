@@ -29,6 +29,9 @@ const row = (id: string, name: string, extra: Partial<RosterRow> = {}): RosterRo
   deactivated_at: null,
   attributes: {},
   avatar_url: null,
+  auth_user_id: `auth-${id}`,
+  created_at: "2026-09-01T00:00:00Z",
+  is_test: false,
   ...extra,
 });
 
@@ -46,6 +49,8 @@ const base = {
   roleOptions: ["agent", "manager", "admin"] as const,
   teamOptions: [] as string[],
   managerOptions: [] as [string, string][],
+  nowMs: Date.UTC(2026, 8, 28, 12),
+  hoursReadable: false,
 };
 
 const bodyRows = () =>
@@ -175,7 +180,7 @@ describe("RosterTable", () => {
 
     it("gives the total alone when nothing is filtered", () => {
       render(<RosterTable {...base} roleOptions={[...base.roleOptions]} />);
-      expect(count()).toBe("3 agents");
+      expect(count()).toBe("3 agents, all signed in");
     });
 
     // This carries the intent of the test it replaced: the readout is the only
@@ -206,7 +211,7 @@ describe("RosterTable", () => {
         row("z", "Gone", { deactivated_at: "2026-01-01T00:00:00Z" }),
       ];
       render(<RosterTable {...base} roleOptions={[...base.roleOptions]} rows={rows} />);
-      expect(count()).toBe("2 agents");
+      expect(count()).toBe("2 agents, all signed in");
     });
 
     it("counts nothing at all for an empty roster", () => {
@@ -231,9 +236,12 @@ describe("RosterTable", () => {
       const table = screen.getByRole("table");
       expect((table.textContent!.match(/Bookable/g) ?? []).length).toBe(1);
       expect(screen.getByRole("columnheader", { name: "Bookable" })).toBeTruthy();
-      // ROWS has two bookable and one not.
-      expect(screen.getAllByText("Yes")).toHaveLength(2);
-      expect(screen.getAllByText("No")).toHaveLength(1);
+      // ROWS has two bookable and one not. Read from the Bookable column only:
+      // the Signed in column (#1802) answers its own question with Yes too.
+      const idx = screen.getAllByRole("columnheader").findIndex((th) => th.textContent === "Bookable");
+      const values = bodyRows().map((r) => within(r).getAllByRole("cell")[idx]!.textContent);
+      expect(values.filter((v) => v === "Yes")).toHaveLength(2);
+      expect(values.filter((v) => v === "No")).toHaveLength(1);
     });
 
     it("draws a pill for the negative state too, never a hyphen", async () => {
@@ -439,7 +447,7 @@ describe("RosterTable", () => {
 // is asserted here too: one fact declared in two places drifts, and the drift is
 // invisible because each place reads correctly on its own (L263).
 describe("column order (#1844)", () => {
-  const HEADERS = ["Member", "Team", "Role", "Manager", "Bookable"];
+  const HEADERS = ["Member", "Team", "Role", "Manager", "Bookable", "Signed in"];
   // `base.roleOptions` is `as const`; the prop wants a mutable array.
   const props = { ...base, roleOptions: [...base.roleOptions] };
 
@@ -491,5 +499,86 @@ describe("column order (#1844)", () => {
     // pair of -1s cannot satisfy it (L98).
     expect(selects).toContain("team");
     expect(selects).toContain("role");
+  });
+});
+
+// #1802: who has never signed in, from `auth_user_id`, never from the photo.
+describe("RosterTable never signed in", () => {
+  const NOW = Date.UTC(2026, 8, 28, 12);
+  const rows: RosterRow[] = [
+    // Signed in, no photo: the avatar heuristic's wrong case.
+    row("s", "Signed Nophoto", { avatar_url: null }),
+    // Never signed in, photo from the Workspace directory (#2600).
+    row("n", "Never Photo", { auth_user_id: null, avatar_url: "https://photo", created_at: new Date(NOW - 3 * 86_400_000).toISOString() }),
+    row("m", "Never Today", { auth_user_id: null, created_at: new Date(NOW).toISOString() }),
+  ];
+  const props = { ...base, roleOptions: [...base.roleOptions], rows, nowMs: NOW };
+  const count = () => document.querySelector('[aria-live="polite"]')!.textContent;
+  const cellFor = (name: string) => {
+    const tr = bodyRows().find((r) => (r.textContent ?? "").includes(name))!;
+    const idx = screen.getAllByRole("columnheader").findIndex((th) => th.textContent === "Signed in");
+    return within(tr).getAllByRole("cell")[idx]!.textContent;
+  };
+
+  it("counts the people who have never signed in beside the roster total", () => {
+    render(<RosterTable {...props} />);
+    expect(count()).toBe("3 agents, 2 never signed in");
+  });
+
+  it("says Never with how long, and Yes for a signed in row with no photo", () => {
+    render(<RosterTable {...props} />);
+    expect(cellFor("Never Photo")).toBe("Never, waiting 3 days");
+    expect(cellFor("Never Today")).toBe("Never, added today");
+    expect(cellFor("Signed Nophoto")).toBe("Yes");
+  });
+
+  it("filters to never signed in from a picker", async () => {
+    render(<RosterTable {...props} />);
+    await pickFilter(/Filter by sign in/i, "Never signed in");
+    expect(bodyRows().map((r) => r.textContent)).toEqual([
+      expect.stringContaining("Never Photo"),
+      expect.stringContaining("Never Today"),
+    ]);
+    expect(count()).toBe("2 of 3 agents");
+  });
+
+  it("gives the healthy values the quietest treatment and the exceptions the loudest (L609)", () => {
+    const withHours = rows.map((r, i) => ({ ...r, hours: (["set", "seeded", "none"] as const)[i] }));
+    render(<RosterTable {...props} rows={withHours} hoursReadable />);
+    const heads = screen.getAllByRole("columnheader");
+    const signinIdx = heads.findIndex((th) => th.textContent === "Signed in");
+    const hoursIdx = heads.findIndex((th) => (th.textContent ?? "").startsWith("Hours"));
+    const cell = (name: string, idx: number) =>
+      within(bodyRows().find((r) => (r.textContent ?? "").includes(name))!).getAllByRole("cell")[idx]!;
+    // Healthy: muted, and the words are still there for a screen reader.
+    for (const [name, idx, text] of [["Signed Nophoto", signinIdx, "Yes"], ["Signed Nophoto", hoursIdx, "Set"]] as const) {
+      const c = cell(name, idx);
+      expect(c.textContent).toBe(text);
+      expect(c.className).toContain("text-fg-muted");
+      expect(c.className).not.toContain("font-semibold");
+    }
+    // Exceptions: full colour and weight.
+    for (const [name, idx] of [["Never Photo", signinIdx], ["Never Photo", hoursIdx], ["Never Today", hoursIdx]] as const) {
+      const c = cell(name, idx);
+      expect(c.className).not.toContain("text-fg-muted");
+      expect(c.className).toContain("font-semibold");
+    }
+  });
+
+  it("shows no hours column or hours filter when the hours could not be read", () => {
+    render(<RosterTable {...props} hoursReadable={false} />);
+    expect(screen.queryByRole("columnheader", { name: /Hours/ })).toBeNull();
+    expect(screen.queryByRole("combobox", { name: /Filter by hours/i })).toBeNull();
+  });
+
+  it("shows the hours state as its own column, separate from sign in", async () => {
+    const withHours = rows.map((r, i) => ({ ...r, hours: (["set", "seeded", "none"] as const)[i] }));
+    render(<RosterTable {...props} rows={withHours} hoursReadable />);
+    const idx = screen.getAllByRole("columnheader").findIndex((th) => (th.textContent ?? "").startsWith("Hours"));
+    expect(idx).toBeGreaterThan(-1);
+    const tr = bodyRows().find((r) => (r.textContent ?? "").includes("Never Photo"))!;
+    expect(within(tr).getAllByRole("cell")[idx]!.textContent).toBe("Seeded default");
+    await pickFilter(/Filter by hours/i, "Seeded default");
+    expect(bodyRows()).toHaveLength(1);
   });
 });

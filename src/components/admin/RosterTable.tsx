@@ -6,8 +6,8 @@ import type { Role } from "@/lib/db/types";
 import { Pill } from "@/components/ui/Pill";
 import { InPlaceLink } from "@/components/ui/InPlaceLink";
 import { ViewAsButton } from "@/components/admin/ViewAsButton";
-import { isActive } from "@/lib/active-user";
 import { teamsOf } from "@/lib/admin/agent-display";
+import { isNeverSignedIn } from "@/lib/admin/unclaimed";
 import { DebtTeamLedger, LEDGER_LEGEND } from "@/components/admin/DebtTeamLedger";
 import { RowActionsMenu } from "@/components/ui/RowActionsMenu";
 import { SelectField } from "@/components/ui/SelectField";
@@ -15,7 +15,13 @@ import { BookablePill } from "@/components/ui/BookablePill";
 import { inputCls, btnSecondaryCls } from "@/components/ui/styles";
 import {
   ROSTER_PAGE_SIZE,
+  ROSTER_HOURS,
+  EMPTY_ROSTER_FILTERS,
   filterRoster,
+  onRoster,
+  neverSignedInCount,
+  rosterSigninText,
+  rosterHoursText,
   sortRoster,
   hasAnyRosterFilter,
   rosterCountText,
@@ -49,6 +55,10 @@ import {
  * JavaScript a submit reloads the page with new params and the server render
  * answers. Both sides call `filterRoster`, so they cannot drift.
  */
+/** The Hours header's explanation of the one term in it nobody can guess. */
+const HOURS_LEGEND =
+  "Seeded default is the organisation's standard week, given to every new agent, which nobody has changed for them";
+
 /** One recipe for both items, so the two cannot drift apart visually (L370). */
 const MENU_ITEM_CLS =
   "flex min-h-11 w-full items-center whitespace-nowrap rounded-md px-3 text-left text-sm text-fg-muted transition-colors hover:bg-[var(--bg-alt)] hover:text-fg";
@@ -61,6 +71,8 @@ export function RosterTable({
   roleOptions,
   teamOptions,
   managerOptions,
+  nowMs,
+  hoursReadable,
 }: {
   /** The whole active roster. Filtering never goes back to the server. */
   rows: RosterRow[];
@@ -70,7 +82,17 @@ export function RosterTable({
   roleOptions: Role[];
   teamOptions: string[];
   managerOptions: [string, string][];
-  /** How many people are on the roster in total, for the "of N" readout. */
+  /**
+   * The server's clock, so the "waiting N days" figure is the one the server
+   * rendered and the browser cannot disagree with it across midnight.
+   */
+  nowMs: number;
+  /**
+   * Whether every row's `hours` was read (#1802). When it was not, the page says
+   * so once and this renders no Hours column and no hours filter, rather than a
+   * column of guesses.
+   */
+  hoursReadable: boolean;
 }) {
   const [filters, setFilters] = useState<RosterFilters>(initialFilters);
   const [page, setPage] = useState(1);
@@ -91,7 +113,10 @@ export function RosterTable({
   // filtered. `filterRoster` treats an offboarded person as not on the roster at
   // all, so this has to count the same population that predicate does, and the
   // only way to guarantee that is to compute it from the same rows (L63).
-  const rosterSize = useMemo(() => rows.filter(isActive).length, [rows]);
+  const rosterSize = useMemo(() => rows.filter(onRoster).length, [rows]);
+  // #1802: from `auth_user_id`, through the same population as `rosterSize`.
+  const neverSignedIn = useMemo(() => neverSignedInCount(rows), [rows]);
+  const columnCount = hoursReadable ? 8 : 7;
   const pageCount = Math.max(1, Math.ceil(matched.length / ROSTER_PAGE_SIZE));
   const current = Math.min(page, pageCount);
   const start = (current - 1) * ROSTER_PAGE_SIZE;
@@ -192,11 +217,42 @@ export function RosterTable({
             className="w-44"
           />
 
+        {/* #1802: in column order, after Bookable. From the linked sign in,
+            never from the photo. */}
+        <SelectField
+          name="signin"
+          value={filters.signin}
+          onChange={(v) => set("signin", v as RosterFilters["signin"])}
+          ariaLabel="Filter by sign in"
+          placeholder="Any sign in"
+          options={[
+            { value: "", label: "Any sign in" },
+            { value: "never", label: "Never signed in" },
+            { value: "yes", label: "Signed in" },
+          ]}
+          className="w-44"
+        />
+
+        {hoursReadable && (
+          <SelectField
+            name="hours"
+            value={filters.hours}
+            onChange={(v) => set("hours", v as RosterFilters["hours"])}
+            ariaLabel="Filter by hours"
+            placeholder="Any hours"
+            options={[
+              { value: "", label: "Any hours" },
+              ...ROSTER_HOURS.map((h) => ({ value: h, label: rosterHoursText(h) })),
+            ]}
+            className="w-44"
+          />
+        )}
+
         {hasAnyRosterFilter(filters) && (
           <button
             type="button"
             onClick={() => {
-              setFilters({ q: "", role: "", team: "", manager: "", bookable: "" });
+              setFilters(EMPTY_ROSTER_FILTERS);
               setPage(1);
             }}
             className="text-xs text-pennie-blue underline dark:text-pennie-sky"
@@ -214,12 +270,13 @@ export function RosterTable({
             matched: matched.length,
             total: rosterSize,
             filtered: hasAnyRosterFilter(filters),
+            neverSignedIn,
           })}
         </span>
       </form>
 
       <div className="overflow-x-auto rounded-md border border-border">
-        <table className="w-full min-w-[640px] text-sm">
+        <table className="w-full min-w-[720px] text-sm">
           <thead>
             <tr className="border-b border-border bg-[var(--bg-alt)] text-left text-xs text-fg-muted">
               <th className="px-4 py-2.5 font-semibold">Member</th>
@@ -237,6 +294,19 @@ export function RosterTable({
               <th className="px-3 py-2.5 font-semibold">Role</th>
               <th className="px-3 py-2.5 font-semibold">Manager</th>
               <th className="px-3 py-2.5 font-semibold">Bookable</th>
+              {/* #1802: two facts, two columns. Somebody can sign in and never
+                  set hours, and an admin or the cal.com import can set hours for
+                  somebody who never logs in, so one badge would lie about one of
+                  them. */}
+              <th className="px-3 py-2.5 font-semibold">Signed in</th>
+              {hoursReadable && (
+                // The one term here nobody can guess, explained once on the
+                // header rather than on every row (L604).
+                <th className="px-3 py-2.5 font-semibold" title={HOURS_LEGEND}>
+                  Hours
+                  <span className="sr-only">{` (${HOURS_LEGEND})`}</span>
+                </th>
+              )}
               <th className="px-4 py-2.5" />
             </tr>
           </thead>
@@ -292,6 +362,25 @@ export function RosterTable({
                       than the header's own word repeated. */}
                   <BookablePill bookable={u.bookable} wording="short" alignToColumn />
                 </td>
+                {/* The commonest value is the quietest (L609): a signed in row
+                    reads muted, a never signed in one reads at full weight with
+                    how long it has waited. */}
+                <td
+                  className={`min-w-[9rem] px-3 py-3 tabular-nums ${
+                    isNeverSignedIn(u) ? "font-semibold text-fg" : "text-fg-muted"
+                  }`}
+                >
+                  {rosterSigninText(u, nowMs)}
+                </td>
+                {hoursReadable && (
+                  <td
+                    className={`px-3 py-3 ${
+                      u.hours === "set" ? "text-fg-muted" : "font-semibold text-fg"
+                    }`}
+                  >
+                    {u.hours ? rosterHoursText(u.hours) : ""}
+                  </td>
+                )}
                 <td className="px-4 py-3 text-right">
                   {/* #1794: one menu per row. The label spelled the agent's whole
                       name into a narrow column, so it wrapped and every row was a
@@ -337,7 +426,7 @@ export function RosterTable({
             ))}
             {items.length === 0 && (
               <tr>
-                <td colSpan={6} className="px-4 py-8 text-center text-sm text-fg-muted">
+                <td colSpan={columnCount} className="px-4 py-8 text-center text-sm text-fg-muted">
                   {/* One builder, so the four empty states are decided in one
                       place and the search one can quote the query (#1791). */}
                   {rosterEmptyText(filters)}

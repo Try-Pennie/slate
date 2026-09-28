@@ -4,7 +4,9 @@ import { currentUser } from "@/lib/auth";
 import { canManageAgents, ROLES } from "@/lib/auth/roles";
 import { consoleHiddenFor } from "@/lib/env";
 import { supabaseAdmin } from "@/lib/supabase/admin";
-import { rosterFiltersFromParams } from "@/lib/admin/roster-filter";
+import { rosterFiltersFromParams, type RosterHours } from "@/lib/admin/roster-filter";
+import { loadRosterHours } from "@/lib/admin/roster-hours";
+import { log } from "@/lib/log";
 import { syncSalesforceNow } from "@/app/admin/actions";
 import { SyncButton } from "@/components/SyncButton";
 import { UnreadableNotice } from "@/components/ui/UnreadableNotice";
@@ -15,6 +17,12 @@ import { cardCls } from "@/components/ui/styles";
 import type { User } from "@/lib/db/types";
 
 export const dynamic = "force-dynamic";
+
+// Module scope so the clock read does not trip react-hooks/purity in render. One
+// instant for every row's "waiting N days" (#1802).
+function renderedAtMs(): number {
+  return Date.now();
+}
 
 export default async function AgentRosterPage({
   searchParams,
@@ -52,6 +60,20 @@ export default async function AgentRosterPage({
   // so, do.
   const users = (usersRes.data ?? []) as User[];
   const rosterUnreadable = usersRes.error != null;
+  // #1802: whether each agent's working hours are still the seeded default, a
+  // fact Slate records (`hours_source`, #1753). Its own boundary: a failed read
+  // costs the Hours column, never the roster, and is said once rather than drawn
+  // as a column of "None" that would read as nobody having hours.
+  let hoursByUser: Map<string, RosterHours> | null = null;
+  if (!rosterUnreadable) {
+    try {
+      hoursByUser = await loadRosterHours(supabaseAdmin(), me.org_id, users.map((u) => u.id));
+    } catch (err) {
+      log.error("admin-roster", { msg: "working hours unreadable" }, err);
+    }
+  }
+  const rows = users.map((u) => ({ ...u, hours: hoursByUser?.get(u.id) ?? null }));
+
   // The push-health pill and the sync-health panel moved to the Health page
   // (#1748), which is where anything time sensitive lives; this page is the
   // roster itself.
@@ -73,11 +95,14 @@ export default async function AgentRosterPage({
   // #1752: the roster is filtered in the BROWSER. This server-side pass is the
   // no-JavaScript path and the first paint, and it goes through the SAME
   // predicate the client component uses, so the two cannot drift apart.
-  const filters = rosterFiltersFromParams(
+  const parsed = rosterFiltersFromParams(
     new URLSearchParams(
       Object.entries(sp).filter(([, v]) => typeof v === "string") as [string, string][],
     ),
   );
+  // With no hours read there is no hours picker, so a linked hours filter would
+  // empty the table for a reason no control on the page shows.
+  const filters = hoursByUser ? parsed : { ...parsed, hours: "" as const };
 
   return (
     <>
@@ -145,8 +170,16 @@ export default async function AgentRosterPage({
             {sp.imp_error}
           </p>
         )}
+        {!rosterUnreadable && !hoursByUser && (
+          <UnreadableNotice className="mb-4">
+            Working hours could not be read, so the roster is shown without them.
+            Reload in a moment.
+          </UnreadableNotice>
+        )}
         <RosterTable
-          rows={users}
+          rows={rows}
+          nowMs={renderedAtMs()}
+          hoursReadable={hoursByUser !== null}
           initialFilters={filters}
           actorRole={me.role}
           actorId={me.id}

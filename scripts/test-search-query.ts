@@ -69,6 +69,9 @@ const rosterRow = (name: string, email: string): RosterRow => ({
   deactivated_at: null,
   attributes: {},
   avatar_url: null,
+  auth_user_id: null,
+  created_at: "2026-09-01T00:00:00Z",
+  is_test: false,
 });
 
 const PEOPLE: [string, string][] = [

@@ -3,7 +3,8 @@ import { SaveForm } from "@/components/ui/SaveForm";
 import { grantStaffAccess } from "@/app/admin/actions";
 import { GRANTABLE_STAFF_ROLES, staffAccessMessage } from "@/lib/admin/staff-access";
 import type { StaffAccessOutcome } from "@/lib/admin/staff-access";
-import { pendingWaitText, type PendingAccessRow } from "@/lib/admin/pending-access";
+import type { PendingAccessRow } from "@/lib/admin/pending-access";
+import { unclaimedWaitText } from "@/lib/admin/unclaimed";
 import { ROLE_RANK, roleLabel } from "@/lib/auth/roles";
 import { isRole } from "@/lib/auth/roles";
 import { Pill, type PillVariant } from "@/components/ui/Pill";
@@ -228,7 +229,7 @@ function PendingList({ pending }: { pending: PendingAccessRow[] | null }) {
                   </Pill>
                 </td>
                 <td className="px-3 py-3 text-right tabular-nums text-fg-muted">
-                  {pendingWaitText(row.waitedDays)}
+                  {unclaimedWaitText(row.waitedDays)}
                 </td>
                 <td className="px-3 py-3">
                   {row.stale && (

@@ -24,7 +24,7 @@ const { CANARY_STALE_BOUNDS_MS } = await import("@/lib/monitor/health");
 const { readHeartbeatMs } = await import("@/lib/monitor/heartbeat");
 const { isAlertFiring } = await import("@/lib/notify/dispatch");
 const { loadBookingHorizonDays } = await import("@/lib/booking/settings");
-const { agentsOnUnsetHours } = await import("@/lib/monitor/unset-hours");
+const { agentsOnUnsetHours, groupRulesBySchedule } = await import("@/lib/monitor/unset-hours");
 const { loadTierAgentCounts } = await import("@/lib/monitor/tier-staffing-load");
 const { DEBT_TIER } = await import("@/lib/xbc");
 const { CALLER_HOST_KINDS, SHARED_CALLER } = await import("@/lib/booking/caller-seen");
@@ -174,8 +174,7 @@ const unsetHours = await section("hours sources", async () => {
     await db.from("availability_rules").select("schedule_id, weekday, start_minute, end_minute").in("schedule_id", scheds.map((s) => s.id)),
     "rules",
   ) ?? []) as { schedule_id: string; weekday: number; start_minute: number; end_minute: number }[];
-  const rulesBySchedule = new Map<string, typeof rules>();
-  for (const r of rules) rulesBySchedule.set(r.schedule_id, [...(rulesBySchedule.get(r.schedule_id) ?? []), r]);
+  const rulesBySchedule = groupRulesBySchedule(rules);
   return agentsOnUnsetHours({
     org,
     agents,
