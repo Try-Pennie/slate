@@ -20,6 +20,7 @@
  */
 
 import { formatPhoneForDisplay } from "../phone-format.ts";
+import { RESCHEDULE_TIMES_UNAVAILABLE_SENTENCE } from "./reschedule-times-refusal.ts";
 
 // --- the link resolved to no booking ------------------------------------------
 
@@ -204,13 +205,9 @@ export const RESCHEDULE_COPY = {
   /** The only way back out while the panel is open (#1336). */
   keepCurrent: "Keep my current time",
   noTimes: "All times are taken right now. Check back soon.",
-  /**
-   * The move times could not be served for this booking at all (#2827): the read
-   * keyed on the manage token found no active advisor link booking. One sentence
-   * for every cause, like the advisor link's own refusal, and a retry cannot fix
-   * it, so the picker offers none.
-   */
-  unavailable: "We cannot offer new times for this call right now.",
+  /** The move times could not be served for this booking at all (#2827). Held
+   *  in a leaf module the shared picker can read without this file. */
+  unavailable: RESCHEDULE_TIMES_UNAVAILABLE_SENTENCE,
   failed: "Could not reschedule. Please try again.",
   /**
    * What a move done ON this page says for itself once it lands (#1336, #2215).
