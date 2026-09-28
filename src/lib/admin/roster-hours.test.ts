@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { rosterHoursByUser } from "@/lib/admin/roster-hours";
 import type { OrgDefaults } from "@/lib/schedule-core";
-import type { UnsetHoursSchedule } from "@/lib/monitor/unset-hours";
+import { groupRulesBySchedule, type UnsetHoursSchedule } from "@/lib/monitor/unset-hours";
 
 // #1802: the roster pairs "never signed in" with whether the agent's working
 // hours are still the seeded default. Slate records that fact (`hours_source`,
@@ -25,6 +25,20 @@ const sched = (user_id: string, over: Partial<UnsetHoursSchedule> = {}): UnsetHo
   created_at: "2026-09-01T00:00:00Z",
   rules: seedRules,
   ...over,
+});
+
+describe("groupRulesBySchedule", () => {
+  it("keeps every rule under its own schedule, in order, and invents no schedule", () => {
+    const g = groupRulesBySchedule([
+      { schedule_id: "a", weekday: 1 },
+      { schedule_id: "b", weekday: 2 },
+      { schedule_id: "a", weekday: 3 },
+    ]);
+    expect(g.get("a")!.map((r) => r.weekday)).toEqual([1, 3]);
+    expect(g.get("b")!.map((r) => r.weekday)).toEqual([2]);
+    expect(g.size).toBe(2);
+    expect(groupRulesBySchedule([]).size).toBe(0);
+  });
 });
 
 describe("rosterHoursByUser", () => {

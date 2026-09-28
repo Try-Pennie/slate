@@ -81,6 +81,21 @@ export interface UnsetHoursInput {
   schedules: UnsetHoursSchedule[];
 }
 
+/**
+ * Rule rows grouped by the schedule they belong to. One copy for every reader
+ * that assembles `UnsetHoursSchedule` from the two tables (the monitor lane, the
+ * readiness command and the roster, #1802).
+ */
+export function groupRulesBySchedule<R extends { schedule_id: string }>(rules: R[]): Map<string, R[]> {
+  const out = new Map<string, R[]>();
+  for (const r of rules) {
+    const list = out.get(r.schedule_id);
+    if (list) list.push(r);
+    else out.set(r.schedule_id, [r]);
+  }
+  return out;
+}
+
 /** A week as a comparable string: sorted days, minutes, and the zone. */
 function weekKey(timezone: string, rules: UnsetHoursSchedule["rules"]): string {
   const days = [...rules]

@@ -1,4 +1,4 @@
-import { isUnsetHours, type HoursSource, type UnsetHoursSchedule } from "@/lib/monitor/unset-hours";
+import { groupRulesBySchedule, isUnsetHours, type HoursSource, type UnsetHoursSchedule } from "@/lib/monitor/unset-hours";
 import type { OrgDefaults } from "@/lib/schedule-core";
 import { selectAllPages } from "@/lib/supabase/paginate";
 import { unwrap } from "@/lib/db/result";
@@ -73,8 +73,7 @@ export async function loadRosterHours(db: Db, orgId: string, userIds: string[]):
               .order("id")
               .range(from, to),
         );
-  const rulesBySchedule = new Map<string, typeof rules>();
-  for (const r of rules) rulesBySchedule.set(r.schedule_id, [...(rulesBySchedule.get(r.schedule_id) ?? []), r]);
+  const rulesBySchedule = groupRulesBySchedule(rules);
   const byUser = rosterHoursByUser(
     scheds.map((s) => ({ ...s, rules: rulesBySchedule.get(s.id) ?? [] })),
     org,
