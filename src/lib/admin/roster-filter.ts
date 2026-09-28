@@ -2,6 +2,7 @@ import { isActive } from "@/lib/active-user";
 import { matchesSearchQuery, normalizeSearchQuery } from "@/lib/search-query";
 import { teamsOf } from "@/lib/admin/agent-display";
 import { isNeverSignedIn, unclaimedDays, unclaimedWaitText } from "@/lib/admin/unclaimed";
+import { storedPhotoUrl } from "@/lib/stored-photo";
 import type { User } from "@/lib/db/types";
 
 /**
@@ -74,6 +75,29 @@ export function rosterHoursText(h: RosterHours): string {
 export const ROSTER_SIGNIN = ["never", "yes"] as const;
 export type RosterSignin = (typeof ROSTER_SIGNIN)[number];
 
+/**
+ * The photo filter's values, "" meaning any (#2837). "needed" is somebody with no
+ * photo on file, which since the directory backfill (#2600) means no photo in
+ * Google either.
+ */
+export const ROSTER_PHOTO = ["needed", "has"] as const;
+export type RosterPhoto = (typeof ROSTER_PHOTO)[number];
+
+/**
+ * Whether this person has no photo on file (#2837). A fact of its own, never
+ * folded into sign in: people sign in with no Google photo, and the directory
+ * gives photos to people who have never signed in.
+ */
+export function needsPhoto(u: Pick<RosterRow, "avatar_url">): boolean {
+  return storedPhotoUrl(u.avatar_url) === null;
+}
+
+/**
+ * The marker on a row with no photo. It names the remedy rather than the gap:
+ * Slate takes the photo from Google, so it is the person who adds one there.
+ */
+export const ROSTER_NEEDS_PHOTO_TEXT = "Needs a photo in Google";
+
 export interface RosterFilters {
   /**
    * The search text. Normalised on the way out of a URL, and normalised again by
@@ -94,6 +118,8 @@ export interface RosterFilters {
   signin: "" | RosterSignin;
   /** "" any, or one `RosterHours` (#1802) */
   hours: "" | RosterHours;
+  /** "" any, or one `RosterPhoto` (#2837) */
+  photo: "" | RosterPhoto;
 }
 
 /** Rows per rendered page, so the DOM stays bounded as the roster grows (#94). */
@@ -107,6 +133,7 @@ export const EMPTY_ROSTER_FILTERS: RosterFilters = {
   bookable: "",
   signin: "",
   hours: "",
+  photo: "",
 };
 
 export function hasAnyRosterFilter(f: RosterFilters): boolean {
@@ -114,7 +141,14 @@ export function hasAnyRosterFilter(f: RosterFilters): boolean {
   // filter. Otherwise the table would show everyone while the surface offered a
   // Clear button for a filter doing nothing.
   return Boolean(
-    normalizeSearchQuery(f.q) || f.role || f.team || f.manager || f.bookable || f.signin || f.hours,
+    normalizeSearchQuery(f.q) ||
+      f.role ||
+      f.team ||
+      f.manager ||
+      f.bookable ||
+      f.signin ||
+      f.hours ||
+      f.photo,
   );
 }
 
@@ -147,6 +181,9 @@ export function filterRoster<T extends RosterRow>(rows: T[], f: RosterFilters): 
     if (f.signin === "never" && !isNeverSignedIn(u)) return false;
     if (f.signin === "yes" && isNeverSignedIn(u)) return false;
     if (f.hours && u.hours !== f.hours) return false;
+    // Its own fact, independent of sign in (#2837).
+    if (f.photo === "needed" && !needsPhoto(u)) return false;
+    if (f.photo === "has" && needsPhoto(u)) return false;
     // Name and email as SEPARATE fields, never joined (#1791). The old join
     // inserted a space no record holds, which a query with a space could match
     // across.
@@ -167,7 +204,9 @@ export function filterRoster<T extends RosterRow>(rows: T[], f: RosterFilters): 
  */
 export function rosterEmptyText(f: RosterFilters): string {
   const q = normalizeSearchQuery(f.q);
-  const others = Boolean(f.role || f.team || f.manager || f.bookable || f.signin || f.hours);
+  const others = Boolean(
+    f.role || f.team || f.manager || f.bookable || f.signin || f.hours || f.photo,
+  );
   if (q) return others ? `Nothing matches "${q}" with those filters.` : `Nothing matches "${q}".`;
   if (others) return "Nobody on the roster matches those filters.";
   return "No agents yet.";
@@ -276,6 +315,7 @@ export function rosterFiltersFromParams(params: URLSearchParams): RosterFilters 
     // filter matching nobody for a reason no control on the page shows.
     signin: oneOf(ROSTER_SIGNIN, params.get("signin")),
     hours: oneOf(ROSTER_HOURS, params.get("hours")),
+    photo: oneOf(ROSTER_PHOTO, params.get("photo")),
   };
 }
 
@@ -286,7 +326,7 @@ function oneOf<T extends string>(allowed: readonly T[], v: string | null): "" | 
 /** The query string for these filters, omitting every one that is not set. */
 export function rosterFiltersToQuery(f: RosterFilters): string {
   const params = new URLSearchParams();
-  for (const key of ["q", "role", "team", "manager", "bookable", "signin", "hours"] as const) {
+  for (const key of ["q", "role", "team", "manager", "bookable", "signin", "hours", "photo"] as const) {
     if (f[key]) params.set(key, f[key]);
   }
   return params.toString();

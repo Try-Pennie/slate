@@ -582,3 +582,63 @@ describe("RosterTable never signed in", () => {
     expect(bodyRows()).toHaveLength(1);
   });
 });
+
+// #2837: a missing Google photo is marked on its own, never folded into the
+// Signed in fact. Quiet on the healthy row (a face, nothing said), loud on the
+// exception, in words rather than colour.
+describe("RosterTable needs a photo", () => {
+  const rows: RosterRow[] = [
+    // Signed in with no photo: the marker, AND Signed in still says Yes.
+    row("s", "Signed Nophoto", { avatar_url: null }),
+    // Never signed in, photo from the directory: no marker.
+    row("n", "Never Photo", { auth_user_id: null, avatar_url: "https://photo" }),
+    // A blank stored value is no photo: initials and the marker, never a broken img.
+    row("b", "Blank Photo", { avatar_url: "  " }),
+  ];
+  const props = { ...base, roleOptions: [...base.roleOptions], rows };
+  const trFor = (name: string) => bodyRows().find((r) => (r.textContent ?? "").includes(name))!;
+  const marker = (name: string) => within(trFor(name)).queryByText(/needs a photo/i);
+
+  it("marks exactly the rows with no stored photo", () => {
+    render(<RosterTable {...props} />);
+    expect(marker("Signed Nophoto")).not.toBeNull();
+    expect(marker("Blank Photo")).not.toBeNull();
+    // Positive control on the absence: the row really rendered.
+    expect(trFor("Never Photo")).toBeTruthy();
+    expect(marker("Never Photo")).toBeNull();
+  });
+
+  it("points at the remedy, the person's Google account, in words", () => {
+    render(<RosterTable {...props} />);
+    const m = marker("Signed Nophoto")!;
+    expect(m.textContent).toMatch(/Google/);
+    // The exception is bold, so it stands out from the muted email above it.
+    expect(m.className).toContain("font-semibold");
+    expect(m.className).not.toContain("text-fg-muted");
+  });
+
+  it("keeps the Signed in fact separate: a signed in row with no photo still reads Yes", () => {
+    render(<RosterTable {...props} />);
+    const idx = screen.getAllByRole("columnheader").findIndex((th) => th.textContent === "Signed in");
+    const cell = within(trFor("Signed Nophoto")).getAllByRole("cell")[idx]!;
+    expect(cell.textContent).toBe("Yes");
+    expect(cell.textContent).not.toMatch(/photo/i);
+  });
+
+  it("draws initials rather than an image for a blank stored photo", () => {
+    render(<RosterTable {...props} />);
+    expect(trFor("Blank Photo").querySelector("img")).toBeNull();
+    expect(trFor("Never Photo").querySelector("img")).not.toBeNull();
+  });
+
+  it("filters to the people who need a photo from a picker", async () => {
+    render(<RosterTable {...props} />);
+    await pickFilter(/Filter by photo/i, "Needs a photo");
+    // Sorted by surname: Nophoto before Photo.
+    expect(bodyRows().map((r) => r.textContent)).toEqual([
+      expect.stringContaining("Signed Nophoto"),
+      expect.stringContaining("Blank Photo"),
+    ]);
+    expect(document.querySelector('[aria-live="polite"]')!.textContent).toBe("2 of 3 agents");
+  });
+});

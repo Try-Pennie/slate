@@ -11,6 +11,8 @@ import {
   neverSignedInCount,
   rosterSigninText,
   rosterHoursText,
+  needsPhoto,
+  ROSTER_NEEDS_PHOTO_TEXT,
   EMPTY_ROSTER_FILTERS,
   type RosterFilters,
   type RosterRow,
@@ -127,7 +129,7 @@ describe("sortRoster", () => {
 
 describe("the URL and the filters are one round trip", () => {
   it("reads every filter back out of the params it wrote", () => {
-    const f: RosterFilters = { q: "ada", role: "agent", team: "credit", manager: "m1", bookable: "yes", signin: "never", hours: "seeded" };
+    const f: RosterFilters = { q: "ada", role: "agent", team: "credit", manager: "m1", bookable: "yes", signin: "never", hours: "seeded", photo: "needed" };
     expect(rosterFiltersFromParams(new URLSearchParams(rosterFiltersToQuery(f)))).toEqual(f);
   });
 
@@ -405,5 +407,65 @@ describe("working hours state", () => {
     const words = (["seeded", "set", "none"] as const).map(rosterHoursText);
     expect(new Set(words).size).toBe(3);
     expect(rosterHoursText("seeded")).toBe("Seeded default");
+  });
+});
+
+// #2837: a missing Google photo is its OWN fact, never folded into sign in. Since
+// the directory backfill (#2600) the people with no photo are the ones with none
+// in Google either, so the remedy is the person adding one there.
+describe("needs a photo", () => {
+  const P: RosterRow[] = [
+    // Signed in, no photo: needs a photo, and is still signed in.
+    row({ id: "signed-nophoto", auth_user_id: "auth-1", avatar_url: null }),
+    // Never signed in, photo from the directory: does NOT need one.
+    row({ id: "never-photo", auth_user_id: null, avatar_url: "https://photo" }),
+    // Never signed in, no photo: both facts, independently.
+    row({ id: "never-nophoto", auth_user_id: null, avatar_url: null }),
+    // A blank stored value is no photo, the same as null.
+    row({ id: "blank", avatar_url: "   " }),
+    row({ id: "has", avatar_url: "https://photo" }),
+    // Offboarded and test rows are not on the roster, whatever their photo.
+    row({ id: "gone", avatar_url: null, deactivated_at: "2026-01-01T00:00:00Z" }),
+    row({ id: "smoke", avatar_url: null, is_test: true }),
+  ];
+
+  it("reads the stored photo, treating an empty or blank value as none", () => {
+    expect(needsPhoto({ avatar_url: null })).toBe(true);
+    expect(needsPhoto({ avatar_url: "" })).toBe(true);
+    expect(needsPhoto({ avatar_url: "  " })).toBe(true);
+    expect(needsPhoto({ avatar_url: "https://photo" })).toBe(false);
+  });
+
+  it("filters on the photo independently of sign in", () => {
+    expect(filterRoster(P, { ...NONE, photo: "needed" }).map((u) => u.id)).toEqual([
+      "signed-nophoto",
+      "never-nophoto",
+      "blank",
+    ]);
+    expect(filterRoster(P, { ...NONE, photo: "has" }).map((u) => u.id)).toEqual(["never-photo", "has"]);
+    // The two filters compose, so neither is secretly the other.
+    expect(filterRoster(P, { ...NONE, photo: "needed", signin: "yes" }).map((u) => u.id)).toEqual([
+      "signed-nophoto",
+      "blank",
+    ]);
+    expect(filterRoster(P, { ...NONE, photo: "needed", signin: "never" }).map((u) => u.id)).toEqual([
+      "never-nophoto",
+    ]);
+  });
+
+  it("carries the photo filter through the URL and counts it as a filter", () => {
+    const f: RosterFilters = { ...NONE, photo: "needed" };
+    expect(rosterFiltersToQuery(f)).toBe("photo=needed");
+    expect(rosterFiltersFromParams(new URLSearchParams(rosterFiltersToQuery(f)))).toEqual(f);
+    expect(hasAnyRosterFilter(f)).toBe(true);
+    expect(rosterEmptyText(f)).toBe("Nobody on the roster matches those filters.");
+    expect(rosterFiltersFromParams(new URLSearchParams("photo=maybe")).photo).toBe("");
+  });
+
+  it("words the marker as the remedy, which is the person's Google account", () => {
+    expect(ROSTER_NEEDS_PHOTO_TEXT).toMatch(/photo/i);
+    expect(ROSTER_NEEDS_PHOTO_TEXT).toMatch(/Google/);
+    // It is not the sign in fact wearing another label.
+    expect(ROSTER_NEEDS_PHOTO_TEXT).not.toMatch(/sign/i);
   });
 });

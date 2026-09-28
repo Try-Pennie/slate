@@ -16,6 +16,8 @@
  * a page. One column serves both.
  */
 
+import { storedPhotoUrl } from "../stored-photo.ts";
+
 /** The narrow slice of the Supabase client this needs. */
 export interface AdvisorPhotoReader {
   from(table: "users"): {
@@ -54,8 +56,7 @@ export async function resolveAdvisorPhoto(
       .eq("id", userId)
       .maybeSingle();
     if (error) return null;
-    const url = data?.avatar_url?.trim();
-    return url && url.length > 0 ? url : null;
+    return storedPhotoUrl(data?.avatar_url);
   } catch {
     return null;
   }
