@@ -68,7 +68,7 @@ import { buildRoutingTraceExtras } from "../routing/explain.ts";
 import { calendarLinks, icsDocument, icsUrl, leadCalendarEvent, type CalendarLinks } from "./calendar-links.ts";
 import { resolveBucketPool } from "../availability/service.ts";
 import type { RecordRoutingDecisionInput } from "../routing/record.ts";
-import { tierKeyOf } from "../routing/tiers.ts";
+import { rungExcludesLow, tierKeyOf } from "../routing/tiers.ts";
 import { walkTierLadder } from "../routing/tier-fallback.ts";
 import { tierFallbackAlert } from "../routing/tier-alert.ts";
 import {
@@ -768,6 +768,11 @@ export interface BookingDeps {
      * theirs alone too. Undefined for every routed booking.
      */
     onlyUserId?: string,
+    /**
+     * #2842: drop every advisor who carries Low, on a rung below a top tier lead's
+     * own tier (`rungExcludesLow`). The pool size is then the filtered pool's.
+     */
+    excludeLow?: boolean,
   ): Promise<{ candidates: string[]; memberCount: number }>;
   /**
    * The ORG's opening hours (#1295, gate 1). Used by the two paths in this module
@@ -1651,6 +1656,7 @@ async function assignAgent(
   endIso: string,
   preview = false,
   onlyUserId?: string,
+  excludeLow = false,
 ): Promise<AssignResult & { candidates: string[] }> {
   const { candidates, memberCount } = await deps.roundRobinCandidates(
     bucket,
@@ -1658,6 +1664,7 @@ async function assignAgent(
     Date.parse(startIso),
     preview,
     onlyUserId,
+    excludeLow,
   );
 
   const { assignment, anyUnverified } = await selectAgent(
@@ -1730,15 +1737,23 @@ async function assignAgentWithTierFallback(
       if (!resolved) return { hit: false }; // a lower tier with no bucket row: skip
       if (resolved.bucket.is_test && !allowTestBuckets) return { hit: false };
       const { startIso, endIso } = bookingWindow(startInstantIso, resolved.eventType.duration_min);
+      // The same rule the display cascade judged this rung by (#2842).
+      const excludeLow = rungExcludesLow(requested.bucket.code, rungCode);
       try {
         const { userId, email, candidates } = await assignAgent(
-          deps, resolved.bucket, resolved.eventType, startIso, endIso, preview,
+          deps, resolved.bucket, resolved.eventType, startIso, endIso, preview, undefined, excludeLow,
         );
         return {
           hit: true,
           value: { bucket: resolved.bucket, eventType: resolved.eventType, startIso, endIso, userId, email, candidates },
         };
       } catch (err) {
+        // #2842: a rung filtered to advisors without Low can hold nobody on a
+        // perfectly configured bucket (most Medium advisors also carry Low), so an
+        // empty one says nothing about the bucket. It is skipped WITHOUT becoming
+        // the reason, so the lead is told what the rungs that could serve them
+        // said, and a filtered rung can never page as an empty bucket.
+        if (err instanceof NoEligibleAgentsError && excludeLow) return { hit: false };
         if (err instanceof SlotUnavailableError || err instanceof NoEligibleAgentsError) {
           lastErr = err; // this tier can't serve the slot; drop a rung
           return { hit: false };

@@ -109,6 +109,31 @@ const lead = (over: Partial<ReplayLead> = {}): ReplayLead => ({
   eq(v.rungsDropped, 0, "an agent in several pools is judged by the highest rung holding them");
 }
 
+// --- #2842: a top tier lead's ladder stops at Medium and skips Low carriers ---
+{
+  const world = prepareWorld({
+    users: [
+      ...USERS,
+      user({ id: "u-mid-only", email: "midonly@trypennie.com", attributes: { debt_team: ["medium"] } }),
+    ],
+    buckets: BUCKETS,
+  });
+  // cal.com gave an Ultra lead to a Medium advisor who also carries Low: Slate
+  // would never do that, so it is not agreement of any kind.
+  const lowCarrier = classifyLead(lead({ rawCode: "511", hostEmails: ["med@trypennie.com"] }), world);
+  eq(lowCarrier.verdict, "host-attributes-exclude", "an Ultra lead booked with a Low carrier below its tier is not agreement");
+  // The same pool, an advisor WITHOUT Low: agreement via the ladder (L159).
+  const clean = classifyLead(lead({ rawCode: "511", hostEmails: ["midonly@trypennie.com"] }), world);
+  eq(clean.verdict, "agree-via-ladder", "an advisor without Low on the Medium rung is agreement via the ladder");
+  eq(clean.effectiveCode, "211", "on the Medium rung");
+  // Low itself is below the floor.
+  const low = classifyLead(lead({ rawCode: "411", hostEmails: ["low@trypennie.com"] }), world);
+  eq(low.verdict, "host-attributes-exclude", "a Very High lead never reaches the Low rung");
+  // A High lead's cascade keeps Low carriers, the direction that proves it is per lead.
+  const high = classifyLead(lead({ rawCode: "311", hostEmails: ["med@trypennie.com"] }), world);
+  eq(high.verdict, "agree-via-ladder", "a High lead's cascade may use a Low carrier");
+}
+
 // --- The pool is read per bucket, never as a union across buckets ---
 
 {

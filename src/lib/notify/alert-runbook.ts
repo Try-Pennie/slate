@@ -187,6 +187,9 @@ const FAMILY_BY_KEY: Record<string, AlertFamily> = {
   // remedy to send anybody to and the count exists to put the number on the record.
   // The procedure is now "read it and carry on", which is this family's whole text.
   beyond_overflow_rate: "something-was-measured-and-is-only-worth-knowing",
+  // #2843: sales ops made the Ultra High and Very High cascade ordinary routing on
+  // 2026-09-28, so the number is put on the record and nobody is sent to act on it.
+  top_tier_cascade_rate: "something-was-measured-and-is-only-worth-knowing",
   // #2641: a host misconfiguration Slate cannot fix, worth passing on and never
   // worth waking for, because bookings still complete inside the embed.
   embed_origin_mismatch: "something-was-measured-and-is-only-worth-knowing",

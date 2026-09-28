@@ -116,6 +116,14 @@ import {
 } from "@/lib/monitor/beyond-overflow";
 import { readBeyondOverflowWindow } from "@/lib/monitor/beyond-overflow-store";
 import {
+  topTierCascadeVerdict,
+  topTierCascadeNoticeText,
+  TOP_TIER_CASCADE_NOTICE_KEY,
+  TOP_TIER_CASCADE_COOLDOWN_MS,
+  TOP_TIER_CASCADE_WINDOW_HOURS,
+} from "@/lib/monitor/top-tier-cascade";
+import { readTopTierCascadeWindow } from "@/lib/monitor/top-tier-cascade-store";
+import {
   loadRateState,
   saveRateState,
   readTodayOutcomes,
@@ -1346,6 +1354,36 @@ export async function GET(req: NextRequest) {
         BEYOND_OVERFLOW_NOTICE_KEY,
         BEYOND_OVERFLOW_COOLDOWN_MS,
         beyondOverflowNoticeText(verdict, BEYOND_OVERFLOW_WINDOW_HOURS),
+      );
+    });
+
+    // --- How often a top tier lead is cascaded (#2843) ---
+    //
+    // Replaces the per booking tier_fallback pages for Ultra High and Very High
+    // leads, whose cascade sales ops made ordinary routing on 2026-09-28. Same shape
+    // as the Beyond count above: info only, once a day, never resolves, and a tick
+    // that cannot count sends nothing, because an unreadable count is not a day
+    // with no cascades. Its own failure boundary (L73).
+    await steps.run("top_tier_cascade_rate", null, async () => {
+      const window = await readTopTierCascadeWindow(now);
+      const verdict = topTierCascadeVerdict(window);
+      log.info("monitor", {
+        msg: "top tier cascade rate",
+        ultra_booked: window.ultraBooked,
+        ultra_cascaded: window.ultraCascaded,
+        very_high_booked: window.veryHighBooked,
+        very_high_cascaded: window.veryHighCascaded,
+        window_h: TOP_TIER_CASCADE_WINDOW_HOURS,
+        verdict: verdict.kind,
+      });
+      if (verdict.kind !== "report") return;
+      // alert-key: top_tier_cascade_rate
+      // alert-text-ok: our own copy from top-tier-cascade.ts, built from four
+      // measured counts; no error text can reach it.
+      await sendThrottledInfo(
+        TOP_TIER_CASCADE_NOTICE_KEY,
+        TOP_TIER_CASCADE_COOLDOWN_MS,
+        topTierCascadeNoticeText(verdict, TOP_TIER_CASCADE_WINDOW_HOURS),
       );
     });
 

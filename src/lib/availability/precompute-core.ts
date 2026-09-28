@@ -1,5 +1,5 @@
 import { slotCacheKey } from "./cache-key.ts";
-import { shapePrecomputedRow } from "./precompute-shape.ts";
+import { mapSlotLists, shapePrecomputedRow } from "./precompute-shape.ts";
 import { slotsWithinBusinessHours, type BusinessHoursRules } from "./compute.ts";
 import { trimToBookableDays } from "./bookable-days.ts";
 import type { BucketSlots } from "./service";
@@ -83,8 +83,9 @@ export async function resolveBucketSlots(
   ): Promise<ResolvedBucketSlots> => {
     const hours = await deps.businessHours();
     return {
-      ...val,
-      slots: slotsWithinBusinessHours(val.slots, val.eventType.duration_min, hours),
+      ...mapSlotLists(val, (list) =>
+        slotsWithinBusinessHours(list, val.eventType.duration_min, hours),
+      ),
       source,
     };
   };
@@ -114,10 +115,9 @@ export async function resolveBucketSlots(
   // 21:00 slot is stored as the next day in UTC, and grouping in UTC would spend one
   // of the days on a day the customer does not have.
   const { zone } = await deps.businessHours();
-  const fresh: BucketSlots = {
-    ...computed,
-    slots: trimToBookableDays(computed.slots, zone, horizonDays),
-  };
+  const fresh: BucketSlots = mapSlotLists(computed, (list) =>
+    trimToBookableDays(list, zone, horizonDays),
+  );
   const computedAt = await deps.writeRow(code, fresh, computeStartedMs);
   const cached: CachedBucketSlots = { ...fresh, computedAt };
   await deps.cachePut(key, cached);

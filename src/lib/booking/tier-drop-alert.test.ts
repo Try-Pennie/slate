@@ -88,7 +88,11 @@ const tierDropInput: CreateBookingInput = {
 
 // ---- dep builder -------------------------------------------------------------
 
-function makeTierDropDeps(): BookingDeps {
+const bucketFor = (code: string) => ({ ...bucket511, id: `bkt${code}`, code }) as unknown as Bucket;
+
+// #2843: an Ultra High or Very High cascade is counted daily rather than alerted per
+// booking, so the dispatch test cascades a HIGH lead (311 to 211), which still alerts.
+function makeTierDropDeps(requested = "511", lower = "411"): BookingDeps {
   const noop = async (..._args: unknown[]): Promise<void> => {};
   return {
     // #2638: no test here routes a booker confirm on a missing code.
@@ -96,8 +100,9 @@ function makeTierDropDeps(): BookingDeps {
       throw new Error("Salesforce is not reachable from this test");
     },
     resolveBucketByCode: async (code) => {
-      if (code === "511") return { bucket: bucket511, eventType };
-      if (code === "411") return { bucket: bucket411, eventType };
+      if (code === "511" && requested === "511") return { bucket: bucket511, eventType };
+      if (code === "411" && lower === "411") return { bucket: bucket411, eventType };
+      if (code === requested || code === lower) return { bucket: bucketFor(code), eventType };
       return null;
     },
     // Empty pool on "511" → NoEligibleAgentsError → cascade to "411"
@@ -105,7 +110,7 @@ function makeTierDropDeps(): BookingDeps {
     // who are merely off shift returns zero candidates with a NON-zero count and
     // must NOT cascade as a misconfiguration.
     roundRobinCandidates: async (bucket) =>
-      bucket.code === "511"
+      bucket.code === requested
         ? { candidates: [], memberCount: 0}
         : { candidates: ["a"], memberCount: 1},
     // Gate 1 (#1295) open all week, so these stay about the tier cascade.
@@ -242,9 +247,9 @@ beforeEach(() => vi.clearAllMocks());
 
 describe("tier-drop alert dispatch", () => {
   it("dispatches sendThrottledAlert with key 'tier_fallback:<requestedCode>' on a cascade booking", async () => {
-    const deps = makeTierDropDeps();
+    const deps = makeTierDropDeps("311", "211");
 
-    await createBooking(tierDropInput, deps);
+    await createBooking({ ...tierDropInput, bucketCode: "311" }, deps);
 
     // Exactly one sendThrottledAlert call from the tier-drop path.
     const calls = dispatch.sendThrottledAlert.mock.calls;
@@ -253,9 +258,24 @@ describe("tier-drop alert dispatch", () => {
     );
     expect(tierDropCall).toBeDefined();
     const [key, cooldownMs, text] = tierDropCall!;
-    expect(key).toBe("tier_fallback:511");
+    expect(key).toBe("tier_fallback:311");
     expect(typeof cooldownMs).toBe("number");
     expect(typeof text).toBe("string");
+  });
+
+  // #2843: the same cascade one tier up is the routing rule working, counted once a
+  // day on the info channel. Both directions in one fixture shape (L159): the test
+  // above proves this path DOES dispatch for a High lead.
+  it("does NOT dispatch a tier_fallback alert when an Ultra High lead cascades", async () => {
+    const deps = makeTierDropDeps();
+
+    const res = await createBooking(tierDropInput, deps);
+
+    expect(res.booking.routing_trace?.tier_fallback).toBe(true);
+    const tierDropCalls = dispatch.sendThrottledAlert.mock.calls.filter(([key]) =>
+      typeof key === "string" && key.startsWith("tier_fallback"),
+    );
+    expect(tierDropCalls).toHaveLength(0);
   });
 
   it("does NOT dispatch a tier_fallback alert when the requested bucket itself has an agent free", async () => {

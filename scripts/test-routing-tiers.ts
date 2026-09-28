@@ -1,4 +1,11 @@
-import { tierLadder, tierKeyOf, tierPoolCode, wholeTierPoolCode } from "../src/lib/routing/tiers.ts";
+import {
+  cascadeFloorTier,
+  rungExcludesLow,
+  tierLadder,
+  tierKeyOf,
+  tierPoolCode,
+  wholeTierPoolCode,
+} from "../src/lib/routing/tiers.ts";
 import { assert, finish } from "./lib/harness.ts";
 
 // --- an UNCONSTRAINED code (backend 0 or 1) gains no same tier rung (#2486) ---
@@ -8,8 +15,9 @@ import { assert, finish } from "./lib/harness.ts";
 // resolve one pool by criteria, so the only thing it could add is somebody hand
 // named on the other bucket, and reading that as coverage is the fail open
 // #2485 refused to ship and #2253 was opened about.
-assert(tierLadder("511").join(",") === "511,411,311,211,111", "ultra high cascades to low, same backend/legal");
-assert(tierLadder("412").join(",") === "412,312,212,112", "very high cascades down, digits 1+2 preserved");
+assert(tierLadder("511").join(",") === "511,411,311,211", "ultra high cascades to Medium and stops (#2842)");
+assert(tierLadder("412").join(",") === "412,312,212", "very high cascades to Medium and stops, digits 1+2 preserved");
+assert(tierLadder("312").join(",") === "312,212,112", "high may still cascade to Low (#2842)");
 assert(tierLadder("111").join(",") === "111", "low tier has no lower rung");
 assert(tierLadder("bad").join(",") === "bad", "invalid code returns itself only");
 assert(tierLadder("300").join(",") === "300,200,100", "a None backend gains no same tier rung");
@@ -28,7 +36,7 @@ assert(tierLadder("300").join(",") === "300,200,100", "a None backend gains no s
 // (#2505), which mutes a bucket level finding whenever the tier is staffed,
 // cannot go quiet on a lead who is in fact refused if those tags ever diverge.
 assert(
-  tierLadder("532").join(",") === "532,512,432,412,332,312,232,212,132,112",
+  tierLadder("532").join(",") === "532,512,432,412,332,312,232,212",
   `an Achieve code crosses to the tier pool first (got ${tierLadder("532").join(",")})`,
 );
 assert(
@@ -49,12 +57,12 @@ const ACHIEVE_LADDERS: Record<string, string> = {
   "330": "330,310,230,210,130,110",
   "331": "331,311,231,211,131,111",
   "332": "332,312,232,212,132,112",
-  "430": "430,410,330,310,230,210,130,110",
-  "431": "431,411,331,311,231,211,131,111",
-  "432": "432,412,332,312,232,212,132,112",
-  "530": "530,510,430,410,330,310,230,210,130,110",
-  "531": "531,511,431,411,331,311,231,211,131,111",
-  "532": "532,512,432,412,332,312,232,212,132,112",
+  "430": "430,410,330,310,230,210",
+  "431": "431,411,331,311,231,211",
+  "432": "432,412,332,312,232,212",
+  "530": "530,510,430,410,330,310,230,210",
+  "531": "531,511,431,411,331,311,231,211",
+  "532": "532,512,432,412,332,312,232,212",
 };
 assert(Object.keys(ACHIEVE_LADDERS).length === 15, "every Achieve code is covered");
 for (const [code, want] of Object.entries(ACHIEVE_LADDERS)) {
@@ -69,7 +77,7 @@ for (const [code, want] of Object.entries(ACHIEVE_LADDERS)) {
 // tier before it takes the lead's advertised tier away from them.
 assert(
   tierLadder("522").join(",") ===
-    "522,532,512,422,432,412,322,332,312,222,232,212,122,132,112",
+    "522,532,512,422,432,412,322,332,312,222,232,212",
   `a Beyond code tries Achieve then the whole tier (got ${tierLadder("522").join(",")})`,
 );
 assert(
@@ -87,12 +95,12 @@ const BEYOND_LADDERS: Record<string, string> = {
   "320": "320,330,310,220,230,210,120,130,110",
   "321": "321,331,311,221,231,211,121,131,111",
   "322": "322,332,312,222,232,212,122,132,112",
-  "420": "420,430,410,320,330,310,220,230,210,120,130,110",
-  "421": "421,431,411,321,331,311,221,231,211,121,131,111",
-  "422": "422,432,412,322,332,312,222,232,212,122,132,112",
-  "520": "520,530,510,420,430,410,320,330,310,220,230,210,120,130,110",
-  "521": "521,531,511,421,431,411,321,331,311,221,231,211,121,131,111",
-  "522": "522,532,512,422,432,412,322,332,312,222,232,212,122,132,112",
+  "420": "420,430,410,320,330,310,220,230,210",
+  "421": "421,431,411,321,331,311,221,231,211",
+  "422": "422,432,412,322,332,312,222,232,212",
+  "520": "520,530,510,420,430,410,320,330,310,220,230,210",
+  "521": "521,531,511,421,431,411,321,331,311,221,231,211",
+  "522": "522,532,512,422,432,412,322,332,312,222,232,212",
 };
 assert(Object.keys(BEYOND_LADDERS).length === 15, "every Beyond code is covered");
 for (const [code, want] of Object.entries(BEYOND_LADDERS)) {
@@ -170,6 +178,44 @@ for (const code of ALL_CODES) {
     `${code} ends its tier on tierPoolCode`,
   );
 }
+
+
+// --- the cascade floor and the Low exclusion (#2842) ---
+//
+// Sales ops, 2026-09-28 (Slack #C091G6LEQ80, p1790609176877419). Sam: "Only thing
+// you want to avoid is giving a ultra as an example to someone who is on low. So
+// only cascade down to a medium", "as long as the person who is on Medium isn't
+// also on Low", and, asked the highest tier that may reach Low: "A high".
+assert(cascadeFloorTier(5) === 2 && cascadeFloorTier(4) === 2, "Ultra and Very High stop at Medium");
+assert(
+  cascadeFloorTier(3) === 1 && cascadeFloorTier(2) === 1 && cascadeFloorTier(1) === 1,
+  "High and below may reach Low",
+);
+for (const code of ALL_CODES) {
+  const ladder = tierLadder(code);
+  const floor = cascadeFloorTier(Number(code[0]));
+  assert(
+    ladder.every((r) => Number(r[0]) >= floor),
+    `${code} never drops below its floor (${ladder.join(",")})`,
+  );
+  // The floor is reached, not merely respected: a ladder that stopped a tier
+  // early would pass the check above.
+  assert(Number(ladder[ladder.length - 1][0]) === floor, `${code} reaches its floor`);
+  for (const rung of ladder) {
+    const below = Number(rung[0]) < Number(code[0]);
+    const topTier = Number(code[0]) >= 4;
+    assert(
+      rungExcludesLow(code, rung) === (topTier && below),
+      `${code} -> ${rung} excludes Low exactly when a top tier lead is below its own tier`,
+    );
+  }
+}
+// The lead's OWN tier never excludes: an Ultra advisor who also carries Low is
+// still the Ultra lead's own advisor. Only the cascade is restricted.
+assert(!rungExcludesLow("531", "511"), "a same tier rung keeps its whole pool");
+assert(rungExcludesLow("531", "431"), "the first rung below an Ultra lead excludes Low");
+assert(!rungExcludesLow("331", "131"), "a High lead's cascade keeps Low agents");
+assert(!rungExcludesLow("bad", "111"), "an unreadable code excludes nothing it cannot judge");
 
 assert(tierKeyOf("511") === "ultra_high", "first digit 5 => ultra_high");
 assert(tierKeyOf("411") === "very_high", "first digit 4 => very_high");

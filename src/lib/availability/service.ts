@@ -10,6 +10,8 @@ import {
 } from "@/lib/availability/compute";
 import { loadBusinessHours } from "@/lib/booking/business-hours-load";
 import { agentIdsFromPool } from "@/lib/availability/pool";
+import { lowCarrierIds, withoutLowCarriers } from "@/lib/availability/low-exclusion";
+import { poolServesLowExcludedRungs } from "@/lib/routing/tiers";
 import {
   applyFallback,
   payPeriod,
@@ -82,9 +84,18 @@ export async function resolveBucketAgentIds(bucket: Bucket): Promise<string[]> {
  * buckets instead, so there is nothing left to widen and the pool is simply the
  * pool.
  */
-export async function resolveBucketAgentPool(bucket: Bucket): Promise<{ ids: string[] }> {
+export async function resolveBucketAgentPool(
+  bucket: Bucket,
+): Promise<{ ids: string[]; lowIds: string[] }> {
   const { orgAgents, manualMemberIds, criteria } = await resolveBucketPool(bucket);
-  return { ids: agentIdsFromPool(orgAgents, manualMemberIds, criteria) };
+  // #2842: which of the org's bookable agents carry Low, read from the SAME rows
+  // the pool was matched from, so the exclusion costs no second read. It is over
+  // the whole org rather than the pool, because the fallback agent is looked up
+  // separately and has to be judged too; callers narrow it to the ids they return.
+  return {
+    ids: agentIdsFromPool(orgAgents, manualMemberIds, criteria),
+    lowIds: lowCarrierIds(orgAgents),
+  };
 }
 
 /**
@@ -98,21 +109,30 @@ export async function resolveBucketAgentPool(bucket: Bucket): Promise<{ ids: str
  * (`eligibleAgentIdsCached`) so all cron lanes in a tick share one eligibility
  * read per bucket, while the booker read + booking verify stay live (#421/#508).
  */
-export type EligibleResolver = (
-  bucket: Bucket,
-) => Promise<{ ids: string[]; fallbackApplied: boolean }>;
+export type EligibleResolver = (bucket: Bucket) => Promise<EligibleAgents>;
 
-export async function eligibleAgentIds(
-  bucket: Bucket,
-): Promise<{ ids: string[]; fallbackApplied: boolean }> {
+/**
+ * A bucket's eligible agents. `lowIds` is which of `ids` carry Low (#2842), for a
+ * top tier lead's cascade, which must skip them. OPTIONAL and absent means
+ * UNKNOWN, never "nobody": a resolver that does not supply it (the named link
+ * resolver, an eligibility cache entry written before the field existed) makes
+ * `withoutLowCarriers` offer nobody rather than everybody.
+ */
+export type EligibleAgents = { ids: string[]; fallbackApplied: boolean; lowIds?: string[] };
+
+export async function eligibleAgentIds(bucket: Bucket): Promise<EligibleAgents> {
   const pool = await resolveBucketAgentPool(bucket);
   const matched = pool.ids;
+  const withLow = (r: { ids: string[]; fallbackApplied: boolean }): EligibleAgents => {
+    const low = new Set(pool.lowIds);
+    return { ...r, lowIds: r.ids.filter((id) => low.has(id)) };
+  };
   // The fallback is only consulted when the matched pool is empty, so skip the
   // eligibility round-trip otherwise. A stored fallback_user_id can point at an
   // agent who is no longer bookable (or, with offboarding, deactivated); never
   // route to them just because the pool came up empty.
   if (matched.length > 0 || !bucket.fallback_user_id) {
-    return applyFallback(matched, bucket.fallback_user_id, false);
+    return withLow(applyFallback(matched, bucket.fallback_user_id, false));
   }
   const db = supabaseAdmin();
   const fallback = unwrap(
@@ -126,7 +146,7 @@ export async function eligibleAgentIds(
       .maybeSingle(),
     "fallback agent",
   );
-  return applyFallback(matched, bucket.fallback_user_id, !!fallback);
+  return withLow(applyFallback(matched, bucket.fallback_user_id, !!fallback));
 }
 
 /**
@@ -136,6 +156,17 @@ export async function eligibleAgentIds(
  */
 export function namedAgentResolver(userId: string): EligibleResolver {
   return async () => ({ ids: [userId], fallbackApplied: false });
+}
+
+/**
+ * `inner` with every Low carrier removed (#2842). Fails closed with the helper it
+ * uses: a result that did not say who carries Low yields nobody.
+ */
+export function lowExcludedResolver(inner: EligibleResolver): EligibleResolver {
+  return async (bucket) => {
+    const r = await inner(bucket);
+    return { ...r, ids: withoutLowCarriers(r.ids, r.lowIds), lowIds: [] };
+  };
 }
 
 export interface ResolvedBucket {
@@ -181,11 +212,11 @@ export async function loadMembersAvailability(
   from: string,
   to: string,
   resolveEligible: EligibleResolver = eligibleAgentIds,
-): Promise<{ members: MemberAvailability[] }> {
+): Promise<{ members: MemberAvailability[]; lowIds: string[] | undefined }> {
   const db = supabaseAdmin();
 
-  const { ids: userIds } = await resolveEligible(bucket);
-  if (userIds.length === 0) return { members: [] };
+  const { ids: userIds, lowIds } = await resolveEligible(bucket);
+  if (userIds.length === 0) return { members: [], lowIds };
 
   // The daily-cap count is per agent per LOCAL day, so the bookings read must cover
   // the FULL local day of every day in [from, to] — not just the requested window.
@@ -253,6 +284,7 @@ export async function loadMembersAvailability(
   const rules = schedules.flatMap((s) => s.availability_rules ?? []);
   return {
     members: assembleMemberAvailability(userIds, schedules, rules, busy, dayCountsByUser),
+    lowIds,
   };
 }
 
@@ -282,6 +314,19 @@ export interface BucketSlots {
   eventType: EventType;
   orgName: string;
   slots: string[];
+  /**
+   * #2842: the times at least one advisor who does NOT carry Low is free, for a
+   * top tier lead cascaded onto this pool, who must never be offered a Low
+   * carrier. Computed only for the pools such a lead can land on
+   * (`poolServesLowExcludedRungs`), from the same members and the same rules as
+   * `slots` in the same pass, so it costs no read.
+   *
+   * ABSENT means UNKNOWN and is read as "nobody": a row written before this field
+   * existed, a pool no top tier lead can reach, or an eligibility result that did
+   * not say who carries Low. Reading absence as "everybody" would hand a top tier
+   * lead to exactly the advisors the rule keeps away.
+   */
+  slotsWithoutLow?: string[];
 }
 
 /** Cached slot list for a bucket code — the read path for the embed modal. */
@@ -320,25 +365,48 @@ export async function getBucketSlots(
   // it are the ones that matter and neither is null-tolerant: `loadBusinessHours`
   // throws (#1294) and `loadMembersAvailability` throws on its daily-cap count.
   const org = orgRes.data;
-  const slots = computeBucketSlots({
-    members,
-    durationMin: eventType.duration_min,
-    bufferBeforeMin: eventType.buffer_before_min,
-    bufferAfterMin: eventType.buffer_after_min,
-    minNoticeMin: eventType.min_notice_min,
-    dailyCap: eventType.daily_cap,
-    slotIntervalMin: eventType.slot_interval_min,
-    businessHours,
-    from,
-    to,
-    nowMs: Date.now(),
-  });
+  const nowMs = Date.now();
+  const slotsFor = (pool: MemberAvailability[]) =>
+    computeBucketSlots({
+      members: pool,
+      durationMin: eventType.duration_min,
+      bufferBeforeMin: eventType.buffer_before_min,
+      bufferAfterMin: eventType.buffer_after_min,
+      minNoticeMin: eventType.min_notice_min,
+      dailyCap: eventType.daily_cap,
+      slotIntervalMin: eventType.slot_interval_min,
+      businessHours,
+      from,
+      to,
+      nowMs,
+    });
+  const slots = slotsFor(members);
+
+  // #2842: the second pass, only where a top tier lead's cascade can read it, and
+  // only when the resolver said who carries Low. One clock for both passes, so the
+  // two lists judge minimum notice at the same instant.
+  let slotsWithoutLow: string[] | undefined;
+  if (poolServesLowExcludedRungs(code) && membersResult.lowIds !== undefined) {
+    const keep = new Set(
+      withoutLowCarriers(members.map((m) => m.userId), membersResult.lowIds),
+    );
+    // The pass is paid on the every minute recompute lane, whose headroom already
+    // pages (#2021), so the two cases with a known answer skip it: nobody carries
+    // Low (the lists are the same) and everybody does (nobody is free).
+    slotsWithoutLow =
+      keep.size === members.length
+        ? slots
+        : keep.size === 0
+          ? []
+          : slotsFor(members.filter((m) => keep.has(m.userId)));
+  }
 
   return {
     bucket,
     eventType,
     orgName: (org as { name: string } | null)?.name ?? "",
     slots,
+    ...(slotsWithoutLow !== undefined ? { slotsWithoutLow } : {}),
   };
 }
 
@@ -360,6 +428,12 @@ export async function roundRobinCandidates(
    * is the point: the same predicate the booker's display uses judges the slot.
    */
   onlyUserId?: string,
+  /**
+   * #2842: drop every advisor who carries Low, for a rung below a top tier lead's
+   * own tier (`rungExcludesLow`). The pool size is then the filtered pool's, so a
+   * pool made entirely of Low carriers reads as having nobody for this lead.
+   */
+  excludeLow = false,
 ): Promise<{ candidates: string[]; memberCount: number }> {
   const endIso = new Date(
     startMs + eventType.duration_min * 60_000,
@@ -372,7 +446,11 @@ export async function roundRobinCandidates(
       bucket,
       new Date(startMs).toISOString(),
       endIso,
-      onlyUserId !== undefined ? namedAgentResolver(onlyUserId) : eligibleAgentIds,
+      excludeLow
+        ? lowExcludedResolver(eligibleAgentIds)
+        : onlyUserId !== undefined
+          ? namedAgentResolver(onlyUserId)
+          : eligibleAgentIds,
     ),
     loadBusinessHours(),
   ]);

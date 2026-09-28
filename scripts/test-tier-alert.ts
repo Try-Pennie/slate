@@ -36,17 +36,35 @@ for (const pair of [
   );
 }
 
+// --- a top tier lead's cascade: counted, never paged (#2843) ---
+//
+// Sales ops decided on 2026-09-28 (Slack #C091G6LEQ80, p1790609176877419) that an
+// Ultra High or Very High lead SHOULD be cascaded rather than booked days out, as
+// far as Medium. There are six Ultra advisors, so with a three day window that is
+// ordinary routing, and a page per booking reporting it would be the alert nobody
+// reads by the second week (L36). It is counted once a day instead
+// (`top_tier_cascade_rate`, src/lib/monitor/top-tier-cascade.ts).
+for (const code of ["511", "522", "531", "412", "421", "430"]) {
+  for (const rung of tierLadder(code).slice(1)) {
+    if (rung[0] === code[0]) continue;
+    assert(
+      tierFallbackAlert({ requestedCode: code, effectiveCode: rung }) === null,
+      `a top tier cascade sends nothing per booking: ${code} to ${rung}`,
+    );
+  }
+}
+
 // --- one debt tier down ---
-const one = tierFallbackAlert({ requestedCode: "511", effectiveCode: "411" })!;
-assert(one.key === "tier_fallback:511", "single-tier key");
+const one = tierFallbackAlert({ requestedCode: "311", effectiveCode: "211" })!;
+assert(one.key === "tier_fallback:311", "single-tier key");
 assert(one.cooldownMs === 60 * 60 * 1000, "a single tier drop is a 60-min throttled notice");
 assert(/^Routing notice:/.test(one.text), "single-tier text is a notice, not an alert");
 
 // The case the old threshold got wrong: an overflow AND one tier drop is two
 // rungs and one tier, and must stay a notice.
-const overflowThenDrop = tierFallbackAlert({ requestedCode: "522", effectiveCode: "432" })!;
+const overflowThenDrop = tierFallbackAlert({ requestedCode: "322", effectiveCode: "232" })!;
 assert(
-  overflowThenDrop.key === "tier_fallback:522",
+  overflowThenDrop.key === "tier_fallback:322",
   `an overflow plus one tier drop is still one tier (got ${overflowThenDrop.key})`,
 );
 assert(overflowThenDrop.cooldownMs === 60 * 60 * 1000, "and still a throttled notice");
@@ -56,15 +74,15 @@ assert(
 );
 
 // --- two or more debt tiers down: the capacity problem ---
-const deep = tierFallbackAlert({ requestedCode: "511", effectiveCode: "311" })!;
-assert(deep.key === "tier_fallback_deep:511", "deep-drop key is distinct");
+const deep = tierFallbackAlert({ requestedCode: "311", effectiveCode: "111" })!;
+assert(deep.key === "tier_fallback_deep:311", "deep-drop key is distinct");
 assert(deep.cooldownMs === 5 * 60 * 1000, "deep drop escalates (shorter cooldown)");
 assert(/^Routing alert:/.test(deep.text), "deep-drop text reads as an alert, not a notice");
 assert(/2 debt tiers/.test(deep.text), `the deep drop counts TIERS, not rungs (got ${deep.text})`);
 
 // Four rungs of the new Beyond ladder is two tiers, and must read as two.
-const deepBeyond = tierFallbackAlert({ requestedCode: "522", effectiveCode: "332" })!;
-assert(deepBeyond.key === "tier_fallback_deep:522", "a deep Beyond cascade escalates");
+const deepBeyond = tierFallbackAlert({ requestedCode: "322", effectiveCode: "132" })!;
+assert(deepBeyond.key === "tier_fallback_deep:322", "a deep Beyond cascade escalates");
 assert(/2 debt tiers/.test(deepBeyond.text), `and says two, not four (got ${deepBeyond.text})`);
 
 // --- a pair the LADDER cannot produce says nothing ---
@@ -93,7 +111,7 @@ for (const bad of [
 {
   let alerted = 0;
   let silenced = 0;
-  for (const code of ["522", "511", "412", "300"]) {
+  for (const code of ["322", "311", "312", "300", "222", "231"]) {
     for (const rung of tierLadder(code).slice(1)) {
       const sameTier = rung[0] === code[0];
       if (sameTier) {
@@ -136,9 +154,9 @@ assert(tierFallbackAlert({ requestedCode: "111", effectiveCode: "511" }) === nul
 // backend restriction at all, so the sentence stated an attribute of the person
 // that nothing had measured (L192). Digit 0 is "None" and reads worse still.
 for (const [requested, effective] of [
-  ["531", "411"],
-  ["521", "411"],
-  ["532", "412"],
+  ["331", "211"],
+  ["321", "211"],
+  ["332", "212"],
 ]) {
   const out = tierFallbackAlert({ requestedCode: requested, effectiveCode: effective });
   assert(out !== null, `${requested} to ${effective} is a tier drop and alerts`);
@@ -154,7 +172,7 @@ for (const [requested, effective] of [
 
 // And the control the other way: a real backend service is still NAMED, so the
 // fix above cannot have been achieved by dropping the clause for everyone (L1).
-const toAchieve = tierFallbackAlert({ requestedCode: "521", effectiveCode: "431" });
+const toAchieve = tierFallbackAlert({ requestedCode: "321", effectiveCode: "231" });
 assert(toAchieve !== null, "a Beyond code dropping a tier onto Achieve alerts");
 assert(
   toAchieve!.text.includes("went to Achieve"),

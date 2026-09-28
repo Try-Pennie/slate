@@ -55,7 +55,9 @@ export interface AvailabilityScanDeps {
   probeConcurrency: number;
   deadlineMs: number;
   buckets: ScanBucket[];
-  slotByCode: Map<string, { slotCount: number | null; computedAtMs: number }>;
+  /** `slotCountWithoutLow` (#2842) is optional so a fixture that is not about the
+   *  Low rule can omit it; absent reads as unmeasured, which is no rescue. */
+  slotByCode: Map<string, { slotCount: number | null; computedAtMs: number; slotCountWithoutLow?: number | null }>;
   ladder: (code: string) => string[];
   nameOf: (code: string) => string;
   eligibleIds: (code: string) => Promise<string[]>;
@@ -135,7 +137,12 @@ export async function runAvailabilityScan(deps: AvailabilityScanDeps): Promise<A
       b.code,
       // Same rule for the ladder walk: `null > 0` is false, so an unmeasured rung
       // never claims to cover a tier it might not.
-      { slotCount: deps.slotByCode.get(b.code)?.slotCount ?? 0, isTest: b.isTest },
+      {
+        slotCount: deps.slotByCode.get(b.code)?.slotCount ?? 0,
+        // #2842: absent stays null (unmeasured), never 0, for the same reason.
+        slotCountWithoutLow: deps.slotByCode.get(b.code)?.slotCountWithoutLow ?? null,
+        isTest: b.isTest,
+      },
     ]),
   );
   // Split empty-but-should-show buckets by whether the tier-drop fallback still

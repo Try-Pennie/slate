@@ -4,6 +4,7 @@ import { parseStampMs } from "@/lib/date/stamp";
 import { getBucketSlots, type BucketSlots, type EligibleResolver } from "./service";
 import { bucketsMatchingAgent, type BucketForMatch } from "./bucket-match";
 import { trimToBookableDays } from "./bookable-days";
+import { mapSlotLists } from "./precompute-shape";
 import { BUSINESS_ZONE } from "@/lib/booking/business-hours";
 import type { Attributes, Bucket, Criteria } from "@/lib/db/types";
 import type { PooledBucket } from "./pool-recompute";
@@ -309,10 +310,8 @@ export async function computeBucketSlotsForWindow(
     // settings lookup. A horizon change therefore lands on the next recompute, which
     // is already how it works: the admin save marks every bucket stale.
     if (fresh && bookableDays !== undefined) {
-      fresh = {
-        ...fresh,
-        slots: trimToBookableDays(fresh.slots, BUSINESS_ZONE, bookableDays),
-      };
+      // Both lists, each on its own first days (#2842).
+      fresh = mapSlotLists(fresh, (list) => trimToBookableDays(list, BUSINESS_ZONE, bookableDays));
     }
   } catch (err) {
     // A failed availability read (#277) must NOT write an empty slot row — that

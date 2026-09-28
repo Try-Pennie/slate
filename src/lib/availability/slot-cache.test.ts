@@ -34,8 +34,13 @@ function makeBucketSlots(
   code: string,
   slots: string[],
   isTest = false,
+  // #2842: the times an advisor WITHOUT Low is free. Defaults to the same list, so
+  // a fixture that is not about the Low rule cascades as it always did.
+  // "absent" is a row written before the field existed, which must read as unknown.
+  slotsWithoutLow: string[] | "absent" = slots,
 ): BucketSlots {
   return {
+    ...(slotsWithoutLow !== "absent" ? { slotsWithoutLow } : {}),
     bucket: {
       id: `bkt-${code}`,
       org_id: "org1",
@@ -103,6 +108,90 @@ describe("getBucketSlotsWithFallback", () => {
     // Contrast with the perf guard above: the slow cascade path necessarily reads
     // more than once, which is why the hot-path single-read assertion is meaningful.
     expect(mockResolveBucketSlots.mock.calls.length).toBeGreaterThan(1);
+  });
+
+  // #2842: below an Ultra or Very High lead's own tier, only advisors who do NOT
+  // carry Low may be offered, so the rung is judged on, and serves, its second list.
+  it("judges a rung below a top tier lead on the advisors without Low, and serves only their times", async () => {
+    const LOW_ONLY = "2026-06-08T14:00:00.000Z";
+    mockResolveBucketSlots.mockImplementation(async (code: string) => {
+      if (code === "411") return makeBucketSlots("411", []);
+      // 311: free times exist, but every free advisor carries Low.
+      if (code === "311") return makeBucketSlots("311", [LOW_ONLY], false, []);
+      // 211: a mix; only SLOT has an advisor without Low.
+      if (code === "211") return makeBucketSlots("211", [SLOT, LOW_ONLY], false, [SLOT]);
+      return null;
+    });
+
+    const result = await getBucketSlotsWithFallback("411", FROM_ISO);
+
+    expect(result!.bucket.code).toBe("211");
+    expect(result!.slots).toEqual([SLOT]);
+    expect(result!.routing.rungs_dropped).toBe(2);
+  });
+
+  it("never offers a top tier lead a rung whose second list is unknown", async () => {
+    mockResolveBucketSlots.mockImplementation(async (code: string) => {
+      if (code === "411") return makeBucketSlots("411", []);
+      // A row written before the second list existed: unknown, so nobody.
+      if (code === "311") return makeBucketSlots("311", [SLOT], false, "absent");
+      if (code === "211") return makeBucketSlots("211", [], false, []);
+      return null;
+    });
+
+    const result = await getBucketSlotsWithFallback("411", FROM_ISO);
+
+    // Nothing reachable: the requested bucket comes back with no times, and the
+    // Low carriers' SLOT on 311 is not offered.
+    expect(result!.bucket.code).toBe("411");
+    expect(result!.slots).toEqual([]);
+    expect(result!.routing.tier_fallback).toBe(false);
+  });
+
+  it("never cascades a top tier lead to Low", async () => {
+    mockResolveBucketSlots.mockImplementation(async (code: string) => {
+      if (code === "111") return makeBucketSlots("111", [SLOT]);
+      return makeBucketSlots(code, []);
+    });
+
+    const result = await getBucketSlotsWithFallback("511", FROM_ISO);
+
+    expect(result!.bucket.code).toBe("511");
+    expect(result!.slots).toEqual([]);
+    expect(mockResolveBucketSlots.mock.calls.map((c) => c[0])).not.toContain("111");
+  });
+
+  it("keeps Low carriers in a High lead's cascade, which may reach Low", async () => {
+    mockResolveBucketSlots.mockImplementation(async (code: string) => {
+      if (code === "311") return makeBucketSlots("311", []);
+      if (code === "211") return makeBucketSlots("211", [SLOT], false, []);
+      return null;
+    });
+
+    const result = await getBucketSlotsWithFallback("311", FROM_ISO);
+
+    expect(result!.bucket.code).toBe("211");
+    expect(result!.slots).toEqual([SLOT]);
+  });
+
+  it("serves the top tier lead's OWN tier in full, Low carriers included", async () => {
+    mockResolveBucketSlots.mockResolvedValue(makeBucketSlots("411", [SLOT], false, []));
+
+    const result = await getBucketSlotsWithFallback("411", FROM_ISO);
+
+    expect(result!.bucket.code).toBe("411");
+    expect(result!.slots).toEqual([SLOT]);
+  });
+
+  it("never sends the second list to the booker", async () => {
+    mockResolveBucketSlots.mockImplementation(async (code: string) => {
+      if (code === "411") return makeBucketSlots("411", []);
+      return makeBucketSlots(code, [SLOT]);
+    });
+
+    const result = await getBucketSlotsWithFallback("411", FROM_ISO);
+
+    expect(result).not.toHaveProperty("slotsWithoutLow");
   });
 
   it("skips an is_test bucket in the cascade so a real lower tier wins", async () => {

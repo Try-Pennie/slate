@@ -124,4 +124,25 @@ for (const bad of ["", "not-a-date", "2026-13-45T99:99:99Z"]) {
   );
 }
 
+// --- #2842: the count offered by advisors WITHOUT Low, judged the same way ---
+{
+  const CLOSED_WED: BusinessHoursRules = {
+    zone: "America/New_York",
+    rules: [1, 2, 4, 5, 6, 7].map((weekday) => ({ weekday, start_minute: 0, end_minute: 1440 })),
+    exceptions: [],
+  };
+  const m = slotHealthByCode([
+    { bucket_code: "311", payload: { slots: THREE, slotsWithoutLow: ONE, eventType: ET }, computed_at: FRESH_ISO },
+    { bucket_code: "312", payload: { slots: THREE, eventType: ET }, computed_at: FRESH_ISO },
+  ], OPEN);
+  eq(m.get("311")?.slotCountWithoutLow, 1, "the second list is counted");
+  // Absent is UNKNOWN, never zero: a zero reads as "nobody without Low is free",
+  // which is a finding, while a row from before the field existed is not one.
+  eq(m.get("312")?.slotCountWithoutLow, null, "an absent second list is unmeasured, not zero");
+  const shut = slotHealthByCode([
+    { bucket_code: "311", payload: { slots: THREE, slotsWithoutLow: ONE, eventType: ET }, computed_at: FRESH_ISO },
+  ], CLOSED_WED);
+  eq(shut.get("311")?.slotCountWithoutLow, 0, "the org's hours filter the second list too");
+}
+
 finish();

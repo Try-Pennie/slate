@@ -174,6 +174,12 @@ import {
   beyondOverflowNoticeText,
   BEYOND_OVERFLOW_WINDOW_HOURS,
 } from "@/lib/monitor/beyond-overflow";
+import {
+  topTierCascadeNoticeText,
+  topTierCascadeVerdict,
+  TOP_TIER_CASCADE_WINDOW_HOURS,
+  type TopTierCascadeWindow,
+} from "@/lib/monitor/top-tier-cascade";
 import { bookerUnstaffedAlert } from "@/lib/booking/alert-copy";
 import {
   formatPublicBookingStoppedAlert,
@@ -535,6 +541,19 @@ function beyondOverflowReportPreview(overflowed: number, beyondBooked: number): 
     );
   }
   return beyondOverflowNoticeText(verdict, BEYOND_OVERFLOW_WINDOW_HOURS);
+}
+
+/**
+ * One rendered top tier cascade report (#2843), through the real verdict for the
+ * same reason as the Beyond one above: a window the lane would refuse to report on
+ * throws here rather than rendering a sentence nobody will see.
+ */
+function topTierCascadeReportPreview(w: Omit<TopTierCascadeWindow, "windowHours">): string {
+  const verdict = topTierCascadeVerdict({ ...w, windowHours: TOP_TIER_CASCADE_WINDOW_HOURS });
+  if (verdict.kind !== "report") {
+    throw new Error(`top tier cascade preview fixture is not a reportable window (${verdict.kind})`);
+  }
+  return topTierCascadeNoticeText(verdict, TOP_TIER_CASCADE_WINDOW_HOURS);
 }
 
 /** A roster coverage gap fixture (#1936). Data only: the words come from the
@@ -3130,22 +3149,36 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     text: beyondOverflowReportPreview(1, 7),
   },
   {
+    key: "top_tier_cascade_rate",
+    state: "both top tiers cascaded",
+    channel: "info",
+    text: topTierCascadeReportPreview({ ultraBooked: 8, ultraCascaded: 3, veryHighBooked: 1, veryHighCascaded: 1 }),
+  },
+  {
+    key: "top_tier_cascade_rate",
+    state: "only Very High was booked",
+    channel: "info",
+    text: topTierCascadeReportPreview({ ultraBooked: 0, ultraCascaded: 0, veryHighBooked: 5, veryHighCascaded: 2 }),
+  },
+  // A High lead and below: an Ultra High or Very High cascade is counted daily
+  // above instead (#2843), so these fixtures are the tiers that still page.
+  {
     key: "tier_fallback:*",
     state: "a booking fell back one debt tier",
     channel: "alert",
-    text: tierFallbackAlert({ requestedCode: "411", effectiveCode: "311" })?.text ?? "",
+    text: tierFallbackAlert({ requestedCode: "311", effectiveCode: "211" })?.text ?? "",
   },
   {
     key: "tier_fallback:*",
     state: "the same, where the backend service changed as well",
     channel: "alert",
-    text: tierFallbackAlert({ requestedCode: "522", effectiveCode: "432" })?.text ?? "",
+    text: tierFallbackAlert({ requestedCode: "322", effectiveCode: "232" })?.text ?? "",
   },
   {
     key: "tier_fallback_deep:*",
     state: "a booking fell back several debt tiers",
     channel: "alert",
-    text: tierFallbackAlert({ requestedCode: "411", effectiveCode: "111" })?.text ?? "",
+    text: tierFallbackAlert({ requestedCode: "311", effectiveCode: "111" })?.text ?? "",
   },
   { key: "booker_unstaffed:*", state: "a customer opened a bucket with nobody in it", channel: "alert",
     text: bookerUnstaffedAlert("120") },
