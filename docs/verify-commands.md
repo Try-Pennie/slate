@@ -1310,7 +1310,7 @@ holds rather than reading them as "not yet". **The blind spot, stated so it is n
 assumed covered:** trypennie's confirmed page lookup is itself a server call, so a
 deployment holding the shared key and calling only from its server is invisible
 here and reads as the canary. Separating the two needs the canary on its own key
-(`BOOKING_API_KEY_CANARY`, #2824), after which any shared sighting is not the canary's.
+(`BOOKING_API_KEY_CANARY`, #2822), after which any shared sighting is not the canary's.
 
 A deliberately dropped check, so nobody adds it back by accident: a bookable agent
 sitting on the seeded default week is NOT reported. The seeded week is also a real
