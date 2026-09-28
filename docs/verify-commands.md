@@ -120,8 +120,9 @@ each concludes on every tick its read works.
 `monitorSetupGates` returns, so `tsc` names a new gate with no entry, and
 `scripts/test-detector-verdict-registry.ts` enumerates the same keys at runtime.
 Each entry is a lane (with a bound), a reasoned `exempt`, or a `pending` lane
-naming the issue that adds it; six checks are pending on #2798 because each
-swallows a failed read into a status that pages nothing. Checks that are NOT
+naming the issue that adds it. The six that swallowed a failed read into a status
+that paged nothing were given their lanes by #2798 (the list above), so none is
+pending today. Checks that are NOT
 gated, and detectors off the monitor lane, are outside that enumeration.
 
 # Proving the burst counter answers (`pnpm verify:burst-counter`)
