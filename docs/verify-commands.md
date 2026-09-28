@@ -1214,6 +1214,7 @@ and is pinned offline by `scripts/test-parallel-run-readiness.ts`.
 | 12 | **a real bucket has nobody to route to** |
 | 5 | **a bookable agent has no calendar row**, so they read as free all day |
 | 6 | a calendar is not hydrated to the booking horizon |
+| 17 | **trypennie's own key unproven while calls arrive on the shared key from its production site** (see below) |
 | 13 | **trypennie key never seen from production** (see below) |
 | 7 | an alert cooldown is stretched above its default |
 | 14 | **low volume alarms armed** and a real booking in 7 days carried no `source`, or a Low page has recorded none carrying its own (see below) |
@@ -1290,6 +1291,25 @@ names its host and still fails. What this accepts, deliberately: a trypennie
 developer calling with the production key from their own server satisfies it too.
 The same fact is shown on `/admin/booking-outcomes`, judged by the same function
 (`judgePartnerKey`, `src/lib/booking/caller-seen.ts`).
+
+**Exit 17, trypennie on the shared key (#2819).** With no trypennie row, "not
+deployed yet" and "deployed holding `BOOKING_API_KEY` instead of
+`BOOKING_API_KEY_TRYPENNIE`" read the same, and on 2026-09-28 nobody could say which
+key had been sent. So the run also reads the `shared` caller's rows. The table
+records only caller, host kind, origin, method and a last seen time, and the smoke
+canary holds the shared key and calls it from a server that names no host, so only
+one shared sighting is evidence about trypennie: one from a production origin
+inside the same 7 day bound. That is exit 17, with its own sentence ("calls are
+arriving on the shared key from <origin>, the latest <age>, so trypennie may hold the shared key instead
+of its own"), whatever trypennie's own key was last seen doing short of passing.
+Exit 13 then says which of two things it met: nothing at all on the shared key
+("nothing suggests trypennie has deployed"), or shared server calls, which cannot be
+told apart from the canary's, so the sentence says to confirm which key trypennie
+holds rather than reading them as "not yet". **The blind spot, stated so it is not
+assumed covered:** trypennie's confirmed page lookup is itself a server call, so a
+deployment holding the shared key and calling only from its server is invisible
+here and reads as the canary. Separating the two needs the canary on its own key
+(`BOOKING_API_KEY_CANARY`), after which any shared sighting is not the canary's.
 
 A deliberately dropped check, so nobody adds it back by accident: a bookable agent
 sitting on the seeded default week is NOT reported. The seeded week is also a real

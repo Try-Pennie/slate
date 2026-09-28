@@ -206,4 +206,51 @@ function row(host_kind: CallerSeenRow["host_kind"], agoMs: number, origin: strin
   eq(other.status, "never-seen", "another caller's row never answers for this one");
 }
 
+// --- #2819: trypennie on the SHARED key ------------------------------------------------
+//
+// With no trypennie row, "not deployed yet" and "deployed holding BOOKING_API_KEY
+// instead of its own" used to read the same. The canary also holds the shared key and
+// calls it from a server that names no host, so only a sighting that names a trypennie
+// production origin is evidence about trypennie; a server call on it is not.
+function shared(host_kind: CallerSeenRow["host_kind"], agoMs: number, origin: string | null = null): CallerSeenRow {
+  return { ...row(host_kind, agoMs, origin), caller: "shared" };
+}
+{
+  const onShared = judgePartnerKey("trypennie", [shared("production", DAY, "https://www.trypennie.com"), shared("unstated", 60_000)], NOW, MAX);
+  eq(onShared.status, "on-shared-key", "a production origin on the shared key, with no trypennie row, is its own outcome");
+  assert(/shared key/.test(onShared.detail) && /www\.trypennie\.com/.test(onShared.detail), `and names the key and the origin (got: ${onShared.detail})`);
+  assert(/may hold the shared key instead of its own/.test(onShared.detail), `and says what it suggests (got: ${onShared.detail})`);
+  assert(/never authenticated/.test(onShared.detail), `and still says trypennie's own key has not (got: ${onShared.detail})`);
+
+  // The canary alone: server calls on the shared key, no origin. Must NOT be read as
+  // trypennie, and must say it cannot tell rather than claiming nothing is arriving.
+  const canaryOnly = judgePartnerKey("trypennie", [shared("unstated", 60_000)], NOW, MAX);
+  eq(canaryOnly.status, "never-seen", "canary server calls on the shared key are not trypennie");
+  assert(!/may hold the shared key/.test(canaryOnly.detail), `and are not reported as trypennie on the shared key (got: ${canaryOnly.detail})`);
+  assert(/canary/.test(canaryOnly.detail), `and say a server call there cannot be told from the canary's (got: ${canaryOnly.detail})`);
+
+  // Nothing on either key: plain "not yet", in words distinct from the canary case.
+  const nothing = judgePartnerKey("trypennie", [], NOW, MAX);
+  assert(/nothing has authenticated on the shared key/.test(nothing.detail), `nothing on the shared key either says so (got: ${nothing.detail})`);
+  assert(nothing.detail !== canaryOnly.detail, "and reads differently from the canary only case");
+
+  // Localhost or a preview on the shared key names no trypennie production site.
+  const sharedLocal = judgePartnerKey("trypennie", [shared("localhost", DAY, "http://localhost:3000"), shared("other-host", DAY, "https://x.vercel.app")], NOW, MAX);
+  eq(sharedLocal.status, "never-seen", "a localhost or preview host on the shared key is not a trypennie production sighting");
+
+  const oldShared = judgePartnerKey("trypennie", [shared("production", MAX + DAY, "https://trypennie.com")], NOW, MAX);
+  eq(oldShared.status, "never-seen", "a production sighting on the shared key outside the window is not evidence of today");
+
+  // trypennie's own key tested locally, then deployed on the shared key.
+  const localThenShared = judgePartnerKey("trypennie", [row("localhost", DAY, "http://localhost:3000"), shared("production", DAY, "https://trypennie.com")], NOW, MAX);
+  eq(localThenShared.status, "on-shared-key", "its own key only on localhost plus the shared key from production is the shared key outcome");
+  assert(/localhost:3000/.test(localThenShared.detail), `and still names where its own key was seen (got: ${localThenShared.detail})`);
+
+  const provenAnyway = judgePartnerKey("trypennie", [row("unstated", DAY), shared("production", DAY, "https://trypennie.com")], NOW, MAX);
+  eq(provenAnyway.status, "proven", "its own key proven wins over any shared key sighting");
+
+  const selfJudged = judgePartnerKey("shared", [shared("production", DAY, "https://trypennie.com")], NOW, MAX);
+  eq(selfJudged.status, "proven", "judging the shared caller itself never reports it as on the shared key");
+}
+
 finish();

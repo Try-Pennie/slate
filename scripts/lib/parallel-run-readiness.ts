@@ -138,6 +138,7 @@ export type ReadinessFinding =
   | "parity-stale"
   | "bookable-pending"
   | "hours-unset"
+  | "partner-on-shared-key"
   | "partner-key-unproven"
   | "page-source-missing"
   | "holidays-uncovered"
@@ -172,6 +173,10 @@ export const READINESS_ORDER: readonly ReadinessFinding[] = [
   // Below every finding that stops a lead being BOOKED, above everything else: the
   // booking is made, and the lead lands on a not found page instead of their
   // confirmation, which is the first thing they see from us.
+  // #2819: calls on the SHARED key from trypennie's production site, with its own
+  // key unproven. The same lead harm as the finding beneath it, ranked just above
+  // it because it is the more specific diagnosis: the two never appear together.
+  "partner-on-shared-key",
   "partner-key-unproven",
   "alarm-muted",
   // Only ever present while the low volume alarms are armed (#2767). Just below a
@@ -211,6 +216,8 @@ export const READINESS_EXIT = {
   hoursUnset: 11,
   /** "trypennie key never seen from production" (#2717), in every one of its forms. */
   partnerKeyUnproven: 13,
+  /** trypennie's key unproven while calls arrive on the shared key from its production site (#2819). */
+  partnerOnSharedKey: 17,
   /** Low volume alarms armed and bookings recorded no source, or a Low page recorded none (#2767, #2796). */
   pageSourceMissing: 14,
   /** Low volume alarms armed and an upcoming federal holiday is undecided (#2767). */
@@ -231,6 +238,7 @@ const EXIT_FOR: Record<ReadinessFinding, number> = {
   "parity-stale": READINESS_EXIT.parityStale,
   "bookable-pending": READINESS_EXIT.bookablePending,
   "hours-unset": READINESS_EXIT.hoursUnset,
+  "partner-on-shared-key": READINESS_EXIT.partnerOnSharedKey,
   "partner-key-unproven": READINESS_EXIT.partnerKeyUnproven,
   "page-source-missing": READINESS_EXIT.pageSourceMissing,
   "holidays-uncovered": READINESS_EXIT.holidaysUncovered,
@@ -334,8 +342,13 @@ export function judgeReadiness(f: ReadinessFacts): ReadinessJudgement {
     // every way it fails, each in its own words (never seen, only localhost or a
     // private address, only another host, or not recently): the fix is the same
     // person asking the same partner, and the sentence says which question to ask.
+    //
+    // #2819: calls arriving on the SHARED key from trypennie's production site are
+    // their own exit, because the fix is a different key in their environment rather
+    // than a deploy, and "not yet" must not send somebody after the wrong one (L11).
     const v = judgePartnerKey(f.partnerKey.caller, f.partnerKey.rows, f.nowMs, PARTNER_KEY_MAX_AGE_DAYS * 86_400_000);
-    if (v.status !== "proven") findings.push({ kind: "partner-key-unproven", detail: v.detail });
+    if (v.status === "on-shared-key") findings.push({ kind: "partner-on-shared-key", detail: v.detail });
+    else if (v.status !== "proven") findings.push({ kind: "partner-key-unproven", detail: v.detail });
     else partnerProof = v.detail;
   }
 

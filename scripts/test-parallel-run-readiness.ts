@@ -121,6 +121,16 @@ function armed(over: Partial<LowVolumeArmingFacts> = {}): LowVolumeArmingFacts {
     ],
     ["an agent on hours nobody set", { unsetHours: ["cfrank@x", "jsaminu@x"] }, READINESS_EXIT.hoursUnset],
     ["trypennie's key never seen", { partnerKey: { caller: "trypennie", rows: [] } }, READINESS_EXIT.partnerKeyUnproven],
+    [
+      "trypennie calling on the shared key",
+      {
+        partnerKey: {
+          caller: "trypennie",
+          rows: [{ caller: "shared", host_kind: "production", last_seen_at: new Date(NOW - DAY).toISOString(), method: "GET", origin: "https://trypennie.com" }],
+        },
+      },
+      READINESS_EXIT.partnerOnSharedKey,
+    ],
   ];
   const seen = new Map<number, number>();
   for (const [what, over, expected] of cases) {
@@ -251,6 +261,21 @@ eq(
   const unread = judgeReadiness(healthy({ partnerKey: null }));
   eq(unread.exit, READINESS_EXIT.unreadable, "an unreadable sightings table vouches for nothing, and never reads as never seen");
   assert(/partner key/.test(unread.summary), `and names what it could not read (got: ${unread.summary})`);
+
+  // #2819: trypennie's calls arriving on the SHARED key is its own finding and exit,
+  // because the fix is a different key in their environment, not a deploy.
+  const sharedRow = (host_kind: CallerSeenRow["host_kind"], agoMs: number, origin: string | null): CallerSeenRow => ({ ...seen(host_kind, agoMs, origin), caller: "shared" });
+  const onShared = judgeReadiness(healthy({ partnerKey: { caller: "trypennie", rows: [sharedRow("production", DAY, "https://trypennie.com"), sharedRow("unstated", 60_000, null)] } }));
+  eq(onShared.exit, READINESS_EXIT.partnerOnSharedKey, "trypennie calling on the shared key exits on its own code");
+  assert(onShared.findings.some((f) => f.kind === "partner-on-shared-key"), "as its own finding");
+  assert(!onShared.findings.some((f) => f.kind === "partner-key-unproven"), "and not also as never seen");
+  assert(/may hold the shared key instead of its own/.test(onShared.summary), `and says so (got: ${onShared.summary})`);
+  const canaryOnly = judgeReadiness(healthy({ partnerKey: { caller: "trypennie", rows: [sharedRow("unstated", 60_000, null)] } }));
+  eq(canaryOnly.exit, READINESS_EXIT.partnerKeyUnproven, "the canary alone on the shared key is still never seen, not trypennie");
+  assert(!/may hold the shared key/.test(canaryOnly.summary), `and is not read as trypennie (got: ${canaryOnly.summary})`);
+  assert(canaryOnly.findings[0].detail !== never.findings[0].detail, "and reads differently from nothing on either key");
+  const onSharedWorse = judgeReadiness(healthy({ partnerKey: { caller: "trypennie", rows: [sharedRow("production", DAY, "https://trypennie.com")] }, emptyBuckets: { realBuckets: 60, empty: ["120"] } }));
+  eq(onSharedWorse.exit, READINESS_EXIT.bucketEmpty, "an empty bucket still outranks the shared key finding");
 
   const worse = judgeReadiness(healthy({ partnerKey: { caller: "trypennie", rows: [] }, emptyBuckets: { realBuckets: 60, empty: ["120"] } }));
   eq(worse.exit, READINESS_EXIT.bucketEmpty, "a bucket with nobody in it outranks the partner key");

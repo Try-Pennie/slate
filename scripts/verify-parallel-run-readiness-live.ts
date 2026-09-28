@@ -27,7 +27,7 @@ const { loadBookingHorizonDays } = await import("@/lib/booking/settings");
 const { agentsOnUnsetHours } = await import("@/lib/monitor/unset-hours");
 const { loadTierAgentCounts } = await import("@/lib/monitor/tier-staffing-load");
 const { DEBT_TIER } = await import("@/lib/xbc");
-const { CALLER_HOST_KINDS } = await import("@/lib/booking/caller-seen");
+const { CALLER_HOST_KINDS, SHARED_CALLER } = await import("@/lib/booking/caller-seen");
 type CallerSeenRow = import("@/lib/booking/caller-seen").CallerSeenRow;
 const { judgeReadiness } = await import("./lib/parallel-run-readiness.ts");
 type ReadinessFacts = import("./lib/parallel-run-readiness.ts").ReadinessFacts;
@@ -194,15 +194,17 @@ const unsetHours = await section("hours sources", async () => {
   }).map((a) => a.email ?? a.id);
 });
 
-// #2717: which hosts trypennie's key has authenticated from. At most one row per
-// host kind, so the limit bounds a read that can never be long.
+// #2717: which hosts trypennie's key has authenticated from, and (#2819) the shared
+// key's, so a trypennie deployment holding the shared key is told from one not made
+// yet. At most one row per caller and host kind, so the limit bounds a read that can
+// never be long.
 const partnerKey = await section("partner key sightings", async () => {
   const rows = (unwrap(
     await db
       .from("api_caller_seen")
       .select("caller, host_kind, last_seen_at, method, origin")
-      .eq("caller", "trypennie")
-      .limit(CALLER_HOST_KINDS.length),
+      .in("caller", ["trypennie", SHARED_CALLER])
+      .limit(2 * CALLER_HOST_KINDS.length),
     "api_caller_seen",
   ) ?? []) as CallerSeenRow[];
   return { caller: "trypennie", rows };

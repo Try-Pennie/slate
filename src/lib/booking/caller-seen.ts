@@ -149,7 +149,13 @@ export function makeCallerSeenRecorder(deps: CallerSeenDeps) {
   };
 }
 
-export type PartnerKeyStatus = "proven" | "never-seen" | "not-from-production" | "stale";
+/**
+ * The caller the shared `BOOKING_API_KEY` authenticates as (#2645). The smoke canary
+ * holds it too, which is what makes a sighting on it hard to read (#2819).
+ */
+export const SHARED_CALLER = "shared";
+
+export type PartnerKeyStatus = "proven" | "never-seen" | "not-from-production" | "stale" | "on-shared-key";
 
 export interface PartnerKeyVerdict {
   status: PartnerKeyStatus;
@@ -166,6 +172,15 @@ function ageDays(ms: number): string {
   return days === 1 ? "1 day ago" : `${days} days ago`;
 }
 
+type SeenAt = CallerSeenRow & { ms: number };
+
+function readable(rows: readonly CallerSeenRow[], caller: string): SeenAt[] {
+  return rows
+    .filter((r) => r.caller === caller)
+    .map((r) => ({ ...r, ms: Date.parse(r.last_seen_at) }))
+    .filter((r) => Number.isFinite(r.ms));
+}
+
 /**
  * Has this caller's key authenticated from their deployment recently? The one judge,
  * read by `pnpm verify:parallel-run-readiness` and the admin console, so the two
@@ -175,6 +190,21 @@ function ageDays(ms: number): string {
  * that named no host, a production host first. Localhost or a private address alone,
  * another host alone, and a sighting of either passing kind that is too old all fail,
  * each in its own sentence.
+ *
+ * THE SHARED KEY (#2819). When the caller's own key is not proven, `rows` may also
+ * carry the `shared` caller's rows, and they separate "not deployed yet" from
+ * "deployed holding `BOOKING_API_KEY` instead of its own". What `api_caller_seen`
+ * records is only caller, host kind, origin, method and a last seen time, and the
+ * smoke canary calls the shared key from a server that names no host, refreshing
+ * that row every half hour. So:
+ *   - a recent shared sighting from a PRODUCTION origin is evidence about the
+ *     partner, because the canary never names a host: `on-shared-key`;
+ *   - a shared server call is NOT, because it cannot be told apart from the canary's,
+ *     and the sentence says so rather than reading silence as "not deployed";
+ *   - no recent shared sighting at all is the plain "nothing suggests it has
+ *     deployed".
+ * The production origins are trypennie's (`PRODUCTION_ORIGINS`), which is the only
+ * partner this gates.
  */
 export function judgePartnerKey(
   caller: string,
@@ -182,10 +212,7 @@ export function judgePartnerKey(
   nowMs: number,
   maxAgeMs: number,
 ): PartnerKeyVerdict {
-  const mine = rows
-    .filter((r) => r.caller === caller)
-    .map((r) => ({ ...r, ms: Date.parse(r.last_seen_at) }))
-    .filter((r) => Number.isFinite(r.ms));
+  const mine = readable(rows, caller);
   const bound = `${Math.round(maxAgeMs / 86_400_000)} day`;
   const prod = mine.find((r) => r.host_kind === "production");
   const server = mine.find((r) => r.host_kind === "unstated");
@@ -204,26 +231,56 @@ export function judgePartnerKey(
       detail: `${caller}'s key last authenticated from a server call that named no host ${ageDays(nowMs - server.ms)}, taken as their deployment`,
     };
   }
+
+  // What the caller's own key did, as a clause, and the sentence it ends in when the
+  // shared key says nothing about it.
+  let status: "never-seen" | "not-from-production" | "stale";
+  let ownFact: string;
+  let alone: string;
   const passing = [prod, server].filter((r): r is NonNullable<typeof r> => r !== undefined).sort((a, b) => b.ms - a.ms)[0];
   if (passing) {
     const from = passing.host_kind === "production" ? `their production site (${passing.origin ?? "address unreadable"})` : "a server call that named no host";
+    status = "stale";
+    ownFact = `${caller}'s key last authenticated from ${from} ${ageDays(nowMs - passing.ms)}, outside the ${bound} bound`;
+    alone = `${ownFact}, so a rotation since then is not proven`;
+  } else if (mine.length === 0) {
+    status = "never-seen";
+    ownFact = `${caller}'s key has never authenticated`;
+    alone = `${ownFact}, so it is not known to be in their production environment`;
+  } else {
+    const hosts = (kind: CallerHostKind) =>
+      [...new Set(mine.filter((r) => r.host_kind === kind).map((r) => r.origin).filter((o): o is string => !!o))].join(", ");
+    const seen: string[] = [];
+    if (mine.some((r) => r.host_kind === "localhost")) seen.push(`localhost or a private address (${hosts("localhost") || "address unreadable"})`);
+    if (mine.some((r) => r.host_kind === "other-host")) seen.push(`another host (${hosts("other-host") || "address unreadable"})`);
+    status = "not-from-production";
+    ownFact = `${caller}'s key has authenticated only from ${seen.join(" and from ")}`;
+    alone = `${ownFact}, never from their production site or their server`;
+  }
+
+  if (caller === SHARED_CALLER) return { status, via: null, detail: alone };
+  const shared = readable(rows, SHARED_CALLER).filter((r) => recent(r));
+  const sharedProd = shared
+    .filter((r) => r.host_kind === "production" && r.origin !== null && PRODUCTION_ORIGINS.includes(r.origin))
+    .sort((a, b) => b.ms - a.ms)[0];
+  if (sharedProd) {
     return {
-      status: "stale",
+      status: "on-shared-key",
       via: null,
-      detail: `${caller}'s key last authenticated from ${from} ${ageDays(nowMs - passing.ms)}, outside the ${bound} bound, so a rotation since then is not proven`,
+      detail: `${ownFact}, but calls are arriving on the shared key from ${sharedProd.origin}, the latest ${ageDays(nowMs - sharedProd.ms)}, so ${caller} may hold the shared key instead of its own`,
     };
   }
-  if (mine.length === 0) {
-    return { status: "never-seen", via: null, detail: `${caller}'s key has never authenticated, so it is not known to be in their production environment` };
+  if (status !== "never-seen") return { status, via: null, detail: alone };
+  if (shared.length === 0) {
+    return {
+      status,
+      via: null,
+      detail: `${ownFact} and nothing has authenticated on the shared key inside the ${bound} bound either, so nothing suggests ${caller} has deployed`,
+    };
   }
-  const hosts = (kind: CallerHostKind) =>
-    [...new Set(mine.filter((r) => r.host_kind === kind).map((r) => r.origin).filter((o): o is string => !!o))].join(", ");
-  const seen: string[] = [];
-  if (mine.some((r) => r.host_kind === "localhost")) seen.push(`localhost or a private address (${hosts("localhost") || "address unreadable"})`);
-  if (mine.some((r) => r.host_kind === "other-host")) seen.push(`another host (${hosts("other-host") || "address unreadable"})`);
   return {
-    status: "not-from-production",
+    status,
     via: null,
-    detail: `${caller}'s key has authenticated only from ${seen.join(" and from ")}, never from their production site or their server`,
+    detail: `${ownFact}, and nothing on the shared key came from ${caller}'s production site; a server call on the shared key cannot be told apart from the smoke canary's, so if ${caller} has deployed, confirm which key it holds`,
   };
 }
