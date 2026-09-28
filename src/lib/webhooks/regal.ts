@@ -177,6 +177,13 @@ export function buildRegalEvent(
       slateRequestedTier: routing.requested_tier,
       slateBookedTier: routing.booked_tier,
       slateRungsDropped: routing.rungs_dropped,
+      // #2073: true when the lead booked through their advisor's own named link
+      // rather than being routed. Such a booking carries no routing (every field
+      // above reads as "nothing unusual"), and its bucketCode is only where the
+      // booking is stored, so a journey that reasons about routing or tiers should
+      // branch on this. False on a stored payload that predates the field, which
+      // was always routed.
+      slateAgentLink: p.booking_kind === "agent_link",
     },
     traits: {},
   };

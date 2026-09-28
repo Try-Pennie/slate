@@ -26,6 +26,9 @@ export async function loadRecentBookingsInBuckets(
       // design target, about 2,300 bytes of uuids against the 10,000 budget.
       .in("bucket_id", bucketIds)
       .in("status", ACTIVE_BOOKING_STATUSES)
+      // #2073: the check is about which HOST PAGES route leads into the buckets,
+      // and an agent's own link is Slate's own page and routes nothing.
+      .eq("kind", "routed")
       .gte("created_at", sinceIso)
       .order("id")
       .range(from, to) as unknown as PromiseLike<{

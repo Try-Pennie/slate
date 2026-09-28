@@ -11,7 +11,7 @@ import {
 } from "@/lib/auth/roles";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { isActive } from "@/lib/active-user";
-import { consoleHiddenFor } from "@/lib/env";
+import { appUrl, consoleHiddenFor } from "@/lib/env";
 import {
   setUserRole,
   setBookable,
@@ -19,7 +19,13 @@ import {
   setWorkingHours,
   useDefaultHours,
   setUserLifecycle,
+  replaceAgentBookingLink,
 } from "@/app/admin/actions";
+import { DestructiveConfirm } from "@/components/ui/DestructiveConfirm";
+import { CopyLinkField } from "@/components/ui/CopyLinkField";
+import { UnreadableNotice } from "@/components/ui/UnreadableNotice";
+import { loadAgentLinkToken } from "@/lib/agent-link/store";
+import { agentLinkUrl } from "@/lib/agent-link/link";
 import BulkReassignCoverage from "@/components/BulkReassignCoverage";
 import { backendServiceOf, teamsOf } from "@/lib/admin/agent-display";
 import { debtTeamCoverage, debtTeamValueText } from "@/lib/admin/debt-team";
@@ -180,6 +186,22 @@ export default async function AgentProfilePage({
   // reads of the same question could disagree with each other on the same page.
   // Only needed when the controls actually render.
   const heldUpcoming = canManageThisAgent ? await upcomingBookingCount(agent.id) : null;
+
+  // #2073: the agent's own booking link, for admins only. A failed read is its
+  // own state: drawn as "no link yet" it would offer to CREATE one, which replaces
+  // a link the agent may already be sending.
+  let bookingLink: { kind: "link"; url: string } | { kind: "none" } | { kind: "unreadable" } = {
+    kind: "none",
+  };
+  if (isAdmin) {
+    try {
+      const token = await loadAgentLinkToken(agent.id);
+      bookingLink = token ? { kind: "link", url: agentLinkUrl(appUrl(), token) } : { kind: "none" };
+    } catch (err) {
+      log.error("agent-link", { msg: "could not read an agent's booking link", user_id: agent.id }, err);
+      bookingLink = { kind: "unreadable" };
+    }
+  }
 
   const [schedRes, usersRes, orgRes] = await Promise.all([
     db
@@ -477,6 +499,55 @@ export default async function AgentProfilePage({
             </SaveForm>
           )}
         </section>
+
+        {/* #2073: the agent's own booking link, which books them directly with no
+            routing. Admin only, because replacing it is the one way to stop a
+            link that has leaked. */}
+        {isAdmin && (
+          <section className={cardCls}>
+            <p className="pn-eyebrow text-fg-muted">Booking link</p>
+            {savedOutcome(query?.ok) === "agent-booking-link" ? (
+              <div className="mt-3">
+                <SettingsSaveNotice ok saved={savedSentence("agent-booking-link") ?? ""} />
+              </div>
+            ) : null}
+            {bookingLink.kind === "unreadable" ? (
+              <UnreadableNotice className="mt-3">
+                This booking link could not be read just now, so it is not shown and
+                cannot be replaced from here. The link itself still works. Reload to
+                try again.
+              </UnreadableNotice>
+            ) : (
+              <div className="mt-3 space-y-4">
+                {bookingLink.kind === "link" ? (
+                  <CopyLinkField label="Link" url={bookingLink.url} />
+                ) : (
+                  <p className={`text-sm text-fg-muted ${proseCls}`}>
+                    {agent.name ?? agent.email} has no booking link yet.
+                  </p>
+                )}
+                <DestructiveConfirm
+                  openLabel={bookingLink.kind === "link" ? "Replace link" : "Create link"}
+                  question={
+                    bookingLink.kind === "link"
+                      ? `Replace ${agent.name ?? agent.email}'s booking link?`
+                      : `Create a booking link for ${agent.name ?? agent.email}?`
+                  }
+                  consequence={
+                    bookingLink.kind === "link"
+                      ? "The link they have been sending stops working at once, and anyone who opens it is told this advisor is not taking bookings through it. They will see the new link on their own page."
+                      : "They will see it on their own page, and any lead they send it to can book them directly."
+                  }
+                  dismissLabel={bookingLink.kind === "link" ? "Keep this link" : "Not now"}
+                  confirmLabel={bookingLink.kind === "link" ? "Replace link" : "Create link"}
+                  pendingLabel={bookingLink.kind === "link" ? "Replacing link" : "Creating link"}
+                  action={replaceAgentBookingLink}
+                  hidden={<input type="hidden" name="user_id" value={agent.id} />}
+                />
+              </div>
+            )}
+          </section>
+        )}
 
         {/* Working hours */}
         <section className={cardCls}>

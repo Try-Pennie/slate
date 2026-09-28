@@ -78,6 +78,7 @@ import { acquireLock } from "@/lib/locks";
 import { recordAudit, type AuditAction } from "@/lib/audit";
 import { parseIgnoreAdd, personLabel, type IgnoreRosterUser } from "@/lib/admin/regal-call-ignores";
 import { impersonationErrorUrl } from "@/lib/admin/imp-error-url";
+import { replaceAgentLinkToken } from "@/lib/agent-link/store";
 import { isActive } from "@/lib/active-user";
 import {
   parseMonitorSettingsForm,
@@ -1696,6 +1697,47 @@ export async function endDroppedImpersonation(
       details: { reason },
     });
   }
+}
+
+/**
+ * Admin-only (#2073): replace an agent's own booking link. The old link stops
+ * working at once and reads, to anybody who opens it, exactly like a link that
+ * never existed. Scoped to the admin's own org. THROWS on a refused write, before
+ * the audit entry and the saved notice, so a replacement that did not happen is
+ * never reported (the page's `?error=` notice belongs to the working hours card).
+ */
+export async function replaceAgentBookingLink(form: FormData): Promise<void> {
+  const admin = await requireAdmin();
+  const userId = String(form.get("user_id") ?? "");
+  // throw-ok: only reachable by a request no screen sends, since the form carries the id
+  if (!userId) throw new Error("Not authorized");
+  const target = unwrap(
+    await supabaseAdmin()
+      .from("users")
+      .select("id")
+      .eq("id", userId)
+      .eq("org_id", admin.org_id)
+      .maybeSingle(),
+    "booking link target",
+  );
+  // throw-ok: only reachable by an id outside the admin's own org, which no screen offers
+  if (!target) throw new Error("Not authorized");
+  try {
+    await replaceAgentLinkToken(userId, admin.id);
+  } catch (err) {
+    log.error("admin-actions", { msg: "booking link replace refused", user_id: userId }, err);
+    throw new Error(`The new booking link could not be saved, so the old one still works: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  // Who and when, never the token: a token in the trail is a working link in it.
+  await recordAudit({
+    orgId: admin.org_id,
+    actorId: admin.id,
+    action: "agent.booking_link_replaced",
+    targetUserId: userId,
+  });
+  revalidatePath(`/admin/agents/${userId}`);
+  revalidatePath("/me/my-availability");
+  redirect(`/admin/agents/${userId}${savedQuery("agent-booking-link")}`);
 }
 
 /** Admin-only: set the OOO Google calendar approval events land on (manager rows). */

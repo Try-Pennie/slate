@@ -37,6 +37,9 @@ export async function loadUpcomingBookingsInBuckets(
       .select("id, bucket_id, starts_at, salesforce_id, external_id, agent_name, agent_email, prefill, referrer_origin")
       .in("bucket_id", bucketIds)
       .in("status", ACTIVE_BOOKING_STATUSES)
+      // #2073: a booking through an agent's own link was booked with the agent the
+      // lead already has, not routed below their tier.
+      .eq("kind", "routed")
       .gte("starts_at", nowIso)
       .order("id")
       .range(from, to) as unknown as PromiseLike<{

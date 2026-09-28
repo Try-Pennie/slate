@@ -354,6 +354,8 @@ export function makeDeps(opts: FakeOpts) {
        * naming nobody.
        */
       previousAgentEmail: string | null | undefined;
+      /** #2073: whether the booking was routed or booked through a named link. */
+      bookingKind: string | undefined;
     }[],
     bookingEvents: [] as {
       booking_id: string;
@@ -379,6 +381,10 @@ export function makeDeps(opts: FakeOpts) {
     // assert the outcome + payload directly instead of via a log line.
     recordRoutingDecision: [] as RecordRoutingDecisionInput[],
     roundRobinPreview: [] as (boolean | undefined)[],
+    /** #2073: the one agent each candidate read was narrowed to, undefined for a pool. */
+    roundRobinOnly: [] as (string | undefined)[],
+    /** Every idempotency key the create path looked up. */
+    idempotencyLookups: [] as string[],
     queryBookings: [] as unknown[],
     // #2657: which fetch a path used, and what it asked for. The lookup API asks
     // by strong id against either column; the dedupe path asks by identity, column
@@ -514,8 +520,15 @@ export function makeDeps(opts: FakeOpts) {
             bucket: opts.testBucket ? ({ ...bucket, is_test: true } as Bucket) : bucket,
             eventType,
           },
-    roundRobinCandidates: async (_b, _e, _ms, preview) => {
+    roundRobinCandidates: async (_b, _e, _ms, preview, onlyUserId) => {
       calls.roundRobinPreview.push(preview);
+      calls.roundRobinOnly.push(onlyUserId);
+      // #2073: a named link narrows the read to one agent, so the fake narrows the
+      // free list the same way. The pool size is then that agent alone.
+      if (onlyUserId !== undefined) {
+        const narrowed = (opts.candidates ?? ["a"]).filter((id) => id === onlyUserId);
+        return { candidates: narrowed, memberCount: opts.memberCount ?? 1 };
+      }
       const candidates = opts.candidates ?? ["a"];
       // #1300: the pool SIZE, which is what tells an empty bucket (pages) apart
       // from a bucket whose people are simply off shift (must not page). Defaults
@@ -706,8 +719,8 @@ export function makeDeps(opts: FakeOpts) {
     // Before any insert: idempotency pre-check (existingByKey). After an insert
     // conflict: the key-winner lookup (conflictWinner). Lets one fake model the
     // "nobody yet → race → winner found" sequence.
-    findBookingByIdempotencyKey: async () =>
-      (insertAttempted ? opts.conflictWinner : opts.existingByKey) ?? null,
+    findBookingByIdempotencyKey: async (key) =>
+      (calls.idempotencyLookups.push(key), insertAttempted ? opts.conflictWinner : opts.existingByKey) ?? null,
     insertBooking: async (row) => {
       insertAttempted = true;
       calls.insertBooking.push(row as unknown as Record<string, unknown>);
@@ -1011,6 +1024,7 @@ export function makeDeps(opts: FakeOpts) {
         // a payload built before the correction from one built after it.
         attendee: payload.attendee,
         previousAgentEmail: payload.previous_agent_email,
+        bookingKind: (payload as { booking_kind?: string }).booking_kind,
       });
     },
     newManageToken: () => "tok-fixed",

@@ -5,6 +5,7 @@
  */
 import type {
   AgentCalendar,
+  AgentLink,
   AlertState,
   ApiCallerSeen,
   AuditEntry,
@@ -91,6 +92,7 @@ export interface Database {
         ]
       >;
       bucket_members: Table<BucketMember>;
+      agent_links: Table<AgentLink>;
       availability_schedules: Table<AvailabilitySchedule>;
       availability_rules: Table<
         AvailabilityRule,

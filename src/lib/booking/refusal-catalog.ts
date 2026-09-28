@@ -348,6 +348,34 @@ export const REFUSAL_CATALOG: RefusalPath[] = [
     rateSignal: { kind: "covered" },
     why: "An unexpected fault is never ordinary; the share is the signal that it is happening at all.",
   },
+  {
+    id: "agent_link_unavailable",
+    surface: "embed booker",
+    outcome: "404 AGENT_LINK_UNAVAILABLE, told this advisor is not taking bookings through this link",
+    counting: { kind: "none" },
+    rateSignal: { kind: "none" },
+    why:
+      "An agent's own booking link (#2073) that books nobody: a token that never existed, one " +
+      "an admin replaced, an advisor who has left or is not bookable. Deliberately uncounted, " +
+      "like every other part of a named link confirm, because the tally is what the routed " +
+      "failure share and the per bucket error mix are judged from and a named link does not " +
+      "route; counting it would also let a token prober move a lead facing rate. The cause is " +
+      "logged under tag=agent-link, never the token, and the one sentence for every cause is " +
+      "what keeps the answer from saying whether a token was ever real.",
+  },
+  {
+    id: "agent_link_unreadable",
+    surface: "embed booker",
+    outcome: "500, a generic failure, when the link's token could not be read",
+    counting: { kind: "none" },
+    rateSignal: { kind: "none" },
+    why:
+      "The read behind an agent's own booking link (#2073) failed, which is a fault rather " +
+      "than a refusal: answering it with the not taking bookings sentence would tell a lead " +
+      "with a good link that their advisor is unavailable. It goes through " +
+      "internalErrorResponse, whose per route alert is the signal, and is kept out of the " +
+      "routed tally for the same reason as the refusal above.",
+  },
 
   // --- the direct booking API (#253/#250), where a bot books for a lead ----
   {

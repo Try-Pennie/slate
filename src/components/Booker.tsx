@@ -63,6 +63,7 @@ import {
   descriptionParagraphs,
   phonePrefillNotice,
   allTimesTaken,
+  AGENT_LINK_COPY,
   noAdvisorsAvailable,
   closedNoReopenDate,
   closedUntil,
@@ -197,6 +198,13 @@ import { MarkedLabel } from "@/components/ui/MarkedLabel";
 
 interface BookerProps {
   bucketCode: string;
+  /**
+   * The token of an agent's own booking link (#2073), when the booker is drawn
+   * for one. The times then come from that one agent (`/api/availability?advisor=`)
+   * and the confirm names the link instead of a bucket, so `bucketCode` is empty
+   * and never sent. Null or absent on every routed page.
+   */
+  agentLinkToken?: string | null;
   /**
    * The `xbc` exactly as it arrived, which is NOT always `bucketCode`: a blank or
    * unreadable one is routed to the Low pool (#1908) and this is the only record
@@ -345,6 +353,7 @@ const PALETTE = {
 
 export default function Booker({
   bucketCode,
+  agentLinkToken = null,
   requestedCode,
   salesforceId,
   landingCall,
@@ -590,8 +599,12 @@ export default function Booker({
   const availabilityUrl = useMemo(() => {
     const from = today.toUTC().toISO();
     const to = today.plus({ days: horizonDays }).toUTC().toISO();
-    return `/api/availability?bucket=${encodeURIComponent(bucketCode)}&from=${encodeURIComponent(from!)}&to=${encodeURIComponent(to!)}`;
-  }, [bucketCode, today, horizonDays]);
+    // #2073: an agent's own link reads that one agent's times, never a pool's.
+    const subject = agentLinkToken
+      ? `advisor=${encodeURIComponent(agentLinkToken)}`
+      : `bucket=${encodeURIComponent(bucketCode)}`;
+    return `/api/availability?${subject}&from=${encodeURIComponent(from!)}&to=${encodeURIComponent(to!)}`;
+  }, [agentLinkToken, bucketCode, today, horizonDays]);
 
   // The shared picker (#1336) owns the fetch, the abort + supersession guard
   // (#629), the day grouping in the viewer's zone, the chosen day and the
@@ -785,8 +798,9 @@ export default function Booker({
       }>(
         "/booking",
         {
-          bucketCode,
-          requestedCode,
+          // #2073: an agent's own link names the link, and the server decides
+          // which bucket the booking is stored in; a routed page names its bucket.
+          ...(agentLinkToken ? { agentLinkToken } : { bucketCode, requestedCode }),
           start: selectedSlot,
           timezone: zone,
           salesforceId,
@@ -1744,7 +1758,10 @@ export default function Booker({
         emptyCause === "unstaffed"
         ? noAdvisorsAvailable()
         : emptyCause === "busy"
-          ? allTimesTaken()
+          ? // #2073: one named advisor, so it names them rather than "all times".
+            agentLinkToken
+            ? AGENT_LINK_COPY.noTimes
+            : allTimesTaken()
           : UNCLASSIFIED_EMPTY_NOTICE;
 
   // Dan, 2026-08-12: the far ahead search is offered for a CLOSURE only. A week
@@ -1839,7 +1856,9 @@ export default function Booker({
           {UNCLASSIFIED_EMPTY_RETRY}
         </BookerButton>
       )}
-      {isClosure && nextDaySlots === null && (
+      {/* #2073: not on an agent's own link. The far ahead search walks a
+          bucket's pool, so on a named link it would offer another agent's days. */}
+      {isClosure && !agentLinkToken && nextDaySlots === null && (
         <>
           {nextPassRefusal !== null ? (
             <p role="alert" className="text-sm text-[var(--error)]">

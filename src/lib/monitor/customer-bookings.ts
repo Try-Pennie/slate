@@ -32,6 +32,10 @@ export async function countCustomerBookingsSince(
     .from("bookings")
     .select("*, buckets!inner(is_test)", { count: "exact", head: true })
     .eq("buckets.is_test", false)
+    // #2073: routed bookings only. A booking through an agent's own link is a
+    // later call with a lead the funnel already sent, so counting it would hold
+    // the alarm quiet while customers stopped arriving.
+    .eq("kind", "routed")
     .gte("created_at", sinceIso);
   if (error) {
     log.error("monitor", { msg: "booking volume count read failed", since: sinceIso }, error);
@@ -65,6 +69,8 @@ export async function listCustomerBookingSourcesSince(
     .from("bookings")
     .select("created_at, source, buckets!inner(is_test)")
     .eq("buckets.is_test", false)
+    // #2073: routed bookings only, as the count above.
+    .eq("kind", "routed")
     .gte("created_at", sinceIso)
     .limit(SOURCE_READ_LIMIT);
   if (error) {
@@ -98,6 +104,8 @@ export async function customerBookingFromSourcesSince(
     .from("bookings")
     .select("id, buckets!inner(is_test)")
     .eq("buckets.is_test", false)
+    // #2073: routed bookings only, as the count above.
+    .eq("kind", "routed")
     .in("source", [...sources])
     .gte("created_at", sinceIso)
     .limit(1);
@@ -129,6 +137,9 @@ export async function measurePageSources(
     .from("bookings")
     .select("id, buckets!inner(is_test)", { count: "exact", head: true })
     .eq("buckets.is_test", false)
+    // #2073: routed bookings only. An agent's own link carries no page source, so
+    // counting its bookings would read as landing pages dropping theirs.
+    .eq("kind", "routed")
     .or(["source.is.null", ...UNSOURCED_VALUES.map((v) => `source.eq.${v}`)].join(","))
     .gte("created_at", sinceIso);
   if (error || unsourced === null) {

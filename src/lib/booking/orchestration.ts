@@ -601,6 +601,18 @@ export interface CreateBookingInput {
    * break if the create underneath it started declining.
    */
   refuseIfPersonHasCall?: boolean;
+  /**
+   * #2073: book THIS agent through their own named link, rather than routing. Set
+   * only by the booker's confirm, after the link's token resolved to a bookable
+   * agent. `bucketCode` is then the bucket the booking is stored in (the agent's
+   * own, see `chooseAgentLinkBucket`), never one to route through: no tier
+   * ladder, no other agent, no Salesforce code lookup, no routing decision logged.
+   * It also switches OFF the one call per person rule whatever
+   * `refuseIfPersonHasCall` says, because a later call with a lead who already has
+   * one is the exception that rule exists to allow. Every availability gate and
+   * verify on book still run, for this one agent.
+   */
+  agentLinkUserId?: string;
 }
 
 export interface BookingResult {
@@ -746,6 +758,13 @@ export interface BookingDeps {
     eventType: EventType,
     startMs: number,
     preview?: boolean,
+    /**
+     * #2073: narrow the read to this one agent, for a booking made through their
+     * own named link. The same gates run (the org's hours, the agent's hours,
+     * their calendar, the daily cap), for them alone; the pool size is then
+     * theirs alone too. Undefined for every routed booking.
+     */
+    onlyUserId?: string,
   ): Promise<{ candidates: string[]; memberCount: number }>;
   /**
    * The ORG's opening hours (#1295, gate 1). Used by the two paths in this module
@@ -1547,12 +1566,14 @@ async function assignAgent(
   startIso: string,
   endIso: string,
   preview = false,
+  onlyUserId?: string,
 ): Promise<AssignResult & { candidates: string[] }> {
   const { candidates, memberCount } = await deps.roundRobinCandidates(
     bucket,
     eventType,
     Date.parse(startIso),
     preview,
+    onlyUserId,
   );
 
   const { assignment, anyUnverified } = await selectAgent(
@@ -1647,6 +1668,47 @@ async function assignAgentWithTierFallback(
 }
 
 /**
+ * Assign the ONE agent a named link books (#2073), through the same `assignAgent`
+ * the pool uses, narrowed to them: the same candidate predicate (every
+ * availability gate) and the same verify on book, with nothing to fall back to.
+ *
+ * `NoEligibleAgentsError` is a pool with nobody in it, which pages as a
+ * misconfigured bucket. For one named agent it only means they have nothing to
+ * offer at that time, which is the same instruction as a taken slot.
+ */
+async function assignNamedAgent(
+  deps: BookingDeps,
+  resolved: { bucket: Bucket; eventType: EventType },
+  startInstantIso: string,
+  agentUserId: string,
+): Promise<TierAssignResult> {
+  const { startIso, endIso } = bookingWindow(startInstantIso, resolved.eventType.duration_min);
+  let assigned: AssignResult & { candidates: string[] };
+  try {
+    assigned = await assignAgent(deps, resolved.bucket, resolved.eventType, startIso, endIso, false, agentUserId);
+  } catch (err) {
+    if (err instanceof NoEligibleAgentsError) throw new SlotUnavailableError();
+    throw err;
+  }
+  // The candidate read was narrowed to this agent, so anybody else here is a
+  // fault in that read. Refused rather than booked: booking somebody the link
+  // does not name is the one outcome this path must never produce (L75).
+  if (assigned.userId !== agentUserId) {
+    throw new Error("named link assignment returned an agent the link does not name");
+  }
+  return {
+    bucket: resolved.bucket,
+    eventType: resolved.eventType,
+    startIso,
+    endIso,
+    userId: assigned.userId,
+    email: assigned.email,
+    candidates: assigned.candidates,
+    rungsDropped: 0,
+  };
+}
+
+/**
  * What a webhook says beyond the booking itself. An object rather than more
  * positional arguments: `bookingEventId` and `previousAgentEmail` are both
  * `string | null`, so as positions they would be silently transposable at every
@@ -1695,6 +1757,8 @@ function webhookPayload(
     reason,
     previous_agent_email: previousAgentEmail,
     routing: routingMetaFromTrace(booking.routing_trace),
+    // #2073: absent on a row read before the column existed, which was routed.
+    booking_kind: booking.kind ?? "routed",
   };
 }
 
@@ -2452,8 +2516,12 @@ async function findExistingCall(
  * key, that is stable across every retry of the same submit.
  */
 export function idempotencyCodeFor(
-  input: Pick<CreateBookingInput, "bucketCode" | "requestedCode">,
+  input: Pick<CreateBookingInput, "bucketCode" | "requestedCode" | "agentLinkUserId">,
 ): string {
+  // #2073: a named link booking keys on the AGENT, under a prefix no bucket code
+  // carries. The bucket it lands in is derived from the agent's attributes and
+  // can move between a submit and its retry; the agent the link names cannot.
+  if (input.agentLinkUserId !== undefined) return `agent-link:${input.agentLinkUserId}`;
   if (input.requestedCode === undefined) return input.bucketCode;
   if (resolveRequestedCode(input.requestedCode).kind === "valid") return input.bucketCode;
   return `unrouted:${input.requestedCode}`;
@@ -2592,7 +2660,12 @@ export async function createBooking(
   // carried (`requestedCode`); the direct booking API names a bucket outright and
   // is untouched. A failed Salesforce read throws `LeadCodeUnavailableError`
   // before any write, and the route answers 503.
-  const { input, codeSource } = await routeOnLeadCode(requestedInput, deps);
+  // #2073: a named link does not route, so it never asks Salesforce for a code.
+  const agentLinkUserId = requestedInput.agentLinkUserId;
+  const { input, codeSource } =
+    agentLinkUserId !== undefined
+      ? { input: { ...requestedInput, requestedCode: undefined }, codeSource: undefined }
+      : await routeOnLeadCode(requestedInput, deps);
 
   // #2310: the lead's calling window, judged in the zone the booker was using.
   // AFTER the idempotency fast path, so a retry of a booking that already exists
@@ -2624,7 +2697,8 @@ export async function createBooking(
   // after the bucket resolves (#2660), because the gate is asked in that bucket's
   // WORLD: a test booking under an address must never refuse the real lead who
   // owns it, and a tester must never be refused because a lead shares theirs.
-  if (input.refuseIfPersonHasCall) {
+  // #2073: never on a named link, whatever the caller asked: see agentLinkUserId.
+  if (input.refuseIfPersonHasCall && agentLinkUserId === undefined) {
     const existingCall = await profile.time("person-gate", () =>
       findExistingCall(input, deps, { isTest: bucket.is_test }),
     );
@@ -2651,18 +2725,28 @@ export async function createBooking(
   // read before assign (and before the confirm's write-through mutates the
   // cache) so we can measure runtime divergence once the booking lands (#827).
   // Best-effort: a null (read failed, or a hidden test bucket) skips the measure.
-  const displayedTier = await profile
-    .time("displayed-tier", () => deps.displayedTier(input.bucketCode))
-    .catch(() => null);
+  // Not asked on a named link (#2073): it measures routing, and nothing routed.
+  const displayedTier =
+    agentLinkUserId !== undefined
+      ? null
+      : await profile
+          .time("displayed-tier", () => deps.displayedTier(input.bucketCode))
+          .catch(() => null);
 
   // Fresh create: cascade down the tier ladder if the requested bucket has no
   // agent free for the slot. A crash before the reservation strands nothing.
   let tier: TierAssignResult;
   try {
     tier = await profile.time("assign-and-verify", () =>
-      assignAgentWithTierFallback(deps, { bucket, eventType }, input.startIso, input.allowTestBuckets ?? false),
+      agentLinkUserId !== undefined
+        ? assignNamedAgent(deps, { bucket, eventType }, input.startIso, agentLinkUserId)
+        : assignAgentWithTierFallback(deps, { bucket, eventType }, input.startIso, input.allowTestBuckets ?? false),
     );
   } catch (err) {
+    // #2073: a named link records no routing decision, refused or not: the
+    // routing decision log is what the catch all rate and the routing analytics
+    // count, and nothing was routed.
+    if (agentLinkUserId !== undefined) throw err;
     // Best-effort: record no-booking attempts so "why did this lead get no slots"
     // is answerable. Awaited so the write is not dropped by the CF runtime; the
     // outer try/catch ensures the original error still propagates unchanged.
@@ -2712,11 +2796,13 @@ export async function createBooking(
     considered: candidates,
     excluded: [],
   };
-  try {
-    const pool = await resolveBucketPool(bookedBucket);
-    traceExtras = buildRoutingTraceExtras(pool, candidates);
-  } catch {
-    // best-effort: a transient pool-resolve failure must not fail the booking
+  if (agentLinkUserId === undefined) {
+    try {
+      const pool = await resolveBucketPool(bookedBucket);
+      traceExtras = buildRoutingTraceExtras(pool, candidates);
+    } catch {
+      // best-effort: a transient pool-resolve failure must not fail the booking
+    }
   }
   const phone = toE164(input.attendee.phone);
   const manageToken = deps.newManageToken();
@@ -2761,7 +2847,10 @@ export async function createBooking(
     // #2728: re-reduced here rather than trusted, so a path or query the client
     // sent (which can carry a lead's details) never reaches the row.
     referrer_origin: readReferrerOrigin(input.referrerOrigin),
-    routing_trace: {
+    kind: agentLinkUserId !== undefined ? "agent_link" : "routed",
+    // #2073: nothing was routed, so there is no trace, and a fabricated one would
+    // read as a routing decision to every reader of the column.
+    routing_trace: agentLinkUserId !== undefined ? null : {
       bucket_code: bookedBucket.code,
       bucket_id: bookedBucket.id,
       considered: candidates,
@@ -2983,7 +3072,11 @@ async function completeReservation(
   // Deliver the busyblock/recompute/notify side effects idempotently — the SAME
   // path a crash-resume takes, so booking.created can't be dropped (#613).
   const resolved = await deliverCreatedSideEffects(deps, booking, bookedCode);
-  if (resolved) {
+  // #2073: a named link booking logs no routing decision and raises no tier
+  // alert. Read off the ROW written, so a crash resume from the reservation drain
+  // decides exactly as the fresh create did.
+  const routed = (booking.kind ?? bookingInsert.kind) !== "agent_link";
+  if (resolved && routed) {
     // Best-effort routing decision log. Awaited so the write is not dropped by the
     // CF runtime; try/catch keeps any transient failure out of the booking response.
     try {
@@ -4097,6 +4190,15 @@ async function applyReschedule(
           keepInPlace = inPlaceDeclineReason === null;
         }
       }
+    }
+    // #2073: a named link booking belongs to the agent it names. When they cannot
+    // take the new time it is refused, never moved to somebody from the bucket
+    // it is stored in, which the link never routed through.
+    if (!keepInPlace && booking.kind === "agent_link") {
+      const refusal =
+        inPlaceDeclineReason === "calendar" ? new VerifyUnavailableError() : new SlotUnavailableError();
+      tagRescheduleFailure(refusal, { bookingId: booking.id, inPlaceDeclineReason: inPlaceDeclineReason ?? undefined });
+      throw refusal;
     }
     if (keepInPlace) {
       // keepInPlace is only true when all three were present (the guard block above).

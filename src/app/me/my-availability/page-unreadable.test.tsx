@@ -210,3 +210,32 @@ describe("MePage when the working hours cannot be read (#1647)", () => {
   });
 
 });
+
+describe("MePage and the agent's own booking link (#2073)", () => {
+  const TOKEN = "ab".repeat(32);
+
+  it("shows the link with a copy control", async () => {
+    mockDb({ agent_links: { data: { token: TOKEN }, error: null } });
+    render(await MePage(props()));
+    const field = screen.getByLabelText("Link") as HTMLInputElement;
+    expect(field.value).toMatch(new RegExp(`/book/advisor/${TOKEN}$`));
+    expect(screen.getByRole("button", { name: "Copy link" })).toBeTruthy();
+  });
+
+  it("says an unreadable link could not be read, never that there is none, and leaves the hours working", async () => {
+    mockDb({ agent_links: fails("agent_links read exploded") });
+    render(await MePage(props()));
+    expect(screen.getByText(/booking link could not be read/i)).toBeTruthy();
+    expect(screen.queryByText(/do not have a booking link/i)).toBeNull();
+    expect(screen.queryByLabelText("Link")).toBeNull();
+    // The failure is the link's alone.
+    expect(screen.getByRole("button", { name: "Save" })).toBeTruthy();
+  });
+
+  it("says there is no link yet when the read found none", async () => {
+    mockDb({ agent_links: { data: null, error: null } });
+    render(await MePage(props()));
+    expect(screen.getByText(/do not have a booking link yet/i)).toBeTruthy();
+    expect(screen.queryByText(/booking link could not be read/i)).toBeNull();
+  });
+});

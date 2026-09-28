@@ -519,5 +519,18 @@ for (const [zone, label] of [
   assert(collisions === 0, `#2117: one label means one clock, every offered zone, every month (${collisions} collisions)`);
 }
 
+// #2073: a booking through the advisor's own named link says so, in both directions.
+{
+  const named = buildRegalEvent("booking.created", { ...payload, booking_kind: "agent_link" });
+  assert(named.properties.slateAgentLink === true, "#2073: a named link booking carries slateAgentLink true");
+  const routed = buildRegalEvent("booking.created", { ...payload, booking_kind: "routed" });
+  assert(routed.properties.slateAgentLink === false, "#2073: a routed booking carries slateAgentLink false");
+  const { booking_kind: _absent, ...legacy } = { ...payload, booking_kind: undefined };
+  assert(
+    buildRegalEvent("booking.rescheduled", legacy as BookingEventPayload).properties.slateAgentLink === false,
+    "#2073: a stored payload predating the field reads as routed, which it was",
+  );
+}
+
 
 finish();

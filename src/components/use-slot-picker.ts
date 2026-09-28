@@ -3,6 +3,7 @@
 import { useMemo, useState } from "react";
 
 import { testPassHeaders, testPassRefusalSentence } from "@/lib/embed/test-pass-header";
+import { agentLinkRefusalSentence } from "@/lib/agent-link/refusal-sentence";
 
 import { useFetchList } from "@/components/AsyncList";
 import {
@@ -148,6 +149,10 @@ export function useSlotPicker({
     selectDay: setSelectedDay,
     retry,
     payload,
-    failedMessage: failed ? testPassRefusalSentence(errorPayload) : null,
+    // #2073: or because an agent's own link stopped booking anybody while the
+    // page was open. Both are refusals a retry cannot fix.
+    failedMessage: failed
+      ? (testPassRefusalSentence(errorPayload) ?? agentLinkRefusalSentence(errorPayload))
+      : null,
   };
 }

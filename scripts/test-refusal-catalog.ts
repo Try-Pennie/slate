@@ -236,7 +236,10 @@ function annotationNear(lines: string[], i: number, shape: RegExp): boolean {
 {
   const recorded = new Set<string>();
   for (const s of sources) {
-    for (const m of s.code.matchAll(/recordApiOutcome\(\s*"error"\s*,[^,]+,\s*"([^"]+)"/g)) {
+    // `recordRoutedOutcome` is the booker confirm's own name for the same call
+    // (#2073): it records exactly as `recordApiOutcome` does for a routed confirm
+    // and nothing for one made through an agent's own link, which is not routed.
+    for (const m of s.code.matchAll(/(?:recordApiOutcome|recordRoutedOutcome)\(\s*"error"\s*,[^,]+,\s*"([^"]+)"/g)) {
       recorded.add(m[1]!);
     }
   }

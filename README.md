@@ -121,6 +121,30 @@ trigger drives sync, recompute, outbox, and self-heal. Every endpoint requires
   constraint to one another.
 - Everything else prefills the form and is forwarded in the webhook payload.
 
+### An agent's own booking link (#2073)
+
+```
+/book/advisor/{token}?external_id=&name=&email=&phone=
+```
+
+The link an agent sends a lead for a later call with them, replacing their personal
+cal.com link. It books THAT agent and nobody else: no bucket resolution, no round
+robin, no tier ladder, no fallback. Every availability gate still runs for them
+(the org's hours, their working hours, their calendar, the daily cap), and verify on
+book asks live Google about them alone.
+
+- `{token}` is 64 hex characters, random, one per user (`agent_links`, migration
+  0144), never the email. The agent sees it on `/me/my-availability`; an admin
+  replaces it from the agent's console page, which stops the old link at once.
+- The one call per person rule (#1337) does not apply: a later call with a lead who
+  already has one is what the link is for. An exact double submit still collapses.
+- The booking records `kind = 'agent_link'`, and every monitor, rate and routing
+  reader filters to `kind = 'routed'` (`scripts/test-routed-booking-reads.ts`).
+  Webhooks fire as for any booking and carry `booking_kind`; the Regal event
+  carries `slateAgentLink`.
+- A link that books nobody (unknown, replaced, departed, not bookable) draws one
+  sentence whatever the cause. `source` defaults to `agent-direct`.
+
 ## Programmatic booking
 
 For AI / programmatic booking without the embed, use the key-authed
@@ -205,6 +229,7 @@ tester will see is in the `slate-embed-contract` skill; seeding it is in
 ```
 src/lib/availability   slot computation (compute.ts) + cache-first loading (service.ts)
 src/lib/booking        create / reschedule / cancel + round-robin + verify-on-book + reservations/outbox (crash-safety)
+src/lib/agent-link     an agent's own booking link (#2073): the token, who it books, and that one agent's times
 src/lib/busy           retention for the cached busy_blocks index (past-row prune)
 src/lib/routing        bucket resolution + equal-share ranking + tier fallback + routing-decision log
 src/lib/google         OAuth, calendar ops, push/incremental sync, freeBusy

@@ -100,6 +100,8 @@ async function readManagedBooking(token: string): Promise<ManagedBookingMarkers 
   try {
     // cap-safe: manage_token is unique, so maybeSingle returns at most one row.
     const { data, error } = await supabaseAdmin()
+      // agent-link-ok: one booking looked up by its own token to read its test
+      // markers, which describe that booking whatever kind it is (#2073).
       .from("bookings")
       .select("prefill, referrer_origin, buckets!inner(is_test)")
       .eq("manage_token", token)

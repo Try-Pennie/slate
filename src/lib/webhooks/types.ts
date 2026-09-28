@@ -1,4 +1,5 @@
 import type {
+  BookingKind,
   BookingStatus,
   BookingEventInitiator,
   RoutingTrace,
@@ -67,6 +68,12 @@ export interface BookingEventPayload {
    */
   previous_agent_email: string | null;
   routing: RoutingMeta;
+  /**
+   * #2073: `agent_link` when the lead booked through their advisor's own named
+   * link rather than being routed. Optional because a payload stored before the
+   * field existed has none, and every such booking was routed.
+   */
+  booking_kind?: BookingKind;
 }
 
 /** The booking events, the family `buildRegalEvent` describes. */

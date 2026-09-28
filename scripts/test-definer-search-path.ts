@@ -242,6 +242,9 @@ assert(files.length > 0, `found migrations to scan (got ${files.length})`);
 // migrations) plus `applied_migration_version`, whose definition is still in 0071
 // though 0076 dropped it from the database.
 const EXPECTED_PINNED = [
+  // #2073: mints a new user's booking link token. Security INVOKER, pinned, and
+  // it reaches only pg_catalog built ins (sha256, gen_random_uuid).
+  "agent_link_for_new_user",
   "applied_migration_version",
   "applied_migration_versions",
   "booking_api_outcome_mix",

@@ -25,7 +25,7 @@ const SINCE = "2026-08-05T09:00:00.000Z";
  * is_test filter counts the canary rows and fails the test.
  */
 function fakeDb(
-  rows: { created_at: string; is_test: boolean }[],
+  rows: { created_at: string; is_test: boolean; kind?: string }[],
   opts: { error?: string } = {},
 ) {
   const filters: { col: string; val: unknown }[] = [];
@@ -44,11 +44,15 @@ function fakeDb(
         return Promise.resolve(res({ count: null, error: { message: opts.error } }));
       }
       const testFilter = filters.find((f) => f.col === "buckets.is_test");
+      // #2073: honoured like the test filter, so a count that forgot it counts
+      // the named link bookings below.
+      const kindFilter = filters.find((f) => f.col === "kind");
       const since = filters.find((f) => f.col === "created_at")?.val as string | undefined;
       const kept = rows.filter(
         (r) =>
           (since === undefined || r.created_at >= since) &&
-          (testFilter === undefined || r.is_test === testFilter.val),
+          (testFilter === undefined || r.is_test === testFilter.val) &&
+          (kindFilter === undefined || (r.kind ?? "routed") === kindFilter.val),
       );
       return Promise.resolve(res({ count: kept.length, error: null }));
     },
@@ -78,6 +82,16 @@ describe("countCustomerBookingsSince", () => {
     // bookings in 6 hours and no customer bookings at all. That has to read as 0.
     const { db } = fakeDb([canary("2026-08-05T10:00:00.000Z"), canary("2026-08-05T12:00:00.000Z")]);
     expect(await countCustomerBookingsSince(db, SINCE)).toBe(0);
+  });
+
+  it("does not count a booking made through an agent's own link (#2073)", async () => {
+    // A later call with a lead the funnel already sent: counting it would hold the
+    // alarm quiet while customers stopped arriving.
+    const { db } = fakeDb([
+      customer("2026-08-05T10:00:00.000Z"),
+      { ...customer("2026-08-05T11:00:00.000Z"), kind: "agent_link" },
+    ]);
+    expect(await countCustomerBookingsSince(db, SINCE)).toBe(1);
   });
 
   it("still honours the window it was asked for", async () => {

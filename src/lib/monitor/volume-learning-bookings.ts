@@ -35,6 +35,9 @@ export async function listBookingStampsBetween(
       db
         .from("bookings")
         .select("created_at, buckets!inner(is_test)")
+        // #2073: the floors are fitted to the population the alarm counts, which
+        // is routed bookings only.
+        .eq("kind", "routed")
         .gte("created_at", sinceIso)
         .lt("created_at", untilIso)
         .order("created_at", { ascending: true })

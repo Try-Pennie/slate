@@ -41,6 +41,9 @@ export async function loadOooCoverageBookings(
   if (userIds.length === 0) return [];
   return selectAllPages<OooCoverageBooking>("monitor ooo coverage bookings", (from, to) =>
     db
+      // agent-link-ok: a call booked through an agent's own link is still a call
+      // somebody has to take during their absence, so it needs covering like any
+      // other (#2073).
       .from("bookings")
       .select("id, assigned_user_id, starts_at, ends_at, buckets!inner(is_test)")
       .eq("buckets.is_test", false)

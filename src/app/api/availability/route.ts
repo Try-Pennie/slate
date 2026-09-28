@@ -15,6 +15,7 @@ import { explainEmptyWindow, type EmptyReason } from "@/lib/availability/empty-r
 import { loadBusinessHoursCached } from "@/lib/booking/business-hours-load";
 import { loadBookingHorizonDays } from "@/lib/booking/settings";
 import { log } from "@/lib/log";
+import { agentLinkAvailabilityLive } from "@/lib/agent-link/service";
 
 export const dynamic = "force-dynamic";
 
@@ -47,6 +48,21 @@ async function handle(req: NextRequest) {
   }
 
   const params = req.nextUrl.searchParams;
+
+  // #2073: an agent's own booking link names ONE agent and never routes, so it
+  // is served from that agent's live times rather than a pool's cached ones.
+  // Behind the same rate limit as every public read (above), and inside the same
+  // catch, so a fault answers 500 rather than an empty week.
+  const advisor = params.get("advisor");
+  if (advisor !== null) {
+    const reply = await agentLinkAvailabilityLive(
+      advisor,
+      { from: params.get("from"), to: params.get("to") },
+      Date.now(),
+    );
+    return NextResponse.json(reply.body, { status: reply.status });
+  }
+
   const code = params.get("bucket");
   if (!code) {
     return NextResponse.json({ error: "Missing bucket" }, { status: 400 });
