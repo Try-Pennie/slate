@@ -59,6 +59,10 @@ async function run() {
       created[0].bookingKind === "agent_link",
       "the webhook says the booking came through a named link",
     );
+    assert(
+      created[0].routing === null,
+      "the webhook carries no routing summary, never a fabricated 'no fallback' outcome for a booking nothing routed",
+    );
     assert(calls.resolveBucketByCode.length === 2, "one bucket resolve for the confirm and one for the webhook, never a walk down the tier ladder");
   }
 
@@ -69,6 +73,11 @@ async function run() {
     assert(calls.insertBooking[0].kind === "routed", "an ordinary confirm records a routed booking");
     assert(calls.roundRobinOnly[0] === undefined, "an ordinary confirm asks for the whole pool");
     assert(calls.recordRoutingDecision.length === 1, "an ordinary confirm still logs its routing decision");
+    const routedCreated = calls.webhooks.find((w) => w.event === "booking.created");
+    assert(
+      routedCreated !== undefined && routedCreated.routing !== null && typeof routedCreated.routing === "object",
+      "an ordinary confirm's webhook still carries its routing summary",
+    );
   }
 
   // --- the one call per person rule does not apply ------------------------------

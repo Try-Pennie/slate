@@ -356,6 +356,8 @@ export function makeDeps(opts: FakeOpts) {
       previousAgentEmail: string | null | undefined;
       /** #2073: whether the booking was routed or booked through a named link. */
       bookingKind: string | undefined;
+      /** #2073: the routing summary the payload carries; null when nothing was routed. */
+      routing: unknown;
     }[],
     bookingEvents: [] as {
       booking_id: string;
@@ -1025,6 +1027,7 @@ export function makeDeps(opts: FakeOpts) {
         attendee: payload.attendee,
         previousAgentEmail: payload.previous_agent_email,
         bookingKind: (payload as { booking_kind?: string }).booking_kind,
+        routing: (payload as { routing?: unknown }).routing,
       });
     },
     newManageToken: () => "tok-fixed",

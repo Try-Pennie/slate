@@ -1756,7 +1756,9 @@ function webhookPayload(
     manage_url: manageUrl(deps, booking.manage_token),
     reason,
     previous_agent_email: previousAgentEmail,
-    routing: routingMetaFromTrace(booking.routing_trace),
+    // #2073: null for an agent link booking, which nothing routed. A summary built
+    // from its null trace would read as a routed booking with no fallback.
+    routing: booking.kind === "agent_link" ? null : routingMetaFromTrace(booking.routing_trace),
     // #2073: absent on a row read before the column existed, which was routed.
     booking_kind: booking.kind ?? "routed",
   };
