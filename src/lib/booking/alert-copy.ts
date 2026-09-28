@@ -11,6 +11,7 @@
  * the consequence and where to look, and never promise that anything will retry.
  */
 import type { FailureKind } from "@/lib/google/sync-health";
+import { OFFERED_OPEN_DAYS } from "@/lib/availability/bookable-days";
 
 /** A cached busy_blocks write that did not land, per operation. */
 export function busyBlockWriteThroughAlert(
@@ -343,8 +344,8 @@ export const BOOKER_UNSTAFFED_COOLDOWN_MS = 30 * 60 * 1000;
  */
 export function bookingWindowExtendedAlert(code: string): string {
   return (
-    `A customer on bucket ${code} was offered times past the three day booking window: every ` +
-    `tier their booking may cascade to was full for the next three open days, so a later day ` +
+    `A customer on bucket ${code} was offered times past the ${OFFERED_OPEN_DAYS} day booking window: every ` +
+    `tier their booking may cascade to was full for the next ${OFFERED_OPEN_DAYS} open days, so a later day ` +
     `was opened for them. They could still book. This should be rare, and usually means the ` +
     `pools for that tier and the ones below it are short on advisors, or a lot of them are ` +
     `on time off at once. Check /admin/tiers.`

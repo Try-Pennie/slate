@@ -6,6 +6,8 @@
 // into the next week.
 import { DateTime } from "luxon";
 import { openDaysWindowEndMs } from "../src/lib/booking/business-hours.ts";
+import { bookingWindowExtendedAlert } from "../src/lib/booking/alert-copy.ts";
+import { OFFERED_OPEN_DAYS } from "../src/lib/availability/bookable-days.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
 const zone = "America/New_York";
@@ -38,6 +40,13 @@ eq(et(openDaysWindowEndMs(hours, asEt("2026-09-28T09:00"), 4)), "2026-10-01T20:0
 // No open day at all concludes nothing rather than inventing a window (L215).
 eq(openDaysWindowEndMs({ zone, rules: [], exceptions: [] }, asEt("2026-09-28T09:00"), 3), null, "an org never open has no window");
 eq(openDaysWindowEndMs(hours, asEt("2026-09-28T09:00"), 0), null, "a zero day window is no window");
-assert(Number.isNaN(Number.NaN), "harness sanity");
+// The alert names the window the booker actually uses, read from the one
+// constant, so the two cannot drift (L41).
+{
+  const text = bookingWindowExtendedAlert("511");
+  assert(text.includes(`${OFFERED_OPEN_DAYS} day booking window`), `the alert names the real window (got ${text})`);
+  assert(text.includes(`next ${OFFERED_OPEN_DAYS} open days`), "and the real number of open days");
+  assert(!/\bthree\b/.test(text), "no hand written count left in the copy");
+}
 
 finish();
