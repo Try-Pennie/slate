@@ -239,3 +239,32 @@ describe("MePage and the agent's own booking link (#2073)", () => {
     expect(screen.queryByText(/booking link could not be read/i)).toBeNull();
   });
 });
+
+describe("MePage says where a week came from when Slate recorded it (#1757)", () => {
+  it("tells an agent whose week was copied from cal.com to check it", async () => {
+    mockDb({
+      availability_schedules: {
+        data: { id: "s1", timezone: "America/Chicago", hours_source: "calcom-import" },
+        error: null,
+      },
+    });
+    render(await MePage(props()));
+    expect(screen.getByText(/copied from your cal\.com schedule/i)).toBeTruthy();
+  });
+
+  it("claims nothing for a week the agent saved, or one written before the record existed", async () => {
+    for (const hours_source of ["agent", null]) {
+      mockDb({
+        availability_schedules: {
+          data: { id: "s1", timezone: "America/Chicago", hours_source },
+          error: null,
+        },
+      });
+      const { unmount } = render(await MePage(props()));
+      expect(screen.queryByText(/cal\.com/i)).toBeNull();
+      // The stored week still rendered, so the absence is not a blank page (L159).
+      expect((screen.getByLabelText("Tuesday") as HTMLInputElement).checked).toBe(true);
+      unmount();
+    }
+  });
+});

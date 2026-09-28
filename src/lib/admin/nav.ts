@@ -98,6 +98,9 @@ export const ADMIN_NAV: AdminNavGroup[] = [
       // holiday closures, the booking horizon AND the new agent template.
       { href: "/admin/business-hours", label: "Hours", gate: "admin" },
       { href: "/admin/availability", label: "Agent availability", gate: "manager" },
+      // #1757: every agent's week grouped by manager, so a team can be checked in
+      // one pass. A manager sees their own reports; an admin sees every team.
+      { href: "/admin/team-hours", label: "Team hours", gate: "manager" },
       {
         href: "/admin/bucket-availability",
         label: "Bucket availability",

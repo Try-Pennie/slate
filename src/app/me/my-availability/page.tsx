@@ -18,6 +18,8 @@ import { loadAgentLinkToken } from "@/lib/agent-link/store";
 import { agentLinkUrl } from "@/lib/agent-link/link";
 import { appUrl } from "@/lib/env";
 import { log } from "@/lib/log";
+import { hoursOriginNote } from "@/lib/admin/working-hours-copy";
+import type { AvailabilitySchedule } from "@/lib/db/types";
 
 export const dynamic = "force-dynamic";
 
@@ -62,10 +64,16 @@ export default async function MePage({
   const db = supabaseAdmin();
   const { data: schedule, error: schedErr } = await db
     .from("availability_schedules")
-    .select("id, timezone")
+    .select("id, timezone, hours_source")
     .eq("user_id", me.id)
     .maybeSingle();
-  const sched = schedErr ? null : (schedule as { id: string; timezone: string } | null);
+  const sched = schedErr
+    ? null
+    : (schedule as {
+        id: string;
+        timezone: string;
+        hours_source: AvailabilitySchedule["hours_source"];
+      } | null);
 
   const { data: rulesData, error: rulesErr } = sched
     ? await db
@@ -91,6 +99,10 @@ export default async function MePage({
   // rules[0], which showed Monday's hours for the whole week and then overwrote
   // the rest on save.
   const hoursDays = workingHoursDays(rules);
+  // #1757: said only when Slate RECORDED that somebody else wrote this week. An
+  // agent opening self service finds hours they never set, and the one writer that
+  // can be named from the record is the cal.com import.
+  const originNote = rules.length > 0 ? hoursOriginNote(sched?.hours_source ?? null) : null;
 
   // #2073: the agent's own booking link. A failed read is its own state, never
   // "no link yet", which would send them to ask an admin for something they have.
@@ -184,6 +196,9 @@ export default async function MePage({
               Set your home timezone and weekly hours. Leads always see times
               in their own timezone.
             </p>
+            {originNote ? (
+              <p className={`mb-4 text-sm text-fg ${proseCls}`}>{originNote}</p>
+            ) : null}
             {/* #1988: pressing Save wrote the week and then said
                 nothing, so it looked exactly like a click that did
                 nothing. The sentence is built from the week this render

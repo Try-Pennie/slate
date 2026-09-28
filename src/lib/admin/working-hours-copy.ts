@@ -24,3 +24,20 @@ export function copyMondayOutcome(workingDaysCopiedTo: number): string {
     ? "Copied Monday to your one other working day."
     : `Copied Monday to your other ${workingDaysCopiedTo} working days.`;
 }
+
+/**
+ * The line an agent reads over their own week when somebody else put it there
+ * (#1757).
+ *
+ * Only the cal.com import is named, because it is the one writer Slate can PROVE
+ * set these hours for the agent without asking them: `hours_source` records it.
+ * A week stamped before the stamp existed (null) says nothing, since claiming it
+ * came from cal.com would be a guess dressed as a record (L192). The seeded default
+ * already has its own alert and is not this sentence's business.
+ */
+export function hoursOriginNote(
+  source: "seed" | "agent" | "admin" | "calcom-import" | null,
+): string | null {
+  if (source !== "calcom-import") return null;
+  return "These hours were copied from your cal.com schedule when Slate was set up. Check they match the hours you actually work.";
+}
