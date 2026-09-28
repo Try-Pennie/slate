@@ -941,6 +941,10 @@ function isColourToken(token: string): boolean {
     "size and alignment classes are not read as colours",
   );
   assert(
+    scanRosePairings('"bg-[var(--error)] text-[var(--fg-on-eror)]"', isColourToken).length === 1,
+    "a misspelt token in an explicit var() class is kept, so measuring it throws rather than skipping it",
+  );
+  assert(
     scanRosePairings('"bg-[var(--error)] text-white hover:bg-surface"', isColourToken).length === 1,
     "a hover class is a different state and is not paired with the rest state",
   );
@@ -965,10 +969,11 @@ for (const file of rosePairFiles) {
     }
   }
 }
-// The lead's cancel button, its confirm, the admin confirms and the sync banner
-// are all rose pairings, so a sweep that measured fewer than that read the wrong
-// tree or lost its pattern rather than finding a clean one (L98).
-assert(rosePairsMeasured >= 6, `the rose pairing sweep measured ${rosePairsMeasured} pairs in src (expects at least 6)`);
+// Five literals hold a rose pairing today: the booker's danger variant, the
+// lead's cancel confirm, the admin panel's one destructive confirm constant, and
+// the sync banner with its link. A sweep that measured fewer read the wrong tree
+// or lost its pattern rather than finding a clean one (L98).
+assert(rosePairsMeasured >= 5, `the rose pairing sweep measured ${rosePairsMeasured} pairs in src (expects at least 5)`);
 
 
 finish();

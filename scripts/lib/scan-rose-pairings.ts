@@ -59,7 +59,12 @@ export function scanRosePairings(src: string, isColour: (token: string) => boole
       classes.filter((c) => {
         if (!c.startsWith(`${prefix}-`)) return false;
         const t = tokenForColourClass(c);
-        return t !== null && isColour(t);
+        if (t === null) return false;
+        // An explicit `[var(--x)]` is a colour by construction, so it is always
+        // kept and a misspelt token THROWS when measured rather than being
+        // skipped as though it were `text-sm` (L11). Only a NAMED class needs
+        // the lookup, to tell `text-fg` from a size or an alignment.
+        return /^\w+-\[var\(/.test(c) || isColour(t);
       });
     const bgs = colourOf("bg");
     const fgs = colourOf("text");
