@@ -390,12 +390,15 @@ export function bookerCopyScreens(): CopyScreen[] {
       screen: "Booker: an advisor's own booking link",
       purpose:
         "The link an advisor sends a lead for a later call with them (#2073). It books " +
-        "that one advisor and nobody else, so there is no pool to fall back on. The " +
+        "that one advisor and nobody else, and never reroutes on its own. The " +
         "refusal is ONE sentence whatever the cause (a link that never existed, one " +
         "replaced, an advisor who left or is not taking calls), so the page cannot say " +
-        "which. An empty week names the advisor rather than every time being taken.",
+        "which, and EVERY refusal carries the same button to the ordinary booker " +
+        "(#2831), so the lead chooses. An empty week names the advisor rather than " +
+        "every time being taken.",
       lines: [
         { state: "the link books nobody, whatever the cause", text: AGENT_LINK_COPY.unavailable },
+        { state: "the button beneath every refusal", text: AGENT_LINK_COPY.bookAnother },
         { state: "the advisor has no open time in the window shown", text: AGENT_LINK_COPY.noTimes },
       ],
     },

@@ -78,6 +78,54 @@ export function chooseAgentLinkBucket<B extends AgentLinkBucketChoice>(buckets: 
   return test[0] ?? null;
 }
 
+/**
+ * The pool a refused link offers its lead instead (#2831): the advisor's lowest
+ * REAL bucket, the same one `chooseAgentLinkBucket` files their link bookings
+ * under, or null for the catch all. Unlike that choice it never falls back to a
+ * test bucket, because this one is an ordinary routed booking for a real lead,
+ * and a test pool is not a place to send one.
+ */
+export function chooseAgentLinkPoolCode(buckets: readonly AgentLinkBucketChoice[]): string | null {
+  const real = buckets.filter((b) => !b.is_test);
+  return real.length > 0 ? chooseAgentLinkBucket(real)!.code : null;
+}
+
+/** The keys a pool booking must NOT inherit from the advisor link it came from. */
+const NOT_CARRIED_TO_POOL = new Set([
+  // The pool is decided by `chooseAgentLinkPoolCode`, or left to the catch all,
+  // never by a code that happened to ride on the advisor link.
+  "xbc",
+]);
+
+/**
+ * Where the button on a refused advisor link goes (#2831): the ordinary routed
+ * booker, `/book`, for the advisor's own pool when there is one and with no code
+ * (the catch all, #1908) when there is not.
+ *
+ * The rest of the link's query travels with the lead: their name, email and lead
+ * id so the booker is prefilled, and the embed's own settings so it still draws
+ * inside the host's frame. One exception: the `agent-direct` source that marks an
+ * advisor's direct link is dropped, since a booking made from here is an ordinary
+ * routed one. A source the link named for itself still travels. Every value is
+ * encoded by URLSearchParams, so nothing on the link can splice a code in.
+ */
+export function agentLinkPoolHref(
+  poolCode: string | null,
+  searchParams: Readonly<Record<string, string | string[] | undefined>>,
+): string {
+  const q = new URLSearchParams();
+  if (poolCode) q.set("xbc", poolCode);
+  for (const [key, raw] of Object.entries(searchParams)) {
+    if (NOT_CARRIED_TO_POOL.has(key)) continue;
+    const value = Array.isArray(raw) ? raw[0] : raw;
+    if (value === undefined) continue;
+    if (key === "source" && value === "agent-direct") continue;
+    q.set(key, value);
+  }
+  const query = q.toString();
+  return query ? `/book?${query}` : "/book";
+}
+
 /** The user fields the judge below reads. */
 export interface AgentLinkAgent {
   id: string;

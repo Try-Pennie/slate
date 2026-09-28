@@ -721,6 +721,12 @@ export const AGENT_LINK_COPY = {
    * learn whether a link was ever real, or who is still on the roster.
    */
   unavailable: "This advisor is not taking bookings through this link right now.",
+  /**
+   * The way on beneath that sentence (#2831): the ordinary booker, where any
+   * advisor on the team can take the call. On EVERY refusal, so its presence
+   * says nothing about the link either.
+   */
+  bookAnother: "Book with another advisor",
   /** The advisor is taking bookings and has no open time in the window shown.
    *  Names the advisor rather than "all times", because there is only one of them. */
   noTimes: "This advisor has no open times in the next few days. Please check back later.",

@@ -7,8 +7,10 @@
 // Run: node --experimental-strip-types scripts/test-agent-link.ts
 import {
   AGENT_LINK_TOKEN_PATTERN,
+  agentLinkPoolHref,
   agentLinkUrl,
   chooseAgentLinkBucket,
+  chooseAgentLinkPoolCode,
   isWellFormedAgentLinkToken,
   judgeAgentLink,
   newAgentLinkToken,
@@ -115,6 +117,88 @@ import { assert, eq, finish } from "./lib/harness.ts";
     judgeAgentLink({ ...agent, bookable: false, deactivated_at: "2026-09-01T00:00:00Z" }, [bucket]),
     { ok: false, why: "departed" },
     "departed outranks not bookable",
+  );
+}
+
+// --- the way on when the link books nobody (#2831) ----------------------------
+{
+  // The pool a refused link offers is the advisor's own lowest REAL bucket, the
+  // one #2073 files their link bookings under. Never a test bucket: a lead offered
+  // another advisor is offered a real pool or the catch all, nothing else.
+  eq(chooseAgentLinkPoolCode([]), null, "an advisor in no bucket offers the catch all");
+  eq(
+    chooseAgentLinkPoolCode([
+      { code: "511", is_test: false },
+      { code: "SMOKE", is_test: true },
+      { code: "411", is_test: false },
+    ]),
+    "411",
+    "the lowest real code, whatever order the rows arrive in",
+  );
+  eq(
+    chooseAgentLinkPoolCode([{ code: "SMOKE", is_test: true }]),
+    null,
+    "a test only advisor offers the catch all, never the test pool",
+  );
+
+  eq(agentLinkPoolHref("411", {}), "/book?xbc=411", "a known advisor leads to their own pool");
+  // An unknown, replaced or poolless link leads to the catch all: the ordinary
+  // booker with no code, which routes the way every blank code does (#1908).
+  eq(agentLinkPoolHref(null, {}), "/book", "an unknown link leads to the catch all booker");
+
+  // The lead's own details and the embed's settings travel with them, so the
+  // routed booker is prefilled and still draws inside the host's frame.
+  const sp = {
+    name: "Dana Lee",
+    email: "dana@example.com",
+    external_id: "00Q000000000001",
+    embed: "1",
+    theme: "dark",
+    parentOrigin: "https://www.trypennie.com",
+  };
+  const url = new URL(agentLinkPoolHref("411", sp), "https://slate.example");
+  eq(url.pathname, "/book", "the routed booker's path");
+  eq(url.searchParams.get("xbc"), "411", "the pool code");
+  for (const [k, v] of Object.entries(sp)) eq(url.searchParams.get(k), v, `forwards ${k}`);
+
+  // A code on the advisor link is not the lead's routing code and must never
+  // override the pool: the pool is decided here, or left to the catch all.
+  eq(
+    new URL(agentLinkPoolHref("411", { xbc: "999" }), "https://s.x").searchParams.getAll("xbc"),
+    ["411"],
+    "the advisor's pool wins over any code on the link",
+  );
+  eq(
+    new URL(agentLinkPoolHref(null, { xbc: "999" }), "https://s.x").searchParams.has("xbc"),
+    false,
+    "the catch all carries no code, even one the link arrived with",
+  );
+  // The advisor link's attribution does not follow the lead: a booking made from
+  // the button is an ordinary routed one, not an advisor's direct link.
+  eq(
+    new URL(agentLinkPoolHref("411", { source: "agent-direct" }), "https://s.x").searchParams.has("source"),
+    false,
+    "the direct link attribution does not follow the lead into the pool",
+  );
+  eq(
+    new URL(agentLinkPoolHref("411", { source: "offerhub" }), "https://s.x").searchParams.get("source"),
+    "offerhub",
+    "a source the link named for itself still travels",
+  );
+  eq(
+    new URL(agentLinkPoolHref(null, { name: ["A", "B"] }), "https://s.x").searchParams.get("name"),
+    "A",
+    "a repeated key takes its first value, as every booker page does",
+  );
+  eq(
+    new URL(agentLinkPoolHref(null, { name: "A&xbc=999" }), "https://s.x").searchParams.has("xbc"),
+    false,
+    "a value is encoded, so it cannot smuggle a code in",
+  );
+  eq(
+    new URL(agentLinkPoolHref(null, { name: "A&xbc=999" }), "https://s.x").searchParams.get("name"),
+    "A&xbc=999",
+    "and it arrives intact",
   );
 }
 
