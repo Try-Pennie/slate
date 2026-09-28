@@ -18,7 +18,6 @@ import {
 import {
   recomputeBucketSlotsForToday,
   getBucketSlotsWithFallback,
-  getCachedBucketSlots,
 } from "@/lib/availability/slot-cache";
 import {
   attendeeForLanding,
@@ -2406,6 +2405,12 @@ export interface BookableCheckResult extends orchestration.BookableResult {
  * no lead identity) via orchestration.checkBookable, then attaches nearest
  * before/after slot HINTS from the availability cache. The hints are best-effort:
  * a cache miss or read error yields null hints and never fails the check itself.
+ *
+ * #2846: the hints come from exactly the list the booker serves this lead
+ * (`getBucketSlotsWithFallback`: the display cascade, the offered open day window,
+ * and on a rung below a top tier lead's own tier only the advisors without Low).
+ * Reading a rung's whole cached list instead suggested times only a Low carrier
+ * is free for, which the booking cascade then refuses.
  */
 export async function checkBookable(input: {
   bucketCode: string;
@@ -2413,13 +2418,15 @@ export async function checkBookable(input: {
   allowTestBuckets?: boolean;
 }): Promise<BookableCheckResult> {
   const core = await orchestration.checkBookable(input, realDeps());
-  // Hint from whichever bucket would actually serve (or the requested one when
-  // nothing could). A disallowed test bucket already threw above, so no leak here.
-  const codeForHints = core.effectiveBucketCode ?? input.bucketCode;
+  // A disallowed test bucket already threw above, so no leak here.
   let alternatives = { before: null as string | null, after: null as string | null };
   try {
-    const resolved = await getCachedBucketSlots(codeForHints, new Date().toISOString());
-    if (resolved) alternatives = orchestration.nearestSlots(resolved.slots, input.startIso);
+    const served = await getBucketSlotsWithFallback(
+      input.bucketCode,
+      new Date().toISOString(),
+      input.allowTestBuckets ?? false,
+    );
+    if (served) alternatives = orchestration.nearestSlots(served.slots, input.startIso);
   } catch {
     // Hints are best-effort; a cache read failure must not fail the check.
   }
