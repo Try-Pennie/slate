@@ -17,7 +17,10 @@
 //    measured as no longer upcoming, never off a booking it could not measure;
 //  - a booking made from a known test source (#2737: a host page that is not the
 //    production site, the SAME predicate the off site page uses) is excluded, so a
-//    test booking in a real bucket is never the verdict that un-parks this check.
+//    test booking in a real bucket is never the verdict that un-parks this check;
+//  - #2594: a lead re-scored AFTER booking is told apart from one routed below its
+//    own code, by the code the lead arrived with (`routing_decisions.requested_code`),
+//    and the page names both the old code and tier and the new ones.
 import {
   BELOW_LEAD_TIER_KEY,
   belowLeadTierKey,
@@ -45,7 +48,8 @@ const LEAD_C = "00QUi00000qwertYUI";
 const LOW: PoolBucket = { id: "b-100", code: "100", name: "Low | None | No Legal Param", criteria: { debt_team: "low" } };
 const ULTRA: PoolBucket = { id: "b-512", code: "512", name: "Ultra High | Both | Non-Legal", criteria: { debt_team: "ultra_high" } };
 const MEDIUM: PoolBucket = { id: "b-211", code: "211", name: "Medium | Both | Legal", criteria: { debt_team: "medium" } };
-const BUCKETS = [LOW, ULTRA, MEDIUM];
+const VERY_HIGH: PoolBucket = { id: "b-422", code: "422", name: "Very High | Both | Non-Legal", criteria: { debt_team: "very_high" } };
+const BUCKETS = [LOW, ULTRA, MEDIUM, VERY_HIGH];
 
 function booking(over: Partial<UpcomingBooking> = {}): UpcomingBooking {
   return {
@@ -153,15 +157,19 @@ function booking(over: Partial<UpcomingBooking> = {}): UpcomingBooking {
     new Map([[leadIdKey(LEAD_A), "512"]]),
   );
   if (finding.kind !== "below") throw new Error("fixture must be a finding");
-  const withCatchall = formatBelowLeadTierAlert(finding, true, "https://slate.example/admin/bookings/bk-1");
+  const withCatchall = formatBelowLeadTierAlert(finding, { catchall: true, requestedCode: "" }, "https://slate.example/admin/bookings/bk-1");
   assert(withCatchall.startsWith("An Ultra High lead"), "the page names the lead's tier, with the right article");
   assert(withCatchall.includes("Low"), "the page names the pool's tier");
   assert(withCatchall.includes("512"), "the page names the XBC Salesforce holds");
   assert(withCatchall.includes("Dana Whitfield"), "the page names the agent holding the call");
   assert(withCatchall.includes("https://slate.example/admin/bookings/bk-1"), "the page links the booking");
   assert(/catch-all chose/i.test(withCatchall), "a catch-all booking says the catch-all chose the pool");
-  assert(!/catch-all chose/i.test(formatBelowLeadTierAlert(finding, false, "u")), "a routed booking does not blame the catch-all");
+  assert(
+    !/catch-all chose/i.test(formatBelowLeadTierAlert(finding, { catchall: false, requestedCode: null }, "u")),
+    "a routed booking does not blame the catch-all",
+  );
   assert(/not recorded/i.test(formatBelowLeadTierAlert(finding, null, "u")), "an unknown routing record says so rather than guessing");
+  assert(/could not be read/i.test(formatBelowLeadTierAlert(finding, "unreadable", "u")), "an unreadable routing record says so");
   assert(!/[\u2014\u2013]/.test(withCatchall), "no dashes in the page");
   assert(!/NaN|undefined|null/.test(withCatchall), "no leaked values in the page");
   const rec = formatBelowLeadTierRecovery("bk-1", "agrees", "https://slate.example/admin/bookings/bk-1");
@@ -171,6 +179,66 @@ function booking(over: Partial<UpcomingBooking> = {}): UpcomingBooking {
     "a booking that left the upcoming set gets its own all clear",
   );
   eq(belowLeadTierKey("bk-1"), `${BELOW_LEAD_TIER_KEY}:bk-1`, "the key family is per booking");
+}
+
+// --- #2594: re-scored after booking, against routed below its own code ------------------
+{
+  // The 2026-09-21 shape: booked on XBC 422 into the Very High pool, then Salesforce
+  // re-scored the lead to 512 four minutes later.
+  const [finding] = compareBookingsToLeadTier(
+    [booking({ bucket_id: VERY_HIGH.id, salesforce_id: LEAD_A })],
+    BUCKETS,
+    new Map([[leadIdKey(LEAD_A), "512"]]),
+  );
+  if (finding.kind !== "below") throw new Error("fixture must be a finding");
+  const rescored = formatBelowLeadTierAlert(finding, { catchall: false, requestedCode: "422" }, "u");
+  assert(/re-scored/i.test(rescored), "a lead who arrived on a lower code than today's is named as re-scored");
+  assert(/XBC 422 \(Very High\)/.test(rescored), "the page names the OLD code and the tier it decodes to");
+  assert(/XBC 512/.test(rescored) && rescored.startsWith("An Ultra High lead"), "and the NEW code and tier");
+  assert(rescored.includes("bucket 422"), "and the bucket holding the call");
+  assert(!/catch-all chose/i.test(rescored), "and does not blame the catch-all");
+  assert(!/either that code was lower/i.test(rescored), "and states the measured cause rather than two guesses");
+  assert(!/[\u2014\u2013]/.test(rescored), "no dashes in the page");
+
+  // Arrived on the code Salesforce holds today, and still placed lower: the score did
+  // not move, so saying it was re-scored would send somebody to Salesforce for nothing.
+  const [lowFinding] = compareBookingsToLeadTier(
+    [booking({ salesforce_id: LEAD_A })],
+    BUCKETS,
+    new Map([[leadIdKey(LEAD_A), "512"]]),
+  );
+  if (lowFinding.kind !== "below") throw new Error("fixture must be a finding");
+  const sameCode = formatBelowLeadTierAlert(lowFinding, { catchall: false, requestedCode: "512" }, "u");
+  assert(!/re-scored/i.test(sameCode), "a lead who arrived on today's code is not called re-scored");
+  assert(/XBC 512 \(Ultra High\)/.test(sameCode), "it names the code the lead arrived with");
+  assert(/below the code it was given/i.test(sameCode), "and says the routing placed the call below that code");
+
+  // Both at once: arrived on a lower code than today's AND placed below even that
+  // code. Calling it only a re-score would hide a routing fault, and "was routed on
+  // it" would be false, so the page must name both causes.
+  if (lowFinding.pool.rank >= 4) throw new Error("fixture must sit below the Very High pool");
+  const both = formatBelowLeadTierAlert(lowFinding, { catchall: false, requestedCode: "422" }, "u");
+  assert(/re-scored/i.test(both), "a lead re-scored above an arrival code still reads as re-scored");
+  assert(/below the code it was given/i.test(both), "and a pool below the arrival code is still named as a routing fault");
+  assert(!/was routed on it/i.test(both), "and never claims the call was routed on the arrival code");
+
+  // An arrival code in the same tier as today's score is not a re-score either.
+  const sameTier = formatBelowLeadTierAlert(lowFinding, { catchall: false, requestedCode: "501" }, "u");
+  assert(!/re-scored/i.test(sameTier), "an arrival code in today's tier is never called re-scored");
+
+  // No readable arrival code: fall back to the two possible causes, naming neither as fact.
+  for (const code of [null, "", "011", "  "]) {
+    const t = formatBelowLeadTierAlert(finding, { catchall: false, requestedCode: code }, "u");
+    assert(!/re-scored/i.test(t) && !/below the code it was given/i.test(t), `an arrival code of ${JSON.stringify(code)} claims no cause`);
+    assert(/either that code was lower/i.test(t), `and names both possibilities for ${JSON.stringify(code)}`);
+    assert(!/NaN|undefined|null/.test(t), "no leaked values");
+  }
+
+  // The catch-all line wins over any arrival code: its code was blank or unreadable.
+  assert(
+    /catch-all chose/i.test(formatBelowLeadTierAlert(finding, { catchall: true, requestedCode: "422" }, "u")),
+    "a catch-all booking says so whatever code it carried",
+  );
 }
 
 // --- the runner -------------------------------------------------------------------------
@@ -186,7 +254,7 @@ function deps(over: Partial<BelowLeadTierDeps> = {}, calls: Calls = { notified: 
       for (const id of ids) m.set(leadIdKey(id), id === LEAD_A ? "512" : "111");
       return m;
     },
-    loadCatchall: async () => new Map([["bk-1", true]]),
+    loadRoutingContext: async () => new Map([["bk-1", { catchall: true, requestedCode: "" }]]),
     listFiring: async () => new Set<string>(),
     bookingUrl: (id) => `https://slate.example/admin/bookings/${id}`,
     armed: true,
@@ -415,7 +483,7 @@ async function main(): Promise<void> {
     await runBelowLeadTierCheck(
       deps(
         {
-          loadCatchall: async () => {
+          loadRoutingContext: async () => {
             throw new Error("routing_decisions read failed");
           },
         },
@@ -424,6 +492,31 @@ async function main(): Promise<void> {
     );
     eq(calls.notified.length, 1, "the page is sent without the catch-all context");
     assert(/not recorded|could not be read/i.test(calls.notified[0]?.text ?? ""), "and says the context is missing");
+  }
+
+  // #2594: the arrival code read from the routing record reaches the page, so the
+  // incident's shape is paged as a re-score naming the old and new codes.
+  {
+    const calls: Calls = { notified: [], resolved: [], sfQueries: 0 };
+    const asked: string[][] = [];
+    await runBelowLeadTierCheck(
+      deps(
+        {
+          loadBookings: async () => [booking({ id: "bk-rescored", bucket_id: VERY_HIGH.id, salesforce_id: LEAD_A })],
+          loadRoutingContext: async (ids) => {
+            asked.push(ids);
+            return new Map([["bk-rescored", { catchall: false, requestedCode: "422" }]]);
+          },
+        },
+        calls,
+      ),
+    );
+    eq(asked, [["bk-rescored"]], "the routing record is asked only about the booking being paged");
+    eq(calls.notified.map((n) => n.key), [belowLeadTierKey("bk-rescored")], "one page, on the booking's own key");
+    const text = calls.notified[0]?.text ?? "";
+    assert(/re-scored/i.test(text) && /XBC 422 \(Very High\)/.test(text) && /XBC 512/.test(text), "naming the old and the new code");
+    assert(text.includes("bk-rescored"), "and linking the booking by id");
+    assert(!text.includes(LEAD_A), "the lead's Salesforce id stays out of the page");
   }
 
   // Salesforce is asked only about Lead ids, once per booking set, deduplicated.

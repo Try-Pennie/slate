@@ -213,32 +213,74 @@ export function compareBookingsToLeadTier(
 
 // --------------------------------------------------------------- the copy
 
-/** What the routing record says about the catch-all, for one booking. */
-export type CatchallContext = boolean | null | "unreadable";
+/** One booking's routing record: whether the catch-all chose the pool, and the
+ *  `xbc` the lead's link arrived with (`routing_decisions.requested_code`). */
+export interface RoutingRecord {
+  catchall: boolean;
+  requestedCode: string | null;
+}
 
-function catchallLine(c: CatchallContext): string {
-  if (c === true) {
+/** What the routing record says for one booking: the record, none at all, or a
+ *  read that failed. */
+export type RoutingContext = RoutingRecord | null | "unreadable";
+
+/**
+ * The sentence saying WHY the call sits below the lead, from what was measured.
+ *
+ * #2594 is the reason the arrival code is read. A lead re-scored AFTER booking
+ * (422 to 512 four minutes after the call was made) and a lead routed below the
+ * code it arrived with look identical from the pool and today's score alone, and
+ * they send somebody to two different places: the first is a call to move, the
+ * second is a routing fault. So when the arrival code decodes, the page names it
+ * and its tier and states which one this is. When it does not, it names both
+ * possibilities and claims neither (L11).
+ */
+function routingLine(f: BelowFinding, c: RoutingContext): string {
+  if (c === "unreadable") return "Whether the routing catch-all chose this pool could not be read this time.";
+  if (c === null) {
+    return "Whether the routing catch-all chose this pool is not recorded, which is usual for a booking made without a routing code.";
+  }
+  if (c.catchall) {
     return "The routing catch-all chose this pool, because the lead's link carried a blank or unreadable code.";
   }
-  if (c === false) {
+  const arrived = leadTierOf(c.requestedCode);
+  // Both causes at once: re-scored since, AND placed below the arrival code too.
+  // Naming only the re-score would hide the routing fault.
+  if (arrived.kind === "tier" && arrived.rank < f.lead.rank && f.pool.rank < arrived.rank) {
     return (
-      "The routing catch-all did not pick this pool: it was routed on the code the lead arrived " +
-      "with, so either that code was lower than Salesforce's score or the lead was scored higher after booking."
+      `The lead arrived with XBC ${arrived.code} (${arrived.label}) and Salesforce has re-scored ` +
+      `them to ${f.lead.label} since, but the routing also placed the call below the code it was given.`
     );
   }
-  if (c === "unreadable") return "Whether the routing catch-all chose this pool could not be read this time.";
-  return "Whether the routing catch-all chose this pool is not recorded, which is usual for a booking made without a routing code.";
+  if (arrived.kind === "tier" && arrived.rank < f.lead.rank) {
+    return (
+      `The lead arrived with XBC ${arrived.code} (${arrived.label}) and was routed on it, so ` +
+      `Salesforce re-scored them to ${f.lead.label} after that link was made.`
+    );
+  }
+  if (arrived.kind === "tier") {
+    return (
+      `The lead arrived with XBC ${arrived.code} (${arrived.label}), so the score has not risen ` +
+      `since: the routing placed the call below the code it was given.`
+    );
+  }
+  return (
+    "The routing catch-all did not pick this pool: it was routed on the code the lead arrived " +
+    "with, so either that code was lower than Salesforce's score or the lead was scored higher after booking."
+  );
 }
 
 /**
  * The page for one booking: who the lead is to Salesforce, which team holds the
  * call, when, and what to do. It names the XBC Salesforce holds NOW, because that
- * is what was measured, and says so, since a lead re-scored after booking reads
- * the same as one routed wrongly.
+ * is what was measured, and, when the routing record holds the code the lead
+ * arrived with, names that too, so a lead re-scored after booking (#2594) no
+ * longer reads the same as one routed wrongly. Lead contact data is never in it:
+ * the booking is named by its link, the lead only by tier and score.
  */
 export function formatBelowLeadTierAlert(
   f: BelowFinding,
-  catchall: CatchallContext,
+  routing: RoutingContext,
   bookingUrl: string,
 ): string {
   const when = `${formatSlotDay(f.booking.starts_at, ALERT_ZONE)} at ${formatSlotTime(f.booking.starts_at, ALERT_ZONE)} ET`;
@@ -247,7 +289,7 @@ export function formatBelowLeadTierAlert(
   return (
     `${article} ${f.lead.label} lead is booked with the ${f.pool.label} team: Salesforce scores them ` +
     `XBC ${f.lead.code} today, and the call on ${when} is with ${agent} in bucket ` +
-    `${f.bucket.code} (${f.bucket.name}). ${catchallLine(catchall)} ` +
+    `${f.bucket.code} (${f.bucket.name}). ${routingLine(f, routing)} ` +
     `Reassign the call to somebody who works ${f.lead.label} leads, or correct the score in ` +
     `Salesforce if it is wrong.\n${bookingUrl}`
   );
@@ -303,8 +345,9 @@ export interface BelowLeadTierDeps {
   buckets: PoolBucket[];
   /** The current XBC per lead, keyed by `leadIdKey`. THROWS when Salesforce refuses. */
   readLeadXbcs: (leadIds: string[]) => Promise<Map<string, string | null>>;
-  /** `catchall_applied` per booking id, from `routing_decisions`. Context only. */
-  loadCatchall: (bookingIds: string[]) => Promise<Map<string, boolean>>;
+  /** The routing record per booking id, from `routing_decisions`: the catch-all
+   *  flag and the arrival code (#2594). Context only, so a failure costs no page. */
+  loadRoutingContext: (bookingIds: string[]) => Promise<Map<string, RoutingRecord>>;
   /** Booking ids with an outstanding page in this family. */
   listFiring: () => Promise<Set<string>>;
   bookingUrl: (bookingId: string) => string;
@@ -366,14 +409,14 @@ export async function runBelowLeadTierCheck(deps: BelowLeadTierDeps): Promise<Be
   let cleared = 0;
   if (deps.armed) {
     if (below.length > 0) {
-      let catchall: Map<string, boolean> | null = null;
+      let routing: Map<string, RoutingRecord> | null = null;
       try {
-        catchall = await deps.loadCatchall(below.map((f) => f.booking.id));
+        routing = await deps.loadRoutingContext(below.map((f) => f.booking.id));
       } catch {
-        catchall = null;
+        routing = null;
       }
       for (const f of below) {
-        const context: CatchallContext = catchall === null ? "unreadable" : catchall.get(f.booking.id) ?? null;
+        const context: RoutingContext = routing === null ? "unreadable" : routing.get(f.booking.id) ?? null;
         await deps
           .notify(
             belowLeadTierKey(f.booking.id),

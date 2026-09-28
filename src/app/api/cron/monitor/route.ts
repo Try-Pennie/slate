@@ -307,7 +307,7 @@ import {
 import { runBelowLeadTierCheck, BELOW_LEAD_TIER_KEY, type BelowLeadTierResult } from "@/lib/monitor/below-lead-tier";
 import {
   loadUpcomingBookingsInBuckets,
-  loadCatchallByBooking,
+  loadRoutingContextByBooking,
 } from "@/lib/monitor/below-lead-tier-store";
 import { runOffsiteOriginCheck, OFFSITE_ORIGIN_LOOKBACK_MS } from "@/lib/monitor/offsite-origin";
 import { loadRecentBookingsInBuckets } from "@/lib/monitor/offsite-origin-store";
@@ -1761,7 +1761,8 @@ export async function GET(req: NextRequest) {
             const { token, instanceUrl } = await session;
             return querySoqlAll<LeadXbcRecord>(instanceUrl, token, soql);
           }),
-        loadCatchall: (ids) => loadCatchallByBooking(db, ids),
+        // #2594: the arrival code, so a lead re-scored after booking is paged as one.
+        loadRoutingContext: (ids) => loadRoutingContextByBooking(db, ids),
         listFiring: async () => new Set(await firingFamilyMembers(BELOW_LEAD_TIER_KEY)),
         bookingUrl: (id) => `${appUrl()}${bookingDetailHref(id)}`,
         armed: settings!.belowLeadTierArmed,
