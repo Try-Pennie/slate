@@ -367,7 +367,7 @@ export function RosterTable({
                     how long it has waited. */}
                 <td
                   className={`min-w-[9rem] px-3 py-3 tabular-nums ${
-                    isNeverSignedIn(u) ? "text-fg" : "text-fg-muted"
+                    isNeverSignedIn(u) ? "font-semibold text-fg" : "text-fg-muted"
                   }`}
                 >
                   {rosterSigninText(u, nowMs)}
@@ -375,7 +375,7 @@ export function RosterTable({
                 {hoursReadable && (
                   <td
                     className={`px-3 py-3 ${
-                      u.hours === "set" ? "text-fg-muted" : "text-fg"
+                      u.hours === "set" ? "text-fg-muted" : "font-semibold text-fg"
                     }`}
                   >
                     {u.hours ? rosterHoursText(u.hours) : ""}

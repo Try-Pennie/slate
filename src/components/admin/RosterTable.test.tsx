@@ -542,6 +542,29 @@ describe("RosterTable never signed in", () => {
     expect(count()).toBe("2 of 3 agents");
   });
 
+  it("gives the healthy values the quietest treatment and the exceptions the loudest (L609)", () => {
+    const withHours = rows.map((r, i) => ({ ...r, hours: (["set", "seeded", "none"] as const)[i] }));
+    render(<RosterTable {...props} rows={withHours} hoursReadable />);
+    const heads = screen.getAllByRole("columnheader");
+    const signinIdx = heads.findIndex((th) => th.textContent === "Signed in");
+    const hoursIdx = heads.findIndex((th) => (th.textContent ?? "").startsWith("Hours"));
+    const cell = (name: string, idx: number) =>
+      within(bodyRows().find((r) => (r.textContent ?? "").includes(name))!).getAllByRole("cell")[idx]!;
+    // Healthy: muted, and the words are still there for a screen reader.
+    for (const [name, idx, text] of [["Signed Nophoto", signinIdx, "Yes"], ["Signed Nophoto", hoursIdx, "Set"]] as const) {
+      const c = cell(name, idx);
+      expect(c.textContent).toBe(text);
+      expect(c.className).toContain("text-fg-muted");
+      expect(c.className).not.toContain("font-semibold");
+    }
+    // Exceptions: full colour and weight.
+    for (const [name, idx] of [["Never Photo", signinIdx], ["Never Photo", hoursIdx], ["Never Today", hoursIdx]] as const) {
+      const c = cell(name, idx);
+      expect(c.className).not.toContain("text-fg-muted");
+      expect(c.className).toContain("font-semibold");
+    }
+  });
+
   it("shows no hours column or hours filter when the hours could not be read", () => {
     render(<RosterTable {...props} hoursReadable={false} />);
     expect(screen.queryByRole("columnheader", { name: /Hours/ })).toBeNull();
