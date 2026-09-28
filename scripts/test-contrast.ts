@@ -12,7 +12,13 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { assert, fail, finish } from "./lib/harness.ts";
 import { ratio, type RGB } from "./lib/wcag-contrast.ts";
-import { scanRosePairings, tokenForColourClass, type ClassPair } from "./lib/scan-rose-pairings.ts";
+import {
+  parseColourClass,
+  scanRosePairings,
+  tokenForColourClass,
+  type ClassPair,
+  type Theme,
+} from "./lib/scan-rose-pairings.ts";
 import { sourceFiles } from "./lib/source-files.ts";
 
 // --- Token parsing ----------------------------------------------------------
@@ -967,31 +973,72 @@ const rosePairFiles = sourceFiles({
 // must also be a visible step from the rest fill, or the hover says nothing.
 const STATE_BEHIND = ["--field", "--surface", "--bg"];
 const HOVER_STEP = 1.2;
-function measureStates(pair: ClassPair, where: string): number {
-  let measured = 0;
+type Measurement = { label: string; value: number; min: number };
+// Every ratio a pair's interactive states must clear, returned as data rather
+// than asserted, so a fixture can ask WHICH measurement failed and not merely
+// whether something did (#2856, L140). Each state is measured only in the themes
+// its variant chain applies in: a `dark:hover:` class is a fact about the dark
+// theme, and measuring it against the light tokens would both miss its real
+// failure and invent a false one.
+function stateMeasurements(pair: ClassPair, where: string): Measurement[] {
+  const out: Measurement[] = [];
+  const reads: Record<Theme, (n: string) => RGB> = { light: r, dark: rDark };
+  const restBg = tokenForColourClass(pair.bg);
   for (const s of pair.states) {
-    const bgToken = tokenForColourClass(s.bg);
-    const fgToken = tokenForColourClass(s.fg);
-    const restBg = tokenForColourClass(pair.bg);
-    if (!bgToken || !fgToken || !restBg) continue;
-    for (const [theme, read] of [
-      ["light", r],
-      ["dark", rDark],
-    ] as [string, (n: string) => RGB][]) {
+    const bg = parseColourClass(s.bg);
+    const fg = parseColourClass(s.fg);
+    // A state whose colours cannot be resolved FAILS rather than being skipped:
+    // a silently skipped state is the blind spot this sweep exists to close (L98).
+    if (!bg || !fg || !restBg) {
+      out.push({ label: `${where} ${s.variant}: cannot resolve ${s.fg} on ${s.bg} to tokens`, value: 0, min: 1 });
+      continue;
+    }
+    for (const theme of s.themes) {
+      const read = reads[theme];
       for (const behind of STATE_BEHIND) {
         const ground = read(behind);
-        const fill = composite(read(bgToken), s.opacity, ground);
-        const label = composite(read(fgToken), s.opacity, ground);
-        atLeast(label, fill, 4.5, `${where} ${s.state}: ${s.fg} on ${s.bg} at ${s.opacity} over ${behind} (${theme})`);
-        atLeast(fill, ground, 3, `${where} ${s.state}: ${s.bg} fill against ${behind} (${theme})`);
+        // The fill's own alpha lets the ground through, the label's alpha lets
+        // the fill through, and the element's opacity fades both over the ground.
+        const solidFill = composite(read(bg.token), bg.alpha, ground);
+        const solidLabel = composite(read(fg.token), fg.alpha, solidFill);
+        const fill = composite(solidFill, s.opacity, ground);
+        const label = composite(solidLabel, s.opacity, ground);
+        out.push({
+          label: `${where} ${s.variant}: ${s.fg} on ${s.bg} at ${s.opacity} over ${behind} (${theme})`,
+          value: ratio(label, fill),
+          min: 4.5,
+        });
+        out.push({ label: `${where} ${s.variant}: ${s.bg} fill against ${behind} (${theme})`, value: ratio(fill, ground), min: 3 });
       }
-      if (s.bg !== pair.bg) {
-        atLeast(read(bgToken), read(restBg), HOVER_STEP, `${where} ${s.state}: ${s.bg} is a visible step from ${pair.bg} (${theme})`);
+      // The step from rest is judged on an opaque fill only: a translucent one
+      // has a different value on every surface, and the two checks above
+      // already measure it against each of them.
+      if (s.bg !== pair.bg && bg.alpha === 1) {
+        out.push({
+          label: `${where} ${s.variant}: ${s.bg} is a visible step from ${pair.bg} (${theme})`,
+          value: ratio(read(bg.token), read(restBg)),
+          min: HOVER_STEP,
+        });
       }
     }
-    measured++;
   }
-  return measured;
+  return out;
+}
+function measureStates(pair: ClassPair, where: string): number {
+  for (const m of stateMeasurements(pair, where)) {
+    const said = `${m.label} = ${m.value.toFixed(2)}:1`;
+    if (m.value + 1e-9 >= m.min) assert(true, `${said} (>= ${m.min})`);
+    else fail(`${said} (needs >= ${m.min})`);
+  }
+  return pair.states.length;
+}
+/** The labels of every state measurement in a fixture that falls below its floor. */
+function failingStates(literal: string): string[] {
+  const out: string[] = [];
+  for (const pair of scanRosePairings(literal, isColourToken)) {
+    for (const m of stateMeasurements(pair, "fixture")) if (m.value + 1e-9 < m.min) out.push(m.label);
+  }
+  return out;
 }
 // The positive control: the treatment this issue was opened about must be FOUND
 // as a state and must FAIL in light, or the sweep below proves nothing (L1).
@@ -1032,6 +1079,104 @@ function measureStates(pair: ClassPair, where: string): number {
   );
 }
 
+// --- #2856: states behind a theme, a breakpoint or a group variant ----------
+//
+// The state scan above read only a class whose ONE variant was the state, and
+// dropped every class carrying a second colon. So `dark:hover:opacity-60`,
+// `md:hover:bg-error/60` and `group-hover:opacity-50` were never measured, and a
+// rose button could put a translucent hover back behind any of them with this
+// file green. Each shape below must be FOUND, placed in the theme it applies in,
+// and FAIL on the specific measurement it breaks (L1, L140).
+{
+  const rest = "bg-[var(--error)] text-[var(--fg-on-error)]";
+  const one = (literal: string) => scanRosePairings(literal, isColourToken)[0]?.states ?? [];
+  const themesOf = (s: { themes?: string[] } | undefined) => JSON.stringify(s?.themes);
+
+  const dark = one(`"${rest} dark:hover:opacity-60"`);
+  assert(
+    dark.length === 1 && dark[0].state === "hover" && dark[0].variant === "dark:hover" &&
+      dark[0].opacity === 0.6 && themesOf(dark[0]) === '["dark"]',
+    "dark:hover:opacity-60 is found as a hover that applies in the dark theme only",
+  );
+  const darkFails = failingStates(`"${rest} dark:hover:opacity-60"`);
+  assert(
+    darkFails.some((l) => l.includes(" dark:hover: ") && l.endsWith("(dark)")) &&
+      !darkFails.some((l) => l.endsWith("(light)")),
+    `dark:hover:opacity-60 fails in dark and is not measured in light (${darkFails.length} failing)`,
+  );
+
+  const md = one(`"${rest} md:hover:bg-[var(--error)]/60"`);
+  assert(
+    md.length === 1 && md[0].state === "hover" && md[0].variant === "md:hover" &&
+      md[0].bg === "bg-[var(--error)]/60" && themesOf(md[0]) === '["light","dark"]',
+    "md:hover:bg-[var(--error)]/60 is found as a translucent hover fill measured in both themes",
+  );
+  const mdFails = failingStates(`"${rest} md:hover:bg-[var(--error)]/60"`);
+  assert(
+    mdFails.some((l) => l.includes(" md:hover: ") && l.includes("on bg-[var(--error)]/60")),
+    `md:hover:bg-[var(--error)]/60 fails with its label on the translucent fill (${mdFails.length} failing)`,
+  );
+  const named = one(`"${rest} md:hover:bg-error/60"`);
+  assert(
+    named.length === 1 && named[0].bg === "bg-error/60",
+    "a named rose token with an alpha (md:hover:bg-error/60) is found as well as an explicit var()",
+  );
+
+  const group = one(`"${rest} group-hover:opacity-50"`);
+  assert(
+    group.length === 1 && group[0].state === "hover" && group[0].variant === "group-hover" &&
+      themesOf(group[0]) === '["light","dark"]',
+    "group-hover:opacity-50 is found as a hover state in both themes",
+  );
+  assert(
+    failingStates(`"${rest} group-hover:opacity-50"`).some((l) => l.includes(" group-hover: ")),
+    "group-hover:opacity-50 fails when measured",
+  );
+
+  const combined = one(`"${rest} md:dark:hover:opacity-60"`);
+  assert(
+    combined.length === 1 && combined[0].variant === "md:dark:hover" && themesOf(combined[0]) === '["dark"]',
+    "md:dark:hover:opacity-60 is found as a dark only hover at the md breakpoint",
+  );
+  assert(
+    failingStates(`"${rest} md:dark:hover:opacity-60"`).some((l) => l.includes(" md:dark:hover: ") && l.endsWith("(dark)")),
+    "md:dark:hover:opacity-60 fails in dark",
+  );
+
+  // A hover recoloured in ONE theme inherits the rest of its paint from the hover
+  // that applies in both: the dark hover here is the deeper fill AND 60%.
+  const layered = one(`"${rest} hover:bg-[var(--error-hover)] dark:hover:opacity-60"`);
+  const darkHover = layered.find((s) => s.themes?.includes("dark"));
+  const lightHover = layered.find((s) => s.themes?.includes("light"));
+  assert(
+    darkHover?.bg === "bg-[var(--error-hover)]" && darkHover.opacity === 0.6 &&
+      lightHover?.bg === "bg-[var(--error-hover)]" && lightHover.opacity === 1,
+    "a dark hover inherits the fill of the hover that applies in both themes",
+  );
+
+  // The negative control: a variant hover that passes must not be flagged, or the
+  // controls above are satisfied by a scan that fails every variant it sees.
+  const good = `"${rest} dark:hover:bg-[var(--error-hover)] md:hover:bg-[var(--error-hover)] group-hover:bg-[var(--error-hover)]"`;
+  const goodFails = failingStates(good);
+  assert(
+    one(good).length >= 3 && goodFails.length === 0,
+    `opaque rose hover steps behind dark, md and group-hover are found and pass (${one(good).length} states, failing: ${goodFails.join("; ") || "none"})`,
+  );
+
+  // An unrecognised variant is neither measured nor dropped: it is reported by
+  // name so the sweep fails on it, and the next unknown shape is a red build
+  // rather than the next blind spot.
+  const unknown = scanRosePairings(`"${rest} data-[open]:opacity-50 print:bg-white"`, isColourToken)[0];
+  assert(
+    unknown?.unrecognised?.join(" ") === "data-[open]:opacity-50 print:bg-white",
+    `an unrecognised variant carrying a colour or opacity is reported by name (got ${unknown?.unrecognised?.join(" ")})`,
+  );
+  assert(
+    (scanRosePairings(`"${rest} data-[open]:underline disabled:hover:opacity-50"`, isColourToken)[0]?.unrecognised ?? ["x"]).length === 0,
+    "an unrecognised variant painting no colour, and a disabled state, are not reported",
+  );
+}
+
 // The rose hover step itself, by name, in both themes: the label on it, the step
 // from the rest fill, and the fill against every surface. The sweep reaches it
 // through the class string; this reaches it through the token, so a class string
@@ -1064,6 +1209,12 @@ for (const file of rosePairFiles) {
       atLeast(read(fgToken), read(bgToken), 4.5, `${file}:${pair.line} ${pair.fg} on ${pair.bg} (${theme})`);
     }
     roseStatesMeasured += measureStates(pair, `${file}:${pair.line}`);
+    for (const cls of pair.unrecognised) {
+      fail(
+        `${file}:${pair.line} ${cls} carries a variant the rose state scan does not know; ` +
+          "teach parseVariantChain in scripts/lib/scan-rose-pairings.ts which theme and state it applies in",
+      );
+    }
   }
 }
 // One interactive rose state exists today: the destructive button's hover, whose
