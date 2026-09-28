@@ -29,7 +29,7 @@ export const dynamic = "force-dynamic";
  *
  * It runs every five minutes, which is the precision this needs: the reminder lands
  * within five minutes of the 24 hour mark, and a same day booking is reminded on the
- * next tick rather than at some second schedule. It is NOT on the every minute
+ * first tick after the hand-back hold (#2633) rather than at some second schedule. It is NOT on the every minute
  * trigger, which is the invocation already short of CPU headroom (#1245, #2021).
  */
 
@@ -92,6 +92,7 @@ export async function GET(req: NextRequest) {
       const rows = await selectAllPages<{
         id: string;
         starts_at: string;
+        created_at: string;
         reminder_sent_for: string | null;
         status: string;
         attendee_email: string | null;
@@ -103,7 +104,7 @@ export async function GET(req: NextRequest) {
         db
           .from("bookings")
           .select(
-            "id, starts_at, reminder_sent_for, status, attendee_email, agent_email, agent_name, timezone, manage_token, buckets!inner(is_test)",
+            "id, starts_at, created_at, reminder_sent_for, status, attendee_email, agent_email, agent_name, timezone, manage_token, buckets!inner(is_test)",
           )
           .in("status", ["confirmed", "rescheduled"])
           .gt("starts_at", nowIso)
@@ -128,6 +129,7 @@ export async function GET(req: NextRequest) {
           (r): DueBooking => ({
             id: r.id,
             startsAtIso: r.starts_at,
+            createdAtIso: r.created_at,
             reminderSentForIso: r.reminder_sent_for,
             status: r.status,
             attendeeEmail: r.attendee_email,
@@ -189,6 +191,7 @@ export async function GET(req: NextRequest) {
     sent: run.sent,
     failed: run.failed,
     skipped: run.skipped,
+    held: run.held,
     lost: run.lost,
     attempted: run.attempted,
   });
