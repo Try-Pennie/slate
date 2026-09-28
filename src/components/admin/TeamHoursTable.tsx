@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { WEEKDAY_NAMES } from "@/lib/schedule-core";
-import { setByLabel, type TeamHoursGroup, type TeamHoursRow } from "@/lib/admin/team-hours";
+import { setByLabel, type SetBy, type TeamHoursGroup, type TeamHoursRow } from "@/lib/admin/team-hours";
 import { cardCls } from "@/components/ui/styles";
 
 /**
@@ -18,6 +18,10 @@ import { cardCls } from "@/components/ui/styles";
  */
 const DAYS = [1, 2, 3, 4, 5, 6, 7] as const;
 const SHORT = (weekday: number) => WEEKDAY_NAMES[weekday]!.slice(0, 3);
+
+/** The sources somebody should check, drawn at full ink: a week copied from
+ *  cal.com that the agent has not confirmed, and the untouched company default. */
+const EXCEPTIONS: ReadonlySet<SetBy> = new Set<SetBy>(["calcom-import", "seed"]);
 
 /** What the dash in the Set by column means, said once per table (#1757). */
 const DASH_MEANS =
@@ -64,7 +68,7 @@ function Row({ r }: { r: TeamHoursRow }) {
             );
           })}
           <td
-            className={`px-3 py-3 align-top ${r.hours.setBy === "seed" ? "text-fg" : "text-fg-muted"}`}
+            className={`px-3 py-3 align-top ${EXCEPTIONS.has(r.hours.setBy) ? "text-fg" : "text-fg-muted"}`}
           >
             {/* The commonest value on the roster gets the quietest mark (L609),
                 so the exceptions (a cal.com copy, an untouched default) are what

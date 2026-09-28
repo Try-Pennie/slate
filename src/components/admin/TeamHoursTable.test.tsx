@@ -60,7 +60,10 @@ describe("TeamHoursTable", () => {
     expect(within(row).getByText("Arizona (Phoenix)")).toBeTruthy();
     expect(within(row).getByText("10:00am")).toBeTruthy();
     expect(within(row).getByText("6:00pm")).toBeTruthy();
-    expect(within(row).getByText("Copied from cal.com")).toBeTruthy();
+    // An exception to check, so it carries full ink rather than the muted tone.
+    const source = within(row).getByText("Copied from cal.com");
+    expect(source.className).toMatch(/\btext-fg\b/);
+    expect(source.className).not.toMatch(/text-fg-muted/);
     // Six days off, each said, never an empty cell.
     expect(within(row).getAllByText("Off")).toHaveLength(6);
   });
