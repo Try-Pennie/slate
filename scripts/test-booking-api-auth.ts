@@ -31,7 +31,11 @@ const none = { primary: "", secondary: "" };
   );
   // CANARY_CALLERS gates the smoke endpoints, which can stamp the canary's own
   // heartbeat: a partner key there could keep a dead canary looking alive.
-  eq([...CANARY_CALLERS].sort().join(","), "canary,shared", "only the canary (and the legacy pair) may call the smoke endpoints");
+  // The legacy shared key left this set once the canary was seen on its own key
+  // (#2854): Regal holds the shared key, so leaving it here let a partner stamp the
+  // canary's heartbeat.
+  eq([...CANARY_CALLERS].sort().join(","), "canary", "only the canary may call the smoke endpoints");
+  eq(CANARY_CALLERS.includes("shared"), false, "the shared key may not call the smoke endpoints");
 }
 
 // --- env names are derived from the caller, one rule for all of them -------------

@@ -28,7 +28,7 @@ export const dynamic = "force-dynamic";
  * liveness signal and must stay minimal and safe to expose.
  */
 export async function GET(req: NextRequest) {
-  // #2645: the canary's own key (and the legacy shared pair) only, never a partner's.
+  // #2645, #2854: the canary's own key only, never the shared key or a partner's.
   const keys = configuredBookingApiKeys(CANARY_CALLERS);
   const auth = authenticateBearer(req.headers.get("authorization"), keys);
   if (!auth.ok) {

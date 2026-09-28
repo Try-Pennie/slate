@@ -15,6 +15,12 @@ const env = vi.hoisted(() => ({
   bookingApiKeySecondary: vi.fn(() => ""),
   bookingApiKeyFor: vi.fn((_caller: string, _slot: string) => ""),
 }));
+// #2854: the smoke endpoints take the canary's own key and nothing else, so the key
+// these tests authenticate with is the canary's. `bookingApiKeyPrimary` above is the
+// shared key, which is left configured in the refusal test to prove it is refused.
+const canaryKey = vi.hoisted(() => ({ primary: vi.fn(() => ""), secondary: vi.fn(() => "") }));
+const canaryKeyFor = (caller: string, slot: string) =>
+  caller !== "canary" ? "" : slot === "primary" ? canaryKey.primary() : canaryKey.secondary();
 vi.mock("@/lib/env", () => env);
 
 const cf = vi.hoisted(() => ({ getCloudflareContext: vi.fn() }));
@@ -52,13 +58,15 @@ function namespaceAnswering(reply: (url: string, init?: RequestInit) => Promise<
 
 beforeEach(() => {
   vi.clearAllMocks();
-  env.bookingApiKeyPrimary.mockReturnValue("real-key");
-  env.bookingApiKeySecondary.mockReturnValue("");
+  env.bookingApiKeyPrimary.mockReturnValue("");
+  env.bookingApiKeyFor.mockImplementation(canaryKeyFor);
+  canaryKey.primary.mockReturnValue("real-key");
+  canaryKey.secondary.mockReturnValue("");
 });
 
 describe("POST /api/smoke/burst-counter", () => {
   it("fails CLOSED with 503 when no key is configured, and never touches the counter", async () => {
-    env.bookingApiKeyPrimary.mockReturnValue("");
+    canaryKey.primary.mockReturnValue("");
     const asked = namespaceAnswering(async () => Response.json({ count: 1, windowStartMs: 0 }));
     const res = await post();
     expect(res.status).toBe(503);
@@ -69,6 +77,15 @@ describe("POST /api/smoke/burst-counter", () => {
   it("401s a wrong key without reporting anything to the counter", async () => {
     const asked = namespaceAnswering(async () => Response.json({ count: 1, windowStartMs: 0 }));
     const res = await post("Bearer not-the-key");
+    expect(res.status).toBe(401);
+    expect(asked).toEqual([]);
+  });
+
+  // #2854: the shared key is refused here, because Regal holds it.
+  it("401s the shared key without reporting anything to the counter", async () => {
+    env.bookingApiKeyPrimary.mockReturnValue("shared-key");
+    const asked = namespaceAnswering(async () => Response.json({ count: 1, windowStartMs: 0 }));
+    const res = await post("Bearer shared-key");
     expect(res.status).toBe(401);
     expect(asked).toEqual([]);
   });

@@ -100,7 +100,7 @@ async function handle(req: NextRequest) {
   // parse the bearer against env keys) and gate the test bucket BEFORE the tier
   // cascade, so an unauthorized hidden bucket 404s doing the same single resolve
   // an unknown code does (no timing signal that it exists, #601).
-  // #2645: the canary's own key (and the legacy shared pair) only, never a partner's.
+  // #2645, #2854: the canary's own key only, never the shared key or a partner's.
   // #2660: OR the code is the PUBLIC test bucket and (#2666) the caller carries a
   // good pass for it, which `/book` hands only to a page on an approved website. The
   // pass is checked against THIS code, so it can never authorise a hidden bucket or

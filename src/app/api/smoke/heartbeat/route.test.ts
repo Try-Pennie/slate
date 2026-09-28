@@ -11,6 +11,12 @@ const env = vi.hoisted(() => ({
   bookingApiKeySecondary: vi.fn(() => ""),
   bookingApiKeyFor: vi.fn((_caller: string, _slot: string) => ""),
 }));
+// #2854: the smoke endpoints take the canary's own key and nothing else, so the key
+// these tests authenticate with is the canary's. `bookingApiKeyPrimary` above is the
+// shared key, which is left configured in the refusal test to prove it is refused.
+const canaryKey = vi.hoisted(() => ({ primary: vi.fn(() => ""), secondary: vi.fn(() => "") }));
+const canaryKeyFor = (caller: string, slot: string) =>
+  caller !== "canary" ? "" : slot === "primary" ? canaryKey.primary() : canaryKey.secondary();
 const heartbeat = vi.hoisted(() => ({ recordHeartbeat: vi.fn(async () => {}) }));
 
 const seen = vi.hoisted(() => ({ recordCallerSeen: vi.fn() }));
@@ -32,13 +38,14 @@ function post(authorization?: string, lane?: string) {
 beforeEach(() => {
   vi.clearAllMocks();
   env.bookingApiKeyPrimary.mockReturnValue("");
-  env.bookingApiKeySecondary.mockReturnValue("");
-  env.bookingApiKeyFor.mockReturnValue("");
+  env.bookingApiKeyFor.mockImplementation(canaryKeyFor);
+  canaryKey.primary.mockReturnValue("");
+  canaryKey.secondary.mockReturnValue("");
   heartbeat.recordHeartbeat.mockResolvedValue(undefined);
 });
 
 // #2645: this endpoint keeps the canary's heartbeat fresh, so it takes only the
-// canary's own key (and the legacy shared pair). A partner key that could stamp it
+// canary's own key. A partner key that could stamp it
 // would keep a dead canary looking alive.
 describe("POST /api/smoke/heartbeat caller scope (#2645)", () => {
   beforeEach(() => {
@@ -82,9 +89,12 @@ describe("POST /api/smoke/heartbeat records the lanes' move to their own key (#2
     expect((seen.recordCallerSeen.mock.calls[0] as unknown[])[0]).toBe("canary-lanes");
   });
 
-  it("records nothing when the shared key stamps, since that is not the move", async () => {
+  // #2854: the shared key used to stamp here and record nothing. Regal holds it, so
+  // it is refused outright now, and a refused stamp can record no sighting either.
+  it("refuses the shared key, stamping and recording nothing", async () => {
     const res = await post("Bearer shared-secret");
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(401);
+    expect(heartbeat.recordHeartbeat).not.toHaveBeenCalled();
     expect(seen.recordCallerSeen).not.toHaveBeenCalled();
   });
 
@@ -103,29 +113,29 @@ describe("POST /api/smoke/heartbeat (#525)", () => {
   });
 
   it("returns 401 and stamps nothing for a wrong key", async () => {
-    env.bookingApiKeyPrimary.mockReturnValue("real-secret");
+    canaryKey.primary.mockReturnValue("real-secret");
     const res = await post("Bearer wrong");
     expect(res.status).toBe(401);
     expect(heartbeat.recordHeartbeat).not.toHaveBeenCalled();
   });
 
   it("returns 401 when the Authorization header is missing", async () => {
-    env.bookingApiKeyPrimary.mockReturnValue("real-secret");
+    canaryKey.primary.mockReturnValue("real-secret");
     const res = await post();
     expect(res.status).toBe(401);
     expect(heartbeat.recordHeartbeat).not.toHaveBeenCalled();
   });
 
   it("stamps the smoke-canary heartbeat and returns 200 on a valid key", async () => {
-    env.bookingApiKeyPrimary.mockReturnValue("real-secret");
+    canaryKey.primary.mockReturnValue("real-secret");
     const res = await post("Bearer real-secret");
     expect(res.status).toBe(200);
     expect(heartbeat.recordHeartbeat).toHaveBeenCalledWith("smoke-canary");
   });
 
   it("authenticates the secondary key too (zero-downtime rotation)", async () => {
-    env.bookingApiKeyPrimary.mockReturnValue("old-secret");
-    env.bookingApiKeySecondary.mockReturnValue("new-secret");
+    canaryKey.primary.mockReturnValue("old-secret");
+    canaryKey.secondary.mockReturnValue("new-secret");
     const res = await post("Bearer new-secret");
     expect(res.status).toBe(200);
     expect(heartbeat.recordHeartbeat).toHaveBeenCalledWith("smoke-canary");
@@ -134,14 +144,14 @@ describe("POST /api/smoke/heartbeat (#525)", () => {
   // #982: the full book/reschedule/cancel pass stamps its OWN heartbeat so a
   // silently-dropped full run is no longer masked by the 30-min dry tick.
   it("stamps smoke-canary-full when lane=smoke-canary-full", async () => {
-    env.bookingApiKeyPrimary.mockReturnValue("real-secret");
+    canaryKey.primary.mockReturnValue("real-secret");
     const res = await post("Bearer real-secret", "smoke-canary-full");
     expect(res.status).toBe(200);
     expect(heartbeat.recordHeartbeat).toHaveBeenCalledWith("smoke-canary-full");
   });
 
   it("defaults to the smoke-canary lane when no lane is given", async () => {
-    env.bookingApiKeyPrimary.mockReturnValue("real-secret");
+    canaryKey.primary.mockReturnValue("real-secret");
     const res = await post("Bearer real-secret");
     expect(res.status).toBe(200);
     expect(heartbeat.recordHeartbeat).toHaveBeenCalledWith("smoke-canary");
@@ -152,14 +162,14 @@ describe("POST /api/smoke/heartbeat (#525)", () => {
   // switch looking alive while that lane is actually dead, so an unknown lane is
   // rejected and stamps NOTHING.
   it("rejects a real cron lane with 400 and stamps nothing", async () => {
-    env.bookingApiKeyPrimary.mockReturnValue("real-secret");
+    canaryKey.primary.mockReturnValue("real-secret");
     const res = await post("Bearer real-secret", "sync");
     expect(res.status).toBe(400);
     expect(heartbeat.recordHeartbeat).not.toHaveBeenCalled();
   });
 
   it("rejects an unknown lane with 400 and stamps nothing", async () => {
-    env.bookingApiKeyPrimary.mockReturnValue("real-secret");
+    canaryKey.primary.mockReturnValue("real-secret");
     const res = await post("Bearer real-secret", "bogus");
     expect(res.status).toBe(400);
     expect(heartbeat.recordHeartbeat).not.toHaveBeenCalled();
@@ -168,7 +178,7 @@ describe("POST /api/smoke/heartbeat (#525)", () => {
   // Auth is checked BEFORE the lane, so a bad key on a bogus lane is still a 401
   // (do not leak which lanes are valid to an unauthenticated caller).
   it("checks auth before the lane (wrong key on a bogus lane is 401)", async () => {
-    env.bookingApiKeyPrimary.mockReturnValue("real-secret");
+    canaryKey.primary.mockReturnValue("real-secret");
     const res = await post("Bearer wrong", "bogus");
     expect(res.status).toBe(401);
     expect(heartbeat.recordHeartbeat).not.toHaveBeenCalled();

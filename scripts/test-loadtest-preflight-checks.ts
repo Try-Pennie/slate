@@ -17,6 +17,7 @@ import {
 } from "./loadtest/preflight-checks.ts";
 import { stubCreateEvent } from "../src/lib/google/loadtest-stub.ts";
 import { deterministicEventId } from "../src/lib/booking/core.ts";
+import { authenticateBearer } from "../src/lib/booking/api-auth.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
 // --- an id the stub really produced is recognised -----------------------------
@@ -150,6 +151,30 @@ import { assert, eq, finish } from "./lib/harness.ts";
   assert(!v.ok, "an unreadable body at 200 is refused");
   const w = loadtestModeVerdict(200, "not json");
   assert(!w.ok, "and so is a string body");
+}
+
+{
+  // #2854: /api/smoke/version takes the canary's own key and nothing else, so a
+  // load test Worker provisioned the old way (the shared key only) answers the
+  // route's own "not configured" 503. That is a provisioning fault, so it names the
+  // key to set, and it is NOT waited out as a redeploy blip would be. The body is
+  // taken from the real authorizer rather than copied, so a reworded refusal cannot
+  // quietly turn this back into an unexplained wait.
+  const unconfigured = authenticateBearer("Bearer anything", []);
+  assert(!unconfigured.ok && unconfigured.status === 503, "no configured key is the authorizer's 503");
+  const body = unconfigured.ok ? {} : { error: unconfigured.error };
+  const mode = loadtestModeVerdict(503, body);
+  assert(!mode.ok && mode.why.includes("BOOKING_API_KEY_CANARY"), "a deployment with no canary key is told which key to set");
+  const fault = faultModeVerdict(503, body, { faultPct: 10 });
+  assert(!fault.ok && !fault.retriable, "and the fault poll does not wait it out");
+  assert(!fault.ok && fault.why.includes("BOOKING_API_KEY_CANARY"), "and says the same thing");
+  // A refused key is the other shape of the same mistake: the drivers hold a value
+  // the Worker holds under another name.
+  const refused = loadtestModeVerdict(401, { error: "unauthorized" });
+  assert(!refused.ok && refused.why.includes("BOOKING_API_KEY_CANARY"), "a refused key also names the canary slot");
+  // Control: a plain 503 with no such body is still a blip, and still waited out.
+  const blip = faultModeVerdict(503, {}, { faultPct: 10 });
+  assert(!blip.ok && blip.retriable && !blip.why.includes("BOOKING_API_KEY_CANARY"), "an ordinary 503 is still retried, with no key advice");
 }
 
 // --- the deployment is really injecting faults (#2262) ------------------------

@@ -13,6 +13,12 @@ const env = vi.hoisted(() => ({
   bookingApiKeySecondary: vi.fn(() => ""),
   bookingApiKeyFor: vi.fn((_caller: string, _slot: string) => ""),
 }));
+// #2854: the smoke endpoints take the canary's own key and nothing else, so the key
+// these tests authenticate with is the canary's. `bookingApiKeyPrimary` above is the
+// shared key, which is left configured in the refusal test to prove it is refused.
+const canaryKey = vi.hoisted(() => ({ primary: vi.fn(() => ""), secondary: vi.fn(() => "") }));
+const canaryKeyFor = (caller: string, slot: string) =>
+  caller !== "canary" ? "" : slot === "primary" ? canaryKey.primary() : canaryKey.secondary();
 vi.mock("@/lib/env", () => env);
 vi.mock("@/lib/build-info", () => ({ BUILD_COMMIT: "abc1234" }));
 
@@ -27,7 +33,9 @@ function get(authorization?: string) {
 beforeEach(() => {
   vi.clearAllMocks();
   env.bookingApiKeyPrimary.mockReturnValue("");
-  env.bookingApiKeySecondary.mockReturnValue("");
+  env.bookingApiKeyFor.mockImplementation(canaryKeyFor);
+  canaryKey.primary.mockReturnValue("");
+  canaryKey.secondary.mockReturnValue("");
 });
 
 describe("GET /api/smoke/version", () => {
@@ -39,21 +47,30 @@ describe("GET /api/smoke/version", () => {
   });
 
   it("401s a missing authorization header without revealing the commit", async () => {
-    env.bookingApiKeyPrimary.mockReturnValue("real-key");
+    canaryKey.primary.mockReturnValue("real-key");
     const res = await get();
     expect(res.status).toBe(401);
     expect(JSON.stringify(await res.json())).not.toContain("abc1234");
   });
 
   it("401s a wrong key without revealing the commit", async () => {
-    env.bookingApiKeyPrimary.mockReturnValue("real-key");
+    canaryKey.primary.mockReturnValue("real-key");
     const res = await get("Bearer not-the-key");
     expect(res.status).toBe(401);
     expect(JSON.stringify(await res.json())).not.toContain("abc1234");
   });
 
+  // #2854: the shared key is refused here, because Regal holds it.
+  it("401s the shared key without revealing the commit", async () => {
+    canaryKey.primary.mockReturnValue("real-key");
+    env.bookingApiKeyPrimary.mockReturnValue("shared-key");
+    const res = await get("Bearer shared-key");
+    expect(res.status).toBe(401);
+    expect(JSON.stringify(await res.json())).not.toContain("abc1234");
+  });
+
   it("returns the build commit to a correctly-keyed caller", async () => {
-    env.bookingApiKeyPrimary.mockReturnValue("real-key");
+    canaryKey.primary.mockReturnValue("real-key");
     const res = await get("Bearer real-key");
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ commit: "abc1234", loadtest: false, faultPct: 0 });
@@ -69,7 +86,7 @@ describe("GET /api/smoke/version", () => {
     const saved = process.env.SLATE_LOADTEST;
     process.env.SLATE_LOADTEST = "true";
     try {
-      env.bookingApiKeyPrimary.mockReturnValue("real-key");
+      canaryKey.primary.mockReturnValue("real-key");
       const res = await get("Bearer real-key");
       expect(await res.json()).toEqual({
         commit: "abc1234",
@@ -84,8 +101,8 @@ describe("GET /api/smoke/version", () => {
   });
 
   it("accepts the secondary key too, so the key can be rotated without a deploy gap", async () => {
-    env.bookingApiKeyPrimary.mockReturnValue("old-key");
-    env.bookingApiKeySecondary.mockReturnValue("new-key");
+    canaryKey.primary.mockReturnValue("old-key");
+    canaryKey.secondary.mockReturnValue("new-key");
     const res = await get("Bearer new-key");
     expect(res.status).toBe(200);
     expect((await res.json()).commit).toBe("abc1234");
@@ -97,7 +114,7 @@ describe("GET /api/smoke/version", () => {
     // every request perfectly and would satisfy the "no 5xx under fault" bar with
     // no fault having happened. Zero is the answer everywhere but a fault leg, and
     // it is what the preflight requires before a steady pass.
-    env.bookingApiKeyPrimary.mockReturnValue("real-key");
+    canaryKey.primary.mockReturnValue("real-key");
     const res = await get("Bearer real-key");
     expect((await res.json()).faultPct).toBe(0);
   });
@@ -111,7 +128,7 @@ describe("GET /api/smoke/version", () => {
     process.env.SLATE_LOADTEST = "true";
     process.env.SLACK_BOT_TOKEN = "xoxb-not-a-real-token";
     try {
-      env.bookingApiKeyPrimary.mockReturnValue("real-key");
+      canaryKey.primary.mockReturnValue("real-key");
       const body = await (await get("Bearer real-key")).json();
       expect(body.productionSecrets).toEqual(["SLACK_BOT_TOKEN"]);
       // The NAMES, never the values: this is answered over the wire and logged.
@@ -129,7 +146,7 @@ describe("GET /api/smoke/version", () => {
     // config leak dressed as a safety check. The field exists only under the flag.
     process.env.SLACK_BOT_TOKEN = "xoxb-not-a-real-token";
     try {
-      env.bookingApiKeyPrimary.mockReturnValue("real-key");
+      canaryKey.primary.mockReturnValue("real-key");
       const body = await (await get("Bearer real-key")).json();
       expect(body).not.toHaveProperty("productionSecrets");
     } finally {
@@ -144,7 +161,7 @@ describe("GET /api/smoke/version", () => {
     // deployment rather than about its configuration, and `faultPct` (#2262) says
     // whether it is injecting Google failures. Widening this list is the
     // deliberate act; a new key appearing without one fails here.
-    env.bookingApiKeyPrimary.mockReturnValue("real-key");
+    canaryKey.primary.mockReturnValue("real-key");
     const res = await get("Bearer real-key");
     expect(Object.keys(await res.json()).sort()).toEqual(["commit", "faultPct", "loadtest"]);
   });

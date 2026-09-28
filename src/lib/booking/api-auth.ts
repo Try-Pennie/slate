@@ -33,9 +33,10 @@ export type NamedBookingApiCaller = Exclude<BookingApiCaller, "shared">;
 /**
  * Who may call the smoke endpoints. They can stamp the canary's own heartbeat and
  * reach the hidden test buckets, so a partner key there could keep a dead canary
- * looking alive. `shared` stays until the canary has moved to its own key.
+ * looking alive. The shared key left once the canary was seen on its own (#2854),
+ * because Regal still holds it.
  */
-export const CANARY_CALLERS: readonly BookingApiCaller[] = ["canary", "shared"];
+export const CANARY_CALLERS: readonly BookingApiCaller[] = ["canary"];
 
 /**
  * Whether an authenticated caller may book (or check) a test bucket through the
