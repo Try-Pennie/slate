@@ -477,6 +477,15 @@ const PREVIEW_BELOW_TIER: BelowFinding = {
 };
 const PREVIEW_BELOW_TIER_URL = "https://slate.trypennie.app/admin/bookings/5b0c7a8e-2f41-4d7e-9a61-0c3f1e2d4b5a";
 
+/** #2594: the same lead booked correctly on XBC 422 into the Very High pool, then
+ *  re-scored to 512 four minutes later. */
+const PREVIEW_RESCORED: BelowFinding = {
+  ...PREVIEW_BELOW_TIER,
+  booking: { ...PREVIEW_BELOW_TIER.booking, bucket_id: "b-422" },
+  bucket: { id: "b-422", code: "422", name: "Very High | Both | Non-Legal", criteria: { debt_team: "very_high" } },
+  pool: { rank: 4, label: "Very High" },
+};
+
 // #2715. The 2026-09-25 shape: a partner testing from localhost onto a real Low
 // advisor at 13:00 UTC.
 const PREVIEW_OFFSITE: OffsiteFinding = {
@@ -987,13 +996,27 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     key: "booking_below_lead_tier:*",
     state: "the catch-all chose the Low pool for an Ultra High lead",
     channel: "alert",
-    text: formatBelowLeadTierAlert(PREVIEW_BELOW_TIER, true, PREVIEW_BELOW_TIER_URL),
+    text: formatBelowLeadTierAlert(PREVIEW_BELOW_TIER, { catchall: true, requestedCode: "" }, PREVIEW_BELOW_TIER_URL),
+  },
+  // #2594: the arrival code tells a re-score after booking apart from a routing
+  // fault, so each gets its own state, plus the one where the code cannot say.
+  {
+    key: "booking_below_lead_tier:*",
+    state: "arrived on a lower code, and Salesforce re-scored the lead after booking",
+    channel: "alert",
+    text: formatBelowLeadTierAlert(PREVIEW_RESCORED, { catchall: false, requestedCode: "422" }, PREVIEW_BELOW_TIER_URL),
   },
   {
     key: "booking_below_lead_tier:*",
-    state: "routed on its own code, and the lead was scored higher since",
+    state: "arrived on today's code, and the routing placed it lower",
     channel: "alert",
-    text: formatBelowLeadTierAlert(PREVIEW_BELOW_TIER, false, PREVIEW_BELOW_TIER_URL),
+    text: formatBelowLeadTierAlert(PREVIEW_BELOW_TIER, { catchall: false, requestedCode: "512" }, PREVIEW_BELOW_TIER_URL),
+  },
+  {
+    key: "booking_below_lead_tier:*",
+    state: "routed on its own code, and the arrival code is not recorded",
+    channel: "alert",
+    text: formatBelowLeadTierAlert(PREVIEW_BELOW_TIER, { catchall: false, requestedCode: null }, PREVIEW_BELOW_TIER_URL),
   },
   {
     key: "booking_below_lead_tier:*",

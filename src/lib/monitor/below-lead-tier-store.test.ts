@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { loadUpcomingBookingsInBuckets, loadCatchallByBooking } from "./below-lead-tier-store";
+import { loadUpcomingBookingsInBuckets, loadRoutingContextByBooking } from "./below-lead-tier-store";
 
 // #2593. The two reads behind the below-tier check. The fake HONOURS the filters
 // rather than asserting a query shape, so a read that forgot one returns the rows
@@ -106,23 +106,36 @@ describe("loadUpcomingBookingsInBuckets", () => {
   });
 });
 
-describe("loadCatchallByBooking", () => {
+describe("loadRoutingContextByBooking", () => {
   it("answers per booking, and a booking with no routing decision is simply absent", async () => {
     const db = fakeDb({
       routing_decisions: [
-        { booking_id: "bk-1", catchall_applied: true },
-        { booking_id: "bk-2", catchall_applied: false },
-        { booking_id: "other", catchall_applied: true },
+        { booking_id: "bk-1", catchall_applied: true, requested_code: "", created_at: EARLIER },
+        { booking_id: "bk-2", catchall_applied: false, requested_code: "422", created_at: EARLIER },
+        { booking_id: "other", catchall_applied: true, requested_code: null, created_at: EARLIER },
       ],
     });
-    const m = await loadCatchallByBooking(db, ["bk-1", "bk-2", "bk-3"]);
-    expect(m.get("bk-1")).toBe(true);
-    expect(m.get("bk-2")).toBe(false);
+    const m = await loadRoutingContextByBooking(db, ["bk-1", "bk-2", "bk-3"]);
+    expect(m.get("bk-1")).toEqual({ catchall: true, requestedCode: "" });
+    // #2594: the code the lead ARRIVED with, which is what tells a re-score after
+    // booking apart from a lead routed below its own code.
+    expect(m.get("bk-2")).toEqual({ catchall: false, requestedCode: "422" });
     expect(m.has("bk-3")).toBe(false);
     expect(m.has("other")).toBe(false);
   });
 
+  it("takes the arrival code from the NEWEST decision, whatever order the rows arrive in", async () => {
+    const rows = [
+      { booking_id: "bk-1", catchall_applied: false, requested_code: "211", created_at: EARLIER },
+      { booking_id: "bk-1", catchall_applied: false, requested_code: "422", created_at: LATER },
+    ];
+    for (const ordered of [rows, [...rows].reverse()]) {
+      const m = await loadRoutingContextByBooking(fakeDb({ routing_decisions: ordered }), ["bk-1"]);
+      expect(m.get("bk-1")?.requestedCode).toBe("422");
+    }
+  });
+
   it("THROWS on a read error, so the page says the context could not be read", async () => {
-    await expect(loadCatchallByBooking(fakeDb({}, { error: "timeout" }), ["bk-1"])).rejects.toThrow();
+    await expect(loadRoutingContextByBooking(fakeDb({}, { error: "timeout" }), ["bk-1"])).rejects.toThrow();
   });
 });
