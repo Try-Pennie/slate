@@ -118,6 +118,15 @@
 
   /* Error semantics (S1) */
   --error:              var(--pennie-rose);
+  /* The rose fill a pressed-for destructive button wears on hover (#2836). It
+     replaced `hover:opacity-90`, which faded the label and the fill together
+     over whatever was behind the button: white on the rose at 90% over a white
+     card read 4.39:1, under AA, at the moment of pressing. An opaque step has
+     one value wherever it lands. Deeper in light, so the white label GAINS
+     contrast (6.61:1) and the step from rest is 1.29:1; the dark flip below
+     steps the other way for the same reason. Paired with --fg-on-error and
+     asserted in both themes in scripts/test-contrast.ts. */
+  --error-hover:        rgb(170, 48, 48);
 
   /* The test mode marker's pair (#2660), declared with the palette so the
      contrast guard reads it beside every other measured pairing. The rules that
@@ -313,6 +322,10 @@
      on it; white, which is correct in light, reads 2.39:1 and would be an
      invisible label rather than a dim one (#2455). */
   --fg-on-error:      var(--pennie-graphite);
+  /* The hover step, flipped with the rose and its label (#2836). Dark's label is
+     graphite, so the step that keeps it readable is LIGHTER: 6.76:1 for the
+     label, 1.30:1 from the rest fill, matching light's step the other way. */
+  --error-hover:      rgb(236, 176, 176);
 }
 
 /* Dark variant for utilities: drive `dark:` off the data attribute, not the OS. */

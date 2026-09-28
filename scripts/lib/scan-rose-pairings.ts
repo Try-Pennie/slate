@@ -21,7 +21,74 @@ export type ClassPair = {
   literal: string;
   /** 1 based line of the literal's opening quote. */
   line: number;
+  /**
+   * What the same control paints in each INTERACTIVE state the literal declares
+   * (#2836). The rest pair is not the only pair a person reads: a pointer resting
+   * on the button is in the hover state at the moment of pressing, and a keyboard
+   * user is in the focus state. A state that restates neither colour inherits the
+   * rest one, so every entry is a complete pair ready to measure.
+   */
+  states: StatePaint[];
 };
+
+/** One interactive state of a rose pairing, resolved to a complete paint. */
+export type StatePaint = {
+  /** The variant prefix (`hover`, `focus`, `focus-visible`, `active`). */
+  state: string;
+  /** The background colour class in that state, unprefixed. */
+  bg: string;
+  /** The text colour class in that state, unprefixed. */
+  fg: string;
+  /**
+   * The element's opacity in that state, 1 when none is declared. Anything below
+   * 1 fades the fill AND the label over whatever is behind the control, so the
+   * pair can only be measured once it is composited over a real background.
+   */
+  opacity: number;
+};
+
+/**
+ * The interactive states measured. `disabled:` is deliberately absent: WCAG 1.4.3
+ * exempts an inactive control, and `disabled:opacity-60` is how every button here
+ * says it cannot be pressed.
+ */
+const INTERACTIVE_STATES = ["hover", "focus", "focus-visible", "active"];
+
+/**
+ * Every interactive state a literal declares a colour or an opacity for, with the
+ * rest classes filled in wherever the state does not restate them.
+ */
+export function interactiveStates(
+  literal: string,
+  restBg: string,
+  restFg: string,
+  isColour: (token: string) => boolean,
+): StatePaint[] {
+  const out: StatePaint[] = [];
+  const classes = literal.split(/\s+/).filter(Boolean);
+  for (const state of INTERACTIVE_STATES) {
+    const own = classes
+      .filter((c) => c.startsWith(`${state}:`))
+      .map((c) => c.slice(state.length + 1))
+      .filter((c) => !c.includes(":"));
+    const colour = (c: string, prefix: "bg" | "text") => {
+      if (!c.startsWith(`${prefix}-`)) return false;
+      const t = tokenForColourClass(c);
+      return t !== null && (/^\w+-\[var\(/.test(c) || isColour(t));
+    };
+    const bg = own.find((c) => colour(c, "bg"));
+    const fg = own.find((c) => colour(c, "text"));
+    const op = own.map((c) => c.match(/^opacity-(\d+)$/)).find((m) => m !== null);
+    if (!bg && !fg && !op) continue;
+    out.push({
+      state,
+      bg: bg ?? restBg,
+      fg: fg ?? restFg,
+      opacity: op ? Number(op[1]) / 100 : 1,
+    });
+  }
+  return out;
+}
 
 /** Class names that paint the rose, in either half. */
 const ROSE = new Set(["error", "[var(--error)]"]);
@@ -43,8 +110,10 @@ export function tokenForColourClass(cls: string): string | null {
 
 /**
  * Every literal whose UNPREFIXED classes include a background and a text colour,
- * at least one of which is the rose. Hover and other variant classes are skipped:
- * they describe a different state, and the at rest pair is the one always drawn.
+ * at least one of which is the rose. Hover and other variant classes are not
+ * paired with the rest classes, since they describe a different state; each
+ * interactive state is reported separately on `states` (#2836), resolved to the
+ * complete pair it paints.
  *
  * A text class is only a colour if `isColour` says its token exists, which is how
  * `text-sm` and `text-center` are told from `text-fg` without a list of sizes.
@@ -72,7 +141,9 @@ export function scanRosePairings(src: string, isColour: (token: string) => boole
     const bare = (c: string) => c.replace(/^(bg|text)-/, "");
     if (!bgs.some((c) => ROSE.has(bare(c))) && !fgs.some((c) => ROSE.has(bare(c)))) continue;
     const line = src.slice(0, m.index ?? 0).split("\n").length;
-    for (const bg of bgs) for (const fg of fgs) out.push({ bg, fg, literal, line });
+    for (const bg of bgs) {
+      for (const fg of fgs) out.push({ bg, fg, literal, line, states: interactiveStates(literal, bg, fg, isColour) });
+    }
   }
   return out;
 }

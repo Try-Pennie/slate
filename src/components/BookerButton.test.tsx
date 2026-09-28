@@ -71,6 +71,10 @@ describe("bookerButtonClass", () => {
     expect(danger).toContain("bg-[var(--error)]");
     expect(danger).toContain("text-[var(--fg-on-error)]");
     expect(danger).not.toContain("text-white");
+    // #2836: the hover is an opaque step, never an opacity fade over whatever
+    // is behind the button (4.39:1 in light).
+    expect(danger).toContain("hover:bg-[var(--error-hover)]");
+    expect(danger.some((c) => /^hover:opacity-/.test(c))).toBe(false);
     for (const other of ["primary", "secondary", "quiet"] as const) {
       expect(classesFor(other, "md")).not.toContain("bg-[var(--error)]");
     }

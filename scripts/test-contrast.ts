@@ -12,7 +12,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { assert, fail, finish } from "./lib/harness.ts";
 import { ratio, type RGB } from "./lib/wcag-contrast.ts";
-import { scanRosePairings, tokenForColourClass } from "./lib/scan-rose-pairings.ts";
+import { scanRosePairings, tokenForColourClass, type ClassPair } from "./lib/scan-rose-pairings.ts";
 import { sourceFiles } from "./lib/source-files.ts";
 
 // --- Token parsing ----------------------------------------------------------
@@ -953,7 +953,103 @@ const rosePairFiles = sourceFiles({
   match: /\.(ts|tsx)$/,
   exclude: (f) => /\.test\.tsx?$/.test(f),
 });
+// --- #2836: the same pairs in every INTERACTIVE state, over a real background --
+//
+// The sweep above measured each rose pair AT REST, and the danger button's hover
+// was `hover:opacity-90`, which nobody measured. Opacity fades the label AND the
+// fill over whatever is behind the button, so the hovered pair is a composite and
+// has a different value on every surface it can land on: white on the rose at 90%
+// over a white card read 4.39:1 in light, under AA, at the moment of pressing.
+//
+// So every state a class string declares (hover, focus, focus-visible, active) is
+// resolved to the fill and label it really paints, composited over each surface a
+// control can sit on, and measured in both themes. A state that CHANGES the fill
+// must also be a visible step from the rest fill, or the hover says nothing.
+const STATE_BEHIND = ["--field", "--surface", "--bg"];
+const HOVER_STEP = 1.2;
+function measureStates(pair: ClassPair, where: string): number {
+  let measured = 0;
+  for (const s of pair.states) {
+    const bgToken = tokenForColourClass(s.bg);
+    const fgToken = tokenForColourClass(s.fg);
+    const restBg = tokenForColourClass(pair.bg);
+    if (!bgToken || !fgToken || !restBg) continue;
+    for (const [theme, read] of [
+      ["light", r],
+      ["dark", rDark],
+    ] as [string, (n: string) => RGB][]) {
+      for (const behind of STATE_BEHIND) {
+        const ground = read(behind);
+        const fill = composite(read(bgToken), s.opacity, ground);
+        const label = composite(read(fgToken), s.opacity, ground);
+        atLeast(label, fill, 4.5, `${where} ${s.state}: ${s.fg} on ${s.bg} at ${s.opacity} over ${behind} (${theme})`);
+        atLeast(fill, ground, 3, `${where} ${s.state}: ${s.bg} fill against ${behind} (${theme})`);
+      }
+      if (s.bg !== pair.bg) {
+        atLeast(read(bgToken), read(restBg), HOVER_STEP, `${where} ${s.state}: ${s.bg} is a visible step from ${pair.bg} (${theme})`);
+      }
+    }
+    measured++;
+  }
+  return measured;
+}
+// The positive control: the treatment this issue was opened about must be FOUND
+// as a state and must FAIL in light, or the sweep below proves nothing (L1).
+{
+  const old = scanRosePairings(
+    '"bg-[var(--error)] text-[var(--fg-on-error)] transition-opacity hover:opacity-90"',
+    isColourToken,
+  );
+  const st = old[0]?.states ?? [];
+  assert(
+    st.length === 1 && st[0].state === "hover" && st[0].opacity === 0.9 &&
+      st[0].bg === "bg-[var(--error)]" && st[0].fg === "text-[var(--fg-on-error)]",
+    "the state scan finds hover:opacity-90 as a hover that keeps the rest pair at 90%",
+  );
+  below(
+    composite(r("--fg-on-error"), 0.9, r("--surface")),
+    composite(r("--error"), 0.9, r("--surface")),
+    4.5,
+    "the old danger hover, white on the rose at 90% over a white card - the 4.39 this issue was opened about",
+  );
+  const focus = scanRosePairings('"bg-[var(--error)] text-white focus-visible:opacity-80"', isColourToken)[0]?.states ?? [];
+  assert(
+    focus.length === 1 && focus[0].state === "focus-visible" && focus[0].opacity === 0.8,
+    "a focus state is found as well as a hover one",
+  );
+  const recoloured = scanRosePairings(
+    '"bg-[var(--error)] text-white hover:bg-[var(--error-hover)] disabled:opacity-60"',
+    isColourToken,
+  )[0]?.states ?? [];
+  assert(
+    recoloured.length === 1 && recoloured[0].bg === "bg-[var(--error-hover)]" &&
+      recoloured[0].fg === "text-white" && recoloured[0].opacity === 1,
+    "a hover that changes only the fill inherits the rest label, and disabled is not an interactive state",
+  );
+  assert(
+    (scanRosePairings('"bg-[var(--error)] text-white hover:underline"', isColourToken)[0]?.states ?? []).length === 0,
+    "a hover that paints no colour or opacity is not a state to measure",
+  );
+}
+
+// The rose hover step itself, by name, in both themes: the label on it, the step
+// from the rest fill, and the fill against every surface. The sweep reaches it
+// through the class string; this reaches it through the token, so a class string
+// that stopped using it cannot take the measurement with it.
+for (const [theme, read] of [
+  ["light", r],
+  ["dark", rDark],
+] as [string, (n: string) => RGB][]) {
+  const hoverFill = read("--error-hover");
+  atLeast(read("--fg-on-error"), hoverFill, 4.5, `danger label on the rose hover fill (${theme})`);
+  atLeast(hoverFill, read("--error"), HOVER_STEP, `the rose hover fill is a visible step from rest (${theme})`);
+  for (const surface of STATE_BEHIND) {
+    atLeast(hoverFill, read(surface), 3, `the rose hover fill against ${surface} (${theme})`);
+  }
+}
+
 let rosePairsMeasured = 0;
+let roseStatesMeasured = 0;
 for (const file of rosePairFiles) {
   const src = readFileSync(file, "utf8");
   for (const pair of scanRosePairings(src, isColourToken)) {
@@ -967,13 +1063,19 @@ for (const file of rosePairFiles) {
     ] as [string, (n: string) => RGB][]) {
       atLeast(read(fgToken), read(bgToken), 4.5, `${file}:${pair.line} ${pair.fg} on ${pair.bg} (${theme})`);
     }
+    roseStatesMeasured += measureStates(pair, `${file}:${pair.line}`);
   }
 }
-// Five literals hold a rose pairing today: the booker's danger variant, the
-// lead's cancel confirm, the admin panel's one destructive confirm constant, and
-// the sync banner with its link. A sweep that measured fewer read the wrong tree
-// or lost its pattern rather than finding a clean one (L98).
-assert(rosePairsMeasured >= 5, `the rose pairing sweep measured ${rosePairsMeasured} pairs in src (expects at least 5)`);
+// One interactive rose state exists today: the destructive button's hover, whose
+// colours live in ONE constant that the booker's danger variant and the lead's
+// cancel confirm both read. Fewer than one means the sweep lost it (L98).
+assert(roseStatesMeasured >= 1, `the rose state sweep measured ${roseStatesMeasured} interactive states in src (expects at least 1)`);
+// Four literals hold a rose pairing today: the destructive fill constant (which
+// the booker's danger variant and the lead's cancel confirm both read since
+// #2836, where they were two copies), the admin panel's one destructive confirm
+// constant, and the sync banner with its link. A sweep that measured fewer read
+// the wrong tree or lost its pattern rather than finding a clean one (L98).
+assert(rosePairsMeasured >= 4, `the rose pairing sweep measured ${rosePairsMeasured} pairs in src (expects at least 4)`);
 
 
 finish();

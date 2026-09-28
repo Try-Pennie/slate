@@ -64,6 +64,23 @@ const SIZES: Record<BookerButtonSize, string> = {
 };
 
 /**
+ * The destructive fill, its label and its hover, in ONE literal that every rose
+ * button reads: the booker's `danger` variant and the lead's cancel confirm on
+ * the manage page. They were two hand written copies of the same string, and
+ * both hovered with `hover:opacity-90`, which faded the label AND the rose over
+ * whatever was behind the button: 4.39:1 in light, under AA, in the state a
+ * pointer is in at the moment of pressing (#2836). The hover is an opaque step
+ * now, `--error-hover`, flipped with the theme beside `--error` and
+ * `--fg-on-error`, so it has one value wherever the button lands.
+ *
+ * `scripts/test-contrast.ts` finds this literal itself and measures its rest
+ * AND hover pairs in both themes over every surface a button can sit on, so an
+ * opacity fade put back here fails the build rather than a lead's eyes.
+ */
+export const DANGER_FILL_CLASSES =
+  "bg-[var(--error)] text-[var(--fg-on-error)] transition-colors hover:bg-[var(--error-hover)]";
+
+/**
  * The colour half. Three of the four read the palette they are handed; `danger`
  * reads `--error` and its label `--fg-on-error` directly, because the rose and
  * the label on it flip with the theme together (white on the light rose,
@@ -76,7 +93,7 @@ function variantClasses(variant: BookerButtonVariant, p: BookerButtonPalette): s
     case "secondary":
       return `border ${p.toggleBorder} ${p.body} ${p.navHover}`;
     case "danger":
-      return "bg-[var(--error)] text-[var(--fg-on-error)] transition-opacity hover:opacity-90";
+      return DANGER_FILL_CLASSES;
     case "quiet":
       return `underline underline-offset-2 hover:no-underline ${p.muted}`;
   }
