@@ -120,7 +120,8 @@ describe("readRaceRateBookings (#2877)", () => {
       ],
       error: null,
     };
-    const rows = await readRaceRateBookings(NOW);
+    // Mid hour, so a window that is not clipped to whole hours would show.
+    const rows = await readRaceRateBookings(NOW + 30 * 60_000);
     expect(rows).toEqual([
       { createdMs: Date.UTC(2026, 8, 28, 15, 10), bucketCode: "111" },
       { createdMs: Date.UTC(2026, 8, 28, 15, 20), bucketCode: "412" },
@@ -131,6 +132,7 @@ describe("readRaceRateBookings (#2877)", () => {
     // The smoke canary and the public test bucket are test buckets; an agent's own
     // link is not routed traffic.
     expect(q.eq).toEqual(expect.arrayContaining([["buckets.is_test", false], ["kind", "routed"]]));
+    // Both ends on a whole hour: the partial first hour and the hour under way are out.
     expect(q.gte).toEqual([["created_at", new Date(NOW - RACE_RATE_LOOKBACK_DAYS * 86_400_000).toISOString()]]);
     expect(q.lt).toEqual([["created_at", new Date(NOW).toISOString()]]);
     // A stable order, so pages do not overlap or skip.

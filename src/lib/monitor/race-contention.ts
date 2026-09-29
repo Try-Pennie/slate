@@ -175,6 +175,19 @@ export interface TierBooking {
 
 const HOUR_MS = 3_600_000;
 
+/**
+ * The bookings window the rate is measured over, clipped to whole hours at BOTH
+ * ends: it starts on the hour `RACE_RATE_LOOKBACK_DAYS` before the hour under
+ * way, and ends where that hour begins. A window starting at exactly now minus 14
+ * days would hold part of its first hour and count it as a full, quiet one, and
+ * the hour under way is partial the same way (L696, L709). The store reads this
+ * window and the measurement counts this window, so the two cannot drift apart.
+ */
+export function raceRateWindow(nowMs: number): { sinceMs: number; untilMs: number } {
+  const untilMs = Math.floor(nowMs / HOUR_MS) * HOUR_MS;
+  return { sinceMs: untilMs - RACE_RATE_LOOKBACK_DAYS * 24 * HOUR_MS, untilMs };
+}
+
 /** The same quantile `pnpm measure:lead-hours` reports, so the two agree on "median". */
 function medianOf(sorted: number[]): number {
   return sorted[Math.floor(0.5 * (sorted.length - 1))]!;
@@ -193,8 +206,9 @@ function medianOf(sorted: number[]): number {
  * cannot be read, are left out rather than guessed at.
  */
 export function measuredRaceThreshold(bookings: readonly TierBooking[], nowMs: number): RaceThreshold {
-  const currentHour = Math.floor(nowMs / HOUR_MS);
-  const firstHour = currentHour - RACE_RATE_LOOKBACK_DAYS * 24;
+  const win = raceRateWindow(nowMs);
+  const currentHour = win.untilMs / HOUR_MS;
+  const firstHour = win.sinceMs / HOUR_MS;
   const byTier = new Map<string, Map<number, number>>();
   let counted = 0;
   for (const b of bookings) {
@@ -404,20 +418,52 @@ export async function raceThresholdFor(
  *
  * The cooldown is asked only on such a day, so an ordinary tick costs nothing
  * extra. While it is running the day is NOT judged, rather than judged against a
- * threshold nobody measured, and the result says so. A failed bookings read still
- * throws to the step boundary.
+ * threshold nobody measured, and the result says so.
+ *
+ * A qualifying day that stays UNDER the share never sends, so the cooldown never
+ * starts and would not stop the read. So the measured threshold is also kept for
+ * the Eastern day it was measured on (`cache`): one read per day per isolate. The
+ * rate is a fortnight's median, which one day cannot move enough to matter. A
+ * failed read throws to the step boundary and caches nothing, so the next tick
+ * tries again rather than judging on a threshold nobody measured.
  */
 export async function judgeRaceContention(
   w: RaceContentionWindow,
   nowMs: number,
-  deps: { readBookings: () => Promise<readonly TierBooking[]>; whisperDue: () => Promise<boolean> },
+  deps: {
+    readBookings: () => Promise<readonly TierBooking[]>;
+    whisperDue: () => Promise<boolean>;
+    cache: RaceThresholdCache;
+  },
 ): Promise<
   | { kind: "judged"; verdict: RaceContentionVerdict; threshold: RaceThreshold }
   | { kind: "cooling-down" }
 > {
-  if (raceThresholdNeeded(w) && !(await deps.whisperDue())) return { kind: "cooling-down" };
-  const threshold = await raceThresholdFor(w, deps.readBookings, nowMs);
+  const needed = raceThresholdNeeded(w);
+  if (needed && !(await deps.whisperDue())) return { kind: "cooling-down" };
+  let threshold = needed ? deps.cache.get(w.day) : null;
+  if (!threshold) {
+    threshold = await raceThresholdFor(w, deps.readBookings, nowMs);
+    if (needed) deps.cache.set(w.day, threshold);
+  }
   return { kind: "judged", verdict: raceContentionVerdict(w, threshold), threshold };
+}
+
+/** The measured threshold for one Eastern day, so a day measures at most once. */
+export interface RaceThresholdCache {
+  get(day: string): RaceThreshold | null;
+  set(day: string, threshold: RaceThreshold): void;
+}
+
+/** A cache holding only the latest day, so it never grows. */
+export function createRaceThresholdCache(): RaceThresholdCache {
+  let entry: { day: string; threshold: RaceThreshold } | null = null;
+  return {
+    get: (day) => (entry && entry.day === day ? entry.threshold : null),
+    set: (day, threshold) => {
+      entry = { day, threshold };
+    },
+  };
 }
 
 /** Where a fallback threshold came from, as a clause a sentence can end with. */
@@ -486,7 +532,7 @@ export function raceContentionNoticeText(v: Extract<RaceContentionVerdict, { kin
   return (
     `Confirms losing the overlap race on ${w.day} (Eastern): ${v.losers} of ${v.confirms} (${pct(v.share)}) ` +
     `lost their advisor to another lead confirming the same time, above the ${pct(t.share)} ${basis} ` +
-    `${rescued} ${wasWere(rescued)} handed to the next free advisor in the same bucket and booked. ${refusedLine} ` +
+    `${rescued} ${wasWere(rescued)} booked with the next free advisor in the bucket they were confirming into. ${refusedLine} ` +
     `What to do: look at today's bookings whose routing_trace carries race_lost, by start time and bucket. ` +
     `Many leads confirming one time points at a booking link being replayed or a burst from one source; ` +
     `races spread across many times points at slow confirms widening the race, so check verify on book ` +

@@ -22,11 +22,20 @@ import { OUTCOME_DAY_ZONE, type RawMix } from "@/lib/monitor/booking-api-outcome
 import { selectAllPages } from "@/lib/supabase/paginate";
 import { parseStampMs } from "@/lib/date/stamp";
 import {
-  RACE_RATE_LOOKBACK_DAYS,
+  createRaceThresholdCache,
+  raceRateWindow,
   raceWindowFromMix,
   type RaceContentionWindow,
   type TierBooking,
 } from "@/lib/monitor/race-contention";
+
+/**
+ * The measured race threshold for the current Eastern day, held for this isolate
+ * so a qualifying day pages through the fortnight of bookings once rather than on
+ * every monitor tick (PR #2883). Holds one day, so it never grows. A fresh isolate
+ * measures again, which costs one read and changes nothing a day's median could.
+ */
+export const raceThresholdDayCache = createRaceThresholdCache();
 
 /** Today's race counts, on the tally's own Eastern day boundary. */
 export async function readRaceContentionWindow(nowMs: number): Promise<RaceContentionWindow> {
@@ -48,7 +57,8 @@ export async function readRaceContentionWindow(nowMs: number): Promise<RaceConte
 }
 
 /**
- * Real routed bookings over the `RACE_RATE_LOOKBACK_DAYS` before `nowMs`, each with
+ * Real routed bookings over `raceRateWindow(nowMs)` (the whole hours of the
+ * `RACE_RATE_LOOKBACK_DAYS` before the hour under way), each with
  * its bucket code, for the busiest tier's rate (#2877).
  *
  * The same population the rest of the monitoring tree counts as customers: test
@@ -68,8 +78,10 @@ export async function readRaceRateBookings(nowMs: number): Promise<TierBooking[]
   if (!Number.isFinite(nowMs)) {
     throw new Error(`could not read the clock (${String(nowMs)}), so no booking window was asked for`);
   }
-  const sinceIso = new Date(nowMs - RACE_RATE_LOOKBACK_DAYS * 86_400_000).toISOString();
-  const untilIso = new Date(nowMs).toISOString();
+  // Whole hours at both ends, the same window the measurement counts.
+  const win = raceRateWindow(nowMs);
+  const sinceIso = new Date(win.sinceMs).toISOString();
+  const untilIso = new Date(win.untilMs).toISOString();
   const db = supabaseAdmin();
   const rows = await selectAllPages<{ created_at: string; buckets: { code: string } | { code: string }[] | null }>(
     "race rate bookings",

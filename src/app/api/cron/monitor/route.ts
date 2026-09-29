@@ -130,7 +130,11 @@ import {
   RACE_CONTENTION_NOTICE_KEY,
   RACE_CONTENTION_COOLDOWN_MS,
 } from "@/lib/monitor/race-contention";
-import { readRaceContentionWindow, readRaceRateBookings } from "@/lib/monitor/race-contention-store";
+import {
+  raceThresholdDayCache,
+  readRaceContentionWindow,
+  readRaceRateBookings,
+} from "@/lib/monitor/race-contention-store";
 import {
   loadRateState,
   saveRateState,
@@ -1422,6 +1426,9 @@ export async function GET(req: NextRequest) {
       const judged = await judgeRaceContention(window, now, {
         readBookings: () => readRaceRateBookings(now),
         whisperDue: () => isAlertDue(RACE_CONTENTION_NOTICE_KEY, RACE_CONTENTION_COOLDOWN_MS, now),
+        // One measurement per Eastern day: a quiet qualifying day never sends,
+        // so the cooldown alone would not stop the read.
+        cache: raceThresholdDayCache,
       });
       if (judged.kind === "cooling-down") {
         log.info("monitor", {

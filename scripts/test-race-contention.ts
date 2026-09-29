@@ -25,6 +25,7 @@ import {
   RACE_SATURATION_SHARE,
   RACE_TALLY_OUTCOMES,
   fallbackRaceThreshold,
+  createRaceThresholdCache,
   judgeRaceContention,
   measuredRaceThreshold,
   raceBoundHitPage,
@@ -35,6 +36,7 @@ import {
   raceOutcomeForConfirm,
   raceOutcomeForMove,
   raceOutcomeForRefusal,
+  raceRateWindow,
   raceThresholdFor,
   raceThresholdForRate,
   raceThresholdNeeded,
@@ -215,7 +217,9 @@ eq(
 {
   const v = verdict(w({ created: 200, reassigned: 2, reassignedMoves: 3, refused: 1 }));
   if (v.kind !== "report") throw new Error("fixture");
-  assert(raceContentionNoticeText(v).includes("5 were handed"), "the copy counts rescued moves among those handed on");
+  const text = raceContentionNoticeText(v);
+  assert(text.includes("5 were booked with the next free advisor"), "the copy counts rescued moves among those rebooked");
+  assert(!/same bucket/.test(text), "and does not claim a cross bucket move stayed in the same bucket");
 }
 
 // --- whether the verdict needs a measured threshold at all ---------------------------
@@ -259,7 +263,8 @@ eq(raceThresholdNeeded(w({ created: 3, reassigned: 4 })), false, "a broken read 
     const c = { reads: 0, dueAsks: 0 };
     return {
       c,
-      deps: (due: boolean) => ({
+      deps: (due: boolean, cache = createRaceThresholdCache()) => ({
+        cache,
         readBookings: async () => {
           c.reads++;
           return [] as TierBooking[];
@@ -307,12 +312,71 @@ eq(raceThresholdNeeded(w({ created: 3, reassigned: 4 })), false, "a broken read 
           throw new Error("read failed");
         },
         whisperDue: async () => true,
+        cache: createRaceThresholdCache(),
       });
     } catch (e) {
       threw = e instanceof Error && e.message === "read failed";
     }
     assert(threw, "a failed bookings read still fails loud through the step boundary");
   }
+  {
+    // A qualifying day that stays under the share never sends, so the cooldown
+    // never starts: the threshold must be measured once for the day, not per tick.
+    const cache = createRaceThresholdCache();
+    const { c, deps } = counting();
+    const r1 = await judgeRaceContention(needed, NOW_B, deps(true, cache));
+    const r2 = await judgeRaceContention(needed, NOW_B + 5 * 60_000, deps(true, cache));
+    eq(c.reads, 1, "two ticks on the same qualifying quiet day make one bookings read");
+    assert(r1.kind === "judged" && r2.kind === "judged" && r2.threshold === r1.threshold, "and judge against the same threshold");
+    await judgeRaceContention({ ...needed, day: "2026-09-30" }, NOW_B + 86_400_000, deps(true, cache));
+    eq(c.reads, 2, "the next Eastern day measures again");
+  }
+  {
+    // A failed read caches nothing, so the next tick tries again rather than
+    // judging on a threshold nobody measured.
+    const cache = createRaceThresholdCache();
+    let reads = 0;
+    const failing = {
+      cache,
+      whisperDue: async () => true,
+      readBookings: async (): Promise<TierBooking[]> => {
+        reads++;
+        throw new Error("read failed");
+      },
+    };
+    for (let i = 0; i < 2; i++) {
+      try {
+        await judgeRaceContention(needed, NOW_B, failing);
+      } catch {
+        // expected
+      }
+    }
+    eq(reads, 2, "a failed read is retried next tick, never remembered");
+  }
+}
+
+// --- the lookback is clipped at BOTH ends, on whole hours -------------------------
+{
+  const NOW_C = Date.UTC(2026, 8, 29, 16, 30, 0);
+  const win = raceRateWindow(NOW_C);
+  eq(win.untilMs, Date.UTC(2026, 8, 29, 16, 0, 0), "the window ends where the hour still under way begins");
+  eq(win.sinceMs % 3_600_000, 0, "and starts on a whole hour");
+  eq(win.untilMs - win.sinceMs, RACE_RATE_LOOKBACK_DAYS * 86_400_000, "and spans exactly the lookback");
+
+  // 25 hours of one tier: 12 hours of 3 and 13 of 5, the oldest being a 5 whose
+  // bookings sit at minutes 0 to 50. Read from exactly now minus 14 days (16:30),
+  // the oldest hour keeps only its last two and drags the median to 3.
+  const rows: TierBooking[] = [];
+  for (let h = 0; h < 25; h++) {
+    const hourStart = win.sinceMs + h * 3_600_000;
+    const n = h === 0 || h > 12 ? 5 : 3;
+    for (let i = 0; i < n; i++) rows.push({ createdMs: hourStart + i * 10 * 60_000, bucketCode: "111" });
+  }
+  const read = (since: number, until: number) => rows.filter((r) => r.createdMs >= since && r.createdMs < until);
+  const partial = measuredRaceThreshold(read(NOW_C - RACE_RATE_LOOKBACK_DAYS * 86_400_000, NOW_C), NOW_C);
+  const whole = measuredRaceThreshold(read(win.sinceMs, win.untilMs), NOW_C);
+  eq(partial.perHour, 3, "control: a read starting mid hour counts a partial hour and moves the median");
+  eq(whole.perHour, 5, "the whole hour window measures the median the traffic really had");
 }
 
 // --- #2877: the threshold measured from Slate's own bookings ------------------------
@@ -429,7 +493,7 @@ function traffic(code: string, perHour: number, hours: number, startHoursAgo = 1
   assert(text.includes("3.0%"), "names the share");
   assert(text.includes("1.8%"), "names the threshold it is judged against");
   assert(text.includes("a fixture"), "a fallback threshold says why it was used");
-  assert(text.includes("4 were handed"), "says how many were rescued");
+  assert(text.includes("4 were booked with the next free advisor"), "says how many were rescued");
   assert(text.includes("2 were refused"), "says how many leads were turned away");
   assert(text.includes("1 of them"), "separates the bound hits");
   assert(/race_lost/.test(text), "points at where the rescued ones are recorded");
@@ -450,7 +514,7 @@ function traffic(code: string, perHour: number, hours: number, startHoursAgo = 1
   const one = raceContentionVerdict(w({ created: 400, reassigned: 1, reassignedMoves: 0, refused: 1, refusedAtBound: 1 }), measured);
   if (one.kind !== "report") throw new Error(`fixture (${one.kind})`);
   const oneText = raceContentionNoticeText(one);
-  assert(oneText.includes("1 was handed"), "one rescued reads in the singular");
+  assert(oneText.includes("1 was booked with the next free advisor"), "one rescued reads in the singular");
   assert(oneText.includes("2 were refused"), "two refused in the plural");
   const soleRefusal = raceContentionVerdict(w({ created: 400, reassigned: 2, refused: 1 }), measured);
   if (soleRefusal.kind !== "report") throw new Error(`fixture (${soleRefusal.kind})`);
