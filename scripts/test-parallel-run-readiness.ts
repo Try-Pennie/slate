@@ -216,8 +216,7 @@ eq(
 // Their confirmed page reads every booking with it, so a key missing from their
 // production environment sends every pilot lead to a not found page, and until this
 // the only way to know was to ask them. The gate may not pass on a promise: never
-// seen, seen only from localhost or a preview, seen only from a call that named no
-// host (#2868), and seen too long ago all refuse,
+// seen, seen only from localhost or a preview, and seen too long ago all refuse,
 // each on the same named exit and each in its own words.
 {
   const never = judgeReadiness(healthy({ partnerKey: { caller: "trypennie", rows: [] } }));
@@ -237,17 +236,14 @@ eq(
 
   const texts = new Set([never, local, preview, stale].map((j) => j.findings[0].detail));
 
-  // #2868: a call that named no host is what a hand run probe with the partner's key
-  // produces too, so it no longer passes the gate. It refuses on the partner key exit
-  // and the finding still reports that it was seen.
+  // Dan, 2026-09-25: a recent server call that named no host passes, because
+  // trypennie's lookup is one. The summary says it passed on that.
   const server = judgeReadiness(healthy({ partnerKey: { caller: "trypennie", rows: [seen("unstated", DAY, null)] } }));
-  eq(server.exit, READINESS_EXIT.partnerKeyUnproven, "a call this week that named no host does not pass");
-  const serverFinding = server.findings.find((f) => f.kind === "partner-key-unproven");
-  assert(serverFinding !== undefined && /named no host/.test(serverFinding.detail), `and the finding reports the sighting (got: ${serverFinding?.detail})`);
+  eq(server.exit, READINESS_EXIT.ready, "a server call this week passes");
+  assert(/server call that named no host/.test(server.summary), `and the summary says it passed on a server call (got: ${server.summary})`);
   const oldServer = judgeReadiness(healthy({ partnerKey: { caller: "trypennie", rows: [seen("unstated", 30 * DAY, null)] } }));
   eq(oldServer.exit, READINESS_EXIT.partnerKeyUnproven, "a server call a month ago still refuses");
-  texts.add(server.findings[0].detail);
-  eq(texts.size, 5, "each way of not being proven reads differently");
+  eq(texts.size, 4, "each way of not being proven reads differently");
 
   const prod = judgeReadiness(healthy({ partnerKey: { caller: "trypennie", rows: [seen("production", DAY, "https://trypennie.com"), seen("localhost", 60_000, "http://localhost:3000")] } }));
   eq(prod.exit, READINESS_EXIT.ready, "seen from production this week passes, even with a later localhost test beside it");

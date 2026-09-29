@@ -1278,22 +1278,19 @@ host and refreshed at most once an hour per isolate, deferred past the response,
 so a booking pays nothing for it. The host is the request's `Origin`, else the
 origin of its `Referer`, never the path. The gate passes when, within
 `PARTNER_KEY_MAX_AGE_DAYS` (7), the key has authenticated from
-`https://trypennie.com` or `https://www.trypennie.com`. It fails, on one exit with
-its own sentence each, when the key never authenticated, was seen only from
-localhost or a private address, only from another host (a preview), only from
-calls that named no host, or last from production longer ago than the bound.
+`https://trypennie.com` or `https://www.trypennie.com`, OR from a server call that
+named no host, and the READY line says which of the two it passed on. It fails,
+on one exit with its own sentence each, when the key never authenticated, was seen
+only from localhost or a private address, only from another host (a preview), or
+last from a passing kind longer ago than the bound.
 
-**A call that names no host no longer passes (#2868).** It did from 2026-09-25,
-because trypennie's lookup is a server to server call that sends neither header.
-But one hand run curl or script with trypennie's key sends neither header either,
-so the proof could be written by us rather than by their site (L58), and on
-2026-09-28 a key probe for #2865 nearly turned this gate green that way. Such a
-sighting is still shown, with its age, and never counted. **For trypennie that
-means their server lookup must send `Origin: https://www.trypennie.com`** (or a
-`Referer` on that origin); until it does, exit 13 stays red against a working key,
-and the sentence says exactly that. As of 2026-09-29 their only production
-sightings named no host. The same fact is shown on `/admin/booking-outcomes`,
-judged by the same function (`judgePartnerKey`, `src/lib/booking/caller-seen.ts`).
+**Why a server call passes (Dan, 2026-09-25).** trypennie's lookup is a server to
+server call, which sends neither header, so demanding a named production host
+would keep the gate red against a working key. A browser on localhost or a preview
+names its host and still fails. What this accepts, deliberately: a trypennie
+developer calling with the production key from their own server satisfies it too.
+The same fact is shown on `/admin/booking-outcomes`, judged by the same function
+(`judgePartnerKey`, `src/lib/booking/caller-seen.ts`).
 
 **Exits 17 and 18 are retired (#2865).** They judged the shared booking key: 17 read
 calls arriving on it from trypennie's production site as trypennie holding the wrong

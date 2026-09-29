@@ -32,8 +32,8 @@ const GATED_CALLER: BookingApiCaller = "trypennie";
  */
 export function CallerSightings({ rows, now }: { rows: CallerSeenRow[]; now: number }) {
   const verdict = judgePartnerKey(GATED_CALLER, rows, now, PARTNER_KEY_MAX_AGE_DAYS * 86_400_000);
-  // The judge's own sentence in every state, in the words the gate prints. Only a
-  // production host passes; a call that named no host is reported, not proof (#2868).
+  // The judge's own sentence in every state, so a pass says which sighting it
+  // passed on (a production host or a server call) in the words the gate prints.
   const partnerLine = `${verdict.detail}.`;
   return (
     <section className={cardCls}>

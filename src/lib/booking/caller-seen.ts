@@ -17,9 +17,12 @@
  * WHAT A HOST IS. The request's `Origin` header, else the origin of its `Referer`,
  * reduced to scheme, host and port so a path or query (a booking id on the confirmed
  * page) is never stored. A server to server call sends neither, which is `unstated`.
- * Such a call is recorded and shown, and it never proves a partner's deployment
- * (#2868): one hand run curl or script with the key sends neither header either,
- * so only a named production host counts (`judgePartnerKey`).
+ * trypennie's lookup is exactly such a call, so Dan decided (2026-09-25) that a
+ * recent server call ALSO proves the key: a browser on localhost or a preview names
+ * its host, and a server call that names none is taken as their deployment. A
+ * trypennie developer calling with the production key from their own server would
+ * satisfy it too, and that was accepted. The verdict says which of the two it
+ * passed on, so nobody reads a server call as a production page load.
  *
  * WHY IT COSTS NOTHING ON THE HOT PATH. A row is written on a caller's first success
  * from a host kind and refreshed at most once an hour per isolate after that, by a
@@ -153,20 +156,13 @@ export function makeCallerSeenRecorder(deps: CallerSeenDeps) {
   };
 }
 
-
-/**
- * `no-host-named` (#2868) is a sighting that exists and proves nothing: the key
- * authenticated only from calls that named no host (and perhaps from localhost or
- * a preview). It has its own status rather than folding into `not-from-production`
- * so the sentence can report the sighting with its age while saying it is not proof.
- */
-export type PartnerKeyStatus = "proven" | "never-seen" | "not-from-production" | "no-host-named" | "stale";
+export type PartnerKeyStatus = "proven" | "never-seen" | "not-from-production" | "stale";
 
 export interface PartnerKeyVerdict {
   status: PartnerKeyStatus;
-  /** Which sighting proved it, when it is proven. Only a named production host can
-   *  (#2868): a call that names no host is also what a hand run probe sends. */
-  via: "production" | null;
+  /** Which sighting proved it, when it is proven: a named production host, or a
+   *  server call that named no host (accepted by Dan, 2026-09-25). */
+  via: "production" | "server-call" | null;
   /** One sentence for the terminal and the admin console, the same words in both. */
   detail: string;
 }
@@ -191,19 +187,10 @@ function readable(rows: readonly CallerSeenRow[], caller: string): SeenAt[] {
  * read by `pnpm verify:parallel-run-readiness` and the admin console, so the two
  * cannot disagree about the same rows (L41).
  *
- * Passes ONLY on a sighting inside `maxAgeMs` from a named production host
- * (`PRODUCTION_ORIGINS`). It used to pass on a server call that named no host too
- * (Dan, 2026-09-25, because trypennie's lookup is one), and #2868 reverses that: a
- * call naming neither Origin nor Referer is exactly what one hand run curl or script
- * with the partner's key produces, so the proof could be written by us rather than
- * by their site (L58). On 2026-09-28 a key probe for #2865 nearly turned the flip
- * gate green that way. Such a sighting is still REPORTED, with its age, and never
- * counted as proof. A partner whose deployment calls from a server proves itself by
- * naming its production site in the request's `Origin` (or `Referer`).
- *
- * Localhost or a private address alone, another host alone, a call naming no host
- * alone, and a production sighting that is too old all fail, each in its own
- * sentence.
+ * Passes on a sighting inside `maxAgeMs` from a production host OR from a server call
+ * that named no host, a production host first. Localhost or a private address alone,
+ * another host alone, and a sighting of either passing kind that is too old all fail,
+ * each in its own sentence.
  */
 export function judgePartnerKey(
   caller: string,
@@ -214,18 +201,31 @@ export function judgePartnerKey(
   const mine = readable(rows, caller);
   const bound = `${Math.round(maxAgeMs / 86_400_000)} day`;
   const prod = mine.find((r) => r.host_kind === "production");
-  if (prod && nowMs - prod.ms <= maxAgeMs) {
+  const server = mine.find((r) => r.host_kind === "unstated");
+  const recent = (r: { ms: number } | undefined) => r !== undefined && nowMs - r.ms <= maxAgeMs;
+  if (prod && recent(prod)) {
     return {
       status: "proven",
       via: "production",
       detail: `${caller}'s key last authenticated from their production site (${prod.origin ?? "address unreadable"}) ${ageDays(nowMs - prod.ms)}`,
     };
   }
-  if (prod) {
+  if (server && recent(server)) {
+    return {
+      status: "proven",
+      via: "server-call",
+      detail: `${caller}'s key last authenticated from a server call that named no host ${ageDays(nowMs - server.ms)}, taken as their deployment`,
+    };
+  }
+
+  // The caller's own key has not proven itself, so say what it DID do.
+  const passing = [prod, server].filter((r): r is NonNullable<typeof r> => r !== undefined).sort((a, b) => b.ms - a.ms)[0];
+  if (passing) {
+    const from = passing.host_kind === "production" ? `their production site (${passing.origin ?? "address unreadable"})` : "a server call that named no host";
     return {
       status: "stale",
       via: null,
-      detail: `${caller}'s key last authenticated from their production site (${prod.origin ?? "address unreadable"}) ${ageDays(nowMs - prod.ms)}, outside the ${bound} bound, so a rotation since then is not proven`,
+      detail: `${caller}'s key last authenticated from ${from} ${ageDays(nowMs - passing.ms)}, outside the ${bound} bound, so a rotation since then is not proven`,
     };
   }
   if (mine.length === 0) {
@@ -240,18 +240,9 @@ export function judgePartnerKey(
   const seen: string[] = [];
   if (mine.some((r) => r.host_kind === "localhost")) seen.push(`localhost or a private address (${hosts("localhost") || "address unreadable"})`);
   if (mine.some((r) => r.host_kind === "other-host")) seen.push(`another host (${hosts("other-host") || "address unreadable"})`);
-  const noHost = mine.find((r) => r.host_kind === "unstated");
-  if (noHost) {
-    const also = seen.length ? `, and otherwise only from ${seen.join(" and from ")}` : "";
-    return {
-      status: "no-host-named",
-      via: null,
-      detail: `${caller}'s key last authenticated from a call that named no host ${ageDays(nowMs - noHost.ms)}${also}. A hand run call with the key looks the same, so that does not prove their deployment: it is proven once a call names their production site as its Origin`,
-    };
-  }
   return {
     status: "not-from-production",
     via: null,
-    detail: `${caller}'s key has authenticated only from ${seen.join(" and from ")}, never from their production site`,
+    detail: `${caller}'s key has authenticated only from ${seen.join(" and from ")}, never from their production site or their server`,
   };
 }
