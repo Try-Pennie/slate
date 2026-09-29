@@ -97,7 +97,11 @@ export function preloadConfirmationMark({ force = false }: { force?: boolean } =
   loadPlayer()
     .then((m) => m.warmConfirmationMarkPlayer())
     // swallow-ok: a head start only; the player falls back to fetching its URL and the screen shows the still coin when that fails
-    .catch(() => {});
+    .catch(() => {
+      // Forgotten, so the next call (another time picked) tries again rather
+      // than one flaky moment costing the drawing for the whole visit.
+      warmed = false;
+    });
   stillWarm = new Image();
   stillWarm.src = CONFIRMATION_MARK.still;
 }
