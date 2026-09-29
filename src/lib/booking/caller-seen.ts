@@ -114,8 +114,11 @@ export function requestHost(headers: HeaderSource): { kind: CallerHostKind; orig
  * it the probe would be recorded as their deployment and prove their key (L58: the
  * proof would be written by us). A marked call is recorded under
  * `probeCallerName(caller)` with its real host kind, so which key it used stays
- * visible, while every reader of `api_caller_seen` filters to `BOOKING_API_CALLERS`
- * and so never counts it. Only the recording changes: the request is authenticated,
+ * visible. It never counts as proof: the readiness gate reads only the real callers
+ * (`BOOKING_API_CALLERS`), and `judgePartnerKey` reads only the named caller's own
+ * rows. The admin page deliberately reads both the real callers and their `probe:`
+ * names, and lists the probes under their own heading ("Slate's own probes"). Only
+ * the recording changes: the request is authenticated,
  * rate limited and served exactly as an unmarked one. A blank value is no marker.
  */
 export const PROBE_HEADER = "x-slate-probe";

@@ -241,13 +241,27 @@ function row(host_kind: CallerSeenRow["host_kind"], agoMs: number, origin: strin
   record("trypennie", "GET", headers({ "x-slate-probe": "key check for #2865" }));
   record("trypennie", "GET", headers({ "x-slate-probe": "second probe", origin: "https://www.trypennie.com" }));
   record("trypennie", "GET", headers({}));
-  record("trypennie", "GET", headers({ "x-slate-probe": "   " }));
   for (const w of deferred) await w();
   eq(
     writes.map((w) => `${w.caller}/${w.host_kind}`).join(","),
     "probe:trypennie/unstated,probe:trypennie/production,trypennie/unstated",
-    "a marked call is recorded as probe:<caller> with its real host kind; an unmarked one as the caller; a blank marker is no marker",
+    "a marked call is recorded as probe:<caller> with its real host kind; an unmarked one as the caller",
   );
+
+  // A blank marker is no marker. Its own fresh recorder, so no earlier row's throttle
+  // can suppress the write: a blank wrongly read as a marker would write probe:trypennie.
+  const blankWrites: CallerSeenWrite[] = [];
+  const blankDeferred: (() => Promise<unknown>)[] = [];
+  const blankRecord = makeCallerSeenRecorder({
+    write: async (w) => {
+      blankWrites.push(w);
+    },
+    defer: (work) => blankDeferred.push(work),
+    now: () => NOW,
+  });
+  blankRecord("trypennie", "GET", headers({ "x-slate-probe": "   " }));
+  for (const w of blankDeferred) await w();
+  eq(blankWrites.map((w) => `${w.caller}/${w.host_kind}`).join(","), "trypennie/unstated", "a blank marker is recorded as the caller, not as a probe");
 
   // The judge reads the rows as recorded: probe rows never answer for trypennie.
   const probeRows: CallerSeenRow[] = [
