@@ -9,6 +9,7 @@
  *   Cal.ns["<ns>"]("ui", { ... });             // accepted (Slate styles itself)
  *   Cal.ns["<ns>"]("prerender", { ... });      // accepted, no-op (see below)
  *   Cal("on", { action: "bookingSuccessful", callback });
+ *   Cal.ns["<ns>"]("closeModal"); Cal("closeModal");  // hide the modal, as the close button does
  *   window.Cal.config.forwardQueryParams = true;
  *   <button data-cal-link="router?form=…" data-cal-namespace="review"
  *           data-cal-config='{"layout":"month_view"}'>Book</button>
@@ -149,6 +150,15 @@
     } else if (method === "on") {
       var o = args[1] || {};
       on(o.action, o.callback);
+    } else if (method === "closeModal") {
+      // cal.com's command for a host that takes over after a booking (trypennie
+      // sends the lead to its own confirmation page, and the modal stayed open
+      // under its loader while that page loaded). This namespace's frame only;
+      // hide() is idempotent, so a frame already hidden, or none, is a no-op.
+      // `frames` is assigned below the queue drain, so a closeModal the loader
+      // stub queued before this script ran finds it undefined, and nothing is
+      // open then anyway.
+      if (frames && frames[ns]) frames[ns].hide();
     }
     // "prerender" and anything else: accepted, no-op (kept API-compatible).
   }
@@ -176,6 +186,9 @@
     } else if (method === "on") {
       var o = args[1] || {};
       on(o.action, o.callback);
+    } else if (method === "closeModal") {
+      // Global form: whichever modal is on screen (only one ever is).
+      if (activeModalHide) activeModalHide();
     }
     // "initNamespace" and others: no-op.
   }

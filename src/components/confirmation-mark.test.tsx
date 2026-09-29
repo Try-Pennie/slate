@@ -300,6 +300,23 @@ describe("loading the animation early (#2636, and the blank of 2026-09-29)", () 
     expect(stub.warms).toBe(1);
   });
 
+  it("tries again on the next call after a warm that failed, so one flaky moment does not cost the drawing for the whole visit", async () => {
+    captureImages();
+    stub.warm = () => Promise.reject(new TypeError("offline"));
+    preloadConfirmationMark({ force: true });
+    await playerArrives();
+
+    stub.warm = null;
+    preloadConfirmationMark();
+    await playerArrives();
+    expect(stub.warms).toBe(2);
+
+    // And once one has succeeded, it is not repeated.
+    preloadConfirmationMark();
+    await playerArrives();
+    expect(stub.warms).toBe(2);
+  });
+
   it("warms nothing for a lead who asked for less motion, since they will only ever see the still", async () => {
     withReducedMotion(true);
     const srcs = captureImages();

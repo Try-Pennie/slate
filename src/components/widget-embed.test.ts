@@ -817,3 +817,94 @@ describe("widget.js honours data-cal-config metadata on the trigger (#2716)", ()
     expect(src.searchParams.has(PARTNER_KEYS.regalProfileId)).toBe(false);
   });
 });
+
+// Trypennie sends the lead to its own confirmation page the moment a Slate
+// booking lands, and the modal stayed open while that page loaded, so the lead
+// saw Slate's confirmation flash under the host's loader (Dan, 2026-09-29).
+// cal.com's embed answers `cal("closeModal")` for exactly this, and a host
+// written against it must get the same answer from Slate.
+describe("widget.js closes the modal on the host's command (closeModal)", () => {
+  type AnyCal = ((...args: unknown[]) => void) & { ns: Record<string, (...args: unknown[]) => void> };
+  const cal = () => (window as unknown as { Cal: AnyCal }).Cal;
+  const created = {
+    booking: { id: "bk-close", startsAt: "2026-10-01T15:00:00.000Z", endsAt: "2026-10-01T15:30:00.000Z", salesforceId: "00QClose000001" },
+    salesforceId: "00QClose000001",
+    outcome: "created",
+  };
+
+  function expectClosed(overlay: HTMLElement) {
+    // Hidden the way the close button hides it: kept, out of the tree, scroll back.
+    expect(overlay.isConnected).toBe(true);
+    expect(overlay.style.display).toBe("none");
+    expect(overlay.getAttribute("aria-hidden")).toBe("true");
+    expect(document.body.style.overflow).toBe("");
+  }
+
+  it("closes the namespace's open modal on Cal.ns[ns]('closeModal')", () => {
+    const ns = freshNs();
+    cal()("init", ns, { origin: "https://slate.test" });
+    openModalIn(ns);
+    const overlay = shownOverlay()!;
+    expect(overlay).not.toBeNull();
+
+    cal().ns[ns]("closeModal");
+    expectClosed(overlay);
+    expect(shownOverlay()).toBeNull();
+  });
+
+  it("closes the open modal on the global Cal('closeModal')", () => {
+    openModalIn(freshNs());
+    const overlay = shownOverlay()!;
+
+    cal()("closeModal");
+    expectClosed(overlay);
+  });
+
+  it("does not close another namespace's modal", () => {
+    const mine = freshNs();
+    const other = freshNs();
+    cal()("init", other, { origin: "https://slate.test" });
+    openModalIn(mine);
+    const overlay = shownOverlay()!;
+
+    cal().ns[other]("closeModal");
+    expect(shownOverlay()).toBe(overlay);
+  });
+
+  it("does nothing, and does not throw, when no modal is open", () => {
+    const ns = freshNs();
+    cal()("init", ns, { origin: "https://slate.test" });
+    expect(() => cal().ns[ns]("closeModal")).not.toThrow();
+    expect(() => cal()("closeModal")).not.toThrow();
+    expect(shownOverlay()).toBeNull();
+  });
+
+  it("closes the modal when called from inside the host's booking callback, which is where trypennie calls it", () => {
+    const ns = freshNs();
+    cal()("init", ns, { origin: "https://slate.test" });
+    let closedInside = false;
+    cal()("on", {
+      action: "bookingSuccessfulV2",
+      callback: () => {
+        cal().ns[ns]("closeModal");
+        closedInside = shownOverlay() === null;
+      },
+    });
+    const iframe = openModalIn(ns);
+    const overlay = shownOverlay()!;
+
+    fromActiveFrame(iframe, { type: EMBED_MESSAGE.bookingSuccessful, data: created });
+    expect(closedInside).toBe(true);
+    expectClosed(overlay);
+  });
+
+  it("reopens the same frame after a host close, like any other close", () => {
+    const ns = freshNs();
+    cal()("init", ns, { origin: "https://slate.test" });
+    const first = openModalIn(ns);
+    cal().ns[ns]("closeModal");
+
+    openModalIn(ns);
+    expect(shownIframe()).toBe(first);
+  });
+});
