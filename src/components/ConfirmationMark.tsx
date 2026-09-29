@@ -45,11 +45,16 @@ type Player = ComponentType<{
  * rejection is forgotten rather than kept, so a chunk that failed once on a
  * flaky connection is asked for again by the next caller.
  */
-let playerPromise: Promise<Player> | null = null;
+type PlayerModule = {
+  ConfirmationMarkPlayer: Player;
+  warmConfirmationMarkPlayer: () => Promise<void>;
+};
 
-function loadPlayer(): Promise<Player> {
+let playerPromise: Promise<PlayerModule> | null = null;
+
+function loadPlayer(): Promise<PlayerModule> {
   playerPromise ??= import("@/components/ConfirmationMarkPlayer").then(
-    (m) => m.ConfirmationMarkPlayer,
+    (m) => m,
     (err: unknown) => {
       playerPromise = null;
       throw err;
@@ -59,6 +64,8 @@ function loadPlayer(): Promise<Player> {
 }
 
 let warmed = false;
+/** Held so the early request for the still is not collected before it lands. */
+let stillWarm: HTMLImageElement | null = null;
 
 /**
  * Start loading the animation BEFORE the confirmation screen (#2636), called
@@ -69,9 +76,14 @@ let warmed = false;
  * screen no longer swaps (see `holdMs`), so a late load now costs the drawing
  * rather than causing a glitch, and this is what keeps that rare.
  *
- * The two files are served `max-age=0, must-revalidate`, so warming them buys a
- * cached copy the player's own fetch revalidates with a 304 rather than
- * downloading about 800 KB at the moment of confirmation.
+ * It used to warm only the HTTP cache, and that was not enough (Dan, rebooking,
+ * 2026-09-29: "it was just white for a second before the coin showed up"). The
+ * files are served `max-age=0, must-revalidate`, so the player still paid a
+ * round trip for each and compiled its wasm on the confirmation screen, and on a
+ * slowed phone profile it never painted inside the hold. So the player now warms
+ * ITSELF (`warmConfirmationMarkPlayer`: the wasm compiled, the animation held in
+ * memory), and the still coin is requested here too, since it is what shows
+ * whenever the drawing is late.
  *
  * Every failure here is deliberately dropped: this is a head start and nothing
  * more. The confirmation screen makes its own request and shows the still coin
@@ -80,14 +92,14 @@ let warmed = false;
  */
 export function preloadConfirmationMark({ force = false }: { force?: boolean } = {}): void {
   if (typeof window === "undefined" || !prefersMotion()) return;
-  // swallow-ok: a head start only; the confirmation screen loads the player itself and shows the still coin when that fails
-  loadPlayer().catch(() => {});
   if (warmed && !force) return;
   warmed = true;
-  for (const url of [CONFIRMATION_MARK.wasm, CONFIRMATION_MARK.animation]) {
-    // swallow-ok: warms the HTTP cache only; the player fetches this itself and a failure there shows the still coin
-    fetch(url).catch(() => {});
-  }
+  loadPlayer()
+    .then((m) => m.warmConfirmationMarkPlayer())
+    // swallow-ok: a head start only; the player falls back to fetching its URL and the screen shows the still coin when that fails
+    .catch(() => {});
+  stillWarm = new Image();
+  stillWarm.src = CONFIRMATION_MARK.still;
 }
 
 /**
@@ -128,9 +140,9 @@ export function ConfirmationMark() {
     if (!playable) return;
     let live = true;
     loadPlayer().then(
-      (component) => {
+      (m) => {
         // Stored behind a function, or React would call it as an updater.
-        if (live) setPlayer(() => component);
+        if (live) setPlayer(() => m.ConfirmationMarkPlayer);
       },
       () => {
         // The safe path, and the reason this is not a fail-loud site: the still
@@ -158,17 +170,20 @@ export function ConfirmationMark() {
   return (
     <div className="mx-auto flex max-w-72 items-center justify-center px-6 py-5">
       <div data-testid="confirmation-mark-box" className="relative h-36 w-36">
-        {showStill && (
-          /* eslint-disable-next-line @next/next/no-img-element */
-          <img
-            src={CONFIRMATION_MARK.still}
-            alt=""
-            aria-hidden="true"
-            width={CONFIRMATION_MARK.size}
-            height={CONFIRMATION_MARK.size}
-            className="absolute inset-0 h-36 w-36 object-contain"
-          />
-        )}
+        {/* Mounted from the first render and HIDDEN until it is wanted, so it has
+            loaded by the time the hold runs out rather than being requested
+            then: that request was most of the blank Dan saw on 2026-09-29.
+            Hidden rather than merely covered, because both layers are
+            transparent and a coin behind the drawing shows through (#2560). */}
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img
+          src={CONFIRMATION_MARK.still}
+          alt=""
+          aria-hidden="true"
+          width={CONFIRMATION_MARK.size}
+          height={CONFIRMATION_MARK.size}
+          className={`absolute inset-0 h-36 w-36 object-contain${showStill ? "" : " invisible"}`}
+        />
         {showPlayer ? (
           // The positioning and the fade are on a layer THIS component owns.
           // DotLottieReact renders a wrapper of its own and puts `className` on
