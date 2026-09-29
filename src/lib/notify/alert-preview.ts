@@ -184,7 +184,9 @@ import {
   raceBoundHitPageText,
   raceContentionNoticeText,
   raceContentionVerdict,
+  measuredRaceThreshold,
   type RaceContentionWindow,
+  type RaceThreshold,
 } from "@/lib/monitor/race-contention";
 import { bookerUnstaffedAlert,
   bookingWindowExtendedAlert } from "@/lib/booking/alert-copy";
@@ -575,12 +577,30 @@ function topTierCascadeReportPreview(w: Omit<TopTierCascadeWindow, "windowHours"
 }
 
 /**
+ * A race threshold (#2877) through the real measurement: `perHour` bookings in
+ * each of `hours` whole hours of one bucket code before `NOW_MS`. Too few hours
+ * gives the fallback, worded by the measurement itself rather than here.
+ */
+function raceThresholdPreview(code: string, perHour: number, hours: number): RaceThreshold {
+  const hourMs = 3_600_000;
+  const current = Math.floor(NOW_MS / hourMs) * hourMs;
+  const rows = Array.from({ length: hours * perHour }, (_, i) => ({
+    createdMs: current - (Math.floor(i / perHour) + 1) * hourMs,
+    bucketCode: code,
+  }));
+  return measuredRaceThreshold(rows, NOW_MS);
+}
+
+/**
  * One rendered race contention whisper (#2838), through the real verdict for the
  * same reason as the two above: a window the lane would not report on throws here
  * rather than rendering a sentence nobody will see.
  */
-function raceContentionReportPreview(w: Omit<RaceContentionWindow, "day">): string {
-  const verdict = raceContentionVerdict({ ...w, day: "2026-07-28" });
+function raceContentionReportPreview(
+  w: Omit<RaceContentionWindow, "day" | "reassignedMoves"> & { reassignedMoves?: number },
+  threshold: RaceThreshold = raceThresholdPreview("111", 9, 9),
+): string {
+  const verdict = raceContentionVerdict({ reassignedMoves: 0, ...w, day: "2026-07-28" }, threshold);
   if (verdict.kind !== "report") {
     throw new Error(`race contention preview fixture is not a reportable window (${verdict.kind})`);
   }
@@ -3257,6 +3277,15 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     state: "saturated on a thin day",
     channel: "info",
     text: raceContentionReportPreview({ created: 5, reassigned: 3, refused: 2, refusedAtBound: 0 }),
+  },
+  {
+    key: "booking_race_contention",
+    state: "judged against the busiest tier Slate measured, rescued moves among the losers",
+    channel: "info",
+    text: raceContentionReportPreview(
+      { created: 400, reassigned: 3, reassignedMoves: 2, refused: 1, refusedAtBound: 0 },
+      raceThresholdPreview("111", 6, 30),
+    ),
   },
   {
     key: "booking_race_bound_hit",

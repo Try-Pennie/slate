@@ -130,6 +130,7 @@ import {
   firingFamilyMembers,
   firingKey,
   settleAlertsSilently,
+  isAlertDue,
 } from "./dispatch";
 import { slackInfoChannel } from "@/lib/env";
 import { __clearChannelCache } from "@/lib/notify/channels";
@@ -643,6 +644,48 @@ describe("off the Workers runtime, a write dispatcher does nothing (#1537)", () 
   it("leaves READS alone, so a laptop can still inspect alert state", async () => {
     rows.set(firingKey("some_key"), new Date().toISOString());
     await expect(isAlertFiring("some_key")).resolves.toBe(true);
+  });
+});
+
+// PR #2883: the race whisper asks this before paging through a fortnight of
+// bookings, so the question must be answered exactly as the send answers it.
+describe("isAlertDue", () => {
+  const NOW = Date.parse("2026-09-29T15:00:00.000Z");
+  const HOUR = 60 * 60_000;
+  afterEach(() => {
+    failCooldownRead.value = false;
+  });
+
+  it("is due when the key was never sent", async () => {
+    expect(await isAlertDue("race_key", 24 * HOUR, NOW)).toBe(true);
+  });
+
+  it("is NOT due while the cooldown from the last send is still running", async () => {
+    rows.set("race_key", new Date(NOW - HOUR).toISOString());
+    expect(await isAlertDue("race_key", 24 * HOUR, NOW)).toBe(false);
+  });
+
+  it("is due again once the cooldown has elapsed", async () => {
+    rows.set("race_key", new Date(NOW - 25 * HOUR).toISOString());
+    expect(await isAlertDue("race_key", 24 * HOUR, NOW)).toBe(true);
+  });
+
+  it("is due when the row cannot be read, the side the send itself takes", async () => {
+    rows.set("race_key", new Date(NOW - HOUR).toISOString());
+    failCooldownRead.value = true;
+    expect(await isAlertDue("race_key", 24 * HOUR, NOW)).toBe(true);
+  });
+
+  it("is due when the stamp is unreadable, as the send treats it", async () => {
+    rows.set("race_key", "not a time");
+    expect(await isAlertDue("race_key", 24 * HOUR, NOW)).toBe(true);
+  });
+
+  it("agrees with the send: a key it calls not due is one the send suppresses", async () => {
+    rows.set("race_key", new Date().toISOString());
+    expect(await isAlertDue("race_key", 24 * HOUR, Date.now())).toBe(false);
+    await sendThrottledAlert("race_key", 24 * HOUR, "x");
+    expect(slack.postSlack).not.toHaveBeenCalled();
   });
 });
 

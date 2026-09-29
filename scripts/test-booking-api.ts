@@ -302,8 +302,8 @@ async function run() {
         `race on a move at ${startIso}: booked with the next advisor (got ${res.booking.assigned_user_id})`,
       );
       assert(
-        res.raceOutcome === "race_reassigned",
-        `race on a move at ${startIso}: the rescue is counted (got ${String(res.raceOutcome)})`,
+        res.raceOutcome === "race_reassigned_move",
+        `race on a move at ${startIso}: the rescue is counted on its own move row (#2867) (got ${String(res.raceOutcome)})`,
       );
     }
 

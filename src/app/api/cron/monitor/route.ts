@@ -4,6 +4,7 @@ import { acquireLock, releaseLock } from "@/lib/locks";
 import {
   sendThrottledAlert,
   sendThrottledInfo,
+  isAlertDue,
   resolveAlert,
   resolveRecovered,
   settleAlertsSilently,
@@ -124,12 +125,16 @@ import {
 } from "@/lib/monitor/top-tier-cascade";
 import { readTopTierCascadeWindow } from "@/lib/monitor/top-tier-cascade-store";
 import {
-  raceContentionVerdict,
   raceContentionNoticeText,
+  judgeRaceContention,
   RACE_CONTENTION_NOTICE_KEY,
   RACE_CONTENTION_COOLDOWN_MS,
 } from "@/lib/monitor/race-contention";
-import { readRaceContentionWindow } from "@/lib/monitor/race-contention-store";
+import {
+  raceThresholdDayCache,
+  readRaceContentionWindow,
+  readRaceRateBookings,
+} from "@/lib/monitor/race-contention-store";
 import {
   loadRateState,
   saveRateState,
@@ -1416,15 +1421,40 @@ export async function GET(req: NextRequest) {
     // since an unreadable tally is not a day with no races.
     await steps.run("booking_race_contention", null, async () => {
       const window = await readRaceContentionWindow(now);
-      const verdict = raceContentionVerdict(window);
+      // #2877: the busiest tier's rate, read only when the day can turn on it,
+      // and (PR #2883) only while the whisper could still go out, asked of the
+      // same cooldown read the send makes.
+      const judged = await judgeRaceContention(window, now, {
+        readBookings: () => readRaceRateBookings(now),
+        whisperDue: () => isAlertDue(RACE_CONTENTION_NOTICE_KEY, RACE_CONTENTION_COOLDOWN_MS, now),
+        // One measurement per Eastern day: a quiet qualifying day never sends,
+        // so the cooldown alone would not stop the read.
+        cache: raceThresholdDayCache,
+      });
+      if (judged.kind === "cooling-down") {
+        log.info("monitor", {
+          msg: "booking race contention",
+          day: window.day,
+          verdict: "not judged",
+          why: "the whisper's cooldown is still running, so it could not send whatever the verdict",
+        });
+        return;
+      }
+      const { threshold, verdict } = judged;
       log.info("monitor", {
         msg: "booking race contention",
         day: window.day,
         created: window.created,
         reassigned: window.reassigned,
+        reassigned_moves: window.reassignedMoves,
         refused: window.refused,
         refused_at_bound: window.refusedAtBound,
         verdict: verdict.kind,
+        threshold_source: threshold.basis.source,
+        threshold_per_hour: threshold.perHour,
+        ...(threshold.basis.source === "measured"
+          ? { threshold_tier: threshold.basis.tier, threshold_hours: threshold.basis.activeHours }
+          : { threshold_why: threshold.basis.reason }),
         ...(verdict.kind === "unmeasured" ? { why: verdict.reason } : {}),
       });
       if (verdict.kind !== "report") return;

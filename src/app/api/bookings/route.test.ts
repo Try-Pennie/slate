@@ -621,14 +621,15 @@ describe("POST /api/bookings: lost overlap races are counted (#2838)", () => {
 
   // #2861: the cross bucket move confirms through the same race loop, and used to
   // reach the tally in neither of its outcomes.
+  // #2867: on its own row, since its outcome row is never `created`.
   it("counts a race rescued on a cross bucket move", async () => {
     service.bookViaApi.mockResolvedValue({
       ...result("rescheduled", { bucket_code: "411", race_lost: ["a"] }),
-      raceOutcome: "race_reassigned",
+      raceOutcome: "race_reassigned_move",
     });
     const res = await post("Bearer secret", VALID_BODY);
     expect((await res.json()).outcome).toBe("rescheduled");
-    expect(outcomes()).toEqual([["rescheduled", null], ["race_reassigned", null]]);
+    expect(outcomes()).toEqual([["rescheduled", null], ["race_reassigned_move", null]]);
   });
 
   it("counts a race that refused a cross bucket move, beside the declined change", async () => {
