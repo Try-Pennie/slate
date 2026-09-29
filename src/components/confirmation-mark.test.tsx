@@ -28,6 +28,8 @@ const stub = vi.hoisted(() => ({
     onFailed: () => void;
   },
   mounts: 0,
+  warms: 0,
+  warm: null as null | (() => Promise<void>),
 }));
 
 // The player is behind a dynamic import so it stays out of the booker's first
@@ -35,6 +37,10 @@ const stub = vi.hoisted(() => ({
 // dynamic import in ConfirmationMark is typechecked, so `tsc` fails if this and
 // the real module ever disagree about what is exported.
 vi.mock("@/components/ConfirmationMarkPlayer", () => ({
+  warmConfirmationMarkPlayer: () => {
+    stub.warms += 1;
+    return stub.warm ? stub.warm() : Promise.resolve();
+  },
   ConfirmationMarkPlayer: (props: {
     onDrawing: () => void;
     onEnded: () => void;
@@ -62,8 +68,16 @@ function withReducedMotion(reduce: boolean) {
   })) as unknown as typeof window.matchMedia;
 }
 
-function still(): HTMLImageElement | null {
+function stillElement(): HTMLImageElement | null {
   return document.querySelector(`img[src="${CONFIRMATION_MARK.still}"]`);
+}
+
+/** The still coin as a lead SEES it. It stays mounted, hidden, from the first
+ *  render (so it has loaded by the time it is needed), so "in the DOM" is not
+ *  the question; "visible" is. */
+function still(): HTMLImageElement | null {
+  const img = stillElement();
+  return img && !img.className.split(/\s+/).includes("invisible") ? img : null;
 }
 
 /** Let the dynamic import settle. It resolves on a microtask, so this is a tick
@@ -79,6 +93,8 @@ async function playerArrives() {
 beforeEach(() => {
   stub.props = null;
   stub.mounts = 0;
+  stub.warms = 0;
+  stub.warm = null;
   withReducedMotion(false);
   // The hold is a real timer in the component, so the clock is SET here rather
   // than waited on: every test decides exactly when the hold runs out.
@@ -111,6 +127,24 @@ describe("confirmation mark (#2163, #2560, #2636)", () => {
 
     expect(screen.getByTestId("mark-player")).not.toBeNull();
     expect(still()).toBeNull();
+  });
+
+  // Dan, 2026-09-29, rebooking: "it was just white for a second before the
+  // coin showed up". Measured on a slowed phone profile, the still was only
+  // REQUESTED when the hold ran out, so the blank lasted the hold plus a round
+  // trip for the image (about 0.9s instead of 0.5s).
+  it("has the still coin loading during the hold, hidden, so it appears the instant the hold runs out", async () => {
+    render(<ConfirmationMark />);
+    await playerArrives();
+
+    const img = stillElement();
+    expect(img).not.toBeNull();
+    expect(img!.className).toContain("invisible");
+    expect(still()).toBeNull();
+
+    holdRunsOut();
+    expect(stillElement()).toBe(img);
+    expect(still()).not.toBeNull();
   });
 
   it("keeps the space reserved during the hold, so the screen does not jump when the mark arrives", () => {
@@ -222,35 +256,57 @@ describe("confirmation mark (#2163, #2560, #2636)", () => {
   });
 });
 
-describe("loading the animation early (#2636)", () => {
-  it("fetches the player's wasm and the animation once, however often it is asked", () => {
-    const fetchSpy = vi.fn().mockResolvedValue(new Response(""));
-    vi.stubGlobal("fetch", fetchSpy);
+describe("loading the animation early (#2636, and the blank of 2026-09-29)", () => {
+  function captureImages() {
+    const srcs: string[] = [];
+    vi.stubGlobal(
+      "Image",
+      class {
+        set src(v: string) {
+          srcs.push(v);
+        }
+      },
+    );
+    return srcs;
+  }
 
+  // Warming only the HTTP cache was not enough: the files are served
+  // `max-age=0, must-revalidate`, so the player still paid a round trip for each
+  // and compiled its wasm on the confirmation screen, and on a slowed phone
+  // profile it never painted inside the hold. The player warms ITSELF now.
+  it("warms the player itself once, however often it is asked", async () => {
+    captureImages();
+    preloadConfirmationMark({ force: true });
     preloadConfirmationMark();
-    preloadConfirmationMark();
+    await playerArrives();
 
-    const urls = fetchSpy.mock.calls.map((c) => String(c[0])).sort();
-    expect(urls).toEqual([CONFIRMATION_MARK.animation, CONFIRMATION_MARK.wasm].sort());
+    expect(stub.warms).toBe(1);
   });
 
-  it("does not throw when a warm fetch fails, because the confirmation screen has its own fallback", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new TypeError("offline")));
+  it("starts loading the still coin too, since it is what shows when the drawing is late", () => {
+    const srcs = captureImages();
+    preloadConfirmationMark({ force: true });
+
+    expect(srcs).toEqual([CONFIRMATION_MARK.still]);
+  });
+
+  it("does not throw when warming fails, because the confirmation screen has its own fallback", async () => {
+    captureImages();
+    stub.warm = () => Promise.reject(new TypeError("offline"));
 
     expect(() => preloadConfirmationMark({ force: true })).not.toThrow();
-    // Let the rejections settle: an unhandled one would fail the run.
-    await act(async () => {
-      await Promise.resolve();
-      await Promise.resolve();
-    });
+    // Let the rejection settle: an unhandled one would fail the run.
+    await playerArrives();
+    expect(stub.warms).toBe(1);
   });
 
-  it("fetches nothing for a lead who asked for less motion, since they will only ever see the still", () => {
+  it("warms nothing for a lead who asked for less motion, since they will only ever see the still", async () => {
     withReducedMotion(true);
-    const fetchSpy = vi.fn().mockResolvedValue(new Response(""));
-    vi.stubGlobal("fetch", fetchSpy);
+    const srcs = captureImages();
 
     preloadConfirmationMark({ force: true });
-    expect(fetchSpy).not.toHaveBeenCalled();
+    await playerArrives();
+    expect(stub.warms).toBe(0);
+    expect(srcs).toEqual([]);
   });
 });

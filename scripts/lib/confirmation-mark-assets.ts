@@ -41,6 +41,21 @@ export function installedWasmPath(root: string): string {
   );
 }
 
+/**
+ * Where the app's OWN import of `@lottiefiles/dotlottie-web` lands, and where the
+ * react package's lands. `ConfirmationMarkPlayer` imports the player class
+ * directly for its static `preload`, which compiles the wasm ahead of the
+ * confirmation screen. That only helps if the class it warms is the one the
+ * react player constructs: were the two to resolve to different copies (a react
+ * bump that moved its own pin), the warm would compile a wasm nobody uses and
+ * the blank before the mark would come back with nothing failing.
+ */
+export function webPackageRoots(root: string): { direct: string; viaReact: string } {
+  const direct = realpathSync(join(root, "node_modules/@lottiefiles/dotlottie-web"));
+  const viaReact = dirname(dirname(installedWasmPath(root)));
+  return { direct, viaReact: realpathSync(viaReact) };
+}
+
 /** The installed dotlottie-web version, which is what the wasm is a build of. */
 export function installedWasmVersion(root: string): string {
   const pkg = join(dirname(dirname(installedWasmPath(root))), "package.json");

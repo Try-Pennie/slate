@@ -22,6 +22,7 @@ import {
   DOTLOTTIE_WASM_PATH,
   installedWasmPath,
   installedWasmVersion,
+  webPackageRoots,
 } from "./lib/confirmation-mark-assets.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
@@ -123,6 +124,15 @@ const stillAskForVideo = sources.filter((file) =>
   assert(
     stillAskForVideo.length === 0,
     `nothing still asks for the deleted video (offenders: ${stillAskForVideo.join(", ") || "none"}; ${sources.length} files read)`,
+  );
+}
+
+// --- the warm and the player are one copy of the runtime ------------------
+{
+  const { direct, viaReact } = webPackageRoots(root);
+  assert(
+    direct === viaReact,
+    `the app's own dotlottie-web is the copy the react player uses, so warming it warms the real player (app: ${direct}; react: ${viaReact}). Pin @lottiefiles/dotlottie-web in package.json to the version @lottiefiles/dotlottie-react depends on.`,
   );
 }
 

@@ -43,6 +43,7 @@
   },
   "dependencies": {
     "@lottiefiles/dotlottie-react": "^0.19.16",
+    "@lottiefiles/dotlottie-web": "0.80.0",
     "@supabase/ssr": "^0.12.5",
     "@supabase/supabase-js": "^2.112.4",
     "googleapis": "^173.0.0",

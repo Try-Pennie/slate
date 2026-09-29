@@ -2,6 +2,11 @@
 
 import { useCallback } from "react";
 import { DotLottieReact, setWasmUrl, type DotLottie } from "@lottiefiles/dotlottie-react";
+// The class itself, for its static `preload`. The React package re-exports its
+// TYPES but not this at runtime, so it comes from the player package directly,
+// pinned to the exact version the React package depends on so both are one
+// module instance and one wasm.
+import { DotLottie as DotLottieCore } from "@lottiefiles/dotlottie-web";
 import { CONFIRMATION_MARK } from "@/lib/booking/confirmation-mark";
 
 /**
@@ -13,8 +18,10 @@ import { CONFIRMATION_MARK } from "@/lib/booking/confirmation-mark";
  * picker that has no use for either. `scripts/test-confirmation-mark-assets.ts`
  * fails the build on a static import of it.
  *
- * This component owns ONE thing, the wiring from the player's own events to the
- * three outcomes its parent has a picture for. Everything else, the still coin
+ * This module owns two things: getting the player ready ahead of the
+ * confirmation screen (`warmConfirmationMarkPlayer`), and the wiring from the
+ * player's own events to the three outcomes its parent has a picture for.
+ * Everything else, the still coin
  * underneath, the reduced motion branch, and what happens when a lead's browser
  * never fetches this chunk at all, belongs to `ConfirmationMark`, which is the
  * one that is always on screen.
@@ -24,6 +31,46 @@ import { CONFIRMATION_MARK } from "@/lib/booking/confirmation-mark";
 // Module scope rather than an effect: an effect runs after the first render, and
 // the first render is what constructs the player.
 setWasmUrl(CONFIRMATION_MARK.wasm);
+
+/** The animation's bytes, once `warmConfirmationMarkPlayer` has them. */
+let animationBytes: ArrayBuffer | null = null;
+let warming: Promise<void> | null = null;
+
+/**
+ * Get the player ready BEFORE the confirmation screen, called by the early load
+ * once a lead has picked a time.
+ *
+ * Dan, rebooking a call on 2026-09-29: "it was just white for a second before
+ * the coin showed up". Warming only the HTTP cache left two costs on the
+ * confirmation screen itself: both files are served `max-age=0,
+ * must-revalidate`, so the player still paid a round trip for each, and it
+ * compiled its wasm there too. On a slowed phone profile the drawing never
+ * painted inside the hold, so the lead got the blank and then the still.
+ *
+ * So this compiles the wasm now and keeps the animation's bytes in memory; the
+ * player is handed the bytes and asks the network for nothing. One promise for
+ * the page. A failure is forgotten, so the next caller tries again, and it
+ * rejects rather than resolving quietly so the caller can tell; the player then
+ * falls back to its URL, which is exactly what it did before this existed.
+ */
+export function warmConfirmationMarkPlayer(): Promise<void> {
+  warming ??= Promise.all([
+    DotLottieCore.preload(),
+    fetch(CONFIRMATION_MARK.animation).then((res) => {
+      if (!res.ok) throw new Error(`animation answered ${res.status}`);
+      return res.arrayBuffer();
+    }),
+  ]).then(
+    ([, bytes]) => {
+      animationBytes = bytes;
+    },
+    (err: unknown) => {
+      warming = null;
+      throw err;
+    },
+  );
+  return warming;
+}
 
 export function ConfirmationMarkPlayer({
   onDrawing,
@@ -63,7 +110,9 @@ export function ConfirmationMarkPlayer({
 
   return (
     <DotLottieReact
-      src={CONFIRMATION_MARK.animation}
+      // The warmed bytes when the early load got them, so nothing is fetched on
+      // this screen; the URL otherwise.
+      {...(animationBytes ? { data: animationBytes } : { src: CONFIRMATION_MARK.animation })}
       dotLottieRefCallback={wire}
       autoplay
       loop={false}
