@@ -16,20 +16,30 @@
 export type Theme = "light" | "dark";
 
 export type ClassPair = {
-  /** The background colour class, unprefixed (`bg-[var(--error)]`). */
+  /**
+   * The background class of the pair's first rest entry, for naming, or of its
+   * first state when the literal paints no opaque rest pair at all.
+   */
   bg: string;
-  /** The text colour class, unprefixed (`text-white`). */
+  /** The text class chosen the same way as `bg`. */
   fg: string;
   /** The whole literal, so a failure can be found by searching for it. */
   literal: string;
   /** 1 based line of the literal's opening quote. */
   line: number;
   /**
+   * What the control paints AT REST, per theme and per width (#2866). An
+   * unprefixed pair is one entry measured in both themes; a `dark:text-white`,
+   * an `md:bg-white` or a `dark:opacity-60` makes the theme or width it applies
+   * in its own entry, because that is a different pair somebody reads.
+   */
+  rest: RestPaint[];
+  /**
    * What the same control paints in each INTERACTIVE state the literal declares
    * (#2836). The rest pair is not the only pair a person reads: a pointer resting
    * on the button is in the hover state at the moment of pressing, and a keyboard
    * user is in the focus state. A state that restates neither colour inherits the
-   * rest one, so every entry is a complete pair ready to measure.
+   * rest one of its own theme and width, so every entry is a complete pair.
    */
   states: StatePaint[];
   /**
@@ -38,6 +48,31 @@ export type ClassPair = {
    * class is never measured and never silently dropped.
    */
   unrecognised: string[];
+  /**
+   * Every measurement this pair could not take, each naming the state, the
+   * theme and why (#2866). A state with its own complete fill and label is
+   * always measured for its own contrast; what lands here is the part that
+   * needed something the literal does not hold, most often the step from a
+   * rest fill in a theme whose rest is a wash or paints no fill. Reported so a
+   * reader can see what the sweep did NOT judge, never dropped in silence (L98).
+   * Each gap is reported ONCE per literal, on the first candidate pair that met
+   * it, so the later pairs of a literal carry only what is new to them.
+   */
+  unmeasured: string[];
+};
+
+/** The rest paint of a rose pairing, in the themes and at the width it applies. */
+export type RestPaint = {
+  /** `rest`, or the variants limiting it (`dark`, `md`, `md:dark`), for naming. */
+  variant: string;
+  /** The themes this paint applies in. */
+  themes: Theme[];
+  /** The opaque background colour class. */
+  bg: string;
+  /** The opaque text colour class. */
+  fg: string;
+  /** The element's rest opacity, 1 when none is declared. */
+  opacity: number;
 };
 
 /** One interactive state of a rose pairing, resolved to a complete paint. */
@@ -55,6 +90,13 @@ export type StatePaint = {
   bg: string;
   /** The text colour class in that state, unprefixed, alpha included. */
   fg: string;
+  /**
+   * The rest fill this state steps from, in the same theme and at the same
+   * width, so a recoloured state can be judged a visible step from it (#2866).
+   * Null when that theme has no opaque rest fill: the state's own contrast is
+   * still measured, and only the step is not, which `unmeasured` says.
+   */
+  restBg: string | null;
   /**
    * The element's opacity in that state, 1 when none is declared. Anything below
    * 1 fades the fill AND the label over whatever is behind the control, so the
@@ -101,7 +143,13 @@ function splitVariants(cls: string): { variants: string[]; utility: string } {
 
 /** A class's variant chain, read as what it means for measuring contrast. */
 type Chain =
-  | { kind: "rest" }
+  | {
+      kind: "rest";
+      /** Null for every theme, else the one theme the chain is limited to. */
+      theme: Theme | null;
+      /** Null for every width, else the breakpoint variant it is limited to. */
+      breakpoint: string | null;
+    }
   | { kind: "exempt" }
   | { kind: "unknown" }
   | {
@@ -125,7 +173,7 @@ type Chain =
  * first time a new shape appears, and after that the shape is measured properly.
  */
 function parseVariantChain(variants: string[]): Chain {
-  if (variants.length === 0) return { kind: "rest" };
+  if (variants.length === 0) return { kind: "rest", theme: null, breakpoint: null };
   let state: string | null = null;
   let trigger: string | null = null;
   let theme: Theme | null = null;
@@ -157,9 +205,9 @@ function parseVariantChain(variants: string[]): Chain {
     }
     return { kind: "unknown" };
   }
-  // A theme or width limit with no state is a REST variant. The rest pair has
-  // never been measured behind a variant, which is a separate gap from this one.
-  if (state === null || trigger === null) return { kind: "rest" };
+  // A theme or width limit with no state is a REST variant, measured as the rest
+  // pair of the theme and width it names (#2866).
+  if (state === null || trigger === null) return { kind: "rest", theme, breakpoint };
   return { kind: "state", state, trigger, theme, breakpoint };
 }
 
@@ -187,97 +235,6 @@ function opacityOf(utility: string): number | null {
 }
 
 /**
- * Every interactive state a literal declares a colour or an opacity for, with the
- * rest classes filled in wherever the state does not restate them, resolved per
- * theme and per breakpoint (#2856).
- *
- * Each state variant spelling is its own trigger (hovering the control and
- * hovering its group are different moments), and for each trigger the paint is
- * resolved at every width a class limits itself to and in both themes: a class
- * with no theme variant applies in both, a `dark:` one in dark only and over the
- * unlimited one, and a min width breakpoint applies at its own width and every
- * wider one. Entries that come out identical across the two themes are merged,
- * so an unqualified `hover:` is one state measured twice, as before.
- *
- * Alongside the states it returns every painting class whose variant it could
- * not place, so the caller fails on it by name (see `parseVariantChain`).
- */
-export function interactiveStates(
-  literal: string,
-  restBg: string,
-  restFg: string,
-  isColour: (token: string) => boolean,
-): { states: StatePaint[]; unrecognised: string[] } {
-  const colour = (utility: string, prefix: "bg" | "text") => {
-    if (!utility.startsWith(`${prefix}-`)) return false;
-    const c = parseColourClass(utility);
-    return c !== null && (/^\w+-\[var\(/.test(utility) || isColour(c.token));
-  };
-  const paints = (u: string) => colour(u, "bg") || colour(u, "text") || opacityOf(u) !== null;
-
-  type Parsed = { utility: string; state: string; trigger: string; theme: Theme | null; breakpoint: string | null };
-  const parsed: Parsed[] = [];
-  const unrecognised: string[] = [];
-  for (const cls of literal.split(/\s+/).filter(Boolean)) {
-    const { variants, utility } = splitVariants(cls);
-    const chain = parseVariantChain(variants);
-    if (!paints(utility)) continue;
-    if (chain.kind === "unknown") unrecognised.push(cls);
-    if (chain.kind !== "state") continue;
-    parsed.push({ utility, state: chain.state, trigger: chain.trigger, theme: chain.theme, breakpoint: chain.breakpoint });
-  }
-
-  const out: StatePaint[] = [];
-  for (const state of INTERACTIVE_STATES) {
-    const triggers = [...new Set(parsed.filter((p) => p.state === state).map((p) => p.trigger))];
-    for (const trigger of triggers) {
-      const own = parsed.filter((p) => p.trigger === trigger);
-      const widths = [null, ...[...new Set(own.map((p) => p.breakpoint).filter((b) => b !== null))]
-        .sort((a, b) => breakpointRank(a) - breakpointRank(b))];
-      for (const at of widths) {
-        const byTheme: { theme: Theme; paint: Omit<StatePaint, "themes"> }[] = [];
-        for (const theme of ["light", "dark"] as Theme[]) {
-          const live = own
-            .filter((p) => (p.theme === null || p.theme === theme) && appliesAt(p.breakpoint, at))
-            // Later wins: a wider breakpoint over a narrower one, and within a
-            // width a `dark:` class over the unlimited one.
-            .sort((a, b) => breakpointRank(a.breakpoint) - breakpointRank(b.breakpoint) ||
-              (a.theme === null ? 0 : 1) - (b.theme === null ? 0 : 1));
-          // A width is its own entry only when something is limited to it;
-          // otherwise the narrower width already measured the same paint.
-          if (at !== null && !live.some((p) => p.breakpoint === at)) continue;
-          if (live.length === 0) continue;
-          const last = <T,>(pick: (p: Parsed) => T | null): T | null => {
-            let v: T | null = null;
-            for (const p of live) {
-              const x = pick(p);
-              if (x !== null) v = x;
-            }
-            return v;
-          };
-          const bg = last((p) => (colour(p.utility, "bg") ? p.utility : null));
-          const fg = last((p) => (colour(p.utility, "text") ? p.utility : null));
-          const op = last((p) => opacityOf(p.utility));
-          const variant = [at, live.some((p) => p.theme === "dark") ? "dark" : null, trigger]
-            .filter((x) => x !== null)
-            .join(":");
-          byTheme.push({ theme, paint: { state, variant, bg: bg ?? restBg, fg: fg ?? restFg, opacity: op ?? 1 } });
-        }
-        const same = (a: Omit<StatePaint, "themes">, b: Omit<StatePaint, "themes">) =>
-          a.variant === b.variant && a.bg === b.bg && a.fg === b.fg && a.opacity === b.opacity;
-        if (byTheme.length === 2 && same(byTheme[0].paint, byTheme[1].paint)) {
-          out.push({ ...byTheme[0].paint, themes: ["light", "dark"] });
-        } else {
-          for (const t of byTheme) out.push({ ...t.paint, themes: [t.theme] });
-        }
-      }
-    }
-  }
-  return { states: out, unrecognised };
-}
-
-
-/**
  * `bg-error/60` -> `{ token: "--error", alpha: 0.6 }`, `text-white` ->
  * `{ token: "--pennie-white", alpha: 1 }`. The alpha form is how a STATE may
  * paint a translucent fill, which is measurable once composited over a surface;
@@ -294,8 +251,8 @@ export function parseColourClass(cls: string): { token: string; alpha: number } 
   return { token, alpha };
 }
 
-/** Class names that paint the rose, in either half. */
-const ROSE = new Set(["error", "[var(--error)]"]);
+/** The token that paints the rose, in either half, at any alpha. */
+const ROSE_TOKEN = "--error";
 
 /**
  * `bg-[var(--x)]` -> `--x`, `bg-white` -> `--pennie-white`, `bg-surface` ->
@@ -312,45 +269,288 @@ export function tokenForColourClass(cls: string): string | null {
   return null;
 }
 
+/** One class of a literal, with what its variant chain means. */
+type Parsed = { cls: string; utility: string; chain: Chain };
+type Limited = { utility: string; theme: Theme | null; breakpoint: string | null };
+
 /**
- * Every literal whose UNPREFIXED classes include a background and a text colour,
- * at least one of which is the rose. Hover and other variant classes are not
- * paired with the rest classes, since they describe a different state; each
- * interactive state is reported separately on `states` (#2836), resolved to the
- * complete pair it paints.
- *
- * A text class is only a colour if `isColour` says its token exists, which is how
- * `text-sm` and `text-center` are told from `text-fg` without a list of sizes.
+ * The classes that apply in `theme` at the width `at` stands for, in cascade
+ * order, later winning: a wider breakpoint over a narrower one, and within a
+ * width a `dark:` class over the unlimited one. The same order for the rest and
+ * for every state, so the two can never resolve one literal differently.
  */
+function liveIn<T extends Limited>(classes: T[], theme: Theme, at: string | null): T[] {
+  return classes
+    .filter((p) => (p.theme === null || p.theme === theme) && appliesAt(p.breakpoint, at))
+    .sort((a, b) => breakpointRank(a.breakpoint) - breakpointRank(b.breakpoint) ||
+      (a.theme === null ? 0 : 1) - (b.theme === null ? 0 : 1));
+}
+
+/** Every literal in `src` that paints the rose, with its rest and state pairs. */
 export function scanRosePairings(src: string, isColour: (token: string) => boolean): ClassPair[] {
   const out: ClassPair[] = [];
   const literalRe = /(["'`])((?:(?!\1)[^\\\n]|\\.)*)\1/g;
   for (const m of src.matchAll(literalRe)) {
     const literal = m[2];
-    const classes = literal.split(/\s+/).filter((c) => c && !c.includes(":"));
-    const colourOf = (prefix: "bg" | "text") =>
-      classes.filter((c) => {
-        if (!c.startsWith(`${prefix}-`)) return false;
-        const t = tokenForColourClass(c);
-        if (t === null) return false;
-        // An explicit `[var(--x)]` is a colour by construction, so it is always
-        // kept and a misspelt token THROWS when measured rather than being
-        // skipped as though it were `text-sm` (L11). Only a NAMED class needs
-        // the lookup, to tell `text-fg` from a size or an alignment.
-        return /^\w+-\[var\(/.test(c) || isColour(t);
+    const before = src.slice(0, m.index ?? 0);
+    // A literal on a COMMENT line (one opening with `//`, `/*` or a JSDoc `*`)
+    // describes a class string rather than painting one, so it is not a pairing
+    // anything draws. It matters since #2866 measures a state with no rest pair:
+    // a comment quoting a retired treatment then read as a live failure. A
+    // literal after code on the same line is still scanned, so a trailing
+    // comment is not exempt by this rule.
+    const lineStart = before.slice(before.lastIndexOf("\n") + 1);
+    if (/^\s*(\/\/|\/\*|\*)/.test(lineStart)) continue;
+    const line = before.split("\n").length;
+    out.push(...pairsOfLiteral(literal, line, isColour));
+  }
+  return out;
+}
+
+/**
+ * The rose pairings one literal holds.
+ *
+ * A literal is a rose pairing when ANY class it carries paints the rose, whatever
+ * variant it sits behind (#2866): `bg-surface text-fg hover:bg-[var(--error)]`
+ * puts a label on the rose at the moment of pressing, and reading the rose only
+ * from unprefixed classes left that hover unfound and so unmeasured.
+ *
+ * The REST pair is then resolved per theme and per width through the same
+ * variant chain parser and the same cascade the states use, so `dark:text-white`
+ * on the rose is measured as the dark pair it is. A rest fill must be opaque: a
+ * wash (`bg-error/25`) has a different colour on every page and is refused as a
+ * rest fill, as it always was. When a wash WINS the cascade in a theme, that
+ * theme's rest is not a measurable pair, and the unlimited fill beneath it does
+ * not answer for it: a fallback to the class the wash overrides would measure a
+ * paint nobody sees there. A theme with no rest fill or no rest label at all
+ * (the parent paints it) is likewise not measured, since the pair is not in the
+ * literal to read.
+ *
+ * A text class is only a colour if `isColour` says its token exists, which is how
+ * `text-sm` and `text-center` are told from `text-fg` without a list of sizes. An
+ * explicit `[var(--x)]` is a colour by construction, so it is always kept and a
+ * misspelt token THROWS when measured rather than being skipped (L11).
+ */
+function pairsOfLiteral(literal: string, line: number, isColour: (token: string) => boolean): ClassPair[] {
+  const colour = (utility: string, prefix: "bg" | "text") => {
+    if (!utility.startsWith(`${prefix}-`)) return false;
+    const c = parseColourClass(utility);
+    return c !== null && (/^\w+-\[var\(/.test(utility) || isColour(c.token));
+  };
+  const paints = (u: string) => colour(u, "bg") || colour(u, "text") || opacityOf(u) !== null;
+  const isRose = (u: string) => (colour(u, "bg") || colour(u, "text")) && parseColourClass(u)?.token === ROSE_TOKEN;
+
+  const parsed: Parsed[] = literal
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((cls) => {
+      const { variants, utility } = splitVariants(cls);
+      return { cls, utility, chain: parseVariantChain(variants) };
+    });
+  if (!parsed.some((p) => p.chain.kind !== "exempt" && isRose(p.utility))) return [];
+
+  const unrecognised = parsed.filter((p) => p.chain.kind === "unknown" && paints(p.utility)).map((p) => p.cls);
+  const rest: Limited[] = [];
+  type StateClass = Limited & { state: string; trigger: string };
+  const stated: StateClass[] = [];
+  for (const p of parsed) {
+    if (!paints(p.utility)) continue;
+    if (p.chain.kind === "rest") rest.push({ utility: p.utility, theme: p.chain.theme, breakpoint: p.chain.breakpoint });
+    if (p.chain.kind === "state") {
+      stated.push({
+        utility: p.utility,
+        theme: p.chain.theme,
+        breakpoint: p.chain.breakpoint,
+        state: p.chain.state,
+        trigger: p.chain.trigger,
       });
-    const bgs = colourOf("bg");
-    const fgs = colourOf("text");
-    if (bgs.length === 0 || fgs.length === 0) continue;
-    const bare = (c: string) => c.replace(/^(bg|text)-/, "");
-    if (!bgs.some((c) => ROSE.has(bare(c))) && !fgs.some((c) => ROSE.has(bare(c)))) continue;
-    const line = src.slice(0, m.index ?? 0).split("\n").length;
-    for (const bg of bgs) {
-      for (const fg of fgs) {
-        const { states, unrecognised } = interactiveStates(literal, bg, fg, isColour);
-        out.push({ bg, fg, literal, line, states, unrecognised });
+    }
+  }
+
+  // The rest cell at one width in one theme. The winning cascade level for each
+  // half is the last one carrying a class of that half; its OPAQUE classes are
+  // the candidates, so two fills written on one literal (a conflict whose
+  // winner is stylesheet order, not class order) are both measured.
+  const widthsOf = (cls: Limited[]) =>
+    [...new Set(cls.map((p) => p.breakpoint).filter((b): b is string => b !== null))]
+      .sort((a, b) => breakpointRank(a) - breakpointRank(b));
+  const levelKey = (p: Limited) => `${breakpointRank(p.breakpoint)}|${p.theme ?? ""}`;
+  const candidates = (live: Limited[], prefix: "bg" | "text") => {
+    const half = live.filter((p) => colour(p.utility, prefix));
+    if (half.length === 0) return [];
+    const top = levelKey(half[half.length - 1]);
+    return half.filter((p) => levelKey(p) === top && tokenForColourClass(p.utility) !== null).map((p) => p.utility);
+  };
+  type Cell = { at: string | null; theme: Theme; bgs: string[]; fgs: string[]; opacity: number; dark: boolean };
+  const cellAt = (at: string | null, theme: Theme): Cell => {
+    const live = liveIn(rest, theme, at);
+    let opacity = 1;
+    for (const p of live) opacity = opacityOf(p.utility) ?? opacity;
+    return {
+      at,
+      theme,
+      bgs: candidates(live, "bg"),
+      fgs: candidates(live, "text"),
+      opacity,
+      dark: live.some((p) => p.theme === "dark"),
+    };
+  };
+  const restCells: Cell[] = [];
+  for (const at of [null, ...widthsOf(rest)]) {
+    for (const theme of ["light", "dark"] as Theme[]) {
+      const cell = cellAt(at, theme);
+      // A width is its own entry only when a rest class is limited to it;
+      // otherwise the narrower width already measured the same paint.
+      if (at !== null && !liveIn(rest, theme, at).some((p) => p.breakpoint === at)) continue;
+      if (cell.bgs.length > 0 && cell.fgs.length > 0) restCells.push(cell);
+    }
+  }
+
+  // One pair per candidate choice, the i-th fill and the j-th label, with a cell
+  // holding fewer candidates keeping its last: for the unprefixed classes alone
+  // that is the cross product the scan has always produced.
+  // With no rest cell at all there is still one pair to build: the states may
+  // paint complete pairs of their own.
+  const nb = Math.max(1, ...restCells.map((c) => c.bgs.length));
+  const nf = Math.max(1, ...restCells.map((c) => c.fgs.length));
+  const pick = (xs: string[], i: number) => xs[Math.min(i, xs.length - 1)] ?? null;
+  const variantOf = (at: string | null, dark: boolean, tail: string | null) =>
+    [at, dark ? "dark" : null, tail].filter((x) => x !== null).join(":");
+
+  const pairs: ClassPair[] = [];
+  // What could not be measured is a fact about the LITERAL, and the candidate
+  // pairs of one literal all meet the same gaps, so each is reported once, on
+  // the first pair that met it. Otherwise the sweep prints one note per
+  // candidate for a single gap.
+  const reported = new Set<string>();
+  for (let i = 0; i < nb; i++) {
+    for (let j = 0; j < nf; j++) {
+      const restPaints = mergeThemes(
+        restCells.map((c) => ({
+          theme: c.theme,
+          paint: { variant: variantOf(c.at, c.dark, null) || "rest", bg: pick(c.bgs, i)!, fg: pick(c.fgs, j)!, opacity: c.opacity },
+        })),
+        (a, b) => a.variant === b.variant && a.bg === b.bg && a.fg === b.fg && a.opacity === b.opacity,
+      );
+      const { states, unmeasured } = statePaints(
+        stated, rest, widthsOf, cellAt, (c) => pick(c.bgs, i), (c) => pick(c.fgs, j), colour, variantOf,
+      );
+      // A literal with no rest pair and no state it could build is a rose mark
+      // with its fill painted elsewhere (a bare `text-error`), not a pairing.
+      if (restPaints.length === 0 && states.length === 0 && unmeasured.length === 0) continue;
+      const fresh = [...new Set(unmeasured)].filter((u) => !reported.has(u));
+      for (const u of fresh) reported.add(u);
+      const named = restPaints[0] ?? states[0];
+      pairs.push({
+        bg: named?.bg ?? "",
+        fg: named?.fg ?? "",
+        literal,
+        line,
+        rest: restPaints,
+        states,
+        unrecognised,
+        unmeasured: fresh,
+      });
+    }
+  }
+  return pairs;
+}
+
+/**
+ * Entries identical across the two themes become one entry measured in both,
+ * so an unqualified class is one paint measured twice, as it always was.
+ * Entries are merged only with their neighbour of the other theme at the same
+ * width, which is how they are produced.
+ */
+function mergeThemes<P>(byTheme: { theme: Theme; paint: P }[], same: (a: P, b: P) => boolean): (P & { themes: Theme[] })[] {
+  const out: (P & { themes: Theme[] })[] = [];
+  for (let k = 0; k < byTheme.length; k++) {
+    const a = byTheme[k];
+    const b = byTheme[k + 1];
+    if (a.theme === "light" && b?.theme === "dark" && same(a.paint, b.paint)) {
+      out.push({ ...a.paint, themes: ["light", "dark"] });
+      k++;
+    } else out.push({ ...a.paint, themes: [a.theme] });
+  }
+  return out;
+}
+
+/**
+ * Every interactive state a literal declares a colour or an opacity for, with the
+ * rest paint of the same theme and width filled in wherever the state does not
+ * restate it (#2836, #2856, #2866).
+ *
+ * Each state variant spelling is its own trigger (hovering the control and
+ * hovering its group are different moments), and for each trigger the paint is
+ * resolved at every width a state OR rest class limits itself to, in both
+ * themes. A state class beats a rest class whatever variants either carries:
+ * the state's pseudo class gives it the higher specificity, and the `dark:`
+ * variant here adds none (`:where`).
+ *
+ * A state is measured for its OWN contrast whenever its fill and label can be
+ * resolved, from its own classes or the rest of its theme and width, whether or
+ * not that theme has a rest pair. Two things are not measured, and each is
+ * reported on `unmeasured` rather than dropped: a whole state whose fill or
+ * label the literal does not hold in that theme (neither the state nor the rest
+ * paints it), and, for a state with its own fill, the step from rest in a theme
+ * with no opaque rest fill (`restBg` null), since there is nothing to step from.
+ */
+function statePaints(
+  stated: (Limited & { state: string; trigger: string })[],
+  rest: Limited[],
+  widthsOf: (cls: Limited[]) => string[],
+  cellAt: (at: string | null, theme: Theme) => { bgs: string[]; fgs: string[]; opacity: number; dark: boolean },
+  restBgOf: (c: { bgs: string[] }) => string | null,
+  restFgOf: (c: { fgs: string[] }) => string | null,
+  colour: (u: string, prefix: "bg" | "text") => boolean,
+  variantOf: (at: string | null, dark: boolean, tail: string | null) => string,
+): { states: StatePaint[]; unmeasured: string[] } {
+  const out: StatePaint[] = [];
+  const unmeasured: string[] = [];
+  for (const state of INTERACTIVE_STATES) {
+    const triggers = [...new Set(stated.filter((p) => p.state === state).map((p) => p.trigger))];
+    for (const trigger of triggers) {
+      const own = stated.filter((p) => p.trigger === trigger);
+      const widths = [null, ...widthsOf([...own, ...rest]).sort((a, b) => breakpointRank(a) - breakpointRank(b))];
+      for (const at of [...new Set(widths)]) {
+        const byTheme: { theme: Theme; paint: Omit<StatePaint, "themes"> }[] = [];
+        for (const theme of ["light", "dark"] as Theme[]) {
+          const live = liveIn(own, theme, at);
+          if (live.length === 0) continue;
+          if (at !== null && !live.some((p) => p.breakpoint === at) && !liveIn(rest, theme, at).some((p) => p.breakpoint === at)) {
+            continue;
+          }
+          const last = <T,>(pickOne: (p: Limited) => T | null): T | null => {
+            let v: T | null = null;
+            for (const p of live) {
+              const x = pickOne(p);
+              if (x !== null) v = x;
+            }
+            return v;
+          };
+          const cell = cellAt(at, theme);
+          const restBg = restBgOf(cell);
+          const bg = last((p) => (colour(p.utility, "bg") ? p.utility : null)) ?? restBg;
+          const fg = last((p) => (colour(p.utility, "text") ? p.utility : null)) ?? restFgOf(cell);
+          const dark = live.some((p) => p.theme === "dark") || cell.dark;
+          const variant = variantOf(at, dark, trigger);
+          if (bg === null || fg === null) {
+            const missing = bg === null ? "fill" : "label";
+            unmeasured.push(`${variant} (${theme}): not measured, the literal paints no ${missing} for it in this theme`);
+            continue;
+          }
+          if (restBg === null) {
+            unmeasured.push(`${variant} (${theme}): step from rest not measured, this theme has no opaque rest fill`);
+          }
+          const op = last((p) => opacityOf(p.utility)) ?? cell.opacity;
+          byTheme.push({ theme, paint: { state, variant, bg, fg, restBg, opacity: op } });
+        }
+        out.push(
+          ...mergeThemes(byTheme, (a, b) =>
+            a.variant === b.variant && a.bg === b.bg && a.fg === b.fg && a.restBg === b.restBg && a.opacity === b.opacity),
+        );
       }
     }
   }
-  return out;
+  return { states: out, unmeasured };
 }

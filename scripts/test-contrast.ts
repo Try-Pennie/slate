@@ -983,13 +983,17 @@ type Measurement = { label: string; value: number; min: number };
 function stateMeasurements(pair: ClassPair, where: string): Measurement[] {
   const out: Measurement[] = [];
   const reads: Record<Theme, (n: string) => RGB> = { light: r, dark: rDark };
-  const restBg = tokenForColourClass(pair.bg);
   for (const s of pair.states) {
     const bg = parseColourClass(s.bg);
     const fg = parseColourClass(s.fg);
+    // The step is judged against the rest fill of the theme and width the state
+    // is in, which a `dark:` or `md:` rest class can change (#2866).
+    // Null when the theme has no opaque rest fill; the pair's `unmeasured`
+    // then says the step was not judged, and the state's own contrast still is.
+    const restBg = s.restBg === null ? null : tokenForColourClass(s.restBg);
     // A state whose colours cannot be resolved FAILS rather than being skipped:
     // a silently skipped state is the blind spot this sweep exists to close (L98).
-    if (!bg || !fg || !restBg) {
+    if (!bg || !fg || (s.restBg !== null && !restBg)) {
       out.push({ label: `${where} ${s.variant}: cannot resolve ${s.fg} on ${s.bg} to tokens`, value: 0, min: 1 });
       continue;
     }
@@ -1013,9 +1017,9 @@ function stateMeasurements(pair: ClassPair, where: string): Measurement[] {
       // The step from rest is judged on an opaque fill only: a translucent one
       // has a different value on every surface, and the two checks above
       // already measure it against each of them.
-      if (s.bg !== pair.bg && bg.alpha === 1) {
+      if (restBg !== null && s.bg !== s.restBg && bg.alpha === 1) {
         out.push({
-          label: `${where} ${s.variant}: ${s.bg} is a visible step from ${pair.bg} (${theme})`,
+          label: `${where} ${s.variant}: ${s.bg} is a visible step from ${s.restBg} (${theme})`,
           value: ratio(read(bg.token), read(restBg)),
           min: HOVER_STEP,
         });
@@ -1023,6 +1027,105 @@ function stateMeasurements(pair: ClassPair, where: string): Measurement[] {
     }
   }
   return out;
+}
+// Every ratio a pair's REST paint must clear, per theme and width (#2866). An
+// opaque rest pair is the label on the fill, as it always was; a rest opacity
+// below 1 fades both over whatever is behind, so it is composited over each
+// surface a control can sit on, the same way a state is.
+function restMeasurements(pair: ClassPair, where: string): Measurement[] {
+  const out: Measurement[] = [];
+  const reads: Record<Theme, (n: string) => RGB> = { light: r, dark: rDark };
+  for (const p of pair.rest) {
+    const bg = tokenForColourClass(p.bg);
+    const fg = tokenForColourClass(p.fg);
+    if (!bg || !fg) {
+      out.push({ label: `${where} ${p.variant}: cannot resolve ${p.fg} on ${p.bg} to tokens`, value: 0, min: 1 });
+      continue;
+    }
+    for (const theme of p.themes) {
+      const read = reads[theme];
+      if (p.opacity === 1) {
+        out.push({ label: `${where} ${p.variant}: ${p.fg} on ${p.bg} (${theme})`, value: ratio(read(fg), read(bg)), min: 4.5 });
+        continue;
+      }
+      for (const behind of STATE_BEHIND) {
+        const ground = read(behind);
+        out.push({
+          label: `${where} ${p.variant}: ${p.fg} on ${p.bg} at ${p.opacity} over ${behind} (${theme})`,
+          value: ratio(composite(read(fg), p.opacity, ground), composite(read(bg), p.opacity, ground)),
+          min: 4.5,
+        });
+      }
+    }
+  }
+  return out;
+}
+/** The themes a pair's rest was actually measured in (a ratio taken, not a refusal). */
+function measuredRestThemes(pair: ClassPair, where: string): Set<Theme> {
+  const out = new Set<Theme>();
+  for (const m of restMeasurements(pair, where)) {
+    const theme = m.label.match(/\((light|dark)\)$/)?.[1] as Theme | undefined;
+    if (theme) out.add(theme);
+  }
+  return out;
+}
+/**
+ * The rest guard's expectation for one file: every literal holding an unprefixed
+ * opaque fill and an unprefixed opaque label, one of them the rose, keyed
+ * `file:line`, with the themes its rest must be measured in.
+ *
+ * Derived from the literal ALONE, with its own copy of the literal pattern and
+ * never through `scanRosePairings`, because a guard whose expectation comes from
+ * the scanner can only prove the scanner agrees with itself (L70).
+ */
+function expectedRestThemes(file: string, src: string): Map<string, Set<Theme>> {
+  const out = new Map<string, Set<Theme>>();
+  for (const m of src.matchAll(/(["'`])((?:(?!\1)[^\\\n]|\\.)*)\1/g)) {
+    const before = src.slice(0, m.index ?? 0);
+    // A comment line quotes a class string rather than painting it.
+    if (/^\s*(\/\/|\/\*|\*)/.test(before.slice(before.lastIndexOf("\n") + 1))) continue;
+    const classes = m[2].split(/\s+/).filter(Boolean);
+    const plain = classes.filter((c) => !c.includes(":"));
+    const opaque = (prefix: "bg" | "text") =>
+      plain.filter((c) => {
+        if (!c.startsWith(`${prefix}-`)) return false;
+        const t = tokenForColourClass(c);
+        return t !== null && (/^\w+-\[var\(/.test(c) || isColourToken(t));
+      });
+    const both = [...opaque("bg"), ...opaque("text")];
+    if (opaque("bg").length === 0 || opaque("text").length === 0) continue;
+    if (!both.some((c) => tokenForColourClass(c) === "--error")) continue;
+    // A wash written behind `dark:` alone (`dark:bg-error/20`, `dark:text-x/50`)
+    // outranks the unlimited class in the dark theme at every width, so the dark
+    // rest there is a translucent paint the scanner deliberately does not
+    // measure as a pair. It is not expected, rather than expected and failed.
+    // Read from the class text here, never by asking the scanner.
+    const darkWash = classes.some((c) => {
+      const w = c.match(/^dark:((?:bg|text)-.+?)\/(?:\d+|\[[^\]]+\])$/);
+      if (!w) return false;
+      const t = tokenForColourClass(w[1]);
+      return t !== null && (/^\w+-\[var\(/.test(w[1]) || isColourToken(t));
+    });
+    out.set(`${file}:${before.split("\n").length}`, new Set<Theme>(darkWash ? ["light"] : ["light", "dark"]));
+  }
+  return out;
+}
+/** Every expected `file:line (theme)` the measurement did not reach. */
+function restGaps(expected: Map<string, Set<Theme>>, measured: Map<string, Set<Theme>>): string[] {
+  const out: string[] = [];
+  for (const [at, themes] of expected) {
+    for (const theme of themes) if (!measured.get(at)?.has(theme)) out.push(`${at} (${theme})`);
+  }
+  return out;
+}
+/** Asserts every rest measurement, and returns the themes it measured a ratio in. */
+function measureRest(pair: ClassPair, where: string): Set<Theme> {
+  for (const m of restMeasurements(pair, where)) {
+    const said = `${m.label} = ${m.value.toFixed(2)}:1`;
+    if (m.value + 1e-9 >= m.min) assert(true, `${said} (>= ${m.min})`);
+    else fail(`${said} (needs >= ${m.min})`);
+  }
+  return measuredRestThemes(pair, where);
 }
 function measureStates(pair: ClassPair, where: string): number {
   for (const m of stateMeasurements(pair, where)) {
@@ -1177,6 +1280,168 @@ function failingStates(literal: string): string[] {
   );
 }
 
+// --- #2866: the REST pair behind a theme or breakpoint variant ---------------
+//
+// #2856 taught the state scan to read `dark:`, breakpoint and `group-` chains,
+// while the REST pair was still read from unprefixed classes only. So a rest
+// colour or opacity written as `dark:text-white` or `md:bg-white` on a rose
+// literal was never measured, and a literal whose rose appeared ONLY behind a
+// variant (`bg-surface text-fg hover:bg-[var(--error)]`) was never found as a
+// rose pairing at all, taking its hover with it. Each shape below must be FOUND
+// and FAIL on the measurement it breaks, beside a counterpart that passes, so a
+// scan that fails everything it sees cannot satisfy the controls (L1, L140).
+{
+  const onRose = "bg-[var(--error)] text-[var(--fg-on-error)]";
+  const pairsOf = (literal: string) => scanRosePairings(literal, isColourToken);
+  const failing = (literal: string) => {
+    const out: string[] = [];
+    for (const pair of pairsOf(literal)) {
+      for (const m of [...restMeasurements(pair, "fixture"), ...stateMeasurements(pair, "fixture")]) {
+        if (m.value + 1e-9 < m.min) out.push(m.label);
+      }
+    }
+    return out;
+  };
+  const onlyIn = (fails: string[], theme: Theme, needle: string) =>
+    fails.some((l) => l.includes(needle) && l.endsWith(`(${theme})`)) &&
+    !fails.some((l) => l.endsWith(`(${theme === "dark" ? "light" : "dark"})`));
+  const shapes: { name: string; bad: string; theme: Theme | "both"; needle: string; good: string }[] = [
+    // White is right on the light rose and 2.39:1 on the dark one.
+    { name: "dark:text-white", bad: `${onRose} dark:text-white`, theme: "dark", needle: " dark: text-white on bg-[var(--error)]", good: `bg-[var(--error)] text-white dark:text-[var(--fg-on-error)]` },
+    // The dark rose is a light rose, and a rose label on a white card in dark is faint.
+    { name: "dark:bg-white", bad: `bg-surface text-[var(--error)] dark:bg-white`, theme: "dark", needle: " dark: text-[var(--error)] on bg-white", good: `${onRose} dark:bg-[var(--error-hover)]` },
+    // The rose label on its own fill turns white on white from md up.
+    { name: "md:bg-white", bad: `${onRose} md:bg-white`, theme: "light", needle: " md: text-[var(--fg-on-error)] on bg-white", good: `${onRose} md:bg-[var(--error-hover)]` },
+    // A rest opacity fades the label and the fill over whatever is behind.
+    { name: "dark:opacity-60", bad: `${onRose} dark:opacity-60`, theme: "dark", needle: " dark: text-[var(--fg-on-error)] on bg-[var(--error)] at 0.6", good: `${onRose} dark:opacity-100` },
+    // The rose only in the dark rest: found, and the dark label measured on it.
+    { name: "dark:bg-[var(--error)] with no other rose", bad: `bg-surface text-fg dark:bg-[var(--error)]`, theme: "dark", needle: " dark: text-fg on bg-[var(--error)]", good: `bg-surface text-fg dark:bg-[var(--error)] dark:text-[var(--fg-on-error)]` },
+    // The rose only in the hover: found, and the hover measured.
+    { name: "hover:bg-[var(--error)] with no other rose", bad: `bg-surface text-fg hover:bg-[var(--error)]`, theme: "both", needle: " hover: text-fg on bg-[var(--error)]", good: `bg-surface text-fg hover:bg-[var(--error)] hover:text-[var(--fg-on-error)]` },
+  ];
+  for (const s of shapes) {
+    const bad = failing(`"${s.bad}"`);
+    assert(
+      pairsOf(`"${s.bad}"`).length >= 1 &&
+        (s.theme === "both" ? bad.some((l) => l.includes(s.needle)) : onlyIn(bad, s.theme, s.needle)),
+      `${s.name}: "${s.bad}" is found and fails on "${s.needle}" in ${s.theme} (failing: ${bad.join("; ") || "none"})`,
+    );
+    const goodPairs = pairsOf(`"${s.good}"`);
+    const good = failing(`"${s.good}"`);
+    assert(
+      goodPairs.length >= 1 && good.length === 0,
+      `${s.name}: the passing counterpart "${s.good}" is found and passes (${goodPairs.length} pairs, failing: ${good.join("; ") || "none"})`,
+    );
+  }
+  // A hover inherits the rest paint of the theme it is in: under a dark rest
+  // fill of white, the dark hover at 90% is measured over white, not the rose.
+  const inherited = pairsOf(`"bg-[var(--error)] text-white dark:bg-white hover:opacity-90"`)[0]?.states ?? [];
+  const darkHover = inherited.find((s) => s.themes.includes("dark"));
+  assert(
+    darkHover?.bg === "bg-white" && darkHover.restBg === "bg-white" && darkHover.opacity === 0.9 &&
+      inherited.find((s) => s.themes.includes("light"))?.bg === "bg-[var(--error)]",
+    `a hover inherits the rest fill of its own theme (got ${JSON.stringify(inherited)})`,
+  );
+  // A theme limited wash is not a rest fill, and the unlimited fill does not
+  // answer for it: the dark cell is simply not a measurable pair.
+  const washed = pairsOf(`"${onRose} dark:bg-error/20"`)[0]?.rest ?? [];
+  assert(
+    washed.length === 1 && JSON.stringify(washed[0].themes) === '["light"]',
+    `a dark wash leaves the dark rest unmeasured rather than falling back to the light fill (got ${JSON.stringify(washed)})`,
+  );
+  // A state that paints its OWN fill and label is a complete pair whatever the
+  // rest holds, so it is measured even when the literal has no opaque rest pair
+  // at all. Only the step from rest needs a rest fill, and where there is none
+  // that is REPORTED on `unmeasured`, never dropped in silence (L98).
+  const noRest = `"text-fg hover:bg-[var(--error)] hover:text-white"`;
+  const noRestFails = failing(noRest);
+  assert(
+    pairsOf(noRest).length === 1 && pairsOf(noRest)[0].rest.length === 0 &&
+      noRestFails.some((l) => l.includes(" hover: text-white on bg-[var(--error)]") && l.endsWith("(dark)")),
+    `a hover with its own fill and label and no rest fill is found and fails in dark (failing: ${noRestFails.join("; ") || "none"})`,
+  );
+  const noRestGood = `"text-fg hover:bg-[var(--error)] hover:text-[var(--fg-on-error)]"`;
+  const noRestGoodPair = pairsOf(noRestGood)[0];
+  assert(
+    noRestGoodPair?.states.length === 1 && failing(noRestGood).length === 0 &&
+      noRestGoodPair.unmeasured.some((u) => u.includes("hover") && u.includes("step from rest")),
+    `its passing counterpart is measured, passes, and reports the step from rest as unmeasured (got ${JSON.stringify(noRestGoodPair)})`,
+  );
+  // The same when a WASH wins the rest in one theme: the dark hover still
+  // paints its own fill and label, so it is measured there.
+  const washRest = `"bg-surface text-fg dark:bg-error/20 hover:bg-[var(--error)] hover:text-white"`;
+  const washFails = failing(washRest);
+  assert(
+    // Named `dark:hover` in dark because the dark rest class limits what it steps from.
+    onlyIn(washFails, "dark", " dark:hover: text-white on bg-[var(--error)]"),
+    `a hover over a theme whose rest is a wash is measured in that theme and fails there (failing: ${washFails.join("; ") || "none"})`,
+  );
+  const washGood = `"bg-surface text-fg dark:bg-error/20 hover:bg-[var(--error)] hover:text-[var(--fg-on-error)]"`;
+  const washGoodPair = pairsOf(washGood)[0];
+  assert(
+    failing(washGood).length === 0 &&
+      (washGoodPair?.states ?? []).some((s) => s.themes.includes("dark")) &&
+      (washGoodPair?.unmeasured ?? []).some((u) => u.includes("(dark)") && u.includes("step from rest")),
+    `its passing counterpart is measured in dark and reports the dark step from rest as unmeasured (got ${JSON.stringify(washGoodPair)})`,
+  );
+  // One literal read as several candidate pairs (two fills written side by side)
+  // reports each thing it could not measure ONCE, not once per candidate, or the
+  // sweep prints the same note line again for every pair of the literal.
+  const twoFills = `"bg-surface bg-white text-fg dark:bg-error/20 hover:bg-[var(--error)] hover:text-[var(--fg-on-error)]"`;
+  const twoFillPairs = pairsOf(twoFills);
+  const twoFillNotes = twoFillPairs.flatMap((p) => p.unmeasured);
+  assert(
+    twoFillPairs.length === 2 && twoFillNotes.length === 1 && twoFillNotes[0].includes("(dark)"),
+    `a literal with two candidate pairs reports its unmeasured step once (${twoFillPairs.length} pairs, notes: ${JSON.stringify(twoFillNotes)})`,
+  );
+  // The sweep's rest guard derives what it expects from the literal alone, not
+  // from the scanner (L70). A `dark:` wash wins the dark rest, which the scanner
+  // deliberately leaves unmeasured, so the guard must not expect dark there,
+  // while still expecting both themes of an ordinary pair.
+  {
+    const src = [
+      `const washed = "bg-[var(--error)] text-[var(--fg-on-error)] dark:bg-error/20";`,
+      `const plainPair = "bg-[var(--error)] text-[var(--fg-on-error)]";`,
+    ].join("\n");
+    const expected = expectedRestThemes("fixture.ts", src);
+    const measured = new Map<string, Set<Theme>>();
+    for (const pair of scanRosePairings(src, isColourToken)) {
+      measured.set(`fixture.ts:${pair.line}`, measuredRestThemes(pair, "fixture"));
+    }
+    assert(
+      JSON.stringify([...(expected.get("fixture.ts:1") ?? [])]) === '["light"]' &&
+        JSON.stringify([...(expected.get("fixture.ts:2") ?? [])]) === '["light","dark"]',
+      `the rest guard expects light only under a dark wash, and both themes otherwise (got ${JSON.stringify([...expected].map(([k, v]) => [k, [...v]]))})`,
+    );
+    assert(
+      restGaps(expected, measured).length === 0,
+      `the rest guard stays green over a dark wash the scanner leaves unmeasured (gaps: ${restGaps(expected, measured).join(", ") || "none"})`,
+    );
+    // The light only mutation, applied to the measurement: the guard must still
+    // name the ordinary pair whose dark rest went unmeasured.
+    const lightOnly = new Map([...measured].map(([k, v]) => [k, new Set([...v].filter((t) => t === "light"))]));
+    assert(
+      JSON.stringify(restGaps(expected, lightOnly)) === '["fixture.ts:2 (dark)"]',
+      `the rest guard still fails when a dark rest goes unmeasured (gaps: ${restGaps(expected, lightOnly).join(", ") || "none"})`,
+    );
+  }
+  // A literal on a comment line describes a treatment rather than painting one,
+  // so it is not found; the same literal as code is.
+  const quoted = "bg-error/10 text-error hover:bg-error/20";
+  assert(
+    pairsOf(`/**\n * the old button (\`${quoted}\`) failed\n */`).length === 0 &&
+      pairsOf(`// "${quoted}"`).length === 0 &&
+      pairsOf(`const cls = "${quoted}";`).length === 1,
+    "a class string quoted in a comment is not a pairing, and the same string in code is",
+  );
+  // The unprefixed pair still reads as one rest entry measured in both themes.
+  const plain = pairsOf(`"${onRose}"`)[0]?.rest ?? [];
+  assert(
+    plain.length === 1 && JSON.stringify(plain[0].themes) === '["light","dark"]' && plain[0].opacity === 1,
+    `an unprefixed rose pair is one rest entry in both themes (got ${JSON.stringify(plain)})`,
+  );
+}
+
 // The rose hover step itself, by name, in both themes: the label on it, the step
 // from the rest fill, and the fill against every surface. The sweep reaches it
 // through the class string; this reaches it through the token, so a class string
@@ -1195,20 +1460,28 @@ for (const [theme, read] of [
 
 let rosePairsMeasured = 0;
 let roseStatesMeasured = 0;
+// Where the sweep measured a rest ratio, by `file:line`, and in which themes.
+const restMeasuredAt = new Map<string, Set<Theme>>();
+// The literals that MUST have a rest ratio measured, and in which themes, derived
+// from the tree independently of the scanner by `expectedRestThemes`: the shape
+// the scan read before #2866, which the per theme resolver can only add to, so
+// one that dropped a rest pair or a theme leaves one of these unmeasured (L70).
+const restExpectedAt = new Map<string, Set<Theme>>();
+for (const file of rosePairFiles) {
+  for (const [at, themes] of expectedRestThemes(file, readFileSync(file, "utf8"))) restExpectedAt.set(at, themes);
+}
 for (const file of rosePairFiles) {
   const src = readFileSync(file, "utf8");
   for (const pair of scanRosePairings(src, isColourToken)) {
-    const bgToken = tokenForColourClass(pair.bg);
-    const fgToken = tokenForColourClass(pair.fg);
-    if (!bgToken || !fgToken) continue;
     rosePairsMeasured++;
-    for (const [theme, read] of [
-      ["light", r],
-      ["dark", rDark],
-    ] as [string, (n: string) => RGB][]) {
-      atLeast(read(fgToken), read(bgToken), 4.5, `${file}:${pair.line} ${pair.fg} on ${pair.bg} (${theme})`);
-    }
+    const at = `${file}:${pair.line}`;
+    const themes = restMeasuredAt.get(at) ?? new Set<Theme>();
+    for (const t of measureRest(pair, at)) themes.add(t);
+    restMeasuredAt.set(at, themes);
     roseStatesMeasured += measureStates(pair, `${file}:${pair.line}`);
+    // What the sweep could not judge is printed, so a green run never reads as
+    // more than it measured (L98).
+    for (const u of pair.unmeasured) console.log(`note: ${file}:${pair.line} ${u}`);
     for (const cls of pair.unrecognised) {
       fail(
         `${file}:${pair.line} ${cls} carries a variant the rose state scan does not know; ` +
@@ -1221,6 +1494,16 @@ for (const file of rosePairFiles) {
 // colours live in ONE constant that the booker's danger variant and the lead's
 // cancel confirm both read. Fewer than one means the sweep lost it (L98).
 assert(roseStatesMeasured >= 1, `the rose state sweep measured ${roseStatesMeasured} interactive states in src (expects at least 1)`);
+// Every literal holding an unprefixed rose pair must have had its rest measured
+// in every theme it is expected in (both, unless a `dark:` wash wins the dark
+// rest). The expectation comes from the tree rather than the scanner, so a
+// resolver that loses a theme or a whole rest pair fails here (L98).
+const restUnmeasured = restGaps(restExpectedAt, restMeasuredAt);
+assert(
+  restExpectedAt.size >= 4 && restUnmeasured.length === 0,
+  `every unprefixed rose pair in src had its rest measured in each expected theme ` +
+    `(${restExpectedAt.size} expected, unmeasured: ${restUnmeasured.join(", ") || "none"})`,
+);
 // Four literals hold a rose pairing today: the destructive fill constant (which
 // the booker's danger variant and the lead's cancel confirm both read since
 // #2836, where they were two copies), the admin panel's one destructive confirm
