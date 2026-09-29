@@ -538,7 +538,7 @@ async function run() {
   // --- #2072: the booking records where it came from ---
   // Read on the SERVER from the prefill every route already sends, so the public
   // booker and the direct booking API are covered by the one create path.
-  const sourceOf = async (prefill: Record<string, string>) => {
+  const sourceOf = async (prefill: Record<string, string>, apiCaller?: "regal" | "trypennie" | "canary") => {
     const { deps, calls } = makeDeps({ candidates: ["a"], freeEmails: new Set(["a@x.com"]) });
     const warned: string[] = [];
     const realWarn = console.warn;
@@ -546,7 +546,7 @@ async function run() {
       warned.push(args.map(String).join(" "));
     };
     try {
-      await createBooking({ ...input, prefill }, deps);
+      await createBooking({ ...input, prefill, ...(apiCaller ? { apiCaller } : {}) }, deps);
     } finally {
       console.warn = realWarn;
     }
@@ -561,6 +561,15 @@ async function run() {
     const { row, warned } = await sourceOf({ xbc: "411" });
     assert(row?.source === "not-given", "create: a link with no source records not-given, never null or empty");
     assert(!warned.some((l) => l.includes("tag=booking-source")), "create: an absent source is not a warning");
+  }
+  {
+    // #2876: the booking API's caller is known here, so a call naming no page
+    // records WHO booked rather than not-given, which the per page alarm would
+    // otherwise read as a booking that might be any page's.
+    const { row } = await sourceOf({ xbc: "411" }, "regal");
+    assert(row?.source === "api-regal", `create: an API booking naming no page records its caller (got ${row?.source})`);
+    const named = await sourceOf({ xbc: "411", source: "booking" }, "trypennie");
+    assert(named.row?.source === "booking", "create: a page the API caller names is still recorded as that page");
   }
   {
     const { row, warned } = await sourceOf({ xbc: "411", source: "offer-hub" });

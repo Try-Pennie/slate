@@ -16,7 +16,11 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { assert, eq, finish } from "./lib/harness.ts";
+import { BOOKING_API_CALLERS } from "../src/lib/booking/api-callers.ts";
 import {
+  API_SOURCES,
+  apiSourceFor,
+  isApiSource,
   BOOKING_SOURCE_PARAM,
   BOOKING_SOURCES,
   PAGE_SOURCES,
@@ -41,13 +45,69 @@ const DECIDED: Record<string, string | null> = {
   "agent-direct": "meet",
   "not-given": null,
   unrecognised: null,
+  // #2876: a booking API call that named no page records WHO called, one value per
+  // caller holding a key (#2645). Typed out here rather than read off the constant,
+  // so a rename of a caller has to be seen in this file too (L70).
+  "api-regal": null,
+  "api-trypennie": null,
+  "api-canary": null,
 };
 
 eq(BOOKING_SOURCE_PARAM, "source", "the URL key a page sets is `source`");
 eq(
   [...BOOKING_SOURCES].sort().join(","),
   Object.keys(DECIDED).sort().join(","),
-  "the vocabulary is exactly the decided pages plus not-given and unrecognised",
+  "the vocabulary is exactly the decided pages, not-given, unrecognised and one API source per caller",
+);
+
+// --- #2876: the API sources are DERIVED from the callers that hold a key -------
+// A caller added to BOOKING_API_CALLERS gets its source by construction, so its
+// bookings can never fall back to not-given and hide a dark page.
+eq(
+  [...API_SOURCES].sort().join(","),
+  BOOKING_API_CALLERS.map((c) => `api-${c}`).sort().join(","),
+  "there is exactly one API source per booking API caller",
+);
+for (const caller of BOOKING_API_CALLERS) {
+  eq(apiSourceFor(caller), `api-${caller}`, `the ${caller} caller records api-${caller}`);
+  assert(isApiSource(apiSourceFor(caller)), `api-${caller} is recognised as an API source`);
+  assert(!(PAGE_SOURCES as readonly string[]).includes(apiSourceFor(caller)), `api-${caller} is not a page a link can name`);
+}
+for (const s of [...PAGE_SOURCES, SOURCE_NOT_GIVEN, SOURCE_UNRECOGNISED, null]) {
+  assert(!isApiSource(s), `${s ?? "null"} is not an API source`);
+}
+
+// Reading a request from an authenticated caller.
+eq(
+  readBookingSource({ xbc: "411" }, "regal"),
+  { source: "api-regal", unrecognisedRaw: null },
+  "an API call naming no page records its caller, never not-given",
+);
+eq(
+  readBookingSource({ source: "  " }, "trypennie"),
+  { source: "api-trypennie", unrecognisedRaw: null },
+  "a blank source from an API caller also records the caller",
+);
+eq(readBookingSource(null, "canary"), { source: "api-canary", unrecognisedRaw: null }, "no prefill at all from the canary records api-canary");
+eq(
+  readBookingSource({ source: "offerhub" }, "trypennie"),
+  { source: "offerhub", unrecognisedRaw: null },
+  "a page the API caller names wins over the caller, because the page is the finer fact",
+);
+eq(
+  readBookingSource({ source: "offer-hub" }, "regal"),
+  { source: "unrecognised", unrecognisedRaw: "offer-hub" },
+  "an unknown value from an API caller stays unrecognised: it named a page, just a wrong one",
+);
+eq(
+  readBookingSource({ source: "api-regal" }),
+  { source: "unrecognised", unrecognisedRaw: "api-regal" },
+  "a public link cannot claim to be the booking API",
+);
+eq(
+  readBookingSource({ source: "api-regal" }, "trypennie"),
+  { source: "unrecognised", unrecognisedRaw: "api-regal" },
+  "one API caller cannot record itself as another",
 );
 for (const [source, legacy] of Object.entries(DECIDED)) {
   eq(

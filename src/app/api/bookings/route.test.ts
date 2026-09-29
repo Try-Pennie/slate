@@ -288,6 +288,13 @@ describe("POST /api/bookings (auth skeleton)", () => {
     }
   });
 
+  it("hands the authenticated caller to the booking, so a call naming no page records who made it (#2876)", async () => {
+    regalKey.primary.mockReturnValue("real-secret");
+    const res = await post("Bearer real-secret", VALID_BODY);
+    expect(res.status).toBe(200);
+    expect(service.bookViaApi).toHaveBeenCalledWith(expect.objectContaining({ apiCaller: "regal" }));
+  });
+
   it("returns 409 on confirm_required so the bot can ask the lead first", async () => {
     regalKey.primary.mockReturnValue("real-secret");
     service.bookViaApi.mockResolvedValue(result("confirm_required"));

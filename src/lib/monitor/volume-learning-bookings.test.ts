@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import { listBookingStampsBetween } from "./volume-learning-bookings";
+import { isPageTraffic, pageTrafficFilter } from "./page-volume";
 
 // #2739: the read the low volume learner is fitted from.
 const SINCE = "2026-08-05T09:00:00.000Z";
@@ -11,14 +12,20 @@ const SINCE = "2026-08-05T09:00:00.000Z";
  * learner reports.
  */
 function stampDb(
-  rows: { created_at: string; is_test: boolean }[],
+  rows: { created_at: string; is_test: boolean; source?: string | null }[],
   opts: { errorOnPage?: number } = {},
 ) {
   const pages: [number, number][] = [];
   const make = () => {
-    const f: { gte?: string; lt?: string; eqTest?: unknown } = {};
+    const f: { gte?: string; lt?: string; eqTest?: unknown; or?: string } = {};
     const chain = {
       select: (_c: string) => chain,
+      // Only the page traffic filter (#2876) is understood; anything else throws.
+      or: (expr: string) => {
+        if (expr !== pageTrafficFilter()) throw new Error(`fake: unhandled or() ${expr}`);
+        f.or = expr;
+        return chain;
+      },
       eq: (col: string, val: unknown) => {
         if (col === "buckets.is_test") f.eqTest = val;
         return chain;
@@ -32,6 +39,7 @@ function stampDb(
         const kept = rows
           .filter((r) => (f.gte === undefined || r.created_at >= f.gte) && (f.lt === undefined || r.created_at < f.lt))
           .filter((r) => f.eqTest === undefined || r.is_test === f.eqTest)
+          .filter((r) => f.or === undefined || isPageTraffic(r.source ?? null))
           .sort((a, b) => a.created_at.localeCompare(b.created_at))
           .slice(from, to + 1)
           .map((r) => ({ created_at: r.created_at, buckets: { is_test: r.is_test } }));
@@ -58,6 +66,22 @@ describe("listBookingStampsBetween", () => {
     expect(await listBookingStampsBetween(db, SINCE, UNTIL)).toEqual([
       { createdAtMs: Date.parse("2026-08-05T10:00:00.000Z"), isTest: true },
       { createdAtMs: Date.parse("2026-08-05T10:05:00.000Z"), isTest: false },
+    ]);
+  });
+
+  // #2876: the floors are learned from the population the tier alarm counts, which
+  // is page traffic. A booking API call learned as traffic would raise the floors
+  // above anything the pages alone send, and the alarm would page a healthy day.
+  it("learns from page traffic only, leaving booking API bookings out", async () => {
+    const { db } = stampDb([
+      { created_at: "2026-08-05T10:00:00.000Z", is_test: false, source: "api-regal" },
+      { created_at: "2026-08-05T10:01:00.000Z", is_test: false, source: "api-trypennie" },
+      { created_at: "2026-08-05T10:02:00.000Z", is_test: false, source: "offerhub" },
+      { created_at: "2026-08-05T10:03:00.000Z", is_test: false, source: null },
+    ]);
+    expect(await listBookingStampsBetween(db, SINCE, UNTIL)).toEqual([
+      { createdAtMs: Date.parse("2026-08-05T10:02:00.000Z"), isTest: false },
+      { createdAtMs: Date.parse("2026-08-05T10:03:00.000Z"), isTest: false },
     ]);
   });
 

@@ -14,10 +14,38 @@ import {
   countCustomerBookingsSince,
   customerBookingFromSourcesSince,
   listCustomerBookingSourcesSince,
+  measurePageSources,
   SOURCE_READ_LIMIT,
 } from "./customer-bookings";
 
+import { API_SOURCES } from "@/lib/booking/booking-source";
+
 const SINCE = "2026-08-05T09:00:00.000Z";
+
+/**
+ * The `or()` alternatives these reads send, and nothing else: `source.is.null`,
+ * `source.eq.<v>` and `source.not.in.(<a>,<b>)`. Anything else throws, so a new
+ * filter cannot pass through a fake that never read it.
+ */
+function orPredicate(expr: string): (r: { source?: string | null }) => boolean {
+  const alts: ((r: { source?: string | null }) => boolean)[] = [];
+  const notIn = /source\.not\.in\.\(([^)]*)\)/g;
+  const rest = expr.replace(notIn, (_all, list: string) => {
+    const vals = list.split(",");
+    alts.push((r) => r.source != null && !vals.includes(r.source));
+    return "";
+  });
+  for (const a of rest.split(",").filter(Boolean)) {
+    if (a === "source.is.null") {
+      alts.push((r) => (r.source ?? null) === null);
+      continue;
+    }
+    const m = /^source\.eq\.(.+)$/.exec(a);
+    if (!m) throw new Error(`fake: unhandled or() alternative ${a}`);
+    alts.push((r) => r.source === m[1]);
+  }
+  return (r) => alts.some((f) => f(r));
+}
 
 /**
  * A stand-in for the supabase count chain. Records the filters applied and
@@ -25,12 +53,14 @@ const SINCE = "2026-08-05T09:00:00.000Z";
  * is_test filter counts the canary rows and fails the test.
  */
 function fakeDb(
-  rows: { created_at: string; is_test: boolean; kind?: string }[],
+  rows: { created_at: string; is_test: boolean; kind?: string; source?: string | null }[],
   opts: { error?: string } = {},
 ) {
   const filters: { col: string; val: unknown }[] = [];
+  const ors: ((r: { source?: string | null }) => boolean)[] = [];
   const chain = {
     select: (_cols: string, _opts: { count: string; head: boolean }) => chain,
+    or: (expr: string) => (ors.push(orPredicate(expr)), chain),
     eq: (col: string, val: unknown) => {
       filters.push({ col, val });
       return chain;
@@ -50,6 +80,7 @@ function fakeDb(
       const since = filters.find((f) => f.col === "created_at")?.val as string | undefined;
       const kept = rows.filter(
         (r) =>
+          ors.every((o) => o(r)) &&
           (since === undefined || r.created_at >= since) &&
           (testFilter === undefined || r.is_test === testFilter.val) &&
           (kindFilter === undefined || (r.kind ?? "routed") === kindFilter.val),
@@ -94,6 +125,30 @@ describe("countCustomerBookingsSince", () => {
     expect(await countCustomerBookingsSince(db, SINCE)).toBe(1);
   });
 
+  // #2876: a booking made through the booking API names its caller and came from no
+  // landing page. The tier floors were fitted to page traffic (the cal.com routing
+  // forms), so a steady API stream counted here would hold the tier above its floor
+  // while every landing page was dark.
+  it("does not count booking API bookings, so an API stream cannot hold the tier above its floor", async () => {
+    const api = Array.from({ length: 30 }, (_, i) => ({
+      ...customer(`2026-08-05T10:${String(i).padStart(2, "0")}:00.000Z`),
+      source: API_SOURCES[i % API_SOURCES.length]!,
+    }));
+    const { db } = fakeDb(api);
+    expect(await countCustomerBookingsSince(db, SINCE)).toBe(0);
+  });
+
+  it("control: page bookings, untagged ones and ones from before sources still count", async () => {
+    const { db } = fakeDb([
+      { ...customer("2026-08-05T10:00:00.000Z"), source: "offerhub" },
+      { ...customer("2026-08-05T10:01:00.000Z"), source: "not-given" },
+      { ...customer("2026-08-05T10:02:00.000Z"), source: null },
+      { ...customer("2026-08-05T10:03:00.000Z"), source: "unrecognised" },
+      { ...customer("2026-08-05T10:04:00.000Z"), source: "api-regal" },
+    ]);
+    expect(await countCustomerBookingsSince(db, SINCE)).toBe(4);
+  });
+
   it("still honours the window it was asked for", async () => {
     const { db } = fakeDb([
       customer("2026-08-05T08:00:00.000Z"), // before SINCE
@@ -122,16 +177,18 @@ type SourceFakeRow = { created_at: string; is_test: boolean; source: string | nu
 function sourceDb(rows: SourceFakeRow[], opts: { error?: string } = {}) {
   const make = () => {
     const filters: { col: string; val: unknown }[] = [];
+    const ors: ((r: SourceFakeRow) => boolean)[] = [];
     let limit = Infinity;
     const chain = {
       select: () => chain,
       eq: (col: string, val: unknown) => (filters.push({ col, val }), chain),
       gte: (col: string, val: unknown) => (filters.push({ col, val }), chain),
       in: (col: string, val: unknown) => (filters.push({ col, val }), chain),
+      or: (expr: string) => (ors.push(orPredicate(expr)), chain),
       limit: (n: number) => ((limit = n), chain),
       then: (res: (v: unknown) => unknown) => {
         if (opts.error) return Promise.resolve(res({ data: null, count: null, error: { message: opts.error } }));
-        const kept = rows.filter((r) =>
+        const kept = rows.filter((r) => ors.every((o) => o(r))).filter((r) =>
           filters.every((f) =>
             f.col === "buckets.is_test"
               ? r.is_test === f.val
@@ -204,6 +261,47 @@ describe("customerBookingFromSourcesSince", () => {
     const log = vi.spyOn(console, "error").mockImplementation(() => {});
     const { db } = sourceDb([], { error: "read timeout" });
     await expect(customerBookingFromSourcesSince(db, ["offerhub"], SINCE)).rejects.toThrow(/could not read/);
+    log.mockRestore();
+  });
+});
+
+// #2876: the measurement the alerts settings page and the readiness gate read. A
+// booking made through the booking API names its caller, not a page, so it is not
+// page traffic: it neither counts as unsourced nor as a booking the pages could
+// have sent. Without that, a lookback holding only API bookings would read as
+// "every booking carried a source" and show the page floors as coverage.
+describe("measurePageSources", () => {
+  const NOW = Date.parse("2026-08-06T09:00:00.000Z");
+  const at = "2026-08-05T10:00:00.000Z";
+  const row = (source: string | null, is_test = false): SourceFakeRow => ({ created_at: at, is_test, source });
+
+  it("leaves booking API bookings out of both the page traffic and the unsourced count", async () => {
+    const { db } = sourceDb([
+      row("offerhub"),
+      row("not-given"),
+      row(null),
+      row("api-regal"),
+      row("api-trypennie"),
+      row("api-canary"),
+      row("offerhub", true),
+    ]);
+    const m = await measurePageSources(db, NOW);
+    expect(m.realBookings).toBe(3);
+    expect(m.unsourced).toBe(2);
+  });
+
+  it("reads a lookback holding only API bookings as no page traffic at all, never as sources recorded", async () => {
+    const { db } = sourceDb([row("api-regal"), row("api-trypennie")]);
+    const m = await measurePageSources(db, NOW);
+    expect(m.realBookings).toBe(0);
+    expect(m.unsourced).toBe(0);
+    expect(m.pages.every((p) => !p.recorded)).toBe(true);
+  });
+
+  it("throws on a failed read rather than answering zero", async () => {
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    const { db } = sourceDb([], { error: "read timeout" });
+    await expect(measurePageSources(db, NOW)).rejects.toThrow(/could not be read/);
     log.mockRestore();
   });
 });
