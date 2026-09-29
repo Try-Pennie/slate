@@ -584,7 +584,7 @@ export function crossCheckSlateBookings(input: {
   return { matched, ga4Only, slateOnly, outsideExport };
 }
 
-export type SlateCheckInput = { ok: true; submissionIds: string[] } | { ok: false; message: string } | { ok: "skipped" };
+export type SlateCheckInput = { ok: true; submissionIds: string[] } | { ok: false; message: string } | { ok: "skipped"; missing: string[] };
 
 // --- the whole judgement ------------------------------------------------------------
 
@@ -778,7 +778,9 @@ export function judgePilotSplit(input: {
     return out(PILOT_SPLIT_EXIT.compared, extra);
   }
   if (check.ok === "skipped") {
-    lines.push("Slate cross check was skipped: no Supabase secret key here, so GA4's Slate bookings were not compared with Slate's own rows.");
+    lines.push(
+      `Slate cross check was skipped: ${check.missing.join(" and ")} ${check.missing.length === 1 ? "is" : "are"} not set here, so GA4's Slate bookings were not compared with Slate's own rows.`,
+    );
     return out(PILOT_SPLIT_EXIT.compared, extra);
   }
   if (check.ok === false) {

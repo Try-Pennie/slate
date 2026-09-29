@@ -116,7 +116,11 @@ if (first.exit !== PILOT_SPLIT_EXIT.compared) print(first.lines, first.exit);
 
 async function readSlate(dates: string[]): Promise<SlateCheckInput> {
   const creds = judgeSupabaseCredentials(env);
-  if (!creds.ok) return { ok: "skipped" };
+  if (!creds.ok) {
+    // Say which one is absent: a missing URL is not a missing key (L11).
+    const missing = ["NEXT_PUBLIC_SUPABASE_URL", "SUPABASE_SECRET_KEY"].filter((n) => !env[n]?.trim());
+    return { ok: "skipped", missing };
+  }
   try {
     const { supabaseAdmin } = await import("@/lib/supabase/admin");
     const { selectAllPages } = await import("@/lib/supabase/paginate");

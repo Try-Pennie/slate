@@ -388,9 +388,13 @@ function idsInBucketRange(n: number, below: boolean, percent: number, prefix: st
   const crossFailed = judgePilotSplit({ csvText: csv(healthyRows), env: { PILOT_SPLIT_PERCENT: "50" }, slateCheck: { ok: false, message: "boom" } });
   seen.add(crossFailed.exit);
   eq(crossFailed.exit, PILOT_SPLIT_EXIT.crossCheckFailed, "a cross check that could not read Slate exits on its own code");
-  const crossSkipped = judgePilotSplit({ csvText: csv(healthyRows), env: { PILOT_SPLIT_PERCENT: "50" }, slateCheck: { ok: "skipped" } });
+  const crossSkipped = judgePilotSplit({
+    csvText: csv(healthyRows),
+    env: { PILOT_SPLIT_PERCENT: "50" },
+    slateCheck: { ok: "skipped", missing: ["NEXT_PUBLIC_SUPABASE_URL"] },
+  });
   eq(crossSkipped.exit, PILOT_SPLIT_EXIT.compared, "a skipped cross check does not fail the comparison");
-  assert(/cross check was skipped/.test(crossSkipped.lines.join("\n")), "and says it was skipped, never silently");
+  assert(/cross check was skipped: NEXT_PUBLIC_SUPABASE_URL is not set/.test(crossSkipped.lines.join("\n")), "and names what was missing, never a secret key it did not look for (L11)");
 
   for (const [name, code] of Object.entries(PILOT_SPLIT_EXIT)) {
     assert(seen.has(code), `exit ${code} (${name}) is produced by at least one case`);
