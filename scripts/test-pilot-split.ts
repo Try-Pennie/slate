@@ -340,6 +340,16 @@ function idsInBucketRange(n: number, below: boolean, percent: number, prefix: st
     { PILOT_SPLIT_PERCENT: "50" },
   );
   eq(noBooker.exit, PILOT_SPLIT_EXIT.noBookerEvents, "plenty of leads and not one booker event means the booker events are not in the export");
+  const halfEach = Math.floor(MIN_LEADS_PER_HALF / 2);
+  const thinNoBooker = judge(
+    csv([...slateIds.slice(0, halfEach).flatMap((id) => lead(id, "slate")), ...calIds.slice(0, halfEach).flatMap((id) => lead(id, "cal.com"))]),
+    { PILOT_SPLIT_PERCENT: "50" },
+  );
+  eq(
+    thinNoBooker.exit,
+    PILOT_SPLIT_EXIT.tooFewToRead,
+    `${halfEach} leads a half with no booker events is too few to read, never "plenty of leads": the floor is per half`,
+  );
 
   // The planner, from the environment.
   const plan = planFromEnv({

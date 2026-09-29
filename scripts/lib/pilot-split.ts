@@ -88,7 +88,13 @@ const Z_POWER_80 = 0.8416212335729143; // power 0.8
 const OPEN_EVENTS = new Set(["view_booker", "navigate_to_booker"]);
 const BOOKED_EVENT = "complete_booking";
 const ASSIGNMENT_EVENT = "booking_assignment";
-/** Every `ga4_event_name` trypennie's booker tracker sends. */
+/**
+ * Every `ga4_event_name` trypennie's booker tracker sends. A lead counts as booked on
+ * `complete_booking` whether or not a `cancel_booking` follows: the booking rate is
+ * whether the booker converted the lead, and a later cancellation is a separate
+ * outcome. The Slate cross check reads Slate's bookings in every status for the same
+ * reason, so the two sides count the same leads.
+ */
 export const BOOKER_EVENTS = new Set([
   "navigate_to_booker",
   "view_booker",
@@ -705,7 +711,9 @@ export function judgePilotSplit(input: {
     if (excluded.length > 0) lines.push(`Left out: ${excluded.join("; ")}.`);
     return out(PILOT_SPLIT_EXIT.emptyHalf, extra);
   }
-  if (s.bookerEvents === 0 && s.slate.leads + s.calcom.leads >= MIN_LEADS_PER_HALF) {
+  // Per half, like the readability floor below: two thin halves with no booker events
+  // are too few to read, not evidence the export is missing a filter.
+  if (s.bookerEvents === 0 && s.slate.leads >= MIN_LEADS_PER_HALF && s.calcom.leads >= MIN_LEADS_PER_HALF) {
     lines.push(
       `FAILED (no-booker-events): ${plural(s.slate.leads + s.calcom.leads, "lead")} and not one booker event (${[...BOOKER_EVENTS].join(", ")}). ` +
         "The Exploration is missing them: check the event name filter and that ga4_event_name is a registered custom dimension.",

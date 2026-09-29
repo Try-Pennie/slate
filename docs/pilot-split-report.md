@@ -77,7 +77,9 @@ reach `/my-offers/result`. One of those two trypennie changes is needed first.
 - **A lead seen under both providers** means the two pages disagreed about it. It
   is counted and left out of both halves.
 - **Opened the booker**: `view_booker`, `navigate_to_booker`, or a booking.
-  **Booked**: `complete_booking`.
+  **Booked**: `complete_booking`, even when a `cancel_booking` follows: the rate
+  is whether the booker converted the lead, and the Slate cross check reads Slate's
+  bookings in every status so both sides count the same leads.
 - **Bounce is "left without opening the booker"**, the booker level bounce, which
   reads the same way for both providers. GA4's own session bounce cannot be split
   by an event scoped parameter such as `booking_provider`.
