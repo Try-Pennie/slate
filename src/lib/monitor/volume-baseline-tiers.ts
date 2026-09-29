@@ -4,8 +4,15 @@
 import { cellsFromRows, type VolumeBaseline } from "./volume-floors.ts";
 import type { VolumeTier } from "./volume-tiers.ts";
 
-/** Each measured tier beside Low, whole: [floor30, floor120, typical120] per hour, one row per weekday from Monday. */
-export const MEASURED_TIER_BASELINES: Partial<Record<VolumeTier, VolumeBaseline>> = {
+/**
+ * SAVED cal.com measurements of each tier beside Low, whole: [floor30, floor120, typical120]
+ * per hour, one row per weekday from Monday. NOT IN FORCE until #2893: nothing judges or
+ * learns against them, and TIER_ANCHORS is Low alone. A whole tier floor under a partially
+ * carried tier's learned floors would raise them to traffic it cannot reach (Dan, 2026-09-29),
+ * so they are kept here, measured while cal.com still takes that traffic, to be applied in
+ * proportion to the share of each tier Slate carries.
+ */
+export const SAVED_TIER_MEASUREMENTS: Partial<Record<VolumeTier, VolumeBaseline>> = {
   "2": {
     source: "calcom",
     measuredOn: "2026-09-29",

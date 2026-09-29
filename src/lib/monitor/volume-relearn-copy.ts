@@ -148,9 +148,10 @@ export function learningStatusCopy(state: BaselineInForce, nowMs: number): Learn
 
 /**
  * One line for every tier beside Low (#2874), each saying what is true of it now:
- * judged against its own learned floors, learning with its cal.com measurement as the
- * floor under them (#2888), carried and not judged yet (with when it will be), or
- * not carried at all. Whether a tier is judged comes from `tierJudgedBaseline`, the
+ * judged against its own learned floors, carried and not judged yet (with when it
+ * will be), or not carried at all. A tier beside Low with a cal.com anchor, which
+ * none has until #2893 applies the saved measurements, says it is learning with that
+ * floor under it, never that it is judged against it (#2888). Whether a tier is judged comes from `tierJudgedBaseline`, the
  * predicate the monitor's tier checks use, so the line and the alarm cannot disagree
  * (L16). Every tier gets a line, so a tier that is not judged is stated rather than
  * absent (L678).
@@ -179,7 +180,8 @@ export function tierLearningLines(
     // The one predicate the monitor judges tiers by: a tier it returns nothing for is
     // never described as judged here (L16).
     if (tierJudgedBaseline(state) === null && state.kind === "measured" && state.why === "insufficient" && state.entry?.rampStartAt) {
-      // Anchored and still learning (#2888): the measurement is a floor under what it
+      // Anchored and still learning (#2888, reachable once #2893 gives a tier beside
+      // Low an anchor): the measurement is a floor under what it
       // learns, never what it is judged against, so the line says it is learning.
       const weeks = weeksSoFar(state);
       return (

@@ -440,6 +440,21 @@ let fitted: StoredVolumeLearning | null = null;
   );
   const bareLines = tierLearningLines({ rampEndOn: null, learning: soon.saves[0] }, early + MIN, LOW_ONLY);
   assert(/^Medium: carried since .*, and not judged until 4 full weeks/.test(bareLines[0]!), `control: an unanchored tier keeps its line (${bareLines[0]})`);
+  // With the REAL anchors (Low alone until #2893), every tier line is exactly main's:
+  // the saved measurements of Medium, High and Very High change nothing on the page.
+  for (const [what, learning, at] of [
+    ["one booking in", first.saves[0], oneIn + MIN],
+    ["two weeks in", soon.saves[0], early + MIN],
+    ["learned", widened.saves[0], NOW + MIN],
+    ["nothing stored", null, NOW],
+  ] as const) {
+    eq(tierLearningLines({ rampEndOn: null, learning }, at), tierLearningLines({ rampEndOn: null, learning }, at, LOW_ONLY), `${what}: the real anchors give the tier lines of a Low only world`);
+    eq(
+      Object.keys(resolveTierBaselines({ volume_ramp_end_on: null, volume_learning: learning })),
+      Object.keys(resolveTierBaselines({ volume_ramp_end_on: null, volume_learning: learning }, LOW_ONLY)),
+      `${what}: and judge the same tiers`,
+    );
+  }
   for (const line of [...youngLines, ...learnedLines, ...bareLines]) {
     assert(!/undefined|NaN|null|\[object/.test(line), `no leaked value in "${line.slice(0, 50)}"`);
     assert(!/[\u2014\u2013]/.test(line), "no dashes in the copy");

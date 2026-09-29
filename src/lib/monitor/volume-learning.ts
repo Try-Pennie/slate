@@ -17,9 +17,8 @@
  *   all of it. So learning refuses to start without an explicit ramp START (a
  *   tier's first real booking, or a later declared ramp end, #2874), and every
  *   booking before it is excluded and counted, rather than the window merely
- *   happening to start later. For a measured tier (Low, Medium, High and Very High,
- *   #2888) the cal.com anchor keeps a floor learned on a partial ramp from judging
- *   below the measurement; a tier with no anchor (Ultra High) learns a
+ *   happening to start later. For Low the cal.com anchor keeps a floor learned on a
+ *   partial ramp from judging below the measurement; a tier with no anchor learns a
  *   low floor until the horizon moves past its partial weeks, which a declared ramp
  *   end avoids.
  * - TEST BOOKINGS ARE NOT TRAFFIC. The smoke agents and buckets write real rows,

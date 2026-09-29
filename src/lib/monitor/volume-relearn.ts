@@ -33,10 +33,9 @@
  *
  * THE CAL.COM FIT IS THE FLOOR UNDER A MEASURED TIER'S LEARNED FLOOR TWICE:
  * `learnFloors` holds every cell at or above it when it fits, and `baselineInForce`
- * does again when it READS. For a tier beside Low the fit is a floor ONLY: it never
- * makes the tier judged before its own traffic has been learned
- * (`tierJudgedBaseline`, #2888). A tier nobody has measured has nothing under it.
- * Either way a tier beside Low is UNJUDGED until it is learned, and says so.
+ * does again when it READS. A tier with no anchor (every tier beside Low, until
+ * #2893) has nothing under it, and any tier beside Low is UNJUDGED until its own
+ * traffic has been learned, and says so (`tierJudgedBaseline`).
  *
  * No `@/` imports, so node scripts can drive it directly.
  */
@@ -305,14 +304,13 @@ export function baselineInForce(
  * while the alarm skips it, or the reverse (L16).
  *
  * A tier beside Low is judged only once four weeks of its own bookings are learned,
- * and then against those learned floors, held at or above its cal.com anchor where
- * it has one (`baselineInForce` does the holding). The anchor NEVER makes a tier
- * judged before that. Dan, 2026-09-29: the pilot may move only some of a tier's
- * pages, and judging that partial traffic against floors fitted to the whole tier
- * false pages, 108 to 283 times in two normal weeks as measured in
- * `scripts/lib/volume-floor-scope.ts`. So an anchor is a floor, never a judge. Low is
- * not decided here: it has its own check and is judged against its measurement from
- * the start, as it always has been.
+ * and then against those learned floors (held at or above an anchor, were it given
+ * one; none has one until #2893). An anchor never makes a tier beside Low judged
+ * before that: the pilot may move only some of a tier's pages, and judging that
+ * partial traffic against floors fitted to the whole tier false pages, 108 to 283
+ * times in two normal weeks as measured in `scripts/lib/volume-floor-scope.ts`. Low
+ * is not decided here: it has its own check and is judged against its measurement
+ * from the start, as it always has been.
  */
 export function tierJudgedBaseline(state: BaselineInForce): VolumeBaseline | null {
   return state.kind === "learned" ? state.baseline : null;

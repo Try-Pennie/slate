@@ -2,8 +2,7 @@
  * The low volume alarm for every tier judged BESIDE Low (#2874).
  *
  * Which tiers those are is decided upstream, by `resolveTierBaselines`: exactly the
- * tiers Slate carries whose own bookings have been learned. A tier's cal.com
- * measurement is only the floor under those learned floors (#2888). Each is judged by the
+ * tiers Slate carries whose own bookings have been learned. Each is judged by the
  * same check as Low (`runLowVolumeCheck`), on its own count, its own floors and its
  * own alert key, one after another, so a tier's page names that tier and one tier's
  * cooldown never silences another's (L707).

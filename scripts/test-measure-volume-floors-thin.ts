@@ -2,7 +2,7 @@
 // floor above zero at any hour the alarm judges, and it refuses it on EVERY path
 // that writes: the live cal.com read, REFIT=1 and RECORD_CLOSED_DAYS=1. The refusal
 // first shipped on the live path only, so a refit or a recorded holiday could still
-// commit an all zero anchor that reads as a measured floor and holds nothing up.
+// commit an all zero measurement that reads as a real floor and holds nothing up.
 //
 // Each mode is run for real, as a child process, in a TEMPORARY working directory,
 // so every path the command writes lands there and never in the repo (L2). The

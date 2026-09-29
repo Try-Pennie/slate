@@ -15,8 +15,9 @@
  * the alarms read is filtered to the tier its floors describe, the tiers Slate
  * carries are derived from its own bookings, and each is learned from its own first
  * booking (`src/lib/monitor/volume-tiers.ts`, `volume-relearn.ts`). Change this
- * only to MEASURE another tier's cal.com anchor, which is a separate fixture and
- * baseline per tier; the admin page names the scope beside the floors it produced.
+ * only to MEASURE Low again. Other tiers are measured with MEASURE_TIER into their
+ * own fixtures and a saved, not in force, module (#2888, applied by #2893); the
+ * admin page names the scope beside the floors it produced.
  *
  * The committed fixture keeps every Low page's series, not only the scoped one, so
  * a wider scope can be fitted and replayed offline from the same measurement.
@@ -282,7 +283,9 @@ function renderBaselineEntry(key: string, baseline: VolumeBaseline): string {
 // booked it through, with no page scope, since per page floors for those tiers are
 // not a thing any alarm reads. Each tier's counts are committed in their own file,
 // and the floors of every measured tier live in ONE generated module, rendered from
-// every such file, so measuring one tier can never drop another's anchor.
+// every such file, so measuring one tier can never drop another's measurement.
+// These are SAVED, not in force: TIER_ANCHORS is Low alone until #2893 applies them
+// in proportion to the share of each tier Slate carries (Dan, 2026-09-29).
 
 /** Low's committed measurement, the file the command has always written. */
 export const LOW_FIXTURE_PATH = "scripts/fixtures/calcom-low-bookings.json";
@@ -349,8 +352,8 @@ export function readTierFixtures(): Partial<Record<VolumeTier, VolumeFixture>> {
 
 /**
  * The baselines the tier module must hold, one per measurement. A measurement filed
- * under a tier it did not count is refused by name, so an anchor can never judge a
- * tier with another tier's traffic (L70).
+ * under a tier it did not count is refused by name, so a saved measurement can never
+ * describe a tier with another tier's traffic (L70).
  */
 export function tierBaselinesFromFixtures(
   fixtures: Partial<Record<VolumeTier, VolumeFixture>>,
@@ -378,8 +381,15 @@ export function renderTierBaselineModule(baselines: Partial<Record<VolumeTier, V
     'import { cellsFromRows, type VolumeBaseline } from "./volume-floors.ts";',
     'import type { VolumeTier } from "./volume-tiers.ts";',
     "",
-    "/** Each measured tier beside Low, whole: [floor30, floor120, typical120] per hour, one row per weekday from Monday. */",
-    "export const MEASURED_TIER_BASELINES: Partial<Record<VolumeTier, VolumeBaseline>> = {",
+    "/**",
+    " * SAVED cal.com measurements of each tier beside Low, whole: [floor30, floor120, typical120]",
+    " * per hour, one row per weekday from Monday. NOT IN FORCE until #2893: nothing judges or",
+    " * learns against them, and TIER_ANCHORS is Low alone. A whole tier floor under a partially",
+    " * carried tier's learned floors would raise them to traffic it cannot reach (Dan, 2026-09-29),",
+    " * so they are kept here, measured while cal.com still takes that traffic, to be applied in",
+    " * proportion to the share of each tier Slate carries.",
+    " */",
+    "export const SAVED_TIER_MEASUREMENTS: Partial<Record<VolumeTier, VolumeBaseline>> = {",
     ...entries,
     "};",
     "",
@@ -398,16 +408,16 @@ export function judgedHourCoverage(
 }
 
 /**
- * Null when an anchor carries a floor at some hour the alarm judges, else the
- * refusal. An anchor whose every judged floor is zero would put the tier on
- * /admin/alerts as judged against its cal.com measurement while it could never fire,
- * which is an alarm that reads as working and is not (L678).
+ * Null when a measurement carries a floor at some hour the alarm judges, else the
+ * refusal. A measurement whose every judged floor is zero would be saved as a floor
+ * that can never hold anything up, while reading as a real measurement of the tier
+ * (L678).
  */
 export function thinAnchorRefusal(baseline: VolumeBaseline, week: Pick<BusinessHoursConfig, "rules">): string | null {
   const { withFloor, judged } = judgedHourCoverage(baseline, week);
   if (withFloor > 0) return null;
   return (
     `FAILED (too-thin): ${baseline.bookings} bookings fit no floor above zero at any of the ${judged} hours the alarm judges, ` +
-    "so an anchor from them could never fire. Nothing was written."
+    "so a floor from them could never hold anything up. Nothing was written."
   );
 }
