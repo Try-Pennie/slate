@@ -49,7 +49,8 @@ import {
   type FailingCalendarRow,
 } from "@/lib/notify/alerts";
 import { reachabilityFromError } from "@/lib/google/reachability-classify";
-import { googlePushUrl } from "@/lib/env";
+import { appUrl, googlePushUrl } from "@/lib/env";
+import { bookingDetailHref } from "@/lib/booking/detail";
 import { parseStampMs } from "@/lib/date/stamp";
 import { sendThrottledAlert } from "@/lib/notify/dispatch";
 import { findExternalCollisions } from "@/lib/google/collision";
@@ -188,11 +189,16 @@ async function detectExternalCollisions(userId: string, email: string): Promise<
     );
     if (collisions.length === 0) return;
 
-    const ids = collisions.map((c) => c.bookingId).join(", ");
+    const clashes = collisions.map((c) => ({
+      bookingUrl: `${appUrl()}${bookingDetailHref(c.bookingId)}`,
+      callStart: new Date(c.bookingStartMs).toISOString(),
+      eventStart: new Date(c.eventStartMs).toISOString(),
+      eventEnd: new Date(c.eventEndMs).toISOString(),
+    }));
     await sendThrottledAlert(
       `external_double_book:${userId}`,
       COLLISION_ALERT_COOLDOWN_MS,
-      externalDoubleBookAlert(email, collisions.length, ids),
+      externalDoubleBookAlert(email, clashes),
     ).catch(() => {});
   } catch (err) {
     log.error("sync", { msg: "external-collision detection failed", user_id: userId }, err);
