@@ -4,6 +4,7 @@ import { acquireLock, releaseLock } from "@/lib/locks";
 import {
   sendThrottledAlert,
   sendThrottledInfo,
+  isAlertDue,
   resolveAlert,
   resolveRecovered,
   settleAlertsSilently,
@@ -124,9 +125,8 @@ import {
 } from "@/lib/monitor/top-tier-cascade";
 import { readTopTierCascadeWindow } from "@/lib/monitor/top-tier-cascade-store";
 import {
-  raceContentionVerdict,
   raceContentionNoticeText,
-  raceThresholdFor,
+  judgeRaceContention,
   RACE_CONTENTION_NOTICE_KEY,
   RACE_CONTENTION_COOLDOWN_MS,
 } from "@/lib/monitor/race-contention";
@@ -1416,9 +1416,23 @@ export async function GET(req: NextRequest) {
     // since an unreadable tally is not a day with no races.
     await steps.run("booking_race_contention", null, async () => {
       const window = await readRaceContentionWindow(now);
-      // #2877: the busiest tier's rate, read only when the day can turn on it.
-      const threshold = await raceThresholdFor(window, () => readRaceRateBookings(now), now);
-      const verdict = raceContentionVerdict(window, threshold);
+      // #2877: the busiest tier's rate, read only when the day can turn on it,
+      // and (PR #2883) only while the whisper could still go out, asked of the
+      // same cooldown read the send makes.
+      const judged = await judgeRaceContention(window, now, {
+        readBookings: () => readRaceRateBookings(now),
+        whisperDue: () => isAlertDue(RACE_CONTENTION_NOTICE_KEY, RACE_CONTENTION_COOLDOWN_MS, now),
+      });
+      if (judged.kind === "cooling-down") {
+        log.info("monitor", {
+          msg: "booking race contention",
+          day: window.day,
+          verdict: "not judged",
+          why: "today's whisper already went out and its cooldown is still running",
+        });
+        return;
+      }
+      const { threshold, verdict } = judged;
       log.info("monitor", {
         msg: "booking race contention",
         day: window.day,

@@ -75,6 +75,34 @@ function mayWriteAlerts(key: string, what: string): boolean {
   return false;
 }
 
+/**
+ * Whether `key`'s cooldown has elapsed at `nowMs`, so a send now would go out.
+ * The one cooldown read, used by `sendThrottledAlert` itself and by a caller that
+ * must not spend reads building a message the throttle would drop (PR #2883, the
+ * race whisper's fortnight of bookings), so the two can never disagree.
+ *
+ * Fails toward DUE on a read error or an unreadable stamp, the side the send has
+ * always taken: a lost cooldown costs a duplicate message, a swallowed one mutes it.
+ */
+export async function isAlertDue(key: string, cooldownMs: number, nowMs: number): Promise<boolean> {
+  // error-ok: an empty result reads as "never sent", which SENDS. That is the
+  // fail safe side and the same one #1169 chose for an unreadable stamp: a lost
+  // cooldown costs a duplicate page, a swallowed one would mute the alert.
+  const { data } = await supabaseAdmin()
+    .from("alert_state")
+    .select("last_sent_at")
+    .eq("key", key)
+    .maybeSingle();
+  // #1169: fail closed. A corrupt last_sent_at used to parse to NaN, which
+  // shouldSendAlert compared false against forever, permanently muting this
+  // alert. Unreadable reads as "never sent" (null -> send), and the send then
+  // overwrites the corrupt stamp with a fresh one.
+  const lastSentAtMs = data
+    ? parseStampMs((data as { last_sent_at: string }).last_sent_at)
+    : null;
+  return shouldSendAlert(lastSentAtMs, nowMs, cooldownMs);
+}
+
 export async function sendThrottledAlert(
   key: string,
   cooldownMs: number,
@@ -92,23 +120,8 @@ export async function sendThrottledAlert(
   if (!mayWriteAlerts(key, "page")) return;
   if (!slackConfigured()) return;
   const db = supabaseAdmin();
-  // error-ok: an empty result reads as "never sent", which SENDS. That is the
-  // fail safe side and the same one #1169 chose for an unreadable stamp: a lost
-  // cooldown costs a duplicate page, a swallowed one would mute the alert.
-  const { data } = await db
-    .from("alert_state")
-    .select("last_sent_at")
-    .eq("key", key)
-    .maybeSingle();
-  // #1169: fail closed. A corrupt last_sent_at used to parse to NaN, which
-  // shouldSendAlert compared false against forever, permanently muting this
-  // alert. Unreadable reads as "never sent" (null -> send), and the send then
-  // overwrites the corrupt stamp with a fresh one.
-  const lastSentAtMs = data
-    ? parseStampMs((data as { last_sent_at: string }).last_sent_at)
-    : null;
   const nowMs = Date.now();
-  if (!shouldSendAlert(lastSentAtMs, nowMs, cooldownMs)) return;
+  if (!(await isAlertDue(key, cooldownMs, nowMs))) return;
 
   const result = await postSlack({ text, ...(channel ? { channel } : {}) });
   // Fail loud (#1035): a not-ok send used to be invisible AND burned the full

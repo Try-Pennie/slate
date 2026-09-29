@@ -25,6 +25,7 @@ import {
   RACE_SATURATION_SHARE,
   RACE_TALLY_OUTCOMES,
   fallbackRaceThreshold,
+  judgeRaceContention,
   measuredRaceThreshold,
   raceBoundHitPage,
   raceBoundHitPageText,
@@ -249,6 +250,69 @@ eq(raceThresholdNeeded(w({ created: 3, reassigned: 4 })), false, "a broken read 
     threw = e instanceof Error && e.message === "read failed";
   }
   assert(threw, "a failed read reaches the step boundary, never a silent fallback");
+}
+
+// --- PR #2883: at most one bookings read per whisper decision ------------------------
+{
+  const NOW_B = Date.UTC(2026, 8, 29, 16, 30, 0);
+  const counting = () => {
+    const c = { reads: 0, dueAsks: 0 };
+    return {
+      c,
+      deps: (due: boolean) => ({
+        readBookings: async () => {
+          c.reads++;
+          return [] as TierBooking[];
+        },
+        whisperDue: async () => {
+          c.dueAsks++;
+          return due;
+        },
+      }),
+    };
+  };
+  const needed = w({ created: 200, reassigned: 4 });
+  assert(raceThresholdNeeded(needed), "fixture: a day that can turn on the threshold");
+
+  {
+    const { c, deps } = counting();
+    const r = await judgeRaceContention(needed, NOW_B, deps(false));
+    eq(c.reads, 0, "the whisper already went out today: the next tick reads no bookings");
+    eq(r.kind, "cooling-down", "and says it skipped the day because the whisper is cooling down");
+  }
+  {
+    const { c, deps } = counting();
+    const r = await judgeRaceContention(needed, NOW_B, deps(true));
+    eq(c.reads, 1, "the whisper has not gone out: the day reads the bookings once");
+    assert(r.kind === "judged" && r.threshold.basis.source === "fallback", "and judges against what it read");
+  }
+  {
+    const { c, deps } = counting();
+    const r = await judgeRaceContention(w({ created: 200, reassigned: 2 }), NOW_B, deps(true));
+    eq(c.dueAsks, 0, "a day that cannot report does not even ask about the cooldown");
+    eq(c.reads, 0, "nor read bookings");
+    assert(r.kind === "judged" && r.verdict.kind === "quiet", "and is still judged");
+  }
+  {
+    const { c, deps } = counting();
+    const r = await judgeRaceContention(w({ created: 4, reassigned: 2, refused: 2 }), NOW_B, deps(true));
+    eq(c.reads, 0, "a saturated day reports without the bookings");
+    assert(r.kind === "judged" && r.verdict.kind === "report", "and reports");
+  }
+  {
+    let threw = false;
+    try {
+      await judgeRaceContention(needed, NOW_B, {
+        readBookings: async () => {
+          throw new Error("read failed");
+        },
+        whisperDue: async () => true,
+      });
+    } catch (e) {
+      threw = e instanceof Error && e.message === "read failed";
+    }
+    assert(threw, "a failed bookings read still fails loud through the step boundary");
+  }
 }
 
 // --- #2877: the threshold measured from Slate's own bookings ------------------------

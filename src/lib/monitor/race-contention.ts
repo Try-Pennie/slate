@@ -395,6 +395,31 @@ export async function raceThresholdFor(
   return measuredRaceThreshold(await readBookings(), nowMs);
 }
 
+/**
+ * The lane's whole decision for one tick (PR #2883): at most one bookings read
+ * per whisper decision. A day that can turn on the threshold stays that way for
+ * the rest of the day, and the whisper sends at most once per cooldown, so without
+ * this every five minute tick after the first report would page through a
+ * fortnight of bookings to build a message the throttle then drops.
+ *
+ * The cooldown is asked only on such a day, so an ordinary tick costs nothing
+ * extra. While it is running the day is NOT judged, rather than judged against a
+ * threshold nobody measured, and the result says so. A failed bookings read still
+ * throws to the step boundary.
+ */
+export async function judgeRaceContention(
+  w: RaceContentionWindow,
+  nowMs: number,
+  deps: { readBookings: () => Promise<readonly TierBooking[]>; whisperDue: () => Promise<boolean> },
+): Promise<
+  | { kind: "judged"; verdict: RaceContentionVerdict; threshold: RaceThreshold }
+  | { kind: "cooling-down" }
+> {
+  if (raceThresholdNeeded(w) && !(await deps.whisperDue())) return { kind: "cooling-down" };
+  const threshold = await raceThresholdFor(w, deps.readBookings, nowMs);
+  return { kind: "judged", verdict: raceContentionVerdict(w, threshold), threshold };
+}
+
 /** Where a fallback threshold came from, as a clause a sentence can end with. */
 function fallbackNote(t: RaceThreshold): string {
   return t.basis.source === "fallback" ? ` (the Low constant's floor, because ${t.basis.reason})` : "";
