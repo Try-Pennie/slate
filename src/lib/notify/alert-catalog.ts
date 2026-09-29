@@ -401,6 +401,36 @@ export const ALERT_CATALOG: AlertEntry[] = [
       "verdict ends it, and the same lane re-measures every 5 minutes.",
   },
   {
+    key: "volume_count_unreadable:*",
+    kind: "condition",
+    // The suffix is one of the debt tier digits in volume-tiers.ts; Low keeps the bare key.
+    suffix: "bounded",
+    why:
+      "The volume monitor cannot read one tier's own count (#2874), so that tier is " +
+      "measured by nothing; the read succeeds again and the same lane sees it on the " +
+      "next tick.",
+  },
+  {
+    key: "tier_volume_check_failed:*",
+    kind: "condition",
+    // The suffix is one of the debt tier digits in volume-tiers.ts.
+    suffix: "bounded",
+    why:
+      "One tier's low volume check could not run (#2874), so that tier is judged by " +
+      "nothing; it ends when the same lane next judges that tier, within 5 minutes " +
+      "of whatever broke it being fixed.",
+  },
+  {
+    key: "low_tier_volume:*",
+    kind: "condition",
+    // The suffix is one of the five debt tier digits in volume-tiers.ts.
+    suffix: "bounded",
+    why:
+      "A debt tier judged beside Low has stopped booking (#2874); its bookings come " +
+      "back and the same lane re-measures it against the tier's own learned floors " +
+      "every 5 minutes.",
+  },
+  {
     key: "low_page_volume:*",
     kind: "condition",
     // The suffix is one of the fixed Low landing pages in page-volume.ts.

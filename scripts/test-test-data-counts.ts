@@ -173,7 +173,9 @@ eq(
   const sabotaged = real
     // Every embed in the file, not only the count's: the per page reads (#2738)
     // carry the same filter, and one left behind would keep `is_test` in the code.
-    .replace(/, buckets!inner\(is_test\)/g, "")
+    // Whatever columns the embed names (#2874 added the code, for the tier).
+    .replace(/,? ?\$\{BUCKET_EMBED\}|, buckets!inner\([^)]*\)/g, "")
+    .replace(/const BUCKET_EMBED = "buckets!inner\([^)]*\)";/, "")
     .split("\n")
     .filter((line) => !line.includes('.eq("buckets.is_test"'))
     .join("\n");

@@ -103,6 +103,12 @@ const FAMILY_BY_KEY: Record<string, AlertFamily> = {
   // #2738. The same family as the tier alarm it sits beside: one page's customers
   // are not getting through, and the procedure starts from what that page links to.
   low_page_volume: "the-booker-is-offering-nothing-or-too-little",
+  // #2874. The same family again: one debt tier's customers are not getting
+  // through, judged against that tier's own learned floors.
+  low_tier_volume: "the-booker-is-offering-nothing-or-too-little",
+  // #2874. The check itself broke, not the booker: the same family as the count
+  // that cannot be read, whose procedure starts from the monitor lane's logs.
+  tier_volume_check_failed: "a-lane-or-schedule-has-gone-quiet",
   // #2366. The same family, and deliberately so: this is the one cause of an empty
   // booker that the family's own first check cannot see, because availability is
   // healthy and the refusal happens on the write. A reader who arrives here from the

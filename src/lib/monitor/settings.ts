@@ -2,9 +2,10 @@ import { supabaseAdmin } from "@/lib/supabase/admin";
 import { unwrap } from "@/lib/db/result";
 import { log } from "@/lib/log";
 import type { MonitorAlertConfig, MonitorSettings } from "@/lib/db/types";
-import type { FloorOverride, FloorPolicy } from "./volume-floors.ts";
+import type { FloorOverride, FloorPolicy, VolumeBaseline } from "./volume-floors.ts";
 import { MEASURED_VOLUME_BASELINE } from "./volume-baseline.ts";
 import { baselineInForce } from "./volume-relearn.ts";
+import { LOW_TIER, VOLUME_TIERS, type VolumeTier } from "./volume-tiers.ts";
 
 /**
  * UI-tunable monitor alert settings (#571). Cooldowns and low-volume floors are
@@ -647,13 +648,37 @@ export function resolveFloors(
         : null;
   const inForce = baselineInForce(
     { rampEndOn: config?.volume_ramp_end_on ?? null, learning: config?.volume_learning ?? null },
-    MEASURED_VOLUME_BASELINE,
+    LOW_TIER,
   );
   return {
-    baseline: inForce.baseline,
+    // Low has a cal.com measurement, so it is never unjudged; the measurement is the
+    // answer for every state that is not a learned result.
+    baseline: inForce.kind === "unjudged" ? MEASURED_VOLUME_BASELINE : inForce.baseline,
     override30: pick(config?.floor_30 ?? null, env.floor30),
     override120: pick(config?.floor_120 ?? null, env.floor120),
   };
+}
+
+/**
+ * The tiers judged BESIDE Low (#2874), each with the floors it is judged against:
+ * exactly the tiers whose own bookings have been learned, through the same judge as
+ * Low's floors. A tier carried and not yet learned is absent here and stated as not
+ * judged on /admin/alerts, never judged against a guess. No overrides: the two floor
+ * overrides are Low's knobs, named for the alarm that predates the tiers.
+ */
+export function resolveTierBaselines(
+  config: Pick<MonitorAlertConfig, "volume_ramp_end_on" | "volume_learning"> | null,
+): Partial<Record<VolumeTier, VolumeBaseline>> {
+  const out: Partial<Record<VolumeTier, VolumeBaseline>> = {};
+  for (const tier of VOLUME_TIERS) {
+    if (tier === LOW_TIER) continue;
+    const inForce = baselineInForce(
+      { rampEndOn: config?.volume_ramp_end_on ?? null, learning: config?.volume_learning ?? null },
+      tier,
+    );
+    if (inForce.kind === "learned") out[tier] = inForce.baseline;
+  }
+  return out;
 }
 
 /** The env half of the floors, read in one place for the monitor and the admin page. */
@@ -894,6 +919,8 @@ export interface ResolvedMonitorSettings {
   cooldownMs: Record<MonitorAlertKey, number>;
   /** #1956: the measured floors and any override; resolve an instant with `floorsFor`. */
   floors: FloorPolicy;
+  /** #2874: the floors of every tier judged beside Low, from `resolveTierBaselines`. */
+  tierBaselines: Partial<Record<VolumeTier, VolumeBaseline>>;
   /** #575: is the low-booking-volume alert armed (store > env > disarmed)? */
   lowVolumeArmed: boolean;
   /** #1313: is the booking-failure-rate page armed (store > disarmed)? */
@@ -977,6 +1004,7 @@ export async function loadMonitorSettings(): Promise<ResolvedMonitorSettings> {
   const resolved: ResolvedMonitorSettings = {
     cooldownMs: resolveCooldownMs(rows),
     floors: resolveFloors(config, envFloors()),
+    tierBaselines: resolveTierBaselines(config),
     lowVolumeArmed: resolveLowVolumeArmed(config, envLowVolumeArmed()),
     failureRateArmed: resolveFailureRateArmed(config),
     availabilityDriftArmed: resolveAvailabilityDriftArmed(config),

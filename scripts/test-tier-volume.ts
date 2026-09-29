@@ -1,0 +1,139 @@
+// The low volume alarm for every tier judged beside Low (#2874). Run:
+//   node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/test-tier-volume.ts
+//
+// What this pins, each with a control (L159):
+// - each tier is judged on its OWN count and its own key, so one tier going quiet
+//   pages that tier and nothing else;
+// - a tier whose count cannot be read clears nothing (#1134, #1152);
+// - with no tier learned beside Low, nothing is read at all.
+import { runTierVolumeChecks } from "../src/lib/monitor/tier-volume.ts";
+import type { BusinessHoursConfig } from "../src/lib/monitor/booking-volume.ts";
+import type { FloorCell, VolumeBaseline } from "../src/lib/monitor/volume-floors.ts";
+import { MEASURED_VOLUME_BASELINE } from "../src/lib/monitor/volume-baseline.ts";
+import { assert, eq, finish } from "./lib/harness.ts";
+
+const HOURS: BusinessHoursConfig = {
+  zone: "America/New_York",
+  rules: [1, 2, 3, 4, 5, 6].map((weekday) => ({ weekday, start_minute: 8 * 60, end_minute: 20 * 60 })),
+  exceptions: [],
+};
+// A Tuesday, 2pm Eastern.
+const NOW = Date.parse("2026-12-15T19:00:00Z");
+
+function flat(floor30: number, floor120: number): VolumeBaseline {
+  return {
+    ...MEASURED_VOLUME_BASELINE,
+    source: "slate",
+    cells: Array.from({ length: 7 }, () =>
+      Array.from({ length: 24 }, (): FloorCell => ({ floor30, floor120, typical120: floor120 * 3 })),
+    ),
+  };
+}
+
+function harness(opts: {
+  baselines: Partial<Record<string, VolumeBaseline>>;
+  counts: Record<string, number | null>;
+}) {
+  const sent: { key: string; text: string }[] = [];
+  const resolved: { key: string; text: string }[] = [];
+  const reads: string[] = [];
+  /** How many times the batched all-clear ran: each run is an alert_state read. */
+  const settles = { n: 0 };
+  const run = () =>
+    runTierVolumeChecks({
+      nowMs: NOW,
+      businessHours: HOURS,
+      baselines: opts.baselines,
+      countSince: async (tier) => {
+        reads.push(tier);
+        return tier in opts.counts ? opts.counts[tier]! : 0;
+      },
+      armed: true,
+      cooldownMs: 30 * 60_000,
+      notify: async (key, _ms, text) => void sent.push({ key, text }),
+      notifyCountUnreadable: async (key, _ms, text) => void sent.push({ key, text }),
+      resolveRecovered: async (r) => {
+        settles.n++;
+        resolved.push(...r);
+        return [];
+      },
+    });
+  return { run, sent, resolved, reads, settles };
+}
+
+// --- each tier on its own count and its own key ---
+{
+  const h = harness({ baselines: { "2": flat(1, 4), "3": flat(1, 4) }, counts: { "2": 0, "3": 12 } });
+  const out = await h.run();
+  eq(Object.keys(out).sort(), ["2", "3"], "every tier learned beside Low is judged");
+  eq(h.sent.map((s) => s.key), ["low_tier_volume:2"], "only the quiet tier pages, on its own key");
+  assert(/^Medium booking volume is low/.test(h.sent[0]?.text ?? ""), "naming it");
+  assert(h.resolved.some((r) => r.key === "low_tier_volume:3"), "the healthy tier clears its own page");
+  assert(!h.resolved.some((r) => r.key === "low_tier_volume:2"), "and the quiet one is not cleared");
+  assert(!h.resolved.some((r) => r.key === "low_booking_volume"), "and nothing of Low's is touched by either");
+}
+
+// --- a tier whose count cannot be read clears nothing ---
+{
+  const h = harness({ baselines: { "4": flat(1, 4) }, counts: { "4": null } });
+  const out = await h.run();
+  eq(out["4"]?.status, "count-unreadable", "an unreadable count is its own outcome, never a low reading");
+  eq(h.resolved.length, 0, "and it sends no all-clear of any kind");
+  eq(h.sent.map((s) => s.key), ["volume_count_unreadable:4"], "it says the count could not be read, on that tier's own key");
+  // Control: the same tier, readable and healthy, does clear.
+  const ok = harness({ baselines: { "4": flat(1, 4) }, counts: { "4": 20 } });
+  await ok.run();
+  assert(ok.resolved.some((r) => r.key === "low_tier_volume:4"), "control: a readable healthy count clears the tier's page");
+}
+
+// --- one alert_state read per tick, however many tiers ---
+{
+  const h = harness({ baselines: { "2": flat(1, 4), "3": flat(1, 4), "4": flat(1, 4) }, counts: { "2": 20, "3": 20, "4": null } });
+  await h.run();
+  eq(h.settles.n, 1, "three tiers settle their all-clears in ONE read, on the budget four cron lanes share");
+  const keys = h.resolved.map((r) => r.key).sort();
+  eq(
+    keys,
+    [
+      "low_tier_volume:2",
+      "low_tier_volume:3",
+      "tier_volume_check_failed:2",
+      "tier_volume_check_failed:3",
+      "volume_count_unreadable:2",
+      "volume_count_unreadable:3",
+    ],
+    "carrying every readable tier's own keys, and nothing for the tier that could not be read",
+  );
+  assert(!keys.includes("volume_count_unreadable"), "and never Low's unreadable page, which only Low's own count answers");
+  assert(!keys.includes("volume_count_unreadable:4"), "nor the unreadable tier's own, which is still unreadable");
+}
+
+// --- one tier's check failing is that tier's own finding, and stops nobody else ---
+{
+  // A damaged stored baseline (a missing week) makes `floorsFor` throw. The tiers
+  // after it must still be judged, and the all-clears already collected settled.
+  const damaged: VolumeBaseline = { ...flat(1, 4), cells: [] };
+  const h = harness({ baselines: { "2": flat(1, 4), "3": damaged, "4": flat(1, 4) }, counts: { "2": 20, "3": 20, "4": 20 } });
+  const out = await h.run();
+  eq(out["2"]?.status, "checked", "the tier before it is judged");
+  eq(out["4"]?.status, "checked", "and so is the tier after it");
+  eq(out["3"]?.status, "unverified", "the failed tier is reported as not measured, never as healthy");
+  eq(h.sent.map((s) => s.key), ["tier_volume_check_failed:3"], "and pages on its own key");
+  assert(/High/.test(h.sent[0]?.text ?? "") && !/database/.test(h.sent[0]?.text ?? ""), `naming the tier, and not claiming a read failed (${h.sent[0]?.text})`);
+  eq(h.settles.n, 1, "the collected all-clears are still settled, once");
+  const keys = h.resolved.map((r) => r.key);
+  assert(keys.includes("low_tier_volume:2") && keys.includes("low_tier_volume:4"), "carrying both judged tiers' keys");
+  assert(!keys.some((k) => k.endsWith(":3")), "and nothing for the tier that failed");
+  assert(keys.includes("tier_volume_check_failed:2") && keys.includes("tier_volume_check_failed:4"), "a tier that ran clears its own check failed page");
+}
+
+// --- nothing learned beside Low: nothing is read ---
+{
+  const h = harness({ baselines: {}, counts: {} });
+  const out = await h.run();
+  eq(Object.keys(out), [], "no tier is judged");
+  eq(h.reads.length, 0, "and no count is read, so the lane pays nothing before a second tier is learned");
+  eq(h.settles.n, 0, "and no alert_state read either");
+}
+
+finish();

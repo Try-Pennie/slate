@@ -138,8 +138,15 @@ import {
   formatVolumeCountReadableNotice,
   formatLowVolumeAlert,
   formatLowVolumeRecoveryNotice,
+  formatTierVolumeAlert,
+  formatTierVolumeRecoveryNotice,
+  formatTierVolumeCountUnreadableAlert,
+  formatTierVolumeCountReadableNotice,
+  formatTierVolumeCheckFailedAlert,
+  formatTierVolumeCheckRanNotice,
   formatVolumeVerdictGapRecoveryNotice,
 } from "@/lib/monitor/booking-volume";
+import { tierLabel } from "@/lib/monitor/volume-tiers";
 import { formatVolumeVerdictGapAlert } from "@/lib/monitor/volume-verdict-gap";
 import { judgedFloors, type FloorsNow } from "@/lib/monitor/volume-floors";
 import {
@@ -749,6 +756,53 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     text: formatLowVolumeRecoveryNotice([
       { label: "30 min", count: 5, floor: 3 },
       { label: "120 min", count: 18, floor: 12 },
+    ]),
+  },
+  {
+    // #2874. A tier judged beside Low, against floors learned from its own bookings.
+    // It names the tier, because one tier going quiet while the others book points
+    // at that tier's pages or pool rather than at the booker every tier shares.
+    key: "low_tier_volume:*",
+    state: "a tier beside Low has gone quiet",
+    channel: "alert",
+    text: formatTierVolumeAlert(tierLabel("2"), [
+      { label: "30 min", count: 0, floor: 2, basis: MEASURED_TUESDAY_2PM.basis30 },
+      { label: "120 min", count: 3, floor: 9, basis: MEASURED_TUESDAY_2PM.basis120 },
+    ]),
+  },
+  {
+    // One tier's count failing is that tier's own page, never Low's (#2874).
+    key: "volume_count_unreadable:*",
+    state: "one tier's count cannot be read",
+    channel: "alert",
+    text: formatTierVolumeCountUnreadableAlert(tierLabel("2")),
+  },
+  {
+    key: "volume_count_unreadable:*",
+    state: "the tier's count reads again",
+    channel: "recovery",
+    text: formatTierVolumeCountReadableNotice(tierLabel("2")),
+  },
+  {
+    // One tier's check could not run; the others were still judged (#2874).
+    key: "tier_volume_check_failed:*",
+    state: "one tier's check could not run",
+    channel: "alert",
+    text: formatTierVolumeCheckFailedAlert(tierLabel("3")),
+  },
+  {
+    key: "tier_volume_check_failed:*",
+    state: "the tier is judged again",
+    channel: "recovery",
+    text: formatTierVolumeCheckRanNotice(tierLabel("3")),
+  },
+  {
+    key: "low_tier_volume:*",
+    state: "the tier is booking again",
+    channel: "recovery",
+    text: formatTierVolumeRecoveryNotice(tierLabel("2"), [
+      { label: "30 min", count: 3, floor: 2 },
+      { label: "120 min", count: 11, floor: 9 },
     ]),
   },
   {

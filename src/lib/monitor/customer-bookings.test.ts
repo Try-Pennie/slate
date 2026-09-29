@@ -13,6 +13,7 @@ import { describe, it, expect, vi } from "vitest";
 import {
   countCustomerBookingsSince,
   customerBookingFromSourcesSince,
+  firstTierBookingsSince,
   listCustomerBookingSourcesSince,
   measurePageSources,
   SOURCE_READ_LIMIT,
@@ -21,6 +22,13 @@ import {
 import { API_SOURCES } from "@/lib/booking/booking-source";
 
 const SINCE = "2026-08-05T09:00:00.000Z";
+
+/** A `like` on the embedded bucket code: only a trailing `%` is honoured, and the row's code defaults to a Low one. */
+function likePredicate(col: string, pattern: string): (r: { code?: string }) => boolean {
+  if (col !== "buckets.code" || !/^[^%]*%$/.test(pattern)) throw new Error(`fake: unhandled like(${col}, ${pattern})`);
+  const prefix = pattern.slice(0, -1);
+  return (r) => (r.code ?? "111").startsWith(prefix);
+}
 
 /**
  * The `or()` alternatives these reads send, and nothing else: `source.is.null`,
@@ -53,14 +61,15 @@ function orPredicate(expr: string): (r: { source?: string | null }) => boolean {
  * is_test filter counts the canary rows and fails the test.
  */
 function fakeDb(
-  rows: { created_at: string; is_test: boolean; kind?: string; source?: string | null }[],
+  rows: { created_at: string; is_test: boolean; kind?: string; source?: string | null; code?: string }[],
   opts: { error?: string } = {},
 ) {
   const filters: { col: string; val: unknown }[] = [];
-  const ors: ((r: { source?: string | null }) => boolean)[] = [];
+  const ors: ((r: { source?: string | null; code?: string }) => boolean)[] = [];
   const chain = {
     select: (_cols: string, _opts: { count: string; head: boolean }) => chain,
     or: (expr: string) => (ors.push(orPredicate(expr)), chain),
+    like: (col: string, pattern: string) => (ors.push(likePredicate(col, pattern)), chain),
     eq: (col: string, val: unknown) => {
       filters.push({ col, val });
       return chain;
@@ -90,7 +99,15 @@ function fakeDb(
   };
   return {
     filters,
-    db: { from: (_t: string) => chain } as never,
+    // Each query starts clean, so two reads on one fake never share filters; the
+    // filters left are the last query's.
+    db: {
+      from: (_t: string) => {
+        filters.length = 0;
+        ors.length = 0;
+        return chain;
+      },
+    } as never,
   };
 }
 
@@ -105,14 +122,14 @@ describe("countCustomerBookingsSince", () => {
       canary("2026-08-05T11:00:00.000Z"),
       customer("2026-08-05T10:30:00.000Z"),
     ]);
-    expect(await countCustomerBookingsSince(db, SINCE)).toBe(1);
+    expect(await countCustomerBookingsSince(db, SINCE, "1")).toBe(1);
   });
 
   it("returns zero, not the canary's count, on a genuinely dead funnel", async () => {
     // The case the alarm exists for: today's production reality is 8 canary
     // bookings in 6 hours and no customer bookings at all. That has to read as 0.
     const { db } = fakeDb([canary("2026-08-05T10:00:00.000Z"), canary("2026-08-05T12:00:00.000Z")]);
-    expect(await countCustomerBookingsSince(db, SINCE)).toBe(0);
+    expect(await countCustomerBookingsSince(db, SINCE, "1")).toBe(0);
   });
 
   it("does not count a booking made through an agent's own link (#2073)", async () => {
@@ -122,7 +139,7 @@ describe("countCustomerBookingsSince", () => {
       customer("2026-08-05T10:00:00.000Z"),
       { ...customer("2026-08-05T11:00:00.000Z"), kind: "agent_link" },
     ]);
-    expect(await countCustomerBookingsSince(db, SINCE)).toBe(1);
+    expect(await countCustomerBookingsSince(db, SINCE, "1")).toBe(1);
   });
 
   // #2876: a booking made through the booking API names its caller and came from no
@@ -135,7 +152,7 @@ describe("countCustomerBookingsSince", () => {
       source: API_SOURCES[i % API_SOURCES.length]!,
     }));
     const { db } = fakeDb(api);
-    expect(await countCustomerBookingsSince(db, SINCE)).toBe(0);
+    expect(await countCustomerBookingsSince(db, SINCE, "1")).toBe(0);
   });
 
   it("control: page bookings, untagged ones and ones from before sources still count", async () => {
@@ -146,7 +163,21 @@ describe("countCustomerBookingsSince", () => {
       { ...customer("2026-08-05T10:03:00.000Z"), source: "unrecognised" },
       { ...customer("2026-08-05T10:04:00.000Z"), source: "api-regal" },
     ]);
-    expect(await countCustomerBookingsSince(db, SINCE)).toBe(4);
+    expect(await countCustomerBookingsSince(db, SINCE, "1")).toBe(4);
+  });
+
+  // #2874: every floor is scoped to one tier, so a count for one tier must never
+  // include another's bookings, or widening the pilot moves the Low alarm.
+  it("counts only the tier it was asked for", async () => {
+    const { db } = fakeDb([
+      { ...customer("2026-08-05T10:00:00.000Z"), code: "111" },
+      { ...customer("2026-08-05T10:01:00.000Z"), code: "311" },
+      { ...customer("2026-08-05T10:02:00.000Z"), code: "312" },
+    ]);
+    expect(await countCustomerBookingsSince(db, SINCE, "1")).toBe(1);
+    // Control: the other tier's bookings are there, and count for their own tier.
+    expect(await countCustomerBookingsSince(db, SINCE, "3")).toBe(2);
+    expect(await countCustomerBookingsSince(db, SINCE, "5")).toBe(0);
   });
 
   it("still honours the window it was asked for", async () => {
@@ -154,7 +185,7 @@ describe("countCustomerBookingsSince", () => {
       customer("2026-08-05T08:00:00.000Z"), // before SINCE
       customer("2026-08-05T10:00:00.000Z"),
     ]);
-    expect(await countCustomerBookingsSince(db, SINCE)).toBe(1);
+    expect(await countCustomerBookingsSince(db, SINCE, "1")).toBe(1);
   });
 
   it("returns null on a read error, so a failed query never pages a false drought", async () => {
@@ -162,7 +193,7 @@ describe("countCustomerBookingsSince", () => {
     // zero, because zero is the exact value that pages.
     const log = vi.spyOn(console, "error").mockImplementation(() => {});
     const { db } = fakeDb([customer("2026-08-05T10:00:00.000Z")], { error: "read timeout" });
-    expect(await countCustomerBookingsSince(db, SINCE)).toBeNull();
+    expect(await countCustomerBookingsSince(db, SINCE, "1")).toBeNull();
     expect(log).toHaveBeenCalled();
     log.mockRestore();
   });
@@ -172,7 +203,7 @@ describe("countCustomerBookingsSince", () => {
 // both must THROW on a failed read rather than answer, because their empty answers
 // ("no bookings from any page", "this page has never recorded a booking") are the
 // answers that page.
-type SourceFakeRow = { created_at: string; is_test: boolean; source: string | null };
+type SourceFakeRow = { created_at: string; is_test: boolean; source: string | null; code?: string; kind?: string };
 
 function sourceDb(rows: SourceFakeRow[], opts: { error?: string } = {}) {
   const make = () => {
@@ -185,6 +216,11 @@ function sourceDb(rows: SourceFakeRow[], opts: { error?: string } = {}) {
       gte: (col: string, val: unknown) => (filters.push({ col, val }), chain),
       in: (col: string, val: unknown) => (filters.push({ col, val }), chain),
       or: (expr: string) => (ors.push(orPredicate(expr)), chain),
+      like: (col: string, pattern: string) => (ors.push(likePredicate(col, pattern)), chain),
+      order: (col: string, o: { ascending: boolean }) => {
+        if (col !== "created_at" || !o.ascending) throw new Error(`fake: unhandled order(${col})`);
+        return chain;
+      },
       limit: (n: number) => ((limit = n), chain),
       then: (res: (v: unknown) => unknown) => {
         if (opts.error) return Promise.resolve(res({ data: null, count: null, error: { message: opts.error } }));
@@ -196,9 +232,12 @@ function sourceDb(rows: SourceFakeRow[], opts: { error?: string } = {}) {
                 ? r.created_at >= (f.val as string)
                 : f.col === "source"
                   ? (f.val as string[]).includes(r.source ?? "")
-                  : true,
+                  : f.col === "kind"
+                    ? (r.kind ?? "routed") === f.val
+                    : true,
           ),
         );
+        kept.sort((a, b) => a.created_at.localeCompare(b.created_at));
         const page = kept.slice(0, limit);
         return Promise.resolve(
           res({ data: page.map(({ created_at, source }) => ({ created_at, source })), count: kept.length, error: null }),
@@ -218,7 +257,7 @@ describe("listCustomerBookingSourcesSince", () => {
       { created_at: "2026-08-05T10:06:00.000Z", is_test: false, source: null },
       { created_at: "2026-08-05T08:00:00.000Z", is_test: false, source: "booking" },
     ]);
-    expect(await listCustomerBookingSourcesSince(db, SINCE)).toEqual([
+    expect(await listCustomerBookingSourcesSince(db, SINCE, "1")).toEqual([
       { createdMs: Date.parse("2026-08-05T10:05:00.000Z"), source: "offerhub" },
       { createdMs: Date.parse("2026-08-05T10:06:00.000Z"), source: null },
     ]);
@@ -227,7 +266,7 @@ describe("listCustomerBookingSourcesSince", () => {
   it("throws on a read error, never answering with an empty list", async () => {
     const log = vi.spyOn(console, "error").mockImplementation(() => {});
     const { db } = sourceDb([], { error: "read timeout" });
-    await expect(listCustomerBookingSourcesSince(db, SINCE)).rejects.toThrow(/could not read/);
+    await expect(listCustomerBookingSourcesSince(db, SINCE, "1")).rejects.toThrow(/could not read/);
     log.mockRestore();
   });
 
@@ -238,12 +277,55 @@ describe("listCustomerBookingSourcesSince", () => {
       source: "offerhub",
     }));
     const { db } = sourceDb(rows);
-    await expect(listCustomerBookingSourcesSince(db, SINCE)).rejects.toThrow(/truncated/);
+    await expect(listCustomerBookingSourcesSince(db, SINCE, "1")).rejects.toThrow(/truncated/);
   });
 
   it("throws on a timestamp it cannot read rather than dropping the booking", async () => {
     const { db } = sourceDb([{ created_at: "not a date", is_test: false, source: "offerhub" }]);
-    await expect(listCustomerBookingSourcesSince(db, "")).rejects.toThrow(/unreadable/);
+    await expect(listCustomerBookingSourcesSince(db, "", "1")).rejects.toThrow(/unreadable/);
+  });
+});
+
+describe("the per page reads are scoped to a tier (#2874)", () => {
+  it("lists and finds only the tier asked for", async () => {
+    const { db } = sourceDb([
+      { created_at: "2026-08-05T10:05:00.000Z", is_test: false, source: "offerhub", code: "111" },
+      { created_at: "2026-08-05T10:06:00.000Z", is_test: false, source: "offerhub", code: "411" },
+    ]);
+    expect((await listCustomerBookingSourcesSince(db, SINCE, "1")).length).toBe(1);
+    expect((await listCustomerBookingSourcesSince(db, SINCE, "4")).length).toBe(1);
+    expect(await customerBookingFromSourcesSince(db, ["offerhub"], SINCE, "2")).toBe(false);
+    expect(await customerBookingFromSourcesSince(db, ["offerhub"], SINCE, "4")).toBe(true);
+  });
+});
+
+describe("firstTierBookingsSince (#2874)", () => {
+  it("finds each tier's first real page booking, and null for a tier nobody has booked", async () => {
+    const { db } = sourceDb([
+      { created_at: "2026-10-02T10:00:00.000Z", is_test: false, source: "booking", code: "111" },
+      { created_at: "2026-10-01T09:00:00.000Z", is_test: false, source: "offerhub", code: "112" },
+      // Not a tier's first real booking, each for its own reason:
+      { created_at: "2026-09-30T09:00:00.000Z", is_test: true, source: "booking", code: "311" }, // a test bucket
+      { created_at: "2026-09-30T09:01:00.000Z", is_test: false, source: "api-regal", code: "311" }, // not page traffic
+      { created_at: "2026-09-30T09:02:00.000Z", is_test: false, source: null, code: "311", kind: "agent_link" }, // not routed
+      { created_at: "2026-09-20T09:00:00.000Z", is_test: false, source: "booking", code: "511" }, // before the window
+      { created_at: "2026-10-03T12:00:00.000Z", is_test: false, source: "not-given", code: "311" },
+    ]);
+    const first = await firstTierBookingsSince(db, "2026-09-25T04:00:00.000Z");
+    expect(first).toEqual({
+      "1": Date.parse("2026-10-01T09:00:00.000Z"),
+      "2": null,
+      "3": Date.parse("2026-10-03T12:00:00.000Z"),
+      "4": null,
+      "5": null,
+    });
+  });
+
+  it("throws on a failed read, never answering that no tier is carried", async () => {
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    const { db } = sourceDb([], { error: "read timeout" });
+    await expect(firstTierBookingsSince(db, SINCE)).rejects.toThrow(/could not read/);
+    log.mockRestore();
   });
 });
 
@@ -253,14 +335,14 @@ describe("customerBookingFromSourcesSince", () => {
       { created_at: "2026-08-05T10:00:00.000Z", is_test: true, source: "offerhub" },
       { created_at: "2026-08-05T10:00:00.000Z", is_test: false, source: "booking" },
     ]);
-    expect(await customerBookingFromSourcesSince(db, ["offerhub", "booking-portal"], SINCE)).toBe(false);
-    expect(await customerBookingFromSourcesSince(db, ["booking"], SINCE)).toBe(true);
+    expect(await customerBookingFromSourcesSince(db, ["offerhub", "booking-portal"], SINCE, "1")).toBe(false);
+    expect(await customerBookingFromSourcesSince(db, ["booking"], SINCE, "1")).toBe(true);
   });
 
   it("throws on a read error, so a failure is never 'this page has recorded nothing'", async () => {
     const log = vi.spyOn(console, "error").mockImplementation(() => {});
     const { db } = sourceDb([], { error: "read timeout" });
-    await expect(customerBookingFromSourcesSince(db, ["offerhub"], SINCE)).rejects.toThrow(/could not read/);
+    await expect(customerBookingFromSourcesSince(db, ["offerhub"], SINCE, "1")).rejects.toThrow(/could not read/);
     log.mockRestore();
   });
 });
@@ -296,6 +378,17 @@ describe("measurePageSources", () => {
     expect(m.realBookings).toBe(0);
     expect(m.unsourced).toBe(0);
     expect(m.pages.every((p) => !p.recorded)).toBe(true);
+  });
+
+  it("measures the Low tier only, the tier the page floors describe (#2874)", async () => {
+    const { db } = sourceDb([
+      { ...row("offerhub"), code: "111" },
+      { ...row("not-given"), code: "311" },
+      { ...row("not-given"), code: "411" },
+    ]);
+    const m = await measurePageSources(db, NOW);
+    expect(m.realBookings).toBe(1);
+    expect(m.unsourced).toBe(0);
   });
 
   it("throws on a failed read rather than answering zero", async () => {

@@ -40,8 +40,8 @@ import { CALCOM_RETIREMENT_FORM } from "@/lib/calcom/retirement";
 import { VolumeLearning, type PageCoverageView } from "@/components/admin/VolumeLearning";
 import { EARLIEST_RAMP_END, RAMP_END_FORM, baselineInForce, type BaselineInForce } from "@/lib/monitor/volume-relearn";
 import { LEARNING } from "@/lib/monitor/volume-learning";
-import { learningStatusCopy } from "@/lib/monitor/volume-relearn-copy";
-import { MEASURED_VOLUME_BASELINE } from "@/lib/monitor/volume-baseline";
+import { learningStatusCopy, tierLearningLines } from "@/lib/monitor/volume-relearn-copy";
+import { LOW_TIER } from "@/lib/monitor/volume-tiers";
 import { LOW_PAGES, pageCoverage, pageSourceStatus, type PageSourceMeasure } from "@/lib/monitor/page-volume";
 import { measurePageSources } from "@/lib/monitor/customer-bookings";
 import { MEASURED_PAGE_BASELINES } from "@/lib/monitor/page-volume-baseline";
@@ -62,6 +62,11 @@ export const dynamic = "force-dynamic";
 // learning status says how long ago the last refit ran, which needs the present.
 function learningStatusNow(state: BaselineInForce) {
   return learningStatusCopy(state, Date.now());
+}
+
+/** The other tiers' lines (#2874), for the same reason: they say how old a refit is. */
+function tierLinesNow(input: { rampEndOn: string | null; learning: unknown }) {
+  return tierLearningLines(input, Date.now());
 }
 
 /**
@@ -165,12 +170,10 @@ export default async function AlertSettingsPage({
   const floorPolicy = resolveFloors(config, envFloors());
   // #2739: which baseline that is, through the judge `resolveFloors` itself used, so
   // the words and the floors cannot disagree.
-  const learning = learningStatusNow(
-    baselineInForce(
-      { rampEndOn: config?.volume_ramp_end_on ?? null, learning: config?.volume_learning ?? null },
-      MEASURED_VOLUME_BASELINE,
-    ),
-  );
+  const learningInput = { rampEndOn: config?.volume_ramp_end_on ?? null, learning: config?.volume_learning ?? null };
+  const learning = learningStatusNow(baselineInForce(learningInput, LOW_TIER));
+  // #2874: every other tier's line, judged by the same judge the monitor reads.
+  const tierLines = tierLinesNow(learningInput);
   // The org's week decides which hours the floor table shows. Unreadable is its
   // own state (every hour shown, and said), never an empty table (L10).
   let week: { rules: { weekday: number; start_minute: number; end_minute: number }[] } | null = null;
@@ -682,6 +685,7 @@ export default async function AlertSettingsPage({
         <VolumeLearning
           rampEndOn={config?.volume_ramp_end_on ?? null}
           detail={learning.detail}
+          tiers={tierLines}
           coverage={coverage}
           sourceNotice={sourceNotice}
           notice={learningNotice}

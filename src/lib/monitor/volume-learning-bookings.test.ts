@@ -12,7 +12,7 @@ const SINCE = "2026-08-05T09:00:00.000Z";
  * learner reports.
  */
 function stampDb(
-  rows: { created_at: string; is_test: boolean; source?: string | null }[],
+  rows: { created_at: string; is_test: boolean; source?: string | null; code?: string }[],
   opts: { errorOnPage?: number } = {},
 ) {
   const pages: [number, number][] = [];
@@ -42,7 +42,7 @@ function stampDb(
           .filter((r) => f.or === undefined || isPageTraffic(r.source ?? null))
           .sort((a, b) => a.created_at.localeCompare(b.created_at))
           .slice(from, to + 1)
-          .map((r) => ({ created_at: r.created_at, buckets: { is_test: r.is_test } }));
+          .map((r) => ({ created_at: r.created_at, buckets: { is_test: r.is_test, code: r.code ?? "111" } }));
         return Promise.resolve(
           opts.errorOnPage === index ? { data: null, error: { message: "read timeout" } } : { data: kept, error: null },
         );
@@ -64,8 +64,20 @@ describe("listBookingStampsBetween", () => {
       { created_at: UNTIL, is_test: false },
     ]);
     expect(await listBookingStampsBetween(db, SINCE, UNTIL)).toEqual([
-      { createdAtMs: Date.parse("2026-08-05T10:00:00.000Z"), isTest: true },
-      { createdAtMs: Date.parse("2026-08-05T10:05:00.000Z"), isTest: false },
+      { createdAtMs: Date.parse("2026-08-05T10:00:00.000Z"), isTest: true, tier: "1" },
+      { createdAtMs: Date.parse("2026-08-05T10:05:00.000Z"), isTest: false, tier: "1" },
+    ]);
+  });
+
+  // #2874: each tier is learned from its own bookings, so every row says whose it is.
+  it("says which tier each booking belongs to, and none for a test bucket's code", async () => {
+    const { db } = stampDb([
+      { created_at: "2026-08-05T10:00:00.000Z", is_test: false, code: "312" },
+      { created_at: "2026-08-05T10:01:00.000Z", is_test: true, code: "SMOKE" },
+    ]);
+    expect(await listBookingStampsBetween(db, SINCE, UNTIL)).toEqual([
+      { createdAtMs: Date.parse("2026-08-05T10:00:00.000Z"), isTest: false, tier: "3" },
+      { createdAtMs: Date.parse("2026-08-05T10:01:00.000Z"), isTest: true, tier: null },
     ]);
   });
 
@@ -80,8 +92,8 @@ describe("listBookingStampsBetween", () => {
       { created_at: "2026-08-05T10:03:00.000Z", is_test: false, source: null },
     ]);
     expect(await listBookingStampsBetween(db, SINCE, UNTIL)).toEqual([
-      { createdAtMs: Date.parse("2026-08-05T10:02:00.000Z"), isTest: false },
-      { createdAtMs: Date.parse("2026-08-05T10:03:00.000Z"), isTest: false },
+      { createdAtMs: Date.parse("2026-08-05T10:02:00.000Z"), isTest: false, tier: "1" },
+      { createdAtMs: Date.parse("2026-08-05T10:03:00.000Z"), isTest: false, tier: "1" },
     ]);
   });
 

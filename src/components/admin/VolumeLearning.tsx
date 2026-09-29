@@ -26,11 +26,15 @@ export interface PageCoverageView {
 }
 
 /**
- * Learning the low volume floors from Slate's own bookings, on /admin/alerts (#2739).
+ * Learning the low volume floors from Slate's own bookings, on /admin/alerts (#2739,
+ * #2874).
  *
- * Three things, in the order a reader needs them: what learning is doing now, the
- * one date that starts it, and how much of each Low page's week its own alarm can
- * judge. The coverage is a table rather than `pageCoverage()`'s sentences, because
+ * In the order a reader needs them: what learning is doing for Low now, one line
+ * for every other tier, the optional ramp end, and how much of each Low page's week
+ * its own alarm can judge. Nothing has to be set for learning to start: every tier,
+ * Low included, starts at its own first real booking (Dan, 2026-09-29, on #2874).
+ * The ramp end is an OPTIONAL override that can only start learning later, for a
+ * tier whose first weeks were a partial ramp. The coverage is a table rather than `pageCoverage()`'s sentences, because
  * three pages each explaining what an unmeasured hour is states one fact three
  * times (L579, L605): the numbers go in rows and the explanation is said once.
  *
@@ -48,6 +52,7 @@ export interface PageCoverageView {
 export function VolumeLearning({
   rampEndOn,
   detail,
+  tiers,
   coverage,
   sourceNotice,
   notice,
@@ -57,8 +62,10 @@ export function VolumeLearning({
 }: {
   /** The stored ramp end, YYYY-MM-DD, or null when none is declared. */
   rampEndOn: string | null;
-  /** From `learningStatusCopy`: what learning is doing now. */
+  /** From `learningStatusCopy`: what learning is doing now, for Low. */
   detail: string[];
+  /** From `tierLearningLines` (#2874): one line for every other tier, judged or not. */
+  tiers: string[];
   /** Each Low page's coverage from `pageCoverage()`, or null when the week could not be read. */
   coverage: PageCoverageView[] | null;
   /**
@@ -89,9 +96,9 @@ export function VolumeLearning({
   ) : (
     <>
       {changing ? `The ramp end moves from ${day(rampEndOn)} to ${day(typed)}. ` : ""}
-      From then, bookings made before {day(typed)} are never used. Once {minWeeks} full weeks
-      after it have been booked, the low volume alarm judges against floors learned from Slate&apos;s
-      own bookings, refit every day, and never lower than the cal.com floors.
+      Every tier then learns only from bookings made on or after {day(typed)}, or after its own
+      first booking if that is later, and each is judged against its learned floors once {minWeeks}{" "}
+      full weeks of them have been booked. Low&apos;s never go below the cal.com floors.
       {changing ? " The floors learned for the old date stop applying at the next check." : ""}
     </>
   );
@@ -108,7 +115,22 @@ export function VolumeLearning({
         ))}
       </div>
 
-      <div className="mt-4 flex flex-wrap items-end gap-3">
+      {/* #2874: every other tier, one line each, so a tier that is not judged is
+          stated rather than absent (L678). */}
+      <h3 className="mt-4 text-sm font-semibold text-fg">The other tiers</h3>
+      <ul className="mt-0.5 space-y-1" data-volume-tiers>
+        {tiers.map((line) => (
+          <li key={line} className="text-xs text-fg-muted">
+            {line}
+          </li>
+        ))}
+      </ul>
+
+      <p className="mt-4 text-xs text-fg-muted">
+        Each tier learns from its own first real booking, so nothing needs setting when another tier
+        moves to Slate. Set a ramp end only when the first weeks were a partial ramp, to leave them out.
+      </p>
+      <div className="mt-2 flex flex-wrap items-end gap-3">
         <SaveForm
           action={action}
           name="volume-ramp-end"
@@ -154,9 +176,9 @@ export function VolumeLearning({
               pendingLabel="Clearing..."
               message={
                 <>
-                  The low volume alarm goes back to the cal.com floors at the next check, and what
-                  was learned since {day(rampEndOn)} is discarded. Nothing is learned again until a
-                  ramp end is set.
+                  Every tier goes back to learning from its own first booking, and what was learned
+                  from {day(rampEndOn)} stops applying at the next check, until the refit that follows
+                  replaces it.
                 </>
               }
             />

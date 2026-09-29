@@ -176,4 +176,34 @@ const control = learnFloors({ bookings: steady, rampEndMs: RAMP_END, nowMs: NOW,
   }
 }
 
+// --- #2874: a tier nobody has measured learns with no anchor under it ---
+{
+  // No cal.com measurement exists for the tier, so there is no floor under the
+  // learned floor: what its own traffic fits is what it gets, judged in the zone it
+  // is given, and scoped in the words it is given.
+  const out = learnFloors({
+    bookings: steady,
+    rampEndMs: RAMP_END,
+    nowMs: NOW,
+    anchor: null,
+    zone: ZONE,
+    scope: "Every real Medium booking",
+    closedDates: [],
+  });
+  const zeroAnchor = learnFloors({ bookings: steady, rampEndMs: RAMP_END, nowMs: NOW, anchor: anchor(0, 0), closedDates: [] });
+  eq(out.status, "learned", "an unanchored tier learns from its own traffic");
+  if (out.status === "learned" && zeroAnchor.status === "learned") {
+    assert(JSON.stringify(out.baseline.cells) === JSON.stringify(zeroAnchor.baseline.cells), "exactly what an anchor of zeros would leave");
+    eq(out.baseline.zone, ZONE, "judged in the zone it was given");
+    eq(out.baseline.scope, "Every real Medium booking", "and scoped in the words it was given");
+  }
+  let threw = false;
+  try {
+    learnFloors({ bookings: steady, rampEndMs: RAMP_END, nowMs: NOW, anchor: null, closedDates: [] });
+  } catch {
+    threw = true;
+  }
+  assert(threw, "with neither an anchor nor a zone there is no week to judge in, so it refuses");
+}
+
 finish();
