@@ -55,6 +55,7 @@ export function VolumeLearning({
   tiers,
   coverage,
   sourceNotice,
+  heldOff,
   notice,
   action,
   earliest,
@@ -74,6 +75,12 @@ export function VolumeLearning({
    * the lookback carried one. Required, so the page has to decide it.
    */
   sourceNotice: string | null;
+  /**
+   * From `pagesNotOnSlateLines()` (#2878): one sentence per Low page Slate does not
+   * carry yet, said whatever else the section says, so a page missing from the table
+   * reads as a decision. Empty once every Low page is on Slate.
+   */
+  heldOff: string[];
   /** The saved notice for this form, drawn here rather than at the top of the page. */
   notice?: React.ReactNode;
   action: (form: FormData) => Promise<void>;
@@ -191,6 +198,11 @@ export function VolumeLearning({
         Each page&apos;s own alarm keeps the cal.com floors for that page; learning replaces the
         floors for the Low tier as a whole.
       </p>
+      {heldOff.map((line) => (
+        <p key={line} className="mt-1 text-xs text-fg" data-page-held-off>
+          {line}
+        </p>
+      ))}
       {sourceNotice !== null ? (
         <p className="mt-1 text-xs text-fg" role="status" data-page-sources>
           {sourceNotice}

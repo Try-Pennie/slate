@@ -36,8 +36,17 @@ describe("VolumeFloors", () => {
     expect(line).toContain("Jul 24 to Sep 25");
     expect(line).toContain(MEASURED_VOLUME_BASELINE.bookings.toLocaleString("en-US"));
     expect(line).toContain(MEASURED_VOLUME_BASELINE.scope);
-    // The whole tier is fitted, so there is no share of it to state.
-    expect(line).not.toContain("of that tier's bookings");
+    // #2878: the committed floors are the two pilot pages', said in plain words
+    // with their share of the tier, so nobody reads them as the whole tier's.
+    expect(line).toContain("Completed Application Review Follow Up and Completed Application Review pages");
+    expect(line).not.toContain("Income Verification");
+    expect(line).toContain("66% of that tier's bookings");
+  });
+
+  it("states no share when the floors are the whole tier's", () => {
+    const whole = { ...MEASURED_VOLUME_BASELINE, tierShare: null };
+    const { container } = renderFloors({ baseline: whole, table: floorTable(whole, WEEK) });
+    expect(container.querySelector("[data-floor-provenance]")!.textContent).not.toContain("of that tier's bookings");
   });
 
   it("states the share when the floors are fitted to part of the tier", () => {

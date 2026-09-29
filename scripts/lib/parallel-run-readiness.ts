@@ -404,7 +404,7 @@ export function judgeReadiness(f: ReadinessFacts): ReadinessJudgement {
       if (without.length) {
         armingChecks.push({
           kind: "page-source-missing",
-          detail: `${without.length} Low page(s) recorded no booking at all in the last ${s.lookbackDays} days, though every one of the ${s.realBookings} real bookings carried a source, so the per page alarm would report each as a page that stopped booking: ${names(without)}`,
+          detail: `${without.length} Low page(s) Slate carries recorded no booking at all in the last ${s.lookbackDays} days, though every one of the ${s.realBookings} real bookings carried a source, so the per page alarm would report each as a page that stopped booking: ${names(without)}`,
         });
       }
     }
@@ -440,13 +440,13 @@ export function judgeReadiness(f: ReadinessFacts): ReadinessJudgement {
           : "the low volume alarms are disarmed, so none of this changes the exit";
   const armingLine =
     advisories.length === 0 && !armingGates
-      ? `\nBefore arming the low volume alarms (#1956, #2738): every real booking in the last ${arming.pageSources?.lookbackDays} days carried its source and every Low page recorded one, every federal holiday in the next ${arming.holidays?.windowDays} days is decided (${arming.holidays?.checked} date(s))`
+      ? `\nBefore arming the low volume alarms (#1956, #2738): every real booking in the last ${arming.pageSources?.lookbackDays} days carried its source and every Low page Slate carries recorded one, every federal holiday in the next ${arming.holidays?.windowDays} days is decided (${arming.holidays?.checked} date(s))`
       : advisories.length
         ? `\nBefore arming the low volume alarms (#1956, #2738); ${armingState}:\n` +
           advisories.map((a) => `  ${a.kind}: ${a.detail}`).join("\n")
         : armingChecks.length || armingUnreadable.length
           ? `\nArming preconditions gate this run: ${armingState}`
-          : `\nArming preconditions met while gating (${armingState}): every real booking carried its source and every Low page recorded one, every federal holiday in the next ${arming.holidays?.windowDays} days is decided`;
+          : `\nArming preconditions met while gating (${armingState}): every real booking carried its source and every Low page Slate carries recorded one, every federal holiday in the next ${arming.holidays?.windowDays} days is decided`;
 
   if (unreadable.length) {
     findings.unshift({

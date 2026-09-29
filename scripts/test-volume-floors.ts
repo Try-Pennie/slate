@@ -36,6 +36,7 @@ import {
   type VolumeFixture,
 } from "./lib/volume-floor-scope.ts";
 import { headOf, replayLowVolume, withGap } from "./lib/volume-floor-replay.ts";
+import { LOW_PAGES_ON_SLATE } from "../src/lib/monitor/page-volume.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
 const ZONE = "America/New_York";
@@ -158,10 +159,18 @@ const fixture = JSON.parse(readFileSync("scripts/fixtures/calcom-low-bookings.js
   );
   eq(MEASURED_VOLUME_BASELINE.cells.length, 7, "seven weekdays");
   assert(MEASURED_VOLUME_BASELINE.cells.every((d) => d.length === 24), "twenty four hours each");
-  // Dan, 2026-09-25: every Low page moves to Slate at once, so the floors are the
-  // whole tier's. Fitting one page while all flip misses outages; fitting the tier
-  // while one flips paged 108 to 283 times in two normal weeks of replay.
-  eq(MEASURED_VOLUME_BASELINE.tierShare, null, "the floors are fitted to the whole Low tier, which is what Slate carries");
+  // Dan, 2026-09-29 (#2878): the pilot launches on the two pages already wired to
+  // Slate, so the floors are those two pages' and not the whole tier's. Fitting the
+  // tier while only some pages flip paged 108 to 283 times in two normal weeks of
+  // replay; fitting fewer pages than flip is slow and blind.
+  const pilotForms = LOW_PAGES_ON_SLATE.map((p) => p.calcomForm);
+  const pilotBookings = pilotForms.reduce((s, f) => s + fixture.forms[f]!.reduce((a, v) => a + v, 0), 0);
+  eq(MEASURED_VOLUME_BASELINE.bookings, pilotBookings, "the floors count exactly the bookings of the pages Slate carries");
+  assert(
+    MEASURED_VOLUME_BASELINE.tierShare !== null && MEASURED_VOLUME_BASELINE.tierShare > 0.5 && MEASURED_VOLUME_BASELINE.tierShare < 1,
+    `and say they are that share of the Low tier, not all of it (${MEASURED_VOLUME_BASELINE.tierShare})`,
+  );
+  eq(MEASURED_VOLUME_BASELINE.scope, FLOOR_SCOPE.label, "and name that scope in the words the admin page shows");
   assert(MEASURED_VOLUME_BASELINE.bookings > 1000, "fitted to a real volume of bookings, not a handful");
   // Every page in the tier is kept, so a wider scope can be fitted offline.
   assert(Object.keys(fixture.forms).length >= 2, "the measurement holds every Low page, not only the scoped one");
@@ -176,6 +185,15 @@ const fixture = JSON.parse(readFileSync("scripts/fixtures/calcom-low-bookings.js
     refused = (e as Error).message;
   }
   assert(refused.includes("does not hold"), "a scoped page missing from the measurement is refused by name");
+  // #2878: a scope naming no page at all (every Low page held off Slate) would fit
+  // floors of zero that could never breach and still read as a measurement (L678).
+  let empty = "";
+  try {
+    scopedSeries(fixture, { ...FLOOR_SCOPE, forms: [] });
+  } catch (e) {
+    empty = (e as Error).message;
+  }
+  assert(empty.includes("names no page"), `a scope with no pages is refused by name (${empty})`);
   // The whole tier scope reports no share, because it IS the tier.
   const whole = baselineFromFixture(fixture, { ...FLOOR_SCOPE, forms: Object.keys(fixture.forms) });
   eq(whole.tierShare, null, "a scope covering every page is the whole tier");

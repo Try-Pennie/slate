@@ -8,8 +8,13 @@ import { VolumeLearning } from "@/components/admin/VolumeLearning";
 // the date actually typed, and clearing must say what it gives up.
 const action = vi.fn(async () => {});
 const coverage = [
-  { id: "income-verification", name: "Income Verification Phone Call", open: 72, judged: 60 },
+  { id: "application-review", name: "Completed Application Review", open: 72, judged: 60 },
   { id: "application-review-follow-up", name: "Completed Application Review Follow Up", open: 72, judged: 19 },
+];
+
+// #2878: from `pagesNotOnSlateLines()`, a page held off Slate stated in words.
+const HELD_OFF = [
+  "Income Verification Phone Call is not judged: its leads come from trypennie's /offerportal and /portal, which do not send them to Slate yet.",
 ];
 
 const TIERS = [
@@ -25,6 +30,7 @@ function renderIt(over: Partial<Parameters<typeof VolumeLearning>[0]> = {}) {
       tiers={TIERS}
       coverage={coverage}
       sourceNotice={null}
+      heldOff={HELD_OFF}
       action={action}
       earliest="2026-09-25"
       minWeeks={4}
@@ -43,6 +49,24 @@ describe("VolumeLearning", () => {
     expect(followUp.textContent).toContain("53");
     // The explanation of an unmeasured hour is said once, not once per page.
     expect(container.textContent!.split("too few of that page").length - 1).toBe(1);
+  });
+
+  // #2878: a page Slate does not carry is named as not judged, whatever else the
+  // section is saying, so its absence from the table never reads as an oversight
+  // and its silence never reads as a page that stopped.
+  it("names each page held off Slate as not judged, beside the table and in place of it", () => {
+    for (const over of [{}, { sourceNotice: "Source not recorded on 3 of 40 bookings in the last 7 days." }, { coverage: null }]) {
+      const { container, unmount } = renderIt(over);
+      const lines = [...container.querySelectorAll("[data-page-held-off]")].map((e) => e.textContent);
+      expect(lines).toEqual(HELD_OFF);
+      expect(container.querySelector('[data-page-coverage="income-verification"]')).toBeNull();
+      unmount();
+    }
+  });
+
+  it("says nothing about held off pages once every Low page is on Slate", () => {
+    const { container } = renderIt({ heldOff: [] });
+    expect(container.querySelectorAll("[data-page-held-off]")).toHaveLength(0);
   });
 
   it("confirms a new ramp end with its consequence, from the date typed", () => {

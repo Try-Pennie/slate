@@ -150,7 +150,7 @@ import { tierLabel } from "@/lib/monitor/volume-tiers";
 import { formatVolumeVerdictGapAlert } from "@/lib/monitor/volume-verdict-gap";
 import { judgedFloors, type FloorsNow } from "@/lib/monitor/volume-floors";
 import {
-  LOW_PAGES,
+  LOW_PAGES_ON_SLATE,
   formatPageUnseenAlert,
   formatPageVolumeAlert,
   formatPageVolumeRecoveryNotice,
@@ -812,7 +812,7 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     state: "one page has stopped booking and the tier is fine",
     channel: "alert",
     text: formatPageVolumeAlert(
-      LOW_PAGES[0]!,
+      LOW_PAGES_ON_SLATE[0]!,
       [{ label: "120 min", count: 0, floor: 2, basis: MEASURED_TUESDAY_2PM.basis120 }],
       true,
     ),
@@ -823,7 +823,7 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     state: "one page has stopped booking and the tier was not judged",
     channel: "alert",
     text: formatPageVolumeAlert(
-      LOW_PAGES[2]!,
+      LOW_PAGES_ON_SLATE[1]!,
       [
         { label: "30 min", count: 0, floor: 1, basis: MEASURED_TUESDAY_2PM.basis30 },
         { label: "120 min", count: 1, floor: 5, basis: MEASURED_TUESDAY_2PM.basis120 },
@@ -837,7 +837,7 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     key: "low_page_volume:*",
     state: "the page has recorded no booking in the lookback",
     channel: "alert",
-    text: formatPageUnseenAlert(LOW_PAGES[1]!, [
+    text: formatPageUnseenAlert(LOW_PAGES_ON_SLATE[1]!, [
       { label: "120 min", count: 0, floor: 1, basis: MEASURED_TUESDAY_2PM.basis120 },
     ]),
   },
@@ -845,7 +845,7 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     key: "low_page_volume:*",
     state: "the page is booking again",
     channel: "recovery",
-    text: formatPageVolumeRecoveryNotice(LOW_PAGES[0]!, [
+    text: formatPageVolumeRecoveryNotice(LOW_PAGES_ON_SLATE[0]!, [
       { label: "30 min", count: 1, floor: 0 },
       { label: "120 min", count: 6, floor: 2 },
     ]),
