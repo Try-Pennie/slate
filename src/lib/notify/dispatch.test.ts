@@ -647,11 +647,6 @@ describe("off the Workers runtime, a write dispatcher does nothing (#1537)", () 
   });
 });
 
-// #2542: the cooldown read carries an `// error-ok:` saying that an empty result
-// reads as "never sent", which SENDS. That is the fail safe side, and it had
-// never been asserted: this file sat outside the swallowed-read guard's hand
-// written directory list, so nothing had asked what a refused `alert_state` read
-// does. A lost cooldown costs a duplicate page; a swallowed one MUTES the alert.
 // PR #2883: the race whisper asks this before paging through a fortnight of
 // bookings, so the question must be answered exactly as the send answers it.
 describe("isAlertDue", () => {
@@ -694,6 +689,11 @@ describe("isAlertDue", () => {
   });
 });
 
+// #2542: the cooldown read carries an `// error-ok:` saying that an empty result
+// reads as "never sent", which SENDS. That is the fail safe side, and it had
+// never been asserted: this file sat outside the swallowed-read guard's hand
+// written directory list, so nothing had asked what a refused `alert_state` read
+// does. A lost cooldown costs a duplicate page; a swallowed one MUTES the alert.
 describe("the cooldown read failing (#2542)", () => {
   beforeEach(() => {
     failCooldownRead.value = false;

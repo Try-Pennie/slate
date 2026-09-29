@@ -1428,7 +1428,7 @@ export async function GET(req: NextRequest) {
           msg: "booking race contention",
           day: window.day,
           verdict: "not judged",
-          why: "today's whisper already went out and its cooldown is still running",
+          why: "the whisper's cooldown is still running, so it could not send whatever the verdict",
         });
         return;
       }
