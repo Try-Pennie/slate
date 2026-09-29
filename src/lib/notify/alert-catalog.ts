@@ -668,8 +668,8 @@ export const ALERT_CATALOG: AlertEntry[] = [
   {
     key: "external_double_book:*",
     kind: "incident",
-    suffix: "bounded",
-    why: "Two specific bookings already overlap; a person reschedules one, and no code path observes that.",
+    suffix: "booking",
+    why: "One Slate call already overlaps an event booked outside Slate; a person reassigns or reschedules it, and no code path observes that. Keyed by the booking so each clashing call pages on its own (#2905).",
   },
   {
     key: "booking_offsite_origin:*",

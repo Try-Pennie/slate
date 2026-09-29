@@ -49,12 +49,13 @@ for (const e of ALERT_CATALOG.filter((x) => !x.key.endsWith(":*"))) {
 
 // Measured 2026-09-25 against the live table and the send sites, so a wrong
 // declaration on the families the issue named is caught rather than trusted.
-// The issue said misroute and external_double_book were keyed by booking; they
-// are keyed by bucket code and by agent, which the roster bounds.
-for (const k of ["booking_offsite_origin:*", "stale_phone_invite:*", "booking_below_lead_tier:*"]) {
+// The issue said misroute was keyed by booking; it is keyed by bucket code, which
+// the roster bounds. external_double_book IS keyed by booking since #2905, one
+// page per clashing call, so its rows are pruned with the other booking families.
+for (const k of ["booking_offsite_origin:*", "stale_phone_invite:*", "booking_below_lead_tier:*", "external_double_book:*"]) {
   eq(alertEntry(k)?.suffix, "booking", `${k} is keyed by a booking id`);
 }
-for (const k of ["misroute:*", "external_double_book:*", "cron_lane_stale:*", "webhook_dead:*"]) {
+for (const k of ["misroute:*", "cron_lane_stale:*", "webhook_dead:*"]) {
   eq(alertEntry(k)?.suffix, "bounded", `${k} is keyed by something the roster or the code bounds`);
 }
 
@@ -128,7 +129,7 @@ function table(): Set<string> {
     "sync_failures",
     "alert_firing:sync_failures",
     `misroute:${ids.past}`,
-    "external_double_book:88888888-8888-4888-8888-888888888888",
+    "retired_booking_key:88888888-8888-4888-8888-888888888888",
   ]);
 }
 

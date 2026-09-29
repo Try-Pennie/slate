@@ -533,8 +533,8 @@ const PREVIEW_CLASH_A = {
 const PREVIEW_CLASH_B = {
   bookingUrl: PREVIEW_OFFSITE_URL,
   callStart: "2026-10-02T14:00:00Z",
-  eventStart: "2026-10-02T13:30:00Z",
-  eventEnd: "2026-10-02T14:30:00Z",
+  eventStart: "2026-10-02T02:00:00Z",
+  eventEnd: "2026-10-02T15:00:00Z",
 };
 
 /** #2090: an invented agent for the Regal call previews (L155). */
@@ -3656,9 +3656,9 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
   { key: "ooo_approvals_digest", state: "several of each", channel: "alert",
     text: oooApprovalsDigestAlert(6, 3, "530 authentication required") },
   { key: "external_double_book:*", state: "an overlap with an outside event", channel: "alert",
-    text: externalDoubleBookAlert("dana.whitfield@trypennie.com", [PREVIEW_CLASH_A]) },
-  { key: "external_double_book:*", state: "two calls overlapping outside events", channel: "alert",
-    text: externalDoubleBookAlert("dana.whitfield@trypennie.com", [PREVIEW_CLASH_A, PREVIEW_CLASH_B]) },
+    text: externalDoubleBookAlert("dana.whitfield@trypennie.com", PREVIEW_CLASH_A) },
+  { key: "external_double_book:*", state: "an outside event that began the day before", channel: "alert",
+    text: externalDoubleBookAlert("dana.whitfield@trypennie.com", PREVIEW_CLASH_B) },
   { key: "misroute:*", state: "a booking that matched no criteria", channel: "alert",
     text: misrouteAlert("bk_8f21c4", "411", "usr_22") },
   { key: "internal_error:*", state: "an unexpected 500", channel: "alert",

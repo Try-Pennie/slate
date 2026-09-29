@@ -12,19 +12,18 @@ import { assert, finish } from "./lib/harness.ts";
 import { externalDoubleBookAlert } from "../src/lib/notify/misc-alert-copy.ts";
 
 const URL_A = "https://slate.trypennie.app/admin/bookings/b1979142-e1a1-456b-aa18-d00c8c42aedb";
-const URL_B = "https://slate.trypennie.app/admin/bookings/5b0c7a8e-2f41-4d7e-9a61-0c3f1e2d4b5a";
 
 // 1. One clash: the real 2026-09-29 page. Call 17:00 to 17:20 UTC on Oct 1, an
 //    outside event 17:00 to 17:30 UTC, both read in Eastern.
 {
-  const text = externalDoubleBookAlert("radeyemo@trypennie.com", [
+  const text = externalDoubleBookAlert("radeyemo@trypennie.com",
     {
       bookingUrl: URL_A,
       callStart: "2026-10-01T17:00:00Z",
       eventStart: "2026-10-01T17:00:00Z",
       eventEnd: "2026-10-01T17:30:00Z",
     },
-  ]);
+  );
   assert(text.includes("radeyemo@trypennie.com"), "names the advisor by email");
   assert(text.includes("Thu, Oct 1"), `states the day of the call: ${text}`);
   assert(text.includes("1:00pm ET"), `states the call time in Eastern: ${text}`);
@@ -37,44 +36,19 @@ const URL_B = "https://slate.trypennie.app/admin/bookings/5b0c7a8e-2f41-4d7e-9a6
   assert(!/\(s\)/.test(text), "no (s) pluralisation");
 }
 
-// 2. Two clashes: each call gets its own time and its own link, so the reader
-//    is never left guessing which link belongs to which call.
-{
-  const text = externalDoubleBookAlert("dana.whitfield@trypennie.com", [
-    {
-      bookingUrl: URL_A,
-      callStart: "2026-10-01T17:00:00Z",
-      eventStart: "2026-10-01T17:00:00Z",
-      eventEnd: "2026-10-01T17:30:00Z",
-    },
-    {
-      bookingUrl: URL_B,
-      callStart: "2026-10-02T14:00:00Z",
-      eventStart: "2026-10-02T13:30:00Z",
-      eventEnd: "2026-10-02T14:30:00Z",
-    },
-  ]);
-  const lines = text.split("\n");
-  const lineA = lines.find((l) => l.includes(URL_A)) ?? "";
-  const lineB = lines.find((l) => l.includes(URL_B)) ?? "";
-  assert(lineA.includes("Thu, Oct 1") && lineA.includes("1:00pm ET"), `first call's line carries its time: ${lineA}`);
-  assert(lineB.includes("Fri, Oct 2") && lineB.includes("10:00am ET"), `second call's line carries its time: ${lineB}`);
-  assert(lineB.includes("9:30am to 10:30am ET"),
-    `second call's line carries its outside event: ${lineB}`);
-  assert(/\b2 Slate calls\b/.test(text), `counts the calls in words that agree: ${text}`);
-}
+// Several clashes on one advisor are several pages: scripts/test-double-book-paging.ts.
 
 // 3. An outside event that starts on an EARLIER day than the call (an all night
 //    block, say) must say so, or the window reads as a time on the call's day.
 {
-  const text = externalDoubleBookAlert("x@trypennie.com", [
+  const text = externalDoubleBookAlert("x@trypennie.com",
     {
       bookingUrl: URL_A,
       callStart: "2026-10-01T13:00:00Z",
       eventStart: "2026-10-01T02:00:00Z",
       eventEnd: "2026-10-01T15:00:00Z",
     },
-  ]);
+  );
   assert(text.includes("Wed, Sep 30"), `an event starting the previous day names that day: ${text}`);
 }
 

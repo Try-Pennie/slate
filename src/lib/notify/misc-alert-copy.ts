@@ -206,28 +206,17 @@ function clashCallTime(c: DoubleBookClash): string {
 }
 
 /**
- * A Slate booking overlaps an event booked outside Slate.
+ * A Slate call overlaps an event booked outside Slate.
  *
- * Every clash carries its call time, the outside event's window and a link to
- * the booking page. The first version listed bare booking ids and said "check
- * the agent's calendar", which left the reader with no time, nothing to click,
- * and a calendar that is not theirs to open.
+ * One call per page (#2905), carrying the call's time, the outside event's
+ * window and a link to the booking page, where the reassign and reschedule
+ * controls are.
  */
-export function externalDoubleBookAlert(email: string, clashes: DoubleBookClash[]): string {
-  if (clashes.length === 1) {
-    const c = clashes[0];
-    return (
-      `Possible external double-book for ${email}. A Google event added outside Slate ` +
-      `(${clashEventWindow(c)}) overlaps their Slate call on ${clashCallTime(c)}. ` +
-      `Reassign or reschedule the call:\n${c.bookingUrl}`
-    );
-  }
-  const lines = clashes.map(
-    (c) => `Call on ${clashCallTime(c)}, outside event ${clashEventWindow(c)}: ${c.bookingUrl}`,
-  );
+export function externalDoubleBookAlert(email: string, c: DoubleBookClash): string {
   return (
-    `Possible external double-book for ${email}. ${clashes.length} Slate calls overlap Google ` +
-    `events added outside Slate. Reassign or reschedule each call:\n${lines.join("\n")}`
+    `Possible external double-book for ${email}. A Google event added outside Slate ` +
+    `(${clashEventWindow(c)}) overlaps their Slate call on ${clashCallTime(c)}. ` +
+    `Reassign or reschedule the call:\n${c.bookingUrl}`
   );
 }
 
