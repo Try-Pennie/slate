@@ -141,6 +141,8 @@ import {
   formatTierVolumeRecoveryNotice,
   formatTierVolumeCountUnreadableAlert,
   formatTierVolumeCountReadableNotice,
+  formatTierVolumeCheckFailedAlert,
+  formatTierVolumeCheckRanNotice,
   formatVolumeVerdictGapRecoveryNotice,
 } from "@/lib/monitor/booking-volume";
 import { tierLabel } from "@/lib/monitor/volume-tiers";
@@ -779,6 +781,19 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     state: "the tier's count reads again",
     channel: "recovery",
     text: formatTierVolumeCountReadableNotice(tierLabel("2")),
+  },
+  {
+    // One tier's check could not run; the others were still judged (#2874).
+    key: "tier_volume_check_failed:*",
+    state: "one tier's check could not run",
+    channel: "alert",
+    text: formatTierVolumeCheckFailedAlert(tierLabel("3")),
+  },
+  {
+    key: "tier_volume_check_failed:*",
+    state: "the tier is judged again",
+    channel: "recovery",
+    text: formatTierVolumeCheckRanNotice(tierLabel("3")),
   },
   {
     key: "low_tier_volume:*",

@@ -43,7 +43,16 @@ import { LEARNING, learnFloors, underpin, type LearnedFloors, type SlateBookingR
 import type { VolumeBaseline } from "./volume-floors.ts";
 import { MEASURED_VOLUME_BASELINE } from "./volume-baseline.ts";
 import { parseStampMs } from "../date/stamp.ts";
-import { LOW_TIER, TIER_ANCHORS, VOLUME_TIERS, tierLabel, tierRampStartMs, type VolumeTier } from "./volume-tiers.ts";
+import {
+  LOW_TIER,
+  TIER_ANCHORS,
+  VOLUME_TIERS,
+  isVolumeTier,
+  recordOfTiers,
+  tierLabel,
+  tierRampStartMs,
+  type VolumeTier,
+} from "./volume-tiers.ts";
 
 const HOUR_MS = 60 * 60_000;
 const WEEK_MS = 7 * 24 * HOUR_MS;
@@ -207,7 +216,7 @@ export function readStoredLearning(raw: unknown): StoredLearningRead {
   // unreadable: half a stored refit is not a smaller refit.
   if (Object.keys(tiers).length === 0) return { state: "unreadable" };
   for (const [tier, entry] of Object.entries(tiers)) {
-    if (!VOLUME_TIERS.includes(tier) || !isTierEntry(entry)) return { state: "unreadable" };
+    if (!isVolumeTier(tier) || !isTierEntry(entry)) return { state: "unreadable" };
   }
   return { state: "ok", legacy: false, value: raw as StoredVolumeLearning };
 }
@@ -364,17 +373,20 @@ export async function runVolumeRelearn(deps: {
   }
 
   const tiers: Partial<Record<VolumeTier, StoredTierLearning>> = {};
-  const summary: Record<VolumeTier, LearnedFloors["status"] | "not-carried"> = {};
+  const summary: [VolumeTier, LearnedFloors["status"] | "not-carried"][] = [];
   for (const tier of VOLUME_TIERS) {
     const firstMs = first[tier] ?? null;
     const startMs = tierRampStartMs(firstMs, declaredMs);
     if (firstMs === null || startMs === null) {
       tiers[tier] = { firstBookingAt: null, rampStartAt: null, result: null };
-      summary[tier] = "not-carried";
+      summary.push([tier, "not-carried"]);
       continue;
     }
     const result = learnFloors({
-      bookings: rows.filter((r) => r.tier === tier),
+      // The tier's own rows, plus the test bucket rows, which belong to no tier
+      // (their codes are not XBCs) and must still reach the learner so it counts
+      // them as left out rather than their vanishing before any tier saw them.
+      bookings: rows.filter((r) => r.tier === tier || (r.isTest && (r.tier ?? null) === null)),
       rampEndMs: startMs,
       nowMs: deps.nowMs,
       anchor: deps.anchors[tier] ?? null,
@@ -383,7 +395,7 @@ export async function runVolumeRelearn(deps: {
       closedDates,
     });
     tiers[tier] = { firstBookingAt: new Date(firstMs).toISOString(), rampStartAt: new Date(startMs).toISOString(), result };
-    summary[tier] = result.status;
+    summary.push([tier, result.status]);
   }
   await deps.save({
     version: LEARNING_STATE_VERSION,
@@ -396,9 +408,9 @@ export async function runVolumeRelearn(deps: {
     rows_read: rows.length,
     closed_days: closedDates.length,
     carried: carried.join(",") || "none",
-    tiers: VOLUME_TIERS.map((t) => `${t}=${summary[t]}`).join(" "),
+    tiers: summary.map(([t, status]) => `${t}=${status}`).join(" "),
   });
-  return { status: "refit", rowsRead: rows.length, tiers: summary };
+  return { status: "refit", rowsRead: rows.length, tiers: recordOfTiers(summary) };
 }
 
 /** The name the ramp end form's refusals carry back, so the page draws them beside it. */

@@ -165,8 +165,8 @@ function harness(overrides: {
   floors?: { floor30: number; floor120: number };
   unreadableFiring?: boolean;
   settleThrows?: boolean;
-  /** #2874: a tier judged beside Low, with its own key and name. */
-  tier?: { key: string; label: string };
+  /** #2874: a tier judged beside Low, typed from the check's own dependency. */
+  tier?: Parameters<typeof runLowVolumeCheck>[0]["tier"];
 }) {
   const notified: { key: string; cooldownMs: number; text: string }[] = [];
   const resolved: { key: string; text: string }[] = [];

@@ -9,7 +9,7 @@ import {
   UNSOURCED_VALUES,
   type PageSourceMeasure,
 } from "@/lib/monitor/page-volume";
-import { LOW_TIER, VOLUME_TIERS, tierCodePattern, type VolumeTier } from "@/lib/monitor/volume-tiers";
+import { LOW_TIER, VOLUME_TIERS, recordOfTiers, tierCodePattern, type VolumeTier } from "@/lib/monitor/volume-tiers";
 
 /**
  * The embed every read here joins on: the bucket's test flag, which is the only
@@ -165,7 +165,7 @@ export async function firstTierBookingsSince(
   db: ReturnType<typeof supabaseAdmin>,
   sinceIso: string,
 ): Promise<Record<VolumeTier, number | null>> {
-  const out: Record<VolumeTier, number | null> = {};
+  const out: [VolumeTier, number | null][] = [];
   for (const tier of VOLUME_TIERS) {
     // cap-safe: at most one row, the earliest.
     const { data, error } = await db
@@ -184,14 +184,14 @@ export async function firstTierBookingsSince(
     }
     const row = ((data ?? []) as { created_at: string }[])[0];
     if (!row) {
-      out[tier] = null;
+      out.push([tier, null]);
       continue;
     }
     const ms = parseStampMs(row.created_at);
     if (ms === null) throw new Error(`volume tiers: tier ${tier}'s first booking has an unreadable created_at`);
-    out[tier] = ms;
+    out.push([tier, ms]);
   }
-  return out;
+  return recordOfTiers(out);
 }
 
 /**

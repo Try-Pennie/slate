@@ -1185,8 +1185,10 @@ export async function GET(req: NextRequest) {
           armed: settings!.lowVolumeArmed,
           cooldownMs: cooldownMs.low_booking_volume,
           // alert-key: low_tier_volume:*
+          // alert-key: tier_volume_check_failed:*
           // alert-text-ok: our own copy from booking-volume.ts, built from measured
-          // counts and the tier's own name; no error text can reach it.
+          // counts and the tier's own name; no error text can reach it (a tier's
+          // thrown error goes to the log through logError below).
           notify: (key, cooldownMs, text) => sendThrottledAlert(key, cooldownMs, text),
           notifyCountUnreadable: (key, cooldownMs, text) => {
             // alert-key: volume_count_unreadable:*
@@ -1196,10 +1198,12 @@ export async function GET(req: NextRequest) {
           },
           // alert-key: volume_count_unreadable:*
           // alert-key: low_tier_volume:*
+          // alert-key: tier_volume_check_failed:*
           // all-clear-proof: scripts/test-monitor-booking-volume.ts - pins that a
           // tier's reading clears only that tier's own page, and nothing of Low's.
           resolveRecovered: (recovered) => resolveRecovered(recovered),
           log: (fields) => log.info("monitor", { msg: "tier booking volume", ...fields }),
+          logError: (fields, err) => log.error("monitor", fields, err instanceof Error ? err : undefined),
         }),
       );
     }

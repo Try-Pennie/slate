@@ -411,6 +411,16 @@ export const ALERT_CATALOG: AlertEntry[] = [
       "next tick.",
   },
   {
+    key: "tier_volume_check_failed:*",
+    kind: "condition",
+    // The suffix is one of the debt tier digits in volume-tiers.ts.
+    suffix: "bounded",
+    why:
+      "One tier's low volume check could not run (#2874), so that tier is judged by " +
+      "nothing; it ends when the same lane next judges that tier, within 5 minutes " +
+      "of whatever broke it being fixed.",
+  },
+  {
     key: "low_tier_volume:*",
     kind: "condition",
     // The suffix is one of the five debt tier digits in volume-tiers.ts.

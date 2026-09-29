@@ -12,9 +12,15 @@
  *
  * No `@/` imports, so node scripts can drive it.
  */
-import { runLowVolumeCheck, type BusinessHoursConfig, type LowVolumeResult } from "./booking-volume.ts";
+import {
+  formatTierVolumeCheckFailedAlert,
+  formatTierVolumeCheckRanNotice,
+  runLowVolumeCheck,
+  type BusinessHoursConfig,
+  type LowVolumeResult,
+} from "./booking-volume.ts";
 import { floorsFor, judgedFloors, type VolumeBaseline } from "./volume-floors.ts";
-import { tierCountUnreadableKey, tierLabel, tierVolumeAlertKey, type VolumeTier } from "./volume-tiers.ts";
+import { tierCheckFailedKey, tierCountUnreadableKey, tierLabel, tierVolumeAlertKey, type VolumeTier } from "./volume-tiers.ts";
 import type { ThrottledNotify } from "./alert-deps";
 
 export async function runTierVolumeChecks(deps: {
@@ -30,6 +36,8 @@ export async function runTierVolumeChecks(deps: {
   notifyCountUnreadable: ThrottledNotify;
   resolveRecovered: (recovered: { key: string; text: string }[]) => Promise<string[]>;
   log?: (fields: Record<string, unknown>) => void;
+  /** Where a tier's thrown error is logged in full; the page carries none of it. */
+  logError?: (fields: { msg: string; tier: string }, err: unknown) => void;
 }): Promise<Partial<Record<VolumeTier, LowVolumeResult>>> {
   // all-clear-proof: scripts/test-tier-volume.ts - pins that a tier whose count
   // cannot be read clears nothing, and that a tier's reading clears only its own page.
@@ -39,24 +47,43 @@ export async function runTierVolumeChecks(deps: {
   // five tiers must not cost five. Only what a tier MEASURED is ever collected,
   // because each check offers nothing on a path that could not read its count.
   const recovered: { key: string; text: string }[] = [];
-  for (const [tier, baseline] of Object.entries(deps.baselines)) {
+  for (const [tier, baseline] of Object.entries(deps.baselines) as [VolumeTier, VolumeBaseline | undefined][]) {
     if (!baseline) continue;
-    out[tier] = await runLowVolumeCheck({
-      nowMs: deps.nowMs,
-      businessHours: deps.businessHours,
-      countSince: (sinceIso) => deps.countSince(tier, sinceIso),
-      floors: judgedFloors(floorsFor({ baseline, override30: null, override120: null }, deps.nowMs)),
-      armed: deps.armed,
-      cooldownMs: deps.cooldownMs,
-      notify: deps.notify,
-      notifyCountUnreadable: deps.notifyCountUnreadable,
-      resolveRecovered: async (r) => {
-        recovered.push(...r);
-        return [];
-      },
-      tier: { key: tierVolumeAlertKey(tier), countUnreadableKey: tierCountUnreadableKey(tier), label: tierLabel(tier) },
-      log: deps.log,
-    });
+    const label = tierLabel(tier);
+    // EACH TIER IS ITS OWN FAILURE BOUNDARY (L73). One tier throwing, a damaged
+    // stored floor record most likely, must not leave the tiers after it unjudged
+    // nor drop the all-clears already collected: it is that tier's finding, on its
+    // own key, reported as not measured and never as healthy.
+    const mine: { key: string; text: string }[] = [];
+    try {
+      out[tier] = await runLowVolumeCheck({
+        nowMs: deps.nowMs,
+        businessHours: deps.businessHours,
+        countSince: (sinceIso) => deps.countSince(tier, sinceIso),
+        floors: judgedFloors(floorsFor({ baseline, override30: null, override120: null }, deps.nowMs)),
+        armed: deps.armed,
+        cooldownMs: deps.cooldownMs,
+        notify: deps.notify,
+        notifyCountUnreadable: deps.notifyCountUnreadable,
+        resolveRecovered: async (r) => {
+          mine.push(...r);
+          return [];
+        },
+        tier: { key: tierVolumeAlertKey(tier), countUnreadableKey: tierCountUnreadableKey(tier), label },
+        log: deps.log,
+      });
+    } catch (err) {
+      out[tier] = { status: "unverified" };
+      deps.logError?.({ msg: "tier volume check failed", tier: label }, err);
+      await deps.notify(tierCheckFailedKey(tier), deps.cooldownMs, formatTierVolumeCheckFailedAlert(label)).catch(() => {});
+      continue;
+    }
+    recovered.push(...mine);
+    // Its own "check failed" page is over only once the tier was actually JUDGED:
+    // a count it could not read ran the check and still judged nothing (#1152).
+    if (out[tier]?.status === "checked") {
+      recovered.push({ key: tierCheckFailedKey(tier), text: formatTierVolumeCheckRanNotice(label) });
+    }
   }
   if (recovered.length > 0) await deps.resolveRecovered(recovered).catch(() => {});
   return out;

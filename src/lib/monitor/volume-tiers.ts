@@ -33,14 +33,18 @@ import { MEASURED_VOLUME_BASELINE } from "./volume-baseline.ts";
 import { VOLUME_ALERT_KEY, VOLUME_COUNT_UNREADABLE_KEY } from "./booking-volume.ts";
 import type { VolumeBaseline } from "./volume-floors.ts";
 
-/** A debt tier digit, "1" (Low) to "5" (Ultra High). */
-export type VolumeTier = string;
+/**
+ * Every debt tier. Written as a literal so `VolumeTier` is a union and a typo in
+ * a tier fails `tsc`; `scripts/test-volume-tiers.ts` holds it equal to the routing
+ * vocabulary's own keys (`DEBT_TIER`), so the two cannot drift (L41).
+ */
+export const VOLUME_TIERS = ["1", "2", "3", "4", "5"] as const;
 
-/** Every debt tier, from the routing vocabulary rather than typed out (L41). */
-export const VOLUME_TIERS: readonly VolumeTier[] = Object.keys(DEBT_TIER).sort();
+/** A debt tier digit, "1" (Low) to "5" (Ultra High). */
+export type VolumeTier = (typeof VOLUME_TIERS)[number];
 
 /** Low: the tier the committed measurement, the per page floors and the pilot describe. */
-export const LOW_TIER: VolumeTier = "1";
+export const LOW_TIER = "1" satisfies VolumeTier;
 
 /**
  * Each measured tier's cal.com floors, the floor under whatever is learned for it.
@@ -53,15 +57,28 @@ export const TIER_ANCHORS: Readonly<Partial<Record<VolumeTier, VolumeBaseline>>>
 };
 
 export function isVolumeTier(value: string): value is VolumeTier {
-  return VOLUME_TIERS.includes(value);
+  return (VOLUME_TIERS as readonly string[]).includes(value);
+}
+
+/**
+ * A value for every tier, from pairs built by walking `VOLUME_TIERS`. Throws when
+ * a tier is missing, so a record typed as covering every tier really does: a tier
+ * left out would otherwise read as undefined, which callers treat as "nobody".
+ */
+export function recordOfTiers<T>(pairs: readonly (readonly [VolumeTier, T])[]): Record<VolumeTier, T> {
+  const out = new Map<VolumeTier, T>(pairs);
+  for (const tier of VOLUME_TIERS) {
+    if (!out.has(tier)) throw new Error(`volume tiers: no value for tier ${tier}`);
+  }
+  return Object.fromEntries(out) as Record<VolumeTier, T>;
 }
 
 const XBC = /^([1-5])[0-3][0-2]$/;
 
 /** The tier of a bucket code, or null for a code that is not an XBC (the test buckets). */
 export function tierOfBucketCode(code: string | null | undefined): VolumeTier | null {
-  const m = XBC.exec((code ?? "").trim());
-  return m && isVolumeTier(m[1]!) ? m[1]! : null;
+  const tier = XBC.exec((code ?? "").trim())?.[1];
+  return tier !== undefined && isVolumeTier(tier) ? tier : null;
 }
 
 /** "Low", "Ultra High": a tier as the team says it. */
@@ -94,11 +111,6 @@ export function tierRampStartMs(firstBookingMs: number | null, declaredRampEndMs
 /** The alert family for a tier other than Low (#2874), one key per tier (L707). */
 export const TIER_VOLUME_ALERT_PREFIX = "low_tier_volume";
 
-/**
- * A tier's low volume alert key. Low keeps `low_booking_volume`, the key it has
- * paged on since #370, so an open page, its cooldown and its runbook entry carry
- * over; every other tier has its own key in the `low_tier_volume` family.
- */
 /** The family for a tier's count that could not be read (#2874), one key per tier. */
 export const TIER_COUNT_UNREADABLE_PREFIX = "volume_count_unreadable";
 
@@ -111,6 +123,20 @@ export function tierCountUnreadableKey(tier: VolumeTier): string {
   return tier === LOW_TIER ? VOLUME_COUNT_UNREADABLE_KEY : `${TIER_COUNT_UNREADABLE_PREFIX}:${tier}`;
 }
 
+/** The family for a tier whose check itself failed to run (#2874), one key per tier. */
+export const TIER_CHECK_FAILED_PREFIX = "tier_volume_check_failed";
+
+/** A tier's "check failed" key. Only tiers beside Low use it; Low's check is its own step. */
+export function tierCheckFailedKey(tier: VolumeTier): string {
+  if (!isVolumeTier(tier)) throw new Error(`volume tiers: ${tier} is not a debt tier`);
+  return `${TIER_CHECK_FAILED_PREFIX}:${tier}`;
+}
+
+/**
+ * A tier's low volume alert key. Low keeps `low_booking_volume`, the key it has
+ * paged on since #370, so an open page, its cooldown and its runbook entry carry
+ * over; every other tier has its own key in the `low_tier_volume` family.
+ */
 export function tierVolumeAlertKey(tier: VolumeTier): string {
   if (!isVolumeTier(tier)) throw new Error(`volume tiers: ${tier} is not a debt tier`);
   return tier === LOW_TIER ? VOLUME_ALERT_KEY : `${TIER_VOLUME_ALERT_PREFIX}:${tier}`;

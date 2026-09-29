@@ -26,11 +26,15 @@ export interface PageCoverageView {
 }
 
 /**
- * Learning the low volume floors from Slate's own bookings, on /admin/alerts (#2739).
+ * Learning the low volume floors from Slate's own bookings, on /admin/alerts (#2739,
+ * #2874).
  *
- * Three things, in the order a reader needs them: what learning is doing now, the
- * one date that starts it, and how much of each Low page's week its own alarm can
- * judge. The coverage is a table rather than `pageCoverage()`'s sentences, because
+ * In the order a reader needs them: what learning is doing for Low now, one line
+ * for every other tier, the optional ramp end, and how much of each Low page's week
+ * its own alarm can judge. Nothing has to be set for learning to start: every tier,
+ * Low included, starts at its own first real booking (Dan, 2026-09-29, on #2874).
+ * The ramp end is an OPTIONAL override that can only start learning later, for a
+ * tier whose first weeks were a partial ramp. The coverage is a table rather than `pageCoverage()`'s sentences, because
  * three pages each explaining what an unmeasured hour is states one fact three
  * times (L579, L605): the numbers go in rows and the explanation is said once.
  *

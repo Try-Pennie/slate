@@ -94,11 +94,37 @@ function harness(opts: {
   const keys = h.resolved.map((r) => r.key).sort();
   eq(
     keys,
-    ["low_tier_volume:2", "low_tier_volume:3", "volume_count_unreadable:2", "volume_count_unreadable:3"],
+    [
+      "low_tier_volume:2",
+      "low_tier_volume:3",
+      "tier_volume_check_failed:2",
+      "tier_volume_check_failed:3",
+      "volume_count_unreadable:2",
+      "volume_count_unreadable:3",
+    ],
     "carrying every readable tier's own keys, and nothing for the tier that could not be read",
   );
   assert(!keys.includes("volume_count_unreadable"), "and never Low's unreadable page, which only Low's own count answers");
   assert(!keys.includes("volume_count_unreadable:4"), "nor the unreadable tier's own, which is still unreadable");
+}
+
+// --- one tier's check failing is that tier's own finding, and stops nobody else ---
+{
+  // A damaged stored baseline (a missing week) makes `floorsFor` throw. The tiers
+  // after it must still be judged, and the all-clears already collected settled.
+  const damaged: VolumeBaseline = { ...flat(1, 4), cells: [] };
+  const h = harness({ baselines: { "2": flat(1, 4), "3": damaged, "4": flat(1, 4) }, counts: { "2": 20, "3": 20, "4": 20 } });
+  const out = await h.run();
+  eq(out["2"]?.status, "checked", "the tier before it is judged");
+  eq(out["4"]?.status, "checked", "and so is the tier after it");
+  eq(out["3"]?.status, "unverified", "the failed tier is reported as not measured, never as healthy");
+  eq(h.sent.map((s) => s.key), ["tier_volume_check_failed:3"], "and pages on its own key");
+  assert(/High/.test(h.sent[0]?.text ?? "") && !/database/.test(h.sent[0]?.text ?? ""), `naming the tier, and not claiming a read failed (${h.sent[0]?.text})`);
+  eq(h.settles.n, 1, "the collected all-clears are still settled, once");
+  const keys = h.resolved.map((r) => r.key);
+  assert(keys.includes("low_tier_volume:2") && keys.includes("low_tier_volume:4"), "carrying both judged tiers' keys");
+  assert(!keys.some((k) => k.endsWith(":3")), "and nothing for the tier that failed");
+  assert(keys.includes("tier_volume_check_failed:2") && keys.includes("tier_volume_check_failed:4"), "a tier that ran clears its own check failed page");
 }
 
 // --- nothing learned beside Low: nothing is read ---

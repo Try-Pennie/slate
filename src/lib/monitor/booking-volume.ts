@@ -190,6 +190,7 @@ export async function runLowVolumeCheck(deps: {
       armed: deps.armed,
       unverified: true,
       retried: true,
+      ...(deps.tier ? { tier: deps.tier.label } : {}),
     });
     // Pages regardless of `armed`. That switch exists so the ramp cannot cry wolf
     // about VOLUME, and an unreadable query makes no claim about volume at all.
@@ -293,6 +294,25 @@ export function formatTierVolumeCountUnreadableAlert(tierLabel: string): string 
     `This is a database read problem, not a booking drought. Check the bookings table and the monitor ` +
     `lane's logs; the ${tierLabel} low volume alarm is blind until it clears.`
   );
+}
+
+/**
+ * A tier whose check could not run at all this tick (#2874), usually a stored
+ * floor record the check could not use. It says what is known: the check did not
+ * run, so that tier was not judged. It claims no read failed, because it cannot
+ * know that, and points at the log line carrying the error.
+ */
+export function formatTierVolumeCheckFailedAlert(tierLabel: string): string {
+  return (
+    `The ${tierLabel} low volume check could not run, so ${tierLabel} bookings were not judged this tick. ` +
+    `The other tiers were still checked. The monitor lane's log carries the error ` +
+    `(tag=monitor, msg="tier volume check failed").`
+  );
+}
+
+/** Its all-clear, hung off that tier's check running to an outcome again. */
+export function formatTierVolumeCheckRanNotice(tierLabel: string): string {
+  return `The ${tierLabel} low volume check is running again, so ${tierLabel} bookings are being judged. No action is needed.`;
 }
 
 /** A tier's all-clear for that, hung off its count coming back. */

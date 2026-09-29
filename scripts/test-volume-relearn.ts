@@ -171,6 +171,12 @@ let fitted: StoredVolumeLearning | null = null;
   eq(lowFit.firstBookingAt, new Date(LOW_FIRST).toISOString(), "the stored result names the tier's first booking");
   eq(lowFit.rampStartAt, new Date(LOW_FIRST).toISOString(), "which is its ramp start, with nothing declared");
   eq(lowFit.result?.status, "learned", "eight steady weeks are learned");
+  // The test bucket rows carry no tier, and must still be counted as left out
+  // rather than disappearing before any tier saw them.
+  const testRows = bookings(LOW_FIRST, NOW, 60, null, true).length;
+  if (lowFit.result?.status === "learned") eq(lowFit.result.excludedTest, testRows, "every test booking read is counted as left out");
+  const said = learningStatusCopy(baselineInForce({ rampEndOn: null, learning: h.saves[0] }, "1"), NOW + MIN).detail.join(" ");
+  assert(said.includes(`Left out of the fit: ${testRows.toLocaleString("en-US")} test bookings`), `and the page says how many (${said})`);
   eq(fitted.tiers["2"]?.firstBookingAt, null, "and a tier nobody booked is not carried");
   eq(baselineInForce({ rampEndOn: null, learning: fitted }, "1").kind, "learned", "Low's learned floors are in force");
   if (out.status === "refit") eq(out.tiers["1"], "learned", "and the step reports it");

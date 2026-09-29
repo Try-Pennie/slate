@@ -23,12 +23,14 @@ import {
   tierCountUnreadableKey,
 } from "../src/lib/monitor/volume-tiers.ts";
 import { MEASURED_VOLUME_BASELINE } from "../src/lib/monitor/volume-baseline.ts";
+import { DEBT_TIER } from "../src/lib/xbc.ts";
 import { VOLUME_ALERT_KEY, VOLUME_COUNT_UNREADABLE_KEY } from "../src/lib/monitor/booking-volume.ts";
 import { FLOOR_SCOPE, type VolumeFixture } from "./lib/volume-floor-scope.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
 // --- the vocabulary ---
-eq([...VOLUME_TIERS], ["1", "2", "3", "4", "5"], "the tiers are the five debt tiers of the routing vocabulary");
+eq([...VOLUME_TIERS], ["1", "2", "3", "4", "5"], "the tiers are the five debt tiers");
+eq([...VOLUME_TIERS], Object.keys(DEBT_TIER).sort(), "exactly the routing vocabulary's, so the typed list cannot drift from it");
 eq(tierLabel("1"), "Low", "tier 1 is Low");
 eq(tierLabel("5"), "Ultra High", "tier 5 is Ultra High");
 let threw = false;
