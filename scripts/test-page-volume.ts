@@ -14,6 +14,7 @@ import { DateTime } from "luxon";
 import {
   LOW_PAGES,
   isPageTraffic,
+  pageTrafficFilter,
   isUnsourced,
   PAGE_SEEN_LOOKBACK_DAYS,
   pageCoverage,
@@ -30,7 +31,7 @@ import { MEASURED_PAGE_BASELINES } from "../src/lib/monitor/page-volume-baseline
 import { MEASURED_VOLUME_BASELINE } from "../src/lib/monitor/volume-baseline.ts";
 import type { BusinessHoursConfig } from "../src/lib/monitor/booking-volume.ts";
 import { fitFloorCells, type BookingSeries, type FloorCell, type VolumeBaseline } from "../src/lib/monitor/volume-floors.ts";
-import { API_SOURCES, PAGE_SOURCES } from "../src/lib/booking/booking-source.ts";
+import { API_SOURCES, BOOKING_SOURCES, PAGE_SOURCES } from "../src/lib/booking/booking-source.ts";
 import {
   FLOOR_SCOPE,
   OFFLINE_OPEN_WEEK,
@@ -353,6 +354,18 @@ const HEALTHY_ROWS: SourceRow[] = [
   }
   for (const s of [...PAGE_SOURCES, "not-given", "unrecognised", null]) {
     assert(isPageTraffic(s), `${s ?? "null"} is page traffic, or might be`);
+  }
+  // The database filter the tier count and the floor learner send says exactly what
+  // the predicate says, over every value the column can hold and null (L16).
+  {
+    const f = pageTrafficFilter();
+    const m = /^source\.is\.null,source\.not\.in\.\(([^)]*)\)$/.exec(f);
+    assert(m !== null, `the page traffic filter has the one shape the reads rely on (${f})`);
+    const excluded = new Set((m?.[1] ?? "").split(","));
+    for (const s of [...BOOKING_SOURCES, null]) {
+      const passes = s === null || !excluded.has(s);
+      eq(passes, isPageTraffic(s), `the filter and isPageTraffic agree on ${s ?? "null"}`);
+    }
   }
   const quietRows = HEALTHY_ROWS.filter((r) => r.source !== "offerhub");
   const viaApi = harness({ rows: [...quietRows, ago(10, "api-regal"), ago(20, "api-trypennie"), ago(40, "api-canary")] });

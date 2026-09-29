@@ -18,7 +18,34 @@ import {
   SOURCE_READ_LIMIT,
 } from "./customer-bookings";
 
+import { API_SOURCES } from "@/lib/booking/booking-source";
+
 const SINCE = "2026-08-05T09:00:00.000Z";
+
+/**
+ * The `or()` alternatives these reads send, and nothing else: `source.is.null`,
+ * `source.eq.<v>` and `source.not.in.(<a>,<b>)`. Anything else throws, so a new
+ * filter cannot pass through a fake that never read it.
+ */
+function orPredicate(expr: string): (r: { source?: string | null }) => boolean {
+  const alts: ((r: { source?: string | null }) => boolean)[] = [];
+  const notIn = /source\.not\.in\.\(([^)]*)\)/g;
+  const rest = expr.replace(notIn, (_all, list: string) => {
+    const vals = list.split(",");
+    alts.push((r) => r.source != null && !vals.includes(r.source));
+    return "";
+  });
+  for (const a of rest.split(",").filter(Boolean)) {
+    if (a === "source.is.null") {
+      alts.push((r) => (r.source ?? null) === null);
+      continue;
+    }
+    const m = /^source\.eq\.(.+)$/.exec(a);
+    if (!m) throw new Error(`fake: unhandled or() alternative ${a}`);
+    alts.push((r) => r.source === m[1]);
+  }
+  return (r) => alts.some((f) => f(r));
+}
 
 /**
  * A stand-in for the supabase count chain. Records the filters applied and
@@ -26,12 +53,14 @@ const SINCE = "2026-08-05T09:00:00.000Z";
  * is_test filter counts the canary rows and fails the test.
  */
 function fakeDb(
-  rows: { created_at: string; is_test: boolean; kind?: string }[],
+  rows: { created_at: string; is_test: boolean; kind?: string; source?: string | null }[],
   opts: { error?: string } = {},
 ) {
   const filters: { col: string; val: unknown }[] = [];
+  const ors: ((r: { source?: string | null }) => boolean)[] = [];
   const chain = {
     select: (_cols: string, _opts: { count: string; head: boolean }) => chain,
+    or: (expr: string) => (ors.push(orPredicate(expr)), chain),
     eq: (col: string, val: unknown) => {
       filters.push({ col, val });
       return chain;
@@ -51,6 +80,7 @@ function fakeDb(
       const since = filters.find((f) => f.col === "created_at")?.val as string | undefined;
       const kept = rows.filter(
         (r) =>
+          ors.every((o) => o(r)) &&
           (since === undefined || r.created_at >= since) &&
           (testFilter === undefined || r.is_test === testFilter.val) &&
           (kindFilter === undefined || (r.kind ?? "routed") === kindFilter.val),
@@ -95,6 +125,30 @@ describe("countCustomerBookingsSince", () => {
     expect(await countCustomerBookingsSince(db, SINCE)).toBe(1);
   });
 
+  // #2876: a booking made through the booking API names its caller and came from no
+  // landing page. The tier floors were fitted to page traffic (the cal.com routing
+  // forms), so a steady API stream counted here would hold the tier above its floor
+  // while every landing page was dark.
+  it("does not count booking API bookings, so an API stream cannot hold the tier above its floor", async () => {
+    const api = Array.from({ length: 30 }, (_, i) => ({
+      ...customer(`2026-08-05T10:${String(i).padStart(2, "0")}:00.000Z`),
+      source: API_SOURCES[i % API_SOURCES.length]!,
+    }));
+    const { db } = fakeDb(api);
+    expect(await countCustomerBookingsSince(db, SINCE)).toBe(0);
+  });
+
+  it("control: page bookings, untagged ones and ones from before sources still count", async () => {
+    const { db } = fakeDb([
+      { ...customer("2026-08-05T10:00:00.000Z"), source: "offerhub" },
+      { ...customer("2026-08-05T10:01:00.000Z"), source: "not-given" },
+      { ...customer("2026-08-05T10:02:00.000Z"), source: null },
+      { ...customer("2026-08-05T10:03:00.000Z"), source: "unrecognised" },
+      { ...customer("2026-08-05T10:04:00.000Z"), source: "api-regal" },
+    ]);
+    expect(await countCustomerBookingsSince(db, SINCE)).toBe(4);
+  });
+
   it("still honours the window it was asked for", async () => {
     const { db } = fakeDb([
       customer("2026-08-05T08:00:00.000Z"), // before SINCE
@@ -130,18 +184,7 @@ function sourceDb(rows: SourceFakeRow[], opts: { error?: string } = {}) {
       eq: (col: string, val: unknown) => (filters.push({ col, val }), chain),
       gte: (col: string, val: unknown) => (filters.push({ col, val }), chain),
       in: (col: string, val: unknown) => (filters.push({ col, val }), chain),
-      // Only the shape measurePageSources sends: `source.is.null` and `source.eq.<v>`
-      // alternatives. Anything else throws, so a new filter cannot pass unread.
-      or: (expr: string) => {
-        const alts = expr.split(",").map((a) => {
-          if (a === "source.is.null") return (r: SourceFakeRow) => r.source === null;
-          const m = /^source\.eq\.(.+)$/.exec(a);
-          if (!m) throw new Error(`fake: unhandled or() alternative ${a}`);
-          return (r: SourceFakeRow) => r.source === m[1];
-        });
-        ors.push((r) => alts.some((f) => f(r)));
-        return chain;
-      },
+      or: (expr: string) => (ors.push(orPredicate(expr)), chain),
       limit: (n: number) => ((limit = n), chain),
       then: (res: (v: unknown) => unknown) => {
         if (opts.error) return Promise.resolve(res({ data: null, count: null, error: { message: opts.error } }));

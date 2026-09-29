@@ -146,7 +146,7 @@ export function learnFloors(input: {
       fromDate: isoDate(fromMs),
       toDate: isoDate(toMs - 1),
       zone: input.anchor.zone,
-      scope: "Every real customer booking Slate took after the ramp ended",
+      scope: "Every real customer booking a landing page sent Slate after the ramp ended",
       tierShare: null,
       bookings,
       cells: underpin(fitFloorCells(series, zone, input.closedDates), input.anchor.cells),

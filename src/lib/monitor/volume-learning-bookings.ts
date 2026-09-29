@@ -3,6 +3,7 @@ import { log } from "@/lib/log";
 import { parseStampMs } from "@/lib/date/stamp";
 import { selectAllPages } from "@/lib/supabase/paginate";
 import type { SlateBookingRow } from "./volume-learning.ts";
+import { pageTrafficFilter } from "./page-volume.ts";
 
 // Its own file rather than beside the counts in customer-bookings.ts: those FILTER
 // test bookings out, and this one deliberately reads them and flags them, so the
@@ -38,6 +39,9 @@ export async function listBookingStampsBetween(
         // #2073: the floors are fitted to the population the alarm counts, which
         // is routed bookings only.
         .eq("kind", "routed")
+        // #2876: and page traffic only, as the alarm's count is. A booking API call
+        // learned as traffic would raise the floors above what the pages send.
+        .or(pageTrafficFilter())
         .gte("created_at", sinceIso)
         .lt("created_at", untilIso)
         .order("created_at", { ascending: true })

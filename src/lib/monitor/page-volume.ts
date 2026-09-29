@@ -217,6 +217,15 @@ export function isPageTraffic(source: string | null): boolean {
 export const NON_PAGE_VALUES = API_SOURCES;
 
 /**
+ * `isPageTraffic` as a PostgREST `or()` filter, for the reads that count or learn
+ * from page traffic (the tier alarm's count, the floor learner's read). Null, a
+ * booking from before #2072, is named explicitly because `not in` alone drops it.
+ */
+export function pageTrafficFilter(): string {
+  return `source.is.null,source.not.in.(${NON_PAGE_VALUES.join(",")})`;
+}
+
+/**
  * "Source not recorded on 3 of 40 bookings in the last 7 days": the one sentence every
  * surface uses in place of a floor while bookings arrive without a page (#2765), so
  * the alarm, the alerts settings page and the readiness gate say it the same way.
