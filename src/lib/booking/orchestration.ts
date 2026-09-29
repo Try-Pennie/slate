@@ -92,6 +92,7 @@ import { sendThrottledAlert } from "../notify/dispatch.ts";
 import {
   raceBoundHitPage,
   raceOutcomeForConfirm,
+  raceOutcomeForMove,
   raceOutcomeForRefusal,
   type RaceTallyOutcome,
 } from "../monitor/race-contention.ts";
@@ -3870,7 +3871,10 @@ async function moveToRequestedBucket(
     outcome: "moved",
     booking: created.booking,
     manageUrl: created.manageUrl,
-    raceOutcome: raceOutcomeForConfirm(created),
+    // #2867: its own row, because a move's outcome row is `rescheduled` or
+    // `deduped` and never `created`, so the create arm's row would count a
+    // loser with no confirm behind it.
+    raceOutcome: raceOutcomeForMove(created),
   };
 }
 

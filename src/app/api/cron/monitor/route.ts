@@ -126,10 +126,11 @@ import { readTopTierCascadeWindow } from "@/lib/monitor/top-tier-cascade-store";
 import {
   raceContentionVerdict,
   raceContentionNoticeText,
+  raceThresholdFor,
   RACE_CONTENTION_NOTICE_KEY,
   RACE_CONTENTION_COOLDOWN_MS,
 } from "@/lib/monitor/race-contention";
-import { readRaceContentionWindow } from "@/lib/monitor/race-contention-store";
+import { readRaceContentionWindow, readRaceRateBookings } from "@/lib/monitor/race-contention-store";
 import {
   loadRateState,
   saveRateState,
@@ -1415,15 +1416,23 @@ export async function GET(req: NextRequest) {
     // since an unreadable tally is not a day with no races.
     await steps.run("booking_race_contention", null, async () => {
       const window = await readRaceContentionWindow(now);
-      const verdict = raceContentionVerdict(window);
+      // #2877: the busiest tier's rate, read only when the day can turn on it.
+      const threshold = await raceThresholdFor(window, () => readRaceRateBookings(now), now);
+      const verdict = raceContentionVerdict(window, threshold);
       log.info("monitor", {
         msg: "booking race contention",
         day: window.day,
         created: window.created,
         reassigned: window.reassigned,
+        reassigned_moves: window.reassignedMoves,
         refused: window.refused,
         refused_at_bound: window.refusedAtBound,
         verdict: verdict.kind,
+        threshold_source: threshold.basis.source,
+        threshold_per_hour: threshold.perHour,
+        ...(threshold.basis.source === "measured"
+          ? { threshold_tier: threshold.basis.tier, threshold_hours: threshold.basis.activeHours }
+          : { threshold_why: threshold.basis.reason }),
         ...(verdict.kind === "unmeasured" ? { why: verdict.reason } : {}),
       });
       if (verdict.kind !== "report") return;
