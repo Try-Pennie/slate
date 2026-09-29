@@ -16,8 +16,8 @@ import { LEARNING, type LearnedFloors } from "./volume-learning.ts";
 import { parseStampMs } from "../date/stamp.ts";
 import { formatClockTime } from "../date/parse.ts";
 import { REFIT_OVERDUE_MS, baselineInForce, tierJudgedBaseline, type BaselineInForce } from "./volume-relearn.ts";
-import { LOW_TIER, TIER_ANCHORS, VOLUME_TIERS, tierLabel, type VolumeTier } from "./volume-tiers.ts";
-import type { VolumeBaseline } from "./volume-floors.ts";
+import { LOW_TIER, VOLUME_TIERS, tierLabel } from "./volume-tiers.ts";
+import { CARRIED_SHARE, REAL_ANCHOR_SOURCE, type AnchorSource } from "./carried-share.ts";
 import { MEASURED_VOLUME_BASELINE } from "./volume-baseline.ts";
 
 /** The zone every date here is said in: the org's, which the measurement was judged in. */
@@ -55,6 +55,68 @@ function rampStartWords(state: BaselineInForce): string {
     : `the ramp end declared for ${dayOf(e.rampStartAt)}`;
 }
 
+const pct = (share: number) => `${Math.round(share * 100)}%`;
+
+/**
+ * What the stored share says about a tier (#2893), one sentence, or null when there
+ * is nothing to say because the tier has no measurement to thin. Every outcome gets
+ * its own words: a held share and a share measured today send a reader to do
+ * different things (L11).
+ */
+export function shareSentence(state: BaselineInForce, source: AnchorSource = REAL_ANCHOR_SOURCE): string | null {
+  if (!source.measurements[state.tier]?.length) return null;
+  const label = tierLabel(state.tier);
+  const sh = state.share;
+  if (!sh) {
+    return state.tier === LOW_TIER
+      ? `Slate's share of ${label} bookings has not been measured yet, so the cal.com measurement stands as measured until the next refit measures it.`
+      : `Slate's share of ${label} bookings has not been measured yet, so no cal.com measurement is under its floors.`;
+  }
+  const a = sh.applied;
+  const inForce = a ? `${pct(a.share)} measured in the day to ${instant(a.to)}` : null;
+  const counted = (slate: number, calcom: number) =>
+    `${slate.toLocaleString("en-US")} of ${(slate + calcom).toLocaleString("en-US")} across Slate and cal.com`;
+  switch (sh.last.outcome) {
+    case "calcom-off":
+      return `cal.com is not configured here, so Slate is taken to carry all of ${label} and its cal.com measurement applies in full.`;
+    case "applied":
+    case "hold-expired": {
+      const base = `Slate carried ${pct(a!.share)} of ${label} bookings in the day to ${instant(a!.to)} (${counted(a!.slate, a!.calcom)}), so the cal.com floors under ${label} are thinned to that share.`;
+      return sh.last.outcome === "hold-expired"
+        ? `${base} It had been held for ${CARRIED_SHARE.holdExpiryDays} days, which is as long as a share is ever held.`
+        : base;
+    }
+    case "held": {
+      const until = sh.heldSince
+        ? DateTime.fromISO(sh.heldSince, { zone: ZONE }).plus({ days: CARRIED_SHARE.holdExpiryDays }).toFormat("LLL d")
+        : "the expiry";
+      const level = sh.last.level === null ? "" : ` while ${label}'s whole traffic ran at ${pct(sh.last.level)} of its usual level`;
+      return (
+        `Slate's share of ${label} measured ${pct(sh.last.slate / Math.max(1, sh.last.slate + (sh.last.calcom ?? 0)))}${level}, ` +
+        `which reads as bookings lost rather than moved to cal.com, so the ${inForce ?? "earlier share"} stays in force. ` +
+        `It gives way on ${until} if it still holds then.`
+      );
+    }
+    case "too-few":
+    case "closed-day": {
+      const why =
+        sh.last.outcome === "too-few"
+          ? `The last day had ${plural(sh.last.slate + (sh.last.calcom ?? 0), "booking", "bookings")} of ${label} across Slate and cal.com, too few to read a share from`
+          : "The last day touched a day the office was closed, which says nothing about the share";
+      return inForce
+        ? `${why}, so the ${inForce} stays in force.`
+        : `${why}, and no share has been measured yet.`;
+    }
+  }
+}
+
+/** The words for the floor under a tier's floors, at the share in force. */
+function underWords(state: BaselineInForce, measuredOn: string): string {
+  const a = state.share?.applied;
+  const base = `its cal.com measurement from ${day(measuredOn)}`;
+  return a && a.share < 1 ? `${base} thinned to the ${pct(a.share)} of ${tierLabel(state.tier)} bookings Slate carries` : base;
+}
+
 /** Weeks since the ramp start, from a stored insufficient result. */
 function weeksSoFar(state: BaselineInForce): number {
   const r = state.entry?.result;
@@ -87,7 +149,9 @@ export function learningStatusCopy(state: BaselineInForce, nowMs: number): Learn
       `Left out of the fit: ${plural(r.excludedTest, "test booking", "test bookings")} and ` +
         `${plural(r.excludedRamp, "booking", "bookings")} from before the ramp started, at ${rampStartWords(state)}.`,
     );
-    if (state.anchored) detail.push("No floor is below the cal.com measurement.");
+    if (state.anchored) detail.push("No floor is below the cal.com measurement, thinned to the share of Low Slate carries.");
+    const shared = shareSentence(state);
+    if (shared) detail.push(shared);
     // An unreadable stamp reads as overdue, the side that sends somebody to look.
     const fittedMs = parseStampMs(state.fittedAt);
     if (fittedMs === null || nowMs - fittedMs > REFIT_OVERDUE_MS) {
@@ -100,9 +164,16 @@ export function learningStatusCopy(state: BaselineInForce, nowMs: number): Learn
     return { inForce: `In force: floors ${which}, last refit ${instant(state.fittedAt)}.`, detail };
   }
 
+  const notLearned = notLearnedCopy(state);
+  const shared = shareSentence(state);
+  return shared ? { ...notLearned, detail: [...notLearned.detail, shared] } : notLearned;
+}
+
+/** Low's status before it has learned: the measurement in force, and why nothing learned is. */
+function notLearnedCopy(state: Exclude<BaselineInForce, { kind: "learned" }>): LearningStatusCopy {
   const measured =
     state.kind === "measured"
-      ? `In force: the cal.com measurement from ${day(state.baseline.measuredOn)}.`
+      ? `In force: ${underWords(state, state.baseline.measuredOn).replace(/^its /, "the ")}.`
       : `Not judged: ${tierLabel(state.tier)} has no cal.com measurement and nothing learned yet.`;
   const label = tierLabel(state.tier);
   switch (state.why) {
@@ -149,9 +220,9 @@ export function learningStatusCopy(state: BaselineInForce, nowMs: number): Learn
 /**
  * One line for every tier beside Low (#2874), each saying what is true of it now:
  * judged against its own learned floors, carried and not judged yet (with when it
- * will be), or not carried at all. A tier beside Low with a cal.com anchor, which
- * none has until #2893 applies the saved measurements, says it is learning with that
- * floor under it, never that it is judged against it (#2888). Whether a tier is judged comes from `tierJudgedBaseline`, the
+ * will be), or not carried at all. A tier beside Low with a cal.com anchor, once its
+ * carried share has been measured (#2893), says it is learning with that floor under
+ * it, never that it is judged against it (#2888). Whether a tier is judged comes from `tierJudgedBaseline`, the
  * predicate the monitor's tier checks use, so the line and the alarm cannot disagree
  * (L16). Every tier gets a line, so a tier that is not judged is stated rather than
  * absent (L678).
@@ -159,35 +230,36 @@ export function learningStatusCopy(state: BaselineInForce, nowMs: number): Learn
 export function tierLearningLines(
   input: { rampEndOn: string | null; learning: unknown },
   nowMs: number,
-  anchors: Readonly<Partial<Record<VolumeTier, VolumeBaseline>>> = TIER_ANCHORS,
+  anchors: AnchorSource = REAL_ANCHOR_SOURCE,
 ): string[] {
   return VOLUME_TIERS.filter((t) => t !== LOW_TIER).map((tier) => {
     const state = baselineInForce(input, tier, anchors);
     const label = tierLabel(tier);
-    const anchor = anchors[tier];
     if (state.kind === "learned") {
       const fittedMs = parseStampMs(state.fittedAt);
       const overdue = fittedMs === null || nowMs - fittedMs > REFIT_OVERDUE_MS;
-      const under = anchor && state.anchored
-        ? `none below its cal.com measurement from ${day(anchor.measuredOn)}`
+      const held = state.share?.last.outcome === "held" ? ` ${shareSentence(state, anchors)}` : "";
+      const under = state.anchor
+        ? `none below ${underWords(state, state.anchor.measuredOn)}`
         : "with no cal.com measurement under them";
       return (
         `${label}: judged against floors learned from its own bookings since ${rampStartWords(state)}, ` +
         `${under}, last refit ${instant(state.fittedAt)}.` +
-        (overdue ? " No refit has succeeded since then." : "")
+        (overdue ? " No refit has succeeded since then." : "") +
+        held
       );
     }
     // The one predicate the monitor judges tiers by: a tier it returns nothing for is
     // never described as judged here (L16).
     if (tierJudgedBaseline(state) === null && state.kind === "measured" && state.why === "insufficient" && state.entry?.rampStartAt) {
-      // Anchored and still learning (#2888, reachable once #2893 gives a tier beside
-      // Low an anchor): the measurement is a floor under what it
-      // learns, never what it is judged against, so the line says it is learning.
+      // Anchored and still learning (#2888, #2893): the measurement, thinned to the
+      // share Slate carries, is a floor under what it learns, never what it is
+      // judged against, so the line says it is learning.
       const weeks = weeksSoFar(state);
       return (
         `${label}: learning from its own bookings since its first real booking on ` +
         `${state.entry.firstBookingAt ? dayOf(state.entry.firstBookingAt) : "an unknown day"}, ` +
-        `with its cal.com measurement from ${day(state.baseline.measuredOn)} as the floor under what it learns. ` +
+        `with ${underWords(state, state.baseline.measuredOn)} as the floor under what it learns. ` +
         `Not judged until ${LEARNING.minWeeks} full weeks are learned (${weeks === 1 ? "1 so far" : `${weeks} so far`}), ` +
         `so until then a drop in ${label} bookings is not caught.`
       );

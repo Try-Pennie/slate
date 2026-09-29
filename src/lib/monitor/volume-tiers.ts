@@ -21,19 +21,21 @@
  * (`volume-relearn.ts`). A declared ramp end, when a person sets one, can only move a
  * tier's start LATER, never earlier than its own first booking.
  *
- * ANCHORS. A tier's anchor is the cal.com measurement of that tier, the floor under
- * its learned floor. Only Low has an anchor (`volume-baseline.ts`, 2026-09-25), so a
- * tier without one is judged only once it has been learned, and until then it is
- * UNJUDGED and says so on /admin/alerts rather than reading as quiet (L678). Medium,
- * High and Very High were MEASURED on 2026-09-29 and the measurements are SAVED in
- * `volume-baseline-tiers.ts`, NOT applied (Dan, 2026-09-29): a whole tier floor under
- * a partially carried tier's learned floors would raise them to traffic partial
- * carriage cannot reach. Applying them in proportion to the carried share is #2893.
+ * ANCHORS. A tier's anchor is its cal.com measurement THINNED to the share of the
+ * tier Slate carries (#2893, `carried-share.ts`), the floor under its learned floor.
+ * Every measurement of a tier is listed in `TIER_MEASUREMENTS`: Low's two page fit
+ * (`volume-baseline.ts`) and every tier's whole tier fit
+ * (`volume-baseline-tiers.ts`, Medium, High and Very High measured 2026-09-29). Until
+ * the refit has measured a tier's share, the anchors are `TIER_ANCHORS`, Low's two
+ * page fit alone, which is exactly what was armed before the shares existed. A tier
+ * beside Low is judged only once it has been learned, and until then it is UNJUDGED
+ * and says so on /admin/alerts rather than reading as quiet (L678).
  *
  * No `@/` imports, so node scripts can drive it.
  */
 import { DEBT_TIER } from "../xbc.ts";
 import { MEASURED_VOLUME_BASELINE } from "./volume-baseline.ts";
+import { WHOLE_TIER_MEASUREMENTS } from "./volume-baseline-tiers.ts";
 import { VOLUME_ALERT_KEY, VOLUME_COUNT_UNREADABLE_KEY } from "./booking-volume.ts";
 import type { VolumeBaseline } from "./volume-floors.ts";
 
@@ -51,14 +53,28 @@ export type VolumeTier = (typeof VOLUME_TIERS)[number];
 export const LOW_TIER = "1" satisfies VolumeTier;
 
 /**
- * Each measured tier's cal.com floors, the floor under whatever is learned for it.
- * Adding a tier's anchor is a measurement of that tier (`pnpm measure:volume-floors`),
- * never a hand typed floor. `scripts/test-volume-tiers.ts` holds Low's entry to the
- * tier the committed measurement actually counted, and
- * `scripts/test-volume-tier-anchors.ts` holds this to Low alone until #2893.
+ * The anchors in force BEFORE the refit has measured a tier's carried share (#2893):
+ * Low's two page measurement alone, the state that was armed before the shares
+ * existed, so a deploy or an unreadable share record changes nothing a person set
+ * up. `scripts/test-volume-tiers.ts` holds Low's entry to the tier the committed
+ * measurement actually counted, and `scripts/test-volume-tier-anchors.ts` holds this
+ * to Low alone.
  */
 export const TIER_ANCHORS: Readonly<Partial<Record<VolumeTier, VolumeBaseline>>> = {
   [LOW_TIER]: MEASURED_VOLUME_BASELINE,
+};
+
+/**
+ * Every cal.com measurement of each tier, to be thinned to the share Slate carries
+ * (#2893). Adding one is a measurement (`pnpm measure:volume-floors`), never a hand
+ * typed floor. Low has two, its two page fit and the whole tier; each other measured
+ * tier has its whole tier fit; Ultra High has none, so it never has an anchor.
+ */
+export const TIER_MEASUREMENTS: Readonly<Partial<Record<VolumeTier, readonly VolumeBaseline[]>>> = {
+  ...Object.fromEntries((Object.entries(WHOLE_TIER_MEASUREMENTS) as [VolumeTier, VolumeBaseline][]).map(([t, whole]) => [t, [whole]])),
+  // Low's two page fit is listed whether or not its whole tier fit exists, so Low can
+  // never be left with nothing to thin.
+  [LOW_TIER]: [MEASURED_VOLUME_BASELINE, ...(WHOLE_TIER_MEASUREMENTS[LOW_TIER] ? [WHOLE_TIER_MEASUREMENTS[LOW_TIER]] : [])],
 };
 
 export function isVolumeTier(value: string): value is VolumeTier {

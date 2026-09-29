@@ -5,7 +5,8 @@ import type { MonitorAlertConfig, MonitorSettings } from "@/lib/db/types";
 import type { FloorOverride, FloorPolicy, VolumeBaseline } from "./volume-floors.ts";
 import { MEASURED_VOLUME_BASELINE } from "./volume-baseline.ts";
 import { baselineInForce, tierJudgedBaseline } from "./volume-relearn.ts";
-import { LOW_TIER, TIER_ANCHORS, VOLUME_TIERS, type VolumeTier } from "./volume-tiers.ts";
+import { LOW_TIER, VOLUME_TIERS, type VolumeTier } from "./volume-tiers.ts";
+import { REAL_ANCHOR_SOURCE, type AnchorSource } from "./carried-share.ts";
 
 /**
  * UI-tunable monitor alert settings (#571). Cooldowns and low-volume floors are
@@ -669,7 +670,7 @@ export function resolveFloors(
  */
 export function resolveTierBaselines(
   config: Pick<MonitorAlertConfig, "volume_ramp_end_on" | "volume_learning"> | null,
-  anchors: Readonly<Partial<Record<VolumeTier, VolumeBaseline>>> = TIER_ANCHORS,
+  anchors: AnchorSource = REAL_ANCHOR_SOURCE,
 ): Partial<Record<VolumeTier, VolumeBaseline>> {
   const out: Partial<Record<VolumeTier, VolumeBaseline>> = {};
   for (const tier of VOLUME_TIERS) {

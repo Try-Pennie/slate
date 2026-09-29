@@ -93,7 +93,9 @@ import {
 } from "@/lib/monitor/customer-bookings";
 import { listBookingStampsBetween } from "@/lib/monitor/volume-learning-bookings";
 import { runVolumeRelearn } from "@/lib/monitor/volume-relearn";
-import { LOW_TIER, TIER_ANCHORS } from "@/lib/monitor/volume-tiers";
+import { LOW_TIER } from "@/lib/monitor/volume-tiers";
+import { REAL_ANCHOR_SOURCE } from "@/lib/monitor/carried-share";
+import { calcomTierBookingCounts } from "@/lib/calcom/client";
 import { runTierVolumeChecks } from "@/lib/monitor/tier-volume";
 import { MEASURED_VOLUME_BASELINE } from "@/lib/monitor/volume-baseline";
 import { runPageVolumeCheck, type PageVolumeResult } from "@/lib/monitor/page-volume";
@@ -1258,7 +1260,8 @@ export async function GET(req: NextRequest) {
     await steps.run("volume_learning", null, () =>
       runVolumeRelearn({
         nowMs: now,
-        anchors: TIER_ANCHORS,
+        // #2893: each tier's cal.com measurements, thinned to the share Slate carries.
+        anchors: REAL_ANCHOR_SOURCE,
         zone: MEASURED_VOLUME_BASELINE.zone,
         readConfig: async () => {
           // Its own read rather than `settings`, whose step falls back to the last
@@ -1280,6 +1283,9 @@ export async function GET(req: NextRequest) {
         // availability gate uses, so a holiday is never learned as a quiet day. It
         // throws on a failed read, and so does this step: nothing is written.
         readClosedDates: async (fromIsoDate) => closedExceptionDates(await loadBusinessHoursExceptions(fromIsoDate)),
+        // #2893: cal.com's bookings per tier over the same day as Slate's, about ten
+        // paced requests once a day. Throws on a failed read, and so does this step.
+        readCalcomTierCounts: (fromIso, toIso) => calcomTierBookingCounts(fromIso, toIso),
         save: async (state) => {
           // An UPDATE of the two machine columns only, never an upsert: it must not
           // touch the settings a person saved, nor the updated_at and updated_by the

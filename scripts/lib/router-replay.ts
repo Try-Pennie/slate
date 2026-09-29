@@ -31,6 +31,8 @@ import { agentIdsFromPool } from "@/lib/availability/pool";
 import { rungExcludesLow, tierLadder } from "@/lib/routing/tiers";
 import { carriesLow } from "@/lib/availability/low-exclusion";
 import { resolveRequestedCode } from "@/lib/routing/catchall";
+// Lives with the routing response reader since #2893, which the Worker reads too.
+export { extractCode } from "../../src/lib/calcom/routing-responses.ts";
 
 /** A Slate user as the replay needs them. Every user, not only the bookable ones:
  *  "the host has left" and "Slate has never heard of them" are different findings. */
@@ -152,33 +154,6 @@ export function poolShare(code: string, world: PreparedWorld): number | null {
   if (!pool) return null;
   if (world.bookableCount === 0) return null;
   return pool.size / world.bookableCount;
-}
-
-/**
- * The xbc a routing form response carried, as text, or `null` when the form has no
- * such field.
- *
- * `null` and `""` are deliberately different: a form with no xbc field never asked,
- * and a blank one asked and got nothing. Both end at the catch-all, and both are
- * reported as `catchall-absent`, but the extraction keeps them apart so the count
- * of forms that do not carry a code at all is knowable.
- *
- * cal.com stores the value as a NUMBER when it looks like one, measured live on
- * 2026-09-11: `{"label":"xbc","value":22}`. So the digits are recovered with
- * `String`, and a two digit value stays two digits and is refused downstream,
- * exactly as it is by the live booker.
- */
-export function extractCode(response: unknown): string | null {
-  if (response === null || typeof response !== "object") return null;
-  for (const field of Object.values(response as Record<string, unknown>)) {
-    if (field === null || typeof field !== "object") continue;
-    const { label, value } = field as { label?: unknown; value?: unknown };
-    if (typeof label !== "string" || label.trim().toLowerCase() !== "xbc") continue;
-    if (typeof value === "number") return String(value);
-    if (typeof value === "string") return value;
-    return "";
-  }
-  return null;
 }
 
 function codeText(raw: unknown): string {

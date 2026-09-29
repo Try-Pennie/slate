@@ -1,4 +1,4 @@
-// The SAVED cal.com measurements of the tiers beside Low (#2888). Run:
+// The whole tier cal.com measurements of every tier (#2888, #2893). Run:
 //   node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/test-volume-tier-anchors.ts
 //
 // What this pins:
@@ -6,17 +6,17 @@
 //   when it is unset, and anything that is not a debt tier is refused by name;
 // - every committed tier measurement re-derives exactly the committed floors module,
 //   the same parity scripts/test-volume-floors.ts holds for Low (L422);
-// - each saved measurement is filed under the tier it actually counted (L70), and
-//   none of them is in force: TIER_ANCHORS is Low alone (Dan, 2026-09-29), because a
-//   whole tier floor under a partially carried tier's learned floors raises them to
-//   traffic partial carriage cannot reach, and applying them is its own change;
+// - each measurement is filed under the tier it actually counted (L70), and none is
+//   applied as measured: each is listed in TIER_MEASUREMENTS to be thinned to the
+//   share of its tier Slate carries (#2893), while TIER_ANCHORS, the anchors before
+//   any share is measured, stays Low's two page fit alone, the state that was armed;
 // - a measurement fitted to so little traffic that no judged hour carries a floor is
 //   refused rather than saved.
 import { existsSync, readFileSync } from "node:fs";
 import { DateTime } from "luxon";
-import { LOW_TIER, TIER_ANCHORS, VOLUME_TIERS, tierLabel, type VolumeTier } from "../src/lib/monitor/volume-tiers.ts";
+import { LOW_TIER, TIER_ANCHORS, TIER_MEASUREMENTS, VOLUME_TIERS, tierLabel, type VolumeTier } from "../src/lib/monitor/volume-tiers.ts";
 import { MEASURED_VOLUME_BASELINE } from "../src/lib/monitor/volume-baseline.ts";
-import { SAVED_TIER_MEASUREMENTS } from "../src/lib/monitor/volume-baseline-tiers.ts";
+import { WHOLE_TIER_MEASUREMENTS } from "../src/lib/monitor/volume-baseline-tiers.ts";
 import { fitFloorCells, type FloorCell, type VolumeBaseline } from "../src/lib/monitor/volume-floors.ts";
 import { headOf, replayLowVolume, withGap } from "./lib/volume-floor-replay.ts";
 import {
@@ -86,14 +86,10 @@ const synthetic = (tier: string, forms: Record<string, number[]>): VolumeFixture
   const b = baselineFromFixture(f, scope);
   eq(b.tierShare, null, "so its floors are the whole tier's");
   eq(b.bookings, 6, "fitted to every booking the tier took");
+  // #2893 reversed "Low is never given the whole tier scope": Low's whole tier fit is
+  // the measurement thinned once Slate carries more of Low than its two pages.
+  eq(wholeTierScope(synthetic("1", { A: [1], B: [2] })).forms, ["A", "B"], "Low's whole tier scope is every form it booked through");
   let refused = "";
-  try {
-    wholeTierScope(synthetic("1", { A: [1] }));
-  } catch (e) {
-    refused = (e as Error).message;
-  }
-  assert(refused.includes("Low"), `Low is never given the whole tier scope, it has FLOOR_SCOPE (${refused})`);
-  refused = "";
   try {
     tierBaselinesFromFixtures({ "2": synthetic("3", { A: [1] }) });
   } catch (e) {
@@ -127,8 +123,8 @@ const fixtures = readTierFixtures();
     renderTierBaselineModule(derived) === readFileSync(TIER_BASELINES_PATH, "utf8"),
     `${TIER_BASELINES_PATH} is exactly what the committed tier measurements fit to (run MEASURE_TIER=<tier> REFIT=1 pnpm measure:volume-floors)`,
   );
-  assert(JSON.stringify(SAVED_TIER_MEASUREMENTS) === JSON.stringify(derived), "and the module evaluates to those baselines");
-  eq(Object.keys(SAVED_TIER_MEASUREMENTS).sort(), Object.keys(fixtures).sort(), "one baseline per committed measurement, no more and no fewer");
+  assert(JSON.stringify(WHOLE_TIER_MEASUREMENTS) === JSON.stringify(derived), "and the module evaluates to those baselines");
+  eq(Object.keys(WHOLE_TIER_MEASUREMENTS).sort(), Object.keys(fixtures).sort(), "one baseline per committed measurement, no more and no fewer");
   for (const tier of OTHERS) {
     const f = fixtures[tier];
     if (!f) {
@@ -136,7 +132,7 @@ const fixtures = readTierFixtures();
       continue;
     }
     eq(f.tier, tier, `${tierFixturePath(tier)} counted ${tierLabel(tier)}, the tier its file is named for`);
-    const b = SAVED_TIER_MEASUREMENTS[tier]!;
+    const b = WHOLE_TIER_MEASUREMENTS[tier]!;
     eq(b.tierShare, null, `${tierLabel(tier)}'s floors are the whole tier's`);
     assert(b.bookings > 0, `${tierLabel(tier)} was fitted to real bookings (${b.bookings})`);
     eq(thinAnchorRefusal(b, OFFLINE_OPEN_WEEK), null, `${tierLabel(tier)}'s anchor carries a floor at some judged hour`);
@@ -147,38 +143,34 @@ const fixtures = readTierFixtures();
       `${tierLabel(tier)}'s closed days are distinct and in date order`,
     );
   }
-  // The Low measurement is not a tier measurement, and never reaches this module.
-  let refused = "";
-  try {
-    tierBaselinesFromFixtures({ [LOW_TIER]: JSON.parse(readFileSync(LOW_FIXTURE_PATH, "utf8")) as VolumeFixture });
-  } catch (e) {
-    refused = (e as Error).message;
-  }
-  assert(refused.includes("Low"), `Low's measurement is refused here, it has its own module (${refused})`);
-  eq(renderTierBaselineModule({}).includes("SAVED_TIER_MEASUREMENTS: Partial<Record<VolumeTier, VolumeBaseline>> = {\n};"), true, "no measurement renders an empty record, not a missing export");
+  // Low's whole tier fit comes from Low's own file, beside its two page fit (#2893).
+  eq(fixtures[LOW_TIER], JSON.parse(readFileSync(LOW_FIXTURE_PATH, "utf8")) as VolumeFixture, "Low's whole tier fit is read from Low's own measurement");
+  const lowWhole = WHOLE_TIER_MEASUREMENTS[LOW_TIER]!;
+  eq(lowWhole.tierShare, null, "and covers the whole of Low");
+  assert(lowWhole.bookings > MEASURED_VOLUME_BASELINE.bookings, `more of it than the two page fit does (${lowWhole.bookings} against ${MEASURED_VOLUME_BASELINE.bookings})`);
+  eq(lowWhole.measuredOn, MEASURED_VOLUME_BASELINE.measuredOn, "from the same measurement");
+  eq(renderTierBaselineModule({}).includes("WHOLE_TIER_MEASUREMENTS: Partial<Record<VolumeTier, VolumeBaseline>> = {\n};"), true, "no measurement renders an empty record, not a missing export");
 }
 
-// --- the saved measurements are saved, and NOT in force ---
+// --- every measurement is listed to be thinned; none is applied as measured ---
 {
-  // Dan, 2026-09-29: keep the Medium, High and Very High measurements while cal.com
-  // can still take them, and apply none. Applying them in proportion to the share of
-  // each tier Slate carries is a separate change, #2893.
-  eq(Object.keys(TIER_ANCHORS), [LOW_TIER], "TIER_ANCHORS is exactly Low: no saved measurement is in force");
+  // Dan, 2026-09-29: a whole tier floor must never sit under a partially carried
+  // tier as measured. #2893 lists each for thinning to the share Slate carries, and
+  // keeps the anchors before any share is measured exactly as they were armed.
+  eq(Object.keys(TIER_ANCHORS), [LOW_TIER], "TIER_ANCHORS, before a share is measured, is exactly Low");
   assert(TIER_ANCHORS[LOW_TIER] === MEASURED_VOLUME_BASELINE, "Low's anchor is its own committed measurement");
   eq(FLOOR_SCOPE.tier, LOW_TIER, "which is the tier Low's scope measures");
   // Ultra High was measured the same day and REFUSED as too thin: 3,379 bookings in
   // nine weeks fit a floor above zero at none of the 72 hours the alarm judges.
   // Pinned, so a measurement deleted by accident fails here.
-  eq(Object.keys(SAVED_TIER_MEASUREMENTS).sort(), ["2", "3", "4"], "measurements are saved for Medium, High and Very High, none for Ultra High");
+  eq(Object.keys(WHOLE_TIER_MEASUREMENTS).sort(), ["1", "2", "3", "4"], "whole tier fits exist for Low, Medium, High and Very High, none for Ultra High");
+  eq(TIER_MEASUREMENTS[LOW_TIER], [MEASURED_VOLUME_BASELINE, WHOLE_TIER_MEASUREMENTS[LOW_TIER]], "Low's measurements to thin are its two page fit and its whole tier fit");
   for (const tier of ["2", "3", "4"] as const) {
-    assert(SAVED_TIER_MEASUREMENTS[tier] !== undefined, `${tierLabel(tier)}'s measurement is saved`);
-    eq(fixtures[tier]?.tier, tier, `and it counted ${tierLabel(tier)} (L70)`);
-    assert(TIER_ANCHORS[tier] === undefined, `and it is not an anchor, so ${tierLabel(tier)} is unaffected by it`);
-    assert(
-      !Object.values(TIER_ANCHORS).includes(SAVED_TIER_MEASUREMENTS[tier]!),
-      `nor filed as another tier's anchor`,
-    );
+    eq(fixtures[tier]?.tier, tier, `${tierLabel(tier)}'s measurement counted ${tierLabel(tier)} (L70)`);
+    eq(TIER_MEASUREMENTS[tier], [WHOLE_TIER_MEASUREMENTS[tier]], `and it is the one measurement ${tierLabel(tier)} thins`);
+    assert(TIER_ANCHORS[tier] === undefined, `and not an anchor before a share is measured, so ${tierLabel(tier)} is unaffected until then`);
   }
+  eq(TIER_MEASUREMENTS["5"], undefined, "Ultra High has nothing to thin, so it never has an anchor");
 }
 
 // --- the REPLAY: each tier's shipped alarm, armed, over real weeks it was not fitted on ---
@@ -199,7 +191,7 @@ for (const [tier, fixture] of Object.entries(fixtures) as [VolumeTier, VolumeFix
   const endMs = fixture.startMs + series.counts.length * per;
   const holdoutFrom = endMs - 14 * DAY;
   const trained: VolumeBaseline = {
-    ...SAVED_TIER_MEASUREMENTS[tier]!,
+    ...WHOLE_TIER_MEASUREMENTS[tier]!,
     cells: fitFloorCells(headOf(series, series.counts.length - (14 * DAY) / per), fixture.zone, fixture.closedDates),
   };
   const policy = { baseline: trained, override30: null, override120: null };
