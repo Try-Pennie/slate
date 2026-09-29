@@ -55,6 +55,8 @@ export type ClassPair = {
    * needed something the literal does not hold, most often the step from a
    * rest fill in a theme whose rest is a wash or paints no fill. Reported so a
    * reader can see what the sweep did NOT judge, never dropped in silence (L98).
+   * Each gap is reported ONCE per literal, on the first candidate pair that met
+   * it, so the later pairs of a literal carry only what is new to them.
    */
   unmeasured: string[];
 };
@@ -416,6 +418,11 @@ function pairsOfLiteral(literal: string, line: number, isColour: (token: string)
     [at, dark ? "dark" : null, tail].filter((x) => x !== null).join(":");
 
   const pairs: ClassPair[] = [];
+  // What could not be measured is a fact about the LITERAL, and the candidate
+  // pairs of one literal all meet the same gaps, so each is reported once, on
+  // the first pair that met it. Otherwise the sweep prints one note per
+  // candidate for a single gap.
+  const reported = new Set<string>();
   for (let i = 0; i < nb; i++) {
     for (let j = 0; j < nf; j++) {
       const restPaints = mergeThemes(
@@ -431,6 +438,8 @@ function pairsOfLiteral(literal: string, line: number, isColour: (token: string)
       // A literal with no rest pair and no state it could build is a rose mark
       // with its fill painted elsewhere (a bare `text-error`), not a pairing.
       if (restPaints.length === 0 && states.length === 0 && unmeasured.length === 0) continue;
+      const fresh = [...new Set(unmeasured)].filter((u) => !reported.has(u));
+      for (const u of fresh) reported.add(u);
       const named = restPaints[0] ?? states[0];
       pairs.push({
         bg: named?.bg ?? "",
@@ -440,7 +449,7 @@ function pairsOfLiteral(literal: string, line: number, isColour: (token: string)
         rest: restPaints,
         states,
         unrecognised,
-        unmeasured,
+        unmeasured: fresh,
       });
     }
   }
