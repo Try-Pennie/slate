@@ -12,7 +12,7 @@
  * bookings table. A confirm REFUSED after a race writes no booking and no routing
  * decision, so `routing_trace.race_lost` can only ever see the rescued half, and a
  * count built on it would read quietest exactly when leads are being turned away.
- * The tally takes a free text outcome, so three names beside the existing ones
+ * The tally takes a free text outcome, so the race names beside the existing ones
  * (`RACE_TALLY_OUTCOMES`) record both halves with no migration. They sit OUTSIDE
  * `OUTCOME_ORDER`, so they never enter the failure share's denominator, which is
  * the same trick the self inflicted refusals use. And numerator and denominator
