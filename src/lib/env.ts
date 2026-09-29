@@ -161,7 +161,7 @@ const BOOKING_API_KEYS: Record<BookingApiCaller, Record<KeySlot, () => string>> 
 export const bookingApiKeyFor = (caller: BookingApiCaller, slot: KeySlot): string =>
   BOOKING_API_KEYS[caller][slot]();
 
-// Hashes of RETIRED booking API keys (#2879), as `label:sha256hex` pairs separated by
+// Hashes of RETIRED booking API keys (#2879), as `label:sha256:<hex>` entries separated by
 // commas, never the keys. A refused request presenting one pages, naming its host and
 // route (`src/lib/booking/retired-keys.ts`). Empty = the check is inert. A Worker
 // secret, so even the hash stays out of the repo; `pnpm hash:retired-key` computes it.

@@ -1,4 +1,4 @@
-// Print the `label:hash` entry for a retired booking API key (#2879), for the
+// Print the `label:sha256:<hash>` entry for a retired booking API key (#2879), for the
 // BOOKING_API_RETIRED_KEY_HASHES Worker secret. Run:
 //   pnpm -s hash:retired-key <label>
 //

@@ -46,13 +46,18 @@ import { timingSafeEqual } from "@/lib/bearer-auth";
 import type { ThrottledNotify } from "@/lib/monitor/alert-deps";
 import { requestHost, type CallerHostKind, type HeaderSource } from "@/lib/booking/caller-seen";
 
-/** The setting holding the hashes, as `label:sha256hex`, comma separated. */
+/**
+ * The setting holding the hashes, as `label:sha256:<hex>` entries, comma separated.
+ * The `sha256:` part is REQUIRED: a raw 64 hex key pasted as `label:<key>` has the
+ * same shape as a bare hash, would parse, and could never match anything, so an
+ * entry without it is refused as unreadable rather than accepted.
+ */
 export const RETIRED_KEY_HASHES_ENV = "BOOKING_API_RETIRED_KEY_HASHES";
 
 /** The alert family, one member per retired key label and host kind. Also the cooldown's key. */
 export const RETIRED_KEY_ALERT_FAMILY = "retired_booking_key";
 
-/** How long one isolate waits before asking the dispatcher again for one host kind. */
+/** How long one isolate waits before asking the dispatcher again for one retired key from one host kind. */
 export const RETIRED_KEY_ISOLATE_THROTTLE_MS = 60_000;
 
 export interface RetiredKeyHash {
@@ -71,6 +76,8 @@ export class RetiredKeyConfigError extends Error {
 
 const LABEL = /^[a-z][a-z0-9-]{0,39}$/;
 const HEX64 = /^[0-9a-f]{64}$/;
+/** The algorithm tag every stored entry carries between its label and its hash. */
+const HASH_TAG = "sha256:";
 
 /**
  * Read the configured hashes. Blank is nothing retired. Anything set and unusable
@@ -84,14 +91,20 @@ export function parseRetiredKeyHashes(raw: string): RetiredKeyHash[] {
   entries.forEach((entry, i) => {
     const where = `${RETIRED_KEY_HASHES_ENV} entry ${i + 1}`;
     const text = entry.trim();
-    if (!text) throw new RetiredKeyConfigError(`${where} is empty; write label:hash pairs separated by commas`);
+    if (!text) throw new RetiredKeyConfigError(`${where} is empty; write label:sha256:<hash> entries separated by commas`);
     const sep = text.indexOf(":");
-    if (sep < 0) throw new RetiredKeyConfigError(`${where} has no label; write it as label:hash`);
+    if (sep < 0) throw new RetiredKeyConfigError(`${where} has no label; write it as label:sha256:<hash>`);
     const label = text.slice(0, sep).trim();
-    const sha256 = text.slice(sep + 1).trim().toLowerCase();
+    const rest = text.slice(sep + 1).trim();
     if (!LABEL.test(label)) {
       throw new RetiredKeyConfigError(`${where} has a label that is not lowercase letters, digits and hyphens`);
     }
+    if (!rest.toLowerCase().startsWith(HASH_TAG)) {
+      throw new RetiredKeyConfigError(
+        `${where} has no sha256: part, so it may be a raw key rather than a hash; store the line pnpm hash:retired-key prints (label:sha256:<hash>), never the key`,
+      );
+    }
+    const sha256 = rest.slice(HASH_TAG.length).trim().toLowerCase();
     if (!HEX64.test(sha256)) {
       throw new RetiredKeyConfigError(
         `${where} is not a 64 hex character SHA-256; store the output of pnpm hash:retired-key, never the key`,
@@ -110,13 +123,14 @@ export async function sha256Hex(text: string): Promise<string> {
 }
 
 /**
- * The `label:hash` entry for one retired key, which is what `pnpm hash:retired-key`
+ * The `label:sha256:<hash>` entry for one retired key, which is what `pnpm hash:retired-key`
  * prints and `parseRetiredKeyHashes` reads. Refuses a blank key and a key still in a
  * live slot. It deliberately does NOT refuse a 64 hex character value: keys minted
  * with `openssl rand -hex 32` (DEPLOY.md) have exactly that shape, so refusing it
  * would make the commonest key impossible to retire. A hash pasted by mistake is
  * guarded elsewhere: the key is read only from RETIRED_BOOKING_API_KEY, and the
- * value stored always carries its `label:` prefix, so a bare hash is never a line.
+ * value stored always carries `label:sha256:`, so neither a bare hash nor a raw key
+ * pasted as `label:<key>` parses as an entry.
  */
 export async function retiredKeyHashLine(
   label: string,
@@ -133,7 +147,7 @@ export async function retiredKeyHashLine(
         `and its hash in ${RETIRED_KEY_HASHES_ENV} would cover nothing. Hash it at the rotation that removes it from that slot`,
     );
   }
-  return `${label}:${await sha256Hex(key)}`;
+  return `${label}:${HASH_TAG}${await sha256Hex(key)}`;
 }
 
 /** A configured booking key, by its slot label. The secret never leaves this module. */

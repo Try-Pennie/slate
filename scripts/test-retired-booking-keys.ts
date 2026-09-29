@@ -6,7 +6,7 @@
 // confirmed page was refused 401 after a real booking and nothing noticed, because
 // the caller sightings record only keys that AUTHENTICATE. So Slate keeps a hash of
 // each retired key (never the key), and a refused request presenting one is recorded
-// and paged once per host kind per cooldown. Both directions are pinned: a retired
+// and paged once per retired key label and host kind per cooldown. Both directions are pinned: a retired
 // key pages, and an unknown key (a stale guess, a crawler, a typo) never pages as
 // retired. So is the arming: a configured value this cannot read refuses loudly
 // rather than reading as "nothing is retired".
@@ -47,9 +47,9 @@ const nodeHash = (s: string) => createHash("sha256").update(s, "utf8").digest("h
   eq(parseRetiredKeyHashes(""), [], "unset reads as nothing retired");
   eq(parseRetiredKeyHashes("   "), [], "and so does a blank value");
   const h = nodeHash(RETIRED);
-  eq(parseRetiredKeyHashes(`shared:${h}`), [{ label: "shared", sha256: h }], "one labelled hash");
+  eq(parseRetiredKeyHashes(`shared:sha256:${h}`), [{ label: "shared", sha256: h }], "one labelled hash");
   eq(
-    parseRetiredKeyHashes(` shared:${h.toUpperCase()} , regal-old:${nodeHash(OTHER_RETIRED)} `),
+    parseRetiredKeyHashes(` shared:sha256:${h.toUpperCase()} , regal-old:sha256:${nodeHash(OTHER_RETIRED)} `),
     [
       { label: "shared", sha256: h },
       { label: "regal-old", sha256: nodeHash(OTHER_RETIRED) },
@@ -60,12 +60,14 @@ const nodeHash = (s: string) => createHash("sha256").update(s, "utf8").digest("h
   // Every way the value can be unusable refuses by name, and never echoes it.
   const refusals: [string, string, RegExp][] = [
     ["no label", h, /entry 1/],
-    ["short hash", "shared:abc123", /64 hex/],
-    ["not hex", `shared:${"z".repeat(64)}`, /64 hex/],
-    ["a raw key pasted instead of a hash", `shared:${RETIRED}`, /64 hex/],
-    ["an empty entry", `shared:${h},,x:${h}`, /entry 2/],
-    ["a bad label", `Shared Key:${h}`, /label/],
-    ["a repeated label", `shared:${h},shared:${nodeHash(OTHER_RETIRED)}`, /twice/],
+    ["short hash", "shared:sha256:abc123", /64 hex/],
+    ["not hex", `shared:sha256:${"z".repeat(64)}`, /64 hex/],
+    ["a raw key pasted instead of a hash", `shared:${RETIRED}`, /sha256:/],
+    ["an entry with no sha256: part", `shared:${h}`, /sha256:/],
+    ["a raw 64 hex key pasted as label:<key>", `shared:${"a1".repeat(32)}`, /sha256:/],
+    ["an empty entry", `shared:sha256:${h},,x:sha256:${h}`, /entry 2/],
+    ["a bad label", `Shared Key:sha256:${h}`, /label/],
+    ["a repeated label", `shared:sha256:${h},shared:sha256:${nodeHash(OTHER_RETIRED)}`, /twice/],
   ];
   for (const [what, raw, why] of refusals) {
     let caught: unknown = null;
@@ -85,7 +87,9 @@ const nodeHash = (s: string) => createHash("sha256").update(s, "utf8").digest("h
 // --- the line `pnpm hash:retired-key` prints is exactly what the parser reads ------
 {
   const line = await retiredKeyHashLine("shared", RETIRED);
-  eq(line, `shared:${nodeHash(RETIRED)}`, "the arming line is label:hash");
+  eq(line, `shared:sha256:${nodeHash(RETIRED)}`, "the arming line is label:sha256:hash");
+  const hexLine = await retiredKeyHashLine("hexkey", "a1".repeat(32));
+  eq(parseRetiredKeyHashes(hexLine), [{ label: "hexkey", sha256: nodeHash("a1".repeat(32)) }], "the line printed for a 64 hex key parses back too");
   assert(!line.includes(RETIRED), "and never carries the key");
   eq(parseRetiredKeyHashes(line), [{ label: "shared", sha256: nodeHash(RETIRED) }], "and reads straight back");
   for (const [what, label, key] of [
@@ -103,12 +107,12 @@ const nodeHash = (s: string) => createHash("sha256").update(s, "utf8").digest("h
   // A key minted with `openssl rand -hex 32` (DEPLOY.md) is 64 hex characters, the
   // same shape as a hash, and must still be retirable (#2879 review).
   const hexKey = "a1".repeat(32);
-  eq(await retiredKeyHashLine("hexkey", hexKey), `hexkey:${nodeHash(hexKey)}`, "a 64 hex character key hashes like any other");
+  eq(await retiredKeyHashLine("hexkey", hexKey), `hexkey:sha256:${nodeHash(hexKey)}`, "a 64 hex character key hashes like any other");
 }
 
 // --- matching a presented token ---------------------------------------------------
 {
-  const hashes = parseRetiredKeyHashes(`shared:${nodeHash(RETIRED)},regal-old:${nodeHash(OTHER_RETIRED)}`);
+  const hashes = parseRetiredKeyHashes(`shared:sha256:${nodeHash(RETIRED)},regal-old:sha256:${nodeHash(OTHER_RETIRED)}`);
   eq((await matchRetiredKey(RETIRED, hashes))?.label, "shared", "a retired key matches its own label");
   eq((await matchRetiredKey(OTHER_RETIRED, hashes))?.label, "regal-old", "and the second one matches its own");
   eq(await matchRetiredKey(UNKNOWN, hashes), null, "an unknown key matches nothing");
@@ -171,7 +175,7 @@ function rig(raw: string, opts: { notifyFails?: boolean; live?: { id: string; se
   };
 }
 const H = (h: Record<string, string>) => new Headers(h);
-const ARMED = `shared:${nodeHash(RETIRED)}`;
+const ARMED = `shared:sha256:${nodeHash(RETIRED)}`;
 
 {
   const r = rig(ARMED);
@@ -203,7 +207,7 @@ const ARMED = `shared:${nodeHash(RETIRED)}`;
 {
   // Positive control for the direction above: the SAME rig with the unknown key's
   // own hash configured does page, so the silence is the match, not a deaf watcher.
-  const r = rig(`shared:${nodeHash(UNKNOWN)}`);
+  const r = rig(`shared:sha256:${nodeHash(UNKNOWN)}`);
   r.watch(UNKNOWN, "POST", "/api/bookings", H({}));
   await r.drain();
   eq(r.sent.length, 1, "the same key configured as retired pages");
@@ -211,13 +215,13 @@ const ARMED = `shared:${nodeHash(RETIRED)}`;
 }
 
 {
-  // Once per host kind per cooldown: a burst from one kind makes one send attempt
+  // Once per retired key and host kind per cooldown: a burst from one kind makes one send attempt
   // per isolate throttle window, while another kind is not held behind it.
   const r = rig(ARMED);
   for (let i = 0; i < 5; i++) r.watch(RETIRED, "GET", "/api/bookings", H({ origin: "https://www.trypennie.com" }));
   r.watch(RETIRED, "GET", "/api/bookings", H({ origin: "http://localhost:3000" }));
   await r.drain();
-  eq(r.sent.map((s) => s.key).sort().join(","), "retired_booking_key:shared:localhost,retired_booking_key:shared:production", "one attempt per host kind for a burst");
+  eq(r.sent.map((s) => s.key).sort().join(","), "retired_booking_key:shared:localhost,retired_booking_key:shared:production", "one attempt per retired key and host kind for a burst");
   eq(r.events.filter((e) => e.kind === "retired-key-presented").length, 6, "while every presentation is still recorded");
   r.advance(61_000);
   r.watch(RETIRED, "GET", "/api/bookings", H({ origin: "https://www.trypennie.com" }));
@@ -228,7 +232,7 @@ const ARMED = `shared:${nodeHash(RETIRED)}`;
 {
   // Two retired keys from ONE host kind inside the cooldown both page (L707): a
   // cooldown keyed coarser than the label the message names would silence the second.
-  const r = rig(`shared:${nodeHash(RETIRED)},regal-old:${nodeHash(OTHER_RETIRED)}`);
+  const r = rig(`shared:sha256:${nodeHash(RETIRED)},regal-old:sha256:${nodeHash(OTHER_RETIRED)}`);
   r.watch(RETIRED, "GET", "/api/bookings", H({ origin: "https://www.trypennie.com" }));
   r.watch(OTHER_RETIRED, "POST", "/api/bookings", H({ origin: "https://www.trypennie.com" }));
   await r.drain();
