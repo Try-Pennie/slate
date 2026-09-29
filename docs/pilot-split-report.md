@@ -25,16 +25,16 @@ Exploration export, downloaded by hand.
 ## Setting up the export, once
 
 1. **GTM.** A GA4 Event tag named `booking_assignment`, fired on the custom event
-   trigger `booking_assignment`, sending the dataLayer values `booking_provider`
-   and `submission_id` as event parameters. trypennie pushes the event on every
+   trigger `booking_assignment`, sending the dataLayer values `booking_provider`,
+   `submission_id` and `xbc` as event parameters. trypennie pushes the event on every
    load of both pages (Halo-lab-Trypennie/trypennie#517), and GA4 never sees it without this tag: the command
    exits 6. The existing `cal_booking` tag must also send `booking_provider` and
    `submission_id` beside `ga4_event_name`.
-2. **GA4 Admin, Custom definitions.** Register three EVENT scoped custom
-   dimensions, display names exactly `submission_id`, `booking_provider` and
-   `ga4_event_name`, each on the parameter of the same name. Registration is not
+2. **GA4 Admin, Custom definitions.** Register four EVENT scoped custom
+   dimensions, display names exactly `submission_id`, `booking_provider`, `xbc`
+   and `ga4_event_name`, each on the parameter of the same name. Registration is not
    retroactive: only events after it carry the dimension.
-3. **Explore, Free form.** Rows: Date, submission_id, booking_provider, Event name,
+3. **Explore, Free form.** Rows: Date, submission_id, booking_provider, xbc, Event name,
    ga4_event_name. Values: Event count. Filter: Event name exactly matches
    `booking_assignment` or `cal_booking` (or, if the GTM tag names GA4 events after
    `ga4_event_name`, those names; the command reads `ga4_event_name` when it is set
@@ -52,18 +52,15 @@ into the control half, which is exactly the lead mix difference the split exists
 to remove. There are two ways to exclude them, and the command refuses without
 one:
 
-- **An `xbc` column.** A fourth custom dimension, which needs trypennie to push
-  `xbc` with `booking_assignment`. Leads whose XBC does not start with 1 are left
-  out and counted.
+- **An `xbc` column**, the way the setup above builds the export. trypennie sends
+  `xbc` with `booking_assignment` (added to Halo-lab-Trypennie/trypennie#517 on
+  2026-09-29). Leads whose XBC does not start with 1 are left out and counted.
 - **`PILOT_SPLIT_PERCENT`.** A `cal.com` lead whose bucket is UNDER the percentage
   cannot be a pilot lead, so the hash finds those. It cannot find a non Low lead
   whose bucket is over the percentage, so when it finds any at all the command
-  exits 8 with an estimate of how many more are hiding in the control half. The
-  fix is on trypennie's side: push `xbc`, or push `booking_assignment` only for
-  pilot leads, in which case the hash finds nobody outside and the run proceeds.
-
-**As Halo-lab-Trypennie/trypennie#517 stands this command will exit 8 on real traffic**, because non Low leads
-reach `/my-offers/result`. One of those two trypennie changes is needed first.
+  exits 8 with an estimate of how many more are hiding in the control half. This
+  is the fallback for an export built without the `xbc` dimension, and on real
+  traffic it will exit 8, because non Low leads reach `/my-offers/result`.
 
 ## What is counted
 
