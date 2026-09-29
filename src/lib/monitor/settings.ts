@@ -662,10 +662,10 @@ export function resolveFloors(
 /**
  * The tiers judged BESIDE Low (#2874), each with the floors it is judged against,
  * decided by `tierJudgedBaseline`, the same predicate /admin/alerts states them from:
- * a learned tier on its learned floors, and a carried tier with a cal.com measurement
- * on that measurement until it is learned (#2888). A carried tier with neither is
- * absent here and stated as not judged on /admin/alerts, never judged against a
- * guess. No overrides: the two floor overrides are Low's knobs, named for the alarm
+ * exactly the tiers whose own bookings have been learned, on those floors, held at or
+ * above the tier's cal.com anchor where it has one (#2888). The anchor is a floor
+ * only, so a carried tier not yet learned is absent here, anchor or not, and stated
+ * as not judged on /admin/alerts, never judged against a guess. No overrides: the two floor overrides are Low's knobs, named for the alarm
  * that predates the tiers.
  */
 export function resolveTierBaselines(

@@ -38,8 +38,8 @@
 // and never touches Low's files. scripts/test-volume-tier-anchors.ts holds the module
 // to the files, and every file is an anchor in TIER_ANCHORS by construction. REFIT=1
 // and RECORD_CLOSED_DAYS=1 work the same way per tier. A tier so thin that no judged
-// hour carries a floor is refused rather than written, since its anchor could never
-// fire and would still read as judged.
+// hour carries a floor is refused rather than written, in every mode, since its anchor
+// could never hold a floor up and would still read as a measured one.
 //
 // It talks to cal.com, so it is deliberately not named `test-*.ts`.
 //
@@ -93,11 +93,22 @@ const PAGE_BASELINE_PATH = "src/lib/monitor/page-volume-baseline.ts";
 const scopeOf = (fixture: VolumeFixture): FloorScope => (TARGET.low ? FLOOR_SCOPE : wholeTierScope(fixture));
 
 /**
- * Writes the measurement and its floors. Low writes its own module; any other tier
- * writes its own counts and re-renders the tier module from EVERY committed tier
+ * Writes the measurement and its floors, and is the ONLY place any mode writes, so
+ * the too thin refusal below guards the live read, REFIT=1 and RECORD_CLOSED_DAYS=1
+ * alike: a refit or a recorded holiday can thin a fit as surely as a read can. A
+ * tier beside Low whose floors are zero at every judged hour is reported and exits
+ * 6 with nothing written, since committed it would read as a measured floor and
+ * could never hold anything up. Low writes its own module; any other tier writes
+ * its own counts and re-renders the tier module from EVERY committed tier
  * measurement, so measuring one tier never drops another's anchor.
  */
 function writeMeasurement(fixture: VolumeFixture, baseline: VolumeBaseline): void {
+  const thin = TARGET.low ? null : thinAnchorRefusal(baseline, OFFLINE_OPEN_WEEK);
+  if (thin) {
+    report(fixture, baseline);
+    console.error(thin);
+    process.exit(6);
+  }
   writeFileSync(FIXTURE_PATH, JSON.stringify(fixture) + "\n");
   if (TARGET.low) {
     writeFileSync(BASELINE_PATH, renderBaselineModule(baseline));
@@ -279,14 +290,6 @@ const baseline = baselineFromFixture(fixture, scopeOf(fixture));
 console.log(
   `Read ${read.rows.length} routing form responses over ${DAYS} days (${baseline.fromDate} to ${baseline.toDate}).`,
 );
-// A tier beside Low whose floors are zero at every judged hour is reported and NOT
-// written: committed, it would read as judged against cal.com and could never fire.
-const thin = TARGET.low ? null : thinAnchorRefusal(baseline, OFFLINE_OPEN_WEEK);
-if (thin) {
-  report(fixture, baseline);
-  console.error(thin);
-  process.exit(6);
-}
 writeMeasurement(fixture, baseline);
 report(fixture, baseline);
 writeAfter(fixture, baseline);

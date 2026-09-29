@@ -24,9 +24,10 @@
  * ANCHORS. A tier's anchor is the cal.com measurement of that tier, the floor under
  * its learned floor. Low was measured on 2026-09-25 (`volume-baseline.ts`, scoped to
  * its pages), and each tier beside it WHOLE on 2026-09-29 (`volume-baseline-tiers.ts`,
- * #2888). A carried tier with an anchor is judged against it until its own bookings
- * are learned; a tier without one is judged only once it has been learned, and until
- * then it is UNJUDGED and says so on /admin/alerts rather than reading as quiet (L678).
+ * #2888). Beside Low an anchor is a FLOOR ONLY (Dan, 2026-09-29): every tier beside
+ * Low is judged only once its own bookings have been learned, anchor or not, and
+ * until then it is UNJUDGED and says so on /admin/alerts rather than reading as
+ * quiet (L678). Low alone is judged against its measurement from the start.
  *
  * No `@/` imports, so node scripts can drive it.
  */

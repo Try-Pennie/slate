@@ -33,10 +33,10 @@
  *
  * THE CAL.COM FIT IS THE FLOOR UNDER A MEASURED TIER'S LEARNED FLOOR TWICE:
  * `learnFloors` holds every cell at or above it when it fits, and `baselineInForce`
- * does again when it READS. Until a carried measured tier is learned it is judged
- * against that fit (`tierJudgedBaseline`, #2888). A tier nobody has measured has
- * nothing under it, so it is UNJUDGED until its own traffic has been learned, and
- * says so.
+ * does again when it READS. For a tier beside Low the fit is a floor ONLY: it never
+ * makes the tier judged before its own traffic has been learned
+ * (`tierJudgedBaseline`, #2888). A tier nobody has measured has nothing under it.
+ * Either way a tier beside Low is UNJUDGED until it is learned, and says so.
  *
  * No `@/` imports, so node scripts can drive it directly.
  */
@@ -304,18 +304,18 @@ export function baselineInForce(
  * page's tier lines both come from here, so the page cannot say a tier is judged
  * while the alarm skips it, or the reverse (L16).
  *
- * Learned: its learned floors, held at or above its anchor where it has one.
- * Measured and CARRIED (its stored entry has a ramp start): its cal.com measurement,
- * exactly as Low is judged against its own until it is learned. A measured tier that
- * is not carried, or whose carrying is not known yet (nothing stored, an unreadable
- * record), is NOT judged: Slate takes none of its traffic, so judging it against
- * cal.com's would page on every tick for a tier nobody moved to Slate. Low is judged
- * regardless because it is the tier the pilot moves first, and has its own check.
+ * A tier beside Low is judged only once four weeks of its own bookings are learned,
+ * and then against those learned floors, held at or above its cal.com anchor where
+ * it has one (`baselineInForce` does the holding). The anchor NEVER makes a tier
+ * judged before that. Dan, 2026-09-29: the pilot may move only some of a tier's
+ * pages, and judging that partial traffic against floors fitted to the whole tier
+ * false pages, 108 to 283 times in two normal weeks as measured in
+ * `scripts/lib/volume-floor-scope.ts`. So an anchor is a floor, never a judge. Low is
+ * not decided here: it has its own check and is judged against its measurement from
+ * the start, as it always has been.
  */
 export function tierJudgedBaseline(state: BaselineInForce): VolumeBaseline | null {
-  if (state.kind === "learned") return state.baseline;
-  if (state.kind === "measured" && state.entry?.rampStartAt) return state.baseline;
-  return null;
+  return state.kind === "learned" ? state.baseline : null;
 }
 
 export type RelearnResult =

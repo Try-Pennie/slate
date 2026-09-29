@@ -2,13 +2,13 @@
  * The low volume alarm for every tier judged BESIDE Low (#2874).
  *
  * Which tiers those are is decided upstream, by `resolveTierBaselines`: exactly the
- * tiers Slate carries whose own bookings have been learned, or that have a cal.com
- * measurement to be judged against until they are (#2888). Each is judged by the
+ * tiers Slate carries whose own bookings have been learned. A tier's cal.com
+ * measurement is only the floor under those learned floors (#2888). Each is judged by the
  * same check as Low (`runLowVolumeCheck`), on its own count, its own floors and its
  * own alert key, one after another, so a tier's page names that tier and one tier's
  * cooldown never silences another's (L707).
  *
- * The floors are the learned or measured ones and nothing else: the two floor overrides on
+ * The floors are the learned ones and nothing else: the two floor overrides on
  * /admin/alerts are Low's knobs, named for the alarm that predates the tiers.
  *
  * No `@/` imports, so node scripts can drive it.

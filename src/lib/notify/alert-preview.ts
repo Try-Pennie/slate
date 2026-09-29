@@ -759,8 +759,7 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     ]),
   },
   {
-    // #2874. A tier judged beside Low, against its cal.com measurement (#2888) or
-    // the floors learned from its own bookings.
+    // #2874. A tier judged beside Low, against floors learned from its own bookings.
     // It names the tier, because one tier going quiet while the others book points
     // at that tier's pages or pool rather than at the booker every tier shares.
     key: "low_tier_volume:*",

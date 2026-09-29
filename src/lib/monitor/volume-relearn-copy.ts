@@ -148,8 +148,8 @@ export function learningStatusCopy(state: BaselineInForce, nowMs: number): Learn
 
 /**
  * One line for every tier beside Low (#2874), each saying what is true of it now:
- * judged against its own learned floors, judged against its cal.com measurement until
- * those are learned (#2888), carried and not judged yet (with when it will be), or
+ * judged against its own learned floors, learning with its cal.com measurement as the
+ * floor under them (#2888), carried and not judged yet (with when it will be), or
  * not carried at all. Whether a tier is judged comes from `tierJudgedBaseline`, the
  * predicate the monitor's tier checks use, so the line and the alarm cannot disagree
  * (L16). Every tier gets a line, so a tier that is not judged is stated rather than
@@ -176,19 +176,19 @@ export function tierLearningLines(
         (overdue ? " No refit has succeeded since then." : "")
       );
     }
-    if (state.kind === "measured" && tierJudgedBaseline(state)) {
-      const measurement = `its cal.com measurement from ${day(state.baseline.measuredOn)}`;
-      if (state.why === "insufficient") {
-        const weeks = weeksSoFar(state);
-        return (
-          `${label}: carried since its first real booking on ${state.entry?.firstBookingAt ? dayOf(state.entry.firstBookingAt) : "an unknown day"}, ` +
-          `and judged against ${measurement} until ${LEARNING.minWeeks} full weeks of its own bookings are learned ` +
-          `(${weeks === 1 ? "1 so far" : `${weeks} so far`}).`
-        );
-      }
-      return state.why === "other-ramp-end"
-        ? `${label}: judged against ${measurement}. The refit for the new ramp end runs on the next check, within 5 minutes.`
-        : `${label}: judged against ${measurement} until the next refit, within 5 minutes.`;
+    // The one predicate the monitor judges tiers by: a tier it returns nothing for is
+    // never described as judged here (L16).
+    if (tierJudgedBaseline(state) === null && state.kind === "measured" && state.why === "insufficient" && state.entry?.rampStartAt) {
+      // Anchored and still learning (#2888): the measurement is a floor under what it
+      // learns, never what it is judged against, so the line says it is learning.
+      const weeks = weeksSoFar(state);
+      return (
+        `${label}: learning from its own bookings since its first real booking on ` +
+        `${state.entry.firstBookingAt ? dayOf(state.entry.firstBookingAt) : "an unknown day"}, ` +
+        `with its cal.com measurement from ${day(state.baseline.measuredOn)} as the floor under what it learns. ` +
+        `Not judged until ${LEARNING.minWeeks} full weeks are learned (${weeks === 1 ? "1 so far" : `${weeks} so far`}), ` +
+        `so until then a drop in ${label} bookings is not caught.`
+      );
     }
     switch (state.why) {
       case "not-carried":
