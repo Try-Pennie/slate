@@ -87,7 +87,10 @@ const HASH_TAG = "sha256:";
 export function parseRetiredKeyHashes(raw: string): RetiredKeyHash[] {
   if (!raw.trim()) return [];
   const out: RetiredKeyHash[] = [];
-  const entries = raw.split(",");
+  // Commas or newlines, so the committed file of hashes (one entry per line) and the
+  // secret (one comma separated line) are both read. Leading and trailing blank space
+  // is dropped; an empty entry BETWEEN two others is still refused.
+  const entries = raw.trim().split(/,|\r?\n/);
   entries.forEach((entry, i) => {
     const where = `${RETIRED_KEY_HASHES_ENV} entry ${i + 1}`;
     const text = entry.trim();
@@ -114,6 +117,21 @@ export function parseRetiredKeyHashes(raw: string): RetiredKeyHash[] {
     out.push({ label, sha256 });
   });
   return out;
+}
+
+/**
+ * The whole value to store after adding one entry to the retired list (#2879).
+ * `wrangler secret put` REPLACES the secret and a secret cannot be read back, so
+ * piping one new line alone would silently stop noticing every key retired before
+ * it. The existing list comes from the committed file of hashes (hashes are not
+ * secret), is parsed first so an unreadable list is refused rather than extended,
+ * and the result is parsed again so a repeated label is refused before it is stored.
+ */
+export function combineRetiredKeyEntries(existing: string, line: string): string {
+  const entries = [...parseRetiredKeyHashes(existing), ...parseRetiredKeyHashes(line)];
+  const combined = entries.map((e) => `${e.label}:${HASH_TAG}${e.sha256}`).join(",");
+  parseRetiredKeyHashes(combined);
+  return combined;
 }
 
 /** SHA-256 of the exact text, lowercase hex. Web Crypto, so the Worker and node agree. */

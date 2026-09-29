@@ -390,7 +390,7 @@ stopping an abusive caller either.
 ## The booking API is refusing its caller
 
 Keys: `booking_api_ceiling`, `booking_api_credential`, `booking_api_list_read`,
-`retired_booking_key:*` (four).
+`retired_booking_key:*` (one per retired key and kind of host).
 
 **What fired it.** Slate is turning its own integration away. Note this is the opposite
 of the limiter section above: those controls fail OPEN, so a page there means requests

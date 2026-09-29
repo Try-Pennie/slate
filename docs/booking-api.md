@@ -125,6 +125,9 @@ Authorization: Bearer <your caller's key>
   before: a key still in a live slot authenticates, so its hash can never fire.
   The list is empty today, because the old shared key's value still lives in
   `BOOKING_API_KEY_TRYPENNIE_2`; it is armed at the next rotation.
+  `pnpm -s hash:retired-key <label>` adds the entry to the committed
+  `docs/retired-booking-key-hashes.txt` and prints the WHOLE list for the secret,
+  because `wrangler secret put` replaces the value and it cannot be read back.
 - `503` if no key is configured (endpoint disabled); `401` on a missing/wrong key.
 - **A hand run probe with a partner's key sends `X-Slate-Probe: <why>`** (#2868), for
   example `curl -H 'X-Slate-Probe: key check after rotation' ...`. It is answered
