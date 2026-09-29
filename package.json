@@ -25,6 +25,7 @@
     "check:workflow-settings": "node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/check-workflow-settings.ts",
     "import:calcom-schedules": "node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/import-calcom-schedules.ts",
     "backfill:bookable-trait": "node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/backfill-bookable-trait.ts",
+    "report:pilot-split": "node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/report-pilot-split.ts",
     "verify:availability-truth": "node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/verify-availability-truth-live.ts",
     "verify:twilio-parity": "node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/verify-twilio-parity-live.ts",
     "verify:calcom-parity": "node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/verify-calcom-parity-live.ts",
