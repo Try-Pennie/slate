@@ -15,6 +15,10 @@ Nothing here has been rewritten. Each section is the text that stood in
 `AGENTS.md`, moved whole so the recorded decisions and the evidence behind them
 stay where they can be found.
 
+A sibling hand run command that reports rather than verifies,
+`pnpm report:pilot-split` (Slate against cal.com booking rate across trypennie's
+per lead split, #2898), has its runbook in `docs/pilot-split-report.md`.
+
 # A detector the roster cannot exercise (`pnpm verify:availability-truth`)
 
 The availability-truth probe (#1315) asks whether the times Slate is OFFERING are
