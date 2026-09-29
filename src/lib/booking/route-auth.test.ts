@@ -27,11 +27,13 @@ const rateLimit = vi.hoisted(() => ({
 }));
 const tally = vi.hoisted(() => ({ recordApiOutcome: vi.fn() }));
 const seen = vi.hoisted(() => ({ recordCallerSeen: vi.fn() }));
+const retired = vi.hoisted(() => ({ watchRetiredKey: vi.fn() }));
 
 vi.mock("@/lib/env", () => env);
 vi.mock("@/lib/rate-limit", () => rateLimit);
 vi.mock("@/lib/monitor/record-api-outcome", () => tally);
 vi.mock("@/lib/booking/record-caller-seen", () => seen);
+vi.mock("@/lib/booking/retired-key-watch", () => retired);
 
 import { authorizeBookingApi } from "./route-auth";
 import { DIRECT_BOOKING_API_IP_HOURLY_RATE_RULES } from "@/lib/rate-limit-core";
@@ -273,5 +275,41 @@ describe("authorizeBookingApi records who authenticated (#2717)", () => {
     rateLimit.bookingApiWriteWithinLimit.mockResolvedValue(false);
     await authorizeBookingApi(req("Bearer trypenniesecret"));
     expect(seen.recordCallerSeen).not.toHaveBeenCalled();
+  });
+});
+
+describe("authorizeBookingApi asks whether a refused key is a retired one (#2879)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    env.bookingApiKeyFor.mockImplementation(regalKeyFor);
+    regalKey.primary.mockReturnValue("goodsecret");
+    rateLimit.allowRequest.mockResolvedValue(true);
+    rateLimit.bookingApiWriteWithinLimit.mockResolvedValue(true);
+    rateLimit.bookingApiReadWithinLimit.mockResolvedValue(true);
+    rateLimit.bookingApiIpWithinLimit.mockResolvedValue(true);
+  });
+
+  it("hands a refused, present token to the watcher with the method, path and headers", async () => {
+    const r = req("Bearer oldsharedkey");
+    const out = await authorizeBookingApi(r);
+    expect(retired.watchRetiredKey).toHaveBeenCalledTimes(1);
+    const [token, method, path, headers] = retired.watchRetiredKey.mock.calls[0];
+    expect(token).toBe("oldsharedkey");
+    expect(method).toBe("POST");
+    expect(path).toBe("/api/bookings");
+    expect(headers).toBe(r.headers);
+    // Refused exactly as before: the same 401 and the same body.
+    expect(out.ok).toBe(false);
+    if (out.ok) return;
+    expect(out.response.status).toBe(401);
+    expect(await out.response.json()).toEqual({ error: "unauthorized" });
+  });
+
+  it("asks nothing for a request with no credential, a good key, or no key configured", async () => {
+    await authorizeBookingApi(req());
+    await authorizeBookingApi(req("Bearer goodsecret"));
+    env.bookingApiKeyFor.mockImplementation(() => "");
+    await authorizeBookingApi(req("Bearer oldsharedkey"));
+    expect(retired.watchRetiredKey).not.toHaveBeenCalled();
   });
 });

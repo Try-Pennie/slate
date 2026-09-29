@@ -118,6 +118,10 @@ Authorization: Bearer <your caller's key>
   the same value: the request would be attributed to whichever is listed first.
 - **Each caller has two slots** so its secret rotates with **zero downtime**: add
   the new key in the `_2` slot, point that caller at it, then retire the primary.
+  **When you retire one, add its hash to `BOOKING_API_RETIRED_KEY_HASHES`**
+  (#2879, the step is in `DEPLOY.md`), so a caller still presenting it pages
+  `retired_booking_key` naming its host and route, instead of being found by a lead
+  landing on a broken page.
 - `503` if no key is configured (endpoint disabled); `401` on a missing/wrong key.
 - The smoke endpoints (`/api/smoke/*`) and the hidden test buckets accept only
   the canary's key, never a partner's.

@@ -23,6 +23,7 @@
  * the fixture should be the state that embarrasses it.
  */
 import { ALERT_CATALOG, type AlertKind } from "@/lib/notify/alert-catalog";
+import { formatRetiredKeyAlert } from "@/lib/booking/retired-keys";
 import { PUBLIC_TEST_BUCKET_CODES } from "@/lib/embed/public-test-bucket";
 import { noEligibleAgentsAlert } from "@/lib/availability/bucket-coverage";
 import {
@@ -880,6 +881,25 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     state: "the key is accepted again",
     channel: "recovery",
     text: refusalAllClear.credential,
+  },
+  // #2879: one state per kind of host, since each names the caller differently.
+  {
+    key: "retired_booking_key:*",
+    state: "the retired shared key, from the production site",
+    channel: "alert",
+    text: formatRetiredKeyAlert({ label: "shared", host: { kind: "production", origin: "https://www.trypennie.com" }, route: "GET /api/bookings" }),
+  },
+  {
+    key: "retired_booking_key:*",
+    state: "the retired shared key, from a call that named no host",
+    channel: "alert",
+    text: formatRetiredKeyAlert({ label: "shared", host: { kind: "unstated", origin: null }, route: "POST /api/bookings" }),
+  },
+  {
+    key: "retired_booking_key:*",
+    state: "a retired key from a preview host",
+    channel: "alert",
+    text: formatRetiredKeyAlert({ label: "regal-2026-09", host: { kind: "other-host", origin: "https://tp-git-x.vercel.app" }, route: "POST /api/bookings/cancel" }),
   },
   {
     key: "booking_api_list_read",

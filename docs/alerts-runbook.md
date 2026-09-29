@@ -389,7 +389,8 @@ stopping an abusive caller either.
 
 ## The booking API is refusing its caller
 
-Keys: `booking_api_ceiling`, `booking_api_credential`, `booking_api_list_read`.
+Keys: `booking_api_ceiling`, `booking_api_credential`, `booking_api_list_read`,
+`retired_booking_key:*`.
 
 **What fired it.** Slate is turning its own integration away. Note this is the opposite
 of the limiter section above: those controls fail OPEN, so a page there means requests
@@ -416,6 +417,16 @@ their own keys.
   endpoint. The caller is refused and retries the same cursor, so nothing is lost, but
   its sync has stalled. The same table is on the booking write path, so check whether
   bookings are still completing.
+
+- `retired_booking_key:*` (#2879) means a request presented a key Slate RETIRED, so it
+  was refused, and the message names which retired key (its label, never the value),
+  the host and the route. The host is the lead: the production site means a partner's
+  live environment still holds it, a call that named no host means a server or a
+  script. Every presentation is logged as `tag=booking-api msg="retired key
+  presented"` with the same fields, so the log shows every call, not only the one
+  that paged. The repair is at the caller: give it its own key (`docs/booking-api.md`
+  section 2). It is an incident, so it never sends an all clear; it goes quiet once
+  nobody presents the key for a cooldown.
 
 **Fix or escalate.** A missing secret and a rejected key are both time-sensitive once
 the automated booker is live: leads are being refused for as long as it lasts. A ceiling

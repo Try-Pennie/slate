@@ -1013,6 +1013,7 @@ canary key is not configured.
 | `BOOKING_API_KEY_REGAL`, `_2` | Regal's own booking key (#2645) | Regal's calls are refused with `401`; with every booking key unset, `503` on `/api/bookings` |
 | `BOOKING_API_KEY_TRYPENNIE`, `_2` | trypennie's own booking key. `_2` holds the value trypennie was given before the split (#2865) | trypennie's calls are refused with `401` |
 | `BOOKING_API_KEY_CANARY`, `_2` | The smoke canary's own key, the only key the smoke endpoints accept | Every canary lane, the deploy probe and every heartbeat stamp fail with a 401 and alert (#2822) |
+| `BOOKING_API_RETIRED_KEY_HASHES` | Hashes of retired booking keys (#2879). A refused request presenting one pages `retired_booking_key`; the refusal itself is unchanged | Nothing is noticed: a caller holding a retired key is refused with `401` and nobody is told |
 | `REASSIGN_API_KEY` | `POST /api/bookings/reassign` | `503` |
 | `DUPLICATE_CANCEL_API_KEY` | `POST /api/bookings/cancel-duplicate` | `503` |
 | `OFFBOARDING_API_KEY` | `/api/users/lifecycle`, `/api/users/deactivate`, `/api/users/reactivate` | `503` |
