@@ -13,6 +13,8 @@ import { readFileSync } from "node:fs";
 import { DateTime } from "luxon";
 import {
   LOW_PAGES,
+  isPageTraffic,
+  isUnsourced,
   PAGE_SEEN_LOOKBACK_DAYS,
   pageCoverage,
   pagePlaces,
@@ -28,7 +30,7 @@ import { MEASURED_PAGE_BASELINES } from "../src/lib/monitor/page-volume-baseline
 import { MEASURED_VOLUME_BASELINE } from "../src/lib/monitor/volume-baseline.ts";
 import type { BusinessHoursConfig } from "../src/lib/monitor/booking-volume.ts";
 import { fitFloorCells, type BookingSeries, type FloorCell, type VolumeBaseline } from "../src/lib/monitor/volume-floors.ts";
-import { PAGE_SOURCES } from "../src/lib/booking/booking-source.ts";
+import { API_SOURCES, PAGE_SOURCES } from "../src/lib/booking/booking-source.ts";
 import {
   FLOOR_SCOPE,
   OFFLINE_OPEN_WEEK,
@@ -61,6 +63,21 @@ const REPLAY_HOURS = offlineHoursFor(fixture);
   assert(all.every((s) => (PAGE_SOURCES as readonly string[]).includes(s)), "every source is in the #2072 vocabulary");
   eq(new Set(LOW_PAGES.map((p) => p.id)).size, LOW_PAGES.length, "page ids are distinct, so each has its own alert key");
   eq(pagePlaces(LOW_PAGES[0]!), "/booking/portal and /offerhub", "a page's places come from the source vocabulary's own names");
+
+  // #2765: the values trypennie actually sends, typed out from its merged change
+  // (Halo-lab-Trypennie/trypennie PR #516, merged 2026-09-29) rather than read off
+  // LOW_PAGES (L70), each landing on the Low page whose cal.com form served it.
+  const SENT_BY_TRYPENNIE: Record<string, LowPageId> = {
+    "my-offers-result": "application-review", // /my-offers/result
+    booking: "application-review", // /booking/[SO_ID], AI_Agent_Eligible__c false
+    "booking-agent-eligible": "application-review-follow-up", // /booking/[SO_ID], eligible
+    "booking-portal": "income-verification", // /booking/portal/[SO_ID]
+    offerhub: "income-verification", // the offerhub modals
+  };
+  for (const [source, id] of Object.entries(SENT_BY_TRYPENNIE)) {
+    const owners = LOW_PAGES.filter((p) => (p.sources as readonly string[]).includes(source)).map((p) => p.id);
+    eq(owners, [id], `trypennie's source=${source} counts for the ${id} page, and only that page`);
+  }
 }
 
 // --- 2. the committed per page floors are the committed measurement's ---
@@ -325,6 +342,31 @@ const HEALTHY_ROWS: SourceRow[] = [
   const odd = harness({ rows: [...HEALTHY_ROWS.filter((r) => r.source !== "offerhub"), ago(10, "unrecognised"), ago(20, "unrecognised")] });
   await odd.run();
   eq(odd.calls.sent.length, 1, "bookings with an unrecognised source do not hold a page");
+
+  // #2876: a booking made through the booking API is not page traffic. It names its
+  // caller rather than no page, so it can never excuse a page's shortfall (a steady
+  // stream of Regal or trypennie API bookings would otherwise hide a dark page), and
+  // it is left out of the count the unsourced share is quoted against.
+  for (const s of API_SOURCES) {
+    assert(!isUnsourced(s), `${s} is not an unsourced booking`);
+    assert(!isPageTraffic(s), `${s} is not page traffic`);
+  }
+  for (const s of [...PAGE_SOURCES, "not-given", "unrecognised", null]) {
+    assert(isPageTraffic(s), `${s ?? "null"} is page traffic, or might be`);
+  }
+  const quietRows = HEALTHY_ROWS.filter((r) => r.source !== "offerhub");
+  const viaApi = harness({ rows: [...quietRows, ago(10, "api-regal"), ago(20, "api-trypennie"), ago(40, "api-canary")] });
+  const viaApiOut = await viaApi.run();
+  eq(viaApi.calls.sent.map((s) => s.key), [pageVolumeAlertKey("income-verification")], "API bookings do not hold a quiet page: it still pages");
+  assert(
+    viaApiOut.status === "checked" && viaApiOut.sources.unsourced === 0 && viaApiOut.sources.total === quietRows.length,
+    `and the step counts neither API booking as unsourced nor as page traffic read (${JSON.stringify(viaApiOut.status === "checked" ? viaApiOut.sources : null)})`,
+  );
+  // Control in the same shape (L159): the same three bookings with no caller named
+  // are unsourced, and they DO hold the page.
+  const noCaller = harness({ rows: [...quietRows, ago(10, "not-given"), ago(20, "not-given"), ago(40, "not-given")] });
+  await noCaller.run();
+  eq(noCaller.calls.sent.length, 0, "control: three bookings naming nothing hold the page, so the API ones were the difference");
 }
 {
   // Rows at or after now, or before the long window, are outside every window.

@@ -23,7 +23,7 @@
  *
  * No `@/` imports, so node scripts can run it directly.
  */
-import { SOURCE_DETAILS, SOURCE_NOT_GIVEN, type PageSource } from "../booking/booking-source.ts";
+import { API_SOURCES, SOURCE_DETAILS, SOURCE_NOT_GIVEN, isApiSource, type PageSource } from "../booking/booking-source.ts";
 import {
   describeBreaches,
   describeCounts,
@@ -102,7 +102,11 @@ export function pagePlaces(page: LowPage): string {
  */
 export interface PageSourceMeasure {
   lookbackDays: number;
-  /** Real (non test bucket) bookings in the lookback. */
+  /**
+   * Real (non test bucket) bookings in the lookback that are page traffic
+   * (`isPageTraffic`): a booking API call is not counted (#2876), or a lookback
+   * holding only those would read as every booking having carried a source.
+   */
   realBookings: number;
   /** Of those, how many recorded no page (`isUnsourced`). */
   unsourced: number;
@@ -165,7 +169,8 @@ export interface SourceRow {
  * Whether a booking recorded NO page (#2765): `not-given` (the link carried no
  * `?source=`), or null (a booking from before #2072). Such a booking might be ANY
  * page's, so it can hide a page's shortfall. `unrecognised` is not one of them: that
- * link named a page, it was just a name Slate does not know.
+ * link named a page, it was just a name Slate does not know. Nor is an API source
+ * (#2876): that booking named its caller and came from no page at all.
  *
  * One predicate, used by the per page alarm on every tick and by the readiness
  * measurement (`measurePageSources`), so the two never count differently (L16).
@@ -193,6 +198,23 @@ export function bookingSourcesRecorded(m: PageSourceMeasure): boolean {
 
 /** The `bookings.source` values `isUnsourced` counts, for a database filter. */
 export const UNSOURCED_VALUES = [SOURCE_NOT_GIVEN] as const;
+
+/**
+ * Whether a booking is, or might be, a landing page's (#2876). A booking made
+ * through the key authed booking API records its caller (`api-regal`, and so on)
+ * and came from no page, so it is not page traffic: it can neither excuse a page's
+ * shortfall nor stand in the count the unsourced share is quoted against. Every
+ * other value is, including `not-given` and null, which might be any page's.
+ *
+ * One predicate for the per page step and the measurement (`measurePageSources`),
+ * so the two never disagree about what the pages could have sent (L16).
+ */
+export function isPageTraffic(source: string | null): boolean {
+  return !isApiSource(source);
+}
+
+/** The `bookings.source` values `isPageTraffic` leaves out, for a database filter. */
+export const NON_PAGE_VALUES = API_SOURCES;
 
 /**
  * "Source not recorded on 3 of 40 bookings in the last 7 days": the one sentence every
@@ -299,7 +321,12 @@ export async function runPageVolumeCheck(deps: {
 
   const inWindow = (r: SourceRow, ms: number) => r.createdMs >= deps.nowMs - ms && r.createdMs < deps.nowMs;
   const unsourcedIn = (ms: number) => rows.filter((r) => isUnsourced(r.source) && inWindow(r, ms)).length;
-  const sources = { unsourced: unsourcedIn(longMs), total: rows.filter((r) => inWindow(r, longMs)).length };
+  // #2876: the share is quoted against what the pages could have sent, so a booking
+  // API call (which names its caller, never a page) is not in the total.
+  const sources = {
+    unsourced: unsourcedIn(longMs),
+    total: rows.filter((r) => isPageTraffic(r.source) && inWindow(r, longMs)).length,
+  };
 
   // The untagged bookings left to excuse short pages with, spent as pages are excused.
   // Kept as BOOKINGS rather than one count per window (#2795): the short window sits

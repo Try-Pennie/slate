@@ -123,6 +123,8 @@ async function handlePost(req: NextRequest) {
       externalId: v.externalId,
       confirmReschedule: v.confirmReschedule,
       allowTestBuckets,
+      // #2876: from the key that matched, so a call naming no page records who made it.
+      apiCaller: authd.caller,
     });
 
     const body = {

@@ -103,6 +103,11 @@ trigger drives sync, recompute, outbox, and self-heal. Every endpoint requires
   and recorded as `unrecognised`, with the raw value logged under
   `tag=booking-source` so the link can be found and fixed. The same key works on
   `/book` and through `widget.js` (put it on the `data-cal-link` query string).
+  A booking API call (`POST /api/bookings`) may send one of these in `prefill.source`
+  too; one that sends none is recorded as its caller, `api-regal`, `api-trypennie` or
+  `api-canary` (#2876), never `not-given`, so it is not mistaken for a landing page
+  booking. Those values are set from the key that authenticated the call and are
+  refused (recorded `unrecognised`) on a link.
 
   | `source` | page | cal.com event type |
   |---|---|---|

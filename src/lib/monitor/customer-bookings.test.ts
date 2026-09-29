@@ -14,6 +14,7 @@ import {
   countCustomerBookingsSince,
   customerBookingFromSourcesSince,
   listCustomerBookingSourcesSince,
+  measurePageSources,
   SOURCE_READ_LIMIT,
 } from "./customer-bookings";
 
@@ -122,16 +123,29 @@ type SourceFakeRow = { created_at: string; is_test: boolean; source: string | nu
 function sourceDb(rows: SourceFakeRow[], opts: { error?: string } = {}) {
   const make = () => {
     const filters: { col: string; val: unknown }[] = [];
+    const ors: ((r: SourceFakeRow) => boolean)[] = [];
     let limit = Infinity;
     const chain = {
       select: () => chain,
       eq: (col: string, val: unknown) => (filters.push({ col, val }), chain),
       gte: (col: string, val: unknown) => (filters.push({ col, val }), chain),
       in: (col: string, val: unknown) => (filters.push({ col, val }), chain),
+      // Only the shape measurePageSources sends: `source.is.null` and `source.eq.<v>`
+      // alternatives. Anything else throws, so a new filter cannot pass unread.
+      or: (expr: string) => {
+        const alts = expr.split(",").map((a) => {
+          if (a === "source.is.null") return (r: SourceFakeRow) => r.source === null;
+          const m = /^source\.eq\.(.+)$/.exec(a);
+          if (!m) throw new Error(`fake: unhandled or() alternative ${a}`);
+          return (r: SourceFakeRow) => r.source === m[1];
+        });
+        ors.push((r) => alts.some((f) => f(r)));
+        return chain;
+      },
       limit: (n: number) => ((limit = n), chain),
       then: (res: (v: unknown) => unknown) => {
         if (opts.error) return Promise.resolve(res({ data: null, count: null, error: { message: opts.error } }));
-        const kept = rows.filter((r) =>
+        const kept = rows.filter((r) => ors.every((o) => o(r))).filter((r) =>
           filters.every((f) =>
             f.col === "buckets.is_test"
               ? r.is_test === f.val
@@ -204,6 +218,47 @@ describe("customerBookingFromSourcesSince", () => {
     const log = vi.spyOn(console, "error").mockImplementation(() => {});
     const { db } = sourceDb([], { error: "read timeout" });
     await expect(customerBookingFromSourcesSince(db, ["offerhub"], SINCE)).rejects.toThrow(/could not read/);
+    log.mockRestore();
+  });
+});
+
+// #2876: the measurement the alerts settings page and the readiness gate read. A
+// booking made through the booking API names its caller, not a page, so it is not
+// page traffic: it neither counts as unsourced nor as a booking the pages could
+// have sent. Without that, a lookback holding only API bookings would read as
+// "every booking carried a source" and show the page floors as coverage.
+describe("measurePageSources", () => {
+  const NOW = Date.parse("2026-08-06T09:00:00.000Z");
+  const at = "2026-08-05T10:00:00.000Z";
+  const row = (source: string | null, is_test = false): SourceFakeRow => ({ created_at: at, is_test, source });
+
+  it("leaves booking API bookings out of both the page traffic and the unsourced count", async () => {
+    const { db } = sourceDb([
+      row("offerhub"),
+      row("not-given"),
+      row(null),
+      row("api-regal"),
+      row("api-trypennie"),
+      row("api-canary"),
+      row("offerhub", true),
+    ]);
+    const m = await measurePageSources(db, NOW);
+    expect(m.realBookings).toBe(3);
+    expect(m.unsourced).toBe(2);
+  });
+
+  it("reads a lookback holding only API bookings as no page traffic at all, never as sources recorded", async () => {
+    const { db } = sourceDb([row("api-regal"), row("api-trypennie")]);
+    const m = await measurePageSources(db, NOW);
+    expect(m.realBookings).toBe(0);
+    expect(m.unsourced).toBe(0);
+    expect(m.pages.every((p) => !p.recorded)).toBe(true);
+  });
+
+  it("throws on a failed read rather than answering zero", async () => {
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    const { db } = sourceDb([], { error: "read timeout" });
+    await expect(measurePageSources(db, NOW)).rejects.toThrow(/could not be read/);
     log.mockRestore();
   });
 });

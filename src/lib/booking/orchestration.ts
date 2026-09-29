@@ -80,6 +80,7 @@ import { leadCallingZone, withinLeadCallingWindow } from "./lead-calling-window.
 import { shortErrorReason } from "../notify/error-text.ts";
 import { log } from "@/lib/log";
 import { readBookingSource } from "./booking-source.ts";
+import type { BookingApiCaller } from "./api-callers.ts";
 import { rescheduleTimesFrom, type RescheduleTimesFrom } from "./reschedule-times-url.ts";
 import { readReferrerOrigin } from "../embed/referrer-origin.ts";
 import {
@@ -655,6 +656,13 @@ export interface CreateBookingInput {
    * verify on book still run, for this one agent.
    */
   agentLinkUserId?: string;
+  /**
+   * #2876: which key authed the direct booking API call, set ONLY by that route
+   * from the key it matched, never from the request body. A call naming no page
+   * then records `api-<caller>` as its source rather than `not-given`, which the
+   * per page volume alarm would read as a booking any page could have sent.
+   */
+  apiCaller?: BookingApiCaller;
 }
 
 export interface BookingResult {
@@ -2973,7 +2981,7 @@ export async function createBooking(
   // broken link must never cost a lead. The raw value is logged so the link can
   // be found and fixed, and stays in prefill; the column holds only the
   // vocabulary.
-  const sourceReading = readBookingSource(input.prefill);
+  const sourceReading = readBookingSource(input.prefill, input.apiCaller);
   if (sourceReading.unrecognisedRaw !== null) {
     log.warn("booking-source", {
       msg: "unrecognised source on the booking link",

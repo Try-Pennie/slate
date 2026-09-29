@@ -460,13 +460,38 @@ describe("AlertSettings per page floors wait on recorded sources (#2765)", () =>
 
   it("says how many bookings recorded no source, instead of the pages' floors", async () => {
     auth.currentUser.mockResolvedValueOnce(ADMIN);
-    // The fake answers every bookings read alike: 40 real, 40 unsourced, a row found.
-    db.results.bookings = { data: [{ id: "b1" }], error: null, count: 40 } as { data: unknown; error: unknown };
+    // In read order: 40 real, 0 through the booking API (#2876), 40 unsourced, and a
+    // row found for each page.
+    const counts = [40, 0, 40];
+    db.results.bookings = {
+      data: [{ id: "b1" }],
+      error: null,
+      get count() {
+        return counts.shift() ?? 0;
+      },
+    } as unknown as { data: unknown; error: unknown };
     render(await AlertSettingsPage(props));
     const said = learningCard().querySelector("[data-page-sources]")!.textContent!;
     expect(said).toMatch(/^Source not recorded on 40 of 40 bookings in the last 7 days/);
     expect(coverageRows()).toHaveLength(0);
     expect(db.reads.filter((t) => t === "bookings").length).toBeGreaterThan(0);
+  });
+
+  it("does not show the floors as coverage when every booking came through the booking API (#2876)", async () => {
+    auth.currentUser.mockResolvedValueOnce(ADMIN);
+    // In read order: 40 real, all 40 through the booking API, 0 unsourced. None of
+    // them is page traffic, so nothing says whether the pages' links carry a source.
+    const counts = [40, 40, 0];
+    db.results.bookings = {
+      data: [],
+      error: null,
+      get count() {
+        return counts.shift() ?? 0;
+      },
+    } as unknown as { data: unknown; error: unknown };
+    render(await AlertSettingsPage(props));
+    expect(learningCard().querySelector("[data-page-sources]")!.textContent).toMatch(/^No real booking in the last 7 days/);
+    expect(coverageRows()).toHaveLength(0);
   });
 
   it("says a failed source read could not be read, never that every booking carried one", async () => {
@@ -479,8 +504,8 @@ describe("AlertSettings per page floors wait on recorded sources (#2765)", () =>
 
   it("control: every real booking sourced shows the pages' floors", async () => {
     auth.currentUser.mockResolvedValueOnce(ADMIN);
-    // A count of 40 for the real bookings and of 0 for the unsourced, in read order.
-    const counts = [40, 0];
+    // In read order: 40 real, 0 through the booking API (#2876), 0 unsourced.
+    const counts = [40, 0, 0];
     db.results.bookings = {
       data: [{ id: "b1" }],
       error: null,

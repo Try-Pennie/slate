@@ -21,14 +21,11 @@
  */
 import { bearerToken, timingSafeEqual } from "@/lib/bearer-auth";
 import { isPublicTestBucket } from "@/lib/embed/public-test-bucket";
+import { BOOKING_API_CALLERS, type BookingApiCaller } from "./api-callers.ts";
 
-/**
- * Every system that holds a booking API key (#2645), one key each. If two callers
- * were ever handed the same value by mistake, the request is attributed to the one
- * declared first.
- */
-export const BOOKING_API_CALLERS = ["regal", "trypennie", "canary"] as const;
-export type BookingApiCaller = (typeof BOOKING_API_CALLERS)[number];
+// The caller list lives in its own import free module (#2876), so the booking
+// source vocabulary can derive one source per caller without reaching this one.
+export { BOOKING_API_CALLERS, type BookingApiCaller };
 
 /**
  * Who may call the smoke endpoints. They can stamp the canary's own heartbeat and

@@ -16,9 +16,9 @@
  *
  * Two values are OUTCOMES rather than pages, and they mean different things:
  *
- * - `not-given`: the link carried no source (older links, direct visits, the
- *   direct booking API). Recorded explicitly, so it is never an empty string
- *   standing in for several different things.
+ * - `not-given`: the link carried no source (older links, direct visits).
+ *   Recorded explicitly, so it is never an empty string standing in for several
+ *   different things.
  * - `unrecognised`: the link named a page this list does not know. That is a
  *   broken link somebody should fix, so it is kept apart from `not-given`, and the
  *   raw value goes to the log rather than into the column (the column holds only
@@ -26,9 +26,19 @@
  *
  * A null column is a THIRD thing: a booking recorded before this field existed.
  *
+ * The booking API is a FOURTH (#2876). A call that names no page records WHO made
+ * it, `api-<caller>`, one value per caller in `BOOKING_API_CALLERS`, derived from
+ * that list so a caller added there gets its source by construction. It used to
+ * record `not-given`, which the per page volume alarm reads as a booking that could
+ * be any page's, so a steady stream of Regal or trypennie API bookings excused a
+ * landing page gone dark. An API source is not page traffic and is not unsourced
+ * (`page-volume.ts`). A page the caller DOES name still wins, being the finer fact.
+ *
  * The list, the database constraint (`bookings_source_check`) and this mapping
  * agree by test: `scripts/test-booking-source.ts`.
  */
+
+import { BOOKING_API_CALLERS, type BookingApiCaller } from "./api-callers.ts";
 
 /** The URL key a landing page sets. */
 export const BOOKING_SOURCE_PARAM = "source";
@@ -50,12 +60,30 @@ export type PageSource = (typeof PAGE_SOURCES)[number];
 export const SOURCE_NOT_GIVEN = "not-given";
 export const SOURCE_UNRECOGNISED = "unrecognised";
 
+/** What a booking API call naming no page records: its caller (#2876). */
+export type ApiSource = `api-${BookingApiCaller}`;
+
+export function apiSourceFor(caller: BookingApiCaller): ApiSource {
+  return `api-${caller}`;
+}
+
+/** One per caller holding a key, derived from the caller list rather than typed out. */
+export const API_SOURCES: readonly ApiSource[] = BOOKING_API_CALLERS.map(apiSourceFor);
+
+const API_SET: ReadonlySet<string> = new Set(API_SOURCES);
+
+/** Whether a stored source names a booking API caller rather than a page or an outcome. */
+export function isApiSource(source: string | null): source is ApiSource {
+  return source !== null && API_SET.has(source);
+}
+
 /** Every value `bookings.source` can hold (besides null for older rows). */
-export type BookingSource = PageSource | typeof SOURCE_NOT_GIVEN | typeof SOURCE_UNRECOGNISED;
+export type BookingSource = PageSource | typeof SOURCE_NOT_GIVEN | typeof SOURCE_UNRECOGNISED | ApiSource;
 export const BOOKING_SOURCES: readonly BookingSource[] = [
   ...PAGE_SOURCES,
   SOURCE_NOT_GIVEN,
   SOURCE_UNRECOGNISED,
+  ...API_SOURCES,
 ];
 
 /** The seven cal.com event types the routing forms booked into. */
@@ -85,6 +113,11 @@ export const SOURCE_DETAILS: Record<BookingSource, SourceDetail> = {
   "agent-direct": { page: "An advisor's direct link", legacyEventType: "meet" },
   "not-given": { page: "No source on the link", legacyEventType: null },
   unrecognised: { page: "A source Slate does not know", legacyEventType: null },
+  // #2876: not pages, so no cal.com event type. `Record<BookingSource, ...>` makes
+  // tsc refuse a caller added to BOOKING_API_CALLERS without a line here.
+  "api-regal": { page: "The booking API, called by Regal", legacyEventType: null },
+  "api-trypennie": { page: "The booking API, called by trypennie", legacyEventType: null },
+  "api-canary": { page: "The booking API, called by the smoke canary", legacyEventType: null },
 };
 
 /** How much of an unrecognised value is handed back for the log. */
@@ -107,17 +140,27 @@ function isPageSource(value: string): value is PageSource {
  *
  * Case and surrounding space are ignored, because `OfferHub` on a hand typed link
  * is the same page and nothing about it needs fixing. Absent, empty or blank is
- * `not-given`. Anything else outside the page list, including a link that names
- * one of the two outcomes, is `unrecognised`.
+ * `not-given`, or, when the booking came through the key authed booking API,
+ * that caller's `api-<caller>` (#2876): the caller is known, so recording nothing
+ * would throw away a fact. Anything else outside the page list, including a link
+ * that names one of the outcomes or an API source, is `unrecognised`: only the
+ * authenticated caller decides which API source a booking records, never a link.
  */
-export function readBookingSource(prefill: Record<string, unknown> | null | undefined): SourceReading {
+export function readBookingSource(
+  prefill: Record<string, unknown> | null | undefined,
+  apiCaller?: BookingApiCaller,
+): SourceReading {
+  const absent: SourceReading = {
+    source: apiCaller === undefined ? SOURCE_NOT_GIVEN : apiSourceFor(apiCaller),
+    unrecognisedRaw: null,
+  };
   const value = prefill?.[BOOKING_SOURCE_PARAM];
-  if (value === undefined || value === null) return { source: SOURCE_NOT_GIVEN, unrecognisedRaw: null };
+  if (value === undefined || value === null) return absent;
   if (typeof value !== "string") {
     return { source: SOURCE_UNRECOGNISED, unrecognisedRaw: String(value).slice(0, RAW_LOG_LIMIT) };
   }
   const trimmed = value.trim();
-  if (trimmed.length === 0) return { source: SOURCE_NOT_GIVEN, unrecognisedRaw: null };
+  if (trimmed.length === 0) return absent;
   const normalized = trimmed.toLowerCase();
   if (isPageSource(normalized)) return { source: normalized, unrecognisedRaw: null };
   return { source: SOURCE_UNRECOGNISED, unrecognisedRaw: trimmed.slice(0, RAW_LOG_LIMIT) };

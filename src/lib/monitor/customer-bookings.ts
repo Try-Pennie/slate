@@ -2,7 +2,13 @@ import type { supabaseAdmin } from "@/lib/supabase/admin";
 import { log } from "@/lib/log";
 import { parseStampMs } from "@/lib/date/stamp";
 import type { BookingSource } from "@/lib/booking/booking-source";
-import { LOW_PAGES, PAGE_SEEN_LOOKBACK_DAYS, UNSOURCED_VALUES, type PageSourceMeasure } from "@/lib/monitor/page-volume";
+import {
+  LOW_PAGES,
+  NON_PAGE_VALUES,
+  PAGE_SEEN_LOOKBACK_DAYS,
+  UNSOURCED_VALUES,
+  type PageSourceMeasure,
+} from "@/lib/monitor/page-volume";
 
 /**
  * Customer bookings created since `sinceIso`, for the low-volume alarm (#370).
@@ -130,8 +136,26 @@ export async function measurePageSources(
   nowMs: number,
 ): Promise<PageSourceMeasure> {
   const sinceIso = new Date(nowMs - PAGE_SEEN_LOOKBACK_DAYS * 86_400_000).toISOString();
-  const realBookings = await countCustomerBookingsSince(db, sinceIso);
-  if (realBookings === null) throw new Error("page sources: the real booking count could not be read");
+  const allReal = await countCustomerBookingsSince(db, sinceIso);
+  if (allReal === null) throw new Error("page sources: the real booking count could not be read");
+  // #2876: a booking API call names its caller and came from no page, so it is not
+  // page traffic (`isPageTraffic`). Left in, a lookback holding only API bookings
+  // would read as every booking having carried a source and show the page floors
+  // as coverage. Subtracted rather than filtered in the count above, which the
+  // tier alarm shares and which must go on counting every customer booking.
+  // cap-safe: head-only exact count, no rows.
+  const { count: apiBookings, error: apiError } = await db
+    .from("bookings")
+    .select("id, buckets!inner(is_test)", { count: "exact", head: true })
+    .eq("buckets.is_test", false)
+    .eq("kind", "routed")
+    .in("source", [...NON_PAGE_VALUES])
+    .gte("created_at", sinceIso);
+  if (apiError || apiBookings === null) {
+    log.error("monitor", { msg: "booking api count failed", since: sinceIso }, apiError ?? undefined);
+    throw new Error("page sources: the booking API count could not be read");
+  }
+  const realBookings = allReal - apiBookings;
   // cap-safe: head-only exact count, no rows. A null source is a booking from before #2072.
   const { count: unsourced, error } = await db
     .from("bookings")
