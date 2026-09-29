@@ -439,7 +439,7 @@ let fitted: StoredVolumeLearning | null = null;
   for (const c of [none, notCarried, learned, overdue, unreadable]) {
     for (const line of [c.inForce, ...c.detail, ...lines, ...unreadLines]) {
       assert(!/undefined|NaN|null|\[object/.test(line), `no leaked value in "${line.slice(0, 50)}"`);
-      assert(!/[—–]/.test(line), "no dashes in the copy");
+      assert(!/[\u2014\u2013]/.test(line), "no dashes in the copy");
     }
   }
 }
