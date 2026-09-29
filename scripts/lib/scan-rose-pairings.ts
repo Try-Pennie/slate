@@ -16,9 +16,12 @@
 export type Theme = "light" | "dark";
 
 export type ClassPair = {
-  /** The rest background class of the pair's first rest entry, for naming. */
+  /**
+   * The background class of the pair's first rest entry, for naming, or of its
+   * first state when the literal paints no opaque rest pair at all.
+   */
   bg: string;
-  /** The rest text class of the pair's first rest entry, for naming. */
+  /** The text class chosen the same way as `bg`. */
   fg: string;
   /** The whole literal, so a failure can be found by searching for it. */
   literal: string;
@@ -45,6 +48,15 @@ export type ClassPair = {
    * class is never measured and never silently dropped.
    */
   unrecognised: string[];
+  /**
+   * Every measurement this pair could not take, each naming the state, the
+   * theme and why (#2866). A state with its own complete fill and label is
+   * always measured for its own contrast; what lands here is the part that
+   * needed something the literal does not hold, most often the step from a
+   * rest fill in a theme whose rest is a wash or paints no fill. Reported so a
+   * reader can see what the sweep did NOT judge, never dropped in silence (L98).
+   */
+  unmeasured: string[];
 };
 
 /** The rest paint of a rose pairing, in the themes and at the width it applies. */
@@ -79,8 +91,10 @@ export type StatePaint = {
   /**
    * The rest fill this state steps from, in the same theme and at the same
    * width, so a recoloured state can be judged a visible step from it (#2866).
+   * Null when that theme has no opaque rest fill: the state's own contrast is
+   * still measured, and only the step is not, which `unmeasured` says.
    */
-  restBg: string;
+  restBg: string | null;
   /**
    * The element's opacity in that state, 1 when none is declared. Anything below
    * 1 fades the fill AND the label over whatever is behind the control, so the
@@ -276,7 +290,16 @@ export function scanRosePairings(src: string, isColour: (token: string) => boole
   const literalRe = /(["'`])((?:(?!\1)[^\\\n]|\\.)*)\1/g;
   for (const m of src.matchAll(literalRe)) {
     const literal = m[2];
-    const line = src.slice(0, m.index ?? 0).split("\n").length;
+    const before = src.slice(0, m.index ?? 0);
+    // A literal on a COMMENT line (one opening with `//`, `/*` or a JSDoc `*`)
+    // describes a class string rather than painting one, so it is not a pairing
+    // anything draws. It matters since #2866 measures a state with no rest pair:
+    // a comment quoting a retired treatment then read as a live failure. A
+    // literal after code on the same line is still scanned, so a trailing
+    // comment is not exempt by this rule.
+    const lineStart = before.slice(before.lastIndexOf("\n") + 1);
+    if (/^\s*(\/\/|\/\*|\*)/.test(lineStart)) continue;
+    const line = before.split("\n").length;
     out.push(...pairsOfLiteral(literal, line, isColour));
   }
   return out;
@@ -380,13 +403,14 @@ function pairsOfLiteral(literal: string, line: number, isColour: (token: string)
       if (cell.bgs.length > 0 && cell.fgs.length > 0) restCells.push(cell);
     }
   }
-  if (restCells.length === 0) return [];
 
   // One pair per candidate choice, the i-th fill and the j-th label, with a cell
   // holding fewer candidates keeping its last: for the unprefixed classes alone
   // that is the cross product the scan has always produced.
-  const nb = Math.max(...restCells.map((c) => c.bgs.length));
-  const nf = Math.max(...restCells.map((c) => c.fgs.length));
+  // With no rest cell at all there is still one pair to build: the states may
+  // paint complete pairs of their own.
+  const nb = Math.max(1, ...restCells.map((c) => c.bgs.length));
+  const nf = Math.max(1, ...restCells.map((c) => c.fgs.length));
   const pick = (xs: string[], i: number) => xs[Math.min(i, xs.length - 1)] ?? null;
   const variantOf = (at: string | null, dark: boolean, tail: string | null) =>
     [at, dark ? "dark" : null, tail].filter((x) => x !== null).join(":");
@@ -401,8 +425,23 @@ function pairsOfLiteral(literal: string, line: number, isColour: (token: string)
         })),
         (a, b) => a.variant === b.variant && a.bg === b.bg && a.fg === b.fg && a.opacity === b.opacity,
       );
-      const states = statePaints(stated, rest, widthsOf, cellAt, (c) => pick(c.bgs, i), (c) => pick(c.fgs, j), colour, variantOf);
-      pairs.push({ bg: restPaints[0].bg, fg: restPaints[0].fg, literal, line, rest: restPaints, states, unrecognised });
+      const { states, unmeasured } = statePaints(
+        stated, rest, widthsOf, cellAt, (c) => pick(c.bgs, i), (c) => pick(c.fgs, j), colour, variantOf,
+      );
+      // A literal with no rest pair and no state it could build is a rose mark
+      // with its fill painted elsewhere (a bare `text-error`), not a pairing.
+      if (restPaints.length === 0 && states.length === 0 && unmeasured.length === 0) continue;
+      const named = restPaints[0] ?? states[0];
+      pairs.push({
+        bg: named?.bg ?? "",
+        fg: named?.fg ?? "",
+        literal,
+        line,
+        rest: restPaints,
+        states,
+        unrecognised,
+        unmeasured,
+      });
     }
   }
   return pairs;
@@ -437,8 +476,15 @@ function mergeThemes<P>(byTheme: { theme: Theme; paint: P }[], same: (a: P, b: P
  * resolved at every width a state OR rest class limits itself to, in both
  * themes. A state class beats a rest class whatever variants either carries:
  * the state's pseudo class gives it the higher specificity, and the `dark:`
- * variant here adds none (`:where`). A theme where neither the state nor the
- * rest supplies a fill or a label is not a pair in this literal and is skipped.
+ * variant here adds none (`:where`).
+ *
+ * A state is measured for its OWN contrast whenever its fill and label can be
+ * resolved, from its own classes or the rest of its theme and width, whether or
+ * not that theme has a rest pair. Two things are not measured, and each is
+ * reported on `unmeasured` rather than dropped: a whole state whose fill or
+ * label the literal does not hold in that theme (neither the state nor the rest
+ * paints it), and, for a state with its own fill, the step from rest in a theme
+ * with no opaque rest fill (`restBg` null), since there is nothing to step from.
  */
 function statePaints(
   stated: (Limited & { state: string; trigger: string })[],
@@ -449,8 +495,9 @@ function statePaints(
   restFgOf: (c: { fgs: string[] }) => string | null,
   colour: (u: string, prefix: "bg" | "text") => boolean,
   variantOf: (at: string | null, dark: boolean, tail: string | null) => string,
-): StatePaint[] {
+): { states: StatePaint[]; unmeasured: string[] } {
   const out: StatePaint[] = [];
+  const unmeasured: string[] = [];
   for (const state of INTERACTIVE_STATES) {
     const triggers = [...new Set(stated.filter((p) => p.state === state).map((p) => p.trigger))];
     for (const trigger of triggers) {
@@ -476,10 +523,18 @@ function statePaints(
           const restBg = restBgOf(cell);
           const bg = last((p) => (colour(p.utility, "bg") ? p.utility : null)) ?? restBg;
           const fg = last((p) => (colour(p.utility, "text") ? p.utility : null)) ?? restFgOf(cell);
-          if (bg === null || fg === null || restBg === null) continue;
-          const op = last((p) => opacityOf(p.utility)) ?? cell.opacity;
           const dark = live.some((p) => p.theme === "dark") || cell.dark;
-          byTheme.push({ theme, paint: { state, variant: variantOf(at, dark, trigger), bg, fg, restBg, opacity: op } });
+          const variant = variantOf(at, dark, trigger);
+          if (bg === null || fg === null) {
+            const missing = bg === null ? "fill" : "label";
+            unmeasured.push(`${variant} (${theme}): not measured, the literal paints no ${missing} for it in this theme`);
+            continue;
+          }
+          if (restBg === null) {
+            unmeasured.push(`${variant} (${theme}): step from rest not measured, this theme has no opaque rest fill`);
+          }
+          const op = last((p) => opacityOf(p.utility)) ?? cell.opacity;
+          byTheme.push({ theme, paint: { state, variant, bg, fg, restBg, opacity: op } });
         }
         out.push(
           ...mergeThemes(byTheme, (a, b) =>
@@ -488,5 +543,5 @@ function statePaints(
       }
     }
   }
-  return out;
+  return { states: out, unmeasured };
 }
