@@ -62,6 +62,7 @@ export const ALERT_KEYS = [
   "main_not_deployed",
   "ci_runs_refused",
   "public_booking_stopped",
+  "retired_booking_key",
 ] as const;
 
 export type MonitorAlertKey = (typeof ALERT_KEYS)[number];
@@ -340,6 +341,12 @@ export const ALERT_FIELDS: {
     help: "The kill switch that stops Slate taking public bookings has been on for longer than the incident lever is meant to be held for. Nothing is broken: somebody turned it off deliberately and it asks whether that is still intended. It ends by itself when booking is started again.",
   },
   {
+    key: "retired_booking_key",
+    urgency: "page",
+    label: "A retired booking key still in use",
+    help: "A request presented a booking API key that has been retired, so it was refused. Whoever still holds it is being turned away on every call, which can leave a lead on a broken page. Repeats for each retired key and each kind of host the calls come from.",
+  },
+  {
     key: "ci_runs_refused",
     urgency: "page",
     label: "CI runs refused before they start",
@@ -520,6 +527,11 @@ export const MONITOR_DEFAULTS = {
     // is a question about a deliberate state, and a state somebody is deliberately
     // holding through a long incident must not be asked about every hour (L36).
     public_booking_stopped: 4 * 60 * 60_000,
+    // A retired booking key presented (#2879): somebody still holds a key Slate no
+    // longer accepts, and every call they make is refused, so a lead may be on a
+    // broken page right now. Hourly per retired key and kind of host, like the other pages whose
+    // remedy is a person doing something, and it stops once they hold a live key.
+    retired_booking_key: 60 * 60_000,
   },
   // No coded low volume floors any more (#1956). They were 5 and 20, one pair for
   // every hour of the week, and nothing had measured either: replayed over two

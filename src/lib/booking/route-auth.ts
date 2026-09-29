@@ -11,6 +11,8 @@ import {
 } from "@/lib/booking/api-auth";
 import { recordApiOutcome } from "@/lib/monitor/record-api-outcome";
 import { recordCallerSeen } from "@/lib/booking/record-caller-seen";
+import { watchRetiredKey } from "@/lib/booking/retired-key-watch";
+import { bearerToken } from "@/lib/bearer-auth";
 import type { SelfInflictedRefusal } from "@/lib/monitor/booking-api-outcome";
 import { log } from "@/lib/log";
 import {
@@ -152,6 +154,12 @@ export async function authorizeBookingApi(
 ): Promise<AuthOutcome> {
   const auth = authenticateBearer(req.headers.get("authorization"), configuredBookingApiKeys());
   if (!auth.ok) {
+    // #2879: a present token that is not one of ours may be a RETIRED key, which the
+    // caller sightings cannot see because they record only successes. The watcher
+    // defers everything past the response, so the refusal below is unchanged.
+    if (auth.status === 401 && auth.tokenPresent) {
+      watchRetiredKey(bearerToken(req.headers.get("authorization")), req.method, new URL(req.url).pathname, req.headers);
+    }
     // The reason is DERIVED from the status the authenticator already decided, so
     // the classification and the response cannot disagree (L53).
     return refuse(

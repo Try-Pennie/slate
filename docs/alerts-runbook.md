@@ -389,14 +389,15 @@ stopping an abusive caller either.
 
 ## The booking API is refusing its caller
 
-Keys: `booking_api_ceiling`, `booking_api_credential`, `booking_api_list_read`.
+Keys: `booking_api_ceiling`, `booking_api_credential`, `booking_api_list_read`,
+`retired_booking_key:*` (one per retired key and kind of host).
 
 **What fired it.** Slate is turning its own integration away. Note this is the opposite
 of the limiter section above: those controls fail OPEN, so a page there means requests
 are being served unmetered. Here somebody is actually being refused, and if the caller
 is the automated booker then every lead in those requests was refused too.
 
-Each of the three is deliberately kept out of the booking failure share, because
+The first three are deliberately kept out of the booking failure share, because
 `attempts` there is every recorded outcome summed and putting a noisy caller's volume in
 that denominator would make a real outage look proportionally smaller while it is
 happening. They are measured against their own totals instead, which is why they page on
@@ -417,10 +418,23 @@ their own keys.
   its sync has stalled. The same table is on the booking write path, so check whether
   bookings are still completing.
 
+- `retired_booking_key:*` (#2879) means a request presented a key Slate RETIRED, so it
+  was refused, and the message names which retired key (its label, never the value),
+  the host and the route. The host is the lead: the production site means a partner's
+  live environment still holds it, a call that named no host means a server or a
+  script. It pages once per retired key per kind of host per cooldown, so two retired
+  keys from the same host each page. Every presentation is logged as `tag=booking-api msg="retired key
+  presented"` with the same fields, so the log shows every call, not only the one
+  that paged. The repair is at the caller: give it its own key (`docs/booking-api.md`
+  section 2). It is an incident, so it never sends an all clear; it goes quiet once
+  nobody presents the key for a cooldown.
+
 **Fix or escalate.** A missing secret and a rejected key are both time-sensitive once
 the automated booker is live: leads are being refused for as long as it lasts. A ceiling
 trip is a capacity decision rather than a fault, so it can wait for someone who can
-choose the number. All three clear on their own once the condition ends.
+choose the number. The first three clear on their own once the condition ends and
+say so. The retired key page never sends an all clear, because nothing Slate can
+observe says the holder stopped: it simply goes quiet once nobody presents the key.
 
 ---
 

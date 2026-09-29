@@ -1293,6 +1293,17 @@ developer calling with the production key from their own server satisfies it too
 The same fact is shown on `/admin/booking-outcomes`, judged by the same function
 (`judgePartnerKey`, `src/lib/booking/caller-seen.ts`).
 
+**A hand run probe with a partner's key must send `X-Slate-Probe: <why>` (#2868).**
+A probe from a script or curl names no host either, so unmarked it reads exactly as
+trypennie's server lookup and turns this exit green by itself (L58). A marked call is
+served exactly as an unmarked one and recorded under `probe:<caller>` (for example
+`probe:trypennie`) with its real host kind, so the key it used stays visible. This
+command reads only `BOOKING_API_CALLERS` and `judgePartnerKey` reads only the named
+caller's rows, so a probe row never proves anything; the admin card reads the
+`probe:` names too and lists them apart under "Slate's own probes".
+This replaces the old workaround of sending a localhost `Origin`, which kept the probe
+out of the proof only by making it look like a developer's browser.
+
 **Exits 17 and 18 are retired (#2865).** They judged the shared booking key: 17 read
 calls arriving on it from trypennie's production site as trypennie holding the wrong
 key (#2819), and 18 reported it being sent from a browser (#2822). The shared key is

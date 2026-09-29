@@ -1,0 +1,338 @@
+/**
+ * Noticing a RETIRED booking API key being presented (#2879).
+ *
+ * #2865 retired the shared `BOOKING_API_KEY`. trypennie's staging project still held
+ * it, and on 2026-09-29 its confirmed page was refused 401 after a real booking and
+ * rendered its not found page. Nothing noticed: the caller sightings
+ * (`caller-seen.ts`) record only keys that AUTHENTICATE, and a refusal is not
+ * attributed to anybody. The same will happen at every future rotation, since each
+ * caller's two slots exist precisely so keys can be retired.
+ *
+ * So Slate keeps a HASH of each retired key, never the key. The list is committed in
+ * `docs/retired-booking-key-hashes.txt` (hashes are not secret, and a secret cannot
+ * be read back or appended to), and the Worker reads the same list from the
+ * `BOOKING_API_RETIRED_KEY_HASHES` secret. When a refused request presents one, the refusal is exactly what it
+ * was, and afterwards the presentation is recorded and paged once per retired key
+ * per host kind per cooldown, naming the host and the route, so whoever still holds
+ * it can be found.
+ *
+ * THE HASH is a plain SHA-256 of the exact token, hex encoded, because the auth path
+ * compares the exact token after `Bearer ` with nothing trimmed. `sha256Hex` is the
+ * one implementation, used both here and by `pnpm hash:retired-key`, which is how a
+ * person computes the value to store.
+ *
+ * WHY PER LABEL AND HOST KIND and not per origin: an alert key derived from request
+ * text must be mapped onto a fixed set first (#2755), or any caller could mint
+ * throttle rows without limit. The configured labels and the four host kinds are
+ * that set, and the ORIGIN is named in the message instead. The label is in the key
+ * because the message names it: keyed on host kind alone, a second retired key from
+ * the same kind of host would be silenced behind the first (L707).
+ *
+ * WHY IT COSTS NOTHING ON THE HOT PATH. It runs only on a 401 that carried a token,
+ * and all of it (hashing, the cooldown read, the send) is deferred past the response.
+ * An isolate throttle holds each retired key and host kind to one dispatcher call a minute, so a
+ * client retrying a retired key in a loop costs one `alert_state` read a minute per
+ * isolate rather than one per request; the dispatcher's own cooldown decides whether
+ * that call pages. A failed send releases the throttle (L368).
+ *
+ * ARMING. Unset is inert, and that is a stated state rather than a silent one: the
+ * one step that arms it is in DEPLOY.md. A value that is SET and cannot be read
+ * (a raw key pasted instead of a hash, a missing label) refuses loudly on every
+ * refused request rather than reading as "nothing is retired" (L98).
+ *
+ * Pure apart from its injected seams; `retired-key-watch.ts` wires the real ones and
+ * `scripts/test-retired-booking-keys.ts` drives this.
+ */
+import { timingSafeEqual } from "@/lib/bearer-auth";
+import type { ThrottledNotify } from "@/lib/monitor/alert-deps";
+import { requestHost, type CallerHostKind, type HeaderSource } from "@/lib/booking/caller-seen";
+
+/**
+ * The setting holding the hashes, as `label:sha256:<hex>` entries, comma separated.
+ * The `sha256:` part is REQUIRED: a raw 64 hex key pasted as `label:<key>` has the
+ * same shape as a bare hash, would parse, and could never match anything, so an
+ * entry without it is refused as unreadable rather than accepted.
+ */
+export const RETIRED_KEY_HASHES_ENV = "BOOKING_API_RETIRED_KEY_HASHES";
+
+/** The alert family, one member per retired key label and host kind. Also the cooldown's key. */
+export const RETIRED_KEY_ALERT_FAMILY = "retired_booking_key";
+
+/** How long one isolate waits before asking the dispatcher again for one retired key from one host kind. */
+export const RETIRED_KEY_ISOLATE_THROTTLE_MS = 60_000;
+
+export interface RetiredKeyHash {
+  /** A name for the retired key, never the key: "shared", "regal-2026-09". */
+  label: string;
+  /** SHA-256 of the exact token, lowercase hex. */
+  sha256: string;
+}
+
+export class RetiredKeyConfigError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "RetiredKeyConfigError";
+  }
+}
+
+const LABEL = /^[a-z][a-z0-9-]{0,39}$/;
+const HEX64 = /^[0-9a-f]{64}$/;
+/** The algorithm tag every stored entry carries between its label and its hash. */
+const HASH_TAG = "sha256:";
+
+/**
+ * Read the configured hashes. Blank is nothing retired. Anything set and unusable
+ * THROWS, naming the entry by position and the rule it broke and never echoing the
+ * value, because a raw key pasted here by mistake must not reach a log line.
+ */
+export function parseRetiredKeyHashes(raw: string): RetiredKeyHash[] {
+  // Lines starting with `#` are comments (the committed file's header), dropped
+  // whole before splitting, so a comma inside one never makes an entry.
+  const body = raw
+    .split(/\r?\n/)
+    .filter((line) => !line.trim().startsWith("#"))
+    .join("\n")
+    .trim();
+  if (!body) return [];
+  const out: RetiredKeyHash[] = [];
+  // Commas or newlines, so the committed file of hashes (one entry per line) and the
+  // secret (one comma separated line) are both read. Leading and trailing blank space
+  // is dropped; an empty entry BETWEEN two others is still refused.
+  const entries = body.split(/,|\r?\n/);
+  entries.forEach((entry, i) => {
+    const where = `${RETIRED_KEY_HASHES_ENV} entry ${i + 1}`;
+    const text = entry.trim();
+    if (!text) throw new RetiredKeyConfigError(`${where} is empty; write label:sha256:<hash> entries separated by commas`);
+    const sep = text.indexOf(":");
+    if (sep < 0) throw new RetiredKeyConfigError(`${where} has no label; write it as label:sha256:<hash>`);
+    const label = text.slice(0, sep).trim();
+    const rest = text.slice(sep + 1).trim();
+    if (!LABEL.test(label)) {
+      throw new RetiredKeyConfigError(`${where} has a label that is not lowercase letters, digits and hyphens`);
+    }
+    if (!rest.toLowerCase().startsWith(HASH_TAG)) {
+      throw new RetiredKeyConfigError(
+        `${where} has no sha256: part, so it may be a raw key rather than a hash; store the line pnpm hash:retired-key prints (label:sha256:<hash>), never the key`,
+      );
+    }
+    const sha256 = rest.slice(HASH_TAG.length).trim().toLowerCase();
+    if (!HEX64.test(sha256)) {
+      throw new RetiredKeyConfigError(
+        `${where} is not a 64 hex character SHA-256; store the output of pnpm hash:retired-key, never the key`,
+      );
+    }
+    if (out.some((h) => h.label === label)) throw new RetiredKeyConfigError(`${where} uses the label "${label}" twice`);
+    out.push({ label, sha256 });
+  });
+  return out;
+}
+
+/**
+ * The whole value to store after adding one entry to the retired list (#2879).
+ * `wrangler secret put` REPLACES the secret and a secret cannot be read back, so
+ * piping one new line alone would silently stop noticing every key retired before
+ * it. The existing list comes from the committed file of hashes (hashes are not
+ * secret), is parsed first so an unreadable list is refused rather than extended,
+ * and the result is parsed again so a repeated label is refused before it is stored.
+ */
+export function combineRetiredKeyEntries(existing: string, line: string): string {
+  const current = parseRetiredKeyHashes(existing);
+  // An entry already present with the SAME hash is a no op, so a retry after a failed
+  // `wrangler secret put` succeeds. The same label for a different hash still falls
+  // through to the repeated label refusal below.
+  const adding = parseRetiredKeyHashes(line).filter(
+    (n) => !current.some((c) => c.label === n.label && c.sha256 === n.sha256),
+  );
+  const entries = [...current, ...adding];
+  const combined = entries.map((e) => `${e.label}:${HASH_TAG}${e.sha256}`).join(",");
+  parseRetiredKeyHashes(combined);
+  return combined;
+}
+
+/** SHA-256 of the exact text, lowercase hex. Web Crypto, so the Worker and node agree. */
+export async function sha256Hex(text: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
+  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+/**
+ * The `label:sha256:<hash>` entry for one retired key, which is what `pnpm hash:retired-key`
+ * prints and `parseRetiredKeyHashes` reads. Refuses a blank key and a key still in a
+ * live slot. It deliberately does NOT refuse a 64 hex character value: keys minted
+ * with `openssl rand -hex 32` (DEPLOY.md) have exactly that shape, so refusing it
+ * would make the commonest key impossible to retire. A hash pasted by mistake is
+ * guarded elsewhere: the key is read only from RETIRED_BOOKING_API_KEY, and the
+ * value stored always carries `label:sha256:`, so neither a bare hash nor a raw key
+ * pasted as `label:<key>` parses as an entry.
+ */
+export async function retiredKeyHashLine(
+  label: string,
+  key: string,
+  /** Every booking key configured where this runs; a match means the key is not retired. */
+  live: readonly LiveKey[] = [],
+): Promise<string> {
+  if (!LABEL.test(label)) throw new RetiredKeyConfigError(`${RETIRED_KEY_HASHES_ENV} label must be lowercase letters, digits and hyphens`);
+  if (!key.trim()) throw new RetiredKeyConfigError(`the retired key is empty, so there is nothing to hash for ${RETIRED_KEY_HASHES_ENV}`);
+  const liveIn = live.filter((k) => timingSafeEqual(k.secret, key)).map((k) => k.id);
+  if (liveIn.length) {
+    throw new RetiredKeyConfigError(
+      `that key is still live in ${liveIn.join(", ")}, so it is not retired: it authenticates, the watcher never sees it, ` +
+        `and its hash in ${RETIRED_KEY_HASHES_ENV} would cover nothing. Hash it at the rotation that removes it from that slot`,
+    );
+  }
+  return `${label}:${HASH_TAG}${await sha256Hex(key)}`;
+}
+
+/** A configured booking key, by its slot label. The secret never leaves this module. */
+export interface LiveKey {
+  id: string;
+  secret: string;
+}
+
+/**
+ * Retired hashes that equal a key still configured in a live slot. Such an entry can
+ * never fire (the key authenticates, so the watcher never sees it) while the list
+ * reads as armed, so the watcher treats it as a misconfiguration.
+ */
+export async function liveSlotsInRetiredList(
+  hashes: readonly RetiredKeyHash[],
+  live: readonly LiveKey[],
+): Promise<{ label: string; slot: string }[]> {
+  if (hashes.length === 0 || live.length === 0) return [];
+  const out: { label: string; slot: string }[] = [];
+  for (const k of live) {
+    const h = await sha256Hex(k.secret);
+    for (const r of hashes) if (timingSafeEqual(h, r.sha256)) out.push({ label: r.label, slot: k.id });
+  }
+  return out;
+}
+
+/** The retired key this token is, or null. Every hash is compared, in constant time. */
+export async function matchRetiredKey(token: string, hashes: readonly RetiredKeyHash[]): Promise<RetiredKeyHash | null> {
+  if (hashes.length === 0) return null;
+  const presented = await sha256Hex(token);
+  let found: RetiredKeyHash | null = null;
+  for (const h of hashes) {
+    if (timingSafeEqual(presented, h.sha256) && found === null) found = h;
+  }
+  return found;
+}
+
+/**
+ * The alert (and cooldown) key for one retired key from one kind of host. Keyed on
+ * the LABEL as well as the host kind, because the message names the label: a
+ * cooldown keyed coarser than that would silence a second retired key from the same
+ * host kind behind the first (L707). Both parts come from a bounded set: the host
+ * kinds, and the labels an operator configured (never text from the request).
+ */
+export function retiredKeyAlertKey(label: string, kind: CallerHostKind): string {
+  return `${RETIRED_KEY_ALERT_FAMILY}:${label}:${kind}`;
+}
+
+function describeHost(host: { kind: CallerHostKind; origin: string | null }): string {
+  const at = host.origin ?? "address unreadable";
+  switch (host.kind) {
+    case "production":
+      return `the production site (${at})`;
+    case "localhost":
+      return `localhost or a private address (${at})`;
+    case "other-host":
+      return `another host (${at})`;
+    case "unstated":
+      return "a call that named no host, so a server or a script";
+  }
+}
+
+export interface RetiredKeyPresentation {
+  label: string;
+  host: { kind: CallerHostKind; origin: string | null };
+  /** Method and path, never the query: `GET /api/bookings`. */
+  route: string;
+}
+
+/** The page. One builder, called by the send site and by `pnpm preview:alerts`. */
+export function formatRetiredKeyAlert(p: RetiredKeyPresentation): string {
+  return (
+    `A request used the retired booking key "${p.label}" from ${describeHost(p.host)}, on ${p.route}. ` +
+    `It was refused, so whoever still holds that key is being turned away: find the system ` +
+    `calling from there and give it its own key (docs/booking-api.md section 2).`
+  );
+}
+
+export type RetiredKeyEvent =
+  | ({ kind: "retired-key-presented" } & { label: string; hostKind: CallerHostKind; origin: string | null; route: string })
+  | { kind: "config-unreadable"; error: RetiredKeyConfigError };
+
+export interface RetiredKeyWatchDeps {
+  /** The raw setting, read at use so a changed secret needs no restart. */
+  rawHashes: () => string;
+  /** The booking keys configured on this deployment, to refuse a retired hash that is still live. */
+  liveKeys: () => readonly LiveKey[];
+  /** The alert's cooldown. Never throws (`loadMonitorCooldowns`). */
+  cooldownMs: () => Promise<number>;
+  /** The throttled dispatcher. Rejects on failure. */
+  notify: ThrottledNotify<unknown>;
+  /** The record: a log line in production. */
+  report: (event: RetiredKeyEvent) => void;
+  /** Run work after the response (`afterResponse`), logging a rejection. */
+  defer: (work: () => Promise<unknown>) => void;
+  now: () => number;
+}
+
+/**
+ * Build the watcher the booking API's authorizer calls on every refused request that
+ * carried a token. It returns at once; everything else happens after the response.
+ */
+export function makeRetiredKeyWatcher(deps: RetiredKeyWatchDeps) {
+  const lastAsked = new Map<string, number>();
+  return function watchRetiredKey(
+    token: string | null,
+    method: string,
+    pathname: string,
+    headers: HeaderSource,
+  ): void {
+    if (token === null) return;
+    try {
+      const raw = deps.rawHashes();
+      if (!raw.trim()) return;
+      const host = requestHost(headers);
+      const route = `${method} ${pathname}`;
+      deps.defer(async () => {
+        let hashes: RetiredKeyHash[];
+        try {
+          hashes = parseRetiredKeyHashes(raw);
+        } catch (err) {
+          if (err instanceof RetiredKeyConfigError) deps.report({ kind: "config-unreadable", error: err });
+          throw err;
+        }
+        const stillLive = await liveSlotsInRetiredList(hashes, deps.liveKeys());
+        if (stillLive.length) {
+          const err = new RetiredKeyConfigError(
+            `${RETIRED_KEY_HASHES_ENV} names a key still live on this deployment (` +
+              stillLive.map((m) => `${m.label} in ${m.slot}`).join(", ") +
+              `), which authenticates and so can never be noticed; remove that entry or retire the slot`,
+          );
+          deps.report({ kind: "config-unreadable", error: err });
+          throw err;
+        }
+        const match = await matchRetiredKey(token, hashes);
+        if (!match) return;
+        deps.report({ kind: "retired-key-presented", label: match.label, hostKind: host.kind, origin: host.origin, route });
+        const key = retiredKeyAlertKey(match.label, host.kind);
+        const nowMs = deps.now();
+        const last = lastAsked.get(key);
+        if (last !== undefined && nowMs - last < RETIRED_KEY_ISOLATE_THROTTLE_MS) return;
+        lastAsked.set(key, nowMs);
+        try {
+          await deps.notify(key, await deps.cooldownMs(), formatRetiredKeyAlert({ label: match.label, host, route }));
+        } catch (err) {
+          if (lastAsked.get(key) === nowMs) lastAsked.delete(key);
+          throw err;
+        }
+      });
+    } catch {
+      // Nothing about noticing a retired key may reach the refusal itself. The
+      // scheduler is the only thing here that can throw synchronously.
+    }
+  };
+}

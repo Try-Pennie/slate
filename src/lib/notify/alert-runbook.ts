@@ -120,6 +120,9 @@ const FAMILY_BY_KEY: Record<string, AlertFamily> = {
   booking_api_ceiling: "the-booking-api-is-refusing-its-caller",
   booking_api_credential: "the-booking-api-is-refusing-its-caller",
   booking_api_list_read: "the-booking-api-is-refusing-its-caller",
+  // #2879. A caller presenting a key Slate retired is being refused on every call,
+  // which is this family's premise, with a named repair: give it its own key.
+  retired_booking_key: "the-booking-api-is-refusing-its-caller",
   recompute_headroom: "a-sweep-cannot-keep-up",
   calendar_window_uncovered: "the-booker-is-offering-nothing-or-too-little",
   hydration_all_failing: "google-cannot-be-reached-for-an-agent",

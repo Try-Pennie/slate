@@ -27,11 +27,13 @@ const rateLimit = vi.hoisted(() => ({
 }));
 const tally = vi.hoisted(() => ({ recordApiOutcome: vi.fn() }));
 const seen = vi.hoisted(() => ({ recordCallerSeen: vi.fn() }));
+const retired = vi.hoisted(() => ({ watchRetiredKey: vi.fn() }));
 
 vi.mock("@/lib/env", () => env);
 vi.mock("@/lib/rate-limit", () => rateLimit);
 vi.mock("@/lib/monitor/record-api-outcome", () => tally);
 vi.mock("@/lib/booking/record-caller-seen", () => seen);
+vi.mock("@/lib/booking/retired-key-watch", () => retired);
 
 import { authorizeBookingApi } from "./route-auth";
 import { DIRECT_BOOKING_API_IP_HOURLY_RATE_RULES } from "@/lib/rate-limit-core";
@@ -269,9 +271,65 @@ describe("authorizeBookingApi records who authenticated (#2717)", () => {
     expect(seen.recordCallerSeen).not.toHaveBeenCalled();
   });
 
+  // #2868: a probe marker changes only how a SUCCESS is recorded, so a marked call
+  // whose key fails auth leaves no row under the caller or under probe:<caller>.
+  it("records nothing for a marked probe whose key fails auth", async () => {
+    const r = req("Bearer stalekey");
+    r.headers.set("x-slate-probe", "key check");
+    const out = await authorizeBookingApi(r);
+    expect(out.ok).toBe(false);
+    expect(seen.recordCallerSeen).not.toHaveBeenCalled();
+  });
+
+  it("hands a marked probe that authenticates to the recorder with its headers, so it is recorded as a probe", async () => {
+    const r = req("Bearer trypenniesecret");
+    r.headers.set("x-slate-probe", "key check");
+    const out = await authorizeBookingApi(r);
+    expect(out.ok).toBe(true);
+    expect(seen.recordCallerSeen).toHaveBeenCalledTimes(1);
+    const [, , headers] = seen.recordCallerSeen.mock.calls[0];
+    expect((headers as Headers).get("x-slate-probe")).toBe("key check");
+  });
+
   it("records nothing for a good key the ceiling refused", async () => {
     rateLimit.bookingApiWriteWithinLimit.mockResolvedValue(false);
     await authorizeBookingApi(req("Bearer trypenniesecret"));
     expect(seen.recordCallerSeen).not.toHaveBeenCalled();
+  });
+});
+
+describe("authorizeBookingApi asks whether a refused key is a retired one (#2879)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    env.bookingApiKeyFor.mockImplementation(regalKeyFor);
+    regalKey.primary.mockReturnValue("goodsecret");
+    rateLimit.allowRequest.mockResolvedValue(true);
+    rateLimit.bookingApiWriteWithinLimit.mockResolvedValue(true);
+    rateLimit.bookingApiReadWithinLimit.mockResolvedValue(true);
+    rateLimit.bookingApiIpWithinLimit.mockResolvedValue(true);
+  });
+
+  it("hands a refused, present token to the watcher with the method, path and headers", async () => {
+    const r = req("Bearer oldsharedkey");
+    const out = await authorizeBookingApi(r);
+    expect(retired.watchRetiredKey).toHaveBeenCalledTimes(1);
+    const [token, method, path, headers] = retired.watchRetiredKey.mock.calls[0];
+    expect(token).toBe("oldsharedkey");
+    expect(method).toBe("POST");
+    expect(path).toBe("/api/bookings");
+    expect(headers).toBe(r.headers);
+    // Refused exactly as before: the same 401 and the same body.
+    expect(out.ok).toBe(false);
+    if (out.ok) return;
+    expect(out.response.status).toBe(401);
+    expect(await out.response.json()).toEqual({ error: "unauthorized" });
+  });
+
+  it("asks nothing for a request with no credential, a good key, or no key configured", async () => {
+    await authorizeBookingApi(req());
+    await authorizeBookingApi(req("Bearer goodsecret"));
+    env.bookingApiKeyFor.mockImplementation(() => "");
+    await authorizeBookingApi(req("Bearer oldsharedkey"));
+    expect(retired.watchRetiredKey).not.toHaveBeenCalled();
   });
 });

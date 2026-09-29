@@ -118,7 +118,23 @@ Authorization: Bearer <your caller's key>
   the same value: the request would be attributed to whichever is listed first.
 - **Each caller has two slots** so its secret rotates with **zero downtime**: add
   the new key in the `_2` slot, point that caller at it, then retire the primary.
+  **When you retire one, add its hash to `BOOKING_API_RETIRED_KEY_HASHES`**
+  (#2879, the step is in `DEPLOY.md`), so a caller still presenting it pages
+  `retired_booking_key` naming its host and route, instead of being found by a lead
+  landing on a broken page. Do it once the old value has LEFT its slot, never
+  before: a key still in a live slot authenticates, so its hash can never fire.
+  The list is empty today, because the old shared key's value still lives in
+  `BOOKING_API_KEY_TRYPENNIE_2`; it is armed at the next rotation.
+  `pnpm -s hash:retired-key <label>` prints the WHOLE list (the committed
+  `docs/retired-booking-key-hashes.txt` plus the new entry) for the secret, because
+  `wrangler secret put` replaces the value and it cannot be read back; once the put
+  succeeds, `pnpm -s hash:retired-key --record <label>` adds the entry to the file.
 - `503` if no key is configured (endpoint disabled); `401` on a missing/wrong key.
+- **A hand run probe with a partner's key sends `X-Slate-Probe: <why>`** (#2868), for
+  example `curl -H 'X-Slate-Probe: key check after rotation' ...`. It is answered
+  exactly as any call, and recorded as `probe:<caller>` rather than as the partner, so
+  it can never make their key look proven in `pnpm verify:parallel-run-readiness` or
+  on `/admin/booking-outcomes`. Do not fake an `Origin` to achieve the same thing.
 - The smoke endpoints (`/api/smoke/*`) and the hidden test buckets accept only
   the canary's key, never a partner's.
 - **Rate limit:** per CALLER (both of a caller's slots share one budget), generous, a runaway/leaked-key backstop rather than a

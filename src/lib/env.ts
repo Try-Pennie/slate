@@ -161,6 +161,12 @@ const BOOKING_API_KEYS: Record<BookingApiCaller, Record<KeySlot, () => string>> 
 export const bookingApiKeyFor = (caller: BookingApiCaller, slot: KeySlot): string =>
   BOOKING_API_KEYS[caller][slot]();
 
+// Hashes of RETIRED booking API keys (#2879), as `label:sha256:<hex>` entries separated by
+// commas, never the keys. A refused request presenting one pages, naming its host and
+// route (`src/lib/booking/retired-keys.ts`). Empty = the check is inert. A Worker
+// secret, so even the hash stays out of the repo; `pnpm hash:retired-key` computes it.
+export const bookingApiRetiredKeyHashes = (): string => process.env.BOOKING_API_RETIRED_KEY_HASHES ?? "";
+
 // Fine-grained GitHub token (Actions: read/write on Try-Pennie/slate) so the
 // monitor lane can trigger the smoke-canary workflow when GitHub's own schedule
 // drops a run (#525 follow-up). Empty = gap-filler is a quiet no-op (GitHub's

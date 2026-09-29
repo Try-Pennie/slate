@@ -20,6 +20,7 @@
     "build:confirmation-mark": "node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/build-confirmation-mark-assets.ts",
     "preview:booker": "node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/preview-booker.ts",
     "bundle:record": "NODE_NO_WARNINGS=1 node --experimental-strip-types scripts/bundle-budget.ts record",
+    "hash:retired-key": "node --env-file-if-exists=.env.local --experimental-strip-types --import ./scripts/register-paths.mjs scripts/hash-retired-key.ts",
     "preview:alerts": "node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/preview-alerts.ts",
     "check:workflow-settings": "node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/check-workflow-settings.ts",
     "import:calcom-schedules": "node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/import-calcom-schedules.ts",
