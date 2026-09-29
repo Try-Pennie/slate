@@ -1309,7 +1309,7 @@ telling the two apart needs the stamp #1753 asks for, and belongs there.
 
 **It retires at cutover (#65)** with the rest of the family, and since #2875 it
 says so itself: once cal.com is marked retired on /admin/alerts it exits 19 with a
-`RETIRED:` line before reading anything else, rather than holding red for ever on a
+`RETIRED:` line, and that verdict outranks every other section it read, rather than holding red for ever on a
 comparison that has stopped by design. A retired setting it cannot read is an
 unreadable section (exit 2), never a pass.
 
