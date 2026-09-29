@@ -1,6 +1,6 @@
 // Tests for the pure MIME assembly used by the Gmail sender.
 // Run: node --experimental-strip-types scripts/test-email-mime.ts
-import { buildMimeMessage, base64Mime, quotedPrintable } from "../src/lib/notify/email-mime.ts";
+import { buildMimeMessage, base64Mime, quotedPrintable, plainTextToHtml } from "../src/lib/notify/email-mime.ts";
 import { assert, finish } from "./lib/harness.ts";
 
 assert(base64Mime("hi") === "aGk=", "base64Mime encodes ascii");
@@ -92,6 +92,174 @@ function textPart(raw: string, boundary: string): { headers: string; wire: strin
   const body = "x".repeat(73) + "’".repeat(10);
   const wire = quotedPrintable(body);
   assert(decodeQuotedPrintable(wire) === body, "#2625: a soft break never lands inside an escape");
+}
+
+// ---- #2895: an HTML alternative, derived from the same plain text ----------------
+// Mail clients show text/plain in a fixed width column, so a reminder read with its
+// sentences broken mid line, and Regal's conversation view dropped the blank lines
+// altogether. The fix sends multipart/alternative: the unchanged text part FIRST
+// (the fallback) and an HTML part SECOND (what clients prefer to render), and the
+// HTML is DERIVED from the text so the words live in one place (L41).
+//
+// What this can prove is the structure Slate SENDS. What arrives is decided by the
+// Gmail API, which on 2026-09-29 was measured rewriting a single part message into
+// a hard wrapped text/plain one, so delivery is confirmed by a real send, not here.
+
+/** Split a message or part into its header block and its body. */
+function splitHead(raw: string): { headers: string; body: string } {
+  const at = raw.indexOf("\r\n\r\n");
+  return { headers: raw.slice(0, at), body: raw.slice(at + 4) };
+}
+
+/** An independent multipart reader: every part between exact delimiter lines. */
+function parts(body: string, boundary: string): { headers: string; body: string }[] {
+  const out: string[][] = [];
+  let current: string[] | null = null;
+  let closed = false;
+  for (const line of body.split("\r\n")) {
+    if (line === `--${boundary}--`) {
+      if (current) out.push(current);
+      current = null;
+      closed = true;
+      break;
+    }
+    if (line === `--${boundary}`) {
+      if (current) out.push(current);
+      current = [];
+      continue;
+    }
+    if (current) current.push(line);
+  }
+  assert(closed, `the ${boundary} envelope is closed with its final delimiter`);
+  return out.map((l) => splitHead(l.join("\r\n")));
+}
+
+function boundaryOf(headers: string, type: string): string {
+  const m = headers.match(new RegExp(`Content-Type: ${type}; boundary="([^"]+)"`));
+  assert(m !== null, `declares Content-Type ${type} with a boundary`);
+  return m ? m[1] : "";
+}
+
+const REMINDER_BODY = [
+  "Hi, this is a reminder that your call with David Haggerty at Pennie is today at 5:10pm EDT.",
+  "",
+  "We will call you on the number you gave us, so there is nothing you need to set up.",
+  "",
+  "If that time no longer works, you can pick another or cancel here: https://slate.trypennie.app/booking/manage/RShnO4RXlgClwSS4B2WEAUQ2",
+  "",
+  "If it is easier, just reply to this email and it will reach me directly.",
+  "",
+  "David Haggerty",
+  "Pennie",
+].join("\n");
+
+/** The text part exactly as Slate sent it before #2895, rebuilt from its pieces. */
+const TEXT_PART_BEFORE =
+  'Content-Type: text/plain; charset="UTF-8"\r\nContent-Transfer-Encoding: quoted-printable\r\n\r\n' +
+  quotedPrintable(REMINDER_BODY);
+
+const REMINDER_HTML_BODY = [
+  "<p>Hi, this is a reminder that your call with David Haggerty at Pennie is today at 5:10pm EDT.</p>",
+  "<p>We will call you on the number you gave us, so there is nothing you need to set up.</p>",
+  '<p>If that time no longer works, you can pick another or cancel here: <a href="https://slate.trypennie.app/booking/manage/RShnO4RXlgClwSS4B2WEAUQ2">https://slate.trypennie.app/booking/manage/RShnO4RXlgClwSS4B2WEAUQ2</a></p>',
+  "<p>If it is easier, just reply to this email and it will reach me directly.</p>",
+  "<p>David Haggerty<br>\nPennie</p>",
+].join("\n");
+
+function checkAlternative(alt: { headers: string; body: string }[], label: string): void {
+  assert(alt.length === 2, `${label}: the alternative holds exactly two parts (got ${alt.length})`);
+  const [text, html] = alt;
+  if (!text || !html) return;
+  assert(/^Content-Type: text\/plain; charset="UTF-8"$/m.test(text.headers), `${label}: the FIRST alternative is text/plain UTF-8, the fallback`);
+  assert(`${text.headers}\r\n\r\n${text.body}` === TEXT_PART_BEFORE, `${label}: the text part is byte identical to what was sent before`);
+  assert(decodeQuotedPrintable(text.body) === REMINDER_BODY, `${label}: the decoded text is the body exactly`);
+  assert(/^Content-Type: text\/html; charset="UTF-8"$/m.test(html.headers), `${label}: the SECOND alternative is text/html UTF-8, the one clients prefer`);
+  assert(/^Content-Transfer-Encoding: quoted-printable$/m.test(html.headers), `${label}: the html part is quoted-printable`);
+  const longest = Math.max(...html.body.split("\r\n").map((l) => l.length));
+  assert(longest <= 76, `${label}: no html line on the wire is over 76 characters (longest ${longest})`);
+  const decoded = decodeQuotedPrintable(html.body);
+  assert(decoded === plainTextToHtml(REMINDER_BODY), `${label}: the html part decodes to the html derived from the body`);
+  assert(decoded.includes(REMINDER_HTML_BODY), `${label}: the html carries one <p> per paragraph and the manage link`);
+}
+
+{
+  // No attachment (the reminder): multipart/alternative at the top.
+  const raw = buildMimeMessage({ from: "a@x.com", to: ["b@y.com"], subject: "s", body: REMINDER_BODY }, "RB");
+  const { headers, body } = splitHead(raw);
+  assert(/^MIME-Version: 1\.0$/m.test(headers), "#2895: still MIME 1.0");
+  assert(!/multipart\/mixed/.test(headers), "#2895: without attachments there is no mixed wrapper");
+  checkAlternative(parts(body, boundaryOf(headers, "multipart/alternative")), "#2895 no attachment");
+}
+
+{
+  // With an attachment (the OOO approvals digest): mixed, holding the alternative
+  // first and the attachment after it.
+  const csv = "h1,h2\nv1,v2";
+  const raw = buildMimeMessage(
+    {
+      from: "a@x.com",
+      to: ["b@y.com"],
+      subject: "s",
+      body: REMINDER_BODY,
+      attachments: [{ filename: "a.csv", content: csv, mimeType: "text/csv" }],
+    },
+    "MB",
+  );
+  const { headers, body } = splitHead(raw);
+  const outer = boundaryOf(headers, "multipart/mixed");
+  const top = parts(body, outer);
+  assert(top.length === 2, `#2895 attachment: mixed holds the alternative plus one attachment (got ${top.length})`);
+  const inner = boundaryOf(top[0]?.headers ?? "", "multipart/alternative");
+  assert(inner !== "" && !inner.startsWith(outer) && !outer.startsWith(inner), "#2895 attachment: neither boundary is a prefix of the other, so no delimiter can be misread");
+  checkAlternative(parts(top[0]?.body ?? "", inner), "#2895 attachment");
+  assert(/Content-Disposition: attachment; filename="a.csv"/.test(top[1]?.headers ?? ""), "#2895 attachment: the attachment follows the alternative");
+  assert((top[1]?.body ?? "").trim() === base64Mime(csv), "#2895 attachment: the attachment body is unchanged");
+}
+
+// ---- plainTextToHtml: paragraphs, line breaks, links, and escaping ---------------
+{
+  const html = plainTextToHtml("One line\nsecond line\n\nNext paragraph");
+  assert(html.includes("<p>One line<br>\nsecond line</p>"), "#2895: a single line break inside a paragraph becomes <br>");
+  assert(html.includes("<p>Next paragraph</p>"), "#2895: a blank line starts a new <p>");
+  assert((html.match(/<p>/g) ?? []).length === 2, "#2895: one <p> per paragraph");
+  assert(/<meta charset="utf-8">/i.test(html), "#2895: the document declares UTF-8");
+  assert(!/<img|<style|style=|<link|<script|<font/i.test(html), "#2895: no images, styling, fonts or scripts");
+}
+{
+  const html = plainTextToHtml("a\n\n\n\n  \nb");
+  assert((html.match(/<p>/g) ?? []).length === 2, "#2895: a run of blank or whitespace lines is one paragraph break, never an empty <p>");
+}
+{
+  const url = "https://slate.trypennie.app/booking/manage/RShnO4RXlgClwSS4B2WEAUQ2";
+  const html = plainTextToHtml(`cancel here: ${url}`);
+  assert(html.includes(`cancel here: <a href="${url}">${url}</a>`), "#2895: a URL becomes a link to itself");
+  const trailing = plainTextToHtml(`See ${url}.`);
+  assert(trailing.includes(`<a href="${url}">${url}</a>.`), "#2895: sentence punctuation after a URL stays outside the link");
+}
+{
+  // A value from outside (an advisor name, a URL) must never become markup.
+  const html = plainTextToHtml(`Hi <script>alert("x")</script> & 'Tom' > "Jo"`);
+  assert(!html.includes("<script>"), "#2895: a tag in the text is escaped, not rendered");
+  assert(
+    html.includes("&lt;script&gt;alert(&quot;x&quot;)&lt;/script&gt; &amp; &#39;Tom&#39; &gt; &quot;Jo&quot;"),
+    "#2895: < > & and both quotes are escaped",
+  );
+  const link = plainTextToHtml(`https://x.com/a?b=1&c=2"onmouseover="bad`);
+  assert(!link.includes('"onmouseover="'), "#2895: a quote cannot close the href and add an attribute");
+  assert(link.includes('href="https://x.com/a?b=1&amp;c=2'), "#2895: an ampersand inside a link is escaped in the href");
+  const js = plainTextToHtml("javascript:alert(1)");
+  assert(!js.includes("<a"), "#2895: only http and https become links");
+  const angle = plainTextToHtml("https://x.com/<b>x</b>");
+  assert(!angle.includes("<b>") && angle.includes('<a href="https://x.com/">'), "#2895: markup after a URL is escaped and outside the link");
+  const name = plainTextToHtml("Your call with <img src=x onerror=alert(1)> at Pennie");
+  assert(!name.includes("<img") && name.includes("&lt;img src=x onerror=alert(1)&gt;"), "#2895: an advisor name carrying markup is escaped");
+}
+{
+  // Non ASCII survives the html part too.
+  const body = "José’s call… done";
+  const raw = buildMimeMessage({ from: "a@x.com", to: ["b@y.com"], subject: "s", body }, "U");
+  const alt = parts(splitHead(raw).body, "U");
+  assert(decodeQuotedPrintable(alt[1]?.body ?? "").includes("José’s call… done"), "#2895: non ASCII survives the html part");
 }
 
 finish();

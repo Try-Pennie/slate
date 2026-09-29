@@ -197,8 +197,11 @@ export function reminderSubject(input: ReminderCopyInput): string {
 }
 
 /**
- * Plain text, because that is what the Gmail path sends and because a reminder is
- * four sentences: a lead reading it on a phone gains nothing from markup.
+ * Plain text, and the ONLY copy of these words. The Gmail path sends it as the
+ * text part and derives the html part from it (`plainTextToHtml` in
+ * `src/lib/notify/email-mime.ts`, #2895): a blank line here is a paragraph there,
+ * and the manage URL becomes a link. So keep paragraphs separated by one blank
+ * line and write no markup; anything written here is escaped, never rendered.
  *
  * It is sent from the ADVISOR's own mailbox (Dan, 2026-09-15, over a shared or
  * noreply address), so a lead who replies "can we move this" reaches the person they

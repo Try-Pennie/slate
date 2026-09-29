@@ -35,14 +35,20 @@ export function base64Mime(input: string): string {
 const QP_LINE = 76;
 
 /**
- * Quoted-printable, for the TEXT part (#2625).
+ * Quoted-printable, for the text and html parts (#2625, #2895).
  *
  * The body used to go out as `7bit`, one long line per paragraph, and a mail hop
- * is free to hard wrap a line past 76 characters: a reminder arrived broken mid
- * sentence ("...at Pennie is" / "today at 6:50pm EDT."). Quoted-printable keeps
- * every line on the wire at 76 or under with SOFT breaks (`=` at the end of a
- * line), which every client removes again, so the reader sees the paragraphs
- * exactly as they were written. Real line breaks stay real (CRLF).
+ * is free to hard wrap a line past 76 characters. Quoted-printable keeps every
+ * line Slate PUTS ON THE WIRE at 76 or under with SOFT breaks (`=` at the end of
+ * a line), which a decoder removes again. Real line breaks stay real (CRLF).
+ *
+ * That is a claim about what Slate sends, not about what arrives. On 2026-09-29 a
+ * reminder sent through the Gmail API arrived re-encoded: one top level
+ * `text/plain` with no transfer encoding, hard wrapped near 72 characters on word
+ * boundaries, so the reader still saw sentences broken mid line (#2895). The fix
+ * for how a reader sees the paragraphs is the html alternative below, which
+ * clients render as flowing text; the text part stays as the fallback and may
+ * still arrive wrapped. Judge delivery by a real send's raw source (L726).
  *
  * Escaped: every non ASCII byte (UTF-8, so a curly quote survives), `=` itself,
  * and a space or tab at the end of a line, which a hop may otherwise strip. A soft
@@ -77,10 +83,106 @@ function encodeQpLine(line: string): string {
   return out.join("\r\n");
 }
 
+/** Escape every character HTML gives a meaning to, quotes included (attribute safe). */
+function escapeHtml(text: string): string {
+  return text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
 /**
- * Build a multipart/mixed message (text body + attachments). `boundary` is a
- * parameter so tests are deterministic; the caller passes a unique one in prod.
- * Encodes the Subject as RFC 2047 base64 so non-ASCII (e.g. a smart date) is safe.
+ * An http or https URL, stopping at whitespace, angle brackets and quotes, so a
+ * quote can never close the href it lands in.
+ */
+const URL_PATTERN = /https?:\/\/[^\s<>"']+/g;
+/** Sentence punctuation that ends a sentence rather than the URL before it. */
+const URL_TRAILING = /[.,;:!?)\]]+$/;
+
+function linkifyLine(line: string): string {
+  let out = "";
+  let last = 0;
+  for (const match of line.matchAll(URL_PATTERN)) {
+    const start = match.index ?? 0;
+    const url = match[0].replace(URL_TRAILING, "");
+    out += escapeHtml(line.slice(last, start));
+    const safe = escapeHtml(url);
+    out += `<a href="${safe}">${safe}</a>`;
+    last = start + url.length;
+  }
+  return out + escapeHtml(line.slice(last));
+}
+
+/**
+ * The html alternative, DERIVED from the plain text body (#2895) so the words live
+ * in one place (L41). Mail clients show text/plain in a fixed width column, and
+ * some viewers (Regal's conversation view) drop its blank lines, so a reader saw
+ * sentences broken mid line or paragraphs run together. Html flows.
+ *
+ * One `<p>` per blank line separated paragraph, a single line break inside one is
+ * a `<br>`, an http or https URL is a link to itself, and every other character is
+ * escaped, so a value carried in the copy (an advisor's name, a URL) can never
+ * become markup. Deliberately nothing else: no styling, images, fonts or tracking.
+ */
+export function plainTextToHtml(text: string): string {
+  // A blank or whitespace only line ends a paragraph; a run of them is one break.
+  const paragraphs: string[][] = [];
+  let current: string[] = [];
+  for (const line of text.replace(/\r\n/g, "\n").split("\n")) {
+    if (line.trim() === "") {
+      if (current.length > 0) paragraphs.push(current);
+      current = [];
+    } else {
+      current.push(line);
+    }
+  }
+  if (current.length > 0) paragraphs.push(current);
+  const body = paragraphs.map((lines) => `<p>${lines.map(linkifyLine).join("<br>\n")}</p>`);
+  return [
+    "<!DOCTYPE html>",
+    "<html>",
+    "<head>",
+    '<meta charset="utf-8">',
+    "</head>",
+    "<body>",
+    ...body,
+    "</body>",
+    "</html>",
+  ].join("\n");
+}
+
+/** A part's header lines, a blank line, then its body. */
+function part(headers: string[], body: string): string {
+  return [...headers, "", body].join("\r\n");
+}
+
+/**
+ * The text and html alternatives, text FIRST: RFC 2046 orders alternatives from
+ * plainest to richest, and a client shows the last one it can render.
+ */
+function alternativeBody(body: string, boundary: string): string {
+  return [
+    `--${boundary}`,
+    part(['Content-Type: text/plain; charset="UTF-8"', "Content-Transfer-Encoding: quoted-printable"], quotedPrintable(body)),
+    `--${boundary}`,
+    part(['Content-Type: text/html; charset="UTF-8"', "Content-Transfer-Encoding: quoted-printable"], quotedPrintable(plainTextToHtml(body))),
+    `--${boundary}--`,
+  ].join("\r\n");
+}
+
+/**
+ * Build the message. `boundary` is a parameter so tests are deterministic; the
+ * caller passes a unique one in prod. Encodes the Subject as RFC 2047 base64 so
+ * non-ASCII (e.g. a smart date) is safe.
+ *
+ * Structure (#2895):
+ *   no attachments:   multipart/alternative (text/plain, text/html)
+ *   with attachments: multipart/mixed (multipart/alternative (text, html), attachment...)
+ *
+ * The nested alternative's boundary is `alt_<boundary>`, which the outer delimiter
+ * is not a prefix of, so a parser can never read an inner delimiter as an outer one.
  */
 export function buildMimeMessage(msg: MimeMessage, boundary: string): string {
   const encodedSubject = `=?UTF-8?B?${btoa(
@@ -94,20 +196,24 @@ export function buildMimeMessage(msg: MimeMessage, boundary: string): string {
     ...(msg.replyTo ? [`Reply-To: ${msg.replyTo}`] : []),
     `Subject: ${encodedSubject}`,
     "MIME-Version: 1.0",
-    `Content-Type: multipart/mixed; boundary="${boundary}"`,
   ];
+  const attachments = msg.attachments ?? [];
 
+  if (attachments.length === 0) {
+    headers.push(`Content-Type: multipart/alternative; boundary="${boundary}"`);
+    return `${headers.join("\r\n")}\r\n\r\n${alternativeBody(msg.body, boundary)}`;
+  }
+
+  headers.push(`Content-Type: multipart/mixed; boundary="${boundary}"`);
+  const altBoundary = `alt_${boundary}`;
   const parts: string[] = [];
   parts.push(
     [
       `--${boundary}`,
-      'Content-Type: text/plain; charset="UTF-8"',
-      "Content-Transfer-Encoding: quoted-printable",
-      "",
-      quotedPrintable(msg.body),
+      part([`Content-Type: multipart/alternative; boundary="${altBoundary}"`], alternativeBody(msg.body, altBoundary)),
     ].join("\r\n"),
   );
-  for (const att of msg.attachments ?? []) {
+  for (const att of attachments) {
     parts.push(
       [
         `--${boundary}`,
