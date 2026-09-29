@@ -5,7 +5,8 @@
 // - the tier list is the routing vocabulary's, and a booking's tier is its bucket
 //   code's first digit, with the test buckets belonging to no tier;
 // - Low's anchor is the committed measurement, and that measurement really counted
-//   the Low tier, so the anchor is filed under the tier it describes (L70);
+//   the Low tier, so the anchor is filed under the tier it describes (L70); the
+//   other tiers' anchors are held the same way by test-volume-tier-anchors.ts;
 // - a tier's ramp start is its first real booking, and a declared ramp end can only
 //   move it later;
 // - each tier has its own alert key, Low keeping the one it has always paged on.
@@ -59,7 +60,8 @@ try {
 assert(threw, "a pattern is refused for anything that is not a tier, so a typo cannot match nothing");
 
 // --- the anchors ---
-eq(Object.keys(TIER_ANCHORS), [LOW_TIER], "only Low has been measured, so only Low has an anchor");
+// Which tiers beside Low carry an anchor, and that each is filed under the tier its
+// measurement counted, is pinned by scripts/test-volume-tier-anchors.ts (#2888).
 assert(TIER_ANCHORS[LOW_TIER] === MEASURED_VOLUME_BASELINE, "Low's anchor is the committed measurement");
 const fixture = JSON.parse(readFileSync("scripts/fixtures/calcom-low-bookings.json", "utf8")) as VolumeFixture;
 eq(fixture.tier, LOW_TIER, "and the committed measurement counted exactly that tier");

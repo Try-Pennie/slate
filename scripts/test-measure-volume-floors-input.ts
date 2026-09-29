@@ -15,7 +15,16 @@ const NO_NETWORK = "data:text/javascript,globalThis.fetch=()=>{throw new Error('
 // default, so an exported value on the machine running the suite cannot change what
 // a case means (L439). The key is a stand in: fetch is replaced, so it is never sent.
 function childEnv(extra: Record<string, string>): NodeJS.ProcessEnv {
-  return { ...process.env, CALCOM_API_KEY: "not-a-real-key", MEASURE_DAYS: "", MEASURE_PACE_MS: "", ...extra };
+  return {
+    ...process.env,
+    CALCOM_API_KEY: "not-a-real-key",
+    MEASURE_DAYS: "",
+    MEASURE_PACE_MS: "",
+    MEASURE_TIER: "",
+    REFIT: "",
+    RECORD_CLOSED_DAYS: "",
+    ...extra,
+  };
 }
 
 function run(env: Record<string, string>, script = "scripts/measure-volume-floors.ts") {
@@ -50,6 +59,26 @@ function run(env: Record<string, string>, script = "scripts/measure-volume-floor
   // that refuses everything.
   const r = run({ MEASURE_PACE_MS: "0" });
   assert(r.err.includes("network refused"), "a readable pace passes the guards and reaches for cal.com");
+}
+
+// #2888: MEASURE_TIER picks the tier, and a value that is not a tier is refused by
+// name before anything is read or written, in every mode, since a refit for the
+// wrong tier rewrites a committed anchor as surely as a live run does.
+for (const mode of [{}, { REFIT: "1" }, { RECORD_CLOSED_DAYS: "1" }] as Record<string, string>[]) {
+  for (const bad of ["9", "low", "1%"]) {
+    const r = run({ ...mode, MEASURE_TIER: bad, MEASURE_PACE_MS: "0" });
+    const label = `MEASURE_TIER=${bad}${mode.REFIT ? " with REFIT" : mode.RECORD_CLOSED_DAYS ? " with RECORD_CLOSED_DAYS" : ""}`;
+    assert(r.status === 1, `${label} exits 1 (got ${r.status})`);
+    assert(r.err.includes("FAILED (bad-input): MEASURE_TIER"), `${label} names the tier as what it could not read`);
+    assert(!r.err.includes("network refused"), `${label} refuses before any cal.com call`);
+  }
+}
+{
+  // Positive control: a real tier passes the guard and reaches for cal.com, so the
+  // refusals above came from the tier guard and not from a script refusing everything.
+  const r = run({ MEASURE_TIER: "3", MEASURE_PACE_MS: "0" });
+  assert(r.err.includes("network refused"), "MEASURE_TIER=3 passes the guard and reaches for cal.com");
+  assert(!r.err.includes("MEASURE_TIER"), "and says nothing about the tier");
 }
 
 {

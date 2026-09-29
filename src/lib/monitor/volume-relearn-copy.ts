@@ -15,8 +15,9 @@ import { DateTime } from "luxon";
 import { LEARNING, type LearnedFloors } from "./volume-learning.ts";
 import { parseStampMs } from "../date/stamp.ts";
 import { formatClockTime } from "../date/parse.ts";
-import { REFIT_OVERDUE_MS, baselineInForce, type BaselineInForce } from "./volume-relearn.ts";
-import { LOW_TIER, VOLUME_TIERS, tierLabel } from "./volume-tiers.ts";
+import { REFIT_OVERDUE_MS, baselineInForce, tierJudgedBaseline, type BaselineInForce } from "./volume-relearn.ts";
+import { LOW_TIER, TIER_ANCHORS, VOLUME_TIERS, tierLabel, type VolumeTier } from "./volume-tiers.ts";
+import type { VolumeBaseline } from "./volume-floors.ts";
 import { MEASURED_VOLUME_BASELINE } from "./volume-baseline.ts";
 
 /** The zone every date here is said in: the org's, which the measurement was judged in. */
@@ -147,22 +148,47 @@ export function learningStatusCopy(state: BaselineInForce, nowMs: number): Learn
 
 /**
  * One line for every tier beside Low (#2874), each saying what is true of it now:
- * judged against its own learned floors, carried and not judged yet (with when it
- * will be), or not carried at all. Every tier gets a line, so a tier that is not
- * judged is stated rather than absent (L678).
+ * judged against its own learned floors, judged against its cal.com measurement until
+ * those are learned (#2888), carried and not judged yet (with when it will be), or
+ * not carried at all. Whether a tier is judged comes from `tierJudgedBaseline`, the
+ * predicate the monitor's tier checks use, so the line and the alarm cannot disagree
+ * (L16). Every tier gets a line, so a tier that is not judged is stated rather than
+ * absent (L678).
  */
-export function tierLearningLines(input: { rampEndOn: string | null; learning: unknown }, nowMs: number): string[] {
+export function tierLearningLines(
+  input: { rampEndOn: string | null; learning: unknown },
+  nowMs: number,
+  anchors: Readonly<Partial<Record<VolumeTier, VolumeBaseline>>> = TIER_ANCHORS,
+): string[] {
   return VOLUME_TIERS.filter((t) => t !== LOW_TIER).map((tier) => {
-    const state = baselineInForce(input, tier);
+    const state = baselineInForce(input, tier, anchors);
     const label = tierLabel(tier);
+    const anchor = anchors[tier];
     if (state.kind === "learned") {
       const fittedMs = parseStampMs(state.fittedAt);
       const overdue = fittedMs === null || nowMs - fittedMs > REFIT_OVERDUE_MS;
+      const under = anchor && state.anchored
+        ? `none below its cal.com measurement from ${day(anchor.measuredOn)}`
+        : "with no cal.com measurement under them";
       return (
         `${label}: judged against floors learned from its own bookings since ${rampStartWords(state)}, ` +
-        `with no cal.com measurement under them, last refit ${instant(state.fittedAt)}.` +
+        `${under}, last refit ${instant(state.fittedAt)}.` +
         (overdue ? " No refit has succeeded since then." : "")
       );
+    }
+    if (state.kind === "measured" && tierJudgedBaseline(state)) {
+      const measurement = `its cal.com measurement from ${day(state.baseline.measuredOn)}`;
+      if (state.why === "insufficient") {
+        const weeks = weeksSoFar(state);
+        return (
+          `${label}: carried since its first real booking on ${state.entry?.firstBookingAt ? dayOf(state.entry.firstBookingAt) : "an unknown day"}, ` +
+          `and judged against ${measurement} until ${LEARNING.minWeeks} full weeks of its own bookings are learned ` +
+          `(${weeks === 1 ? "1 so far" : `${weeks} so far`}).`
+        );
+      }
+      return state.why === "other-ramp-end"
+        ? `${label}: judged against ${measurement}. The refit for the new ramp end runs on the next check, within 5 minutes.`
+        : `${label}: judged against ${measurement} until the next refit, within 5 minutes.`;
     }
     switch (state.why) {
       case "not-carried":

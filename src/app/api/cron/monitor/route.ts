@@ -1164,12 +1164,13 @@ export async function GET(req: NextRequest) {
     }
 
     // --- Low booking volume for every OTHER tier Slate carries (#2874) ---
-    // Which tiers those are is derived from the bookings Slate takes, and each is
-    // judged only once its own bookings have been learned (`resolveTierBaselines`),
-    // so widening the pilot to a new tier needs no code change and no refit by hand:
-    // four weeks after that tier's first real booking it is judged here on its own
-    // key. Same hours gate, arming switch and cooldown as Low. A tier carried and not
-    // yet learned is not in the list, and /admin/alerts says it is not judged.
+    // Which tiers those are is derived from the bookings Slate takes
+    // (`resolveTierBaselines`), so widening the pilot to a new tier needs no code
+    // change and no refit by hand: from that tier's first real booking it is judged
+    // here on its own key, against its cal.com measurement where it has one (#2888)
+    // and against its own learned floors four weeks later. Same hours gate, arming
+    // switch and cooldown as Low. A carried tier with no measurement and nothing
+    // learned yet is not in the list, and /admin/alerts says it is not judged.
     if (gates.lowVolume.run) {
       await steps.run("tier_volume", null, () =>
         runTierVolumeChecks({

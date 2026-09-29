@@ -33,8 +33,10 @@
  *
  * THE CAL.COM FIT IS THE FLOOR UNDER A MEASURED TIER'S LEARNED FLOOR TWICE:
  * `learnFloors` holds every cell at or above it when it fits, and `baselineInForce`
- * does again when it READS. A tier nobody has measured has nothing under it, so it
- * is UNJUDGED until its own traffic has been learned, and says so.
+ * does again when it READS. Until a carried measured tier is learned it is judged
+ * against that fit (`tierJudgedBaseline`, #2888). A tier nobody has measured has
+ * nothing under it, so it is UNJUDGED until its own traffic has been learned, and
+ * says so.
  *
  * No `@/` imports, so node scripts can drive it directly.
  */
@@ -294,6 +296,26 @@ export function baselineInForce(
     fittedAt: stored.fittedAt,
     anchored: anchor !== null,
   };
+}
+
+/**
+ * The floors a tier beside Low is judged against NOW, or null when it is not judged
+ * (#2874, #2888). The ONE predicate for it: the monitor's tier checks and the admin
+ * page's tier lines both come from here, so the page cannot say a tier is judged
+ * while the alarm skips it, or the reverse (L16).
+ *
+ * Learned: its learned floors, held at or above its anchor where it has one.
+ * Measured and CARRIED (its stored entry has a ramp start): its cal.com measurement,
+ * exactly as Low is judged against its own until it is learned. A measured tier that
+ * is not carried, or whose carrying is not known yet (nothing stored, an unreadable
+ * record), is NOT judged: Slate takes none of its traffic, so judging it against
+ * cal.com's would page on every tick for a tier nobody moved to Slate. Low is judged
+ * regardless because it is the tier the pilot moves first, and has its own check.
+ */
+export function tierJudgedBaseline(state: BaselineInForce): VolumeBaseline | null {
+  if (state.kind === "learned") return state.baseline;
+  if (state.kind === "measured" && state.entry?.rampStartAt) return state.baseline;
+  return null;
 }
 
 export type RelearnResult =

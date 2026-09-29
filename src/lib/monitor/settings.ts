@@ -4,8 +4,8 @@ import { log } from "@/lib/log";
 import type { MonitorAlertConfig, MonitorSettings } from "@/lib/db/types";
 import type { FloorOverride, FloorPolicy, VolumeBaseline } from "./volume-floors.ts";
 import { MEASURED_VOLUME_BASELINE } from "./volume-baseline.ts";
-import { baselineInForce } from "./volume-relearn.ts";
-import { LOW_TIER, VOLUME_TIERS, type VolumeTier } from "./volume-tiers.ts";
+import { baselineInForce, tierJudgedBaseline } from "./volume-relearn.ts";
+import { LOW_TIER, TIER_ANCHORS, VOLUME_TIERS, type VolumeTier } from "./volume-tiers.ts";
 
 /**
  * UI-tunable monitor alert settings (#571). Cooldowns and low-volume floors are
@@ -660,23 +660,29 @@ export function resolveFloors(
 }
 
 /**
- * The tiers judged BESIDE Low (#2874), each with the floors it is judged against:
- * exactly the tiers whose own bookings have been learned, through the same judge as
- * Low's floors. A tier carried and not yet learned is absent here and stated as not
- * judged on /admin/alerts, never judged against a guess. No overrides: the two floor
- * overrides are Low's knobs, named for the alarm that predates the tiers.
+ * The tiers judged BESIDE Low (#2874), each with the floors it is judged against,
+ * decided by `tierJudgedBaseline`, the same predicate /admin/alerts states them from:
+ * a learned tier on its learned floors, and a carried tier with a cal.com measurement
+ * on that measurement until it is learned (#2888). A carried tier with neither is
+ * absent here and stated as not judged on /admin/alerts, never judged against a
+ * guess. No overrides: the two floor overrides are Low's knobs, named for the alarm
+ * that predates the tiers.
  */
 export function resolveTierBaselines(
   config: Pick<MonitorAlertConfig, "volume_ramp_end_on" | "volume_learning"> | null,
+  anchors: Readonly<Partial<Record<VolumeTier, VolumeBaseline>>> = TIER_ANCHORS,
 ): Partial<Record<VolumeTier, VolumeBaseline>> {
   const out: Partial<Record<VolumeTier, VolumeBaseline>> = {};
   for (const tier of VOLUME_TIERS) {
     if (tier === LOW_TIER) continue;
-    const inForce = baselineInForce(
-      { rampEndOn: config?.volume_ramp_end_on ?? null, learning: config?.volume_learning ?? null },
-      tier,
+    const judged = tierJudgedBaseline(
+      baselineInForce(
+        { rampEndOn: config?.volume_ramp_end_on ?? null, learning: config?.volume_learning ?? null },
+        tier,
+        anchors,
+      ),
     );
-    if (inForce.kind === "learned") out[tier] = inForce.baseline;
+    if (judged) out[tier] = judged;
   }
   return out;
 }
