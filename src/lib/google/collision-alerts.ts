@@ -2,10 +2,20 @@
  * Paging for external double-book clashes (#316, #2905). Pure apart from the
  * injected notify, so a node test drives it.
  *
- * One page per CALL, keyed by the booking. The message names one call, and a
- * cooldown keyed by the advisor let a second clash on the same advisor sit
- * silent behind the first page, which read as the whole picture (L707).
+ * One page per CLASH. The message names one call and one outside event, and a
+ * cooldown keyed coarser than that lets a second clash sit silent behind the first
+ * page, which then reads as the whole picture (L707). Keyed by the advisor, a
+ * second call's clash was silenced; keyed by the call alone, a second outside
+ * event on it, or the call moved onto another clash, would have been.
+ *
+ * The booking id LEADS the key, because the retention prune reads it from there
+ * to reap the row once the call has passed.
  */
+export function doubleBookAlertKey(c: ExternalCollision): string {
+  // A Google event id carries no colon. One with no id is told apart by its window.
+  const event = c.gcalEventId ?? `w${c.eventStartMs}-${c.eventEndMs}`;
+  return `external_double_book:${c.bookingId}:${event}:${c.bookingStartMs}`;
+}
 import type { ExternalCollision } from "@/lib/google/collision";
 import { externalDoubleBookAlert } from "@/lib/notify/misc-alert-copy";
 import { log } from "@/lib/log";
@@ -34,7 +44,7 @@ export async function pageExternalCollisions(
     // advisor's other clashes unpaged (L73).
     try {
       await deps.notify(
-        `external_double_book:${c.bookingId}`,
+        doubleBookAlertKey(c),
         DOUBLE_BOOK_COOLDOWN_MS,
         externalDoubleBookAlert(email, {
           bookingUrl: deps.bookingUrl(c.bookingId),

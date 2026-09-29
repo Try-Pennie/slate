@@ -35,7 +35,9 @@ const url = (id: string) => `https://slate.test/admin/bookings/${id}`;
     clash("b-1", "2026-10-01T17:00:00Z", "2026-10-01T17:00:00Z", "2026-10-01T17:30:00Z"),
     clash("b-2", "2026-10-02T14:00:00Z", "2026-10-02T13:30:00Z", "2026-10-02T14:30:00Z"),
   ], { notify: r.notify, bookingUrl: url });
-  eq(r.sent.map((s) => s.key), ["external_double_book:b-1", "external_double_book:b-2"], "one key per call");
+  assert(r.sent.length === 2 && r.sent[0].key !== r.sent[1].key, "one page, on its own key, per call");
+  assert(r.sent[0].key.startsWith("external_double_book:b-1:") && r.sent[1].key.startsWith("external_double_book:b-2:"),
+    `each key leads with its booking id, which the retention prune reads: ${r.sent.map((x) => x.key)}`);
   assert(r.sent[0].text.includes(url("b-1")) && !r.sent[0].text.includes(url("b-2")), "the first page names only its call");
   assert(r.sent[1].text.includes(url("b-2")) && !r.sent[1].text.includes(url("b-1")), "the second page names only its call");
   assert(r.sent[1].text.includes("Fri, Oct 2") && r.sent[1].text.includes("10:00am ET"), `second page carries its time: ${r.sent[1].text}`);
@@ -59,15 +61,33 @@ const url = (id: string) => `https://slate.test/admin/bookings/${id}`;
     clash("b-2", "2026-10-02T14:00:00Z", "2026-10-02T13:30:00Z", "2026-10-02T14:30:00Z"),
   ], {
     notify: async (key) => {
-      if (key.endsWith("b-1")) throw new Error("slack down");
+      if (key.includes(":b-1:")) throw new Error("slack down");
       sent.push(key);
     },
     bookingUrl: url,
   });
-  eq(sent, ["external_double_book:b-2"], "a throw on the first call still pages the second");
+  assert(sent.length === 1 && sent[0].startsWith("external_double_book:b-2:"), "a throw on the first call still pages the second");
 }
 
-// 4. No clashes, no pages.
+// 4. The key names the CLASH, not only the call: a second outside event on the same
+//    call, or the call moved onto another clash, is a new page rather than one
+//    silenced behind the first for a day. The same clash seen again keeps its key.
+{
+  const keyOf = async (c: ExternalCollision) => {
+    const r = recorder();
+    await pageExternalCollisions("x@trypennie.com", [c], { notify: r.notify, bookingUrl: url });
+    return r.sent[0].key;
+  };
+  const base = clash("b-1", "2026-10-01T17:00:00Z", "2026-10-01T17:00:00Z", "2026-10-01T17:30:00Z");
+  eq(await keyOf(base), await keyOf({ ...base }), "the same clash seen on the next sync keeps its key");
+  assert(await keyOf(base) !== await keyOf({ ...base, gcalEventId: "ev-other" }), "another outside event on the call is a new key");
+  assert(await keyOf(base) !== await keyOf({ ...base, bookingStartMs: T("2026-10-01T18:00:00Z") }),
+    "the call moved onto another clash is a new key");
+  assert(await keyOf({ ...base, gcalEventId: null }) !== await keyOf({ ...base, gcalEventId: null, eventStartMs: T("2026-10-01T16:45:00Z") }),
+    "an outside event with no id is told apart by its window");
+}
+
+// 5. No clashes, no pages.
 {
   const r = recorder();
   await pageExternalCollisions("x@trypennie.com", [], { notify: r.notify, bookingUrl: url });

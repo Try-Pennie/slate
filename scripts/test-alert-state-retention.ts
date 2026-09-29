@@ -59,6 +59,19 @@ for (const k of ["misroute:*", "cron_lane_stale:*", "webhook_dead:*"]) {
   eq(alertEntry(k)?.suffix, "bounded", `${k} is keyed by something the roster or the code bounds`);
 }
 
+// A booking family may carry more after the booking id (#2905: the double-book
+// key names the clash as well as the call). The id is the segment before the next
+// colon, and it must still be a uuid, so a lookalike never reaches the delete.
+{
+  const id = "11111111-1111-4111-8111-111111111111";
+  eq(parseBookingAlertKey(`external_double_book:${id}:ev-9:1700000000000`)?.bookingId, id,
+    "a key carrying more after the booking id still names that booking");
+  eq(parseBookingAlertKey(`alert_firing:external_double_book:${id}:ev-9:1`)?.bookingId, id,
+    "and so does its firing marker");
+  eq(parseBookingAlertKey("external_double_book:not-a-uuid:ev-9"), null, "a non uuid lead segment is refused");
+  eq(parseBookingAlertKey(`external_double_book:${id}x:ev`), null, "a uuid with trailing junk before the colon is refused");
+}
+
 // The prune list is the catalog's booking families, not a list kept beside it (L41).
 eq(
   [...BOOKING_KEYED_FAMILIES].sort(),
