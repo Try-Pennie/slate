@@ -5,7 +5,9 @@
 // hand typed numbers, one for every hour of the week, and nothing had ever measured
 // either. This reads the bookings cal.com actually took, per landing page, and fits
 // a floor per weekday and hour to the traffic Slate carries (FLOOR_SCOPE in
-// scripts/lib/volume-floor-scope.ts).
+// scripts/lib/volume-floor-scope.ts, derived from LOW_PAGES_ON_SLATE in
+// src/lib/monitor/page-volume.ts; widening the pilot to another Low page is an edit
+// there followed by REFIT=1, #2878).
 //
 // WHAT IT WRITES, both committed:
 //   scripts/fixtures/calcom-low-bookings.json   bookings per 5 minute bucket per page
@@ -74,7 +76,7 @@ import {
   type FloorScope,
   type VolumeFixture,
 } from "./lib/volume-floor-scope.ts";
-import { LOW_PAGES, pageCoverage } from "../src/lib/monitor/page-volume.ts";
+import { LOW_PAGES_ON_SLATE, pageCoverage, pagesNotOnSlateLines } from "../src/lib/monitor/page-volume.ts";
 import { SERIES_BUCKET_MINUTES, WEEKDAY_NAMES, type VolumeBaseline } from "../src/lib/monitor/volume-floors.ts";
 import { tierLabel } from "../src/lib/monitor/volume-tiers.ts";
 
@@ -144,7 +146,10 @@ function writePages(fixture: VolumeFixture): void {
   const pages = pageBaselinesFromFixture(fixture);
   writeFileSync(PAGE_BASELINE_PATH, renderPageBaselineModule(pages));
   console.log("\nPer page floors:");
-  for (const page of LOW_PAGES) console.log(`  ${pageCoverage(page, pages[page.id], OFFLINE_OPEN_WEEK).text}`);
+  for (const page of LOW_PAGES_ON_SLATE) console.log(`  ${pageCoverage(page, pages[page.id], OFFLINE_OPEN_WEEK).text}`);
+  // #2878: every Low page's floors are written, and a page held off Slate is said
+  // to be held off rather than listed as though its alarm were judging it.
+  for (const line of pagesNotOnSlateLines()) console.log(`  ${line}`);
 }
 
 function report(fixture: VolumeFixture, baseline: VolumeBaseline): void {

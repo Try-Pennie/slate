@@ -42,7 +42,7 @@ import { EARLIEST_RAMP_END, RAMP_END_FORM, baselineInForce, type BaselineInForce
 import { LEARNING } from "@/lib/monitor/volume-learning";
 import { learningStatusCopy, tierLearningLines } from "@/lib/monitor/volume-relearn-copy";
 import { LOW_TIER } from "@/lib/monitor/volume-tiers";
-import { LOW_PAGES, pageCoverage, pageSourceStatus, type PageSourceMeasure } from "@/lib/monitor/page-volume";
+import { LOW_PAGES_ON_SLATE, pageCoverage, pagesNotOnSlateLines, pageSourceStatus, type PageSourceMeasure } from "@/lib/monitor/page-volume";
 import { measurePageSources } from "@/lib/monitor/customer-bookings";
 import { MEASURED_PAGE_BASELINES } from "@/lib/monitor/page-volume-baseline";
 import { floorTable } from "@/lib/admin/volume-floor-table";
@@ -215,9 +215,10 @@ export default async function AlertSettingsPage({
     log.error("admin-alerts", { msg: "regal ignore list unreadable" }, err instanceof Error ? err : undefined);
   }
 
-  // #2738's per page coverage, against the same week the floor tables use.
+  // #2738's per page coverage, against the same week the floor tables use. Only the
+  // pages Slate carries (#2878): the rest are named as not judged beside the table.
   const coverage: PageCoverageView[] | null = week
-    ? LOW_PAGES.map((page) => {
+    ? LOW_PAGES_ON_SLATE.map((page) => {
         const c = pageCoverage(page, MEASURED_PAGE_BASELINES[page.id], week);
         return { id: page.id, name: page.name, open: c.open, judged: c.judged };
       })
@@ -688,6 +689,7 @@ export default async function AlertSettingsPage({
           tiers={tierLines}
           coverage={coverage}
           sourceNotice={sourceNotice}
+          heldOff={pagesNotOnSlateLines()}
           notice={learningNotice}
           action={setVolumeRampEnd}
           earliest={EARLIEST_RAMP_END}

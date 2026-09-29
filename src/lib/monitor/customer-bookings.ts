@@ -3,7 +3,7 @@ import { log } from "@/lib/log";
 import { parseStampMs } from "@/lib/date/stamp";
 import type { BookingSource } from "@/lib/booking/booking-source";
 import {
-  LOW_PAGES,
+  LOW_PAGES_ON_SLATE,
   PAGE_SEEN_LOOKBACK_DAYS,
   pageTrafficFilter,
   UNSOURCED_VALUES,
@@ -231,7 +231,7 @@ export async function measurePageSources(
     throw new Error("page sources: the unsourced count could not be read");
   }
   const pages: PageSourceMeasure["pages"] = [];
-  for (const page of LOW_PAGES) {
+  for (const page of LOW_PAGES_ON_SLATE) {
     pages.push({
       id: page.id,
       name: page.name,

@@ -2,13 +2,19 @@
  * Whose traffic the low volume floors are fitted to, and how a baseline is built
  * from the committed measurement (#1956).
  *
- * THE SCOPE IS A DECISION, and it lives here in one place. Dan, 2026-09-25: every
- * Low landing page moves to Slate at once, so the floors are the whole Low tier's.
- * Replayed over two held out weeks of real cal.com bookings, that scope paged 0
- * times on normal traffic and caught a full outage in 30 minutes typically (85 at
- * worst). The scope has to MATCH what Slate carries, in both directions: floors
- * fitted to the tier while only one page flipped paged 108 to 283 times in the same
- * two weeks, and floors fitted to one page while all flip are slow and blind.
+ * THE SCOPE IS A DECISION, and it is made in ONE place: `LOW_PAGES_ON_SLATE` in
+ * `src/lib/monitor/page-volume.ts`, which the per page alarm, the readiness gate and
+ * the admin page read too. Dan, 2026-09-29 (#2878): the Low pilot launches on the
+ * two pages already wired to Slate, Completed Application Review and its Follow Up
+ * (`/booking/[SO_ID]` and `/my-offers/result`), so the Low floors are those two
+ * pages' traffic. Income Verification follows when #2870 wires it.
+ *
+ * The scope has to MATCH what Slate carries, in both directions: floors fitted to
+ * the whole tier while only one page flipped paged 108 to 283 times in two held out
+ * weeks, and floors fitted to one page while all flip are slow and blind. The whole
+ * tier scope this replaced (2026-09-25) paged 0 times on normal traffic and caught
+ * a full outage in 30 minutes typically (85 at worst); the two page scope's own
+ * numbers are printed by `scripts/test-volume-floors.ts` and quoted on #2878.
  *
  * THIS IS THE SCOPE OF THE ANCHOR MEASUREMENT, NOT OF WHAT SLATE CARRIES (#2874).
  * Widening the pilot to another tier needs no edit here and no refit: every count
@@ -24,7 +30,7 @@
  */
 import { existsSync, readFileSync } from "node:fs";
 import { fitFloorCells, type BookingSeries, type VolumeBaseline } from "../../src/lib/monitor/volume-floors.ts";
-import { LOW_PAGES, type LowPage, type LowPageId } from "../../src/lib/monitor/page-volume.ts";
+import { LOW_PAGES, LOW_PAGES_ON_SLATE, type LowPage, type LowPageId } from "../../src/lib/monitor/page-volume.ts";
 import { LOW_TIER, VOLUME_TIERS, isVolumeTier, tierLabel, type VolumeTier } from "../../src/lib/monitor/volume-tiers.ts";
 import { floorTable } from "../../src/lib/admin/volume-floor-table.ts";
 import { DateTime } from "luxon";
@@ -39,12 +45,18 @@ export interface FloorScope {
   label: string;
 }
 
+/** "A, B and C": names joined as a sentence says them. */
+function spoken(names: readonly string[]): string {
+  return names.length < 2 ? (names[0] ?? "") : `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
+}
+
 export const FLOOR_SCOPE: FloorScope = {
   tier: "1",
-  // Every Low page, from the one list the per page alarm (#2738) is keyed on, so
-  // the tier and its pages are fitted to the same forms by construction (L41).
-  forms: LOW_PAGES.map((p) => p.calcomForm),
-  label: "Low debt bookings from every Low landing page, all of which move to Slate together",
+  // The Low pages Slate carries, from the one switch the per page alarm, the
+  // readiness gate and the admin page all read (#2878), so the floors and the pages
+  // judged against them are the same pages by construction (L41).
+  forms: LOW_PAGES_ON_SLATE.map((p) => p.calcomForm),
+  label: `Low debt bookings from the ${spoken(LOW_PAGES_ON_SLATE.map((p) => p.name))} pages, the Low pages that send their leads to Slate`,
 };
 
 /** The committed measurement: booking counts per bucket, per page, for one tier. */
@@ -71,6 +83,9 @@ export function scopedSeries(fixture: VolumeFixture, scope: FloorScope): Booking
   if (scope.tier !== fixture.tier) {
     throw new Error(`the fixture measures tier ${fixture.tier}, the scope asks for tier ${scope.tier}`);
   }
+  // A scope with no page (every Low page held off Slate) would fit floors of zero,
+  // which can never breach and would still read as a measurement (L678, #2878).
+  if (scope.forms.length === 0) throw new Error("the scope names no page, so there is no traffic to fit floors to");
   const lengths = new Set(Object.values(fixture.forms).map((c) => c.length));
   if (lengths.size !== 1) throw new Error("the fixture's forms cover different spans");
   const n = [...lengths][0]!;

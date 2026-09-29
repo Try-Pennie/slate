@@ -1,13 +1,18 @@
 /**
  * Low booking volume PER LANDING PAGE (#2738), beside the tier alarm (#1956).
  *
- * WHY. The tier alarm counts every Low booking together, because every Low page
- * moves to Slate at once. Replayed over two held out weeks of real cal.com bookings
+ * WHY. The tier alarm counts every Low booking together, across the Low pages Slate
+ * carries (`LOW_PAGES_ON_SLATE`, #2878). Replayed over two held out weeks of real cal.com bookings
  * it catches a full outage in about 30 minutes, and it mostly cannot see ONE page
  * breaking while the others keep booking: the healthy pages hold the total above
  * the floor. A broken Income Verification page (34% of Low) was missed on 8 of 9
  * weekday afternoons, a broken Follow Up page (16%) on 9 of 9 (#2738). Once every page runs
- * through Slate, one page's link or embed breaking is the likeliest outage.
+ * through Slate, one page's link or embed breaking is the likeliest outage. Those
+ * figures are #2738's, over all three pages and the tier they made up.
+ *
+ * ONLY THE PAGES SLATE CARRIES ARE JUDGED (#2878). A page held off Slate is not
+ * read, paged, cleared or looked up: its silence is the expected state, not an
+ * outage, and paging it would say so every afternoon until it is wired.
  *
  * WHAT. Each Low page gets its own floors, fitted with the same `fitFloorCells` to
  * that page's own series in the committed measurement, and judged against the
@@ -51,8 +56,8 @@ export type LowPageId = "income-verification" | "application-review-follow-up" |
 
 /**
  * The Low pages, from the live routing forms as recorded on #2072. The order is the
- * measurement's own, and `FLOOR_SCOPE` (the tier alarm's scope) is derived from this
- * list, so the tier and the pages are fitted to the same forms by construction.
+ * measurement's own. Every page keeps its measured floors here whether or not Slate
+ * carries it yet; which ones Slate carries is `LOW_PAGES_ON_SLATE` below.
  */
 export const LOW_PAGES: readonly LowPage[] = [
   {
@@ -74,6 +79,55 @@ export const LOW_PAGES: readonly LowPage[] = [
     sources: ["booking", "my-offers-result"],
   },
 ];
+
+/** Why a Low page is not on Slate yet, and the issue that puts it there. */
+export interface HeldOffSlate {
+  /** In plain words, completing "its leads ...": what stops them reaching Slate. */
+  reason: string;
+  /** The issue whose change puts the page on Slate, and so deletes this entry. */
+  issue: number;
+}
+
+/**
+ * THE ONE SWITCH for which Low pages send their leads to Slate (#2878).
+ *
+ * Dan, 2026-09-29: the Low pilot launches on the two trypennie pages already wired
+ * to Slate, `/booking/[SO_ID]` and `/my-offers/result`, which are the Completed
+ * Application Review page and its Follow Up. Income Verification's leads come from
+ * `/offerportal` and `/portal`, which are not wired (#2870).
+ *
+ * Everything that judges or describes Low volume reads `LOW_PAGES_ON_SLATE`, derived
+ * from this: the Low floors' scope (`FLOOR_SCOPE`, refitted from the committed
+ * measurement), the per page alarm, the readiness gate's per page check and the
+ * admin page. A page Slate does not carry would otherwise read as a page that
+ * stopped booking from the day the alarm is armed, and floors fitted to traffic
+ * Slate never sees page on every normal afternoon (108 to 283 false pages in two
+ * held out weeks, `scripts/lib/volume-floor-scope.ts`).
+ *
+ * WIDENING is deleting the page's entry here, then `REFIT=1 pnpm measure:volume-floors`
+ * so the Low floors take its traffic in, in the same change. The committed per page
+ * floors already cover every Low page, so nothing else moves.
+ */
+export const LOW_PAGES_NOT_ON_SLATE: Readonly<Partial<Record<LowPageId, HeldOffSlate>>> = {
+  "income-verification": {
+    reason: "come from trypennie's /offerportal and /portal, which do not send them to Slate yet",
+    issue: 2870,
+  },
+};
+
+/** The Low pages whose leads Slate carries, in the measurement's order. */
+export const LOW_PAGES_ON_SLATE: readonly LowPage[] = LOW_PAGES.filter((p) => !(p.id in LOW_PAGES_NOT_ON_SLATE));
+
+/**
+ * One sentence per page held off Slate, for the surfaces that list the pages, so a
+ * page missing from a table reads as a decision rather than an oversight (L678).
+ */
+export function pagesNotOnSlateLines(): string[] {
+  return LOW_PAGES.flatMap((p) => {
+    const held = LOW_PAGES_NOT_ON_SLATE[p.id];
+    return held ? [`${p.name} is not judged: its leads ${held.reason}.`] : [];
+  });
+}
 
 /** alert_state key family: one key per page, so one page's cooldown never silences another's (L707). */
 export const PAGE_VOLUME_ALERT_PREFIX = "low_page_volume";
@@ -110,7 +164,7 @@ export interface PageSourceMeasure {
   realBookings: number;
   /** Of those, how many recorded no page (`isUnsourced`). */
   unsourced: number;
-  /** Whether each Low page recorded at least one booking carrying one of its sources. */
+  /** Whether each Low page Slate carries (#2878) recorded at least one booking carrying one of its sources. */
   pages: { id: LowPageId; name: string; recorded: boolean }[];
 }
 
@@ -314,7 +368,7 @@ export async function runPageVolumeCheck(deps: {
 }): Promise<PageVolumeResult> {
   if (!isBusinessHours(deps.nowMs, deps.businessHours)) return { status: "outside-hours" };
 
-  const judged = LOW_PAGES.map((page) => {
+  const judged = LOW_PAGES_ON_SLATE.map((page) => {
     const floors = judgedFloors(
       floorsFor({ baseline: deps.baselines[page.id], override30: null, override120: null }, deps.nowMs),
     );

@@ -13,6 +13,9 @@ import { readFileSync } from "node:fs";
 import { DateTime } from "luxon";
 import {
   LOW_PAGES,
+  LOW_PAGES_NOT_ON_SLATE,
+  LOW_PAGES_ON_SLATE,
+  pagesNotOnSlateLines,
   isPageTraffic,
   pageTrafficFilter,
   isUnsourced,
@@ -58,7 +61,6 @@ const REPLAY_HOURS = offlineHoursFor(fixture);
 {
   const forms = Object.keys(fixture.forms).sort();
   eq(LOW_PAGES.map((p) => p.calcomForm).sort(), forms, "the pages are exactly the measurement's Low routing forms");
-  eq(FLOOR_SCOPE.forms, LOW_PAGES.map((p) => p.calcomForm), "the tier alarm's scope is derived from the same list");
   const all = LOW_PAGES.flatMap((p) => [...p.sources]);
   eq(new Set(all).size, all.length, "no source belongs to two pages, so a booking counts for one page only");
   assert(all.every((s) => (PAGE_SOURCES as readonly string[]).includes(s)), "every source is in the #2072 vocabulary");
@@ -81,6 +83,53 @@ const REPLAY_HOURS = offlineHoursFor(fixture);
   }
 }
 
+// --- 1. which Low pages send their leads to Slate (#2878) ---
+{
+  // Dan, 2026-09-29: the pilot launches on /booking/[SO_ID] and /my-offers/result
+  // only. Typed out here rather than read off the switch, so the switch is checked
+  // against the decision and not against itself (L70).
+  const PILOT_PAGES: LowPageId[] = ["application-review-follow-up", "application-review"];
+  const PILOT_FORMS = [
+    "Completed Application Review (/booking ai_agent_eligible false and /my-offers/result)",
+    "Completed Application Review Follow Up Routing (ai_agent_eligible true /booking)",
+  ];
+  eq(LOW_PAGES_ON_SLATE.map((p) => p.id), PILOT_PAGES, "Slate carries the two pilot pages, in the measurement's own order");
+  eq(
+    LOW_PAGES_ON_SLATE.flatMap((p) => [...p.sources]).sort(),
+    ["booking", "booking-agent-eligible", "my-offers-result"],
+    "which are the sources /booking/[SO_ID] and /my-offers/result send",
+  );
+  eq([...FLOOR_SCOPE.forms].sort(), PILOT_FORMS, "the Low floors are fitted to exactly the two pilot forms");
+  eq(
+    FLOOR_SCOPE.forms,
+    LOW_PAGES_ON_SLATE.map((p) => p.calcomForm),
+    "derived from the one switch, so the floors and the judged pages cannot disagree (L41)",
+  );
+  assert(!FLOOR_SCOPE.label.includes("Income Verification"), `the scope's plain words leave out the page Slate does not carry (${FLOOR_SCOPE.label})`);
+  for (const page of LOW_PAGES_ON_SLATE) {
+    assert(FLOOR_SCOPE.label.includes(page.name), `and name ${page.name}`);
+  }
+
+  // The page Slate does not carry stays in LOW_PAGES, so widening is one line.
+  eq(LOW_PAGES.length, 3, "Income Verification is still a Low page, its measured floors kept");
+  eq(Object.keys(LOW_PAGES_NOT_ON_SLATE), ["income-verification"], "and is the one page held off Slate");
+  for (const [id, why] of Object.entries(LOW_PAGES_NOT_ON_SLATE)) {
+    assert(LOW_PAGES.some((p) => p.id === id), `${id} is a Low page, not a typo that holds nothing back`);
+    assert(Number.isInteger(why!.issue) && why!.issue > 0, `${id} names the issue that puts it on Slate (L65)`);
+    assert(why!.reason.trim().split(/\s+/).length >= 3, `${id} says why it is held off, in words`);
+  }
+  eq(LOW_PAGES_NOT_ON_SLATE["income-verification"]?.issue, 2870, "Income Verification waits on #2870, which wires /offerportal and /portal");
+  eq(
+    LOW_PAGES_ON_SLATE.length + Object.keys(LOW_PAGES_NOT_ON_SLATE).length,
+    LOW_PAGES.length,
+    "every Low page is either on Slate or held off it, and none is both",
+  );
+  const lines = pagesNotOnSlateLines();
+  eq(lines.length, 1, "one line for the one page held off");
+  assert(lines[0]!.startsWith("Income Verification Phone Call is not judged"), `in plain words (${lines[0]})`);
+  assert(!/[\u2014\u2013]/.test(lines[0]!), "with no dash");
+}
+
 // --- 2. the committed per page floors are the committed measurement's ---
 {
   const derived = pageBaselinesFromFixture(fixture);
@@ -94,8 +143,10 @@ const REPLAY_HOURS = offlineHoursFor(fixture);
     assert(b.tierShare !== null && b.tierShare > 0 && b.tierShare < 1, `${page.id} records its share of the tier`);
     assert(b.scope.includes(page.name), `${page.id}'s baseline names the page it was fitted to`);
   }
-  const total = LOW_PAGES.reduce((s, p) => s + MEASURED_PAGE_BASELINES[p.id].bookings, 0);
-  eq(total, MEASURED_VOLUME_BASELINE.bookings, "the pages' bookings add up to the tier's");
+  // #2878: the Low floors are fitted to the pages Slate carries, so those pages'
+  // bookings add up to the floors' bookings, and the page held off is not in them.
+  const total = LOW_PAGES_ON_SLATE.reduce((s, p) => s + MEASURED_PAGE_BASELINES[p.id].bookings, 0);
+  eq(total, MEASURED_VOLUME_BASELINE.bookings, "the carried pages' bookings add up to the Low floors' bookings");
 }
 
 // --- 2. coverage: a floor of 0 is declared, never read as coverage ---
@@ -163,8 +214,8 @@ function harness(opts: {
 }) {
   const calls = { reads: 0, seen: 0, sent: [] as { key: string; text: string }[], resolved: [] as { key: string; text: string }[] };
   const baselines = {
-    "income-verification": flat(0, 2),
-    "application-review-follow-up": flat(0, 1),
+    "income-verification": flat(0, 1),
+    "application-review-follow-up": flat(0, 2),
     "application-review": flat(1, 5),
     ...opts.baselines,
   } as Record<LowPageId, VolumeBaseline>;
@@ -200,10 +251,44 @@ function harness(opts: {
 const ago = (min: number, source: string | null): SourceRow => ({ createdMs: TUESDAY_2PM - min * MIN, source });
 const verdictOf = (pages: PageVerdict[], id: LowPageId) => pages.find((p) => p.id === id)!;
 const HEALTHY_ROWS: SourceRow[] = [
-  ...[10, 40, 70].map((m) => ago(m, "offerhub")),
   ...[20, 80].map((m) => ago(m, "booking-agent-eligible")),
   ...[5, 15, 25, 50, 60, 90, 100].map((m) => ago(m, m % 2 ? "booking" : "my-offers-result")),
 ];
+
+{
+  // #2878: a page Slate does not carry is never judged, paged or cleared, however
+  // high its floors and however silent it is. Income Verification is given floors
+  // that would breach at every tick, and recorded as never seen, which is exactly
+  // what the armed alarm would say about it from the day it is armed.
+  const h = harness({ rows: HEALTHY_ROWS, baselines: { "income-verification": flat(5, 20) }, seen: false });
+  const out = await h.run();
+  const judged = out.status === "checked" ? out.pages.map((p) => p.id) : [];
+  eq(judged, LOW_PAGES_ON_SLATE.map((p) => p.id), "only the pages Slate carries are judged");
+  assert(!judged.includes("income-verification"), "Income Verification is not judged while it is not on Slate");
+  assert(!h.calls.sent.some((s) => s.key === pageVolumeAlertKey("income-verification")), "and never paged, not even as a page never seen");
+  assert(!h.calls.resolved.some((r) => r.key === pageVolumeAlertKey("income-verification")), "and never cleared, since it measured nothing");
+  eq(h.calls.seen, 0, "and no lookup is spent on it");
+  // Control in the SAME fixture (L159): the pages Slate carries are judged healthy
+  // and clear, so the silence about Income Verification is the switch, not a dead step.
+  eq(h.calls.resolved.map((r) => r.key).sort(), LOW_PAGES_ON_SLATE.map((p) => pageVolumeAlertKey(p.id)).sort(), "control: the carried pages clear");
+
+  // Its bookings, were any to arrive, count for nothing Slate judges.
+  const stray = harness({ rows: [...HEALTHY_ROWS, ...[10, 40, 70].map((m) => ago(m, "offerhub"))] });
+  const strayOut = await stray.run();
+  assert(strayOut.status === "checked" && strayOut.pages.every((p) => p.verdict === "healthy"), "stray offerhub bookings change no verdict");
+
+  // Edge: an hour in which ONLY the page held off could be judged reads nothing at
+  // all and reports the carried pages unmeasured, rather than reading for a page it
+  // then ignores.
+  const only = harness({
+    baselines: { "income-verification": flat(5, 20), "application-review-follow-up": flat(0, 0), "application-review": flat(0, 0) },
+    rows: [],
+  });
+  const onlyOut = await only.run();
+  eq(only.calls.reads, 0, "no read for a page that is not judged");
+  assert(onlyOut.status === "checked" && onlyOut.pages.every((p) => p.verdict === "unmeasured-hour"), "the carried pages report unmeasured");
+  eq(only.calls.sent.length + only.calls.resolved.length, 0, "and nothing is paged or cleared");
+}
 
 {
   // Outside the org's hours nothing is read, nothing is paged and nothing is cleared.
@@ -220,31 +305,31 @@ const HEALTHY_ROWS: SourceRow[] = [
   eq(holiday.calls.reads + holiday.calls.sent.length + holiday.calls.resolved.length, 0, "and reads, pages and clears nothing");
   const control = harness({ rows: [] });
   await control.run();
-  eq(control.calls.sent.length, 3, "control: the same silent Tuesday with no exception pages every page");
+  eq(control.calls.sent.length, 2, "control: the same silent Tuesday with no exception pages every page Slate carries");
 }
 {
-  // Every page healthy: one read for all three, every page's own key cleared, nothing paged.
+  // Every page healthy: one read for every page, every page's own key cleared, nothing paged.
   const h = harness({ rows: HEALTHY_ROWS });
   const out = await h.run();
   eq(h.calls.reads, 1, "one read serves every page");
   eq(h.calls.sent.length, 0, "healthy pages page nothing");
-  eq(h.calls.resolved.map((r) => r.key).sort(), LOW_PAGES.map((p) => pageVolumeAlertKey(p.id)).sort(), "each measured page clears its own key");
+  eq(h.calls.resolved.map((r) => r.key).sort(), LOW_PAGES_ON_SLATE.map((p) => pageVolumeAlertKey(p.id)).sort(), "each measured page clears its own key");
   assert(out.status === "checked" && out.pages.every((p) => p.verdict === "healthy"), "every page judged healthy");
   assert(/Completed Application Review page are back above the expected minimum: 3 in the last 30 min; 7 in the last 120 min/.test(h.calls.resolved.find((r) => r.key === pageVolumeAlertKey("application-review"))!.text), "the all-clear quotes the page's own measured counts");
 }
 {
   // Rows from other pages never count toward a page.
-  const h = harness({ rows: [...HEALTHY_ROWS.filter((r) => r.source !== "offerhub"), ago(10, "unrecognised"), ago(10, "rml-portal")] });
+  const h = harness({ rows: [...HEALTHY_ROWS.filter((r) => r.source !== "booking-agent-eligible"), ago(10, "unrecognised"), ago(10, "rml-portal")] });
   const out = await h.run();
-  const iv = verdictOf(out.status === "checked" ? out.pages : [], "income-verification");
-  assert(iv.verdict === "low" && iv.windows[1]!.count === 0, "other pages' bookings do not count for Income Verification");
-  eq(h.calls.sent.map((s) => s.key), [pageVolumeAlertKey("income-verification")], "only the quiet page pages, on its own key");
+  const fu = verdictOf(out.status === "checked" ? out.pages : [], "application-review-follow-up");
+  assert(fu.verdict === "low" && fu.windows[1]!.count === 0, "other pages' bookings do not count for the Follow Up page");
+  eq(h.calls.sent.map((s) => s.key), [pageVolumeAlertKey("application-review-follow-up")], "only the quiet page pages, on its own key");
   const text = h.calls.sent[0]!.text;
-  assert(text.includes("Income Verification Phone Call page (/booking/portal and /offerhub)"), "the page names the page and its URLs");
+  assert(text.includes("Completed Application Review Follow Up page (/booking, eligible for the AI agent)"), "the page names the page and its URLs");
   assert(text.includes("0 in the last 120 min (expected at least 2, measured for Tuesdays 2pm to 3pm)"), "and quotes the measured count against its floor and where the floor came from");
   assert(text.includes("Low bookings overall are above their floor"), "and says the tier is fine, because the tier alarm measured that");
-  assert(!h.calls.resolved.some((r) => r.key === pageVolumeAlertKey("income-verification")), "a low page is not cleared");
-  eq(h.calls.resolved.length, 2, "the two healthy pages still clear");
+  assert(!h.calls.resolved.some((r) => r.key === pageVolumeAlertKey("application-review-follow-up")), "a low page is not cleared");
+  eq(h.calls.resolved.length, 1, "the healthy page still clears");
 }
 {
   // #2765: a booking that recorded NO source might be any page's. While enough of them
@@ -252,26 +337,26 @@ const HEALTHY_ROWS: SourceRow[] = [
   // links stopped carrying ?source= cannot be told apart, so it is held and SAYS so,
   // with the count, rather than paging against a floor it cannot judge (L11).
   const untagged = [ago(10, "not-given"), ago(30, null)];
-  const h = harness({ rows: [...HEALTHY_ROWS.filter((r) => r.source !== "offerhub"), ...untagged] });
+  const h = harness({ rows: [...HEALTHY_ROWS.filter((r) => r.source !== "booking-agent-eligible"), ...untagged] });
   const out = await h.run();
-  const iv = verdictOf(out.status === "checked" ? out.pages : [], "income-verification");
-  assert(iv.verdict === "source-unrecorded", `a shortfall untagged bookings could make up is held (got ${iv.verdict})`);
-  if (iv.verdict === "source-unrecorded") {
-    eq([iv.unsourced, iv.total], [2, 11], "it counts the untagged bookings against every booking read");
-    assert(/^Source not recorded on 2 of 11 bookings in the last 120 min/.test(iv.text), `and says so in those words: ${iv.text}`);
-    assert(!/expected at least/.test(iv.text), "rather than presenting a floor");
+  const fu = verdictOf(out.status === "checked" ? out.pages : [], "application-review-follow-up");
+  assert(fu.verdict === "source-unrecorded", `a shortfall untagged bookings could make up is held (got ${fu.verdict})`);
+  if (fu.verdict === "source-unrecorded") {
+    eq([fu.unsourced, fu.total], [2, 9], "it counts the untagged bookings against every booking read");
+    assert(/^Source not recorded on 2 of 9 bookings in the last 120 min/.test(fu.text), `and says so in those words: ${fu.text}`);
+    assert(!/expected at least/.test(fu.text), "rather than presenting a floor");
   }
   eq(h.calls.sent.length, 0, "nothing is paged about it");
-  assert(!h.calls.resolved.some((r) => r.key === pageVolumeAlertKey("income-verification")), "and nothing is cleared: it was not measured healthy");
-  eq(h.calls.resolved.length, 2, "the pages measured healthy still clear");
-  assert(out.status === "checked" && out.sources.unsourced === 2 && out.sources.total === 11, "the step reports the unsourced count for the whole read");
+  assert(!h.calls.resolved.some((r) => r.key === pageVolumeAlertKey("application-review-follow-up")), "and nothing is cleared: it was not measured healthy");
+  eq(h.calls.resolved.length, 1, "the page measured healthy still clears");
+  assert(out.status === "checked" && out.sources.unsourced === 2 && out.sources.total === 9, "the step reports the unsourced count for the whole read");
 
   // Too few untagged bookings to cover the shortfall: the page really is low, and pages.
-  const short = harness({ rows: [...HEALTHY_ROWS.filter((r) => r.source !== "offerhub"), ago(10, "not-given")] });
+  const short = harness({ rows: [...HEALTHY_ROWS.filter((r) => r.source !== "booking-agent-eligible"), ago(10, "not-given")] });
   await short.run();
-  eq(short.calls.sent.map((s) => s.key), [pageVolumeAlertKey("income-verification")], "one untagged booking cannot make up a shortfall of two, so it pages");
+  eq(short.calls.sent.map((s) => s.key), [pageVolumeAlertKey("application-review-follow-up")], "one untagged booking cannot make up a shortfall of two, so it pages");
   // Control in the same shape (L159): the untagged bookings removed, it pages too.
-  const none = harness({ rows: HEALTHY_ROWS.filter((r) => r.source !== "offerhub") });
+  const none = harness({ rows: HEALTHY_ROWS.filter((r) => r.source !== "booking-agent-eligible") });
   const noneOut = await none.run();
   eq(none.calls.sent.length, 1, "control: with every booking tagged the quiet page pages");
   assert(noneOut.status === "checked" && noneOut.sources.unsourced === 0, "and the step reports none untagged");
@@ -279,17 +364,17 @@ const HEALTHY_ROWS: SourceRow[] = [
   // missing bookings of one page AND three of another. Pages are excused in the list's
   // own order until the pool is spent, and a page it cannot cover still pages.
   const shared = harness({
-    baselines: { "income-verification": flat(0, 3), "application-review-follow-up": flat(0, 0), "application-review": flat(0, 3) },
+    baselines: { "income-verification": flat(0, 0), "application-review-follow-up": flat(0, 3), "application-review": flat(0, 3) },
     rows: [ago(10, "not-given"), ago(20, "not-given"), ago(30, null)],
   });
   const sharedOut = await shared.run();
   const sharedPages = sharedOut.status === "checked" ? sharedOut.pages : [];
-  eq(verdictOf(sharedPages, "income-verification").verdict, "source-unrecorded", "the first short page takes the three untagged bookings");
+  eq(verdictOf(sharedPages, "application-review-follow-up").verdict, "source-unrecorded", "the first short page takes the three untagged bookings");
   eq(verdictOf(sharedPages, "application-review").verdict, "low", "so the second, short by three too, cannot be excused by the same three");
   eq(shared.calls.sent.map((s) => s.key), [pageVolumeAlertKey("application-review")], "and pages");
   // Control: six untagged bookings cover both, and nothing pages.
   const enough = harness({
-    baselines: { "income-verification": flat(0, 3), "application-review-follow-up": flat(0, 0), "application-review": flat(0, 3) },
+    baselines: { "income-verification": flat(0, 0), "application-review-follow-up": flat(0, 3), "application-review": flat(0, 3) },
     rows: [10, 20, 30, 40, 50, 60].map((m) => ago(m, "not-given")),
   });
   await enough.run();
@@ -299,20 +384,20 @@ const HEALTHY_ROWS: SourceRow[] = [
   // the missing booking of ONE page only: never one page's 30 minute shortfall and a
   // different page's 120 minute shortfall at once (L11).
   const acrossWindows = {
-    "income-verification": flat(1, 0),
-    "application-review-follow-up": flat(0, 0),
+    "income-verification": flat(0, 0),
+    "application-review-follow-up": flat(1, 0),
     "application-review": flat(0, 1),
   };
   const across = harness({ baselines: acrossWindows, rows: [ago(10, "not-given")] });
   const acrossOut = await across.run();
   const acrossPages = acrossOut.status === "checked" ? acrossOut.pages : [];
-  eq(verdictOf(acrossPages, "income-verification").verdict, "source-unrecorded", "the page short in the 30 minute window takes the one untagged booking");
+  eq(verdictOf(acrossPages, "application-review-follow-up").verdict, "source-unrecorded", "the page short in the 30 minute window takes the one untagged booking");
   eq(verdictOf(acrossPages, "application-review").verdict, "low", "so the page short only in the 120 minute window cannot be excused by the same booking");
   eq(across.calls.sent.map((s) => s.key), [pageVolumeAlertKey("application-review")], "and pages");
   // Positive control in the same shape (L159): with only one page short, the one
   // untagged booking still excuses it, in either window.
   for (const [id, floors] of [
-    ["income-verification", flat(1, 0)],
+    ["application-review-follow-up", flat(1, 0)],
     ["application-review", flat(0, 1)],
   ] as const) {
     const alone = harness({
@@ -327,20 +412,20 @@ const HEALTHY_ROWS: SourceRow[] = [
   // because that booking counts in both windows. A second, older untagged booking is
   // then left for another page's 120 minute shortfall.
   const both = harness({
-    baselines: { "income-verification": flat(1, 1), "application-review-follow-up": flat(0, 0), "application-review": flat(0, 1) },
+    baselines: { "income-verification": flat(0, 0), "application-review-follow-up": flat(1, 1), "application-review": flat(0, 1) },
     rows: [ago(10, "not-given"), ago(90, null)],
   });
   await both.run();
   eq(both.calls.sent.length, 0, "one booking covers a page's shortfall in both windows, and an older one covers another page's 120 minutes");
   // But the older booking cannot cover a 30 minute shortfall: it is outside that window.
   const tooOld = harness({
-    baselines: { "income-verification": flat(0, 1), "application-review-follow-up": flat(0, 0), "application-review": flat(1, 0) },
+    baselines: { "income-verification": flat(0, 0), "application-review-follow-up": flat(0, 1), "application-review": flat(1, 0) },
     rows: [ago(10, "not-given"), ago(90, null)],
   });
   await tooOld.run();
   eq(tooOld.calls.sent.length, 0, "the 120 minute shortfall is covered by the older booking, leaving the recent one for the 30 minute shortfall");
   // An unrecognised source is a link that NAMED a page, so it is not an untagged booking.
-  const odd = harness({ rows: [...HEALTHY_ROWS.filter((r) => r.source !== "offerhub"), ago(10, "unrecognised"), ago(20, "unrecognised")] });
+  const odd = harness({ rows: [...HEALTHY_ROWS.filter((r) => r.source !== "booking-agent-eligible"), ago(10, "unrecognised"), ago(20, "unrecognised")] });
   await odd.run();
   eq(odd.calls.sent.length, 1, "bookings with an unrecognised source do not hold a page");
 
@@ -367,10 +452,10 @@ const HEALTHY_ROWS: SourceRow[] = [
       eq(passes, isPageTraffic(s), `the filter and isPageTraffic agree on ${s ?? "null"}`);
     }
   }
-  const quietRows = HEALTHY_ROWS.filter((r) => r.source !== "offerhub");
+  const quietRows = HEALTHY_ROWS.filter((r) => r.source !== "booking-agent-eligible");
   const viaApi = harness({ rows: [...quietRows, ago(10, "api-regal"), ago(20, "api-trypennie"), ago(40, "api-canary")] });
   const viaApiOut = await viaApi.run();
-  eq(viaApi.calls.sent.map((s) => s.key), [pageVolumeAlertKey("income-verification")], "API bookings do not hold a quiet page: it still pages");
+  eq(viaApi.calls.sent.map((s) => s.key), [pageVolumeAlertKey("application-review-follow-up")], "API bookings do not hold a quiet page: it still pages");
   assert(
     viaApiOut.status === "checked" && viaApiOut.sources.unsourced === 0 && viaApiOut.sources.total === quietRows.length,
     `and the step counts neither API booking as unsourced nor as page traffic read (${JSON.stringify(viaApiOut.status === "checked" ? viaApiOut.sources : null)})`,
@@ -383,9 +468,9 @@ const HEALTHY_ROWS: SourceRow[] = [
 }
 {
   // Rows at or after now, or before the long window, are outside every window.
-  const h = harness({ rows: [...HEALTHY_ROWS.filter((r) => r.source !== "offerhub"), { createdMs: TUESDAY_2PM, source: "offerhub" }, ago(121, "offerhub")] });
+  const h = harness({ rows: [...HEALTHY_ROWS.filter((r) => r.source !== "booking-agent-eligible"), { createdMs: TUESDAY_2PM, source: "booking-agent-eligible" }, ago(121, "booking-agent-eligible")] });
   const out = await h.run();
-  assert(out.status === "checked" && verdictOf(out.pages, "income-verification").verdict === "low", "a booking at the tick or before the window counts for nothing");
+  assert(out.status === "checked" && verdictOf(out.pages, "application-review-follow-up").verdict === "low", "a booking at the tick or before the window counts for nothing");
 }
 {
   // An hour a page cannot be judged in: no read at all when no page can be judged,
@@ -422,17 +507,17 @@ const HEALTHY_ROWS: SourceRow[] = [
   // Positive control in the SAME fixture (L159): the tier unjudged, the pages page.
   const u = harness({ rows: [], tierLow: null });
   await u.run();
-  eq(u.calls.sent.length, 3, "with the tier unjudged, every quiet page pages");
+  eq(u.calls.sent.length, 2, "with the tier unjudged, every quiet page pages");
   assert(u.calls.sent.every((s) => !s.text.includes("Low bookings overall")), "without claiming a tier reading nobody made");
 }
 {
   // A page that has recorded nothing in the lookback is told apart from one that stopped.
   const h = harness({ rows: [], seen: false });
   const out = await h.run();
-  eq(h.calls.sent.length, 3, "every quiet page still pages");
+  eq(h.calls.sent.length, 2, "every quiet page still pages");
   const text = h.calls.sent[0]!.text;
   assert(text.includes(`No booking in the last ${PAGE_SEEN_LOOKBACK_DAYS} days`), "saying nothing has been recorded from it");
-  assert(text.includes("source=booking-portal or source=offerhub"), "and naming the link parameter that tells pages apart");
+  assert(text.includes("source=booking-agent-eligible"), "and naming the link parameter that tells pages apart");
   assert(out.status === "checked" && out.pages.every((p) => p.verdict === "low" && p.action === "paged-unseen"), "recorded as an unseen page");
   const t = harness({ rows: [], seen: "throws" });
   await t.run();
@@ -526,7 +611,7 @@ const tierPolicy = {
 };
 const caught: Record<string, { hits: number; of: number }> = {};
 for (const hour of [9, 10, 13, 16]) {
-  for (const page of LOW_PAGES) {
+  for (const page of LOW_PAGES_ON_SLATE) {
     const delays: (number | null)[] = [];
     const tierDelays: (number | null)[] = [];
     let strays = 0;
@@ -557,8 +642,15 @@ for (const hour of [9, 10, 13, 16]) {
     );
   }
 }
-// What the per page alarm is FOR: the two pages the tier alarm cannot see at 1pm.
-eq(caught["income-verification@13"], { hits: 9, of: 9 }, "a broken Income Verification page is caught every afternoon");
+// #2878: Income Verification is not on Slate, so its series going silent, as it is
+// on Slate every day until #2870, pages nothing at all, on any afternoon.
+{
+  let pages = 0;
+  for (const from of weekdays(13)) pages += (await replay(oneBroken("income-verification", from, from + 180 * MIN), from, from + 180 * MIN)).pages.length;
+  console.log(`replay: Income Verification silent from 13:00 for 3h, held off Slate: ${pages} pages`);
+  eq(pages, 0, "a page Slate does not carry going silent pages nothing");
+}
+// What the per page alarm is FOR: a page the tier alarm cannot see alone at 1pm.
 eq(caught["application-review@13"], { hits: 9, of: 9 }, "a broken Application Review page is caught every afternoon");
 eq(caught["application-review-follow-up@9"], { hits: 9, of: 9 }, "a broken Follow Up page is caught every morning, where it is measured");
 // And where it is NOT measured, the replay agrees with the declaration.
