@@ -15,6 +15,7 @@ import {
   TIER_ANCHORS,
   TIER_VOLUME_ALERT_PREFIX,
   VOLUME_TIERS,
+  isVolumeTier,
   tierCodePattern,
   tierLabel,
   tierOfBucketCode,
@@ -64,7 +65,7 @@ const fixture = JSON.parse(readFileSync("scripts/fixtures/calcom-low-bookings.js
 eq(fixture.tier, LOW_TIER, "and the committed measurement counted exactly that tier");
 eq(FLOOR_SCOPE.tier, LOW_TIER, "which is the tier the measurement script is scoped to");
 for (const tier of Object.keys(TIER_ANCHORS)) {
-  assert(VOLUME_TIERS.includes(tier), `every anchor is filed under a real tier (${tier})`);
+  assert(isVolumeTier(tier), `every anchor is filed under a real tier (${tier})`);
 }
 
 // --- the ramp start ---

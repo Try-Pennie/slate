@@ -23,11 +23,6 @@ import { API_SOURCES } from "@/lib/booking/booking-source";
 
 const SINCE = "2026-08-05T09:00:00.000Z";
 
-/**
- * The `or()` alternatives these reads send, and nothing else: `source.is.null`,
- * `source.eq.<v>` and `source.not.in.(<a>,<b>)`. Anything else throws, so a new
- * filter cannot pass through a fake that never read it.
- */
 /** A `like` on the embedded bucket code: only a trailing `%` is honoured, and the row's code defaults to a Low one. */
 function likePredicate(col: string, pattern: string): (r: { code?: string }) => boolean {
   if (col !== "buckets.code" || !/^[^%]*%$/.test(pattern)) throw new Error(`fake: unhandled like(${col}, ${pattern})`);
@@ -35,6 +30,11 @@ function likePredicate(col: string, pattern: string): (r: { code?: string }) => 
   return (r) => (r.code ?? "111").startsWith(prefix);
 }
 
+/**
+ * The `or()` alternatives these reads send, and nothing else: `source.is.null`,
+ * `source.eq.<v>` and `source.not.in.(<a>,<b>)`. Anything else throws, so a new
+ * filter cannot pass through a fake that never read it.
+ */
 function orPredicate(expr: string): (r: { source?: string | null }) => boolean {
   const alts: ((r: { source?: string | null }) => boolean)[] = [];
   const notIn = /source\.not\.in\.\(([^)]*)\)/g;
