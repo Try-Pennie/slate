@@ -223,7 +223,7 @@ export function readStoredLearning(raw: unknown): StoredLearningRead {
   return { state: "ok", legacy: false, value: raw as StoredVolumeLearning };
 }
 
-/** Why a tier is judged against its cal.com measurement, or not judged at all. */
+/** Why a tier has no learned floors yet. Only Low is judged against its cal.com measurement meanwhile; any other tier is not judged until it has learned (#2888). */
 export type MeasuredWhy =
   /** The refit looked, and the tier has taken no real booking. */
   | "not-carried"
@@ -247,7 +247,7 @@ interface InForceCommon {
 }
 
 export type BaselineInForce =
-  /** A measured tier judged against its cal.com measurement. */
+  /** Not yet learned: Low is judged against its cal.com measurement, any other tier is not judged (#2888). */
   | (InForceCommon & { kind: "measured"; baseline: VolumeBaseline; why: MeasuredWhy })
   /** A tier nobody has measured, not yet learned: nothing judges it. */
   | (InForceCommon & { kind: "unjudged"; why: MeasuredWhy })
