@@ -58,16 +58,16 @@ import type { AgentCalendar } from "@/lib/db/types";
 import { unwrap, unwrapCount } from "@/lib/db/result";
 import { chunkIdsByUrlBudget } from "@/lib/db/id-batch";
 import { log } from "@/lib/log";
-import { externalDoubleBookAlert } from "@/lib/notify/misc-alert-copy";
+import { pageExternalCollisions } from "@/lib/google/collision-alerts";
 import { afterResponse } from "@/lib/after-response";
 import { gatedWriteRows } from "@/lib/booking/gated-write";
 
 // Renew well before Google's ~7-day watch TTL so a cron outage can't drop push.
 const WATCH_RENEW_THRESHOLD_MS = 3 * 24 * 60 * 60 * 1000;
 // External-double-book detection (#316): only future bookings can be
-// double-booked, so scan a forward window; alert at most this often per agent.
+// double-booked, so scan a forward window. Each clashing call pages on its own
+// cooldown (DOUBLE_BOOK_COOLDOWN_MS, #2905).
 const COLLISION_WINDOW_MS = 14 * 24 * 60 * 60 * 1000;
-const COLLISION_ALERT_COOLDOWN_MS = 30 * 60 * 1000;
 
 async function loadAgentEmail(userId: string): Promise<string | null> {
   // error-ok: push-path agent-email lookup; a read error skips this push-triggered
@@ -189,17 +189,11 @@ async function detectExternalCollisions(userId: string, email: string): Promise<
     );
     if (collisions.length === 0) return;
 
-    const clashes = collisions.map((c) => ({
-      bookingUrl: `${appUrl()}${bookingDetailHref(c.bookingId)}`,
-      callStart: new Date(c.bookingStartMs).toISOString(),
-      eventStart: new Date(c.eventStartMs).toISOString(),
-      eventEnd: new Date(c.eventEndMs).toISOString(),
-    }));
-    await sendThrottledAlert(
-      `external_double_book:${userId}`,
-      COLLISION_ALERT_COOLDOWN_MS,
-      externalDoubleBookAlert(email, clashes),
-    ).catch(() => {});
+    await pageExternalCollisions(email, collisions, {
+      // alert-key: external_double_book:*
+      notify: (key, ms, text) => sendThrottledAlert(key, ms, text),
+      bookingUrl: (id) => `${appUrl()}${bookingDetailHref(id)}`,
+    });
   } catch (err) {
     log.error("sync", { msg: "external-collision detection failed", user_id: userId }, err);
   }
