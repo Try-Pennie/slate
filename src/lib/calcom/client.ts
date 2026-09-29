@@ -9,6 +9,7 @@ import {
   type DateOverride,
 } from "@/lib/calcom/overrides";
 import { CAL_SCHEDULES_API_VERSION, pickDefaultSchedule } from "@/lib/calcom/schedule-import";
+import { bookedByTier, readRoutingResponses } from "@/lib/calcom/routing-responses";
 
 /**
  * Minimal Cal.com v2 org-API client for the OOO dual-write during the cutover
@@ -393,4 +394,39 @@ export async function readScheduleForImport(
   } catch (err) {
     return { kind: "unreachable", detail: err instanceof Error ? err.message : String(err) };
   }
+}
+
+/**
+ * The pause between routing response pages, measured against cal.com's rate limit
+ * for bulk reads (#2240), the same one the measure commands use.
+ */
+const ROUTING_PACE_MS = 550;
+
+/**
+ * cal.com's bookings per debt tier created in [fromIso, toIso) (#2893), for the daily
+ * carried share. Null when cal.com is not configured here, which is the state after
+ * cutover, and never on a failed read: a refused page or a changed payload THROWS,
+ * because a share from part of cal.com's traffic would lean toward Slate and thin
+ * every anchor with it. About ten requests a day, paced.
+ */
+export async function calcomTierBookingCounts(fromIso: string, toIso: string): Promise<Record<"1" | "2" | "3" | "4" | "5", number> | null> {
+  if (!calcomConfigured()) return null;
+  const fromMs = Date.parse(fromIso); // parse-ok: built by the caller from a number with toISOString
+  const toMs = Date.parse(toIso); // parse-ok: as above
+  const read = await readRoutingResponses({
+    get: async (path) => {
+      const r = await calcomFetch(path);
+      return { status: r.status, json: { data: r.data } };
+    },
+    org: calcomOrgId(),
+    fromIso,
+    paceMs: ROUTING_PACE_MS,
+    sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  });
+  if (!read.ok) {
+    throw new Error(
+      `cal.com routing responses could not be read (${read.reason}, status ${read.status}${read.formName ? `, form ${read.formName}` : ""})`,
+    );
+  }
+  return bookedByTier(read.rows, fromMs, toMs);
 }

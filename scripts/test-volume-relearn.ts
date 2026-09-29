@@ -35,6 +35,9 @@ import { floorsFor, type FloorCell, type VolumeBaseline } from "../src/lib/monit
 import { MEASURED_VOLUME_BASELINE } from "../src/lib/monitor/volume-baseline.ts";
 import { VOLUME_TIERS, type VolumeTier } from "../src/lib/monitor/volume-tiers.ts";
 import { resolveFloors, resolveTierBaselines } from "../src/lib/monitor/settings.ts";
+import { binomialFloor, carriedAnchor, type AnchorSource } from "../src/lib/monitor/carried-share.ts";
+import { FLOOR_FIT } from "../src/lib/monitor/volume-floors.ts";
+import { TIER_MEASUREMENTS } from "../src/lib/monitor/volume-tiers.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
 const ZONE = "America/New_York";
@@ -51,10 +54,24 @@ function anchor(floor30: number, floor120: number): VolumeBaseline {
   };
 }
 
+/**
+ * An anchor source whose anchors are exactly `record`, before a share is measured and
+ * at a share of 1 (#2893): each is listed as its tier's whole measurement, so thinning
+ * it to 1 leaves it as it is. Every case below written before shares existed passes
+ * one of these, and the harness's cal.com is switched off (a share of 1), so those
+ * cases keep meaning what they meant.
+ */
+function sourceOf(record: Partial<Record<VolumeTier, VolumeBaseline>>): AnchorSource {
+  return {
+    unmeasured: record,
+    measurements: Object.fromEntries(Object.entries(record).map(([t, b]) => [t, [{ ...b!, tierShare: null }]])),
+  };
+}
+
 // Anchors as they stood before #2888 measured the tiers beside Low: the cases
 // about a tier nobody measured pass this, so they keep meaning that whatever
-// TIER_ANCHORS holds today (L439).
-const LOW_ONLY: Partial<Record<VolumeTier, VolumeBaseline>> = { "1": MEASURED_VOLUME_BASELINE };
+// the real measurements hold today (L439).
+const LOW_ONLY: AnchorSource = sourceOf({ "1": MEASURED_VOLUME_BASELINE });
 
 const RAMP_END_ON = "2026-11-02"; // a Monday
 const RAMP_END = DateTime.fromISO(`${RAMP_END_ON}T00:00`, { zone: ZONE }).toMillis();
@@ -86,6 +103,10 @@ function harness(opts: {
   nowMs?: number;
   closedDates?: string[];
   closedThrows?: boolean;
+  /** cal.com's counts per tier; null (the default) is cal.com switched off, a share of 1. */
+  calcom?: Partial<Record<VolumeTier, number>> | null;
+  calcomThrows?: boolean;
+  source?: AnchorSource;
 }) {
   const reads: { sinceIso: string; untilIso: string }[] = [];
   const firstReads: string[] = [];
@@ -94,7 +115,7 @@ function harness(opts: {
   const run = () =>
     runVolumeRelearn({
       nowMs: opts.nowMs ?? NOW,
-      anchors: opts.anchors ?? { "1": anchor(0, 4) },
+      anchors: opts.source ?? sourceOf(opts.anchors ?? { "1": anchor(0, 4) }),
       zone: ZONE,
       readConfig: async () => {
         if (opts.configThrows) throw new Error("config read failed");
@@ -114,6 +135,11 @@ function harness(opts: {
         closedReads.push(fromIsoDate);
         if (opts.closedThrows) throw new Error("exceptions read failed");
         return opts.closedDates ?? [];
+      },
+      readCalcomTierCounts: async () => {
+        if (opts.calcomThrows) throw new Error("cal.com read failed");
+        if (opts.calcom === undefined || opts.calcom === null) return null;
+        return { "1": 0, "2": 0, "3": 0, "4": 0, "5": 0, ...opts.calcom };
       },
       save: async (state) => {
         if (opts.saveThrows) throw new Error("write refused");
@@ -299,12 +325,13 @@ let fitted: StoredVolumeLearning | null = null;
   const h = harness({ rows: low });
   const partial = runVolumeRelearn({
     nowMs: NOW,
-    anchors: { "1": anchor(0, 4) },
+    anchors: sourceOf({ "1": anchor(0, 4) }),
     zone: ZONE,
     readConfig: async () => ({ rampEndOn: null, learning: null }),
     readFirstBookings: async () => ({ "1": LOW_FIRST }),
     readBookings: async () => low,
     readClosedDates: async () => [],
+    readCalcomTierCounts: async () => null,
     save: async (s) => void h.saves.push(s),
   });
   assert(await rejects(partial, /tier 2/), "an answer that says nothing about a tier is refused by name");
@@ -330,7 +357,7 @@ let fitted: StoredVolumeLearning | null = null;
   const lowered = JSON.parse(JSON.stringify(fitted)) as StoredVolumeLearning;
   const r = lowered.tiers["1"]!.result!;
   if (r.status === "learned") r.baseline.cells = r.baseline.cells.map((d) => d.map((c) => ({ ...c, floor30: 0, floor120: 2 })));
-  const inForce = baselineInForce({ rampEndOn: null, learning: lowered }, "1", { "1": anchor(1, 11) });
+  const inForce = baselineInForce({ rampEndOn: null, learning: lowered }, "1", sourceOf({ "1": anchor(1, 11) }));
   eq(inForce.kind, "learned", "a stored learned result is in force");
   const tuesday2pm = DateTime.fromISO("2027-01-05T14:10", { zone: ZONE }).toMillis();
   if (inForce.kind === "learned") {
@@ -338,7 +365,7 @@ let fitted: StoredVolumeLearning | null = null;
     eq(floors.floor120, 11, "a learned 2 hour floor below the cal.com floor is judged at the cal.com floor");
     eq(floors.floor30, 1, "and so is the 30 minute floor");
   }
-  const aboveAnchor = baselineInForce({ rampEndOn: null, learning: fitted }, "1", { "1": anchor(0, 1) });
+  const aboveAnchor = baselineInForce({ rampEndOn: null, learning: fitted }, "1", sourceOf({ "1": anchor(0, 1) }));
   if (aboveAnchor.kind === "learned") {
     const kept = floorsFor({ baseline: aboveAnchor.baseline, override30: null, override120: null }, tuesday2pm);
     assert(kept.floor120 > 1, "control: a learned floor above the cal.com floor is kept as learned");
@@ -371,7 +398,8 @@ let fitted: StoredVolumeLearning | null = null;
 // tier floors false pages (108 to 283 times in two normal weeks, measured in
 // scripts/lib/volume-floor-scope.ts). Low keeps its own behaviour.
 {
-  const ANCHORED: Partial<Record<VolumeTier, VolumeBaseline>> = { "1": MEASURED_VOLUME_BASELINE, "2": anchor(1, 7), "3": anchor(1, 5) };
+  const ANCHORED_RECORD: Partial<Record<VolumeTier, VolumeBaseline>> = { "1": MEASURED_VOLUME_BASELINE, "2": anchor(1, 7), "3": anchor(1, 5) };
+  const ANCHORED = sourceOf(ANCHORED_RECORD);
 
   // One booking in: carried, anchored, and NOT judged.
   const oneIn = MEDIUM_FIRST + 60 * MIN;
@@ -379,7 +407,7 @@ let fitted: StoredVolumeLearning | null = null;
     rows: [...low.filter((b) => b.createdAtMs < oneIn), ...bookings(MEDIUM_FIRST, MEDIUM_FIRST + 1, 10, "2")],
     first: { "1": LOW_FIRST, "2": MEDIUM_FIRST },
     nowMs: oneIn,
-    anchors: ANCHORED,
+    anchors: ANCHORED_RECORD,
   });
   await first.run();
   const config = { volume_ramp_end_on: null, volume_learning: first.saves[0] };
@@ -397,13 +425,13 @@ let fitted: StoredVolumeLearning | null = null;
     rows: [...low, ...medium].filter((b) => b.createdAtMs < early),
     first: { "1": LOW_FIRST, "2": MEDIUM_FIRST },
     nowMs: early,
-    anchors: ANCHORED,
+    anchors: ANCHORED_RECORD,
   });
   await soon.run();
   eq(Object.keys(resolveTierBaselines({ volume_ramp_end_on: null, volume_learning: soon.saves[0] }, ANCHORED)), [], "two weeks in it is still not judged");
 
   // Learned: judged, and every floor at least the anchor.
-  const widened = harness({ rows: [...low, ...medium], first: { "1": LOW_FIRST, "2": MEDIUM_FIRST }, anchors: LOW_ONLY });
+  const widened = harness({ rows: [...low, ...medium], first: { "1": LOW_FIRST, "2": MEDIUM_FIRST }, source: LOW_ONLY });
   await widened.run();
   const learned = resolveTierBaselines({ volume_ramp_end_on: null, volume_learning: widened.saves[0] }, ANCHORED);
   eq(Object.keys(learned), ["2"], "once four weeks of its own bookings are learned, Medium IS judged");
@@ -440,21 +468,17 @@ let fitted: StoredVolumeLearning | null = null;
   );
   const bareLines = tierLearningLines({ rampEndOn: null, learning: soon.saves[0] }, early + MIN, LOW_ONLY);
   assert(/^Medium: carried since .*, and not judged until 4 full weeks/.test(bareLines[0]!), `control: an unanchored tier keeps its line (${bareLines[0]})`);
-  // With the REAL anchors (Low alone until #2893), every tier line is exactly main's:
-  // the saved measurements of Medium, High and Very High change nothing on the page.
-  for (const [what, learning, at] of [
-    ["one booking in", first.saves[0], oneIn + MIN],
-    ["two weeks in", soon.saves[0], early + MIN],
-    ["learned", widened.saves[0], NOW + MIN],
-    ["nothing stored", null, NOW],
-  ] as const) {
-    eq(tierLearningLines({ rampEndOn: null, learning }, at), tierLearningLines({ rampEndOn: null, learning }, at, LOW_ONLY), `${what}: the real anchors give the tier lines of a Low only world`);
-    eq(
-      Object.keys(resolveTierBaselines({ volume_ramp_end_on: null, volume_learning: learning })),
-      Object.keys(resolveTierBaselines({ volume_ramp_end_on: null, volume_learning: learning }, LOW_ONLY)),
-      `${what}: and judge the same tiers`,
-    );
-  }
+  // With nothing stored no share has been measured, so the REAL source gives exactly
+  // the anchors that were armed before #2893: Low's measurement alone.
+  eq(tierLearningLines({ rampEndOn: null, learning: null }, NOW), tierLearningLines({ rampEndOn: null, learning: null }, NOW, LOW_ONLY), "nothing stored: the real anchors give the tier lines of a Low only world");
+  eq(Object.keys(resolveTierBaselines({ volume_ramp_end_on: null, volume_learning: null })), [], "and judge no tier beside Low");
+  // Once a share IS stored (here cal.com off, a share of 1), the real source puts
+  // Medium's own saved measurement under its learned floors (#2893).
+  const realLines = tierLearningLines({ rampEndOn: null, learning: widened.saves[0] }, NOW + MIN);
+  assert(
+    /^Medium: judged against floors learned from its own bookings since .*, none below its cal\.com measurement from Sep 29, 2026, last refit /.test(realLines[0]!),
+    `with a share stored, Medium's own measurement is under its floors (${realLines[0]})`,
+  );
   for (const line of [...youngLines, ...learnedLines, ...bareLines]) {
     assert(!/undefined|NaN|null|\[object/.test(line), `no leaked value in "${line.slice(0, 50)}"`);
     assert(!/[\u2014\u2013]/.test(line), "no dashes in the copy");
@@ -557,6 +581,100 @@ let fitted: StoredVolumeLearning | null = null;
       assert(!/[\u2014\u2013]/.test(line), "no dashes in the copy");
     }
   }
+}
+
+// --- #2893: each tier's cal.com measurement, thinned to the share Slate carries ---
+//
+// Low bookings arrive every 5 minutes, 288 in the day before the refit. cal.com took
+// as many again, so Slate carried half of Low that day.
+{
+  const WHOLE = sourceOf({ "1": anchor(1, 20) });
+  const half = harness({ rows: low, calcom: { "1": 288 }, source: WHOLE });
+  await half.run();
+  const share = half.saves[0]!.carriedShare!.tiers["1"]!;
+  eq(share.applied?.share, 0.5, "the refit measures Slate's share of Low: 288 of 576");
+  eq([share.applied?.slate, share.applied?.calcom], [288, 288], "counting Slate's own rows and cal.com's answer over the same day");
+  eq(share.last.outcome, "applied", "and applies it, with nothing before it to protect");
+  const inForce = baselineInForce({ rampEndOn: null, learning: half.saves[0] }, "1", WHOLE);
+  eq(inForce.anchor?.cells[1]![14]!.floor120, binomialFloor(20, 0.5, FLOOR_FIT.poissonAlpha), "the anchor read back is the measurement thinned to that share");
+  eq(inForce.share?.applied?.share, 0.5, "and the state says which share it is at");
+
+  // THE ISSUE ITSELF: a whole tier anchor under partial traffic raises the learned
+  // floors past what that traffic clears. Thinned, it does not.
+  const full = harness({ rows: low, source: WHOLE }); // cal.com off: a share of 1
+  await full.run();
+  const fullIn = baselineInForce({ rampEndOn: null, learning: full.saves[0] }, "1", WHOLE);
+  assert(fullIn.kind === "learned" && fullIn.baseline.cells.every((d) => d.every((c) => c.floor120 >= 20)), "control: at a share of 1 every learned floor is raised to the whole anchor's 20");
+  assert(inForce.kind === "learned" && inForce.baseline.cells.some((d) => d.some((c) => c.floor120 < 20)), "at half, the learned floors are no longer raised to traffic Slate does not carry");
+  const fitTime = half.saves[0]!.tiers["1"]!.result;
+  assert(
+    (fitTime?.status === "learned" || fitTime?.status === "declining") && fitTime.baseline.cells.some((d) => d.some((c) => c.floor120 < 20)),
+    "and the fit itself underpinned with the thinned anchor, the same one the read uses",
+  );
+
+  // Slate breaks the next day: its bookings stop and cal.com does NOT take them.
+  const nextDay = NOW + DAY;
+  const lost = harness({ rows: low, calcom: { "1": 288 }, source: WHOLE, learning: half.saves[0], nowMs: nextDay });
+  await lost.run();
+  const held = lost.saves[0]!.carriedShare!.tiers["1"]!;
+  eq(held.last.outcome, "held", "a share that fell with the tier's whole traffic is HELD: those bookings were lost, not moved");
+  eq(held.applied?.share, 0.5, "the half share stays in force");
+  eq(held.last.slate, 0, "while the reading itself is kept, to say what was seen");
+  const heldIn = baselineInForce({ rampEndOn: null, learning: lost.saves[0] }, "1", WHOLE);
+  eq(heldIn.anchor?.cells[1]![14]!.floor120, binomialFloor(20, 0.5, FLOOR_FIT.poissonAlpha), "so the floors watching the outage do not drop with it");
+  // Control: the same drop, with cal.com taking the leads Slate stopped getting.
+  const moved = harness({ rows: low, calcom: { "1": 576 }, source: WHOLE, learning: half.saves[0], nowMs: nextDay });
+  await moved.run();
+  eq(moved.saves[0]!.carriedShare!.tiers["1"]!.applied?.share, 0, "control: when cal.com took them, the leads MOVED and the new share applies");
+
+  // A failed or partial cal.com read writes nothing and leaves the floors in force.
+  const broken = harness({ rows: low, calcomThrows: true, source: WHOLE });
+  assert(await rejects(broken.run(), /cal\.com read failed/), "a cal.com read that fails fails the refit");
+  eq(broken.saves.length, 0, "and writes nothing");
+  const garbled = harness({ rows: low, calcom: { "3": Number.NaN }, source: WHOLE });
+  assert(await rejects(garbled.run(), /tier 3/), "a cal.com answer with an unreadable tier is refused by name (L214)");
+  eq(garbled.saves.length, 0, "and writes nothing");
+
+  // Nothing carried: cal.com is not asked, and the shares last measured are kept.
+  const none = harness({ rows: [], first: {}, calcomThrows: true, learning: half.saves[0], source: WHOLE, nowMs: nextDay });
+  await none.run();
+  eq(none.saves[0]!.carriedShare, half.saves[0]!.carriedShare, "with no tier carried, cal.com is never read and the stored shares stand");
+}
+
+// Low before it has learned, through the resolver the monitor uses, with the REAL
+// measurements: at half the pilot pages' traffic, Low's two page fit is thinned.
+{
+  const young = LOW_FIRST + 2 * WEEK;
+  const h = harness({ rows: low.filter((b) => b.createdAtMs < young), calcom: { "1": 288 }, source: undefined, nowMs: young });
+  await h.run();
+  const set = resolveFloors({ floor_30: null, floor_120: null, volume_ramp_end_on: null, volume_learning: h.saves[0] }, {});
+  const expected = carriedAnchor(TIER_MEASUREMENTS["1"], 0.5)!;
+  eq(set.baseline.cells, expected.cells, "Low, not yet learned, is judged against its measurement thinned to the share");
+  eq(expected.scope.startsWith(MEASURED_VOLUME_BASELINE.scope), true, "which is the two page fit, the narrowest that covers half of Low");
+  assert(set.baseline.cells.some((d, i) => d.some((c, j) => c.floor120 < MEASURED_VOLUME_BASELINE.cells[i]![j]!.floor120)), "and lower than the untouched fit somewhere");
+  const unmeasured = resolveFloors({ floor_30: null, floor_120: null, volume_ramp_end_on: null, volume_learning: null }, {});
+  eq(unmeasured.baseline, MEASURED_VOLUME_BASELINE, "control: with no share measured Low keeps exactly the fit that was armed");
+  const detail = learningStatusCopy(baselineInForce({ rampEndOn: null, learning: h.saves[0] }, "1"), young + MIN).detail.join(" ");
+  assert(/Slate carried 50% of Low bookings in the day to .* \(288 of 576 across Slate and cal\.com\), so the cal\.com floors under Low are thinned to that share\./.test(detail), `the page says the share and what it did (${detail})`);
+}
+
+// --- the stored shape: version 2 still reads, and a version 3 record is validated ---
+{
+  const v2 = JSON.parse(JSON.stringify(fitted)) as Record<string, unknown>;
+  v2.version = 2;
+  delete v2.carriedShare;
+  const read = readStoredLearning(v2);
+  eq(read.state, "ok", "a version 2 record, from before shares existed, still reads (L1010)");
+  if (read.state === "ok") {
+    eq(read.legacy, true, "as legacy, so the next tick refits and measures the shares");
+    eq(read.value.carriedShare, null, "with no share measured");
+  }
+  const fresh = harness({ rows: low, learning: { ...v2, fittedAt: new Date(NOW - MIN).toISOString() } });
+  eq((await fresh.run()).status, "refit", "a fresh version 2 record is refit at once rather than waiting out the day");
+  const noField = JSON.parse(JSON.stringify(fitted)) as Record<string, unknown>;
+  delete noField.carriedShare;
+  eq(readStoredLearning(noField).state, "unreadable", "a version 3 record with no share field is malformed, not 'none measured'");
+  eq(readStoredLearning({ ...(fitted as object), carriedShare: { measuredAt: "soon" } }).state, "unreadable", "and so is one whose shares do not validate");
 }
 
 finish();

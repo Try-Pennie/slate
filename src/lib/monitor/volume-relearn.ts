@@ -31,22 +31,40 @@
  * due. The one thing a failure can never become is a fit over an empty list, which
  * would be a learned floor of zero (L105, L215).
  *
- * THE CAL.COM FIT IS THE FLOOR UNDER A MEASURED TIER'S LEARNED FLOOR TWICE:
- * `learnFloors` holds every cell at or above it when it fits, and `baselineInForce`
- * does again when it READS. A tier with no anchor (every tier beside Low, until
- * #2893) has nothing under it, and any tier beside Low is UNJUDGED until its own
- * traffic has been learned, and says so (`tierJudgedBaseline`).
+ * THE CAL.COM FIT, THINNED TO THE SHARE SLATE CARRIES, IS THE FLOOR UNDER A
+ * MEASURED TIER'S LEARNED FLOOR TWICE (#2893): `learnFloors` holds every cell at or
+ * above it when it fits, and `baselineInForce` does again when it READS. Each refit
+ * first counts every tier's bookings in Slate and in cal.com over the last day
+ * (`carried-share.ts`), stores the share it applies or holds, and every anchor, at
+ * fit time and at read time, is thinned to that stored share, so the two cannot
+ * disagree. A cal.com read that fails THROWS like every other read here. A tier
+ * nobody measured (Ultra High) has nothing under it, and any tier beside Low is
+ * UNJUDGED until its own traffic has been learned, and says so
+ * (`tierJudgedBaseline`).
  *
  * No `@/` imports, so node scripts can drive it directly.
  */
 import { DateTime } from "luxon";
 import { LEARNING, learnFloors, underpin, type LearnedFloors, type SlateBookingRow } from "./volume-learning.ts";
+import {
+  CARRIED_SHARE,
+  REAL_ANCHOR_SOURCE,
+  anchorFor,
+  anchorsFor,
+  expectedBookings,
+  isCount,
+  isInstant,
+  isStoredCarriedShare,
+  judgeTierShare,
+  type AnchorSource,
+  type StoredCarriedShare,
+  type StoredTierShare,
+} from "./carried-share.ts";
 import type { VolumeBaseline } from "./volume-floors.ts";
 import { MEASURED_VOLUME_BASELINE } from "./volume-baseline.ts";
 import { parseStampMs } from "../date/stamp.ts";
 import {
   LOW_TIER,
-  TIER_ANCHORS,
   VOLUME_TIERS,
   isVolumeTier,
   recordOfTiers,
@@ -68,11 +86,12 @@ export const REFIT_EVERY_MS = 24 * HOUR_MS;
 export const REFIT_OVERDUE_MS = 2 * REFIT_EVERY_MS;
 
 /**
- * The stored shape's version. 2 is per tier (#2874); 1, a single result for Low, is
- * still READ (L1010: a stored version is never reinterpreted, only superseded) and
- * refit at once. Any other value is unreadable, never guessed at.
+ * The stored shape's version. 3 carries each tier's carried share (#2893); 2 is per
+ * tier (#2874) with no shares; 1 is a single result for Low. The older two are still
+ * READ (L1010: a stored version is never reinterpreted, only superseded), as having
+ * measured no share, and refit at once. Any other value is unreadable, never guessed at.
  */
-export const LEARNING_STATE_VERSION = 2;
+export const LEARNING_STATE_VERSION = 3;
 
 /** One tier's refit, as stored. */
 export interface StoredTierLearning {
@@ -98,6 +117,11 @@ export interface StoredVolumeLearning {
   fittedAt: string;
   /** One entry per tier the refit looked at. A tier with no entry was never fitted. */
   tiers: Partial<Record<VolumeTier, StoredTierLearning>>;
+  /**
+   * Each tier's share of its bookings Slate carries (#2893), or null when no share
+   * has been measured yet, which leaves every anchor as it was before shares existed.
+   */
+  carriedShare: StoredCarriedShare | null;
 }
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -114,8 +138,6 @@ export function rampEndMs(rampEndOn: string, zone: string): number | null {
   return dt.isValid ? dt.toMillis() : null;
 }
 
-const isCount = (n: unknown): n is number => typeof n === "number" && Number.isFinite(n) && n >= 0;
-const isInstant = (s: unknown): s is string => typeof s === "string" && parseStampMs(s) !== null;
 
 function isBaseline(b: unknown): b is VolumeBaseline {
   if (!b || typeof b !== "object") return false;
@@ -167,7 +189,7 @@ function isTierEntry(e: unknown): e is StoredTierLearning {
 export type StoredLearningRead =
   | { state: "none" }
   | { state: "unreadable" }
-  /** `legacy` is a version 1 result, read as Low's and refit at the next tick. */
+  /** `legacy` is a version 1 or 2 result, read with no shares and refit at the next tick. */
   | { state: "ok"; value: StoredVolumeLearning; legacy: boolean };
 
 /**
@@ -203,10 +225,18 @@ export function readStoredLearning(raw: unknown): StoredLearningRead {
             convertedFromRampEnd: true,
           },
         },
+        carriedShare: null,
       },
     };
   }
-  if (v.version !== LEARNING_STATE_VERSION) return { state: "unreadable" };
+  // Version 2 is version 3 before shares existed (#2874): read as having measured none,
+  // and refit at once so the next record carries them.
+  if (v.version !== LEARNING_STATE_VERSION && v.version !== 2) return { state: "unreadable" };
+  // A missing field is malformed; a stored null is "none measured yet".
+  const carriedShare = v.version === 2 ? null : "carriedShare" in v ? v.carriedShare : undefined;
+  if (carriedShare === undefined || (carriedShare !== null && !isStoredCarriedShare(carriedShare))) {
+    return { state: "unreadable" };
+  }
   if (v.declaredRampEndOn !== null && (typeof v.declaredRampEndOn !== "string" || !isCalendarDate(v.declaredRampEndOn))) {
     return { state: "unreadable" };
   }
@@ -219,7 +249,11 @@ export function readStoredLearning(raw: unknown): StoredLearningRead {
   for (const [tier, entry] of Object.entries(tiers)) {
     if (!isVolumeTier(tier) || !isTierEntry(entry)) return { state: "unreadable" };
   }
-  return { state: "ok", legacy: false, value: raw as StoredVolumeLearning };
+  return {
+    state: "ok",
+    legacy: v.version === 2,
+    value: { ...(raw as Omit<StoredVolumeLearning, "version" | "carriedShare">), version: LEARNING_STATE_VERSION, carriedShare },
+  };
 }
 
 /** Why a tier has no learned floors yet. Only Low is judged against its cal.com measurement meanwhile; any other tier is not judged until it has learned (#2888). */
@@ -243,6 +277,12 @@ interface InForceCommon {
   entry: StoredTierLearning | null;
   /** When the stored refit ran, when one is readable. */
   fittedAt: string | null;
+  /** This tier's stored share (#2893), or null when none has been measured. */
+  share: StoredTierShare | null;
+  /** When the stored shares were measured, when there are any. */
+  shareMeasuredAt: string | null;
+  /** The cal.com floor under this tier at the share in force, or null with none. */
+  anchor: VolumeBaseline | null;
 }
 
 export type BaselineInForce =
@@ -269,14 +309,25 @@ export type BaselineInForce =
 export function baselineInForce(
   input: { rampEndOn: string | null; learning: unknown },
   tier: VolumeTier,
-  anchors: Readonly<Partial<Record<VolumeTier, VolumeBaseline>>> = TIER_ANCHORS,
+  source: AnchorSource = REAL_ANCHOR_SOURCE,
 ): BaselineInForce {
   const { rampEndOn } = input;
-  const anchor = anchors[tier] ?? null;
   const read = readStoredLearning(input.learning);
   const stored = read.state === "ok" ? read.value : null;
+  const share = stored?.carriedShare?.tiers[tier] ?? null;
+  // The anchor at the share in force, the same one the refit underpinned with, so the
+  // floors read here are the floors the refit fitted (#2893).
+  const anchor = anchorFor(tier, share?.applied?.share ?? null, source);
   const entry = stored?.tiers[tier] ?? null;
-  const common: InForceCommon = { tier, rampEndOn, entry, fittedAt: stored?.fittedAt ?? null };
+  const common: InForceCommon = {
+    tier,
+    rampEndOn,
+    entry,
+    fittedAt: stored?.fittedAt ?? null,
+    share,
+    shareMeasuredAt: stored?.carriedShare?.measuredAt ?? null,
+    anchor,
+  };
   const notLearned = (why: MeasuredWhy): BaselineInForce =>
     anchor ? { ...common, kind: "measured", baseline: anchor, why } : { ...common, kind: "unjudged", why };
   if (read.state === "unreadable") return notLearned("unreadable");
@@ -304,8 +355,8 @@ export function baselineInForce(
  * while the alarm skips it, or the reverse (L16).
  *
  * A tier beside Low is judged only once four weeks of its own bookings are learned,
- * and then against those learned floors (held at or above an anchor, were it given
- * one; none has one until #2893). An anchor never makes a tier beside Low judged
+ * and then against those learned floors (held at or above its cal.com measurement
+ * thinned to the share Slate carries, #2893). An anchor never makes a tier beside Low judged
  * before that: the pilot may move only some of a tier's pages, and judging that
  * partial traffic against floors fitted to the whole tier false pages, 108 to 283
  * times in two normal weeks as measured in `scripts/lib/volume-floor-scope.ts`. Low
@@ -315,6 +366,9 @@ export function baselineInForce(
 export function tierJudgedBaseline(state: BaselineInForce): VolumeBaseline | null {
   return state.kind === "learned" ? state.baseline : null;
 }
+
+/** cal.com's bookings per tier in [from, to), or null when cal.com is not configured here. */
+export type ReadCalcomTierCounts = (fromIso: string, toIso: string) => Promise<Record<VolumeTier, number> | null>;
 
 export type RelearnResult =
   | { status: "not-due"; fittedAt: string }
@@ -330,8 +384,8 @@ export type RelearnResult =
  */
 export async function runVolumeRelearn(deps: {
   nowMs: number;
-  /** Each measured tier's cal.com fit, the floor under its learned floor. */
-  anchors: Readonly<Partial<Record<VolumeTier, VolumeBaseline>>>;
+  /** Each tier's cal.com measurements, thinned to the share Slate carries (#2893). */
+  anchors: AnchorSource;
   /** The zone weekday, hour and a declared ramp end's day are judged in. */
   zone: string;
   /** The stored ramp end and refit. Throws when it cannot be read. */
@@ -349,6 +403,14 @@ export async function runVolumeRelearn(deps: {
    * refit with the holidays left in is the fault this exists to prevent.
    */
   readClosedDates: (fromIsoDate: string) => Promise<string[]>;
+  /**
+   * cal.com's bookings per tier created in [from, to) (#2893), counted the way the
+   * measurements were (a routing form response that went on to a booking, filed by
+   * the lead's code), or null when cal.com is not configured here, which is the state
+   * after cutover. Throws on a failed or partial read: a share from part of cal.com's
+   * traffic would thin every anchor toward Slate's side, and nothing is written.
+   */
+  readCalcomTierCounts: ReadCalcomTierCounts;
   /** Store the refit. Throws when the write did not land. */
   save: (state: StoredVolumeLearning) => Promise<void>;
   log?: (fields: Record<string, unknown>) => void;
@@ -392,6 +454,15 @@ export async function runVolumeRelearn(deps: {
     closedDates = await deps.readClosedDates(DateTime.fromMillis(sinceMs, { zone: deps.zone }).toISODate() ?? "");
   }
 
+  // Each tier's share of its bookings Slate carries (#2893), measured before the fit so
+  // the fit underpins with the same anchors the read will. Only while something is
+  // carried: with nothing carried no anchor is under anything, and the shares last
+  // measured are kept rather than a day of cal.com traffic reading as Slate taking none.
+  const previousShare = read.state === "ok" ? read.value.carriedShare : null;
+  const carriedShare =
+    carried.length > 0 ? await measureCarriedShares(deps, rows, closedDates, previousShare) : previousShare;
+  const anchors = anchorsFor(carriedShare, deps.anchors);
+
   const tiers: Partial<Record<VolumeTier, StoredTierLearning>> = {};
   const summary: [VolumeTier, LearnedFloors["status"] | "not-carried"][] = [];
   for (const tier of VOLUME_TIERS) {
@@ -409,7 +480,7 @@ export async function runVolumeRelearn(deps: {
       bookings: rows.filter((r) => r.tier === tier || (r.isTest && (r.tier ?? null) === null)),
       rampEndMs: startMs,
       nowMs: deps.nowMs,
-      anchor: deps.anchors[tier] ?? null,
+      anchor: anchors[tier] ?? null,
       zone: deps.zone,
       scope: `Every real ${tierLabel(tier)} booking a landing page sent Slate after the tier's ramp start`,
       closedDates,
@@ -422,6 +493,7 @@ export async function runVolumeRelearn(deps: {
     declaredRampEndOn: rampEndOn,
     fittedAt: new Date(deps.nowMs).toISOString(),
     tiers,
+    carriedShare,
   });
   deps.log?.({
     ramp_end: rampEndOn,
@@ -429,8 +501,67 @@ export async function runVolumeRelearn(deps: {
     closed_days: closedDates.length,
     carried: carried.join(",") || "none",
     tiers: summary.map(([t, status]) => `${t}=${status}`).join(" "),
+    shares: VOLUME_TIERS.map((t) => {
+      const e = carriedShare?.tiers[t];
+      return `${t}=${e?.applied ? e.applied.share : "none"}/${e?.last.outcome ?? "none"}`;
+    }).join(" "),
   });
   return { status: "refit", rowsRead: rows.length, tiers: recordOfTiers(summary) };
+}
+
+/**
+ * Every tier's share over the last `CARRIED_SHARE.windowHours`, judged against the
+ * share in force. Slate's side comes from the rows the refit already read; cal.com's
+ * is one read. The whole tier measurement, where a tier has one, is what the day's
+ * total is judged against, to tell leads moved to cal.com from leads lost.
+ */
+async function measureCarriedShares(
+  deps: {
+    nowMs: number;
+    zone: string;
+    anchors: AnchorSource;
+    readCalcomTierCounts: ReadCalcomTierCounts;
+  },
+  rows: SlateBookingRow[],
+  closedDates: string[],
+  previous: StoredCarriedShare | null,
+): Promise<StoredCarriedShare> {
+  const toMs = deps.nowMs;
+  const fromMs = toMs - CARRIED_SHARE.windowHours * 60 * 60_000;
+  const fromIso = new Date(fromMs).toISOString();
+  const toIso = new Date(toMs).toISOString();
+  const calcom = await deps.readCalcomTierCounts(fromIso, toIso);
+  if (calcom !== null) {
+    for (const tier of VOLUME_TIERS) {
+      const n = calcom[tier];
+      // Silence about a tier is not "cal.com took none" (L214).
+      if (typeof n !== "number" || !Number.isFinite(n) || n < 0) {
+        throw new Error(`volume learning: the cal.com count said nothing readable about tier ${tier}`);
+      }
+    }
+  }
+  const closed = new Set(closedDates);
+  const dayOf = (ms: number) => DateTime.fromMillis(ms, { zone: deps.zone }).toISODate() ?? "";
+  const touchesClosed = closed.has(dayOf(fromMs)) || closed.has(dayOf(toMs - 1));
+  const out: Partial<Record<VolumeTier, StoredTierShare>> = {};
+  for (const tier of VOLUME_TIERS) {
+    const slate = rows.filter((r) => !r.isTest && r.tier === tier && r.createdAtMs >= fromMs && r.createdAtMs < toMs).length;
+    const whole = deps.anchors.measurements[tier]?.find((b) => b.tierShare === null) ?? null;
+    const expected = whole ? expectedBookings(whole, fromMs, toMs) : 0;
+    const cal = calcom === null ? null : calcom[tier];
+    const level = expected > 0 && cal !== null ? Math.round(((slate + cal) / expected) * 100) / 100 : null;
+    out[tier] = judgeTierShare({
+      previous: previous?.tiers[tier] ?? null,
+      slate,
+      calcom: cal,
+      level,
+      touchesClosed,
+      fromIso,
+      toIso,
+      nowMs: deps.nowMs,
+    });
+  }
+  return { measuredAt: toIso, from: fromIso, to: toIso, tiers: out };
 }
 
 /** The name the ramp end form's refusals carry back, so the page draws them beside it. */

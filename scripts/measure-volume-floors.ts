@@ -37,10 +37,10 @@
 //   scripts/fixtures/calcom-tier-<tier>-bookings.json   that tier's counts, alone
 //   src/lib/monitor/volume-baseline-tiers.ts             every measured tier's floors,
 //                                                        rendered from every such file
-// and never touches Low's files. Those floors are SAVED, NOT IN FORCE: TIER_ANCHORS is
-// Low alone until #2893 applies them in proportion to the share of each tier Slate
-// carries (Dan, 2026-09-29). scripts/test-volume-tier-anchors.ts holds the module to
-// the files and TIER_ANCHORS to Low. REFIT=1 and RECORD_CLOSED_DAYS=1 work the same
+// and never touches Low's files. A Low run re-renders that module too, since it holds
+// Low's whole tier fit beside the others (#2893). None of them is applied as measured:
+// each is thinned to the share of its tier Slate carries (carried-share.ts, Dan
+// 2026-09-29). scripts/test-volume-tier-anchors.ts holds the module to the files. REFIT=1 and RECORD_CLOSED_DAYS=1 work the same
 // way per tier. A tier so thin that no judged hour carries a floor is refused rather
 // than written, in every mode, since it could never hold a floor up and would still
 // read as a real measurement.
@@ -114,10 +114,9 @@ function writeMeasurement(fixture: VolumeFixture, baseline: VolumeBaseline): voi
     process.exit(6);
   }
   writeFileSync(FIXTURE_PATH, JSON.stringify(fixture) + "\n");
-  if (TARGET.low) {
-    writeFileSync(BASELINE_PATH, renderBaselineModule(baseline));
-    return;
-  }
+  if (TARGET.low) writeFileSync(BASELINE_PATH, renderBaselineModule(baseline));
+  // Every tier's whole tier fit, Low's included since #2893, so a Low run re-renders
+  // the tier module too: its whole tier fit comes from the file just written.
   const all = { ...readTierFixtures(), [TARGET.tier]: fixture };
   writeFileSync(TIER_BASELINES_PATH, renderTierBaselineModule(tierBaselinesFromFixtures(all)));
 }
