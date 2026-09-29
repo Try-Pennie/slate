@@ -183,23 +183,37 @@ function row(host_kind: CallerSeenRow["host_kind"], agoMs: number, origin: strin
   eq(preview.status, "not-from-production", "seen only from a preview host is not production");
   assert(/x\.vercel\.app/.test(preview.detail), `and names that host (got: ${preview.detail})`);
 
-  // Dan, 2026-09-25: trypennie's lookup is a server call that names no host, so a
-  // recent one PASSES, and the sentence says it passed on that and not on a page.
+  // #2868 reverses the 2026-09-25 acceptance: a call that names no host is also what
+  // one hand run curl or script with the partner's key produces, so it is written by
+  // us as easily as by the partner (L58) and can never prove their deployment. It is
+  // REPORTED as seen, with its age, in a sentence of its own, and never as proof.
   const server = judgePartnerKey("trypennie", [row("unstated", DAY), row("localhost", 60_000, "http://localhost:3000")], NOW, MAX);
-  eq(server.status, "proven", "a recent server call that named no host passes");
-  eq(server.via, "server-call", "and says it passed on the server call");
-  assert(/server call that named no host/.test(server.detail), `in its sentence too (got: ${server.detail})`);
+  eq(server.status, "no-host-named", "a recent call that named no host does NOT prove the deployment");
+  eq(server.via, null, "and names no passing sighting");
+  assert(/named no host/.test(server.detail) && /1 day ago/.test(server.detail), `the sentence still reports it as seen, with its age (got: ${server.detail})`);
+  assert(/does not prove/.test(server.detail), `and says it is not proof (got: ${server.detail})`);
+  assert(/localhost:3000/.test(server.detail), `and still names the other hosts it was seen from (got: ${server.detail})`);
 
   const staleServer = judgePartnerKey("trypennie", [row("unstated", MAX + DAY)], NOW, MAX);
-  eq(staleServer.status, "stale", "a server call older than the window is stale, not a pass");
-  assert(/server call/.test(staleServer.detail) && /outside the/.test(staleServer.detail), `and says so (got: ${staleServer.detail})`);
+  eq(staleServer.status, "no-host-named", "an old call that named no host is the same finding, not a stale pass");
+  assert(/8 days ago/.test(staleServer.detail), `and carries its own age (got: ${staleServer.detail})`);
 
-  const details = new Set([never.detail, local.detail, preview.detail, staleServer.detail]);
-  eq(details.size, 4, "each way of not being proven reads differently");
+  // The same call beside a stale production sighting: the production one is what
+  // could have proven it, so the verdict is stale and the sentence names it.
+  const staleProdNewServer = judgePartnerKey(
+    "trypennie",
+    [row("production", MAX + DAY, "https://trypennie.com"), row("unstated", 60_000)],
+    NOW,
+    MAX,
+  );
+  eq(staleProdNewServer.status, "stale", "a fresh no host call never rescues a stale production sighting");
+
+  const details = new Set([never.detail, local.detail, preview.detail, server.detail, staleProdNewServer.detail]);
+  eq(details.size, 5, "each way of not being proven reads differently");
 
   const prod = judgePartnerKey("trypennie", [row("production", 2 * DAY, "https://trypennie.com"), row("localhost", 60_000)], NOW, MAX);
   eq(prod.status, "proven", "seen from production inside the window is proven, whatever else it was seen from");
-  eq(prod.via, "production", "and a production host is preferred over a server call when both are recent");
+  eq(prod.via, "production", "and says it passed on the production host");
   const both = judgePartnerKey("trypennie", [row("unstated", 60_000), row("production", DAY, "https://trypennie.com")], NOW, MAX);
   eq(both.via, "production", "even when the server call is the newer of the two");
   assert(/production site/.test(both.detail), `and the sentence names the production site (got: ${both.detail})`);

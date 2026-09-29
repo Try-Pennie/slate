@@ -329,11 +329,13 @@ export function judgeReadiness(f: ReadinessFacts): ReadinessJudgement {
   let partnerProof: string | null = null;
   if (f.partnerKey === null) unreadable.push("partner key sightings");
   else {
-    // Passes on a recent production host OR a recent server call that named no
-    // host (Dan, 2026-09-25: trypennie's lookup is a server call). One exit for
-    // every way it fails, each in its own words (never seen, only localhost or a
-    // private address, only another host, or not recently): the fix is the same
-    // person asking the same partner, and the sentence says which question to ask.
+    // Passes only on a recent sighting from a named production host. A call that
+    // named no host no longer passes (#2868): a hand run probe with the key looks
+    // the same, so it is reported and never proof. One exit for every way it
+    // fails, each in its own words (never seen, only localhost or a private
+    // address, only another host, only calls naming no host, or not recently): the
+    // fix is the same person asking the same partner, and the sentence says which
+    // question to ask.
     //
     // Exits 17 and 18 judged the retired shared key (#2819, #2822) and are retired
     // with it (#2865); the numbers stay unused so an old log never reads as a new one.
