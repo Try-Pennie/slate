@@ -15,6 +15,8 @@ import {
   PARTNER_KEY_MAX_AGE_DAYS,
   judgePartnerKey,
   makeCallerSeenRecorder,
+  PROBE_HEADER,
+  probeCallerName,
   requestHost,
   type CallerSeenRow,
   type CallerSeenWrite,
@@ -214,6 +216,80 @@ function row(host_kind: CallerSeenRow["host_kind"], agoMs: number, origin: strin
 
   const other = judgePartnerKey("trypennie", [{ ...row("production", DAY), caller: "regal" }], NOW, MAX);
   eq(other.status, "never-seen", "another caller's row never answers for this one");
+}
+
+// --- #2868: Slate's own probes are recorded apart and never prove a partner --------
+//
+// A hand run probe with a partner's key names no host, exactly as trypennie's server
+// lookup does, so without a marker it would read as their deployment (L58). A probe
+// sends X-Slate-Probe and is recorded under `probe:<caller>` with its real host kind,
+// so the key it used stays visible while every reader filtering to the known callers
+// leaves it out. An unmarked call is recorded exactly as before.
+{
+  eq(PROBE_HEADER, "x-slate-probe", "the marker is one named header");
+  eq(probeCallerName("trypennie"), "probe:trypennie", "a probe is recorded under probe:<caller>");
+
+  const writes: CallerSeenWrite[] = [];
+  const deferred: (() => Promise<unknown>)[] = [];
+  const record = makeCallerSeenRecorder({
+    write: async (w) => {
+      writes.push(w);
+    },
+    defer: (work) => deferred.push(work),
+    now: () => NOW,
+  });
+  record("trypennie", "GET", headers({ "x-slate-probe": "key check for #2865" }));
+  record("trypennie", "GET", headers({ "x-slate-probe": "second probe", origin: "https://www.trypennie.com" }));
+  record("trypennie", "GET", headers({}));
+  record("trypennie", "GET", headers({ "x-slate-probe": "   " }));
+  for (const w of deferred) await w();
+  eq(
+    writes.map((w) => `${w.caller}/${w.host_kind}`).join(","),
+    "probe:trypennie/unstated,probe:trypennie/production,trypennie/unstated",
+    "a marked call is recorded as probe:<caller> with its real host kind; an unmarked one as the caller; a blank marker is no marker",
+  );
+
+  // The judge reads the rows as recorded: probe rows never answer for trypennie.
+  const probeRows: CallerSeenRow[] = [
+    { ...row("unstated", 60_000), caller: "probe:trypennie" },
+    { ...row("production", 60_000, "https://www.trypennie.com"), caller: "probe:trypennie" },
+  ];
+  eq(judgePartnerKey("trypennie", probeRows, NOW, MAX).status, "never-seen", "a marked probe, even naming production, does not prove the key");
+  // Positive controls: the same sightings unmarked DO prove it.
+  eq(judgePartnerKey("trypennie", [row("unstated", 60_000)], NOW, MAX).status, "proven", "an unmarked call naming no host still proves the key, as on main");
+  eq(judgePartnerKey("trypennie", [row("production", 60_000, "https://www.trypennie.com")], NOW, MAX).status, "proven", "a production host sighting still proves it");
+}
+
+// --- #2868: every reader of the table names its callers, so a probe row stays out ---
+//
+// A probe row keeps out of the proof only because each read asks for callers BY NAME.
+// A reader that selected the whole table, or aggregated across callers, would let
+// `probe:trypennie` stand beside `trypennie`. So every read in src/ and scripts/ is
+// found by walking the tree and must carry `.in("caller", ...)`.
+{
+  const { readdirSync, statSync } = await import("node:fs");
+  const { join, relative } = await import("node:path");
+  const root = new URL("..", import.meta.url).pathname;
+  const walk = (dir: string): string[] =>
+    readdirSync(dir).flatMap((e) => {
+      const p = join(dir, e);
+      if (statSync(p).isDirectory()) return e === "node_modules" ? [] : walk(p);
+      return /\.(ts|tsx)$/.test(p) && !/\.test\.tsx?$/.test(p) && !/scripts\/test-/.test(p) ? [p] : [];
+    });
+  const reads: { file: string; chain: string }[] = [];
+  for (const file of [...walk(join(root, "src")), ...walk(join(root, "scripts"))]) {
+    const text = readFileSync(file, "utf8");
+    for (const m of text.matchAll(/\.from\("api_caller_seen"\)([\s\S]{0,400})/g)) {
+      const chain = m[1].split(/;\n|\n\s*\]\)|\n\s*"api_caller_seen"/)[0];
+      if (/\.select\(/.test(chain)) reads.push({ file: relative(root, file), chain });
+    }
+  }
+  assert(reads.length >= 2, `the scan finds the readiness and admin reads (found ${reads.length})`);
+  for (const r of reads) {
+    assert(/\.in\(\s*"caller"/.test(r.chain), `${r.file} reads api_caller_seen filtered to named callers`);
+  }
+  // Positive control: a whole table read is caught.
+  assert(!/\.in\(\s*"caller"/.test('.select("caller, host_kind").limit(40)'), "a read with no caller filter would be caught");
 }
 
 // --- #2865: rows the retired shared key left behind prove nothing -------------------

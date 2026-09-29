@@ -11,8 +11,9 @@
  *
  * WHY PER HOST KIND and not one row per caller: a single "last seen" row would let a
  * localhost test at 10:30 overwrite the production call at 10:00, and the readiness
- * gate would then report the key as seen only from localhost. Four kinds times four
- * callers, plus the `canary-lanes` sighting (#2822), bounds the table at twenty rows.
+ * gate would then report the key as seen only from localhost. Four kinds times the
+ * callers, the same again for their marked probes (`probe:<caller>`, #2868), plus the
+ * rows the retired shared key left (#2865), bounds the table at a few dozen rows.
  *
  * WHAT A HOST IS. The request's `Origin` header, else the origin of its `Referer`,
  * reduced to scheme, host and port so a path or query (a booking id on the confirmed
@@ -107,6 +108,28 @@ export function requestHost(headers: HeaderSource): { kind: CallerHostKind; orig
   return { kind: PRODUCTION_ORIGINS.includes(origin) ? "production" : "other-host", origin };
 }
 
+/**
+ * The marker a hand run probe sends (#2868): `X-Slate-Probe: <why>`. A probe with a
+ * partner's key names no host, exactly as trypennie's server lookup does, so without
+ * it the probe would be recorded as their deployment and prove their key (L58: the
+ * proof would be written by us). A marked call is recorded under
+ * `probeCallerName(caller)` with its real host kind, so which key it used stays
+ * visible, while every reader of `api_caller_seen` filters to `BOOKING_API_CALLERS`
+ * and so never counts it. Only the recording changes: the request is authenticated,
+ * rate limited and served exactly as an unmarked one. A blank value is no marker.
+ */
+export const PROBE_HEADER = "x-slate-probe";
+
+/** The caller a marked probe is recorded under: `probe:trypennie`. */
+export function probeCallerName(caller: string): string {
+  return `probe:${caller}`;
+}
+
+/** Whether a request carries the probe marker. */
+export function isSlateProbe(headers: HeaderSource): boolean {
+  return (headers.get(PROBE_HEADER)?.trim() ?? "") !== "";
+}
+
 export interface CallerSeenDeps {
   /** Upsert one row on (caller, host_kind). Rejects on failure. */
   write: (w: CallerSeenWrite) => Promise<void>;
@@ -123,9 +146,10 @@ export interface CallerSeenDeps {
  */
 export function makeCallerSeenRecorder(deps: CallerSeenDeps) {
   const lastClaimed = new Map<string, number>();
-  return function recordCallerSeen(caller: string, method: string, headers: HeaderSource): void {
+  return function recordCallerSeen(authenticated: string, method: string, headers: HeaderSource): void {
     try {
       const nowMs = deps.now();
+      const caller = isSlateProbe(headers) ? probeCallerName(authenticated) : authenticated;
       const host = requestHost(headers);
       const key = `${caller}:${host.kind}`;
       const last = lastClaimed.get(key);

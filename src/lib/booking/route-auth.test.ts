@@ -271,6 +271,26 @@ describe("authorizeBookingApi records who authenticated (#2717)", () => {
     expect(seen.recordCallerSeen).not.toHaveBeenCalled();
   });
 
+  // #2868: a probe marker changes only how a SUCCESS is recorded, so a marked call
+  // whose key fails auth leaves no row under the caller or under probe:<caller>.
+  it("records nothing for a marked probe whose key fails auth", async () => {
+    const r = req("Bearer stalekey");
+    r.headers.set("x-slate-probe", "key check");
+    const out = await authorizeBookingApi(r);
+    expect(out.ok).toBe(false);
+    expect(seen.recordCallerSeen).not.toHaveBeenCalled();
+  });
+
+  it("hands a marked probe that authenticates to the recorder with its headers, so it is recorded as a probe", async () => {
+    const r = req("Bearer trypenniesecret");
+    r.headers.set("x-slate-probe", "key check");
+    const out = await authorizeBookingApi(r);
+    expect(out.ok).toBe(true);
+    expect(seen.recordCallerSeen).toHaveBeenCalledTimes(1);
+    const [, , headers] = seen.recordCallerSeen.mock.calls[0];
+    expect((headers as Headers).get("x-slate-probe")).toBe("key check");
+  });
+
   it("records nothing for a good key the ceiling refused", async () => {
     rateLimit.bookingApiWriteWithinLimit.mockResolvedValue(false);
     await authorizeBookingApi(req("Bearer trypenniesecret"));

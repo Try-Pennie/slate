@@ -12,7 +12,7 @@ import {
   type OutcomeMix,
   type RawMix,
 } from "@/lib/monitor/booking-api-outcome";
-import { CALLER_HOST_KINDS, type CallerSeenRow } from "@/lib/booking/caller-seen";
+import { CALLER_HOST_KINDS, probeCallerName, type CallerSeenRow } from "@/lib/booking/caller-seen";
 import { BOOKING_API_CALLERS } from "@/lib/booking/api-auth";
 import { CallerSightings } from "@/components/admin/CallerSightings";
 import { cardCls } from "@/components/ui/styles";
@@ -122,11 +122,13 @@ export default async function BookingOutcomesPage() {
     // #2717: one row per (caller, host kind), so the limit is the whole key space.
     // Only the callers the authorizer still knows: rows for the retired shared key and
     // its canary lanes marker (#2865) stay in the table and must not take a place.
+    // Slate's own marked probes (#2868) are read too, so the card can show them
+    // apart; the partner judge filters to the real caller and never counts them.
     db
       .from("api_caller_seen")
       .select("caller, host_kind, last_seen_at, method, origin")
-      .in("caller", [...BOOKING_API_CALLERS])
-      .limit(BOOKING_API_CALLERS.length * CALLER_HOST_KINDS.length),
+      .in("caller", [...BOOKING_API_CALLERS, ...BOOKING_API_CALLERS.map(probeCallerName)])
+      .limit(2 * BOOKING_API_CALLERS.length * CALLER_HOST_KINDS.length),
   ]);
   // An unreadable table must not render as "never authenticated", which is the
   // exact finding this panel exists to show (L10).

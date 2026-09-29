@@ -127,7 +127,37 @@ describe("BookingOutcomesPage caller sightings", () => {
     const inFilter = vi.fn(() => ({ limit: seenRead }));
     from.mockImplementationOnce(() => ({ select: () => ({ in: inFilter }) }));
     render(await BookingOutcomesPage());
-    expect(inFilter).toHaveBeenCalledWith("caller", ["regal", "trypennie", "canary"]);
+    expect(inFilter).toHaveBeenCalledWith("caller", [
+      "regal",
+      "trypennie",
+      "canary",
+      "probe:regal",
+      "probe:trypennie",
+      "probe:canary",
+    ]);
+  });
+
+  // #2868: Slate's own marked probes are shown apart, labelled as ours, and never
+  // prove a partner's key.
+  it("shows a marked probe separately as Slate's own, and does not let it prove trypennie", async () => {
+    auth.currentUser.mockResolvedValueOnce(ADMIN);
+    rpc.mockResolvedValue(MIX);
+    const recent = new Date(Date.now() - 2 * HOUR).toISOString();
+    seenRead.mockResolvedValue({
+      data: [{ caller: "probe:trypennie", host_kind: "unstated", last_seen_at: recent, method: "GET", origin: null }],
+      error: null,
+    });
+    render(await BookingOutcomesPage());
+    expect(screen.getByText(/Slate's own probes/i)).toBeTruthy();
+    expect(screen.getByText(/trypennie's key, probed by Slate/i)).toBeTruthy();
+    expect(screen.getByText(/trypennie's key has never authenticated/i)).toBeTruthy();
+  });
+
+  it("shows no probe section when nothing was probed", async () => {
+    auth.currentUser.mockResolvedValueOnce(ADMIN);
+    rpc.mockResolvedValue(MIX);
+    render(await BookingOutcomesPage());
+    expect(screen.queryByText(/Slate's own probes/i)).toBeNull();
   });
 
   it("shows no row and no warning for a leftover shared key sighting", async () => {

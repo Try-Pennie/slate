@@ -126,6 +126,11 @@ Authorization: Bearer <your caller's key>
   The list is empty today, because the old shared key's value still lives in
   `BOOKING_API_KEY_TRYPENNIE_2`; it is armed at the next rotation.
 - `503` if no key is configured (endpoint disabled); `401` on a missing/wrong key.
+- **A hand run probe with a partner's key sends `X-Slate-Probe: <why>`** (#2868), for
+  example `curl -H 'X-Slate-Probe: key check after rotation' ...`. It is answered
+  exactly as any call, and recorded as `probe:<caller>` rather than as the partner, so
+  it can never make their key look proven in `pnpm verify:parallel-run-readiness` or
+  on `/admin/booking-outcomes`. Do not fake an `Origin` to achieve the same thing.
 - The smoke endpoints (`/api/smoke/*`) and the hidden test buckets accept only
   the canary's key, never a partner's.
 - **Rate limit:** per CALLER (both of a caller's slots share one budget), generous, a runaway/leaked-key backstop rather than a
