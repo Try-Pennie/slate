@@ -41,7 +41,7 @@ const from = vi.hoisted(() => {
     // Every filter/ordering method is chainable and the builder is awaitable, so
     // a read that ends on `.limit()` or `.is()` resolves the same way one ending
     // on `.order()` does (#1658 drives reads with both shapes).
-    for (const m of ["select", "eq", "order", "in", "gte", "lte", "is", "limit", "neq", "range", "or"]) {
+    for (const m of ["select", "eq", "order", "in", "gte", "lte", "is", "limit", "neq", "range", "or", "like"]) {
       b[m] = () => b;
     }
     return b;

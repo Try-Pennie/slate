@@ -9,6 +9,14 @@ import {
   UNSOURCED_VALUES,
   type PageSourceMeasure,
 } from "@/lib/monitor/page-volume";
+import { LOW_TIER, VOLUME_TIERS, tierCodePattern, type VolumeTier } from "@/lib/monitor/volume-tiers";
+
+/**
+ * The embed every read here joins on: the bucket's test flag, which is the only
+ * place test-ness lives, and its code, whose first digit is the booking's tier
+ * (#2874). One string, so the reads cannot select different columns of it.
+ */
+const BUCKET_EMBED = "buckets!inner(is_test, code)";
 
 /**
  * Customer bookings created since `sinceIso`, for the low-volume alarm (#370).
@@ -28,15 +36,20 @@ import {
  * Returns null when the read FAILED, never 0 (#1158, and the wider rule in
  * AGENTS.md): zero is the value that pages, so an errored query must present as
  * unverified and let the caller skip the tick rather than invent a drought.
+ *
+ * #2874: ONE tier's bookings, the tier whose floors the count is judged against, so
+ * widening the pilot to another tier can never hold this tier's count up. Required
+ * rather than defaulted to Low, so every caller names the tier it means (L168).
  */
 export async function countCustomerBookingsSince(
   db: ReturnType<typeof supabaseAdmin>,
   sinceIso: string,
+  tier: VolumeTier,
 ): Promise<number | null> {
   // cap-safe: a head-only exact count returns no rows.
   const { count, error } = await db
     .from("bookings")
-    .select("*, buckets!inner(is_test)", { count: "exact", head: true })
+    .select(`*, ${BUCKET_EMBED}`, { count: "exact", head: true })
     .eq("buckets.is_test", false)
     // #2073: routed bookings only. A booking through an agent's own link is a
     // later call with a lead the funnel already sent, so counting it would hold
@@ -48,9 +61,10 @@ export async function countCustomerBookingsSince(
     // every page was dark. Null (a booking from before #2072) is kept explicitly,
     // because `not in` alone drops a null.
     .or(pageTrafficFilter())
+    .like("buckets.code", tierCodePattern(tier))
     .gte("created_at", sinceIso);
   if (error) {
-    log.error("monitor", { msg: "booking volume count read failed", since: sinceIso }, error);
+    log.error("monitor", { msg: "booking volume count read failed", since: sinceIso, tier }, error);
     return null;
   }
   return count ?? 0;
@@ -72,17 +86,22 @@ export const SOURCE_READ_LIMIT = 1000;
  * count above. THROWS on a failed read, a full page or an unreadable timestamp:
  * each of those answered as a list would read as pages that stopped booking, which
  * is the answer that pages. The lane's step boundary reports the throw.
+ *
+ * #2874: one tier's bookings, the tier the pages' floors were fitted to, so another
+ * tier booking through the same pages cannot hold a page's count up.
  */
 export async function listCustomerBookingSourcesSince(
   db: ReturnType<typeof supabaseAdmin>,
   sinceIso: string,
+  tier: VolumeTier,
 ): Promise<{ createdMs: number; source: string | null }[]> {
   const { data, error } = await db
     .from("bookings")
-    .select("created_at, source, buckets!inner(is_test)")
+    .select(`created_at, source, ${BUCKET_EMBED}`)
     .eq("buckets.is_test", false)
     // #2073: routed bookings only, as the count above.
     .eq("kind", "routed")
+    .like("buckets.code", tierCodePattern(tier))
     .gte("created_at", sinceIso)
     .limit(SOURCE_READ_LIMIT);
   if (error) {
@@ -104,20 +123,22 @@ export async function listCustomerBookingSourcesSince(
  * Whether ANY customer booking since `sinceIso` carried one of `sources` (#2738):
  * the difference between a page that stopped booking and one whose link never
  * carried a source. Throws on a failed read, because "never recorded" is the
- * answer that changes what the page says.
+ * answer that changes what the page says. Scoped to one tier, as the list above.
  */
 export async function customerBookingFromSourcesSince(
   db: ReturnType<typeof supabaseAdmin>,
   sources: readonly BookingSource[],
   sinceIso: string,
+  tier: VolumeTier,
 ): Promise<boolean> {
   // cap-safe: at most one row, it is an existence check.
   const { data, error } = await db
     .from("bookings")
-    .select("id, buckets!inner(is_test)")
+    .select(`id, ${BUCKET_EMBED}`)
     .eq("buckets.is_test", false)
     // #2073: routed bookings only, as the count above.
     .eq("kind", "routed")
+    .like("buckets.code", tierCodePattern(tier))
     .in("source", [...sources])
     .gte("created_at", sinceIso)
     .limit(1);
@@ -129,10 +150,57 @@ export async function customerBookingFromSourcesSince(
 }
 
 /**
+ * Each tier's first real page booking at or after `sinceIso`, or null for a tier
+ * nobody has booked (#2874). This is what decides which tiers Slate carries and
+ * when each one's floors may start being learned: derived from the bookings it
+ * actually takes, never a constant somebody has to edit when the pilot widens.
+ *
+ * The same population the alarm counts (a real bucket, routed, page traffic), so a
+ * test booking, an agent's own link or a booking API call can never start a tier.
+ * One existence read per tier, run by the once a day refit rather than every tick.
+ * THROWS on any failed read: an empty answer is "no tier is carried", which would
+ * stop every tier learning on a read that never ran.
+ */
+export async function firstTierBookingsSince(
+  db: ReturnType<typeof supabaseAdmin>,
+  sinceIso: string,
+): Promise<Record<VolumeTier, number | null>> {
+  const out: Record<VolumeTier, number | null> = {};
+  for (const tier of VOLUME_TIERS) {
+    // cap-safe: at most one row, the earliest.
+    const { data, error } = await db
+      .from("bookings")
+      .select(`created_at, ${BUCKET_EMBED}`)
+      .eq("buckets.is_test", false)
+      .eq("kind", "routed")
+      .or(pageTrafficFilter())
+      .like("buckets.code", tierCodePattern(tier))
+      .gte("created_at", sinceIso)
+      .order("created_at", { ascending: true })
+      .limit(1);
+    if (error) {
+      log.error("monitor", { msg: "first tier booking read failed", tier, since: sinceIso }, error);
+      throw new Error(`volume tiers: could not read tier ${tier}'s first booking`);
+    }
+    const row = ((data ?? []) as { created_at: string }[])[0];
+    if (!row) {
+      out[tier] = null;
+      continue;
+    }
+    const ms = parseStampMs(row.created_at);
+    if (ms === null) throw new Error(`volume tiers: tier ${tier}'s first booking has an unreadable created_at`);
+    out[tier] = ms;
+  }
+  return out;
+}
+
+/**
  * Whether the Low pages' bookings are carrying their source (#2765, #2767): real
  * bookings over the per page alarm's own lookback, how many recorded no page, and
  * whether each page recorded one of its own. ONE measurement, read by the readiness
- * gate and by /admin/alerts, so the two can never count differently.
+ * gate and by /admin/alerts, so the two can never count differently. Of the Low
+ * tier only (#2874), because the pages' floors, and the per page alarm that reads
+ * the same rows, are Low's.
  *
  * Throws on any failed read. Every caller maps that to "could not be read", never
  * to zero unsourced, which is the answer that would show floors as coverage.
@@ -145,16 +213,17 @@ export async function measurePageSources(
   // #2876: page traffic only, the same count the tier alarm reads, so a lookback
   // holding only booking API calls reads as no page traffic rather than as every
   // booking having carried a source.
-  const realBookings = await countCustomerBookingsSince(db, sinceIso);
+  const realBookings = await countCustomerBookingsSince(db, sinceIso, LOW_TIER);
   if (realBookings === null) throw new Error("page sources: the real booking count could not be read");
   // cap-safe: head-only exact count, no rows. A null source is a booking from before #2072.
   const { count: unsourced, error } = await db
     .from("bookings")
-    .select("id, buckets!inner(is_test)", { count: "exact", head: true })
+    .select(`id, ${BUCKET_EMBED}`, { count: "exact", head: true })
     .eq("buckets.is_test", false)
     // #2073: routed bookings only. An agent's own link carries no page source, so
     // counting its bookings would read as landing pages dropping theirs.
     .eq("kind", "routed")
+    .like("buckets.code", tierCodePattern(LOW_TIER))
     .or(["source.is.null", ...UNSOURCED_VALUES.map((v) => `source.eq.${v}`)].join(","))
     .gte("created_at", sinceIso);
   if (error || unsourced === null) {
@@ -166,7 +235,7 @@ export async function measurePageSources(
     pages.push({
       id: page.id,
       name: page.name,
-      recorded: await customerBookingFromSourcesSince(db, page.sources, sinceIso),
+      recorded: await customerBookingFromSourcesSince(db, page.sources, sinceIso, LOW_TIER),
     });
   }
   return { lookbackDays: PAGE_SEEN_LOOKBACK_DAYS, realBookings, unsourced, pages };

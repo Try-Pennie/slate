@@ -4,6 +4,7 @@ import { parseStampMs } from "@/lib/date/stamp";
 import { selectAllPages } from "@/lib/supabase/paginate";
 import type { SlateBookingRow } from "./volume-learning.ts";
 import { pageTrafficFilter } from "./page-volume.ts";
+import { tierOfBucketCode } from "./volume-tiers.ts";
 
 // Its own file rather than beside the counts in customer-bookings.ts: those FILTER
 // test bookings out, and this one deliberately reads them and flags them, so the
@@ -30,12 +31,13 @@ export async function listBookingStampsBetween(
   sinceIso: string,
   untilIso: string,
 ): Promise<SlateBookingRow[]> {
-  const rows = await selectAllPages<{ created_at: string; buckets: { is_test: boolean } | null }>(
+  const rows = await selectAllPages<{ created_at: string; buckets: { is_test: boolean; code: string | null } | null }>(
     "volume learning bookings",
     (from, to) =>
       db
         .from("bookings")
-        .select("created_at, buckets!inner(is_test)")
+        // #2874: the bucket's code too, whose first digit is the booking's tier.
+        .select("created_at, buckets!inner(is_test, code)")
         // #2073: the floors are fitted to the population the alarm counts, which
         // is routed bookings only.
         .eq("kind", "routed")
@@ -54,6 +56,6 @@ export async function listBookingStampsBetween(
   return rows.map((r) => {
     const createdAtMs = parseStampMs(r.created_at);
     if (createdAtMs === null) throw new Error("volume learning: a booking's created_at is unreadable");
-    return { createdAtMs, isTest: r.buckets?.is_test === true };
+    return { createdAtMs, isTest: r.buckets?.is_test === true, tier: tierOfBucketCode(r.buckets?.code) };
   });
 }

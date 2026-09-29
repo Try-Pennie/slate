@@ -156,6 +156,13 @@ export async function runLowVolumeCheck(deps: {
    */
   resolveRecovered: (recovered: { key: string; text: string }[]) => Promise<string[]>;
   log?: (fields: Record<string, unknown>) => void;
+  /**
+   * #2874: a tier judged BESIDE Low, with its own alert key and its name. Absent
+   * means Low, which keeps the key it has paged on since #370. A tier's reading
+   * clears only its own page: the verdict gap is about Low's verdict, so a tier's
+   * breach says nothing about it.
+   */
+  tier?: { key: string; label: string };
 }): Promise<LowVolumeResult> {
   if (!isBusinessHours(deps.nowMs, deps.businessHours)) return { status: "outside-hours" };
 
@@ -211,14 +218,17 @@ export async function runLowVolumeCheck(deps: {
     },
   ];
   const breaches = lowVolumeBreaches(windows);
+  const alertKey = deps.tier?.key ?? VOLUME_ALERT_KEY;
   if (breaches.length && deps.armed) {
-    await deps.notify(VOLUME_ALERT_KEY, deps.cooldownMs, formatLowVolumeAlert(breaches)).catch(() => {});
+    const text = deps.tier ? formatTierVolumeAlert(deps.tier.label, breaches) : formatLowVolumeAlert(breaches);
+    await deps.notify(alertKey, deps.cooldownMs, text).catch(() => {});
   }
   deps.log?.({
     count_30m: count30,
     count_120m: count120,
     below_floor: breaches.length,
     armed: deps.armed,
+    ...(deps.tier ? { tier: deps.tier.label } : {}),
   });
   // Both all-clears hang off a count we actually READ, never off "we did not page
   // this run" (#1152). Every path above that could not measure returns before
@@ -235,12 +245,13 @@ export async function runLowVolumeCheck(deps: {
   // concluding, which is the whole of what that page said was not happening. It
   // rides this settle rather than a read of its own, so the healthy tick costs
   // nothing extra on the budget four cron lanes share.
-  const recovered = [
-    { key: VOLUME_COUNT_UNREADABLE_KEY, text: formatVolumeCountReadableNotice() },
-    { key: VOLUME_VERDICT_GAP_KEY, text: formatVolumeVerdictGapRecoveryNotice() },
-  ];
+  const recovered = [{ key: VOLUME_COUNT_UNREADABLE_KEY, text: formatVolumeCountReadableNotice() }];
+  if (!deps.tier) recovered.push({ key: VOLUME_VERDICT_GAP_KEY, text: formatVolumeVerdictGapRecoveryNotice() });
   if (breaches.length === 0) {
-    recovered.push({ key: VOLUME_ALERT_KEY, text: formatLowVolumeRecoveryNotice(windows) });
+    recovered.push({
+      key: alertKey,
+      text: deps.tier ? formatTierVolumeRecoveryNotice(deps.tier.label, windows) : formatLowVolumeRecoveryNotice(windows),
+    });
   }
   // all-clear-proof: scripts/test-monitor-booking-volume.ts - pins that a tick
   // outside business hours, a count that failed both reads, a reader that threw,
@@ -305,6 +316,26 @@ export function formatLowVolumeAlert(breaches: VolumeWindow[]): string {
   return (
     `Booking volume is low: ${describeBreaches(breaches)} The booker may be down ` +
     `(broken embed, empty availability, or sync wedged); check it.`
+  );
+}
+
+/**
+ * The page for a tier judged beside Low (#2874). It names the tier, because one
+ * tier going quiet while the others book points at that tier's pages or pool
+ * rather than at the booker every tier shares.
+ */
+export function formatTierVolumeAlert(tierLabel: string, breaches: VolumeWindow[]): string {
+  return (
+    `${tierLabel} booking volume is low: ${describeBreaches(breaches)} Check that ${tierLabel} leads are ` +
+    `still reaching Slate (their landing pages and booking links) and that the ${tierLabel} pool is offering times.`
+  );
+}
+
+/** The all-clear for a tier, hung off counts measured at or above both floors. */
+export function formatTierVolumeRecoveryNotice(tierLabel: string, windows: VolumeWindow[]): string {
+  return (
+    `${tierLabel} bookings are back above the expected minimum: ${describeCounts(windows)}. ` +
+    `The earlier page about it is cleared. No action is needed.`
   );
 }
 

@@ -2,21 +2,25 @@
  * Phase 2 of #1956: re-fitting the low volume floors from Slate's OWN bookings once
  * Slate carries the traffic.
  *
- * WIRED, AND INERT UNTIL A PERSON DECLARES THE RAMP OVER (#2739). An admin sets
- * the ramp end on /admin/alerts; until then `volume-relearn.ts` reads nothing, and
- * the monitor judges against the cal.com measurement (`volume-baseline.ts`). Once
- * it is set, the monitor lane refits from Slate's own bookings once a day and
- * stores the result, and the fixtures in scripts/test-volume-learning.ts say what
- * a refit does.
+ * WIRED PER DEBT TIER, AND STARTED BY EACH TIER'S FIRST REAL BOOKING (#2739,
+ * #2874). `volume-relearn.ts` refits once a day, each carried tier from its own
+ * bookings after its ramp start: the tier's first real booking, or a later ramp end
+ * an admin declares on /admin/alerts. Until a tier is learned, Low is judged against
+ * the cal.com measurement (`volume-baseline.ts`) and any other tier is not judged.
+ * The fixtures in scripts/test-volume-learning.ts say what a refit does.
  *
  * Three traps each turn a self learning floor into an alarm that can never fire,
  * and each has its own guard here:
  *
  * - THE RAMP IS NORMAL TO NOBODY. During the ramp Slate deliberately carries a
  *   fraction of traffic, and floors learned then are far too low once it carries
- *   all of it. So learning refuses to start without an EXPLICIT ramp end, and every
+ *   all of it. So learning refuses to start without an explicit ramp START (a
+ *   tier's first real booking, or a later declared ramp end, #2874), and every
  *   booking before it is excluded and counted, rather than the window merely
- *   happening to start later.
+ *   happening to start later. For Low the cal.com anchor keeps a floor learned on a
+ *   partial ramp from judging below the measurement; a tier with no anchor learns a
+ *   low floor until the horizon moves past its partial weeks, which a declared ramp
+ *   end avoids.
  * - TEST BOOKINGS ARE NOT TRAFFIC. The smoke agents and buckets write real rows,
  *   and counting them inflates the floors by exactly the traffic that is not real.
  * - A FLOOR THAT FOLLOWS VOLUME CANNOT SEE A SLOW DECLINE. Two guards: a recent
@@ -56,6 +60,12 @@ export interface SlateBookingRow {
   createdAtMs: number;
   /** True for a booking on a test bucket, which is never traffic. */
   isTest: boolean;
+  /**
+   * The debt tier of the bucket that took it (#2874), or null for a bucket whose
+   * code is not an XBC (the test buckets). The refit learns each tier from its own
+   * rows; a fixture that learns one population may leave it out.
+   */
+  tier?: string | null;
 }
 
 export type LearnedFloors =
@@ -98,20 +108,34 @@ const isoDate = (ms: number) => new Date(ms).toISOString().slice(0, 10);
 
 export function learnFloors(input: {
   bookings: SlateBookingRow[];
-  /** When the ramp ended, declared by a person. Null means it has not. */
+  /**
+   * When learning may start: the tier's ramp start (#2874, its first real booking
+   * or a later declared ramp end). Null means it has not started.
+   */
   rampEndMs: number | null;
   nowMs: number;
-  /** The measured floors learning may never fall below. */
-  anchor: VolumeBaseline;
+  /**
+   * The measured floors learning may never fall below, or null for a tier nobody
+   * has measured (#2874), which then learns from its own traffic with nothing under
+   * it and must say so wherever its floors are shown.
+   */
+  anchor: VolumeBaseline | null;
+  /** The zone weekday and hour are judged in. Defaults to the anchor's; required without one. */
+  zone?: string;
+  /** Whose traffic the floors describe, in plain words. */
+  scope?: string;
   /** The dates the org records as closed, from `business_hours_exceptions` (#2764). */
   closedDates: ClosedDates;
 }): LearnedFloors {
+  const zone = input.zone ?? input.anchor?.zone;
+  // A fit with no zone would judge weekday and hour in whatever the runtime's is,
+  // which is UTC on a Worker: refuse rather than fit the week to the wrong clock.
+  if (!zone) throw new Error("volume learning: no zone to judge weekday and hour in");
   if (input.rampEndMs === null) return { status: "not-started", reason: "ramp-not-declared" };
   const per = SERIES_BUCKET_MINUTES * 60_000;
   const endMs = Math.floor(input.nowMs / per) * per;
   const startMs = Math.ceil(Math.max(input.rampEndMs, endMs - LEARNING.horizonWeeks * WEEK_MS) / per) * per;
 
-  const zone = input.anchor.zone;
   const closed = new Set(input.closedDates);
   const onClosedDay = (ms: number) => closed.has(DateTime.fromMillis(ms, { zone }).toISODate() ?? "");
 
@@ -145,11 +169,13 @@ export function learnFloors(input: {
       measuredOn: isoDate(endMs),
       fromDate: isoDate(fromMs),
       toDate: isoDate(toMs - 1),
-      zone: input.anchor.zone,
-      scope: "Every real customer booking a landing page sent Slate after the ramp ended",
+      zone,
+      scope: input.scope ?? "Every real customer booking a landing page sent Slate after the ramp ended",
       tierShare: null,
       bookings,
-      cells: underpin(fitFloorCells(series, zone, input.closedDates), input.anchor.cells),
+      cells: input.anchor
+        ? underpin(fitFloorCells(series, zone, input.closedDates), input.anchor.cells)
+        : fitFloorCells(series, zone, input.closedDates),
     };
   };
 

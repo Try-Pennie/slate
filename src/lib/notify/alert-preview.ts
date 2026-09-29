@@ -137,8 +137,11 @@ import {
   formatVolumeCountReadableNotice,
   formatLowVolumeAlert,
   formatLowVolumeRecoveryNotice,
+  formatTierVolumeAlert,
+  formatTierVolumeRecoveryNotice,
   formatVolumeVerdictGapRecoveryNotice,
 } from "@/lib/monitor/booking-volume";
+import { tierLabel } from "@/lib/monitor/volume-tiers";
 import { formatVolumeVerdictGapAlert } from "@/lib/monitor/volume-verdict-gap";
 import { judgedFloors, type FloorsNow } from "@/lib/monitor/volume-floors";
 import {
@@ -748,6 +751,27 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     text: formatLowVolumeRecoveryNotice([
       { label: "30 min", count: 5, floor: 3 },
       { label: "120 min", count: 18, floor: 12 },
+    ]),
+  },
+  {
+    // #2874. A tier judged beside Low, against floors learned from its own bookings.
+    // It names the tier, because one tier going quiet while the others book points
+    // at that tier's pages or pool rather than at the booker every tier shares.
+    key: "low_tier_volume:*",
+    state: "a tier beside Low has gone quiet",
+    channel: "alert",
+    text: formatTierVolumeAlert(tierLabel("2"), [
+      { label: "30 min", count: 0, floor: 2, basis: MEASURED_TUESDAY_2PM.basis30 },
+      { label: "120 min", count: 3, floor: 9, basis: MEASURED_TUESDAY_2PM.basis120 },
+    ]),
+  },
+  {
+    key: "low_tier_volume:*",
+    state: "the tier is booking again",
+    channel: "recovery",
+    text: formatTierVolumeRecoveryNotice(tierLabel("2"), [
+      { label: "30 min", count: 3, floor: 2 },
+      { label: "120 min", count: 11, floor: 9 },
     ]),
   },
   {

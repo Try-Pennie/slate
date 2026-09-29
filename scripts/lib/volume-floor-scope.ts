@@ -10,9 +10,13 @@
  * fitted to the tier while only one page flipped paged 108 to 283 times in the same
  * two weeks, and floors fitted to one page while all flip are slow and blind.
  *
- * When what Slate carries changes, change `FLOOR_SCOPE.forms` to exactly those
- * pages and run `REFIT=1 pnpm measure:volume-floors`. The admin page names the scope and its share
- * beside the floors, so a scope nobody updated is visible to whoever arms the alarm.
+ * THIS IS THE SCOPE OF THE ANCHOR MEASUREMENT, NOT OF WHAT SLATE CARRIES (#2874).
+ * Widening the pilot to another tier needs no edit here and no refit: every count
+ * the alarms read is filtered to the tier its floors describe, the tiers Slate
+ * carries are derived from its own bookings, and each is learned from its own first
+ * booking (`src/lib/monitor/volume-tiers.ts`, `volume-relearn.ts`). Change this
+ * only to MEASURE another tier's cal.com anchor, which is a separate fixture and
+ * baseline per tier; the admin page names the scope beside the floors it produced.
  *
  * The committed fixture keeps every Low page's series, not only the scoped one, so
  * a wider scope can be fitted and replayed offline from the same measurement.

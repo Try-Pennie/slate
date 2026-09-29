@@ -87,11 +87,14 @@ import {
 } from "@/lib/monitor/volume-verdict-gap";
 import {
   countCustomerBookingsSince,
+  firstTierBookingsSince,
   customerBookingFromSourcesSince,
   listCustomerBookingSourcesSince,
 } from "@/lib/monitor/customer-bookings";
 import { listBookingStampsBetween } from "@/lib/monitor/volume-learning-bookings";
 import { runVolumeRelearn } from "@/lib/monitor/volume-relearn";
+import { LOW_TIER, TIER_ANCHORS } from "@/lib/monitor/volume-tiers";
+import { runTierVolumeChecks } from "@/lib/monitor/tier-volume";
 import { MEASURED_VOLUME_BASELINE } from "@/lib/monitor/volume-baseline";
 import { runPageVolumeCheck, type PageVolumeResult } from "@/lib/monitor/page-volume";
 import { MEASURED_PAGE_BASELINES } from "@/lib/monitor/page-volume-baseline";
@@ -1097,7 +1100,9 @@ export async function GET(req: NextRequest) {
           // day the funnel mysteriously stopped delivering.
           exceptions: businessHours!.exceptions,
         },
-        countSince: (sinceIso) => countCustomerBookingsSince(db, sinceIso),
+        // #2874: Low's own bookings, the tier these floors describe, so another tier
+        // joining the pilot can never hold this count up.
+        countSince: (sinceIso) => countCustomerBookingsSince(db, sinceIso, LOW_TIER),
         // #1956: the measured floors for THIS weekday and hour, each carrying where
         // it came from so a page can say whether it is the measurement or an override.
         floors: judgedFloors(floorsFor(settings!.floors, now)),
@@ -1158,6 +1163,47 @@ export async function GET(req: NextRequest) {
       log.warn("monitor", { msg: "volume verdict gap paged", open_minutes: volumeVerdictGap.openMinutes });
     }
 
+    // --- Low booking volume for every OTHER tier Slate carries (#2874) ---
+    // Which tiers those are is derived from the bookings Slate takes, and each is
+    // judged only once its own bookings have been learned (`resolveTierBaselines`),
+    // so widening the pilot to a new tier needs no code change and no refit by hand:
+    // four weeks after that tier's first real booking it is judged here on its own
+    // key. Same hours gate, arming switch and cooldown as Low. A tier carried and not
+    // yet learned is not in the list, and /admin/alerts says it is not judged.
+    if (gates.lowVolume.run) {
+      await steps.run("tier_volume", null, () =>
+        runTierVolumeChecks({
+          nowMs: now,
+          // Non-null by the gate above: the check does not run without this read.
+          businessHours: {
+            zone: businessHours!.zone,
+            rules: businessHours!.rules,
+            exceptions: businessHours!.exceptions,
+          },
+          baselines: settings!.tierBaselines,
+          countSince: (tier, sinceIso) => countCustomerBookingsSince(db, sinceIso, tier),
+          armed: settings!.lowVolumeArmed,
+          cooldownMs: cooldownMs.low_booking_volume,
+          // alert-key: low_tier_volume:*
+          // alert-text-ok: our own copy from booking-volume.ts, built from measured
+          // counts and the tier's own name; no error text can reach it.
+          notify: (key, cooldownMs, text) => sendThrottledAlert(key, cooldownMs, text),
+          notifyCountUnreadable: (key, cooldownMs, text) => {
+            // alert-key: volume_count_unreadable
+            // alert-text-ok: our own copy from booking-volume.ts, with no error
+            // interpolated: the detail belongs in the lane's logs.
+            return sendThrottledAlert(key, cooldownMs, text);
+          },
+          // alert-key: volume_count_unreadable
+          // alert-key: low_tier_volume:*
+          // all-clear-proof: scripts/test-monitor-booking-volume.ts - pins that a
+          // tier's reading clears only that tier's own page, and nothing of Low's.
+          resolveRecovered: (recovered) => resolveRecovered(recovered),
+          log: (fields) => log.info("monitor", { msg: "tier booking volume", ...fields }),
+        }),
+      );
+    }
+
     // --- Low booking volume PER LANDING PAGE (#2738): one page breaking while the
     // others keep booking, which the tier total above cannot see. Same hours gate,
     // same arming switch and cooldown; each page's floors are measured for that
@@ -1175,8 +1221,9 @@ export async function GET(req: NextRequest) {
           exceptions: businessHours!.exceptions,
         },
         baselines: MEASURED_PAGE_BASELINES,
-        readSources: (sinceIso) => listCustomerBookingSourcesSince(db, sinceIso),
-        pageSeenSince: (sources, sinceIso) => customerBookingFromSourcesSince(db, sources, sinceIso),
+        // #2874: the pages' floors are Low's, so the pages count Low's bookings only.
+        readSources: (sinceIso) => listCustomerBookingSourcesSince(db, sinceIso, LOW_TIER),
+        pageSeenSince: (sources, sinceIso) => customerBookingFromSourcesSince(db, sources, sinceIso, LOW_TIER),
         tierLow: volume.status === "checked" ? volume.breaches.length > 0 : null,
         armed: settings!.lowVolumeArmed,
         cooldownMs: cooldownMs.low_booking_volume,
@@ -1193,11 +1240,13 @@ export async function GET(req: NextRequest) {
       }),
     );
 
-    // --- Relearning the low volume floors from Slate's own bookings (#2739) ---
-    // Inert until an admin declares the ramp over on /admin/alerts: with no ramp
-    // end it reads the one config row and stops. Once declared it refits at most
-    // once a day and stores the result, which the NEXT tick's settings read puts in
-    // force. Deliberately outside the business hours gate, since a refit reads
+    // --- Relearning the low volume floors from Slate's own bookings (#2739), per
+    // debt tier (#2874) ---
+    // At most once a day it asks each tier for its first real booking, which is
+    // what says the tier is carried and starts its ramp, then fits every carried
+    // tier from its own bookings and stores the result, which the NEXT tick's
+    // settings read puts in force. A declared ramp end on /admin/alerts can only
+    // start a tier later. Deliberately outside the business hours gate, since a refit reads
     // history rather than the minutes just gone. Every failure throws, so this
     // boundary logs it and the step streak pages `monitor_step_failing:volume_learning`;
     // nothing is written on the way, so the floors in force stay exactly as they
@@ -1205,7 +1254,8 @@ export async function GET(req: NextRequest) {
     await steps.run("volume_learning", null, () =>
       runVolumeRelearn({
         nowMs: now,
-        anchor: MEASURED_VOLUME_BASELINE,
+        anchors: TIER_ANCHORS,
+        zone: MEASURED_VOLUME_BASELINE.zone,
         readConfig: async () => {
           // Its own read rather than `settings`, whose step falls back to the last
           // known value: here an unreadable row must throw, not read as the ramp
@@ -1220,6 +1270,7 @@ export async function GET(req: NextRequest) {
           ) as { volume_ramp_end_on: string | null; volume_learning: unknown } | null;
           return { rampEndOn: row?.volume_ramp_end_on ?? null, learning: row?.volume_learning ?? null };
         },
+        readFirstBookings: (sinceIso) => firstTierBookingsSince(db, sinceIso),
         readBookings: (sinceIso, untilIso) => listBookingStampsBetween(db, sinceIso, untilIso),
         // #2764: the org's closed days over the horizon, through the loader the
         // availability gate uses, so a holiday is never learned as a quiet day. It

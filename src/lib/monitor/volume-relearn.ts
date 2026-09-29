@@ -1,19 +1,27 @@
 /**
- * Wiring the low volume learner (#1956 phase 2) to live data (#2739).
+ * Wiring the low volume learner (#1956 phase 2) to live data (#2739), per debt
+ * tier (#2874).
  *
- * THE RAMP END IS A STORED DATE A PERSON SETS on /admin/alerts
- * (`monitor_alert_config.volume_ramp_end_on`), empty by default. Until it is set,
- * nothing here reads a booking, nothing is written, and the floors in force are the
- * cal.com measurement. That is the whole reason it is a declaration rather than a
- * date computed from traffic: during the ramp Slate deliberately carries a fraction
- * of the traffic, and nothing in the data can say when that stopped (see
- * `volume-learning.ts`).
+ * WHICH TIERS ARE CARRIED, AND FROM WHEN, IS DERIVED. Once a day the monitor lane
+ * asks each tier for its first real page booking on or after the measurement date
+ * (`EARLIEST_RAMP_END`). A tier with none is not carried, nothing is learned for it,
+ * and it is recorded as looked at and found empty rather than left out, so "not
+ * carried" and "never checked" read differently. A tier with one is carried from
+ * that booking, which is its RAMP START: nobody has to declare anything, and
+ * widening the pilot to a new tier needs no code change, no refit by hand and no
+ * date typed anywhere.
  *
- * ONCE IT IS SET, the monitor lane refits once a day (`REFIT_EVERY_MS`) from
- * Slate's own bookings and stores the whole result on the same row
- * (`volume_learning`), so a five minute tick costs one small read rather than a
- * refit. A stored result belongs to the ramp end it was fitted for: changing the
- * date takes it out of force and makes a refit due at once.
+ * A DECLARED RAMP END (`monitor_alert_config.volume_ramp_end_on`, set on
+ * /admin/alerts) is kept as the one human override, and it can only move a tier's
+ * start LATER: a person who knows a tier's first weeks were a partial ramp says the
+ * day it ended, and learning ignores the bookings before it (the trap
+ * `volume-learning.ts` describes). A stored result belongs to the declaration it
+ * was fitted under, so changing it takes every tier's result out of force and makes
+ * a refit due at once.
+ *
+ * EACH TIER IS LEARNED FROM ITS OWN BOOKINGS ONLY, so one tier's traffic can never
+ * move another's floors. The whole result is stored on one row (`volume_learning`),
+ * one entry per tier, so a five minute tick costs one small read rather than a refit.
  *
  * A READ THAT FAILS LEAVES THE CURRENT FLOORS IN FORCE AND SAYS SO. Every failure
  * here THROWS: the lane's step boundary logs it and, after a few ticks, pages
@@ -23,10 +31,10 @@
  * due. The one thing a failure can never become is a fit over an empty list, which
  * would be a learned floor of zero (L105, L215).
  *
- * THE CAL.COM FIT IS THE FLOOR UNDER THE LEARNED FLOOR TWICE: `learnFloors` holds
- * every cell at or above it when it fits, and `baselineInForce` does again when it
- * READS, so a stored result from before a re-measurement, or one damaged on the
- * way, can still never judge below the measured floors.
+ * THE CAL.COM FIT IS THE FLOOR UNDER A MEASURED TIER'S LEARNED FLOOR TWICE:
+ * `learnFloors` holds every cell at or above it when it fits, and `baselineInForce`
+ * does again when it READS. A tier nobody has measured has nothing under it, so it
+ * is UNJUDGED until its own traffic has been learned, and says so.
  *
  * No `@/` imports, so node scripts can drive it directly.
  */
@@ -35,11 +43,12 @@ import { LEARNING, learnFloors, underpin, type LearnedFloors, type SlateBookingR
 import type { VolumeBaseline } from "./volume-floors.ts";
 import { MEASURED_VOLUME_BASELINE } from "./volume-baseline.ts";
 import { parseStampMs } from "../date/stamp.ts";
+import { TIER_ANCHORS, VOLUME_TIERS, tierLabel, tierRampStartMs, type VolumeTier } from "./volume-tiers.ts";
 
 const HOUR_MS = 60 * 60_000;
 const WEEK_MS = 7 * 24 * HOUR_MS;
 
-/** How often a declared ramp end is refit. */
+/** How often the refit runs. */
 export const REFIT_EVERY_MS = 24 * HOUR_MS;
 
 /**
@@ -48,17 +57,32 @@ export const REFIT_EVERY_MS = 24 * HOUR_MS;
  */
 export const REFIT_OVERDUE_MS = 2 * REFIT_EVERY_MS;
 
-/** The stored shape's version. A stored value naming another is unreadable, never guessed at. */
-export const LEARNING_STATE_VERSION = 1;
+/**
+ * The stored shape's version. 2 is per tier (#2874); 1, a single result for Low, is
+ * still READ (L1010: a stored version is never reinterpreted, only superseded) and
+ * refit at once. Any other value is unreadable, never guessed at.
+ */
+export const LEARNING_STATE_VERSION = 2;
+
+/** One tier's refit, as stored. */
+export interface StoredTierLearning {
+  /** The tier's first real page booking, as an ISO instant, or null: not carried. */
+  firstBookingAt: string | null;
+  /** When learning may start: the first booking or a later declared ramp end. Null when not carried. */
+  rampStartAt: string | null;
+  /** What was learned, or null when the tier is not carried. */
+  result: LearnedFloors | null;
+}
 
 /** What the lane writes to `monitor_alert_config.volume_learning`. */
 export interface StoredVolumeLearning {
   version: typeof LEARNING_STATE_VERSION;
-  /** The ramp end, YYYY-MM-DD, this result was fitted for. */
-  rampEndOn: string;
+  /** The declared ramp end, YYYY-MM-DD, this refit ran under, or null for none. */
+  declaredRampEndOn: string | null;
   /** When the refit ran, as an ISO instant. */
   fittedAt: string;
-  result: LearnedFloors;
+  /** One entry per tier the refit looked at. A tier with no entry was never fitted. */
+  tiers: Partial<Record<VolumeTier, StoredTierLearning>>;
 }
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -76,6 +100,7 @@ export function rampEndMs(rampEndOn: string, zone: string): number | null {
 }
 
 const isCount = (n: unknown): n is number => typeof n === "number" && Number.isFinite(n) && n >= 0;
+const isInstant = (s: unknown): s is string => typeof s === "string" && parseStampMs(s) !== null;
 
 function isBaseline(b: unknown): b is VolumeBaseline {
   if (!b || typeof b !== "object") return false;
@@ -112,15 +137,23 @@ function isResult(r: unknown): r is LearnedFloors {
         isCount(v.excludedRamp)
       );
     default:
-      // "not-started" is never stored: the lane does not refit without a ramp end.
+      // "not-started" is never stored: a tier is refit only once it has a ramp start.
       return false;
   }
+}
+
+function isTierEntry(e: unknown): e is StoredTierLearning {
+  if (!e || typeof e !== "object") return false;
+  const v = e as Record<string, unknown>;
+  if (v.firstBookingAt === null) return v.rampStartAt === null && v.result === null;
+  return isInstant(v.firstBookingAt) && isInstant(v.rampStartAt) && isResult(v.result);
 }
 
 export type StoredLearningRead =
   | { state: "none" }
   | { state: "unreadable" }
-  | { state: "ok"; value: StoredVolumeLearning };
+  /** `legacy` is a version 1 result, read as Low's and refit at the next tick. */
+  | { state: "ok"; value: StoredVolumeLearning; legacy: boolean };
 
 /**
  * The stored result, validated field by field (L688): the column is jsonb, so its
@@ -130,91 +163,144 @@ export function readStoredLearning(raw: unknown): StoredLearningRead {
   if (raw === null || raw === undefined) return { state: "none" };
   if (typeof raw !== "object") return { state: "unreadable" };
   const v = raw as Record<string, unknown>;
+  if (v.version === 1) {
+    // #2739's single result, fitted for Low under a declared ramp end. It is judged
+    // by the rules it was written under (L1013): Low's, under that declaration.
+    if (typeof v.rampEndOn !== "string" || !isCalendarDate(v.rampEndOn)) return { state: "unreadable" };
+    if (!isInstant(v.fittedAt) || !isResult(v.result)) return { state: "unreadable" };
+    const startMs = rampEndMs(v.rampEndOn, MEASURED_VOLUME_BASELINE.zone);
+    if (startMs === null) return { state: "unreadable" };
+    return {
+      state: "ok",
+      legacy: true,
+      value: {
+        version: LEARNING_STATE_VERSION,
+        declaredRampEndOn: v.rampEndOn,
+        fittedAt: v.fittedAt,
+        tiers: { [LOW_ANCHOR_TIER]: { firstBookingAt: new Date(startMs).toISOString(), rampStartAt: new Date(startMs).toISOString(), result: v.result } },
+      },
+    };
+  }
   if (v.version !== LEARNING_STATE_VERSION) return { state: "unreadable" };
-  if (typeof v.rampEndOn !== "string" || !isCalendarDate(v.rampEndOn)) return { state: "unreadable" };
-  if (typeof v.fittedAt !== "string" || !Number.isFinite(Date.parse(v.fittedAt))) return { state: "unreadable" };
-  if (!isResult(v.result)) return { state: "unreadable" };
-  return { state: "ok", value: raw as StoredVolumeLearning };
+  if (v.declaredRampEndOn !== null && (typeof v.declaredRampEndOn !== "string" || !isCalendarDate(v.declaredRampEndOn))) {
+    return { state: "unreadable" };
+  }
+  if (!isInstant(v.fittedAt)) return { state: "unreadable" };
+  if (!v.tiers || typeof v.tiers !== "object") return { state: "unreadable" };
+  const tiers = v.tiers as Record<string, unknown>;
+  // A key that is not a tier, or an entry that is not one, makes the whole record
+  // unreadable: half a stored refit is not a smaller refit.
+  if (Object.keys(tiers).length === 0) return { state: "unreadable" };
+  for (const [tier, entry] of Object.entries(tiers)) {
+    if (!VOLUME_TIERS.includes(tier) || !isTierEntry(entry)) return { state: "unreadable" };
+  }
+  return { state: "ok", legacy: false, value: raw as StoredVolumeLearning };
 }
 
-/** Why the cal.com measurement is the baseline in force. */
+/** The tier a version 1 result belongs to: the one the committed measurement describes. */
+const LOW_ANCHOR_TIER: VolumeTier = "1";
+
+/** Why a tier is judged against its cal.com measurement, or not judged at all. */
 export type MeasuredWhy =
-  /** Nobody has declared the ramp over. */
-  | "no-ramp-end"
-  /** Declared, and no refit has landed yet. */
+  /** The refit looked, and the tier has taken no real booking. */
+  | "not-carried"
+  /** No refit has run since this tier was looked at, or none has ever run. */
   | "not-fitted"
-  /** The stored result was fitted for a different ramp end. */
+  /** The stored result was fitted under a different declared ramp end. */
   | "other-ramp-end"
-  /** Declared, and not enough weeks after it yet. */
+  /** Carried, and not enough weeks after its ramp start yet. */
   | "insufficient"
   /** Something is stored and it is not a result. */
   | "unreadable";
 
+interface InForceCommon {
+  tier: VolumeTier;
+  /** The declared ramp end now stored, or null. */
+  rampEndOn: string | null;
+  /** This tier's stored entry, when one is readable. */
+  entry: StoredTierLearning | null;
+  /** When the stored refit ran, when one is readable. */
+  fittedAt: string | null;
+}
+
 export type BaselineInForce =
-  | {
-      kind: "measured";
-      baseline: VolumeBaseline;
-      why: MeasuredWhy;
-      rampEndOn: string | null;
-      /** The stored result it did not use, when one is readable. */
-      stored: StoredVolumeLearning | null;
-    }
-  | {
+  /** A measured tier judged against its cal.com measurement. */
+  | (InForceCommon & { kind: "measured"; baseline: VolumeBaseline; why: MeasuredWhy })
+  /** A tier nobody has measured, not yet learned: nothing judges it. */
+  | (InForceCommon & { kind: "unjudged"; why: MeasuredWhy })
+  | (InForceCommon & {
       kind: "learned";
-      /** Held at or above the anchor, cell by cell. */
+      /** Held at or above the anchor, cell by cell, where the tier has one. */
       baseline: VolumeBaseline;
       status: "learned" | "declining";
-      rampEndOn: string;
-      stored: StoredVolumeLearning;
-    };
+      entry: StoredTierLearning;
+      fittedAt: string;
+      /** False for a tier with no cal.com measurement under its learned floors. */
+      anchored: boolean;
+    });
 
 /**
- * Which baseline the low volume alarm judges against, from the stored ramp end and
- * the stored refit. The ONE judge of it: the monitor's floors and the admin page's
- * "in force" line both come from here, so they cannot disagree (L16).
+ * Which baseline one tier's low volume alarm judges against, from the stored ramp
+ * end and the stored refit. The ONE judge of it: the monitor's floors and the admin
+ * page's "in force" line both come from here, so they cannot disagree (L16).
  */
 export function baselineInForce(
   input: { rampEndOn: string | null; learning: unknown },
-  anchor: VolumeBaseline,
+  tier: VolumeTier,
+  anchors: Readonly<Partial<Record<VolumeTier, VolumeBaseline>>> = TIER_ANCHORS,
 ): BaselineInForce {
   const { rampEndOn } = input;
+  const anchor = anchors[tier] ?? null;
   const read = readStoredLearning(input.learning);
   const stored = read.state === "ok" ? read.value : null;
-  const measured = (why: MeasuredWhy): BaselineInForce => ({ kind: "measured", baseline: anchor, why, rampEndOn, stored });
-  if (!rampEndOn) return measured("no-ramp-end");
-  if (read.state === "unreadable") return measured("unreadable");
-  if (!stored) return measured("not-fitted");
-  if (stored.rampEndOn !== rampEndOn) return measured("other-ramp-end");
-  const r = stored.result;
-  if (r.status !== "learned" && r.status !== "declining") return measured("insufficient");
+  const entry = stored?.tiers[tier] ?? null;
+  const common: InForceCommon = { tier, rampEndOn, entry, fittedAt: stored?.fittedAt ?? null };
+  const notLearned = (why: MeasuredWhy): BaselineInForce =>
+    anchor ? { ...common, kind: "measured", baseline: anchor, why } : { ...common, kind: "unjudged", why };
+  if (read.state === "unreadable") return notLearned("unreadable");
+  if (!stored) return notLearned("not-fitted");
+  if (stored.declaredRampEndOn !== rampEndOn) return notLearned("other-ramp-end");
+  if (!entry) return notLearned("not-fitted");
+  if (entry.firstBookingAt === null) return notLearned("not-carried");
+  const r = entry.result;
+  if (!r || (r.status !== "learned" && r.status !== "declining")) return notLearned("insufficient");
   return {
+    ...common,
     kind: "learned",
-    baseline: { ...r.baseline, cells: underpin(r.baseline.cells, anchor.cells) },
+    baseline: anchor ? { ...r.baseline, cells: underpin(r.baseline.cells, anchor.cells) } : r.baseline,
     status: r.status,
-    rampEndOn,
-    stored,
+    entry,
+    fittedAt: stored.fittedAt,
+    anchored: anchor !== null,
   };
 }
 
 export type RelearnResult =
-  | { status: "no-ramp-end" }
   | { status: "not-due"; fittedAt: string }
-  | { status: "refit"; learned: LearnedFloors["status"]; rowsRead: number };
+  | { status: "refit"; rowsRead: number; tiers: Record<VolumeTier, LearnedFloors["status"] | "not-carried"> };
 
 /**
  * The monitor lane's once a day refit. Every seam is injected so the rules are
  * driven by `scripts/test-volume-relearn.ts` with no database.
  *
- * Throws on anything it could not do: an unreadable ramp end, a failed bookings
- * read, a refused write. Each leaves the stored floors exactly as they were.
+ * Throws on anything it could not do: an unreadable ramp end, a failed read, an
+ * answer about the tiers that leaves one out, a refused write. Each leaves the
+ * stored floors exactly as they were.
  */
 export async function runVolumeRelearn(deps: {
   nowMs: number;
-  /** The cal.com fit, the floor under every learned floor. */
-  anchor: VolumeBaseline;
+  /** Each measured tier's cal.com fit, the floor under its learned floor. */
+  anchors: Readonly<Partial<Record<VolumeTier, VolumeBaseline>>>;
+  /** The zone weekday, hour and a declared ramp end's day are judged in. */
+  zone: string;
   /** The stored ramp end and refit. Throws when it cannot be read. */
   readConfig: () => Promise<{ rampEndOn: string | null; learning: unknown }>;
-  /** Every booking created in [since, until), test bookings flagged. Throws on a failed read. */
+  /**
+   * Each tier's first real page booking at or after `sinceIso`, or null for a tier
+   * nobody booked (`firstTierBookingsSince`). Throws on a failed read.
+   */
+  readFirstBookings: (sinceIso: string) => Promise<Record<VolumeTier, number | null>>;
+  /** Every booking created in [since, until), test bookings flagged, each with its tier. Throws on a failed read. */
   readBookings: (sinceIso: string, untilIso: string) => Promise<SlateBookingRow[]>;
   /**
    * The dates the org records as CLOSED from `fromIsoDate` onward (#2764), through the
@@ -227,44 +313,80 @@ export async function runVolumeRelearn(deps: {
   log?: (fields: Record<string, unknown>) => void;
 }): Promise<RelearnResult> {
   const { rampEndOn, learning } = await deps.readConfig();
-  if (!rampEndOn) return { status: "no-ramp-end" };
-  const rampMs = rampEndMs(rampEndOn, deps.anchor.zone);
-  if (rampMs === null) throw new Error(`volume learning: the stored ramp end ${rampEndOn} is not a date`);
+  const declaredMs = rampEndOn ? rampEndMs(rampEndOn, deps.zone) : null;
+  if (rampEndOn && declaredMs === null) throw new Error(`volume learning: the stored ramp end ${rampEndOn} is not a date`);
 
   const read = readStoredLearning(learning);
-  if (read.state === "ok" && read.value.rampEndOn === rampEndOn) {
-    // An unreadable stamp is due: refitting early costs one read, trusting a stamp
-    // nobody can read would never refit at all.
+  if (read.state === "ok" && !read.legacy && read.value.declaredRampEndOn === rampEndOn) {
+    // An unreadable stamp is due: refitting early costs a few reads, trusting a
+    // stamp nobody can read would never refit at all.
     const fittedMs = parseStampMs(read.value.fittedAt);
     const age = fittedMs === null ? null : deps.nowMs - fittedMs;
     if (age !== null && age >= 0 && age < REFIT_EVERY_MS) return { status: "not-due", fittedAt: read.value.fittedAt };
   }
 
-  // A full horizon back, rather than from the ramp end, so the bookings before it
-  // are READ and counted as excluded: the page says how many, and a count of zero
-  // there means none existed rather than that none were looked at.
+  // From the measurement's own date, the same cutoff the ramp end form enforces:
+  // Slate carried no customer traffic before it, so nothing earlier starts a tier.
+  const earliestMs = rampEndMs(EARLIEST_RAMP_END, deps.zone);
+  if (earliestMs === null) throw new Error(`volume learning: the earliest ramp end ${EARLIEST_RAMP_END} is not a date`);
+  const first = await deps.readFirstBookings(new Date(earliestMs).toISOString());
+  for (const tier of VOLUME_TIERS) {
+    const v = first[tier];
+    // Silence about a tier is not "nobody booked it" (L214): refuse rather than
+    // record a tier as not carried on an answer that never mentioned it.
+    if (v === undefined || (v !== null && !Number.isFinite(v))) {
+      throw new Error(`volume learning: the first bookings read said nothing readable about tier ${tier}`);
+    }
+  }
+  const carried = VOLUME_TIERS.filter((t) => first[t] !== null);
+
+  // A full horizon back, rather than from any ramp start, so the bookings before a
+  // tier's start are READ and counted as excluded: the page says how many, and a
+  // count of zero there means none existed rather than that none were looked at.
   const sinceMs = deps.nowMs - LEARNING.horizonWeeks * WEEK_MS;
-  const rows = await deps.readBookings(new Date(sinceMs).toISOString(), new Date(deps.nowMs).toISOString());
-  const closedDates = await deps.readClosedDates(
-    DateTime.fromMillis(sinceMs, { zone: deps.anchor.zone }).toISODate() ?? "",
-  );
-  const result = learnFloors({ bookings: rows, rampEndMs: rampMs, nowMs: deps.nowMs, anchor: deps.anchor, closedDates });
+  let rows: SlateBookingRow[] = [];
+  let closedDates: string[] = [];
+  if (carried.length > 0) {
+    rows = await deps.readBookings(new Date(sinceMs).toISOString(), new Date(deps.nowMs).toISOString());
+    closedDates = await deps.readClosedDates(DateTime.fromMillis(sinceMs, { zone: deps.zone }).toISODate() ?? "");
+  }
+
+  const tiers: Partial<Record<VolumeTier, StoredTierLearning>> = {};
+  const summary: Record<VolumeTier, LearnedFloors["status"] | "not-carried"> = {};
+  for (const tier of VOLUME_TIERS) {
+    const firstMs = first[tier] ?? null;
+    const startMs = tierRampStartMs(firstMs, declaredMs);
+    if (firstMs === null || startMs === null) {
+      tiers[tier] = { firstBookingAt: null, rampStartAt: null, result: null };
+      summary[tier] = "not-carried";
+      continue;
+    }
+    const result = learnFloors({
+      bookings: rows.filter((r) => r.tier === tier),
+      rampEndMs: startMs,
+      nowMs: deps.nowMs,
+      anchor: deps.anchors[tier] ?? null,
+      zone: deps.zone,
+      scope: `Every real ${tierLabel(tier)} booking a landing page sent Slate after the tier's ramp start`,
+      closedDates,
+    });
+    tiers[tier] = { firstBookingAt: new Date(firstMs).toISOString(), rampStartAt: new Date(startMs).toISOString(), result };
+    summary[tier] = result.status;
+  }
   await deps.save({
     version: LEARNING_STATE_VERSION,
-    rampEndOn,
+    declaredRampEndOn: rampEndOn,
     fittedAt: new Date(deps.nowMs).toISOString(),
-    result,
+    tiers,
   });
   deps.log?.({
     ramp_end: rampEndOn,
     rows_read: rows.length,
     closed_days: closedDates.length,
-    learned: result.status,
-    ...(result.status === "not-started"
-      ? {}
-      : { excluded_test: result.excludedTest, excluded_ramp: result.excludedRamp }),
+    carried: carried.join(",") || "none",
+    tiers: VOLUME_TIERS.map((t) => `${t}=${summary[t]}`).join(" "),
   });
-  return { status: "refit", learned: result.status, rowsRead: rows.length };
+  return { status: "refit", rowsRead: rows.length, tiers: summary };
 }
 
 /** The name the ramp end form's refusals carry back, so the page draws them beside it. */

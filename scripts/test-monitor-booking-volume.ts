@@ -165,6 +165,8 @@ function harness(overrides: {
   floors?: { floor30: number; floor120: number };
   unreadableFiring?: boolean;
   settleThrows?: boolean;
+  /** #2874: a tier judged beside Low, with its own key and name. */
+  tier?: { key: string; label: string };
 }) {
   const notified: { key: string; cooldownMs: number; text: string }[] = [];
   const resolved: { key: string; text: string }[] = [];
@@ -209,6 +211,7 @@ function harness(overrides: {
         return overrides.unreadableFiring ? recovered.map((r) => r.key) : [];
       },
       log: (fields: Record<string, unknown>) => logged.push(fields),
+      ...(overrides.tier ? { tier: overrides.tier } : {}),
     });
   return { run, notified, resolved, logged, countCalls, get settleCalls() { return settleCalls; } };
 }
@@ -471,6 +474,28 @@ function harness(overrides: {
   const h = harness({ counts: { "30": 9, "120": 40 }, settleThrows: true });
   const res = await h.run();
   assert(res.status === "checked", "a failed settle still returns the measured result");
+}
+
+// --- #2874: a tier judged beside Low has its own key and says which tier it is ---
+{
+  const MEDIUM = { key: "low_tier_volume:2", label: "Medium" };
+  const low = harness({ tier: MEDIUM, counts: { "30": 0, "120": 3 } });
+  const out = await low.run();
+  eq(out.status, "checked", "a tier is judged exactly like Low");
+  eq(low.notified.map((n) => n.key), ["low_tier_volume:2"], "and pages on its own key, never Low's");
+  assert(/^Medium booking volume is low:/.test(low.notified[0]?.text ?? ""), `naming the tier (${low.notified[0]?.text})`);
+  assert(!low.resolved.some((r) => r.key === VOLUME_ALERT_KEY), "a tier's reading clears nothing of Low's");
+  assert(!low.resolved.some((r) => r.key === VOLUME_VERDICT_GAP_KEY), "nor Low's verdict gap, which only Low's verdict answers");
+  const healthy = harness({ tier: MEDIUM, counts: { "30": 9, "120": 40 } });
+  await healthy.run();
+  const cleared = healthy.resolved.find((r) => r.key === "low_tier_volume:2");
+  assert(cleared !== undefined && /^Medium bookings are back above/.test(cleared.text), `a healthy tier clears its own page, by name (${cleared?.text})`);
+  assert(!healthy.resolved.some((r) => r.key === VOLUME_ALERT_KEY || r.key === VOLUME_VERDICT_GAP_KEY), "and nothing of Low's");
+  // Control: with no tier named, the same reading is Low's, as it always was.
+  const plain = harness({ counts: { "30": 0, "120": 3 } });
+  await plain.run();
+  eq(plain.notified.map((n) => n.key), [VOLUME_ALERT_KEY], "control: with no tier named it pages on Low's key");
+  for (const n of [...low.notified, ...healthy.resolved]) assert(!DASHES.test(n.text), "no dashes in the tier copy");
 }
 
 finish();

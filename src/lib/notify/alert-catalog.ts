@@ -401,6 +401,16 @@ export const ALERT_CATALOG: AlertEntry[] = [
       "verdict ends it, and the same lane re-measures every 5 minutes.",
   },
   {
+    key: "low_tier_volume:*",
+    kind: "condition",
+    // The suffix is one of the five debt tier digits in volume-tiers.ts.
+    suffix: "bounded",
+    why:
+      "A debt tier judged beside Low has stopped booking (#2874); its bookings come " +
+      "back and the same lane re-measures it against the tier's own learned floors " +
+      "every 5 minutes.",
+  },
+  {
     key: "low_page_volume:*",
     kind: "condition",
     // The suffix is one of the fixed Low landing pages in page-volume.ts.
