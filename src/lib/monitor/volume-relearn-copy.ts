@@ -15,8 +15,9 @@ import { DateTime } from "luxon";
 import { LEARNING, type LearnedFloors } from "./volume-learning.ts";
 import { parseStampMs } from "../date/stamp.ts";
 import { formatClockTime } from "../date/parse.ts";
-import { REFIT_OVERDUE_MS, baselineInForce, type BaselineInForce } from "./volume-relearn.ts";
-import { LOW_TIER, VOLUME_TIERS, tierLabel } from "./volume-tiers.ts";
+import { REFIT_OVERDUE_MS, baselineInForce, tierJudgedBaseline, type BaselineInForce } from "./volume-relearn.ts";
+import { LOW_TIER, TIER_ANCHORS, VOLUME_TIERS, tierLabel, type VolumeTier } from "./volume-tiers.ts";
+import type { VolumeBaseline } from "./volume-floors.ts";
 import { MEASURED_VOLUME_BASELINE } from "./volume-baseline.ts";
 
 /** The zone every date here is said in: the org's, which the measurement was judged in. */
@@ -148,20 +149,47 @@ export function learningStatusCopy(state: BaselineInForce, nowMs: number): Learn
 /**
  * One line for every tier beside Low (#2874), each saying what is true of it now:
  * judged against its own learned floors, carried and not judged yet (with when it
- * will be), or not carried at all. Every tier gets a line, so a tier that is not
- * judged is stated rather than absent (L678).
+ * will be), or not carried at all. A tier beside Low with a cal.com anchor, which
+ * none has until #2893 applies the saved measurements, says it is learning with that
+ * floor under it, never that it is judged against it (#2888). Whether a tier is judged comes from `tierJudgedBaseline`, the
+ * predicate the monitor's tier checks use, so the line and the alarm cannot disagree
+ * (L16). Every tier gets a line, so a tier that is not judged is stated rather than
+ * absent (L678).
  */
-export function tierLearningLines(input: { rampEndOn: string | null; learning: unknown }, nowMs: number): string[] {
+export function tierLearningLines(
+  input: { rampEndOn: string | null; learning: unknown },
+  nowMs: number,
+  anchors: Readonly<Partial<Record<VolumeTier, VolumeBaseline>>> = TIER_ANCHORS,
+): string[] {
   return VOLUME_TIERS.filter((t) => t !== LOW_TIER).map((tier) => {
-    const state = baselineInForce(input, tier);
+    const state = baselineInForce(input, tier, anchors);
     const label = tierLabel(tier);
+    const anchor = anchors[tier];
     if (state.kind === "learned") {
       const fittedMs = parseStampMs(state.fittedAt);
       const overdue = fittedMs === null || nowMs - fittedMs > REFIT_OVERDUE_MS;
+      const under = anchor && state.anchored
+        ? `none below its cal.com measurement from ${day(anchor.measuredOn)}`
+        : "with no cal.com measurement under them";
       return (
         `${label}: judged against floors learned from its own bookings since ${rampStartWords(state)}, ` +
-        `with no cal.com measurement under them, last refit ${instant(state.fittedAt)}.` +
+        `${under}, last refit ${instant(state.fittedAt)}.` +
         (overdue ? " No refit has succeeded since then." : "")
+      );
+    }
+    // The one predicate the monitor judges tiers by: a tier it returns nothing for is
+    // never described as judged here (L16).
+    if (tierJudgedBaseline(state) === null && state.kind === "measured" && state.why === "insufficient" && state.entry?.rampStartAt) {
+      // Anchored and still learning (#2888, reachable once #2893 gives a tier beside
+      // Low an anchor): the measurement is a floor under what it
+      // learns, never what it is judged against, so the line says it is learning.
+      const weeks = weeksSoFar(state);
+      return (
+        `${label}: learning from its own bookings since its first real booking on ` +
+        `${state.entry.firstBookingAt ? dayOf(state.entry.firstBookingAt) : "an unknown day"}, ` +
+        `with its cal.com measurement from ${day(state.baseline.measuredOn)} as the floor under what it learns. ` +
+        `Not judged until ${LEARNING.minWeeks} full weeks are learned (${weeks === 1 ? "1 so far" : `${weeks} so far`}), ` +
+        `so until then a drop in ${label} bookings is not caught.`
       );
     }
     switch (state.why) {

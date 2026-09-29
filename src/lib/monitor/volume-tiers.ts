@@ -22,9 +22,13 @@
  * tier's start LATER, never earlier than its own first booking.
  *
  * ANCHORS. A tier's anchor is the cal.com measurement of that tier, the floor under
- * its learned floor. Only Low has been measured (`volume-baseline.ts`, 2026-09-25),
- * so a tier without one is judged only once it has been learned, and until then it
- * is UNJUDGED and says so on /admin/alerts rather than reading as quiet (L678).
+ * its learned floor. Only Low has an anchor (`volume-baseline.ts`, 2026-09-25), so a
+ * tier without one is judged only once it has been learned, and until then it is
+ * UNJUDGED and says so on /admin/alerts rather than reading as quiet (L678). Medium,
+ * High and Very High were MEASURED on 2026-09-29 and the measurements are SAVED in
+ * `volume-baseline-tiers.ts`, NOT applied (Dan, 2026-09-29): a whole tier floor under
+ * a partially carried tier's learned floors would raise them to traffic partial
+ * carriage cannot reach. Applying them in proportion to the carried share is #2893.
  *
  * No `@/` imports, so node scripts can drive it.
  */
@@ -50,7 +54,8 @@ export const LOW_TIER = "1" satisfies VolumeTier;
  * Each measured tier's cal.com floors, the floor under whatever is learned for it.
  * Adding a tier's anchor is a measurement of that tier (`pnpm measure:volume-floors`),
  * never a hand typed floor. `scripts/test-volume-tiers.ts` holds Low's entry to the
- * tier the committed measurement actually counted.
+ * tier the committed measurement actually counted, and
+ * `scripts/test-volume-tier-anchors.ts` holds this to Low alone until #2893.
  */
 export const TIER_ANCHORS: Readonly<Partial<Record<VolumeTier, VolumeBaseline>>> = {
   [LOW_TIER]: MEASURED_VOLUME_BASELINE,

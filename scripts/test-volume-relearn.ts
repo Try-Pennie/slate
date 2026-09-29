@@ -51,6 +51,11 @@ function anchor(floor30: number, floor120: number): VolumeBaseline {
   };
 }
 
+// Anchors as they stood before #2888 measured the tiers beside Low: the cases
+// about a tier nobody measured pass this, so they keep meaning that whatever
+// TIER_ANCHORS holds today (L439).
+const LOW_ONLY: Partial<Record<VolumeTier, VolumeBaseline>> = { "1": MEASURED_VOLUME_BASELINE };
+
 const RAMP_END_ON = "2026-11-02"; // a Monday
 const RAMP_END = DateTime.fromISO(`${RAMP_END_ON}T00:00`, { zone: ZONE }).toMillis();
 const NOW = RAMP_END + 8 * WEEK + 3 * 60 * MIN;
@@ -148,7 +153,7 @@ const medium = bookings(MEDIUM_FIRST, NOW, 10, "2");
   const lowNow = baselineInForce({ rampEndOn: null, learning: saved }, "1");
   eq(lowNow.kind, "measured", "Low stays on the cal.com measurement");
   if (lowNow.kind === "measured") eq(lowNow.why, "not-carried", "and says it is not carried yet");
-  const mediumNow = baselineInForce({ rampEndOn: null, learning: saved }, "2");
+  const mediumNow = baselineInForce({ rampEndOn: null, learning: saved }, "2", LOW_ONLY);
   eq(mediumNow.kind, "unjudged", "a tier nobody measured and nobody books is unjudged, never quiet");
   if (mediumNow.kind === "unjudged") eq(mediumNow.why, "not-carried", "for that reason");
 }
@@ -199,7 +204,7 @@ let fitted: StoredVolumeLearning | null = null;
   const med = widened.saves[0]!.tiers["2"]!;
   eq(med.firstBookingAt, new Date(MEDIUM_FIRST).toISOString(), "Medium is carried from its own first booking");
   eq(med.result?.status, "learned", "and after five weeks of its own bookings it is learned");
-  const mediumNow = baselineInForce({ rampEndOn: null, learning: widened.saves[0] }, "2");
+  const mediumNow = baselineInForce({ rampEndOn: null, learning: widened.saves[0] }, "2", LOW_ONLY);
   eq(mediumNow.kind, "learned", "so Medium's own floors are in force, with no code change and no refit by hand");
   if (mediumNow.kind === "learned" && med.result?.status === "learned") {
     assert(
@@ -211,7 +216,7 @@ let fitted: StoredVolumeLearning | null = null;
   const early = MEDIUM_FIRST + 2 * WEEK;
   const soon = harness({ rows: [...low, ...medium].filter((b) => b.createdAtMs < early), first: { "1": LOW_FIRST, "2": MEDIUM_FIRST }, nowMs: early });
   await soon.run();
-  const mediumSoon = baselineInForce({ rampEndOn: null, learning: soon.saves[0] }, "2");
+  const mediumSoon = baselineInForce({ rampEndOn: null, learning: soon.saves[0] }, "2", LOW_ONLY);
   eq(mediumSoon.kind, "unjudged", "control: two weeks after its first booking Medium is not yet judged");
   if (mediumSoon.kind === "unjudged") eq(mediumSoon.why, "insufficient", "because it has too few weeks");
 }
@@ -351,10 +356,109 @@ let fitted: StoredVolumeLearning | null = null;
 
   const widened = harness({ rows: [...low, ...medium], first: { "1": LOW_FIRST, "2": MEDIUM_FIRST } });
   await widened.run();
-  const tiers = resolveTierBaselines({ volume_ramp_end_on: null, volume_learning: widened.saves[0] });
+  const tiers = resolveTierBaselines({ volume_ramp_end_on: null, volume_learning: widened.saves[0] }, LOW_ONLY);
   eq(Object.keys(tiers), ["2"], "the tiers judged beside Low are exactly the learned ones");
   eq(tiers["2"]?.source, "slate", "each with its own learned floors");
   eq(Object.keys(resolveTierBaselines({ volume_ramp_end_on: null, volume_learning: fitted })), [], "control: with only Low carried there are none");
+}
+
+// --- #2888: a non Low tier's cal.com anchor is a FLOOR ONLY ---
+//
+// Dan, 2026-09-29: the anchor never makes a tier judged. A carried tier beside Low
+// is judged only once four weeks of its own bookings are learned, exactly as #2891
+// shipped, and from then on no learned floor falls below its anchor. The pilot may
+// move only some of a tier's pages, and judging that partial traffic against whole
+// tier floors false pages (108 to 283 times in two normal weeks, measured in
+// scripts/lib/volume-floor-scope.ts). Low keeps its own behaviour.
+{
+  const ANCHORED: Partial<Record<VolumeTier, VolumeBaseline>> = { "1": MEASURED_VOLUME_BASELINE, "2": anchor(1, 7), "3": anchor(1, 5) };
+
+  // One booking in: carried, anchored, and NOT judged.
+  const oneIn = MEDIUM_FIRST + 60 * MIN;
+  const first = harness({
+    rows: [...low.filter((b) => b.createdAtMs < oneIn), ...bookings(MEDIUM_FIRST, MEDIUM_FIRST + 1, 10, "2")],
+    first: { "1": LOW_FIRST, "2": MEDIUM_FIRST },
+    nowMs: oneIn,
+    anchors: ANCHORED,
+  });
+  await first.run();
+  const config = { volume_ramp_end_on: null, volume_learning: first.saves[0] };
+  eq(first.saves[0]!.tiers["2"]?.rampStartAt, new Date(MEDIUM_FIRST).toISOString(), "Medium is carried from its one booking");
+  eq(Object.keys(resolveTierBaselines(config, ANCHORED)), [], "an anchored Medium with one booking is NOT judged: its anchor is a floor, not a judge");
+  eq(
+    Object.keys(resolveTierBaselines({ volume_ramp_end_on: "2026-12-07", volume_learning: first.saves[0] }, ANCHORED)),
+    [],
+    "nor under a changed ramp end while its refit is pending",
+  );
+
+  // Two weeks in: still learning, still not judged.
+  const early = MEDIUM_FIRST + 2 * WEEK;
+  const soon = harness({
+    rows: [...low, ...medium].filter((b) => b.createdAtMs < early),
+    first: { "1": LOW_FIRST, "2": MEDIUM_FIRST },
+    nowMs: early,
+    anchors: ANCHORED,
+  });
+  await soon.run();
+  eq(Object.keys(resolveTierBaselines({ volume_ramp_end_on: null, volume_learning: soon.saves[0] }, ANCHORED)), [], "two weeks in it is still not judged");
+
+  // Learned: judged, and every floor at least the anchor.
+  const widened = harness({ rows: [...low, ...medium], first: { "1": LOW_FIRST, "2": MEDIUM_FIRST }, anchors: LOW_ONLY });
+  await widened.run();
+  const learned = resolveTierBaselines({ volume_ramp_end_on: null, volume_learning: widened.saves[0] }, ANCHORED);
+  eq(Object.keys(learned), ["2"], "once four weeks of its own bookings are learned, Medium IS judged");
+  eq(learned["2"]?.source, "slate", "against its own learned floors");
+  assert(
+    learned["2"]!.cells.every((d) => d.every((c) => c.floor120 >= 7 && c.floor30 >= 1)),
+    "held at or above its cal.com anchor in every cell",
+  );
+  const bare = resolveTierBaselines({ volume_ramp_end_on: null, volume_learning: widened.saves[0] }, LOW_ONLY);
+  assert(
+    bare["2"]!.cells.some((d) => d.some((c) => c.floor120 < 7)),
+    "control: without the anchor some learned floor sits below it, so the hold above is the anchor's doing",
+  );
+
+  // Low unchanged: judged against its measurement before it is learned, and its
+  // learned floors are its own once they are.
+  const lowYoung = resolveFloors({ floor_30: null, floor_120: null, volume_ramp_end_on: null, volume_learning: first.saves[0] }, {});
+  eq(lowYoung.baseline.source, "calcom", "Low, not yet learned, is still judged against its cal.com measurement");
+  const lowLearned = resolveFloors({ floor_30: null, floor_120: null, volume_ramp_end_on: null, volume_learning: widened.saves[0] }, {});
+  eq(lowLearned.baseline.source, "slate", "and against its learned floors once learned");
+
+  // The admin page, through the same predicate: learning with a floor under it, never "judged".
+  const youngLines = tierLearningLines({ rampEndOn: null, learning: soon.saves[0] }, early + MIN, ANCHORED);
+  assert(
+    /^Medium: learning from its own bookings since its first real booking on .*, with its cal\.com measurement from Sep 25, 2026 as the floor under what it learns\. Not judged until 4 full weeks are learned \(2 so far\), so until then a drop in Medium bookings is not caught\.$/.test(youngLines[0]!),
+    `an anchored tier still learning says so, with its floor (${youngLines[0]})`,
+  );
+  assert(!/judged against/.test(youngLines[0]!), "and never says it is judged against the measurement");
+  assert(/^High: no real booking yet, so not carried and not judged\.$/.test(youngLines[1]!), `a measured tier nobody booked is not carried (${youngLines[1]})`);
+  const learnedLines = tierLearningLines({ rampEndOn: null, learning: widened.saves[0] }, NOW + MIN, ANCHORED);
+  assert(
+    /^Medium: judged against floors learned from its own bookings since .*, none below its cal\.com measurement from Sep 25, 2026, last refit /.test(learnedLines[0]!),
+    `a learned anchored tier names the floor under its floors (${learnedLines[0]})`,
+  );
+  const bareLines = tierLearningLines({ rampEndOn: null, learning: soon.saves[0] }, early + MIN, LOW_ONLY);
+  assert(/^Medium: carried since .*, and not judged until 4 full weeks/.test(bareLines[0]!), `control: an unanchored tier keeps its line (${bareLines[0]})`);
+  // With the REAL anchors (Low alone until #2893), every tier line is exactly main's:
+  // the saved measurements of Medium, High and Very High change nothing on the page.
+  for (const [what, learning, at] of [
+    ["one booking in", first.saves[0], oneIn + MIN],
+    ["two weeks in", soon.saves[0], early + MIN],
+    ["learned", widened.saves[0], NOW + MIN],
+    ["nothing stored", null, NOW],
+  ] as const) {
+    eq(tierLearningLines({ rampEndOn: null, learning }, at), tierLearningLines({ rampEndOn: null, learning }, at, LOW_ONLY), `${what}: the real anchors give the tier lines of a Low only world`);
+    eq(
+      Object.keys(resolveTierBaselines({ volume_ramp_end_on: null, volume_learning: learning })),
+      Object.keys(resolveTierBaselines({ volume_ramp_end_on: null, volume_learning: learning }, LOW_ONLY)),
+      `${what}: and judge the same tiers`,
+    );
+  }
+  for (const line of [...youngLines, ...learnedLines, ...bareLines]) {
+    assert(!/undefined|NaN|null|\[object/.test(line), `no leaked value in "${line.slice(0, 50)}"`);
+    assert(!/[\u2014\u2013]/.test(line), "no dashes in the copy");
+  }
 }
 
 // --- a stored value that is not a result reads as unreadable, never as floors ---
@@ -440,12 +544,12 @@ let fitted: StoredVolumeLearning | null = null;
   // The other tiers, one line each, every one of them stating what is true of it.
   const widened = harness({ rows: [...low, ...medium], first: { "1": LOW_FIRST, "2": MEDIUM_FIRST, "3": NOW - WEEK } });
   await widened.run();
-  const lines = tierLearningLines({ rampEndOn: null, learning: widened.saves[0] }, NOW + MIN);
+  const lines = tierLearningLines({ rampEndOn: null, learning: widened.saves[0] }, NOW + MIN, LOW_ONLY);
   eq(lines.length, VOLUME_TIERS.length - 1, "one line for every tier beside Low");
   assert(/^Medium: judged against floors learned from its own bookings/.test(lines[0]!), `a learned tier says so (${lines[0]})`);
   assert(/^High: carried since .*, and not judged until 4 full weeks/.test(lines[1]!), `a young tier says when it will be judged (${lines[1]})`);
   assert(/^Very High: no real booking yet, so not carried and not judged\.$/.test(lines[2]!), `a tier nobody booked says so (${lines[2]})`);
-  const unreadLines = tierLearningLines({ rampEndOn: null, learning: "nonsense" }, NOW);
+  const unreadLines = tierLearningLines({ rampEndOn: null, learning: "nonsense" }, NOW, LOW_ONLY);
   assert(unreadLines.every((l) => /could not be read/.test(l)), "an unreadable result says so for every tier rather than calling them not carried");
   for (const c of [none, notCarried, learned, overdue, unreadable]) {
     for (const line of [c.inForce, ...c.detail, ...lines, ...unreadLines]) {

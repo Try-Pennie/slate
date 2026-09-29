@@ -29,33 +29,115 @@
 // recorded AFTER a measurement is picked up with RECORD_CLOSED_DAYS=1, which re-reads
 // them for the committed span and refits without reading cal.com.
 //
+// THE OTHER TIERS (#2888). MEASURE_TIER picks the debt tier, Low (1) when unset, so
+// every run above is unchanged. Any other tier is measured WHOLE, every form cal.com
+// booked it through, since no alarm reads per page floors for it, and writes:
+//   scripts/fixtures/calcom-tier-<tier>-bookings.json   that tier's counts, alone
+//   src/lib/monitor/volume-baseline-tiers.ts             every measured tier's floors,
+//                                                        rendered from every such file
+// and never touches Low's files. Those floors are SAVED, NOT IN FORCE: TIER_ANCHORS is
+// Low alone until #2893 applies them in proportion to the share of each tier Slate
+// carries (Dan, 2026-09-29). scripts/test-volume-tier-anchors.ts holds the module to
+// the files and TIER_ANCHORS to Low. REFIT=1 and RECORD_CLOSED_DAYS=1 work the same
+// way per tier. A tier so thin that no judged hour carries a floor is refused rather
+// than written, in every mode, since it could never hold a floor up and would still
+// read as a real measurement.
+//
 // It talks to cal.com, so it is deliberately not named `test-*.ts`.
 //
 // Env:
+//   MEASURE_TIER     the debt tier digit, 1 (Low, the default) to 5 (Ultra High)
 //   CALCOM_API_KEY   required
 //   CALCOM_ORG_ID    default 19474
 //   MEASURE_DAYS     how far back to read (default 63, nine whole weeks)
 //   MEASURE_ZONE     the zone weekday and hour are judged in (default America/New_York)
 //   MEASURE_PACE_MS  pacing between pages (default 550, measured in #2240)
-import { readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { loadEnvFiles, envOr } from "./smoke-env.ts";
 import { PACE_REFUSAL, paceMsOrNull, readRoutingResponses, tierOf } from "./lib/calcom-routing-responses.ts";
 import {
   FLOOR_SCOPE,
+  TIER_BASELINES_PATH,
   buildFixture,
   baselineFromFixture,
+  judgedHourCoverage,
+  measureTargetFor,
   pageBaselinesFromFixture,
+  readTierFixtures,
   renderBaselineModule,
   renderPageBaselineModule,
+  renderTierBaselineModule,
+  thinAnchorRefusal,
+  tierBaselinesFromFixtures,
+  wholeTierScope,
   OFFLINE_OPEN_WEEK,
+  type FloorScope,
   type VolumeFixture,
 } from "./lib/volume-floor-scope.ts";
 import { LOW_PAGES, pageCoverage } from "../src/lib/monitor/page-volume.ts";
 import { SERIES_BUCKET_MINUTES, WEEKDAY_NAMES, type VolumeBaseline } from "../src/lib/monitor/volume-floors.ts";
+import { tierLabel } from "../src/lib/monitor/volume-tiers.ts";
 
-const FIXTURE_PATH = "scripts/fixtures/calcom-low-bookings.json";
+// Which tier, before anything else: a refit or a closed day recording for the wrong
+// tier would rewrite a committed measurement as surely as a live run would.
+const TARGET_READ = measureTargetFor(process.env.MEASURE_TIER);
+if (!TARGET_READ.ok) {
+  console.error(TARGET_READ.refusal);
+  process.exit(1);
+}
+const TARGET = TARGET_READ.target;
+
+const FIXTURE_PATH = TARGET.fixturePath;
 const BASELINE_PATH = "src/lib/monitor/volume-baseline.ts";
 const PAGE_BASELINE_PATH = "src/lib/monitor/page-volume-baseline.ts";
+
+/** Low keeps FLOOR_SCOPE; every other tier is fitted whole. */
+const scopeOf = (fixture: VolumeFixture): FloorScope => (TARGET.low ? FLOOR_SCOPE : wholeTierScope(fixture));
+
+/**
+ * Writes the measurement and its floors, and is the ONLY place any mode writes, so
+ * the too thin refusal below guards the live read, REFIT=1 and RECORD_CLOSED_DAYS=1
+ * alike: a refit or a recorded holiday can thin a fit as surely as a read can. A
+ * tier beside Low whose floors are zero at every judged hour is reported and exits
+ * 6 with nothing written, since committed it would read as a measured floor and
+ * could never hold anything up. Low writes its own module; any other tier writes
+ * its own counts and re-renders the tier module from EVERY committed tier
+ * measurement, so measuring one tier never drops another's saved measurement.
+ */
+function writeMeasurement(fixture: VolumeFixture, baseline: VolumeBaseline): void {
+  const thin = TARGET.low ? null : thinAnchorRefusal(baseline, OFFLINE_OPEN_WEEK);
+  if (thin) {
+    report(fixture, baseline);
+    console.error(thin);
+    process.exit(6);
+  }
+  writeFileSync(FIXTURE_PATH, JSON.stringify(fixture) + "\n");
+  if (TARGET.low) {
+    writeFileSync(BASELINE_PATH, renderBaselineModule(baseline));
+    return;
+  }
+  const all = { ...readTierFixtures(), [TARGET.tier]: fixture };
+  writeFileSync(TIER_BASELINES_PATH, renderTierBaselineModule(tierBaselinesFromFixtures(all)));
+}
+
+/** What the floors cover: Low's per page floors, or how much of the week a whole tier's measurement carries a floor. */
+function writeAfter(fixture: VolumeFixture, baseline: VolumeBaseline): void {
+  if (TARGET.low) {
+    writePages(fixture);
+    return;
+  }
+  const { withFloor, judged } = judgedHourCoverage(baseline, OFFLINE_OPEN_WEEK);
+  console.log(`\n${tierLabel(TARGET.tier)}: ${withFloor} of the ${judged} hours the alarm judges carry a floor above zero.`);
+}
+
+/** The committed measurement for this tier, refused by name when there is none to refit. */
+function readCommitted(): VolumeFixture {
+  if (!existsSync(FIXTURE_PATH)) {
+    console.error(`FAILED (no-measurement): ${FIXTURE_PATH} does not exist, so there is nothing to refit; measure the tier first`);
+    process.exit(5);
+  }
+  return JSON.parse(readFileSync(FIXTURE_PATH, "utf8")) as VolumeFixture;
+}
 
 /** Writes each page's floors and says, per page, how much of its week they can judge (#2738). */
 function writePages(fixture: VolumeFixture): void {
@@ -95,8 +177,8 @@ async function readClosedDates(fromIsoDate: string): Promise<string[]> {
 // span and refits, without reading cal.com: a holiday entered after the measurement.
 if (process.env.RECORD_CLOSED_DAYS === "1") {
   loadEnvFiles([".env.local", ".dev.vars", ...(process.env.ENV_FILE ? [process.env.ENV_FILE] : [])]);
-  const committed = JSON.parse(readFileSync(FIXTURE_PATH, "utf8")) as VolumeFixture;
-  const span = baselineFromFixture({ ...committed, closedDates: [] }, FLOOR_SCOPE);
+  const committed = readCommitted();
+  const span = baselineFromFixture({ ...committed, closedDates: [] }, scopeOf(committed));
   const read = await readClosedDates(span.fromDate).catch((e: Error) => {
     console.error(`FAILED (closed-days-unreadable): ${e.message}; nothing was written`);
     process.exit(4);
@@ -105,24 +187,23 @@ if (process.env.RECORD_CLOSED_DAYS === "1") {
     ...committed,
     closedDates: read.filter((d) => d >= span.fromDate && d <= span.toDate),
   };
-  writeFileSync(FIXTURE_PATH, JSON.stringify(fixture) + "\n");
-  const baseline = baselineFromFixture(fixture, FLOOR_SCOPE);
-  writeFileSync(BASELINE_PATH, renderBaselineModule(baseline));
+  const baseline = baselineFromFixture(fixture, scopeOf(fixture));
+  writeMeasurement(fixture, baseline);
   console.log(`Closed days in ${span.fromDate} to ${span.toDate}: ${fixture.closedDates.join(", ") || "none"}. Nothing was read from cal.com.`);
   report(fixture, baseline);
-  writePages(fixture);
+  writeAfter(fixture, baseline);
   process.exit(0);
 }
 
 // REFIT=1 re-fits the floors from the COMMITTED measurement without reading cal.com,
 // which is what a change to FLOOR_SCOPE or to the fit itself needs.
 if (process.env.REFIT === "1") {
-  const fixture = JSON.parse(readFileSync(FIXTURE_PATH, "utf8")) as VolumeFixture;
-  const baseline = baselineFromFixture(fixture, FLOOR_SCOPE);
-  writeFileSync(BASELINE_PATH, renderBaselineModule(baseline));
+  const fixture = readCommitted();
+  const baseline = baselineFromFixture(fixture, scopeOf(fixture));
+  writeMeasurement(fixture, baseline);
   console.log(`Re-fitted from the measurement taken ${baseline.measuredOn}; nothing was read from cal.com.`);
   report(fixture, baseline);
-  writePages(fixture);
+  writeAfter(fixture, baseline);
   process.exit(0);
 }
 
@@ -184,7 +265,7 @@ const closedDates = await readClosedDates(new Date(startMs).toISOString().slice(
 const fixture = buildFixture({
   closedDates,
   rows: read.rows.map((r) => ({ ...r, tier: tierOf(r.code) })),
-  tier: FLOOR_SCOPE.tier,
+  tier: TARGET.tier,
   startMs,
   endMs,
   bucketMinutes: SERIES_BUCKET_MINUTES,
@@ -192,7 +273,13 @@ const fixture = buildFixture({
   measuredOn: new Date(endMs).toISOString().slice(0, 10),
   formNames: [],
 });
-const missing = FLOOR_SCOPE.forms.filter((f) => !fixture.forms[f]);
+if (!TARGET.low && Object.keys(fixture.forms).length === 0) {
+  console.error(
+    `FAILED (tier-unmeasured): cal.com took no ${tierLabel(TARGET.tier)} bookings in ${DAYS} days, so there is nothing to fit; nothing was written`,
+  );
+  process.exit(3);
+}
+const missing = TARGET.low ? FLOOR_SCOPE.forms.filter((f) => !fixture.forms[f]) : [];
 if (missing.length > 0) {
   console.error(
     `FAILED (scope-unmeasured): no bookings for ${missing.map((m) => `"${m}"`).join(", ")}. ` +
@@ -201,12 +288,10 @@ if (missing.length > 0) {
   process.exit(3);
 }
 
-const baseline = baselineFromFixture(fixture, FLOOR_SCOPE);
-writeFileSync(FIXTURE_PATH, JSON.stringify(fixture) + "\n");
-writeFileSync(BASELINE_PATH, renderBaselineModule(baseline));
-
+const baseline = baselineFromFixture(fixture, scopeOf(fixture));
 console.log(
   `Read ${read.rows.length} routing form responses over ${DAYS} days (${baseline.fromDate} to ${baseline.toDate}).`,
 );
+writeMeasurement(fixture, baseline);
 report(fixture, baseline);
-writePages(fixture);
+writeAfter(fixture, baseline);

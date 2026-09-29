@@ -33,8 +33,9 @@
  *
  * THE CAL.COM FIT IS THE FLOOR UNDER A MEASURED TIER'S LEARNED FLOOR TWICE:
  * `learnFloors` holds every cell at or above it when it fits, and `baselineInForce`
- * does again when it READS. A tier nobody has measured has nothing under it, so it
- * is UNJUDGED until its own traffic has been learned, and says so.
+ * does again when it READS. A tier with no anchor (every tier beside Low, until
+ * #2893) has nothing under it, and any tier beside Low is UNJUDGED until its own
+ * traffic has been learned, and says so (`tierJudgedBaseline`).
  *
  * No `@/` imports, so node scripts can drive it directly.
  */
@@ -221,7 +222,7 @@ export function readStoredLearning(raw: unknown): StoredLearningRead {
   return { state: "ok", legacy: false, value: raw as StoredVolumeLearning };
 }
 
-/** Why a tier is judged against its cal.com measurement, or not judged at all. */
+/** Why a tier has no learned floors yet. Only Low is judged against its cal.com measurement meanwhile; any other tier is not judged until it has learned (#2888). */
 export type MeasuredWhy =
   /** The refit looked, and the tier has taken no real booking. */
   | "not-carried"
@@ -245,7 +246,7 @@ interface InForceCommon {
 }
 
 export type BaselineInForce =
-  /** A measured tier judged against its cal.com measurement. */
+  /** Not yet learned: Low is judged against its cal.com measurement, any other tier is not judged (#2888). */
   | (InForceCommon & { kind: "measured"; baseline: VolumeBaseline; why: MeasuredWhy })
   /** A tier nobody has measured, not yet learned: nothing judges it. */
   | (InForceCommon & { kind: "unjudged"; why: MeasuredWhy })
@@ -294,6 +295,25 @@ export function baselineInForce(
     fittedAt: stored.fittedAt,
     anchored: anchor !== null,
   };
+}
+
+/**
+ * The floors a tier beside Low is judged against NOW, or null when it is not judged
+ * (#2874, #2888). The ONE predicate for it: the monitor's tier checks and the admin
+ * page's tier lines both come from here, so the page cannot say a tier is judged
+ * while the alarm skips it, or the reverse (L16).
+ *
+ * A tier beside Low is judged only once four weeks of its own bookings are learned,
+ * and then against those learned floors (held at or above an anchor, were it given
+ * one; none has one until #2893). An anchor never makes a tier beside Low judged
+ * before that: the pilot may move only some of a tier's pages, and judging that
+ * partial traffic against floors fitted to the whole tier false pages, 108 to 283
+ * times in two normal weeks as measured in `scripts/lib/volume-floor-scope.ts`. Low
+ * is not decided here: it has its own check and is judged against its measurement
+ * from the start, as it always has been.
+ */
+export function tierJudgedBaseline(state: BaselineInForce): VolumeBaseline | null {
+  return state.kind === "learned" ? state.baseline : null;
 }
 
 export type RelearnResult =
