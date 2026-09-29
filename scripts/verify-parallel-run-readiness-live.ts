@@ -66,6 +66,11 @@ const stretchedCooldowns = await section("alert cooldowns", async () => {
     .map((r) => ({ key: r.key, minutes: r.cooldown_min as number, defaultMinutes: defaults[r.key] / 60_000 }));
 });
 
+// #2875: whether cal.com is retired decides whether anything below is judged at all.
+// `loadCalcomRetired` answers null on a failed read rather than throwing.
+const { loadCalcomRetired } = await import("@/lib/calcom/retirement");
+const calcomRetired = await loadCalcomRetired();
+
 const lastRunMs = await section("parity heartbeat", () => readHeartbeatMs("schedule-parity"));
 const drifting = await section("drift alert state", () => isAlertFiring("schedule_parity_drift"));
 
@@ -256,6 +261,7 @@ const facts: ReadinessFacts = {
   unsetHours,
   partnerKey,
   lowVolumeArming: { armed: armedState, pageSources, holidays },
+  calcomRetired,
 };
 const verdict = judgeReadiness(facts);
 console.log(verdict.summary);

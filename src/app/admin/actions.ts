@@ -76,6 +76,7 @@ import { replayDeadLetteredDeliveries, resendDelivery } from "@/lib/webhooks/emi
 import { webhookUrlError } from "@/lib/webhooks/url";
 import { acquireLock } from "@/lib/locks";
 import { recordAudit, type AuditAction } from "@/lib/audit";
+import { CALCOM_RETIREMENT_FORM, loadCalcomRetired, __resetCalcomRetiredCache } from "@/lib/calcom/retirement";
 import { parseIgnoreAdd, personLabel, type IgnoreRosterUser } from "@/lib/admin/regal-call-ignores";
 import { impersonationErrorUrl } from "@/lib/admin/imp-error-url";
 import { replaceAgentLinkToken } from "@/lib/agent-link/store";
@@ -1093,6 +1094,56 @@ export async function setVolumeRampEnd(form: FormData): Promise<void> {
   redirect(
     `/admin/alerts${savedQuery(parsed.rampEndOn === null ? "volume-ramp-end-cleared" : "volume-ramp-end-set")}#volume-learning`,
   );
+}
+
+/**
+ * Retire cal.com, or put it back (#2875). Admin only, the same gate as the rest of
+ * /admin/alerts.
+ *
+ * One stored switch, `monitor_alert_config.calcom_retired`, read by every cal.com
+ * lane (src/lib/calcom/retirement.ts), so cutover needs no code change. It writes
+ * that one column on id=1 and nothing else, so a save here cannot touch a cooldown,
+ * a channel or an arming switch on the same row, and a save of the settings form
+ * can never touch it (that form's upsert does not name it).
+ *
+ * The form posts the STATE it wants rather than toggling, like the kill switch, and
+ * anything that is not an explicit "true" means live: a stray submit must never
+ * retire cal.com, because that stops the time off dual write while cal.com may still
+ * be taking every lead.
+ *
+ * Refused before the audit entry and the saved notice (#2379). The audit entry
+ * carries the value before and after (L529), and the before value is null when it
+ * could not be read rather than a guess.
+ */
+export async function setCalcomRetired(form: FormData): Promise<void> {
+  const admin = await requireAdmin();
+  const retired = String(form.get("retired") ?? "") === "true";
+  const before = await loadCalcomRetired();
+
+  const { error } = await supabaseAdmin().from("monitor_alert_config").upsert(
+    { id: 1, calcom_retired: retired, updated_at: new Date().toISOString(), updated_by: admin.id },
+    { onConflict: "id" },
+  );
+  if (error) {
+    redirect(
+      `/admin/alerts${refusedFromQuery(
+        writeRefused(retired ? "The change to retire cal.com" : "The change to put cal.com back", error),
+        CALCOM_RETIREMENT_FORM,
+      )}#calcom-retirement`,
+    );
+  }
+
+  await recordAudit({
+    orgId: admin.org_id,
+    actorId: admin.id,
+    action: "monitor.calcom_retired",
+    details: { from: before, to: retired },
+  });
+  // The lanes read the switch through a per isolate cache; drop this isolate's copy
+  // so a lane sharing it acts on the change now rather than a TTL later.
+  __resetCalcomRetiredCache();
+  revalidatePath("/admin/alerts");
+  redirect(`/admin/alerts${savedQuery(retired ? "calcom-retired" : "calcom-live")}#calcom-retirement`);
 }
 
 /**

@@ -3,6 +3,7 @@ import {
   coreLaneAlertText,
   canaryAlertText,
   canaryRecoveryText,
+  calcomLaneRetiredText,
   laneRecoveryText,
   mirrorAlertText,
   mirrorRecoveryText,
@@ -43,6 +44,7 @@ import {
 } from "@/lib/notify/dispatch";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { log } from "@/lib/log";
+import { CALCOM_HEARTBEAT_LANES, loadCalcomRetiredCached, withoutRetiredCalcomLanes } from "@/lib/calcom/retirement";
 import { parseStampMs } from "@/lib/date/stamp";
 
 /** Per lane, so one dead lane can't throttle away the first alert for another. */
@@ -142,12 +144,25 @@ export async function alertOnStaleLanes(): Promise<LaneWatchdogOutcome> {
     return LANE_WATCHDOG_UNJUDGED;
   }
   const now = Date.now();
+  // #2875: once cal.com is marked retired its two comparison lanes stop stamping
+  // by construction, so they leave the canary family rather than paging "went
+  // quiet" every cooldown about a system nobody books through. A read that failed
+  // or threw keeps them watched: silencing a live lane on a failed read would be a
+  // detector nobody can see is off, while the opposite mistake costs one page.
+  let calcomRetired: boolean | null;
+  try {
+    calcomRetired = await loadCalcomRetiredCached(now);
+  } catch (err) {
+    log.error("lane-watchdog", { msg: "cal.com retired read threw; its lanes stay watched" }, err instanceof Error ? err : undefined);
+    calcomRetired = null;
+  }
+  const canaryBounds = withoutRetiredCalcomLanes(CANARY_STALE_BOUNDS_MS, calcomRetired);
   const stale = findStaleLanes(heartbeats, now);
   // The external booking-smoke canary (#525) is judged against its OWN bound and
   // alerts with its OWN copy: it is a scheduled GitHub Actions workflow, not a
   // Worker cron lane, so a CPU-kill message would be wrong and it must never touch
   // the external /api/health signal.
-  const canaryStale = findStaleLanes(heartbeats, now, CANARY_STALE_BOUNDS_MS);
+  const canaryStale = findStaleLanes(heartbeats, now, canaryBounds);
   // The Snowflake mirror export lane (#1101) is judged against its OWN bound and,
   // like the canary, alerts to Slack only: a stale mirror means the analytics
   // warehouse is going stale, not that the app is down, so it must never touch
@@ -330,12 +345,21 @@ export async function alertOnStaleLanes(): Promise<LaneWatchdogOutcome> {
     // armed wording asserts three things that are all false on a lapse. A lane is
     // exactly one of the three states, so these can never both name one key, and a
     // lane whose page never fired sends nothing either way.
-    parkStates.flatMap((p) => {
-      const key = unparkAlertKey(p.lane);
-      if (p.state === "armed") return [{ key, text: verdictUnparkRecoveryText(p.lane) }];
-      if (p.state === "parked") return [{ key, text: verdictUnparkLapsedText(p.lane) }];
-      return [];
-    }),
+    [
+      ...parkStates.flatMap((p) => {
+        const key = unparkAlertKey(p.lane);
+        if (p.state === "armed") return [{ key, text: verdictUnparkRecoveryText(p.lane) }];
+        if (p.state === "parked") return [{ key, text: verdictUnparkLapsedText(p.lane) }];
+        return [];
+      }),
+      // #2875: a cal.com lane page already open when cal.com was retired ends HERE,
+      // saying it was retired. Its heartbeat will never come back, so the recovery
+      // pass below could never end it, and "running again" would be false.
+      ...(calcomRetired === true
+        ? CALCOM_HEARTBEAT_LANES.map((lane) => ({ key: staleLaneAlertKey(lane), text: calcomLaneRetiredText(lane) }))
+        : []),
+    ],
+    canaryBounds,
   );
 
   return {
@@ -410,21 +434,25 @@ async function pageWithGraceWindow(
  * shared message that pointed responders at the wrong lane and lock. An all-clear
  * that names the wrong thing is the same defect facing the other way.
  */
-const LANE_FAMILIES: {
+function laneFamilies(canaryBounds: Record<string, number>): {
   bounds: Record<string, number>;
   recovery: (lane: string) => string;
   /** This family is judged with `neverIsStale`, so a recovered lane may still be
    *  carrying a first-sighting marker that has to be dropped (see below). */
   graceWindow?: true;
-}[] = [
-  { bounds: LANE_STALE_BOUNDS_MS, recovery: laneRecoveryText },
-  { bounds: CANARY_STALE_BOUNDS_MS, recovery: canaryRecoveryText },
-  { bounds: MIRROR_STALE_BOUNDS_MS, recovery: mirrorRecoveryText },
-  { bounds: RETENTION_STALE_BOUNDS_MS, recovery: retentionRecoveryText, graceWindow: true },
-  { bounds: TIME_OFF_STALE_BOUNDS_MS, recovery: timeOffRecoveryText, graceWindow: true },
-  { bounds: UPTIME_STALE_BOUNDS_MS, recovery: uptimeRecoveryText, graceWindow: true },
-  { bounds: VERDICT_STALE_BOUNDS_MS, recovery: verdictRecoveryText, graceWindow: true },
-];
+}[] {
+  return [
+    { bounds: LANE_STALE_BOUNDS_MS, recovery: laneRecoveryText },
+    // #2875: the SAME canary bounds the staleness pass judged against, so a retired
+    // cal.com lane is settled once, by its retirement text, never also as recovered.
+    { bounds: canaryBounds, recovery: canaryRecoveryText },
+    { bounds: MIRROR_STALE_BOUNDS_MS, recovery: mirrorRecoveryText },
+    { bounds: RETENTION_STALE_BOUNDS_MS, recovery: retentionRecoveryText, graceWindow: true },
+    { bounds: TIME_OFF_STALE_BOUNDS_MS, recovery: timeOffRecoveryText, graceWindow: true },
+    { bounds: UPTIME_STALE_BOUNDS_MS, recovery: uptimeRecoveryText, graceWindow: true },
+    { bounds: VERDICT_STALE_BOUNDS_MS, recovery: verdictRecoveryText, graceWindow: true },
+  ];
+}
 
 /**
  * Announce that a lane which was paged is stamping again (#1134).
@@ -456,12 +484,13 @@ async function resolveRecoveredLanes(
    * `alert_state` read every minute on the budget four cron lanes share.
    */
   alsoSettle: { key: string; text: string }[] = [],
+  canaryBounds: Record<string, number> = CANARY_STALE_BOUNDS_MS,
 ): Promise<void> {
   const recovered: { key: string; lane: string; text: string; graceWindow: boolean }[] = [];
   for (const s of alsoSettle) {
     recovered.push({ key: s.key, lane: s.key, text: s.text, graceWindow: false });
   }
-  for (const { bounds, recovery, graceWindow } of LANE_FAMILIES) {
+  for (const { bounds, recovery, graceWindow } of laneFamilies(canaryBounds)) {
     for (const [lane, maxStaleMs] of Object.entries(bounds)) {
       if (staleLanes.has(lane)) continue;
       const lastRanAtMs = heartbeats[lane];

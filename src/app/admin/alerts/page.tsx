@@ -35,6 +35,8 @@ import {
   resolveFloors,
 } from "@/lib/monitor/settings";
 import { VolumeFloors } from "@/components/admin/VolumeFloors";
+import { CalcomRetirementSwitch } from "@/components/admin/CalcomRetirementSwitch";
+import { CALCOM_RETIREMENT_FORM } from "@/lib/calcom/retirement";
 import { VolumeLearning, type PageCoverageView } from "@/components/admin/VolumeLearning";
 import { EARLIEST_RAMP_END, RAMP_END_FORM, baselineInForce, type BaselineInForce } from "@/lib/monitor/volume-relearn";
 import { LEARNING } from "@/lib/monitor/volume-learning";
@@ -81,6 +83,8 @@ async function pageSourceNoticeNow(): Promise<string | null> {
 
 /** The two outcomes the learning section confirms in place rather than at the top. */
 const LEARNING_OUTCOMES = new Set(["volume-ramp-end-set", "volume-ramp-end-cleared"]);
+/** #2875: the two outcomes the cal.com switch confirms beside itself. */
+const CALCOM_OUTCOMES = new Set(["calcom-retired", "calcom-live"]);
 
 export default async function AlertSettingsPage({
   searchParams,
@@ -93,8 +97,18 @@ export default async function AlertSettingsPage({
   // #2739: the ramp end form sits lower on the page, and its confirmation is drawn
   // beside it, where the person pressed, rather than above the fold (L608).
   const savedHere = outcome !== null && LEARNING_OUTCOMES.has(outcome);
+  // #2875: likewise the cal.com switch, which sits at the foot of the page, and its
+  // refusals by the form name they carry.
+  const savedByCalcom = outcome !== null && CALCOM_OUTCOMES.has(outcome);
+  const refusedByCalcom = !!sp.error && sp.form === CALCOM_RETIREMENT_FORM;
   // Its refusals too, which carry the form's name because a refusal has no outcome.
   const refusedHere = !!sp.error && sp.form === RAMP_END_FORM;
+  const calcomNotice =
+    savedByCalcom && saved ? (
+      <SettingsSaveNotice ok saved={saved} error={sp.error} />
+    ) : refusedByCalcom ? (
+      <SettingsSaveNotice ok={false} error={sp.error} saved="" />
+    ) : undefined;
   const learningNotice =
     savedHere && saved ? (
       <SettingsSaveNotice ok saved={saved} error={sp.error} />
@@ -136,6 +150,16 @@ export default async function AlertSettingsPage({
   const awaitingActivationArmed = resolveAwaitingActivationArmed(config);
   const belowLeadTierArmed = resolveBelowLeadTierArmed(config);
   const regalCallsArmed = resolveRegalCallsArmed(config);
+  // #2875: null when the row could not be read, or was read without the column
+  // (a deploy ahead of migration 0147), never a guess. No row at all is the
+  // column's default, live.
+  const calcomRetired: boolean | null = !configReadable
+    ? null
+    : config === null
+      ? false
+      : typeof config.calcom_retired === "boolean"
+        ? config.calcom_retired
+        : null;
   // #1956: the measured floors and anything replacing them, through the same
   // resolver the monitor uses, so the page shows what the alarm will judge against.
   const floorPolicy = resolveFloors(config, envFloors());
@@ -241,8 +265,10 @@ export default async function AlertSettingsPage({
           that saved rather than whatever this page had written down. An
           unrecognised value (a bookmarked `?ok=1` from before outcomes were
           named) shows nothing, rather than confirming a save nobody made. */}
-      {saved && !savedHere && <SettingsSaveNotice ok saved={saved} error={sp.error} />}
-      {sp.error && !saved && !refusedHere && <SettingsSaveNotice ok={false} error={sp.error} saved="" />}
+      {saved && !savedHere && !savedByCalcom && <SettingsSaveNotice ok saved={saved} error={sp.error} />}
+      {sp.error && !saved && !refusedHere && !refusedByCalcom && (
+        <SettingsSaveNotice ok={false} error={sp.error} saved="" />
+      )}
       {!armed && (
         <div className="rounded-md border border-border bg-[var(--bg-alt)] px-5 py-4 text-sm text-fg-muted">
           The low booking volume alarm is <strong>off</strong>: its floors below are measured
@@ -543,9 +569,10 @@ export default async function AlertSettingsPage({
             gives the lead today, every 5 minutes, and records what it finds in the
             logs, but nobody is notified. On: Slack gets an alert for each call that
             is with a lower team than the lead&apos;s tier, and a follow up once it
-            is moved, the score comes down, or the call is cancelled. Turn this on
-            before cutover: it replaces the cal.com Slack workflow that stops working
-            then.
+            is moved, the score comes down, or the call is cancelled.{" "}
+            {calcomRetired === true
+              ? "cal.com is retired, so this is the only check doing what its Slack workflow did."
+              : "Turn this on before cutover: it replaces the cal.com Slack workflow that stops working then."}
           </p>
           <label className="mt-4 flex items-center gap-2 text-sm">
             <input
@@ -698,6 +725,13 @@ export default async function AlertSettingsPage({
             changed; reload to try again.
           </UnreadableNotice>
         )}
+      </section>
+      {/* #2875. Last on the page, because it is pressed once, at cutover, and it is
+          the most far reaching control here (L609). Outside the settings form like
+          the two sections above it: its own confirmed action. */}
+      <section id="calcom-retirement" className={cardCls}>
+        <h2 className="mb-1 text-sm font-semibold">cal.com</h2>
+        <CalcomRetirementSwitch retired={calcomRetired} notice={calcomNotice} />
       </section>
     </>
   );

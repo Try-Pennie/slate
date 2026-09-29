@@ -4,6 +4,7 @@ import { parseStampMs } from "@/lib/date/stamp";
 import { addOooOverrides, removeOooOverrides } from "@/lib/calcom/client";
 import type { AbsenceWindow } from "@/lib/calcom/overrides";
 import { log } from "@/lib/log";
+import { calcomOverrideWriteSkip, loadCalcomRetired } from "@/lib/calcom/retirement";
 
 /**
  * The ONE place the cal.com override dual-write is started from (#2417).
@@ -93,6 +94,14 @@ export async function loadOtherApprovedWindows(args: {
 export async function syncCalcomOverrides(
   args: CalcomOverrideSyncArgs,
 ): Promise<string> {
+  // #2875: once cal.com is marked retired nothing books through it, so there is
+  // nothing an override could protect. Checked HERE because every writer starts
+  // here, the monitor lane's retry included, which never consulted the deploy
+  // level OOO_CALCOM_DUAL_WRITE flag. Read fresh, never cached, and a failed read
+  // WRITES as today: during the parallel run a missing block lets cal.com book
+  // somebody who is away, while a write to a retired cal.com is one failed call.
+  const retiredSkip = calcomOverrideWriteSkip(await loadCalcomRetired());
+  if (retiredSkip) return retiredSkip;
   const others = await loadOtherApprovedWindows({
     agentUserId: args.agentUserId,
     requestId: args.requestId,

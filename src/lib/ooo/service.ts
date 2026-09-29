@@ -287,6 +287,11 @@ export function realDeps(): OooDeps {
     // #2417: both go through `syncCalcomOverrides`, which reads the agent's
     // OTHER approved absences on the same dates and refuses the write when that
     // read fails. Nothing here builds a window set of its own.
+    //
+    // #2875: the deploy level OOO_CALCOM_DUAL_WRITE flag is not the cutover lever.
+    // The stored "cal.com retired" switch on /admin/alerts is, and it is checked
+    // inside `syncCalcomOverrides`, which is where the monitor lane's retry starts
+    // too, so retiring cal.com stops every override write with no deploy.
     calcomAddOverrides: async (target) =>
       oooCalcomDualWrite()
         ? syncCalcomOverrides({ mode: "add", ...target })

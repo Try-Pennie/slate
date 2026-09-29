@@ -35,3 +35,12 @@ export const OUTCOME_OK_PREFIX = "ok";
 
 /** Every skip, whether terminal or provisional. */
 export const OUTCOME_SKIPPED_PREFIX = "skipped";
+
+/**
+ * cal.com has been marked retired on /admin/alerts (#2875). Terminal, like
+ * `OUTCOME_NOT_CONFIGURED`: once cal.com takes no bookings there is nothing an
+ * override could protect, so the sweep settles it rather than retrying or paging.
+ * Its own words rather than "not configured", because a reader of the time off
+ * record should see that somebody retired cal.com, not that a key went missing.
+ */
+export const OUTCOME_CALCOM_RETIRED = "skipped: cal.com retired";

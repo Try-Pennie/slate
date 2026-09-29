@@ -168,8 +168,20 @@ function who(a: UnsetHoursFinding, nowMs: number): string {
   return `${label}, ${how}`;
 }
 
-/** The page: what a lead would meet, who, how long, and where the fix lives. */
-export function formatUnsetHoursAlert(agents: UnsetHoursFinding[], nowMs: number): string {
+/**
+ * The page: what a lead would meet, who, how long, and where the fix lives.
+ *
+ * #2875: where the fix lives depends on whether cal.com is retired. While it is
+ * live the cal.com import is the quickest repair; once it is retired there is
+ * nothing to import from, so offering it names a fix that cannot work (L111). A
+ * setting that could not be read keeps today's wording, since the import may
+ * well still work.
+ */
+export function formatUnsetHoursAlert(
+  agents: UnsetHoursFinding[],
+  nowMs: number,
+  opts: { calcomRetired?: boolean | null } = {},
+): string {
   const n = agents.length;
   // Longest first, so the one nobody has got to in a month leads. An unreadable
   // stamp sorts to the front for the same reason: it is the least understood.
@@ -178,8 +190,10 @@ export function formatUnsetHoursAlert(agents: UnsetHoursFinding[], nowMs: number
   const more = n > NAME_CAP ? `\n(and ${n - NAME_CAP} more)` : "";
   return (
     `${n} bookable ${n === 1 ? "agent has" : "agents have"} spent more than ${GRACE_DAYS} days on working hours ` +
-    `nobody set: the seeded default, which is right only by coincidence. Import their real hours with ` +
-    `APPLY=1 pnpm import:calcom-schedules, or set them under admin > agent hours.\n` +
+    `nobody set: the seeded default, which is right only by coincidence. ` +
+    (opts.calcomRetired === true
+      ? `Ask them to set their own hours in Slate, or set them under admin > agent hours.\n`
+      : `Import their real hours with APPLY=1 pnpm import:calcom-schedules, or set them under admin > agent hours.\n`) +
     lines.join("\n") +
     more
   );
@@ -213,6 +227,12 @@ export interface UnsetHoursDeps {
   cooldownMs: number;
   /** Passed in so the grace boundary is drivable and the copy is deterministic. */
   nowMs: number;
+  /**
+   * #2875: whether cal.com is marked retired, which decides only the WORDING of the
+   * fix the page names. Omitted, or a read that fails or throws, keeps today's
+   * wording, and the page is sent either way.
+   */
+  calcomRetired?: () => Promise<boolean | null>;
 }
 
 export type UnsetHoursResult =
@@ -229,7 +249,17 @@ export async function runUnsetHoursCheck(deps: UnsetHoursDeps): Promise<UnsetHou
   }
   const agents = agentsPastUnsetHoursGrace(agentsOnUnsetHours(input), deps.nowMs);
   if (agents.length) {
-    await deps.notify(AGENTS_ON_UNSET_HOURS_KEY, deps.cooldownMs, formatUnsetHoursAlert(agents, deps.nowMs));
+    let calcomRetired: boolean | null = false;
+    try {
+      calcomRetired = deps.calcomRetired ? await deps.calcomRetired() : false;
+    } catch {
+      calcomRetired = null;
+    }
+    await deps.notify(
+      AGENTS_ON_UNSET_HOURS_KEY,
+      deps.cooldownMs,
+      formatUnsetHoursAlert(agents, deps.nowMs, { calcomRetired }),
+    );
     return { status: "paged", agents };
   }
   await deps.resolve(AGENTS_ON_UNSET_HOURS_KEY, formatUnsetHoursRecovery());

@@ -85,6 +85,24 @@ jobs:
       - name: Install
         run: pnpm install --frozen-lockfile
 
+      # #2875: once cal.com is marked retired on /admin/alerts, this whole job is a
+      # comparison against a system nobody books through, and its apply step would
+      # put stale cal.com hours over a week somebody set in Slate. So every step
+      # below asks first. The apply runs only on a measured `0`, so a setting that
+      # could not be read writes nothing; the rest run on anything but `1`, so the
+      # same failure keeps today's comparison and report. The Worker stops watching
+      # and re firing this lane on the same setting (src/lib/calcom/retirement.ts).
+      - name: Is cal.com retired?
+        id: retired
+        # A crash here leaves `retired` empty, which every step below reads as
+        # unknown: the apply is skipped and the rest run as today. Failing the job
+        # instead would skip the comparison AND its failure alert.
+        continue-on-error: true
+        env:
+          NEXT_PUBLIC_SUPABASE_URL: https://drukfvgaynzrralbzkzj.supabase.co
+          SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+        run: node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/calcom-retired-check.ts
+
       # Skip quietly until the keys are configured, so merging this does not fail a
       # run every morning before setup. An absent key is "not configured yet"; a
       # present but wrong one still runs and reports.
@@ -140,7 +158,7 @@ jobs:
       - name: Correct drifted hours from cal.com
         id: apply
         continue-on-error: true
-        if: steps.pre.outputs.configured == '1'
+        if: steps.pre.outputs.configured == '1' && steps.retired.outputs.retired == '0'
         env:
           APPLY: "1"
           CALCOM_API_KEY: ${{ secrets.CALCOM_API_KEY }}
@@ -159,7 +177,7 @@ jobs:
       - name: Compare Slate against cal.com
         id: sweep
         continue-on-error: true
-        if: steps.pre.outputs.configured == '1'
+        if: steps.pre.outputs.configured == '1' && steps.retired.outputs.retired != '1'
         env:
           CALCOM_API_KEY: ${{ secrets.CALCOM_API_KEY }}
           # The roster half reads Slate's own users through supabaseAdmin, so the
@@ -186,7 +204,7 @@ jobs:
       # importing nothing outside scripts/.
       - name: Report the result to Slate
         id: report
-        if: steps.pre.outputs.configured == '1'
+        if: steps.pre.outputs.configured == '1' && steps.retired.outputs.retired != '1'
         env:
           BOOKING_API_KEY_CANARY: ${{ secrets.BOOKING_API_KEY_CANARY }}
           SLATE_BASE_URL: ${{ vars.SLATE_BASE_URL }}
@@ -205,7 +223,7 @@ jobs:
       # watchdog pages: a detector that has stopped concluding otherwise looks exactly
       # like one finding nothing wrong (#1394).
       - name: Stamp the parity heartbeat (a measured sweep only)
-        if: success() && steps.pre.outputs.configured == '1'
+        if: success() && steps.pre.outputs.configured == '1' && steps.retired.outputs.retired != '1'
         env:
           BOOKING_API_KEY_CANARY: ${{ secrets.BOOKING_API_KEY_CANARY }}
           SLATE_BASE_URL: ${{ vars.SLATE_BASE_URL }}
@@ -220,7 +238,7 @@ jobs:
       # nobody is watching, and the only signal would be the heartbeat going stale
       # thirty hours later.
       - name: Slack alert when the sweep could not report
-        if: failure() && steps.pre.outputs.configured == '1'
+        if: failure() && steps.pre.outputs.configured == '1' && steps.retired.outputs.retired != '1'
         env:
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
           SLACK_ALERTS_CHANNEL: ${{ vars.SLACK_ALERTS_CHANNEL }}

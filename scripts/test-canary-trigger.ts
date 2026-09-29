@@ -629,6 +629,44 @@ async function main() {
     }
   }
 
+  // 24. The "cal.com retired" switch (#2875). Once cal.com takes no bookings the
+  //     parity sweep compares against nothing, so re firing it daily is a workflow
+  //     run spent proving cal.com is gone. Retired: the parity pass is not even
+  //     read or locked, and the two booking canary passes run exactly as before.
+  //     Live, and a setting that could not be read, keep today's behaviour.
+  {
+    const staleParity = async (lane: string) => (lane === "schedule-parity" ? NOW - 28 * 60 * 60_000 : NOW - 8 * 60 * 60_000);
+    const retired = wiring({ calcomRetired: async () => true });
+    // A recording reader with a stale parity heartbeat, so a pass that read it would fire.
+    const lanesRead: string[] = [];
+    retired.w.readHeartbeatMs = async (lane) => (lanesRead.push(lane), staleParity(lane));
+    const r = await runCanaryGapFills(retired.w);
+    eq(r.parity?.dispatched, false, "retired: the parity sweep is never re fired");
+    eq(r.parity?.reason, "calcom-retired", "retired: it says why, rather than reading as fresh");
+    assert(!lanesRead.includes("schedule-parity"), "retired: the parity heartbeat is not even read");
+    assert(!retired.calls.locks.some(([n]) => n === "parity_dispatch"), "retired: the parity lock is not taken");
+    eq(retired.calls.modes.join(","), "dry,full", "retired: the booking canary passes still fire");
+
+    for (const [label, answer] of [["live", false], ["unreadable", null]] as const) {
+      const { w, calls } = wiring({ calcomRetired: async () => answer });
+      w.readHeartbeatMs = staleParity;
+      const rr = await runCanaryGapFills(w);
+      eq(rr.parity?.dispatched, true, `${label}: a 28h old parity heartbeat is re fired, as today`);
+      assert(calls.modes.includes("parity"), `${label}: the parity dispatch is made`);
+    }
+
+    // A reader that throws is the same as one that could not read: today's behaviour.
+    const { w: throwing, calls: throwingCalls } = wiring({
+      calcomRetired: async () => {
+        throw new Error("db down");
+      },
+    });
+    throwing.readHeartbeatMs = staleParity;
+    const rt = await runCanaryGapFills(throwing);
+    eq(rt.parity?.dispatched, true, "a throwing retirement read keeps today's re fire");
+    eq(throwingCalls.modes.join(","), "dry,full,parity", "and nothing else is skipped");
+  }
+
   finish();
 }
 

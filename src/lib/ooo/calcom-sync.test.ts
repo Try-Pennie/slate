@@ -25,6 +25,12 @@ vi.mock("@/lib/calcom/client", () => ({
   addOooOverrides: add,
   removeOooOverrides: remove,
 }));
+// #2875: the "cal.com retired" switch. Only its read is replaced.
+const retired = vi.hoisted(() => ({ load: vi.fn(async (): Promise<boolean | null> => false) }));
+vi.mock("@/lib/calcom/retirement", async (orig) => ({
+  ...(await orig<typeof import("@/lib/calcom/retirement")>()),
+  loadCalcomRetired: retired.load,
+}));
 vi.mock("@/lib/log", () => ({
   log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
@@ -62,6 +68,7 @@ vi.mock("@/lib/supabase/admin", () => ({
 }));
 
 import { syncCalcomOverrides } from "./calcom-sync";
+import { OUTCOME_CALCOM_RETIRED } from "@/lib/calcom/outcomes";
 
 const ARGS = {
   requestId: "req-1",
@@ -78,6 +85,7 @@ beforeEach(() => {
   state.rows = [];
   state.error = null;
   state.filters = [];
+  retired.load.mockResolvedValue(false);
 });
 
 describe("the cal.com override write refuses a set it could not measure (#2417)", () => {
@@ -138,5 +146,35 @@ describe("the cal.com override write refuses a set it could not measure (#2417)"
     const lower = state.filters.find(([k]) => k === "gt:ends_at")?.[1] as string;
     expect(Date.parse(upper) - Date.parse(ARGS.endIso)).toBe(24 * 60 * 60 * 1000);
     expect(Date.parse(ARGS.startIso) - Date.parse(lower)).toBe(24 * 60 * 60 * 1000);
+  });
+});
+
+// #2875: every writer of a cal.com override starts here (the approval, the
+// cancellation, the narrowing edit, the admin Retry and the monitor lane's sweep),
+// so this is the one place retiring cal.com can stop them all.
+describe("the cal.com retired switch (#2875)", () => {
+  it("writes nothing to cal.com once it is retired, and records its own skip", async () => {
+    retired.load.mockResolvedValue(true);
+    state.rows = [other];
+    for (const mode of ["add", "remove"] as const) {
+      const outcome = await syncCalcomOverrides({ mode, ...ARGS });
+      expect(outcome).toBe(OUTCOME_CALCOM_RETIRED);
+    }
+    expect(add).not.toHaveBeenCalled();
+    expect(remove).not.toHaveBeenCalled();
+    expect(range).not.toHaveBeenCalled();
+  });
+
+  it("keeps writing when the setting could not be read, so a failed read never unprotects an absence", async () => {
+    retired.load.mockResolvedValue(null);
+    state.rows = [];
+    expect(await syncCalcomOverrides({ mode: "add", ...ARGS })).toBe("ok");
+    expect(add).toHaveBeenCalledTimes(1);
+  });
+
+  it("writes as today while cal.com is live", async () => {
+    state.rows = [];
+    expect(await syncCalcomOverrides({ mode: "remove", ...ARGS })).toBe("ok");
+    expect(remove).toHaveBeenCalledTimes(1);
   });
 });

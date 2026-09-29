@@ -53,6 +53,8 @@ export const SAVE_OUTCOMES = [
   "booking-paused",
   "booking-reasons",
   "booking-resumed",
+  "calcom-live",
+  "calcom-retired",
   "bucket-created",
   "bucket-routing",
   "bucket-updated",
@@ -90,6 +92,11 @@ export const SAVE_OUTCOME_COPY: Record<Exclude<SaveOutcome, DynamicOutcome>, str
   "booking-paused": "Online booking is stopped. Leads cannot book a call until you start it again.",
   "booking-reasons": "Booking reasons saved.",
   "booking-resumed": "Online booking is running again. Leads can book a call.",
+  // #2875: each says which way it went and when it takes hold, because both
+  // directions change what Slate writes. What each state MEANS is drawn once, by
+  // the switch beneath this notice, so it is not said here a second time (L605).
+  "calcom-live": "Saved: cal.com is back. Its lanes run again from their next scheduled check.",
+  "calcom-retired": "Saved: cal.com is retired. Every cal.com lane stops at its next check, within 5 minutes.",
   "bucket-created": "Bucket created.",
   "bucket-routing": "Bucket routing saved.",
   "bucket-updated": "Bucket saved.",

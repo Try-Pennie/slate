@@ -199,7 +199,7 @@ export const ALERT_FIELDS: {
     key: "schedule_parity_drift",
     urgency: "alert",
     label: "Slate and cal.com disagree about the roster",
-    help: "The daily comparison found an agent the two systems hold different working hours, days, timezone or pool membership for. While both systems are live this changes who a lead is booked with, or when, and nothing inside Slate can see it: a stored week is valid whether or not it matches the one the agent keeps.",
+    help: "The daily comparison found an agent the two systems hold different working hours, days, timezone or pool membership for. While both systems are live this changes who a lead is booked with, or when, and nothing inside Slate can see it: a stored week is valid whether or not it matches the one the agent keeps. It stops once cal.com is marked retired, lower down these settings.",
   },
   {
     key: "agents_on_unset_hours",
@@ -241,7 +241,7 @@ export const ALERT_FIELDS: {
     key: "ooo_calcom_unprotected",
     urgency: "alert",
     label: "Time off not blocked in cal.com",
-    help: "An agent is on approved time off right now with no cal.com block in place, so cal.com can still book them while they are away.",
+    help: "An agent is on approved time off right now with no cal.com block in place, so cal.com can still book them while they are away. It stops once cal.com is marked retired, lower down these settings.",
   },
   {
     key: "availability_drift",

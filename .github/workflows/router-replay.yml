@@ -68,6 +68,22 @@ jobs:
       - name: Install
         run: pnpm install --frozen-lockfile
 
+      # #2875: once cal.com is marked retired on /admin/alerts there are no cal.com
+      # routed leads to replay, and a run would only post that it could not read
+      # them. So the replay, its report and its stamp all skip on `1`; anything else
+      # (live, or a setting that could not be read) keeps today's behaviour. The
+      # Worker stops watching this lane on the same setting.
+      - name: Is cal.com retired?
+        id: retired
+        # A crash here leaves `retired` empty, which every step below reads as
+        # unknown: the apply is skipped and the rest run as today. Failing the job
+        # instead would skip the comparison AND its failure alert.
+        continue-on-error: true
+        env:
+          NEXT_PUBLIC_SUPABASE_URL: https://drukfvgaynzrralbzkzj.supabase.co
+          SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+        run: node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/calcom-retired-check.ts
+
       # Skip quietly until the keys are configured, so merging this does not fail a
       # run every week before setup. An absent key is "not configured yet"; a present
       # but wrong one still runs and reports.
@@ -95,7 +111,7 @@ jobs:
       # fixed key would be written once and then never updated, so the cache would
       # freeze at whatever the first run happened to read.
       - name: Restore the booking cache
-        if: steps.pre.outputs.configured == '1'
+        if: steps.pre.outputs.configured == '1' && steps.retired.outputs.retired != '1'
         uses: actions/cache@640a1c2554105b57832a23eea0b4672fc7a790d5 # v4
         with:
           path: .replay-cache
@@ -111,7 +127,7 @@ jobs:
       - name: Replay cal.com's routed leads through Slate's ladder
         id: replay
         continue-on-error: true
-        if: steps.pre.outputs.configured == '1'
+        if: steps.pre.outputs.configured == '1' && steps.retired.outputs.retired != '1'
         env:
           CALCOM_API_KEY: ${{ secrets.CALCOM_API_KEY }}
           # The roster half reads Slate's own users through supabaseAdmin. The URL is
@@ -135,7 +151,7 @@ jobs:
       # importing nothing outside scripts/.
       - name: Say what the replay found
         id: report
-        if: always() && steps.pre.outputs.configured == '1'
+        if: always() && steps.pre.outputs.configured == '1' && steps.retired.outputs.retired != '1'
         env:
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
           SLACK_ALERTS_CHANNEL: ${{ vars.SLACK_ALERTS_CHANNEL }}
@@ -159,7 +175,7 @@ jobs:
       # `notify-router-replay.ts` writes `concluded` before it exits non-zero
       # precisely so this step can still read it, which only works with `always()`.
       - name: Stamp the replay heartbeat (a measured verdict only)
-        if: always() && steps.pre.outputs.configured == '1' && steps.report.outputs.concluded == '1'
+        if: always() && steps.pre.outputs.configured == '1' && steps.retired.outputs.retired != '1' && steps.report.outputs.concluded == '1'
         env:
           BOOKING_API_KEY_CANARY: ${{ secrets.BOOKING_API_KEY_CANARY }}
           SLATE_BASE_URL: ${{ vars.SLATE_BASE_URL }}

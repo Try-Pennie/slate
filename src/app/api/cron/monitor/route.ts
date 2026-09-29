@@ -195,6 +195,7 @@ import {
 import { recordConsecutiveStreak } from "@/lib/notify/streak";
 import { shortErrorReason } from "@/lib/notify/error-text";
 import { alertOnStaleLanes } from "@/lib/monitor/lane-watchdog";
+import { loadCalcomRetiredCached } from "@/lib/calcom/retirement";
 import {
   runCanaryGapFills,
   postWorkflowDispatch,
@@ -1720,6 +1721,8 @@ export async function GET(req: NextRequest) {
         resolve: (key, text) => resolveAlert(key, text),
         cooldownMs: cooldownMs.agents_on_unset_hours,
         nowMs: Date.now(),
+        // #2875: once cal.com is retired the page stops offering the cal.com import.
+        calcomRetired: () => loadCalcomRetiredCached(now),
       }),
     );
 
@@ -2936,6 +2939,9 @@ export async function GET(req: NextRequest) {
         readHeartbeatMs,
         acquireLock: async (name, ttl) => (await acquireLock(name, ttl)) !== null,
         dispatch: (pass) => postWorkflowDispatch(canaryToken, pass),
+        // #2875: a cal.com lane is not re fired once cal.com is marked retired.
+        // The same cached read the watchdog step above made, so no second query.
+        calcomRetired: () => loadCalcomRetiredCached(now),
         onInfo: (msg) => log.info("canary-trigger", { msg }),
         onError: (msg, err) => log.error("canary-trigger", { msg }, err),
       }),
@@ -2997,6 +3003,9 @@ export async function GET(req: NextRequest) {
         nowMs: now,
         loadCandidates: () => loadFailedOverrideCandidates(db),
         retry: (requestId) => retryOverrideForRequest(db, requestId),
+        // #2875: retired, nothing is retried and both pages end saying so. The
+        // retry itself also refuses on a FRESH read inside `syncCalcomOverrides`.
+        calcomRetired: () => loadCalcomRetiredCached(now),
         alert: async (key, text) => {
           // alert-key: ooo_calcom_unprotected
           // alert-text-ok: our own copy from calcom-override-sweep.ts, never a raw error.

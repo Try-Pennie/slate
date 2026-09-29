@@ -60,6 +60,9 @@ export const AUDIT_ACTIONS = [
   // judges against, weeks later and with nobody watching, so the trail records the
   // date before and after.
   "monitor.volume_ramp_end",
+  // #2875: retiring cal.com stops every cal.com lane and every write to or from
+  // cal.com, so the trail records the value before and after.
+  "monitor.calcom_retired",
   "reason.options",
   "booking.settings",
   // When Pennie is open (#1297). Distinct from booking.settings because it changes
