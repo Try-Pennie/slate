@@ -30,7 +30,7 @@
  */
 import { DEBT_TIER } from "../xbc.ts";
 import { MEASURED_VOLUME_BASELINE } from "./volume-baseline.ts";
-import { VOLUME_ALERT_KEY } from "./booking-volume.ts";
+import { VOLUME_ALERT_KEY, VOLUME_COUNT_UNREADABLE_KEY } from "./booking-volume.ts";
 import type { VolumeBaseline } from "./volume-floors.ts";
 
 /** A debt tier digit, "1" (Low) to "5" (Ultra High). */
@@ -99,6 +99,18 @@ export const TIER_VOLUME_ALERT_PREFIX = "low_tier_volume";
  * paged on since #370, so an open page, its cooldown and its runbook entry carry
  * over; every other tier has its own key in the `low_tier_volume` family.
  */
+/** The family for a tier's count that could not be read (#2874), one key per tier. */
+export const TIER_COUNT_UNREADABLE_PREFIX = "volume_count_unreadable";
+
+/**
+ * A tier's "count unreadable" key. Low keeps `volume_count_unreadable`; every other
+ * tier has its own, so one tier's readable count never clears another's page.
+ */
+export function tierCountUnreadableKey(tier: VolumeTier): string {
+  if (!isVolumeTier(tier)) throw new Error(`volume tiers: ${tier} is not a debt tier`);
+  return tier === LOW_TIER ? VOLUME_COUNT_UNREADABLE_KEY : `${TIER_COUNT_UNREADABLE_PREFIX}:${tier}`;
+}
+
 export function tierVolumeAlertKey(tier: VolumeTier): string {
   if (!isVolumeTier(tier)) throw new Error(`volume tiers: ${tier} is not a debt tier`);
   return tier === LOW_TIER ? VOLUME_ALERT_KEY : `${TIER_VOLUME_ALERT_PREFIX}:${tier}`;

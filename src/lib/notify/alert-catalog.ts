@@ -401,6 +401,16 @@ export const ALERT_CATALOG: AlertEntry[] = [
       "verdict ends it, and the same lane re-measures every 5 minutes.",
   },
   {
+    key: "volume_count_unreadable:*",
+    kind: "condition",
+    // The suffix is one of the debt tier digits in volume-tiers.ts; Low keeps the bare key.
+    suffix: "bounded",
+    why:
+      "The volume monitor cannot read one tier's own count (#2874), so that tier is " +
+      "measured by nothing; the read succeeds again and the same lane sees it on the " +
+      "next tick.",
+  },
+  {
     key: "low_tier_volume:*",
     kind: "condition",
     // The suffix is one of the five debt tier digits in volume-tiers.ts.

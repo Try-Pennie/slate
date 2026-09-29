@@ -44,7 +44,10 @@ const plural = (n: number, one: string, many: string) => `${n.toLocaleString("en
 /** Where a tier's ramp started, in words: its first booking, or the later declared end. */
 function rampStartWords(state: BaselineInForce): string {
   const e = state.entry;
-  if (!e?.rampStartAt || !e.firstBookingAt) return "";
+  if (!e?.rampStartAt) return "";
+  if (e.convertedFromRampEnd || !e.firstBookingAt) {
+    return `the ramp end declared for ${dayOf(e.rampStartAt)}, recorded before Slate tracked each tier's first booking`;
+  }
   const label = tierLabel(state.tier);
   return e.rampStartAt === e.firstBookingAt
     ? `the first real ${label} booking on ${dayOf(e.firstBookingAt)}`

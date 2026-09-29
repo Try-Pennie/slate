@@ -14,7 +14,7 @@
  */
 import { runLowVolumeCheck, type BusinessHoursConfig, type LowVolumeResult } from "./booking-volume.ts";
 import { floorsFor, judgedFloors, type VolumeBaseline } from "./volume-floors.ts";
-import { tierLabel, tierVolumeAlertKey, type VolumeTier } from "./volume-tiers.ts";
+import { tierCountUnreadableKey, tierLabel, tierVolumeAlertKey, type VolumeTier } from "./volume-tiers.ts";
 import type { ThrottledNotify } from "./alert-deps";
 
 export async function runTierVolumeChecks(deps: {
@@ -34,6 +34,11 @@ export async function runTierVolumeChecks(deps: {
   // all-clear-proof: scripts/test-tier-volume.ts - pins that a tier whose count
   // cannot be read clears nothing, and that a tier's reading clears only its own page.
   const out: Partial<Record<VolumeTier, LowVolumeResult>> = {};
+  // Every tier's all-clears are collected and settled in ONE call after the loop:
+  // each settle is an alert_state read on the budget four cron lanes share, so
+  // five tiers must not cost five. Only what a tier MEASURED is ever collected,
+  // because each check offers nothing on a path that could not read its count.
+  const recovered: { key: string; text: string }[] = [];
   for (const [tier, baseline] of Object.entries(deps.baselines)) {
     if (!baseline) continue;
     out[tier] = await runLowVolumeCheck({
@@ -45,10 +50,14 @@ export async function runTierVolumeChecks(deps: {
       cooldownMs: deps.cooldownMs,
       notify: deps.notify,
       notifyCountUnreadable: deps.notifyCountUnreadable,
-      resolveRecovered: deps.resolveRecovered,
-      tier: { key: tierVolumeAlertKey(tier), label: tierLabel(tier) },
+      resolveRecovered: async (r) => {
+        recovered.push(...r);
+        return [];
+      },
+      tier: { key: tierVolumeAlertKey(tier), countUnreadableKey: tierCountUnreadableKey(tier), label: tierLabel(tier) },
       log: deps.log,
     });
   }
+  if (recovered.length > 0) await deps.resolveRecovered(recovered).catch(() => {});
   return out;
 }

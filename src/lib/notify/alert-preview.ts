@@ -139,6 +139,8 @@ import {
   formatLowVolumeRecoveryNotice,
   formatTierVolumeAlert,
   formatTierVolumeRecoveryNotice,
+  formatTierVolumeCountUnreadableAlert,
+  formatTierVolumeCountReadableNotice,
   formatVolumeVerdictGapRecoveryNotice,
 } from "@/lib/monitor/booking-volume";
 import { tierLabel } from "@/lib/monitor/volume-tiers";
@@ -764,6 +766,19 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
       { label: "30 min", count: 0, floor: 2, basis: MEASURED_TUESDAY_2PM.basis30 },
       { label: "120 min", count: 3, floor: 9, basis: MEASURED_TUESDAY_2PM.basis120 },
     ]),
+  },
+  {
+    // One tier's count failing is that tier's own page, never Low's (#2874).
+    key: "volume_count_unreadable:*",
+    state: "one tier's count cannot be read",
+    channel: "alert",
+    text: formatTierVolumeCountUnreadableAlert(tierLabel("2")),
+  },
+  {
+    key: "volume_count_unreadable:*",
+    state: "the tier's count reads again",
+    channel: "recovery",
+    text: formatTierVolumeCountReadableNotice(tierLabel("2")),
   },
   {
     key: "low_tier_volume:*",

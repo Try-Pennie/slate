@@ -1189,12 +1189,12 @@ export async function GET(req: NextRequest) {
           // counts and the tier's own name; no error text can reach it.
           notify: (key, cooldownMs, text) => sendThrottledAlert(key, cooldownMs, text),
           notifyCountUnreadable: (key, cooldownMs, text) => {
-            // alert-key: volume_count_unreadable
+            // alert-key: volume_count_unreadable:*
             // alert-text-ok: our own copy from booking-volume.ts, with no error
             // interpolated: the detail belongs in the lane's logs.
             return sendThrottledAlert(key, cooldownMs, text);
           },
-          // alert-key: volume_count_unreadable
+          // alert-key: volume_count_unreadable:*
           // alert-key: low_tier_volume:*
           // all-clear-proof: scripts/test-monitor-booking-volume.ts - pins that a
           // tier's reading clears only that tier's own page, and nothing of Low's.

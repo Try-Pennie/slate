@@ -20,9 +20,10 @@ import {
   tierOfBucketCode,
   tierRampStartMs,
   tierVolumeAlertKey,
+  tierCountUnreadableKey,
 } from "../src/lib/monitor/volume-tiers.ts";
 import { MEASURED_VOLUME_BASELINE } from "../src/lib/monitor/volume-baseline.ts";
-import { VOLUME_ALERT_KEY } from "../src/lib/monitor/booking-volume.ts";
+import { VOLUME_ALERT_KEY, VOLUME_COUNT_UNREADABLE_KEY } from "../src/lib/monitor/booking-volume.ts";
 import { FLOOR_SCOPE, type VolumeFixture } from "./lib/volume-floor-scope.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
@@ -79,5 +80,10 @@ eq(new Set(keys).size, keys.length, "every tier has its own key, so one tier's c
 for (const tier of VOLUME_TIERS.filter((t) => t !== LOW_TIER)) {
   eq(tierVolumeAlertKey(tier), `${TIER_VOLUME_ALERT_PREFIX}:${tier}`, `tier ${tier} pages in the tier family`);
 }
+
+// --- one count unreadable key per tier (#2874) ---
+eq(tierCountUnreadableKey(LOW_TIER), VOLUME_COUNT_UNREADABLE_KEY, "Low keeps the unreadable key it has always paged on");
+const unreadKeys = VOLUME_TIERS.map(tierCountUnreadableKey);
+eq(new Set(unreadKeys).size, unreadKeys.length, "every tier has its own, so one tier's readable count never clears another's page");
 
 finish();

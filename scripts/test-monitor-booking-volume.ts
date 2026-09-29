@@ -478,7 +478,7 @@ function harness(overrides: {
 
 // --- #2874: a tier judged beside Low has its own key and says which tier it is ---
 {
-  const MEDIUM = { key: "low_tier_volume:2", label: "Medium" };
+  const MEDIUM = { key: "low_tier_volume:2", countUnreadableKey: "volume_count_unreadable:2", label: "Medium" };
   const low = harness({ tier: MEDIUM, counts: { "30": 0, "120": 3 } });
   const out = await low.run();
   eq(out.status, "checked", "a tier is judged exactly like Low");
@@ -491,6 +491,16 @@ function harness(overrides: {
   const cleared = healthy.resolved.find((r) => r.key === "low_tier_volume:2");
   assert(cleared !== undefined && /^Medium bookings are back above/.test(cleared.text), `a healthy tier clears its own page, by name (${cleared?.text})`);
   assert(!healthy.resolved.some((r) => r.key === VOLUME_ALERT_KEY || r.key === VOLUME_VERDICT_GAP_KEY), "and nothing of Low's");
+  // A tier's count that reads clears only ITS unreadable page, never Low's: Low's
+  // page would otherwise be cleared by one tier and re-fired by Low every tick.
+  assert(healthy.resolved.some((r) => r.key === "volume_count_unreadable:2"), "a readable tier clears its own unreadable page");
+  assert(!healthy.resolved.some((r) => r.key === VOLUME_COUNT_UNREADABLE_KEY), "and never Low's");
+  const unreadable = harness({ tier: MEDIUM, counts: { "30": null, "120": null } });
+  const unreadOut = await unreadable.run();
+  eq(unreadOut.status, "count-unreadable", "a tier whose count fails twice is its own outcome");
+  eq(unreadable.notified.map((n) => n.key), ["volume_count_unreadable:2"], "and pages on that tier's unreadable key");
+  assert(/Medium/.test(unreadable.notified[0]?.text ?? ""), `naming the tier (${unreadable.notified[0]?.text})`);
+  eq(unreadable.resolved.length, 0, "and clears nothing");
   // Control: with no tier named, the same reading is Low's, as it always was.
   const plain = harness({ counts: { "30": 0, "120": 3 } });
   await plain.run();

@@ -382,6 +382,11 @@ let fitted: StoredVolumeLearning | null = null;
   eq(baselineInForce({ rampEndOn: RAMP_END_ON, learning: legacy }, "1").kind, "learned", "and stays in force while that ramp end is");
   const other = baselineInForce({ rampEndOn: null, learning: legacy }, "1");
   eq(other.kind, "measured", "control: with the ramp end cleared it is out of force until the next refit");
+  // It never knew the tier's first booking, so the page must not say it did.
+  const said = learningStatusCopy(baselineInForce({ rampEndOn: RAMP_END_ON, learning: legacy }, "1"), NOW + MIN).detail.join(" ");
+  assert(/ramp end declared for Nov 2, 2026, recorded before Slate tracked each tier's first booking/.test(said), `a converted result names the declared ramp end it came from (${said})`);
+  assert(!/first real Low booking/.test(said), "and never presents that date as a first booking");
+  if (read.state === "ok") eq(read.value.tiers["1"]?.firstBookingAt, null, "the converted record claims no first booking");
   const h = harness({ rampEndOn: RAMP_END_ON, learning: legacy, rows: low, nowMs: Date.parse(fitted!.fittedAt) + MIN });
   eq((await h.run()).status, "refit", "a version 1 result is refit at once, so the per tier result replaces it");
 }

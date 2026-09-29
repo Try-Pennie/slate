@@ -162,7 +162,7 @@ export async function runLowVolumeCheck(deps: {
    * clears only its own page: the verdict gap is about Low's verdict, so a tier's
    * breach says nothing about it.
    */
-  tier?: { key: string; label: string };
+  tier?: { key: string; countUnreadableKey: string; label: string };
 }): Promise<LowVolumeResult> {
   if (!isBusinessHours(deps.nowMs, deps.businessHours)) return { status: "outside-hours" };
 
@@ -195,9 +195,9 @@ export async function runLowVolumeCheck(deps: {
     // about VOLUME, and an unreadable query makes no claim about volume at all.
     await deps
       .notifyCountUnreadable(
-        VOLUME_COUNT_UNREADABLE_KEY,
+        deps.tier?.countUnreadableKey ?? VOLUME_COUNT_UNREADABLE_KEY,
         deps.cooldownMs,
-        formatVolumeCountUnreadableAlert(),
+        deps.tier ? formatTierVolumeCountUnreadableAlert(deps.tier.label) : formatVolumeCountUnreadableAlert(),
       )
       .catch(() => {});
     return { status: "count-unreadable" };
@@ -245,7 +245,14 @@ export async function runLowVolumeCheck(deps: {
   // concluding, which is the whole of what that page said was not happening. It
   // rides this settle rather than a read of its own, so the healthy tick costs
   // nothing extra on the budget four cron lanes share.
-  const recovered = [{ key: VOLUME_COUNT_UNREADABLE_KEY, text: formatVolumeCountReadableNotice() }];
+  // #2874: a tier's readable count answers only ITS OWN unreadable page. Offering
+  // Low's key here would clear Low's page from another tier's read on every tick,
+  // and Low's own failing read would re-fire it on the next.
+  const recovered = [
+    deps.tier
+      ? { key: deps.tier.countUnreadableKey, text: formatTierVolumeCountReadableNotice(deps.tier.label) }
+      : { key: VOLUME_COUNT_UNREADABLE_KEY, text: formatVolumeCountReadableNotice() },
+  ];
   if (!deps.tier) recovered.push({ key: VOLUME_VERDICT_GAP_KEY, text: formatVolumeVerdictGapRecoveryNotice() });
   if (breaches.length === 0) {
     recovered.push({
@@ -275,6 +282,24 @@ export function formatVolumeCountUnreadableAlert(): string {
     "booking. This is a database read problem, not a booking drought. Check the " +
     "bookings table and the monitor lane's logs; the low volume alarm is blind " +
     "until it clears."
+  );
+}
+
+/** A tier's count that failed twice in one tick (#2874): the same fault, named for its tier. */
+export function formatTierVolumeCountUnreadableAlert(tierLabel: string): string {
+  return (
+    `The booking volume monitor cannot read the ${tierLabel} tier's count: two attempts in the same ` +
+    `minute both failed, so nothing is being measured about whether ${tierLabel} customers are booking. ` +
+    `This is a database read problem, not a booking drought. Check the bookings table and the monitor ` +
+    `lane's logs; the ${tierLabel} low volume alarm is blind until it clears.`
+  );
+}
+
+/** A tier's all-clear for that, hung off its count coming back. */
+export function formatTierVolumeCountReadableNotice(tierLabel: string): string {
+  return (
+    `The booking volume monitor can read the ${tierLabel} tier's count again, so it is measuring ` +
+    `whether ${tierLabel} customers are booking. No action is needed.`
   );
 }
 

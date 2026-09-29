@@ -43,7 +43,7 @@ import { LEARNING, learnFloors, underpin, type LearnedFloors, type SlateBookingR
 import type { VolumeBaseline } from "./volume-floors.ts";
 import { MEASURED_VOLUME_BASELINE } from "./volume-baseline.ts";
 import { parseStampMs } from "../date/stamp.ts";
-import { TIER_ANCHORS, VOLUME_TIERS, tierLabel, tierRampStartMs, type VolumeTier } from "./volume-tiers.ts";
+import { LOW_TIER, TIER_ANCHORS, VOLUME_TIERS, tierLabel, tierRampStartMs, type VolumeTier } from "./volume-tiers.ts";
 
 const HOUR_MS = 60 * 60_000;
 const WEEK_MS = 7 * 24 * HOUR_MS;
@@ -72,6 +72,11 @@ export interface StoredTierLearning {
   rampStartAt: string | null;
   /** What was learned, or null when the tier is not carried. */
   result: LearnedFloors | null;
+  /**
+   * Set only on a version 1 result read back (never stored): its start is the
+   * ramp end declared then, and nothing recorded the tier's first booking.
+   */
+  convertedFromRampEnd?: true;
 }
 
 /** What the lane writes to `monitor_alert_config.volume_learning`. */
@@ -177,7 +182,17 @@ export function readStoredLearning(raw: unknown): StoredLearningRead {
         version: LEARNING_STATE_VERSION,
         declaredRampEndOn: v.rampEndOn,
         fittedAt: v.fittedAt,
-        tiers: { [LOW_ANCHOR_TIER]: { firstBookingAt: new Date(startMs).toISOString(), rampStartAt: new Date(startMs).toISOString(), result: v.result } },
+        // It never knew the tier's first booking, only the declared ramp end, so it
+        // records no first booking and says where its start came from, rather than
+        // presenting the declared date as one.
+        tiers: {
+          [LOW_TIER]: {
+            firstBookingAt: null,
+            rampStartAt: new Date(startMs).toISOString(),
+            result: v.result,
+            convertedFromRampEnd: true,
+          },
+        },
       },
     };
   }
@@ -196,9 +211,6 @@ export function readStoredLearning(raw: unknown): StoredLearningRead {
   }
   return { state: "ok", legacy: false, value: raw as StoredVolumeLearning };
 }
-
-/** The tier a version 1 result belongs to: the one the committed measurement describes. */
-const LOW_ANCHOR_TIER: VolumeTier = "1";
 
 /** Why a tier is judged against its cal.com measurement, or not judged at all. */
 export type MeasuredWhy =
@@ -261,7 +273,7 @@ export function baselineInForce(
   if (!stored) return notLearned("not-fitted");
   if (stored.declaredRampEndOn !== rampEndOn) return notLearned("other-ramp-end");
   if (!entry) return notLearned("not-fitted");
-  if (entry.firstBookingAt === null) return notLearned("not-carried");
+  if (entry.rampStartAt === null) return notLearned("not-carried");
   const r = entry.result;
   if (!r || (r.status !== "learned" && r.status !== "declining")) return notLearned("insufficient");
   return {
