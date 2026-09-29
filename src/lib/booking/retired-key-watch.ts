@@ -4,6 +4,7 @@ import { log } from "@/lib/log";
 import { loadMonitorCooldowns } from "@/lib/monitor/settings";
 import { sendThrottledAlert } from "@/lib/notify/dispatch";
 import { makeRetiredKeyWatcher } from "@/lib/booking/retired-keys";
+import { configuredBookingApiKeys } from "@/lib/booking/api-keys";
 
 /**
  * The watcher the booking API's authorizer calls on a refused request that carried a
@@ -17,12 +18,13 @@ import { makeRetiredKeyWatcher } from "@/lib/booking/retired-keys";
  */
 export const watchRetiredKey = makeRetiredKeyWatcher({
   rawHashes: () => bookingApiRetiredKeyHashes(),
+  liveKeys: () => configuredBookingApiKeys().map((k) => ({ id: k.id, secret: k.secret })),
   cooldownMs: async () => (await loadMonitorCooldowns("booking-api")).retired_booking_key,
   // alert-key: retired_booking_key:*
   notify: (key, cooldownMs, text) => sendThrottledAlert(key, cooldownMs, text),
   report: (event) => {
     if (event.kind === "config-unreadable") {
-      log.error("booking-api", { msg: "retired key hashes unreadable, so a retired key cannot be noticed" }, event.error);
+      log.error("booking-api", { msg: "retired key hashes unusable, so a retired key cannot be noticed" }, event.error);
       return;
     }
     log.warn("booking-api", {

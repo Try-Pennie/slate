@@ -121,7 +121,10 @@ Authorization: Bearer <your caller's key>
   **When you retire one, add its hash to `BOOKING_API_RETIRED_KEY_HASHES`**
   (#2879, the step is in `DEPLOY.md`), so a caller still presenting it pages
   `retired_booking_key` naming its host and route, instead of being found by a lead
-  landing on a broken page.
+  landing on a broken page. Do it once the old value has LEFT its slot, never
+  before: a key still in a live slot authenticates, so its hash can never fire.
+  The list is empty today, because the old shared key's value still lives in
+  `BOOKING_API_KEY_TRYPENNIE_2`; it is armed at the next rotation.
 - `503` if no key is configured (endpoint disabled); `401` on a missing/wrong key.
 - The smoke endpoints (`/api/smoke/*`) and the hidden test buckets accept only
   the canary's key, never a partner's.

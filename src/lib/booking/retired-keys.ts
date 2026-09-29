@@ -112,13 +112,49 @@ export async function sha256Hex(text: string): Promise<string> {
  * already 64 hex characters, since that is almost certainly a hash pasted where the
  * key belongs and hashing it again would store a value no request could ever match.
  */
-export async function retiredKeyHashLine(label: string, key: string): Promise<string> {
+export async function retiredKeyHashLine(
+  label: string,
+  key: string,
+  /** Every booking key configured where this runs; a match means the key is not retired. */
+  live: readonly LiveKey[] = [],
+): Promise<string> {
   if (!LABEL.test(label)) throw new RetiredKeyConfigError(`${RETIRED_KEY_HASHES_ENV} label must be lowercase letters, digits and hyphens`);
   if (!key.trim()) throw new RetiredKeyConfigError(`the retired key is empty, so there is nothing to hash for ${RETIRED_KEY_HASHES_ENV}`);
   if (HEX64.test(key.trim().toLowerCase())) {
     throw new RetiredKeyConfigError(`that value is already shaped like a hash; ${RETIRED_KEY_HASHES_ENV} needs the hash of the key itself`);
   }
+  const liveIn = live.filter((k) => timingSafeEqual(k.secret, key)).map((k) => k.id);
+  if (liveIn.length) {
+    throw new RetiredKeyConfigError(
+      `that key is still live in ${liveIn.join(", ")}, so it is not retired: it authenticates, the watcher never sees it, ` +
+        `and its hash in ${RETIRED_KEY_HASHES_ENV} would cover nothing. Hash it at the rotation that removes it from that slot`,
+    );
+  }
   return `${label}:${await sha256Hex(key)}`;
+}
+
+/** A configured booking key, by its slot label. The secret never leaves this module. */
+export interface LiveKey {
+  id: string;
+  secret: string;
+}
+
+/**
+ * Retired hashes that equal a key still configured in a live slot. Such an entry can
+ * never fire (the key authenticates, so the watcher never sees it) while the list
+ * reads as armed, so the watcher treats it as a misconfiguration.
+ */
+export async function liveSlotsInRetiredList(
+  hashes: readonly RetiredKeyHash[],
+  live: readonly LiveKey[],
+): Promise<{ label: string; slot: string }[]> {
+  if (hashes.length === 0 || live.length === 0) return [];
+  const out: { label: string; slot: string }[] = [];
+  for (const k of live) {
+    const h = await sha256Hex(k.secret);
+    for (const r of hashes) if (timingSafeEqual(h, r.sha256)) out.push({ label: r.label, slot: k.id });
+  }
+  return out;
 }
 
 /** The retired key this token is, or null. Every hash is compared, in constant time. */
@@ -173,6 +209,8 @@ export type RetiredKeyEvent =
 export interface RetiredKeyWatchDeps {
   /** The raw setting, read at use so a changed secret needs no restart. */
   rawHashes: () => string;
+  /** The booking keys configured on this deployment, to refuse a retired hash that is still live. */
+  liveKeys: () => readonly LiveKey[];
   /** The alert's cooldown. Never throws (`loadMonitorCooldowns`). */
   cooldownMs: () => Promise<number>;
   /** The throttled dispatcher. Rejects on failure. */
@@ -208,6 +246,16 @@ export function makeRetiredKeyWatcher(deps: RetiredKeyWatchDeps) {
           hashes = parseRetiredKeyHashes(raw);
         } catch (err) {
           if (err instanceof RetiredKeyConfigError) deps.report({ kind: "config-unreadable", error: err });
+          throw err;
+        }
+        const stillLive = await liveSlotsInRetiredList(hashes, deps.liveKeys());
+        if (stillLive.length) {
+          const err = new RetiredKeyConfigError(
+            `${RETIRED_KEY_HASHES_ENV} names a key still live on this deployment (` +
+              stillLive.map((m) => `${m.label} in ${m.slot}`).join(", ") +
+              `), which authenticates and so can never be noticed; remove that entry or retire the slot`,
+          );
+          deps.report({ kind: "config-unreadable", error: err });
           throw err;
         }
         const match = await matchRetiredKey(token, hashes);

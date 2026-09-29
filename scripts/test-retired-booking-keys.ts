@@ -22,6 +22,7 @@ import {
   parseRetiredKeyHashes,
   retiredKeyAlertKey,
   retiredKeyHashLine,
+  liveSlotsInRetiredList,
   sha256Hex,
   type RetiredKeyEvent,
 } from "../src/lib/booking/retired-keys.ts";
@@ -129,7 +130,7 @@ const nodeHash = (s: string) => createHash("sha256").update(s, "utf8").digest("h
 }
 
 // --- the watcher: both directions, the throttle, and arming ------------------------
-function rig(raw: string, opts: { notifyFails?: boolean } = {}) {
+function rig(raw: string, opts: { notifyFails?: boolean; live?: { id: string; secret: string }[] } = {}) {
   const pending: (() => Promise<unknown>)[] = [];
   const sent: { key: string; cooldownMs: number; text: string }[] = [];
   const events: RetiredKeyEvent[] = [];
@@ -137,6 +138,7 @@ function rig(raw: string, opts: { notifyFails?: boolean } = {}) {
   let notifyFails = opts.notifyFails ?? false;
   const watch = makeRetiredKeyWatcher({
     rawHashes: () => raw,
+    liveKeys: () => opts.live ?? [],
     cooldownMs: async () => 60 * 60_000,
     notify: async (key, cooldownMs, text) => {
       if (notifyFails) throw new Error("slack down");
@@ -255,6 +257,7 @@ const ARMED = `shared:${nodeHash(RETIRED)}`;
   // Nothing about this may reach the request: a scheduler that throws is contained.
   const watch = makeRetiredKeyWatcher({
     rawHashes: () => ARMED,
+    liveKeys: () => [],
     cooldownMs: async () => 1,
     notify: async () => {},
     report: () => {},
@@ -270,6 +273,42 @@ const ARMED = `shared:${nodeHash(RETIRED)}`;
     escaped = true;
   }
   assert(!escaped, "a scheduler that throws never reaches the booking request");
+}
+
+// --- a key still in a live slot is not retired, and hashing it covers nothing -----
+//
+// A live key authenticates, so the watcher (which only sees refused tokens) could
+// never fire on it: the list would read as armed while covering nothing. Both the
+// hash command and the Worker refuse that, naming the slot and never the value.
+{
+  const live = [
+    { id: "trypennie:secondary", secret: RETIRED },
+    { id: "regal:primary", secret: UNKNOWN },
+  ];
+  eq(
+    await liveSlotsInRetiredList(parseRetiredKeyHashes(ARMED), live),
+    [{ label: "shared", slot: "trypennie:secondary" }],
+    "a retired hash equal to a live slot's key is found, by label and slot",
+  );
+  eq(await liveSlotsInRetiredList(parseRetiredKeyHashes(ARMED), [{ id: "regal:primary", secret: UNKNOWN }]), [], "and none when no live key matches");
+
+  let refused: unknown = null;
+  try {
+    await retiredKeyHashLine("shared", RETIRED, [{ id: "trypennie:secondary", secret: RETIRED }]);
+  } catch (err) {
+    refused = err;
+  }
+  assert(refused instanceof RetiredKeyConfigError, "the hash command refuses a key that is still live");
+  const msg = refused instanceof Error ? refused.message : "";
+  assert(/trypennie:secondary/.test(msg) && /live/.test(msg), `naming the slot it is live in (got: ${msg})`);
+  assert(!msg.includes(RETIRED), "and never the value");
+
+  const r = rig(ARMED, { live: [{ id: "trypennie:secondary", secret: RETIRED }] });
+  r.watch(UNKNOWN, "GET", "/api/bookings", H({}));
+  const errors = await r.drain();
+  eq(r.sent.length, 0, "a list naming a live key sends nothing");
+  assert(r.events.some((e) => e.kind === "config-unreadable" && /trypennie:secondary/.test(e.error.message)), "and reports it as a misconfiguration naming the slot");
+  assert(errors.length === 1, "and the check fails rather than passing quietly");
 }
 
 // --- wiring: the authorizer asks only on a refused, present token ------------------
