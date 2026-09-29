@@ -344,7 +344,7 @@ export const ALERT_FIELDS: {
     key: "retired_booking_key",
     urgency: "page",
     label: "A retired booking key still in use",
-    help: "A request presented a booking API key that has been retired, so it was refused. Whoever still holds it is being turned away on every call, which can leave a lead on a broken page. Repeats for each kind of host the calls come from.",
+    help: "A request presented a booking API key that has been retired, so it was refused. Whoever still holds it is being turned away on every call, which can leave a lead on a broken page. Repeats for each retired key and each kind of host the calls come from.",
   },
   {
     key: "ci_runs_refused",
@@ -529,7 +529,7 @@ export const MONITOR_DEFAULTS = {
     public_booking_stopped: 4 * 60 * 60_000,
     // A retired booking key presented (#2879): somebody still holds a key Slate no
     // longer accepts, and every call they make is refused, so a lead may be on a
-    // broken page right now. Hourly per kind of host, like the other pages whose
+    // broken page right now. Hourly per retired key and kind of host, like the other pages whose
     // remedy is a person doing something, and it stops once they hold a live key.
     retired_booking_key: 60 * 60_000,
   },

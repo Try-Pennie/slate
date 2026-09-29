@@ -90,7 +90,6 @@ const nodeHash = (s: string) => createHash("sha256").update(s, "utf8").digest("h
   eq(parseRetiredKeyHashes(line), [{ label: "shared", sha256: nodeHash(RETIRED) }], "and reads straight back");
   for (const [what, label, key] of [
     ["a blank key", "shared", "   "],
-    ["a key already shaped like a hash", "shared", nodeHash(RETIRED)],
     ["a bad label", "Shared", RETIRED],
   ] as const) {
     let refused = false;
@@ -101,6 +100,10 @@ const nodeHash = (s: string) => createHash("sha256").update(s, "utf8").digest("h
     }
     assert(refused, `${what} is refused rather than hashed into a line that could never match`);
   }
+  // A key minted with `openssl rand -hex 32` (DEPLOY.md) is 64 hex characters, the
+  // same shape as a hash, and must still be retirable (#2879 review).
+  const hexKey = "a1".repeat(32);
+  eq(await retiredKeyHashLine("hexkey", hexKey), `hexkey:${nodeHash(hexKey)}`, "a 64 hex character key hashes like any other");
 }
 
 // --- matching a presented token ---------------------------------------------------
@@ -115,7 +118,7 @@ const nodeHash = (s: string) => createHash("sha256").update(s, "utf8").digest("h
 // --- the alert key is bounded, and the copy names where and which route -----------
 {
   for (const kind of CALLER_HOST_KINDS) {
-    eq(retiredKeyAlertKey(kind), `${RETIRED_KEY_ALERT_FAMILY}:${kind}`, `the ${kind} key is one of a fixed set`);
+    eq(retiredKeyAlertKey("shared", kind), `${RETIRED_KEY_ALERT_FAMILY}:shared:${kind}`, `the ${kind} key names the retired key and the host kind`);
   }
   const prod = formatRetiredKeyAlert({ label: "shared", host: { kind: "production", origin: "https://www.trypennie.com" }, route: "GET /api/bookings" });
   assert(/retired booking key "shared"/.test(prod), `names which retired key (got: ${prod})`);
@@ -175,7 +178,7 @@ const ARMED = `shared:${nodeHash(RETIRED)}`;
   r.watch(RETIRED, "GET", "/api/bookings", H({ origin: "https://www.trypennie.com" }));
   eq((await r.drain()).length, 0, "a retired key's check finishes without error");
   eq(r.sent.length, 1, "a retired key pages");
-  eq(r.sent[0]?.key, "retired_booking_key:production", "keyed on its host kind");
+  eq(r.sent[0]?.key, "retired_booking_key:shared:production", "keyed on the retired key and its host kind");
   eq(r.sent[0]?.cooldownMs, 60 * 60_000, "on the tunable cooldown");
   assert(/https:\/\/www\.trypennie\.com/.test(r.sent[0]?.text ?? "") && /GET \/api\/bookings/.test(r.sent[0]?.text ?? ""), "naming the origin and the route");
   const rec = r.events.find((e) => e.kind === "retired-key-presented");
@@ -204,7 +207,7 @@ const ARMED = `shared:${nodeHash(RETIRED)}`;
   r.watch(UNKNOWN, "POST", "/api/bookings", H({}));
   await r.drain();
   eq(r.sent.length, 1, "the same key configured as retired pages");
-  eq(r.sent[0]?.key, "retired_booking_key:unstated", "under the no host kind");
+  eq(r.sent[0]?.key, "retired_booking_key:shared:unstated", "under the no host kind");
 }
 
 {
@@ -214,12 +217,27 @@ const ARMED = `shared:${nodeHash(RETIRED)}`;
   for (let i = 0; i < 5; i++) r.watch(RETIRED, "GET", "/api/bookings", H({ origin: "https://www.trypennie.com" }));
   r.watch(RETIRED, "GET", "/api/bookings", H({ origin: "http://localhost:3000" }));
   await r.drain();
-  eq(r.sent.map((s) => s.key).sort().join(","), "retired_booking_key:localhost,retired_booking_key:production", "one attempt per host kind for a burst");
+  eq(r.sent.map((s) => s.key).sort().join(","), "retired_booking_key:shared:localhost,retired_booking_key:shared:production", "one attempt per host kind for a burst");
   eq(r.events.filter((e) => e.kind === "retired-key-presented").length, 6, "while every presentation is still recorded");
   r.advance(61_000);
   r.watch(RETIRED, "GET", "/api/bookings", H({ origin: "https://www.trypennie.com" }));
   await r.drain();
   eq(r.sent.length, 3, "after the isolate window the dispatcher is asked again (its own cooldown decides)");
+}
+
+{
+  // Two retired keys from ONE host kind inside the cooldown both page (L707): a
+  // cooldown keyed coarser than the label the message names would silence the second.
+  const r = rig(`shared:${nodeHash(RETIRED)},regal-old:${nodeHash(OTHER_RETIRED)}`);
+  r.watch(RETIRED, "GET", "/api/bookings", H({ origin: "https://www.trypennie.com" }));
+  r.watch(OTHER_RETIRED, "POST", "/api/bookings", H({ origin: "https://www.trypennie.com" }));
+  await r.drain();
+  eq(
+    r.sent.map((s) => s.key).sort().join(","),
+    "retired_booking_key:regal-old:production,retired_booking_key:shared:production",
+    "each retired key from the same host kind pages under its own key",
+  );
+  assert(/"regal-old"/.test(r.sent.find((s) => s.key.includes("regal-old"))?.text ?? ""), "and each message names its own key");
 }
 
 {

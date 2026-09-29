@@ -882,7 +882,8 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     channel: "recovery",
     text: refusalAllClear.credential,
   },
-  // #2879: one state per kind of host, since each names the caller differently.
+  // #2879: one state per kind of host, since each names the caller differently, plus a
+  // second retired key from the same host kind, which pages on its own key.
   {
     key: "retired_booking_key:*",
     state: "the retired shared key, from the production site",
@@ -900,6 +901,12 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     state: "a retired key from a preview host",
     channel: "alert",
     text: formatRetiredKeyAlert({ label: "regal-2026-09", host: { kind: "other-host", origin: "https://tp-git-x.vercel.app" }, route: "POST /api/bookings/cancel" }),
+  },
+  {
+    key: "retired_booking_key:*",
+    state: "a second retired key from the production site, paging on its own key",
+    channel: "alert",
+    text: formatRetiredKeyAlert({ label: "regal-2026-09", host: { kind: "production", origin: "https://www.trypennie.com" }, route: "POST /api/bookings" }),
   },
   {
     key: "booking_api_list_read",

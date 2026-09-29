@@ -651,7 +651,7 @@ export const ALERT_CATALOG: AlertEntry[] = [
     key: "retired_booking_key:*",
     kind: "incident",
     suffix: "bounded",
-    why: "A request presented a retired booking key and was already refused (#2879). Nothing Slate observes can say the holder has stopped: a caller given its own key simply stops presenting the old one, and silence is also what a caller that gave up looks like, so there is no healthy state to announce. The suffix is one of the four host kinds, never text from the request.",
+    why: "A request presented a retired booking key and was already refused (#2879). Nothing Slate observes can say the holder has stopped: a caller given its own key simply stops presenting the old one, and silence is also what a caller that gave up looks like, so there is no healthy state to announce. The suffix is the retired key's configured label plus one of the four host kinds, so a second retired key from the same kind of host is never silenced behind the first; neither part is text from the request.",
   },
   {
     key: "misroute:*",

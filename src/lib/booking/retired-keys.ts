@@ -11,22 +11,25 @@
  * So Slate keeps a HASH of each retired key, never the key, in
  * `BOOKING_API_RETIRED_KEY_HASHES` (a Worker secret, so even the hash stays out of
  * the repo). When a refused request presents one, the refusal is exactly what it
- * was, and afterwards the presentation is recorded and paged once per host kind per
- * cooldown, naming the host and the route, so whoever still holds it can be found.
+ * was, and afterwards the presentation is recorded and paged once per retired key
+ * per host kind per cooldown, naming the host and the route, so whoever still holds
+ * it can be found.
  *
  * THE HASH is a plain SHA-256 of the exact token, hex encoded, because the auth path
  * compares the exact token after `Bearer ` with nothing trimmed. `sha256Hex` is the
  * one implementation, used both here and by `pnpm hash:retired-key`, which is how a
  * person computes the value to store.
  *
- * WHY PER HOST KIND and not per origin: an alert key derived from request text must
- * be mapped onto a fixed set first (#2755), or any caller could mint throttle rows
- * without limit. The four host kinds are that set, and the ORIGIN is named in the
- * message instead.
+ * WHY PER LABEL AND HOST KIND and not per origin: an alert key derived from request
+ * text must be mapped onto a fixed set first (#2755), or any caller could mint
+ * throttle rows without limit. The configured labels and the four host kinds are
+ * that set, and the ORIGIN is named in the message instead. The label is in the key
+ * because the message names it: keyed on host kind alone, a second retired key from
+ * the same kind of host would be silenced behind the first (L707).
  *
  * WHY IT COSTS NOTHING ON THE HOT PATH. It runs only on a 401 that carried a token,
  * and all of it (hashing, the cooldown read, the send) is deferred past the response.
- * An isolate throttle holds each host kind to one dispatcher call a minute, so a
+ * An isolate throttle holds each retired key and host kind to one dispatcher call a minute, so a
  * client retrying a retired key in a loop costs one `alert_state` read a minute per
  * isolate rather than one per request; the dispatcher's own cooldown decides whether
  * that call pages. A failed send releases the throttle (L368).
@@ -46,7 +49,7 @@ import { requestHost, type CallerHostKind, type HeaderSource } from "@/lib/booki
 /** The setting holding the hashes, as `label:sha256hex`, comma separated. */
 export const RETIRED_KEY_HASHES_ENV = "BOOKING_API_RETIRED_KEY_HASHES";
 
-/** The alert family, one member per host kind. Also the cooldown's key. */
+/** The alert family, one member per retired key label and host kind. Also the cooldown's key. */
 export const RETIRED_KEY_ALERT_FAMILY = "retired_booking_key";
 
 /** How long one isolate waits before asking the dispatcher again for one host kind. */
@@ -108,9 +111,12 @@ export async function sha256Hex(text: string): Promise<string> {
 
 /**
  * The `label:hash` entry for one retired key, which is what `pnpm hash:retired-key`
- * prints and `parseRetiredKeyHashes` reads. Refuses a blank key, and a key that is
- * already 64 hex characters, since that is almost certainly a hash pasted where the
- * key belongs and hashing it again would store a value no request could ever match.
+ * prints and `parseRetiredKeyHashes` reads. Refuses a blank key and a key still in a
+ * live slot. It deliberately does NOT refuse a 64 hex character value: keys minted
+ * with `openssl rand -hex 32` (DEPLOY.md) have exactly that shape, so refusing it
+ * would make the commonest key impossible to retire. A hash pasted by mistake is
+ * guarded elsewhere: the key is read only from RETIRED_BOOKING_API_KEY, and the
+ * value stored always carries its `label:` prefix, so a bare hash is never a line.
  */
 export async function retiredKeyHashLine(
   label: string,
@@ -120,9 +126,6 @@ export async function retiredKeyHashLine(
 ): Promise<string> {
   if (!LABEL.test(label)) throw new RetiredKeyConfigError(`${RETIRED_KEY_HASHES_ENV} label must be lowercase letters, digits and hyphens`);
   if (!key.trim()) throw new RetiredKeyConfigError(`the retired key is empty, so there is nothing to hash for ${RETIRED_KEY_HASHES_ENV}`);
-  if (HEX64.test(key.trim().toLowerCase())) {
-    throw new RetiredKeyConfigError(`that value is already shaped like a hash; ${RETIRED_KEY_HASHES_ENV} needs the hash of the key itself`);
-  }
   const liveIn = live.filter((k) => timingSafeEqual(k.secret, key)).map((k) => k.id);
   if (liveIn.length) {
     throw new RetiredKeyConfigError(
@@ -168,8 +171,15 @@ export async function matchRetiredKey(token: string, hashes: readonly RetiredKey
   return found;
 }
 
-export function retiredKeyAlertKey(kind: CallerHostKind): string {
-  return `${RETIRED_KEY_ALERT_FAMILY}:${kind}`;
+/**
+ * The alert (and cooldown) key for one retired key from one kind of host. Keyed on
+ * the LABEL as well as the host kind, because the message names the label: a
+ * cooldown keyed coarser than that would silence a second retired key from the same
+ * host kind behind the first (L707). Both parts come from a bounded set: the host
+ * kinds, and the labels an operator configured (never text from the request).
+ */
+export function retiredKeyAlertKey(label: string, kind: CallerHostKind): string {
+  return `${RETIRED_KEY_ALERT_FAMILY}:${label}:${kind}`;
 }
 
 function describeHost(host: { kind: CallerHostKind; origin: string | null }): string {
@@ -261,7 +271,7 @@ export function makeRetiredKeyWatcher(deps: RetiredKeyWatchDeps) {
         const match = await matchRetiredKey(token, hashes);
         if (!match) return;
         deps.report({ kind: "retired-key-presented", label: match.label, hostKind: host.kind, origin: host.origin, route });
-        const key = retiredKeyAlertKey(host.kind);
+        const key = retiredKeyAlertKey(match.label, host.kind);
         const nowMs = deps.now();
         const last = lastAsked.get(key);
         if (last !== undefined && nowMs - last < RETIRED_KEY_ISOLATE_THROTTLE_MS) return;
