@@ -25,6 +25,15 @@ const heartbeat = vi.hoisted(() => ({
 
 vi.mock("@/lib/notify/dispatch", () => dispatch);
 vi.mock("@/lib/monitor/heartbeat", () => heartbeat);
+// #2875: the "cal.com retired" switch, read through its per isolate cache. Only the
+// read is replaced; which lanes belong to cal.com stays the real module's answer.
+const retirement = vi.hoisted(() => ({
+  load: vi.fn(async (): Promise<boolean | null> => false),
+}));
+vi.mock("@/lib/calcom/retirement", async (orig) => ({
+  ...(await orig<typeof import("@/lib/calcom/retirement")>()),
+  loadCalcomRetiredCached: retirement.load,
+}));
 // The first-sighting marker for never-stamped lanes (#1102), kept in alert_state.
 const marker = vi.hoisted(() => ({
   firstSeenAt: null as string | null,
@@ -162,6 +171,7 @@ beforeEach(() => {
   dispatch.existingAlertStateKeys.mockResolvedValue(new Set<string>());
   dispatch.resolveAlert.mockResolvedValue(true);
   heartbeat.readAllHeartbeatMs.mockResolvedValue(healthy());
+  retirement.load.mockResolvedValue(false);
   vi.spyOn(console, "error").mockImplementation(() => {});
   vi.spyOn(console, "info").mockImplementation(() => {});
 });
@@ -1211,6 +1221,77 @@ describe("alertOnStaleLanes (#803)", () => {
       dispatch.existingAlertStateKeys.mockRejectedValue(new Error("supabase unreachable"));
       await expect(alertOnStaleLanes()).resolves.toEqual({ judged: true, stale: [] });
       expect(dispatch.resolveAlert).not.toHaveBeenCalled();
+    });
+  });
+
+  // #2875: once cal.com is marked retired, the two comparison lanes stop stamping
+  // by construction (there is nothing to compare against), and paging "comparison
+  // went quiet" every cooldown would be the watchdog reporting the cutover as a
+  // fault. Live, and a setting that could not be read, keep today's page.
+  describe("the cal.com retired switch (#2875)", () => {
+    const quietCalcomLanes = () => ({
+      ...healthy(),
+      "schedule-parity": ago(40 * 60 * MIN), // bound is 30h
+      "router-replay": ago(12 * 24 * 60 * MIN), // bound is 9 days
+    });
+    const sentKeys = () => dispatch.sendThrottledAlert.mock.calls.map((c) => c[0] as string);
+
+    it("pages both quiet cal.com lanes while cal.com is live, as today", async () => {
+      heartbeat.readAllHeartbeatMs.mockResolvedValue(quietCalcomLanes());
+      const { stale } = await alertOnStaleLanes();
+      expect(stale.map((l) => l.lane)).toEqual(expect.arrayContaining(["schedule-parity", "router-replay"]));
+      expect(sentKeys()).toEqual(
+        expect.arrayContaining(["cron_lane_stale:schedule-parity", "cron_lane_stale:router-replay"]),
+      );
+    });
+
+    it("pages nothing about either lane once cal.com is retired", async () => {
+      retirement.load.mockResolvedValue(true);
+      heartbeat.readAllHeartbeatMs.mockResolvedValue(quietCalcomLanes());
+      const { stale, judged } = await alertOnStaleLanes();
+      expect(judged).toBe(true);
+      expect(stale.map((l) => l.lane)).not.toContain("schedule-parity");
+      expect(stale.map((l) => l.lane)).not.toContain("router-replay");
+      expect(dispatch.sendThrottledAlert).not.toHaveBeenCalled();
+    });
+
+    it("still pages the booking canary once cal.com is retired", async () => {
+      retirement.load.mockResolvedValue(true);
+      heartbeat.readAllHeartbeatMs.mockResolvedValue({ ...quietCalcomLanes(), "smoke-canary": ago(120 * MIN) });
+      await alertOnStaleLanes();
+      expect(sentKeys()).toEqual(["cron_lane_stale:smoke-canary"]);
+    });
+
+    it("keeps paging when the setting could not be read, so a failed read never silences a live lane", async () => {
+      retirement.load.mockResolvedValue(null);
+      heartbeat.readAllHeartbeatMs.mockResolvedValue(quietCalcomLanes());
+      await alertOnStaleLanes();
+      expect(sentKeys()).toEqual(
+        expect.arrayContaining(["cron_lane_stale:schedule-parity", "cron_lane_stale:router-replay"]),
+      );
+    });
+
+    it("keeps paging when the retirement read throws", async () => {
+      retirement.load.mockRejectedValue(new Error("supabase unreachable"));
+      heartbeat.readAllHeartbeatMs.mockResolvedValue(quietCalcomLanes());
+      const { judged } = await alertOnStaleLanes();
+      expect(judged).toBe(true);
+      expect(sentKeys()).toContain("cron_lane_stale:schedule-parity");
+    });
+
+    it("ends a page already open on a cal.com lane, saying cal.com was retired rather than that it recovered", async () => {
+      retirement.load.mockResolvedValue(true);
+      heartbeat.readAllHeartbeatMs.mockResolvedValue(quietCalcomLanes());
+      dispatch.existingAlertStateKeys.mockResolvedValue(
+        new Set(["alert_firing:cron_lane_stale:schedule-parity"]),
+      );
+      await alertOnStaleLanes();
+      const resolved = dispatch.resolveAlert.mock.calls.filter((c) => c[0] === "cron_lane_stale:schedule-parity");
+      expect(resolved).toHaveLength(1);
+      expect(resolved[0][1]).toMatch(/retired/i);
+      expect(resolved[0][1]).not.toMatch(/running again/i);
+      // A lane whose page never fired sends nothing.
+      expect(dispatch.resolveAlert.mock.calls.map((c) => c[0])).not.toContain("cron_lane_stale:router-replay");
     });
   });
 });

@@ -298,6 +298,10 @@ export interface MonitorAlertConfig {
    *  Null = unset, with NO fallback to the alerts or info channel; unset while a
    *  handoff is open pages the alerts channel (migration 0123). */
   handoff_channel: string | null;
+  /** #2875 (migration 0147): cal.com no longer takes bookings, so every cal.com
+   *  lane is retired. NOT NULL DEFAULT false; read through
+   *  `src/lib/calcom/retirement.ts`, written only by `setCalcomRetired`. */
+  calcom_retired: boolean;
   updated_at: string;
   updated_by: string | null;
 }

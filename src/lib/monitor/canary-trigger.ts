@@ -1,3 +1,5 @@
+import { isCalcomLane } from "@/lib/calcom/retirement";
+
 /**
  * Reliable trigger for the booking smoke canary (#525 follow-up).
  *
@@ -116,7 +118,9 @@ export interface CanaryTriggerResult {
     | "cooldown"
     | "dispatched"
     | "dispatch-failed"
-    | "dispatch-error";
+    | "dispatch-error"
+    /** #2875: this pass re fires a cal.com lane and cal.com is marked retired. */
+    | "calcom-retired";
 }
 
 /** The repo the gap-filler triggers workflows in. */
@@ -237,6 +241,12 @@ export interface CanaryGapFillWiring {
   dispatch: (pass: GapFillPass) => Promise<{ ok: boolean; status: number }>;
   onInfo?: (msg: string) => void;
   onError?: (msg: string, err?: unknown) => void;
+  /**
+   * #2875: whether cal.com is marked retired (`loadCalcomRetiredCached`). Asked
+   * once per tick, and only matters to a pass whose lane is a cal.com lane
+   * (`isCalcomLane`). Omitted, it reads as live, which is today's behaviour.
+   */
+  calcomRetired?: () => Promise<boolean | null>;
 }
 
 /**
@@ -257,10 +267,29 @@ export async function runCanaryGapFills(
 ): Promise<Record<GapFillPass, CanaryTriggerResult | null>> {
   const results = {} as Record<GapFillPass, CanaryTriggerResult | null>;
 
+  // #2875: once cal.com is retired, re firing a cal.com workflow spends a run
+  // proving cal.com is gone. A read that failed, or threw, keeps today's re fire:
+  // the cost of a wrong answer that way is one workflow run, and the cost of the
+  // other is a live comparison going quiet with nothing re firing it.
+  let calcomRetired: boolean | null = false;
+  if (w.calcomRetired) {
+    try {
+      calcomRetired = await w.calcomRetired();
+    } catch (err) {
+      (w.onError ?? (() => {}))("canary gap-fill: the cal.com retired read threw; re firing as usual", err);
+      calcomRetired = null;
+    }
+  }
+
   // Sequential, never `Promise.all`: these run on the invocation budget four cron
   // lanes share, and the tests assert the order the lanes are read in.
   for (const pass of Object.keys(GAP_FILL_PASSES) as GapFillPass[]) {
     const cfg = GAP_FILL_PASSES[pass];
+    if (calcomRetired === true && isCalcomLane(cfg.lane)) {
+      (w.onInfo ?? (() => {}))(`canary gap-fill: ${cfg.lane} is a cal.com lane and cal.com is retired, so it is not re fired`);
+      results[pass] = { dispatched: false, reason: "calcom-retired" };
+      continue;
+    }
     try {
       results[pass] = await triggerCanaryGapFill({
         now: w.now,

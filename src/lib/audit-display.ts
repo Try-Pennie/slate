@@ -48,6 +48,7 @@ const ACTION_LABEL: Record<string, string> = {
   "webhook.test_sent": "sent a test webhook to a URL they entered",
   "monitor.settings": "changed alert settings",
   "monitor.volume_ramp_end": "changed when the booking ramp ended",
+  "monitor.calcom_retired": "changed whether cal.com is retired",
   "reason.options": "changed reason options",
   "booking.settings": "changed booking settings",
   "pii.erasure": "erased contact data",

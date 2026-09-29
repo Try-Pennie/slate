@@ -241,7 +241,22 @@ export function formatUnprotectedAlert(rows: OverrideCandidate[], nowMs: number)
   return (
     `${started.length} ${noun} on approved time off right now with no cal.com block in place ` +
     `(${who}${more}), so cal.com can still book them while they are away. ` +
-    `Retries are running every 5 minutes; the recorded reason is on each time off request.`
+    `Retries are running every 5 minutes; the recorded reason is on each time off request. ` +
+    `If cal.com no longer takes bookings, mark it retired on the alerts page and this stops.`
+  );
+}
+
+/**
+ * The ending for both pages once cal.com is marked retired (#2875). Not a recovery:
+ * no block was put in place, and there is nothing left for one to protect, because
+ * nobody books through cal.com any more. Slate's own busy block is what keeps an
+ * absent agent from being offered, and it never depended on cal.com.
+ */
+export function formatCalcomRetiredSweepEnding(): string {
+  return (
+    "cal.com has been marked retired on the alerts page, so nobody can be booked " +
+    "through it and an absence needs no cal.com block. The earlier page is cleared. " +
+    "If cal.com is still taking bookings, turn that setting off again."
   );
 }
 
@@ -291,6 +306,13 @@ export async function runCalcomOverrideSweep(deps: {
   resolve: AlertResolve;
   max?: number;
   log?: (msg: string) => void;
+  /**
+   * #2875: whether cal.com is marked retired. Retired, nothing is retried and both
+   * pages end with `formatCalcomRetiredSweepEnding`. A read that failed or threw
+   * keeps today's sweep, because during the parallel run a missing block lets
+   * cal.com book somebody who is away. Omitted, it reads as live.
+   */
+  calcomRetired?: () => Promise<boolean | null>;
 }): Promise<SweepResult> {
   const empty: SweepResult = {
     retried: 0,
@@ -299,6 +321,23 @@ export async function runCalcomOverrideSweep(deps: {
     deferred: 0,
     measured: false,
   };
+  let retired: boolean | null = false;
+  if (deps.calcomRetired) {
+    try {
+      retired = await deps.calcomRetired();
+    } catch {
+      retired = null;
+    }
+  }
+  if (retired === true) {
+    // Hung off a MEASURED answer: the setting was read and says retired, which is
+    // the only evidence that ends these two pages without a block in place.
+    deps.log?.("cal.com is retired, so no override is retried");
+    await deps.resolve(CALCOM_UNPROTECTED_KEY, formatCalcomRetiredSweepEnding());
+    await deps.resolve(CALCOM_ALERT_KEY, formatCalcomRetiredSweepEnding());
+    return { ...empty, measured: true };
+  }
+
   const loaded = await deps.loadCandidates();
   if (loaded === null) return empty;
   // Applied here rather than trusted to the loader, so a caller cannot forget the

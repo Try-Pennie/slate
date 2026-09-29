@@ -96,6 +96,12 @@ export interface ReadinessFacts {
   partnerKey: { caller: string; rows: CallerSeenRow[] } | null;
   /** The low volume alarms' arming preconditions (#2767). */
   lowVolumeArming: LowVolumeArmingFacts;
+  /**
+   * #2875: `monitor_alert_config.calcom_retired`, read through
+   * `loadCalcomRetired`. true ends the judgement before anything else, because the
+   * parallel run it judges is over; null is an unreadable section.
+   */
+  calcomRetired: boolean | null;
 }
 
 /**
@@ -217,6 +223,12 @@ export const READINESS_EXIT = {
   holidaysUncovered: 15,
   /** Low volume alarms armed and no real booking in the lookback to judge sources by (#2767). */
   pageSourceUnmeasured: 16,
+  /**
+   * #2875: cal.com is marked retired, so there is no parallel run to judge. Its
+   * own code rather than 0, because READY claims a trustworthy shadow run and
+   * nothing was measured; 17 and 18 stay retired with the shared key (#2865).
+   */
+  calcomRetired: 19,
 } as const;
 
 const EXIT_FOR: Record<ReadinessFinding, number> = {
@@ -260,8 +272,22 @@ function hours(ms: number): string {
 }
 
 export function judgeReadiness(f: ReadinessFacts): ReadinessJudgement {
+  // #2875: every precondition below is about Slate shadowing cal.com. Once cal.com
+  // is retired the comparison stops by design and parity-stale would hold this red
+  // for ever, which reads as a broken shadow run rather than a finished one.
+  if (f.calcomRetired === true) {
+    return {
+      exit: READINESS_EXIT.calcomRetired,
+      findings: [],
+      advisories: [],
+      summary:
+        "RETIRED: cal.com is marked retired on the alerts page, so the parallel run this command judges is over and nothing was judged. " +
+        "If cal.com is still taking bookings, turn that setting off and run this again.",
+    };
+  }
   const findings: { kind: ReadinessFinding; detail: string }[] = [];
   const unreadable: string[] = [];
+  if (f.calcomRetired === null) unreadable.push("the cal.com retired setting");
 
   if (f.stretchedCooldowns === null) unreadable.push("alert cooldowns");
   else if (f.stretchedCooldowns.length) {

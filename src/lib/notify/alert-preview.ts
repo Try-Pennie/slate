@@ -289,6 +289,7 @@ import {
   coreLaneAlertText,
   canaryAlertText,
   canaryRecoveryText,
+  calcomLaneRetiredText,
   laneRecoveryText,
   mirrorAlertText,
   mirrorRecoveryText,
@@ -330,6 +331,7 @@ import {
   formatUnprotectedAlert,
   formatOverrideRecovery,
   formatUnprotectedRecovery,
+  formatCalcomRetiredSweepEnding,
 } from "@/lib/monitor/calcom-override-sweep";
 import {
   formatSaturationAlert,
@@ -1401,6 +1403,13 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     text: formatUnprotectedRecovery(),
   },
   {
+    // #2875: ended by retiring cal.com, with no block put in place.
+    key: "ooo_calcom_unprotected",
+    state: "cal.com was retired",
+    channel: "recovery",
+    text: formatCalcomRetiredSweepEnding(),
+  },
+  {
     key: "coverage_needs_human",
     state: "one appointment nobody was free for",
     channel: "alert",
@@ -1914,6 +1923,17 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     state: "one whose stamp cannot be read",
     channel: "alert",
     text: formatUnsetHoursAlert([{ id: "u3", email: "dpatel@trypennie.com", name: "D Patel", unsetSinceMs: null }], NOW_MS),
+  },
+  {
+    // #2875: once cal.com is retired the page stops offering the cal.com import.
+    key: "agents_on_unset_hours",
+    state: "one agent past the grace, after cal.com was retired",
+    channel: "alert",
+    text: formatUnsetHoursAlert(
+      [{ id: "u1", email: "cfrank@trypennie.com", name: "C Frank", unsetSinceMs: NOW_MS - 6 * 24 * 60 * 60_000 }],
+      NOW_MS,
+      { calcomRetired: true },
+    ),
   },
   {
     key: "agents_on_unset_hours",
@@ -2639,6 +2659,20 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     state: "the daily cal.com comparison recovered",
     channel: "recovery",
     text: canaryRecoveryText("schedule-parity"),
+  },
+  {
+    // #2875: not a recovery. The lane will never stamp again, so the page ends by
+    // saying cal.com was retired, never that the comparison is running again.
+    key: "cron_lane_stale:*",
+    state: "the daily cal.com comparison ended because cal.com was retired",
+    channel: "recovery",
+    text: calcomLaneRetiredText("schedule-parity"),
+  },
+  {
+    key: "cron_lane_stale:*",
+    state: "the weekly routing replay ended because cal.com was retired",
+    channel: "recovery",
+    text: calcomLaneRetiredText("router-replay"),
   },
   {
     key: "cron_lane_stale:*",
@@ -3599,6 +3633,9 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
   // none, so quoting one would suggest the others were left.
   { key: "ooo_calcom", state: "the retry sweep landed every override", channel: "recovery",
     text: formatOverrideRecovery() },
+  // #2875: the same ending the unprotected page gets once cal.com is retired.
+  { key: "ooo_calcom", state: "cal.com was retired", channel: "recovery",
+    text: formatCalcomRetiredSweepEnding() },
   { key: "ooo_agent_dm", state: "the decision DM did not land", channel: "alert",
     text: oooAgentDmAlert("dana.whitfield@trypennie.com", "req_9f2") },
   { key: "ooo_undo", state: "undoing the manager event failed", channel: "alert",

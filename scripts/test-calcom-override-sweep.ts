@@ -183,14 +183,33 @@ interface FakeOpts {
   candidates?: OverrideCandidate[] | null;
   outcomes?: Record<string, string>;
   max?: number;
+  /** #2875: the "cal.com retired" read. Omitted, the sweep runs as it always has. */
+  retired?: boolean | null | "throw";
 }
 
 function runFake(opts: FakeOpts) {
-  const state = { retried: [] as string[], alerts: [] as string[], resolved: [] as string[] };
+  const state = {
+    retried: [] as string[],
+    alerts: [] as string[],
+    resolved: [] as string[],
+    resolvedText: [] as string[],
+    loaded: 0,
+  };
   const promise = runCalcomOverrideSweep({
     nowMs: NOW,
     max: opts.max,
-    loadCandidates: async () => opts.candidates ?? null,
+    ...(opts.retired === undefined
+      ? {}
+      : {
+          calcomRetired: async () => {
+            if (opts.retired === "throw") throw new Error("monitor_alert_config read failed");
+            return opts.retired as boolean | null;
+          },
+        }),
+    loadCandidates: async () => {
+      state.loaded++;
+      return opts.candidates ?? null;
+    },
     retry: async (id) => {
       state.retried.push(id);
       return opts.outcomes?.[id] ?? "failed: schedule patch returned 500";
@@ -198,8 +217,9 @@ function runFake(opts: FakeOpts) {
     alert: async (key, text) => {
       state.alerts.push(`${key}|${text}`);
     },
-    resolve: async (key) => {
+    resolve: async (key, text) => {
       state.resolved.push(key);
+      state.resolvedText.push(text);
       return true;
     },
   });
@@ -442,6 +462,40 @@ function runFake(opts: FakeOpts) {
   const ok = agentEmailForRetry({ data: { email: "agent@trypennie.com" }, error: null });
   assert("email" in ok, "a readable row with an address yields the address");
   eq("email" in ok ? ok.email : "", "agent@trypennie.com", "and yields the one it read");
+}
+
+// --- #2875: the "cal.com retired" switch ---------------------------------------------
+// Once cal.com takes no bookings, an absence with no cal.com block is protected by
+// Slate alone, and "cal.com can still book them while they are away" is false.
+{
+  const underWay = candidate({ id: "req-9", startsAt: new Date(NOW - hours(2)).toISOString() });
+  const { state, promise } = runFake({ candidates: [underWay], retired: true });
+  const res = await promise;
+  eq(state.retried.length, 0, "retired: no cal.com write is retried");
+  eq(state.loaded, 0, "retired: the candidates are not even read");
+  eq(state.alerts.length, 0, "retired: nothing pages, not even an absence under way with no block");
+  eq(
+    [...state.resolved].sort(),
+    [CALCOM_ALERT_KEY, CALCOM_UNPROTECTED_KEY].sort(),
+    "retired: both pages are settled, so one already open ends",
+  );
+  assert(
+    state.resolvedText.every((t) => /retired/i.test(t) && !/in place/i.test(t)),
+    "retired: the ending says cal.com was retired, never that the blocks are in place",
+  );
+  eq(res.measured, true, "retired: a measured answer (the setting was read), not an unreadable tick");
+}
+for (const retired of [null, "throw", false] as const) {
+  // Unknown keeps today's behaviour: during the parallel run a missing block lets
+  // cal.com book somebody who is away, and one failed write costs nothing.
+  const underWay = candidate({ id: "req-9", startsAt: new Date(NOW - hours(2)).toISOString() });
+  const { state, promise } = runFake({ candidates: [underWay], retired });
+  await promise;
+  eq(state.retried, ["req-9"], `retired read ${String(retired)}: the failed override is retried, as today`);
+  assert(
+    state.alerts.some((a) => a.startsWith(CALCOM_UNPROTECTED_KEY)),
+    `retired read ${String(retired)}: an absence under way with no block still pages`,
+  );
 }
 
 finish();

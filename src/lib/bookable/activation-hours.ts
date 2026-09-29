@@ -35,12 +35,17 @@
 // budget has not run out while reading.
 //
 // Retires with the importer at cutover (#65), when agents set their own hours in
-// Slate (#2350).
+// Slate (#2350), and since #2875 it does so on the stored "cal.com retired" switch
+// rather than on a code change: retired, cal.com is not asked and the hire keeps
+// the seeded week for them to set. A setting that cannot be read falls CLOSED here,
+// the same way as the daily importer, because this is a write over a Slate week and
+// a missed import is repaired by the next morning's run while an overwrite is not.
 import type { OrgDefaults } from "@/lib/schedule-core";
 import { isUnsetHours, type UnsetHoursSchedule } from "@/lib/monitor/unset-hours";
 import { diffSchedule, planImportedWeek, type SlateRule } from "@/lib/calcom/schedule-import";
 import { readScheduleForImport, type ScheduleForImportRead } from "@/lib/calcom/client";
 import { writeImportedWeek } from "@/lib/calcom/import-write";
+import { loadCalcomRetired } from "@/lib/calcom/retirement";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { unwrap } from "@/lib/db/result";
 import { log, type LogFields, type LogTag } from "@/lib/log";
@@ -55,6 +60,10 @@ export type StoredWeek = UnsetHoursSchedule;
 export type ActivationHoursReason =
   /** Somebody set this week (agent, admin, a previous import), so it is left alone. */
   | "hours-already-set"
+  /** #2875: cal.com is marked retired, so a hire's week is never asked of it. */
+  | "calcom-retired"
+  /** #2875: whether cal.com is retired could not be read, so nothing is imported. */
+  | "calcom-retired-unreadable"
   /** No schedule row, or one holding no rules: the default fill's finding, not ours. */
   | "no-schedule-row"
   /** No cal.com key or org in this deployment. */
@@ -80,6 +89,8 @@ export type ActivationHoursOutcome =
   | { kind: "skipped"; reason: ActivationHoursReason; detail: string };
 
 export interface ActivationHoursDeps {
+  /** #2875: the "cal.com retired" switch, read fresh. May throw; a throw is unreadable. */
+  loadCalcomRetired: () => Promise<boolean | null>;
   /** The agent's schedule row and rules; null when they have no row. Throws on a failed read. */
   loadWeek: (userId: string) => Promise<StoredWeek | null>;
   /** The org default, read ONLY to judge an unstamped row. Throws on a failed read. */
@@ -106,6 +117,7 @@ const TAG = "bookable-api";
 /** Reasons that are a normal state rather than a week left wrong. */
 const QUIET: ReadonlySet<ActivationHoursReason> = new Set([
   "hours-already-set",
+  "calcom-retired",
   "calcom-not-configured",
   "loadtest",
 ]);
@@ -153,6 +165,19 @@ export async function importHoursOnActivation(
   const budget = deps.remainingMs();
   if (budget < MIN_IMPORT_BUDGET_MS) {
     return skip("out-of-budget", `${Math.max(0, Math.round(budget))}ms of the activation budget left`);
+  }
+
+  // #2875: asked before anything else, so a retired cal.com costs the activation
+  // no Slate read and no cal.com call.
+  let retired: boolean | null;
+  try {
+    retired = await deps.loadCalcomRetired();
+  } catch {
+    retired = null;
+  }
+  if (retired === true) return skip("calcom-retired", "cal.com is marked retired, so the seeded week stays for the agent to set");
+  if (retired === null) {
+    return skip("calcom-retired-unreadable", "could not read whether cal.com is retired, so nothing was imported");
   }
 
   let stored: StoredWeek | null;
@@ -224,6 +249,7 @@ export async function importHoursOnActivation(
  */
 export function defaultActivationHoursDeps(remainingMs: () => number): ActivationHoursDeps {
   return {
+    loadCalcomRetired: () => loadCalcomRetired(),
     loadWeek: async (userId) => {
       const db = supabaseAdmin();
       const sched = unwrap(

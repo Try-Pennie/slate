@@ -62,10 +62,16 @@ function rig(opts: {
   org?: OrgDefaults | null | "throw";
   writeThrows?: boolean;
   remainingMs?: number[];
+  /** #2875: the "cal.com retired" read. Default live, the parallel run. */
+  retired?: boolean | null | "throw";
 } = {}): Rig {
   const r: Rig = { deps: undefined as never, writes: [], calcomCalls: [], orgReads: 0, logs: [] };
   const remaining = [...(opts.remainingMs ?? [30_000])];
   r.deps = {
+    loadCalcomRetired: async () => {
+      if (opts.retired === "throw") throw new Error("monitor_alert_config read failed");
+      return opts.retired === undefined ? false : opts.retired;
+    },
     loadWeek: async () => {
       if (opts.stored === "throw") throw new Error("availability_schedules read failed");
       return opts.stored === undefined ? week() : opts.stored;
@@ -250,6 +256,33 @@ eq(seenReasons.size, failures.length, "no two cal.com failures share a reason");
   const r = rig({ remainingMs: [3_000] });
   await importHoursOnActivation(AGENT, r.deps);
   assert(r.calcomCalls[0].timeoutMs * 2 <= 3_000, "two calls at the given timeout fit inside the remaining budget");
+}
+
+// --- #2875: once cal.com is retired, a new hire's week is never asked of it ---------
+// After cutover cal.com holds nothing anybody maintains, so importing from it would
+// put a stale or empty week over the seed; the hire sets their own hours in Slate.
+{
+  const r = rig({ retired: true });
+  const out = await importHoursOnActivation(AGENT, r.deps);
+  eq(out.kind === "skipped" && out.reason, "calcom-retired", "retired: skipped with its own reason");
+  eq(r.calcomCalls.length, 0, "retired: cal.com is not asked");
+  eq(r.writes.length, 0, "retired: nothing is written");
+  eq(r.logs[0]?.level, "info", "retired: a normal state, logged quietly rather than as a week left wrong");
+}
+for (const retired of [null, "throw"] as const) {
+  // Unreadable falls CLOSED, like the daily importer: this write replaces a Slate
+  // week, and a missed import is repaired by the next run while an overwrite is not.
+  const r = rig({ retired });
+  const out = await importHoursOnActivation(AGENT, r.deps);
+  eq(out.kind === "skipped" && out.reason, "calcom-retired-unreadable", `retired read ${String(retired)}: skipped, in its own words`);
+  eq(r.calcomCalls.length, 0, `retired read ${String(retired)}: cal.com is not asked`);
+  eq(r.writes.length, 0, `retired read ${String(retired)}: nothing is written`);
+  eq(r.logs[0]?.level, "warn", `retired read ${String(retired)}: warned, because the week stays on the seed`);
+}
+{
+  const r = rig({ retired: false });
+  const out = await importHoursOnActivation(AGENT, r.deps);
+  eq(out.kind, "imported", "live: the seeded week is imported, as today");
 }
 
 finish();

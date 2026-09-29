@@ -1224,6 +1224,7 @@ and is pinned offline by `scripts/test-parallel-run-readiness.ts`.
 | 9 | the cal.com comparison has not reached a verdict inside its 30 hour bound |
 | 10 | somebody is waiting to become bookable behind a refused activation |
 | 11 | a bookable agent is on working hours nobody set |
+| 19 | **cal.com is marked retired** on /admin/alerts (#2875), so the parallel run is over and nothing was judged |
 
 The rows are in the order the run is judged, worst first, which is not the order of
 the numbers: a code names an outcome and the order decides which one names a run.
@@ -1306,7 +1307,11 @@ sitting on the seeded default week is NOT reported. The seeded week is also a re
 week some agents genuinely keep, so the proxy would be a standing false finding;
 telling the two apart needs the stamp #1753 asks for, and belongs there.
 
-**It retires at cutover (#65)** with the rest of the family.
+**It retires at cutover (#65)** with the rest of the family, and since #2875 it
+says so itself: once cal.com is marked retired on /admin/alerts it exits 19 with a
+`RETIRED:` line, and that verdict outranks every other section it read, rather than holding red for ever on a
+comparison that has stopped by design. A retired setting it cannot read is an
+unreadable section (exit 2), never a pass.
 
 # Do the codes sharing one pool offer the same times? (`pnpm verify:pool-slot-parity`)
 

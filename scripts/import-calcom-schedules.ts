@@ -60,6 +60,7 @@ const { unwrap } = await import("@/lib/db/result");
 const { planImportedWeek, pickDefaultSchedule, diffSchedule, skipKindForStatus, paceMs, hoursOverwriteRefusal } =
   await import("@/lib/calcom/schedule-import");
 const { writeImportedWeek } = await import("@/lib/calcom/import-write");
+const { loadCalcomRetired, calcomHoursWriteRefusal } = await import("@/lib/calcom/retirement");
 // The reads this shares with `pnpm verify:calcom-parity`. One definition of "who
 // is a bookable agent", because two would drift and the command would then report
 // agreement about a roster this never wrote to.
@@ -78,6 +79,10 @@ const EXIT = {
   needsAPerson: 3,
   writeFailed: 4,
   rateLimited: 5,
+  /** #2875: cal.com is marked retired, so an APPLY run writes nothing. */
+  calcomRetired: 6,
+  /** #2875: whether cal.com is retired could not be read, so an APPLY run writes nothing. */
+  retiredUnreadable: 7,
 } as const;
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
@@ -136,6 +141,16 @@ if (!calcomKey) {
 
 const calGet = makeCalGet({ key: calcomKey, sleep });
 const db = supabaseAdmin();
+
+// #2875: asked BEFORE any cal.com read, so a retired cal.com costs this run nothing
+// and says so on its own exit code. `writeImportedWeek` refuses on the same rule for
+// every write it is handed; this is what turns a hundred refused writes into one
+// sentence. A dry run still reads and prints, because it writes nothing.
+if (apply) {
+  const retired = await loadCalcomRetired();
+  const refusal = calcomHoursWriteRefusal(retired);
+  if (refusal) stop(retired === true ? EXIT.calcomRetired : EXIT.retiredUnreadable, refusal);
+}
 
 console.log(apply ? "APPLYING changes to production\n" : "DRY RUN: nothing will be written\n");
 

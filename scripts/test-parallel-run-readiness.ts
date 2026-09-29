@@ -45,6 +45,7 @@ function healthy(over: Partial<ReadinessFacts> = {}): ReadinessFacts {
     unsetHours: [],
     partnerKey: { caller: "trypennie", rows: [seen("production", DAY, "https://trypennie.com")] },
     lowVolumeArming: disarmed(),
+    calcomRetired: false,
     ...over,
   };
 }
@@ -414,6 +415,26 @@ eq(
     }
   }
   eq(compared, 21, "every shape of the measurement was compared");
+}
+
+// --- #2875: once cal.com is retired there is no parallel run to be ready for ----------
+// Every precondition here is about Slate shadowing cal.com, so after cutover the
+// command could never exit READY again: the comparison stops, and parity-stale
+// holds it red for ever. It says plainly that the run it judges has ended instead.
+{
+  const j = judgeReadiness(healthy({ calcomRetired: true, parity: { lastRunMs: null, boundMs: 30 * 60 * 60_000, drifting: null } }));
+  eq(j.exit, READINESS_EXIT.calcomRetired, "retired: exits on its own code");
+  assert(j.exit !== READINESS_EXIT.ready, "retired is never READY, so a script cannot read it as a green shadow run");
+  assert(/^RETIRED/.test(j.summary), "retired: the summary says so first");
+  assert(/cal\.com/.test(j.summary) && /alerts page/.test(j.summary), "retired: it names what was retired and where");
+  eq(j.findings.length, 0, "retired: nothing is reported as a finding, because nothing was judged");
+  assert(!/parity-stale/.test(j.summary), "retired: a comparison that stopped is not reported as stale");
+
+  const unknown = judgeReadiness(healthy({ calcomRetired: null }));
+  eq(unknown.exit, READINESS_EXIT.unreadable, "an unreadable retired setting is an unreadable section");
+  assert(/cal\.com retired setting/.test(unknown.summary), "and names which one");
+
+  eq(judgeReadiness(healthy({ calcomRetired: false })).exit, READINESS_EXIT.ready, "live: READY as today");
 }
 
 finish();

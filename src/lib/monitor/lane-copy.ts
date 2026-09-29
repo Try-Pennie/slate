@@ -92,6 +92,24 @@ export function canaryRecoveryText(lane: string): string {
   );
 }
 
+/**
+ * The ending for a cal.com lane page that was open when cal.com was marked retired
+ * (#2875). Not a recovery: the lane will never stamp again, and saying it is
+ * "running again" would be false. It names what changed and where it was changed,
+ * so a reader who did not flip the switch can find who did.
+ */
+export function calcomLaneRetiredText(lane: string): string {
+  const what =
+    lane === "router-replay"
+      ? "The weekly routing replay against cal.com"
+      : "The daily Slate against cal.com comparison";
+  return (
+    `${what} is no longer watched, because cal.com has been marked retired on the ` +
+    `alerts page. The earlier page is cleared. If cal.com is still taking bookings, ` +
+    `turn that setting off again.`
+  );
+}
+
 /** All-clear for the Snowflake mirror lanes, keyed like its alert (#1101, #1123). */
 export function mirrorRecoveryText(lane: string): string {
   if (lane === "snowflake-reconcile") {
@@ -419,7 +437,7 @@ export function canaryAlertText(lane: StaleLane, boundMin: number): string {
     return `The booking smoke canary's full end to end pass (create, reschedule, cancel) ${quiet}, so the automated proof that a booking can actually be made is no longer running (the quick health tick may still be fine). Both the 6h scheduled run and the Worker gap filler have failed to complete it. Re run it from the Actions tab (Run workflow on smoke-canary, mode full).`;
   }
   if (lane.lane === "router-replay") {
-    return `The weekly replay that puts real cal.com routed leads through the Slate tier ladder ${quiet}, so nothing is measuring whether Slate would route them the way the incumbent does. It is the ONLY reading of Slate routing that exists before cutover, because cal.com is still taking every real lead and Slate has no traffic of its own to be judged by. It also goes quiet when it runs and cannot judge enough leads to mean anything, which is the same silence, so check what the last run said. Re run it from the Actions tab (Run workflow on router-replay).`;
+    return `The weekly replay that puts real cal.com routed leads through the Slate tier ladder ${quiet}, so nothing is measuring whether Slate would route them the way the incumbent does. It is the ONLY reading of Slate routing that exists before cutover, because cal.com is still taking every real lead and Slate has no traffic of its own to be judged by. It also goes quiet when it runs and cannot judge enough leads to mean anything, which is the same silence, so check what the last run said. Re run it from the Actions tab (Run workflow on router-replay). If cal.com no longer takes bookings, mark it retired at the foot of the alerts page and this stops.`;
   }
   if (lane.lane === "schedule-parity") {
     // No "re run it from the Actions tab" here, unlike its two siblings above: the
@@ -427,7 +445,7 @@ export function canaryAlertText(lane: StaleLane, boundMin: number): string {
     // reached the hand re run has already been tried and failed. Naming it would be
     // a remedy that no longer matches what the system does (L111), which is worse
     // than none. What is left for a person is to read why the attempts died.
-    return `The daily check comparing Slate's roster and working hours against cal.com ${quiet}, so nothing is watching for the two systems drifting apart while both are live. Drift ran at about four agents a day the last time this went unwatched, and it is invisible from inside Slate: a schedule saying 08:00 reads the same whether or not the agent starts then. The monitor lane already re fires this once the daily run is late enough to count as dropped, so GitHub's schedule and that re attempt have both failed to finish one. Read what the last schedule-parity run in the Actions tab actually said: a run that starts and then cannot reach cal.com, Twilio or Slate never stamps.`;
+    return `The daily check comparing Slate's roster and working hours against cal.com ${quiet}, so nothing is watching for the two systems drifting apart while both are live. Drift ran at about four agents a day the last time this went unwatched, and it is invisible from inside Slate: a schedule saying 08:00 reads the same whether or not the agent starts then. The monitor lane already re fires this once the daily run is late enough to count as dropped, so GitHub's schedule and that re attempt have both failed to finish one. Read what the last schedule-parity run in the Actions tab actually said: a run that starts and then cannot reach cal.com, Twilio or Slate never stamps. If cal.com no longer takes bookings, mark it retired at the foot of the alerts page and this stops.`;
   }
   return `The booking smoke canary ${quiet}, so the automated end to end booking check is no longer running. The scheduled GitHub Actions workflow (smoke-canary) has likely stopped firing or is failing before it can report. Check the Actions tab and re run it.`;
 }

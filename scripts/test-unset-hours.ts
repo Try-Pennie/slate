@@ -215,4 +215,37 @@ function input(over: Partial<UnsetHoursInput> = {}): UnsetHoursInput {
   assert(!/[\u2014\u2013]/.test(recovery), "no dashes there either");
 }
 
+// --- #2875: once cal.com is retired, the page must not name a fix that cannot work ---
+{
+  const who = [{ id: "u1", email: "cfrank@x", name: "C Frank", unsetSinceMs: NOW - 3 * DAY }];
+  const retired = formatUnsetHoursAlert(who, NOW, { calcomRetired: true });
+  assert(!/calcom|cal\.com/i.test(retired), "retired: no cal.com import is offered, since there is nothing to import from");
+  assert(/admin > agent hours/.test(retired), "retired: it still says where the fix lives");
+  assert(/set their own hours/i.test(retired), "retired: and that the agent can set them");
+  assert(/cfrank@x/.test(retired), "retired: still names who");
+  assert(!/[\u2014\u2013]/.test(retired), "retired: no dashes as punctuation");
+  const live = formatUnsetHoursAlert(who, NOW, { calcomRetired: false });
+  assert(/import:calcom-schedules/.test(live), "live: the cal.com import is offered, as today");
+  const unknown = formatUnsetHoursAlert(who, NOW, { calcomRetired: null });
+  eq(unknown, live, "unreadable setting: today's wording, since the import may well still work");
+
+  const pages: string[] = [];
+  const deps = (retiredAnswer: boolean | null | "throw") => ({
+    load: async () => input(),
+    notify: async (_key: string, _ms: number, text: string) => { pages.push(text); },
+    resolve: async () => true,
+    cooldownMs: 1,
+    nowMs: NOW,
+    calcomRetired: async () => {
+      if (retiredAnswer === "throw") throw new Error("monitor_alert_config read failed");
+      return retiredAnswer;
+    },
+  });
+  await runUnsetHoursCheck(deps(true));
+  assert(pages.length === 1 && !/calcom/i.test(pages[0]), "the lane step pages the retired wording when cal.com is retired");
+  pages.length = 0;
+  await runUnsetHoursCheck(deps("throw"));
+  assert(pages.length === 1 && /import:calcom-schedules/.test(pages[0]), "a throwing read pages today's wording, and still pages");
+}
+
 finish();
