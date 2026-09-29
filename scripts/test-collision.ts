@@ -24,6 +24,15 @@ const block = (gcalEventId: string | null, startH: number, endH: number) => ({
   const c = findExternalCollisions([block("ext-1", 9, 10)], [booking("bk1", "slate-evt", 9)]);
   assert(c.length === 1 && c[0].bookingId === "bk1" && c[0].gcalEventId === "ext-1", "overlapping external event collides");
 }
+// The collision carries both windows, so the page can say WHEN the clash is
+// rather than handing the reader a bare id.
+{
+  const c = findExternalCollisions([block("ext-1", 8, 10)], [booking("bk1", "slate-evt", 9)]);
+  assert(
+    c.length === 1 && c[0].bookingStartMs === T(9) && c[0].eventStartMs === T(8) && c[0].eventEndMs === T(10),
+    "a collision carries the call's start and the outside event's window",
+  );
+}
 // The booking's OWN event, mirrored back by sync, is NOT a collision.
 {
   const c = findExternalCollisions([block("slate-evt", 9, 10)], [booking("bk1", "slate-evt", 9)]);

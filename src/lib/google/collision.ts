@@ -44,6 +44,10 @@ export interface SlateBooking {
 export interface ExternalCollision {
   bookingId: string;
   gcalEventId: string | null;
+  /** The call's start and the outside event's window, so the page can say WHEN. */
+  bookingStartMs: number;
+  eventStartMs: number;
+  eventEndMs: number;
 }
 
 export function findExternalCollisions(
@@ -61,7 +65,13 @@ export function findExternalCollisions(
       // Skip the booking's own mirrored event (same Google id).
       if (g.gcalEventId !== null && g.gcalEventId === b.gcalEventId) continue;
       if (g.startMs < b.endMs && g.endMs > b.startMs) {
-        collisions.push({ bookingId: b.id, gcalEventId: g.gcalEventId });
+        collisions.push({
+          bookingId: b.id,
+          gcalEventId: g.gcalEventId,
+          bookingStartMs: b.startMs,
+          eventStartMs: g.startMs,
+          eventEndMs: g.endMs,
+        });
         break; // one collision per booking is enough to flag
       }
     }
