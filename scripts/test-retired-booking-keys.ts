@@ -132,74 +132,117 @@ const nodeHash = (s: string) => createHash("sha256").update(s, "utf8").digest("h
     "shared,regal-old",
     "the committed file's one entry per line form parses, trailing newline and all",
   );
-  for (const [what, existing, why] of [
-    ["a label already in the list", first, /twice/],
-    ["an existing list that does not parse", "shared:not-a-hash", /sha256:/],
+  // Adding an entry that is already there, same label and same hash, is a no op, so a
+  // retry after a failed `wrangler secret put` succeeds rather than being refused.
+  eq(combineRetiredKeyEntries(first, first), first, "re-adding the same entry leaves the list as it was");
+  eq(
+    parseRetiredKeyHashes(combineRetiredKeyEntries(`${first},${second}`, first)).map((h) => h.label).join(","),
+    "shared,regal-old",
+    "and does not duplicate it inside a longer list",
+  );
+  const sameLabelOtherKey = await retiredKeyHashLine("shared", UNKNOWN);
+  for (const [what, existing, line, why] of [
+    ["a label already in the list for a DIFFERENT key", first, sameLabelOtherKey, /twice/],
+    ["an existing list that does not parse", "shared:not-a-hash", second, /sha256:/],
   ] as const) {
     let refused: unknown = null;
     try {
-      combineRetiredKeyEntries(existing, what === "a label already in the list" ? first : second);
+      combineRetiredKeyEntries(existing, line);
     } catch (err) {
       refused = err;
     }
     assert(refused instanceof RetiredKeyConfigError && why.test(refused.message), `${what} refuses rather than writing a list that cannot be read (got: ${String(refused)})`);
   }
+  // The committed file carries a header comment; comment lines are not entries.
+  eq(parseRetiredKeyHashes("# retired booking keys, none yet\n# one per line\n"), [], "a file holding only comments is an empty list");
+  eq(
+    parseRetiredKeyHashes(`# header, with a comma\n${first}\n`).map((h) => h.label).join(","),
+    "shared",
+    "and comments beside entries are skipped, commas in them included",
+  );
 }
 
-// --- the real command, run twice, keeps both entries ------------------------------
+// --- the real command: print, record, retry, and a missing file --------------------
 //
-// Driven end to end in a temporary directory, so the file it writes is never the
-// repo's. The second run must print BOTH entries: that output is what replaces the
-// secret whole.
+// Driven end to end with RETIRED_KEY_HASHES_PATH pointing into a temporary directory
+// and the working directory somewhere else again, so the repo's own file is never
+// written and a cwd relative path would be caught.
 {
-  const { mkdtempSync, mkdirSync, readFileSync: read } = await import("node:fs");
+  const { mkdtempSync, writeFileSync: write, readFileSync: read, existsSync } = await import("node:fs");
   const { tmpdir } = await import("node:os");
   const { join } = await import("node:path");
   const { spawnSync } = await import("node:child_process");
-  const { RETIRED_KEY_HASHES_FILE } = await import("./lib/retired-key-file.ts");
-  const dir = mkdtempSync(join(tmpdir(), "retired-keys-"));
-  mkdirSync(join(dir, "docs"));
+  const home = mkdtempSync(join(tmpdir(), "retired-keys-file-"));
+  const elsewhere = mkdtempSync(join(tmpdir(), "retired-keys-cwd-"));
+  const file = join(home, "retired-booking-key-hashes.txt");
   const script = new URL("./hash-retired-key.ts", import.meta.url).pathname;
   const hook = new URL("./register-paths.mjs", import.meta.url).pathname;
-  const run = (label: string, key: string) =>
-    spawnSync(process.execPath, ["--experimental-strip-types", "--import", hook, script, label], {
-      cwd: dir,
+  const run = (args: string[], key: string, path: string | null = file) =>
+    spawnSync(process.execPath, ["--experimental-strip-types", "--import", hook, script, ...args], {
+      cwd: elsewhere,
       encoding: "utf8",
-      env: { PATH: process.env.PATH ?? "", RETIRED_BOOKING_API_KEY: key },
+      env: { PATH: process.env.PATH ?? "", RETIRED_BOOKING_API_KEY: key, ...(path ? { RETIRED_KEY_HASHES_PATH: path } : {}) },
     });
-  const first = run("shared", RETIRED);
-  eq(first.status, 0, `the first run succeeds (stderr: ${first.stderr.trim().split("\n").pop()})`);
-  const second = run("regal-old", OTHER_RETIRED);
-  eq(second.status, 0, `the second run succeeds (stderr: ${second.stderr.trim().split("\n").pop()})`);
+  const last = (r: { stderr: string }) => r.stderr.trim().split("\n").pop();
+
+  // A missing file is refused, never read as an empty list (L105): printing only the
+  // new entry would have the secret put drop every key retired before it.
+  const missing = run(["shared"], RETIRED);
+  assert(missing.status !== 0 && /not found|missing/i.test(missing.stderr), `a missing list refuses (stderr: ${last(missing)})`);
+  eq(missing.stdout, "", "and prints nothing that could be piped into the secret");
+
+  write(file, "# retired booking keys\n");
+  const printed = run(["shared"], RETIRED);
+  eq(printed.status, 0, `printing succeeds (stderr: ${last(printed)})`);
+  eq(parseRetiredKeyHashes(printed.stdout).map((h) => h.label).join(","), "shared", "and prints the combined list");
+  eq(read(file, "utf8"), "# retired booking keys\n", "printing writes NOTHING, so a failed secret put leaves the list as it was");
+  const retry = run(["shared"], RETIRED);
+  eq(retry.stdout, printed.stdout, "a retry after a failed secret put prints the same value");
+
+  const recorded = run(["--record", "shared"], RETIRED);
+  eq(recorded.status, 0, `--record succeeds (stderr: ${last(recorded)})`);
+  eq(parseRetiredKeyHashes(read(file, "utf8")).map((h) => h.label).join(","), "shared", "and --record writes the entry");
+  assert(read(file, "utf8").startsWith("# retired booking keys\n"), "keeping the file's header");
+  const recordedAgain = run(["--record", "shared"], RETIRED);
+  eq(recordedAgain.status, 0, "recording the same entry again is a no op, not a refusal");
+  eq(parseRetiredKeyHashes(read(file, "utf8")).length, 1, "and adds no duplicate");
+
+  const secondPrint = run(["regal-old"], OTHER_RETIRED);
   eq(
-    parseRetiredKeyHashes(second.stdout).map((h) => h.label).join(","),
+    parseRetiredKeyHashes(secondPrint.stdout).map((h) => h.label).join(","),
     "shared,regal-old",
-    "the second run prints both entries, so the secret it replaces keeps the first",
+    "the next key prints BOTH entries, so the secret it replaces keeps the first",
   );
-  eq(
-    parseRetiredKeyHashes(read(join(dir, RETIRED_KEY_HASHES_FILE), "utf8")).map((h) => h.label).join(","),
-    "shared,regal-old",
-    "and the committed file lists both",
-  );
-  assert(!second.stdout.includes(RETIRED) && !second.stdout.includes(OTHER_RETIRED), "and neither key appears in what it prints");
-  const again = run("shared", UNKNOWN);
-  assert(again.status !== 0 && /twice/.test(again.stderr), `reusing a label refuses rather than overwriting (stderr: ${again.stderr.trim()})`);
+  assert(!secondPrint.stdout.includes(RETIRED) && !secondPrint.stdout.includes(OTHER_RETIRED), "and neither key appears in what it prints");
+  const reused = run(["shared"], UNKNOWN);
+  assert(reused.status !== 0 && /twice/.test(reused.stderr), `a label reused for a different key refuses (stderr: ${last(reused)})`);
+
+  // With no override, the path comes from the script's own location, not the cwd:
+  // run from an unrelated directory, it reads the repo's committed list and writes
+  // nothing there.
+  assert(!existsSync(join(elsewhere, "docs")), "nothing was written relative to the working directory");
+  const { retiredKeyHashesPath } = await import("./lib/retired-key-file.ts");
+  eq(retiredKeyHashesPath(), new URL("../docs/retired-booking-key-hashes.txt", import.meta.url).pathname, "the default path is the repo's own file, resolved from the script");
+  const repoFile = retiredKeyHashesPath();
+  const before = read(repoFile, "utf8");
+  const fromElsewhere = run(["probe-only"], "fixture-value-from-elsewhere", null);
+  eq(fromElsewhere.status, 0, `run from another directory, it finds the repo's list (stderr: ${last(fromElsewhere)})`);
+  eq(read(repoFile, "utf8"), before, "and a print run leaves the repo's list untouched");
 }
 
-// --- the committed list, when there is one, is readable ----------------------------
+// --- the committed list exists and is readable -------------------------------------
 {
   const { existsSync } = await import("node:fs");
-  const { RETIRED_KEY_HASHES_FILE } = await import("./lib/retired-key-file.ts");
-  const path = new URL(`../${RETIRED_KEY_HASHES_FILE}`, import.meta.url).pathname;
-  if (existsSync(path)) {
-    let ok = true;
-    try {
-      parseRetiredKeyHashes(readFileSync(path, "utf8"));
-    } catch {
-      ok = false;
-    }
-    assert(ok, `${RETIRED_KEY_HASHES_FILE} parses, so the next hash:retired-key can extend it`);
+  const { retiredKeyHashesPath } = await import("./lib/retired-key-file.ts");
+  const path = retiredKeyHashesPath();
+  assert(existsSync(path), `${path} exists, so hash:retired-key never reads a missing list as empty`);
+  let ok = true;
+  try {
+    parseRetiredKeyHashes(readFileSync(path, "utf8"));
+  } catch {
+    ok = false;
   }
+  assert(ok, "and it parses, so the next hash:retired-key can extend it");
 }
 
 // --- matching a presented token ---------------------------------------------------

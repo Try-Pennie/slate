@@ -1,0 +1,4 @@
+# Retired booking API keys (#2879): one label:sha256:<hash> entry per line, never a key.
+# The Worker reads the same list from the BOOKING_API_RETIRED_KEY_HASHES secret.
+# Add an entry only with pnpm hash:retired-key (see DEPLOY.md), never by hand.
+# As of 2026-09-29 nothing is retired: the old shared key's value is still live as BOOKING_API_KEY_TRYPENNIE_2.

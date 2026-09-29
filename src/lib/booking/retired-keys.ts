@@ -8,9 +8,10 @@
  * attributed to anybody. The same will happen at every future rotation, since each
  * caller's two slots exist precisely so keys can be retired.
  *
- * So Slate keeps a HASH of each retired key, never the key, in
- * `BOOKING_API_RETIRED_KEY_HASHES` (a Worker secret, so even the hash stays out of
- * the repo). When a refused request presents one, the refusal is exactly what it
+ * So Slate keeps a HASH of each retired key, never the key. The list is committed in
+ * `docs/retired-booking-key-hashes.txt` (hashes are not secret, and a secret cannot
+ * be read back or appended to), and the Worker reads the same list from the
+ * `BOOKING_API_RETIRED_KEY_HASHES` secret. When a refused request presents one, the refusal is exactly what it
  * was, and afterwards the presentation is recorded and paged once per retired key
  * per host kind per cooldown, naming the host and the route, so whoever still holds
  * it can be found.
@@ -85,12 +86,19 @@ const HASH_TAG = "sha256:";
  * value, because a raw key pasted here by mistake must not reach a log line.
  */
 export function parseRetiredKeyHashes(raw: string): RetiredKeyHash[] {
-  if (!raw.trim()) return [];
+  // Lines starting with `#` are comments (the committed file's header), dropped
+  // whole before splitting, so a comma inside one never makes an entry.
+  const body = raw
+    .split(/\r?\n/)
+    .filter((line) => !line.trim().startsWith("#"))
+    .join("\n")
+    .trim();
+  if (!body) return [];
   const out: RetiredKeyHash[] = [];
   // Commas or newlines, so the committed file of hashes (one entry per line) and the
   // secret (one comma separated line) are both read. Leading and trailing blank space
   // is dropped; an empty entry BETWEEN two others is still refused.
-  const entries = raw.trim().split(/,|\r?\n/);
+  const entries = body.split(/,|\r?\n/);
   entries.forEach((entry, i) => {
     const where = `${RETIRED_KEY_HASHES_ENV} entry ${i + 1}`;
     const text = entry.trim();
@@ -128,7 +136,14 @@ export function parseRetiredKeyHashes(raw: string): RetiredKeyHash[] {
  * and the result is parsed again so a repeated label is refused before it is stored.
  */
 export function combineRetiredKeyEntries(existing: string, line: string): string {
-  const entries = [...parseRetiredKeyHashes(existing), ...parseRetiredKeyHashes(line)];
+  const current = parseRetiredKeyHashes(existing);
+  // An entry already present with the SAME hash is a no op, so a retry after a failed
+  // `wrangler secret put` succeeds. The same label for a different hash still falls
+  // through to the repeated label refusal below.
+  const adding = parseRetiredKeyHashes(line).filter(
+    (n) => !current.some((c) => c.label === n.label && c.sha256 === n.sha256),
+  );
+  const entries = [...current, ...adding];
   const combined = entries.map((e) => `${e.label}:${HASH_TAG}${e.sha256}`).join(",");
   parseRetiredKeyHashes(combined);
   return combined;
