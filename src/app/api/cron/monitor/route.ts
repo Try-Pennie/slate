@@ -96,6 +96,7 @@ import { runVolumeRelearn } from "@/lib/monitor/volume-relearn";
 import { LOW_TIER } from "@/lib/monitor/volume-tiers";
 import { REAL_ANCHOR_SOURCE } from "@/lib/monitor/carried-share";
 import { calcomTierBookingCounts } from "@/lib/calcom/client";
+import { runPilotOfferSampleLive } from "@/lib/monitor/pilot-offers-live";
 import { runTierVolumeChecks } from "@/lib/monitor/tier-volume";
 import { MEASURED_VOLUME_BASELINE } from "@/lib/monitor/volume-baseline";
 import { runPageVolumeCheck, type PageVolumeResult } from "@/lib/monitor/page-volume";
@@ -1301,6 +1302,17 @@ export async function GET(req: NextRequest) {
         log: (fields) => log.info("monitor", { msg: "volume learning", ...fields }),
       }),
     );
+
+    // --- What each booker offers during the pilot split (#2927) ---
+    // A booking rate gap between the Slate and cal.com halves can come from what
+    // each system OFFERED, so every quarter hour this asks both, read only, what a
+    // Low lead would be offered and stores one row each. cal.com is asked through
+    // its routing form, the same one the split pages route Low leads through;
+    // Slate through its booker's own read of the bucket, filtered by the same
+    // notice the availability route applies. A failed read is stored as a failure
+    // with its reason, never as zero times; only a refused insert throws, and the
+    // step streak pages on that.
+    await steps.run("pilot_offers", null, () => runPilotOfferSampleLive(db, now));
 
     // --- Customers failing to complete a booking (#1313) ---
     // The lagging half of the pair with #1315: this one sees customers already

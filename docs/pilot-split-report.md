@@ -126,6 +126,26 @@ half's GA4 bookings: GA4 bookings with no Slate row (a tagging fault), Slate
 bookings GA4 never saw (GA4 losses, which undercount the Slate half), and Slate
 bookings outside the export. Without the key it says it was skipped.
 
+## What each booker offered (#2927)
+
+A booking rate gap between the halves can come from what each system OFFERED rather
+than from the booker: on 2026-09-30 cal.com's first time for a Low lead was the next
+morning with 32 in the next day, while Slate's was that evening with 249. So the
+report ends with a section saying, over the export's days, how many times each
+system typically offered a Low lead in the next 24 hours, how long until its first
+time, and in how many quarter hours Slate's first time came earlier.
+
+The numbers come from the monitor lane, which every 15 minutes asks both systems,
+read only, what a Low lead (bucket 112) would be offered and stores one row each in
+`pilot_offer_samples` (`src/lib/monitor/pilot-offers.ts`). cal.com is asked through
+its routing form's `calculate-slots` call, so it answers for the pool a Low lead on
+the split pages is routed to, not the whole event; the call stores no response.
+Slate is asked through its booker's own read of the bucket. A failed read is stored
+as a failure with its reason and counted out loud in the report, never as zero
+times. With no samples for the export's days the section says so rather than
+reading as equal availability. It needs the Supabase key, like the cross check, and
+never changes the exit code.
+
 ## Exit codes
 
 Only a comparison made exits 0. Every way of learning nothing exits on its own

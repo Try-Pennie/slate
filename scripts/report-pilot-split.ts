@@ -81,6 +81,12 @@ import { join } from "node:path";
 import { loadEnvFiles } from "./smoke-env.ts";
 import { ENV_FILES, judgeSupabaseCredentials } from "./lib/supabase-credentials.ts";
 import {
+  pilotOffersReportLines,
+  readPilotOffersForReport,
+  type PilotOfferRow,
+  type PilotOffersRead,
+} from "../src/lib/monitor/pilot-offers.ts";
+import {
   judgePilotSplit,
   planFromEnv,
   PILOT_SPLIT_EXIT,
@@ -172,6 +178,41 @@ async function readSlate(dates: string[]): Promise<SlateCheckInput> {
   }
 }
 
+// #2927: what each booker offered a Low lead over the same days, from the monitor
+// lane's quarter hourly samples, so a gap in booking rate can be read against a gap
+// in availability. Informational: it never changes the exit code.
+async function readOffers(dates: string[]): Promise<PilotOffersRead> {
+  const creds = judgeSupabaseCredentials(env);
+  const missing = creds.ok
+    ? []
+    : (() => {
+        const absent = ["NEXT_PUBLIC_SUPABASE_URL", "SUPABASE_SECRET_KEY"].filter((n) => !env[n]?.trim());
+        return absent.length > 0 ? absent : ["usable Supabase credentials"];
+      })();
+  return readPilotOffersForReport({
+    missing,
+    fetchRows: async () => {
+      const { supabaseAdmin } = await import("@/lib/supabase/admin");
+      const { selectAllPages } = await import("@/lib/supabase/paginate");
+      const DAY = 86_400_000;
+      const from = new Date(Date.parse(`${dates[0]}T00:00:00Z`) - DAY).toISOString();
+      const to = new Date(Date.parse(`${dates[dates.length - 1]}T00:00:00Z`) + 2 * DAY).toISOString();
+      const db = supabaseAdmin();
+      return selectAllPages<PilotOfferRow>("pilot offer samples", (lo, hi) =>
+        db
+          .from("pilot_offer_samples")
+          .select("sampled_at, system, bucket_code, ok, earliest_offered_at, offered_24h, error")
+          .gte("sampled_at", from)
+          .lt("sampled_at", to)
+          .order("sampled_at")
+          .order("system")
+          .range(lo, hi),
+      );
+    },
+  });
+}
+
 const slateCheck = await readSlate(first.dates);
 const final = judgePilotSplit({ exports: exportFiles, env, slateCheck });
-print(final.lines, final.exit);
+const offers = await readOffers(first.dates);
+print([...final.lines, "", ...pilotOffersReportLines(offers)], final.exit);
