@@ -64,8 +64,7 @@ export interface BookingAlertRow {
  * Reads a key as a row of a booking keyed family, or null. Either the cooldown row
  * (`family:<uuid>`) or its firing marker (`alert_firing:family:<uuid>`), and the
  * suffix must be a uuid, so nothing that merely shares a prefix is ever touched.
- * A family may carry more after the id (`family:<uuid>:<rest>`, #2905, where the
- * double-book key names the clash as well as the call): the id is the segment up
+ * A family may carry more after the id (`family:<uuid>:<rest>`): the id is the segment up
  * to the next colon, and it must still be a whole uuid.
  */
 export function parseBookingAlertKey(

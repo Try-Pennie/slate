@@ -168,7 +168,6 @@ const FAMILY_BY_KEY: Record<string, AlertFamily> = {
   reconcile_busy_blocks: "a-booking-side-effect-did-not-complete",
   reconcile_missing_busy_blocks: "a-booking-side-effect-did-not-complete",
   creation_orphan_events: "a-booking-side-effect-did-not-complete",
-  external_double_book: "a-booking-side-effect-did-not-complete",
   reassign_intent_dropped: "a-booking-side-effect-did-not-complete",
   reschedule_pin_dropped: "a-booking-side-effect-did-not-complete",
   reschedule_lock_outage: "a-booking-side-effect-did-not-complete",
