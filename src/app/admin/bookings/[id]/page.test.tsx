@@ -228,7 +228,7 @@ describe("the detail page shows where the booking came from (#2072)", () => {
     dbState.roster = [{ id: "u1", name: "Aria Agent", email: "aria@trypennie.com" }];
     render(await BookingDetailPage(props));
     expect(screen.getByText("Source")).toBeTruthy();
-    expect(screen.getByText("/offerhub, cal.com event type call")).toBeTruthy();
+    expect(screen.getByText("/offerportal, cal.com event type call")).toBeTruthy();
   });
 
   it("says a booking older than the field predates sources, rather than showing it as unset", async () => {

@@ -143,7 +143,7 @@ export function pageVolumeAlertKey(id: LowPageId): string {
  */
 export const PAGE_SEEN_LOOKBACK_DAYS = 7;
 
-/** "/booking/portal and /offerhub": where a page lives, from the source vocabulary's own names (L41). */
+/** "/booking/portal, /offerportal and the /portal-2 or /portal-3 calendar": where a page lives, from the source vocabulary's own names (L41). */
 export function pagePlaces(page: LowPage): string {
   const places = page.sources.map((s) => SOURCE_DETAILS[s].page);
   return places.length === 1 ? places[0]! : `${places.slice(0, -1).join(", ")} and ${places[places.length - 1]}`;
