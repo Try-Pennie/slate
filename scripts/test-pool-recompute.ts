@@ -11,6 +11,8 @@
 // Run: node --experimental-strip-types scripts/test-pool-recompute.ts
 import {
   recomputePool,
+  recomputeAgentPools,
+  type AgentPoolsDeps,
   type PooledBucket,
   type PoolRecomputeDeps,
 } from "../src/lib/availability/pool-recompute.ts";
@@ -251,6 +253,105 @@ function harness(
   await recomputePool([pooled("SMOKE")], deps);
   eq(rec.writes.map((w) => w.code), ["SMOKE"], "a pool of one behaves exactly as before");
   eq(rec.computeCalls, ["SMOKE"], "computing for itself");
+}
+
+// --- An agent's pools, as the push and OOO paths refresh them (#2922) ---
+//
+// The push path used to recompute every CODE an agent is in, one after another,
+// with the whole multi agent compute per code (about four seconds each). An agent
+// in eight codes spent about thirty seconds, which is exactly where Cloudflare
+// cancels post response work, so almost every push refresh was cut off. The fix
+// is the lane's own saving: one compute per POOL, and a budget that hands what is
+// left to the lane rather than being cancelled mid write.
+
+function pooledIn(code: string, debtTeam: string): PooledBucket {
+  return { ...pooled(code), criteria: { debt_team: debtTeam } };
+}
+
+const MID_POOL = ["200", "201", "210"].map((c) => pooledIn(c, "mid"));
+const HIGH_POOL = ["300", "310"].map((c) => pooledIn(c, "high"));
+const ALL = [...LOW_POOL, ...MID_POOL, ...HIGH_POOL];
+
+function agentHarness(over: Partial<AgentPoolsDeps> = {}) {
+  let clock = 1_000_000;
+  const computed: string[][] = [];
+  const deps: AgentPoolsDeps = {
+    nowMs: () => clock,
+    deadlineMs: clock + 20_000,
+    recomputePool: async (pool) => {
+      computed.push(pool.map((b) => b.code));
+      clock += 4_000;
+    },
+    lastRunAt: new Map(),
+    skipMs: 2_000,
+    ...over,
+  };
+  return { deps, computed, advance: (ms: number) => (clock += ms) };
+}
+
+{
+  const { deps, computed } = agentHarness();
+  const out = await recomputeAgentPools(["100", "110", "112", "200"], ALL, deps);
+  eq(computed.length, 2, "an agent in four codes across two pools computes twice, not four times");
+  eq(computed[0], ["100", "101", "102", "110", "111", "112"], "and a pool refreshes every code in it, siblings included");
+  eq(computed[1], ["200", "201", "210"], "the second pool is refreshed whole as well");
+  eq(out, { refreshed: 2, deferred: 0, failed: 0, debounced: 0 }, "and says so");
+}
+
+{
+  // Past the budget, the remaining pools are left to the every minute lane and
+  // COUNTED, rather than being started and cancelled mid write.
+  const { deps, computed } = agentHarness();
+  deps.deadlineMs = deps.nowMs() + 5_000;
+  const out = await recomputeAgentPools(["100", "200", "300"], ALL, deps);
+  eq(computed.length, 2, "a pool is started only while inside the budget");
+  eq(out, { refreshed: 2, deferred: 1, failed: 0, debounced: 0 }, "and the one it did not start is reported as deferred");
+}
+
+{
+  const { deps } = agentHarness();
+  deps.deadlineMs = deps.nowMs() - 1;
+  const out = await recomputeAgentPools(["100", "200"], ALL, deps);
+  eq(out, { refreshed: 0, deferred: 2, failed: 0, debounced: 0 }, "already past the budget, nothing starts and every pool is deferred");
+}
+
+{
+  // One pool's failure has its own boundary (L73): the next pool still refreshes.
+  const { deps, computed } = agentHarness();
+  const real = deps.recomputePool;
+  deps.recomputePool = async (pool) => {
+    if (pool[0].code === "100") throw new Error("compute failed");
+    await real(pool);
+  };
+  const out = await recomputeAgentPools(["100", "200"], ALL, deps);
+  eq(computed, [["200", "201", "210"]], "a failed pool does not stop the next one");
+  eq(out, { refreshed: 1, deferred: 0, failed: 1, debounced: 0 }, "and the failure is counted, not swallowed");
+}
+
+{
+  // A burst of pushes for one agent in one isolate computes a pool once.
+  // The fixture's compute costs no clock time here, so the second push lands
+  // inside the debounce window rather than four seconds after the first.
+  const { deps, computed, advance } = agentHarness();
+  deps.recomputePool = async (pool) => {
+    computed.push(pool.map((b) => b.code));
+  };
+  await recomputeAgentPools(["100"], ALL, deps);
+  const second = await recomputeAgentPools(["110"], ALL, deps);
+  eq(computed.length, 1, "a pool refreshed moments ago is not computed again");
+  eq(second, { refreshed: 0, deferred: 0, failed: 0, debounced: 1 }, "and the skip is reported as debounced");
+  advance(2_000);
+  await recomputeAgentPools(["110"], ALL, deps);
+  eq(computed.length, 2, "once the debounce has passed it computes again");
+}
+
+{
+  const { deps, computed } = agentHarness();
+  const out = await recomputeAgentPools([], ALL, deps);
+  eq(computed.length, 0, "an agent in no bucket computes nothing");
+  eq(out, { refreshed: 0, deferred: 0, failed: 0, debounced: 0 }, "and reports nothing");
+  const unknown = await recomputeAgentPools(["999"], ALL, deps);
+  eq(unknown.refreshed + unknown.deferred, 0, "a code no bucket carries any more puts no work anywhere");
 }
 
 finish();

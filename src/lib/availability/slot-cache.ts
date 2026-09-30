@@ -12,8 +12,14 @@ import {
   recomputeBucketSlots,
   computeBucketSlotsForWindow,
   bucketsForAgent,
+  listPoolBuckets,
 } from "./precompute";
-import { recomputePool, type PooledBucket } from "./pool-recompute";
+import {
+  recomputePool,
+  recomputeAgentPools,
+  type AgentPoolsOutcome,
+  type PooledBucket,
+} from "./pool-recompute";
 import { appUrl } from "@/lib/env";
 import { loadBookingHorizonDays } from "@/lib/booking/settings";
 import { loadBusinessHoursCached } from "@/lib/booking/business-hours-load";
@@ -190,19 +196,52 @@ export async function recomputePoolSlotsForToday(
 }
 
 /**
- * Recompute every bucket an agent affects (their calendar/OOO just changed).
- * Best-effort and non-blocking for the caller; never throws into a push/cron path.
+ * How long an agent's pool refresh may keep STARTING pools (#2922). It runs after
+ * the response, where Cloudflare cancels whatever is still going 30 seconds after
+ * the response ends, and on the push path the calendar sync spends a few of those
+ * seconds first. A pool takes about four seconds, so twenty leaves room for the
+ * last one started to finish; anything not started is left to the every minute
+ * lane rather than being cut off mid write.
  */
-export async function recomputeBucketsForAgent(userId: string): Promise<void> {
+export const AGENT_RECOMPUTE_BUDGET_MS = 20_000;
+
+/** When each pool was last started in this isolate, for the burst debounce. */
+const lastPoolRecomputeAt = new Map<string, number>();
+
+/**
+ * Recompute every bucket an agent affects (their calendar/OOO just changed), one
+ * compute per POOL rather than per code (#2922), inside a budget. Resolves to what
+ * it did, or null when it could not even work out the agent's buckets. Never
+ * throws into a push/cron path: the recompute lane's freshness sweep backstops.
+ */
+export async function recomputeBucketsForAgent(
+  userId: string,
+): Promise<AgentPoolsOutcome | null> {
   try {
-    const codes = await bucketsForAgent(userId);
-    // Load the horizon once for the whole fan-out, not once per bucket.
-    const horizon = await loadBookingHorizonDays();
-    for (const code of codes) await recomputeBucketSlotsForToday(code, false, undefined, horizon);
+    const deadlineMs = Date.now() + AGENT_RECOMPUTE_BUDGET_MS;
+    const [codes, buckets, horizon] = await Promise.all([
+      bucketsForAgent(userId),
+      listPoolBuckets(),
+      // Loaded once for the whole fan-out, not once per pool.
+      loadBookingHorizonDays(),
+    ]);
+    const outcome = await recomputeAgentPools(codes, buckets, {
+      nowMs: Date.now,
+      deadlineMs,
+      recomputePool: (pool) => recomputePoolSlotsForToday(pool, undefined, horizon),
+      lastRunAt: lastPoolRecomputeAt,
+      skipMs: RECOMPUTE_SKIP_MS,
+    });
+    // One line per refresh, so the push path's completed refreshes can be counted
+    // against Cloudflare's cancellation warnings (#2922). A cancelled refresh
+    // writes nothing, which is why the count lives on the side that finished.
+    log.info("slot-cache", { msg: "agent pools recomputed", user_id: userId, codes: codes.length, ...outcome });
+    return outcome;
   } catch (err) {
     // Best-effort: the recompute lane's freshness sweep still backstops. Log the
     // cause (#313) so a failed fan-out isn't wholly silent.
     log.error("slot-cache", { msg: "recomputeBucketsForAgent failed", user_id: userId }, err);
+    return null;
   }
 }
 

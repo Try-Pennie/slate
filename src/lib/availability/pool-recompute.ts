@@ -1,7 +1,7 @@
 import { log } from "@/lib/log";
 import type { Bucket } from "@/lib/db/types";
 import type { BucketSlots } from "./service";
-import type { PoolInput } from "./pool-key";
+import { groupByPool, type PoolInput } from "./pool-key";
 import { bucketsDueForRecompute, type KnownRow } from "./precompute-cron";
 
 /**
@@ -175,4 +175,78 @@ export function poolsDueForRecompute(
     const pool = pools.get(k);
     return pool ? [pool] : [];
   });
+}
+
+/** The seams `recomputeAgentPools` runs through, injected so the budget and the
+ *  debounce are driven by a fixture clock rather than the real one. */
+export interface AgentPoolsDeps {
+  nowMs(): number;
+  /** No pool is STARTED at or past this instant; the rest are deferred. */
+  deadlineMs: number;
+  /** Refresh one whole pool: one compute, written to every code in it. */
+  recomputePool(pool: PooledBucket[]): Promise<unknown>;
+  /** When each pool key was last started in this isolate. */
+  lastRunAt: Map<string, number>;
+  /** A pool started less than this long ago is skipped. */
+  skipMs: number;
+}
+
+export interface AgentPoolsOutcome {
+  refreshed: number;
+  /** Not started because the budget ran out; the every minute lane owns them. */
+  deferred: number;
+  failed: number;
+  /** Skipped because this isolate started the same pool moments ago. */
+  debounced: number;
+}
+
+/**
+ * Refresh the pools an agent's calendar or time off can move (#2922), for the
+ * push and OOO paths that run after the response.
+ *
+ * Those paths used to recompute every CODE the agent is in, one after another,
+ * with the whole multi agent compute each time (about four seconds). An agent in
+ * eight codes spent about thirty seconds, which is where Cloudflare cancels post
+ * response work, so 88% of push refreshes in the hour measured on 2026-09-30 were
+ * cut off and the change waited for the recompute lane instead. The saving here
+ * is the lane's own (#2245): siblings in a pool share one answer, so one compute
+ * per pool refreshes every code the agent touches, siblings included.
+ *
+ * The budget is checked before each pool rather than trusted: a pool left
+ * unstarted is counted and left to the lane, which refreshes every pool inside
+ * its four minute freshness window, whereas one started past the limit is
+ * cancelled mid write and reported by nothing. Each pool has its own failure
+ * boundary (L73), and the debounce stands in for the per code one this replaces,
+ * so a burst of pushes for one agent computes a pool once.
+ */
+export async function recomputeAgentPools(
+  agentCodes: string[],
+  allBuckets: PooledBucket[],
+  deps: AgentPoolsDeps,
+): Promise<AgentPoolsOutcome> {
+  const outcome: AgentPoolsOutcome = { refreshed: 0, deferred: 0, failed: 0, debounced: 0 };
+  const wanted = new Set(agentCodes);
+  const pools = [...groupByPool(allBuckets)].filter(([, members]) =>
+    members.some((m) => wanted.has(m.code)),
+  );
+  for (const [key, pool] of pools) {
+    const now = deps.nowMs();
+    if (now >= deps.deadlineMs) {
+      outcome.deferred++;
+      continue;
+    }
+    if (now - (deps.lastRunAt.get(key) ?? -Infinity) < deps.skipMs) {
+      outcome.debounced++;
+      continue;
+    }
+    deps.lastRunAt.set(key, now);
+    try {
+      await deps.recomputePool(pool);
+      outcome.refreshed++;
+    } catch (err) {
+      outcome.failed++;
+      log.warn("precompute", { msg: "agent pool recompute failed", bucket: pool[0].code }, err);
+    }
+  }
+  return outcome;
 }

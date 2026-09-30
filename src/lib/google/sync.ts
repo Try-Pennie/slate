@@ -59,7 +59,6 @@ import { unwrap, unwrapCount } from "@/lib/db/result";
 import { chunkIdsByUrlBudget } from "@/lib/db/id-batch";
 import { log } from "@/lib/log";
 import { COLLISION_WINDOW_MS, pageExternalCollisions } from "@/lib/google/collision-alerts";
-import { afterResponse } from "@/lib/after-response";
 import { gatedWriteRows } from "@/lib/booking/gated-write";
 
 // Renew well before Google's ~7-day watch TTL so a cron outage can't drop push.
@@ -1069,12 +1068,13 @@ export async function syncByChannel(
       .eq("sync_claimed_at", claimIso);
   }
   // The agent's calendar changed: refresh the precomputed slot rows for every
-  // bucket they affect so it shows up in <5s. Through afterResponse (#503) so
-  // the recompute survives the isolate teardown after the response instead of a
-  // float Cloudflare can drop; the 1-min cron backstops it regardless. The sole
-  // caller (the push route) already runs this inside an after(); afterResponse
-  // nests safely and degrades to a plain float if a nested schedule is refused.
-  afterResponse("sync-recompute", () => recomputeBucketsForAgent(cal.user_id));
+  // pool they affect so it shows up in seconds. Awaited rather than scheduled
+  // (#2922): the sole caller, the push route, already runs this whole function
+  // inside after() (#503), so awaiting it here keeps the refresh inside the same
+  // post response window and lets the route time the sync and the refresh as ONE
+  // unit, which is the unit Cloudflare cancels. It never throws, and the budget
+  // inside it leaves unstarted pools to the every minute recompute lane.
+  await recomputeBucketsForAgent(cal.user_id);
   return "synced";
 }
 
