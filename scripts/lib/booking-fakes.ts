@@ -141,7 +141,7 @@ export interface FakeOpts {
   agentByEmail?: User | null; // getAgentByEmail (reassign)
   pastDue?: BookingContext[];
   // Successive completion-sweep batches for the drain loop (#871): each call to
-  // loadPastBookingsToComplete returns the next batch (empty once exhausted),
+  // loadPastBookingIdsToComplete returns the next batch (empty once exhausted),
   // modelling the DB query returning fewer rows as batches flip to completed.
   pastDueBatches?: BookingContext[][];
   // A reschedule lease already held for the booking (#439): models a concurrent
@@ -294,7 +294,7 @@ export function makeDeps(opts: FakeOpts) {
   // Cursor into opts.pastDueBatches for the completion drain loop (#871).
   let pastBatchIdx = 0;
   const calls = {
-    loadPastBookingsToComplete: 0,
+    loadPastBookingIdsToComplete: 0,
     busyIntervalsForAgent: [] as string[],
     agentActiveBookingStartsMs: [] as { userId: string; excludeBookingId: string }[],
     agentWorkingHours: [] as string[],
@@ -1031,15 +1031,15 @@ export function makeDeps(opts: FakeOpts) {
       return opts.listResult ?? { rows: [], buckets: [] };
     },
     getAgentByEmail: async () => opts.agentByEmail ?? null,
-    loadPastBookingsToComplete: async () => {
+    loadPastBookingIdsToComplete: async () => {
       // Drain loop (#871): hand back one batch per call when batches are given,
-      // else the single static list. `calls.loadPastBookingsToComplete` counts
+      // else the single static list. `calls.loadPastBookingIdsToComplete` counts
       // invocations so a test can prove the loop stopped (didn't re-fetch).
-      calls.loadPastBookingsToComplete += 1;
+      calls.loadPastBookingIdsToComplete += 1;
       if (opts.pastDueBatches) {
-        return opts.pastDueBatches[pastBatchIdx++] ?? [];
+        return (opts.pastDueBatches[pastBatchIdx++] ?? []).map((c) => c.booking.id);
       }
-      return opts.pastDue ?? [];
+      return (opts.pastDue ?? []).map((c) => c.booking.id);
     },
     emitWebhook: async (_orgId, event, payload, dedupeKey, suppressed = false, deferSend) => {
       calls.webhooks.push({

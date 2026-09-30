@@ -204,7 +204,7 @@ function makeDeps(): BookingDeps {
     loadAgentDisplayName: async () => null,
     queryBookings: async () => ({ rows: [] as Booking[], buckets: [] as Bucket[] }),
     getAgentByEmail: async () => null,
-    loadPastBookingsToComplete: async () => [],
+    loadPastBookingIdsToComplete: async () => [],
     emitWebhook: noop,
     newManageToken: () => "tok-fixed",
     newIdempotencyKey: () => "anon-fixed",

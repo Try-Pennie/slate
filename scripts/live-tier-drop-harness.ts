@@ -479,7 +479,7 @@ function buildDeps(
     findActiveBookingsByStrongIds: async () => [],
     queryBookings: async () => ({ rows: [], buckets: [] }),
     getAgentByEmail: async () => null,
-    loadPastBookingsToComplete: async () => [],
+    loadPastBookingIdsToComplete: async () => [],
   };
 }
 

@@ -1177,8 +1177,8 @@ export interface BookingDeps {
   /**
    * Batch-flips finished bookings to `completed`, returning the ids THIS call
    * actually transitioned. The update is gated on each row still being in a
-   * completable status, so an overlapping cron tick that already completed some
-   * of them won't re-fire their booking.completed (#163). One statement for the
+   * completable status, so a row an overlapping cron tick already completed is
+   * not counted twice (#163). One statement for the
    * whole batch instead of a round-trip per booking (#164).
    */
   completeBookingsIfDue(bookingIds: string[]): Promise<string[]>;
@@ -1292,7 +1292,9 @@ export interface BookingDeps {
    *  referenced by that page (for bucketCode), resolved in one .in() query. */
   queryBookings(filter: ListFilter): Promise<{ rows: Booking[]; buckets: Bucket[] }>;
   getAgentByEmail(email: string): Promise<User | null>;
-  loadPastBookingsToComplete(): Promise<BookingContext[]>;
+  /** Ids of finished bookings still marked active, at most one batch. Ids only:
+   *  marking a row completed needs nothing else about it (#2915). */
+  loadPastBookingIdsToComplete(): Promise<string[]>;
   // webhooks + misc
   /** `suppressed` records the delivery but skips the external POST (#459: an
    *  is_test bucket's booking must never reach Regal/Cadence). `deferSend` (#884)
@@ -2632,9 +2634,6 @@ export async function findDuplicateWarning(
     manageUrl: manageUrl(deps, match.booking.manage_token),
   };
 }
-
-/** Max simultaneous booking.completed deliveries (Cloudflare subrequest cap). */
-const COMPLETION_WEBHOOK_CONCURRENCY = 6;
 
 /** Max reservations completed at once when draining a backlog (AUD-062). Rows are
  *  leased independently so concurrency never double-runs one; the cap keeps the
@@ -5186,56 +5185,40 @@ export async function cancelBookingWithDetail(
   return { claimed: true, booking: named };
 }
 
-/** Cron sweep: mark finished bookings complete and emit booking.completed. */
 /**
- * Complete one loaded batch: flip the due rows and fire booking.completed for
- * exactly the ones THIS call transitioned. Returns how many it transitioned so
- * the drain loop can tell progress (>0) from a stall (0). Assumes `due` is
- * non-empty.
+ * Complete one loaded batch: flip the due rows to `completed`. Returns how many
+ * THIS call transitioned so the drain loop can tell progress (>0) from a stall
+ * (0). Assumes `due` is non-empty.
+ *
+ * No webhook (#2915). Completion is decided on the clock, once a call's end time
+ * has passed, not on evidence the call happened, so `booking.completed` fired for
+ * no-shows too. Regal knows whether a call happened from its own call and
+ * disposition data, and nothing listened for the event.
  */
 async function completeDueBatch(
   deps: BookingDeps,
-  due: BookingContext[],
+  dueIds: string[],
 ): Promise<number> {
   // One batched UPDATE for the whole batch instead of a round-trip per booking
   // (#164). The returned ids are the rows THIS call actually flipped, so an
-  // overlapping cron tick that already completed some of them won't re-fire
-  // their booking.completed — the receiver can't dedupe a second delivery (#163).
-  const transitioned = new Set(
-    await deps.completeBookingsIfDue(due.map((d) => d.booking.id)),
-  );
-  const toFire = due.filter((d) => transitioned.has(d.booking.id));
-
-  // Fan booking.completed out with bounded concurrency rather than a serial
-  // await per booking — faster under a backlog, but capped so we don't blow
-  // the Worker's simultaneous-connection ceiling.
-  await mapWithConcurrency(
-    toFire,
-    COMPLETION_WEBHOOK_CONCURRENCY,
-    ({ booking, bucket, eventType }) =>
-      fire(
-        deps,
-        "booking.completed",
-        { ...booking, status: "completed" },
-        bucket,
-        eventType,
-      ),
-  );
-  return toFire.length;
+  // overlapping cron tick that already completed some of them is not counted twice
+  // (#163).
+  const transitioned = await deps.completeBookingsIfDue(dueIds);
+  return transitioned.length;
 }
 
 /**
  * Drain the finished-booking backlog: load and complete successive batches in
  * one run rather than clearing a single batch per tick and letting the rest
  * wait (#871, follow-up to #223). Each batch flips its rows to `completed`, so
- * the next `loadPastBookingsToComplete` query returns the following rows, so the
+ * the next `loadPastBookingIdsToComplete` query returns the following rows, so the
  * loop advances on its own and stops as soon as a batch comes back under the
  * cap (nothing more waiting).
  *
  * Two guards keep the loop bounded:
- *   - A batch that transitions ZERO rows makes no progress (only unresolvable
- *     rows remain, already error-logged per row in joinBookingContexts): stop
- *     rather than re-fetch the same set.
+ *   - A batch that transitions ZERO rows makes no progress (every row it loaded
+ *     was completed or cancelled by something else in between): stop rather
+ *     than re-fetch the same set.
  *   - MAX_COMPLETION_DRAIN_BATCHES caps the run to stay inside the Worker
  *     CPU/subrequest budget. Hitting it with a full batch still pending is the
  *     fail-loud signal that the backlog is outgrowing the sweep, so warn (this
@@ -5250,7 +5233,7 @@ export async function completePastBookings(
   let backlogRemains = false;
 
   while (batches < MAX_COMPLETION_DRAIN_BATCHES) {
-    const due = await deps.loadPastBookingsToComplete();
+    const due = await deps.loadPastBookingIdsToComplete();
     if (due.length === 0) break;
     batches += 1;
 

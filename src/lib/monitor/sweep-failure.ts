@@ -57,8 +57,8 @@ const SWEEP_SUBJECT: Record<string, { what: string; cost: string; back: string }
     what: "The booking completion sweep on the complete cron lane",
     cost:
       "Finished bookings are not being marked complete, so they keep counting as upcoming " +
-      "and their booking.completed webhooks are not going out at all.",
-    back: "Finished bookings are being marked complete again, and the booking.completed webhooks that were held up have gone out",
+      "calls in every count and screen that reads the status.",
+    back: "Finished bookings are being marked complete again, and they no longer count as upcoming",
   },
   [WEBHOOK_RETRY_SWEEP_FAILING_KEY]: {
     what: "The failed webhook delivery retry on the complete cron lane",

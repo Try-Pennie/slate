@@ -26,7 +26,6 @@ export type WebhookEvent =
    * not happened.
    */
   | "booking.reassigned"
-  | "booking.completed"
   /**
    * Whether Slate can route a lead to an agent changed (#2085). Not a booking at
    * all, so its payload and its Regal body are a different family: a traits only

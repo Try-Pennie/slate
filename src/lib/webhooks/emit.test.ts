@@ -78,7 +78,10 @@ function makeBuilder(table: string) {
     if (b._updated) b._selectedAfterUpdate = true;
     return b;
   };
-  b.in = self;
+  b.in = (col: string, val: unknown) => {
+    state.filters.push({ table, col, val });
+    return b;
+  };
   b.lt = self;
   b.gte = self;
   b.eq = (col: string, val: unknown) => {
@@ -143,6 +146,7 @@ import {
 } from "./emit";
 import type { BookingEventPayload } from "@/lib/webhooks/types";
 import { WEBHOOK_MAX_ATTEMPTS } from "@/lib/webhooks/retry";
+import { WEBHOOK_EVENTS } from "@/lib/webhooks/events";
 
 const endpoint = {
   id: "ep1",
@@ -552,7 +556,7 @@ describe("misconfigured Regal endpoint (#600)", () => {
 
 // #2073: a booking through an advisor's own link reaches Regal as "Client Sync
 // Action" for a create, a move and a cancel, which is all cal.com's personal link
-// ever sent. A reassign or a completion has no equivalent, so Regal gets nothing,
+// ever sent. A reassign has no equivalent, so Regal gets nothing,
 // while a non Regal subscriber still receives the event as before.
 describe("agent link bookings and Regal (#2073)", () => {
   const regal = { ...endpoint, id: "ep-regal", format: "regal", url: "https://events.regalvoice.com/events", auth_header: "key" };
@@ -567,7 +571,7 @@ describe("agent link bookings and Regal (#2073)", () => {
     prefill: {},
   } as unknown as BookingEventPayload;
 
-  for (const event of ["booking.reassigned", "booking.completed"] as const) {
+  for (const event of ["booking.reassigned"] as const) {
     it(`sends Regal nothing for an agent link ${event}, and still sends other subscribers`, async () => {
       state.endpoints = [regal, generic];
       await emitWebhook("o1", event, named, `bk1:${event}`);
@@ -594,6 +598,46 @@ describe("agent link bookings and Regal (#2073)", () => {
     await emitWebhook("o1", "booking.reassigned", routed, "bk1:r");
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(JSON.parse(String(fetchMock.mock.calls[0][1].body)).name).toBe("Slate Booking Reassigned");
+  });
+});
+
+// #2915: `booking.completed` is no longer an event Slate sends, and delivery rows
+// written before that still carry it. No path may POST one again: Regal has no event
+// name for it any more, so a resend would reach it nameless. The resend says why it
+// refused rather than reading as a delivery that went.
+describe("an event Slate no longer sends (#2915)", () => {
+  const retired = (id: string, status = "success"): Record<string, unknown> => ({
+    ...delivery(id),
+    event: "booking.completed",
+    status,
+    suppressed: false,
+    payload_erased: false,
+  });
+
+  it("resendDelivery refuses it: no POST, returns 'retired-event'", async () => {
+    state.deliveries = [retired("d1")];
+    const res = await resendDelivery("d1", "o1");
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(res).toBe("retired-event");
+  });
+
+  it("the retry and replay reads ask only for events Slate still sends, so a retired row never holds a slot", async () => {
+    state.deliveries = [];
+    await retryFailedDeliveries();
+    await replayDeadLetteredDeliveries("o1", new Date(Date.now() - 3_600_000).toISOString());
+    const eventFilters = state.filters.filter((f) => f.table === "webhook_deliveries" && f.col === "event");
+    expect(eventFilters).toHaveLength(2);
+    for (const f of eventFilters) {
+      expect([...(f.val as string[])].sort()).toEqual([...WEBHOOK_EVENTS].sort());
+      expect(f.val as string[]).not.toContain("booking.completed");
+    }
+  });
+
+  it("retryFailedDeliveries never POSTs it, and still sends a current event beside it", async () => {
+    state.deliveries = [retired("d1", "failed"), delivery("d2")];
+    const retried = await retryFailedDeliveries();
+    expect(retried).toBe(1);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });
 

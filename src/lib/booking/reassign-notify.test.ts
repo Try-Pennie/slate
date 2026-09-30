@@ -178,7 +178,7 @@ function makeDeps(): BookingDeps {
     findActiveBookingsByStrongIds: async () => [] as Booking[],
     queryBookings: async () => ({ rows: [] as Booking[], buckets: [] as Bucket[] }),
     getAgentByEmail: async () => targetAgent,
-    loadPastBookingsToComplete: async () => [],
+    loadPastBookingIdsToComplete: async () => [],
     emitWebhook: noop,
     newManageToken: () => "tok-fixed",
     newIdempotencyKey: () => "anon-fixed",

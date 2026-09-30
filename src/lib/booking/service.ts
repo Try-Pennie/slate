@@ -56,7 +56,6 @@ import { loadHandoffChannel } from "@/lib/handoffs/store";
 import { postSlack } from "@/lib/notify/slack";
 import {
   insertFailureLogFields,
-  joinBookingContexts,
   PAST_COMPLETION_BATCH_LIMIT,
   calendarIdsFromResult,
   freeAgentsFromBusy,
@@ -2000,34 +1999,17 @@ export function realDeps(deferSend?: WebhookSendScheduler): BookingDeps {
       return (data as User | null) ?? null;
     },
 
-    loadPastBookingsToComplete: async () => {
+    loadPastBookingIdsToComplete: async () => {
       const db = supabaseAdmin();
       const nowIso = new Date().toISOString();
       // error-ok: best-effort sweep of past bookings to mark complete; a read error yields none this tick and the completion lane retries.
       const { data: rows } = await db
         .from("bookings")
-        .select("*")
+        .select("id")
         .in("status", ["confirmed", "rescheduled"])
         .lt("ends_at", nowIso)
         .limit(PAST_COMPLETION_BATCH_LIMIT);
-
-      const bookings = (rows ?? []) as Booking[];
-      if (bookings.length === 0) return [];
-
-      // Resolve buckets + event types with two `.in()` queries and join in
-      // memory, instead of two lookups per booking (~400 round-trips) (#164).
-      const bucketIds = [...new Set(bookings.map((b) => b.bucket_id))];
-      const eventTypeIds = [...new Set(bookings.map((b) => b.event_type_id))];
-      const [{ data: buckets }, { data: eventTypes }] = await Promise.all([
-        db.from("buckets").select("*").in("id", bucketIds),
-        db.from("event_types").select("*").in("id", eventTypeIds),
-      ]);
-
-      return joinBookingContexts(
-        bookings,
-        (buckets ?? []) as Bucket[],
-        (eventTypes ?? []) as EventType[],
-      );
+      return ((rows ?? []) as { id: string }[]).map((r) => r.id);
     },
   };
 }

@@ -104,7 +104,6 @@ describe("buildRegalEvent routing properties (#492)", () => {
     "booking.rescheduled",
     "booking.cancelled",
     "booking.reassigned",
-    "booking.completed",
   ];
   it.each(EVENTS)("carries the routing summary on %s", (event) => {
     const e = buildRegalEvent(event, payload(INTENTIONAL_DROP));
@@ -158,7 +157,6 @@ describe("buildRegalEvent partner join keys (#2659)", () => {
     "booking.rescheduled",
     "booking.cancelled",
     "booking.reassigned",
-    "booking.completed",
   ];
   it.each(EVENTS)("carries them on %s, since every event is a join point", (event) => {
     const e = buildRegalEvent(

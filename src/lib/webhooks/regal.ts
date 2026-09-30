@@ -22,7 +22,6 @@ const EVENT_NAMES: Record<BookingWebhookEvent, string> = {
   "booking.rescheduled": "Slate Booking Rescheduled",
   "booking.cancelled": "Slate Booking Cancelled",
   "booking.reassigned": "Slate Booking Reassigned",
-  "booking.completed": "Slate Booking Completed",
 };
 
 // Collapse a zone's two seasonal abbreviations to one label, matching the old
@@ -134,9 +133,8 @@ interface RegalEvent {
  * ("Client Sync - Generate Tasks") is built on it, so these bookings keep that
  * contract at cutover and never trigger the routed "Slate Booking ..." journeys.
  * The name, the three action literals and the property names were read off
- * journey 304 itself. cal.com's personal link sent nothing on a reassign or a
- * completion, so those have no entry: `regalSendsNothingFor` keeps them away from
- * Regal entirely.
+ * journey 304 itself. cal.com's personal link sent nothing on a reassign, so it
+ * has no entry: `regalSendsNothingFor` keeps it away from Regal entirely.
  */
 const CLIENT_SYNC_EVENT = "Client Sync Action";
 const CLIENT_SYNC_ACTIONS: Partial<Record<BookingWebhookEvent, string>> = {
@@ -147,7 +145,7 @@ const CLIENT_SYNC_ACTIONS: Partial<Record<BookingWebhookEvent, string>> = {
 
 /**
  * Whether Regal must receive NOTHING for this event (#2073): an agent link
- * booking's reassign or completion, which cal.com's personal link never reported.
+ * booking's reassign, which cal.com's personal link never reported.
  * Asked per endpoint by the emitter, so other subscribers still get the event.
  */
 export function regalSendsNothingFor(event: BookingWebhookEvent, p: Pick<BookingEventPayload, "booking_kind">): boolean {

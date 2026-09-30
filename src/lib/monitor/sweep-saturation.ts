@@ -71,12 +71,12 @@ export function formatSaturationRecovery(sweep: string): string {
 }
 
 /** All-clear for the completion sweep (#1134). Answers the specific worry its page
- *  raised, that finished bookings' completed webhooks were being delayed. */
+ *  raised, that finished bookings were still counting as upcoming. */
 export function formatCompletionSaturationRecovery(): string {
   return (
     `The booking completion sweep has caught up. Finished bookings are being ` +
-    `marked complete inside the per run budget again, and the booking.completed ` +
-    `webhooks that were being delayed have gone out. No action is needed.`
+    `marked complete inside the per run budget again, so none is still counting ` +
+    `as upcoming. No action is needed.`
   );
 }
 
@@ -199,7 +199,7 @@ export function formatCompletionSaturationAlert(runs: number, perRun: number): s
     `The booking completion sweep has exhausted its per run drain budget ` +
     `(${perRun} finished bookings per run) for at least ${runs} consecutive runs. ` +
     `Finished bookings are piling up faster than the sweep can mark them complete, ` +
-    `so their booking.completed webhooks are being delayed. Check for a backlog ` +
+    `so they go on counting as upcoming calls. Check for a backlog ` +
     `spike or a failing completion path, and consider raising the per run budget.`
   );
 }

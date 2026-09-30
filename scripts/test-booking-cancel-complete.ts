@@ -166,14 +166,10 @@ async function run() {
         calls.completeBookingsIfDue[0].includes("p2"),
       "complete: transitions all due bookings in a single batched call (#164)",
     );
-    assert(
-      calls.webhooks.length === 2 && calls.webhooks.every((w) => w.event === "booking.completed"),
-      "complete: fires booking.completed for each",
-    );
-    assert(
-      calls.webhooks.every((w) => w.deferred === false),
-      "#884: the completion sweep sends inline (no scheduler), so its bounded fan-out still caps connections",
-    );
+    // #2915: completion is on the clock (the call's end time passed), not evidence the
+    // call happened, so it fired for no-shows too. Regal knows from its own call data;
+    // the sweep only marks the row now and tells nobody.
+    assert(calls.webhooks.length === 0, "#2915 complete: sends no webhook for a completed booking");
 
     const { deps: dEmpty } = makeDeps({ pastDue: [] });
     assert(
@@ -182,17 +178,13 @@ async function run() {
     );
 
     // #163: an overlapping cron tick already flipped p1 to completed, so the
-    // conditional transition no-ops there and booking.completed must NOT re-fire.
-    const { deps: dRace, calls: cRace } = makeDeps({
+    // conditional transition no-ops there and only p1's own tick counts it.
+    const { deps: dRace } = makeDeps({
       pastDue: due,
       alreadyCompleted: new Set(["p1"]),
     });
     const raced = (await completePastBookings(dRace)).completed;
     assert(raced === 1, "complete: counts only rows this tick actually transitioned");
-    assert(
-      cRace.webhooks.length === 1 && cRace.webhooks[0].event === "booking.completed",
-      "complete: no duplicate booking.completed for an already-completed row",
-    );
   }
 
   // --- completePastBookings drains the whole backlog (#871) ---
@@ -228,20 +220,16 @@ async function run() {
       calls.completeBookingsIfDue.length === 3,
       "drain: one batched transition per loaded batch",
     );
-    assert(
-      calls.webhooks.length === PAST_COMPLETION_BATCH_LIMIT * 2 + 30 &&
-        calls.webhooks.every((w) => w.event === "booking.completed"),
-      "drain: fires booking.completed for every drained booking",
-    );
+    assert(calls.webhooks.length === 0, "#2915 drain: sends no webhook for any drained booking");
     // The loop stopped after the under-cap batch: no needless extra fetch.
     assert(
-      calls.loadPastBookingsToComplete === 3,
+      calls.loadPastBookingIdsToComplete === 3,
       "drain: stops loading once a batch comes back under the cap",
     );
 
-    // Stall guard: a FULL batch that transitions zero rows (only unresolvable
-    // rows left, already error-logged per row) must stop the loop, not re-fetch
-    // the same set forever.
+    // Stall guard: a FULL batch that transitions zero rows (every row it loaded
+    // was completed or cancelled by something else in between) must stop the
+    // loop, not re-fetch the same set forever.
     const stallBatch = fullBatch("stall");
     const { deps: dStall, calls: cStall } = makeDeps({
       pastDueBatches: [stallBatch, fullBatch("never")],
@@ -256,7 +244,7 @@ async function run() {
     );
     assert(
       cStall.completeBookingsIfDue.length === 1 &&
-        cStall.loadPastBookingsToComplete === 1,
+        cStall.loadPastBookingIdsToComplete === 1,
       "drain: a zero-progress batch stops the loop instead of re-fetching",
     );
 

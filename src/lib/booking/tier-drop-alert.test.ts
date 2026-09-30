@@ -208,7 +208,7 @@ function makeTierDropDeps(requested = "511", lower = "411"): BookingDeps {
     loadAgentDisplayName: async () => null,
     queryBookings: async () => ({ rows: [] as Booking[], buckets: [] as Bucket[] }),
     getAgentByEmail: async () => null,
-    loadPastBookingsToComplete: async () => [],
+    loadPastBookingIdsToComplete: async () => [],
     emitWebhook: noop,
     newManageToken: () => "tok-fixed",
     newIdempotencyKey: () => "anon-fixed",
