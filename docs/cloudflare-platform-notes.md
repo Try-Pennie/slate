@@ -151,6 +151,32 @@ It fails **open and loud** like every other limiter here, and it declines to
 judge a request whose address could not be identified at all, because `"unknown"`
 is a shared bucket rather than an address.
 
+## Work after the response is cancelled 30 seconds after it (#2922)
+
+`after()` maps to `ctx.waitUntil`, and Cloudflare cancels whatever is still
+running 30 seconds after the response ends, logging
+`waitUntil() tasks did not complete within the allowed time after invocation end
+and have been cancelled` as a `warn` on the invocation. Nothing in the app can
+record that, because the cancelled code never runs again.
+
+Measured on 2026-09-30: 145 of 165 Google pushes in one hour were cancelled, each
+invocation running 28 to 34 seconds of wall time and 15 to 24 seconds of CPU. The
+calendar sync finished (no `sync_claimed_at` claim was left behind, which a sync
+cut off mid pass would leave); the slot refresh after it recomputed every bucket
+CODE the agent is in, one after another, at about four seconds each. It now
+computes once per pool and stops starting pools after `AGENT_RECOMPUTE_BUDGET_MS`
+(`src/lib/availability/slot-cache.ts`), leaving the rest to the every minute
+recompute lane.
+
+**Measuring it.** A push whose work finished logs
+`tag=google-push msg="push work finished"` with its outcome and elapsed `ms`, and
+each agent refresh logs `tag=slot-cache msg="agent pools recomputed"` with how
+many pools it refreshed, deferred, failed and debounced. The cancel rate is the
+count of cancellation warnings on invocations whose `$metadata.message` includes
+`/api/google/push`, against the count of `push work finished` lines over the same
+window. Both sides are needed: the finished count alone cannot tell a quiet hour
+from a broken one.
+
 ## Subrequests are NOT a constraint
 
 Cloudflare **removed the old 1,000 subrequest cap on 2026-02-11**. Workers Paid is
