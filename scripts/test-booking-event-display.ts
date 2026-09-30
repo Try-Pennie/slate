@@ -218,6 +218,9 @@ const sameTimeReassign = toBookingEventView(
   OPTS,
 );
 eq(sameTimeReassign.lead, "16 hours before the call", "same time reassign lead names the call");
+// And it draws no "8:00am -> 8:00am" line: a time that did not change is not a
+// change, and the same fact twice on one entry (L605) is what Dan saw next.
+eq(sameTimeReassign.timeChange, null, "same time reassign shows no time change");
 // Same instant written two ways is still the same time.
 eq(
   toBookingEventView(
@@ -227,6 +230,15 @@ eq(
   ).lead,
   "1 hour before the call",
   "one instant in two spellings is not a move",
+);
+eq(
+  toBookingEventView(
+    { ...reassign, from_starts_at: "2026-10-01T12:00:00Z", to_starts_at: "2026-10-01T12:00:00.000+00:00" },
+    nameOf,
+    OPTS,
+  ).timeChange,
+  null,
+  "one instant in two spellings draws no time change",
 );
 
 const cancel: BookingEvent = {

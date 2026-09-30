@@ -183,8 +183,12 @@ export function toBookingEventView(
   nameOf: NameResolver,
   reasonOptions: ReasonOptionsByAction,
 ): BookingEventView {
+  // One judge for "did this entry move the call" feeds both the time line and the
+  // lead wording, so an unchanged time neither draws "8:00am -> 8:00am" nor says
+  // "then" (Dan, 2026-09-30), and the two can never disagree about one entry.
+  const moved = movedTheCall(e.from_starts_at, e.to_starts_at);
   const timeChange =
-    e.from_starts_at && e.to_starts_at
+    moved && e.from_starts_at && e.to_starts_at
       ? { from: e.from_starts_at, to: e.to_starts_at }
       : null;
   const agentChange =
@@ -202,6 +206,6 @@ export function toBookingEventView(
     reason: reasonLabel(REASON_ACTION[e.action], e.reason_code, e.reason_detail, reasonOptions),
     timeChange,
     agentChange,
-    lead: formatLeadTime(e.lead_time_minutes, movedTheCall(e.from_starts_at, e.to_starts_at)),
+    lead: formatLeadTime(e.lead_time_minutes, moved),
   };
 }
