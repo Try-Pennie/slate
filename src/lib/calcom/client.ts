@@ -414,8 +414,8 @@ export async function calcomTierBookingCounts(fromIso: string, toIso: string): P
   const fromMs = Date.parse(fromIso); // parse-ok: built by the caller from a number with toISOString
   const toMs = Date.parse(toIso); // parse-ok: as above
   const read = await readRoutingResponses({
-    get: async (path) => {
-      const r = await calcomFetch(path);
+    get: async (path, apiVersion) => {
+      const r = await calcomFetch(path, { headers: { "cal-api-version": apiVersion } });
       return { status: r.status, json: { data: r.data } };
     },
     org: calcomOrgId(),

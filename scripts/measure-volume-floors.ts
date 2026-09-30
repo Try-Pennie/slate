@@ -56,7 +56,7 @@
 //   MEASURE_PACE_MS  pacing between pages (default 550, measured in #2240)
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { loadEnvFiles, envOr } from "./smoke-env.ts";
-import { PACE_REFUSAL, paceMsOrNull, readRoutingResponses, tierOf } from "./lib/calcom-routing-responses.ts";
+import { PACE_REFUSAL, calcomGetter, paceMsOrNull, readRoutingResponses, tierOf } from "./lib/calcom-routing-responses.ts";
 import {
   FLOOR_SCOPE,
   TIER_BASELINES_PATH,
@@ -235,13 +235,7 @@ if (PACE_MS === null) {
   process.exit(1);
 }
 
-async function calGet(path: string): Promise<{ status: number; json: unknown }> {
-  const res = await fetch(`https://api.cal.com/v2${path}`, {
-    headers: { Authorization: `Bearer ${KEY}`, "cal-api-version": "2024-06-14" },
-  });
-  const json = await res.json().catch(() => null);
-  return { status: res.status, json };
-}
+const calGet = calcomGetter(KEY);
 
 const per = SERIES_BUCKET_MINUTES * 60_000;
 const endMs = Math.floor(Date.now() / per) * per;

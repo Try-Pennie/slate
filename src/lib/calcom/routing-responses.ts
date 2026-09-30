@@ -37,7 +37,15 @@ export type RoutingReadResult =
   | { ok: true; rows: RoutingResponse[]; formCount: number }
   | { ok: false; reason: "forms-unreadable" | "responses-unreadable"; status: number; formName?: string };
 
-type Getter = (path: string) => Promise<{ status: number; json: unknown }>;
+/**
+ * The cal.com API version every routing response read asks for, owned here rather than
+ * by each caller: the volume measurements were read at it, and a caller asking at
+ * another (or at none) could count the same traffic differently (L728, #2893).
+ */
+export const ROUTING_API_VERSION = "2024-06-14";
+
+/** One GET against cal.com, sent with the `cal-api-version` header the reader names. */
+type Getter = (path: string, apiVersion: string) => Promise<{ status: number; json: unknown }>;
 
 interface RawForm {
   id: string;
@@ -62,7 +70,7 @@ export async function readRoutingResponses(opts: {
   pageSize?: number;
 }): Promise<RoutingReadResult> {
   const page = opts.pageSize ?? 250;
-  const formsRes = await opts.get(`/organizations/${opts.org}/routing-forms`);
+  const formsRes = await opts.get(`/organizations/${opts.org}/routing-forms`, ROUTING_API_VERSION);
   const forms = (formsRes.json as { data?: RawForm[] } | null)?.data;
   if (formsRes.status !== 200 || !Array.isArray(forms) || forms.length === 0) {
     return { ok: false, reason: "forms-unreadable", status: formsRes.status };
@@ -73,6 +81,7 @@ export async function readRoutingResponses(opts: {
       const res = await opts.get(
         `/organizations/${opts.org}/routing-forms/${form.id}/responses` +
           `?take=${page}&skip=${skip}&sortCreatedAt=desc&afterCreatedAt=${encodeURIComponent(opts.fromIso)}`,
+        ROUTING_API_VERSION,
       );
       const data = (res.json as { data?: RawResponse[] } | null)?.data;
       if (res.status !== 200 || !Array.isArray(data)) {

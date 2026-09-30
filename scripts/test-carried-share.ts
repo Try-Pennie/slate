@@ -29,7 +29,7 @@ import {
   type StoredTierShare,
 } from "../src/lib/monitor/carried-share.ts";
 import { FLOOR_FIT, type FloorCell, type VolumeBaseline } from "../src/lib/monitor/volume-floors.ts";
-import { bookedByTier, type RoutingResponse } from "../src/lib/calcom/routing-responses.ts";
+import { ROUTING_API_VERSION, bookedByTier, readRoutingResponses, type RoutingResponse } from "../src/lib/calcom/routing-responses.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
 const HOUR = 60 * 60_000;
@@ -218,6 +218,29 @@ assert(!isStoredCarriedShare(null), "nothing does not");
     threw = true;
   }
   assert(threw, "an unreadable stamp refuses the count rather than dropping a booking cal.com took");
+}
+
+// --- the reader owns the cal.com API version, so every caller counts the same way ---
+// The measurements were read at one version; a reader that let each caller choose
+// (the Worker's daily count sent none) could get a different answer for the same
+// traffic, and the share would compare two different things (L728).
+{
+  const versions: string[] = [];
+  const read = await readRoutingResponses({
+    get: async (path, apiVersion) => {
+      versions.push(apiVersion);
+      if (path.endsWith("/routing-forms")) return { status: 200, json: { data: [{ id: "f1", name: "Form" }] } };
+      return { status: 200, json: { data: [] } };
+    },
+    org: "1",
+    fromIso: new Date(monday9).toISOString(),
+    paceMs: 0,
+    sleep: async () => {},
+  });
+  eq(read.ok, true, "a fake cal.com answers");
+  eq(versions.length, 2, "one forms read and one responses page");
+  assert(versions.every((v) => v === ROUTING_API_VERSION), `every read asks for the one pinned version (${versions.join(", ")})`);
+  eq(ROUTING_API_VERSION, "2024-06-14", "the version the committed measurements were read at");
 }
 
 finish();
