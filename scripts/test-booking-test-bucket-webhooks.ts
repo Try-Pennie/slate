@@ -3,7 +3,7 @@
 // The smoke test books real bookings through the key-authed API (allowTestBuckets),
 // so without a gate every smoke run injects a synthetic lead downstream and then
 // cancels it. The gate lives in orchestration's `fire()`, the single choke point
-// every booking webhook passes through, so create/cancel/reschedule/complete are all
+// every booking webhook passes through, so create/cancel/reschedule/reassign are all
 // covered by one check.
 //
 // The emission is still RECORDED, marked suppressed, and only the external POST is

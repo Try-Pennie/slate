@@ -9,7 +9,7 @@ import { summarizeWebhookReply } from "@/lib/webhooks/response-summary";
 import { log } from "@/lib/log";
 import { webhookDeadAlert, webhookDeadRecovery } from "@/lib/monitor/cron-alert-copy";
 import type { WebhookPayload, WebhookPayloadFor } from "@/lib/webhooks/types";
-import { isAgentEvent, isEmittedEvent } from "@/lib/webhooks/events";
+import { isAgentEvent, isEmittedEvent, WEBHOOK_EVENTS } from "@/lib/webhooks/events";
 import { regalSendsNothingFor } from "@/lib/webhooks/regal";
 import { payloadForSend, type CurrentRoutableRead } from "@/lib/webhooks/agent-trait";
 import type { WebhookEndpoint, WebhookEvent } from "@/lib/db/types";
@@ -22,10 +22,10 @@ const DEAD_LETTER_COOLDOWN_MS = 30 * 60 * 1000;
 const SUPPRESSED_RESPONSE = "suppressed: is_test bucket, external POST skipped (#459)";
 
 /**
- * #2073: an agent link booking's reassign or completion, recorded for a Regal
- * endpoint and never sent. cal.com's personal link sent Regal nothing for either,
- * and the Regal body for these bookings ("Client Sync Action") has no action for
- * them, so sending one would invent an event no journey expects.
+ * #2073: an agent link booking's reassign, recorded for a Regal endpoint and never
+ * sent. cal.com's personal link sent Regal nothing for it, and the Regal body for
+ * these bookings ("Client Sync Action") has no action for it, so sending one would
+ * invent an event no journey expects.
  */
 const SUPPRESSED_AGENT_LINK_RESPONSE =
   "suppressed: an agent link booking has no Regal event for this (#2073), external POST skipped";
@@ -428,6 +428,10 @@ export async function retryFailedDeliveries(): Promise<number> {
     .from("webhook_deliveries")
     .select("id, endpoint_id, event, payload, attempts, updated_at")
     .in("status", ["failed", "pending"])
+    // #2915: only events Slate still sends. A row of a retired event is never
+    // POSTed (claimAndSend refuses it), so selecting it would park it in this
+    // window for ever, taking one of the hundred slots every tick.
+    .in("event", WEBHOOK_EVENTS)
     // Belt and braces (#459): a suppressed row is already terminal ('success'), so
     // it can't match the status filter, but never sweep one into a POST.
     .eq("suppressed", false)
@@ -586,6 +590,7 @@ export async function replayDeadLetteredDeliveries(
     .select("id, endpoint_id, event, payload, attempts, status")
     .in("endpoint_id", [...byId.keys()])
     .eq("status", "failed")
+    .in("event", WEBHOOK_EVENTS) // #2915: never replay an event Slate no longer sends
     .eq("suppressed", false) // #459: never replay a suppressed (is_test) delivery
     .eq("payload_erased", false) // #1073: never replay an erased ({}) payload
     .gte("attempts", WEBHOOK_MAX_ATTEMPTS)

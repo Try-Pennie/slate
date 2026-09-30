@@ -78,7 +78,10 @@ function makeBuilder(table: string) {
     if (b._updated) b._selectedAfterUpdate = true;
     return b;
   };
-  b.in = self;
+  b.in = (col: string, val: unknown) => {
+    state.filters.push({ table, col, val });
+    return b;
+  };
   b.lt = self;
   b.gte = self;
   b.eq = (col: string, val: unknown) => {
@@ -143,6 +146,7 @@ import {
 } from "./emit";
 import type { BookingEventPayload } from "@/lib/webhooks/types";
 import { WEBHOOK_MAX_ATTEMPTS } from "@/lib/webhooks/retry";
+import { WEBHOOK_EVENTS } from "@/lib/webhooks/events";
 
 const endpoint = {
   id: "ep1",
@@ -552,7 +556,7 @@ describe("misconfigured Regal endpoint (#600)", () => {
 
 // #2073: a booking through an advisor's own link reaches Regal as "Client Sync
 // Action" for a create, a move and a cancel, which is all cal.com's personal link
-// ever sent. A reassign or a completion has no equivalent, so Regal gets nothing,
+// ever sent. A reassign has no equivalent, so Regal gets nothing,
 // while a non Regal subscriber still receives the event as before.
 describe("agent link bookings and Regal (#2073)", () => {
   const regal = { ...endpoint, id: "ep-regal", format: "regal", url: "https://events.regalvoice.com/events", auth_header: "key" };
@@ -615,6 +619,18 @@ describe("an event Slate no longer sends (#2915)", () => {
     const res = await resendDelivery("d1", "o1");
     expect(fetchMock).not.toHaveBeenCalled();
     expect(res).toBe("retired-event");
+  });
+
+  it("the retry and replay reads ask only for events Slate still sends, so a retired row never holds a slot", async () => {
+    state.deliveries = [];
+    await retryFailedDeliveries();
+    await replayDeadLetteredDeliveries("o1", new Date(Date.now() - 3_600_000).toISOString());
+    const eventFilters = state.filters.filter((f) => f.table === "webhook_deliveries" && f.col === "event");
+    expect(eventFilters).toHaveLength(2);
+    for (const f of eventFilters) {
+      expect([...(f.val as string[])].sort()).toEqual([...WEBHOOK_EVENTS].sort());
+      expect(f.val as string[]).not.toContain("booking.completed");
+    }
   });
 
   it("retryFailedDeliveries never POSTs it, and still sends a current event beside it", async () => {
