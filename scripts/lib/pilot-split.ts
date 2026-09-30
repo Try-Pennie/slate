@@ -109,7 +109,10 @@ const OPEN_EVENTS = new Set(["view_booker", "navigate_to_booker"]);
 const BOOKED_EVENT = "complete_booking";
 const ASSIGNMENT_EVENT = "booking_assignment";
 /**
- * Every `ga4_event_name` trypennie's booker tracker sends. A lead counts as booked on
+ * Every booker step trypennie's tracker sends. They reach GA4 as the EVENT NAME
+ * itself (`view_booker`, `complete_booking`): the container's Cal Booking Funnel tag
+ * renames `cal_booking` by its step (read 2026-09-30); a `ga4_event_name` column,
+ * where an export has one, carries the same values. A lead counts as booked on
  * `complete_booking` whether or not a `cancel_booking` follows: the booking rate is
  * whether the booker converted the lead, and a later cancellation is a separate
  * outcome. The Slate cross check reads Slate's bookings in every status for the same
@@ -401,6 +404,18 @@ export function readExports(exports: readonly ExportFile[]): ParsedExport {
         message:
           `${file.name} holds exactly ${p.dataRows} rows, one of GA4's row limits, so it was probably cut off and would ` +
           "under count both halves. Export fewer days per file and send them all.",
+      };
+    }
+    // A booker event still named cal_booking has lost its step: nothing in the file
+    // says which it was, and counting it as none reads every such lead as one who
+    // never opened the booker (L11).
+    if (p.rows.some((r) => r.event === "cal_booking")) {
+      return {
+        ok: false,
+        exit: PILOT_SPLIT_EXIT.missingColumn,
+        message:
+          `${file.name} has booker events named cal_booking and no ga4_event_name column, so their steps cannot be read. ` +
+          "Export the step names as Event name (the Event name filter in docs/pilot-split-report.md), or add ga4_event_name.",
       };
     }
     parsed.push({ name: file.name, p });
