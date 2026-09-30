@@ -40,7 +40,7 @@ if (!KEY) {
   process.exit(1);
 }
 
-const { PACE_REFUSAL, paceMsOrNull, readRoutingResponses } = await import("./lib/calcom-routing-responses.ts");
+const { PACE_REFUSAL, calcomGetter, paceMsOrNull, readRoutingResponses } = await import("./lib/calcom-routing-responses.ts");
 
 const ORG = envOr(process.env.CALCOM_ORG_ID, "19474");
 const DAYS = Number(envOr(process.env.MEASURE_DAYS, "14"));
@@ -54,13 +54,7 @@ if (!Number.isFinite(DAYS) || DAYS <= 0) {
   process.exit(1);
 }
 
-async function calGet(path: string): Promise<{ status: number; json: unknown }> {
-  const res = await fetch(`https://api.cal.com/v2${path}`, {
-    headers: { Authorization: `Bearer ${KEY}`, "cal-api-version": "2024-06-14" },
-  });
-  const json = await res.json().catch(() => null);
-  return { status: res.status, json };
-}
+const calGet = calcomGetter(KEY);
 
 // The paging loop is shared with `measure:volume-floors` (#1956), so both commands
 // count the same traffic and both refuse a partial read the same way (L98).
