@@ -101,7 +101,8 @@ function idsInBucketRange(n: number, below: boolean, percent: number, prefix: st
 
 // --- 2. parsing: every required column is named when missing -------------------
 {
-  for (const missing of ["Date", "submission_id", "booking_provider", "Event name", "ga4_event_name", "Event count"]) {
+  // ga4_event_name is optional since the real container was read (see the real export case below).
+  for (const missing of ["Date", "submission_id", "booking_provider", "Event name", "Event count"]) {
     const header = HEADER.filter((h) => h !== missing);
     const parsed = parseGa4Export(csv([], header));
     assert(!parsed.ok, `a file with no ${missing} column is refused`);
@@ -290,6 +291,25 @@ function idsInBucketRange(n: number, below: boolean, percent: number, prefix: st
   assert(text(healthy).includes(`${slateIds.length} leads`), "the report says how many leads it compared");
   assert(!/[\u2014\u2013]/.test(text(healthy)), "the report carries no em or en dash");
   eq(healthy.slateBookedKeys.size, 30, "the Slate half's booked submissions are handed to the cross check");
+
+  // The export the real container produces (#2898): the GTM tag names each booker
+  // event after its step (`view_booker`, `complete_booking`), sends no
+  // ga4_event_name parameter, so the export has no such column.
+  const REAL_HEADER = ["Date", "submission_id", "booking_provider", "Event name", "Event count"];
+  const realRows = [
+    ...slateIds.flatMap((id, i) => [
+      ["20261005", id, "slate", "booking_assignment", "1"],
+      ...(i < 30 ? [["20261005", id, "slate", "view_booker", "1"], ["20261005", id, "slate", "complete_booking", "1"]] : i < 60 ? [["20261005", id, "slate", "view_booker", "1"]] : []),
+    ]),
+    ...calIds.flatMap((id, i) => [
+      ["20261005", id, "cal.com", "booking_assignment", "1"],
+      ...(i < 20 ? [["20261005", id, "cal.com", "view_booker", "1"], ["20261005", id, "cal.com", "complete_booking", "1"]] : i < 70 ? [["20261005", id, "cal.com", "view_booker", "1"]] : []),
+    ]),
+  ];
+  const real = judge(csv(realRows, REAL_HEADER), { PILOT_SPLIT_PERCENT: "50" });
+  eq(real.exit, PILOT_SPLIT_EXIT.compared, "an export with no ga4_event_name column, the booker step in Event name, is compared");
+  eq(real.slateBookedKeys.size, 30, "and its bookings are read from the event name");
+  assert(text(real).includes(`${slateIds.length} leads`), "over every lead");
 
   const noFile = judge(null);
   eq(noFile.exit, PILOT_SPLIT_EXIT.notConfigured, "no PILOT_SPLIT_CSV exits on its own code, before anything is read");

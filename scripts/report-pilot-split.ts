@@ -20,27 +20,26 @@
 // submission; Slate holds no GA4 API credentials. So the input is a GA4 Exploration
 // export, downloaded by hand. Setup, once:
 //
-//   1. GTM: a GA4 Event tag named booking_assignment, fired on the custom event
-//      trigger `booking_assignment`, sending the dataLayer values booking_provider
-//      and submission_id as event parameters. trypennie pushes the event on every
-//      load of both pages (Halo-lab-Trypennie/trypennie#517); without the tag GA4 never sees it and this
-//      command exits 6. The existing cal_booking tag must also send
-//      booking_provider and submission_id beside ga4_event_name.
+//   1. GTM: a GA4 Event tag on a Custom Event trigger booking_assignment, sending
+//      booking_provider, submission_id and xbc. trypennie pushes the event on every
+//      load of both pages (Halo-lab-Trypennie/trypennie#517); without the tag GA4
+//      never sees it and this command exits 6. The booker steps already reach GA4
+//      as their own event names (view_booker, complete_booking) with both
+//      parameters, through the existing Cal Booking Funnel tag.
 //   2. GA4 Admin, Custom definitions: register three EVENT scoped custom
-//      dimensions, display names exactly submission_id, booking_provider and
-//      ga4_event_name, each on the parameter of the same name. Registration is not
-//      retroactive: only events after it carry the dimension.
-//   3. Explore, Free form. Rows: Date, submission_id, booking_provider, Event name,
-//      ga4_event_name. Values: Event count. Filter: Event name exactly matches
-//      booking_assignment OR cal_booking (or, if the GTM tag names GA4 events after
-//      ga4_event_name, those names). Date range: only days SlatePilotPercent__c held
-//      one value. Show rows: the largest, and check the row count is under it.
+//      dimensions, submission_id, booking_provider and xbc, each on the parameter
+//      of the same name. Registration is not retroactive.
+//   3. Explore, Free form. Rows: Date, submission_id, booking_provider, xbc, Event
+//      name. Values: Event count. Filter: Event name matches regex
+//      booking_assignment|navigate_to_booker|view_booker|reopen_booker|reload_booker|load_slots|complete_booking|cancel_booking|reschedule_booking|fail_booker_load.
+//      Date range: only days SlatePilotPercent__c held one value. Show rows: the
+//      largest. The full walkthrough is docs/pilot-split-report.md.
 //   4. Share, Download file, CSV. That file is PILOT_SPLIT_CSV; several files, one
 //      per week, are read together.
 //
 // The export must hold ONLY PILOT leads (see scripts/lib/pilot-split.ts, rule 4):
-// either an extra xbc column (a fourth custom dimension, which needs trypennie to
-// push xbc with booking_assignment), or PILOT_SPLIT_PERCENT so the hash can find
+// either an xbc column (the third custom dimension, which trypennie sends with
+// booking_assignment since #517), or PILOT_SPLIT_PERCENT so the hash can find
 // the leads that were never in the pilot. A lead is counted once per submission,
 // only if it has a booking_assignment event, and a lead seen under both providers
 // is left out of both halves and counted.
