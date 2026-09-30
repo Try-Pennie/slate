@@ -25,7 +25,7 @@ vi.mock("@/lib/env", () => ({
   calcomBaseUrl: () => env.baseUrl,
 }));
 
-import { addOooOverrides, removeOooOverrides } from "./client";
+import { addOooOverrides, calcomRoutedSlots, removeOooOverrides } from "./client";
 import {
   isFailure,
   isProvisionalSkip,
@@ -365,5 +365,39 @@ describe("a date's overrides are derived from every approved absence on it (#241
     );
     expect(outcome).toBe("ok");
     expect(offered("2026-08-07")).toBe("the normal week");
+  });
+});
+
+// #2927 follow up: the pilot offer sample runs on the monitor lane, so a cal.com
+// call that never answers would stall every check after it with nothing recorded.
+describe("calcomRoutedSlots", () => {
+  it("asks the routing form's calculate-slots with the lead's fields", async () => {
+    replies = [{ status: 200, data: { eventTypeId: 1, slots: {} } }];
+    const out = await calcomRoutedSlots("form-1", { xbc: 112 }, "2026-10-01T00:00:00.000Z", "2026-10-02T00:00:00.000Z");
+    expect(out.status).toBe(200);
+    expect(urls[0]).toContain("/routing-forms/form-1/calculate-slots?");
+    expect(bodies[0]).toEqual({ xbc: 112 });
+  });
+
+  it("gives up on a cal.com that never answers, so the caller records a failure", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        (_url: string, init?: { signal?: AbortSignal }) =>
+          new Promise((_resolve, reject) => {
+            init?.signal?.addEventListener("abort", () => reject(new Error("aborted")));
+          }),
+      ),
+    );
+    await expect(
+      calcomRoutedSlots("form-1", { xbc: 112 }, "2026-10-01T00:00:00.000Z", "2026-10-02T00:00:00.000Z", 20),
+    ).rejects.toThrow();
+  });
+
+  it("refuses when cal.com is not configured here", async () => {
+    env.apiKey = "";
+    await expect(
+      calcomRoutedSlots("form-1", { xbc: 112 }, "2026-10-01T00:00:00.000Z", "2026-10-02T00:00:00.000Z"),
+    ).rejects.toThrow("not configured");
   });
 });

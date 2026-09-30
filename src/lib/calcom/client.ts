@@ -444,6 +444,10 @@ export async function calcomRoutedSlots(
   fields: Record<string, number | string>,
   startIso: string,
   endIso: string,
+  // It runs on the monitor lane, awaited ahead of the checks after it, so a cal.com
+  // that never answers must give up rather than stall them. Measured 2026-09-30 the
+  // call answers in well under a second; ten gives a slow day plenty of room.
+  timeoutMs = CALCOM_ROUTED_SLOTS_TIMEOUT_MS,
 ): Promise<{ status: number; data: unknown }> {
   if (!calcomConfigured()) throw new Error("cal.com is not configured here");
   const q = new URLSearchParams({ start: startIso, end: endIso });
@@ -451,5 +455,9 @@ export async function calcomRoutedSlots(
     method: "POST",
     headers: { "cal-api-version": "2024-09-04" },
     body: JSON.stringify(fields),
+    signal: AbortSignal.timeout(timeoutMs),
   });
 }
+
+/** How long the pilot offer sample waits for cal.com before recording a failure. */
+export const CALCOM_ROUTED_SLOTS_TIMEOUT_MS = 10_000;

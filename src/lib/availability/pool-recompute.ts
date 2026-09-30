@@ -183,8 +183,9 @@ export interface AgentPoolsDeps {
   nowMs(): number;
   /** No pool is STARTED at or past this instant; the rest are deferred. */
   deadlineMs: number;
-  /** Refresh one whole pool: one compute, written to every code in it. */
-  recomputePool(pool: PooledBucket[]): Promise<unknown>;
+  /** Refresh one whole pool: one compute, written to every code in it. Resolves to
+   *  how many codes' rows were written; zero means nothing landed. */
+  recomputePool(pool: PooledBucket[]): Promise<number>;
   /** When each pool key was last started in this isolate. */
   lastRunAt: Map<string, number>;
   /** A pool started less than this long ago is skipped. */
@@ -239,12 +240,25 @@ export async function recomputeAgentPools(
       outcome.debounced++;
       continue;
     }
+    // Stamped before the compute so a burst of pushes in this isolate computes the
+    // pool once, and cleared again on a failure: the debounce stands for "this pool
+    // was just refreshed", which a failure is not, so the next push must try again.
     deps.lastRunAt.set(key, now);
     try {
-      await deps.recomputePool(pool);
-      outcome.refreshed++;
+      const written = await deps.recomputePool(pool);
+      if (written > 0) {
+        outcome.refreshed++;
+      } else {
+        // A compute that answered nothing, or writes that all failed, landed no row.
+        // Counting it as refreshed would have the refresh's log line claim work
+        // that never happened (L11).
+        outcome.failed++;
+        deps.lastRunAt.delete(key);
+        log.warn("precompute", { msg: "agent pool recompute wrote no rows", bucket: pool[0].code });
+      }
     } catch (err) {
       outcome.failed++;
+      deps.lastRunAt.delete(key);
       log.warn("precompute", { msg: "agent pool recompute failed", bucket: pool[0].code }, err);
     }
   }
