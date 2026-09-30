@@ -69,7 +69,7 @@ describe("reportSweepFailures (#2544)", () => {
     expect(key).toBe(COMPLETION_SWEEP_FAILING_KEY);
     expect(body).toContain("complete");
     // The page has to say what a reader LOSES, not merely that a sweep is erroring.
-    expect(body).toContain("booking.completed");
+    expect(body).toContain("counting as upcoming");
     expect(body).toContain(String(SWEEP_FAILURE_ALERT_AFTER_RUNS));
   });
 

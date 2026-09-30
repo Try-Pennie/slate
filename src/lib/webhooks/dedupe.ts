@@ -6,8 +6,8 @@ import type { WebhookEvent } from "@/lib/db/types";
  * so a re-enqueue of the SAME logical event inserts nothing and re-sends nothing
  * — exactly-once to Regal/Cadence — while a genuinely new action still fires.
  *
- * - `booking.created` / `booking.completed`: no `booking_events` row exists, and
- *   there is exactly one of each per booking, ever → key on the booking id.
+ * - `booking.created`: no `booking_events` row exists, and there is exactly
+ *   one per booking, ever → key on the booking id.
  * - `booking.rescheduled` / `booking.cancelled`: key on the
  *   `booking_events` row id, which is fresh per action — so a legitimate SECOND
  *   reschedule is NOT deduped away.
@@ -26,7 +26,7 @@ export function webhookDedupeKey(
   event: WebhookEvent,
   ctx: { bookingId: string; bookingEventId: string | null },
 ): string | null {
-  if (event === "booking.created" || event === "booking.completed") {
+  if (event === "booking.created") {
     return ctx.bookingId;
   }
   return ctx.bookingEventId;

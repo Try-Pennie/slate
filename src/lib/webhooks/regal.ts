@@ -22,7 +22,6 @@ const EVENT_NAMES: Record<BookingWebhookEvent, string> = {
   "booking.rescheduled": "Slate Booking Rescheduled",
   "booking.cancelled": "Slate Booking Cancelled",
   "booking.reassigned": "Slate Booking Reassigned",
-  "booking.completed": "Slate Booking Completed",
 };
 
 // Collapse a zone's two seasonal abbreviations to one label, matching the old

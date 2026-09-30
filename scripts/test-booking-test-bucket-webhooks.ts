@@ -21,7 +21,6 @@ import {
   cancelBooking,
   rescheduleBooking,
   reassignBooking,
-  completePastBookings,
 } from "../src/lib/booking/orchestration.ts";
 import type { Bucket, User } from "../src/lib/db/types.ts";
 import {
@@ -201,34 +200,6 @@ async function run() {
     assert(
       !calls.webhooks.some((w) => w.event === "booking.rescheduled"),
       "reassign(real bucket): fires no booking.rescheduled alongside it",
-    );
-  }
-
-  // --- completion sweep: a mixed batch suppresses per booking, not all-or-nothing ---
-  // The cron completes every past booking in one sweep, so a smoke booking and a real
-  // lead's booking routinely land in the same batch. A gate that keyed off the batch
-  // rather than the row would either leak the smoke event or swallow the real one.
-  {
-    const pastDue = [
-      { booking: makeBooking({ id: "p-test", status: "confirmed" }), bucket: testBucket, eventType },
-      { booking: makeBooking({ id: "p-real", status: "confirmed" }), bucket: realBucket, eventType },
-    ];
-    const { deps, calls } = makeDeps({ pastDue });
-    const { completed } = await completePastBookings(deps);
-    assert(completed === 2, "complete(mixed batch): both bookings still transition to completed");
-    assert(
-      calls.webhooks.length === 2,
-      "complete(mixed batch): both bookings record a booking.completed emission",
-    );
-    const testEmit = calls.webhooks.find((w) => w.bucket_code === "999");
-    const realEmit = calls.webhooks.find((w) => w.bucket_code === "412");
-    assert(
-      testEmit?.suppressed === true,
-      "complete(mixed batch): the test bucket's emission is suppressed",
-    );
-    assert(
-      realEmit?.suppressed === false,
-      "complete(mixed batch): the real lead's emission is NOT suppressed (the gate is per row, not per batch)",
     );
   }
 

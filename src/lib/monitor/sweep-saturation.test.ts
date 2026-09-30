@@ -159,9 +159,9 @@ describe("reportCompletionSaturation (#883)", () => {
     const [key, text] = resolveAlert.mock.calls[0];
     expect(key).toBe(CKEY);
     expect(text).toContain("completion sweep");
-    // The page warned that completed webhooks were being delayed, so the
-    // all-clear has to answer that specific worry.
-    expect(text).toMatch(/webhook/i);
+    // The page warned that finished bookings were still counting as upcoming, so
+    // the all-clear has to answer that specific worry.
+    expect(text).toMatch(/counting as upcoming/i);
   });
 
   it("never announces recovery when the run's verdict is unknown", async () => {

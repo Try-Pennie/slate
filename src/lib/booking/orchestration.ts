@@ -1177,8 +1177,8 @@ export interface BookingDeps {
   /**
    * Batch-flips finished bookings to `completed`, returning the ids THIS call
    * actually transitioned. The update is gated on each row still being in a
-   * completable status, so an overlapping cron tick that already completed some
-   * of them won't re-fire their booking.completed (#163). One statement for the
+   * completable status, so a row an overlapping cron tick already completed is
+   * not counted twice (#163). One statement for the
    * whole batch instead of a round-trip per booking (#164).
    */
   completeBookingsIfDue(bookingIds: string[]): Promise<string[]>;
@@ -2632,9 +2632,6 @@ export async function findDuplicateWarning(
     manageUrl: manageUrl(deps, match.booking.manage_token),
   };
 }
-
-/** Max simultaneous booking.completed deliveries (Cloudflare subrequest cap). */
-const COMPLETION_WEBHOOK_CONCURRENCY = 6;
 
 /** Max reservations completed at once when draining a backlog (AUD-062). Rows are
  *  leased independently so concurrency never double-runs one; the cap keeps the
@@ -5186,12 +5183,15 @@ export async function cancelBookingWithDetail(
   return { claimed: true, booking: named };
 }
 
-/** Cron sweep: mark finished bookings complete and emit booking.completed. */
 /**
- * Complete one loaded batch: flip the due rows and fire booking.completed for
- * exactly the ones THIS call transitioned. Returns how many it transitioned so
- * the drain loop can tell progress (>0) from a stall (0). Assumes `due` is
- * non-empty.
+ * Complete one loaded batch: flip the due rows to `completed`. Returns how many
+ * THIS call transitioned so the drain loop can tell progress (>0) from a stall
+ * (0). Assumes `due` is non-empty.
+ *
+ * No webhook (#2915). Completion is decided on the clock, once a call's end time
+ * has passed, not on evidence the call happened, so `booking.completed` fired for
+ * no-shows too. Regal knows whether a call happened from its own call and
+ * disposition data, and nothing listened for the event.
  */
 async function completeDueBatch(
   deps: BookingDeps,
@@ -5199,29 +5199,10 @@ async function completeDueBatch(
 ): Promise<number> {
   // One batched UPDATE for the whole batch instead of a round-trip per booking
   // (#164). The returned ids are the rows THIS call actually flipped, so an
-  // overlapping cron tick that already completed some of them won't re-fire
-  // their booking.completed — the receiver can't dedupe a second delivery (#163).
-  const transitioned = new Set(
-    await deps.completeBookingsIfDue(due.map((d) => d.booking.id)),
-  );
-  const toFire = due.filter((d) => transitioned.has(d.booking.id));
-
-  // Fan booking.completed out with bounded concurrency rather than a serial
-  // await per booking — faster under a backlog, but capped so we don't blow
-  // the Worker's simultaneous-connection ceiling.
-  await mapWithConcurrency(
-    toFire,
-    COMPLETION_WEBHOOK_CONCURRENCY,
-    ({ booking, bucket, eventType }) =>
-      fire(
-        deps,
-        "booking.completed",
-        { ...booking, status: "completed" },
-        bucket,
-        eventType,
-      ),
-  );
-  return toFire.length;
+  // overlapping cron tick that already completed some of them is not counted twice
+  // (#163).
+  const transitioned = await deps.completeBookingsIfDue(due.map((d) => d.booking.id));
+  return transitioned.length;
 }
 
 /**

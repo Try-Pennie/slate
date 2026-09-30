@@ -52,16 +52,28 @@ const EVENT_FAMILY: {
   "booking.rescheduled": "booking",
   "booking.cancelled": "booking",
   "booking.reassigned": "booking",
-  "booking.completed": "booking",
   "agent.bookable_changed": "agent",
 };
 
 /** Every event Slate can emit. Order is the declaration order above. */
 export const WEBHOOK_EVENTS = Object.keys(EVENT_FAMILY) as WebhookEvent[];
 
-/** The family of one event. */
+/**
+ * Whether Slate still sends this event (#2915). A stored delivery can name an event
+ * that has since been removed (`booking.completed`), and the column is plain text,
+ * so the row's type says WebhookEvent while its value may not be one. Every send
+ * path asks this before a POST.
+ */
+export function isEmittedEvent(event: string): event is WebhookEvent {
+  return Object.prototype.hasOwnProperty.call(EVENT_FAMILY, event);
+}
+
+/**
+ * The family of one event. Read by prefix for a removed event, so a delivery row
+ * written before its event was retired still displays under the family it had.
+ */
 export function webhookEventFamily(event: WebhookEvent): WebhookEventFamily {
-  return EVENT_FAMILY[event];
+  return EVENT_FAMILY[event] ?? (String(event).startsWith("agent.") ? "agent" : "booking");
 }
 
 /** Narrowing form of the family, for the code that builds or refreshes a body. */

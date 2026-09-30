@@ -58,7 +58,7 @@ export interface BookingEventPayload {
   manage_url: string;
   /**
    * Reason + initiator for booking.rescheduled / booking.cancelled (#326).
-   * Null on booking.created / booking.completed (no reason applies).
+   * Null on booking.created (no reason applies).
    */
   reason: BookingReasonMeta | null;
   /**

@@ -9,7 +9,7 @@ import { summarizeWebhookReply } from "@/lib/webhooks/response-summary";
 import { log } from "@/lib/log";
 import { webhookDeadAlert, webhookDeadRecovery } from "@/lib/monitor/cron-alert-copy";
 import type { WebhookPayload, WebhookPayloadFor } from "@/lib/webhooks/types";
-import { isAgentEvent } from "@/lib/webhooks/events";
+import { isAgentEvent, isEmittedEvent } from "@/lib/webhooks/events";
 import { regalSendsNothingFor } from "@/lib/webhooks/regal";
 import { payloadForSend, type CurrentRoutableRead } from "@/lib/webhooks/agent-trait";
 import type { WebhookEndpoint, WebhookEvent } from "@/lib/db/types";
@@ -411,6 +411,10 @@ async function claimAndSend(
   payload: WebhookPayload,
   currentAttempts: number,
 ): Promise<boolean> {
+  // #2915: a row written before its event was retired is never POSTed again, on any
+  // path. Regal has no name for it any more, so it would arrive nameless. Checked
+  // before the claim, so the row is left exactly as it was.
+  if (!isEmittedEvent(event)) return false;
   if (!(await claimDeliveryAttempt(db, deliveryId, currentAttempts))) return false;
   await send(endpoint, deliveryId, event, payload, currentAttempts + 1);
   return true;
@@ -477,6 +481,7 @@ export type ResendResult =
   | "not-found"
   | "suppressed"
   | "payload-erased"
+  | "retired-event"
   | "deduped";
 
 /**
@@ -512,6 +517,9 @@ export async function resendDelivery(
   // #1073: the payload was blanked for PII retention. Refuse rather than POST an
   // empty {} body (a fake success on a generic endpoint, a throw on Regal).
   if (row.payload_erased) return "payload-erased";
+  // #2915: an event Slate no longer sends. Said here rather than left to the send
+  // path's own refusal, which the admin would read as "already re-sent".
+  if (!isEmittedEvent(row.event)) return "retired-event";
 
   // error-ok: a manual admin resend; a read error surfaces as "not-found" so the
   // admin retries, and nothing is sent or lost (no automatic side effect).

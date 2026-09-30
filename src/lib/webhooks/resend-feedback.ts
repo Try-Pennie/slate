@@ -34,6 +34,7 @@ export const RESEND_RESULTS: ResendResult[] = [
   "not-found",
   "suppressed",
   "payload-erased",
+  "retired-event",
   "deduped",
 ];
 
@@ -69,6 +70,14 @@ export function resendFeedback(result: ResendResult): ResendFeedback {
         tone: "error",
         message:
           "This delivery cannot be re-sent: its contents were deleted under the data retention window, so there is nothing left to send.",
+      };
+
+    case "retired-event":
+      // Permanent: Slate no longer sends this kind of event at all (#2915).
+      return {
+        tone: "error",
+        message:
+          "This kind of event is no longer sent, so this delivery cannot be re-sent.",
       };
 
     case "suppressed":

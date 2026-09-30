@@ -359,7 +359,6 @@ function checkContract(event: WebhookEvent, expected: string[]) {
 }
 
 checkContract("booking.created", BASE_KEYS);
-checkContract("booking.completed", BASE_KEYS);
 checkContract("booking.rescheduled", RESCHEDULE_KEYS);
 checkContract("booking.cancelled", CANCEL_KEYS);
 checkContract("booking.reassigned", REASSIGN_KEYS);
@@ -370,7 +369,6 @@ for (const event of [
   "booking.created",
   "booking.rescheduled",
   "booking.cancelled",
-  "booking.completed",
   "booking.reassigned",
 ] as WebhookEvent[]) {
   const built = buildRegalEvent(event, payload);
@@ -548,7 +546,7 @@ for (const [zone, label] of [
   assert(moved.properties.scheduled_at === "2026-06-09T18:30:00.000Z", "#2073: a reschedule carries the new start, normalised to ISO UTC");
   // The same shape stored by Postgres keeps meaning the same instant.
   // cal.com's personal link sent nothing for these, so there is no event to build.
-  for (const event of ["booking.reassigned", "booking.completed"] as const) {
+  for (const event of ["booking.reassigned"] as const) {
     assert(regalSendsNothingFor(event, named), `#2073: an agent link ${event} sends nothing to Regal`);
     assert(!regalSendsNothingFor(event, payload), `#2073: a routed ${event} is still sent`);
   }

@@ -776,7 +776,6 @@ format per endpoint is built by `src/lib/webhooks/wire.ts`.
 | `booking.rescheduled` | A booking's TIME moves: in place, or across buckets |
 | `booking.cancelled` | A booking is cancelled |
 | `booking.reassigned` | A booking moves to another advisor at the same time (#2368): the machine contact-owner move, an admin reassign, the bulk redistribute, the offboarding coverage sweep |
-| `booking.completed` | A past booking is marked completed by the complete lane |
 
 A reassign used to arrive as `booking.rescheduled`, so every consumer listening
 for a time change fired on a booking whose time had not moved. It is its own
@@ -967,7 +966,7 @@ cost matters; see `docs/cloudflare-platform-notes.md`.
 | `GET /api/cron/outbox` | Drains the booking outbox (#429): resumes any mutation whose side effects are not fully delivered, plus the reservation and abandoned-pin sweeps. |
 | `GET /api/cron/selfheal` | The booking-safety sweeps (#433): reconciles missing busy blocks, orphaned calendar events, and the other invariants a crash can break. |
 | `GET /api/cron/monitor` | The monitor lane: every health check, each inside its own boundary so one throw cannot take out the rest (#1281). |
-| `GET /api/cron/complete` | Flips due appointments to completed and fires `booking.completed`. |
+| `GET /api/cron/complete` | Flips due appointments to completed. It sends no webhook: completion is decided on the clock, not on whether the call happened (#2915). |
 | `GET /api/cron/agents` | Hourly roster sync from Salesforce: agent and team changes, attributes, and departures. |
 | `GET /api/cron/watch` | Renews Google calendar push channels before they expire, and names persistently failing agents. |
 | `GET /api/cron/hydrate-calendars` | Fills in calendar metadata for agents whose calendars have not been read yet. |

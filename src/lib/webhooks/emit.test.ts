@@ -567,7 +567,7 @@ describe("agent link bookings and Regal (#2073)", () => {
     prefill: {},
   } as unknown as BookingEventPayload;
 
-  for (const event of ["booking.reassigned", "booking.completed"] as const) {
+  for (const event of ["booking.reassigned"] as const) {
     it(`sends Regal nothing for an agent link ${event}, and still sends other subscribers`, async () => {
       state.endpoints = [regal, generic];
       await emitWebhook("o1", event, named, `bk1:${event}`);
@@ -594,6 +594,34 @@ describe("agent link bookings and Regal (#2073)", () => {
     await emitWebhook("o1", "booking.reassigned", routed, "bk1:r");
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(JSON.parse(String(fetchMock.mock.calls[0][1].body)).name).toBe("Slate Booking Reassigned");
+  });
+});
+
+// #2915: `booking.completed` is no longer an event Slate sends, and delivery rows
+// written before that still carry it. No path may POST one again: Regal has no event
+// name for it any more, so a resend would reach it nameless. The resend says why it
+// refused rather than reading as a delivery that went.
+describe("an event Slate no longer sends (#2915)", () => {
+  const retired = (id: string, status = "success"): Record<string, unknown> => ({
+    ...delivery(id),
+    event: "booking.completed",
+    status,
+    suppressed: false,
+    payload_erased: false,
+  });
+
+  it("resendDelivery refuses it: no POST, returns 'retired-event'", async () => {
+    state.deliveries = [retired("d1")];
+    const res = await resendDelivery("d1", "o1");
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(res).toBe("retired-event");
+  });
+
+  it("retryFailedDeliveries never POSTs it, and still sends a current event beside it", async () => {
+    state.deliveries = [retired("d1", "failed"), delivery("d2")];
+    const retried = await retryFailedDeliveries();
+    expect(retried).toBe(1);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });
 

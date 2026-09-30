@@ -18,10 +18,6 @@ assert(
   webhookDedupeKey("booking.created", { bookingId: B, bookingEventId: null }) === B,
   "booking.created keys on the booking id",
 );
-assert(
-  webhookDedupeKey("booking.completed", { bookingId: B, bookingEventId: "evt-x" }) === B,
-  "booking.completed keys on the booking id (ignores any event id)",
-);
 
 // mutation events -> the booking_events row id (versioned).
 for (const ev of ["booking.rescheduled", "booking.cancelled", "booking.reassigned"] as const) {
