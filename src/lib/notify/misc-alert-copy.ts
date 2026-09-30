@@ -1,5 +1,4 @@
 import { CLIENT_ERROR_KEY_PREFIX } from "@/lib/api/client-error-scrub";
-import { formatSlotDay, formatSlotTime } from "@/lib/booking/slot-label";
 
 /**
  * The remaining alert wording, lifted out of its send sites (#1153).
@@ -173,51 +172,6 @@ export function oooApprovalsDigestAlert(
   reason: string,
 ): string {
   return `The daily OOO-approvals email (${approvals} ${approvals === 1 ? "approval" : "approvals"}) failed to send to ${recipients} ${recipients === 1 ? "recipient" : "recipients"}: ${reason}`;
-}
-
-/** One Slate call an outside Google event overlaps, as the page needs it. */
-export interface DoubleBookClash {
-  /** The booking's admin page, where the reassign and reschedule controls are. */
-  bookingUrl: string;
-  callStart: string;
-  eventStart: string;
-  eventEnd: string;
-}
-
-const DOUBLE_BOOK_ZONE = "America/New_York";
-
-/**
- * The outside event's window, naming a day only where it differs from the
- * call's, so an event that began the night before does not read as a time on
- * the call's own day.
- */
-function clashEventWindow(c: DoubleBookClash): string {
-  const callDay = formatSlotDay(c.callStart, DOUBLE_BOOK_ZONE);
-  const at = (iso: string) => {
-    const day = formatSlotDay(iso, DOUBLE_BOOK_ZONE);
-    const time = formatSlotTime(iso, DOUBLE_BOOK_ZONE);
-    return day === callDay ? time : `${day} at ${time}`;
-  };
-  return `${at(c.eventStart)} to ${at(c.eventEnd)} ET`;
-}
-
-function clashCallTime(c: DoubleBookClash): string {
-  return `${formatSlotDay(c.callStart, DOUBLE_BOOK_ZONE)} at ${formatSlotTime(c.callStart, DOUBLE_BOOK_ZONE)} ET`;
-}
-
-/**
- * A Slate call overlaps an event booked outside Slate.
- *
- * One call per page (#2905), carrying the call's time, the outside event's
- * window and a link to the booking page, where the reassign and reschedule
- * controls are.
- */
-export function externalDoubleBookAlert(email: string, c: DoubleBookClash): string {
-  return (
-    `Possible external double-book for ${email}. A Google event added outside Slate ` +
-    `(${clashEventWindow(c)}) overlaps their Slate call on ${clashCallTime(c)}. ` +
-    `Reassign or reschedule the call:\n${c.bookingUrl}`
-  );
 }
 
 /** A booking went to an agent who does not match the bucket. */

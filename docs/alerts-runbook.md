@@ -209,7 +209,7 @@ in code (see `AGENTS.md`).
 
 Keys: `outbox_drain_stuck`, `outbox_all_handed_off`, `reservation_drain_stuck`,
 `booking_event_insert`, `busy_block_write_through`, `reconcile_busy_blocks`,
-`reconcile_missing_busy_blocks`, `creation_orphan_events`, `external_double_book:*`,
+`reconcile_missing_busy_blocks`, `creation_orphan_events`,
 `reassign_intent_dropped`, `reschedule_pin_dropped`, `reschedule_lock_outage`,
 `stale_phone_invite:*`, `webhook_dead:*`, `webhook_event_no_subscriber`,
 `handoff_channel_unset`, `handoff_undelivered`, `bookable_trait_unrecorded:*`.

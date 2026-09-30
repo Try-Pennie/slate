@@ -49,16 +49,12 @@ import {
   type FailingCalendarRow,
 } from "@/lib/notify/alerts";
 import { reachabilityFromError } from "@/lib/google/reachability-classify";
-import { appUrl, googlePushUrl } from "@/lib/env";
-import { bookingDetailHref } from "@/lib/booking/detail";
+import { googlePushUrl } from "@/lib/env";
 import { parseStampMs } from "@/lib/date/stamp";
-import { sendThrottledAlert } from "@/lib/notify/dispatch";
-import { findExternalCollisions } from "@/lib/google/collision";
 import type { AgentCalendar } from "@/lib/db/types";
 import { unwrap, unwrapCount } from "@/lib/db/result";
 import { chunkIdsByUrlBudget } from "@/lib/db/id-batch";
 import { log } from "@/lib/log";
-import { COLLISION_WINDOW_MS, pageExternalCollisions } from "@/lib/google/collision-alerts";
 import { gatedWriteRows } from "@/lib/booking/gated-write";
 
 // Renew well before Google's ~7-day watch TTL so a cron outage can't drop push.
@@ -106,92 +102,6 @@ export async function loadAgentCalendars(userId: string): Promise<AgentCalendar[
     .select("*")
     .eq("user_id", userId);
   return (data ?? []) as AgentCalendar[];
-}
-
-/**
- * Detect external Google double-bookings for an agent (#316): an external
- * (`source: gcal`) event overlapping an active Slate booking on the same agent,
- * over a forward window. Slate-vs-Slate is prevented by the unique index, and a
- * booking's own mirrored event is excluded by id, so a hit means someone booked
- * this agent directly in Google over a Slate-held slot. Best-effort: fires a
- * throttled alert so a human can resolve it; never throws into the sync path.
- */
-async function detectExternalCollisions(userId: string, email: string): Promise<void> {
-  try {
-    const db = supabaseAdmin();
-    const nowIso = new Date().toISOString();
-    const toIso = new Date(Date.now() + COLLISION_WINDOW_MS).toISOString();
-    // Active future bookings first — if none, there's nothing to collide with.
-    // error-ok: best-effort external-collision scan (never throws into sync); a
-    // read error just skips detection this pass and retries next sync.
-    const { data: bookingRows } = await db
-      // cap-safe: one agent's active bookings inside the short collision window.
-      .from("bookings")
-      // `allow_double_book` is read because an owner reassign (#9) is allowed to
-      // place a call on a busy advisor, and #2442 stops that paging engineering
-      // about an overlap somebody meant to create.
-      .select("id, gcal_event_id, starts_at, ends_at, allow_double_book")
-      .eq("assigned_user_id", userId)
-      .in("status", ["confirmed", "rescheduled"])
-      .gte("starts_at", nowIso)
-      .lt("starts_at", toIso);
-    const bookings = (bookingRows ?? []) as {
-      id: string;
-      gcal_event_id: string | null;
-      starts_at: string;
-      ends_at: string;
-      allow_double_book: boolean | null;
-    }[];
-    if (bookings.length === 0) return;
-
-    // error-ok: best-effort external-collision scan; a read error skips detection
-    // this pass and retries next sync.
-    const { data: blockRows } = await db
-      // cap-safe: one agent's gcal busy blocks inside the short collision window.
-      .from("busy_blocks")
-      .select("gcal_event_id, starts_at, ends_at")
-      .eq("user_id", userId)
-      .eq("source", "gcal")
-      .lt("starts_at", toIso)
-      .gt("ends_at", nowIso);
-    const blocks = ((blockRows ?? []) as {
-      gcal_event_id: string | null;
-      starts_at: string;
-      ends_at: string;
-    }[]).map((b) => ({
-      gcalEventId: b.gcal_event_id,
-      // parse-ok: busy_blocks.starts_at/ends_at are NOT NULL timestamptz that
-      // Postgres renders, so NaN would mean a schema break, not bad input. Worth
-      // naming what a NaN WOULD cost, since this feeds collision detection: an
-      // unreadable row would simply not collide, and this alert would stay quiet.
-      startMs: Date.parse(b.starts_at),
-      endMs: Date.parse(b.ends_at), // parse-ok: NOT NULL timestamptz, as above
-    }));
-
-    const collisions = findExternalCollisions(
-      blocks,
-      bookings.map((b) => ({
-        id: b.id,
-        gcalEventId: b.gcal_event_id,
-        // parse-ok: bookings.starts_at/ends_at are NOT NULL timestamptz, same as
-        // the busy-block side above, and carry the same caveat if that ever changes.
-        startMs: Date.parse(b.starts_at),
-        endMs: Date.parse(b.ends_at), // parse-ok: NOT NULL timestamptz, as above
-        // `?? false` rather than passed straight through: a null column reads as
-        // an ordinary booking, so the alarm speaks up rather than going quiet.
-        allowDoubleBook: b.allow_double_book ?? false,
-      })),
-    );
-    if (collisions.length === 0) return;
-
-    await pageExternalCollisions(email, collisions, {
-      // alert-key: external_double_book:*
-      notify: (key, ms, text) => sendThrottledAlert(key, ms, text),
-      bookingUrl: (id) => `${appUrl()}${bookingDetailHref(id)}`,
-    });
-  } catch (err) {
-    log.error("sync", { msg: "external-collision detection failed", user_id: userId }, err);
-  }
 }
 
 /**
@@ -656,14 +566,6 @@ async function syncCalendar(
         slateEventIds,
         window,
       );
-
-    // A sync that wrote events may have just mirrored an external Google booking
-    // that collides with a Slate booking (#316). Check now (best-effort) so a
-    // cross-system double-book is detected, not silent. Covers both the cron and
-    // push paths, which both flow through here.
-    if (result.events.length > 0) {
-      await detectExternalCollisions(cal.user_id, email);
-    }
 
     // Persist the advanced sync token on its OWN write (correctness-critical:
     // it's how the next pass resumes instead of re-bootstrapping). Kept separate
