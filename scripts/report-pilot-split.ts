@@ -2,6 +2,8 @@
 // The runbook, with everything below in more detail, is docs/pilot-split-report.md.
 //
 //   PILOT_SPLIT_CSV=~/Downloads/pilot-split.csv PILOT_SPLIT_PERCENT=50 pnpm report:pilot-split
+//   PILOT_SPLIT_CSV=~/Downloads/week1.csv,~/Downloads/week2.csv   (several exports, #2908)
+//   PILOT_SPLIT_CSV=~/Downloads/pilot-split/                    (every .csv in a folder)
 //   PILOT_SPLIT_PLAN=1 PILOT_SPLIT_LEADS_PER_DAY=180 PILOT_SPLIT_PERCENT=50 \
 //     PILOT_SPLIT_BASE_RATE=0.12 PILOT_SPLIT_LIFT=0.02 pnpm report:pilot-split
 //
@@ -33,7 +35,8 @@
 //      booking_assignment OR cal_booking (or, if the GTM tag names GA4 events after
 //      ga4_event_name, those names). Date range: only days SlatePilotPercent__c held
 //      one value. Show rows: the largest, and check the row count is under it.
-//   4. Share, Download file, CSV. That file is PILOT_SPLIT_CSV.
+//   4. Share, Download file, CSV. That file is PILOT_SPLIT_CSV; several files, one
+//      per week, are read together.
 //
 // The export must hold ONLY PILOT leads (see scripts/lib/pilot-split.ts, rule 4):
 // either an extra xbc column (a fourth custom dimension, which needs trypennie to
@@ -70,9 +73,12 @@
 // | 11 | a half is under the minimum sample: not yet readable |
 // | 12 | planning mode is missing an input or was given one it cannot use |
 // | 13 | the comparison was made and the Slate cross check could not read Slate |
+// | 14 | an export ends exactly on a GA4 row limit, so it was probably cut off; export fewer days per file |
+// | 15 | two exports cover the same day, so its leads would be read twice |
 //
 // It is deliberately NOT named `test-*.ts`: that glob is the offline unit suite.
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync, statSync } from "node:fs";
+import { join } from "node:path";
 import { loadEnvFiles } from "./smoke-env.ts";
 import { ENV_FILES, judgeSupabaseCredentials } from "./lib/supabase-credentials.ts";
 import {
@@ -80,6 +86,7 @@ import {
   planFromEnv,
   PILOT_SPLIT_EXIT,
   type SlateCheckInput,
+  type ExportFile,
 } from "./lib/pilot-split.ts";
 
 loadEnvFiles(ENV_FILES);
@@ -96,22 +103,39 @@ if ((env.PILOT_SPLIT_PLAN ?? "").trim() === "1") {
   print(plan.lines, plan.exit);
 }
 
-const path = (env.PILOT_SPLIT_CSV ?? "").trim();
-let csvText: string | null = null;
-if (path !== "") {
-  const resolved = path.startsWith("~/") ? `${env.HOME ?? ""}${path.slice(1)}` : path;
-  try {
-    csvText = readFileSync(resolved, "utf8");
-  } catch (err) {
-    print(
-      [`FAILED (unreadable-file): could not read ${resolved}: ${err instanceof Error ? err.message : String(err)}`],
-      PILOT_SPLIT_EXIT.unreadableFile,
-    );
+// One export, several separated by commas, or a folder of them (#2908): a split long
+// enough to read outgrows one GA4 download, so the runbook exports a week at a time.
+const named = (env.PILOT_SPLIT_CSV ?? "")
+  .split(",")
+  .map((p) => p.trim())
+  .filter((p) => p !== "");
+let exportFiles: ExportFile[] | null = null;
+if (named.length > 0) {
+  exportFiles = [];
+  for (const path of named) {
+    const resolved = path.startsWith("~/") ? `${env.HOME ?? ""}${path.slice(1)}` : path;
+    try {
+      const files = statSync(resolved).isDirectory()
+        ? readdirSync(resolved)
+            .filter((f) => f.toLowerCase().endsWith(".csv"))
+            .sort()
+            .map((f) => join(resolved, f))
+        : [resolved];
+      if (files.length === 0) {
+        print([`FAILED (unreadable-file): ${resolved} is a folder with no .csv files in it`], PILOT_SPLIT_EXIT.unreadableFile);
+      }
+      for (const f of files) exportFiles.push({ name: f, text: readFileSync(f, "utf8") });
+    } catch (err) {
+      print(
+        [`FAILED (unreadable-file): could not read ${resolved}: ${err instanceof Error ? err.message : String(err)}`],
+        PILOT_SPLIT_EXIT.unreadableFile,
+      );
+    }
   }
 }
 
 // Judge once without Slate; only a comparison that stands is worth a Slate read.
-const first = judgePilotSplit({ csvText, env });
+const first = judgePilotSplit({ exports: exportFiles, env });
 if (first.exit !== PILOT_SPLIT_EXIT.compared) print(first.lines, first.exit);
 
 async function readSlate(dates: string[]): Promise<SlateCheckInput> {
@@ -150,5 +174,5 @@ async function readSlate(dates: string[]): Promise<SlateCheckInput> {
 }
 
 const slateCheck = await readSlate(first.dates);
-const final = judgePilotSplit({ csvText, env, slateCheck });
+const final = judgePilotSplit({ exports: exportFiles, env, slateCheck });
 print(final.lines, final.exit);

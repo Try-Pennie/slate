@@ -267,8 +267,10 @@ function idsInBucketRange(n: number, below: boolean, percent: number, prefix: st
 // --- 7. the whole judgement: each exit code from at least one case (L151) ------
 {
   const seen = new Set<number>();
-  const judge = (csvText: string | null, env: Record<string, string> = {}) => {
-    const r = judgePilotSplit({ csvText, env });
+  // One text is one export; a list is several, named export-1.csv and on (#2908).
+  const judge = (texts: string | string[] | null, env: Record<string, string> = {}) => {
+    const list = texts === null ? null : Array.isArray(texts) ? texts : [texts];
+    const r = judgePilotSplit({ exports: list && list.map((text, i) => ({ name: `export-${i + 1}.csv`, text })), env });
     seen.add(r.exit);
     return r;
   };
@@ -340,7 +342,8 @@ function idsInBucketRange(n: number, below: boolean, percent: number, prefix: st
     { PILOT_SPLIT_PERCENT: "50" },
   );
   eq(noBooker.exit, PILOT_SPLIT_EXIT.noBookerEvents, "plenty of leads and not one booker event means the booker events are not in the export");
-  const halfEach = Math.floor(MIN_LEADS_PER_HALF / 2);
+  // One short of half, so the two halves' rows do not land on a GA4 row limit (#2908).
+  const halfEach = Math.floor(MIN_LEADS_PER_HALF / 2) - 1;
   const thinNoBooker = judge(
     csv([...slateIds.slice(0, halfEach).flatMap((id) => lead(id, "slate")), ...calIds.slice(0, halfEach).flatMap((id) => lead(id, "cal.com"))]),
     { PILOT_SPLIT_PERCENT: "50" },
@@ -385,16 +388,64 @@ function idsInBucketRange(n: number, below: boolean, percent: number, prefix: st
   eq(cross.slateOnly, 1, "a Slate booking for a Slate half lead GA4 never saw book is counted");
   eq(cross.outsideExport, 1, "a Slate booking for a submission not in the export is counted apart");
   eq(cross.matched, 1, "an 18 character Slate id matches its 15 character GA4 form");
-  const crossFailed = judgePilotSplit({ csvText: csv(healthyRows), env: { PILOT_SPLIT_PERCENT: "50" }, slateCheck: { ok: false, message: "boom" } });
+  const crossFailed = judgePilotSplit({ exports: [{ name: "export.csv", text: csv(healthyRows) }], env: { PILOT_SPLIT_PERCENT: "50" }, slateCheck: { ok: false, message: "boom" } });
   seen.add(crossFailed.exit);
   eq(crossFailed.exit, PILOT_SPLIT_EXIT.crossCheckFailed, "a cross check that could not read Slate exits on its own code");
   const crossSkipped = judgePilotSplit({
-    csvText: csv(healthyRows),
+    exports: [{ name: "export.csv", text: csv(healthyRows) }],
     env: { PILOT_SPLIT_PERCENT: "50" },
     slateCheck: { ok: "skipped", missing: ["NEXT_PUBLIC_SUPABASE_URL"] },
   });
   eq(crossSkipped.exit, PILOT_SPLIT_EXIT.compared, "a skipped cross check does not fail the comparison");
   assert(/cross check was skipped: NEXT_PUBLIC_SUPABASE_URL is not set/.test(crossSkipped.lines.join("\n")), "and names what was missing, never a secret key it did not look for (L11)");
+
+  // --- several exports (#2908): a week at a time when one file would be cut off ---
+  const leadsOn = (ids: string[], provider: "slate" | "cal.com", date: string, booked: number) =>
+    ids.flatMap((id, i) => lead(id, provider, i < booked ? ["view_booker", "complete_booking"] : [], date));
+  const weekOne = csv([
+    ...leadsOn(slateIds.slice(0, 60), "slate", "20261005", 15),
+    ...leadsOn(calIds.slice(0, 60), "cal.com", "20261005", 10),
+  ]);
+  const weekTwo = csv([
+    ...leadsOn(slateIds.slice(60), "slate", "20261006", 15),
+    ...leadsOn(calIds.slice(60), "cal.com", "20261006", 10),
+  ]);
+  const both = judge([weekOne, weekTwo], { PILOT_SPLIT_PERCENT: "50" });
+  eq(both.exit, PILOT_SPLIT_EXIT.compared, "two exports covering different days are read together");
+  assert(text(both).includes(`${slateIds.length} leads`), "and every lead in either file is compared");
+  eq(both.dates, ["2026-10-05", "2026-10-06"], "over the days of both files");
+
+  // A lead assigned in one file and booking in the next is one booked lead.
+  const returning = slateIds[0]!;
+  const later = csv([[ "20261006", returning, "slate", "cal_booking", "complete_booking", "1" ], ...leadsOn(calIds.slice(60), "cal.com", "20261006", 10)]);
+  const earlier = csv([...leadsOn(slateIds, "slate", "20261005", 30), ...leadsOn(calIds.slice(0, 60), "cal.com", "20261005", 10)]);
+  const joined = judge([earlier, later], { PILOT_SPLIT_PERCENT: "50" });
+  assert(joined.slateBookedKeys.has(returning.slice(0, 15)), "a lead assigned in one file who books in the next counts as booked");
+  assert(text(joined).includes(`${slateIds.length} leads`), "and is counted once");
+
+  const overlap = judge([weekOne, weekOne], { PILOT_SPLIT_PERCENT: "50" });
+  eq(overlap.exit, PILOT_SPLIT_EXIT.overlappingExports, "two exports covering the same day are refused on their own code");
+  assert(/export-1\.csv.*export-2\.csv|export-2\.csv.*export-1\.csv/.test(text(overlap)) && text(overlap).includes("2026-10-05"), `and it names both files and the day (${text(overlap)})`);
+
+  const noXbcHeader = HEADER;
+  const xbcHeader = [...HEADER.slice(0, 3), "xbc", ...HEADER.slice(3)];
+  const withXbc = csv(slateIds.slice(0, 5).map((id) => ["20261007", id, "slate", "111", "booking_assignment", "(not set)", "1"]), xbcHeader);
+  const mixed = judge([csv(leadsOn(calIds.slice(0, 5), "cal.com", "20261008", 0), noXbcHeader), withXbc], { PILOT_SPLIT_PERCENT: "50" });
+  eq(mixed.exit, PILOT_SPLIT_EXIT.missingColumn, "an export without the xbc column beside one with it is refused");
+  assert(text(mixed).includes("export-1.csv"), `and names the file missing it (${text(mixed)})`);
+
+  const broken = judge([weekOne, csv([], HEADER.slice(1))], { PILOT_SPLIT_PERCENT: "50" });
+  eq(broken.exit, PILOT_SPLIT_EXIT.missingColumn, "one unreadable export refuses the run");
+  assert(text(broken).includes("export-2.csv"), `and names which file (${text(broken)})`);
+
+  // A file ending exactly on a GA4 row limit was probably cut off there.
+  const fiveHundred = idsInBucketRange(500, true, 100, "a04UiT");
+  const capped = judge(csv(fiveHundred.map((id) => ["20261009", id, "slate", "booking_assignment", "(not set)", "1"])));
+  eq(capped.exit, PILOT_SPLIT_EXIT.possiblyTruncated, "an export of exactly 500 rows is refused as possibly cut off");
+  assert(/export-1\.csv/.test(text(capped)) && /fewer days/.test(text(capped)), `naming the file and what to do (${text(capped)})`);
+  const underCap = judge(csv(fiveHundred.slice(1).map((id) => ["20261009", id, "slate", "booking_assignment", "(not set)", "1"])));
+  assert(underCap.exit !== PILOT_SPLIT_EXIT.possiblyTruncated, "control: 499 rows is not read as cut off");
+
 
   for (const [name, code] of Object.entries(PILOT_SPLIT_EXIT)) {
     assert(seen.has(code), `exit ${code} (${name}) is produced by at least one case`);
