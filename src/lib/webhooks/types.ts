@@ -26,7 +26,7 @@ export function routingMetaFromTrace(trace: RoutingTrace | null): RoutingMeta {
   };
 }
 
-/** Why a booking was rescheduled/cancelled + who did it (#326). Null on create/complete. */
+/** Why a booking was rescheduled/cancelled + who did it (#326). Null on create. */
 export interface BookingReasonMeta {
   /** Stable reason code (analytics dimension). */
   code: string;

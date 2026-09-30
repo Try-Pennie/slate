@@ -1,7 +1,7 @@
 // Webhook dedupe-key derivation (#436 / #429 P1). The key makes a re-enqueued
 // webhook idempotent so a retry (or the future outbox executor) never double-
-// fires Regal/Cadence. created/completed key on the booking id (exactly one of
-// each per booking); the three mutation events key on the per-operation id the
+// fires Regal/Cadence. created keys on the booking id (exactly one per
+// booking); the three mutation events key on the per-operation id the
 // caller passes (versioned, so a legitimate SECOND reschedule is NOT deduped
 // away). For rescheduled and cancelled that is the booking_events row id; for
 // booking.reassigned (#2368) it is the reassign's OUTBOX row id, because the time
@@ -13,7 +13,7 @@ import { assert, finish } from "./lib/harness.ts";
 
 const B = "booking-1";
 
-// created / completed -> booking id (no booking_events row exists for these).
+// created -> booking id (no booking_events row exists for it).
 assert(
   webhookDedupeKey("booking.created", { bookingId: B, bookingEventId: null }) === B,
   "booking.created keys on the booking id",
