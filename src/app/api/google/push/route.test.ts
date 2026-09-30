@@ -24,7 +24,8 @@ const server = vi.hoisted(() => ({
 }));
 
 const logError = vi.hoisted(() => vi.fn());
-vi.mock("@/lib/log", () => ({ log: { error: logError, warn: vi.fn(), info: vi.fn() } }));
+const logInfo = vi.hoisted(() => vi.fn());
+vi.mock("@/lib/log", () => ({ log: { error: logError, warn: vi.fn(), info: logInfo } }));
 
 // #1046: the channel token is the ONLY credential on this endpoint, and it was
 // the last machine-endpoint secret in the tree still compared with a plain `!==`
@@ -140,6 +141,47 @@ describe("Google push handler background failures are recorded", () => {
     // The channel id is what ties the line back to a calendar.
     expect(fields.channel_id).toBe("chan-1");
     expect(err).toBeInstanceOf(Error);
+  });
+
+  // #2922: Cloudflare cancelled 88% of push syncs at its post response limit and
+  // nothing in Slate could see it. A cancelled job cannot report itself, so the
+  // count lives on the side that FINISHED: one line per completed push, which a
+  // query sets against Cloudflare's own cancellation warnings.
+  it("records each push whose work finished, with its outcome and elapsed time", async () => {
+    sync.syncByChannel.mockResolvedValueOnce("synced" as never);
+    await POST(
+      push({
+        "x-goog-channel-token": "secret-token",
+        "x-goog-resource-state": "exists",
+        "x-goog-channel-id": "chan-1",
+      }),
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const finished = logInfo.mock.calls.filter(
+      ([tag, fields]) => tag === "google-push" && (fields as { msg?: string }).msg === "push work finished",
+    );
+    expect(finished).toHaveLength(1);
+    const fields = finished[0][1] as Record<string, unknown>;
+    expect(fields.channel_id).toBe("chan-1");
+    expect(fields.outcome).toBe("synced");
+    expect(typeof fields.ms).toBe("number");
+  });
+
+  it("does not record a failed push as finished", async () => {
+    sync.syncByChannel.mockRejectedValueOnce(new Error("boom"));
+    await POST(
+      push({
+        "x-goog-channel-token": "secret-token",
+        "x-goog-resource-state": "exists",
+        "x-goog-channel-id": "chan-1",
+      }),
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(logInfo).not.toHaveBeenCalled();
+    expect(logError).toHaveBeenCalledTimes(1);
   });
 
   it("logs nothing when the background sync succeeds", async () => {
