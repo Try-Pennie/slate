@@ -281,6 +281,7 @@ function agentHarness(over: Partial<AgentPoolsDeps> = {}) {
     recomputePool: async (pool) => {
       computed.push(pool.map((b) => b.code));
       clock += 4_000;
+      return pool.length;
     },
     lastRunAt: new Map(),
     skipMs: 2_000,
@@ -321,7 +322,7 @@ function agentHarness(over: Partial<AgentPoolsDeps> = {}) {
   const real = deps.recomputePool;
   deps.recomputePool = async (pool) => {
     if (pool[0].code === "100") throw new Error("compute failed");
-    await real(pool);
+    return real(pool);
   };
   const out = await recomputeAgentPools(["100", "200"], ALL, deps);
   eq(computed, [["200", "201", "210"]], "a failed pool does not stop the next one");
@@ -335,6 +336,7 @@ function agentHarness(over: Partial<AgentPoolsDeps> = {}) {
   const { deps, computed, advance } = agentHarness();
   deps.recomputePool = async (pool) => {
     computed.push(pool.map((b) => b.code));
+    return pool.length;
   };
   await recomputeAgentPools(["100"], ALL, deps);
   const second = await recomputeAgentPools(["110"], ALL, deps);
@@ -352,6 +354,39 @@ function agentHarness(over: Partial<AgentPoolsDeps> = {}) {
   eq(out, { refreshed: 0, deferred: 0, failed: 0, debounced: 0 }, "and reports nothing");
   const unknown = await recomputeAgentPools(["999"], ALL, deps);
   eq(unknown.refreshed + unknown.deferred, 0, "a code no bucket carries any more puts no work anywhere");
+}
+
+{
+  // #2922 follow up: a pool whose compute answered nothing, or whose every write
+  // failed, wrote NO rows. Counting it as refreshed made the refresh's own log line
+  // claim work that never landed, and that line is how push refreshes are judged.
+  const { deps, computed } = agentHarness();
+  deps.recomputePool = async (pool) => {
+    computed.push(pool.map((b) => b.code));
+    return pool[0]!.code === "100" ? 0 : pool.length;
+  };
+  const out = await recomputeAgentPools(["100", "200"], ALL, deps);
+  eq(out, { refreshed: 1, deferred: 0, failed: 1, debounced: 0 }, "a pool that wrote no rows is a failure, not a refresh");
+}
+
+{
+  // And a pool that failed must not hold off the next push's refresh: the debounce
+  // stands for "this pool was just refreshed", which a failure is not.
+  for (const fail of [async () => 0, async () => { throw new Error("compute failed"); }]) {
+    const { deps, computed } = agentHarness();
+    deps.recomputePool = async (pool) => {
+      computed.push(pool.map((b) => b.code));
+      return fail();
+    };
+    await recomputeAgentPools(["100"], ALL, deps);
+    deps.recomputePool = async (pool) => {
+      computed.push(pool.map((b) => b.code));
+      return pool.length;
+    };
+    const retry = await recomputeAgentPools(["100"], ALL, deps);
+    eq(retry, { refreshed: 1, deferred: 0, failed: 0, debounced: 0 }, "a push right after a failed refresh computes the pool again");
+    eq(computed.length, 2, "rather than being debounced behind the failure");
+  }
 }
 
 finish();
