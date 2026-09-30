@@ -130,10 +130,9 @@ export function formatUnsubscribedEventsAlert(coverage: SubscriberCoverage): str
  * `pnpm preview:alerts` renders the text that actually ships (L41).
  */
 export function formatUnsubscribedEventsRecovery(): string {
-  return (
-    "Every booking event Slate sends now has an active webhook endpoint subscribed to it, " +
-    "so nothing is being recorded as delivered while reaching nobody."
-  );
+  // Names Regal because it is the only endpoint today (Dan chose this over a
+  // generic "a webhook endpoint", 2026-09-30); revisit if a second one is added.
+  return "Resolved: every booking event is reaching Regal again.";
 }
 
 /**

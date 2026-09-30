@@ -17,6 +17,7 @@
 import { assert, eq, finish } from "./lib/harness.ts";
 import {
   formatUnsubscribedEventsAlert,
+  formatUnsubscribedEventsRecovery,
   runWebhookSubscriberCheck,
   subscriberCoverage,
   WEBHOOK_SUBSCRIBERS_KEY,
@@ -164,6 +165,19 @@ const EVENTS = ["booking.created", "booking.rescheduled", "booking.cancelled"];
   eq(threw.measured, false, "runner: a throwing read is reported as unmeasured");
   eq(resolved.length, 0, "runner: a throwing read sends NO all-clear");
   eq(alerted.length, 0, "runner: a throwing read does not page either");
+}
+
+// --- the all-clear reads as one plain sentence ---
+// The first version said "nothing is being recorded as delivered while reaching
+// nobody", a double negative about the mechanism that a reader on a phone had to
+// decode to learn the problem was over. It now just says so.
+{
+  const text = formatUnsubscribedEventsRecovery();
+  eq(
+    text,
+    "Resolved: every booking event is reaching Regal again.",
+    "the all-clear says the problem is over in plain words",
+  );
 }
 
 finish();
