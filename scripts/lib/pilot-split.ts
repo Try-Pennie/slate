@@ -414,8 +414,8 @@ export function readExports(exports: readonly ExportFile[]): ParsedExport {
         ok: false,
         exit: PILOT_SPLIT_EXIT.missingColumn,
         message:
-          `${file.name} has booker events named cal_booking and no ga4_event_name column, so their steps cannot be read. ` +
-          "Export the step names as Event name (the Event name filter in docs/pilot-split-report.md), or add ga4_event_name.",
+          `${file.name} has booker events named cal_booking with no step, so which step each was cannot be read. ` +
+          "Export the steps as the Event name (the Event name filter in docs/pilot-split-report.md) rather than cal_booking.",
       };
     }
     parsed.push({ name: file.name, p });

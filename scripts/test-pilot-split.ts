@@ -321,6 +321,17 @@ function idsInBucketRange(n: number, below: boolean, percent: number, prefix: st
     { PILOT_SPLIT_PERCENT: "50" },
   );
   eq(unnamed.exit, PILOT_SPLIT_EXIT.missingColumn, "cal_booking events with no step column are refused");
+  // The column present and empty on those rows is the same fault, and must not be
+  // told to add a column it already has (L11).
+  const emptyStep = judge(
+    csv(
+      [...slateIds.slice(0, 3).flatMap((id) => [["20261005", id, "slate", "booking_assignment", "(not set)", "1"], ["20261005", id, "slate", "cal_booking", "(not set)", "1"]])],
+    ),
+    { PILOT_SPLIT_PERCENT: "50" },
+  );
+  eq(emptyStep.exit, PILOT_SPLIT_EXIT.missingColumn, "cal_booking events whose ga4_event_name is (not set) are refused too");
+  assert(!/no ga4_event_name column/.test(text(emptyStep)) && /no step/.test(text(emptyStep)), `saying they carry no step, not that a column is missing (${text(emptyStep)})`);
+  assert(/no step/.test(text(unnamed)), `and the same words when the column is absent (${text(unnamed)})`);
   assert(/cal_booking/.test(text(unnamed)) && /export-1\.csv/.test(text(unnamed)), `naming the event and the file (${text(unnamed)})`);
 
   const noFile = judge(null);
