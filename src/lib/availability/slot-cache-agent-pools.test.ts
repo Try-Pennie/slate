@@ -18,7 +18,7 @@ const precompute = vi.hoisted(() => ({
     orgName: "Pennie",
     slots: ["2026-10-01T14:00:00.000Z"],
   })),
-  writeBucketSlotsRow: vi.fn(async () => {}),
+  writeBucketSlotsRow: vi.fn(async (_code: string, _val: unknown, _atMs: number) => {}),
   recomputeBucketSlots: vi.fn(async () => {}),
   readBucketSlotsRow: vi.fn(),
 }));
