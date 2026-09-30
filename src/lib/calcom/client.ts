@@ -430,3 +430,26 @@ export async function calcomTierBookingCounts(fromIso: string, toIso: string): P
   }
   return bookedByTier(read.rows, fromMs, toMs);
 }
+
+/**
+ * What cal.com's routing form would offer a lead with these routing fields over
+ * [startIso, endIso) (#2927): `POST /routing-forms/{form}/calculate-slots`. It
+ * answers the routed event type and its slots and stores no response (measured
+ * 2026-09-30: the form's newest response was unchanged by the call). Returns the
+ * raw status and body for `readCalcomRoutedSlots` to judge; throws when cal.com
+ * is not configured here, so the sample records why rather than an empty offer.
+ */
+export async function calcomRoutedSlots(
+  formId: string,
+  fields: Record<string, number | string>,
+  startIso: string,
+  endIso: string,
+): Promise<{ status: number; data: unknown }> {
+  if (!calcomConfigured()) throw new Error("cal.com is not configured here");
+  const q = new URLSearchParams({ start: startIso, end: endIso });
+  return calcomFetch(`/routing-forms/${encodeURIComponent(formId)}/calculate-slots?${q}`, {
+    method: "POST",
+    headers: { "cal-api-version": "2024-09-04" },
+    body: JSON.stringify(fields),
+  });
+}

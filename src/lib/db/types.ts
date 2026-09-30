@@ -999,6 +999,7 @@ export type BookingReservationInsert = {
  *  0140). One row per (caller, host_kind); the shape and its vocabulary live with
  *  the code that writes and judges it. */
 export type { CallerSeenRow as ApiCallerSeen } from "@/lib/booking/caller-seen";
+export type { PilotOfferRow as PilotOfferSample } from "@/lib/monitor/pilot-offers";
 
 /** Dead-man's switch heartbeat (#420): one row per cron lane, stamped each tick. */
 export interface LaneHeartbeat {

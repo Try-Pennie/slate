@@ -16,6 +16,8 @@ import {
   readCalcomRoutedSlots,
   runPilotOfferSample,
   summarisePilotOffers,
+  pilotOffersReportLines,
+  readPilotOffersForReport,
   type PilotOfferRow,
 } from "../src/lib/monitor/pilot-offers.ts";
 
@@ -208,6 +210,69 @@ const row = (system: "slate" | "calcom", minutes: number | null, count: number |
   eq(s.calcom.medianOffered24h, 0, "an empty answer counts as zero times");
   eq(s.calcom.medianMinutesToFirst, null, "and has no wait to take a median of");
   eq([s.paired, s.slateEarlier], [1, 1], "a system offering something is earlier than one offering nothing");
+}
+
+
+// --- the report's lines --------------------------------------------------------
+{
+  const lines = pilotOffersReportLines({ ok: true, summary: summarisePilotOffers([]) });
+  assert(lines.some((l) => l.includes("no availability samples")), "no samples says so, rather than reading as equal availability");
+}
+{
+  const lines = pilotOffersReportLines({ ok: false, message: "relation does not exist" });
+  assert(lines.some((l) => l.includes("could not be read") && l.includes("relation does not exist")), "an unreadable table says so, with the reason");
+}
+{
+  const lines = pilotOffersReportLines({ ok: "skipped", missing: ["SUPABASE_SECRET_KEY"] });
+  assert(lines.some((l) => l.includes("skipped") && l.includes("SUPABASE_SECRET_KEY")), "a skipped read names what was missing");
+}
+{
+  const t = at(0);
+  const summary = summarisePilotOffers([row("slate", 90, 200, t), row("calcom", 1200, 30, t), row("calcom", null, null, at(0, 15))]);
+  const text = pilotOffersReportLines({ ok: true, summary }).join("\n");
+  assert(text.includes("Slate") && text.includes("200"), "Slate's typical count is shown");
+  assert(text.includes("cal.com") && text.includes("30"), "and cal.com's");
+  assert(text.includes("1 of 2 cal.com samples failed") || text.includes("1 failed"), "failed samples are counted out loud");
+  assert(text.includes("1 of 1"), "and how often Slate offered the earlier time, out of the quarter hours both were read");
+}
+
+// --- a stored stamp that cannot be read -------------------------------------------
+{
+  const t = at(0);
+  const s = summarisePilotOffers([
+    { ...row("slate", 60, 10, t), earliest_offered_at: "not a time" },
+    row("calcom", 1200, 30, t),
+  ]);
+  eq(s.slate.medianMinutesToFirst, null, "an unreadable stored time gives no wait, rather than a NaN one");
+  eq([s.paired, s.slateEarlier], [1, 0], "and never credits that system with the earlier time");
+}
+
+// --- the report's read -------------------------------------------------------------
+{
+  let fetched = 0;
+  const skipped = await readPilotOffersForReport({
+    missing: ["SUPABASE_SECRET_KEY"],
+    fetchRows: async () => {
+      fetched++;
+      return [];
+    },
+  });
+  eq(skipped, { ok: "skipped", missing: ["SUPABASE_SECRET_KEY"] }, "missing credentials skip the read and name what is missing");
+  eq(fetched, 0, "and nothing is fetched");
+}
+{
+  const failed = await readPilotOffersForReport({
+    missing: [],
+    fetchRows: async () => {
+      throw new Error("relation does not exist");
+    },
+  });
+  eq(failed, { ok: false, message: "relation does not exist" }, "a failed read is reported with its reason, never as no samples");
+}
+{
+  const t = at(0);
+  const read = await readPilotOffersForReport({ missing: [], fetchRows: async () => [row("slate", 60, 10, t), row("calcom", 120, 5, t)] });
+  assert(read.ok === true && read.summary.paired === 1, "a readable table is summarised");
 }
 
 finish();

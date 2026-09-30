@@ -24,6 +24,7 @@
  * one (L90). Pure and injected, so every path is driven by
  * `scripts/test-pilot-offers.ts`. Retires with the parallel run at cutover (#65).
  */
+import { parseStampMs } from "@/lib/date/stamp";
 
 /** How often a sample is taken. */
 export const PILOT_OFFER_INTERVAL_MS = 15 * 60_000;
@@ -55,7 +56,9 @@ export function pilotOfferRoutingFields(xbc: string): Record<string, number> {
 export type PilotOfferSystem = "slate" | "calcom";
 
 /** One stored reading. `ok` false carries an error and no numbers. */
-export interface PilotOfferRow {
+// A type alias rather than an interface: the typed Supabase client needs a type
+// assignable to a string keyed record, which an interface is not.
+export type PilotOfferRow = {
   sampled_at: string;
   system: PilotOfferSystem;
   bucket_code: string;
@@ -63,7 +66,7 @@ export interface PilotOfferRow {
   earliest_offered_at: string | null;
   offered_24h: number | null;
   error: string | null;
-}
+};
 
 export function pilotOfferSampleDue(lastSampledAtMs: number | null, nowMs: number): boolean {
   if (lastSampledAtMs === null) return true;
@@ -81,8 +84,8 @@ export function offerSummary(
   let earliest: number | null = null;
   let count = 0;
   for (const t of times) {
-    const ms = Date.parse(t);
-    if (!Number.isFinite(ms)) throw new Error(`an offered time could not be read: ${t.slice(0, 40)}`);
+    const ms = parseStampMs(t);
+    if (ms === null) throw new Error(`an offered time could not be read: ${t.slice(0, 40)}`);
     if (ms < nowMs) continue;
     if (earliest === null || ms < earliest) earliest = ms;
     if (ms < nowMs + COUNT_WINDOW_MS) count++;
@@ -200,9 +203,9 @@ function summariseSystem(rows: PilotOfferRow[]): SystemOffers {
   const ok = rows.filter((r) => r.ok);
   const waits = ok.flatMap((r) => {
     if (r.earliest_offered_at === null) return [];
-    const first = Date.parse(r.earliest_offered_at);
-    const taken = Date.parse(r.sampled_at);
-    return Number.isFinite(first) && Number.isFinite(taken) ? [(first - taken) / 60_000] : [];
+    const first = parseStampMs(r.earliest_offered_at);
+    const taken = parseStampMs(r.sampled_at);
+    return first !== null && taken !== null ? [(first - taken) / 60_000] : [];
   });
   return {
     samples: rows.length,
@@ -212,9 +215,12 @@ function summariseSystem(rows: PilotOfferRow[]): SystemOffers {
   };
 }
 
-/** Earliest time as a number, with "offered nothing" as infinitely late. */
-const firstMs = (r: PilotOfferRow): number =>
-  r.earliest_offered_at === null ? Number.POSITIVE_INFINITY : Date.parse(r.earliest_offered_at);
+/**
+ * Earliest time as a number, with "offered nothing" as infinitely late. An
+ * unreadable stored stamp is also treated as late, so it can never credit either
+ * system with the earlier time.
+ */
+const firstMs = (r: PilotOfferRow): number => parseStampMs(r.earliest_offered_at) ?? Number.POSITIVE_INFINITY;
 
 export function summarisePilotOffers(rows: readonly PilotOfferRow[]): PilotOffersSummary {
   const slateRows = rows.filter((r) => r.system === "slate");
@@ -229,4 +235,67 @@ export function summarisePilotOffers(rows: readonly PilotOfferRow[]): PilotOffer
     if (firstMs(s) < firstMs(c)) slateEarlier++;
   }
   return { slate: summariseSystem(slateRows), calcom: summariseSystem(calcomRows), paired, slateEarlier };
+}
+
+export type PilotOffersRead =
+  | { ok: true; summary: PilotOffersSummary }
+  | { ok: false; message: string }
+  | { ok: "skipped"; missing: string[] };
+
+const wait = (minutes: number | null): string => {
+  if (minutes === null) return "nothing offered";
+  const m = Math.round(minutes);
+  return m < 60 ? `${m}m` : `${Math.floor(m / 60)}h ${m % 60}m`;
+};
+
+const systemLine = (name: string, s: SystemOffers): string => {
+  const readable = s.samples - s.failed;
+  const failed = s.failed > 0 ? ` (${s.failed} of ${s.samples} ${name} samples failed and are left out)` : "";
+  return (
+    `  ${name}: typically ${s.medianOffered24h ?? 0} times in the next 24 hours, first one in ${wait(s.medianMinutesToFirst)}, ` +
+    `over ${readable} readable sample${readable === 1 ? "" : "s"}${failed}`
+  );
+};
+
+/**
+ * The report's availability section: what each booker offered a Low lead over the
+ * export's days, so a booking rate gap can be read against it. It never reads as
+ * "both offered the same" when nothing was measured.
+ */
+export function pilotOffersReportLines(read: PilotOffersRead): string[] {
+  const head = "What each booker offered a Low lead (bucket 112), sampled every 15 minutes:";
+  if (read.ok === "skipped") {
+    return [head, `  skipped: ${read.missing.join(" and ")} ${read.missing.length === 1 ? "is" : "are"} not set here.`];
+  }
+  if (read.ok === false) return [head, `  the samples could not be read: ${read.message}`];
+  const { slate, calcom, paired, slateEarlier } = read.summary;
+  if (slate.samples === 0 && calcom.samples === 0) {
+    return [head, "  no availability samples for these dates, so the halves cannot be compared on what they offered."];
+  }
+  return [
+    head,
+    systemLine("Slate", slate),
+    systemLine("cal.com", calcom),
+    paired === 0
+      ? "  no quarter hour had both systems read, so neither can be said to have offered earlier."
+      : `  Slate offered the earlier first time in ${slateEarlier} of ${paired} quarter hours where both were read.`,
+  ];
+}
+
+/**
+ * The report's read of the samples: skipped with the names of what is missing,
+ * failed with its reason, or summarised. Kept apart from the Supabase call so each
+ * path is tested.
+ */
+export async function readPilotOffersForReport(input: {
+  /** Credentials the report lacks; empty when it has them. */
+  missing: string[];
+  fetchRows: () => Promise<PilotOfferRow[]>;
+}): Promise<PilotOffersRead> {
+  if (input.missing.length > 0) return { ok: "skipped", missing: input.missing };
+  try {
+    return { ok: true, summary: summarisePilotOffers(await input.fetchRows()) };
+  } catch (err) {
+    return { ok: false, message: err instanceof Error ? err.message : String(err) };
+  }
 }

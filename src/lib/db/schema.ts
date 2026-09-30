@@ -8,6 +8,7 @@ import type {
   AgentLink,
   AlertState,
   ApiCallerSeen,
+  PilotOfferSample,
   AuditEntry,
   AvailabilityRule,
   AvailabilitySchedule,
@@ -160,6 +161,7 @@ export interface Database {
       >;
       lane_heartbeats: Table<LaneHeartbeat>;
       api_caller_seen: Table<ApiCallerSeen>;
+      pilot_offer_samples: Table<PilotOfferSample>;
       selfheal_scan_cursor: Table<SelfhealScanCursor>;
       export_cursor: Table<ExportCursor>;
       bulk_reassign_jobs: Table<BulkReassignJob>;
