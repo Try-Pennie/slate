@@ -39,10 +39,14 @@ Exploration export, downloaded by hand.
    `booking_assignment` or `cal_booking` (or, if the GTM tag names GA4 events after
    `ga4_event_name`, those names; the command reads `ga4_event_name` when it is set
    and the event name when it is `(not set)`). Date range: only days
-   `SlatePilotPercent__c` held one value. Set Show rows to its largest and check
-   the table's row count is under it, because a truncated export under-counts
-   both halves without saying so.
-4. **Share, Download file, CSV.** That file is `PILOT_SPLIT_CSV`.
+   `SlatePilotPercent__c` held one value. Set Show rows to its largest.
+4. **Share, Download file, CSV.** That file is `PILOT_SPLIT_CSV`. When a range is
+   too long for one download, export a week at a time and pass every file: the
+   command reads them together, joins a lead who appears in more than one, and
+   refuses two files covering the same day (exit 15). A file whose rows land
+   exactly on a GA4 row limit (100, 250, 500, 1,000, 2,500, 5,000, 10,000 or
+   100,000) was probably cut off there and is refused (exit 14), because a cut off
+   export under counts both halves without saying so (#2908).
 
 ## The population must be pilot leads only
 
@@ -95,6 +99,9 @@ one:
 PILOT_SPLIT_CSV=~/Downloads/pilot-split.csv PILOT_SPLIT_PERCENT=50 pnpm report:pilot-split
 ```
 
+Several exports are separated by commas (`~/Downloads/week1.csv,~/Downloads/week2.csv`),
+or name a folder and every `.csv` in it is read.
+
 `PILOT_SPLIT_LIFT=0.02` also prints a days estimate at the volume and cal.com rate
 the export measured. Before any data exists, planning mode estimates from given
 numbers (rates as fractions, 0.12 for 12%):
@@ -137,6 +144,8 @@ code (L98, L11).
 | 11 | a half is under the minimum sample: not yet readable |
 | 12 | planning mode is missing an input or was given one it cannot use |
 | 13 | the comparison was made and the Slate cross check could not read Slate |
+| 14 | an export ends exactly on a GA4 row limit, so it was probably cut off; export fewer days per file |
+| 15 | two exports cover the same day, so its leads would be read twice |
 
 ## Where the code lives
 

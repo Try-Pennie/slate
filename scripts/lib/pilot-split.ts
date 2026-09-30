@@ -70,7 +70,26 @@ export const PILOT_SPLIT_EXIT = {
   planRefused: 12,
   /** The comparison was made, and the Slate cross check could not read Slate. */
   crossCheckFailed: 13,
+  /** An export ends exactly on a GA4 row limit, so it was probably cut off there (#2908). */
+  possiblyTruncated: 14,
+  /** Two exports cover the same day, so its leads would be read twice (#2908). */
+  overlappingExports: 15,
 } as const;
+
+/**
+ * Row counts GA4 stops an export at: the Exploration's Show rows choices and its
+ * export ceilings. A file whose data rows land exactly on one was almost certainly
+ * cut off there, and a cut off export under counts both halves without a word (L98),
+ * so it is refused rather than read. Landing on one by chance is rare; the remedy,
+ * exporting fewer days per file, costs one more download.
+ */
+export const GA4_ROW_LIMITS: readonly number[] = [100, 250, 500, 1000, 2500, 5000, 10000, 100000];
+
+/** One GA4 export as the command read it: its path, for naming it in a refusal, and its text. */
+export interface ExportFile {
+  name: string;
+  text: string;
+}
 
 /**
  * The minimum sample below which a difference is reported as not yet readable
@@ -164,6 +183,8 @@ export type ParsedExport =
       hasXbc: boolean;
       /** True when a second table followed the first and was not read. */
       ignoredRemainder: boolean;
+      /** Data rows in the table, totals row left out: what a GA4 row limit counts. */
+      dataRows: number;
     }
   | { ok: false; exit: number; message: string };
 
@@ -284,6 +305,7 @@ export function parseGa4Export(text: string): ParsedExport {
   const rows: Ga4Row[] = [];
   let withoutSubmission = 0;
   let ignoredRemainder = false;
+  let dataRows = 0;
   for (idx++; idx < records.length; idx++) {
     const r = records[idx];
     if (r.blank || r.fields[0].trimStart().startsWith("#")) {
@@ -294,6 +316,7 @@ export function parseGa4Export(text: string): ParsedExport {
     const dims = ["date", "submission_id", "booking_provider", "event_name", "ga4_event_name"].map((n) => value(at(f, n)));
     // GA4 may add a totals row with every dimension blank.
     if (dims.every((d) => d === null)) continue;
+    dataRows++;
     const date = readDate((at(f, "date") ?? "").trim());
     if (date === null) {
       return {
@@ -330,7 +353,79 @@ export function parseGa4Export(text: string): ParsedExport {
       xbc: hasXbc ? value(at(f, OPTIONAL_XBC_COLUMN)) : null,
     });
   }
-  return { ok: true, rows, withoutSubmission, hasXbc, ignoredRemainder };
+  return { ok: true, rows, withoutSubmission, hasXbc, ignoredRemainder, dataRows };
+}
+
+const EXIT_LABEL: Record<number, string> = {
+  [PILOT_SPLIT_EXIT.missingColumn]: "missing-column",
+  [PILOT_SPLIT_EXIT.unreadableValue]: "unreadable-value",
+  [PILOT_SPLIT_EXIT.unreadableFile]: "unreadable-file",
+  [PILOT_SPLIT_EXIT.possiblyTruncated]: "possibly-truncated",
+  [PILOT_SPLIT_EXIT.overlappingExports]: "overlapping-exports",
+};
+
+/**
+ * Several exports read as one (#2908): a split long enough to read outgrows one GA4
+ * download, so the runbook exports a week at a time. Every file is parsed and any
+ * refusal names the file. A lead may appear in several files (assigned one week,
+ * booked the next) and is joined on its submission like any lead within one file;
+ * the same DAY in two files is refused instead, because that is the same traffic
+ * exported twice. The xbc column is all or nothing: a file without it beside files
+ * with it would drop that file's leads as having no code.
+ */
+export function readExports(exports: readonly ExportFile[]): ParsedExport {
+  if (exports.length === 0) {
+    return { ok: false, exit: PILOT_SPLIT_EXIT.unreadableFile, message: "no export files were found" };
+  }
+  const parsed: { name: string; p: Extract<ParsedExport, { ok: true }> }[] = [];
+  for (const file of exports) {
+    if (file.text.trim() === "") {
+      return { ok: false, exit: PILOT_SPLIT_EXIT.unreadableFile, message: `${file.name}: the export is empty` };
+    }
+    const p = parseGa4Export(file.text);
+    if (!p.ok) return { ...p, message: `${file.name}: ${p.message}` };
+    if (GA4_ROW_LIMITS.includes(p.dataRows)) {
+      return {
+        ok: false,
+        exit: PILOT_SPLIT_EXIT.possiblyTruncated,
+        message:
+          `${file.name} holds exactly ${p.dataRows} rows, one of GA4's row limits, so it was probably cut off and would ` +
+          "under count both halves. Export fewer days per file and send them all.",
+      };
+    }
+    parsed.push({ name: file.name, p });
+  }
+  const daysOf = new Map<string, string>();
+  for (const { name, p } of parsed) {
+    for (const d of new Set(p.rows.map((r) => r.date))) {
+      const other = daysOf.get(d);
+      if (other !== undefined && other !== name) {
+        return {
+          ok: false,
+          exit: PILOT_SPLIT_EXIT.overlappingExports,
+          message: `${other} and ${name} both cover ${d}, so that day's leads would be read twice. Export each day once.`,
+        };
+      }
+      daysOf.set(d, name);
+    }
+  }
+  const withXbc = parsed.filter(({ p }) => p.hasXbc);
+  if (withXbc.length > 0 && withXbc.length < parsed.length) {
+    const lacking = parsed.filter(({ p }) => !p.hasXbc).map(({ name }) => name);
+    return {
+      ok: false,
+      exit: PILOT_SPLIT_EXIT.missingColumn,
+      message: `${lacking.join(", ")} ${lacking.length === 1 ? "has" : "have"} no xbc column while the other exports do. Export every file with the same dimensions.`,
+    };
+  }
+  return {
+    ok: true,
+    rows: parsed.flatMap(({ p }) => p.rows),
+    withoutSubmission: parsed.reduce((n, { p }) => n + p.withoutSubmission, 0),
+    hasXbc: withXbc.length === parsed.length,
+    ignoredRemainder: parsed.some(({ p }) => p.ignoredRemainder),
+    dataRows: parsed.reduce((n, { p }) => n + p.dataRows, 0),
+  };
 }
 
 // --- per lead -------------------------------------------------------------------
@@ -617,7 +712,8 @@ const BOUNCE_NOTE =
   "by an event scoped parameter such as booking_provider, so it is not used.";
 
 export function judgePilotSplit(input: {
-  csvText: string | null;
+  /** Every export to read together, or null when PILOT_SPLIT_CSV named none. */
+  exports: readonly ExportFile[] | null;
   env: Record<string, string | undefined>;
   slateCheck?: SlateCheckInput;
 }): Judgement {
@@ -631,24 +727,14 @@ export function judgePilotSplit(input: {
     ...extra,
   });
 
-  if (input.csvText === null) {
+  if (input.exports === null) {
     lines.push("FAILED (not-configured): set PILOT_SPLIT_CSV to the GA4 Exploration export; nothing was read.");
     lines.push("Or set PILOT_SPLIT_PLAN=1 to estimate how many days the split needs before any data exists.");
     return out(PILOT_SPLIT_EXIT.notConfigured);
   }
-  if (input.csvText.trim() === "") {
-    lines.push("FAILED (unreadable-file): the export is empty.");
-    return out(PILOT_SPLIT_EXIT.unreadableFile);
-  }
-  const parsed = parseGa4Export(input.csvText);
+  const parsed = readExports(input.exports);
   if (!parsed.ok) {
-    const label =
-      parsed.exit === PILOT_SPLIT_EXIT.missingColumn
-        ? "missing-column"
-        : parsed.exit === PILOT_SPLIT_EXIT.unreadableValue
-          ? "unreadable-value"
-          : "unreadable-file";
-    lines.push(`FAILED (${label}): ${parsed.message}`);
+    lines.push(`FAILED (${EXIT_LABEL[parsed.exit] ?? "unreadable-file"}): ${parsed.message}`);
     return out(parsed.exit);
   }
   const pr = readPercent(input.env.PILOT_SPLIT_PERCENT);
