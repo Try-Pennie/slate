@@ -311,6 +311,18 @@ function idsInBucketRange(n: number, below: boolean, percent: number, prefix: st
   eq(real.slateBookedKeys.size, 30, "and its bookings are read from the event name");
   assert(text(real).includes(`${slateIds.length} leads`), "over every lead");
 
+  // Booker events that arrive named cal_booking with no step column cannot be read
+  // as steps: refused by name, never counted as a lead who never opened the booker.
+  const unnamed = judge(
+    csv(
+      [...slateIds.slice(0, 3).flatMap((id) => [["20261005", id, "slate", "booking_assignment", "1"], ["20261005", id, "slate", "cal_booking", "1"]])],
+      ["Date", "submission_id", "booking_provider", "Event name", "Event count"],
+    ),
+    { PILOT_SPLIT_PERCENT: "50" },
+  );
+  eq(unnamed.exit, PILOT_SPLIT_EXIT.missingColumn, "cal_booking events with no step column are refused");
+  assert(/cal_booking/.test(text(unnamed)) && /export-1\.csv/.test(text(unnamed)), `naming the event and the file (${text(unnamed)})`);
+
   const noFile = judge(null);
   eq(noFile.exit, PILOT_SPLIT_EXIT.notConfigured, "no PILOT_SPLIT_CSV exits on its own code, before anything is read");
 
