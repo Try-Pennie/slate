@@ -72,7 +72,7 @@ const url = (id: string) => `https://slate.test/admin/bookings/${id}`;
 
 // 4. The key names the CLASH, not only the call: a second outside event on the same
 //    call, or the call moved onto another clash, is a new page rather than one
-//    silenced behind the first for a day. The same clash seen again keeps its key.
+//    silenced behind the first for the whole cooldown. The same clash seen again keeps its key.
 {
   const keyOf = async (c: ExternalCollision) => {
     const r = recorder();
