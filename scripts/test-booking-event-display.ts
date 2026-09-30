@@ -31,24 +31,39 @@ const OPTS: Record<ReasonAction, ReasonOption[]> = {
 // appointment time, so three reschedules in a row show a growing notice period
 // against one unchanging clock time, which reads as a data fault and is not.
 const ANCHOR = "the time it was booked for then";
-eq(formatLeadTime(2880), `2 days before ${ANCHOR}`, "2880 min -> 2 days before");
-eq(formatLeadTime(1440), `1 day before ${ANCHOR}`, "1440 min -> 1 day before");
-eq(formatLeadTime(180), `3 hours before ${ANCHOR}`, "180 min -> 3 hours before");
-eq(formatLeadTime(60), `1 hour before ${ANCHOR}`, "60 min -> 1 hour before");
-eq(formatLeadTime(45), `45 minutes before ${ANCHOR}`, "45 min -> 45 minutes before");
-eq(formatLeadTime(1), `1 minute before ${ANCHOR}`, "1 min -> 1 minute before");
-eq(formatLeadTime(-120), `2 hours after ${ANCHOR}`, "-120 min -> after the appointment");
-eq(formatLeadTime(0), "at the time it was booked for", "0 min -> at the booked time");
-eq(formatLeadTime(null), null, "null lead -> null");
+eq(formatLeadTime(2880, true), `2 days before ${ANCHOR}`, "2880 min -> 2 days before");
+eq(formatLeadTime(1440, true), `1 day before ${ANCHOR}`, "1440 min -> 1 day before");
+eq(formatLeadTime(180, true), `3 hours before ${ANCHOR}`, "180 min -> 3 hours before");
+eq(formatLeadTime(60, true), `1 hour before ${ANCHOR}`, "60 min -> 1 hour before");
+eq(formatLeadTime(45, true), `45 minutes before ${ANCHOR}`, "45 min -> 45 minutes before");
+eq(formatLeadTime(1, true), `1 minute before ${ANCHOR}`, "1 min -> 1 minute before");
+eq(formatLeadTime(-120, true), `2 hours after ${ANCHOR}`, "-120 min -> after the appointment");
+eq(formatLeadTime(0, true), "at the time it was booked for", "0 min -> at the booked time");
+eq(formatLeadTime(null, true), null, "null lead -> null");
 
-// Every phrase it can produce names something, or the fix is only in the cases
-// somebody happened to list.
+// Every phrase a MOVING entry can produce names its moving anchor, or the fix is
+// only in the cases somebody happened to list.
 for (const m of [2880, 1440, 180, 60, 45, 1, 0, -1, -60, -2880]) {
-  const out = formatLeadTime(m) ?? "";
+  const out = formatLeadTime(m, true) ?? "";
   assert(
     /the time it was booked for/.test(out),
     `every lead phrase names what it is relative to (${m} gave ${JSON.stringify(out)})`,
   );
+}
+
+// When the entry did NOT move the call (a reassign, a cancel), the anchor is the
+// call itself and cannot differ from any other entry's, so "then" only made the
+// line harder to read: "16 hours before the time it was booked for then" on a
+// reassignment whose time read 8:00am -> 8:00am (Dan, 2026-09-30).
+eq(formatLeadTime(960, false), "16 hours before the call", "unmoved, before -> before the call");
+eq(formatLeadTime(1, false), "1 minute before the call", "unmoved, 1 min before");
+eq(formatLeadTime(-240, false), "4 hours after the call was due", "unmoved, after -> after it was due");
+eq(formatLeadTime(0, false), "at the time of the call", "unmoved, 0 -> at the time of the call");
+eq(formatLeadTime(null, false), null, "unmoved, null lead -> null");
+for (const m of [2880, 60, 1, 0, -1, -60, -2880]) {
+  const out = formatLeadTime(m, false) ?? "";
+  assert(/the call/.test(out), `an unmoved phrase still names the call (${m} gave ${JSON.stringify(out)})`);
+  assert(!/then/.test(out), `an unmoved phrase carries no moving anchor (${m} gave ${JSON.stringify(out)})`);
 }
 
 // --- reasonLabel: code -> human label, with "other" free text + unknown-code fallback ---
@@ -189,6 +204,31 @@ eq(av.agentChange, "Jo Lee → Dan Wright", "reassign agentChange from -> to (na
 eq(av.timeChange, null, "reassign with no time change -> null");
 eq(av.reason, "Coverage (agent unavailable)", "reassign reason label");
 
+// The case in Dan's screenshot: a reassign records the SAME time on both sides,
+// so the time did not move and the lead names the call, not "then".
+const sameTimeReassign = toBookingEventView(
+  {
+    ...reassign,
+    initiator: "system",
+    from_starts_at: "2026-10-01T12:00:00Z",
+    to_starts_at: "2026-10-01T12:00:00Z",
+    lead_time_minutes: 964,
+  },
+  nameOf,
+  OPTS,
+);
+eq(sameTimeReassign.lead, "16 hours before the call", "same time reassign lead names the call");
+// Same instant written two ways is still the same time.
+eq(
+  toBookingEventView(
+    { ...reassign, from_starts_at: "2026-10-01T12:00:00Z", to_starts_at: "2026-10-01T12:00:00.000+00:00", lead_time_minutes: 60 },
+    nameOf,
+    OPTS,
+  ).lead,
+  "1 hour before the call",
+  "one instant in two spellings is not a move",
+);
+
 const cancel: BookingEvent = {
   ...base,
   action: "cancelled",
@@ -200,7 +240,7 @@ const cancel: BookingEvent = {
 const cv = toBookingEventView(cancel, nameOf, OPTS);
 eq(cv.actionLabel, "Cancelled", "cancel -> actionLabel Cancelled");
 eq(cv.who, "Customer", "cancel who = Customer");
-eq(cv.lead, "4 hours after the time it was booked for then", "cancel lead names its anchor");
+eq(cv.lead, "4 hours after the call was due", "cancel does not move the call, so its lead names the call");
 assert(cv.timeChange === null && cv.agentChange === null, "cancel has no time/agent change");
 
 // --- buildHistoryViews: newest-first + roster name resolution (name ?? email) ---

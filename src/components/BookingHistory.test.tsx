@@ -24,7 +24,7 @@ const EVENTS: BookingEventView[] = [
     reason: "Coverage (agent unavailable)",
     timeChange: null,
     agentChange: "Jo Lee → Ana Ruiz",
-    lead: "2 days before the time it was booked for then",
+    lead: "2 days before the call",
   },
   {
     id: "e-old",
@@ -35,7 +35,7 @@ const EVENTS: BookingEventView[] = [
     reason: "No longer interested",
     timeChange: null,
     agentChange: null,
-    lead: "4 hours after the time it was booked for then",
+    lead: "4 hours after the call was due",
   },
 ];
 
