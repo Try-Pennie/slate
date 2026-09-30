@@ -115,11 +115,15 @@ trigger drives sync, recompute, outbox, and self-heal. Every endpoint requires
   | `booking` | `/booking`, not eligible for the AI agent | review |
   | `booking-agent-eligible` | `/booking`, eligible for the AI agent | connect |
   | `booking-portal` | `/booking/portal` | call |
-  | `offerhub` | `/offerhub` | call |
+  | `offerhub` | `/offerportal`, from its Income Verification pop ups | call |
   | `rml-portal` | `/rml/portal` | income |
   | `email-booking` | the email booking link | terms |
   | `guided-app` | guided application completion | apply |
   | `agent-direct` | an advisor's direct link | meet |
+  | `pennie` | `/pennie` | review |
+  | `review-terms` | `/review-terms` | terms |
+  | `my-offers-result-2` | `/my-offers/result-2` | review |
+  | `income-landing` | the `/portal-2` or `/portal-3` calendar | call |
 
   The list and the mapping live in `src/lib/booking/booking-source.ts`, and
   `scripts/test-booking-source.ts` holds this table, the code and the database

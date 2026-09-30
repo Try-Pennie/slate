@@ -40,7 +40,7 @@ const v = bookingDetailView(base, nameOf);
 // been booked into, so an admin can read either name. The three non page states
 // each say their own thing: a booking older than the field, a link with no
 // source, and a link naming a page Slate does not know are three different facts.
-eq(v.source, "/offerhub, cal.com event type call", "a page source shows the page and its legacy event type");
+eq(v.source, "/offerportal, cal.com event type call", "a page source shows the page and its legacy event type");
 eq(
   bookingDetailView({ ...base, source: "booking-agent-eligible" }, nameOf).source,
   "/booking, eligible for the AI agent, cal.com event type connect",

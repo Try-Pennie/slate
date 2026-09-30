@@ -65,7 +65,7 @@ const REPLAY_HOURS = offlineHoursFor(fixture);
   eq(new Set(all).size, all.length, "no source belongs to two pages, so a booking counts for one page only");
   assert(all.every((s) => (PAGE_SOURCES as readonly string[]).includes(s)), "every source is in the #2072 vocabulary");
   eq(new Set(LOW_PAGES.map((p) => p.id)).size, LOW_PAGES.length, "page ids are distinct, so each has its own alert key");
-  eq(pagePlaces(LOW_PAGES[0]!), "/booking/portal and /offerhub", "a page's places come from the source vocabulary's own names");
+  eq(pagePlaces(LOW_PAGES[0]!), "/booking/portal, /offerportal and the /portal-2 or /portal-3 calendar", "a page's places come from the source vocabulary's own names");
 
   // #2765: the values trypennie actually sends, typed out from its merged change
   // (Halo-lab-Trypennie/trypennie PR #516, merged 2026-09-29) rather than read off
@@ -96,7 +96,9 @@ const REPLAY_HOURS = offlineHoursFor(fixture);
   eq(LOW_PAGES_ON_SLATE.map((p) => p.id), PILOT_PAGES, "Slate carries the two pilot pages, in the measurement's own order");
   eq(
     LOW_PAGES_ON_SLATE.flatMap((p) => [...p.sources]).sort(),
-    ["booking", "booking-agent-eligible", "my-offers-result"],
+    // #2873: /pennie and /my-offers/result-2 book the same Completed Application
+    // Review form, so their sources count toward that page once #2870 wires them.
+    ["booking", "booking-agent-eligible", "my-offers-result", "my-offers-result-2", "pennie"],
     "which are the sources /booking/[SO_ID] and /my-offers/result send",
   );
   eq([...FLOOR_SCOPE.forms].sort(), PILOT_FORMS, "the Low floors are fitted to exactly the two pilot forms");

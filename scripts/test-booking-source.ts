@@ -43,6 +43,16 @@ const DECIDED: Record<string, string | null> = {
   "email-booking": "terms",
   "guided-app": "apply",
   "agent-direct": "meet",
+  // #2873: the trypennie surfaces that move to Slate with #2870, each mapped to the
+  // routing form its booker opens today, read off trypennie main (3ff7b7b,
+  // 2026-09-30): /pennie/[SO_ID] and /my-offers/result-2 open PRIMARY_BOOKING_LINK
+  // (b839aed8, the review form), /review-terms/[SO_ID] opens 5022c0c9 (the terms
+  // form), and the /portal-2 and /portal-3 calendar opens OFFERHUB_BOOKING_LINK
+  // (255a083e, Income Verification, the call event type).
+  pennie: "review",
+  "review-terms": "terms",
+  "my-offers-result-2": "review",
+  "income-landing": "call",
   "not-given": null,
   unrecognised: null,
   // #2876: a booking API call that named no page records WHO called, one value per
@@ -121,7 +131,10 @@ assert(
   "not-given and unrecognised are outcomes, not pages a link can name",
 );
 for (const s of BOOKING_SOURCES) {
-  assert(/^[a-z]+(-[a-z]+)*$/.test(s), `${s} is a lowercase kebab value a URL can carry unencoded`);
+  // Digits too (#2873): trypennie's own page is /my-offers/result-2, and a digit
+  // travels in a URL unencoded exactly as a letter does. Uppercase, spaces and
+  // punctuation are what this keeps out.
+  assert(/^[a-z0-9]+(-[a-z0-9]+)*$/.test(s), `${s} is a lowercase kebab value a URL can carry unencoded`);
   assert((SOURCE_DETAILS[s]?.page ?? "").trim().length > 0, `${s} has a description to show an admin`);
 }
 
@@ -206,7 +219,7 @@ eq(latestCheckValues([{ file: "a.sql", sql: "select 1;" }], "k"), null, "no defi
 // A page author reads the README, not the constant, so a source missing there is
 // one nobody can use, and a stale row sends them to a value the server rejects.
 const readme = readFileSync(join(process.cwd(), "README.md"), "utf8");
-const rows = [...readme.matchAll(/^\s*\|\s*`([a-z-]+)`\s*\|[^|]*\|\s*([a-z]+)\s*\|\s*$/gm)].map((m) => [m[1], m[2]]);
+const rows = [...readme.matchAll(/^\s*\|\s*`([a-z0-9-]+)`\s*\|[^|]*\|\s*([a-z]+)\s*\|\s*$/gm)].map((m) => [m[1], m[2]]);
 eq(
   rows.map(([s]) => s).sort().join(","),
   [...PAGE_SOURCES].sort().join(","),

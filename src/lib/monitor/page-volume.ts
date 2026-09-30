@@ -64,7 +64,7 @@ export const LOW_PAGES: readonly LowPage[] = [
     id: "income-verification",
     name: "Income Verification Phone Call",
     calcomForm: "Income Verification Phone Call (engine /booking/portal and /offerhub)",
-    sources: ["booking-portal", "offerhub"],
+    sources: ["booking-portal", "offerhub", "income-landing"],
   },
   {
     id: "application-review-follow-up",
@@ -76,7 +76,7 @@ export const LOW_PAGES: readonly LowPage[] = [
     id: "application-review",
     name: "Completed Application Review",
     calcomForm: "Completed Application Review (/booking ai_agent_eligible false and /my-offers/result)",
-    sources: ["booking", "my-offers-result"],
+    sources: ["booking", "my-offers-result", "pennie", "my-offers-result-2"],
   },
 ];
 
@@ -143,7 +143,7 @@ export function pageVolumeAlertKey(id: LowPageId): string {
  */
 export const PAGE_SEEN_LOOKBACK_DAYS = 7;
 
-/** "/booking/portal and /offerhub": where a page lives, from the source vocabulary's own names (L41). */
+/** "/booking/portal, /offerportal and the /portal-2 or /portal-3 calendar": where a page lives, from the source vocabulary's own names (L41). */
 export function pagePlaces(page: LowPage): string {
   const places = page.sources.map((s) => SOURCE_DETAILS[s].page);
   return places.length === 1 ? places[0]! : `${places.slice(0, -1).join(", ")} and ${places[places.length - 1]}`;
