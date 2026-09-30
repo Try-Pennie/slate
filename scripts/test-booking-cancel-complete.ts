@@ -227,9 +227,9 @@ async function run() {
       "drain: stops loading once a batch comes back under the cap",
     );
 
-    // Stall guard: a FULL batch that transitions zero rows (only unresolvable
-    // rows left, already error-logged per row) must stop the loop, not re-fetch
-    // the same set forever.
+    // Stall guard: a FULL batch that transitions zero rows (every row it loaded
+    // was completed or cancelled by something else in between) must stop the
+    // loop, not re-fetch the same set forever.
     const stallBatch = fullBatch("stall");
     const { deps: dStall, calls: cStall } = makeDeps({
       pastDueBatches: [stallBatch, fullBatch("never")],
