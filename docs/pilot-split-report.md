@@ -24,22 +24,25 @@ Exploration export, downloaded by hand.
 
 ## Setting up the export, once
 
-1. **GTM.** A GA4 Event tag named `booking_assignment`, fired on the custom event
-   trigger `booking_assignment`, sending the dataLayer values `booking_provider`,
-   `submission_id` and `xbc` as event parameters. trypennie pushes the event on every
-   load of both pages (Halo-lab-Trypennie/trypennie#517), and GA4 never sees it without this tag: the command
-   exits 6. The existing `cal_booking` tag must also send `booking_provider` and
-   `submission_id` beside `ga4_event_name`.
-2. **GA4 Admin, Custom definitions.** Register four EVENT scoped custom
-   dimensions, display names exactly `submission_id`, `booking_provider`, `xbc`
-   and `ga4_event_name`, each on the parameter of the same name. Registration is not
-   retroactive: only events after it carry the dimension.
-3. **Explore, Free form.** Rows: Date, submission_id, booking_provider, xbc, Event name,
-   ga4_event_name. Values: Event count. Filter: Event name exactly matches
-   `booking_assignment` or `cal_booking` (or, if the GTM tag names GA4 events after
-   `ga4_event_name`, those names; the command reads `ga4_event_name` when it is set
-   and the event name when it is `(not set)`). Date range: only days
-   `SlatePilotPercent__c` held one value. Set Show rows to its largest.
+1. **GTM** (container `GTM-5WK9CS54`). A Data Layer Variable `DLV - xbc` on `xbc`,
+   a Custom Event trigger `booking_assignment`, and a GA4 Event tag on it (Measurement
+   ID `G-6LJE6E4XS8`, event name `booking_assignment`) sending `booking_provider`,
+   `submission_id` and `xbc` from `DLV - booking_provider`, `DLV - submission_id`
+   and `DLV - xbc`. The first two variables already exist. trypennie pushes the event
+   on every load of both pages (Halo-lab-Trypennie/trypennie#517), and GA4 never sees
+   it without this tag: the command exits 6. The booker events need nothing: the
+   existing `GA4 Event - Cal Booking Funnel` tag already sends `booking_provider`
+   and `submission_id`, and names each GA4 event after its step (`view_booker`,
+   `complete_booking`), read off the container on 2026-09-30.
+2. **GA4 Admin, Custom definitions.** Register three EVENT scoped custom
+   dimensions, display names exactly `submission_id`, `booking_provider` and `xbc`,
+   each on the parameter of the same name. Registration is not retroactive: only
+   events after it carry the dimension.
+3. **Explore, Free form.** Rows: Date, submission_id, booking_provider, xbc, Event
+   name. Values: Event count. Filter: Event name matches regex
+   `booking_assignment|navigate_to_booker|view_booker|reopen_booker|reload_booker|load_slots|complete_booking|cancel_booking|reschedule_booking|fail_booker_load`. Date range: only days `SlatePilotPercent__c` held one value. Set Show
+   rows to its largest. (An export that also carries a `ga4_event_name` column
+   still reads; the step is taken from it when it is set.)
 4. **Share, Download file, CSV.** That file is `PILOT_SPLIT_CSV`. When a range is
    too long for one download, export a week at a time and pass every file: the
    command reads them together, joins a lead who appears in more than one, and

@@ -10,7 +10,8 @@
 // `/booking/[SO_ID]` and `/my-offers/result` by `slateBucket(submission id)`
 // against `SlatePilotPercent__c`, and pushes `booking_assignment` (with
 // `booking_provider` and `submission_id`) on every page load. Booker events
-// (`cal_booking`, named by `ga4_event_name`) carry the same two parameters. So a
+// carry the same two parameters, and reach GA4 named after the step itself
+// (`view_booker`, `complete_booking`): GTM renames `cal_booking` by its step. So a
 // GA4 Exploration at submission id grain holds both halves' denominators and
 // bookings. The warehouse cannot answer it: GA4 reaches Snowflake only as daily
 // totals with no event parameters.
@@ -155,9 +156,15 @@ export const REQUIRED_COLUMNS = [
   "submission_id",
   "booking_provider",
   "event_name",
-  "ga4_event_name",
   "event_count",
 ] as const;
+/**
+ * Read when present, and not required: trypennie's GTM tag sends each booker step
+ * AS the GA4 event name (`view_booker`, `complete_booking`) and no `ga4_event_name`
+ * parameter at all, read off the container on 2026-09-30. An export built for a tag
+ * that did send it still reads, the step taken from it when it is set.
+ */
+export const OPTIONAL_STEP_COLUMN = "ga4_event_name";
 /** Read when present: restricts the comparison to Low leads directly. */
 export const OPTIONAL_XBC_COLUMN = "xbc";
 
@@ -300,6 +307,7 @@ export function parseGa4Export(text: string): ParsedExport {
     };
   }
   const hasXbc = col.has(OPTIONAL_XBC_COLUMN);
+  const hasStep = col.has(OPTIONAL_STEP_COLUMN);
   const at = (fields: string[], name: string) => fields[col.get(name) as number];
 
   const rows: Ga4Row[] = [];
@@ -313,7 +321,9 @@ export function parseGa4Export(text: string): ParsedExport {
       break;
     }
     const f = r.fields;
-    const dims = ["date", "submission_id", "booking_provider", "event_name", "ga4_event_name"].map((n) => value(at(f, n)));
+    const dims = ["date", "submission_id", "booking_provider", "event_name", ...(hasStep ? [OPTIONAL_STEP_COLUMN] : [])].map((n) =>
+      value(at(f, n)),
+    );
     // GA4 may add a totals row with every dimension blank.
     if (dims.every((d) => d === null)) continue;
     dataRows++;
@@ -348,7 +358,7 @@ export function parseGa4Export(text: string): ParsedExport {
       submissionKey: leadKey(submissionId),
       provider,
       unrecognisedProvider: provider === null && providerRaw !== null ? providerRaw : null,
-      event: (value(at(f, "ga4_event_name")) ?? value(at(f, "event_name")) ?? "").toLowerCase(),
+      event: ((hasStep ? value(at(f, OPTIONAL_STEP_COLUMN)) : null) ?? value(at(f, "event_name")) ?? "").toLowerCase(),
       count,
       xbc: hasXbc ? value(at(f, OPTIONAL_XBC_COLUMN)) : null,
     });
@@ -802,7 +812,7 @@ export function judgePilotSplit(input: {
   if (s.bookerEvents === 0 && s.slate.leads >= MIN_LEADS_PER_HALF && s.calcom.leads >= MIN_LEADS_PER_HALF) {
     lines.push(
       `FAILED (no-booker-events): ${plural(s.slate.leads + s.calcom.leads, "lead")} and not one booker event (${[...BOOKER_EVENTS].join(", ")}). ` +
-        "The Exploration is missing them: check the event name filter and that ga4_event_name is a registered custom dimension.",
+        "The Exploration is missing them: check its Event name filter includes the booker steps (view_booker, complete_booking and the rest).",
     );
     return out(PILOT_SPLIT_EXIT.noBookerEvents, extra);
   }
