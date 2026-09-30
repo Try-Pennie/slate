@@ -64,7 +64,7 @@ export const LOW_PAGES: readonly LowPage[] = [
     id: "income-verification",
     name: "Income Verification Phone Call",
     calcomForm: "Income Verification Phone Call (engine /booking/portal and /offerhub)",
-    sources: ["booking-portal", "offerhub"],
+    sources: ["booking-portal", "offerhub", "income-landing"],
   },
   {
     id: "application-review-follow-up",
@@ -76,7 +76,7 @@ export const LOW_PAGES: readonly LowPage[] = [
     id: "application-review",
     name: "Completed Application Review",
     calcomForm: "Completed Application Review (/booking ai_agent_eligible false and /my-offers/result)",
-    sources: ["booking", "my-offers-result"],
+    sources: ["booking", "my-offers-result", "pennie", "my-offers-result-2"],
   },
 ];
 

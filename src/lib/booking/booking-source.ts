@@ -54,6 +54,11 @@ export const PAGE_SOURCES = [
   "email-booking",
   "guided-app",
   "agent-direct",
+  // #2873: the trypennie surfaces that move to Slate with #2870.
+  "pennie",
+  "review-terms",
+  "my-offers-result-2",
+  "income-landing",
 ] as const;
 export type PageSource = (typeof PAGE_SOURCES)[number];
 
@@ -106,11 +111,19 @@ export const SOURCE_DETAILS: Record<BookingSource, SourceDetail> = {
   booking: { page: "/booking", legacyEventType: "review" },
   "booking-agent-eligible": { page: "/booking, eligible for the AI agent", legacyEventType: "connect" },
   "booking-portal": { page: "/booking/portal", legacyEventType: "call" },
-  offerhub: { page: "/offerhub", legacyEventType: "call" },
+  // #2873: the Income Verification pop ups on /offerportal and /offerportal-2 set
+  // this, not the /offerhub page, which has no booker of its own and hands off to
+  // /booking/portal. The pop ups rewrite the page's source to it, so it is also
+  // what every /offerportal booking records.
+  offerhub: { page: "/offerportal", legacyEventType: "call" },
   "rml-portal": { page: "/rml/portal", legacyEventType: "income" },
   "email-booking": { page: "Email booking link", legacyEventType: "terms" },
   "guided-app": { page: "Guided application completion", legacyEventType: "apply" },
   "agent-direct": { page: "An advisor's direct link", legacyEventType: "meet" },
+  pennie: { page: "/pennie", legacyEventType: "review" },
+  "review-terms": { page: "/review-terms", legacyEventType: "terms" },
+  "my-offers-result-2": { page: "/my-offers/result-2", legacyEventType: "review" },
+  "income-landing": { page: "the /portal-2 or /portal-3 calendar", legacyEventType: "call" },
   "not-given": { page: "No source on the link", legacyEventType: null },
   unrecognised: { page: "A source Slate does not know", legacyEventType: null },
   // #2876: not pages, so no cal.com event type. `Record<BookingSource, ...>` makes
