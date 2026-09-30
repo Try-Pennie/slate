@@ -223,7 +223,7 @@ async function run() {
     assert(calls.webhooks.length === 0, "#2915 drain: sends no webhook for any drained booking");
     // The loop stopped after the under-cap batch: no needless extra fetch.
     assert(
-      calls.loadPastBookingsToComplete === 3,
+      calls.loadPastBookingIdsToComplete === 3,
       "drain: stops loading once a batch comes back under the cap",
     );
 
@@ -244,7 +244,7 @@ async function run() {
     );
     assert(
       cStall.completeBookingsIfDue.length === 1 &&
-        cStall.loadPastBookingsToComplete === 1,
+        cStall.loadPastBookingIdsToComplete === 1,
       "drain: a zero-progress batch stops the loop instead of re-fetching",
     );
 

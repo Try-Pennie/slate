@@ -1,12 +1,8 @@
 import type {
-  Booking,
   BookingEventAction,
   BookingEventInitiator,
-  Bucket,
   BusySource,
-  EventType,
 } from "@/lib/db/types";
-import { log } from "@/lib/log";
 import { TEST_MODE_COPY } from "@/lib/booking/booker-copy";
 
 /**
@@ -713,11 +709,9 @@ export function eventDescription(
 
 /**
  * The completion sweep loads at most this many finished bookings per run and
- * completes them. It is the source of truth for the cap: `loadPastBookingsTo
- * complete` bounds its query by it, and `joinBookingContexts` warns when a run
- * comes back full (see below). Fine at current volume (~2k bookings/day), but a
- * backlog over the cap quietly waits a tick, so the full-batch case is made
- * observable rather than silent (#223).
+ * completes them. It is the source of truth for the cap:
+ * `loadPastBookingIdsToComplete` bounds its query by it, and the drain loop in
+ * `completePastBookings` reads a full batch as more waiting (#223, #871).
  */
 export const PAST_COMPLETION_BATCH_LIMIT = 200;
 
@@ -735,55 +729,6 @@ export const PAST_COMPLETION_BATCH_LIMIT = 200;
  * `completePastBookings`), replacing #223's per-batch warn here.
  */
 export const MAX_COMPLETION_DRAIN_BATCHES = 25;
-
-/**
- * Pairs each booking with its bucket + event type from already-fetched sets,
- * so the completion sweep can resolve them with two `.in()` queries instead of
- * a round-trip per booking (#164).
- *
- * This is the choke point that sees the whole fetched batch and performs the
- * drop, so the silent data-loss condition is made loud here (#223), without
- * changing the behavior itself: a booking whose bucket or event type isn't in
- * the fetched set is dropped and would never complete. FK integrity makes this
- * unreachable in prod, so if it happens it is a real data anomaly, not routine:
- * log it (id + which side was missing) at error, per the fail-loud rule, instead
- * of vanishing.
- *
- * The other #223 condition (a full batch signalling a backlog) moved to the
- * drain loop in `completePastBookings` (#871): the sweep now clears the whole
- * backlog per run, so a mid-drain full batch is being cleared, not left waiting.
- * The loud signal is now "drain budget exhausted" when a run can't finish.
- */
-export function joinBookingContexts(
-  bookings: Booking[],
-  buckets: Bucket[],
-  eventTypes: EventType[],
-): { booking: Booking; bucket: Bucket; eventType: EventType }[] {
-  const bucketById = new Map(buckets.map((b) => [b.id, b]));
-  const eventTypeById = new Map(eventTypes.map((e) => [e.id, e]));
-
-  const out: { booking: Booking; bucket: Bucket; eventType: EventType }[] = [];
-  for (const booking of bookings) {
-    const bucket = bucketById.get(booking.bucket_id);
-    const eventType = eventTypeById.get(booking.event_type_id);
-    if (bucket && eventType) {
-      out.push({ booking, bucket, eventType });
-      continue;
-    }
-    const reason =
-      !bucket && !eventType
-        ? "bucket_and_event_type_missing"
-        : !bucket
-          ? "bucket_missing"
-          : "event_type_missing";
-    log.error("completion-sweep", {
-      msg: "unresolvable booking skipped, will never complete",
-      booking_id: booking.id,
-      reason,
-    });
-  }
-  return out;
-}
 
 /**
  * The fields that identify a FAILED booking insert (#1047).
