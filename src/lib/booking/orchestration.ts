@@ -4213,6 +4213,38 @@ export async function cancelDirectBooking(
   return toApiBookingView({ ...ctx.booking, status: "cancelled" }, deps, ctx.bucket.is_test);
 }
 
+/**
+ * The booking's routing trace, or a seed standing in for one on a legacy row that
+ * never had one, so a later move is still recorded rather than dropped for want of
+ * a base. The seed names the current advisor as the original choice, since that is
+ * the only decision the row can still tell us about.
+ */
+function traceOrSeed(booking: Booking, bucket: Bucket): RoutingTrace {
+  return (
+    booking.routing_trace ?? {
+      bucket_code: bucket.code,
+      bucket_id: bucket.id,
+      considered: [],
+      chosen_user_id: booking.assigned_user_id ?? "",
+      fallback_applied: false,
+      reassignments: [],
+    }
+  );
+}
+
+/**
+ * The trace with one move appended to its reassignments (#2916). `chosen_user_id`
+ * and `considered` are left as they were: they record what the ranker decided at
+ * booking time, and the reassignments list is where every later hand over lives,
+ * whichever path made it.
+ */
+function traceWithMove(trace: RoutingTrace, from: string | null, to: string, nowMs: number): RoutingTrace {
+  return {
+    ...trace,
+    reassignments: [...(trace.reassignments ?? []), { from, to, at: new Date(nowMs).toISOString() }],
+  };
+}
+
 export async function rescheduleBooking(
   token: string,
   newStartIso: string,
@@ -4598,6 +4630,14 @@ async function applyReschedule(
       status: "rescheduled",
       gcal_event_id: newGcalEventId,
       reschedule_seq: pin.reschedule_seq,
+      // #2916: a reroute hands the call to another advisor, so it is recorded in
+      // the trace's reassignments the way a reassign records it. Built from the
+      // snapshot, which is safe here and only here: the write is gated on the
+      // assignee AND the event id we read, and every other writer of the trace (a
+      // reassign) changes both, so a stale trace can never land over a newer one.
+      ...(assigned !== fromAgentUserId
+        ? { routing_trace: traceWithMove(traceOrSeed(booking, bucket), fromAgentUserId, assigned, nowMs) }
+        : {}),
     },
     { assignedUserId: fromAgentUserId, gcalEventId: fromGcalEventId },
   );
@@ -4846,14 +4886,7 @@ export async function reassignBooking(
   // history entry. We pass only a BASE trace to seed the row if it has none; the
   // swap derives the record (from = the genuinely-current agent under the lock,
   // to = this target, at = now) and appends it onto the row's own current history.
-  const baseTrace: RoutingTrace = booking.routing_trace ?? {
-    bucket_code: bucket.code,
-    bucket_id: bucket.id,
-    considered: [],
-    chosen_user_id: booking.assigned_user_id ?? "",
-    fallback_applied: false,
-    reassignments: [],
-  };
+  const baseTrace: RoutingTrace = traceOrSeed(booking, bucket);
   // Captured BEFORE the swap for the returned object's local trace view: the
   // agent we're moving away from, as this caller saw it.
   const fromUserId = booking.assigned_user_id;
