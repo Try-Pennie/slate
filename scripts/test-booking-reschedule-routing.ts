@@ -345,6 +345,97 @@ async function run() {
     );
   }
 
+  // --- #2916: a reroute that hands the booking to a DIFFERENT advisor records the
+  // move in the routing trace, in the same gated write that moves the booking, the
+  // way a reassign does. Before this the trace went on naming the original advisor
+  // with no reassignments entry (dc4abf27), so anything reading the trace for who
+  // holds the call named the wrong person. The original decision is kept as it was:
+  // chosen_user_id and considered describe what the ranker chose at booking time.
+  // Covered both ways: a reroute appends exactly one entry, and an in place move
+  // (same advisor) leaves the trace untouched. ---
+  const offShiftA = new Map([
+    ["a", { timezone: "America/New_York", rules: [{ weekday: 1, start_minute: 9 * 60, end_minute: 810 }] }],
+  ]);
+  {
+    const priorTrace = {
+      bucket_code: "411",
+      bucket_id: "bkt1",
+      considered: ["a", "c"],
+      chosen_user_id: "a",
+      fallback_applied: false,
+      reassignments: [{ from: "c", to: "a", at: "2026-05-30T12:00:00.000Z" }],
+    };
+    const ctx = { booking: makeBooking({ routing_trace: priorTrace } as never), bucket, eventType };
+    const { deps, calls } = makeDeps({
+      existing: ctx,
+      bookingById: ctx,
+      candidates: ["b"],
+      freeEmails: new Set(["a@x.com", "b@x.com"]),
+      workingHoursByUser: offShiftA,
+    });
+    await rescheduleBooking("tok1", "2026-06-08T18:00:00.000Z", RR, "customer", deps, NOW);
+    const trace = calls.commitReschedule[0]?.patch.routing_trace as typeof priorTrace | undefined;
+    assert(
+      trace != null &&
+        trace.chosen_user_id === "a" &&
+        JSON.stringify(trace.considered) === JSON.stringify(["a", "c"]) &&
+        trace.bucket_code === "411",
+      "#2916 reroute: the trace keeps the original decision (chosen, considered, bucket)",
+    );
+    assert(
+      JSON.stringify(trace?.reassignments) ===
+        JSON.stringify([
+          { from: "c", to: "a", at: "2026-05-30T12:00:00.000Z" },
+          { from: "a", to: "b", at: new Date(NOW).toISOString() },
+        ]),
+      "#2916 reroute: appends exactly one move from the old advisor to the new one, after the existing history",
+    );
+    assert(
+      calls.commitReschedule[0]?.patch.assigned_user_id === "b",
+      "#2916 reroute: the trace entry lands in the SAME gated commit that moves the booking",
+    );
+  }
+  {
+    // A legacy row with no trace at all is seeded the way a reassign seeds one, so
+    // the move is still recorded rather than dropped for want of a base.
+    const ctx = { booking: makeBooking({}), bucket, eventType };
+    const { deps, calls } = makeDeps({
+      existing: ctx,
+      bookingById: ctx,
+      candidates: ["b"],
+      freeEmails: new Set(["a@x.com", "b@x.com"]),
+      workingHoursByUser: offShiftA,
+    });
+    await rescheduleBooking("tok1", "2026-06-08T18:00:00.000Z", RR, "customer", deps, NOW);
+    const trace = calls.commitReschedule[0]?.patch.routing_trace as
+      | { chosen_user_id: string; bucket_code: string; reassignments: { from: string; to: string }[] }
+      | undefined;
+    assert(
+      trace != null &&
+        trace.chosen_user_id === "a" &&
+        trace.bucket_code === bucket.code &&
+        trace.reassignments.length === 1 &&
+        trace.reassignments[0].from === "a" &&
+        trace.reassignments[0].to === "b",
+      "#2916 reroute with no trace: seeds one and records the move",
+    );
+  }
+  {
+    // The positive control's opposite: the advisor is kept, so nothing moved and
+    // the commit must not touch the trace at all.
+    const ctx = { booking: makeBooking({}), bucket, eventType };
+    const { deps, calls } = makeDeps({
+      existing: ctx,
+      bookingById: ctx,
+      freeEmails: new Set(["a@x.com"]),
+    });
+    await rescheduleBooking("tok1", "2026-06-09T14:00:00.000Z", RR, "customer", deps, NOW);
+    assert(
+      calls.commitReschedule.length === 1 && !("routing_trace" in calls.commitReschedule[0].patch),
+      "#2916 in place: a reschedule that keeps the advisor leaves the trace alone",
+    );
+  }
+
   // --- AUD-044/#518: reroute is CREATE-FIRST, so a failed create never strands
   // the booking with its old event already deleted. When the new-agent create
   // fails, the OLD event must still exist (deleted only AFTER a durable commit). ---
