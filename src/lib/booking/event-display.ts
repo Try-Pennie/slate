@@ -1,5 +1,6 @@
 import { type ReasonAction, type ReasonOption } from "./core.ts";
 import type { BookingEvent, BookingEventAction } from "../db/types.ts";
+import { parseStampMs } from "../date/stamp.ts";
 
 /** Resolves a user id to a display name (roster lookup on the server, #561). */
 export type NameResolver = (id: string | null) => string;
@@ -36,11 +37,14 @@ function plural(n: number, unit: string): string {
  * Signed lead-time minutes -> a human phrase relative to the appointment.
  * Positive = the action happened before the appointment; negative = after it
  * (see BookingEvent.lead_time_minutes). Null in -> null out.
+ *
+ * `timeMoved` says whether THIS entry moved the call. Required, so every caller
+ * has to decide it rather than inherit one wording by default.
  */
-export function formatLeadTime(minutes: number | null): string | null {
+export function formatLeadTime(minutes: number | null, timeMoved: boolean): string | null {
   if (minutes == null) return null;
-  if (minutes === 0) return "at the time it was booked for";
-  const suffix = minutes > 0 ? "before" : "after";
+  if (minutes === 0) return timeMoved ? "at the time it was booked for" : "at the time of the call";
+  const before = minutes > 0;
   const abs = Math.abs(minutes);
   let magnitude: string;
   if (abs >= 1440) magnitude = plural(Math.round(abs / 1440), "day");
@@ -56,10 +60,22 @@ export function formatLeadTime(minutes: number | null): string | null {
   // period grew while the wall clock did not.
   //
   // `bookingEventFrom` measures this against the PRE ACTION appointment time, so
-  // the anchor is different for each entry, and an anchor that moves has to be
-  // named or the numbers cannot be reconciled with each other (L589). "then" is
-  // what carries that.
-  return `${magnitude} ${suffix} the time it was booked for then`;
+  // on an entry that moved the call the anchor is not the time now on screen,
+  // and it has to be named or the numbers cannot be reconciled (L589). "then" is
+  // what carries that. An entry that did NOT move the call (a reassign, a
+  // cancel) is measured against the call itself, and "then" there only made the
+  // line harder to read (Dan, 2026-09-30).
+  if (timeMoved) return `${magnitude} ${before ? "before" : "after"} the time it was booked for then`;
+  return before ? `${magnitude} before the call` : `${magnitude} after the call was due`;
+}
+
+/** Whether an entry moved the call: both ends recorded and at different instants.
+ *  An unreadable bound counts as moved, which keeps the fuller wording. */
+function movedTheCall(from: string | null, to: string | null): boolean {
+  if (!from || !to) return false;
+  const f = parseStampMs(from);
+  const t = parseStampMs(to);
+  return f == null || t == null || f !== t;
 }
 
 /**
@@ -186,6 +202,6 @@ export function toBookingEventView(
     reason: reasonLabel(REASON_ACTION[e.action], e.reason_code, e.reason_detail, reasonOptions),
     timeChange,
     agentChange,
-    lead: formatLeadTime(e.lead_time_minutes),
+    lead: formatLeadTime(e.lead_time_minutes, movedTheCall(e.from_starts_at, e.to_starts_at)),
   };
 }
