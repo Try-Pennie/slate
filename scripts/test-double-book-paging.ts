@@ -4,7 +4,7 @@
 // by the advisor, a second clash on the same advisor inside the cooldown was
 // silenced behind a first page that read as the whole picture (L707).
 import { assert, eq, finish } from "./lib/harness.ts";
-import { pageExternalCollisions, DOUBLE_BOOK_COOLDOWN_MS } from "../src/lib/google/collision-alerts.ts";
+import { pageExternalCollisions, DOUBLE_BOOK_COOLDOWN_MS, COLLISION_WINDOW_MS } from "../src/lib/google/collision-alerts.ts";
 import type { ExternalCollision } from "../src/lib/google/collision.ts";
 
 const T = (iso: string) => Date.parse(iso);
@@ -44,12 +44,13 @@ const url = (id: string) => `https://slate.test/admin/bookings/${id}`;
   assert(r.sent.every((s) => s.cooldownMs === DOUBLE_BOOK_COOLDOWN_MS), "every page uses the per call cooldown");
 }
 
-// 2. The cooldown is long enough that a clash seen on every sync does not re-page
-//    on each one, and short enough that an unresolved clash is raised again the
-//    next day rather than never.
+// 2. Each clash pages ONCE, ever (Dan, 2026-09-29: "Once per clash, ever"). A clash
+//    is only seen while its call sits inside the scan window, so a cooldown that
+//    outlasts the window can never lapse while the clash is still visible. A new
+//    clash on the same call is a new key (case 4), so it still pages.
 {
-  assert(DOUBLE_BOOK_COOLDOWN_MS >= 60 * 60 * 1000, "a persisting clash is not re-paged hourly or faster");
-  assert(DOUBLE_BOOK_COOLDOWN_MS <= 24 * 60 * 60 * 1000, "an unresolved clash is raised again within a day");
+  assert(DOUBLE_BOOK_COOLDOWN_MS > COLLISION_WINDOW_MS,
+    `the cooldown (${DOUBLE_BOOK_COOLDOWN_MS}) outlasts the scan window (${COLLISION_WINDOW_MS}), so one clash never re-pages`);
 }
 
 // 3. One failed send does not stop the rest being paged: each call has its own

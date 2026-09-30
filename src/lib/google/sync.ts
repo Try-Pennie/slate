@@ -58,16 +58,12 @@ import type { AgentCalendar } from "@/lib/db/types";
 import { unwrap, unwrapCount } from "@/lib/db/result";
 import { chunkIdsByUrlBudget } from "@/lib/db/id-batch";
 import { log } from "@/lib/log";
-import { pageExternalCollisions } from "@/lib/google/collision-alerts";
+import { COLLISION_WINDOW_MS, pageExternalCollisions } from "@/lib/google/collision-alerts";
 import { afterResponse } from "@/lib/after-response";
 import { gatedWriteRows } from "@/lib/booking/gated-write";
 
 // Renew well before Google's ~7-day watch TTL so a cron outage can't drop push.
 const WATCH_RENEW_THRESHOLD_MS = 3 * 24 * 60 * 60 * 1000;
-// External-double-book detection (#316): only future bookings can be
-// double-booked, so scan a forward window. Each clashing call pages on its own
-// cooldown (DOUBLE_BOOK_COOLDOWN_MS, #2905).
-const COLLISION_WINDOW_MS = 14 * 24 * 60 * 60 * 1000;
 
 async function loadAgentEmail(userId: string): Promise<string | null> {
   // error-ok: push-path agent-email lookup; a read error skips this push-triggered

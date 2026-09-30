@@ -23,13 +23,22 @@ export function doubleBookAlertKey(c: ExternalCollision): string {
   return `external_double_book:${c.bookingId}:${event}:${c.bookingStartMs}`;
 }
 
+const DAY_MS = 24 * 60 * 60 * 1000;
+
 /**
- * How long one call's clash stays quiet after it is paged. Sync sees a
- * persisting clash every minute, so a short cooldown would re-page the same call
- * all day (L36); a day means an unresolved clash on a future call is raised again
- * tomorrow rather than never.
+ * How far ahead sync scans for clashes. Only future calls can be double booked,
+ * so a call is looked at from 14 days before it starts until it starts.
  */
-export const DOUBLE_BOOK_COOLDOWN_MS = 24 * 60 * 60 * 1000;
+export const COLLISION_WINDOW_MS = 14 * DAY_MS;
+
+/**
+ * How long one clash stays quiet after it is paged: longer than the scan window,
+ * so a clash pages ONCE and never again (Dan, 2026-09-29, "Once per clash,
+ * ever"). Sync sees a persisting clash every minute, and repeating a page about a
+ * clash somebody chose to leave is noise (L36). A clash that CHANGES is a new key
+ * (`doubleBookAlertKey`), so it still pages.
+ */
+export const DOUBLE_BOOK_COOLDOWN_MS = COLLISION_WINDOW_MS + DAY_MS;
 
 export interface DoubleBookPagingDeps {
   notify: ThrottledNotify;
