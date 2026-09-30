@@ -370,6 +370,7 @@ vi.mock("@/lib/google/calendar", async () => {
 });
 
 import { hydrateCalendar, syncByChannel, runIncrementalSync } from "@/lib/google/sync";
+import { recomputeBucketsForAgent } from "@/lib/availability/slot-cache";
 import type { AgentCalendar } from "@/lib/db/types";
 
 // ---------------------------------------------------------------------------
@@ -677,5 +678,44 @@ describe("the minute lane honours a hydration claim (#2411)", () => {
 
     expect(res.claimSkipped).toBe(0);
     expect(blockFor("evt-late")).toBeTruthy();
+  });
+});
+
+// #2922: the push path's slot refresh is AWAITED inside syncByChannel rather than
+// scheduled beside it. The push route already runs syncByChannel under after(), so
+// awaiting keeps the refresh in that same post response window and lets the route
+// time the sync and the refresh as the one unit Cloudflare cancels. A nested
+// schedule would let syncByChannel resolve, and the route log "push work
+// finished", while the refresh was still running and about to be cut off.
+describe("a push sync waits for its slot refresh (#2922)", () => {
+  it("does not resolve until the agent's refresh has settled, and releases its claim first", async () => {
+    const g = google.current as FakeGoogle;
+    await bootstrap();
+    g.put("evt-new", at(DAY + 9), at(DAY + 10));
+
+    let release!: () => void;
+    let claimDuringRefresh: string | null | undefined;
+    vi.mocked(recomputeBucketsForAgent).mockImplementationOnce(async (userId) => {
+      expect(userId).toBe(USER_ID);
+      claimDuringRefresh = cal().sync_claimed_at;
+      await new Promise<void>((r) => (release = r));
+      return null;
+    });
+
+    let settled = false;
+    const pending = syncByChannel(CHANNEL).then((out) => {
+      settled = true;
+      return out;
+    });
+    await vi.waitFor(() => expect(release).toBeTypeOf("function"));
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    // The claim is released before the refresh, so a push arriving meanwhile
+    // syncs rather than coalescing behind four seconds of compute per pool.
+    expect(claimDuringRefresh).toBeNull();
+
+    release();
+    await expect(pending).resolves.toBe("synced");
+    expect(blockFor("evt-new")).toBeTruthy();
   });
 });
