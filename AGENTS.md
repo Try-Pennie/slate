@@ -733,8 +733,8 @@ public test bucket `PARTNER` (#2660)**: it is `is_test`, so no webhook, no Regal
 text, a test calendar, and no monitor reads it as a lead. A test on a REAL bucket
 is a real lead to every monitor: the below tier check (#2737) excludes it only
 when its host page is not the production site, so one from trypennie.com or with
-no host (`/book`, the booking API, an admin booking) can un-park that check and
-page, and the failure rate watch (#2513) counts every attempt on a real bucket.
+no host (`/book`, the booking API, an admin booking) is compared against the
+lead's Salesforce tier and pages if its team is below it, and the failure rate watch (#2513) counts every attempt on a real bucket.
 
 **The rare test that must reach a real advisor** uses the bucket with the MOST
 advisors on `/admin/tiers`, never a one person pool, whose only slot it would take

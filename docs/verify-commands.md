@@ -98,9 +98,10 @@ The family has grown since those three, and the list of lanes and bounds is
 `VERDICT_STALE_BOUNDS_MS` in `src/lib/monitor/health.ts` rather than this
 paragraph. The newest is `verdict:below-lead-tier` (#2593), the check holding
 each upcoming booking's pool tier against the lead's current Salesforce
-`XBC__c`. It stamps only when it COMPARED at least one booking, and it ships
+`XBC__c`. It stamps only when it COMPARED at least one booking. It shipped
 parked in `PARKED_VERDICT_DETECTORS` because on 2026-09-24 no real lead had an
-upcoming booking in Slate, so there was nothing to compare.
+upcoming booking in Slate, and was armed on 2026-09-30 (#2696) once the Low pilot
+put real bookings in view.
 
 `verdict:roster-coverage` (#1941) watches the roster coverage alarm (#1454). It
 stamps on a gap list AND on an empty one, since a fully covered week is a

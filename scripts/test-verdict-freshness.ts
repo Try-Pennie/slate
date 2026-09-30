@@ -44,6 +44,7 @@ import {
   failureRateReachedVerdict,
   lowVolumeReachedVerdict,
   parkedDetector,
+  detectorParkState,
   PARKED_VERDICT_DETECTORS,
 } from "../src/lib/monitor/verdict-freshness.ts";
 import {
@@ -442,6 +443,24 @@ const HOUR = 60 * 60_000;
       "a parked lane's copy still names its issue",
     );
   }
+}
+
+// --- the below lead tier watch is armed (#2696) --------------------------------
+//
+// Parked by #2593 because no real lead had an upcoming booking to compare. The
+// Low pilot went live on 2026-09-29 and the lane stamped a verdict on the monitor
+// tick of 2026-09-30 18:33 UTC, which is the un-park page doing its job. Left
+// parked, the check could go blind (an unreadable Salesforce, a broken bookings
+// read) with nothing saying so, while the page it guards is armed and trusted.
+{
+  assert(
+    parkedDetector(BELOW_LEAD_TIER_VERDICT_LANE) === null,
+    "the below lead tier watch is armed now that real leads are booking",
+  );
+  assert(
+    detectorParkState(BELOW_LEAD_TIER_VERDICT_LANE, null, 0) === "armed",
+    "so a lane that never concluded is judged against its bound rather than kept quiet",
+  );
 }
 
 // --- the debt tier alarm's verdict (#2505) ------------------------------------

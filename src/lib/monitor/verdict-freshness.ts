@@ -515,22 +515,10 @@ export const PARKED_VERDICT_DETECTORS: Partial<Record<DetectorVerdictLane, Parke
     // it is what went stale when #2484 moved the window from one hour to four.
     unparkWithinMs: SHIPPED_FAILURE_RATE_THRESHOLDS.windowMs,
   },
-  // #2593. Measured 2026-09-24: no upcoming active booking in a real bucket, and
-  // no Slate booking has ever carried a real Salesforce Lead id, so there is
-  // nothing to compare and the watch would page "never concluded" every day for
-  // a reason nobody can act on (L111, L36). The first real booking unparks it,
-  // and the un-park page is what says so. A test booking made in a real bucket
-  // from a known test source is not compared (#2737), so it cannot un-park it:
-  // on 2026-09-25 a single one from dev.trypennie.com did, then lapsed, and the
-  // page flapped. A test from the production site or with no host still counts.
-  [BELOW_LEAD_TIER_VERDICT_LANE]: {
-    reason:
-      "no real lead has an upcoming booking in Slate yet, so there is no booking to hold against the lead's Salesforce tier. It can only conclude once real leads are booking, from the Low pilot page or at cutover",
-    issue: 2696,
-    // Two monitor ticks. A real roster keeps an upcoming booking in view on every
-    // tick, so a verdict this fresh means real bookings are in Slate now.
-    unparkWithinMs: 10 * 60_000,
-  },
+  // The below lead tier watch (#2593) was parked here until 2026-09-30 (#2696):
+  // no real lead had an upcoming booking to compare. The Low pilot went live on
+  // 2026-09-29 and the lane concluded on the monitor tick of 2026-09-30 18:33 UTC,
+  // so the un-park page said so and the entry came out.
 };
 
 /**
