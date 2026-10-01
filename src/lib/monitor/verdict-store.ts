@@ -35,6 +35,7 @@ import {
   OFFSITE_ORIGIN_VERDICT_LANE,
   AWAITING_ACTIVATION_VERDICT_LANE,
   REGAL_CALL_FEED_VERDICT_LANE,
+  REGAL_CALL_OUTCOMES_VERDICT_LANE,
   type DetectorVerdictLane,
 } from "@/lib/monitor/verdict-freshness";
 
@@ -81,6 +82,7 @@ const STAMP: Record<WorkerStampedVerdictLane, () => Promise<void>> = {
   [OFFSITE_ORIGIN_VERDICT_LANE]: () => recordHeartbeat("verdict:offsite-origin"),
   [AWAITING_ACTIVATION_VERDICT_LANE]: () => recordHeartbeat("verdict:awaiting-activation"),
   [REGAL_CALL_FEED_VERDICT_LANE]: () => recordHeartbeat("verdict:regal-call-feed"),
+  [REGAL_CALL_OUTCOMES_VERDICT_LANE]: () => recordHeartbeat("verdict:regal-call-outcomes"),
 };
 
 /**

@@ -17,6 +17,7 @@ import type {
   BookingHandoff,
   OwnerAlertEvent,
   RegalCallEvent,
+  RegalCallOutcome,
   RegalCallIgnore,
   BookingOutbox,
   BookingReservation,
@@ -137,6 +138,7 @@ export interface Database {
       booking_handoffs: Table<BookingHandoff>;
       owner_alert_events: Table<OwnerAlertEvent>;
       regal_call_events: Table<RegalCallEvent>;
+      regal_call_outcomes: Table<RegalCallOutcome>;
       regal_call_ignores: Table<RegalCallIgnore>;
       bucket_slots: Table<BucketSlotsRow>;
       pending_event_deletions: Table<PendingEventDeletion>;

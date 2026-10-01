@@ -201,6 +201,8 @@ const with_ = (over: Partial<SetupReadiness>): SetupReadiness => ({ ...ALL_SETUP
     awaitingActivation: false,
     regalCalls: false,
     regalCallsUnreadable: false,
+    // #2944: on the same Regal arming switch.
+    regalCallOutcomes: false,
   };
   for (const [name, runs] of Object.entries(expected) as [keyof typeof g, boolean][]) {
     eq(g[name].run, runs, `settings unreadable: ${name} runs = ${runs}`);

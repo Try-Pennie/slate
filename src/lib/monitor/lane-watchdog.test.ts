@@ -147,6 +147,8 @@ const healthy = () => ({
   "verdict:offsite-origin": ago(5 * MIN),
   "verdict:awaiting-activation": ago(5 * MIN),
   "verdict:regal-call-feed": ago(5 * MIN),
+  // #2944: the call outcome ratio judges every tick with calls flowing.
+  "verdict:regal-call-outcomes": ago(10 * MIN),
   // #2696: armed once the Low pilot put real upcoming bookings in view, and a
   // real roster keeps one in view on every monitor tick.
   "verdict:below-lead-tier": ago(5 * MIN),

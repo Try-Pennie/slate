@@ -11,8 +11,10 @@
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { unwrap } from "@/lib/db/result";
 import {
-  processRegalCall,
-  type RegalCallOutcome,
+  processRegalCallDelivery,
+  type RegalCallDelivery,
+  type RegalCallOutcomeRow,
+  type RegalCallOutcomeStore,
   type RegalCallRow,
   type RegalCallStore,
 } from "@/lib/regal/inbound-call";
@@ -43,7 +45,34 @@ export function regalCallStore(db = supabaseAdmin()): RegalCallStore {
   };
 }
 
-/** Classify and record one received body. */
-export async function recordRegalCall(body: unknown): Promise<RegalCallOutcome> {
-  return processRegalCall(body, regalCallStore());
+/**
+ * The call outcome half (#2944): one row per completed call in
+ * `regal_call_outcomes`, kept 120 days for the show rate. THROWS on any error
+ * other than the event_id conflict, for the same reason the detector's insert
+ * does: a swallowed error would report a call as stored that the show rate never
+ * sees.
+ */
+export function regalCallOutcomeStore(db = supabaseAdmin()): RegalCallOutcomeStore {
+  return {
+    insertOutcome: async (row: RegalCallOutcomeRow) => {
+      // ON CONFLICT (event_id) DO NOTHING, told apart from a write by the empty
+      // array it returns. A full row every time (L685).
+      const { data, error } = await db
+        .from("regal_call_outcomes")
+        .upsert({ ...row }, { onConflict: "event_id", ignoreDuplicates: true })
+        .select("id");
+      if (error) throw new Error(`regal call outcome insert failed: ${error.message}`);
+      return (data ?? []).length === 0 ? "duplicate" : "inserted";
+    },
+  };
+}
+
+/**
+ * Record one received body twice over: the detector's per reason row and the
+ * call outcome row, each in its own failure boundary. Never throws for either
+ * half; each half's error comes back settled for the route to log.
+ */
+export async function recordRegalCall(body: unknown): Promise<RegalCallDelivery> {
+  const db = supabaseAdmin();
+  return processRegalCallDelivery(body, { detector: regalCallStore(db), outcome: regalCallOutcomeStore(db) });
 }

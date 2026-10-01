@@ -16,14 +16,28 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 const env = vi.hoisted(() => ({ regalInboundKey: vi.fn(() => "inbound-secret") }));
 vi.mock("@/lib/env", () => env);
 
-const recorded = vi.hoisted(() => ({ bodies: [] as unknown[], fail: false, duplicate: false }));
+// #2944: one delivery writes two rows, each in its own failure boundary, and
+// recordRegalCall hands back each half settled rather than throwing.
+const recorded = vi.hoisted(() => ({
+  bodies: [] as unknown[],
+  fail: false,
+  duplicate: false,
+  outcome: { ok: true, value: { status: "stored", eventId: "e1" } } as unknown,
+  throwAll: false,
+}));
 vi.mock("@/lib/regal/call-store", () => ({
   recordRegalCall: vi.fn(async (body: unknown) => {
     recorded.bodies.push(body);
-    if (recorded.fail) throw new Error("insert refused");
-    return recorded.duplicate
-      ? { status: "duplicate", eventId: "e1" }
-      : { status: "recorded", reason: "candidate" };
+    if (recorded.throwAll) throw new Error("everything refused");
+    const detector = recorded.fail
+      ? { ok: false, error: new Error("insert refused") }
+      : {
+          ok: true,
+          value: recorded.duplicate
+            ? { status: "duplicate", eventId: "e1" }
+            : { status: "recorded", reason: "candidate" },
+        };
+    return { detector, outcome: recorded.outcome };
   }),
 }));
 
@@ -42,7 +56,8 @@ vi.mock("next/server", async (importOriginal) => {
 
 const logError = vi.hoisted(() => vi.fn());
 const logInfo = vi.hoisted(() => vi.fn());
-vi.mock("@/lib/log", () => ({ log: { error: logError, warn: vi.fn(), info: logInfo } }));
+const logWarn = vi.hoisted(() => vi.fn());
+vi.mock("@/lib/log", () => ({ log: { error: logError, warn: logWarn, info: logInfo } }));
 
 import { POST } from "./route";
 
@@ -65,7 +80,10 @@ describe("POST /api/regal/calls", () => {
     recorded.bodies.length = 0;
     recorded.fail = false;
     recorded.duplicate = false;
+    recorded.throwAll = false;
+    recorded.outcome = { ok: true, value: { status: "stored", eventId: "e1" } };
     logInfo.mockReset();
+    logWarn.mockReset();
     deferred.jobs.length = 0;
     logError.mockReset();
   });
@@ -149,5 +167,54 @@ describe("POST /api/regal/calls", () => {
     await drain();
     expect(logError).toHaveBeenCalledTimes(1);
     expect(logError.mock.calls[0][0]).toBe("regal-calls");
+    // The outcome half was still stored and still says so (#2944).
+    expect(logInfo).toHaveBeenCalledWith("regal-call-outcomes", { msg: "stored", event_id: "e1" });
+  });
+
+  it("logs a failed OUTCOME insert on its own tag, with the detector row still recorded (#2944)", async () => {
+    recorded.outcome = { ok: false, error: new Error("outcome insert refused") };
+    await post(BODY);
+    await drain();
+    expect(logInfo).toHaveBeenCalledWith("regal-calls", { msg: "recorded", reason: "candidate" });
+    expect(logError).toHaveBeenCalledTimes(1);
+    expect(logError.mock.calls[0][0]).toBe("regal-call-outcomes");
+    expect((logError.mock.calls[0][2] as Error).message).toBe("outcome insert refused");
+  });
+
+  it("logs a refused outcome by its reason, as a warning when it means the body changed (#2944)", async () => {
+    recorded.outcome = { ok: true, value: { status: "refused", reason: "talk_time_unreadable", eventId: "e1" } };
+    await post(BODY);
+    await drain();
+    expect(logWarn).toHaveBeenCalledWith("regal-call-outcomes", {
+      msg: "refused",
+      reason: "talk_time_unreadable",
+      event_id: "e1",
+    });
+  });
+
+  it("logs a non call event's refusal as ordinary rather than as a warning (#2944)", async () => {
+    recorded.outcome = { ok: true, value: { status: "refused", reason: "not_call_completed", eventId: "e1" } };
+    await post(BODY);
+    await drain();
+    expect(logWarn).not.toHaveBeenCalled();
+    expect(logInfo).toHaveBeenCalledWith("regal-call-outcomes", {
+      msg: "refused",
+      reason: "not_call_completed",
+      event_id: "e1",
+    });
+  });
+
+  it("logs a duplicate outcome as a no op (#2944)", async () => {
+    recorded.outcome = { ok: true, value: { status: "duplicate", eventId: "e1" } };
+    await post(BODY);
+    await drain();
+    expect(logInfo).toHaveBeenCalledWith("regal-call-outcomes", { msg: "duplicate", event_id: "e1" });
+  });
+
+  it("still logs loudly if recording throws outright", async () => {
+    recorded.throwAll = true;
+    expect((await post(BODY)).status).toBe(200);
+    await drain();
+    expect(logError).toHaveBeenCalledTimes(1);
   });
 });

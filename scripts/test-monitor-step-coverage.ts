@@ -186,6 +186,8 @@ const code = src
     ["regal_calls", "gates.regalCalls.run"],
     ["regal_calls_quiet", "gates.regalCallsQuiet.run"],
     ["regal_calls_unreadable", "gates.regalCallsUnreadable.run"],
+    // #2944: the call outcome ratio, on the same Regal arming switch.
+    ["regal_call_outcomes", "gates.regalCallOutcomes.run"],
   ]) {
     // Indexed off the step NAME rather than the `steps.run` token, because a call
     // carrying a type argument puts the two on different lines.

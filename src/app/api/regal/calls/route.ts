@@ -70,19 +70,42 @@ export async function POST(req: NextRequest) {
   // An unreadable body is recorded as `null`, which the classifier counts as
   // body_unreadable. The raw text is never kept: it carries the lead's details.
   const recordable = status === 200 ? body : null;
+  // Two rows per body (#2944): the detector's per reason row and the call outcome
+  // row, each settled in its own boundary so one failing never loses the other,
+  // and each logged on its own tag so a missing outcome is searched for where it
+  // was lost.
   after(async () => {
     try {
-      const outcome = await recordRegalCall(recordable);
-      // A redelivery is logged as a duplicate and nothing else: the stored row keeps
-      // the first delivery's reason, so this delivery's classification is not news.
-      if (outcome.status === "duplicate") {
-        log.info("regal-calls", { msg: "duplicate", event_id: outcome.eventId });
+      const { detector, outcome } = await recordRegalCall(recordable);
+      if (detector.ok) {
+        // A redelivery is logged as a duplicate and nothing else: the stored row
+        // keeps the first delivery's reason, so this delivery's classification is
+        // not news.
+        if (detector.value.status === "duplicate") {
+          log.info("regal-calls", { msg: "duplicate", event_id: detector.value.eventId });
+        } else {
+          log.info("regal-calls", { msg: "recorded", reason: detector.value.reason });
+        }
       } else {
-        log.info("regal-calls", { msg: "recorded", reason: outcome.reason });
+        // Regal will not redeliver, so a lost write is lost: say so where somebody
+        // looking for missing events will search.
+        log.error("regal-calls", { msg: "could not record a received call event" }, detector.error);
+      }
+      if (outcome.ok) {
+        const o = outcome.value;
+        if (o.status === "refused") {
+          // A non call event is the ordinary refusal; every other one means a call
+          // the show rate will not see, so it is a warning a reader can count.
+          const fields = { msg: "refused", reason: o.reason, event_id: o.eventId };
+          if (o.reason === "not_call_completed") log.info("regal-call-outcomes", fields);
+          else log.warn("regal-call-outcomes", fields);
+        } else {
+          log.info("regal-call-outcomes", { msg: o.status, event_id: o.eventId });
+        }
+      } else {
+        log.error("regal-call-outcomes", { msg: "could not store a call outcome" }, outcome.error);
       }
     } catch (err) {
-      // Regal will not redeliver, so a lost write is lost: say so where somebody
-      // looking for missing events will search.
       log.error("regal-calls", { msg: "could not record a received call event" }, err);
     }
   });

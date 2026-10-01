@@ -126,6 +126,10 @@ import {
   formatRegalFeedUnreadableRecovery,
 } from "@/lib/monitor/regal-call-feed";
 import {
+  formatRegalCallOutcomesAlert,
+  formatRegalCallOutcomesRecovery,
+} from "@/lib/monitor/regal-call-outcomes";
+import {
   classifyParitySweep,
   buildScheduleParityAlert,
   buildScheduleParityAllClear,
@@ -2319,6 +2323,24 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     text: formatRegalFeedUnreadableRecovery(),
   },
   {
+    key: "regal_call_outcomes_short",
+    state: "outcomes stopped being stored",
+    channel: "alert",
+    text: formatRegalCallOutcomesAlert({ received: 1040, written: 612, windowMinutes: 120 }),
+  },
+  {
+    key: "regal_call_outcomes_short",
+    state: "not one outcome stored",
+    channel: "alert",
+    text: formatRegalCallOutcomesAlert({ received: 25, written: 0, windowMinutes: 15 }),
+  },
+  {
+    key: "regal_call_outcomes_short",
+    state: "outcomes stored again",
+    channel: "recovery",
+    text: formatRegalCallOutcomesRecovery({ received: 1040, written: 1031, windowMinutes: 120 }),
+  },
+  {
     // The fixture is the real 2026-09-07 sweep: 21 of 102 agents drifted in the five
     // days after 97 schedules were imported and verified idempotent, which is the
     // measurement this alert exists because of.
@@ -3111,6 +3133,7 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
       ["verdict:offsite-origin", "the off site origin check has stopped concluding"],
       ["verdict:awaiting-activation", "the waiting to become bookable check has stopped concluding"],
       ["verdict:regal-call-feed", "the Regal feed checks have stopped concluding"],
+      ["verdict:regal-call-outcomes", "the Regal call outcome check has stopped concluding"],
     ] as const
   ).map(([lane, state]) => ({
     key: "cron_lane_stale:*",

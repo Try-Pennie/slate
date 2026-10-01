@@ -55,6 +55,10 @@ const FAMILY_BY_KEY: Record<string, AlertFamily> = {
   // #2090. Events arrive and the edge cannot read them, so the detector behind it
   // judges nobody: a guard that has quietly stopped covering anything.
   regal_calls_unreadable: "a-limit-or-a-guard-is-not-working",
+  // #2944. Calls arrive and their outcome rows are not being written, so the table
+  // the show rate reads stops filling: the same first question as a lane gone
+  // quiet, which of the work that should be producing is not.
+  regal_call_outcomes_short: "a-lane-or-schedule-has-gone-quiet",
   // #2544. The same family one level in, for the same reason `monitor_step_failing`
   // is here: the lane is running and one JOB on it has stopped producing, so what
   // the reader has to establish is which of the scheduled work is not happening.

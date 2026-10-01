@@ -143,6 +143,18 @@ mirrored). Decided by Dan on 2026-09-08; widening what is kept (#324 wants the
 disposition keyed to a booking, which means lead linkage) is a separate decision with
 its own privacy review, never a drift.
 
+**That widening, made deliberately (#2944).** The show rate in the Slate vs cal.com
+split is judged from these calls, so a second table, `regal_call_outcomes`, keeps one
+row per completed call for **120 days**: the lead's **Salesforce Lead id** (as its 15
+character key, read from `userId`), Regal's event id, the call's start and talk time,
+its direction, type and disposition, whether a conversation happened, whether the AI
+agent placed it, and the acting agent's work address. Dan decided on 2026-10-01 that
+the Salesforce id is an **external id and safe to store**, the same footing as
+`bookings.salesforce_id` (pii-retention.md §1). Still **no phone, no lead email, no
+name and no notes**: the edge never reads them. The table is not mirrored to
+Snowflake and is outside the erasure function, since it holds an external reference
+and no contact data; `prune-regal-calls` deletes each row 120 days after receipt.
+
 ---
 
 ## 4. Snowflake (archival mirror)

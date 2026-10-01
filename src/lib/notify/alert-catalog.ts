@@ -340,6 +340,14 @@ export const ALERT_CATALOG: AlertEntry[] = [
       "and the monitor lane counts the feed every pass (#2090).",
   },
   {
+    key: "regal_call_outcomes_short",
+    kind: "condition",
+    why:
+      "Call outcomes are being stored for under 80% of the completed calls Regal posts; it ends " +
+      "when a measured two hour window is back at 80% or more, and the monitor lane compares the " +
+      "two counts every pass (#2944).",
+  },
+  {
     key: "agents_awaiting_activation",
     kind: "condition",
     why:

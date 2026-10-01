@@ -604,6 +604,10 @@ export const VERDICT_STALE_BOUNDS_MS: Record<string, number> = {
   // it silent the way it makes the Regal call detector silent. The one real gap
   // is an org with no open day in two weeks, which the quiet check cannot judge.
   "verdict:regal-call-feed": 6 * 60 * MIN,
+  // The call outcome ratio (#2944) judges only a two hour window holding enough
+  // completed calls, so it is traffic fed like the Regal call detector and its
+  // longest legitimate silence is the same weekend: four days, the same bound.
+  "verdict:regal-call-outcomes": 4 * 24 * 60 * MIN,
 };
 
 /**

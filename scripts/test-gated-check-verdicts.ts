@@ -29,6 +29,7 @@ import {
   OFFSITE_ORIGIN_VERDICT_LANE,
   AWAITING_ACTIVATION_VERDICT_LANE,
   REGAL_CALL_FEED_VERDICT_LANE,
+  REGAL_CALL_OUTCOMES_VERDICT_LANE,
   type DetectorVerdictCoverage,
 } from "@/lib/monitor/verdict-freshness";
 import { VERDICT_STALE_BOUNDS_MS } from "@/lib/monitor/health";
@@ -221,6 +222,8 @@ const quiet = async () => {};
     awaitingActivation: AWAITING_ACTIVATION_VERDICT_LANE,
     regalCallsQuiet: REGAL_CALL_FEED_VERDICT_LANE,
     regalCallsUnreadable: REGAL_CALL_FEED_VERDICT_LANE,
+    // #2944: its own lane, since it reads a second count the feed pair does not.
+    regalCallOutcomes: REGAL_CALL_OUTCOMES_VERDICT_LANE,
   };
   const coverage = GATED_CHECK_VERDICT_COVERAGE as Record<string, DetectorVerdictCoverage>;
   for (const [check, lane] of Object.entries(expected)) {

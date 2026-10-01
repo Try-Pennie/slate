@@ -39,6 +39,7 @@ import type { CalendarWindowResult } from "@/lib/monitor/calendar-window-coverag
 import type { OffsiteOriginResult } from "@/lib/monitor/offsite-origin";
 import type { AwaitingActivationResult } from "@/lib/monitor/awaiting-activation";
 import type { RegalFeedQuietResult, RegalFeedUnreadableResult } from "@/lib/monitor/regal-call-feed";
+import type { RegalCallOutcomesResult } from "@/lib/monitor/regal-call-outcomes";
 import type { monitorSetupGates } from "@/lib/monitor/setup-gates";
 
 /**
@@ -169,6 +170,14 @@ export const OFFSITE_ORIGIN_VERDICT_LANE = "verdict:offsite-origin";
 export const AWAITING_ACTIVATION_VERDICT_LANE = "verdict:awaiting-activation";
 export const REGAL_CALL_FEED_VERDICT_LANE = "verdict:regal-call-feed";
 /**
+ * The call outcome ratio (#2944): outcome rows written against completed calls
+ * received. Its own lane, not the feed pair's, because it reads a second count
+ * (`regal_call_outcomes`) whose failure is a different fault. It concludes only
+ * on a window with enough calls to judge, so like the Regal call detector its
+ * longest legitimate silence is a weekend.
+ */
+export const REGAL_CALL_OUTCOMES_VERDICT_LANE = "verdict:regal-call-outcomes";
+/**
  * The smoke canary's availability latency reading (#1700), the third member of this
  * family stamped from OUTSIDE the Worker.
  *
@@ -204,6 +213,7 @@ export type DetectorVerdictLane =
   | typeof OFFSITE_ORIGIN_VERDICT_LANE
   | typeof AWAITING_ACTIVATION_VERDICT_LANE
   | typeof REGAL_CALL_FEED_VERDICT_LANE
+  | typeof REGAL_CALL_OUTCOMES_VERDICT_LANE
   | typeof AVAILABILITY_LATENCY_VERDICT_LANE;
 
 /**
@@ -412,6 +422,17 @@ export function regalCallFeedReachedVerdict(
 ): boolean {
   if (!quiet || !unreadable) return false;
   return quiet.status !== "unmeasured" && unreadable.status !== "unmeasured";
+}
+
+/**
+ * Did the call outcome ratio read both counts and JUDGE a rate? (#2944)
+ *
+ * Healthy and short are verdicts. "No calls" and "too few" are not: nothing was
+ * judged, and stamping on them would let a check whose outcome count had stopped
+ * mattering look exactly like one confirming the table fills.
+ */
+export function regalCallOutcomesReachedVerdict(result: RegalCallOutcomesResult | null): boolean {
+  return result !== null && (result.status === "healthy" || result.status === "short");
 }
 
 /**
@@ -629,4 +650,5 @@ export const GATED_CHECK_VERDICT_COVERAGE: Record<MonitorGatedCheck, DetectorVer
   // One lane for both: they read one RPC on one tick, so its failure is one fault.
   regalCallsQuiet: { lane: REGAL_CALL_FEED_VERDICT_LANE },
   regalCallsUnreadable: { lane: REGAL_CALL_FEED_VERDICT_LANE },
+  regalCallOutcomes: { lane: REGAL_CALL_OUTCOMES_VERDICT_LANE },
 };
