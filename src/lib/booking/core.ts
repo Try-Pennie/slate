@@ -4,7 +4,7 @@ import type {
   BusySource,
 } from "@/lib/db/types";
 import { TEST_MODE_COPY } from "@/lib/booking/booker-copy";
-import { callComesFrom } from "@/lib/booking/manage-copy";
+import { CALL_COMES_FROM_PREFIX, callComesFrom } from "@/lib/booking/manage-copy";
 
 /**
  * Pure, side-effect-free cores of the booking flow, split out from
@@ -712,11 +712,34 @@ export function eventDescription(
 ): string {
   const lines = ["Booked via Pennie."];
   if (phone) lines[0] = `Booked via Pennie. Phone: ${phone}`;
-  const from = callComesFrom(opts.callingNumber ?? null);
-  if (from) lines.push(from);
-  lines.push(`Reschedule or cancel: ${manageUrl}`);
+  lines.push(`${MANAGE_LINK_PREFIX}${manageUrl}`);
   if (opts.isTest) lines.unshift(TEST_MODE_COPY.line);
-  return lines.join("\n");
+  return withCallingNumberLine(lines.join("\n"), opts.callingNumber ?? null);
+}
+
+const MANAGE_LINK_PREFIX = "Reschedule or cancel: ";
+
+/**
+ * An invite description with the calling number line set, and NOTHING else changed
+ * (#1334). The reminder lane writes the number into an invite that may carry text
+ * it did not compose, the reassign explanation (#969) above all, so it edits that
+ * one line rather than rebuilding the description from what it knows.
+ *
+ * Any existing calling number line is removed first, so a changed number replaces
+ * the old one rather than sitting beside it, and applying it twice changes nothing.
+ * The new line goes just above the manage link when there is one, which is where
+ * `eventDescription` puts it, and at the end otherwise. A null or unreadable number
+ * leaves the description exactly as it was: no line is ever removed for want of a
+ * replacement, because a stale number is fixed by a known one, not by silence.
+ */
+export function withCallingNumberLine(description: string, callingNumber: string | null): string {
+  const line = callComesFrom(callingNumber);
+  if (!line) return description;
+  const kept = description === "" ? [] : description.split("\n").filter((l) => !l.startsWith(CALL_COMES_FROM_PREFIX));
+  const at = kept.findIndex((l) => l.startsWith(MANAGE_LINK_PREFIX));
+  if (at === -1) kept.push(line);
+  else kept.splice(at, 0, line);
+  return kept.join("\n");
 }
 
 /**

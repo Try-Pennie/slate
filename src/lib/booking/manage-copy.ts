@@ -130,8 +130,11 @@ export function advisorWillCall(phone: string | null): string {
 export function callComesFrom(callingNumber: string | null): string | null {
   const shown = formatPhoneForDisplay(callingNumber);
   if (!shown) return null;
-  return `The call will come from ${shown}. Save it to your contacts so your phone lets it through.`;
+  return `${CALL_COMES_FROM_PREFIX}${shown}. Save it to your contacts so your phone lets it through.`;
 }
+
+/** How the line starts, so an invite already carrying one can find it to replace. */
+export const CALL_COMES_FROM_PREFIX = "The call will come from ";
 
 /**
  * When the call is, spelled the way every other readback of a committed time on

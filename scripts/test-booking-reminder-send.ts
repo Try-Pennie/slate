@@ -11,6 +11,9 @@ import { assert, eq, finish } from "./lib/harness.ts";
 const HOUR = 60 * 60_000;
 const NOW = Date.UTC(2026, 8, 16, 14, 0, 0);
 const LEAD = "00QUi000010889ZMAQ";
+/** The invite as the booking path writes it, before any calling number. */
+const STANDARD_DESCRIPTION =
+  "Booked via Pennie. Phone: +12035615295\nReschedule or cancel: https://slate.trypennie.app/manage/abc";
 
 const due = (over: Partial<DueBooking> = {}): DueBooking => ({
   id: "bk-1",
@@ -27,7 +30,6 @@ const due = (over: Partial<DueBooking> = {}): DueBooking => ({
   manageUrl: "https://slate.trypennie.app/manage/abc",
   leadId: LEAD,
   gcalEventId: "evt-1",
-  attendeePhone: "+12035615295",
   ...over,
 });
 
@@ -56,6 +58,9 @@ function spy(over: Partial<ReminderDeps> = {}) {
     // No calling number known by default, so the suites above judge the send path
     // exactly as it was; the calling number has its own section at the end.
     readCallingNumbers: async () => new Map(),
+    // What the invite says NOW, read before it is touched, so the write changes only
+    // the calling number line (#1334 review): the standard description by default.
+    readInviteDescription: async () => STANDARD_DESCRIPTION,
     refreshInvite: async () => {
       order.push("refresh");
     },
@@ -423,6 +428,72 @@ function spy(over: Partial<ReminderDeps> = {}) {
   eq(result.failed, 0, "and is not a reminder failure");
   eq(s.alerts.length, 0, "nor a page");
   eq(s.warnings.length, 1, "but it is logged with its reason, never silent");
+}
+
+// The write changes ONLY the calling number line (#1334 review). Text somebody else
+// put on the invite, the reassign explanation (#969) above all, survives untouched.
+{
+  const REASSIGN =
+    "Your appointment time has not changed. You have been matched with a different Pennie advisor who will be with you at this time. There is nothing you need to do.";
+  const written: string[] = [];
+  const s = spy({
+    readCallingNumbers: async () => new Map([["00QUi000010889Z", "+12197588170"]]),
+    readInviteDescription: async () => REASSIGN,
+    refreshInvite: async (_a, _e, description) => {
+      written.push(description);
+    },
+  });
+  await runBookingReminders(s.deps);
+  eq(written.length, 1, "the reassigned invite is written once");
+  assert(written[0]!.startsWith(REASSIGN), "keeping the reassign explanation word for word");
+  assert(written[0]!.includes("(219) 758-8170"), "and adding the calling number");
+  assert(!written[0]!.includes("Booked via Pennie"), "without swapping in the standard description");
+}
+// An invite that already says it is not written again, and an old number is replaced
+// rather than joined by a second line.
+{
+  const already =
+    "Booked via Pennie. Phone: +12035615295\nThe call will come from (219) 758-8170. Save it to your contacts so your phone lets it through.\nReschedule or cancel: https://slate.trypennie.app/manage/abc";
+  const s = spy({
+    readCallingNumbers: async () => new Map([["00QUi000010889Z", "+12197588170"]]),
+    readInviteDescription: async () => already,
+  });
+  await runBookingReminders(s.deps);
+  eq(s.order.includes("refresh"), false, "an invite already carrying this number is left alone");
+
+  const written: string[] = [];
+  const moved = spy({
+    readCallingNumbers: async () => new Map([["00QUi000010889Z", "+13025550100"]]),
+    readInviteDescription: async () => already,
+    refreshInvite: async (_a, _e, description) => {
+      written.push(description);
+    },
+  });
+  await runBookingReminders(moved.deps);
+  eq((written[0] ?? "").match(/come from/g)?.length ?? 0, 1, "a changed number replaces the old line rather than adding a second");
+  assert((written[0] ?? "").includes("(302) 555-0100") && !(written[0] ?? "").includes("(219)"), "and names only the new number");
+}
+// An event that is gone is not written to; a description that cannot be read is a
+// counted, logged refresh failure, never a guess.
+{
+  const gone = spy({
+    readCallingNumbers: async () => new Map([["00QUi000010889Z", "+12197588170"]]),
+    readInviteDescription: async () => null,
+  });
+  const r1 = await runBookingReminders(gone.deps);
+  eq(gone.order.includes("refresh"), false, "a deleted invite is not written to");
+  eq(r1.sent, 1, "and the reminder still counts as sent");
+
+  const unread = spy({
+    readCallingNumbers: async () => new Map([["00QUi000010889Z", "+12197588170"]]),
+    readInviteDescription: async () => {
+      throw new Error("events.get: 503");
+    },
+  });
+  const r2 = await runBookingReminders(unread.deps);
+  eq(unread.order.includes("refresh"), false, "an invite that cannot be read is not overwritten blind");
+  eq(r2.inviteRefreshFailed, 1, "and the miss is counted");
+  eq(unread.warnings.length, 1, "and logged");
 }
 
 // No event id on the booking: nothing to refresh, and nothing tried.

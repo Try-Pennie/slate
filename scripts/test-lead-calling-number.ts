@@ -12,10 +12,11 @@
 //  - the deadline the manage page reads under answers null when Salesforce is slow,
 //    on an injected sleep rather than a real one (L524).
 import {
+  callingNumberWithinDeadline,
+  type ScheduleTimer,
   callingNumberOf,
   readLeadCallingNumbers,
   readOneCallingNumber,
-  withDeadline,
 } from "../src/lib/salesforce/lead-calling-number.ts";
 import { readLeadXbcs } from "../src/lib/salesforce/lead-xbc.ts";
 import { bookingLeadId } from "../src/lib/booking/lookup-identity.ts";
@@ -100,19 +101,55 @@ eq(bookingLeadId({ salesforce_id: " ", external_id: null }), null, "a blank colu
 }
 
 // --- the deadline ------------------------------------------------------------------
-{
-  // The sleep resolves at once, so the read that never settles loses the race.
-  const slow = new Promise<string | null>(() => {});
-  const got = await withDeadline(slow, 2_500, async () => {});
-  eq(got, null, "a read slower than the deadline answers null rather than holding the page");
+// The timer is injected: `fireAtOnce` expires the deadline immediately, `never` never
+// does, and both record whether the timer was CLEARED, because a deadline that left
+// its timer running holds the isolate open for the full wait after every fast read.
+function timers() {
+  const state = { set: 0, cleared: 0 };
+  const fireAtOnce: ScheduleTimer = (_ms, fire) => {
+    state.set += 1;
+    queueMicrotask(fire);
+    return () => {
+      state.cleared += 1;
+    };
+  };
+  const never: ScheduleTimer = () => {
+    state.set += 1;
+    return () => {
+      state.cleared += 1;
+    };
+  };
+  return { state, fireAtOnce, never };
 }
+// The one helper both readers use: null on a failure OR a timeout, and each is
+// reported, so "nobody had a number" and "Salesforce was slow or down" stay apart.
 {
-  const got = await withDeadline(Promise.resolve("+12197588170"), 2_500, () => new Promise(() => {}));
-  eq(got, "+12197588170", "a read inside the deadline answers its value");
-}
-{
-  const got = await withDeadline(Promise.reject(new Error("boom")), 2_500, () => new Promise(() => {}));
-  eq(got, null, "a read that fails answers null: the page says nothing about a number");
+  const t = timers();
+  const errs: string[] = [];
+  const slow = await callingNumberWithinDeadline(() => new Promise(() => {}), (e) => errs.push(String(e)), t.fireAtOnce);
+  eq(slow, null, "a slow read answers null rather than holding the page");
+  assert(errs.length === 1 && /no answer within 2500ms/.test(errs[0]!), "and reports that it ran out of time");
+  eq(t.state.cleared, t.state.set, "and its timer is cleared");
+
+  const t2 = timers();
+  const errs2: string[] = [];
+  const failed = await callingNumberWithinDeadline(
+    async () => {
+      throw new Error("SF query failed: 503");
+    },
+    (e) => errs2.push(String(e)),
+    t2.never,
+  );
+  eq(failed, null, "a refused read answers null");
+  assert(errs2.length === 1 && /503/.test(errs2[0]!), "and reports why");
+  eq(t2.state.cleared, 1, "with its timer cleared");
+
+  const t3 = timers();
+  const errs3: string[] = [];
+  const ok = await callingNumberWithinDeadline(async () => "+12197588170", (e) => errs3.push(String(e)), t3.never);
+  eq(ok, "+12197588170", "a prompt read answers its value");
+  eq(errs3.length, 0, "and reports nothing");
+  eq(t3.state.cleared, 1, "and clears the timer it no longer needs");
 }
 
 finish();

@@ -79,6 +79,7 @@ import {
 import { storedFirstName, validateAttendee } from "../attendee.ts";
 import { leadCallingZone, withinLeadCallingWindow } from "./lead-calling-window.ts";
 import { shortErrorReason } from "../notify/error-text.ts";
+import { callingNumberWithinDeadline, type ScheduleTimer } from "../salesforce/lead-calling-number.ts";
 import { log } from "@/lib/log";
 import { readBookingSource } from "./booking-source.ts";
 import type { BookingApiCaller } from "./api-callers.ts";
@@ -808,6 +809,11 @@ export interface BookingDeps {
    * read; its callers then say nothing about a number rather than fail the action.
    */
   readCallingNumber(leadId: string | null): Promise<string | null>;
+  /**
+   * The timer the calling number deadline runs on. Absent means the real clock;
+   * tests inject one so a hung read is judged without waiting for real (L524).
+   */
+  deadlineTimer?: ScheduleTimer;
   /** `preview` = a dry run (#380): route read-only, skipping the #321 shadow-study
    *  log + the unfair-ordering alert so previews don't pollute real-assignment data. */
   /**
@@ -5472,18 +5478,20 @@ export async function updateBookingContact(
     // reminder lane may already have written there; leaving it out would remove it
     // from the invite for good. Any way of not knowing it writes the invite without
     // that line rather than failing the lead's correction.
-    let callingNumber: string | null = null;
-    if (changed.phone) {
-      try {
-        callingNumber = await deps.readCallingNumber(bookingLeadId(booking));
-      } catch (err) {
-        log.warn("manage-contact", {
-          msg: "calling number unread, invite written without it",
-          booking_id: booking.id,
-          reason: shortErrorReason(err),
-        });
-      }
-    }
+    // Bounded by the manage page's own deadline, through the same helper, so a slow
+    // Salesforce never stalls the lead's own correction.
+    const callingNumber = changed.phone
+      ? await callingNumberWithinDeadline(
+          () => deps.readCallingNumber(bookingLeadId(booking)),
+          (err) =>
+            log.warn("manage-contact", {
+              msg: "calling number unread, invite written without it",
+              booking_id: booking.id,
+              reason: shortErrorReason(err),
+            }),
+          deps.deadlineTimer,
+        )
+      : null;
     try {
       await deps.updateEventContact(booking.agent_email, booking.gcal_event_id, {
         // Each field is sent only when it moved, so the PATCH says exactly what

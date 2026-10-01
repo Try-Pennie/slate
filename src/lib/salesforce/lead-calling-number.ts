@@ -28,11 +28,19 @@ import { isLeadId, leadIdKey, readLeadField, type LeadSoqlRunner } from "./lead-
 export const CALLING_NUMBER_FIELD = "AssignedRegalPhone__c";
 
 /**
- * How long the manage page waits for the number before rendering without it.
- * The page is what a lead opens from their invite; a slow Salesforce must cost
- * them the line about the number, never the page.
+ * How long anything a LEAD is waiting on (the manage page, their own phone
+ * correction) waits for the number before going on without it. A slow Salesforce
+ * must cost them the line about the number, never the page or the save.
  */
-export const CALLING_NUMBER_PAGE_DEADLINE_MS = 2_500;
+export const CALLING_NUMBER_DEADLINE_MS = 2_500;
+
+/** Starts a timer and returns the function that clears it. Injected in tests. */
+export type ScheduleTimer = (ms: number, fire: () => void) => () => void;
+
+const realTimer: ScheduleTimer = (ms, fire) => {
+  const t = setTimeout(fire, ms);
+  return () => clearTimeout(t);
+};
 
 /**
  * A stored value as a calling number in E.164, or null. Strict on purpose: only a
@@ -81,15 +89,38 @@ export async function readOneCallingNumber(
 }
 
 /**
- * A read raced against a deadline: its value if it settles in time, null if it is
- * slower or fails. `sleep` is injected so a test never waits for real (L524).
+ * THE way a surface a lead is waiting on reads the calling number: under
+ * `CALLING_NUMBER_DEADLINE_MS`, null on a refusal or a timeout, and each of those
+ * REPORTED through `onUnread`, so "nobody had a number" and "Salesforce was slow or
+ * down" stay apart in the logs (L11). Used by the manage page and the phone
+ * correction, so the bound lives once. The timer is CLEARED however the race ends,
+ * so a fast read leaves nothing holding the isolate for the full wait; it is
+ * injected so a test never waits for real (L524).
  */
-export async function withDeadline<T>(
-  read: Promise<T | null>,
-  ms: number,
-  sleep: (ms: number) => Promise<void> = (n) => new Promise((r) => setTimeout(r, n)),
-): Promise<T | null> {
-  return Promise.race([read.catch(() => null), sleep(ms).then(() => null)]);
+export async function callingNumberWithinDeadline(
+  read: () => Promise<string | null>,
+  onUnread: (err: unknown) => void,
+  timer: ScheduleTimer = realTimer,
+): Promise<string | null> {
+  const TIMED_OUT = Symbol("timed out");
+  const attempt = read().catch((err: unknown) => {
+    onUnread(err);
+    return null;
+  });
+  let cancel = () => {};
+  const expired = new Promise<typeof TIMED_OUT>((resolve) => {
+    cancel = timer(CALLING_NUMBER_DEADLINE_MS, () => resolve(TIMED_OUT));
+  });
+  try {
+    const got = await Promise.race([attempt, expired]);
+    if (got === TIMED_OUT) {
+      onUnread(new Error(`no answer within ${CALLING_NUMBER_DEADLINE_MS}ms`));
+      return null;
+    }
+    return got;
+  } finally {
+    cancel();
+  }
 }
 
 /** A runner against the real org: one token exchange, through the shared client. */

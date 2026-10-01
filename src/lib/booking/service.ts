@@ -124,11 +124,7 @@ import type {
 import type { PersonIdentity, PersonWorld } from "@/lib/booking/person-dedupe";
 import { personStrongIds } from "@/lib/booking/person-dedupe";
 import { readLeadXbcLive } from "@/lib/salesforce/lead-xbc";
-import {
-  CALLING_NUMBER_PAGE_DEADLINE_MS,
-  readCallingNumberLive,
-  withDeadline,
-} from "@/lib/salesforce/lead-calling-number";
+import { callingNumberWithinDeadline, readCallingNumberLive } from "@/lib/salesforce/lead-calling-number";
 import { bookingLeadId } from "@/lib/booking/lookup-identity";
 import { toE164 } from "@/lib/phone";
 import { escapeLike } from "@/lib/sql-like";
@@ -2937,21 +2933,21 @@ export function getBookingAdvisorPhoto(
  * unknown (no lead id, an empty or unreadable field, a refused or slow read). The
  * page then says nothing about a number. Under a deadline, because a lead opening
  * their booking must never wait on Salesforce for a line of help text; a refused
- * read is logged with its reason so "nobody had a number" and "Salesforce was
- * down" stay apart.
+ * or slow read is logged with its reason so "nobody had a number" and "Salesforce
+ * was down" stay apart. The same helper bounds the phone correction.
  */
 export function getBookingCallingNumber(
   booking: Pick<Booking, "id" | "salesforce_id" | "external_id">,
 ): Promise<string | null> {
-  const read = readCallingNumberLive(bookingLeadId(booking)).catch((err) => {
-    log.warn("manage-page", {
-      msg: "calling number unread, page shown without it",
-      booking_id: booking.id,
-      reason: shortErrorReason(err),
-    });
-    return null;
-  });
-  return withDeadline(read, CALLING_NUMBER_PAGE_DEADLINE_MS);
+  return callingNumberWithinDeadline(
+    () => readCallingNumberLive(bookingLeadId(booking)),
+    (err) =>
+      log.warn("manage-page", {
+        msg: "calling number unread, page shown without it",
+        booking_id: booking.id,
+        reason: shortErrorReason(err),
+      }),
+  );
 }
 
 const PENDING_DELETION_ALERT_KEY = "pending_event_deletions";

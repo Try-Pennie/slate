@@ -4,7 +4,7 @@ import type { MimeMessage } from "@/lib/notify/email-mime";
 import { parseStampMs } from "@/lib/date/stamp";
 import { isLeadId, leadIdKey } from "@/lib/salesforce/lead-xbc";
 import { advisorContactCard } from "./advisor-contact-card.ts";
-import { eventDescription } from "./core.ts";
+import { withCallingNumberLine } from "./core.ts";
 
 /**
  * The 24 hour reminder lane's orchestration (#2359).
@@ -49,8 +49,6 @@ export interface DueBooking {
   leadId: string | null;
   /** The invite on the advisor's calendar, which the calling number is written into. */
   gcalEventId: string | null;
-  /** The lead's own number, which the invite's first line carries for the advisor. */
-  attendeePhone: string | null;
 }
 
 export interface ReminderDeps {
@@ -82,6 +80,11 @@ export interface ReminderDeps {
    * the lead about it (Google syncs the content to the attendee either way).
    */
   refreshInvite(agentEmail: string, eventId: string, description: string): Promise<void>;
+  /**
+   * The invite's CURRENT description ("" when it has none), or null when the event
+   * is gone. Throws when it cannot be read, so nothing is written blind.
+   */
+  readInviteDescription(agentEmail: string, eventId: string): Promise<string | null>;
   /** A degraded step that is not a lost reminder: logged with its reason, never paged. */
   warn(msg: string, bookingId: string | null, err: unknown): void;
 }
@@ -285,14 +288,17 @@ export async function runBookingReminders(deps: ReminderDeps): Promise<ReminderR
     // lead the reminder, and only with a number in hand, so an invite is never
     // rewritten to say less than it did. Idempotent: a second write of the same
     // description changes nothing, so a retried tick is harmless.
+    // It reads what the invite says NOW and changes only the calling number line, so
+    // text this lane did not compose (the reassign explanation, #969, on the invite
+    // the owner hand-back creates) survives as it was. A gone event is not written
+    // to, and one that cannot be read is never overwritten blind.
     if (callingNumber && row.gcalEventId) {
       try {
-        await deps.refreshInvite(
-          row.agentEmail,
-          row.gcalEventId,
-          // The lane excludes test buckets, so a real booking's invite: no test line.
-          eventDescription(row.attendeePhone, row.manageUrl, { isTest: false, callingNumber }),
-        );
+        const current = await deps.readInviteDescription(row.agentEmail, row.gcalEventId);
+        if (current !== null) {
+          const next = withCallingNumberLine(current, callingNumber);
+          if (next !== current) await deps.refreshInvite(row.agentEmail, row.gcalEventId, next);
+        }
       } catch (err) {
         run.inviteRefreshFailed += 1;
         deps.warn("invite not refreshed with the calling number", row.id, err);

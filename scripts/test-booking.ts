@@ -5,6 +5,7 @@ import {
   bookingWindow,
   busyBlockFor,
   eventDescription,
+  withCallingNumberLine,
   idempotencyKeyFor,
   selectAgent,
   selectReassignTarget,
@@ -326,6 +327,19 @@ assert(!desc.includes(" - ") && !desc.includes("\u2014"), "lead-facing copy has 
     ),
     "with no calling number the invite is exactly as before",
   );
+  // ONE rule for where the line goes: the full builder and the one line edit the
+  // reminder lane makes to an existing invite agree.
+  const plain = eventDescription("+12035615295", "https://x/m/t");
+  assert(
+    withCallingNumberLine(plain, "+12197588170") === withFrom,
+    "editing a plain invite gives the same text as building it with the number",
+  );
+  assert(
+    withCallingNumberLine(withFrom, "+12197588170") === withFrom,
+    "applying it twice changes nothing",
+  );
+  assert(withCallingNumberLine(withFrom, null) === withFrom, "an unknown number never removes a line");
+  assert(withCallingNumberLine("", "+12197588170").startsWith("The call will come from"), "an empty description gets the line alone");
 }
 
 finish();

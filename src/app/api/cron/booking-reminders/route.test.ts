@@ -122,6 +122,9 @@ const callingNumber = vi.hoisted(() => ({
 }));
 const calendar = vi.hoisted(() => ({
   updateEventDescription: vi.fn(async (_email: string, _eventId: string, _description: string) => {}),
+  getEventOnPrimary: vi.fn(async (_email: string, _eventId: string) => ({
+    description: "Booked via Pennie. Phone: +12035615295\nReschedule or cancel: https://slate.example/booking/manage/tok-1",
+  }) as { description?: string } | null),
 }));
 vi.mock("@/lib/salesforce/lead-calling-number", () => callingNumber);
 vi.mock("@/lib/google/calendar", () => calendar);
@@ -314,7 +317,7 @@ describe("GET /api/cron/booking-reminders", () => {
       new Map([["00QUi000010889Z", "+12197588170"]]),
     );
     state.pages = [
-      [due(1, { salesforce_id: "00QUi000010889ZMAQ", external_id: null, gcal_event_id: "evt-1", attendee_phone: "+12035615295" })],
+      [due(1, { salesforce_id: "00QUi000010889ZMAQ", external_id: null, gcal_event_id: "evt-1" })],
     ];
     const res = await GET(req());
     expect(res.status).toBe(200);
@@ -325,11 +328,16 @@ describe("GET /api/cron/booking-reminders", () => {
     expect(callingNumber.readLeadCallingNumbersLive).toHaveBeenCalledWith(["00QUi000010889ZMAQ"]);
     expect(state.sent[0]?.body).toContain("(219) 758-8170");
     expect(state.sent[0]?.attachments?.[0]?.content).toContain("TEL;TYPE=WORK,VOICE:+12197588170");
+    // It read the invite first and changed only the calling number line.
+    expect(calendar.getEventOnPrimary).toHaveBeenCalledWith("jordan@trypennie.com", "evt-1");
     expect(calendar.updateEventDescription).toHaveBeenCalledWith(
       "jordan@trypennie.com",
       "evt-1",
       expect.stringContaining("(219) 758-8170"),
     );
+    const written = String(calendar.updateEventDescription.mock.calls[0]?.[2]);
+    expect(written.startsWith("Booked via Pennie. Phone: +12035615295\n")).toBe(true);
+    expect(written.endsWith("Reschedule or cancel: https://slate.example/booking/manage/tok-1")).toBe(true);
     await expect(res.json()).resolves.toMatchObject({ sent: 1, withCallingNumber: 1, callingNumberUnread: false });
   });
 

@@ -162,6 +162,8 @@ export interface FakeOpts {
   callingNumber?: string | null;
   /** #1334: the calling number read fails. */
   callingNumberThrows?: boolean;
+  /** #1334: the calling number read never answers; the deadline then fires at once. */
+  callingNumberHangs?: boolean;
   /**
    * findActiveBookingsForPerson throws, which is what a failed bookings read now
    * does (#1641). The booker path fails CLOSED on it: the second booking is
@@ -317,6 +319,8 @@ export function makeDeps(opts: FakeOpts) {
     readLeadXbc: [] as string[],
     /** #1334: every lead the calling number was read for. */
     readCallingNumber: [] as (string | null)[],
+    /** #1334: deadline timers started and cleared around that read. */
+    deadlineTimers: { set: 0, cleared: 0 },
     resolveBucketByCode: [] as string[],
     deleteEvent: [] as { id: string }[],
     enqueueEventDeletion: [] as { email: string; eventId: string; bookingId: string | null }[],
@@ -541,7 +545,17 @@ export function makeDeps(opts: FakeOpts) {
     readCallingNumber: async (leadId) => {
       calls.readCallingNumber.push(leadId);
       if (opts.callingNumberThrows) throw new Error("SF query failed: 503 unavailable");
+      if (opts.callingNumberHangs) return new Promise<string | null>(() => {});
       return opts.callingNumber ?? null;
+    },
+    // The deadline expires at once only for a read that hangs, so no other suite
+    // races a real answer against it; every timer's clear is counted.
+    deadlineTimer: (_ms, fire) => {
+      calls.deadlineTimers.set += 1;
+      if (opts.callingNumberHangs) queueMicrotask(fire);
+      return () => {
+        calls.deadlineTimers.cleared += 1;
+      };
     },
     resolveBucketByCode: async (code) =>
       (calls.resolveBucketByCode.push(code), opts.unknownBucket)

@@ -15,7 +15,9 @@ const { assert, finish } = createAsserter();
 const TOKEN = "tok-manage";
 const LEAD = "00QUi000010889ZMAQ";
 
-function world(opts: { callingNumber?: string | null; callingNumberThrows?: boolean; leadId?: string | null } = {}) {
+function world(
+  opts: { callingNumber?: string | null; callingNumberThrows?: boolean; callingNumberHangs?: boolean; leadId?: string | null } = {},
+) {
   const booking = makeBooking({
     id: "bk-1",
     manage_token: TOKEN,
@@ -28,6 +30,7 @@ function world(opts: { callingNumber?: string | null; callingNumberThrows?: bool
     existing: { booking, bucket, eventType },
     callingNumber: opts.callingNumber,
     callingNumberThrows: opts.callingNumberThrows,
+    callingNumberHangs: opts.callingNumberHangs,
   });
 }
 
@@ -54,6 +57,17 @@ async function run() {
     assert(res.ok, "a failed Salesforce read never fails the lead's correction");
     const description = calls.updateEventContact[0]?.patch.description ?? "";
     assert(description.includes("+12155559999") && !/come from/i.test(description), "the invite is written without the line");
+  }
+  {
+    // A Salesforce that never answers must not stall the lead's own correction: it is
+    // bounded by the same deadline the manage page uses, and the invite goes without
+    // the line. The deadline timer fires at once here, so no test waits for real.
+    const { deps, calls } = world({ callingNumberHangs: true });
+    const res = await updateBookingPhone(TOKEN, "(215) 555-9999", deps);
+    assert(res.ok, "a Salesforce that never answers does not hold the correction");
+    const description = calls.updateEventContact[0]?.patch.description ?? "";
+    assert(description.includes("+12155559999") && !/come from/i.test(description), "the invite is written without the line");
+    assert(calls.deadlineTimers.set === 1 && calls.deadlineTimers.cleared === 1, "under one deadline, whose timer is cleared");
   }
   {
     // A correction that changes nothing writes nothing, so it asks nothing either.

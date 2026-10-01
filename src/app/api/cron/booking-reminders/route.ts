@@ -18,7 +18,7 @@ import {
 } from "@/lib/booking/reminder-rate-store";
 import { SHIPPED_REMINDER_FAILURE_RATE_THRESHOLDS } from "@/lib/monitor/failure-rate-thresholds";
 import { log } from "@/lib/log";
-import { updateEventDescription } from "@/lib/google/calendar";
+import { getEventOnPrimary, updateEventDescription } from "@/lib/google/calendar";
 import { readLeadCallingNumbersLive } from "@/lib/salesforce/lead-calling-number";
 import { bookingLeadId } from "@/lib/booking/lookup-identity";
 
@@ -106,12 +106,11 @@ export async function GET(req: NextRequest) {
         salesforce_id: string | null;
         external_id: string | null;
         gcal_event_id: string | null;
-        attendee_phone: string | null;
       }>("bookings due a reminder", (from, to) =>
         db
           .from("bookings")
           .select(
-            "id, starts_at, created_at, reminder_sent_for, status, attendee_email, agent_email, agent_name, timezone, manage_token, salesforce_id, external_id, gcal_event_id, attendee_phone, buckets!inner(is_test)",
+            "id, starts_at, created_at, reminder_sent_for, status, attendee_email, agent_email, agent_name, timezone, manage_token, salesforce_id, external_id, gcal_event_id, buckets!inner(is_test)",
           )
           .in("status", ["confirmed", "rescheduled"])
           .gt("starts_at", nowIso)
@@ -151,7 +150,6 @@ export async function GET(req: NextRequest) {
             // calling number into.
             leadId: bookingLeadId(r),
             gcalEventId: r.gcal_event_id,
-            attendeePhone: r.attendee_phone,
           }),
         );
     },
@@ -200,6 +198,12 @@ export async function GET(req: NextRequest) {
     // `sendUpdates=none`: Google syncs the description to the attendee either way,
     // and mailing "your event was updated" for a line we added is noise.
     refreshInvite: (agentEmail, eventId, description) => updateEventDescription(agentEmail, eventId, description),
+    // What the invite says now, so only the calling number line changes. Null when
+    // the event is gone; a failed read throws and nothing is written.
+    readInviteDescription: async (agentEmail, eventId) => {
+      const event = await getEventOnPrimary(agentEmail, eventId);
+      return event === null ? null : (event.description ?? "");
+    },
     warn: (msg, bookingId, err) =>
       log.warn("booking-reminder", {
         msg,
