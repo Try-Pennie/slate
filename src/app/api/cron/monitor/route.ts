@@ -327,6 +327,7 @@ import {
 } from "@/lib/monitor/ooo-coverage-gap";
 import { ACTIONABLE_ITEM_STATUSES } from "@/lib/booking/bulk-reassign";
 import { unwrap, unwrapCount } from "@/lib/db/result";
+import { parseStampMs } from "@/lib/date/stamp";
 import { ACTIVE_BOOKING_STATUSES } from "@/lib/booking/bulk-reassign-store";
 import { loadOooCoverageBookings, loadSnapshottedBookingIds } from "@/lib/monitor/ooo-coverage-bookings";
 import { inIdChunks } from "@/lib/db/id-batch";
@@ -2237,6 +2238,23 @@ export async function GET(req: NextRequest) {
                   .gte("received_at", sinceIso),
                 "monitor regal call outcome count",
               ),
+            // The oldest stored row, so a freshly created table is judged only over
+            // the time it has existed. One indexed row, never a list.
+            firstOutcomeAtMs: async () => {
+              const row = unwrap(
+                await db
+                  .from("regal_call_outcomes")
+                  .select("received_at")
+                  .order("received_at", { ascending: true })
+                  .limit(1)
+                  .maybeSingle(),
+                "monitor regal call outcome first row",
+              ) as { received_at: string } | null;
+              if (row === null) return null;
+              const ms = parseStampMs(row.received_at);
+              if (ms === null) throw new Error("regal_call_outcomes first received_at is unreadable");
+              return ms;
+            },
             streak: () => recordFailureStreak(REGAL_CALL_OUTCOMES_STREAK_KEY, REGAL_CALL_OUTCOMES_STREAK_WINDOW_S),
             clearStreak: () => clearFailureStreak(REGAL_CALL_OUTCOMES_STREAK_KEY),
             armed: settings!.regalCallsArmed,

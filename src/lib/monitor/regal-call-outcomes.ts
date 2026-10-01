@@ -49,6 +49,14 @@ export const REGAL_CALL_OUTCOMES_STREAK_WINDOW_S = 900;
 /** The window both counts are read over. */
 export const REGAL_OUTCOME_WINDOW_MS = 2 * 60 * 60_000;
 
+/**
+ * The window when the table has never stored a row. An empty table while calls arrive
+ * is the total failure this check exists for, so it is still judged, but only over the
+ * last 15 minutes: long enough to see a busy feed, short enough that calls received
+ * before the deploy that created the table age out within three checks.
+ */
+export const REGAL_OUTCOME_EMPTY_WINDOW_MS = 15 * 60_000;
+
 /** At or above this share of completed calls with an outcome row is healthy. */
 export const REGAL_OUTCOME_MIN_RATIO = 0.8;
 
@@ -120,6 +128,8 @@ export interface RegalCallOutcomesDeps {
   loadReasonCounts: (sinceIso: string) => Promise<RegalReasonCounts>;
   /** Outcome rows received at or after `sinceIso`. THROWS on a read error. */
   countOutcomes: (sinceIso: string) => Promise<number>;
+  /** When the table stored its first row, or null for an empty table. THROWS on a read error. */
+  firstOutcomeAtMs: () => Promise<number | null>;
   /** Records one short check; true once the short state has persisted for two. */
   streak: () => Promise<boolean>;
   clearStreak: () => Promise<void>;
@@ -133,7 +143,20 @@ export interface RegalCallOutcomesDeps {
 }
 
 export async function runRegalCallOutcomesCheck(deps: RegalCallOutcomesDeps): Promise<RegalCallOutcomesResult> {
-  const sinceIso = new Date(deps.nowMs - REGAL_OUTCOME_WINDOW_MS).toISOString();
+  // Both counts start no earlier than the table's first stored row. Without that, the
+  // checks right after the deploy that created the table compare a few minutes of
+  // stored rows against two hours of received calls and page on a healthy feed.
+  let firstMs: number | null;
+  try {
+    firstMs = await deps.firstOutcomeAtMs();
+  } catch (err) {
+    return { status: "unmeasured", why: err instanceof Error ? err.message : String(err) };
+  }
+  const startMs =
+    firstMs === null
+      ? deps.nowMs - REGAL_OUTCOME_EMPTY_WINDOW_MS
+      : Math.max(deps.nowMs - REGAL_OUTCOME_WINDOW_MS, firstMs);
+  const sinceIso = new Date(startMs).toISOString();
   let counts: RegalReasonCounts;
   let written: number;
   try {

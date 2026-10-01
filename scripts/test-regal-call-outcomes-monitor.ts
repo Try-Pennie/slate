@@ -71,6 +71,8 @@ function harness(opts: {
   written: number | Error;
   armed?: boolean;
   streak?: { hits: number };
+  /** When the table stored its first row; null for an empty table. Defaults to long ago. */
+  firstOutcomeAtMs?: number | null | Error;
 }): Harness {
   const pages: { key: string; text: string }[] = [];
   const resolved: { key: string; text: string }[] = [];
@@ -88,6 +90,11 @@ function harness(opts: {
         since.push(iso);
         if (opts.written instanceof Error) throw opts.written;
         return opts.written;
+      },
+      firstOutcomeAtMs: async () => {
+        const v = opts.firstOutcomeAtMs === undefined ? NOW - 30 * 24 * 60 * 60_000 : opts.firstOutcomeAtMs;
+        if (v instanceof Error) throw v;
+        return v;
       },
       streak: async () => {
         streak.hits += 1;
@@ -230,6 +237,39 @@ assert(!regalCallOutcomesReachedVerdict(null), "a skipped check is NOT a verdict
   assert(/1 completed call\b/.test(page), "one call reads as one call, not one calls");
   const ok = formatRegalCallOutcomesRecovery({ received: 1_000, written: 990 });
   assert(ok.includes("99%"), "the all clear carries its ratio");
+}
+
+// --- a freshly created table: the window starts at its first stored row ----------------
+{
+  // Deployed 10 minutes ago: the received count must not reach back two hours to calls
+  // the new table could never have stored, or the first two checks after the deploy page.
+  const first = NOW - 10 * 60_000;
+  const h = harness({ counts: BUSY, written: 90, firstOutcomeAtMs: first });
+  await h.run();
+  eq(h.since, [new Date(first).toISOString(), new Date(first).toISOString()], "both counts start at the table's first stored row, not two hours back");
+}
+{
+  // A table older than the window reads the full two hours.
+  const h = harness({ counts: BUSY, written: 900, firstOutcomeAtMs: NOW - 5 * 60 * 60_000 });
+  await h.run();
+  eq(h.since, [new Date(NOW - REGAL_OUTCOME_WINDOW_MS).toISOString(), new Date(NOW - REGAL_OUTCOME_WINDOW_MS).toISOString()], "an older table reads the whole window");
+}
+{
+  // An EMPTY table after calls arrived is the total failure this check exists for, so
+  // it is judged, over the last 15 minutes only: long enough to see busy traffic, short
+  // enough that calls from before the deploy age out within three checks.
+  const streak = { hits: 1 };
+  const h = harness({ counts: BUSY, written: 0, firstOutcomeAtMs: null, streak });
+  const r = await h.run();
+  eq(h.since, [new Date(NOW - 15 * 60_000).toISOString(), new Date(NOW - 15 * 60_000).toISOString()], "an empty table is judged over the last 15 minutes");
+  eq(r.status === "short" ? r.paged : null, true, "and nothing stored while calls arrive still pages on the second check");
+}
+{
+  // The first row lookup failing measures nothing.
+  const h = harness({ counts: BUSY, written: 0, firstOutcomeAtMs: new Error("boom") });
+  const r = await h.run();
+  eq(r.status, "unmeasured", "an unreadable first row is unmeasured, never a page");
+  eq(h.pages.length, 0, "and pages nothing");
 }
 
 finish();
