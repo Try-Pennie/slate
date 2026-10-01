@@ -233,7 +233,8 @@ GET /api/bookings?externalId=<id>&bookingId=<uuid>&status=confirmed # assert a s
 - Not found, not owned, or status mismatch: `404 { "code": "NOT_FOUND" }`.
 
 **List mode** (`externalId` key absent), cross-person paginated list for ops and
-reporting. All filters optional:
+reporting. A `bookingId` without `externalId` is refused with `VALIDATION` rather
+than ignored (#2872). All filters optional:
 
 | Parameter | Type | Notes |
 |---|---|---|

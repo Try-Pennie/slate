@@ -275,6 +275,14 @@ function isoWithOffset(v: string): boolean {
 export function parseListQuery(params: URLSearchParams): ListParseResult {
   const bad = (error: string): ListParseResult => ({ ok: false, status: 400, error });
 
+  // #2872: a booking id selects ONE booking and is only honoured beside the lead
+  // id it was booked under. Here, with no externalId, it used to be ignored and the
+  // caller got the first page of every booking with a 200, which a host page could
+  // show as the lead's own call. Refused by name instead.
+  if (params.has("bookingId")) {
+    return bad("bookingId looks up one booking and needs the externalId it was booked under; send both, or neither to list");
+  }
+
   const status = (params.get("status") ?? "").trim();
   if (status && !BOOKING_STATUSES.includes(status as BookingStatus)) {
     return bad("Invalid status filter");
