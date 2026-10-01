@@ -300,7 +300,7 @@ export const refusalSignalCopy = {
       return (
         `The booking API has no key configured, so it is refusing every call. ` +
         `${v.total} refused in the last ${minutes(windowMs)}. This is a deployment gap rather than a ` +
-        `caller holding a stale key: set each caller's booking API key on the Worker (BOOKING_API_KEY_REGAL, _TRYPENNIE, _CANARY) and redeploy. ` +
+        `caller holding a stale key: set each caller's booking API key on the Worker (BOOKING_API_KEY_REGAL, _TRYPENNIE, _CANARY, _MARCIA) and redeploy. ` +
         `Diagnose via tag=booking-api reason=not_configured.`
       );
     }

@@ -80,7 +80,7 @@ import { leadCallingZone, withinLeadCallingWindow } from "./lead-calling-window.
 import { shortErrorReason } from "../notify/error-text.ts";
 import { log } from "@/lib/log";
 import { readBookingSource } from "./booking-source.ts";
-import type { BookingApiCaller } from "./api-callers.ts";
+import type { FullApiCaller } from "./api-callers.ts";
 import { rescheduleTimesFrom, type RescheduleTimesFrom } from "./reschedule-times-url.ts";
 import { readReferrerOrigin } from "../embed/referrer-origin.ts";
 import {
@@ -663,7 +663,7 @@ export interface CreateBookingInput {
    * then records `api-<caller>` as its source rather than `not-given`, which the
    * per page volume alarm would read as a booking any page could have sent.
    */
-  apiCaller?: BookingApiCaller;
+  apiCaller?: FullApiCaller;
 }
 
 export interface BookingResult {

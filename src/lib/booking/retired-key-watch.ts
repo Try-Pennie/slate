@@ -5,6 +5,7 @@ import { loadMonitorCooldowns } from "@/lib/monitor/settings";
 import { sendThrottledAlert } from "@/lib/notify/dispatch";
 import { makeRetiredKeyWatcher } from "@/lib/booking/retired-keys";
 import { configuredBookingApiKeys } from "@/lib/booking/api-keys";
+import { BOOKING_API_CALLERS } from "@/lib/booking/api-auth";
 
 /**
  * The watcher the booking API's authorizer calls on a refused request that carried a
@@ -18,7 +19,9 @@ import { configuredBookingApiKeys } from "@/lib/booking/api-keys";
  */
 export const watchRetiredKey = makeRetiredKeyWatcher({
   rawHashes: () => bookingApiRetiredKeyHashes(),
-  liveKeys: () => configuredBookingApiKeys().map((k) => ({ id: k.id, secret: k.secret })),
+  // Every caller's key, the cancel only ones included (#2940): a key live on ANY route
+  // must never sit in the retired list.
+  liveKeys: () => configuredBookingApiKeys(BOOKING_API_CALLERS).map((k) => ({ id: k.id, secret: k.secret })),
   cooldownMs: async () => (await loadMonitorCooldowns("booking-api")).retired_booking_key,
   // alert-key: retired_booking_key:*
   notify: (key, cooldownMs, text) => sendThrottledAlert(key, cooldownMs, text),

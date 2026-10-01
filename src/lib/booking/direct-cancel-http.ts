@@ -1,5 +1,10 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { authorizeBookingApi } from "@/lib/booking/route-auth";
+import { BOOKING_API_CALLERS } from "@/lib/booking/api-auth";
+import {
+  DIRECT_BOOKING_API_HOURLY_RATE_RULES,
+  DIRECT_BOOKING_API_IP_HOURLY_RATE_RULES,
+} from "@/lib/rate-limit-core";
 import type { CancelParseResult } from "@/lib/booking/api-request";
 import { loadReasonOptions } from "@/lib/booking/reason-options";
 import type { ReasonOption } from "@/lib/booking/core";
@@ -14,8 +19,8 @@ import { GENERIC_ERROR_MESSAGE, reportInternalError } from "@/lib/api/errors";
  * call, whose booking may be touched and what each ending answers lives here, so the
  * two verbs differ only in where the fields are read from.
  *
- * Who may call: a holder of a booking API caller key, under the same ceilings as every other
- * write on that key. Whose booking: only one owned by the strong id the caller sends
+ * Who may call: a holder of any booking API caller key, the cancel only ones (Marcia,
+ * #2940) included, under the same ceilings as every other write on that key. Whose booking: only one owned by the strong id the caller sends
  * (`cancelDirectBooking` checks ownership and answers not found otherwise).
  *
  * `readFields` runs only AFTER the key is accepted, so an unauthenticated body is
@@ -25,7 +30,15 @@ export async function respondToDirectCancel(
   req: NextRequest,
   readFields: (allowedCancel: ReasonOption[]) => CancelParseResult | Promise<CancelParseResult>,
 ): Promise<NextResponse> {
-  const authd = await authorizeBookingApi(req);
+  // #2940: the one route a cancel only caller (Marcia) may reach, so it admits every
+  // caller rather than the whole API default.
+  const authd = await authorizeBookingApi(
+    req,
+    DIRECT_BOOKING_API_HOURLY_RATE_RULES,
+    DIRECT_BOOKING_API_IP_HOURLY_RATE_RULES,
+    false,
+    BOOKING_API_CALLERS,
+  );
   if (!authd.ok) return authd.response;
 
   const reasonOptions = await loadReasonOptions();

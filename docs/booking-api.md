@@ -111,6 +111,16 @@ Authorization: Bearer <your caller's key>
   | Regal | `BOOKING_API_KEY_REGAL` | `BOOKING_API_KEY_REGAL_2` |
   | trypennie | `BOOKING_API_KEY_TRYPENNIE` | `BOOKING_API_KEY_TRYPENNIE_2` |
   | smoke canary | `BOOKING_API_KEY_CANARY` | `BOOKING_API_KEY_CANARY_2` |
+  | Marcia (Pipedream SMS workflow), cancel only | `BOOKING_API_KEY_MARCIA` | `BOOKING_API_KEY_MARCIA_2` |
+
+  **Marcia's key opens the cancel and nothing else** (#2940): `POST
+  /api/bookings/cancel` and `DELETE /api/bookings`. Every other route refuses it
+  with `401`, exactly as the smoke endpoints refuse a partner key. Marcia cancels a
+  lead's booking when the lead opts out or asks to cancel by text, and a key that
+  could also book or read every lead's bookings would be a wider grant than that.
+  The set lives in `CANCEL_ONLY_CALLERS` (`src/lib/booking/api-callers.ts`), and a
+  route admits it only by naming every caller; the default leaves it out, so a new
+  route refuses it without having to say so.
 
   There is no shared key. The one every caller held before the split is retired
   (#2865): the canary moved to its own, Regal was given a fresh one, and trypennie

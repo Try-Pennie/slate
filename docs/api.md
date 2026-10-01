@@ -76,7 +76,7 @@ names which one it requires.
 
 | Auth model | Header | Backing secret(s) | Used by |
 |---|---|---|---|
-| Booking API key | `Authorization: Bearer <key>` | one per caller, each with a `_2` slot: `BOOKING_API_KEY_REGAL`, `BOOKING_API_KEY_TRYPENNIE`, `BOOKING_API_KEY_CANARY`; there is no shared key (#2645, #2865; see `docs/booking-api.md` section 2) | `POST/GET/DELETE /api/bookings`, `POST /api/bookings/cancel`, and (for hidden test buckets only) `GET /api/availability` |
+| Booking API key | `Authorization: Bearer <key>` | one per caller, each with a `_2` slot: `BOOKING_API_KEY_REGAL`, `BOOKING_API_KEY_TRYPENNIE`, `BOOKING_API_KEY_CANARY`, and the cancel only `BOOKING_API_KEY_MARCIA` (#2940); there is no shared key (#2645, #2865; see `docs/booking-api.md` section 2) | `POST/GET/DELETE /api/bookings`, `POST /api/bookings/cancel`, and (for hidden test buckets only) `GET /api/availability`. Marcia's key opens only `POST /api/bookings/cancel` and `DELETE /api/bookings` |
 | Reassign API key | `Authorization: Bearer <key>` | `REASSIGN_API_KEY` | `POST /api/bookings/reassign` |
 | Offboarding API key | `Authorization: Bearer <key>` | `OFFBOARDING_API_KEY` | `POST /api/users/lifecycle`, `POST /api/users/deactivate`, `POST /api/users/reactivate` |
 | Bookable API key | `Authorization: Bearer <key>` | `BOOKABLE_API_KEY` | `POST /api/users/bookable` |
@@ -1036,6 +1036,7 @@ canary key is not configured.
 | `BOOKING_API_KEY_REGAL`, `_2` | Regal's own booking key (#2645) | Regal's calls are refused with `401`; with every booking key unset, `503` on `/api/bookings` |
 | `BOOKING_API_KEY_TRYPENNIE`, `_2` | trypennie's own booking key. `_2` holds the value trypennie was given before the split (#2865) | trypennie's calls are refused with `401` |
 | `BOOKING_API_KEY_CANARY`, `_2` | The smoke canary's own key, the only key the smoke endpoints accept | Every canary lane, the deploy probe and every heartbeat stamp fail with a 401 and alert (#2822) |
+| `BOOKING_API_KEY_MARCIA`, `_2` | Marcia's own key (#2940), accepted by `POST /api/bookings/cancel` and `DELETE /api/bookings` only | Marcia's cancels are refused with `401`; no other caller is affected |
 | `BOOKING_API_RETIRED_KEY_HASHES` | Hashes of retired booking keys (#2879). A refused request presenting one pages `retired_booking_key`; the refusal itself is unchanged | Nothing is noticed: a caller holding a retired key is refused with `401` and nobody is told. Unset today: nothing is retired yet, and it is armed at the next rotation (`DEPLOY.md`) |
 | `REASSIGN_API_KEY` | `POST /api/bookings/reassign` | `503` |
 | `DUPLICATE_CANCEL_API_KEY` | `POST /api/bookings/cancel-duplicate` | `503` |

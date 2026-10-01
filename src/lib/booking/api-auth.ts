@@ -21,11 +21,25 @@
  */
 import { bearerToken, timingSafeEqual } from "@/lib/bearer-auth";
 import { isPublicTestBucket } from "@/lib/embed/public-test-bucket";
-import { BOOKING_API_CALLERS, type BookingApiCaller } from "./api-callers.ts";
+import {
+  BOOKING_API_CALLERS,
+  CANCEL_ONLY_CALLERS,
+  FULL_API_CALLERS,
+  type BookingApiCaller,
+  type CancelOnlyCaller,
+  type FullApiCaller,
+} from "./api-callers.ts";
 
 // The caller list lives in its own import free module (#2876), so the booking
 // source vocabulary can derive one source per caller without reaching this one.
-export { BOOKING_API_CALLERS, type BookingApiCaller };
+export {
+  BOOKING_API_CALLERS,
+  CANCEL_ONLY_CALLERS,
+  FULL_API_CALLERS,
+  type BookingApiCaller,
+  type CancelOnlyCaller,
+  type FullApiCaller,
+};
 
 /**
  * Who may call the smoke endpoints. They can stamp the canary's own heartbeat and

@@ -16,7 +16,7 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { assert, eq, finish } from "./lib/harness.ts";
-import { BOOKING_API_CALLERS } from "../src/lib/booking/api-callers.ts";
+import { BOOKING_API_CALLERS, CANCEL_ONLY_CALLERS, FULL_API_CALLERS } from "../src/lib/booking/api-callers.ts";
 import {
   API_SOURCES,
   apiSourceFor,
@@ -75,10 +75,17 @@ eq(
 // bookings can never fall back to not-given and hide a dark page.
 eq(
   [...API_SOURCES].sort().join(","),
-  BOOKING_API_CALLERS.map((c) => `api-${c}`).sort().join(","),
-  "there is exactly one API source per booking API caller",
+  FULL_API_CALLERS.map((c) => `api-${c}`).sort().join(","),
+  "there is exactly one API source per booking API caller that may book",
 );
-for (const caller of BOOKING_API_CALLERS) {
+// #2940: a cancel only caller can never create a booking, so it has no source and the
+// database CHECK needs no value for it. Positive half first, so the absence below is
+// measured against a list that really does hold the cancel only caller.
+assert(BOOKING_API_CALLERS.includes("marcia"), "Marcia is a booking API caller");
+for (const caller of CANCEL_ONLY_CALLERS) {
+  assert(!isApiSource(`api-${caller}`), `api-${caller} is not a source: ${caller} cannot book`);
+}
+for (const caller of FULL_API_CALLERS) {
   eq(apiSourceFor(caller), `api-${caller}`, `the ${caller} caller records api-${caller}`);
   assert(isApiSource(apiSourceFor(caller)), `api-${caller} is recognised as an API source`);
   assert(!(PAGE_SOURCES as readonly string[]).includes(apiSourceFor(caller)), `api-${caller} is not a page a link can name`);

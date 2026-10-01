@@ -14,6 +14,7 @@ const CALLER_LABEL: Record<BookingApiCaller, string> = {
   regal: "Regal",
   trypennie: "trypennie",
   canary: "Smoke canary",
+  marcia: "Marcia",
 };
 
 const HOST_LABEL: Record<CallerHostKind, string> = {

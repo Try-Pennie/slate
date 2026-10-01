@@ -2,9 +2,11 @@ import { stampSeenIp, stampRefusedBy } from "@/lib/loadtest-echo";
 import { NextResponse, type NextRequest } from "next/server";
 import { configuredBookingApiKeys } from "@/lib/booking/api-keys";
 import {
+  FULL_API_CALLERS,
   type ApiKey,
   type AuthRefusalReason,
   type BookingApiCaller,
+  type FullApiCaller,
   authRefusalCounting,
   authenticateBearer,
   refusalReasonForStatus,
@@ -29,9 +31,9 @@ import {
 } from "@/lib/rate-limit-core";
 import type { RateLimitRule } from "@/lib/rate-limit-core";
 
-export type AuthOutcome =
+export type AuthOutcome<C extends BookingApiCaller = FullApiCaller> =
   /** #2645: `caller` is who the key belongs to, `keyId` which of its slots. */
-  | { ok: true; keyId: ApiKey["id"]; caller: BookingApiCaller }
+  | { ok: true; keyId: ApiKey["id"]; caller: C }
   /**
    * #1429: the refusal now says WHICH one it was. A rotated key (the integration
    * cannot book at all) and a rate ceiling trip (one caller going too fast) sat
@@ -61,7 +63,7 @@ function refuse(
   /** Whether a Bearer token was actually SENT (#1450). Only meaningful for a
    *  credential refusal, and only on the write path. */
   tokenPresent = false,
-): AuthOutcome {
+): Extract<AuthOutcome, { ok: false }> {
   const counting = authRefusalCounting(reason, readPath ? "read" : "write");
   // #1442: a ceiling trip stays OUT of the failure share, and that decision is
   // unchanged. What it left invisible is a SUSTAINED trip on the write path,
@@ -145,14 +147,21 @@ function refuse(
  * separate ceiling so polling can't starve the booking path, #393). `readPath`
  * picks the matching edge binding, and a null `hourlyIpRules` opts reads out of
  * the per-IP backstop.
+ *
+ * `callers` is WHO this route admits (#2940). It defaults to every caller whose key
+ * opens the whole API, so a route says nothing to keep a cancel only key out; the
+ * cancel alone passes `BOOKING_API_CALLERS`. A cancel only key on any other route is
+ * simply not one of that route's keys, so it is refused 401 exactly as a partner key
+ * is on the smoke endpoints.
  */
-export async function authorizeBookingApi(
+export async function authorizeBookingApi<C extends BookingApiCaller = FullApiCaller>(
   req: NextRequest,
   hourlyKeyRules: RateLimitRule[] = DIRECT_BOOKING_API_HOURLY_RATE_RULES,
   hourlyIpRules: RateLimitRule[] | null = DIRECT_BOOKING_API_IP_HOURLY_RATE_RULES,
   readPath = false,
-): Promise<AuthOutcome> {
-  const auth = authenticateBearer(req.headers.get("authorization"), configuredBookingApiKeys());
+  callers: readonly C[] = FULL_API_CALLERS as readonly C[],
+): Promise<AuthOutcome<C>> {
+  const auth = authenticateBearer(req.headers.get("authorization"), configuredBookingApiKeys(callers));
   if (!auth.ok) {
     // #2879: a present token that is not one of ours may be a RETIRED key, which the
     // caller sightings cannot see because they record only successes. The watcher
@@ -208,5 +217,6 @@ export async function authorizeBookingApi(
   // gate and the admin console can read. Deferred past the response and throttled to
   // once an hour per caller and host, so a booking pays nothing for it.
   recordCallerSeen(auth.caller, req.method, req.headers);
-  return { ok: true, keyId: auth.keyId, caller: auth.caller };
+  // The key set was built from `callers` alone, so the caller it matched is one of them.
+  return { ok: true, keyId: auth.keyId, caller: auth.caller as C };
 }
