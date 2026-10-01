@@ -215,7 +215,7 @@ const with_ = (over: Partial<SetupReadiness>): SetupReadiness => ({ ...ALL_SETUP
   eq(Object.keys(expected).sort().join(","), Object.keys(g).sort().join(","), "every gate is decided for settings");
 
   // And the other direction: no OTHER read takes down a check that needs only the
-  // settings. Those four do their own reads inside their own boundaries.
+  // settings. Each does its own reads inside its own boundary.
   for (const read of ["buckets", "slotHealth", "businessHours", "workingHours", "horizonDays"] as const) {
     const o = monitorSetupGates(with_({ [read]: false }));
     for (const name of ["failureRate", "awaitingActivation", "regalCalls", "regalCallsUnreadable", "regalCallOutcomes"] as const) {

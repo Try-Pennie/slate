@@ -299,8 +299,6 @@ assert(!regalCallOutcomesReachedVerdict(null), "a skipped check is NOT a verdict
 {
   // The second short check decides to page, and the Slack send then fails. The result
   // must not report a page that never went out (L12).
-  const streak = { hits: 1 };
-  const h = harness({ counts: BUSY, written: 100, streak });
   const failing = await runRegalCallOutcomesCheck({
     loadReasonCounts: async () => BUSY,
     countOutcomes: async () => 100,
@@ -320,7 +318,6 @@ assert(!regalCallOutcomesReachedVerdict(null), "a skipped check is NOT a verdict
     failing.status === "short" && failing.pageError === "slack down",
     "and carries why it failed, for the tick log",
   );
-  void h;
 }
 
 {
