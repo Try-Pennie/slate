@@ -118,6 +118,40 @@ describe("manage page advisor wiring (#1338)", () => {
     expect(props?.attendeeEmail).toBe("dana@example.com");
   });
 
+  // #2982: "Book a new time" carries the lead's identity back into /book, built
+  // from THIS booking's stored values (the Lead id, the lead's own details and the
+  // page it was booked from). The lead's details are their own on their own page.
+  it("hands the page a rebook link carrying the booking's Lead id, details and source", async () => {
+    service.getBookingByToken.mockResolvedValue({
+      ...found,
+      booking: {
+        ...found.booking,
+        status: "cancelled",
+        salesforce_id: "00QUi00000ABCdeMAH",
+        attendee_name: "Dana Lead",
+        source: "my-offers-result",
+      },
+    });
+    const props = await renderPage();
+    const href = String(props?.rebookHref);
+    const q = new URL(href, "https://slate.example").searchParams;
+    expect(href.startsWith("/book?")).toBe(true);
+    expect(q.get("xbc")).toBe("411");
+    expect(q.get("external_id")).toBe("00QUi00000ABCdeMAH");
+    expect(q.get("name")).toBe("Dana Lead");
+    expect(q.get("email")).toBe("dana@example.com");
+    expect(q.get("phone")).toBe("+12155550100");
+    expect(q.get("source")).toBe("my-offers-result");
+  });
+
+  it("a booking with no Lead id still rebooks with the details it holds", async () => {
+    const props = await renderPage();
+    const q = new URL(String(props?.rebookHref), "https://slate.example").searchParams;
+    expect(q.get("xbc")).toBe("411");
+    expect(q.has("external_id")).toBe(false);
+    expect(q.get("email")).toBe("dana@example.com");
+  });
+
   // #2165: the add to calendar links come from the one builder the confirm and the
   // booking lookup use, built from THIS booking, never a second copy on the page.
   it("hands the page the booking's calendar links from the shared builder", async () => {

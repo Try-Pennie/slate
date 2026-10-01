@@ -12,6 +12,7 @@ import {
 import { loadReasonOptions } from "@/lib/booking/reason-options";
 import { currentTestPassFor } from "@/lib/embed/test-pass-gate";
 import { rescheduleTimesFrom } from "@/lib/booking/reschedule-times-url";
+import { rebookHref } from "@/lib/booking/book-link";
 
 export const dynamic = "force-dynamic";
 
@@ -92,6 +93,16 @@ export default async function ManagePage({
         // #2827: a call booked through an advisor's own link can only move to a
         // time that advisor can take, so its picker reads that advisor's times.
         rescheduleTimesFrom={rescheduleTimesFrom(found.booking)}
+        // #2982: "Book a new time" carries this booking's Lead id, the lead's own
+        // details (already on this page, or theirs to know) and its source page.
+        rebookHref={rebookHref({
+          bucketCode: found.bucket.code,
+          salesforceId: found.booking.salesforce_id ?? null,
+          attendeeName: found.booking.attendee_name ?? null,
+          attendeeEmail: found.booking.attendee_email ?? null,
+          attendeePhone: found.booking.attendee_phone ?? null,
+          source: found.booking.source ?? null,
+        })}
         startsAt={found.booking.starts_at}
         status={found.booking.status}
         eventName={found.eventType.name}
