@@ -37,6 +37,26 @@ export function httpOrigin(value: string | null | undefined): string | null {
   }
 }
 
+/**
+ * The origin of the page that framed the booker, read off its referrer, or null
+ * when the referrer cannot name a host. One rule for every reader of the
+ * referrer: the mismatch report below and the origin a booking records
+ * (`referrerOriginForConfirm`), because two copies disagreed once already.
+ *
+ * A referrer on the booker's OWN origin is null: the browser reports the previous
+ * Slate page there when the frame reloaded or navigated inside itself, which says
+ * nothing about the host. Read as a host, it reported trypennie as framing Slate
+ * on 2026-10-01 while every message reached trypennie.
+ */
+export function hostReferrerOrigin(
+  referrer: string | null | undefined,
+  ownOrigin: string,
+): string | null {
+  const origin = httpOrigin(referrer);
+  if (!origin || origin === httpOrigin(ownOrigin)) return null;
+  return origin;
+}
+
 export interface OriginMismatch {
   /** The origin the host passed as `parentOrigin`, where the Booker posts. */
   declared: string;
@@ -54,12 +74,16 @@ export interface OriginMismatch {
  * a booking page can carry a lead's details. Null when either side cannot be
  * read, because nothing can be told from one value.
  */
-export function parentOriginMismatch(
-  parentOrigin: string | null | undefined,
-  referrer: string | null | undefined,
-): OriginMismatch | null {
-  const declared = httpOrigin(parentOrigin);
-  const framedBy = httpOrigin(referrer);
+export function parentOriginMismatch(input: {
+  /** What the host passed as `parentOrigin`. */
+  declared: string | null | undefined;
+  /** `document.referrer` inside the frame. */
+  referrer: string | null | undefined;
+  /** The booker's own origin, which a referrer can name but a host never is. */
+  ownOrigin: string;
+}): OriginMismatch | null {
+  const declared = httpOrigin(input.declared);
+  const framedBy = hostReferrerOrigin(input.referrer, input.ownOrigin);
   if (!declared || !framedBy || declared === framedBy) return null;
   return { declared, framedBy };
 }

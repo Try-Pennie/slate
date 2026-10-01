@@ -60,8 +60,11 @@ assert(
 // the resize and the success message with nothing logged on either side. The
 // referrer is the browser's own statement of who framed us, so a disagreement
 // between the two is what gets reported.
+const SLATE = "https://slate.trypennie.app";
+const mm = (declared: string | null, referrer: string) =>
+  parentOriginMismatch({ declared, referrer, ownOrigin: SLATE });
 {
-  const m = parentOriginMismatch("https://trypennie.com", "https://www.trypennie.com/booking/a04xx?email=k%40x.com");
+  const m = mm("https://trypennie.com", "https://www.trypennie.com/booking/a04xx?email=k%40x.com");
   assert(
     m?.declared === "https://trypennie.com" && m.framedBy === "https://www.trypennie.com",
     "a www host declaring the bare domain is a mismatch, reported as two ORIGINS",
@@ -70,14 +73,24 @@ assert(
     !JSON.stringify(m).includes("a04xx") && !JSON.stringify(m).includes("email"),
     "and never carries the referrer's path or query, which can hold a lead's details",
   );
-  assert(parentOriginMismatch("https://trypennie.com", "https://trypennie.com/any/path") === null, "same origin, different path, is agreement");
-  assert(parentOriginMismatch("https://trypennie.com:443", "https://trypennie.com/") === null, "a default port is the same origin");
-  assert(parentOriginMismatch("https://host.test", "http://host.test/") !== null, "a scheme difference is a real mismatch");
+  assert(mm("https://trypennie.com", "https://trypennie.com/any/path") === null, "same origin, different path, is agreement");
+  assert(mm("https://trypennie.com:443", "https://trypennie.com/") === null, "a default port is the same origin");
+  assert(mm("https://host.test", "http://host.test/") !== null, "a scheme difference is a real mismatch");
   // Nothing to compare is not a finding: no report, rather than a guess.
-  assert(parentOriginMismatch(null, "https://trypennie.com/") === null, "no declared origin: nothing to compare");
-  assert(parentOriginMismatch("https://trypennie.com", "") === null, "a stripped referrer: nothing to compare");
-  assert(parentOriginMismatch("not a url", "https://trypennie.com/") === null, "an unreadable declared origin: nothing to compare");
-  assert(parentOriginMismatch("https://trypennie.com", "about:blank") === null, "an opaque referrer: nothing to compare");
+  assert(mm(null, "https://trypennie.com/") === null, "no declared origin: nothing to compare");
+  assert(mm("https://trypennie.com", "") === null, "a stripped referrer: nothing to compare");
+  assert(mm("not a url", "https://trypennie.com/") === null, "an unreadable declared origin: nothing to compare");
+  assert(mm("https://trypennie.com", "about:blank") === null, "an opaque referrer: nothing to compare");
+}
+
+// The referrer names Slate itself when the booking box reloaded or navigated
+// inside its own frame: the browser reports the previous Slate page, not the host.
+// That says nothing about who framed us, so it is never a mismatch. Measured
+// 2026-10-01: a trypennie lead whose referrer was the booker's own origin paged
+// "a page at https://slate.trypennie.app" while every message reached trypennie.
+{
+  assert(mm("https://trypennie.com", `${SLATE}/book/1?embed=1&parentOrigin=x`) === null, "a referrer naming Slate's own origin is not a host, so not a mismatch");
+  assert(mm("https://trypennie.com", "https://www.trypennie.com/") !== null, "control: a real host disagreeing is still a mismatch beside it");
 }
 
 // The report travels as a message string. The server rebuilds the pair from it

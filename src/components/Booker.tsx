@@ -685,10 +685,12 @@ export default function Booker({
   const mismatchReported = useRef(false);
   useEffect(() => {
     if (!embedded || mismatchReported.current) return;
-    const mismatch = parentOriginMismatch(
-      parentOrigin,
-      typeof document !== "undefined" ? document.referrer : null,
-    );
+    if (typeof window === "undefined") return;
+    const mismatch = parentOriginMismatch({
+      declared: parentOrigin,
+      referrer: document.referrer,
+      ownOrigin: window.location.origin,
+    });
     if (!mismatch) return;
     mismatchReported.current = true;
     postClientReport({
