@@ -91,10 +91,11 @@ export interface HeldOffSlate {
 /**
  * THE ONE SWITCH for which Low pages send their leads to Slate (#2878).
  *
- * Dan, 2026-09-29: the Low pilot launches on the two trypennie pages already wired
+ * Dan, 2026-09-29: the Low pilot launched on the two trypennie pages already wired
  * to Slate, `/booking/[SO_ID]` and `/my-offers/result`, which are the Completed
- * Application Review page and its Follow Up. Income Verification's leads come from
- * `/offerportal` and `/portal`, which are not wired (#2870).
+ * Application Review page and its Follow Up. Income Verification's surfaces
+ * (`/offerportal`, `/portal`, offerhub, `/booking/portal`) joined on 2026-10-01
+ * (#2870), so the switch holds nothing today.
  *
  * Everything that judges or describes Low volume reads `LOW_PAGES_ON_SLATE`, derived
  * from this: the Low floors' scope (`FLOOR_SCOPE`, refitted from the committed
@@ -109,22 +110,30 @@ export interface HeldOffSlate {
  * floors already cover every Low page, so nothing else moves.
  */
 export const LOW_PAGES_NOT_ON_SLATE: Readonly<Partial<Record<LowPageId, HeldOffSlate>>> = {
-  "income-verification": {
-    reason: "come from trypennie's /offerportal and /portal, which do not send them to Slate yet",
-    issue: 2870,
-  },
+  // Empty since #2870: trypennie's #519 (merged 2026-10-01) put Income Verification's
+  // surfaces behind the Slate switch, so every Low page is judged.
 };
 
+/**
+ * The Low pages whose leads Slate carries, in the measurement's order. Takes the
+ * switch as an input so the held off path is tested while the switch is empty.
+ */
+export function pagesOnSlate(held: Readonly<Partial<Record<LowPageId, HeldOffSlate>>> = LOW_PAGES_NOT_ON_SLATE): readonly LowPage[] {
+  return LOW_PAGES.filter((p) => !(p.id in held));
+}
+
 /** The Low pages whose leads Slate carries, in the measurement's order. */
-export const LOW_PAGES_ON_SLATE: readonly LowPage[] = LOW_PAGES.filter((p) => !(p.id in LOW_PAGES_NOT_ON_SLATE));
+export const LOW_PAGES_ON_SLATE: readonly LowPage[] = pagesOnSlate();
 
 /**
  * One sentence per page held off Slate, for the surfaces that list the pages, so a
  * page missing from a table reads as a decision rather than an oversight (L678).
  */
-export function pagesNotOnSlateLines(): string[] {
+export function pagesNotOnSlateLines(
+  heldOff: Readonly<Partial<Record<LowPageId, HeldOffSlate>>> = LOW_PAGES_NOT_ON_SLATE,
+): string[] {
   return LOW_PAGES.flatMap((p) => {
-    const held = LOW_PAGES_NOT_ON_SLATE[p.id];
+    const held = heldOff[p.id];
     return held ? [`${p.name} is not judged: its leads ${held.reason}.`] : [];
   });
 }

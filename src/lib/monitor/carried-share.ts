@@ -9,8 +9,8 @@
  * Floors fitted to the whole are floors part of it can never clear: as the floor
  * under learned floors they raise them past the traffic Slate sees, and the alarm
  * false pages (108 to 283 times in two normal weeks, measured in
- * `scripts/lib/volume-floor-scope.ts`). Low's two page measurement was refitted by
- * hand for the pages (#2878), which a split, or a third page, undoes again.
+ * `scripts/lib/volume-floor-scope.ts`). Low's measurement was refitted by hand for
+ * the pages Slate carries (#2878, #2870), which a split undoes again.
  *
  * WHAT. Once a day the refit (`volume-relearn.ts`) counts, per tier, the bookings
  * Slate took and the bookings cal.com took over the same 24 hours. Slate's share is
@@ -30,10 +30,10 @@
  * of this trade, since a floor too high pages about nothing (L648).
  *
  * WHICH MEASUREMENT. The narrowest one that covers what Slate carries, thinned by
- * the rest. Low has two: its two page fit (a share 0.66 of the tier) and the whole
- * tier. While Slate carries those two pages the two page fit stays in force exactly
- * as it was; a 50% split thins it by half; carrying more than the two pages thins
- * the whole tier's. No measurement is ever scaled UP past what it measured.
+ * the rest. Low has two: its fit to the pages Slate carries and the whole tier.
+ * Since every Low page joined (#2870) both cover the whole tier, so a 50% split
+ * thins either by half; were a page held off again, its page fit would be the
+ * narrower one. No measurement is ever scaled UP past what it measured.
  *
  * AN OUTAGE IS NOT A SHARE. The share is counted from the bookings the alarm
  * watches, so Slate losing bookings reads as Slate's share falling, and applying it
@@ -136,8 +136,8 @@ export function carriedAnchor(measurements: readonly VolumeBaseline[] | undefine
 
 /**
  * Where a tier's anchor comes from: the anchors in force before any share has been
- * measured (Low's two page measurement alone, the state that was armed before this
- * change), and every measurement of each tier to thin once one has.
+ * measured (Low's committed fit alone, which covers every Low page since #2870), and
+ * every measurement of each tier to thin once one has.
  */
 export interface AnchorSource {
   unmeasured: Readonly<Partial<Record<VolumeTier, VolumeBaseline>>>;

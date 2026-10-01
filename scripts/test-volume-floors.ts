@@ -159,17 +159,16 @@ const fixture = JSON.parse(readFileSync("scripts/fixtures/calcom-low-bookings.js
   );
   eq(MEASURED_VOLUME_BASELINE.cells.length, 7, "seven weekdays");
   assert(MEASURED_VOLUME_BASELINE.cells.every((d) => d.length === 24), "twenty four hours each");
-  // Dan, 2026-09-29 (#2878): the pilot launches on the two pages already wired to
-  // Slate, so the floors are those two pages' and not the whole tier's. Fitting the
+  // Dan, 2026-09-29 (#2878): the floors are the pages Slate carries, never the
+  // whole tier's while only some are carried (every one is since #2870). Fitting the
   // tier while only some pages flip paged 108 to 283 times in two normal weeks of
   // replay; fitting fewer pages than flip is slow and blind.
   const pilotForms = LOW_PAGES_ON_SLATE.map((p) => p.calcomForm);
   const pilotBookings = pilotForms.reduce((s, f) => s + fixture.forms[f]!.reduce((a, v) => a + v, 0), 0);
   eq(MEASURED_VOLUME_BASELINE.bookings, pilotBookings, "the floors count exactly the bookings of the pages Slate carries");
-  assert(
-    MEASURED_VOLUME_BASELINE.tierShare !== null && MEASURED_VOLUME_BASELINE.tierShare > 0.5 && MEASURED_VOLUME_BASELINE.tierShare < 1,
-    `and say they are that share of the Low tier, not all of it (${MEASURED_VOLUME_BASELINE.tierShare})`,
-  );
+  // #2870: every Low page is carried now, so the floors are the whole tier's, which
+  // the baseline records as no share at all rather than a share of 1.
+  eq(MEASURED_VOLUME_BASELINE.tierShare, null, "and say they are the whole Low tier");
   eq(MEASURED_VOLUME_BASELINE.scope, FLOOR_SCOPE.label, "and name that scope in the words the admin page shows");
   assert(MEASURED_VOLUME_BASELINE.bookings > 1000, "fitted to a real volume of bookings, not a handful");
   // Every page in the tier is kept, so a wider scope can be fitted offline.

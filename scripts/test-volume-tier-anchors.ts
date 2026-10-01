@@ -9,7 +9,7 @@
 // - each measurement is filed under the tier it actually counted (L70), and none is
 //   applied as measured: each is listed in TIER_MEASUREMENTS to be thinned to the
 //   share of its tier Slate carries (#2893), while TIER_ANCHORS, the anchors before
-//   any share is measured, stays Low's two page fit alone, the state that was armed;
+//   any share is measured, stays Low's committed fit alone (every Low page since #2870);
 // - a measurement fitted to so little traffic that no judged hour carries a floor is
 //   refused rather than saved.
 import { existsSync, readFileSync } from "node:fs";
@@ -87,7 +87,7 @@ const synthetic = (tier: string, forms: Record<string, number[]>): VolumeFixture
   eq(b.tierShare, null, "so its floors are the whole tier's");
   eq(b.bookings, 6, "fitted to every booking the tier took");
   // #2893 reversed "Low is never given the whole tier scope": Low's whole tier fit is
-  // the measurement thinned once Slate carries more of Low than its two pages.
+  // the measurement thinned to the share of Low Slate carries.
   eq(wholeTierScope(synthetic("1", { A: [1], B: [2] })).forms, ["A", "B"], "Low's whole tier scope is every form it booked through");
   let refused = "";
   try {
@@ -143,11 +143,13 @@ const fixtures = readTierFixtures();
       `${tierLabel(tier)}'s closed days are distinct and in date order`,
     );
   }
-  // Low's whole tier fit comes from Low's own file, beside its two page fit (#2893).
+  // Low's whole tier fit comes from Low's own file, beside its page scoped fit (#2893).
   eq(fixtures[LOW_TIER], JSON.parse(readFileSync(LOW_FIXTURE_PATH, "utf8")) as VolumeFixture, "Low's whole tier fit is read from Low's own measurement");
   const lowWhole = WHOLE_TIER_MEASUREMENTS[LOW_TIER]!;
   eq(lowWhole.tierShare, null, "and covers the whole of Low");
-  assert(lowWhole.bookings > MEASURED_VOLUME_BASELINE.bookings, `more of it than the two page fit does (${lowWhole.bookings} against ${MEASURED_VOLUME_BASELINE.bookings})`);
+  // #2870: every Low page is on Slate, so the Low fit is the whole tier too, and the
+  // two are the same bookings rather than one a share of the other.
+  eq(lowWhole.bookings, MEASURED_VOLUME_BASELINE.bookings, "the same bookings as the Low fit, now that it covers every Low page");
   eq(lowWhole.measuredOn, MEASURED_VOLUME_BASELINE.measuredOn, "from the same measurement");
   eq(renderTierBaselineModule({}).includes("WHOLE_TIER_MEASUREMENTS: Partial<Record<VolumeTier, VolumeBaseline>> = {\n};"), true, "no measurement renders an empty record, not a missing export");
 }
@@ -164,7 +166,7 @@ const fixtures = readTierFixtures();
   // nine weeks fit a floor above zero at none of the 72 hours the alarm judges.
   // Pinned, so a measurement deleted by accident fails here.
   eq(Object.keys(WHOLE_TIER_MEASUREMENTS).sort(), ["1", "2", "3", "4"], "whole tier fits exist for Low, Medium, High and Very High, none for Ultra High");
-  eq(TIER_MEASUREMENTS[LOW_TIER], [MEASURED_VOLUME_BASELINE, WHOLE_TIER_MEASUREMENTS[LOW_TIER]], "Low's measurements to thin are its two page fit and its whole tier fit");
+  eq(TIER_MEASUREMENTS[LOW_TIER], [MEASURED_VOLUME_BASELINE, WHOLE_TIER_MEASUREMENTS[LOW_TIER]], "Low's measurements to thin are its committed fit and its whole tier fit, the same bookings since #2870");
   for (const tier of ["2", "3", "4"] as const) {
     eq(fixtures[tier]?.tier, tier, `${tierLabel(tier)}'s measurement counted ${tierLabel(tier)} (L70)`);
     eq(TIER_MEASUREMENTS[tier], [WHOLE_TIER_MEASUREMENTS[tier]], `and it is the one measurement ${tierLabel(tier)} thins`);

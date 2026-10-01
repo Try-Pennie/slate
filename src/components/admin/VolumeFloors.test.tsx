@@ -36,11 +36,10 @@ describe("VolumeFloors", () => {
     expect(line).toContain("Jul 24 to Sep 25");
     expect(line).toContain(MEASURED_VOLUME_BASELINE.bookings.toLocaleString("en-US"));
     expect(line).toContain(MEASURED_VOLUME_BASELINE.scope);
-    // #2878: the committed floors are the two pilot pages', said in plain words
-    // with their share of the tier, so nobody reads them as the whole tier's.
-    expect(line).toContain("Completed Application Review Follow Up and Completed Application Review pages");
-    expect(line).not.toContain("Income Verification");
-    expect(line).toContain("66% of that tier's bookings");
+    // #2870: every Low page is on Slate, so the committed floors name all three
+    // pages and claim no share, because they are the whole tier's.
+    expect(line).toContain("Income Verification Phone Call, Completed Application Review Follow Up and Completed Application Review pages");
+    expect(line).not.toContain("of that tier's bookings");
   });
 
   it("states no share when the floors are the whole tier's", () => {

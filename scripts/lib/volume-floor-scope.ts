@@ -4,17 +4,16 @@
  *
  * THE SCOPE IS A DECISION, and it is made in ONE place: `LOW_PAGES_ON_SLATE` in
  * `src/lib/monitor/page-volume.ts`, which the per page alarm, the readiness gate and
- * the admin page read too. Dan, 2026-09-29 (#2878): the Low pilot launches on the
- * two pages already wired to Slate, Completed Application Review and its Follow Up
- * (`/booking/[SO_ID]` and `/my-offers/result`), so the Low floors are those two
- * pages' traffic. Income Verification follows when #2870 wires it.
+ * the admin page read too. It names every Low page since 2026-10-01 (#2870), so the
+ * Low floors are the whole Low tier's traffic. From 2026-09-29 (#2878) until then
+ * they were the two pilot pages' alone.
  *
  * The scope has to MATCH what Slate carries, in both directions: floors fitted to
  * the whole tier while only one page flipped paged 108 to 283 times in two held out
  * weeks, and floors fitted to one page while all flip are slow and blind. The whole
  * tier scope this replaced (2026-09-25) paged 0 times on normal traffic and caught
- * a full outage in 30 minutes typically (85 at worst); the two page scope's own
- * numbers are printed by `scripts/test-volume-floors.ts` and quoted on #2878.
+ * a full outage in 30 minutes typically (85 at worst), and is the scope again since
+ * #2870; `scripts/test-volume-tier-anchors.ts` prints its replay.
  *
  * THIS IS THE SCOPE OF THE ANCHOR MEASUREMENT, NOT OF WHAT SLATE CARRIES (#2874).
  * Widening the pilot to another tier needs no edit here and no refit: every count
@@ -299,8 +298,8 @@ function renderBaselineEntry(key: string, baseline: VolumeBaseline): string {
 // not a thing any alarm reads. Each tier's counts are committed in their own file,
 // and the floors of every measured tier live in ONE generated module, rendered from
 // every such file, so measuring one tier can never drop another's measurement.
-// Low's whole tier fit is rendered there too, from Low's own file, beside its two page
-// fit (#2893). None of these is applied as measured: each is thinned to the share of
+// Low's whole tier fit is rendered there too, from Low's own file, beside its page scoped
+// fit (#2893), which equals it while every Low page is carried (#2870). None of these is applied as measured: each is thinned to the share of
 // its tier Slate carries (`src/lib/monitor/carried-share.ts`).
 
 /** Low's committed measurement, the file the command has always written. */
@@ -346,8 +345,8 @@ export function measureTargetFor(raw: string | undefined): { ok: true; target: M
 
 /**
  * A tier as a floor scope: every form it booked through, which is the whole tier.
- * Low has one too since #2893, fitted from the same file as its two page fit, so that
- * Slate carrying more of Low than those two pages has a measurement to thin.
+ * Low has one too since #2893, fitted from the same file as its page scoped fit, so
+ * the share of Low Slate carries always has a whole tier measurement to thin.
  */
 export function wholeTierScope(fixture: VolumeFixture): FloorScope {
   if (!isVolumeTier(fixture.tier)) throw new Error(`volume floors: the measurement counts ${fixture.tier}, which is not a debt tier`);
