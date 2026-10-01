@@ -52,11 +52,21 @@
 //   CALCOM_API_KEY   required
 //   CALCOM_ORG_ID    default 19474
 //   MEASURE_DAYS     how far back to read (default 63, nine whole weeks)
+//   MEASURE_END      where the span ends, an instant with its zone (default now). Since
+//                    the 50/50 split on every tier (2026-10-01 15:46 UTC) a span ending
+//                    later counts about half of each tier, so pin it before the split.
 //   MEASURE_ZONE     the zone weekday and hour are judged in (default America/New_York)
 //   MEASURE_PACE_MS  pacing between pages (default 550, measured in #2240)
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { loadEnvFiles, envOr } from "./smoke-env.ts";
-import { PACE_REFUSAL, calcomGetter, paceMsOrNull, readRoutingResponses, tierOf } from "./lib/calcom-routing-responses.ts";
+import {
+  PACE_REFUSAL,
+  calcomGetter,
+  measureEndOrRefusal,
+  paceMsOrNull,
+  readRoutingResponses,
+  tierOf,
+} from "./lib/calcom-routing-responses.ts";
 import {
   FLOOR_SCOPE,
   TIER_BASELINES_PATH,
@@ -234,11 +244,16 @@ if (PACE_MS === null) {
   console.error(PACE_REFUSAL);
   process.exit(1);
 }
+const END = measureEndOrRefusal(process.env.MEASURE_END ?? "", Date.now());
+if (!END.ok) {
+  console.error(END.refusal);
+  process.exit(1);
+}
 
 const calGet = calcomGetter(KEY);
 
 const per = SERIES_BUCKET_MINUTES * 60_000;
-const endMs = Math.floor(Date.now() / per) * per;
+const endMs = Math.floor(END.endMs / per) * per;
 const startMs = endMs - DAYS * 86_400_000;
 const read = await readRoutingResponses({
   get: calGet,

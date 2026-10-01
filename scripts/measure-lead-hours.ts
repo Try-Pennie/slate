@@ -30,9 +30,14 @@
 //   CALCOM_ORG_ID    default 19474
 //   MEASURE_DAYS     how far back to read (default 14)
 //   MEASURE_PACE_MS  pacing between pages (default 550, measured in #2240)
+//   MEASURE_END      where the span ends, an instant with its zone (default now). Since
+//                    the 50/50 split on every tier (2026-10-01 15:46 UTC) a span ending
+//                    later counts about half of every tier, so pin it before the split.
+//   ENV_FILE         an extra env file, so an agent worktree can read the main
+//                    checkout's .env.local without the key passing through a command line
 import { loadEnvFiles, envOr } from "./smoke-env.ts";
 
-loadEnvFiles([".env.local", ".dev.vars"]);
+loadEnvFiles([".env.local", ".dev.vars", ...(process.env.ENV_FILE ? [process.env.ENV_FILE] : [])]);
 
 const KEY = process.env.CALCOM_API_KEY?.trim() ?? "";
 if (!KEY) {
@@ -40,7 +45,7 @@ if (!KEY) {
   process.exit(1);
 }
 
-const { PACE_REFUSAL, calcomGetter, paceMsOrNull, readRoutingResponses } = await import("./lib/calcom-routing-responses.ts");
+const { PACE_REFUSAL, calcomGetter, measureEndOrRefusal, paceMsOrNull, readRoutingResponses } = await import("./lib/calcom-routing-responses.ts");
 
 const ORG = envOr(process.env.CALCOM_ORG_ID, "19474");
 const DAYS = Number(envOr(process.env.MEASURE_DAYS, "14"));
@@ -53,6 +58,12 @@ if (!Number.isFinite(DAYS) || DAYS <= 0) {
   console.error("FAILED (bad-input): MEASURE_DAYS must be a positive number");
   process.exit(1);
 }
+const END = measureEndOrRefusal(process.env.MEASURE_END ?? "", Date.now());
+if (!END.ok) {
+  console.error(END.refusal);
+  process.exit(1);
+}
+const END_MS = END.endMs;
 
 const calGet = calcomGetter(KEY);
 
@@ -61,7 +72,7 @@ const calGet = calcomGetter(KEY);
 const read = await readRoutingResponses({
   get: calGet,
   org: ORG,
-  fromIso: new Date(Date.now() - DAYS * 86_400_000).toISOString(),
+  fromIso: new Date(END_MS - DAYS * 86_400_000).toISOString(),
   paceMs: PACE_MS,
   sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
 });
@@ -74,7 +85,12 @@ if (!read.ok) {
   );
   process.exit(2);
 }
-const rows = read.rows;
+// The reader pages up to the present, so a pinned end is applied here: a lead after
+// it is outside the span asked about, and counting it would mix the split back in.
+const rows = read.rows.filter((r) => {
+  const ms = Date.parse(r.createdAt);
+  return !Number.isFinite(ms) || ms < END_MS;
+});
 
 if (rows.length === 0) {
   console.error(`FAILED (nothing-measured): no routing form responses in the last ${DAYS} days`);

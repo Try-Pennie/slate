@@ -21,6 +21,35 @@ export function paceMsOrNull(raw: string): number | null {
   return Number.isFinite(ms) && ms >= 0 ? ms : null;
 }
 
+/**
+ * Where the measured span ends, read from MEASURE_END (#2888, #2494): blank is the
+ * moment of the run. Since the split went to 50/50 on every tier (2026-10-01 15:46
+ * UTC) cal.com takes about half of each tier, so a span ending now measures half
+ * the traffic it claims to and has to be pinned before the split, or scaled.
+ *
+ * Refused by name: anything unreadable, an instant with no zone (local time on the
+ * machine running it would move the end by hours, silently), and an end after the
+ * run, which would read cal.com's future as zero traffic (L50).
+ */
+export function measureEndOrRefusal(
+  raw: string,
+  nowMs: number,
+): { ok: true; endMs: number } | { ok: false; refusal: string } {
+  const text = raw.trim();
+  if (!text) return { ok: true, endMs: nowMs };
+  const refuse = (why: string) => ({
+    ok: false as const,
+    refusal: `FAILED (bad-input): MEASURE_END ${why}, for example 2026-10-01T15:45:00Z; nothing was read`,
+  });
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2})$/.test(text)) {
+    return refuse("must be an instant carrying its zone");
+  }
+  const ms = Date.parse(text);
+  if (!Number.isFinite(ms)) return refuse("must be an instant carrying its zone");
+  if (ms > nowMs) return refuse("must not be later than now");
+  return { ok: true, endMs: ms };
+}
+
 /** The refusal both commands print for an unreadable pace, so it reads the same. */
 export const PACE_REFUSAL = "FAILED (bad-input): MEASURE_PACE_MS must be a number of milliseconds, 0 or more";
 
