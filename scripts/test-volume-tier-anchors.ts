@@ -143,11 +143,13 @@ const fixtures = readTierFixtures();
       `${tierLabel(tier)}'s closed days are distinct and in date order`,
     );
   }
-  // Low's whole tier fit comes from Low's own file, beside its two page fit (#2893).
+  // Low's whole tier fit comes from Low's own file, beside its page scoped fit (#2893).
   eq(fixtures[LOW_TIER], JSON.parse(readFileSync(LOW_FIXTURE_PATH, "utf8")) as VolumeFixture, "Low's whole tier fit is read from Low's own measurement");
   const lowWhole = WHOLE_TIER_MEASUREMENTS[LOW_TIER]!;
   eq(lowWhole.tierShare, null, "and covers the whole of Low");
-  assert(lowWhole.bookings > MEASURED_VOLUME_BASELINE.bookings, `more of it than the two page fit does (${lowWhole.bookings} against ${MEASURED_VOLUME_BASELINE.bookings})`);
+  // #2870: every Low page is on Slate, so the Low fit is the whole tier too, and the
+  // two are the same bookings rather than one a share of the other.
+  eq(lowWhole.bookings, MEASURED_VOLUME_BASELINE.bookings, "the same bookings as the Low fit, now that it covers every Low page");
   eq(lowWhole.measuredOn, MEASURED_VOLUME_BASELINE.measuredOn, "from the same measurement");
   eq(renderTierBaselineModule({}).includes("WHOLE_TIER_MEASUREMENTS: Partial<Record<VolumeTier, VolumeBaseline>> = {\n};"), true, "no measurement renders an empty record, not a missing export");
 }
