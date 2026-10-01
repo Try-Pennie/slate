@@ -3,7 +3,9 @@ import { classifyReminderSendFailure } from "./reminder-rate.ts";
 import type { MimeMessage } from "@/lib/notify/email-mime";
 import { parseStampMs } from "@/lib/date/stamp";
 import { isLeadId, leadIdKey } from "@/lib/salesforce/lead-xbc";
-import { advisorContactCard } from "./advisor-contact-card.ts";
+import { advisorContactCard, type CardPhoto } from "./advisor-contact-card.ts";
+import { cardPhotoUrl, fetchCardPhoto, type PhotoFetcher } from "./advisor-card-photo.ts";
+import { storedPhotoUrl } from "@/lib/stored-photo";
 import { withCallingNumberLine } from "./core.ts";
 import { readWithinDeadline, type ScheduleTimer } from "@/lib/salesforce/lead-calling-number";
 
@@ -60,6 +62,8 @@ export interface DueBooking {
   leadId: string | null;
   /** The invite on the advisor's calendar, which the calling number is written into. */
   gcalEventId: string | null;
+  /** The assigned advisor's user id, whose photo goes on the card; null for none. */
+  agentId: string | null;
 }
 
 export interface ReminderDeps {
@@ -96,7 +100,15 @@ export interface ReminderDeps {
    * is gone. Throws when it cannot be read, so nothing is written blind.
    */
   readInviteDescription(agentEmail: string, eventId: string): Promise<string | null>;
-  /** The timer the calling number deadline runs on; absent means the real clock. */
+  /**
+   * The stored photo URL per advisor id (`users.avatar_url`, null for none), read
+   * ONCE per tick for the advisors whose reminders carry a card. Throws on a refused
+   * read, which the lane answers by sending every card without a photo.
+   */
+  readAdvisorPhotoUrls(userIds: string[]): Promise<Map<string, string | null>>;
+  /** Fetches a photo for the card; the real `fetch` in the route. */
+  fetchPhoto: PhotoFetcher;
+  /** The timer the calling number and photo deadlines run on; absent means the real clock. */
   deadlineTimer?: ScheduleTimer;
   /** A degraded step that is not a lost reminder: logged with its reason, never paged. */
   warn(msg: string, bookingId: string | null, err: unknown): void;
@@ -139,6 +151,15 @@ export interface ReminderRun {
   callingNumberUnread: boolean;
   /** Invites the calling number could not be written into, after the send. */
   inviteRefreshFailed: number;
+  /** Reminders sent with the advisor's photo on the card (Dan, 2026-10-01). */
+  withPhoto: number;
+  /**
+   * Advisors whose photo was wanted for a card and could not be had: the lookup
+   * failed, or the fetch was refused, timed out, too large or not an image. Their
+   * cards went without a photo. An advisor with no photo on file is NOT counted,
+   * since that is a known answer rather than a failed read.
+   */
+  photoUnread: number;
 }
 
 /**
@@ -170,6 +191,8 @@ export async function runBookingReminders(deps: ReminderDeps): Promise<ReminderR
     withCallingNumber: 0,
     callingNumberUnread: false,
     inviteRefreshFailed: 0,
+    withPhoto: 0,
+    photoUnread: 0,
   };
 
   // Judged first, so the one Salesforce read below asks only about the bookings
@@ -237,11 +260,24 @@ export async function runBookingReminders(deps: ReminderDeps): Promise<ReminderR
     );
     if (read) callingNumbers = read;
   }
+  const callingNumberOf = (row: DueBooking): string | null =>
+    row.leadId && isLeadId(row.leadId) ? (callingNumbers.get(leadIdKey(row.leadId)) ?? null) : null;
+
+  // The advisor's photo for the card (Dan, 2026-10-01): one lookup for the tick and
+  // at most ONE fetch per advisor, however many of their leads are reminded, only
+  // for reminders that carry a card. The fetches run together under their own
+  // deadline, so the most the photos add to a tick is one deadline, and every way of
+  // not having one sends the card without it.
+  const photos = await loadCardPhotos(
+    deps,
+    run,
+    sendable.filter((r) => callingNumberOf(r) !== null),
+  );
 
   for (const row of sendable) {
     if (!row.attendeeEmail) continue;
-    const callingNumber =
-      row.leadId && isLeadId(row.leadId) ? (callingNumbers.get(leadIdKey(row.leadId)) ?? null) : null;
+    const callingNumber = callingNumberOf(row);
+    const photo = row.agentId ? (photos.get(row.agentId) ?? null) : null;
 
     if (!(await deps.claim(row.id, row.startsAtIso))) {
       // Another tick got there first. Not a fault, and not worth a word.
@@ -271,17 +307,17 @@ export async function runBookingReminders(deps: ReminderDeps): Promise<ReminderR
         subject: reminderSubject(copy),
         body: reminderBody(copy),
         // The card goes only with the copy that mentions it, and carries the
-        // calling number alone, never the texting line (#1334).
+        // calling number alone, never the texting line (#1334). It is named Pennie,
+        // never the advisor, and carries the advisor's photo when there is one.
         ...(callingNumber
           ? {
-              attachments: [
-                advisorContactCard({ agentName: row.agentName, agentEmail: row.agentEmail, callingNumber }),
-              ],
+              attachments: [advisorContactCard({ agentEmail: row.agentEmail, callingNumber, photo })],
             }
           : {}),
       });
       run.sent += 1;
       if (callingNumber) run.withCallingNumber += 1;
+      if (callingNumber && photo) run.withPhoto += 1;
     } catch (err) {
       // Each lead's reminder is independent work, so one bad address must not cost
       // everybody else theirs (L73).
@@ -326,4 +362,52 @@ export async function runBookingReminders(deps: ReminderDeps): Promise<ReminderR
   }
 
   return run;
+}
+
+/**
+ * The card photo per advisor id, for the rows that will carry a card. Absent from
+ * the map means no photo: none on file, or one that could not be had, which is
+ * counted in `run.photoUnread` and logged with its reason. Never throws.
+ */
+async function loadCardPhotos(
+  deps: ReminderDeps,
+  run: ReminderRun,
+  withCard: DueBooking[],
+): Promise<Map<string, CardPhoto>> {
+  const photos = new Map<string, CardPhoto>();
+  const ids = [...new Set(withCard.map((r) => r.agentId).filter((id): id is string => !!id))];
+  if (ids.length === 0) return photos;
+
+  // The same bound as the calling number read: a database read nobody is watching.
+  const urls = await readWithinDeadline(
+    () => deps.readAdvisorPhotoUrls(ids),
+    REMINDER_CALLING_NUMBER_DEADLINE_MS,
+    (err) => {
+      run.photoUnread += ids.length;
+      deps.warn("advisor photos unread, cards sent without them", null, err);
+    },
+    deps.deadlineTimer,
+  );
+  if (!urls) return photos;
+
+  await Promise.all(
+    ids.map(async (id) => {
+      // The manage page's own judge of whether a row holds a photo, so the card and
+      // the page never disagree about it.
+      const stored = storedPhotoUrl(urls.get(id));
+      const url = stored ? cardPhotoUrl(stored) : null;
+      if (!url) return;
+      const photo = await fetchCardPhoto(
+        url,
+        deps.fetchPhoto,
+        (err) => {
+          run.photoUnread += 1;
+          deps.warn("advisor photo unread, card sent without it", null, err);
+        },
+        deps.deadlineTimer,
+      );
+      if (photo) photos.set(id, photo);
+    }),
+  );
+  return photos;
 }

@@ -106,11 +106,12 @@ export async function GET(req: NextRequest) {
         salesforce_id: string | null;
         external_id: string | null;
         gcal_event_id: string | null;
+        assigned_user_id: string | null;
       }>("bookings due a reminder", (from, to) =>
         db
           .from("bookings")
           .select(
-            "id, starts_at, created_at, reminder_sent_for, status, attendee_email, agent_email, agent_name, timezone, manage_token, salesforce_id, external_id, gcal_event_id, buckets!inner(is_test)",
+            "id, starts_at, created_at, reminder_sent_for, status, attendee_email, agent_email, agent_name, timezone, manage_token, salesforce_id, external_id, gcal_event_id, assigned_user_id, buckets!inner(is_test)",
           )
           .in("status", ["confirmed", "rescheduled"])
           .gt("starts_at", nowIso)
@@ -150,6 +151,9 @@ export async function GET(req: NextRequest) {
             // calling number into.
             leadId: bookingLeadId(r),
             gcalEventId: r.gcal_event_id,
+            // Whose photo goes on the card: the CURRENT assignee, read live like the
+            // manage page's, never stamped on the booking.
+            agentId: r.assigned_user_id,
           }),
         );
     },
@@ -195,6 +199,19 @@ export async function GET(req: NextRequest) {
     // the leads being sent to). It throws on a refusal, and the lane then sends
     // every reminder without a number rather than none.
     readCallingNumbers: (leadIds) => readLeadCallingNumbersLive(leadIds),
+    // The advisors' stored photos, one read for the tick. `users` is roster bounded,
+    // so one page holds every id asked about. A failed read throws, and the lane
+    // then sends every card without a photo, logged and counted.
+    readAdvisorPhotoUrls: async (userIds) => {
+      const rows = unwrap(
+        await db.from("users").select("id, avatar_url").in("id", userIds),
+        "advisor photos for reminder cards",
+      ) as { id: string; avatar_url: string | null }[] | null;
+      return new Map((rows ?? []).map((r) => [r.id, r.avatar_url]));
+    },
+    // Google's user content host serves these with no credential (measured
+    // 2026-10-01), exactly as the manage page's img tag loads them.
+    fetchPhoto: (url, init) => fetch(url, { signal: init.signal }),
     // `sendUpdates=none`: Google syncs the description to the attendee either way,
     // and mailing "your event was updated" for a line we added is noise.
     refreshInvite: (agentEmail, eventId, description) => updateEventDescription(agentEmail, eventId, description),
@@ -226,6 +243,8 @@ export async function GET(req: NextRequest) {
     with_calling_number: run.withCallingNumber,
     calling_number_unread: run.callingNumberUnread,
     invite_refresh_failed: run.inviteRefreshFailed,
+    with_photo: run.withPhoto,
+    photo_unread: run.photoUnread,
   });
 
   /**

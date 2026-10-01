@@ -268,6 +268,11 @@ const booking = (over: Partial<Parameters<typeof reminderDue>[0]> = {}) => ({
     const withNumber = reminderBody({ ...args, callingNumber: "+12197588170" });
     assert(withNumber.includes("(219) 758-8170"), "the calling number is named, formatted for a person to read");
     assert(/contact card/i.test(withNumber), "and the attached contact card is mentioned, so the lead knows to open it");
+    // The card is Pennie's, not the advisor's (Dan, 2026-10-01): a redistributed lead
+    // keeps the calling number and gets a different advisor, so the email must not
+    // call the card "my" card even when the advisor is named.
+    assert(/Our contact card is attached/.test(withNumber), "the card is Pennie's, even when the advisor is named");
+    assert(!/My contact card/.test(withNumber), "and never the advisor's own");
     assert(!/nothing you need to set up/i.test(withNumber), "the old 'nothing to set up' line is gone when there is something to save");
     assert(!DASHES.test(withNumber), "no dashes as punctuation");
     assert(withNumber.includes(args.manageUrl) && withNumber.includes("Jordan Lee"), "the rest of the reminder is unchanged");

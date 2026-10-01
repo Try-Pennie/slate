@@ -228,13 +228,14 @@ export function reminderBody(input: ReminderCopyInput): string {
   // sentence is the manage page's own (`callComesFrom`), and the card it points at
   // is attached by the lane (`advisorContactCard`) only when this branch is taken.
   // An advisor with no real name is never stood in for by their address (#1334
-  // review): the call is "with Pennie", the card is Pennie's, and the email is
-  // signed as the lead's Pennie advisor, which is still who will read a reply.
+  // review): the call is "with Pennie" and the email is signed as the lead's Pennie
+  // advisor, which is still who will read a reply. The card is always Pennie's,
+  // never "my" card, because it is named Pennie for every lead: a redistributed lead
+  // keeps the calling number and gets a different advisor (Dan, 2026-10-01).
   const name = realAdvisorName(input.agentName);
   const from = callComesFrom(input.callingNumber);
-  const card = name ? "My contact card is attached" : "Our contact card is attached";
   const numberLines = from
-    ? [`We will call you on the number you gave us. ${from} ${card}, so one tap adds it.`]
+    ? [`We will call you on the number you gave us. ${from} Our contact card is attached, so one tap adds it.`]
     : ["We will call you on the number you gave us, so there is nothing you need to set up."];
   return [
     `Hi, this is a reminder that your call with ${name ? `${name} at Pennie` : "Pennie"} is ${when}.`,
