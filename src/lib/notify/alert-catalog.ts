@@ -201,6 +201,14 @@ export const ALERT_CATALOG: AlertEntry[] = [
     why: "The roster sync cannot read Twilio, so the Redistribute tag is not being acted on; it stays true until a run reads Twilio successfully, which is the recovery.",
   },
   {
+    key: "departed_sessions_unconverged",
+    kind: "condition",
+    why:
+      "Two roster runs in a row could not bring sign in access in line with the roster (an " +
+      "unreadable or partial account list, a refused ban, or somebody active still locked out); " +
+      "it ends when a run converges cleanly, which is the recovery (#2459).",
+  },
+  {
     key: "twilio_write_failures",
     kind: "condition",
     why: "The roster sync can read Twilio and cannot finish acting on it: a flip, a coverage move or a routing attribute write keeps throwing. It stays true until a run lands them all, which is the recovery.",

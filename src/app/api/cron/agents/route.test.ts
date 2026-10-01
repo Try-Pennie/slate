@@ -82,12 +82,20 @@ vi.mock("@/lib/offboarding/session-convergence", () => ({
     departed: 0,
     alreadyRevoked: 0,
     revoked: 0,
-    failed: 0,
+    revokeFailed: 0,
     deferred: 0,
     unlisted: 0,
-    restoredAfterRace: 0,
+    restored: 0,
+    restoreFailed: 0,
+    foreignBans: 0,
     listingComplete: true,
   })),
+}));
+vi.mock("@/lib/offboarding/session-convergence-alert", () => ({
+  reportSessionConvergence: vi.fn(async () => {}),
+  SESSION_CONVERGENCE_ALERT_KEY: "departed_sessions_unconverged",
+  SESSION_CONVERGENCE_STREAK_WINDOW_S: 10800,
+  SESSION_CONVERGENCE_STREAK_ALERT_AT: 2,
 }));
 
 import { GET } from "./route";

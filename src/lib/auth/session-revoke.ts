@@ -49,7 +49,10 @@ import { supabaseAdmin } from "@/lib/supabase/admin";
  * batch write that never comes through there, so they are banned by
  * `offboarding/session-convergence.ts` (#2459), which runs after the reap on
  * every roster run and bans every departed person Supabase Auth does not already
- * hold as banned. That also retries a ban the single person path failed to make.
+ * hold as banned, and lifts this module's ban from anybody active again. That also
+ * retries a ban or a restore the single person path failed to make. Because that
+ * convergence recognises Slate's ban by its length, a change to
+ * `REVOKE_BAN_DURATION` moves its threshold with it (it is derived, not copied).
  */
 
 /**

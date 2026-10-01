@@ -35,10 +35,14 @@ import {
   twilioOrphanedMarkRecovery,
 } from "@/lib/monitor/cron-alert-copy";
 import { hasUserIdConflicts } from "@/lib/salesforce/user-id-link";
+import { convergeDepartedSessions, type SessionConvergenceResult } from "@/lib/offboarding/session-convergence";
 import {
-  convergeDepartedSessions,
-  type SessionConvergenceResult,
-} from "@/lib/offboarding/session-convergence";
+  reportSessionConvergence,
+  SESSION_CONVERGENCE_ALERT_KEY,
+  SESSION_CONVERGENCE_STREAK_ALERT_AT,
+  SESSION_CONVERGENCE_STREAK_WINDOW_S,
+} from "@/lib/offboarding/session-convergence-alert";
+import { loadMonitorCooldowns } from "@/lib/monitor/settings";
 import { defaultTwilioSyncDeps, syncTwilioRedistribute, type TwilioSyncResult } from "@/lib/twilio/sync";
 import { recordDetectorVerdict } from "@/lib/monitor/verdict-store";
 import {
@@ -153,6 +157,28 @@ export async function runRosterSync(): Promise<RosterSyncOutcome> {
       sessions = { ok: false, reason };
       log.error("agents", { msg: "departed session convergence could not run" }, err);
     }
+    // Fail loud: a listing or a ban that keeps failing pages on the SECOND
+    // unhealthy run in a row (one miss is a blip the next hour usually fixes), and
+    // only a measured healthy run clears it. A backlog the cap left for the next
+    // run is expected and never pages. Never throws.
+    // alert-key: departed_sessions_unconverged
+    // all-clear-proof: scripts/test-session-convergence.ts - "a single unhealthy
+    // run pages nobody / and clears nothing" drives reportSessionConvergence with
+    // an unreadable outcome and asserts resolve is never reached.
+    await reportSessionConvergence(sessions, {
+      recordStreak: () =>
+        recordConsecutiveStreak(
+          SESSION_CONVERGENCE_ALERT_KEY,
+          SESSION_CONVERGENCE_STREAK_WINDOW_S,
+          SESSION_CONVERGENCE_STREAK_ALERT_AT,
+        ),
+      clearStreak: () => clearFailureStreak(SESSION_CONVERGENCE_ALERT_KEY),
+      // alert-key: departed_sessions_unconverged
+      notify: (key, ms, text) => sendThrottledAlert(key, ms, text),
+      // alert-key: departed_sessions_unconverged
+      resolve: (key, text) => resolveAlert(key, text),
+      cooldownMs: async () => (await loadMonitorCooldowns("agents")).departed_sessions_unconverged,
+    });
 
     const org = await ensureDefaultOrg();
 

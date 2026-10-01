@@ -32,10 +32,17 @@ const streak = vi.hoisted(() => ({
 // #2459: the departed session convergence that follows the reap.
 const sessions = vi.hoisted(() => ({
   convergeDepartedSessions: vi.fn(),
+  reportSessionConvergence: vi.fn(async () => {}),
 }));
 
 vi.mock("@/lib/locks", () => locks);
 vi.mock("@/lib/offboarding/session-convergence", () => sessions);
+vi.mock("@/lib/offboarding/session-convergence-alert", () => ({
+  reportSessionConvergence: sessions.reportSessionConvergence,
+  SESSION_CONVERGENCE_ALERT_KEY: "departed_sessions_unconverged",
+  SESSION_CONVERGENCE_STREAK_WINDOW_S: 10800,
+  SESSION_CONVERGENCE_STREAK_ALERT_AT: 2,
+}));
 vi.mock("@/lib/salesforce/sync", () => sync);
 vi.mock("@/lib/provision", () => provision);
 vi.mock("@/lib/schedule", () => schedule);
@@ -82,10 +89,12 @@ const convergedClean = {
   departed: 3,
   alreadyRevoked: 2,
   revoked: 1,
-  failed: 0,
+  revokeFailed: 0,
+  restored: 0,
+  restoreFailed: 0,
+  foreignBans: 0,
   deferred: 0,
   unlisted: 0,
-  restoredAfterRace: 0,
   listingComplete: true,
 };
 
@@ -130,6 +139,12 @@ describe("runRosterSync (#2071)", () => {
       sessions.convergeDepartedSessions.mock.invocationCallOrder[0],
     );
     expect(out.sessions).toEqual({ ok: true, result: convergedClean });
+    // The outcome is REPORTED, so a failure that persists pages rather than only
+    // being logged (fail loud), and a healthy run is what clears it.
+    expect(sessions.reportSessionConvergence).toHaveBeenCalledWith(
+      { ok: true, result: convergedClean },
+      expect.objectContaining({ recordStreak: expect.any(Function), resolve: expect.any(Function) }),
+    );
   });
 
   it("contains a convergence that could not read, and says why (#2459)", async () => {
@@ -139,6 +154,10 @@ describe("runRosterSync (#2071)", () => {
     const out = await runRosterSync();
     if (out.skipped) throw new Error("expected a run");
     expect(out.sessions).toEqual({ ok: false, reason: "could not list auth users: 503" });
+    expect(sessions.reportSessionConvergence).toHaveBeenCalledWith(
+      { ok: false, reason: "could not list auth users: 503" },
+      expect.anything(),
+    );
     expect(schedule.ensureDefaultSchedules).toHaveBeenCalled();
     expect(locks.releaseLock).toHaveBeenCalledWith(AGENTS_LOCK_KEY, "lease");
   });

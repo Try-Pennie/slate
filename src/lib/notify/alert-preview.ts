@@ -104,6 +104,14 @@ const PREVIEW_CROSS_SYSTEM_CAL: CalcomUpcomingBooking = {
 const PREVIEW_CROSS_SYSTEM_URL = `https://slate.trypennie.app/admin/bookings/${PREVIEW_CROSS_SYSTEM_SLATE.id}`;
 
 /** The one pair the real judge finds in these inputs; throws if it finds anything else. */
+/** A convergence result with only the named counts set, for the #2459 preview. */
+function previewConvergence(over: Partial<SessionConvergenceResult>): SessionConvergenceResult {
+  return {
+    departed: 13, alreadyRevoked: 12, revoked: 0, revokeFailed: 0, restored: 0, restoreFailed: 0,
+    foreignBans: 0, deferred: 0, unlisted: 0, listingComplete: true, ...over,
+  };
+}
+
 function previewCrossSystemPair(slate: SlateUpcomingBooking, cal: CalcomUpcomingBooking): CrossSystemPair {
   const pairs = findCrossSystemBookings([slate], [cal], PREVIEW_CROSS_SYSTEM_NOW);
   if (pairs.length !== 1) throw new Error(`cross system preview: the judge found ${pairs.length} pairs, not 1`);
@@ -114,6 +122,11 @@ import {
   formatAwaitingActivationRecovery,
 } from "@/lib/monitor/awaiting-activation";
 import { formatStrandedHiresAlert, formatStrandedHiresRecovery } from "@/lib/monitor/stranded-hires";
+import {
+  formatSessionConvergenceAlert,
+  formatSessionConvergenceRecovery,
+  type SessionConvergenceResult,
+} from "@/lib/offboarding/session-convergence-alert";
 import {
   judgeRegalCallers,
   formatRegalCallAlert,
@@ -3687,6 +3700,16 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
   // #2114: the half AFTER the read. Each count is previewed on its own as well as
   // together, because each one sends a reader somewhere different and the combined
   // message is the only place their ordering can be read.
+  // #2459. Each unhealthy shape reads differently, worst first: somebody active
+  // locked out, then a ban that would not land, then a list that could not be read.
+  { key: "departed_sessions_unconverged", state: "the account list could not be read", channel: "alert",
+    text: formatSessionConvergenceAlert({ ok: false, reason: "could not list auth users: 503 Service Unavailable" }) },
+  { key: "departed_sessions_unconverged", state: "somebody active is locked out", channel: "alert",
+    text: formatSessionConvergenceAlert({ ok: true, result: previewConvergence({ restoreFailed: 1 }) }) },
+  { key: "departed_sessions_unconverged", state: "bans refused and the list partial", channel: "alert",
+    text: formatSessionConvergenceAlert({ ok: true, result: previewConvergence({ revokeFailed: 3, listingComplete: false }) }) },
+  { key: "departed_sessions_unconverged", state: "converging cleanly again", channel: "recovery",
+    text: formatSessionConvergenceRecovery() },
   { key: "twilio_write_failures", state: "a flip keeps throwing", channel: "alert",
     text: twilioWriteFailureAlert({ flips: 2, sweeps: 0, attributes: 0 }) },
   { key: "twilio_write_failures", state: "a coverage move could not be queued", channel: "alert",

@@ -56,6 +56,7 @@ export const ALERT_KEYS = [
   "agents_on_unset_hours",
   "agents_awaiting_activation",
   "agents_stranded_outside_pool",
+  "departed_sessions_unconverged",
   "booking_below_lead_tier",
   "cross_system_booking",
   "regal_call_unroutable",
@@ -224,6 +225,12 @@ export const ALERT_FIELDS: {
     urgency: "alert",
     label: "Agents nothing will ever add to the pool",
     help: "Somebody on the Sales profile has signed in and their calendar syncs, and they are not bookable with no activation pending and nobody on record holding them back. Nothing retries them, so they stay out of every pool until a person acts. It is checked every 5 minutes, and ends when they are made bookable or tagged Redistribute in Twilio.",
+  },
+  {
+    key: "departed_sessions_unconverged",
+    urgency: "alert",
+    label: "Sign in access not following the roster",
+    help: "Every hourly roster run bans everybody who has left from renewing a sign in, and lifts that ban from anybody active again. This fires when two runs in a row could not do it: the account list could not be read or came back partial, a ban was refused, or somebody active is still locked out. A backlog the run leaves for the next hour does not count. It ends when a run completes cleanly.",
   },
   {
     key: "booking_below_lead_tier",
@@ -449,6 +456,11 @@ export const MONITOR_DEFAULTS = {
     // the repair is a person pressing one button on an agent page, which happens
     // inside a working morning, and the state costs leads every hour it stands.
     agents_stranded_outside_pool: 6 * 60 * 60_000,
+    // Sign in access not following the roster (#2459). Six hours, matching the
+    // roster sync's own failure pages: it is judged hourly and only after two
+    // unhealthy runs, so a shorter cooldown could not repeat any sooner, and a
+    // longer one would leave somebody locked out without a reminder all day.
+    departed_sessions_unconverged: 6 * 60 * 60_000,
     // Below the lead's tier (#2593), per booking. Six hours: the repair is a person
     // reassigning one call, and calls are usually booked a day or more ahead, so a
     // reminder inside the same working day is worth its noise while a repeat every
