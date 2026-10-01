@@ -115,6 +115,28 @@ export function advisorWillCall(phone: string | null): string {
 }
 
 /**
+ * The number the call will come FROM (#1334), said the same way on the manage
+ * page, in the invite and in the reminder email (L118).
+ *
+ * Call screening silences a number the lead has never seen, so a lead who books
+ * and then misses the call has usually been screened rather than forgotten. Naming
+ * the number, and saying why it is worth saving, is what lets the call through.
+ *
+ * Null when the number is not known, and every caller then says nothing about it:
+ * a wrong number is worse than none (L75), and "a number we will tell you later"
+ * is a promise nothing keeps. It is the CALLING number only, never the texting
+ * line, which reaches nobody when called and changes often.
+ */
+export function callComesFrom(callingNumber: string | null): string | null {
+  const shown = formatPhoneForDisplay(callingNumber);
+  if (!shown) return null;
+  return `${CALL_COMES_FROM_PREFIX}${shown}. Save it to your contacts so your phone lets it through.`;
+}
+
+/** How the line starts, so an invite already carrying one can find it to replace. */
+export const CALL_COMES_FROM_PREFIX = "The call will come from ";
+
+/**
  * When the call is, spelled the way every other readback of a committed time on
  * this product spells it: with the year (#2205, L118). The manage page was the
  * one surface still leaving it off (#2579), which this closes.

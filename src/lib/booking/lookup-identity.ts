@@ -72,3 +72,14 @@ export function bookingMatchesLookupIds(
     (id) => booking.external_id === id || booking.salesforce_id === id,
   );
 }
+
+/**
+ * The lead a booking belongs to: its first strong id, `salesforce_id` before
+ * `external_id`. An embed booking holds the lead id in `salesforce_id`; an API
+ * booking may carry it in either. Null when neither column holds an id. Whether the
+ * value is really a Salesforce Lead id is the reader's question (`isLeadId`).
+ * Shared by the tier comparison (#2593) and the calling number reads (#1334).
+ */
+export function bookingLeadId(b: Pick<Booking, "salesforce_id" | "external_id">): string | null {
+  return strongIdsOf([b.salesforce_id, b.external_id])[0] ?? null;
+}

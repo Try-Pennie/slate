@@ -35,7 +35,7 @@ const state = vi.hoisted(() => ({
   rateReadError: null as { message: string } | null,
   upserts: [] as Row[],
   sendFailures: [] as (string | null)[],
-  sent: [] as { to: string[]; subject: string }[],
+  sent: [] as { to: string[]; subject: string; body?: string; attachments?: { content: string }[] }[],
 }));
 
 const cron = vi.hoisted(() => ({ isAuthorizedCron: vi.fn(() => true) }));
@@ -115,6 +115,23 @@ vi.mock("@/lib/notify/dispatch", () => dispatch);
 vi.mock("@/lib/notify/email", () => email);
 vi.mock("@/lib/supabase/admin", () => admin);
 vi.mock("@/lib/env", () => ({ appUrl: () => "https://slate.example" }));
+
+// #1334: the calling number read and the invite write, the two new outside calls.
+const callingNumber = vi.hoisted(() => ({
+  readLeadCallingNumbersLive: vi.fn(async (_ids: string[]) => new Map<string, string | null>()),
+}));
+const calendar = vi.hoisted(() => ({
+  updateEventDescription: vi.fn(async (_email: string, _eventId: string, _description: string) => {}),
+  getEventOnPrimary: vi.fn(async (_email: string, _eventId: string) => ({
+    description: "Booked via Pennie. Phone: +12035615295\nReschedule or cancel: https://slate.example/booking/manage/tok-1",
+  }) as { description?: string } | null),
+}));
+// Only the live read is replaced; the deadline helper the lane uses stays real.
+vi.mock("@/lib/salesforce/lead-calling-number", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/salesforce/lead-calling-number")>()),
+  ...callingNumber,
+}));
+vi.mock("@/lib/google/calendar", () => calendar);
 
 import { GET } from "./route";
 import { REMINDER_FAILURE_RATE_KEY } from "@/lib/booking/reminder-rate";
@@ -294,5 +311,66 @@ describe("GET /api/cron/booking-reminders", () => {
       dispatch.sendThrottledAlert.mock.calls.map((c) => c[0]),
     ).not.toContain(REMINDER_FAILURE_RATE_KEY);
     expect(heartbeat.recordHeartbeat).toHaveBeenCalledWith("booking-reminders");
+  });
+
+  // #1334: the wiring for the calling number. The lane's own suite proves the order
+  // and the copy; this proves the worklist carries what the lane needs and the two
+  // outside calls are the real ones.
+  it("names the calling number, attaches the card and writes it into the invite", async () => {
+    callingNumber.readLeadCallingNumbersLive.mockResolvedValueOnce(
+      new Map([["00QUi000010889Z", "+12197588170"]]),
+    );
+    state.pages = [
+      [due(1, { salesforce_id: "00QUi000010889ZMAQ", external_id: null, gcal_event_id: "evt-1" })],
+    ];
+    const res = await GET(req());
+    expect(res.status).toBe(200);
+    for (const s of state.worklistSelects) {
+      expect(s).toContain("salesforce_id");
+      expect(s).toContain("gcal_event_id");
+    }
+    expect(callingNumber.readLeadCallingNumbersLive).toHaveBeenCalledWith(["00QUi000010889ZMAQ"]);
+    expect(state.sent[0]?.body).toContain("(219) 758-8170");
+    expect(state.sent[0]?.attachments?.[0]?.content).toContain("TEL;TYPE=WORK,VOICE:+12197588170");
+    // It read the invite first and changed only the calling number line.
+    expect(calendar.getEventOnPrimary).toHaveBeenCalledWith("jordan@trypennie.com", "evt-1");
+    expect(calendar.updateEventDescription).toHaveBeenCalledWith(
+      "jordan@trypennie.com",
+      "evt-1",
+      expect.stringContaining("(219) 758-8170"),
+    );
+    const written = String(calendar.updateEventDescription.mock.calls[0]?.[2]);
+    expect(written.startsWith("Booked via Pennie. Phone: +12035615295\n")).toBe(true);
+    expect(written.endsWith("Reschedule or cancel: https://slate.example/booking/manage/tok-1")).toBe(true);
+    await expect(res.json()).resolves.toMatchObject({ sent: 1, withCallingNumber: 1, callingNumberUnread: false });
+  });
+
+  // #1334 review: a booking with no advisor name used to fall back to the address,
+  // which then greeted the lead and named the contact card. It never reaches a lead
+  // as a name now.
+  it("never shows the advisor's address as their name when the name is missing", async () => {
+    callingNumber.readLeadCallingNumbersLive.mockResolvedValueOnce(
+      new Map([["00QUi000010889Z", "+12197588170"]]),
+    );
+    state.pages = [[due(1, { agent_name: null, salesforce_id: "00QUi000010889ZMAQ", gcal_event_id: "evt-1" })]];
+    await GET(req());
+    const msg = state.sent[0];
+    expect(msg?.body).not.toContain("jordan@trypennie.com");
+    expect(msg?.body).toContain("your call with Pennie is");
+    const card = msg?.attachments?.[0] as { content: string; filename?: string } | undefined;
+    expect(card?.content).toContain("FN:Pennie\r\n");
+    expect(card?.filename).toBe("Pennie.vcf");
+  });
+
+  it("still sends, without a number, when Salesforce cannot be read", async () => {
+    callingNumber.readLeadCallingNumbersLive.mockRejectedValueOnce(new Error("SF query failed: 503"));
+    state.pages = [[due(1, { salesforce_id: "00QUi000010889ZMAQ", gcal_event_id: "evt-1" })]];
+    const res = await GET(req());
+    expect(res.status).toBe(200);
+    expect(state.sent.length).toBe(1);
+    expect(state.sent[0]?.attachments ?? []).toEqual([]);
+    expect(calendar.updateEventDescription).not.toHaveBeenCalled();
+    expect(dispatch.sendThrottledAlert).not.toHaveBeenCalled();
+    await expect(res.json()).resolves.toMatchObject({ sent: 1, callingNumberUnread: true });
   });
 });

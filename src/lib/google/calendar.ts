@@ -43,6 +43,8 @@ export interface GoogleEvent {
    * as another's; nothing in Slate stores it, and it never leaves this module.
    */
   attendees?: { email?: string; self?: boolean; responseStatus?: string }[];
+  /** The invite's body, read so the reminder lane can edit one line of it (#1334). */
+  description?: string;
 }
 
 export interface Interval {

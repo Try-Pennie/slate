@@ -100,6 +100,13 @@ function makeTierDropDeps(requested = "511", lower = "411"): BookingDeps {
     readLeadXbc: async () => {
       throw new Error("Salesforce is not reachable from this test");
     },
+    // #1334: nor does any correct a lead's number.
+    readCallingNumber: async () => {
+      throw new Error("Salesforce is not reachable from this test");
+    },
+    readEventDescription: async () => {
+      throw new Error("no test here edits an invite's description");
+    },
     resolveBucketByCode: async (code) => {
       if (code === "511" && requested === "511") return { bucket: bucket511, eventType };
       if (code === "411" && lower === "411") return { bucket: bucket411, eventType };

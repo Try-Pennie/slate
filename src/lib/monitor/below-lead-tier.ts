@@ -48,7 +48,7 @@
 import { DEBT_TIER, bucketSpecForXbc } from "@/lib/xbc";
 import { formatSlotDay, formatSlotTime } from "@/lib/booking/slot-label";
 import { isLeadId, leadIdKey } from "@/lib/salesforce/lead-xbc";
-import { strongIdsOf } from "@/lib/booking/lookup-identity";
+import { bookingLeadId } from "@/lib/booking/lookup-identity";
 import type { Criteria } from "@/lib/db/types";
 import type { AlertResolve, ThrottledNotify } from "./alert-deps";
 import { isTestSourceBooking, type BookingOriginFacts } from "./offsite-origin";
@@ -147,10 +147,11 @@ export { isLeadId };
  * booking API to `external_id` (defaulting `salesforce_id` from it), so either
  * column can hold it (`lookup-identity.ts`). The first NON-BLANK one wins, by the
  * same rule the lookup API uses (`strongIdsOf`), so a stored "" in
- * `salesforce_id` cannot hide a real `external_id`.
+ * `salesforce_id` cannot hide a real `external_id`. The rule lives once, in
+ * `bookingLeadId`, which the calling number reads use too (#1334).
  */
 export function leadIdOf(b: Pick<UpcomingBooking, "salesforce_id" | "external_id">): string | null {
-  return strongIdsOf([b.salesforce_id, b.external_id])[0] ?? null;
+  return bookingLeadId(b);
 }
 
 export type UnmeasuredReason =

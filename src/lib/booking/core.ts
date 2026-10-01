@@ -4,6 +4,7 @@ import type {
   BusySource,
 } from "@/lib/db/types";
 import { TEST_MODE_COPY } from "@/lib/booking/booker-copy";
+import { CALL_COMES_FROM_PREFIX, callComesFrom } from "@/lib/booking/manage-copy";
 
 /**
  * Pure, side-effect-free cores of the booking flow, split out from
@@ -702,13 +703,72 @@ export function eventDescription(
    * being opened. The same sentence every other test surface carries, from the
    * one builder, never restated here (L41).
    */
-  opts: { isTest: boolean } = { isTest: false },
+  opts: {
+    isTest: boolean;
+    /**
+     * The number the call will come FROM (#1334), when it is known. It is written
+     * at lead creation plus about a minute, so the booking path does not wait on
+     * it; the reminder lane refreshes the invite once it reads one. Absent or null
+     * says nothing about a number.
+     */
+    callingNumber?: string | null;
+  } = { isTest: false },
 ): string {
-  const lines = ["Booked via Pennie."];
-  if (phone) lines[0] = `Booked via Pennie. Phone: ${phone}`;
-  lines.push(`Reschedule or cancel: ${manageUrl}`);
+  const lines = [bookedLine(phone), `${MANAGE_LINK_PREFIX}${manageUrl}`];
   if (opts.isTest) lines.unshift(TEST_MODE_COPY.line);
+  return withCallingNumberLine(lines.join("\n"), opts.callingNumber ?? null);
+}
+
+const MANAGE_LINK_PREFIX = "Reschedule or cancel: ";
+const BOOKED_PREFIX = "Booked via Pennie.";
+
+/** The first line of a booking's invite: who booked it, and the number to dial. */
+function bookedLine(phone: string | null): string {
+  return phone ? `${BOOKED_PREFIX} Phone: ${phone}` : BOOKED_PREFIX;
+}
+
+/**
+ * An invite description with the lead's phone line set, and NOTHING else changed
+ * (#1334). A phone correction used to rebuild the whole description, which dropped
+ * any line it did not know about: the calling number the reminder lane wrote, and the
+ * reassign explanation (#969). It now edits the one line, so those survive.
+ *
+ * The line is replaced where it stands; an invite that has none (the reassign one)
+ * gets it at the top, below the test line when there is one, which is where
+ * `eventDescription` puts it.
+ */
+export function withPhoneLine(description: string, phone: string | null): string {
+  const lines = description === "" ? [] : description.split("\n");
+  const at = lines.findIndex((l) => l.startsWith(BOOKED_PREFIX));
+  if (at !== -1) {
+    lines[at] = bookedLine(phone);
+    return lines.join("\n");
+  }
+  lines.splice(lines[0] === TEST_MODE_COPY.line ? 1 : 0, 0, bookedLine(phone));
   return lines.join("\n");
+}
+
+/**
+ * An invite description with the calling number line set, and NOTHING else changed
+ * (#1334). The reminder lane writes the number into an invite that may carry text
+ * it did not compose, the reassign explanation (#969) above all, so it edits that
+ * one line rather than rebuilding the description from what it knows.
+ *
+ * Any existing calling number line is removed first, so a changed number replaces
+ * the old one rather than sitting beside it, and applying it twice changes nothing.
+ * The new line goes just above the manage link when there is one, which is where
+ * `eventDescription` puts it, and at the end otherwise. A null or unreadable number
+ * leaves the description exactly as it was: no line is ever removed for want of a
+ * replacement, because a stale number is fixed by a known one, not by silence.
+ */
+export function withCallingNumberLine(description: string, callingNumber: string | null): string {
+  const line = callComesFrom(callingNumber);
+  if (!line) return description;
+  const kept = description === "" ? [] : description.split("\n").filter((l) => !l.startsWith(CALL_COMES_FROM_PREFIX));
+  const at = kept.findIndex((l) => l.startsWith(MANAGE_LINK_PREFIX));
+  if (at === -1) kept.push(line);
+  else kept.splice(at, 0, line);
+  return kept.join("\n");
 }
 
 /**

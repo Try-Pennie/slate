@@ -21,6 +21,8 @@ import {
   deterministicEventId,
   EventGone,
   eventDescription,
+  withCallingNumberLine,
+  withPhoneLine,
   eventSummary,
   idempotencyKeyFor,
   selectAgent,
@@ -42,6 +44,7 @@ import {
   type MatchStrength,
 } from "./person-dedupe.ts";
 import {
+  bookingLeadId,
   bookingMatchesLookupIds,
   lookupStrongIds,
   type LookupIdentity,
@@ -78,6 +81,7 @@ import {
 import { storedFirstName, validateAttendee } from "../attendee.ts";
 import { leadCallingZone, withinLeadCallingWindow } from "./lead-calling-window.ts";
 import { shortErrorReason } from "../notify/error-text.ts";
+import { callingNumberWithinDeadline, type ScheduleTimer } from "../salesforce/lead-calling-number.ts";
 import { log } from "@/lib/log";
 import { readBookingSource } from "./booking-source.ts";
 import type { BookingApiCaller } from "./api-callers.ts";
@@ -801,6 +805,23 @@ export interface BookingDeps {
    * is the misroute the read exists to prevent. See `src/lib/routing/lead-code.ts`.
    */
   readLeadXbc: LeadXbcReader;
+  /**
+   * The number a lead's call will come FROM (#1334), from Salesforce Lead
+   * `AssignedRegalPhone__c`: E.164, or null when not known. THROWS on a refused
+   * read; its callers then say nothing about a number rather than fail the action.
+   */
+  readCallingNumber(leadId: string | null): Promise<string | null>;
+  /**
+   * The timer the calling number deadline runs on. Absent means the real clock;
+   * tests inject one so a hung read is judged without waiting for real (L524).
+   */
+  deadlineTimer?: ScheduleTimer;
+  /**
+   * What an invite's description says NOW ("" when it has none), or null when the
+   * event is gone (#1334). Throws when it cannot be read. Read so a correction can
+   * edit one line rather than rebuild the whole description.
+   */
+  readEventDescription(agentEmail: string, eventId: string): Promise<string | null>;
   /** `preview` = a dry run (#380): route read-only, skipping the #321 shadow-study
    *  log + the unfair-ordering alert so previews don't pollute real-assignment data. */
   /**
@@ -5388,7 +5409,8 @@ export async function updateBookingContact(
 
   const found = await deps.loadBookingContext(token);
   if (!found) return { ok: false, error: MANAGE_PHONE_NOT_FOUND };
-  const { booking, bucket, eventType } = found;
+  // No bucket: the invite is edited in place, so its test line (#2660) stays as written.
+  const { booking, eventType } = found;
   // A call that has happened or been called off has no details left to correct,
   // and offering one would say we had not noticed. The page already hides the
   // control in those states; this is the same rule on the server, because a
@@ -5461,22 +5483,67 @@ export async function updateBookingContact(
   // The invite carries the joined name, never the first name, so a first name that
   // moved on its own leaves it exactly as it is and nothing is sent to rewrite it.
   if (booking.gcal_event_id && booking.agent_email && !contactUnchanged(changed)) {
-    try {
-      await deps.updateEventContact(booking.agent_email, booking.gcal_event_id, {
-        // Each field is sent only when it moved, so the PATCH says exactly what
-        // changed and `sendUpdates` is decided by whether the invitee did.
-        ...(changed.phone
-          ? { description: eventDescription(stored, manageUrl(deps, token), { isTest: bucket.is_test }) }
-          : {}),
-        ...(changed.name ? { summary: eventSummary(eventType.name, nextName ?? null) } : {}),
-        ...(changed.email ? { attendeeEmail: nextEmail ?? undefined, attendeeName: nextName ?? undefined } : {}),
-      });
-    } catch (err) {
-      log.warn("manage-contact", {
-        msg: "invite not refreshed",
-        booking_id: booking.id,
-        reason: shortErrorReason(err),
-      });
+    // #1334: the description is EDITED, never rebuilt. It reads what the invite says
+    // now and changes the phone line, plus the calling number line only when
+    // Salesforce answered with one, so every way of not knowing it (a refusal, a
+    // timeout, an empty field) keeps the line the reminder lane already wrote, and
+    // text this path did not compose (the reassign explanation, #969) survives.
+    // The read is bounded by the manage page's own deadline, through the same
+    // helper, so a slow Salesforce never stalls the lead's own correction.
+    const callingNumber = changed.phone
+      ? await callingNumberWithinDeadline(
+          () => deps.readCallingNumber(bookingLeadId(booking)),
+          (err) =>
+            log.warn("manage-contact", {
+              msg: "calling number unread, invite line left as it was",
+              booking_id: booking.id,
+              reason: shortErrorReason(err),
+            }),
+          deps.deadlineTimer,
+        )
+      : null;
+    // The description read is its OWN step, so it cannot cost the rest of the
+    // correction: a name or email moved with the phone still reaches the invite when
+    // the description cannot be read. An invite that cannot be read (or is gone) has
+    // only its description left as it was, never overwritten blind, and is reported
+    // stale exactly as a failed write is.
+    let description: string | undefined;
+    let descriptionStale = false;
+    if (changed.phone) {
+      try {
+        const current = await deps.readEventDescription(booking.agent_email, booking.gcal_event_id);
+        if (current === null) throw new Error("the invite is gone");
+        description = withCallingNumberLine(withPhoneLine(current, stored), callingNumber);
+      } catch (err) {
+        descriptionStale = true;
+        log.warn("manage-contact", {
+          msg: "invite description unread, left as it was",
+          booking_id: booking.id,
+          reason: shortErrorReason(err),
+        });
+      }
+    }
+    const patch = {
+      // Each field is sent only when it moved, so the PATCH says exactly what
+      // changed and `sendUpdates` is decided by whether the invitee did.
+      ...(description !== undefined ? { description } : {}),
+      ...(changed.name ? { summary: eventSummary(eventType.name, nextName ?? null) } : {}),
+      ...(changed.email ? { attendeeEmail: nextEmail ?? undefined, attendeeName: nextName ?? undefined } : {}),
+    };
+    let patchFailed = false;
+    if (Object.keys(patch).length > 0) {
+      try {
+        await deps.updateEventContact(booking.agent_email, booking.gcal_event_id, patch);
+      } catch (err) {
+        patchFailed = true;
+        log.warn("manage-contact", {
+          msg: "invite not refreshed",
+          booking_id: booking.id,
+          reason: shortErrorReason(err),
+        });
+      }
+    }
+    if (descriptionStale || patchFailed) {
       return {
         ok: true,
         phone: stored,

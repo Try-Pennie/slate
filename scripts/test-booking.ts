@@ -5,6 +5,8 @@ import {
   bookingWindow,
   busyBlockFor,
   eventDescription,
+  withCallingNumberLine,
+  withPhoneLine,
   idempotencyKeyFor,
   selectAgent,
   selectReassignTarget,
@@ -307,6 +309,53 @@ assert(!desc.includes(" - ") && !desc.includes("\u2014"), "lead-facing copy has 
     "a real booking's invite is unchanged",
   );
   assert(!desc.includes(TEST_MODE_COPY.line), "and never carries the test line");
+}
+
+// #1334: the invite names the number the call will come FROM when it is known, so it
+// sits on the lead's phone next to the appointment, and says nothing when it is not.
+{
+  const withFrom = eventDescription("+12035615295", "https://x/m/t", { isTest: false, callingNumber: "+12197588170" });
+  assert(withFrom.includes("(219) 758-8170"), "the calling number is named, formatted for the lead");
+  assert(
+    withFrom.startsWith("Booked via Pennie. Phone: +12035615295\n"),
+    "the advisor's dial line stays first and as stored",
+  );
+  assert(withFrom.endsWith("Reschedule or cancel: https://x/m/t"), "and the manage link is still the last line");
+  assert(
+    eventDescription("+12035615295", "https://x/m/t", { isTest: false, callingNumber: null }) === desc.replace(
+      "https://slate.trypennie.app/booking/manage/tok123",
+      "https://x/m/t",
+    ),
+    "with no calling number the invite is exactly as before",
+  );
+  // ONE rule for where the line goes: the full builder and the one line edit the
+  // reminder lane makes to an existing invite agree.
+  const plain = eventDescription("+12035615295", "https://x/m/t");
+  assert(
+    withCallingNumberLine(plain, "+12197588170") === withFrom,
+    "editing a plain invite gives the same text as building it with the number",
+  );
+  assert(
+    withCallingNumberLine(withFrom, "+12197588170") === withFrom,
+    "applying it twice changes nothing",
+  );
+  assert(withCallingNumberLine(withFrom, null) === withFrom, "an unknown number never removes a line");
+  assert(withCallingNumberLine("", "+12197588170").startsWith("The call will come from"), "an empty description gets the line alone");
+
+  // The phone line is edited in place by the same rule the builder writes it with.
+  assert(
+    withPhoneLine(eventDescription("+12035615295", "https://x/m/t", { isTest: true, callingNumber: "+12197588170" }), "+12155559999") ===
+      eventDescription("+12155559999", "https://x/m/t", { isTest: true, callingNumber: "+12197588170" }),
+    "editing the phone line gives the same text as building with the new phone, test line and calling line kept",
+  );
+  assert(
+    withPhoneLine("Booked via Pennie. Phone: +12035615295\nhttps://x", null) === "Booked via Pennie.\nhttps://x",
+    "a removed phone leaves the plain booked line",
+  );
+  assert(
+    withPhoneLine("Some text nobody here wrote.", "+12155559999") === "Booked via Pennie. Phone: +12155559999\nSome text nobody here wrote.",
+    "an invite with no phone line gets one at the top, and keeps the rest",
+  );
 }
 
 finish();

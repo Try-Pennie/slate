@@ -2,6 +2,19 @@ import { reminderDue, reminderHeld, reminderSubject, reminderBody } from "./remi
 import { classifyReminderSendFailure } from "./reminder-rate.ts";
 import type { MimeMessage } from "@/lib/notify/email-mime";
 import { parseStampMs } from "@/lib/date/stamp";
+import { isLeadId, leadIdKey } from "@/lib/salesforce/lead-xbc";
+import { advisorContactCard } from "./advisor-contact-card.ts";
+import { withCallingNumberLine } from "./core.ts";
+import { readWithinDeadline, type ScheduleTimer } from "@/lib/salesforce/lead-calling-number";
+
+/**
+ * How long the lane waits for the tick's one calling number read (#1334). Longer
+ * than the 2.5s a waiting lead gets, because nobody is watching this and the read
+ * is a token exchange plus a query; far shorter than the five minute cadence and
+ * the shared invocation budget, so a hung Salesforce costs every reminder its
+ * number, never the reminder itself.
+ */
+export const REMINDER_CALLING_NUMBER_DEADLINE_MS = 10_000;
 
 /**
  * The 24 hour reminder lane's orchestration (#2359).
@@ -38,10 +51,15 @@ export interface DueBooking {
   attendeeEmail: string | null;
   /** The advisor's mailbox, which is also the sender. */
   agentEmail: string;
-  agentName: string;
+  /** The advisor's name, or null when the booking holds none (never their address). */
+  agentName: string | null;
   /** The LEAD's timezone, so the time reads as they chose it. */
   timezone: string;
   manageUrl: string;
+  /** The lead's Salesforce id (`bookingLeadId`), or null for a booking with none. */
+  leadId: string | null;
+  /** The invite on the advisor's calendar, which the calling number is written into. */
+  gcalEventId: string | null;
 }
 
 export interface ReminderDeps {
@@ -61,6 +79,27 @@ export interface ReminderDeps {
   send(msg: MimeMessage): Promise<string>;
   /** Fail loud: a reminder that did not go out is not allowed to be silent. */
   alert(text: string): Promise<void>;
+  /**
+   * The calling number per lead (#1334), keyed by `leadIdKey`, from Salesforce
+   * `AssignedRegalPhone__c`. Called ONCE per tick with the leads being sent to.
+   * THROWS on a refused read, which the lane answers by sending every reminder
+   * without a number rather than by sending none.
+   */
+  readCallingNumbers(leadIds: string[]): Promise<Map<string, string | null>>;
+  /**
+   * Rewrite the invite's description on the advisor's calendar, without emailing
+   * the lead about it (Google syncs the content to the attendee either way).
+   */
+  refreshInvite(agentEmail: string, eventId: string, description: string): Promise<void>;
+  /**
+   * The invite's CURRENT description ("" when it has none), or null when the event
+   * is gone. Throws when it cannot be read, so nothing is written blind.
+   */
+  readInviteDescription(agentEmail: string, eventId: string): Promise<string | null>;
+  /** The timer the calling number deadline runs on; absent means the real clock. */
+  deadlineTimer?: ScheduleTimer;
+  /** A degraded step that is not a lost reminder: logged with its reason, never paged. */
+  warn(msg: string, bookingId: string | null, err: unknown): void;
 }
 
 export interface ReminderRun {
@@ -90,6 +129,16 @@ export interface ReminderRun {
    * keyed on one would hold a key per wording (L131).
    */
   byCode: Record<string, number>;
+  /** Reminders sent naming the calling number, with the advisor's card (#1334). */
+  withCallingNumber: number;
+  /**
+   * The tick's calling number read FAILED, so every reminder went without one. Not a
+   * page (no reminder was lost), but said out loud, because "no lead had a number"
+   * and "Salesforce could not be read" are otherwise the same silence (L98).
+   */
+  callingNumberUnread: boolean;
+  /** Invites the calling number could not be written into, after the send. */
+  inviteRefreshFailed: number;
 }
 
 /**
@@ -118,8 +167,14 @@ export async function runBookingReminders(deps: ReminderDeps): Promise<ReminderR
     lost: 0,
     attempted: 0,
     byCode: {},
+    withCallingNumber: 0,
+    callingNumberUnread: false,
+    inviteRefreshFailed: 0,
   };
 
+  // Judged first, so the one Salesforce read below asks only about the bookings
+  // this tick will actually try to send.
+  const sendable: DueBooking[] = [];
   for (const row of rows) {
     // Re-judged here rather than trusted from the query, so the rule has ONE owner
     // and a row that was cancelled or moved since the read is not emailed.
@@ -156,6 +211,37 @@ export async function runBookingReminders(deps: ReminderDeps): Promise<ReminderR
       run.skipped += 1;
       continue;
     }
+    sendable.push(row);
+  }
+
+  // #1334: the number the call will come FROM, read ONCE for the tick. A failed
+  // read sends every reminder without a number rather than holding any back: the
+  // number helps the lead, and the reminder itself is the promise.
+  let callingNumbers = new Map<string, string | null>();
+  const leadIds = [
+    ...new Set(sendable.map((r) => r.leadId).filter((id): id is string => !!id && isLeadId(id))),
+  ];
+  if (leadIds.length > 0) {
+    // Under the lane's own deadline, so a hung Salesforce cannot hold every claim
+    // and send behind it. A refusal and a timeout are the same outcome here, each
+    // logged with its own reason; the flag is what tells "nobody had a number"
+    // apart from "Salesforce could not be read" in the run the caller logs.
+    const read = await readWithinDeadline(
+      () => deps.readCallingNumbers(leadIds),
+      REMINDER_CALLING_NUMBER_DEADLINE_MS,
+      (err) => {
+        run.callingNumberUnread = true;
+        deps.warn("calling numbers unread, reminders sent without one", null, err);
+      },
+      deps.deadlineTimer,
+    );
+    if (read) callingNumbers = read;
+  }
+
+  for (const row of sendable) {
+    if (!row.attendeeEmail) continue;
+    const callingNumber =
+      row.leadId && isLeadId(row.leadId) ? (callingNumbers.get(leadIdKey(row.leadId)) ?? null) : null;
 
     if (!(await deps.claim(row.id, row.startsAtIso))) {
       // Another tick got there first. Not a fault, and not worth a word.
@@ -171,6 +257,7 @@ export async function runBookingReminders(deps: ReminderDeps): Promise<ReminderR
       // The lane's own clock, the same one the due check above was judged against,
       // so "tomorrow" and "is this due" can never disagree about what day it is.
       nowMs,
+      callingNumber,
     };
     // Counted BEFORE the call, so a send that threw is in the denominator of its
     // own failure share rather than only in the numerator.
@@ -183,8 +270,18 @@ export async function runBookingReminders(deps: ReminderDeps): Promise<ReminderR
         to: [row.attendeeEmail],
         subject: reminderSubject(copy),
         body: reminderBody(copy),
+        // The card goes only with the copy that mentions it, and carries the
+        // calling number alone, never the texting line (#1334).
+        ...(callingNumber
+          ? {
+              attachments: [
+                advisorContactCard({ agentName: row.agentName, agentEmail: row.agentEmail, callingNumber }),
+              ],
+            }
+          : {}),
       });
       run.sent += 1;
+      if (callingNumber) run.withCallingNumber += 1;
     } catch (err) {
       // Each lead's reminder is independent work, so one bad address must not cost
       // everybody else theirs (L73).
@@ -202,6 +299,29 @@ export async function runBookingReminders(deps: ReminderDeps): Promise<ReminderR
       // failure is still returned in `run.failed`, which the caller logs and the
       // lane's heartbeat is judged against, so the tick is never silent about it.
       await deps.alert(reminderFailedAlert(row.id, reason)).catch(() => {});
+      continue;
+    }
+
+    // #1334: the invite carries the number too, so it sits on the lead's phone next
+    // to the appointment. AFTER the send, so a calendar fault can never cost the
+    // lead the reminder, and only with a number in hand, so an invite is never
+    // rewritten to say less than it did. Idempotent: a second write of the same
+    // description changes nothing, so a retried tick is harmless.
+    // It reads what the invite says NOW and changes only the calling number line, so
+    // text this lane did not compose (the reassign explanation, #969, on the invite
+    // the owner hand-back creates) survives as it was. A gone event is not written
+    // to, and one that cannot be read is never overwritten blind.
+    if (callingNumber && row.gcalEventId) {
+      try {
+        const current = await deps.readInviteDescription(row.agentEmail, row.gcalEventId);
+        if (current !== null) {
+          const next = withCallingNumberLine(current, callingNumber);
+          if (next !== current) await deps.refreshInvite(row.agentEmail, row.gcalEventId, next);
+        }
+      } catch (err) {
+        run.inviteRefreshFailed += 1;
+        deps.warn("invite not refreshed with the calling number", row.id, err);
+      }
     }
   }
 

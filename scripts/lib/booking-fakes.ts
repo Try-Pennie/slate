@@ -25,7 +25,7 @@ import type {
   OwnerAlertEvent,
   RoutingTrace,
 } from "../../src/lib/db/types.ts";
-import { deterministicEventId, EventGone } from "../../src/lib/booking/core.ts";
+import { deterministicEventId, EventGone, eventDescription } from "../../src/lib/booking/core.ts";
 import type { PersonIdentity, PersonWorld } from "../../src/lib/booking/person-dedupe.ts";
 import { GoogleHttpError } from "../../src/lib/google/http-error.ts";
 import type { OwnerAlertEventBody } from "../../src/lib/booking/owner-alert.ts";
@@ -158,6 +158,16 @@ export interface FakeOpts {
   leadXbc?: Record<string, string | null>;
   /** #2638: the Salesforce read fails, which must refuse rather than route. */
   leadXbcThrows?: boolean;
+  /** #1334: the calling number Salesforce holds for any lead (default none). */
+  callingNumber?: string | null;
+  /** #1334: the calling number read fails. */
+  callingNumberThrows?: boolean;
+  /** #1334: the calling number read never answers; the deadline then fires at once. */
+  callingNumberHangs?: boolean;
+  /** #1334: what the booking's invite says now (null: the event is gone). */
+  inviteDescription?: string | null;
+  /** #1334: the invite cannot be read. */
+  inviteReadThrows?: boolean;
   /**
    * findActiveBookingsForPerson throws, which is what a failed bookings read now
    * does (#1641). The booker path fails CLOSED on it: the second booking is
@@ -311,6 +321,10 @@ export function makeDeps(opts: FakeOpts) {
     insertBooking: [] as Record<string, unknown>[],
     /** #2638: every lead id Salesforce was asked about, and every code resolved. */
     readLeadXbc: [] as string[],
+    /** #1334: every lead the calling number was read for. */
+    readCallingNumber: [] as (string | null)[],
+    /** #1334: deadline timers started and cleared around that read. */
+    deadlineTimers: { set: 0, cleared: 0 },
     resolveBucketByCode: [] as string[],
     deleteEvent: [] as { id: string }[],
     enqueueEventDeletion: [] as { email: string; eventId: string; bookingId: string | null }[],
@@ -531,6 +545,30 @@ export function makeDeps(opts: FakeOpts) {
       if (opts.leadXbcThrows) throw new Error("SF query failed: 503 unavailable");
       const table = opts.leadXbc ?? {};
       return Object.prototype.hasOwnProperty.call(table, leadId) ? table[leadId] : undefined;
+    },
+    readCallingNumber: async (leadId) => {
+      calls.readCallingNumber.push(leadId);
+      if (opts.callingNumberThrows) throw new Error("SF query failed: 503 unavailable");
+      if (opts.callingNumberHangs) return new Promise<string | null>(() => {});
+      return opts.callingNumber ?? null;
+    },
+    readEventDescription: async () => {
+      if (opts.inviteReadThrows) throw new Error("events.get: 503");
+      if (opts.inviteDescription !== undefined) return opts.inviteDescription;
+      // By default the invite says what the booking path wrote for the booking.
+      const b = opts.existing?.booking;
+      return eventDescription(b?.attendee_phone ?? null, `https://slate.test/booking/manage/${b?.manage_token ?? ""}`, {
+        isTest: opts.existing?.bucket.is_test ?? false,
+      });
+    },
+    // The deadline expires at once only for a read that hangs, so no other suite
+    // races a real answer against it; every timer's clear is counted.
+    deadlineTimer: (_ms, fire) => {
+      calls.deadlineTimers.set += 1;
+      if (opts.callingNumberHangs) queueMicrotask(fire);
+      return () => {
+        calls.deadlineTimers.cleared += 1;
+      };
     },
     resolveBucketByCode: async (code) =>
       (calls.resolveBucketByCode.push(code), opts.unknownBucket)

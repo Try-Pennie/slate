@@ -184,6 +184,8 @@ const booking = (over: Partial<Parameters<typeof reminderDue>[0]> = {}) => ({
     startsAtIso: new Date(NOW + 20 * HOUR).toISOString(),
     timezone: "America/New_York",
     manageUrl: "https://slate.trypennie.app/manage/abc",
+    // No calling number known: the copy must then say nothing about one (#1334).
+    callingNumber: null as string | null,
     // The copy is told what "now" is rather than reading the clock (#2497). Both
     // ends of the relationship "tomorrow" describes have to be pinned, or the
     // fixture means a different thing every day and the suite goes red with no
@@ -256,6 +258,38 @@ const booking = (over: Partial<Parameters<typeof reminderDue>[0]> = {}) => ({
     const unreadable = reminderSubject({ ...args, nowMs: NaN });
     assert(!/undefined|NaN|Invalid/.test(unreadable), "an unreadable clock leaks nothing into the subject");
     assert(!/today|tomorrow/i.test(unreadable), "and claims no day it could not work out");
+  }
+
+  // --- the number we will call FROM (#1334) --------------------------------------
+  // Call screening silences a number the lead has never seen. When the calling number
+  // is known the reminder names it and points at the attached card; when it is not,
+  // it says nothing about a number at all, because a wrong number is worse than none.
+  {
+    const withNumber = reminderBody({ ...args, callingNumber: "+12197588170" });
+    assert(withNumber.includes("(219) 758-8170"), "the calling number is named, formatted for a person to read");
+    assert(/contact card/i.test(withNumber), "and the attached contact card is mentioned, so the lead knows to open it");
+    assert(!/nothing you need to set up/i.test(withNumber), "the old 'nothing to set up' line is gone when there is something to save");
+    assert(!DASHES.test(withNumber), "no dashes as punctuation");
+    assert(withNumber.includes(args.manageUrl) && withNumber.includes("Jordan Lee"), "the rest of the reminder is unchanged");
+
+    const without = reminderBody(args);
+    assert(!/\(\d{3}\) \d{3}/.test(without) && !/\+1\d{10}/.test(without), "with no calling number, no number is printed");
+    assert(!/contact card|come from/i.test(without), "and nothing promises a card or a calling number");
+  }
+
+  // --- an advisor with no real name (#1334 review) -------------------------------
+  // The lane used to fall back to the advisor's ADDRESS, which then greeted the lead
+  // with "your call with jordan@trypennie.com" and signed the email with it. An
+  // address is never shown as a name: the copy speaks for Pennie instead.
+  for (const agentName of [null, "", "jordan@trypennie.com"]) {
+    const label = JSON.stringify(agentName);
+    for (const callingNumber of [null, "+12197588170"]) {
+      const body = reminderBody({ ...args, agentName, callingNumber });
+      assert(!body.includes("@"), `${label}: no address appears in the body`);
+      assert(!/null|undefined/.test(body), `${label}: no missing value leaks into it`);
+      assert(/your call with Pennie is/i.test(body), `${label}: the call is with Pennie`);
+      assert(/Your Pennie advisor$/.test(body), `${label}: and it is signed as the lead's Pennie advisor`);
+    }
   }
 }
 

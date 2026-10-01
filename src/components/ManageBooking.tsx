@@ -40,6 +40,7 @@ import {
   RESCHEDULE_COPY,
   PHONE_COPY,
   advisorWillCall,
+  callComesFrom,
   callWhen,
   doneBody,
   doneHeading,
@@ -80,6 +81,13 @@ interface ManageBookingProps {
   attendeePhone: string | null;
   /** Where the fresh invite goes after a reschedule. Null drops that clause. */
   attendeeEmail: string | null;
+  /**
+   * The number the call will come FROM (#1334), read server side from the lead's
+   * Salesforce record. Null when it is not known, and then nothing is said about
+   * it: a wrong number is worse than none (L75). Required, so every surface that
+   * renders this page has to decide.
+   */
+  callingNumber: string | null;
   /** The advisor the call is CURRENTLY with, resolved live server-side (#1338).
    *  Null when unresolvable, and then no name is rendered anywhere: coverage
    *  reassignment and bulk reassign both move a booking, so a stale or borrowed
@@ -160,6 +168,7 @@ export default function ManageBooking({
   durationMin,
   attendeePhone,
   attendeeEmail,
+  callingNumber,
   advisorName,
   advisorPhotoUrl,
   advisorRole,
@@ -513,12 +522,17 @@ export default function ManageBooking({
                     both already here. So the advisor is named in the header and
                     not again below, and the number lives with the control that
                     changes it and nowhere else. */}
-                <dl className="grid grid-cols-[64px_1fr] gap-x-5 gap-y-4 text-sm">
+                {/* #2957: the value column is `minmax(0, 1fr)`, not `1fr`. A bare
+                    `1fr` has a min-content floor, so one unbreakable value (an
+                    email address, the zone picker's natural width) widened the
+                    column past the card on a phone and the card clipped it. Each
+                    value may now shrink, and a long address wraps anywhere. */}
+                <dl className="grid grid-cols-[64px_minmax(0,1fr)] gap-x-5 gap-y-4 text-sm">
                   <dt className="text-fg-muted">{LIVE_COPY.whatLabel}</dt>
-                  <dd className="text-fg">{eventName}</dd>
+                  <dd className="min-w-0 text-fg">{eventName}</dd>
 
                   <dt className="text-fg-muted">{LIVE_COPY.whenLabel}</dt>
-                  <dd className="text-fg">
+                  <dd className="min-w-0 text-fg">
                     <span className="tabular-nums">
                       {callWhen(longDayOf(start), timeOf(start), durationMin)}
                     </span>
@@ -528,8 +542,8 @@ export default function ManageBooking({
                     {/* The zone stays a control rather than a label: a lead
                         reading this on a phone in another state needs to move
                         the whole page into their own time, not just read ours. */}
-                    <span className="mt-2 flex items-center gap-2">
-                      <span className="text-fg-muted">
+                    <span className="mt-2 flex min-w-0 items-center gap-2">
+                      <span className="shrink-0 text-fg-muted">
                         <GlobeIcon />
                       </span>
                       <label htmlFor="manage-tz" className="sr-only">
@@ -540,7 +554,9 @@ export default function ManageBooking({
                         ariaLabel="Timezone"
                         value={timeZone}
                         onChange={setTimeZone}
-                        className="max-w-full"
+                        // Fills what the globe leaves rather than keeping its
+                        // natural width, which overran the card at 390px (#2957).
+                        className="min-w-0 flex-1"
                         options={selectOptions.map((o) => ({ value: o.id, label: o.label }))}
                       />
                     </span>
@@ -549,7 +565,7 @@ export default function ManageBooking({
                   {attendeeEmail && (
                     <>
                       <dt className="text-fg-muted">{LIVE_COPY.youLabel}</dt>
-                      <dd className="text-fg">{attendeeEmail}</dd>
+                      <dd className="min-w-0 text-fg [overflow-wrap:anywhere]">{attendeeEmail}</dd>
                     </>
                   )}
                 </dl>
@@ -828,6 +844,13 @@ export default function ManageBooking({
                         </p>
                       )}
                     </>
+                  )}
+                  {/* #1334: the number the call comes FROM, after the lead's own
+                      number and its control rather than between them, so "Not the
+                      right number?" can only be read as about the lead's number.
+                      Nothing at all when it is not known. */}
+                  {callComesFrom(callingNumber) && (
+                    <p className="mt-3 text-sm text-fg">{callComesFrom(callingNumber)}</p>
                   )}
                   <p className="mt-1 text-sm text-fg-muted">
                     {LIVE_COPY.changeYourPlans}
