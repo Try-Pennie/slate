@@ -2235,7 +2235,10 @@ export async function GET(req: NextRequest) {
                 await db
                   .from("regal_call_outcomes")
                   .select("id", { count: "exact", head: true })
-                  .gte("received_at", sinceIso),
+                  .gte("received_at", sinceIso)
+                  // The same population the received side counts: human calls only.
+                  .eq("is_ai_agent", false)
+                  .not("agent_email", "is", null),
                 "monitor regal call outcome count",
               ),
             // The oldest stored row, so a freshly created table is judged only over

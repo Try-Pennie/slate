@@ -16,10 +16,10 @@
 //   6. disarmed: measure, send nothing, clear nothing.
 import {
   runRegalCallOutcomesCheck,
-  completedCallsFrom,
+  humanCallsFrom,
   formatRegalCallOutcomesAlert,
   formatRegalCallOutcomesRecovery,
-  COMPLETED_CALL_REASONS,
+  HUMAN_CALL_REASONS,
   REGAL_CALL_OUTCOMES_KEY,
   REGAL_OUTCOME_WINDOW_MS,
   REGAL_OUTCOME_MIN_RATIO,
@@ -37,22 +37,25 @@ const NOW = Date.UTC(2026, 9, 2, 16, 0, 0);
 
 eq(REGAL_OUTCOME_WINDOW_MS, 2 * 60 * 60_000, "the window is the last two hours");
 eq(REGAL_OUTCOME_MIN_RATIO, 0.8, "the floor is 80%");
-for (const r of ["body_unreadable", "event_id_unreadable", "not_call_completed"] as const) {
-  assert(
-    !COMPLETED_CALL_REASONS.includes(r),
-    `${r} is not counted as a completed call: no outcome row could ever be written for it`,
-  );
-}
-for (const r of REGAL_CALL_REASONS.filter(
-  (x) => !["body_unreadable", "event_id_unreadable", "not_call_completed"].includes(x),
-)) {
-  assert(COMPLETED_CALL_REASONS.includes(r), `${r} IS a completed call with a readable event id`);
+// Only a call with a human advisor on it is counted (#2950). An unanswered dialer
+// attempt arrives with no talk time and is correctly refused, and an AI call is not
+// the advisor's call, so neither can decide a show and neither may count as missing.
+eq([...HUMAN_CALL_REASONS].sort(), ["candidate", "foreign_domain", "no_slate_user"], "only calls with a human advisor are counted");
+for (const r of REGAL_CALL_REASONS.filter((x) => !["candidate", "foreign_domain", "no_slate_user"].includes(x))) {
+  assert(!HUMAN_CALL_REASONS.includes(r), `${r} is not counted: it has no human advisor on it, or could not be read`);
 }
 eq(
-  completedCallsFrom({ candidate: 10, ai_agent: 600, agent_email_null: 300, not_call_completed: 4, body_unreadable: 2 }),
-  910,
-  "the AI's calls and the dialer's are counted: an outcome is wanted for every completed call",
+  humanCallsFrom({ candidate: 10, foreign_domain: 3, no_slate_user: 2, ai_agent: 600, agent_email_null: 300, not_call_completed: 4 }),
+  15,
+  "the AI's calls and the dialer's unanswered attempts are not counted",
 );
+{
+  // Measured on production 2026-10-01 17:12 to 17:17 UTC: 32 human calls, all stored,
+  // beside 9 unanswered attempts and 1 AI call that are never stored. That is healthy.
+  const h = harness({ counts: { candidate: 32, agent_email_null: 9, ai_agent: 1 }, written: 32 });
+  const r = await h.run();
+  eq(r.status, "healthy", "32 of 32 human calls stored is healthy, whatever the dialer did");
+}
 
 // --- harness ------------------------------------------------------------------------
 
@@ -118,7 +121,7 @@ function harness(opts: {
   return { run, pages, resolved, streakHits: () => streak.hits, streakClears: () => clears, since };
 }
 
-const BUSY = { candidate: 80, ai_agent: 700, agent_email_null: 220 }; // 1,000 completed calls
+const BUSY = { candidate: 700, foreign_domain: 200, no_slate_user: 100, ai_agent: 50, agent_email_null: 300 }; // 1,000 human calls
 
 // --- 2. the page ---------------------------------------------------------------------
 
@@ -234,7 +237,7 @@ assert(!regalCallOutcomesReachedVerdict(null), "a skipped check is NOT a verdict
 
 {
   const page = formatRegalCallOutcomesAlert({ received: 1, written: 0, windowMinutes: 120 });
-  assert(/1 completed call\b/.test(page), "one call reads as one call, not one calls");
+  assert(/1 completed advisor call\b/.test(page), "one call reads as one call, not one calls");
   const ok = formatRegalCallOutcomesRecovery({ received: 1_000, written: 990, windowMinutes: 120 });
   assert(ok.includes("99%"), "the all clear carries its ratio");
 }
