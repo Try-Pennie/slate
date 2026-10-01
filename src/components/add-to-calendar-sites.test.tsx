@@ -201,7 +201,7 @@ describe("the Booker's confirmation (#2165)", () => {
 describe("the manage page (#2165)", () => {
   const manageProps = {
     token: "tok1",
-    rebookHref: "/book?xbc=411",
+    rebookHref: "/booking/manage/tok1/rebook?xbc=411",
     bucketCode: "411",
     rescheduleTimesFrom: "pool" as const,
     startsAt: slotIso,
