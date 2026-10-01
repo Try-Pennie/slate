@@ -281,4 +281,20 @@ const lBucketAgent = parseListQuery(new URLSearchParams("bucket=411&agentEmail=a
 assert(lBucketAgent.ok && lBucketAgent.value.bucketCode === "411" && lBucketAgent.value.agentEmail === "a@x.com",
   "list: bucket + agentEmail parsed");
 
+// #2872: a caller holding only a booking id (a host confirmed page whose success
+// event carried no lead id) used to land in list mode, which ignored the id and
+// answered 200 with the first page of EVERY booking. A page reading the first row
+// would show a stranger's call as the lead's own. The id selects one booking, so
+// without the lead id it is refused by name rather than ignored.
+const lBookingIdOnly = parseListQuery(new URLSearchParams("bookingId=11111111-1111-4111-8111-111111111111"));
+assert(!lBookingIdOnly.ok && lBookingIdOnly.status === 400,
+  "list: bookingId without externalId -> 400, never the whole list");
+assert(!lBookingIdOnly.ok && /bookingId/.test(lBookingIdOnly.error) && /externalId/.test(lBookingIdOnly.error),
+  "list: the refusal names bookingId and the externalId it needs");
+const lBlankBookingId = parseListQuery(new URLSearchParams("bookingId="));
+assert(!lBlankBookingId.ok && lBlankBookingId.status === 400,
+  "list: an empty bookingId key is refused too, since its caller meant one booking");
+// Positive control: the same query without the id is still an ordinary list.
+assert(parseListQuery(new URLSearchParams("status=confirmed")).ok, "list: no bookingId stays a valid list");
+
 finish();

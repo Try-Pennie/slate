@@ -555,6 +555,7 @@ the booking belongs to) in addition to the standard booking fields, including
 | `externalId` is present but blank (`externalId=`) | `VALIDATION` | An empty string is not a valid id — omit the param entirely to use list mode. |
 | `externalId` present **and** list-only filter present (`bucket`, `agentEmail`, `afterStart`, `beforeEnd`, `updatedSince`) | `VALIDATION` | These filter modes are mutually exclusive. |
 | `cursor` is malformed / expired | `VALIDATION` | Re-query from page 1. |
+| `bookingId` present **without** `externalId` | `VALIDATION` | A booking id selects one booking and is honoured only beside the lead id it was booked under (#2872). It used to be ignored, answering with the first page of every booking. |
 
 ---
 
