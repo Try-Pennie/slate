@@ -69,6 +69,10 @@ export const CANCEL_REASONS: ReasonOption[] = [
   // Written only by POST /api/bookings/cancel-duplicate (#2369). Last, and system
   // only, so it is never in a picker: see `systemOnly` above.
   { code: "double_booking", label: "Double booking", systemOnly: true },
+  // Sent by Regal on POST /api/bookings/cancel when a lead opts out of their call by
+  // replying to a Marcia text (#2940). System only for the same reason: a lead must
+  // not be able to record a text opt out from the manage page.
+  { code: "text_opt_out", label: "Opted out by text", systemOnly: true },
 ];
 
 /**

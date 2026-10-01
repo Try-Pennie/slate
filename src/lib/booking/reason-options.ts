@@ -146,8 +146,17 @@ export function resolveReasonOptions(
       continue;
     }
     const offerable = forAction.filter((r) => !isSystemOnlyCode(action, r.code, r.system_only));
+    // A system only code is a fact about the CODE, not about the store (#2940): the
+    // store is written by a migration or by saving the reason editor, so a code added
+    // after the last of those is absent from it, and a machine path naming it would be
+    // refused as "not a valid choice" until somebody happened to save the editor. Only
+    // the full list gains it, so it stays out of every picker either way.
+    const storedCodes = new Set(forAction.map((r) => r.code));
+    const unstoredSystemOnly = CODED_DEFAULTS[action].filter(
+      (o) => o.systemOnly && !storedCodes.has(o.code),
+    );
     out[action] = {
-      all: forAction.map(toOption),
+      all: [...forAction.map(toOption), ...unstoredSystemOnly.map((o) => ({ code: o.code, label: o.label }))],
       active: offerable.filter((r) => r.active).map(toOption),
       selectable: offerable.map(toOption),
     };

@@ -81,8 +81,9 @@ const row = (
   ];
   const res = resolveReasonOptions(rows);
   assert(
-    res.cancel.all.map((o) => o.code).join(",") === "a_code,b_code,retired_code,other",
-    "all: every row for the action, sorted by sort_order (incl. retired)",
+    res.cancel.all.map((o) => o.code).join(",") ===
+      ["a_code", "b_code", "retired_code", "other", ...SYSTEM_ONLY_CODES.cancel].join(","),
+    "all: every row for the action, sorted by sort_order (incl. retired), then the system only codes the store lacks (#2940)",
   );
   assert(
     res.cancel.active.map((o) => o.code).join(",") === "a_code,b_code,other",
@@ -406,6 +407,60 @@ const emptyActions = (): ReasonOptionsFormInput => ({
   assert(written!.system_only === true, "and writes it back system only");
   assert(written!.locked === true, "and locked");
   assert(written!.active === true, "and active, so the machine path can always name it");
+}
+
+// --- text_opt_out (#2940): a lead's text opt out, written only by a machine path ---
+//
+// Regal calls POST /api/bookings/cancel with `reason: "text_opt_out"` when a lead
+// opts out of their call by replying to a Marcia text. Like `double_booking` it must
+// never be offered to a lead or an admin, since a lead picking "opted out by text"
+// from the manage page would record something that did not happen.
+{
+  assert(SYSTEM_ONLY_CODES.cancel.includes("text_opt_out"), "text_opt_out is declared system only");
+  assert(LOCKED_CODES.cancel.includes("text_opt_out"), "and locked, so an admin cannot retire it");
+}
+{
+  // The store as production holds it today: written before this code existed, so it
+  // has no text_opt_out row. The machine path must still validate the code, or the
+  // Regal call answers 400 and the opt out cancels nothing until somebody saves the
+  // reason editor. A system only code is a fact about the code, not about the store,
+  // so it joins the full list whichever way the store was written.
+  const stored: ReasonOptionRow[] = [
+    row("cancel", "no_longer_interested", "No longer interested", 0),
+    row("cancel", "other", "Other", 1, true, true),
+    { action: "cancel", code: "double_booking", label: "Double booking", sort_order: 2, active: true, locked: true, system_only: true },
+  ];
+  const res = resolveReasonOptions(stored);
+  const optOut = res.cancel.all.filter((o) => o.code === "text_opt_out");
+  assert(optOut.length === 1, "a store with no text_opt_out row still validates the code, exactly once");
+  assert(optOut[0]?.label === "Opted out by text", "with its coded label, so history renders it");
+  assert(
+    !res.cancel.active.some((o) => o.code === "text_opt_out") &&
+      !res.cancel.selectable.some((o) => o.code === "text_opt_out"),
+    "and it is never offered or submittable by a person",
+  );
+  assert(
+    res.cancel.all.filter((o) => o.code === "double_booking").length === 1,
+    "a system only code the store DOES hold is not duplicated",
+  );
+  assert(
+    res.cancel.all.slice(0, 3).map((o) => o.code).join(",") === "no_longer_interested,other,double_booking",
+    "the stored rows keep their stored order ahead of the added code",
+  );
+  // Positive control on the other actions: nothing is added where no code is system only.
+  assert(
+    resolveReasonOptions([row("reassign", "coverage", "Coverage", 0)]).reassign.all.length === 1,
+    "an action with no system only code gains nothing",
+  );
+}
+{
+  // A stored row for it wins over the coded label, as for every other code.
+  const res = resolveReasonOptions([
+    row("cancel", "other", "Other", 0, true, true),
+    { action: "cancel", code: "text_opt_out", label: "Opted out (text)", sort_order: 1, active: true, locked: true, system_only: true },
+  ]);
+  const optOut = res.cancel.all.filter((o) => o.code === "text_opt_out");
+  assert(optOut.length === 1 && optOut[0].label === "Opted out (text)", "a stored text_opt_out row is used as stored");
 }
 
 finish();
