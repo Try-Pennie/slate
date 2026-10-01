@@ -6,6 +6,7 @@ import { isLeadId, leadIdKey } from "@/lib/salesforce/lead-xbc";
 import { advisorContactCard, type CardPhoto } from "./advisor-contact-card.ts";
 import { cardPhotoUrl, fetchCardPhoto, type PhotoFetcher } from "./advisor-card-photo.ts";
 import { storedPhotoUrl } from "@/lib/stored-photo";
+import { PENNIE_CARD_LOGO } from "./pennie-card-logo.ts";
 import { withCallingNumberLine } from "./core.ts";
 import { readWithinDeadline, type ScheduleTimer } from "@/lib/salesforce/lead-calling-number";
 
@@ -103,7 +104,7 @@ export interface ReminderDeps {
   /**
    * The stored photo URL per advisor id (`users.avatar_url`, null for none), read
    * ONCE per tick for the advisors whose reminders carry a card. Throws on a refused
-   * read, which the lane answers by sending every card without a photo.
+   * read, which the lane answers by sending every card with the Pennie logo.
    */
   readAdvisorPhotoUrls(userIds: string[]): Promise<Map<string, string | null>>;
   /** Fetches a photo for the card; the real `fetch` in the route. */
@@ -156,10 +157,16 @@ export interface ReminderRun {
   /**
    * Advisors whose photo was wanted for a card and could not be had: the lookup
    * failed, or the fetch was refused, timed out, too large or not an image. Their
-   * cards went without a photo. An advisor with no photo on file is NOT counted,
-   * since that is a known answer rather than a failed read.
+   * cards carried the Pennie logo instead. An advisor with no photo on file is NOT
+   * counted, since that is a known answer rather than a failed read.
    */
   photoUnread: number;
+  /**
+   * Reminders sent with the Pennie logo on the card in place of a photo (#2980): no
+   * advisor id, no photo on file, or one that could not be had. With `withPhoto`
+   * it covers every card, so the two always sum to `withCallingNumber`.
+   */
+  withLogo: number;
 }
 
 /**
@@ -193,6 +200,7 @@ export async function runBookingReminders(deps: ReminderDeps): Promise<ReminderR
     inviteRefreshFailed: 0,
     withPhoto: 0,
     photoUnread: 0,
+    withLogo: 0,
   };
 
   // Judged first, so the one Salesforce read below asks only about the bookings
@@ -267,7 +275,7 @@ export async function runBookingReminders(deps: ReminderDeps): Promise<ReminderR
   // at most ONE fetch per advisor, however many of their leads are reminded, only
   // for reminders that carry a card. The fetches run together under their own
   // deadline, so the most the photos add to a tick is one deadline, and every way of
-  // not having one sends the card without it.
+  // not having one sends the card with the bundled Pennie logo instead (#2980).
   const photos = await loadCardPhotos(
     deps,
     run,
@@ -277,7 +285,7 @@ export async function runBookingReminders(deps: ReminderDeps): Promise<ReminderR
   for (const row of sendable) {
     if (!row.attendeeEmail) continue;
     const callingNumber = callingNumberOf(row);
-    const photo = row.agentId ? (photos.get(row.agentId) ?? null) : null;
+    const advisorPhoto = row.agentId ? (photos.get(row.agentId) ?? null) : null;
 
     if (!(await deps.claim(row.id, row.startsAtIso))) {
       // Another tick got there first. Not a fault, and not worth a word.
@@ -308,16 +316,26 @@ export async function runBookingReminders(deps: ReminderDeps): Promise<ReminderR
         body: reminderBody(copy),
         // The card goes only with the copy that mentions it, and carries the
         // calling number alone, never the texting line (#1334). It is named Pennie,
-        // never the advisor, and carries the advisor's photo when there is one.
+        // never the advisor, and carries the advisor's photo, or the Pennie logo when
+        // there is none (#2980), so a saved contact always has a picture.
         ...(callingNumber
           ? {
-              attachments: [advisorContactCard({ agentEmail: row.agentEmail, callingNumber, photo })],
+              attachments: [
+                advisorContactCard({
+                  agentEmail: row.agentEmail,
+                  callingNumber,
+                  photo: advisorPhoto ?? PENNIE_CARD_LOGO,
+                }),
+              ],
             }
           : {}),
       });
       run.sent += 1;
-      if (callingNumber) run.withCallingNumber += 1;
-      if (callingNumber && photo) run.withPhoto += 1;
+      if (callingNumber) {
+        run.withCallingNumber += 1;
+        if (advisorPhoto) run.withPhoto += 1;
+        else run.withLogo += 1;
+      }
     } catch (err) {
       // Each lead's reminder is independent work, so one bad address must not cost
       // everybody else theirs (L73).
@@ -384,7 +402,7 @@ async function loadCardPhotos(
     REMINDER_CALLING_NUMBER_DEADLINE_MS,
     (err) => {
       run.photoUnread += ids.length;
-      deps.warn("advisor photos unread, cards sent without them", null, err);
+      deps.warn("advisor photos unread, cards sent with the Pennie logo", null, err);
     },
     deps.deadlineTimer,
   );
@@ -402,7 +420,7 @@ async function loadCardPhotos(
         deps.fetchPhoto,
         (err) => {
           run.photoUnread += 1;
-          deps.warn("advisor photo unread, card sent without it", null, err);
+          deps.warn("advisor photo unread, card sent with the Pennie logo", null, err);
         },
         deps.deadlineTimer,
       );

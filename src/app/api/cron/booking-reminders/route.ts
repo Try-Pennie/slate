@@ -201,7 +201,7 @@ export async function GET(req: NextRequest) {
     readCallingNumbers: (leadIds) => readLeadCallingNumbersLive(leadIds),
     // The advisors' stored photos, one read for the tick. `users` is roster bounded,
     // so one page holds every id asked about. A failed read throws, and the lane
-    // then sends every card without a photo, logged and counted.
+    // then sends every card with the Pennie logo, logged and counted.
     readAdvisorPhotoUrls: async (userIds) => {
       const rows = unwrap(
         await db.from("users").select("id, avatar_url").in("id", userIds),
@@ -245,6 +245,7 @@ export async function GET(req: NextRequest) {
     invite_refresh_failed: run.inviteRefreshFailed,
     with_photo: run.withPhoto,
     photo_unread: run.photoUnread,
+    with_logo: run.withLogo,
   });
 
   /**
