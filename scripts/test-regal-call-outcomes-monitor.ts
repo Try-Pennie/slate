@@ -295,4 +295,49 @@ assert(!regalCallOutcomesReachedVerdict(null), "a skipped check is NOT a verdict
   eq(h.pages.length, 0, "and pages nothing");
 }
 
+// --- a page that could not be sent says so ---------------------------------------------
+{
+  // The second short check decides to page, and the Slack send then fails. The result
+  // must not report a page that never went out (L12).
+  const failing = await runRegalCallOutcomesCheck({
+    loadReasonCounts: async () => BUSY,
+    countOutcomes: async () => 100,
+    firstOutcomeAtMs: async () => NOW - 30 * 24 * 60 * 60_000,
+    streak: async () => true,
+    clearStreak: async () => {},
+    armed: true,
+    notify: async () => {
+      throw new Error("slack down");
+    },
+    resolve: async () => true,
+    cooldownMs: 60 * 60_000,
+    nowMs: NOW,
+  });
+  eq(failing.status === "short" ? failing.paged : null, false, "a page whose send failed reports paged false");
+  assert(
+    failing.status === "short" && failing.pageError === "slack down",
+    "and carries why it failed, for the tick log",
+  );
+}
+
+{
+  // A healthy ratio whose all clear fails to send says so rather than reading as cleared.
+  const r = await runRegalCallOutcomesCheck({
+    loadReasonCounts: async () => BUSY,
+    countOutcomes: async () => 990,
+    firstOutcomeAtMs: async () => NOW - 30 * 24 * 60 * 60_000,
+    streak: async () => false,
+    clearStreak: async () => {},
+    armed: true,
+    notify: async () => {},
+    resolve: async () => {
+      throw new Error("slack down");
+    },
+    cooldownMs: 60 * 60_000,
+    nowMs: NOW,
+  });
+  eq(r.status, "healthy", "the ratio is still healthy");
+  assert(r.status === "healthy" && r.resolveError === "slack down", "and the failed all clear is carried for the tick log");
+}
+
 finish();
