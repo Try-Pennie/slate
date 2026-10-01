@@ -2326,19 +2326,19 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     key: "regal_call_outcomes_short",
     state: "outcomes stopped being stored",
     channel: "alert",
-    text: formatRegalCallOutcomesAlert({ received: 1040, written: 612 }),
+    text: formatRegalCallOutcomesAlert({ received: 1040, written: 612, windowMinutes: 120 }),
   },
   {
     key: "regal_call_outcomes_short",
     state: "not one outcome stored",
     channel: "alert",
-    text: formatRegalCallOutcomesAlert({ received: 25, written: 0 }),
+    text: formatRegalCallOutcomesAlert({ received: 25, written: 0, windowMinutes: 15 }),
   },
   {
     key: "regal_call_outcomes_short",
     state: "outcomes stored again",
     channel: "recovery",
-    text: formatRegalCallOutcomesRecovery({ received: 1040, written: 1031 }),
+    text: formatRegalCallOutcomesRecovery({ received: 1040, written: 1031, windowMinutes: 120 }),
   },
   {
     // The fixture is the real 2026-09-07 sweep: 21 of 102 agents drifted in the five

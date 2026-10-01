@@ -233,9 +233,9 @@ assert(!regalCallOutcomesReachedVerdict(null), "a skipped check is NOT a verdict
 // --- the copy ---------------------------------------------------------------------------
 
 {
-  const page = formatRegalCallOutcomesAlert({ received: 1, written: 0 });
+  const page = formatRegalCallOutcomesAlert({ received: 1, written: 0, windowMinutes: 120 });
   assert(/1 completed call\b/.test(page), "one call reads as one call, not one calls");
-  const ok = formatRegalCallOutcomesRecovery({ received: 1_000, written: 990 });
+  const ok = formatRegalCallOutcomesRecovery({ received: 1_000, written: 990, windowMinutes: 120 });
   assert(ok.includes("99%"), "the all clear carries its ratio");
 }
 
@@ -263,6 +263,15 @@ assert(!regalCallOutcomesReachedVerdict(null), "a skipped check is NOT a verdict
   const r = await h.run();
   eq(h.since, [new Date(NOW - 15 * 60_000).toISOString(), new Date(NOW - 15 * 60_000).toISOString()], "an empty table is judged over the last 15 minutes");
   eq(r.status === "short" ? r.paged : null, true, "and nothing stored while calls arrive still pages on the second check");
+  assert(h.pages.length === 1 && h.pages[0].text.includes("last 15 minutes"), "and the page names the window it judged, not two hours");
+  assert(!h.pages[0].text.includes("two hours"), "never the full window it did not read");
+}
+{
+  // A table 40 minutes old: the page names 40 minutes.
+  const streak = { hits: 1 };
+  const h = harness({ counts: BUSY, written: 100, firstOutcomeAtMs: NOW - 40 * 60_000, streak });
+  await h.run();
+  assert(h.pages.length === 1 && h.pages[0].text.includes("last 40 minutes"), "a young table's page names its own window");
 }
 {
   // The first row lookup failing measures nothing.

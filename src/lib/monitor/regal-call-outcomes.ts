@@ -96,11 +96,18 @@ function percent(written: number, received: number): string {
   return `${Math.min(100, Math.floor((written / received) * 100))}%`;
 }
 
-export function formatRegalCallOutcomesAlert(m: { received: number; written: number }): string {
+/** The window a check read, said the way a person would: "two hours", "40 minutes". */
+function windowPhrase(minutes: number): string {
+  if (minutes === 120) return "two hours";
+  if (minutes % 60 === 0) return `${minutes / 60} ${minutes === 60 ? "hour" : "hours"}`;
+  return `${minutes} ${minutes === 1 ? "minute" : "minutes"}`;
+}
+
+export function formatRegalCallOutcomesAlert(m: { received: number; written: number; windowMinutes: number }): string {
   const calls = `${n(m.received)} completed ${m.received === 1 ? "call" : "calls"}`;
   const stored = m.written === 0 ? `None of the ${calls}` : `Only ${n(m.written)} of the ${calls}`;
   return (
-    `${stored} Regal posted in the last two hours ${m.received === 1 && m.written === 0 ? "was" : "were"} ` +
+    `${stored} Regal posted in the last ${windowPhrase(m.windowMinutes)} ${m.received === 1 && m.written === 0 ? "was" : "were"} ` +
     `stored with their lead and talk time (${percent(m.written, m.received)}), under the 80% floor on two ` +
     `checks running. The show rate in the ` +
     `Slate vs cal.com split is computed from these rows, so every missing one is a call the comparison ` +
@@ -109,10 +116,10 @@ export function formatRegalCallOutcomesAlert(m: { received: number; written: num
   );
 }
 
-export function formatRegalCallOutcomesRecovery(m: { received: number; written: number }): string {
+export function formatRegalCallOutcomesRecovery(m: { received: number; written: number; windowMinutes: number }): string {
   return (
     `Call outcomes are being stored again: ${n(m.written)} of the ${n(m.received)} completed calls Regal ` +
-    `posted in the last two hours (${percent(m.written, m.received)}).`
+    `posted in the last ${windowPhrase(m.windowMinutes)} (${percent(m.written, m.received)}).`
   );
 }
 
@@ -157,6 +164,7 @@ export async function runRegalCallOutcomesCheck(deps: RegalCallOutcomesDeps): Pr
       ? deps.nowMs - REGAL_OUTCOME_EMPTY_WINDOW_MS
       : Math.max(deps.nowMs - REGAL_OUTCOME_WINDOW_MS, firstMs);
   const sinceIso = new Date(startMs).toISOString();
+  const windowMinutes = Math.max(1, Math.round((deps.nowMs - startMs) / 60_000));
   let counts: RegalReasonCounts;
   let written: number;
   try {
@@ -175,7 +183,7 @@ export async function runRegalCallOutcomesCheck(deps: RegalCallOutcomesDeps): Pr
     if (!deps.armed) return { status: "short", received, written, paged: false };
     const persistent = await deps.streak();
     if (persistent) {
-      const text = formatRegalCallOutcomesAlert({ received, written });
+      const text = formatRegalCallOutcomesAlert({ received, written, windowMinutes });
       await deps.notify(REGAL_CALL_OUTCOMES_KEY, deps.cooldownMs, text).catch(() => {});
     }
     return { status: "short", received, written, paged: persistent };
@@ -184,7 +192,7 @@ export async function runRegalCallOutcomesCheck(deps: RegalCallOutcomesDeps): Pr
   // A MEASURED healthy ratio: the only thing that ends the condition.
   if (deps.armed) {
     await deps.clearStreak();
-    const text = formatRegalCallOutcomesRecovery({ received, written });
+    const text = formatRegalCallOutcomesRecovery({ received, written, windowMinutes });
     await deps.resolve(REGAL_CALL_OUTCOMES_KEY, text).catch(() => {});
   }
   return { status: "healthy", received, written };
