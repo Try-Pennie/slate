@@ -255,7 +255,7 @@ node_modules), #853 (audit tests for real git/fs writes under the hook).
 # Applying a database migration
 
 Deploys do **not** apply Supabase migrations. Every schema change is a deliberate
-`supabase db push` **before** the matching PR merges (the CI `migration-drift` job
+`supabase db push` **before** the matching PR merges (the CI drift check in the `static-checks` job
 and the `deploy` job both fail while a committed migration is unapplied, and the
 prod monitor pages if code ships ahead of its schema). Bump
 `SHIPPED_MIGRATION_VERSION` in the same commit, and never apply through the Supabase
