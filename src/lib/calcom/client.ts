@@ -12,7 +12,12 @@ import { CAL_SCHEDULES_API_VERSION, pickDefaultSchedule } from "@/lib/calcom/sch
 import { bookedByTier, readRoutingResponses } from "@/lib/calcom/routing-responses";
 import {
   readCalcomBookingByUid,
+  readCalcomBookingsCreated,
+  readCalcomListedBookingByUid,
   readUpcomingCalcomBookings,
+  type CalcomListingStatus,
+  type CalcomListedRead,
+  type CalcomListedByUidRead,
   type CalcomBookingRead,
   type CalcomGetter,
   type CalcomUpcomingRead,
@@ -498,6 +503,36 @@ export async function calcomUpcomingBookings(afterStartIso: string, deadlineAtMs
     clock: Date.now,
     deadlineAtMs,
   });
+}
+
+/**
+ * Every cal.com booking of one status MADE in `[afterCreatedIso, beforeCreatedIso)`
+ * (#2946), for the pilot comparison. Null when cal.com is not configured here.
+ */
+export async function calcomBookingsCreated(
+  status: CalcomListingStatus,
+  afterCreatedIso: string,
+  beforeCreatedIso: string,
+  deadlineAtMs: number,
+): Promise<CalcomListedRead | null> {
+  if (!calcomConfigured()) return null;
+  return readCalcomBookingsCreated({
+    get: bookingsGet,
+    org: calcomOrgId(),
+    status,
+    afterCreatedIso,
+    beforeCreatedIso,
+    paceMs: BOOKINGS_PACE_MS,
+    sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    clock: Date.now,
+    deadlineAtMs,
+  });
+}
+
+/** One booking by uid in the listed shape (#2946), for a reschedule chain's next link. */
+export async function calcomListedBookingByUid(uid: string, deadlineAtMs: number): Promise<CalcomListedByUidRead | null> {
+  if (!calcomConfigured()) return null;
+  return readCalcomListedBookingByUid({ get: bookingsGet, uid, clock: Date.now, deadlineAtMs });
 }
 
 /** One cal.com booking by uid (#2933), for the all clear. Null when cal.com is not configured. */

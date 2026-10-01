@@ -74,6 +74,7 @@
 // | 13 | the comparison was made and the Slate cross check could not read Slate |
 // | 14 | an export ends exactly on a GA4 row limit, so it was probably cut off; export fewer days per file |
 // | 15 | two exports cover the same day, so its leads would be read twice |
+// | 16 | the export has an xbc column and no pilot tiers are known (PILOT_SPLIT_TIERS, or SlatePilotTiers__c read from Salesforce) |
 //
 // It is deliberately NOT named `test-*.ts`: that glob is the offline unit suite.
 import { readFileSync, readdirSync, statSync } from "node:fs";
@@ -91,6 +92,7 @@ import {
   planFromEnv,
   PILOT_SPLIT_EXIT,
   type SlateCheckInput,
+  type SalesforceTiers,
   type ExportFile,
 } from "./lib/pilot-split.ts";
 
@@ -140,7 +142,27 @@ if (named.length > 0) {
 }
 
 // Judge once without Slate; only a comparison that stands is worth a Slate read.
-const first = judgePilotSplit({ exports: exportFiles, env });
+let first = judgePilotSplit({ exports: exportFiles, env });
+
+// The pilot tiers (#2946): PILOT_SPLIT_TIERS when set, otherwise SlatePilotTiers__c as
+// Salesforce holds it NOW, read only when the judgement asks (an export with an xbc
+// column and no PILOT_SPLIT_TIERS). Salesforce keeps no history of it, so today's value
+// stands for every day in the export; set PILOT_SPLIT_TIERS for an export from before a
+// change. The value is handed to the judgement AS Salesforce's, which validates it and
+// names SlatePilotTiers__c in any refusal, never as a setting the person did not set.
+let salesforceTiers: SalesforceTiers | undefined;
+if (first.needsTiers && ["SF_CLIENT_ID", "SF_CLIENT_SECRET", "SF_INSTANCE_URL"].every((n) => env[n]?.trim())) {
+  try {
+    const { readPilotSettings } = await import("./lib/pilot-settings-read.ts");
+    salesforceTiers = { ok: true, value: (await readPilotSettings()).tiers };
+  } catch (err) {
+    salesforceTiers = { ok: false, message: err instanceof Error ? err.message : String(err) };
+  }
+  first = judgePilotSplit({ exports: exportFiles, env, salesforceTiers });
+  if (salesforceTiers.ok && first.exit !== PILOT_SPLIT_EXIT.tiersUnknown) {
+    console.error(`Pilot tiers from SlatePilotTiers__c as it is now: ${salesforceTiers.value}.`);
+  }
+}
 if (first.exit !== PILOT_SPLIT_EXIT.compared) print(first.lines, first.exit);
 
 async function readSlate(dates: string[]): Promise<SlateCheckInput> {
@@ -213,6 +235,6 @@ async function readOffers(dates: string[]): Promise<PilotOffersRead> {
 }
 
 const slateCheck = await readSlate(first.dates);
-const final = judgePilotSplit({ exports: exportFiles, env, slateCheck });
+const final = judgePilotSplit({ exports: exportFiles, env, slateCheck, salesforceTiers });
 const offers = await readOffers(first.dates);
 print([...final.lines, "", ...pilotOffersReportLines(offers)], final.exit);

@@ -61,7 +61,13 @@ one:
 
 - **An `xbc` column**, the way the setup above builds the export. trypennie sends
   `xbc` with `booking_assignment` (added to Halo-lab-Trypennie/trypennie#517 on
-  2026-09-29). Leads whose XBC does not start with 1 are left out and counted.
+  2026-09-29). Leads whose XBC tier (its first digit) is not one of the pilot
+  tiers are left out and counted. The tiers come from `PILOT_SPLIT_TIERS`
+  (`SlatePilotTiers__c`'s format, `1;2;3;4;5`), or, when that is unset and
+  Salesforce credentials are here, from `SlatePilotTiers__c` as it is NOW (#2946).
+  Salesforce keeps no history of that field, so set `PILOT_SPLIT_TIERS` for an
+  export from before a change. With neither, an export with an `xbc` column exits
+  16 rather than guess Low.
 - **`PILOT_SPLIT_PERCENT`.** A `cal.com` lead whose bucket is UNDER the percentage
   cannot be a pilot lead, so the hash finds those. It cannot find a non Low lead
   whose bucket is over the percentage, so when it finds any at all the command
@@ -169,6 +175,7 @@ code (L98, L11).
 | 13 | the comparison was made and the Slate cross check could not read Slate |
 | 14 | an export ends exactly on a GA4 row limit, so it was probably cut off; export fewer days per file |
 | 15 | two exports cover the same day, so its leads would be read twice |
+| 16 | the export has an `xbc` column and no pilot tiers are known |
 
 ## Where the code lives
 

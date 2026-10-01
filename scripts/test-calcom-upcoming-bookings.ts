@@ -23,6 +23,14 @@ import {
   CALCOM_BOOKINGS_PAGE_TIMEOUT_MS,
   readCalcomBookingByUid,
   readUpcomingCalcomBookings,
+  readCalcomBookingsCreated,
+  readCalcomListedBookingByUid,
+  phoneKey,
+  followRescheduleChains,
+  CALCOM_WINDOW_PAGE_TIMEOUT_MS,
+  type CalcomListedRead,
+  type CalcomListedByUidRead,
+  type CalcomListedBooking,
   type CalcomBookingRead,
   type CalcomUpcomingRead,
 } from "../src/lib/calcom/upcoming-bookings.ts";
@@ -313,6 +321,198 @@ async function byUid(page: Page, over: { budgetMs?: number; stepMs?: number } = 
   const { result, calls } = await byUid({ status: 200, json: { data: raw(1) } }, { budgetMs: 0 });
   eq(result, { ok: false, reason: "deadline", status: 0 }, "no direct read starts after the deadline");
   eq(calls.length, 0, "and nothing is asked");
+}
+
+// --- bookings CREATED in a window, every status (#2946) ----------------------------
+// The pilot comparison reads each status by when a booking was MADE, a day at a
+// time. What it needs on top of the upcoming row: when it was made, its event type,
+// both ends of a reschedule, the host's address, and a phone key for matching.
+{
+  const created = (id: number, over: Record<string, unknown> = {}) =>
+    raw(id, {
+      createdAt: "2026-10-02T15:00:00.000Z",
+      end: "2026-10-02T22:30:00.000Z",
+      eventTypeId: 1314152,
+      attendees: [{ name: "Lead Person", email: "lead@example.test", phoneNumber: "+1 (555) 010-0199" }],
+      ...over,
+    });
+  async function readCreated(pages: Page[], over: { retries?: number; budgetMs?: number } = {}) {
+    const clk = clock();
+    const g = getter(pages, clk);
+    const result: CalcomListedRead = await readCalcomBookingsCreated({
+      get: g.get,
+      org: "19474",
+      status: "past",
+      afterCreatedIso: "2026-10-02T04:00:00.000Z",
+      beforeCreatedIso: "2026-10-03T04:00:00.000Z",
+      paceMs: 0,
+      sleep: noSleep,
+      clock: clk.now,
+      deadlineAtMs: 1_000_000 + (over.budgetMs ?? 600_000),
+      retries: over.retries,
+    });
+    return { result, calls: g.calls };
+  }
+  {
+    const { result, calls } = await readCreated([
+      {
+        status: 200,
+        json: { data: [created(1, { rescheduledToUid: "uid9", status: "cancelled", hosts: [{ email: " Adv@Pennie.test " }] })] },
+      },
+    ]);
+    const url = new URL(`https://x.test${calls[0].path}`);
+    eq(url.searchParams.get("status"), "past", "the status asked for is the one sent");
+    eq(url.searchParams.get("afterCreatedAt"), "2026-10-02T04:00:00.000Z", "bounded below on when it was made");
+    eq(url.searchParams.get("beforeCreatedAt"), "2026-10-03T04:00:00.000Z", "and above");
+    eq(url.searchParams.get("afterStart"), null, "never by start: a cohort is judged on when the booking was made");
+    eq(calls[0].timeoutMs, CALCOM_WINDOW_PAGE_TIMEOUT_MS, "a page may take the measured slow first page, not twenty seconds");
+    assert(result.ok, "one short page is a complete read");
+    if (result.ok) {
+      const row = result.rows[0];
+      eq(row.createdAt, "2026-10-02T15:00:00.000Z", "when it was made is kept");
+      eq(row.eventTypeId, 1314152, "the event type is kept");
+      eq(row.rescheduledToUid, "uid9", "the forward reschedule link is kept");
+      eq(row.rescheduledFromUid, null, "a missing back link reads as null");
+      eq(row.attendeePhone10, "5550100199", "the phone is reduced to its last ten digits");
+      eq(row.hostEmail, "adv@pennie.test", "the host address is trimmed and lower cased");
+    }
+  }
+  {
+    // The phone lives on the attendee on most rows and only in the answers on some.
+    const { result } = await readCreated([
+      {
+        status: 200,
+        json: {
+          data: [
+            created(2, { attendees: [{ email: "x@example.test" }], bookingFieldsResponses: { attendeePhoneNumber: "15550100777" } }),
+            created(3, { attendees: [{ email: "y@example.test", phoneNumber: "12345" }] }),
+          ],
+        },
+      },
+    ]);
+    if (result.ok) {
+      eq(result.rows[0].attendeePhone10, "5550100777", "a phone only in the answers is read from there");
+      eq(result.rows[1].attendeePhone10, null, "a phone too short to be one reads as none, never a partial key");
+    } else assert(false, "both rows read");
+  }
+  {
+    const { result } = await readCreated([{ status: 200, json: { data: [created(4, { createdAt: undefined })] } }]);
+    eq(
+      result,
+      { ok: false, reason: "row-unreadable", status: 200, page: 0 },
+      "a row with no creation time refuses the read: it cannot be placed in a cohort",
+    );
+  }
+  {
+    // Measured: the first page of a past listing answered in 6 s once and 117 s once.
+    const { result, calls } = await readCreated([new Error("timed out"), { status: 200, json: { data: [created(5)] } }]);
+    assert(result.ok, "a first page that throws is tried once more and the read completes");
+    eq(calls.length, 2, "the page was asked twice");
+  }
+  {
+    const { result, calls } = await readCreated([new Error("timed out"), new Error("timed out again")]);
+    eq(result, { ok: false, reason: "unreachable", status: 0, page: 0 }, "two throws on one page refuse the read rather than return nothing");
+    eq(calls.length, 2, "one retry, not a loop");
+  }
+  {
+    const { result, calls } = await readCreated([{ status: 503, json: {} }]);
+    eq(result, { ok: false, reason: "refused", status: 503, page: 0 }, "a page cal.com answered with an error is refused");
+    eq(calls.length, 1, "an answer is not retried");
+  }
+  {
+    const { result } = await readCreated([new Error("timed out")], { budgetMs: 500 });
+    eq(result, { ok: false, reason: "deadline", status: 0, page: 0 }, "a throw past the deadline is the deadline, and not retried");
+  }
+}
+{
+  // The upcoming read keeps its own rule: no retry on a throw.
+  const { result, calls } = await read([new Error("socket hang up"), { status: 200, json: { data: [] } }]);
+  eq(result, { ok: false, reason: "unreachable", status: 0, page: 0 }, "the upcoming read does not retry");
+  eq(calls.length, 1, "it asked once");
+}
+{
+  const clk = clock();
+  const g = getter([{ status: 200, json: { data: raw(7, { createdAt: "2026-10-02T15:00:00.000Z", rescheduledFromUid: "uid6" }) } }], clk);
+  const r = await readCalcomListedBookingByUid({ get: g.get, uid: "uid7", clock: clk.now, deadlineAtMs: 2_000_000 });
+  assert(r.ok && r.row.rescheduledFromUid === "uid6", "one booking by uid reads in the listed shape");
+}
+{
+  // Both by uid reads share one implementation: the listed one maps every refusal the
+  // same way the upcoming one does.
+  const one = async (page: Page, budgetMs = 60_000) => {
+    const clk = clock();
+    const g = getter([page], clk);
+    return readCalcomListedBookingByUid({ get: g.get, uid: "u1", clock: clk.now, deadlineAtMs: 1_000_000 + budgetMs });
+  };
+  eq(await one({ status: 404, json: {} }), { ok: false, reason: "refused", status: 404 }, "listed by uid: a 404 is a refusal");
+  eq(await one({ status: 200, json: { data: [raw(1)] } }), { ok: false, reason: "unreadable", status: 200 }, "listed by uid: a list is unreadable");
+  eq(await one(new Error("down")), { ok: false, reason: "unreachable", status: 0 }, "listed by uid: a throw is unreachable");
+  eq(await one({ status: 200, json: { data: raw(1) } }, 0), { ok: false, reason: "deadline", status: 0 }, "listed by uid: nothing starts after the deadline");
+}
+
+// --- following a reschedule chain to its end (#2946) ----------------------------------
+// The created window listing can lack a chain's later links (a page shifts under a live
+// walk), and a link read by uid can name a further one the listing lacked too.
+{
+  const link = (n: number, to: string | null, from: string | null): CalcomListedBooking =>
+    ({
+      id: n,
+      uid: `r${n}`,
+      start: "2026-10-03T15:00:00.000Z",
+      status: to === null ? "accepted" : "cancelled",
+      host: null,
+      submissionId: null,
+      attendeeEmails: [],
+      createdAt: "2026-10-02T15:00:00.000Z",
+      end: null,
+      eventTypeId: 1314152,
+      rescheduledFromUid: from,
+      rescheduledToUid: to,
+      attendeePhone10: null,
+      hostEmail: null,
+    });
+  const store = new Map<string, CalcomListedByUidRead>([
+    ["r2", { ok: true, row: { ...link(2, "r3", "r1") } }],
+    ["r3", { ok: true, row: { ...link(3, null, "r2") } }],
+  ]);
+  const asked: string[] = [];
+  const fetchOne = async (uid: string): Promise<CalcomListedByUidRead> => {
+    asked.push(uid);
+    return store.get(uid) ?? { ok: false, reason: "refused", status: 404 };
+  };
+  const followed = await followRescheduleChains([{ ...link(1, "r2", null) }], fetchOne);
+  assert(followed.ok, "a chain two links past the listing is followed");
+  if (followed.ok) {
+    eq(followed.rows.map((r) => r.uid).sort(), ["r1", "r2", "r3"], "to its last link, including the one only the fetched link named");
+    eq(followed.notFound, [], "nothing was missing");
+  }
+  eq(asked, ["r2", "r3"], "each missing link is asked for once");
+
+  const gone = await followRescheduleChains([{ ...link(1, "r9", null) }], fetchOne);
+  assert(gone.ok && gone.notFound.length === 1 && gone.notFound[0] === "r9", "a link cal.com does not hold is reported missing, and the chain stays unresolved");
+
+  // Only a 404 means cal.com does not hold the link. A 401, 429 or 500 is a read that
+  // failed, and reading it as "not found" would judge the chain at the wrong start.
+  for (const status of [401, 429, 500]) {
+    const r = await followRescheduleChains([{ ...link(1, "r2", null) }], async () => ({ ok: false, reason: "refused", status }));
+    eq(r, { ok: false, reason: "refused", uid: "r2", status }, `a ${status} refuses the run by uid and status, never an unresolved chain`);
+  }
+  // A link read back under a different uid answers for something else.
+  const swapped = await followRescheduleChains([{ ...link(1, "r2", null) }], async () => ({ ok: true, row: { ...link(7, null, "r1") } }));
+  eq(swapped, { ok: false, reason: "uid-mismatch", uid: "r2", status: 200 }, "a link that comes back under another uid is refused, not re-asked until the bound");
+
+  const down = await followRescheduleChains([{ ...link(1, "r2", null) }], async () => ({ ok: false, reason: "unreachable", status: 0 }));
+  eq(down, { ok: false, reason: "unreachable", uid: "r2", status: 0 }, "a link that could not be read refuses by uid, never a shorter chain");
+
+  // A chain that never ends (each link names a new one) stops at the bound, by name.
+  let n = 100;
+  const endless = await followRescheduleChains([{ ...link(1, "r100", null) }], async (uid) => ({ ok: true, row: { ...link(++n, `r${n + 1}`, null), uid } }), 5);
+  eq(endless.ok, false, "a chain longer than the bound refuses");
+  if (!endless.ok) eq(endless.reason, "too-many-hops", "and says it was too long");
+}
+{
+  eq(phoneKey("(555) 010-0199"), "5550100199", "a ten digit phone is its own key");
+  eq(phoneKey(undefined), null, "no phone, no key");
 }
 
 finish();
