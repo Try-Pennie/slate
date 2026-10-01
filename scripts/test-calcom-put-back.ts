@@ -193,4 +193,38 @@ eq(
   "loader: a refused agent read is unknown, not zero",
 );
 
+// The agent read is chunked by URL budget: PostgREST refuses an in() filter of a few
+// hundred uuids, so 400 waiting agents must arrive as several reads, every one of
+// them counted.
+{
+  const ids = Array.from({ length: 400 }, (_, i) => `00000000-0000-4000-8000-${String(i).padStart(12, "0")}`);
+  const chunkSizes: number[] = [];
+  const db = {
+    from: (table: string) => {
+      let asked: string[] = [];
+      const self: Record<string, unknown> = {};
+      for (const m of ["select", "eq", "gt", "order"]) self[m] = () => self;
+      self.range = (from: number) =>
+        Promise.resolve(
+          from === 0
+            ? { data: ids.map((u, i) => raw(`r${i}`, u, OUTCOME_CALCOM_RETIRED)), error: null }
+            : { data: [], error: null },
+        );
+      self.in = (_col: string, chunk: string[]) => {
+        asked = chunk;
+        chunkSizes.push(chunk.length);
+        return self;
+      };
+      self.is = () => Promise.resolve({ data: asked.map((id) => ({ id })), error: null });
+      void table;
+      return self;
+    },
+  } as unknown as Parameters<typeof loadPutBackBacklog>[0];
+  const n = await loadPutBackBacklog(db, NOW);
+  eq(n, 400, "loader: 400 waiting agents are all counted");
+  assert(chunkSizes.length > 1, `loader: the agent read is split (${chunkSizes.join(", ")})`);
+  assert(chunkSizes.every((c) => c < 400), "loader: no single read carries every id");
+  eq(chunkSizes.reduce((a, b) => a + b, 0), 400, "loader: every agent is asked about exactly once");
+}
+
 finish();
