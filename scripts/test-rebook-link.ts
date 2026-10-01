@@ -13,6 +13,7 @@
 import { readFileSync } from "node:fs";
 import { assert, eq, finish } from "./lib/harness.ts";
 import {
+  REBOOK_COLUMNS,
   loadRebookRow,
   parseRebookRow,
   readBookEntryQuery,
@@ -27,6 +28,7 @@ const TOKEN = "tok_rebook_fixture_0001";
 const DATA = {
   status: "cancelled",
   salesforce_id: "00QUi00000ABCdeMAH",
+  external_id: null,
   attendee_name: "Dana O'Neil",
   attendee_email: "dana+test@example.com",
   attendee_phone: "+12155550100",
@@ -70,6 +72,18 @@ async function main() {
     eq(entry.link.phone, "+12155550100", "phone");
     eq(readBookingSource(entry.prefill).source, "my-offers-result", "the original page's source is recorded again");
     eq(Object.keys(entry.prefill).join(","), "source", "prefill holds the source and nothing else");
+  }
+
+  // --- an API made booking keeps its Lead id (it may sit in external_id) ------
+  {
+    const api = parseRebookRow({ ...DATA, salesforce_id: null, external_id: "00QUi00000APIidMAH" });
+    eq(rebookEntry(api!).externalId, "00QUi00000APIidMAH", "the Lead id from external_id, by the shared bookingLeadId rule");
+    const both = parseRebookRow({ ...DATA, external_id: "00QUi00000APIidMAH" });
+    eq(rebookEntry(both!).externalId, "00QUi00000ABCdeMAH", "salesforce_id still comes first");
+    assert(REBOOK_COLUMNS.includes("external_id"), "the read selects external_id");
+    eq(parseRebookRow({ ...DATA, external_id: 7 }), null, "a non string external_id: unreadable");
+    const { external_id: _omitted, ...withoutExternal } = DATA;
+    eq(parseRebookRow(withoutExternal), null, "a row missing external_id: unreadable (the select changed)");
   }
 
   // --- no Lead id: the details still fill, nothing is invented ----------------

@@ -14,6 +14,7 @@
 
 import { BOOKING_SOURCE_PARAM, PAGE_SOURCES } from "./booking-source.ts";
 import { readWithinDeadline, type ScheduleTimer } from "../read-within-deadline.ts";
+import { bookingLeadId } from "./lookup-identity.ts";
 
 type SP = Readonly<Record<string, string | string[] | undefined>>;
 
@@ -72,12 +73,17 @@ export function rebookHref(b: { bucketCode: string; manageToken: string; theme: 
 
 /** The booking columns a rebook reads, and nothing more: one row by token. */
 export const REBOOK_COLUMNS =
-  "status, salesforce_id, attendee_name, attendee_email, attendee_phone, source, bucket:buckets(code)";
+  "status, salesforce_id, external_id, attendee_name, attendee_email, attendee_phone, source, bucket:buckets(code)";
 
 export interface RebookRow {
   status: string;
   bucketCode: string;
-  salesforceId: string | null;
+  /**
+   * The lead the booking belongs to, by the shared `bookingLeadId` rule:
+   * `salesforce_id` first, then `external_id`, where an API made booking may
+   * carry it. Null when neither holds an id.
+   */
+  leadId: string | null;
   attendeeName: string | null;
   attendeeEmail: string | null;
   attendeePhone: string | null;
@@ -99,12 +105,15 @@ export function parseRebookRow(data: unknown): RebookRow | null {
   const bucket = Array.isArray(d.bucket) ? d.bucket[0] : d.bucket;
   const code = bucket && typeof bucket === "object" ? (bucket as Record<string, unknown>).code : undefined;
   if (typeof d.status !== "string" || typeof code !== "string" || !code) return null;
-  const fields = [d.salesforce_id, d.attendee_name, d.attendee_email, d.attendee_phone, d.source];
+  const fields = [d.salesforce_id, d.external_id, d.attendee_name, d.attendee_email, d.attendee_phone, d.source];
   if (!fields.every(nullableString)) return null;
   return {
     status: d.status,
     bucketCode: code,
-    salesforceId: d.salesforce_id as string | null,
+    leadId: bookingLeadId({
+      salesforce_id: d.salesforce_id as string | null,
+      external_id: d.external_id as string | null,
+    }),
     attendeeName: d.attendee_name as string | null,
     attendeeEmail: d.attendee_email as string | null,
     attendeePhone: d.attendee_phone as string | null,
@@ -184,7 +193,7 @@ export function rebookEntry(row: RebookRow): BookEntryQuery {
   if (row.source && PAGE_SET.has(row.source)) prefill[BOOKING_SOURCE_PARAM] = row.source;
   return {
     requestedCode: row.bucketCode,
-    externalId: row.salesforceId?.trim() || null,
+    externalId: row.leadId?.trim() || null,
     link: {
       name: row.attendeeName?.trim() ?? "",
       email: row.attendeeEmail?.trim() ?? "",

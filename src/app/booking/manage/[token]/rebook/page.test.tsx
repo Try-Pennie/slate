@@ -41,7 +41,7 @@ const TOKEN = "tok_rebook_fixture_0001";
 const ROW = {
   status: "cancelled",
   bucketCode: "100",
-  salesforceId: "00QUi00000ABCdeMAH",
+  leadId: "00QUi00000ABCdeMAH",
   attendeeName: "Dana Lead",
   attendeeEmail: "dana@example.com",
   attendeePhone: "+12155550100",
