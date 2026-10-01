@@ -37,12 +37,13 @@ export const MAX_AGENTS_PER_SYNC_TICK = 100;
  * Touched-bucket refresh bounds (#296). After a backstop tick, the buckets of
  * agents that actually changed are refreshed inline so a MISSED Google push
  * reflects in ~1 min instead of waiting for the recompute lane's freshness
- * window. Both bounded so a burst can't blow the per-invocation subrequest
- * ceiling; overflow falls back to the recompute lane. MAX_TOUCHED_AGENTS caps
- * the agents we resolve buckets for; MAX_TOUCHED_BUCKETS caps the recomputes.
+ * window. MAX_TOUCHED_AGENTS caps the agents we resolve buckets for; the
+ * recomputes themselves are capped in POOLS by `MAX_TOUCHED_POOLS_PER_SWEEP`
+ * (src/lib/availability/slot-cache.ts, #2357), which replaced a cap of twenty
+ * codes that each ran a whole pool compute. Overflow falls back to the recompute
+ * lane.
  */
 export const MAX_TOUCHED_AGENTS = 50;
-export const MAX_TOUCHED_BUCKETS = 20;
 
 export interface SyncAgent {
   userId: string;

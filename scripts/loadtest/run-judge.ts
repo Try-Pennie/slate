@@ -28,7 +28,7 @@ import {
 } from "./confirm-startup.ts";
 import { DIRECT_BOOKING_API_IP_HOURLY_RATE_RULES } from "../../src/lib/rate-limit-core.ts";
 import { burstControlStrength, type BurstDepthReading } from "./burst-target.ts";
-import { REQUEST_CPU_P99_MS } from "./judge-booking-run.ts";
+import { REQUEST_CPU_P99_MS, cronCpuShareText } from "./judge-booking-run.ts";
 import {
   INVOCATIONS_QUERY,
   SCHEDULED_QUERY,
@@ -615,6 +615,11 @@ if (m) {
       ? `- cron ticks in the window: not measured (${platform.unreadableWhy ?? "no reason given"})`
       : `- cron ticks in the window: ${platform.cron.invocations} from the ` +
           `${platform.cronSource === "archive" ? "run's own archived log" : platform.cronSource === "platform" ? "analytics dataset" : "analytics dataset and the archived log, which agree"}` +
+          // The worst tick's share of the kill limit on EVERY run (#2357), so a pass
+          // at 99 percent never reads the same as a pass at 3.
+          (platform.cron.invocations > 0
+            ? `; ${cronCpuShareText(platform.cron.worstCpuMs, cronCpuBudgetMs())}`
+            : "") +
           (platform.cron.unreadableCpu
             ? `, ${platform.cron.unreadableCpu} of them carrying no readable CPU figure`
             : "") +

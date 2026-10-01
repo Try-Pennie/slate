@@ -53,6 +53,15 @@ vi.mock("@/lib/supabase/admin", () => ({
   }),
 }));
 
+// #2357: the sweep's slot refresh is the shared pooled, counted one, not a loop of
+// per code pool computes. Mocked so these cases can see it was asked for.
+const slotCache = vi.hoisted(() => ({
+  recomputeBucketSlotsForToday: vi.fn(async () => {}),
+  getBucketSlotsWithFallback: vi.fn(),
+  refreshPoolsForAgents: vi.fn(async () => ({ refreshed: 1, deferred: 0, failed: 0, debounced: 0 })),
+}));
+vi.mock("@/lib/availability/slot-cache", () => slotCache);
+
 import { reconcileCancelledBusyBlocks } from "./service";
 
 const CANCELLED_BLOCK = { id: "blk1", user_id: "u1", booking_id: "bk1", source: "slate" };
@@ -82,6 +91,18 @@ describe("reconcileCancelledBusyBlocks in-flight guard (#784)", () => {
 
     expect(res.freed).toBe(1);
     expect(deleteBusyBlocksByIds).toHaveBeenCalledWith(["blk1"]);
+    // #2357: one bounded, pooled refresh for the freed agents, never a per code loop.
+    expect(slotCache.refreshPoolsForAgents).toHaveBeenCalledTimes(1);
+    expect(slotCache.refreshPoolsForAgents).toHaveBeenCalledWith(["u1"], "reconcile");
+    expect(slotCache.recomputeBucketSlotsForToday).not.toHaveBeenCalled();
+  });
+
+  it("refreshes nothing when nothing was freed", async () => {
+    state.outbox = [{ booking_id: "bk1" }];
+
+    await reconcileCancelledBusyBlocks(200);
+
+    expect(slotCache.refreshPoolsForAgents).not.toHaveBeenCalled();
   });
 
   it("aborts the tick when the in-flight read fails, rather than freeing on a blind guess", async () => {

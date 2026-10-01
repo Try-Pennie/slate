@@ -18,6 +18,7 @@ import {
 import {
   recomputeBucketSlotsForToday,
   getBucketSlotsWithFallback,
+  refreshPoolsForAgents,
 } from "@/lib/availability/slot-cache";
 import {
   attendeeForLanding,
@@ -29,7 +30,6 @@ import {
 } from "@/lib/booking/known-lead";
 import { loadBusinessHours } from "@/lib/booking/business-hours-load";
 import { recordRoutingDecision } from "@/lib/routing/record";
-import { touchedBucketCodes } from "@/lib/availability/precompute";
 import {
   createEvent,
   createEventOnCalendar,
@@ -128,7 +128,7 @@ import { toE164 } from "@/lib/phone";
 import { escapeLike } from "@/lib/sql-like";
 import { noEligibleAgentsAlert } from "@/lib/availability/bucket-coverage";
 import { emitWebhook, type WebhookSendScheduler } from "@/lib/webhooks/emit";
-import { deferWebhookSend } from "@/lib/after-response";
+import { afterResponse, deferWebhookSend } from "@/lib/after-response";
 import { sendThrottledAlert, resolveRecovered } from "@/lib/notify/dispatch";
 import {
   bookingEventInsertAlert,
@@ -1053,15 +1053,32 @@ export function realDeps(deferSend?: WebhookSendScheduler): BookingDeps {
     // never contain a "|", so it can't collide with a derived contact key.
     newIdempotencyKey: () => `anon_${nanoid(24)}`,
     // A booking changed the bucket's availability: recompute its precomputed
-    // row so the booked slot disappears. Fire-and-forget so the confirm isn't
+    // row so the booked slot disappears. Not awaited, so the confirm isn't
     // blocked on the recompute; the recompute lane's freshness sweep is the
     // backstop if this best-effort call is missed.
+    //
+    // On the USER-FACING paths (the ones that pass `deferSend`), under
+    // afterResponse rather than a floating `void` (#2345). The recompute is a whole
+    // pool compute, seconds of CPU on the load test Worker, and as a float it
+    // STARTED inside the confirm, sharing the isolate's one thread with the work a
+    // lead is waiting on, ran on past the response, and was reported by nothing:
+    // the load run's per job line named only the tally. On Workers a promise still
+    // pending at the response is not guaranteed to run at all (#191, #503). A
+    // failure is logged by afterResponse under the job's own name.
+    //
+    // The cron drains (no `deferSend`) keep the float, as #503 decided: there,
+    // waitUntil would hold the shared minute invocation open for the recompute,
+    // a lane budget regression, and the recompute lane backstops a dropped one.
     invalidateSlots: (bucketCode) => {
-      void recomputeBucketSlotsForToday(bucketCode).catch((err) =>
-        // Best-effort freshness nudge; the recompute lane reconverges this bucket
-        // regardless. Logged so a lane that is failing EVERY time is findable.
-        log.warn("booking", { msg: "post-confirm recompute failed", bucket: bucketCode }, err),
-      );
+      if (deferSend) {
+        afterResponse("post-confirm-recompute", () => recomputeBucketSlotsForToday(bucketCode));
+      } else {
+        void recomputeBucketSlotsForToday(bucketCode).catch((err) =>
+          // Best-effort freshness nudge; the recompute lane reconverges this bucket
+          // regardless. Logged so a lane that is failing EVERY time is findable.
+          log.warn("booking", { msg: "post-confirm recompute failed", bucket: bucketCode }, err),
+        );
+      }
       return Promise.resolve();
     },
     // #504: the routing decision log, injected so the orchestration's calls are
@@ -3000,9 +3017,6 @@ export async function checkCreationOrphans(limit: number) {
 
 const RECONCILE_ALERT_KEY = "reconcile_busy_blocks";
 const RECONCILE_ALERT_COOLDOWN_MS = 30 * 60 * 1000;
-/** Bound the recompute fan-out so one sweep can't blow the subrequest ceiling;
- *  any overflow buckets are caught by the recompute lane's freshness window. */
-const RECONCILE_MAX_TOUCHED_BUCKETS = 25;
 
 /**
  * #428 reconcile sweep: free busy_blocks whose booking is cancelled/missing so a
@@ -3015,24 +3029,12 @@ export async function reconcileCancelledBusyBlocks(limit: number, offset = 0) {
   const res = await orchestration.reconcileCancelledBusyBlocks(realDeps(), limit, offset);
   if (res.freed === 0) return res;
 
-  // Map freed agents -> their buckets, dedupe, bound, recompute today's slots.
-  // One batched lookup for the whole freed set (#762), not one per agent.
-  const touched = await touchedBucketCodes(
-    res.userIds,
-    RECONCILE_MAX_TOUCHED_BUCKETS,
-    "reconcile",
-  );
-  for (const code of touched) {
-    await recomputeBucketSlotsForToday(code, true).catch((err) =>
-      // Best-effort: the recompute lane owns convergence. Logged so a
-      // persistently failing recompute is findable rather than invisible.
-      log.warn("booking", {
-        msg: "reconcile recompute failed",
-        bucket: code,
-        reason: shortErrorReason(err),
-      }),
-    );
-  }
+  // Refresh the freed agents' pools: one batched bucket lookup (#762), then one
+  // compute per POOL, at most MAX_TOUCHED_POOLS_PER_SWEEP of them (#2357). This
+  // used to loop a whole pool compute per CODE, up to 25 with no time bound, which
+  // is what ran this lane to its 180 s on the load test Worker. Never throws and
+  // logs its own outcome; the recompute lane owns convergence of anything left.
+  await refreshPoolsForAgents(res.userIds, "reconcile");
 
   const freedText = reconcileFreedAlert({
     freedCancelled: res.freedCancelled,
@@ -3062,24 +3064,10 @@ export async function reconcileMissingBusyBlocks(limit: number, offset = 0) {
   if (res.recreated === 0) return res;
 
   // A missing block made the agent look free in EVERY bucket they serve, so
-  // recompute all of each affected agent's buckets (deduped + bounded), exactly
-  // as the #428 sweep does for freed agents - not just the booking's own bucket.
-  const touched = await touchedBucketCodes(
-    res.userIds,
-    RECONCILE_MAX_TOUCHED_BUCKETS,
-    "reconcile-missing",
-  );
-  for (const code of touched) {
-    await recomputeBucketSlotsForToday(code, true).catch((err) =>
-      // Best-effort: the recompute lane owns convergence. Logged so a
-      // persistently failing recompute is findable rather than invisible.
-      log.warn("booking", {
-        msg: "reconcile recompute failed",
-        bucket: code,
-        reason: shortErrorReason(err),
-      }),
-    );
-  }
+  // refresh all of each affected agent's pools, exactly as the #428 sweep does for
+  // freed agents, not just the booking's own bucket. Same shared, bounded refresh
+  // (#2357).
+  await refreshPoolsForAgents(res.userIds, "reconcile-missing");
 
   await sendThrottledAlert(
     RECONCILE_MISSING_ALERT_KEY,

@@ -13,11 +13,12 @@ import {
   computeBucketSlotsForWindow,
   bucketsForAgent,
   listPoolBuckets,
+  touchedBucketCodes,
 } from "./precompute";
 import {
   recomputePool,
-  recomputeAgentPools,
-  type AgentPoolsOutcome,
+  recomputeTouchedPools,
+  type TouchedPoolsOutcome,
   type PooledBucket,
 } from "./pool-recompute";
 import { appUrl } from "@/lib/env";
@@ -216,7 +217,7 @@ const lastPoolRecomputeAt = new Map<string, number>();
  */
 export async function recomputeBucketsForAgent(
   userId: string,
-): Promise<AgentPoolsOutcome | null> {
+): Promise<TouchedPoolsOutcome | null> {
   try {
     const deadlineMs = Date.now() + AGENT_RECOMPUTE_BUDGET_MS;
     const [codes, buckets, horizon] = await Promise.all([
@@ -225,12 +226,17 @@ export async function recomputeBucketsForAgent(
       // Loaded once for the whole fan-out, not once per pool.
       loadBookingHorizonDays(),
     ]);
-    const outcome = await recomputeAgentPools(codes, buckets, {
+    const outcome = await recomputeTouchedPools(codes, buckets, {
       nowMs: Date.now,
       deadlineMs,
       recomputePool: (pool) => recomputePoolSlotsForToday(pool, undefined, horizon),
       lastRunAt: lastPoolRecomputeAt,
       skipMs: RECOMPUTE_SKIP_MS,
+      // The push path is bounded by its budget alone, as it was in #2922: it runs
+      // after the response and its deadline is the platform's 30 second cut, which
+      // the I/O in every pool compute keeps the clock advancing towards. One agent
+      // is in at most a handful of pools, so there is no count to hold it to.
+      maxPools: Number.POSITIVE_INFINITY,
     });
     // One line per refresh, so the push path's completed refreshes can be counted
     // against Cloudflare's cancellation warnings (#2922). A cancelled refresh
@@ -243,6 +249,94 @@ export async function recomputeBucketsForAgent(
     log.error("slot-cache", { msg: "recomputeBucketsForAgent failed", user_id: userId }, err);
     return null;
   }
+}
+
+/**
+ * The most pools one every minute sweep may refresh inline (#2357): the sync
+ * lane's post sync refresh, and each self heal reconcile sweep.
+ *
+ * Those three used to recompute up to 20 (sync) and 25 (each reconcile) bucket
+ * CODES one after another, each a whole pool compute, with no time bound at all.
+ * Sixty codes resolve to fifteen pools (#2245), about four codes a pool, so five
+ * pools cover roughly the twenty codes the old cap allowed, for a quarter of the
+ * computes. On the load test Worker, whose stubbed Google answers instantly and so
+ * turns every second of this into CPU, that tail is what took a minute tick to
+ * 119,137 ms of CPU against the 120,000 ms kill (run 34991614423).
+ *
+ * A COUNT rather than only a deadline, because a Worker's clock does not advance
+ * during execution: CPU spent computing reads as no time at all, so a deadline
+ * alone cannot cap a fan-out whose cost is compute. Pools past it are not lost.
+ * The recompute lane refreshes every pool inside its freshness window, which is
+ * what has always caught the overflow past the old code cap.
+ */
+export const MAX_TOUCHED_POOLS_PER_SWEEP = 5;
+
+/**
+ * The wall budget beside that count: no pool is STARTED after it. A pool takes
+ * about four seconds, so five fit, and this catches the tick where they are slower
+ * than that (a database under load) without the count having to be the only bound.
+ */
+export const TOUCHED_POOLS_BUDGET_MS = 20_000;
+
+/**
+ * Refresh the pools a set of bucket codes falls in, for a cron sweep (#2357): one
+ * compute per POOL, at most `maxPools` started, none started past the budget.
+ *
+ * Resolves to what it did, or null when the pool list or the horizon could not be
+ * read, which is "could not tell" and never "nothing to do" (#1134). Never throws:
+ * every caller is a best effort refresh that the recompute lane backstops. Nothing
+ * touched is the ordinary tick and costs no read.
+ */
+export async function recomputePoolsForCodes(
+  codes: string[],
+  opts: { label: string; maxPools: number },
+): Promise<TouchedPoolsOutcome | null> {
+  if (codes.length === 0) return { refreshed: 0, deferred: 0, failed: 0, debounced: 0 };
+  try {
+    const deadlineMs = Date.now() + TOUCHED_POOLS_BUDGET_MS;
+    const [buckets, horizon] = await Promise.all([listPoolBuckets(), loadBookingHorizonDays()]);
+    const outcome = await recomputeTouchedPools(codes, buckets, {
+      nowMs: Date.now,
+      deadlineMs,
+      recomputePool: (pool) => recomputePoolSlotsForToday(pool, undefined, horizon),
+      lastRunAt: lastPoolRecomputeAt,
+      skipMs: RECOMPUTE_SKIP_MS,
+      maxPools: opts.maxPools,
+    });
+    // One line per sweep refresh, so the next load run can say how many pools each
+    // tick computed and how many it left to the lane, rather than inferring it.
+    log.info("slot-cache", {
+      msg: "touched pools recomputed",
+      label: opts.label,
+      codes: codes.length,
+      ...outcome,
+    });
+    return outcome;
+  } catch (err) {
+    log.error("slot-cache", { msg: "touched pools recompute failed", label: opts.label }, err);
+    return null;
+  }
+}
+
+/**
+ * The whole refresh an every minute sweep makes for the agents it changed (#2357):
+ * their bucket codes in one batched read (#762), then one bounded, pooled refresh.
+ * The sync lane and both self heal reconcile sweeps call this and nothing else, so
+ * the shape that let each of them loop a whole pool compute per code cannot come
+ * back at one of the three while the other two stay fixed (L613).
+ *
+ * Every code is passed through, never a code cap applied BEFORE pooling: capping
+ * codes first would leave which pools get refreshed to the order of a set. Never
+ * throws; a bucket lookup that fails logs and refreshes nothing, and the recompute
+ * lane is the backstop for all of it.
+ */
+export async function refreshPoolsForAgents(
+  userIds: string[],
+  label: string,
+): Promise<TouchedPoolsOutcome | null> {
+  if (userIds.length === 0) return { refreshed: 0, deferred: 0, failed: 0, debounced: 0 };
+  const codes = await touchedBucketCodes(userIds, Number.POSITIVE_INFINITY, label);
+  return recomputePoolsForCodes(codes, { label, maxPools: MAX_TOUCHED_POOLS_PER_SWEEP });
 }
 
 export interface AvailabilityRoutingMeta {

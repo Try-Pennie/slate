@@ -517,6 +517,14 @@ export const REQUEST_CPU_LATENCY_SHARE = 0.5;
  * invocations with no cron in the window, against a wall p95 of 4,025ms. CPU
  * roughly equals wall, so the confirm path is compute bound rather than waiting on
  * anything, and #2321 holds the open question of where those seconds go.
+ *
+ * What it is NOT (#2345): a share of what a lead waits for. The platform reports one
+ * CPU figure per INVOCATION, and a confirm's invocation outlives its response by
+ * whatever was deferred to after it (the tally, and since #2345 the booked bucket's
+ * slot refresh under its own name), so the percentile this is judged against counts
+ * work no lead waits on and cannot be split. The derivation from the latency bar is
+ * the budget's reason, not a claim about what the reading measures; read the report's
+ * by job line beside any breach.
  */
 export const REQUEST_CPU_P99_MS = Math.round(OK_P95_MS * REQUEST_CPU_LATENCY_SHARE);
 /**
@@ -534,6 +542,30 @@ export const REQUEST_CPU_P99_MS = Math.round(OK_P95_MS * REQUEST_CPU_LATENCY_SHA
  * confirm work; their stage profiles are the same shape.
  */
 export const REQUEST_STARTUP_P95_MS = OK_P95_MS - REQUEST_CPU_P99_MS;
+/**
+ * The share of the scheduled CPU kill limit a cron tick may reach before the cron
+ * half of the CPU bar fails (#2357).
+ *
+ * The bar used to fail only past the limit itself, so run 34991614423 passed a
+ * minute tick at 119,137ms against 120,000ms in the same words it would have used
+ * for 4,000. A tick killed there dies mid lane with no retry (cron has none), and
+ * that run was one slow agent away from it. Half leaves room for the worst tick to
+ * double before the platform kills it, which is the measured trend on this roster
+ * shape: 27s, then 65.6s, then 119s across three consecutive runs.
+ */
+export const CRON_CPU_MARGIN_SHARE = 0.5;
+
+/**
+ * The worst tick's share of the kill limit, in ONE wording for the report line
+ * and the finding (L41), so 3 percent and 99 percent never read alike.
+ */
+export function cronCpuShareText(worstCpuMs: number, ceilingMs: number): string {
+  const worst = Math.round(worstCpuMs);
+  if (!Number.isFinite(ceilingMs) || ceilingMs <= 0) {
+    return `worst tick ${worst}ms of CPU, against an unreadable kill limit`;
+  }
+  return `worst tick ${worst}ms of CPU, ${Math.floor((worstCpuMs / ceilingMs) * 100)}% of the ${ceilingMs}ms kill limit`;
+}
 export const FRESHNESS_MAX_SEC = 6 * 60;
 /** How far the platform's invocation count may sit below the run's own before its
  *  numbers are about a different window. */
@@ -876,7 +908,9 @@ export function judgeBookingRun(input: JudgeInput): JudgeResult {
             `before the confirm began (${cs.cold} were the first on their isolate), ` +
             `${m.confirmHandler === null ? "an unmeasured time" : `p95 ${m.confirmHandler.p95}ms`} ` +
             `inside it, and ${m.confirmAfterResponse === null ? "an unmeasured time" : `p95 ${m.confirmAfterResponse.p95}ms`} ` +
-            "AFTER the response had gone, which is the deferred webhook send. No lead waits for " +
+            "AFTER the response had gone, the work deferred to after the response; the report's " +
+            "by job line says which job it was (#2345: on the load test Worker it is never the " +
+            "webhook send, which has no subscriber there). No lead waits for " +
             "that last span and this percentile still counts it, so read the three apart before " +
             "optimising anything. The percentile CANNOT be split: the runtime reports one CPU " +
             "figure per invocation, and no in process timer can apportion it, because a Worker's " +
@@ -894,15 +928,21 @@ export function judgeBookingRun(input: JudgeInput): JudgeResult {
           split,
       );
     }
-  } else if (p.cron.worstCpuMs > input.budgets.cronCpuMs) {
+  } else if (p.cron.worstCpuMs > input.budgets.cronCpuMs * CRON_CPU_MARGIN_SHARE) {
     // The cron half IS judgeable exactly, because the scheduled dataset reports one
     // row per invocation with its own CPU and the cron expression that fired it, so
     // the finding can NAME the lane rather than pointing at a percentile.
+    //
+    // Judged against a MARGIN below the kill limit (#2357), not the limit itself:
+    // a tick that survived by under a second is a near miss, not a pass.
     const worst = Object.entries(p.cron.byCron).sort((a, b) => b[1].worstCpuMs - a[1].worstCpuMs)[0];
+    const marginMs = Math.round(input.budgets.cronCpuMs * CRON_CPU_MARGIN_SHARE);
     fail(
       "cron CPU",
-      `the "${worst?.[0] ?? "(unnamed)"}" lane reached ${Math.round(p.cron.worstCpuMs)}ms of CPU ` +
-        `against the ${input.budgets.cronCpuMs}ms ceiling`,
+      `the "${worst?.[0] ?? "(unnamed)"}" lane's ${cronCpuShareText(p.cron.worstCpuMs, input.budgets.cronCpuMs)}, ` +
+        `past the ${marginMs}ms margin (${Math.round(CRON_CPU_MARGIN_SHARE * 100)}% of it) this bar ` +
+        "holds. A tick killed at the limit dies mid lane with no retry, so the margin is the " +
+        "bar and the limit is not",
     );
   }
   // Every status other than `success` is a finding, and they are named rather than

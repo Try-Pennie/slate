@@ -29,13 +29,22 @@ const pace = vi.hoisted(() => ({
   SYNC_CONCURRENCY: 4,
   MAX_AGENTS_PER_SYNC_TICK: 200,
   MAX_TOUCHED_AGENTS: 50,
-  MAX_TOUCHED_BUCKETS: 50,
 }));
-const precompute = vi.hoisted(() => ({
-  // #762: the lane now resolves every changed agent's buckets in one batched call.
-  touchedBucketCodes: vi.fn(async () => [] as string[]),
+// #2357: the lane's whole post sync refresh is one call (the batched bucket lookup
+// of #762 plus the pooled, counted recompute), pinned in slot-cache-agent-pools.test.ts.
+const slotCache = vi.hoisted(() => ({
+  refreshPoolsForAgents: vi.fn(
+    async (
+      _userIds: string[],
+      _label: string,
+    ): Promise<{ refreshed: number; deferred: number; failed: number; debounced: number } | null> => ({
+      refreshed: 1,
+      deferred: 0,
+      failed: 0,
+      debounced: 0,
+    }),
+  ),
 }));
-const slotCache = vi.hoisted(() => ({ recomputeBucketSlotsForToday: vi.fn(async () => {}) }));
 const dispatch = vi.hoisted(() => ({
   sendThrottledAlert: vi.fn(async () => {}),
   resolveAlert: vi.fn(async () => false),
@@ -66,7 +75,6 @@ vi.mock("@/lib/locks", () => locks);
 vi.mock("@/lib/supabase/admin", () => admin);
 vi.mock("@/lib/google/sync", () => sync);
 vi.mock("@/lib/google/sync-pace", () => pace);
-vi.mock("@/lib/availability/precompute", () => precompute);
 vi.mock("@/lib/availability/slot-cache", () => slotCache);
 vi.mock("@/lib/google/sync-coalesce", () => ({ CRON_LOCK_TTL_MS: 1000, SYNC_TICK_BUDGET_MS: 1000 }));
 vi.mock("@/lib/notify/dispatch", () => dispatch);
@@ -199,54 +207,46 @@ describe("GET /api/cron/sync", () => {
   });
 });
 
-// #1049: the post-sync per-bucket recompute used to swallow its rejection. The
-// recompute lane does reconverge the bucket, so this is genuinely best-effort and
-// stays a warn rather than a page. What was missing is any trace at all: a bucket
-// whose recompute fails on EVERY tick looked identical to one that never needed
-// recomputing.
-describe("GET /api/cron/sync records a failed post-sync recompute (#1049)", () => {
+// #2357: the post sync refresh is ONE pooled, counted call, not a loop over codes.
+// It used to recompute up to twenty bucket CODES one after another, a whole pool
+// compute each and no time bound, and on the load test Worker that tail took a
+// minute tick to 119 s of CPU against the 120 s kill. The per pool failure
+// boundary and its log line (#1049) now live in the pooled helper and are pinned
+// in slot-cache-agent-pools.test.ts and scripts/test-pool-recompute.ts; this pins
+// that the lane actually goes through it.
+describe("GET /api/cron/sync refreshes touched pools through one bounded call (#2357)", () => {
   beforeEach(() => {
-    logWarn.mockClear();
-    // Drive the recompute loop: one agent with changes, one touched bucket.
-    pace.agentsWithChanges.mockReturnValue([{ userId: "u1" }]);
-    precompute.touchedBucketCodes.mockResolvedValue(["411"]);
+    pace.agentsWithChanges.mockReturnValue(["u1", "u2"] as never);
   });
 
-  it("logs the bucket and a short reason when the recompute rejects, and still returns 200", async () => {
+  it("hands the changed agents to the pooled refresh once", async () => {
     cron.isAuthorizedCron.mockReturnValueOnce(true);
-    slotCache.recomputeBucketSlotsForToday.mockRejectedValueOnce(
-      new Error("bucket_slots upsert deadlock detected"),
-    );
 
     const res = await GET(req());
 
-    // The tick must not fail over a best-effort freshness nudge.
     expect(res.status).toBe(200);
-    expect(slotCache.recomputeBucketSlotsForToday).toHaveBeenCalledTimes(1);
-
-    const call = logWarn.mock.calls.find(
-      (c) => String((c[1] as Record<string, unknown>)?.msg ?? "").includes("recompute"),
-    );
-    expect(call).toBeDefined();
-    const [tag, fields] = call as [string, Record<string, unknown>];
-    expect(tag).toBe("sync");
-    // The bucket is what makes it actionable, and the reason must be ONE short
-    // line rather than a pasted database error.
-    expect(fields.bucket).toBe("411");
-    expect(String(fields.reason)).not.toContain("\n");
-    expect(String(fields.reason).length).toBeLessThan(120);
+    expect(slotCache.refreshPoolsForAgents).toHaveBeenCalledTimes(1);
+    expect(slotCache.refreshPoolsForAgents).toHaveBeenCalledWith(["u1", "u2"], "touched-bucket");
   });
 
-  it("logs no recompute warning when the recompute succeeds", async () => {
+  it("still returns 200 and stamps its heartbeat when the pooled refresh could not run", async () => {
     cron.isAuthorizedCron.mockReturnValueOnce(true);
+    slotCache.refreshPoolsForAgents.mockResolvedValueOnce(null);
+
     const res = await GET(req());
+
+    // A best effort freshness nudge; the helper has already logged why.
     expect(res.status).toBe(200);
-    expect(slotCache.recomputeBucketSlotsForToday).toHaveBeenCalledTimes(1);
-    expect(
-      logWarn.mock.calls.some((c) =>
-        String((c[1] as Record<string, unknown>)?.msg ?? "").includes("recompute"),
-      ),
-    ).toBe(false);
+    expect(heartbeat.recordHeartbeat).toHaveBeenCalledWith("sync");
+  });
+
+  it("refreshes nothing when no agent changed", async () => {
+    cron.isAuthorizedCron.mockReturnValueOnce(true);
+    pace.agentsWithChanges.mockReturnValue([] as never);
+
+    await GET(req());
+
+    expect(slotCache.refreshPoolsForAgents).not.toHaveBeenCalled();
   });
 });
 

@@ -15,6 +15,8 @@ import {
   JUDGE_EXIT,
   OK_P95_MS,
   FRESHNESS_MAX_SEC,
+  CRON_CPU_MARGIN_SHARE,
+  cronCpuShareText,
   type JudgeInput,
   type JudgedBooking,
 } from "./loadtest/judge-booking-run.ts";
@@ -1085,12 +1087,14 @@ const bars = (r: ReturnType<typeof judgeBookingRun>) => r.findings.map((f) => f.
 {
   const withCrons = broken((i) => {
     // The shape production actually produces: a huge p99 that is entirely the
-    // cron lanes, and crons present in the window to prove it.
+    // cron lanes, and crons present in the window to prove it. 44.7 s is the
+    // production minute lane's seven day maximum (docs/cloudflare-platform-notes.md),
+    // inside the margin below.
     i.platform.cpuMsP99 = 48_900;
     i.platform.cron = {
       invocations: 10,
-      worstCpuMs: 74_365,
-      byCron: { "* * * * *": { invocations: 10, worstCpuMs: 74_365 } },
+      worstCpuMs: 44_700,
+      byCron: { "* * * * *": { invocations: 10, worstCpuMs: 44_700 } },
     };
   });
   assert(
@@ -1119,6 +1123,82 @@ const bars = (r: ReturnType<typeof judgeBookingRun>) => r.findings.map((f) => f.
   assert(
     cronOverCeiling.findings.find((f) => f.bar === "cron CPU")!.detail.includes("* * * * *"),
     "and it NAMES the lane, because that is what a reader acts on",
+  );
+}
+{
+  // #2357: a bar AT the kill limit has no margin. Run 34991614423 passed a tick at
+  // 119,137 ms against 120,000 with the same words it would have used for 4,000.
+  // The cron half now fails past a stated share of the ceiling, and says the share.
+  const margin = Math.round(CRON_CPU_MARGIN_SHARE * 120_000);
+  const justUnder = broken((i) => {
+    i.platform.cron = {
+      invocations: 19,
+      worstCpuMs: margin,
+      byCron: { "* * * * *": { invocations: 19, worstCpuMs: margin } },
+    };
+  });
+  assert(!bars(justUnder).includes("cron CPU"), "a tick exactly AT the margin is not a finding");
+
+  const nearKill = broken((i) => {
+    i.platform.cron = {
+      invocations: 19,
+      worstCpuMs: 119_137,
+      byCron: {
+        "* * * * *": { invocations: 15, worstCpuMs: 119_137 },
+        "*/5 * * * *": { invocations: 4, worstCpuMs: 665 },
+      },
+    };
+  });
+  const finding = nearKill.findings.find((f) => f.bar === "cron CPU");
+  assert(finding !== undefined, "a tick under the kill limit but past the margin IS a finding");
+  assert(finding!.detail.includes("99%"), "and it states the share of the kill limit the tick used");
+  assert(finding!.detail.includes("* * * * *"), "and names the lane that reached it");
+  assert(
+    finding!.detail.includes(String(margin)),
+    "and the margin it was judged against, so the bar is never read as the ceiling",
+  );
+  eq(nearKill.verdict, "fail", "so the run fails rather than passing on one second of headroom");
+}
+{
+  // The share is printed on EVERY run, pass or fail, through one helper so the
+  // report and the finding cannot word it two ways (L41).
+  eq(
+    cronCpuShareText(119_137, 120_000),
+    "worst tick 119137ms of CPU, 99% of the 120000ms kill limit",
+    "the share line for the measured near kill tick",
+  );
+  eq(
+    cronCpuShareText(4_000, 120_000),
+    "worst tick 4000ms of CPU, 3% of the 120000ms kill limit",
+    "and for a quiet one, so 3 percent and 99 percent never read alike",
+  );
+  eq(
+    cronCpuShareText(0, 0),
+    "worst tick 0ms of CPU, against an unreadable kill limit",
+    "an unusable ceiling is said, never divided by",
+  );
+}
+{
+  // #2345: the request CPU finding used to call the post response span "the deferred
+  // webhook send". The load test Worker has NO webhook subscriber (every confirm in
+  // run 34991614423 logged `no subscriber for event`), so that span cannot be the
+  // send, and naming a job the run never measured sends a reader to the wrong code.
+  const r = broken((i) => {
+    i.platform.cpuMsP99 = REQUEST_CPU_P99_MS + 1_000;
+  });
+  const cpu = r.findings.find((f) => f.bar === "Worker CPU on the request path");
+  assert(cpu !== undefined, "a request CPU breach with the startup split read is a finding");
+  assert(
+    cpu!.detail.includes("AFTER the response had gone"),
+    "and it still reports the post response span apart",
+  );
+  assert(
+    !cpu!.detail.includes("which is the deferred webhook send"),
+    "without naming a job it did not measure",
+  );
+  assert(
+    cpu!.detail.includes("by job"),
+    "and points at the per job line, which is where what that span WAS is measured",
   );
 }
 {
